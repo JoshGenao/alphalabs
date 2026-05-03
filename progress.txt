@@ -1,3 +1,48 @@
+=== SESSION 4 ===
+Date: 2026-05-03
+Feature completed: SRS-ARCH-002 - Enforce dependency direction
+Status: 116 remaining features
+
+What I did:
+- Added `dependency_direction` metadata to `architecture/runtime_services.json` for the
+  Types/Models -> Data Layer -> Strategy Engine -> Execution/Simulation -> Adapters
+  boundary plus sidecar runtime crates.
+- Added `tools/dependency_boundary_check.py`, which validates internal Cargo dependency
+  edges and scans lower-layer Rust crates for forbidden dashboard, orchestrator, and
+  vendor-adapter imports.
+- Wired the SRS-ARCH-002 evidence into `tools/architecture_check.py` and documented the
+  direct check plus negative fixtures in `architecture/README.md`.
+- Added architecture tests for the passing check and required negative cases:
+  orchestrator import, dashboard import, and IB/vendor-specific import from lower layers.
+- Used the local `ddia_reference` skill's maintainability/evolvability guidance to keep
+  the boundary explicit, metadata-driven, and automated rather than implicit convention.
+
+What I tested:
+- `./init.sh` -> "✓ Environment ready" (required outside sandbox because the local server
+  bind is blocked inside the sandbox).
+- `python3 tools/dependency_boundary_check.py` -> "SRS-ARCH-002 PASS" with flow, Cargo
+  graph, and source-scan evidence.
+- Negative fixtures:
+  `--fixture lower-layer-orchestrator-import`,
+  `--fixture lower-layer-vendor-adapter-import`, and
+  `--fixture lower-layer-dashboard-import` all failed with "SRS-ARCH-002 FAIL".
+- `python3 tools/architecture_check.py` -> existing SRS-ARCH-001 PASS plus new
+  SRS-ARCH-002 evidence lines.
+- `python3 -m unittest tests.test_architecture tests.test_strategy_api tests.test_rest_api`
+  -> 25 tests OK.
+- `cargo test` -> all Rust crate unit tests and doc tests passed.
+
+Known issues / notes for next agent:
+- Pre-existing dirty/untracked files were present at session start (`init.sh`, `Cargo.lock`,
+  `requirements.txt`, `prompts/coding_prompt.md`, `.claude/`). They were not part of
+  SRS-ARCH-002 and were not reverted.
+- The dependency checker is intentionally metadata-driven. If a future feature adds a
+  legitimate new internal edge, update `dependency_direction` and keep a negative fixture
+  for the forbidden edge class.
+- No features were skipped for clarification.
+- Lowest remaining feature in the original priority-order list is SRS-ARCH-003
+  (vendor integration isolation behind adapter interfaces).
+
 === SESSION 3 ===
 Date: 2026-05-03
 Feature completed: API-2 - REST API contract surface for SRS-API-001

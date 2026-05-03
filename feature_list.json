@@ -26,7 +26,7 @@
       "Step 3: Verify acceptance criteria: Automated dependency check fails if a lower layer imports the dashboard, orchestrator, or vendor-specific adapter modules outside permitted boundaries.",
       "Step 4: Record objective evidence from inspection, architecture test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {

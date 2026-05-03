@@ -10,3 +10,22 @@ The objective source of truth for the boundary is
 Rust crate manifest and Rust source, that those service directories contain no
 Python implementation files, that container configuration points core services
 at the Rust runtime image, and that the Python package exposes the Strategy API.
+
+`SRS-ARCH-002` is enforced by the same metadata file's
+`dependency_direction` block. `tools/dependency_boundary_check.py` validates
+the allowed internal Cargo dependency graph and scans lower-layer Rust crates
+for forbidden dashboard, orchestrator, and vendor-adapter imports. The check
+can be run directly:
+
+```bash
+python3 tools/dependency_boundary_check.py
+```
+
+The negative fixtures prove the check fails for the required boundary
+violations:
+
+```bash
+python3 tools/dependency_boundary_check.py --fixture lower-layer-orchestrator-import
+python3 tools/dependency_boundary_check.py --fixture lower-layer-vendor-adapter-import
+python3 tools/dependency_boundary_check.py --fixture lower-layer-dashboard-import
+```

@@ -54,6 +54,146 @@
       "path": "crates/atp-notification"
     }
   ],
+  "dependency_direction": {
+    "requirement": "SRS-ARCH-002",
+    "flow": [
+      "atp-types",
+      "atp-data",
+      "atp-strategy-engine",
+      "atp-execution / atp-simulation",
+      "atp-adapters"
+    ],
+    "enforced_crates": [
+      {
+        "crate": "atp-types",
+        "path": "crates/atp-types",
+        "allowed_dependencies": []
+      },
+      {
+        "crate": "atp-data",
+        "path": "crates/atp-data",
+        "allowed_dependencies": [
+          "atp-types"
+        ]
+      },
+      {
+        "crate": "atp-strategy-engine",
+        "path": "crates/atp-strategy-engine",
+        "allowed_dependencies": [
+          "atp-data",
+          "atp-types"
+        ]
+      },
+      {
+        "crate": "atp-execution",
+        "path": "crates/atp-execution",
+        "allowed_dependencies": [
+          "atp-data",
+          "atp-strategy-engine",
+          "atp-types"
+        ]
+      },
+      {
+        "crate": "atp-simulation",
+        "path": "crates/atp-simulation",
+        "allowed_dependencies": [
+          "atp-data",
+          "atp-strategy-engine",
+          "atp-types"
+        ]
+      },
+      {
+        "crate": "atp-adapters",
+        "path": "crates/atp-adapters",
+        "allowed_dependencies": [
+          "atp-types"
+        ]
+      }
+    ],
+    "sidecar_crates": [
+      {
+        "crate": "atp-market-data",
+        "path": "crates/atp-market-data",
+        "allowed_dependencies": [
+          "atp-types"
+        ]
+      },
+      {
+        "crate": "atp-factor-pipeline",
+        "path": "crates/atp-factor-pipeline",
+        "allowed_dependencies": [
+          "atp-data",
+          "atp-types"
+        ]
+      },
+      {
+        "crate": "atp-notification",
+        "path": "crates/atp-notification",
+        "allowed_dependencies": [
+          "atp-types"
+        ]
+      }
+    ],
+    "lower_layer_scan_crates": [
+      "atp-types",
+      "atp-data",
+      "atp-strategy-engine",
+      "atp-execution",
+      "atp-simulation",
+      "atp-market-data",
+      "atp-factor-pipeline",
+      "atp-notification"
+    ],
+    "forbidden_imports": [
+      {
+        "token": "atp_orchestrator",
+        "reason": "lower layers must not call the Strategy Orchestrator"
+      },
+      {
+        "token": "atp_api",
+        "reason": "lower layers must not call the dashboard/API package"
+      },
+      {
+        "token": "atp_dashboard",
+        "reason": "lower layers must not call dashboard modules"
+      },
+      {
+        "token": "atp_adapters",
+        "reason": "vendor adapter implementations must stay behind the adapter boundary",
+        "allowed_crates": [
+          "atp-adapters"
+        ]
+      },
+      {
+        "token": "ib_gateway",
+        "reason": "Interactive Brokers integration belongs in adapter modules",
+        "allowed_crates": [
+          "atp-adapters"
+        ]
+      },
+      {
+        "token": "interactive_brokers",
+        "reason": "Interactive Brokers integration belongs in adapter modules",
+        "allowed_crates": [
+          "atp-adapters"
+        ]
+      },
+      {
+        "token": "databento",
+        "reason": "Databento integration belongs in adapter modules",
+        "allowed_crates": [
+          "atp-adapters"
+        ]
+      },
+      {
+        "token": "sharadar",
+        "reason": "Sharadar integration belongs in adapter modules",
+        "allowed_crates": [
+          "atp-adapters"
+        ]
+      }
+    ]
+  },
   "strategy_api": {
     "package": "atp_strategy",
     "path": "python/atp_strategy",

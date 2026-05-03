@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Architecture checks for SRS-ARCH-001."""
+"""Architecture checks for SRS-ARCH-001 and SRS-ARCH-002."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ import json
 import sys
 import tomllib
 from pathlib import Path
+
+from dependency_boundary_check import DependencyBoundaryError, assert_dependency_direction
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -156,6 +158,10 @@ def run_checks() -> list[str]:
     evidence: list[str] = []
     evidence.extend(assert_workspace_members(config))
     evidence.extend(assert_rust_service_crates(config))
+    try:
+        evidence.extend(assert_dependency_direction(config, ROOT))
+    except DependencyBoundaryError as error:
+        fail(str(error))
     evidence.extend(assert_strategy_api(config))
     evidence.extend(assert_rest_api(config))
     evidence.extend(assert_container_language_boundary(config))
