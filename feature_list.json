@@ -1,0 +1,1802 @@
+[
+  {
+    "id": "SRS-ARCH-001",
+    "category": "architecture",
+    "srs_ref": "SRS-5.1 SRS-ARCH-001",
+    "priority": "P1",
+    "description": "Verify that implement core ATP runtime services in Rust and user-authored strategy interfaces in Python.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-ARCH-001 using file inspection, build manifests, container configuration, and automated architecture/security checks with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Build manifests show Rust crates for core runtime services; Python package exposes the strategy API; no core runtime service is implemented only in Python.",
+      "Step 4: Record objective evidence from inspection, architecture test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-ARCH-002",
+    "category": "architecture",
+    "srs_ref": "SRS-5.1 SRS-ARCH-002",
+    "priority": "P1",
+    "description": "Verify that enforce the dependency direction Types/Models -> Data Layer -> Strategy Engine -> Execution/Simulation -> Adapters.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-ARCH-002 using file inspection, build manifests, container configuration, and automated architecture/security checks with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Automated dependency check fails if a lower layer imports the dashboard, orchestrator, or vendor-specific adapter modules outside permitted boundaries.",
+      "Step 4: Record objective evidence from inspection, architecture test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-ARCH-003",
+    "category": "architecture",
+    "srs_ref": "SRS-5.1 SRS-ARCH-003",
+    "priority": "P1",
+    "description": "Verify that isolate vendor integrations behind adapter interfaces.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-ARCH-003 using file inspection, build manifests, container configuration, and automated architecture/security checks with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: IB, Databento, Sharadar, user Parquet, and future stub providers compile as adapter implementations; core strategy, backtest, and data-query code contains no vendor-specific imports; a structural integration test implements a fictional asset-class or alternative-data adapter using only public adapter interfaces and confirms no core module files are modified.",
+      "Step 4: Record objective evidence from inspection, structural test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-ARCH-004",
+    "category": "architecture",
+    "srs_ref": "SRS-5.1 SRS-ARCH-004",
+    "priority": "P1",
+    "description": "Verify that deploy as a Docker Compose stack on the Phase 1 Proxmox Ubuntu VM target.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-ARCH-004 using file inspection, build manifests, container configuration, and automated architecture/security checks with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Compose configuration starts core services, dashboard/API, strategy containers, Jupyter, IB Gateway integration configuration, SSD paths, and NAS paths with environment-specific configuration; documentation states that cloud VPS deployment is a future target outside the release baseline and identifies portability constraints for future deployment.",
+      "Step 4: Record objective evidence from demonstration, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-ARCH-005",
+    "category": "architecture",
+    "srs_ref": "SRS-5.1 SRS-ARCH-005",
+    "priority": "P1",
+    "description": "Verify that provide a configuration system for credentials, storage paths, IB account settings, market-data line limits, resource limits, and notification channels.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-ARCH-005 using file inspection, build manifests, container configuration, and automated architecture/security checks with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Required configuration keys are documented, validated at startup, and reported as structured readiness failures when missing or invalid.",
+      "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-ORCH-001",
+    "category": "orchestration",
+    "srs_ref": "SRS-5.2 SRS-ORCH-001",
+    "priority": "P1",
+    "description": "Verify that run each strategy instance in an isolated Docker container managed only by the Strategy Orchestrator.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-ORCH-001 using bash, file reads, dev server requests, and browser automation with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Starting, stopping, restarting, destroying, and health-checking a strategy instance occurs through orchestrator APIs; strategy containers cannot manage other containers; an unresponsive strategy container is restarted automatically, logged, and displayed on the dashboard; startup from orchestrator command to strategy ready, excluding warm-up, completes within 30 seconds.",
+      "Step 4: Record objective evidence from test, inspection, performance test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-ORCH-002",
+    "category": "orchestration",
+    "srs_ref": "SRS-5.2 SRS-ORCH-002",
+    "priority": "P1",
+    "description": "Verify that enforce configurable resource profiles for live and paper strategy containers.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-ORCH-002 using bash, file reads, dev server requests, and browser automation with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Default live profile is no more than 512 MB RAM and 0.25 CPU cores; default paper profile is no more than 300 MB RAM and 0.10 CPU cores; configuration overrides are validated.",
+      "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-ORCH-003",
+    "category": "orchestration",
+    "srs_ref": "SRS-5.2 SRS-ORCH-003",
+    "priority": "P1",
+    "description": "Verify that enforce workload priority when the configured host memory safety margin would be breached.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-ORCH-003 using bash, file reads, dev server requests, and browser automation with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: With available memory below the configured safety margin, new lower-priority workloads are refused; if a higher-priority workload requires resources, the lowest-priority active batch workload is terminated according to the SYS-57 hierarchy; dashboard and notification alerts are emitted; live strategy execution is not terminated for lower-priority work.",
+      "Step 4: Record objective evidence from test, fault injection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-ORCH-004",
+    "category": "orchestration",
+    "srs_ref": "SRS-5.2 SRS-ORCH-004",
+    "priority": "P1",
+    "description": "Verify that record and expose the deployed code version for each strategy instance.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-ORCH-004 using bash, file reads, dev server requests, and browser automation with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Each deployment stores a source hash and timestamp; dashboard, REST API, and backtest results display or return the same version identifier.",
+      "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-ORCH-005",
+    "category": "orchestration",
+    "srs_ref": "SRS-5.2 SRS-ORCH-005",
+    "priority": "P2",
+    "description": "Verify that support rollback to the previous deployed strategy version.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-ORCH-005 using bash, file reads, dev server requests, and browser automation with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Rollback is available through dashboard, CLI, and REST API; rollback of the live strategy requires the same confirmation control as live promotion.",
+      "Step 4: Record objective evidence from demonstration, test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SDK-001",
+    "category": "strategy_api",
+    "srs_ref": "SRS-5.2 SRS-SDK-001",
+    "priority": "P1",
+    "description": "Verify that provide a Python Strategy API that is identical for live IB execution and internal paper simulation, where internal paper simulation consumes live market data and produces simulated fills using fictional capital (per SYS-82 through SYS-87).",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SDK-001 using documented REST, WebSocket, CLI, or Python API calls with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: The same strategy source runs without execution-mode branches in live IB execution and internal paper simulation (per AC-14); order, data, logging, state, and callback APIs have identical signatures; the IB paper account integration test path (SYS-2e) executes the same strategy source.",
+      "Step 4: Record objective evidence from contract test, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SDK-002",
+    "category": "strategy_api",
+    "srs_ref": "SRS-5.2 SRS-SDK-002",
+    "priority": "P1",
+    "description": "Verify that expose trading-calendar-aware scheduling primitives through the Python Strategy API.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SDK-002 using documented REST, WebSocket, CLI, or Python API calls with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Strategies can schedule actions at market open, market close, every N minutes, and cron-like expressions; NYSE, NASDAQ, and CBOE holidays, early closes, pre-market and after-hours session boundaries, US Eastern time zone behavior, and daylight saving transitions resolve according to the trading calendar.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SDK-003",
+    "category": "strategy_api",
+    "srs_ref": "SRS-5.2 SRS-SDK-003",
+    "priority": "P1",
+    "description": "Verify that expose strategy subscriptions for equity and option market data while enforcing one tradable asset class per strategy instance.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SDK-003 using documented REST, WebSocket, CLI, or Python API calls with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: A strategy configured for equities or options can subscribe to both asset classes for analysis; order submission is rejected when the strategy attempts to trade an unconfigured asset class.",
+      "Step 4: Record objective evidence from contract test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SDK-004",
+    "category": "strategy_api",
+    "srs_ref": "SRS-5.2 SRS-SDK-004",
+    "priority": "P1",
+    "description": "Verify that deliver order event callbacks to Python strategy code.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SDK-004 using documented REST, WebSocket, CLI, or Python API calls with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Fill, partial fill, cancellation, and rejection callbacks include fill price, fill quantity, commission, and order identifiers; live callback delivery is less than 1,000 ms p95 from broker fill acknowledgement; paper callback delivery is less than 100 ms p95 from simulated fill.",
+      "Step 4: Record objective evidence from contract test, performance test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SDK-005",
+    "category": "strategy_api",
+    "srs_ref": "SRS-5.2 SRS-SDK-005",
+    "priority": "P1",
+    "description": "Verify that provide a warm-up mechanism before live, paper, and backtest execution.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SDK-005 using documented REST, WebSocket, CLI, or Python API calls with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: A strategy configured with a 200-bar warm-up receives historical bars before the first executable bar and begins with indicator buffers initialized.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SDK-006",
+    "category": "strategy_api",
+    "srs_ref": "SRS-5.2 SRS-SDK-006",
+    "priority": "P1",
+    "description": "Verify that expose built-in technical indicators through wrappers around pandas-ta and TA-Lib.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SDK-006 using documented REST, WebSocket, CLI, or Python API calls with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: SMA, EMA, RSI, MACD, Bollinger Bands, and ATR match pandas-ta or TA-Lib reference outputs and support incremental updates on each new bar.",
+      "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SDK-007",
+    "category": "strategy_api",
+    "srs_ref": "SRS-5.2 SRS-SDK-007",
+    "priority": "P2",
+    "description": "Verify that expose time-based bar consolidation and resampling through the Strategy API.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SDK-007 using documented REST, WebSocket, CLI, or Python API calls with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Minute data can be consolidated into 5-minute, 15-minute, hourly, and daily bars without pre-processed datasets.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SDK-008",
+    "category": "strategy_api",
+    "srs_ref": "SRS-5.2 SRS-SDK-008",
+    "priority": "P3",
+    "description": "Verify that expose non-standard bar generation through the Strategy API.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SDK-008 using documented REST, WebSocket, CLI, or Python API calls with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Renko and range bars can be generated from tick or minute-resolution input data.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SDK-009",
+    "category": "strategy_api",
+    "srs_ref": "SRS-5.2 SRS-SDK-009",
+    "priority": "P1",
+    "description": "Verify that document the Python Strategy API for strategy authors.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SDK-009 using documented REST, WebSocket, CLI, or Python API calls with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Public Strategy API functions include Python docstrings and usage examples sufficient for a Python-proficient trader to author a new strategy without reading platform internals.",
+      "Step 4: Record objective evidence from inspection, documentation test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-EXE-001",
+    "category": "execution",
+    "srs_ref": "SRS-5.3 SRS-EXE-001",
+    "priority": "P1",
+    "description": "Verify that route orders to IB only for the designated live strategy.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-EXE-001 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Live designation requires explicit user confirmation; with one live strategy and at least 30 paper strategies running, only the live strategy can submit to IB; all other IB-bound attempts are rejected with a structured error; live order acknowledgement is less than 1,000 ms p95 from strategy API invocation to strategy acknowledgement callback under the reference baseline, excluding IB-to-exchange network round trip.",
+      "Step 4: Record objective evidence from integration test, structural test, performance test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-EXE-002",
+    "category": "execution",
+    "srs_ref": "SRS-5.3 SRS-EXE-002",
+    "priority": "P1",
+    "description": "Verify that route all non-live strategy orders to the internal simulation engine.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-EXE-002 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Paper strategy orders never create IB orders; the IB paper account is available only through operator-initiated adapter integration tests.",
+      "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-EXE-003",
+    "category": "execution",
+    "srs_ref": "SRS-5.3 SRS-EXE-003",
+    "priority": "P1",
+    "description": "Verify that support market, limit, stop, and stop-limit orders for equities and options in live and paper modes.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-EXE-003 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Each order type can be accepted, validated, state-tracked, and acknowledged in both live adapter test mode and internal simulation.",
+      "Step 4: Record objective evidence from contract test, integration test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-EXE-004",
+    "category": "execution",
+    "srs_ref": "SRS-5.3 SRS-EXE-004",
+    "priority": "P1",
+    "description": "Verify that support multi-leg options orders as composite transactions.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-EXE-004 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: A four-leg options order is submitted as one composite order in IB live test mode, simulated as one composite order in paper mode, and displayed as one composite dashboard position.",
+      "Step 4: Record objective evidence from integration test, demonstration and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-EXE-005",
+    "category": "execution",
+    "srs_ref": "SRS-5.3 SRS-EXE-005",
+    "priority": "P1",
+    "description": "Verify that persist live strategy state needed for restart recovery and shall re-execute the warm-up mechanism on restart.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-EXE-005 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Pending submissions, awaiting acknowledgements, broker IDs, order statuses, fill events, correlation IDs, open positions, account equity snapshot, and the user-accessible JSON-serializable state dictionary survive execution engine restart without duplicate submissions; warm-up (SRS-SDK-005) is re-executed on restart to reconstruct indicator buffers and rolling windows from historical data; persisted live state is recoverable within 60 seconds of container restart, excluding warm-up duration.",
+      "Step 4: Record objective evidence from fault injection, test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-EXE-006",
+    "category": "execution",
+    "srs_ref": "SRS-5.3 SRS-EXE-006",
+    "priority": "P1",
+    "description": "Verify that implement the initial brokerage adapter for headless IB Gateway.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-EXE-006 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: The adapter passes automated IB paper-account tests for order submission, cancellation, market data subscription, and historical data retrieval without depending on the TWS GUI.",
+      "Step 4: Record objective evidence from integration test, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-EXE-007",
+    "category": "execution",
+    "srs_ref": "SRS-5.3 SRS-EXE-007",
+    "priority": "P2",
+    "description": "Verify that manage IB TWS API version compatibility for the brokerage adapter.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-EXE-007 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: The adapter documents the supported IB TWS API version; API version upgrades are tested against the IB paper trading account before deployment to live trading.",
+      "Step 4: Record objective evidence from integration test, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-EXE-008",
+    "category": "execution",
+    "srs_ref": "SRS-5.3 SRS-EXE-008",
+    "priority": "P1",
+    "description": "Verify that implement an order lifecycle state machine with documented states and transitions, and shall use a strategy-supplied client correlation ID as the idempotency key for live and paper order submissions.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-EXE-008 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Order states {NEW, PENDING_SUBMIT, ACKED, PARTIALLY_FILLED, FILLED, CANCEL_PENDING, CANCELLED, REJECTED, EXPIRED} are implemented with a documented transition graph; each order carries a client-assigned correlation ID stable across restarts; duplicate submissions for the same correlation ID are rejected idempotently with a structured error per SRS-ERR-001; cancel-replace operates as cancel-then-new with the original correlation ID retained for audit.",
+      "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-EXE-009",
+    "category": "execution",
+    "srs_ref": "SRS-5.3 SRS-EXE-009",
+    "priority": "P1",
+    "description": "Verify that durably commit live order intents before submission to IB and shall use the durable record to reconcile broker state on restart.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-EXE-009 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Order intents are written to a durable outbox before IB submission; on restart, the execution engine consults the outbox and treats acknowledged broker IDs as bound to their correlation IDs (SRS-EXE-008); replayed intents that already have an acknowledged broker ID are not resubmitted; outbox entries are retained until the corresponding terminal state (FILLED, CANCELLED, REJECTED, or EXPIRED) is observed.",
+      "Step 4: Record objective evidence from fault injection, test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-MD-001",
+    "category": "market_data",
+    "srs_ref": "SRS-5.4 SRS-MD-001",
+    "priority": "P1",
+    "description": "Verify that consolidate duplicate real-time market data subscriptions across active strategies.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-MD-001 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Multiple strategies subscribing to the same security consume one IB subscription; each subscriber receives fan-out data with no more than 100 ms additional latency relative to the IB feed.",
+      "Step 4: Record objective evidence from integration test, performance test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-MD-002",
+    "category": "market_data",
+    "srs_ref": "SRS-5.4 SRS-MD-002",
+    "priority": "P1",
+    "description": "Verify that enforce the configured IB market-data line limit.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-MD-002 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: A subscription request that would exceed the configured account limit is rejected with SUBSCRIPTION_LIMIT_REACHED and displayed as an operator alert.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-MD-003",
+    "category": "market_data",
+    "srs_ref": "SRS-5.4 SRS-MD-003",
+    "priority": "P1",
+    "description": "Verify that monitor market data and broker heartbeat freshness continuously.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-MD-003 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Market data and IB Gateway heartbeat staleness over 15 seconds is detected, logged, displayed, and reflected in system health status.",
+      "Step 4: Record objective evidence from test, demonstration and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-MD-004",
+    "category": "market_data",
+    "srs_ref": "SRS-5.4 SRS-MD-004",
+    "priority": "P1",
+    "description": "Verify that block live and simulated order submission when required market data is stale.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-MD-004 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: While subscribed market data is stale, live and paper order submissions return MARKET_DATA_STALE; submissions resume when fresh data is received.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-MD-005",
+    "category": "market_data",
+    "srs_ref": "SRS-5.4 SRS-MD-005",
+    "priority": "P1",
+    "description": "Verify that handle the scheduled IB Gateway daily restart as planned maintenance.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-MD-005 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: During the configured restart window, order submission and market data requests are suspended beginning 60 seconds before the expected restart; normal connectivity notifications are suppressed for the configured window defaulting to 5 minutes; automatic reconnection is attempted after the window; if IB Gateway remains unavailable after the window, standard connectivity loss handling occurs.",
+      "Step 4: Record objective evidence from integration test, fault injection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-MD-006",
+    "category": "market_data",
+    "srs_ref": "SRS-5.4 SRS-MD-006",
+    "priority": "P1",
+    "description": "Verify that execute a startup readiness check before enabling live trading.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-MD-006 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Live strategy startup is blocked until IB connectivity/authentication, IB account data, SSD data layer access, ingestion freshness within one trading day, system service health, and NAS reachability or degraded-mode alert pass; paper strategies may start only after the market data subscription manager and internal simulation engine are available; failures hold the system in pre-trade state unless manually overridden with an operator alert.",
+      "Step 4: Record objective evidence from test, demonstration and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-MD-007",
+    "category": "market_data",
+    "srs_ref": "SRS-5.4 SRS-MD-007",
+    "priority": "P1",
+    "description": "Verify that market-data subscription manager detect sequence gaps in IB tick streams and reflect gap state in heartbeat/staleness.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-MD-007 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Gap events are logged via SRS-LOG-001 with symbol, expected sequence, observed sequence, and timestamp; affected subscriptions enter the stale state until a recovery condition is satisfied (fresh tick with monotonic sequence or operator-acknowledged resync); stale-state transitions block live and paper order submission per SRS-MD-004 and are visible on the dashboard.",
+      "Step 4: Record objective evidence from test, fault injection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-001",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-001",
+    "priority": "P1",
+    "description": "Verify that ingest daily OHLCV data for all US equities from Databento on a scheduled nightly basis.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-001 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: A nightly job retrieves 8,000+ securities, writes validated data to SSD, syncs to NAS, and completes within the overnight window of 16:00 ET to 09:30 ET next trading day.",
+      "Step 4: Record objective evidence from integration test, performance test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-002",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-002",
+    "priority": "P1",
+    "description": "Verify that ingest minute-bar OHLCV data from IB for a configurable watchlist.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-002 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: The default watchlist includes securities with active strategies; the watchlist is editable by dashboard and API; projected request counts are validated against IB pacing limits of no more than 60 historical data requests per 10 minutes and no identical requests within 15 seconds; over-budget jobs are refused at scheduling time with an operator alert.",
+      "Step 4: Record objective evidence from integration test, test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-003",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-003",
+    "priority": "P1",
+    "description": "Verify that support initial bulk backfill from Databento.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-003 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Backfill retrieves the maximum available history offered by the bulk vendor at deployment, with floors of >= 15 years daily and >= 6 months minute, otherwise the deployment shall record a deviation note; daily and minute data are stored through the same validation and catalog path as incremental ingestion.",
+      "Step 4: Record objective evidence from integration test, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-004",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-004",
+    "priority": "P1",
+    "description": "Verify that capture live option-chain snapshots from IB during the configured near-close window.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-004 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Snapshot records include underlying, expiration, strike, right, bid, ask, last, volume, open interest, and implied volatility; expired contracts remain queryable after expiration; projected capture request counts are validated against IB pacing limits and over-budget captures are refused at scheduling time with an operator alert.",
+      "Step 4: Record objective evidence from integration test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-005",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-005",
+    "priority": "P1",
+    "description": "Verify that ingest Sharadar fundamental data on a scheduled basis.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-005 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Income statement, balance sheet, cash flow statement, and key ratio records for US equities are ingested, validated, cataloged, available to the factor pipeline, and completed within the overnight window of 16:00 ET to 09:30 ET next trading day.",
+      "Step 4: Record objective evidence from integration test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-006",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-006",
+    "priority": "P1",
+    "description": "Verify that import historical options data from Databento DBN and Parquet.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-006 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: DBN and Parquet inputs are accepted, normalized into the system catalog, and queryable by symbol, contract, date range, and resolution.",
+      "Step 4: Record objective evidence from test, integration test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-007",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-007",
+    "priority": "P1",
+    "description": "Verify that provide a unified historical data access interface.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-007 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Strategy code, backtests, factor jobs, and notebooks query by symbol, date range, and resolution without specifying the original source provider.",
+      "Step 4: Record objective evidence from contract test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-008",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-008",
+    "priority": "P1",
+    "description": "Verify that implement SSD-primary and NAS-archival tiered storage.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-008 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: All ingestion writes to SSD first; new data is synced to NAS; SSD retains at least 90 days of configured hot data; NAS is used for indefinite retention; storage growth estimates are documented in Section 12.1.",
+      "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-009",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-009",
+    "priority": "P1",
+    "description": "Verify that transparently fall back to NAS for cold historical reads.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-009 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Requests outside SSD retention are served from NAS and cached on SSD without requiring consumer code changes; cold-read cache entries do not exceed the configurable SSD share defaulting to 20 percent and are evicted before hot runtime data.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-010",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-010",
+    "priority": "P1",
+    "description": "Verify that evict SSD cache data according to the configured storage policy.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-010 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: At the default 80 percent high-water mark, eviction prioritizes old inactive data; data for securities with the currently running live strategy is never evicted; data accessed within the configurable recency window defaulting to 24 hours by a running backtest or factor pipeline job is not evicted.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-011",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-011",
+    "priority": "P1",
+    "description": "Verify that adjust historical price data for corporate actions.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-011 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Splits, reverse splits, dividends, delistings, mergers, and symbol changes are reflected in historical records so that backtests spanning corporate-action dates produce correct P&L calculations under the selected normalization mode.",
+      "Step 4: Record objective evidence from test, scenario demonstration and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-012",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-012",
+    "priority": "P1",
+    "description": "Verify that support raw, split-adjusted, fully adjusted, and total-return normalization modes per security subscription.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-012 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Historical and live subscription requests can select a normalization mode; options strategies can request raw prices; indicators can request adjusted series.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-013",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-013",
+    "priority": "P1",
+    "description": "Verify that validate ingested market and options records before writing to primary storage.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-013 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Records failing structural, range, duplicate, or required-field checks are quarantined and not written to primary tables; dashboard and notification alerts include counts and reasons.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-014",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-014",
+    "priority": "P2",
+    "description": "Verify that detect configured anomalous data conditions during ingestion.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-014 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Price moves exceeding a configurable threshold defaulting to 50 percent without a known corporate action, volume exceeding a configurable multiple defaulting to 20 times the 20-day average volume, and missing records for securities that traded on the exchange calendar date produce non-blocking dashboard alerts.",
+      "Step 4: Record objective evidence from test, analysis and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-015",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-015",
+    "priority": "P2",
+    "description": "Verify that support schema evolution for stored data entities.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-015 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Each persisted entity records a schema version; data written under older schema versions remains queryable after schema updates without bulk migration.",
+      "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-016",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-016",
+    "priority": "P1",
+    "description": "Verify that make ingestion jobs idempotent.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-016 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Re-running Databento, IB, option-chain, or Sharadar ingestion for an already ingested date creates no duplicate records and does not corrupt existing data.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-017",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-017",
+    "priority": "P1",
+    "description": "Verify that support concurrent reads during ingestion writes.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-017 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Strategy containers, backtests, factor jobs, and notebooks read previously ingested data while ingestion jobs write new data without corruption or blocking completed data.",
+      "Step 4: Record objective evidence from load test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-018",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-018",
+    "priority": "P2",
+    "description": "Verify that provide scheduled backup and validated recovery support for NAS-stored data.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-018 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Weekly default backups can export NAS data to an external target; backup completion validates integrity; documented RPO is no more than 7 days.",
+      "Step 4: Record objective evidence from demonstration, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-019",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-019",
+    "priority": "P1",
+    "description": "Verify that adjust or cancel live resting orders affected by corporate actions.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-019 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: When a split or reverse split affects a security with resting live orders, order quantities and limit or stop prices are adjusted; when adjustment is not possible, including delisting cases, affected orders are canceled and the operator is notified through strategy callback and notification subsystem.",
+      "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-020",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-020",
+    "priority": "P1",
+    "description": "Verify that adjust live positions affected by corporate actions.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-020 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Live position quantities and average cost basis are adjusted for splits, reverse splits, and dividends; mergers and symbol changes remap positions to successor securities; delistings mark positions as delisted and notify the operator.",
+      "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-DATA-021",
+    "category": "data",
+    "srs_ref": "SRS-5.5 SRS-DATA-021",
+    "priority": "P1",
+    "description": "Verify that apply corporate actions to paper strategy virtual positions and orders.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-DATA-021 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Paper strategy virtual positions and average cost are adjusted for splits, dividends, and mergers; virtual orders for delisted securities are canceled using the same corporate-action data source as live trading and backtesting.",
+      "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-BT-001",
+    "category": "backtesting",
+    "srs_ref": "SRS-5.6 SRS-BT-001",
+    "priority": "P1",
+    "description": "Verify that backtest Python strategies against stored data and user-uploaded Parquet data over configurable date ranges.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-BT-001 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: A backtest can be launched with system data or uploaded Parquet data; start and end dates are selectable through API and dashboard.",
+      "Step 4: Record objective evidence from test, demonstration and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-BT-002",
+    "category": "backtesting",
+    "srs_ref": "SRS-5.6 SRS-BT-002",
+    "priority": "P1",
+    "description": "Verify that apply configurable commission, slippage, and spread-impact models to backtests.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-BT-002 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Defaults match SyRS values; a backtest run can override commission, slippage, and spread-impact models without changing strategy code.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-BT-003",
+    "category": "backtesting",
+    "srs_ref": "SRS-5.6 SRS-BT-003",
+    "priority": "P1",
+    "description": "Verify that use the same transaction-cost model family for internal simulation and backtesting unless configured otherwise.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-BT-003 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: A paper strategy and backtest using identical cost configuration compute fills and commissions from the same model family.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-BT-004",
+    "category": "backtesting",
+    "srs_ref": "SRS-5.6 SRS-BT-004",
+    "priority": "P1",
+    "description": "Verify that compute required backtest and paper/live performance metrics.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-BT-004 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Sharpe ratio, Sortino ratio, alpha, beta, maximum drawdown, annualized return, annualized volatility, and win rate are produced for completed backtests, paper strategies, and live dashboard reporting.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-BT-005",
+    "category": "backtesting",
+    "srs_ref": "SRS-5.6 SRS-BT-005",
+    "priority": "P1",
+    "description": "Verify that compare strategy performance against a user-selected benchmark defaulting to SPY.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-BT-005 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: If no benchmark is selected, SPY is used; alpha and beta are computed against the selected benchmark; dashboard and backtest reports identify the benchmark.",
+      "Step 4: Record objective evidence from test, demonstration and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-BT-006",
+    "category": "backtesting",
+    "srs_ref": "SRS-5.6 SRS-BT-006",
+    "priority": "P1",
+    "description": "Verify that produce factor analysis and tear-sheet outputs.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-BT-006 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Factor returns, information coefficient, and turnover analysis are available for completed factor-analysis runs.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-BT-007",
+    "category": "backtesting",
+    "srs_ref": "SRS-5.6 SRS-BT-007",
+    "priority": "P2",
+    "description": "Verify that support grid search and multidimensional parameter sweeps for backtests.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-BT-007 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: A parameter space definition produces ranked backtest results by the selected objective function.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-BT-008",
+    "category": "backtesting",
+    "srs_ref": "SRS-5.6 SRS-BT-008",
+    "priority": "P2",
+    "description": "Verify that support walk-forward analysis.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-BT-008 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: In-sample windows are optimized, out-of-sample windows are evaluated, and outputs preserve the parameter set and metrics per window.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-BT-009",
+    "category": "backtesting",
+    "srs_ref": "SRS-5.6 SRS-BT-009",
+    "priority": "P1",
+    "description": "Verify that persist completed backtest results.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-BT-009 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Parameters, metrics, trade log, equity curve, benchmark comparison, strategy code version, and timestamp are queryable by strategy, date range, and parameter set.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-BT-010",
+    "category": "backtesting",
+    "srs_ref": "SRS-5.6 SRS-BT-010",
+    "priority": "P1",
+    "description": "Verify that produce deterministic backtest results for identical inputs.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-BT-010 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Repeated runs with identical strategy code, parameters, data, date range, seed, and cost model produce identical trade logs, equity curves, and metrics; platform parallelism, floating-point ordering, and platform-generated random values do not introduce nondeterminism.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-FAC-001",
+    "category": "factor_pipeline",
+    "srs_ref": "SRS-5.6 SRS-FAC-001",
+    "priority": "P1",
+    "description": "Verify that compute scheduled factors across the full US equity universe.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-FAC-001 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: A factor job processes 8,000+ securities using market and Sharadar data, resolves its schedule through the same trading calendar used by strategy scheduling, and completes before the user-configured scheduled deadline.",
+      "Step 4: Record objective evidence from performance test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-RES-001",
+    "category": "research",
+    "srs_ref": "SRS-5.6 SRS-RES-001",
+    "priority": "P1",
+    "description": "Verify that embed the Jupyter research environment in the dashboard workflow.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-RES-001 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Jupyter is reachable from the dashboard without navigating to a separate service URL and runs independently of live strategies, paper strategies, and backtests.",
+      "Step 4: Record objective evidence from demonstration and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-RES-002",
+    "category": "research",
+    "srs_ref": "SRS-5.6 SRS-RES-002",
+    "priority": "P1",
+    "description": "Verify that provide Jupyter access to historical data, indicators, and plotting.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-RES-002 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Notebook code can query the unified data interface, compute pandas-ta or TA-Lib indicators, and render plots without access to live order submission.",
+      "Step 4: Record objective evidence from test, demonstration and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-RES-003",
+    "category": "research",
+    "srs_ref": "SRS-5.6 SRS-RES-003",
+    "priority": "P2",
+    "description": "Verify that provide primary dashboard navigation to the embedded Jupyter research environment.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-RES-003 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: The operator can open the embedded Jupyter environment from the primary dashboard workflow without using a direct service URL.",
+      "Step 4: Record objective evidence from demonstration and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SIM-001",
+    "category": "simulation",
+    "srs_ref": "SRS-5.7 SRS-SIM-001",
+    "priority": "P1",
+    "description": "Verify that simulate paper strategy orders locally without routing to any brokerage.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SIM-001 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Market, limit, stop, stop-limit, equity, option, and multi-leg orders are processed by the simulation engine and create no IB API order calls.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SIM-002",
+    "category": "simulation",
+    "srs_ref": "SRS-5.7 SRS-SIM-002",
+    "priority": "P1",
+    "description": "Verify that simulate fills using live market data and configurable fill models.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SIM-002 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Market, limit, stop, and stop-limit simulated fills follow SYS-83 defaults and per-strategy configuration; fill volume constraints are enforced.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SIM-003",
+    "category": "simulation",
+    "srs_ref": "SRS-5.7 SRS-SIM-003",
+    "priority": "P1",
+    "description": "Verify that maintain an independent virtual position ledger for each paper strategy.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SIM-003 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Quantity, average cost, unrealized P&L, realized P&L, and commission paid are isolated per paper strategy and independent of IB account positions.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SIM-004",
+    "category": "simulation",
+    "srs_ref": "SRS-5.7 SRS-SIM-004",
+    "priority": "P1",
+    "description": "Verify that persist paper strategy simulation state.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SIM-004 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Virtual positions, pending simulated orders, accumulated metrics, and user state are persisted every 60 seconds by default and restored within 30 seconds of container restart, excluding warm-up.",
+      "Step 4: Record objective evidence from fault injection, test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-RESV-001",
+    "category": "reservoir",
+    "srs_ref": "SRS-5.6 SRS-RESV-001",
+    "priority": "P1",
+    "description": "Verify that maintain at least 30 concurrent paper strategies in the Strategy Reservoir for the release baseline.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-RESV-001 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: One live strategy and 30 paper strategies run on the reference hardware baseline without violating order latency or dashboard refresh requirements.",
+      "Step 4: Record objective evidence from system test, performance test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-RESV-002",
+    "category": "reservoir",
+    "srs_ref": "SRS-5.6 SRS-RESV-002",
+    "priority": "P1",
+    "description": "Verify that rank Reservoir strategies over a shared configurable evaluation window.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-RESV-002 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Evaluation windows of 1, 7, 15, 30, 60, and 90 calendar days are supported; default is 30; Sharpe, Sortino, and momentum score are exposed in dashboard and REST API.",
+      "Step 4: Record objective evidence from test, demonstration and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-RESV-003",
+    "category": "reservoir",
+    "srs_ref": "SRS-5.6 SRS-RESV-003",
+    "priority": "P1",
+    "description": "Verify that support manual and configurable automatic Hot-Swap triggers.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-RESV-003 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Manual promotion, drawdown-triggered demotion, top-ranked promotion, and highest-momentum promotion are configurable; automatic triggers default to disabled; all swap triggers are logged.",
+      "Step 4: Record objective evidence from test, demonstration and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-RESV-004",
+    "category": "reservoir",
+    "srs_ref": "SRS-5.6 SRS-RESV-004",
+    "priority": "P1",
+    "description": "Verify that execute Hot-Swap demotion before promotion.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-RESV-004 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Current live strategy stops new signals, cancels resting IB orders, submits liquidation orders, waits for flat confirmation or the configured timeout defaulting to 60 seconds, and transitions to paper only after live positions are flat; on timeout, the swap enters demotion-pending state, dashboard/email/SMS notifications are sent, unfilled liquidation orders are canceled, and promotion is blocked until manual resolution.",
+      "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-RESV-005",
+    "category": "reservoir",
+    "srs_ref": "SRS-5.6 SRS-RESV-005",
+    "priority": "P1",
+    "description": "Verify that promote a selected paper strategy to live execution only after successful demotion.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-RESV-005 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: The promoted strategy starts live with no open IB positions, preserves prior paper performance history, and uses the same strategy code/API behavior.",
+      "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-RESV-006",
+    "category": "reservoir",
+    "srs_ref": "SRS-5.6 SRS-RESV-006",
+    "priority": "P1",
+    "description": "Verify that enforce Hot-Swap cool-down behavior.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-RESV-006 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: After successful swap, automatic triggers are ignored for the configured cool-down period defaulting to 7 calendar days; manual swap during cool-down requires confirmation warning; the cool-down start time is the timestamp of the most recent successful swap completion.",
+      "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-UI-001",
+    "category": "dashboard",
+    "srs_ref": "SRS-5.8 SRS-UI-001",
+    "priority": "P1",
+    "description": "Verify that provide a web dashboard showing live performance, system health, latency, and benchmark-relative metrics.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-UI-001 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Dashboard displays required metrics and refreshes within 5 seconds under release baseline load.",
+      "Step 4: Record objective evidence from demonstration, performance test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-UI-002",
+    "category": "dashboard",
+    "srs_ref": "SRS-5.8 SRS-UI-002",
+    "priority": "P1",
+    "description": "Verify that display active strategy inventory in the dashboard.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-UI-002 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Each active strategy shows name, mode, asset class, container status, deployed code version, P&L, and position count.",
+      "Step 4: Record objective evidence from demonstration and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-UI-003",
+    "category": "dashboard",
+    "srs_ref": "SRS-5.8 SRS-UI-003",
+    "priority": "P1",
+    "description": "Verify that display account-level IB status and Reservoir overview in the dashboard.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-UI-003 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Dashboard shows IB equity, daily and cumulative P&L, margin usage, buying power, paper strategy rankings, and momentum scores.",
+      "Step 4: Record objective evidence from demonstration and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-UI-004",
+    "category": "dashboard",
+    "srs_ref": "SRS-5.8 SRS-UI-004",
+    "priority": "P1",
+    "description": "Verify that display backtest result history and details in the dashboard.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-UI-004 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Backtest history lists strategy, parameters, date range, metrics, and supports drill-down into trade log, equity curve, and benchmark comparison.",
+      "Step 4: Record objective evidence from demonstration and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-LOG-001",
+    "category": "logging",
+    "srs_ref": "SRS-5.8 SRS-LOG-001",
+    "priority": "P1",
+    "description": "Verify that separate persistent system logs from user strategy logs.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-LOG-001 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: System events and user strategy logs are stored with timestamp, severity, source, event type, message, and correlation ID; system logs include order routing outcomes, ingestion job lifecycle, container lifecycle, IB Gateway connection state changes, kill-switch activations, Hot-Swap events, resource threshold alerts, and market data subscription changes; both log classes are viewable from the dashboard.",
+      "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-API-001",
+    "category": "interfaces",
+    "srs_ref": "SRS-5.8 SRS-API-001",
+    "priority": "P1",
+    "description": "Verify that expose dashboard, CLI, and REST/WebSocket interfaces for operator workflows.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-API-001 using documented REST, WebSocket, CLI, or Python API calls with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Live designation, strategy management, kill switch, Hot-Swap, Reservoir ranking, backtests, system status, and logs are available through documented API paths or CLI commands.",
+      "Step 4: Record objective evidence from contract test, demonstration and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-ERR-001",
+    "category": "error_handling",
+    "srs_ref": "SRS-5.8 SRS-ERR-001",
+    "priority": "P1",
+    "description": "Verify that return structured errors for failed order submissions.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-ERR-001 using documented REST, WebSocket, CLI, or Python API calls with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Errors include type, human-readable message, original order parameters, and one of the SyRS-defined error categories when applicable.",
+      "Step 4: Record objective evidence from contract test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-NOTIF-001",
+    "category": "notifications",
+    "srs_ref": "SRS-5.8 SRS-NOTIF-001",
+    "priority": "P1",
+    "description": "Verify that notify the operator through email and SMS for IB connectivity loss and critical failures.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-NOTIF-001 using bash, file reads, dev server requests, and browser automation with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Notification dispatch begins within 60 seconds of detection and delivery status is stored as a notification event.",
+      "Step 4: Record objective evidence from fault injection, integration test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SAFE-001",
+    "category": "safety",
+    "srs_ref": "SRS-5.9 SRS-SAFE-001",
+    "priority": "P1",
+    "description": "Verify that provide a kill switch from dashboard, CLI, and REST API that follows the QuantConnect Liquidate sequence: cancel all resting IB orders for the live strategy, submit market liquidation orders to close every open live-strategy position in the opposite direction of the held quantity, halt all paper simulation engines, and disconnect from IB Gateway.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SAFE-001 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Measured under reference baseline (NFR-SC1): cancellation of all resting IB orders and submission of market liquidation orders for every open live-strategy position completes within 5 seconds (NFR-P3); paper simulation engines transition to the HALTED state with no further on_fill callbacks emitted; HALTED-state transition is observable through SRS-LOG-001 within 1 second of activation; IB Gateway is disconnected after liquidation orders are submitted.",
+      "Step 4: Record objective evidence from scenario test, performance test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SAFE-002",
+    "category": "safety",
+    "srs_ref": "SRS-5.9 SRS-SAFE-002",
+    "priority": "P1",
+    "description": "Verify that handle unfilled kill-switch liquidation orders according to the SyRS timeout behavior.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SAFE-002 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: If a liquidation order remains unfilled after 30 seconds, details are logged, email and SMS are sent, the unfilled liquidation order is canceled, and IB is disconnected.",
+      "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SAFE-003",
+    "category": "safety",
+    "srs_ref": "SRS-5.9 SRS-SAFE-003",
+    "priority": "P1",
+    "description": "Verify that block live order submission when IB Gateway is unreachable.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SAFE-003 using integration or fault-injection workflows using mocked IB/data-provider services, CLI/API calls, and logs with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: During IB unreachable state, order submissions fail with CONNECTIVITY_BLOCKED until reconnection and readiness checks pass.",
+      "Step 4: Record objective evidence from fault injection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-REL-001",
+    "category": "reliability",
+    "srs_ref": "SRS-5.9 SRS-REL-001",
+    "priority": "P1",
+    "description": "Verify that support the SyRS market-hours availability objective.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-REL-001 using bash, file reads, dev server requests, and browser automation with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Health, restart, readiness, logging, and recovery mechanisms produce evidence for measuring at least 99.9 percent availability during US equity market hours, 09:30-16:00 ET Monday-Friday excluding market holidays, over a rolling 30-day period, with planned maintenance and scheduled IB Gateway restart excluded per SyRS NFR-R1.",
+      "Step 4: Record objective evidence from analysis, system test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-REL-002",
+    "category": "reliability",
+    "srs_ref": "SRS-5.9 SRS-REL-002",
+    "priority": "P1",
+    "description": "Verify that restore a full system restart to trade-ready state within the SyRS recovery target.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-REL-002 using bash, file reads, dev server requests, and browser automation with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Under reference deployment conditions, Proxmox VM, Docker daemon, ATP services, and readiness checks complete within 10 minutes.",
+      "Step 4: Record objective evidence from system test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SEC-001",
+    "category": "security",
+    "srs_ref": "SRS-5.9 SRS-SEC-001",
+    "priority": "P1",
+    "description": "Verify that encrypt brokerage and notification credentials at rest and prevent plaintext credential logging.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SEC-001 using file inspection, build manifests, container configuration, and automated architecture/security checks with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Credential files or records are encrypted; log redaction tests prove IB, SMTP, and SMS secrets are not emitted in plaintext.",
+      "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SEC-002",
+    "category": "security",
+    "srs_ref": "SRS-5.9 SRS-SEC-002",
+    "priority": "P1",
+    "description": "Verify that by default, the dashboard/API service shall bind only to RFC 1918 or loopback addresses. Binding to publicly routable interfaces shall require explicit operator configuration and documented external authentication.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SEC-002 using file inspection, build manifests, container configuration, and automated architecture/security checks with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Default Docker Compose port mappings expose dashboard/API only on loopback or RFC 1918 interfaces; an external-host connect test against a non-RFC 1918 interface fails with the default configuration; documentation states that external exposure requires operator-managed authentication.",
+      "Step 4: Record objective evidence from inspection, test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SEC-003",
+    "category": "security",
+    "srs_ref": "SRS-5.9 SRS-SEC-003",
+    "priority": "P1",
+    "description": "Verify that run strategy containers with least-privilege permissions.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SEC-003 using file inspection, build manifests, container configuration, and automated architecture/security checks with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Strategy containers run without privileged mode, without host network access, and without access to other strategy filesystems.",
+      "Step 4: Record objective evidence from inspection, security test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-SEC-004",
+    "category": "security",
+    "srs_ref": "SRS-5.9 SRS-SEC-004",
+    "priority": "P1",
+    "description": "Verify that isolate Jupyter from live trading credentials and execution APIs.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-SEC-004 using file inspection, build manifests, container configuration, and automated architecture/security checks with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Jupyter has read-only access to market data and backtest results and cannot submit live orders or read brokerage credentials.",
+      "Step 4: Record objective evidence from security test and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "SRS-PERF-001",
+    "category": "performance",
+    "srs_ref": "SRS-5.10 SRS-PERF-001",
+    "priority": "P1",
+    "description": "Verify that measure latency-sensitive performance metrics against a Precision Time Protocol (PTP)-disciplined system clock with documented offset bounds and shall report p50, p95, p99, and p99.9 percentiles in verification artifacts.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "Step 2: Exercise SRS-PERF-001 using bash, file reads, dev server requests, and browser automation with the fixtures, mocks, or operator controls needed by the requirement.",
+      "Step 3: Verify acceptance criteria: Verification reports for NFR-P1, NFR-P4, NFR-P5, NFR-P6, NFR-P9, NFR-P10, and SRS-MD-001 fan-out latency include p50, p95, p99, and p99.9 percentiles measured against a PTP-disciplined host clock; the maximum observed clock offset for the measurement window is documented in the verification artifact; measurement boundaries match the SyRS measurement conditions for each NFR.",
+      "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "UI-1",
+    "category": "ui_requirements",
+    "srs_ref": "SRS-6 UI-1",
+    "priority": "P1",
+    "description": "Verify that dashboard provide a primary operations view for live strategy, account health, Reservoir ranking, system health, and critical alerts.",
+    "steps": [
+      "Step 1: Run ./init.sh and open the dashboard in a browser automation session.",
+      "Step 2: Navigate through the dashboard workflow for UI-1 and perform the user action or inspection described by the requirement.",
+      "Step 3: Verify acceptance criteria: User can inspect live strategy status, IB account equity, buying power, margin, Reservoir rankings, heartbeat state, and active critical alerts without SSH access.",
+      "Step 4: Confirm the UI behavior traces to SRS-UI-001, SRS-UI-002, SRS-UI-003 and leave passes false until browser evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "UI-2",
+    "category": "ui_requirements",
+    "srs_ref": "SRS-6 UI-2",
+    "priority": "P1",
+    "description": "Verify that dashboard provide a strategy management view.",
+    "steps": [
+      "Step 1: Run ./init.sh and open the dashboard in a browser automation session.",
+      "Step 2: Navigate through the dashboard workflow for UI-2 and perform the user action or inspection described by the requirement.",
+      "Step 3: Verify acceptance criteria: User can view active strategies, deployed code version, mode, asset class, container status, and key metrics; live designation requires explicit confirmation.",
+      "Step 4: Confirm the UI behavior traces to SRS-ORCH-004, SRS-EXE-001 and leave passes false until browser evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "UI-3",
+    "category": "ui_requirements",
+    "srs_ref": "SRS-6 UI-3",
+    "priority": "P1",
+    "description": "Verify that dashboard provide backtest controls and result history.",
+    "steps": [
+      "Step 1: Run ./init.sh and open the dashboard in a browser automation session.",
+      "Step 2: Navigate through the dashboard workflow for UI-3 and perform the user action or inspection described by the requirement.",
+      "Step 3: Verify acceptance criteria: User can initiate backtests with strategy, date range, parameter overrides, and cost model configuration; user can inspect completed backtest details.",
+      "Step 4: Confirm the UI behavior traces to SRS-BT-001, SRS-UI-004 and leave passes false until browser evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "UI-4",
+    "category": "ui_requirements",
+    "srs_ref": "SRS-6 UI-4",
+    "priority": "P1",
+    "description": "Verify that dashboard provide a kill-switch control with confirmation and status feedback.",
+    "steps": [
+      "Step 1: Run ./init.sh and open the dashboard in a browser automation session.",
+      "Step 2: Navigate through the dashboard workflow for UI-4 and perform the user action or inspection described by the requirement.",
+      "Step 3: Verify acceptance criteria: User can activate kill switch and see cancellation, liquidation submission, timeout, notification, and disconnect status.",
+      "Step 4: Confirm the UI behavior traces to SRS-SAFE-001, SRS-SAFE-002 and leave passes false until browser evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "UI-5",
+    "category": "ui_requirements",
+    "srs_ref": "SRS-6 UI-5",
+    "priority": "P1",
+    "description": "Verify that dashboard provide Hot-Swap controls and status.",
+    "steps": [
+      "Step 1: Run ./init.sh and open the dashboard in a browser automation session.",
+      "Step 2: Navigate through the dashboard workflow for UI-5 and perform the user action or inspection described by the requirement.",
+      "Step 3: Verify acceptance criteria: User can trigger manual promotion, inspect demotion-pending state, view cool-down expiry, and see automatic-trigger configuration.",
+      "Step 4: Confirm the UI behavior traces to SRS-RESV-003 through SRS-RESV-006 and leave passes false until browser evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "UI-6",
+    "category": "ui_requirements",
+    "srs_ref": "SRS-6 UI-6",
+    "priority": "P2",
+    "description": "Verify that dashboard provide embedded Jupyter navigation.",
+    "steps": [
+      "Step 1: Run ./init.sh and open the dashboard in a browser automation session.",
+      "Step 2: Navigate through the dashboard workflow for UI-6 and perform the user action or inspection described by the requirement.",
+      "Step 3: Verify acceptance criteria: User can access Jupyter from the dashboard workflow without direct service URL navigation.",
+      "Step 4: Confirm the UI behavior traces to SRS-RES-001, SRS-RES-003 and leave passes false until browser evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "API-1",
+    "category": "api_requirements",
+    "srs_ref": "SRS-7 API-1",
+    "priority": "P1",
+    "description": "Verify that Python Strategy API exposes Scheduling, subscriptions, historical data, order submission, cancellation, callbacks, indicators, warm-up, logging, state access, and author documentation.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the API, CLI, or strategy runtime surface is reachable.",
+      "Step 2: Use bash, CLI commands, HTTP/WebSocket requests, or a Python strategy fixture to exercise Python Strategy API with Strategy container identity.",
+      "Step 3: Verify required capability: Scheduling, subscriptions, historical data, order submission, cancellation, callbacks, indicators, warm-up, logging, state access, and author documentation",
+      "Step 4: Confirm the interface contract traces to SRS-SDK-001 through SRS-SDK-009 and leave passes false until contract evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "API-2",
+    "category": "api_requirements",
+    "srs_ref": "SRS-7 API-2",
+    "priority": "P1",
+    "description": "Verify that REST API exposes Strategy lifecycle, live designation, kill switch, Hot-Swap, backtest launch, backtest query, Reservoir ranking, watchlist configuration, system status, logs, alerts.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the API, CLI, or strategy runtime surface is reachable.",
+      "Step 2: Use bash, CLI commands, HTTP/WebSocket requests, or a Python strategy fixture to exercise REST API with Local single-user deployment controls.",
+      "Step 3: Verify required capability: Strategy lifecycle, live designation, kill switch, Hot-Swap, backtest launch, backtest query, Reservoir ranking, watchlist configuration, system status, logs, alerts",
+      "Step 4: Confirm the interface contract traces to SRS-API-001 and leave passes false until contract evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "API-3",
+    "category": "api_requirements",
+    "srs_ref": "SRS-7 API-3",
+    "priority": "P1",
+    "description": "Verify that WebSocket API exposes Live dashboard updates for P&L, metrics, account status, heartbeat, logs, alerts, Reservoir ranking, and strategy state.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the API, CLI, or strategy runtime surface is reachable.",
+      "Step 2: Use bash, CLI commands, HTTP/WebSocket requests, or a Python strategy fixture to exercise WebSocket API with Local single-user deployment controls.",
+      "Step 3: Verify required capability: Live dashboard updates for P&L, metrics, account status, heartbeat, logs, alerts, Reservoir ranking, and strategy state",
+      "Step 4: Confirm the interface contract traces to SRS-UI-001 through SRS-UI-004 and leave passes false until contract evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "API-4",
+    "category": "api_requirements",
+    "srs_ref": "SRS-7 API-4",
+    "priority": "P1",
+    "description": "Verify that CLI exposes Kill switch, strategy management, live designation, Hot-Swap, readiness status, and basic administration.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the API, CLI, or strategy runtime surface is reachable.",
+      "Step 2: Use bash, CLI commands, HTTP/WebSocket requests, or a Python strategy fixture to exercise CLI with Local shell access.",
+      "Step 3: Verify required capability: Kill switch, strategy management, live designation, Hot-Swap, readiness status, and basic administration",
+      "Step 4: Confirm the interface contract traces to SRS-API-001, SRS-SAFE-001 and leave passes false until contract evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "API-5",
+    "category": "api_requirements",
+    "srs_ref": "SRS-7 API-5",
+    "priority": "P1",
+    "description": "Verify that Brokerage adapter interface exposes Order submission, cancellation, account status, positions, market data, historical data, and versioned adapter capability discovery.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the API, CLI, or strategy runtime surface is reachable.",
+      "Step 2: Use bash, CLI commands, HTTP/WebSocket requests, or a Python strategy fixture to exercise Brokerage adapter interface with Internal service boundary.",
+      "Step 3: Verify required capability: Order submission, cancellation, account status, positions, market data, historical data, and versioned adapter capability discovery",
+      "Step 4: Confirm the interface contract traces to SRS-EXE-006, SRS-EXE-007 and leave passes false until contract evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "API-6",
+    "category": "api_requirements",
+    "srs_ref": "SRS-7 API-6",
+    "priority": "P1",
+    "description": "Verify that Data provider interface exposes Bulk equity download, historical backfill, incremental update, fundamentals ingestion, options import, and user Parquet import.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the API, CLI, or strategy runtime surface is reachable.",
+      "Step 2: Use bash, CLI commands, HTTP/WebSocket requests, or a Python strategy fixture to exercise Data provider interface with Internal service boundary.",
+      "Step 3: Verify required capability: Bulk equity download, historical backfill, incremental update, fundamentals ingestion, options import, and user Parquet import",
+      "Step 4: Confirm the interface contract traces to SRS-DATA-001 through SRS-DATA-007 and leave passes false until contract evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "API-7",
+    "category": "api_requirements",
+    "srs_ref": "SRS-7 API-7",
+    "priority": "P1",
+    "description": "Verify that Unified historical data interface exposes Query by symbol, date range, resolution, asset class, normalization mode, and data source-neutral result shape.",
+    "steps": [
+      "Step 1: Run ./init.sh and confirm the API, CLI, or strategy runtime surface is reachable.",
+      "Step 2: Use bash, CLI commands, HTTP/WebSocket requests, or a Python strategy fixture to exercise Unified historical data interface with Strategy, backtest, factor, and research consumers.",
+      "Step 3: Verify required capability: Query by symbol, date range, resolution, asset class, normalization mode, and data source-neutral result shape",
+      "Step 4: Confirm the interface contract traces to SRS-DATA-007, SRS-DATA-012 and leave passes false until contract evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "ERR-1",
+    "category": "error_handling",
+    "srs_ref": "SRS-8 ERR-1",
+    "priority": "P1",
+    "description": "Verify that the system handles Order submitted by a non-live strategy to live execution path with the required error behavior.",
+    "steps": [
+      "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
+      "Step 2: Trigger error condition ERR-1: Order submitted by a non-live strategy to live execution path",
+      "Step 3: Verify expected behavior: Reject synchronously with structured error and no IB order side effect.",
+      "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-EXE-001, SRS-ERR-001 and leave passes false until evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "ERR-2",
+    "category": "error_handling",
+    "srs_ref": "SRS-8 ERR-2",
+    "priority": "P1",
+    "description": "Verify that the system handles IB Gateway unreachable with the required error behavior.",
+    "steps": [
+      "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
+      "Step 2: Trigger error condition ERR-2: IB Gateway unreachable",
+      "Step 3: Verify expected behavior: Reject live order submission with CONNECTIVITY_BLOCKED, log event, alert dashboard, and attempt reconnection.",
+      "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-SAFE-003, SRS-MD-005 and leave passes false until evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "ERR-3",
+    "category": "error_handling",
+    "srs_ref": "SRS-8 ERR-3",
+    "priority": "P1",
+    "description": "Verify that the system handles Market data stale with the required error behavior.",
+    "steps": [
+      "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
+      "Step 2: Trigger error condition ERR-3: Market data stale",
+      "Step 3: Verify expected behavior: Reject live and paper order submissions with MARKET_DATA_STALE until fresh data arrives.",
+      "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-MD-004 and leave passes false until evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "ERR-4",
+    "category": "error_handling",
+    "srs_ref": "SRS-8 ERR-4",
+    "priority": "P1",
+    "description": "Verify that the system handles Market-data line limit exceeded with the required error behavior.",
+    "steps": [
+      "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
+      "Step 2: Trigger error condition ERR-4: Market-data line limit exceeded",
+      "Step 3: Verify expected behavior: Reject subscription with SUBSCRIPTION_LIMIT_REACHED and alert operator.",
+      "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-MD-002 and leave passes false until evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "ERR-5",
+    "category": "error_handling",
+    "srs_ref": "SRS-8 ERR-5",
+    "priority": "P1",
+    "description": "Verify that the system handles Ingestion record validation failure with the required error behavior.",
+    "steps": [
+      "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
+      "Step 2: Trigger error condition ERR-5: Ingestion record validation failure",
+      "Step 3: Verify expected behavior: Quarantine invalid record, omit it from primary storage, and alert with reason counts.",
+      "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-DATA-013 and leave passes false until evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "ERR-6",
+    "category": "error_handling",
+    "srs_ref": "SRS-8 ERR-6",
+    "priority": "P1",
+    "description": "Verify that the system handles IB pacing budget exceeded by configured ingestion job with the required error behavior.",
+    "steps": [
+      "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
+      "Step 2: Trigger error condition ERR-6: IB pacing budget exceeded by configured ingestion job",
+      "Step 3: Verify expected behavior: Refuse to start affected job and alert operator at scheduling time.",
+      "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-DATA-002, SRS-DATA-004 and leave passes false until evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "ERR-7",
+    "category": "error_handling",
+    "srs_ref": "SRS-8 ERR-7",
+    "priority": "P1",
+    "description": "Verify that the system handles Hot-Swap demotion liquidation timeout with the required error behavior.",
+    "steps": [
+      "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
+      "Step 2: Trigger error condition ERR-7: Hot-Swap demotion liquidation timeout",
+      "Step 3: Verify expected behavior: Enter demotion-pending state, notify operator, cancel unfilled order, and block promotion.",
+      "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-RESV-004 and leave passes false until evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "ERR-8",
+    "category": "error_handling",
+    "srs_ref": "SRS-8 ERR-8",
+    "priority": "P1",
+    "description": "Verify that the system handles Kill-switch liquidation timeout with the required error behavior.",
+    "steps": [
+      "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
+      "Step 2: Trigger error condition ERR-8: Kill-switch liquidation timeout",
+      "Step 3: Verify expected behavior: Log unfilled order details, notify by email and SMS, cancel unfilled liquidation order, and disconnect from IB.",
+      "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-SAFE-002 and leave passes false until evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  },
+  {
+    "id": "ERR-9",
+    "category": "error_handling",
+    "srs_ref": "SRS-8 ERR-9",
+    "priority": "P1",
+    "description": "Verify that the system handles Missing or invalid startup configuration with the required error behavior.",
+    "steps": [
+      "Step 1: Run ./init.sh and configure the fixture or fault state that triggers the error condition.",
+      "Step 2: Trigger error condition ERR-9: Missing or invalid startup configuration",
+      "Step 3: Verify expected behavior: Hold system in pre-trade state and expose readiness failure through logs, dashboard, and API.",
+      "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-ARCH-005, SRS-MD-006 and leave passes false until evidence is captured."
+    ],
+    "passes": false,
+    "needs_clarification": false
+  }
+]

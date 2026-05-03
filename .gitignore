@@ -1,0 +1,11 @@
+.DS_Store
+.devserver.pid
+.devserver.log
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+node_modules/
+target/
+data/
