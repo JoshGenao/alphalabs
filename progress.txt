@@ -1,3 +1,54 @@
+=== SESSION 2 ===
+Date: 2026-05-03
+Feature completed: API-1 - Python Strategy API contract for SRS-SDK-001..009
+Status: 118 remaining features
+
+What I did:
+- Extended `python/atp_strategy/api.py` with the full Strategy API surface required by API-1's
+  description: AssetClass, StrategyConfig (with warmup_bars and tradable_asset_class),
+  OrderEventType, OrderEvent (with fill_price/fill_quantity/commission/order ids), Scheduler
+  + ScheduleHandle Protocols (at_market_open/at_market_close/every_n_minutes/cron),
+  TradingCalendar Protocol + StaticTradingCalendar reference impl, HistoricalData Protocol,
+  Indicator Protocol, BarConsolidator Protocol, RenkoBuilder/RangeBarBuilder Protocols,
+  StrategyAPIError/AssetClassViolation/WarmupNotComplete error types. Extended
+  StrategyContext with cancel/indicator/consolidate and the asset_class kwarg on subscribe,
+  and added on_warmup_complete/on_schedule callbacks plus a warmup_bars class attr to Strategy.
+- Added `python/atp_strategy/indicators.py` with pure-Python incremental SMA, EMA, RSI, MACD,
+  BollingerBands, ATR — all implementing the Indicator Protocol with no external deps.
+- Wrote `python/atp_strategy/README.md` author guide with runnable Example sections covering
+  every capability bucket (SRS-SDK-009).
+- Added `tools/strategy_api_check.py` contract evidence script that prints API-1 PASS with one
+  bullet per SDK-001..009, mirroring the SRS-ARCH-001 pattern.
+- Added `tests/test_strategy_api.py`: subprocess contract test, protocol shape test,
+  indicator incremental update test, asset-class violation test, public-docstrings walk,
+  and Strategy base-class smoke tests.
+- Extended `architecture/runtime_services.json` required_exports to 29 names so the existing
+  `tools/architecture_check.py` enforces the new surface architecturally without code changes.
+
+What I tested (end-to-end, all six verifications from the plan):
+1. `./init.sh` -> "✓ Environment ready"
+2. `python3 tools/architecture_check.py` -> "SRS-ARCH-001 PASS" listing all 29 exports
+3. `python3 tools/strategy_api_check.py` -> "API-1 PASS" with all 9 SDK bullets
+4. `python3 -m unittest tests.test_architecture tests.test_strategy_api` -> 8 tests OK
+5. Import smoke: `import atp_strategy` exposes all 30 names in `__all__`
+6. Deterministic re-run of the contract script -> identical PASS
+
+Known issues / notes for next agent:
+- The pure-Python indicator implementations satisfy the SRS-SDK-006 incremental-update
+  acceptance criterion, but numerical parity with pandas-ta / TA-Lib reference outputs is
+  deferred to a sibling feature (suggest INDICATOR-1) — those deps are not in scope yet.
+- StaticTradingCalendar is a minimal NYSE-shaped weekday-only calendar (no holidays, no DST).
+  Full holiday/DST coverage for SRS-SDK-002 is deferred to a sibling feature (suggest CAL-1)
+  with `exchange_calendars` or equivalent.
+- SRS-SDK-007 (P2) and SRS-SDK-008 (P3) are exposed as Protocols only; concrete
+  bar-consolidation and Renko/range-bar implementations come with later features.
+- Live-vs-paper driver equivalence (SRS-SDK-001 acceptance) is contract-asserted here (no
+  execution-mode parameters leak into StrategyContext); the actual driver-equivalence test
+  belongs to EXE-1/SIM-1 once those engines exist.
+- Backwards-incompatible change: Strategy.on_order_event now takes an OrderEvent (was
+  OrderHandle). No existing strategy authors yet, so the break is accepted.
+- Lowest remaining P1 by ID is API-2 (REST API surface).
+
 === SESSION 1 ===
 Date: 2026-05-03
 Feature completed: SRS-ARCH-001 - Rust core runtime services and Python strategy API boundary

@@ -58,13 +58,35 @@
     "package": "atp_strategy",
     "path": "python/atp_strategy",
     "required_exports": [
+      "ATR",
+      "AssetClass",
+      "AssetClassViolation",
       "Bar",
+      "BarConsolidator",
+      "BollingerBands",
+      "EMA",
+      "HistoricalData",
+      "Indicator",
+      "MACD",
+      "OrderEvent",
+      "OrderEventType",
       "OrderHandle",
       "OrderRequest",
       "OrderSide",
       "OrderType",
+      "RSI",
+      "RangeBarBuilder",
+      "RenkoBuilder",
+      "SMA",
+      "ScheduleHandle",
+      "Scheduler",
+      "StaticTradingCalendar",
       "Strategy",
-      "StrategyContext"
+      "StrategyAPIError",
+      "StrategyConfig",
+      "StrategyContext",
+      "TradingCalendar",
+      "WarmupNotComplete"
     ]
   }
 }

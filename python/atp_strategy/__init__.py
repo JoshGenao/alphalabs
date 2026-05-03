@@ -1,21 +1,72 @@
-"""Public Python Strategy API for user-authored ATP strategies."""
+"""Public Python Strategy API for user-authored ATP strategies.
+
+The contract surface here is the SDK exposed inside Python strategy
+containers. SRS trace: ``SRS-SDK-001``..``SRS-SDK-009`` (see
+``docs/SRS.md`` §5.2 and ``feature_list.json`` entry ``API-1``).
+"""
 
 from .api import (
+    ATR,
+    AssetClass,
+    AssetClassViolation,
     Bar,
+    BarConsolidator,
+    BollingerBands,
+    EMA,
+    HistoricalData,
+    Indicator,
+    MACD,
+    OrderEvent,
+    OrderEventType,
     OrderHandle,
     OrderRequest,
     OrderSide,
     OrderType,
+    RSI,
+    RangeBarBuilder,
+    RenkoBuilder,
+    SMA,
+    ScheduleCallback,
+    ScheduleHandle,
+    Scheduler,
+    StaticTradingCalendar,
     Strategy,
+    StrategyAPIError,
+    StrategyConfig,
     StrategyContext,
+    TradingCalendar,
+    WarmupNotComplete,
 )
 
 __all__ = [
+    "ATR",
+    "AssetClass",
+    "AssetClassViolation",
     "Bar",
+    "BarConsolidator",
+    "BollingerBands",
+    "EMA",
+    "HistoricalData",
+    "Indicator",
+    "MACD",
+    "OrderEvent",
+    "OrderEventType",
     "OrderHandle",
     "OrderRequest",
     "OrderSide",
     "OrderType",
+    "RSI",
+    "RangeBarBuilder",
+    "RenkoBuilder",
+    "SMA",
+    "ScheduleCallback",
+    "ScheduleHandle",
+    "Scheduler",
+    "StaticTradingCalendar",
     "Strategy",
+    "StrategyAPIError",
+    "StrategyConfig",
     "StrategyContext",
+    "TradingCalendar",
+    "WarmupNotComplete",
 ]
