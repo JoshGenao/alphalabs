@@ -1,0 +1,70 @@
+{
+  "requirement": "SRS-ARCH-001",
+  "core_runtime_language": "Rust",
+  "strategy_api_language": "Python",
+  "core_runtime_services": [
+    {
+      "name": "Types and Domain Models",
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    {
+      "name": "Data Layer",
+      "crate": "atp-data",
+      "path": "crates/atp-data"
+    },
+    {
+      "name": "Strategy Engine",
+      "crate": "atp-strategy-engine",
+      "path": "crates/atp-strategy-engine"
+    },
+    {
+      "name": "Execution Engine",
+      "crate": "atp-execution",
+      "path": "crates/atp-execution"
+    },
+    {
+      "name": "Internal Simulation Engine",
+      "crate": "atp-simulation",
+      "path": "crates/atp-simulation"
+    },
+    {
+      "name": "Market Data Subscription Manager",
+      "crate": "atp-market-data",
+      "path": "crates/atp-market-data"
+    },
+    {
+      "name": "Strategy Orchestrator",
+      "crate": "atp-orchestrator",
+      "path": "crates/atp-orchestrator"
+    },
+    {
+      "name": "Broker and Data Provider Adapters",
+      "crate": "atp-adapters",
+      "path": "crates/atp-adapters"
+    },
+    {
+      "name": "Factor Pipeline Runtime",
+      "crate": "atp-factor-pipeline",
+      "path": "crates/atp-factor-pipeline"
+    },
+    {
+      "name": "Notification Dispatcher",
+      "crate": "atp-notification",
+      "path": "crates/atp-notification"
+    }
+  ],
+  "strategy_api": {
+    "package": "atp_strategy",
+    "path": "python/atp_strategy",
+    "required_exports": [
+      "Bar",
+      "OrderHandle",
+      "OrderRequest",
+      "OrderSide",
+      "OrderType",
+      "Strategy",
+      "StrategyContext"
+    ]
+  }
+}

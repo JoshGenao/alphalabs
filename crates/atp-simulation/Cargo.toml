@@ -1,0 +1,20 @@
+[package]
+name = "atp-simulation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+atp-strategy-engine = { path = "../atp-strategy-engine" }
+atp-types = { path = "../atp-types" }
+
+[dev-dependencies]
+atp-data = { path = "../atp-data" }
+
+[lints]
+workspace = true

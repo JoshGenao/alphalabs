@@ -1,0 +1,17 @@
+[package]
+name = "atp-strategy-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+atp-data = { path = "../atp-data" }
+atp-types = { path = "../atp-types" }
+
+[lints]
+workspace = true

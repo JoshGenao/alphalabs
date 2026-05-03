@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/atp-types",
+    "crates/atp-data",
+    "crates/atp-strategy-engine",
+    "crates/atp-execution",
+    "crates/atp-simulation",
+    "crates/atp-market-data",
+    "crates/atp-orchestrator",
+    "crates/atp-adapters",
+    "crates/atp-factor-pipeline",
+    "crates/atp-notification",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "UNLICENSED"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

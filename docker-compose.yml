@@ -1,0 +1,70 @@
+services:
+  orchestrator:
+    profiles: ["architecture-check"]
+    build:
+      context: .
+      dockerfile: docker/core-runtime.Dockerfile
+      args:
+        ATP_CRATE: atp-orchestrator
+
+  execution-engine:
+    profiles: ["architecture-check"]
+    build:
+      context: .
+      dockerfile: docker/core-runtime.Dockerfile
+      args:
+        ATP_CRATE: atp-execution
+
+  strategy-engine:
+    profiles: ["architecture-check"]
+    build:
+      context: .
+      dockerfile: docker/core-runtime.Dockerfile
+      args:
+        ATP_CRATE: atp-strategy-engine
+
+  simulation-engine:
+    profiles: ["architecture-check"]
+    build:
+      context: .
+      dockerfile: docker/core-runtime.Dockerfile
+      args:
+        ATP_CRATE: atp-simulation
+
+  market-data:
+    profiles: ["architecture-check"]
+    build:
+      context: .
+      dockerfile: docker/core-runtime.Dockerfile
+      args:
+        ATP_CRATE: atp-market-data
+
+  data-layer:
+    profiles: ["architecture-check"]
+    build:
+      context: .
+      dockerfile: docker/core-runtime.Dockerfile
+      args:
+        ATP_CRATE: atp-data
+
+  factor-pipeline:
+    profiles: ["architecture-check"]
+    build:
+      context: .
+      dockerfile: docker/core-runtime.Dockerfile
+      args:
+        ATP_CRATE: atp-factor-pipeline
+
+  notification-dispatcher:
+    profiles: ["architecture-check"]
+    build:
+      context: .
+      dockerfile: docker/core-runtime.Dockerfile
+      args:
+        ATP_CRATE: atp-notification
+
+  strategy-api:
+    profiles: ["architecture-check"]
+    build:
+      context: .
+      dockerfile: docker/strategy-python.Dockerfile

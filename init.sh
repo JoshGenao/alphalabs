@@ -39,8 +39,10 @@ else
   echo "  No requirements.txt found; skipping pip install."
 fi
 
-if [[ -f Cargo.toml ]]; then
+if [[ -f Cargo.toml ]] && command -v cargo >/dev/null 2>&1; then
   cargo fetch
+elif [[ -f Cargo.toml ]]; then
+  echo "  Cargo.toml found but cargo is not installed; skipping cargo fetch."
 else
   echo "  No Cargo.toml found; skipping cargo fetch."
 fi
@@ -61,8 +63,9 @@ elif server_is_ready; then
 else
   rm -f "$PID_FILE"
   : > "$LOG_FILE"
-  python3 -m http.server "$PORT" --bind "$HOST" > "$LOG_FILE" 2>&1 &
+  nohup python3 -m http.server "$PORT" --bind "$HOST" > "$LOG_FILE" 2>&1 &
   SERVER_PID=$!
+  disown "$SERVER_PID" >/dev/null 2>&1 || true
   echo "$SERVER_PID" > "$PID_FILE"
   echo "  Started fallback static dev server with PID $SERVER_PID."
 fi
