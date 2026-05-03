@@ -1,0 +1,951 @@
+{
+  "info": {
+    "description": "Operator REST surface for the ATP single-user trading platform (API-2, traces SRS-API-001). Bound to loopback by default; no RBAC or bearer tokens \u2014 see SRS-SEC-002.",
+    "title": "ATP Operator REST API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/alerts": {
+      "get": {
+        "description": "List operator alerts and notification delivery status. SRS trace: SRS-NOTIF-001, SYS-46, SYS-58. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "operationId": "get_api_v1_alerts",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "acknowledged",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "acknowledged": {
+                      "type": "string"
+                    },
+                    "alert_id": {
+                      "type": "string"
+                    },
+                    "channel": {
+                      "type": "string"
+                    },
+                    "delivery_status": {
+                      "type": "string"
+                    },
+                    "raised_at": {
+                      "type": "string"
+                    },
+                    "severity": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "List operator alerts and notification delivery status.",
+        "tags": [
+          "ALERTS"
+        ],
+        "x-capability": "ALERTS",
+        "x-requires-confirmation": false,
+        "x-srs-refs": [
+          "SRS-NOTIF-001",
+          "SYS-46",
+          "SYS-58"
+        ]
+      }
+    },
+    "/api/v1/backtests": {
+      "post": {
+        "description": "Launch a backtest with strategy, date range, parameter, and cost-model overrides. SRS trace: SRS-BT-001, SYS-14, SYS-43a. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "operationId": "post_api_v1_backtests",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "cost_model": {
+                    "type": "string"
+                  },
+                  "end_date": {
+                    "type": "string"
+                  },
+                  "parameter_overrides": {
+                    "type": "string"
+                  },
+                  "start_date": {
+                    "type": "string"
+                  },
+                  "strategy_id": {
+                    "type": "string"
+                  },
+                  "uploaded_parquet_id": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "backtest_id": {
+                      "type": "string"
+                    },
+                    "queued_at": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "Launch a backtest with strategy, date range, parameter, and cost-model overrides.",
+        "tags": [
+          "BACKTEST_LAUNCH"
+        ],
+        "x-capability": "BACKTEST_LAUNCH",
+        "x-requires-confirmation": false,
+        "x-srs-refs": [
+          "SRS-BT-001",
+          "SYS-14",
+          "SYS-43a"
+        ]
+      }
+    },
+    "/api/v1/backtests/{backtest_id}": {
+      "get": {
+        "description": "Return persisted backtest results (metrics, trade log, equity curve, benchmark). SRS trace: SRS-BT-009, SYS-21, SYS-42. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "operationId": "get_api_v1_backtests_backtest_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "backtest_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "backtest_id": {
+                      "type": "string"
+                    },
+                    "benchmark_comparison": {
+                      "type": "string"
+                    },
+                    "deployment_version_hash": {
+                      "type": "string"
+                    },
+                    "equity_curve": {
+                      "type": "string"
+                    },
+                    "metrics": {
+                      "type": "string"
+                    },
+                    "parameters": {
+                      "type": "string"
+                    },
+                    "strategy_id": {
+                      "type": "string"
+                    },
+                    "trade_log": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "Return persisted backtest results (metrics, trade log, equity curve, benchmark).",
+        "tags": [
+          "BACKTEST_QUERY"
+        ],
+        "x-capability": "BACKTEST_QUERY",
+        "x-requires-confirmation": false,
+        "x-srs-refs": [
+          "SRS-BT-009",
+          "SYS-21",
+          "SYS-42"
+        ]
+      }
+    },
+    "/api/v1/hot-swap": {
+      "post": {
+        "description": "Manually trigger a Reservoir-strategy promotion (demote-then-promote). SRS trace: SRS-RESV-003, SRS-RESV-004, SYS-49a. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "operationId": "post_api_v1_hot-swap",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "candidate_strategy_id": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "demotion_state": {
+                      "type": "string"
+                    },
+                    "promotion_state": {
+                      "type": "string"
+                    },
+                    "swap_id": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "Manually trigger a Reservoir-strategy promotion (demote-then-promote).",
+        "tags": [
+          "HOT_SWAP"
+        ],
+        "x-capability": "HOT_SWAP",
+        "x-requires-confirmation": false,
+        "x-srs-refs": [
+          "SRS-RESV-003",
+          "SRS-RESV-004",
+          "SYS-49a"
+        ]
+      }
+    },
+    "/api/v1/hot-swap/status": {
+      "get": {
+        "description": "Return current Hot-Swap state, demotion-pending status, and cool-down expiry. SRS trace: SRS-RESV-005, SRS-RESV-006, SYS-49b, SYS-49e. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "operationId": "get_api_v1_hot-swap_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "auto_triggers_enabled": {
+                      "type": "string"
+                    },
+                    "cooldown_expires_at": {
+                      "type": "string"
+                    },
+                    "current_live_strategy_id": {
+                      "type": "string"
+                    },
+                    "demotion_pending": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "Return current Hot-Swap state, demotion-pending status, and cool-down expiry.",
+        "tags": [
+          "HOT_SWAP"
+        ],
+        "x-capability": "HOT_SWAP",
+        "x-requires-confirmation": false,
+        "x-srs-refs": [
+          "SRS-RESV-005",
+          "SRS-RESV-006",
+          "SYS-49b",
+          "SYS-49e"
+        ]
+      }
+    },
+    "/api/v1/kill-switch": {
+      "post": {
+        "description": "Activate the QuantConnect Liquidate sequence (cancel, liquidate, halt, disconnect). SRS trace: SRS-SAFE-001, SYS-44a, SYS-44b, NFR-P3. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1). Requires UI-4 confirmation; pass ``confirm`` query param.",
+        "operationId": "post_api_v1_kill-switch",
+        "parameters": [
+          {
+            "description": "Confirmation token (UI-4 two-step modal).",
+            "in": "query",
+            "name": "confirm",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "activated_at": {
+                      "type": "string"
+                    },
+                    "activation_id": {
+                      "type": "string"
+                    },
+                    "cancelled_orders": {
+                      "type": "string"
+                    },
+                    "ib_gateway_disconnected": {
+                      "type": "string"
+                    },
+                    "liquidation_orders": {
+                      "type": "string"
+                    },
+                    "paper_engines_halted": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "Activate the QuantConnect Liquidate sequence (cancel, liquidate, halt, disconnect).",
+        "tags": [
+          "KILL_SWITCH"
+        ],
+        "x-capability": "KILL_SWITCH",
+        "x-requires-confirmation": true,
+        "x-srs-refs": [
+          "SRS-SAFE-001",
+          "SYS-44a",
+          "SYS-44b",
+          "NFR-P3"
+        ]
+      }
+    },
+    "/api/v1/logs": {
+      "get": {
+        "description": "Query system or strategy logs by severity, source, and time range. SRS trace: SRS-LOG-001, SYS-38, SYS-61. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "operationId": "get_api_v1_logs",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "correlation_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_time",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "event_type",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "log_class",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "severity",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_time",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "correlation_id": {
+                      "type": "string"
+                    },
+                    "event_type": {
+                      "type": "string"
+                    },
+                    "events": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "severity": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "Query system or strategy logs by severity, source, and time range.",
+        "tags": [
+          "LOGS"
+        ],
+        "x-capability": "LOGS",
+        "x-requires-confirmation": false,
+        "x-srs-refs": [
+          "SRS-LOG-001",
+          "SYS-38",
+          "SYS-61"
+        ]
+      }
+    },
+    "/api/v1/reservoir/ranking": {
+      "get": {
+        "description": "Rank Reservoir strategies by Sharpe, Sortino, and momentum score. SRS trace: SRS-RESV-002, SYS-48. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "operationId": "get_api_v1_reservoir_ranking",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "eval_window_days",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "eval_window_days": {
+                      "type": "string"
+                    },
+                    "momentum_score": {
+                      "type": "string"
+                    },
+                    "rankings": {
+                      "type": "string"
+                    },
+                    "sharpe": {
+                      "type": "string"
+                    },
+                    "sortino": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "Rank Reservoir strategies by Sharpe, Sortino, and momentum score.",
+        "tags": [
+          "RESERVOIR_RANKING"
+        ],
+        "x-capability": "RESERVOIR_RANKING",
+        "x-requires-confirmation": false,
+        "x-srs-refs": [
+          "SRS-RESV-002",
+          "SYS-48"
+        ]
+      }
+    },
+    "/api/v1/strategies": {
+      "get": {
+        "description": "List deployed strategies with deployment version and lifecycle state. SRS trace: SRS-API-001, SRS-ORCH-004, SYS-79. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "operationId": "get_api_v1_strategies",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "deployment_timestamp": {
+                      "type": "string"
+                    },
+                    "deployment_version_hash": {
+                      "type": "string"
+                    },
+                    "lifecycle_state": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "strategy_id": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "List deployed strategies with deployment version and lifecycle state.",
+        "tags": [
+          "STRATEGY_LIFECYCLE"
+        ],
+        "x-capability": "STRATEGY_LIFECYCLE",
+        "x-requires-confirmation": false,
+        "x-srs-refs": [
+          "SRS-API-001",
+          "SRS-ORCH-004",
+          "SYS-79"
+        ]
+      }
+    },
+    "/api/v1/strategies/{strategy_id}/lifecycle": {
+      "post": {
+        "description": "Transition a strategy lifecycle (start, stop, restart, rollback). SRS trace: SRS-ORCH-004, SRS-ORCH-005, SYS-2c, SYS-80. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "operationId": "post_api_v1_strategies_strategy_id_lifecycle",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "strategy_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "action": {
+                    "type": "string"
+                  },
+                  "target_version_hash": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "deployment_version_hash": {
+                      "type": "string"
+                    },
+                    "lifecycle_state": {
+                      "type": "string"
+                    },
+                    "strategy_id": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "Transition a strategy lifecycle (start, stop, restart, rollback).",
+        "tags": [
+          "STRATEGY_LIFECYCLE"
+        ],
+        "x-capability": "STRATEGY_LIFECYCLE",
+        "x-requires-confirmation": false,
+        "x-srs-refs": [
+          "SRS-ORCH-004",
+          "SRS-ORCH-005",
+          "SYS-2c",
+          "SYS-80"
+        ]
+      }
+    },
+    "/api/v1/strategies/{strategy_id}/promote-live": {
+      "post": {
+        "description": "Designate a strategy as the single live strategy (requires confirmation). SRS trace: SRS-API-001, SYS-2c, SYS-2d. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1). Requires UI-4 confirmation; pass ``confirm`` query param.",
+        "operationId": "post_api_v1_strategies_strategy_id_promote-live",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "strategy_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Confirmation token (UI-4 two-step modal).",
+            "in": "query",
+            "name": "confirm",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "is_live": {
+                      "type": "string"
+                    },
+                    "promoted_at": {
+                      "type": "string"
+                    },
+                    "strategy_id": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "Designate a strategy as the single live strategy (requires confirmation).",
+        "tags": [
+          "LIVE_DESIGNATION"
+        ],
+        "x-capability": "LIVE_DESIGNATION",
+        "x-requires-confirmation": true,
+        "x-srs-refs": [
+          "SRS-API-001",
+          "SYS-2c",
+          "SYS-2d"
+        ]
+      }
+    },
+    "/api/v1/system/status": {
+      "get": {
+        "description": "Return readiness, heartbeat staleness, and resource thresholds. SRS trace: SYS-76, SYS-39, SYS-58. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "operationId": "get_api_v1_system_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "ib_gateway": {
+                      "type": "string"
+                    },
+                    "market_data_heartbeat_age_seconds": {
+                      "type": "string"
+                    },
+                    "nas": {
+                      "type": "string"
+                    },
+                    "ready": {
+                      "type": "string"
+                    },
+                    "resource_alerts": {
+                      "type": "string"
+                    },
+                    "services": {
+                      "type": "string"
+                    },
+                    "ssd": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "Return readiness, heartbeat staleness, and resource thresholds.",
+        "tags": [
+          "SYSTEM_STATUS"
+        ],
+        "x-capability": "SYSTEM_STATUS",
+        "x-requires-confirmation": false,
+        "x-srs-refs": [
+          "SYS-76",
+          "SYS-39",
+          "SYS-58"
+        ]
+      }
+    },
+    "/api/v1/watchlist": {
+      "get": {
+        "description": "Return the IB minute-bar ingestion watchlist. SRS trace: SRS-DATA-002, SYS-22b. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "operationId": "get_api_v1_watchlist",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "default_includes_active_strategies": {
+                      "type": "string"
+                    },
+                    "symbols": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "Return the IB minute-bar ingestion watchlist.",
+        "tags": [
+          "WATCHLIST_CONFIG"
+        ],
+        "x-capability": "WATCHLIST_CONFIG",
+        "x-requires-confirmation": false,
+        "x-srs-refs": [
+          "SRS-DATA-002",
+          "SYS-22b"
+        ]
+      },
+      "put": {
+        "description": "Replace the IB minute-bar ingestion watchlist. SRS trace: SRS-DATA-002, SYS-22b. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "operationId": "put_api_v1_watchlist",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "symbols": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "pacing_budget_remaining": {
+                      "type": "string"
+                    },
+                    "symbols": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "Replace the IB minute-bar ingestion watchlist.",
+        "tags": [
+          "WATCHLIST_CONFIG"
+        ],
+        "x-capability": "WATCHLIST_CONFIG",
+        "x-requires-confirmation": false,
+        "x-srs-refs": [
+          "SRS-DATA-002",
+          "SYS-22b"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "Loopback bind (local-single-user). RFC 1918 binds are also permitted; see SRS-SEC-002.",
+      "url": "http://127.0.0.1:8080"
+    }
+  ],
+  "tags": [
+    {
+      "description": "ALERTS operator capability.",
+      "name": "ALERTS"
+    },
+    {
+      "description": "BACKTEST_LAUNCH operator capability.",
+      "name": "BACKTEST_LAUNCH"
+    },
+    {
+      "description": "BACKTEST_QUERY operator capability.",
+      "name": "BACKTEST_QUERY"
+    },
+    {
+      "description": "HOT_SWAP operator capability.",
+      "name": "HOT_SWAP"
+    },
+    {
+      "description": "KILL_SWITCH operator capability.",
+      "name": "KILL_SWITCH"
+    },
+    {
+      "description": "LIVE_DESIGNATION operator capability.",
+      "name": "LIVE_DESIGNATION"
+    },
+    {
+      "description": "LOGS operator capability.",
+      "name": "LOGS"
+    },
+    {
+      "description": "RESERVOIR_RANKING operator capability.",
+      "name": "RESERVOIR_RANKING"
+    },
+    {
+      "description": "STRATEGY_LIFECYCLE operator capability.",
+      "name": "STRATEGY_LIFECYCLE"
+    },
+    {
+      "description": "SYSTEM_STATUS operator capability.",
+      "name": "SYSTEM_STATUS"
+    },
+    {
+      "description": "WATCHLIST_CONFIG operator capability.",
+      "name": "WATCHLIST_CONFIG"
+    }
+  ],
+  "x-auth-model": "local-single-user",
+  "x-bind-host": "127.0.0.1"
+}

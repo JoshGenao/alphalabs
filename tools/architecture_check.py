@@ -85,6 +85,51 @@ def assert_strategy_api(config: dict) -> list[str]:
     return [f"{strategy_api['package']} exports {', '.join(strategy_api['required_exports'])}"]
 
 
+def assert_rest_api(config: dict) -> list[str]:
+    rest_api = config.get("rest_api")
+    if rest_api is None:
+        return []
+
+    package_path = ROOT / rest_api["path"]
+    if not package_path.exists():
+        fail(f"REST API package path does not exist: {package_path}")
+
+    sys.path.insert(0, str(ROOT / "python"))
+    try:
+        module = importlib.import_module(rest_api["package"])
+    finally:
+        sys.path.pop(0)
+
+    declared_capabilities = {capability.name for capability in module.Capability}
+    missing = sorted(set(rest_api["required_capabilities"]) - declared_capabilities)
+    if missing:
+        fail(f"REST API package is missing capabilities: {', '.join(missing)}")
+
+    snapshot_path = ROOT / rest_api["openapi_snapshot"]
+    if not snapshot_path.exists():
+        fail(f"REST API OpenAPI snapshot is missing: {snapshot_path}")
+    try:
+        json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        fail(f"REST API OpenAPI snapshot is not valid JSON: {error}")
+
+    if module.BIND_HOST != rest_api["bind_host"]:
+        fail(
+            f"REST API BIND_HOST is {module.BIND_HOST!r}, "
+            f"expected {rest_api['bind_host']!r}"
+        )
+    if module.AUTH_MODEL != rest_api["auth_model"]:
+        fail(
+            f"REST API AUTH_MODEL is {module.AUTH_MODEL!r}, "
+            f"expected {rest_api['auth_model']!r}"
+        )
+
+    return [
+        f"{rest_api['package']} covers {len(rest_api['required_capabilities'])} "
+        f"capabilities and binds {module.BIND_HOST} ({module.AUTH_MODEL})"
+    ]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -112,6 +157,7 @@ def run_checks() -> list[str]:
     evidence.extend(assert_workspace_members(config))
     evidence.extend(assert_rust_service_crates(config))
     evidence.extend(assert_strategy_api(config))
+    evidence.extend(assert_rest_api(config))
     evidence.extend(assert_container_language_boundary(config))
     return evidence
 

@@ -87,9 +87,16 @@ if [[ "$READY" != "true" ]]; then
 fi
 
 echo "→ Running baseline smoke test..."
-if curl -sf "$BASE_URL/README.md" >/dev/null; then
-  echo "✓ Environment ready"
-else
+if ! curl -sf "$BASE_URL/README.md" >/dev/null; then
   echo "✗ Environment failed"
   exit 1
 fi
+
+echo "→ Running REST API contract check..."
+if ! python3 tools/rest_api_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  REST API contract check failed; run python3 tools/rest_api_check.py for detail."
+  exit 1
+fi
+
+echo "✓ Environment ready"

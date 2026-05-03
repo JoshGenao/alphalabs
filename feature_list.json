@@ -1586,7 +1586,7 @@
       "Step 3: Verify required capability: Strategy lifecycle, live designation, kill switch, Hot-Swap, backtest launch, backtest query, Reservoir ranking, watchlist configuration, system status, logs, alerts",
       "Step 4: Confirm the interface contract traces to SRS-API-001 and leave passes false until contract evidence is captured."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {

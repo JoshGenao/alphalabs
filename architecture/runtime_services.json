@@ -88,5 +88,25 @@
       "TradingCalendar",
       "WarmupNotComplete"
     ]
+  },
+  "rest_api": {
+    "package": "atp_api",
+    "path": "python/atp_api",
+    "required_capabilities": [
+      "STRATEGY_LIFECYCLE",
+      "LIVE_DESIGNATION",
+      "KILL_SWITCH",
+      "HOT_SWAP",
+      "BACKTEST_LAUNCH",
+      "BACKTEST_QUERY",
+      "RESERVOIR_RANKING",
+      "WATCHLIST_CONFIG",
+      "SYSTEM_STATUS",
+      "LOGS",
+      "ALERTS"
+    ],
+    "openapi_snapshot": "python/atp_api/openapi.json",
+    "bind_host": "127.0.0.1",
+    "auth_model": "local-single-user"
   }
 }

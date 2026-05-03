@@ -1,3 +1,73 @@
+=== SESSION 3 ===
+Date: 2026-05-03
+Feature completed: API-2 - REST API contract surface for SRS-API-001
+Status: 117 remaining features
+
+What I did:
+- Added a new Python package `python/atp_api/` that is the declarative source of truth for
+  the operator REST API:
+  * `routes.py` defines `Method`, `Capability` (11 buckets), and a `Route` dataclass with
+    SRS-traced fields. The 14-route `ROUTES` tuple covers every API-2 capability
+    (lifecycle, live designation, kill switch, Hot-Swap, backtest launch/query,
+    Reservoir ranking, watchlist config, system status, logs, alerts).
+  * `openapi.py` builds a deterministic OpenAPI 3.1 dict from `ROUTES` (pure stdlib).
+  * `openapi.json` is the frozen byte-equal snapshot regenerated from `ROUTES`.
+  * `BIND_HOST=127.0.0.1` and `AUTH_MODEL=local-single-user` encode the SRS-SEC-002
+    loopback policy ("Local single-user deployment controls").
+  * `README.md` summarises auth model, capability table, confirmation routes, sample
+    curl, and the snapshot regeneration recipe.
+- Added `tools/rest_api_check.py` — mirror of `strategy_api_check.py`. Prints "API-2 PASS"
+  with 13 evidence bullets (one per capability + snapshot freshness + loopback policy).
+  Supports `--update` to rewrite the OpenAPI snapshot from current `ROUTES`.
+- Added `tests/test_rest_api.py`: subprocess contract test, route shape walk, capability
+  coverage (== set(Capability)), OpenAPI snapshot byte-equality, snapshot determinism,
+  loopback policy, kill-switch + live-designation confirmation guards, public docstrings.
+- Extended `architecture/runtime_services.json` with a `rest_api` block listing the 11
+  required capabilities, the snapshot path, and the loopback/auth policy. Extended
+  `tools/architecture_check.py` with `assert_rest_api(config)` so the surface is
+  enforced architecturally — `SRS-ARCH-001 PASS` now adds an `atp_api covers 11
+  capabilities and binds 127.0.0.1` evidence line.
+- Extended `init.sh` to run `python3 tools/rest_api_check.py` after the static-server
+  smoke test; `✓ Environment ready` now requires both checks to pass. Cargo-tolerance
+  preserved.
+- Routes that perform irreversible actions (POST /api/v1/kill-switch, POST
+  /api/v1/strategies/{id}/promote-live) carry `requires_confirmation=True` and a
+  `confirm` query parameter, traced to SRS-SAFE-001 and SYS-2d respectively.
+
+What I tested (end-to-end, all six verifications):
+1. `./init.sh` -> "✓ Environment ready" with both smoke test and "Running REST API
+   contract check..." steps shown.
+2. `python3 tools/architecture_check.py` -> "SRS-ARCH-001 PASS" with the new rest_api
+   evidence line.
+3. `python3 tools/rest_api_check.py` -> "API-2 PASS" with 13 evidence bullets (11
+   capabilities + snapshot in-sync + loopback policy).
+4. `python3 -m unittest tests.test_architecture tests.test_strategy_api
+   tests.test_rest_api` -> 21 tests OK.
+5. Snapshot determinism: regenerate `render_snapshot()` -> byte-equal (30,006 bytes)
+   to `python/atp_api/openapi.json`.
+6. Deterministic re-run of the contract script -> identical PASS output.
+
+Known issues / notes for next agent:
+- `init.sh` is now stricter. A broken `atp_api` import fails init (intended; matches
+  the API-1 precedent of architecture_check failing fast). If a future change to
+  `ROUTES` is unintended, `tools/rest_api_check.py --update` regenerates the snapshot.
+- Hot-Swap automatic-trigger configuration (drawdown threshold, top-rank/momentum
+  enable, 7-day cool-down policy edits) is server-internal in this contract; only
+  manual promotion (`POST /api/v1/hot-swap`) and `GET /api/v1/hot-swap/status` are
+  REST-exposed. A future feature can add `PUT /api/v1/hot-swap/policy` if needed.
+- Confirmation is modeled as a `confirm` query parameter on the route declaration; the
+  two-step UX (modal + token) lands with UI-4 / dashboard work.
+- API-2 declares the contract only — no real HTTP runtime exists yet. `init.sh` still
+  serves the placeholder `python3 -m http.server`. Live handlers come with EXE-1,
+  ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1.
+- WebSocket overlap deliberately avoided: API-3 owns `/ws/*`. Re-confirm before adding
+  any streaming routes here.
+- `architecture/container_manifests.json` is still missing (pre-existing); recommend a
+  small architecture-cleanup feature to either remove the reference from
+  `architecture_check.py` or commit the file.
+- Lowest remaining P1 by ID is API-3 (WebSocket API surface) — same contract-evidence
+  pattern should apply: declarative event schema + introspection check + snapshot.
+
 === SESSION 2 ===
 Date: 2026-05-03
 Feature completed: API-1 - Python Strategy API contract for SRS-SDK-001..009
