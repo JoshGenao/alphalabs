@@ -29,3 +29,23 @@ python3 tools/dependency_boundary_check.py --fixture lower-layer-orchestrator-im
 python3 tools/dependency_boundary_check.py --fixture lower-layer-vendor-adapter-import
 python3 tools/dependency_boundary_check.py --fixture lower-layer-dashboard-import
 ```
+
+`SRS-ARCH-003` is enforced by the same metadata file's `adapter_isolation`
+block. `crates/atp-adapters` owns the public brokerage and data-provider
+interfaces plus compile-only stubs for Interactive Brokers, Databento, Sharadar,
+user Parquet, and a future provider. `tools/adapter_isolation_check.py` verifies
+the interface surface, compiles the adapter crate, scans core crates for vendor
+imports, and compiles a temporary fictional alternative-data adapter without
+modifying core source files:
+
+```bash
+python3 tools/adapter_isolation_check.py
+```
+
+The negative fixtures prove core modules cannot import vendor SDKs directly:
+
+```bash
+python3 tools/adapter_isolation_check.py --fixture core-imports-ib
+python3 tools/adapter_isolation_check.py --fixture core-imports-databento
+python3 tools/adapter_isolation_check.py --fixture core-imports-sharadar
+```

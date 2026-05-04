@@ -86,6 +86,70 @@ class ArchitectureBoundaryTest(unittest.TestCase):
         self.assertIn("SRS-ARCH-002 FAIL", result.stderr)
         self.assertIn("atp_dashboard", result.stderr)
 
+    def test_srs_arch_003_adapter_isolation(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "tools/adapter_isolation_check.py"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SRS-ARCH-003 PASS", result.stdout)
+        self.assertIn("public traits", result.stdout)
+        self.assertIn("fictional alternative-data adapter compiled", result.stdout)
+
+    def test_srs_arch_003_rejects_ib_import_from_core(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/adapter_isolation_check.py",
+                "--fixture",
+                "core-imports-ib",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SRS-ARCH-003 FAIL", result.stderr)
+        self.assertIn("interactive_brokers", result.stderr)
+
+    def test_srs_arch_003_rejects_databento_import_from_core(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/adapter_isolation_check.py",
+                "--fixture",
+                "core-imports-databento",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SRS-ARCH-003 FAIL", result.stderr)
+        self.assertIn("databento", result.stderr)
+
+    def test_srs_arch_003_rejects_sharadar_import_from_core(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/adapter_isolation_check.py",
+                "--fixture",
+                "core-imports-sharadar",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SRS-ARCH-003 FAIL", result.stderr)
+        self.assertIn("sharadar", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

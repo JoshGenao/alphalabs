@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Architecture checks for SRS-ARCH-001 and SRS-ARCH-002."""
+"""Architecture checks for SRS-ARCH-001 through SRS-ARCH-003."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+from adapter_isolation_check import AdapterIsolationError, assert_adapter_isolation_static
 from dependency_boundary_check import DependencyBoundaryError, assert_dependency_direction
 
 
@@ -161,6 +162,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_dependency_direction(config, ROOT))
     except DependencyBoundaryError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_adapter_isolation_static(config, ROOT))
+    except AdapterIsolationError as error:
         fail(str(error))
     evidence.extend(assert_strategy_api(config))
     evidence.extend(assert_rest_api(config))

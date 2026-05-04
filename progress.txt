@@ -1,3 +1,55 @@
+=== SESSION 5 ===
+Date: 2026-05-03
+Feature completed: SRS-ARCH-003 - Isolate vendor integrations behind adapter interfaces
+Status: 115 remaining features
+
+What I did:
+- Added public Rust adapter contracts in `crates/atp-adapters` for brokerage,
+  market data, historical data, bulk equity, fundamentals, options, user Parquet,
+  and alternative data providers.
+- Added compile-only Phase 1 stubs for Interactive Brokers, Databento, Sharadar,
+  user Parquet, and a future provider; all stub operations return
+  `AdapterError::NotConfigured` instead of touching real vendor SDKs.
+- Added `adapter_isolation` architecture metadata and
+  `tools/adapter_isolation_check.py` to verify required traits/stubs, compile the
+  adapter crate, scan core crates for vendor imports, and compile a fictional
+  alternative-data adapter using only public interfaces without changing core
+  source files.
+- Wired static SRS-ARCH-003 evidence into `tools/architecture_check.py`,
+  documented commands in `architecture/README.md`, and added positive/negative
+  architecture tests.
+- Used the local `ddia_reference` guidance around maintainability/evolvability:
+  keep vendor coupling behind explicit interfaces and prove the boundary with
+  automated structural checks.
+
+What I tested:
+- `./init.sh` -> "✓ Environment ready" (required outside sandbox because local
+  server bind is blocked inside the sandbox).
+- `python3 tools/adapter_isolation_check.py` -> "SRS-ARCH-003 PASS" with public
+  trait/stub, core vendor-free scan, adapter compile, and fictional adapter
+  evidence.
+- Negative fixtures:
+  `--fixture core-imports-ib`, `--fixture core-imports-databento`, and
+  `--fixture core-imports-sharadar` all failed with "SRS-ARCH-003 FAIL".
+- `python3 tools/architecture_check.py` -> SRS-ARCH-001/002 plus new
+  SRS-ARCH-003 static evidence.
+- `python3 -m unittest tests.test_architecture tests.test_strategy_api tests.test_rest_api`
+  -> 29 tests OK.
+- `cargo test` -> all Rust crate unit tests and doc tests passed.
+
+Known issues / notes for next agent:
+- Pre-existing dirty/untracked files remain unrelated to this feature:
+  `init.sh`, `prompts/initializer_prompt.md`, `.claude/`, `Cargo.lock`,
+  `requirements.txt`, and `prompts/coding_prompt.md`. They were not reverted.
+- The adapter implementations are intentionally compile-only stubs. Real IB,
+  Databento, Sharadar, Arrow, and Parquet integration belongs to later feature
+  work behind these public interfaces.
+- The vendor import scanner checks Rust `use` and `extern crate` lines only, so
+  documentation can still mention vendors without failing the architecture test.
+- No features were skipped for clarification.
+- Lowest remaining feature is SRS-ARCH-004 (Docker Compose deployment on the
+  Phase 1 Proxmox Ubuntu VM target).
+
 === SESSION 4 ===
 Date: 2026-05-03
 Feature completed: SRS-ARCH-002 - Enforce dependency direction

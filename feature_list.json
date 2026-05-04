@@ -41,7 +41,7 @@
       "Step 3: Verify acceptance criteria: IB, Databento, Sharadar, user Parquet, and future stub providers compile as adapter implementations; core strategy, backtest, and data-query code contains no vendor-specific imports; a structural integration test implements a fictional asset-class or alternative-data adapter using only public adapter interfaces and confirms no core module files are modified.",
       "Step 4: Record objective evidence from inspection, structural test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {

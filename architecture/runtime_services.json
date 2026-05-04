@@ -194,6 +194,64 @@
       }
     ]
   },
+  "adapter_isolation": {
+    "requirement": "SRS-ARCH-003",
+    "adapter_crate": {
+      "crate": "atp-adapters",
+      "path": "crates/atp-adapters"
+    },
+    "required_traits": [
+      "BrokerageAdapter",
+      "MarketDataAdapter",
+      "HistoricalDataAdapter",
+      "DataProviderAdapter",
+      "BulkEquityDataProvider",
+      "FundamentalDataProvider",
+      "OptionsDataProvider",
+      "UserParquetDataProvider",
+      "AlternativeDataProvider"
+    ],
+    "required_providers": [
+      "InteractiveBrokersAdapter",
+      "DatabentoAdapter",
+      "SharadarAdapter",
+      "UserParquetAdapter",
+      "FutureStubProvider"
+    ],
+    "core_vendor_free_crates": [
+      "atp-types",
+      "atp-data",
+      "atp-strategy-engine",
+      "atp-execution",
+      "atp-simulation",
+      "atp-market-data",
+      "atp-orchestrator",
+      "atp-factor-pipeline",
+      "atp-notification"
+    ],
+    "forbidden_vendor_imports": [
+      {
+        "token": "ib_gateway",
+        "reason": "Interactive Brokers SDK usage belongs behind the adapter interface"
+      },
+      {
+        "token": "interactive_brokers",
+        "reason": "Interactive Brokers SDK usage belongs behind the adapter interface"
+      },
+      {
+        "token": "ibapi",
+        "reason": "Interactive Brokers SDK usage belongs behind the adapter interface"
+      },
+      {
+        "token": "databento",
+        "reason": "Databento SDK usage belongs behind the adapter interface"
+      },
+      {
+        "token": "sharadar",
+        "reason": "Sharadar access belongs behind the adapter interface"
+      }
+    ]
+  },
   "strategy_api": {
     "package": "atp_strategy",
     "path": "python/atp_strategy",
