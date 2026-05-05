@@ -1,3 +1,98 @@
+=== SESSION 6 ===
+Date: 2026-05-04
+Feature completed: SRS-ARCH-004 - Phase 1 Docker Compose deployment stack
+Status: 114 remaining features
+
+What I did:
+- Extended `docker-compose.yml` with a `phase1` profile that declares the
+  full Phase 1 deployment stack alongside the existing `architecture-check`
+  profile: 8 core Rust services (orchestrator, execution, strategy and
+  simulation engines, market data, data layer, factor pipeline,
+  notifications), plus `phase1-dashboard-api` (loopback-bound per
+  SRS-SEC-002), `phase1-jupyter` (read-only data mounts per SRS-RES-001 and
+  SRS-SEC-004), `phase1-ib-gateway` (operator-supplied image placeholder
+  per SRS-EXE-006), and `phase1-strategy-runtime` (canonical container
+  template carrying SyRS SYS-11 live/paper resource profile labels).
+  Added named volumes `atp_ssd` and `atp_nas` bound to ATP_SSD_DATA_DIR
+  and ATP_NAS_DATA_DIR. All Phase 1 services pull `.env` (required: false
+  so `docker compose config` works without it) and inherit a YAML anchor
+  carrying the 11 ATP_* env vars.
+- Added stub Dockerfiles for the new images:
+  `docker/dashboard-api.Dockerfile`, `docker/jupyter.Dockerfile`,
+  `docker/ib-gateway.Dockerfile`. They follow the existing compile-only
+  precedent: real runtime entrypoints land with later features.
+- Added `.env.example` enumerating every required ATP_* variable with
+  Phase 1 defaults and SRS cross-references.
+- Added `docs/DEPLOYMENT.md` documenting the Proxmox VM target, bring-up
+  commands, service inventory, storage tiers, the loopback bind policy,
+  and an explicit "cloud VPS deployment is a future target outside the
+  release baseline" section followed by a six-item portability constraints
+  list (filesystem assumptions, IB Gateway co-location, Docker socket /
+  cgroup-based isolation, reference-hardware resource profiles,
+  loopback default, single-host log/clock assumptions).
+- Added a `deployment` block to `architecture/runtime_services.json`
+  pointing at the compose file, env example, deployment doc, required
+  services, env vars, volumes, and portability keywords.
+- Added `tools/deployment_check.py` mirroring the
+  adapter_isolation_check.py pattern. Asserts compose service membership,
+  the phase1 profile, env-var passthrough, named-volume bindings, the
+  loopback dashboard bind, Dockerfile presence, .env.example contents,
+  and DEPLOYMENT.md keyword coverage. Three fixtures (`missing-jupyter`,
+  `missing-ssd`, `missing-portability-doc`) prove the check rejects the
+  required regressions.
+- Wired the new check into `tools/architecture_check.py` so the aggregate
+  `SRS-ARCH-001 PASS` output now lists the SRS-ARCH-004 evidence bullets,
+  and into `init.sh` so `✓ Environment ready` requires deployment_check
+  to pass.
+- Extended `tests/test_architecture.py` with one positive and three
+  negative SRS-ARCH-004 tests, and added a new assertion to the existing
+  SRS-ARCH-001 test that the aggregate output covers the deployment
+  evidence.
+- Updated `architecture/README.md` with an SRS-ARCH-004 section
+  documenting the direct check command and negative fixtures.
+
+What I tested (end-to-end, all 9 verifications from the plan):
+1. `./init.sh` -> "✓ Environment ready" with the new "Running deployment
+   configuration check..." step appearing before the OK line.
+2. `python3 tools/deployment_check.py` -> "SRS-ARCH-004 PASS" with 7
+   evidence bullets covering services, env vars, SSD/NAS volumes,
+   Dockerfiles, env-example, and DEPLOYMENT.md.
+3. `python3 tools/deployment_check.py --fixture missing-jupyter` -> exits 1
+   with "SRS-ARCH-004 FAIL" and `phase1-jupyter` in stderr.
+4. `python3 tools/deployment_check.py --fixture missing-ssd` -> exits 1
+   with "SRS-ARCH-004 FAIL" and `ATP_SSD_DATA_DIR` in stderr.
+5. `python3 tools/deployment_check.py --fixture missing-portability-doc`
+   -> exits 1 with "SRS-ARCH-004 FAIL" listing all five missing
+   portability keywords (Phase 1, Proxmox, cloud VPS, future target,
+   portability constraints).
+6. `python3 tools/architecture_check.py` -> "SRS-ARCH-001 PASS" plus the
+   new "SRS-ARCH-004 Phase 1 deployment evidence:" lines aggregated in.
+7. `python3 -m unittest tests.test_architecture tests.test_strategy_api
+   tests.test_rest_api` -> 33 tests OK (29 prior + 4 new).
+8. `cargo test --workspace --lib` -> 10 crates PASS, no regressions.
+9. `docker compose --profile phase1 config -q` and
+   `docker compose --profile architecture-check config -q` -> both exit
+   cleanly, confirming compose syntactic validity for both profiles.
+
+Known issues / notes for next agent:
+- The Phase 1 Dockerfiles for dashboard-api, jupyter, and ib-gateway are
+  intentionally stubs. Production images land with the dashboard
+  implementation (UI-1..6), the JupyterLab integration (RES-1), and the
+  licensed IB Gateway image (EXE-1). The deployment check only verifies
+  presence + reference, not container behavior — the SRS verification
+  method is "Demonstration, inspection".
+- The strategy-runtime service carries SyRS SYS-11 resource limits as
+  labels plus a single `deploy.resources.limits` block sized to the live
+  profile. The orchestrator selects between live and paper limits at
+  spawn time; that selection logic belongs to ORCH-2.
+- Pre-existing dirty/untracked files unrelated to SRS-ARCH-004:
+  `prompts/initializer_prompt.md`, `Cargo.lock`, `requirements.txt`,
+  `prompts/coding_prompt.md`, `.claude/`. They were not reverted.
+- No features were skipped for clarification.
+- Lowest remaining feature is SRS-ARCH-005 (configuration system for
+  credentials, storage paths, IB account settings, market-data line
+  limits, resource limits, and notification channels).
+
 === SESSION 5 ===
 Date: 2026-05-03
 Feature completed: SRS-ARCH-003 - Isolate vendor integrations behind adapter interfaces

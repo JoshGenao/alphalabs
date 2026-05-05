@@ -21,6 +21,7 @@ class ArchitectureBoundaryTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("SRS-ARCH-001 PASS", result.stdout)
         self.assertIn("SRS-ARCH-002 enforced dependency flow", result.stdout)
+        self.assertIn("SRS-ARCH-004 Phase 1 deployment", result.stdout)
 
     def test_srs_arch_002_dependency_boundary(self) -> None:
         result = subprocess.run(
@@ -149,6 +150,72 @@ class ArchitectureBoundaryTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("SRS-ARCH-003 FAIL", result.stderr)
         self.assertIn("sharadar", result.stderr)
+
+    def test_srs_arch_004_deployment_compose(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "tools/deployment_check.py"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SRS-ARCH-004 PASS", result.stdout)
+        self.assertIn("phase1", result.stdout)
+        self.assertIn("SSD primary tier and NAS archive tier", result.stdout)
+        self.assertIn("cloud VPS as future target", result.stdout)
+        self.assertIn("127.0.0.1", result.stdout)
+
+    def test_srs_arch_004_rejects_missing_jupyter(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/deployment_check.py",
+                "--fixture",
+                "missing-jupyter",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SRS-ARCH-004 FAIL", result.stderr)
+        self.assertIn("phase1-jupyter", result.stderr)
+
+    def test_srs_arch_004_rejects_missing_ssd_volume(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/deployment_check.py",
+                "--fixture",
+                "missing-ssd",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SRS-ARCH-004 FAIL", result.stderr)
+        self.assertIn("ATP_SSD_DATA_DIR", result.stderr)
+
+    def test_srs_arch_004_rejects_missing_portability_doc(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/deployment_check.py",
+                "--fixture",
+                "missing-portability-doc",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SRS-ARCH-004 FAIL", result.stderr)
+        self.assertIn("portability", result.stderr)
 
 
 if __name__ == "__main__":

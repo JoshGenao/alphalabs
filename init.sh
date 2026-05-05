@@ -27,24 +27,30 @@ export DATABENTO_API_KEY="${DATABENTO_API_KEY:-placeholder-set-in-environment}"
 export SHARADAR_API_KEY="${SHARADAR_API_KEY:-placeholder-set-in-environment}"
 
 echo "→ Installing dependencies..."
-if [[ -f package.json ]]; then
-  npm install
-else
-  echo "  No package.json found; skipping npm install."
+
+VENV_DIR="${ROOT_DIR}/.venv"
+if [[ ! -d "$VENV_DIR" ]]; then
+  echo "  Creating Python venv at $VENV_DIR..."
+  python3 -m venv "$VENV_DIR"
 fi
 
+# shellcheck disable=SC1091
+source "$VENV_DIR/bin/activate"
+echo "  Using $(python -c 'import sys; print(sys.executable)')"
+
+python -m pip install --quiet --upgrade pip
 if [[ -f requirements.txt ]]; then
-  python3 -m pip install -r requirements.txt
-else
-  echo "  No requirements.txt found; skipping pip install."
+  python -m pip install --quiet -r requirements.txt
+fi
+
+if [[ -f package.json ]]; then
+  npm install
 fi
 
 if [[ -f Cargo.toml ]] && command -v cargo >/dev/null 2>&1; then
   cargo fetch
 elif [[ -f Cargo.toml ]]; then
   echo "  Cargo.toml found but cargo is not installed; skipping cargo fetch."
-else
-  echo "  No Cargo.toml found; skipping cargo fetch."
 fi
 
 server_is_ready() {
@@ -96,6 +102,13 @@ echo "→ Running REST API contract check..."
 if ! python3 tools/rest_api_check.py >/dev/null; then
   echo "✗ Environment failed"
   echo "  REST API contract check failed; run python3 tools/rest_api_check.py for detail."
+  exit 1
+fi
+
+echo "→ Running deployment configuration check..."
+if ! python3 tools/deployment_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Deployment check failed; run python3 tools/deployment_check.py for detail."
   exit 1
 fi
 

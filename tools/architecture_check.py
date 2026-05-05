@@ -11,6 +11,7 @@ from pathlib import Path
 
 from adapter_isolation_check import AdapterIsolationError, assert_adapter_isolation_static
 from dependency_boundary_check import DependencyBoundaryError, assert_dependency_direction
+from deployment_check import DeploymentCheckError, assert_deployment_static
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -170,6 +171,10 @@ def run_checks() -> list[str]:
     evidence.extend(assert_strategy_api(config))
     evidence.extend(assert_rest_api(config))
     evidence.extend(assert_container_language_boundary(config))
+    try:
+        evidence.extend(assert_deployment_static(config, ROOT))
+    except DeploymentCheckError as error:
+        fail(str(error))
     return evidence
 
 

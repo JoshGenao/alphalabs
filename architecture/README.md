@@ -49,3 +49,27 @@ python3 tools/adapter_isolation_check.py --fixture core-imports-ib
 python3 tools/adapter_isolation_check.py --fixture core-imports-databento
 python3 tools/adapter_isolation_check.py --fixture core-imports-sharadar
 ```
+
+`SRS-ARCH-004` is enforced by the `deployment` block in
+`architecture/runtime_services.json`. `tools/deployment_check.py` reads
+`docker-compose.yml`, `.env.example`, and `docs/DEPLOYMENT.md` and
+asserts that the Phase 1 stack declares the required services
+(orchestrator, execution, strategy and simulation engines, market data,
+data layer, factor pipeline, notifications, dashboard/API, Jupyter, IB
+Gateway, strategy runtime), passes the required environment variables,
+mounts the SSD primary tier and NAS archive tier, binds the dashboard
+to loopback, ships every Phase 1 Dockerfile, and documents that cloud
+VPS deployment is a future target with explicit portability constraints.
+
+```bash
+python3 tools/deployment_check.py
+```
+
+The negative fixtures prove the check fails when a required deployment
+artefact regresses:
+
+```bash
+python3 tools/deployment_check.py --fixture missing-jupyter
+python3 tools/deployment_check.py --fixture missing-ssd
+python3 tools/deployment_check.py --fixture missing-portability-doc
+```

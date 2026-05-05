@@ -56,7 +56,7 @@
       "Step 3: Verify acceptance criteria: Compose configuration starts core services, dashboard/API, strategy containers, Jupyter, IB Gateway integration configuration, SSD paths, and NAS paths with environment-specific configuration; documentation states that cloud VPS deployment is a future target outside the release baseline and identifies portability constraints for future deployment.",
       "Step 4: Record objective evidence from demonstration, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {

@@ -306,5 +306,67 @@
     "openapi_snapshot": "python/atp_api/openapi.json",
     "bind_host": "127.0.0.1",
     "auth_model": "local-single-user"
+  },
+  "deployment": {
+    "requirement": "SRS-ARCH-004",
+    "target": "Phase 1 Proxmox Ubuntu VM",
+    "compose_file": "docker-compose.yml",
+    "phase1_profile": "phase1",
+    "env_example": ".env.example",
+    "deployment_doc": "docs/DEPLOYMENT.md",
+    "required_services": [
+      "phase1-orchestrator",
+      "phase1-execution-engine",
+      "phase1-strategy-engine",
+      "phase1-simulation-engine",
+      "phase1-market-data",
+      "phase1-data-layer",
+      "phase1-factor-pipeline",
+      "phase1-notification-dispatcher",
+      "phase1-dashboard-api",
+      "phase1-jupyter",
+      "phase1-ib-gateway",
+      "phase1-strategy-runtime"
+    ],
+    "required_dockerfiles": [
+      "docker/core-runtime.Dockerfile",
+      "docker/strategy-python.Dockerfile",
+      "docker/dashboard-api.Dockerfile",
+      "docker/jupyter.Dockerfile",
+      "docker/ib-gateway.Dockerfile"
+    ],
+    "required_env_vars": [
+      "ATP_ENV",
+      "ATP_IB_HOST",
+      "ATP_IB_LIVE_PORT",
+      "ATP_IB_PAPER_PORT",
+      "ATP_MARKET_DATA_LINE_LIMIT",
+      "ATP_SSD_DATA_DIR",
+      "ATP_NAS_DATA_DIR",
+      "ATP_SMTP_API_KEY",
+      "ATP_SMS_API_KEY",
+      "DATABENTO_API_KEY",
+      "SHARADAR_API_KEY"
+    ],
+    "required_volumes": [
+      {
+        "name": "atp_ssd",
+        "env": "ATP_SSD_DATA_DIR",
+        "tier": "primary"
+      },
+      {
+        "name": "atp_nas",
+        "env": "ATP_NAS_DATA_DIR",
+        "tier": "archive"
+      }
+    ],
+    "dashboard_bind_host": "127.0.0.1",
+    "portability_doc_keywords": [
+      "Phase 1",
+      "Proxmox",
+      "cloud VPS",
+      "future target",
+      "portability constraints"
+    ]
   }
 }
