@@ -121,3 +121,25 @@ python3 tools/websocket_api_check.py --update   # regenerate snapshot
 The contract is parallel to API-2 (`atp_api`); concrete WebSocket
 publishers land with downstream features (EXE-1, ORCH-1, MD-1, RESV-1,
 LOG-1, NOTIF-1).
+
+`API-4` (operator CLI) is enforced by the `cli` block in
+`architecture/runtime_services.json` and the `python/atp_cli` package.
+The catalogue declares 6 command groups (`kill-switch`, `strategy`,
+`live`, `hot-swap`, `readiness`, `admin`), 18 commands, the
+`local-shell` access model, the four irreversible commands that must
+require `--confirm` (`kill-switch activate`, `strategy rollback`,
+`live promote`, `hot-swap trigger`), and a frozen JSON manual snapshot
+at `python/atp_cli/manual.json`. `tools/cli_check.py` validates the
+per-group SRS traces and command coverage, the confirmation invariant,
+the documented exit-code contract, and exercises
+`python -m atp_cli` end-to-end (listing, confirmation gating, and
+the `NOT_IMPLEMENTED` stub):
+
+```bash
+python3 tools/cli_check.py
+python3 tools/cli_check.py --update   # regenerate manual snapshot
+```
+
+The contract is parallel to API-2 (`atp_api`) and API-3 (`atp_ws`);
+concrete CLI handlers land with downstream features (EXE-1, ORCH-1,
+RESV-1, LOG-1, NOTIF-1).

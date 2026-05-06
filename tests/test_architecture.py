@@ -25,6 +25,8 @@ class ArchitectureBoundaryTest(unittest.TestCase):
         self.assertIn("SRS-ARCH-005 configuration system", result.stdout)
         self.assertIn("atp_ws covers 8 channels", result.stdout)
         self.assertIn("/ws/v1", result.stdout)
+        self.assertIn("atp_cli covers 6 groups", result.stdout)
+        self.assertIn("local-shell", result.stdout)
 
     def test_srs_arch_002_dependency_boundary(self) -> None:
         result = subprocess.run(

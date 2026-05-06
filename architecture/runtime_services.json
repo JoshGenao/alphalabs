@@ -326,6 +326,28 @@
     "ws_path": "/ws/v1",
     "max_refresh_seconds": 5
   },
+  "cli": {
+    "package": "atp_cli",
+    "path": "python/atp_cli",
+    "required_groups": [
+      "kill-switch",
+      "strategy",
+      "live",
+      "hot-swap",
+      "readiness",
+      "admin"
+    ],
+    "manual_snapshot": "python/atp_cli/manual.json",
+    "entry_point": "atp",
+    "access_model": "local-shell",
+    "auth_model": "local-single-user",
+    "confirmation_required_commands": [
+      "kill-switch activate",
+      "strategy rollback",
+      "live promote",
+      "hot-swap trigger"
+    ]
+  },
   "deployment": {
     "requirement": "SRS-ARCH-004",
     "target": "Phase 1 Proxmox Ubuntu VM",

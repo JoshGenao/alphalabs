@@ -202,6 +202,69 @@ def assert_websocket_api(config: dict) -> list[str]:
     ]
 
 
+def assert_cli(config: dict) -> list[str]:
+    cli = config.get("cli")
+    if cli is None:
+        return []
+
+    package_path = ROOT / cli["path"]
+    if not package_path.exists():
+        fail(f"CLI package path does not exist: {package_path}")
+
+    sys.path.insert(0, str(ROOT / "python"))
+    try:
+        module = importlib.import_module(cli["package"])
+    finally:
+        sys.path.pop(0)
+
+    declared_groups = {group.value for group in module.Group}
+    missing = sorted(set(cli["required_groups"]) - declared_groups)
+    if missing:
+        fail(f"CLI package is missing groups: {', '.join(missing)}")
+
+    snapshot_path = ROOT / cli["manual_snapshot"]
+    if not snapshot_path.exists():
+        fail(f"CLI manual snapshot is missing: {snapshot_path}")
+    try:
+        json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        fail(f"CLI manual snapshot is not valid JSON: {error}")
+
+    if module.ACCESS_MODEL != cli["access_model"]:
+        fail(
+            f"CLI ACCESS_MODEL is {module.ACCESS_MODEL!r}, "
+            f"expected {cli['access_model']!r}"
+        )
+    if module.AUTH_MODEL != cli["auth_model"]:
+        fail(
+            f"CLI AUTH_MODEL is {module.AUTH_MODEL!r}, "
+            f"expected {cli['auth_model']!r}"
+        )
+    if module.CLI_ENTRY_POINT != cli["entry_point"]:
+        fail(
+            f"CLI entry point is {module.CLI_ENTRY_POINT!r}, "
+            f"expected {cli['entry_point']!r}"
+        )
+
+    declared_irreversible = {
+        c.invocation for c in module.COMMANDS if c.requires_confirmation
+    }
+    missing_confirm = sorted(
+        set(cli["confirmation_required_commands"]) - declared_irreversible
+    )
+    if missing_confirm:
+        fail(
+            "CLI commands missing requires_confirmation flag: "
+            + ", ".join(missing_confirm)
+        )
+
+    return [
+        f"{cli['package']} covers {len(cli['required_groups'])} groups and "
+        f"runs {module.CLI_ENTRY_POINT} via {module.ACCESS_MODEL} "
+        f"({module.AUTH_MODEL})"
+    ]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -239,6 +302,7 @@ def run_checks() -> list[str]:
     evidence.extend(assert_strategy_api(config))
     evidence.extend(assert_rest_api(config))
     evidence.extend(assert_websocket_api(config))
+    evidence.extend(assert_cli(config))
     evidence.extend(assert_container_language_boundary(config))
     try:
         evidence.extend(assert_deployment_static(config, ROOT))

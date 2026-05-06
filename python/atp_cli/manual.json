@@ -1,0 +1,732 @@
+{
+  "entry_point": "atp",
+  "exit_codes": [
+    {
+      "code": 0,
+      "name": "OK"
+    },
+    {
+      "code": 2,
+      "name": "USAGE_ERROR"
+    },
+    {
+      "code": 3,
+      "name": "CONFIRMATION_REQUIRED"
+    },
+    {
+      "code": 4,
+      "name": "NOT_FOUND"
+    },
+    {
+      "code": 5,
+      "name": "NOT_READY"
+    },
+    {
+      "code": 6,
+      "name": "TIMEOUT"
+    },
+    {
+      "code": 64,
+      "name": "NOT_IMPLEMENTED"
+    }
+  ],
+  "groups": [
+    {
+      "commands": [
+        {
+          "arguments": [
+            {
+              "is_flag": true,
+              "name": "--confirm",
+              "required": true,
+              "summary": "Two-step confirmation token (UI-4 / SRS-SAFE-001)."
+            },
+            {
+              "is_flag": true,
+              "name": "--json",
+              "required": false,
+              "summary": "Emit machine-readable JSON instead of formatted text."
+            }
+          ],
+          "description": "Activate the QuantConnect Liquidate sequence: cancel resting IB orders, submit market liquidation, halt paper engines, disconnect IB Gateway. SRS trace: SRS-SAFE-001, SYS-44a, SYS-44b, NFR-P3. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1). Requires --confirm (UI-4 / SRS-SAFE-001 two-step modal).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            },
+            {
+              "code": 3,
+              "name": "CONFIRMATION_REQUIRED"
+            },
+            {
+              "code": 6,
+              "name": "TIMEOUT"
+            }
+          ],
+          "group": "kill-switch",
+          "invocation": "kill-switch activate",
+          "name": "activate",
+          "summary": "Activate the QuantConnect Liquidate sequence: cancel resting IB orders, submit market liquidation, halt paper engines, disconnect IB Gateway.",
+          "x-requires-confirmation": true,
+          "x-srs-refs": [
+            "SRS-SAFE-001",
+            "SYS-44a",
+            "SYS-44b",
+            "NFR-P3"
+          ]
+        },
+        {
+          "arguments": [
+            {
+              "is_flag": true,
+              "name": "--json",
+              "required": false,
+              "summary": "Emit machine-readable JSON instead of formatted text."
+            }
+          ],
+          "description": "Report current kill-switch state, last activation, and liquidation-order outcomes. SRS trace: SRS-SAFE-001, SRS-LOG-001. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            }
+          ],
+          "group": "kill-switch",
+          "invocation": "kill-switch status",
+          "name": "status",
+          "summary": "Report current kill-switch state, last activation, and liquidation-order outcomes.",
+          "x-requires-confirmation": false,
+          "x-srs-refs": [
+            "SRS-SAFE-001",
+            "SRS-LOG-001"
+          ]
+        }
+      ],
+      "name": "kill-switch",
+      "summary": "Operator kill switch (QuantConnect Liquidate sequence).",
+      "x-srs-refs": [
+        "SRS-SAFE-001",
+        "SRS-API-001"
+      ]
+    },
+    {
+      "commands": [
+        {
+          "arguments": [
+            {
+              "is_flag": false,
+              "name": "--status",
+              "required": false,
+              "summary": "Filter by lifecycle state (RUNNING, STOPPED, ...)."
+            },
+            {
+              "is_flag": true,
+              "name": "--json",
+              "required": false,
+              "summary": "Emit machine-readable JSON instead of formatted text."
+            }
+          ],
+          "description": "List deployed strategies with version, mode, and lifecycle state. SRS trace: SRS-API-001, SRS-ORCH-004, SYS-79. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            }
+          ],
+          "group": "strategy",
+          "invocation": "strategy list",
+          "name": "list",
+          "summary": "List deployed strategies with version, mode, and lifecycle state.",
+          "x-requires-confirmation": false,
+          "x-srs-refs": [
+            "SRS-API-001",
+            "SRS-ORCH-004",
+            "SYS-79"
+          ]
+        },
+        {
+          "arguments": [
+            {
+              "is_flag": false,
+              "name": "strategy_id",
+              "required": true,
+              "summary": "Target strategy identifier."
+            },
+            {
+              "is_flag": true,
+              "name": "--json",
+              "required": false,
+              "summary": "Emit machine-readable JSON instead of formatted text."
+            }
+          ],
+          "description": "Show one strategy's deployment version, container, and live flag. SRS trace: SRS-ORCH-004, SYS-79. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            },
+            {
+              "code": 4,
+              "name": "NOT_FOUND"
+            }
+          ],
+          "group": "strategy",
+          "invocation": "strategy show",
+          "name": "show",
+          "summary": "Show one strategy's deployment version, container, and live flag.",
+          "x-requires-confirmation": false,
+          "x-srs-refs": [
+            "SRS-ORCH-004",
+            "SYS-79"
+          ]
+        },
+        {
+          "arguments": [
+            {
+              "is_flag": false,
+              "name": "strategy_id",
+              "required": true,
+              "summary": "Target strategy identifier."
+            }
+          ],
+          "description": "Start a deployed strategy (paper mode unless promoted live). SRS trace: SRS-ORCH-004, SYS-2c. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            },
+            {
+              "code": 4,
+              "name": "NOT_FOUND"
+            },
+            {
+              "code": 5,
+              "name": "NOT_READY"
+            }
+          ],
+          "group": "strategy",
+          "invocation": "strategy start",
+          "name": "start",
+          "summary": "Start a deployed strategy (paper mode unless promoted live).",
+          "x-requires-confirmation": false,
+          "x-srs-refs": [
+            "SRS-ORCH-004",
+            "SYS-2c"
+          ]
+        },
+        {
+          "arguments": [
+            {
+              "is_flag": false,
+              "name": "strategy_id",
+              "required": true,
+              "summary": "Target strategy identifier."
+            }
+          ],
+          "description": "Stop a running strategy and persist its last state. SRS trace: SRS-ORCH-004, SYS-2c. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            },
+            {
+              "code": 4,
+              "name": "NOT_FOUND"
+            }
+          ],
+          "group": "strategy",
+          "invocation": "strategy stop",
+          "name": "stop",
+          "summary": "Stop a running strategy and persist its last state.",
+          "x-requires-confirmation": false,
+          "x-srs-refs": [
+            "SRS-ORCH-004",
+            "SYS-2c"
+          ]
+        },
+        {
+          "arguments": [
+            {
+              "is_flag": false,
+              "name": "strategy_id",
+              "required": true,
+              "summary": "Target strategy identifier."
+            }
+          ],
+          "description": "Stop and restart a strategy without changing its deployment version. SRS trace: SRS-ORCH-004. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            },
+            {
+              "code": 4,
+              "name": "NOT_FOUND"
+            }
+          ],
+          "group": "strategy",
+          "invocation": "strategy restart",
+          "name": "restart",
+          "summary": "Stop and restart a strategy without changing its deployment version.",
+          "x-requires-confirmation": false,
+          "x-srs-refs": [
+            "SRS-ORCH-004"
+          ]
+        },
+        {
+          "arguments": [
+            {
+              "is_flag": false,
+              "name": "strategy_id",
+              "required": true,
+              "summary": "Target strategy identifier."
+            },
+            {
+              "is_flag": false,
+              "name": "--target-version-hash",
+              "required": true,
+              "summary": "Deployment version hash to roll back to."
+            },
+            {
+              "is_flag": true,
+              "name": "--confirm",
+              "required": true,
+              "summary": "Two-step confirmation token (UI-4 / SRS-SAFE-001)."
+            }
+          ],
+          "description": "Roll back a strategy to a prior deployment version (live requires --confirm). SRS trace: SRS-ORCH-005, SYS-80. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1). Requires --confirm (UI-4 / SRS-SAFE-001 two-step modal).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            },
+            {
+              "code": 4,
+              "name": "NOT_FOUND"
+            },
+            {
+              "code": 3,
+              "name": "CONFIRMATION_REQUIRED"
+            }
+          ],
+          "group": "strategy",
+          "invocation": "strategy rollback",
+          "name": "rollback",
+          "summary": "Roll back a strategy to a prior deployment version (live requires --confirm).",
+          "x-requires-confirmation": true,
+          "x-srs-refs": [
+            "SRS-ORCH-005",
+            "SYS-80"
+          ]
+        }
+      ],
+      "name": "strategy",
+      "summary": "Deployed-strategy lifecycle: list, show, start, stop, restart, rollback.",
+      "x-srs-refs": [
+        "SRS-API-001",
+        "SRS-ORCH-004",
+        "SRS-ORCH-005"
+      ]
+    },
+    {
+      "commands": [
+        {
+          "arguments": [
+            {
+              "is_flag": false,
+              "name": "strategy_id",
+              "required": true,
+              "summary": "Strategy to promote to the live IB account."
+            },
+            {
+              "is_flag": true,
+              "name": "--confirm",
+              "required": true,
+              "summary": "Two-step confirmation token (UI-4 / SRS-SAFE-001)."
+            }
+          ],
+          "description": "Designate a strategy as the single live IB strategy. Enforces the one-live-strategy invariant; requires --confirm. SRS trace: SRS-API-001, SYS-2c, SYS-2d. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1). Requires --confirm (UI-4 / SRS-SAFE-001 two-step modal).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            },
+            {
+              "code": 4,
+              "name": "NOT_FOUND"
+            },
+            {
+              "code": 3,
+              "name": "CONFIRMATION_REQUIRED"
+            }
+          ],
+          "group": "live",
+          "invocation": "live promote",
+          "name": "promote",
+          "summary": "Designate a strategy as the single live IB strategy. Enforces the one-live-strategy invariant; requires --confirm.",
+          "x-requires-confirmation": true,
+          "x-srs-refs": [
+            "SRS-API-001",
+            "SYS-2c",
+            "SYS-2d"
+          ]
+        },
+        {
+          "arguments": [
+            {
+              "is_flag": true,
+              "name": "--json",
+              "required": false,
+              "summary": "Emit machine-readable JSON instead of formatted text."
+            }
+          ],
+          "description": "Show which strategy currently holds the live IB designation. SRS trace: SRS-API-001, SYS-2c. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            }
+          ],
+          "group": "live",
+          "invocation": "live show",
+          "name": "show",
+          "summary": "Show which strategy currently holds the live IB designation.",
+          "x-requires-confirmation": false,
+          "x-srs-refs": [
+            "SRS-API-001",
+            "SYS-2c"
+          ]
+        }
+      ],
+      "name": "live",
+      "summary": "Live IB designation: promote a strategy and inspect the live slot.",
+      "x-srs-refs": [
+        "SRS-API-001",
+        "SYS-2c",
+        "SYS-2d"
+      ]
+    },
+    {
+      "commands": [
+        {
+          "arguments": [
+            {
+              "is_flag": false,
+              "name": "candidate_strategy_id",
+              "required": true,
+              "summary": "Reservoir candidate to promote."
+            },
+            {
+              "is_flag": true,
+              "name": "--confirm",
+              "required": true,
+              "summary": "Two-step confirmation token (UI-4 / SRS-SAFE-001)."
+            }
+          ],
+          "description": "Manually demote the live strategy and promote a Reservoir candidate (Hot-Swap). SRS trace: SRS-RESV-003, SRS-RESV-004, SYS-49a. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1). Requires --confirm (UI-4 / SRS-SAFE-001 two-step modal).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            },
+            {
+              "code": 4,
+              "name": "NOT_FOUND"
+            },
+            {
+              "code": 3,
+              "name": "CONFIRMATION_REQUIRED"
+            },
+            {
+              "code": 6,
+              "name": "TIMEOUT"
+            }
+          ],
+          "group": "hot-swap",
+          "invocation": "hot-swap trigger",
+          "name": "trigger",
+          "summary": "Manually demote the live strategy and promote a Reservoir candidate (Hot-Swap).",
+          "x-requires-confirmation": true,
+          "x-srs-refs": [
+            "SRS-RESV-003",
+            "SRS-RESV-004",
+            "SYS-49a"
+          ]
+        },
+        {
+          "arguments": [
+            {
+              "is_flag": true,
+              "name": "--json",
+              "required": false,
+              "summary": "Emit machine-readable JSON instead of formatted text."
+            }
+          ],
+          "description": "Report Hot-Swap state, current live strategy, demotion-pending, and cool-down expiry. SRS trace: SRS-RESV-005, SRS-RESV-006, SYS-49b, SYS-49e. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            }
+          ],
+          "group": "hot-swap",
+          "invocation": "hot-swap status",
+          "name": "status",
+          "summary": "Report Hot-Swap state, current live strategy, demotion-pending, and cool-down expiry.",
+          "x-requires-confirmation": false,
+          "x-srs-refs": [
+            "SRS-RESV-005",
+            "SRS-RESV-006",
+            "SYS-49b",
+            "SYS-49e"
+          ]
+        }
+      ],
+      "name": "hot-swap",
+      "summary": "Reservoir Hot-Swap: manual trigger and status inspection.",
+      "x-srs-refs": [
+        "SRS-RESV-003",
+        "SRS-RESV-004",
+        "SRS-RESV-005",
+        "SRS-RESV-006"
+      ]
+    },
+    {
+      "commands": [
+        {
+          "arguments": [
+            {
+              "is_flag": true,
+              "name": "--json",
+              "required": false,
+              "summary": "Emit machine-readable JSON instead of formatted text."
+            }
+          ],
+          "description": "Print readiness state: IB Gateway, SSD, NAS, services, market data heartbeat staleness, resource alerts. SRS trace: SYS-76, SRS-ARCH-005. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            },
+            {
+              "code": 5,
+              "name": "NOT_READY"
+            }
+          ],
+          "group": "readiness",
+          "invocation": "readiness check",
+          "name": "check",
+          "summary": "Print readiness state: IB Gateway, SSD, NAS, services, market data heartbeat staleness, resource alerts.",
+          "x-requires-confirmation": false,
+          "x-srs-refs": [
+            "SYS-76",
+            "SRS-ARCH-005"
+          ]
+        },
+        {
+          "arguments": [
+            {
+              "default": "60",
+              "is_flag": false,
+              "name": "--timeout",
+              "required": false,
+              "summary": "Maximum seconds to wait before exiting."
+            }
+          ],
+          "description": "Block until readiness check passes or timeout elapses. SRS trace: SYS-76. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            },
+            {
+              "code": 6,
+              "name": "TIMEOUT"
+            }
+          ],
+          "group": "readiness",
+          "invocation": "readiness wait",
+          "name": "wait",
+          "summary": "Block until readiness check passes or timeout elapses.",
+          "x-requires-confirmation": false,
+          "x-srs-refs": [
+            "SYS-76"
+          ]
+        }
+      ],
+      "name": "readiness",
+      "summary": "Startup readiness: state inspection and blocking wait.",
+      "x-srs-refs": [
+        "SYS-76",
+        "SRS-ARCH-005"
+      ]
+    },
+    {
+      "commands": [
+        {
+          "arguments": [
+            {
+              "default": "system",
+              "is_flag": false,
+              "name": "--log-class",
+              "required": false,
+              "summary": "Either 'system' or 'strategy'."
+            },
+            {
+              "is_flag": false,
+              "name": "--severity",
+              "required": false,
+              "summary": "Minimum severity (DEBUG, INFO, WARN, ERROR)."
+            },
+            {
+              "is_flag": false,
+              "name": "--source",
+              "required": false,
+              "summary": "Source component or strategy id."
+            },
+            {
+              "is_flag": false,
+              "name": "--since",
+              "required": false,
+              "summary": "ISO-8601 lower bound for event timestamp."
+            },
+            {
+              "is_flag": true,
+              "name": "--follow",
+              "required": false,
+              "summary": "Stream events as they arrive instead of returning."
+            },
+            {
+              "is_flag": true,
+              "name": "--json",
+              "required": false,
+              "summary": "Emit machine-readable JSON instead of formatted text."
+            }
+          ],
+          "description": "Tail system or strategy logs filtered by severity, source, time. SRS trace: SRS-LOG-001, SYS-38, SYS-61. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            }
+          ],
+          "group": "admin",
+          "invocation": "admin logs",
+          "name": "logs",
+          "summary": "Tail system or strategy logs filtered by severity, source, time.",
+          "x-requires-confirmation": false,
+          "x-srs-refs": [
+            "SRS-LOG-001",
+            "SYS-38",
+            "SYS-61"
+          ]
+        },
+        {
+          "arguments": [
+            {
+              "is_flag": true,
+              "name": "--acknowledged",
+              "required": false,
+              "summary": "Filter to only acknowledged or unacknowledged alerts."
+            },
+            {
+              "is_flag": false,
+              "name": "--since",
+              "required": false,
+              "summary": "ISO-8601 lower bound for ``raised_at``."
+            },
+            {
+              "is_flag": true,
+              "name": "--json",
+              "required": false,
+              "summary": "Emit machine-readable JSON instead of formatted text."
+            }
+          ],
+          "description": "List operator alerts and notification delivery status. SRS trace: SRS-NOTIF-001, SYS-46, SYS-58. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            }
+          ],
+          "group": "admin",
+          "invocation": "admin alerts",
+          "name": "alerts",
+          "summary": "List operator alerts and notification delivery status.",
+          "x-requires-confirmation": false,
+          "x-srs-refs": [
+            "SRS-NOTIF-001",
+            "SYS-46",
+            "SYS-58"
+          ]
+        },
+        {
+          "arguments": [
+            {
+              "is_flag": true,
+              "name": "--json",
+              "required": false,
+              "summary": "Emit machine-readable JSON instead of formatted text."
+            }
+          ],
+          "description": "Show effective ATP configuration with secrets redacted (SRS-ARCH-005 keys, validators, defaults). SRS trace: SRS-ARCH-005. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            }
+          ],
+          "group": "admin",
+          "invocation": "admin config",
+          "name": "config",
+          "summary": "Show effective ATP configuration with secrets redacted (SRS-ARCH-005 keys, validators, defaults).",
+          "x-requires-confirmation": false,
+          "x-srs-refs": [
+            "SRS-ARCH-005"
+          ]
+        },
+        {
+          "arguments": [
+            {
+              "is_flag": true,
+              "name": "--json",
+              "required": false,
+              "summary": "Emit machine-readable JSON instead of formatted text."
+            }
+          ],
+          "description": "Print CLI build version and contract revision. SRS trace: SRS-API-001. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1).",
+          "exit_codes": [
+            {
+              "code": 0,
+              "name": "OK"
+            }
+          ],
+          "group": "admin",
+          "invocation": "admin version",
+          "name": "version",
+          "summary": "Print CLI build version and contract revision.",
+          "x-requires-confirmation": false,
+          "x-srs-refs": [
+            "SRS-API-001"
+          ]
+        }
+      ],
+      "name": "admin",
+      "summary": "Basic administration: logs, alerts, configuration, and version.",
+      "x-srs-refs": [
+        "SRS-LOG-001",
+        "SRS-NOTIF-001",
+        "SRS-ARCH-005"
+      ]
+    }
+  ],
+  "info": {
+    "description": "Operator CLI surface for the ATP single-user trading platform (API-4, traces SRS-API-001 and SRS-SAFE-001). Runs only under local shell access; no remote-CLI mode and no auth tokens \u2014 see SRS-SEC-002.",
+    "title": "ATP Operator CLI",
+    "version": "0.1.0"
+  },
+  "manual": "atp.cli.manual/0.1",
+  "program": "python -m atp_cli",
+  "x-access-model": "local-shell",
+  "x-auth-model": "local-single-user"
+}

@@ -1,3 +1,149 @@
+=== SESSION 9 ===
+Date: 2026-05-06
+Feature completed: API-4 — operator CLI surface for kill switch,
+strategy management, live designation, Hot-Swap, readiness status,
+and basic administration (traces SRS-API-001 + SRS-SAFE-001)
+Status: 111 remaining features
+
+What I did:
+- Added a new Python package `python/atp_cli/` that is the declarative
+  source of truth for the operator CLI:
+  * `commands.py` defines `Group` (6 buckets: kill-switch, strategy,
+    live, hot-swap, readiness, admin), `ExitCode` (OK=0,
+    USAGE_ERROR=2, CONFIRMATION_REQUIRED=3, NOT_FOUND=4, NOT_READY=5,
+    TIMEOUT=6, NOT_IMPLEMENTED=64), frozen-slots `Argument` and
+    `Command` dataclasses, the 18-entry `COMMANDS` tuple, and the
+    access-policy constants `ACCESS_MODEL=local-shell`,
+    `AUTH_MODEL=local-single-user`, `CLI_ENTRY_POINT=atp`. Each
+    command carries `srs_refs`, `arguments`, `exit_codes`, and
+    `requires_confirmation`. Four commands are confirmation-gated
+    (kill-switch activate, strategy rollback, live promote,
+    hot-swap trigger).
+  * `manual.py` builds a deterministic JSON manual dict from
+    `COMMANDS` (pure stdlib), with per-group `x-srs-refs`, per-command
+    `x-srs-refs`/`x-requires-confirmation`, and document-level
+    `x-access-model`/`x-auth-model` extensions encoding SRS-SEC-002.
+  * `manual.json` is the frozen byte-equal snapshot.
+  * `runner.py` builds an argparse parser from `COMMANDS`, exposes
+    `python -m atp_cli --list` for surface introspection, enforces
+    --confirm on irreversible commands (exit 3 on miss), and exits
+    with NOT_IMPLEMENTED (64) for every stub handler.
+  * `__main__.py` wires `python -m atp_cli`.
+  * `__init__.py` re-exports the 17-name public surface.
+  * `README.md` summarises access model, the 6-group/18-command
+    table, exit codes, sample invocations, and snapshot regeneration.
+- Added `tools/cli_check.py` mirroring `rest_api_check.py` and
+  `websocket_api_check.py`: same exit-code contract, evidence-bullet
+  output, `--update` flag. 11 checks total: 6 per-group (assert SRS
+  refs, required commands, --confirm gating where applicable),
+  `confirmation_invariant` (every irreversible command declares
+  --confirm and CONFIRMATION_REQUIRED), `local_shell_policy`
+  (constants + manual x-extensions), `exit_code_contract` (every
+  command exit_codes ⊆ documented ExitCode and includes OK),
+  `manual_snapshot` (byte-equality), `runner_smoke` (subprocess
+  exercises --list, kill-switch activate without --confirm → exit 3,
+  with --confirm → exit 64).
+- Extended `architecture/runtime_services.json` with a `cli` block
+  listing the 6 required groups, the manual snapshot path, the entry
+  point, the access/auth policy, and the four confirmation-required
+  commands. Extended `tools/architecture_check.py` with
+  `assert_cli(config)` so the surface is enforced architecturally —
+  `SRS-ARCH-001 PASS` now adds an `atp_cli covers 6 groups and runs
+  atp via local-shell (local-single-user)` evidence line.
+- Wired `python3 tools/cli_check.py` into `init.sh` between the
+  WebSocket API check and the deployment check; `✓ Environment ready`
+  now requires the new check too.
+- Added `tests/test_cli.py` (15 tests across 10 classes): subprocess
+  contract test, command shape walk, group coverage (== set(Group),
+  len 6, len(COMMANDS) == 18), confirmation invariant for the four
+  irreversible commands, manual snapshot byte-equality, determinism,
+  manual JSON parse, local-shell policy, exit-code contract, runner
+  subprocess (list / confirm gating / NOT_IMPLEMENTED stub / readiness
+  stub), parser build, commands_by_group, public-docstring walk.
+- Tightened `tests/test_architecture.py` SRS-ARCH-001 aggregate test
+  to require the new `atp_cli covers 6 groups` and `local-shell`
+  evidence in the architecture-check output.
+- Extended `architecture/README.md` with an `API-4` section
+  documenting the direct check command, snapshot update recipe, and
+  the parallel relationship to API-2/API-3.
+
+What I tested (end-to-end, all 11 verifications):
+1. `./init.sh` → `✓ Environment ready` with the new
+   `→ Running CLI contract check…` line appearing between the
+   WebSocket API step and the deployment-check step.
+2. `python3 tools/cli_check.py` → `API-4 PASS` with 11 evidence
+   bullets (6 groups + confirmation invariant + local-shell policy +
+   exit-code contract + manual snapshot + runner smoke).
+3. `python3 tools/cli_check.py --update` → byte-equal, no git diff
+   on `python/atp_cli/manual.json`.
+4. Negative spot-check: removed `kill-switch activate` from
+   COMMANDS in-memory and ran `run_checks()` → raised
+   `CLIContractError: Group is missing commands: activate` as expected.
+5. `python3 tools/architecture_check.py` → `SRS-ARCH-001 PASS` with
+   the new `atp_cli covers 6 groups and runs atp via local-shell
+   (local-single-user)` evidence bullet present.
+6. `python3 tools/rest_api_check.py` → still `API-2 PASS`, no
+   regressions; `python3 tools/websocket_api_check.py` → still
+   `API-3 PASS`; `python3 tools/deployment_check.py` and
+   `python3 tools/config_check.py` → still PASS.
+7. `python3 -m unittest tests.test_architecture tests.test_strategy_api
+   tests.test_rest_api tests.test_configuration tests.test_websocket_api
+   tests.test_cli` → 98 tests OK (77 prior + 21 new across
+   test_cli.py and the tightened SRS-ARCH-001 assertion).
+8. `cargo test --workspace --lib` → 10 crates PASS, no regressions.
+9. End-to-end CLI runner exercises:
+   - `PYTHONPATH=python python3 -m atp_cli --list` → exits 0, prints
+     all 18 commands grouped by their 6 buckets.
+   - `python3 -m atp_cli kill-switch activate` → exits 3 with
+     `--confirm is required (SRS-SAFE-001 / UI-4)` on stderr.
+   - `python3 -m atp_cli kill-switch activate --confirm` → exits 64
+     with API-4 contract-stub message and full SRS trace.
+   - `python3 -m atp_cli strategy rollback alpha
+     --target-version-hash deadbeef` → exits 3 (confirmation gate).
+   - `python3 -m atp_cli strategy rollback alpha
+     --target-version-hash deadbeef --confirm` → exits 64.
+   - `python3 -m atp_cli readiness check --json` → exits 64.
+   - `python3 -m atp_cli admin version` → exits 64.
+10. Marked `feature_list.json` entry `API-4` `"passes": true` and
+    re-ran test 7 — all 98 tests still green.
+11. Direct contract introspection via
+    `from atp_cli import build_manual; build_manual()` → no
+    exception, document round-trips cleanly.
+
+Known issues / notes for next agent:
+- API-4 declares the contract only — no concrete handlers exist yet.
+  Real behaviour lands with EXE-1 (kill-switch executor),
+  ORCH-1/ORCH-2 (strategy lifecycle, live designation, rollback),
+  RESV-1 (Hot-Swap), LOG-1 (logs), NOTIF-1 (alerts). `init.sh` still
+  serves the placeholder `python3 -m http.server`.
+- The CLI runner deliberately returns ExitCode.NOT_IMPLEMENTED (64)
+  for every executable command. Downstream features should keep this
+  exit code reserved for missing handlers and use the documented
+  codes (OK, NOT_FOUND, NOT_READY, TIMEOUT, ...) for real outcomes.
+- `requires_confirmation=True` commands MUST also document
+  `ExitCode.CONFIRMATION_REQUIRED` and declare a `--confirm` argument
+  with `required=True`. The check enforces all three at once; do not
+  weaken any one of them without revisiting SRS-SAFE-001 / UI-4.
+- No console-script entry point is wired today (no `pyproject.toml`
+  scripts table). Operators invoke via `python -m atp_cli`. When a
+  packaging step lands, set `[project.scripts] atp = "atp_cli.runner:main"`.
+- `init.sh` is now stricter again: a broken `atp_cli` import or a
+  missing manual snapshot fails init. Recover via
+  `python3 tools/cli_check.py --update` or by running
+  `python3 tools/cli_check.py` directly to see the failure.
+- Pre-existing dirty/untracked files unrelated to API-4:
+  `prompts/initializer_prompt.md`, `prompts/coding_prompt.md`,
+  `Cargo.lock`, `requirements.txt`, `.claude/`, `.vscode/`. They were
+  not reverted.
+- No features were skipped for clarification.
+- Lowest remaining P1 by ID is API-5 (Brokerage adapter interface for
+  order submission, cancellation, account status, position queries —
+  traces SRS-ARCH-003 and the BrokerageAdapter trait already present
+  in `crates/atp-adapters`). The same declarative-contract pattern
+  may not apply directly since adapter interfaces are Rust traits —
+  consider surfacing them through a contract check that scans
+  `crates/atp-adapters/src/` for the required trait methods.
+
 === SESSION 8 ===
 Date: 2026-05-05
 Feature completed: API-3 — WebSocket API contract surface for live
