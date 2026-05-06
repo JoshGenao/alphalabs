@@ -23,6 +23,8 @@ class ArchitectureBoundaryTest(unittest.TestCase):
         self.assertIn("SRS-ARCH-002 enforced dependency flow", result.stdout)
         self.assertIn("SRS-ARCH-004 Phase 1 deployment", result.stdout)
         self.assertIn("SRS-ARCH-005 configuration system", result.stdout)
+        self.assertIn("atp_ws covers 8 channels", result.stdout)
+        self.assertIn("/ws/v1", result.stdout)
 
     def test_srs_arch_002_dependency_boundary(self) -> None:
         result = subprocess.run(

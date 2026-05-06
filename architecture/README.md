@@ -102,3 +102,22 @@ python3 tools/config_check.py --fixture invalid-line-limit
 python3 tools/config_check.py --fixture missing-resource-limit
 python3 tools/config_check.py --fixture invalid-storage-path
 ```
+
+`API-3` (WebSocket API) is enforced by the `websocket_api` block in
+`architecture/runtime_services.json` and the `python/atp_ws` package.
+The catalogue declares 8 event channels (PNL, METRICS, ACCOUNT_STATUS,
+HEARTBEAT, LOGS, ALERTS, RESERVOIR_RANKING, STRATEGY_STATE), the
+SUBSCRIBE/UNSUBSCRIBE/HEARTBEAT control plane, and a frozen AsyncAPI 2.6
+snapshot at `python/atp_ws/asyncapi.json`. `tools/websocket_api_check.py`
+validates per-channel SRS traces and payload fields, the
+`NFR-P2 ≤ 5 s` refresh budget, the AsyncAPI snapshot byte-equality, and
+the `SRS-SEC-002` loopback / single-user policy:
+
+```bash
+python3 tools/websocket_api_check.py
+python3 tools/websocket_api_check.py --update   # regenerate snapshot
+```
+
+The contract is parallel to API-2 (`atp_api`); concrete WebSocket
+publishers land with downstream features (EXE-1, ORCH-1, MD-1, RESV-1,
+LOG-1, NOTIF-1).

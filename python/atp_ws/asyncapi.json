@@ -1,0 +1,806 @@
+{
+  "asyncapi": "2.6.0",
+  "channels": {
+    "/ws/v1/_control": {
+      "description": "Multiplexed client-to-server control plane: SUBSCRIBE, UNSUBSCRIBE, and HEARTBEAT_PING. Server replies with ACK / HEARTBEAT_PONG / ERROR over the same socket.",
+      "publish": {
+        "message": {
+          "oneOf": [
+            {
+              "contentType": "application/json",
+              "name": "SUBSCRIBE_command",
+              "payload": {
+                "additionalProperties": true,
+                "properties": {
+                  "channels": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "SUBSCRIBE"
+                  }
+                },
+                "required": [
+                  "type",
+                  "channels"
+                ],
+                "type": "object"
+              },
+              "summary": "Subscribe to one or more event channels on the same socket.",
+              "tags": [
+                {
+                  "name": "SUBSCRIBE"
+                }
+              ],
+              "title": "Subscribe to one or more event channels on the same socket.",
+              "x-direction": "CLIENT_TO_SERVER",
+              "x-response-message": "ACK",
+              "x-srs-refs": [
+                "SRS-UI-001",
+                "SRS-UI-002",
+                "SRS-UI-003"
+              ]
+            },
+            {
+              "contentType": "application/json",
+              "name": "UNSUBSCRIBE_command",
+              "payload": {
+                "additionalProperties": true,
+                "properties": {
+                  "channels": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "UNSUBSCRIBE"
+                  }
+                },
+                "required": [
+                  "type",
+                  "channels"
+                ],
+                "type": "object"
+              },
+              "summary": "Stop receiving events for one or more previously subscribed channels.",
+              "tags": [
+                {
+                  "name": "UNSUBSCRIBE"
+                }
+              ],
+              "title": "Stop receiving events for one or more previously subscribed channels.",
+              "x-direction": "CLIENT_TO_SERVER",
+              "x-response-message": "ACK",
+              "x-srs-refs": [
+                "SRS-UI-001"
+              ]
+            },
+            {
+              "contentType": "application/json",
+              "name": "HEARTBEAT_PING_command",
+              "payload": {
+                "additionalProperties": true,
+                "properties": {
+                  "nonce": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "HEARTBEAT_PING"
+                  }
+                },
+                "required": [
+                  "type",
+                  "nonce"
+                ],
+                "type": "object"
+              },
+              "summary": "Connection liveness probe; server replies with HEARTBEAT_PONG.",
+              "tags": [
+                {
+                  "name": "HEARTBEAT_PING"
+                }
+              ],
+              "title": "Connection liveness probe; server replies with HEARTBEAT_PONG.",
+              "x-direction": "CLIENT_TO_SERVER",
+              "x-response-message": "HEARTBEAT_PONG",
+              "x-srs-refs": [
+                "SYS-39"
+              ]
+            }
+          ]
+        },
+        "operationId": "client_command",
+        "summary": "Submit a control-plane command."
+      },
+      "x-direction": "CLIENT_TO_SERVER"
+    },
+    "/ws/v1/account_status": {
+      "description": "IB account equity, P&L, margin, buying power, connection state. SRS trace: SRS-UI-003, SYS-43b, SYS-46. Contract only. Concrete payload schemas land with the downstream feature that owns the publisher (EXE-1, ORCH-1, MD-1, RESV-1, LOG-1, NOTIF-1). Periodic publish; refresh \u2264 5s (NFR-P2 \u2264 5s ceiling).",
+      "subscribe": {
+        "message": {
+          "contentType": "application/json",
+          "name": "ACCOUNT_STATUS_event",
+          "payload": {
+            "additionalProperties": true,
+            "properties": {
+              "channel": {
+                "const": "ACCOUNT_STATUS"
+              },
+              "data": {
+                "additionalProperties": true,
+                "properties": {
+                  "as_of": {
+                    "type": "string"
+                  },
+                  "buying_power": {
+                    "type": "string"
+                  },
+                  "cumulative_pnl": {
+                    "type": "string"
+                  },
+                  "daily_pnl": {
+                    "type": "string"
+                  },
+                  "equity": {
+                    "type": "string"
+                  },
+                  "ib_connection_state": {
+                    "type": "string"
+                  },
+                  "margin_usage": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "EVENT"
+              }
+            },
+            "required": [
+              "type",
+              "channel",
+              "data"
+            ],
+            "type": "object"
+          },
+          "summary": "IB account equity, P&L, margin, buying power, connection state.",
+          "tags": [
+            {
+              "name": "ACCOUNT_STATUS"
+            }
+          ],
+          "title": "IB account equity, P&L, margin, buying power, connection state.",
+          "x-direction": "SERVER_TO_CLIENT",
+          "x-refresh-seconds": 5,
+          "x-srs-refs": [
+            "SRS-UI-003",
+            "SYS-43b",
+            "SYS-46"
+          ]
+        },
+        "operationId": "on_account_status",
+        "summary": "IB account equity, P&L, margin, buying power, connection state.",
+        "tags": [
+          {
+            "name": "ACCOUNT_STATUS"
+          }
+        ]
+      },
+      "x-refresh-seconds": 5,
+      "x-requires-subscription": true,
+      "x-srs-refs": [
+        "SRS-UI-003",
+        "SYS-43b",
+        "SYS-46"
+      ]
+    },
+    "/ws/v1/alerts": {
+      "description": "Operator alerts with notification delivery status. SRS trace: SRS-NOTIF-001, SYS-46, SYS-58. Contract only. Concrete payload schemas land with the downstream feature that owns the publisher (EXE-1, ORCH-1, MD-1, RESV-1, LOG-1, NOTIF-1). Event-driven; no fixed refresh cadence.",
+      "subscribe": {
+        "message": {
+          "contentType": "application/json",
+          "name": "ALERTS_event",
+          "payload": {
+            "additionalProperties": true,
+            "properties": {
+              "channel": {
+                "const": "ALERTS"
+              },
+              "data": {
+                "additionalProperties": true,
+                "properties": {
+                  "acknowledged": {
+                    "type": "string"
+                  },
+                  "alert_id": {
+                    "type": "string"
+                  },
+                  "channel": {
+                    "type": "string"
+                  },
+                  "delivery_status": {
+                    "type": "string"
+                  },
+                  "raised_at": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "EVENT"
+              }
+            },
+            "required": [
+              "type",
+              "channel",
+              "data"
+            ],
+            "type": "object"
+          },
+          "summary": "Operator alerts with notification delivery status.",
+          "tags": [
+            {
+              "name": "ALERTS"
+            }
+          ],
+          "title": "Operator alerts with notification delivery status.",
+          "x-direction": "SERVER_TO_CLIENT",
+          "x-refresh-seconds": 0,
+          "x-srs-refs": [
+            "SRS-NOTIF-001",
+            "SYS-46",
+            "SYS-58"
+          ]
+        },
+        "operationId": "on_alerts",
+        "summary": "Operator alerts with notification delivery status.",
+        "tags": [
+          {
+            "name": "ALERTS"
+          }
+        ]
+      },
+      "x-refresh-seconds": 0,
+      "x-requires-subscription": true,
+      "x-srs-refs": [
+        "SRS-NOTIF-001",
+        "SYS-46",
+        "SYS-58"
+      ]
+    },
+    "/ws/v1/heartbeat": {
+      "description": "Market data and broker heartbeat staleness watcher. SRS trace: SRS-UI-001, SYS-39, SYS-39a. Contract only. Concrete payload schemas land with the downstream feature that owns the publisher (EXE-1, ORCH-1, MD-1, RESV-1, LOG-1, NOTIF-1). Periodic publish; refresh \u2264 1s (NFR-P2 \u2264 5s ceiling).",
+      "subscribe": {
+        "message": {
+          "contentType": "application/json",
+          "name": "HEARTBEAT_event",
+          "payload": {
+            "additionalProperties": true,
+            "properties": {
+              "channel": {
+                "const": "HEARTBEAT"
+              },
+              "data": {
+                "additionalProperties": true,
+                "properties": {
+                  "feed": {
+                    "type": "string"
+                  },
+                  "is_stale": {
+                    "type": "string"
+                  },
+                  "last_tick_at": {
+                    "type": "string"
+                  },
+                  "staleness_seconds": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "EVENT"
+              }
+            },
+            "required": [
+              "type",
+              "channel",
+              "data"
+            ],
+            "type": "object"
+          },
+          "summary": "Market data and broker heartbeat staleness watcher.",
+          "tags": [
+            {
+              "name": "HEARTBEAT"
+            }
+          ],
+          "title": "Market data and broker heartbeat staleness watcher.",
+          "x-direction": "SERVER_TO_CLIENT",
+          "x-refresh-seconds": 1,
+          "x-srs-refs": [
+            "SRS-UI-001",
+            "SYS-39",
+            "SYS-39a"
+          ]
+        },
+        "operationId": "on_heartbeat",
+        "summary": "Market data and broker heartbeat staleness watcher.",
+        "tags": [
+          {
+            "name": "HEARTBEAT"
+          }
+        ]
+      },
+      "x-refresh-seconds": 1,
+      "x-requires-subscription": true,
+      "x-srs-refs": [
+        "SRS-UI-001",
+        "SYS-39",
+        "SYS-39a"
+      ]
+    },
+    "/ws/v1/logs": {
+      "description": "System and strategy log events (event-driven, no fixed cadence). SRS trace: SRS-LOG-001, SYS-38, SYS-61. Contract only. Concrete payload schemas land with the downstream feature that owns the publisher (EXE-1, ORCH-1, MD-1, RESV-1, LOG-1, NOTIF-1). Event-driven; no fixed refresh cadence.",
+      "subscribe": {
+        "message": {
+          "contentType": "application/json",
+          "name": "LOGS_event",
+          "payload": {
+            "additionalProperties": true,
+            "properties": {
+              "channel": {
+                "const": "LOGS"
+              },
+              "data": {
+                "additionalProperties": true,
+                "properties": {
+                  "correlation_id": {
+                    "type": "string"
+                  },
+                  "event_type": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "timestamp": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "EVENT"
+              }
+            },
+            "required": [
+              "type",
+              "channel",
+              "data"
+            ],
+            "type": "object"
+          },
+          "summary": "System and strategy log events (event-driven, no fixed cadence).",
+          "tags": [
+            {
+              "name": "LOGS"
+            }
+          ],
+          "title": "System and strategy log events (event-driven, no fixed cadence).",
+          "x-direction": "SERVER_TO_CLIENT",
+          "x-refresh-seconds": 0,
+          "x-srs-refs": [
+            "SRS-LOG-001",
+            "SYS-38",
+            "SYS-61"
+          ]
+        },
+        "operationId": "on_logs",
+        "summary": "System and strategy log events (event-driven, no fixed cadence).",
+        "tags": [
+          {
+            "name": "LOGS"
+          }
+        ]
+      },
+      "x-refresh-seconds": 0,
+      "x-requires-subscription": true,
+      "x-srs-refs": [
+        "SRS-LOG-001",
+        "SYS-38",
+        "SYS-61"
+      ]
+    },
+    "/ws/v1/metrics": {
+      "description": "Live performance metrics including benchmark-relative return. SRS trace: SRS-UI-001, SYS-36, SYS-37. Contract only. Concrete payload schemas land with the downstream feature that owns the publisher (EXE-1, ORCH-1, MD-1, RESV-1, LOG-1, NOTIF-1). Periodic publish; refresh \u2264 5s (NFR-P2 \u2264 5s ceiling).",
+      "subscribe": {
+        "message": {
+          "contentType": "application/json",
+          "name": "METRICS_event",
+          "payload": {
+            "additionalProperties": true,
+            "properties": {
+              "channel": {
+                "const": "METRICS"
+              },
+              "data": {
+                "additionalProperties": true,
+                "properties": {
+                  "alpha": {
+                    "type": "string"
+                  },
+                  "as_of": {
+                    "type": "string"
+                  },
+                  "benchmark_return": {
+                    "type": "string"
+                  },
+                  "beta": {
+                    "type": "string"
+                  },
+                  "max_drawdown": {
+                    "type": "string"
+                  },
+                  "sharpe": {
+                    "type": "string"
+                  },
+                  "sortino": {
+                    "type": "string"
+                  },
+                  "strategy_id": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "EVENT"
+              }
+            },
+            "required": [
+              "type",
+              "channel",
+              "data"
+            ],
+            "type": "object"
+          },
+          "summary": "Live performance metrics including benchmark-relative return.",
+          "tags": [
+            {
+              "name": "METRICS"
+            }
+          ],
+          "title": "Live performance metrics including benchmark-relative return.",
+          "x-direction": "SERVER_TO_CLIENT",
+          "x-refresh-seconds": 5,
+          "x-srs-refs": [
+            "SRS-UI-001",
+            "SYS-36",
+            "SYS-37"
+          ]
+        },
+        "operationId": "on_metrics",
+        "summary": "Live performance metrics including benchmark-relative return.",
+        "tags": [
+          {
+            "name": "METRICS"
+          }
+        ]
+      },
+      "x-refresh-seconds": 5,
+      "x-requires-subscription": true,
+      "x-srs-refs": [
+        "SRS-UI-001",
+        "SYS-36",
+        "SYS-37"
+      ]
+    },
+    "/ws/v1/pnl": {
+      "description": "Live profit-and-loss updates per active strategy. SRS trace: SRS-UI-001, SYS-36, NFR-P2. Contract only. Concrete payload schemas land with the downstream feature that owns the publisher (EXE-1, ORCH-1, MD-1, RESV-1, LOG-1, NOTIF-1). Periodic publish; refresh \u2264 1s (NFR-P2 \u2264 5s ceiling).",
+      "subscribe": {
+        "message": {
+          "contentType": "application/json",
+          "name": "PNL_event",
+          "payload": {
+            "additionalProperties": true,
+            "properties": {
+              "channel": {
+                "const": "PNL"
+              },
+              "data": {
+                "additionalProperties": true,
+                "properties": {
+                  "as_of": {
+                    "type": "string"
+                  },
+                  "cumulative_pnl": {
+                    "type": "string"
+                  },
+                  "daily_pnl": {
+                    "type": "string"
+                  },
+                  "strategy_id": {
+                    "type": "string"
+                  },
+                  "unrealized_pnl": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "EVENT"
+              }
+            },
+            "required": [
+              "type",
+              "channel",
+              "data"
+            ],
+            "type": "object"
+          },
+          "summary": "Live profit-and-loss updates per active strategy.",
+          "tags": [
+            {
+              "name": "PNL"
+            }
+          ],
+          "title": "Live profit-and-loss updates per active strategy.",
+          "x-direction": "SERVER_TO_CLIENT",
+          "x-refresh-seconds": 1,
+          "x-srs-refs": [
+            "SRS-UI-001",
+            "SYS-36",
+            "NFR-P2"
+          ]
+        },
+        "operationId": "on_pnl",
+        "summary": "Live profit-and-loss updates per active strategy.",
+        "tags": [
+          {
+            "name": "PNL"
+          }
+        ]
+      },
+      "x-refresh-seconds": 1,
+      "x-requires-subscription": true,
+      "x-srs-refs": [
+        "SRS-UI-001",
+        "SYS-36",
+        "NFR-P2"
+      ]
+    },
+    "/ws/v1/reservoir_ranking": {
+      "description": "Reservoir strategy ranking with Sharpe, Sortino, and momentum. SRS trace: SRS-RESV-002, SYS-48, SRS-UI-003. Contract only. Concrete payload schemas land with the downstream feature that owns the publisher (EXE-1, ORCH-1, MD-1, RESV-1, LOG-1, NOTIF-1). Periodic publish; refresh \u2264 5s (NFR-P2 \u2264 5s ceiling).",
+      "subscribe": {
+        "message": {
+          "contentType": "application/json",
+          "name": "RESERVOIR_RANKING_event",
+          "payload": {
+            "additionalProperties": true,
+            "properties": {
+              "channel": {
+                "const": "RESERVOIR_RANKING"
+              },
+              "data": {
+                "additionalProperties": true,
+                "properties": {
+                  "as_of": {
+                    "type": "string"
+                  },
+                  "eval_window_days": {
+                    "type": "string"
+                  },
+                  "momentum_score": {
+                    "type": "string"
+                  },
+                  "rankings": {
+                    "type": "string"
+                  },
+                  "sharpe": {
+                    "type": "string"
+                  },
+                  "sortino": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "EVENT"
+              }
+            },
+            "required": [
+              "type",
+              "channel",
+              "data"
+            ],
+            "type": "object"
+          },
+          "summary": "Reservoir strategy ranking with Sharpe, Sortino, and momentum.",
+          "tags": [
+            {
+              "name": "RESERVOIR_RANKING"
+            }
+          ],
+          "title": "Reservoir strategy ranking with Sharpe, Sortino, and momentum.",
+          "x-direction": "SERVER_TO_CLIENT",
+          "x-refresh-seconds": 5,
+          "x-srs-refs": [
+            "SRS-RESV-002",
+            "SYS-48",
+            "SRS-UI-003"
+          ]
+        },
+        "operationId": "on_reservoir_ranking",
+        "summary": "Reservoir strategy ranking with Sharpe, Sortino, and momentum.",
+        "tags": [
+          {
+            "name": "RESERVOIR_RANKING"
+          }
+        ]
+      },
+      "x-refresh-seconds": 5,
+      "x-requires-subscription": true,
+      "x-srs-refs": [
+        "SRS-RESV-002",
+        "SYS-48",
+        "SRS-UI-003"
+      ]
+    },
+    "/ws/v1/strategy_state": {
+      "description": "Active strategy inventory: mode, container status, version. SRS trace: SRS-UI-002, SYS-41, SYS-79. Contract only. Concrete payload schemas land with the downstream feature that owns the publisher (EXE-1, ORCH-1, MD-1, RESV-1, LOG-1, NOTIF-1). Periodic publish; refresh \u2264 5s (NFR-P2 \u2264 5s ceiling).",
+      "subscribe": {
+        "message": {
+          "contentType": "application/json",
+          "name": "STRATEGY_STATE_event",
+          "payload": {
+            "additionalProperties": true,
+            "properties": {
+              "channel": {
+                "const": "STRATEGY_STATE"
+              },
+              "data": {
+                "additionalProperties": true,
+                "properties": {
+                  "asset_class": {
+                    "type": "string"
+                  },
+                  "container_status": {
+                    "type": "string"
+                  },
+                  "deployment_version_hash": {
+                    "type": "string"
+                  },
+                  "lifecycle_state": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "position_count": {
+                    "type": "string"
+                  },
+                  "strategy_id": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "EVENT"
+              }
+            },
+            "required": [
+              "type",
+              "channel",
+              "data"
+            ],
+            "type": "object"
+          },
+          "summary": "Active strategy inventory: mode, container status, version.",
+          "tags": [
+            {
+              "name": "STRATEGY_STATE"
+            }
+          ],
+          "title": "Active strategy inventory: mode, container status, version.",
+          "x-direction": "SERVER_TO_CLIENT",
+          "x-refresh-seconds": 5,
+          "x-srs-refs": [
+            "SRS-UI-002",
+            "SYS-41",
+            "SYS-79"
+          ]
+        },
+        "operationId": "on_strategy_state",
+        "summary": "Active strategy inventory: mode, container status, version.",
+        "tags": [
+          {
+            "name": "STRATEGY_STATE"
+          }
+        ]
+      },
+      "x-refresh-seconds": 5,
+      "x-requires-subscription": true,
+      "x-srs-refs": [
+        "SRS-UI-002",
+        "SYS-41",
+        "SYS-79"
+      ]
+    }
+  },
+  "info": {
+    "description": "Operator WebSocket surface for the ATP single-user trading platform (API-3, traces SRS-UI-001 through SRS-UI-004). Bound to loopback by default; no RBAC or bearer tokens \u2014 see SRS-SEC-002.",
+    "title": "ATP Operator WebSocket API",
+    "version": "0.1.0"
+  },
+  "servers": {
+    "loopback": {
+      "description": "Loopback bind (local-single-user). RFC 1918 binds are also permitted; see SRS-SEC-002.",
+      "protocol": "ws",
+      "url": "ws://127.0.0.1:8080/ws/v1"
+    }
+  },
+  "tags": [
+    {
+      "description": "ACCOUNT_STATUS channel.",
+      "name": "ACCOUNT_STATUS"
+    },
+    {
+      "description": "ALERTS channel.",
+      "name": "ALERTS"
+    },
+    {
+      "description": "HEARTBEAT channel.",
+      "name": "HEARTBEAT"
+    },
+    {
+      "description": "HEARTBEAT_PING channel.",
+      "name": "HEARTBEAT_PING"
+    },
+    {
+      "description": "LOGS channel.",
+      "name": "LOGS"
+    },
+    {
+      "description": "METRICS channel.",
+      "name": "METRICS"
+    },
+    {
+      "description": "PNL channel.",
+      "name": "PNL"
+    },
+    {
+      "description": "RESERVOIR_RANKING channel.",
+      "name": "RESERVOIR_RANKING"
+    },
+    {
+      "description": "STRATEGY_STATE channel.",
+      "name": "STRATEGY_STATE"
+    },
+    {
+      "description": "SUBSCRIBE channel.",
+      "name": "SUBSCRIBE"
+    },
+    {
+      "description": "UNSUBSCRIBE channel.",
+      "name": "UNSUBSCRIBE"
+    }
+  ],
+  "x-auth-model": "local-single-user",
+  "x-bind-host": "127.0.0.1",
+  "x-ws-path": "/ws/v1"
+}

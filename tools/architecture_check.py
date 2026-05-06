@@ -135,6 +135,73 @@ def assert_rest_api(config: dict) -> list[str]:
     ]
 
 
+def assert_websocket_api(config: dict) -> list[str]:
+    websocket_api = config.get("websocket_api")
+    if websocket_api is None:
+        return []
+
+    package_path = ROOT / websocket_api["path"]
+    if not package_path.exists():
+        fail(f"WebSocket API package path does not exist: {package_path}")
+
+    sys.path.insert(0, str(ROOT / "python"))
+    try:
+        module = importlib.import_module(websocket_api["package"])
+    finally:
+        sys.path.pop(0)
+
+    declared_channels = {channel.name for channel in module.Channel}
+    missing = sorted(set(websocket_api["required_channels"]) - declared_channels)
+    if missing:
+        fail(f"WebSocket API package is missing channels: {', '.join(missing)}")
+
+    snapshot_path = ROOT / websocket_api["asyncapi_snapshot"]
+    if not snapshot_path.exists():
+        fail(f"WebSocket API AsyncAPI snapshot is missing: {snapshot_path}")
+    try:
+        json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        fail(f"WebSocket API AsyncAPI snapshot is not valid JSON: {error}")
+
+    if module.BIND_HOST != websocket_api["bind_host"]:
+        fail(
+            f"WebSocket API BIND_HOST is {module.BIND_HOST!r}, "
+            f"expected {websocket_api['bind_host']!r}"
+        )
+    if module.AUTH_MODEL != websocket_api["auth_model"]:
+        fail(
+            f"WebSocket API AUTH_MODEL is {module.AUTH_MODEL!r}, "
+            f"expected {websocket_api['auth_model']!r}"
+        )
+    if module.WS_PATH != websocket_api["ws_path"]:
+        fail(
+            f"WebSocket API WS_PATH is {module.WS_PATH!r}, "
+            f"expected {websocket_api['ws_path']!r}"
+        )
+    if module.MAX_REFRESH_SECONDS != websocket_api["max_refresh_seconds"]:
+        fail(
+            "WebSocket API MAX_REFRESH_SECONDS is "
+            f"{module.MAX_REFRESH_SECONDS}, "
+            f"expected {websocket_api['max_refresh_seconds']}"
+        )
+    for event in module.EVENT_CHANNELS:
+        if (
+            event.refresh_seconds < 0
+            or event.refresh_seconds > module.MAX_REFRESH_SECONDS
+        ):
+            fail(
+                f"WebSocket channel {event.name.value} refresh_seconds="
+                f"{event.refresh_seconds} violates "
+                f"[0, {module.MAX_REFRESH_SECONDS}]s NFR-P2 ceiling"
+            )
+
+    return [
+        f"{websocket_api['package']} covers "
+        f"{len(websocket_api['required_channels'])} channels and binds "
+        f"{module.BIND_HOST} {module.WS_PATH} ({module.AUTH_MODEL})"
+    ]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -171,6 +238,7 @@ def run_checks() -> list[str]:
         fail(str(error))
     evidence.extend(assert_strategy_api(config))
     evidence.extend(assert_rest_api(config))
+    evidence.extend(assert_websocket_api(config))
     evidence.extend(assert_container_language_boundary(config))
     try:
         evidence.extend(assert_deployment_static(config, ROOT))

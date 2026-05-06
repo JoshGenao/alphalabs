@@ -307,6 +307,25 @@
     "bind_host": "127.0.0.1",
     "auth_model": "local-single-user"
   },
+  "websocket_api": {
+    "package": "atp_ws",
+    "path": "python/atp_ws",
+    "required_channels": [
+      "PNL",
+      "METRICS",
+      "ACCOUNT_STATUS",
+      "HEARTBEAT",
+      "LOGS",
+      "ALERTS",
+      "RESERVOIR_RANKING",
+      "STRATEGY_STATE"
+    ],
+    "asyncapi_snapshot": "python/atp_ws/asyncapi.json",
+    "bind_host": "127.0.0.1",
+    "auth_model": "local-single-user",
+    "ws_path": "/ws/v1",
+    "max_refresh_seconds": 5
+  },
   "deployment": {
     "requirement": "SRS-ARCH-004",
     "target": "Phase 1 Proxmox Ubuntu VM",

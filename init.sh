@@ -112,6 +112,13 @@ if ! python3 tools/rest_api_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running WebSocket API contract check..."
+if ! python3 tools/websocket_api_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  WebSocket API contract check failed; run python3 tools/websocket_api_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running deployment configuration check..."
 if ! python3 tools/deployment_check.py >/dev/null; then
   echo "✗ Environment failed"

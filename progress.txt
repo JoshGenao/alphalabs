@@ -1,3 +1,132 @@
+=== SESSION 8 ===
+Date: 2026-05-05
+Feature completed: API-3 — WebSocket API contract surface for live
+dashboard updates (P&L, metrics, account status, heartbeat, logs,
+alerts, Reservoir ranking, strategy state)
+Status: 112 remaining features
+
+What I did:
+- Added a new Python package `python/atp_ws/` that is the declarative
+  source of truth for the operator WebSocket API:
+  * `channels.py` defines `Direction`, `MessageType` (7 frames),
+    `Channel` (8 buckets: PNL, METRICS, ACCOUNT_STATUS, HEARTBEAT,
+    LOGS, ALERTS, RESERVOIR_RANKING, STRATEGY_STATE), frozen-slots
+    `EventChannel` and `ClientCommand` dataclasses, the 8-entry
+    `EVENT_CHANNELS` tuple, and the 3-entry `CLIENT_COMMANDS` tuple
+    (SUBSCRIBE, UNSUBSCRIBE, HEARTBEAT_PING). `BIND_HOST=127.0.0.1`,
+    `AUTH_MODEL=local-single-user`, `WS_PATH=/ws/v1`,
+    `MAX_REFRESH_SECONDS=5` (NFR-P2 ceiling). Each channel carries
+    `srs_refs`, `payload_fields`, `refresh_seconds` (0 means
+    event-driven for LOGS/ALERTS), `requires_subscription`.
+  * `asyncapi.py` builds a deterministic AsyncAPI 2.6 dict from
+    EVENT_CHANNELS + CLIENT_COMMANDS (pure stdlib), with per-channel
+    `subscribe` operations carrying `x-srs-refs`, `x-refresh-seconds`,
+    `x-direction`, plus a multiplexed `/ws/v1/_control` channel for
+    the SUBSCRIBE/UNSUBSCRIBE/HEARTBEAT_PING commands. Document-level
+    `x-bind-host`/`x-auth-model`/`x-ws-path` extensions encode
+    SRS-SEC-002.
+  * `asyncapi.json` is the frozen byte-equal snapshot regenerated from
+    `EVENT_CHANNELS`/`CLIENT_COMMANDS`.
+  * `__init__.py` re-exports the 17-name public surface.
+  * `README.md` summarises auth model, channel table with refresh
+    cadence, message types, sample subscribe/event JSON, and snapshot
+    regeneration recipe.
+- Added `tools/websocket_api_check.py` mirroring `rest_api_check.py`:
+  same exit-code contract, evidence-bullet output, `--update` flag.
+  13 checks total: 8 per-channel (assert SRS refs, required payload
+  fields, subscription required), `subscribe_protocol` (SUBSCRIBE +
+  UNSUBSCRIBE both accept `channels` and reply ACK),
+  `heartbeat_protocol` (HEARTBEAT_PING ↔ HEARTBEAT_PONG and traces
+  SYS-39), `refresh_budget` (every channel within
+  [0, MAX_REFRESH_SECONDS=5]s — NFR-P2), `asyncapi_snapshot`
+  (byte-equality), `loopback_policy` (constants + x-extensions).
+- Extended `architecture/runtime_services.json` with a `websocket_api`
+  block listing 8 required channels, the AsyncAPI snapshot path,
+  bind/auth/ws-path/refresh-ceiling policy. Extended
+  `tools/architecture_check.py` with `assert_websocket_api(config)` so
+  the surface is enforced architecturally — `SRS-ARCH-001 PASS` now
+  adds an `atp_ws covers 8 channels and binds 127.0.0.1 /ws/v1
+  (local-single-user)` evidence line.
+- Wired `python3 tools/websocket_api_check.py` into `init.sh` between
+  the REST API check and the deployment check; `✓ Environment ready`
+  now requires the new check too.
+- Added `tests/test_websocket_api.py` (13 tests across 6 classes):
+  subprocess contract test, EventChannel shape walk, channel
+  coverage (== set(Channel), len 8), AsyncAPI snapshot byte-equality,
+  determinism, AsyncAPI 2.6.0 parse, loopback policy, x-extensions,
+  subscribe protocol, heartbeat protocol, NFR-P2 refresh budget,
+  public-docstring walk.
+- Tightened `tests/test_architecture.py` SRS-ARCH-001 aggregate test
+  to require the new `atp_ws covers 8 channels` and `/ws/v1` evidence
+  in the architecture-check output.
+- Extended `architecture/README.md` with an `API-3` section
+  documenting the direct check command, snapshot update recipe, and
+  the parallel relationship to API-2 (`atp_api`).
+
+What I tested (end-to-end, all 12 verifications from the plan):
+1. `./init.sh` → `✓ Environment ready` with the new
+   `→ Running WebSocket API contract check…` line appearing between
+   the REST API step and the deployment-check step.
+2. `python3 tools/websocket_api_check.py` → `API-3 PASS` with 13
+   evidence bullets (8 channels + subscribe protocol + heartbeat
+   protocol + refresh budget + AsyncAPI snapshot + loopback policy).
+3. `python3 tools/websocket_api_check.py --update` → byte-equal,
+   no git diff on `python/atp_ws/asyncapi.json`. Direct
+   `render_snapshot()` round-trip confirms determinism (24,990
+   bytes, deterministic across two calls, in sync with on-disk).
+4. Negative spot-check: removed STRATEGY_STATE from EVENT_CHANNELS
+   in-memory and ran `run_checks()` → raised
+   `WebSocketContractError: EVENT_CHANNELS missing buckets:
+   STRATEGY_STATE` as expected.
+5. `python3 tools/architecture_check.py` → `SRS-ARCH-001 PASS` with
+   the new `atp_ws covers 8 channels and binds 127.0.0.1 /ws/v1
+   (local-single-user)` evidence bullet present.
+6. `python3 tools/rest_api_check.py` → still `API-2 PASS`, no
+   regressions.
+7. `python3 tools/deployment_check.py` → still `SRS-ARCH-004 PASS`.
+8. `python3 tools/config_check.py` → still `SRS-ARCH-005 PASS`.
+9. `python3 -m unittest tests.test_architecture
+   tests.test_strategy_api tests.test_rest_api tests.test_configuration
+   tests.test_websocket_api` → 77 tests OK (62 prior + ~15 new across
+   test_websocket_api.py and the tightened SRS-ARCH-001 assertion).
+10. `cargo test --workspace --lib` → 10 crates PASS, no regressions.
+11. Direct contract check via
+    `from atp_ws import build_asyncapi; json.dumps(build_asyncapi(),
+    sort_keys=True)` → no exception, doc round-trips cleanly.
+12. Marked `feature_list.json` entry `API-3` `"passes": true` and
+    re-ran test 9 — all 77 tests still green.
+
+Known issues / notes for next agent:
+- API-3 declares the contract only — no real WebSocket runtime exists
+  yet. Concrete publishers (PNL/METRICS/HEARTBEAT/etc.) land with
+  EXE-1, ORCH-1, MD-1, RESV-1, LOG-1, NOTIF-1. `init.sh` still serves
+  the placeholder `python3 -m http.server`.
+- Backtest-progress streaming is intentionally NOT a WebSocket channel.
+  Backtest results are served by REST `GET /api/v1/backtests/{id}`
+  (API-2). If a future feature needs streaming backtest progress,
+  add a new `Channel.BACKTEST_PROGRESS` bucket and bump the snapshot.
+- LOGS and ALERTS use `refresh_seconds=0` to mean *event-driven, no
+  fixed cadence*. The check enforces the closed interval [0, 5]; do
+  not tighten the lower bound to >0 without revisiting the contract.
+- The control-plane (`/ws/v1/_control`) channel is a single AsyncAPI
+  channel that carries a `oneOf` of three command messages
+  (SUBSCRIBE/UNSUBSCRIBE/HEARTBEAT_PING). Per-command operationIds and
+  response-message tags are encoded in `x-response-message`.
+- `init.sh` is now stricter: a broken `atp_ws` import or a missing
+  AsyncAPI snapshot fails init. Recover via
+  `python3 tools/websocket_api_check.py --update` or by running
+  `python3 tools/websocket_api_check.py` directly to see the failure.
+- Pre-existing dirty/untracked files unrelated to API-3:
+  `prompts/initializer_prompt.md`, `prompts/coding_prompt.md`,
+  `Cargo.lock`, `requirements.txt`, `.claude/`. They were not
+  reverted.
+- No features were skipped for clarification.
+- Lowest remaining P1 by ID is API-4 (CLI surface for kill switch,
+  strategy management, live designation, Hot-Swap, readiness, basic
+  admin — traces SRS-API-001 + SRS-SAFE-001). The same
+  declarative-contract pattern (channels module + introspection
+  check + frozen snapshot + architecture wiring) should apply.
+
 === SESSION 7 ===
 Date: 2026-05-05
 Feature completed: SRS-ARCH-005 - Configuration system for credentials,
