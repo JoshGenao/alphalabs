@@ -1,3 +1,150 @@
+=== SESSION 7 ===
+Date: 2026-05-05
+Feature completed: SRS-ARCH-005 - Configuration system for credentials,
+storage paths, IB account settings, market-data line limits, resource
+limits, and notification channels
+Status: 113 remaining features
+
+What I did:
+- Added a top-level `configuration` block to
+  `architecture/runtime_services.json` cataloguing 16 required keys
+  across the six SRS-ARCH-005 categories (credentials, storage_paths,
+  ib_account, market_data_limits, resource_limits, notification_channels).
+  Each key carries name, category, type (int|float|path|secret|enum|host),
+  validator hints (min/max, non_empty, absolute, choices), default,
+  secret flag, and SRS trace.
+- Added five new resource-limit env vars to close the SyRS SYS-57/58
+  gap that previously lived only as static compose labels:
+  ATP_LIVE_STRATEGY_MEM_MB=512, ATP_LIVE_STRATEGY_CPU=0.25,
+  ATP_PAPER_STRATEGY_MEM_MB=300, ATP_PAPER_STRATEGY_CPU=0.10,
+  ATP_HOST_MEMORY_SAFETY_MARGIN_MB=2048. They are threaded through
+  `.env.example`, `init.sh` defaults, the `x-atp-env` anchor in
+  `docker-compose.yml`, and the existing
+  `deployment.required_env_vars` list (which deployment_check.py now
+  validates at the compose layer).
+  IMPORTANT: the env vars are deliberately NOT substituted into the
+  strategy-runtime service's `deploy.resources.limits` block. Compose's
+  `memory:` field requires a unit suffix (e.g. `512M`); a raw integer
+  silently means *bytes* and would OOM at boot. The compose block
+  remains the static template default; the orchestrator (SRS-ORCH-002,
+  future feature) reads the env vars at per-strategy clone time.
+- Added a new Python package `python/atp_config/` (pure stdlib):
+  * `schema.py` — `Category`, `KeyType`, `Severity` enums; `KeySpec`
+    and `ReadinessFailure` dataclasses; `ReadinessReport` with `ok`,
+    `errors`, `warnings`, `as_json_lines()`. `REQUIRED_KEYS` is loaded
+    from runtime_services.json at import time so the JSON catalogue is
+    the single source of truth.
+  * `validate.py` — `load_and_validate(env, *, atp_env=None)` returning
+    a structured `ReadinessReport`. Per-type validators: int/float
+    parse + range; path non-empty + absolute; host non-empty;
+    secret non-empty; enum choices. Production-mode escalation: a
+    placeholder secret is a *warning* in development and a hard *error*
+    when ATP_ENV is staging/production, so init.sh dev defaults still
+    pass while staging/production cannot start with placeholders.
+  * `__init__.py` re-exports the public surface (15 names).
+  * `README.md` documents the categories, every key, validation rules,
+    and the readiness-failure JSON-line shape (covers the
+    "documented" half of the SRS-ARCH-005 AC).
+- Added `tools/config_check.py` mirroring the
+  `tools/deployment_check.py` pattern: same exit-code contract,
+  evidence-bullet output, --fixture flag (modes:
+  `missing-credential`, `placeholder-secret-in-production`,
+  `invalid-line-limit`, `missing-resource-limit`,
+  `invalid-storage-path`), and an `assert_configuration_static()`
+  aggregator entry that `tools/architecture_check.py` consumes.
+- Wired `assert_configuration_static` into `tools/architecture_check.py`
+  after the SRS-ARCH-004 deployment evidence, so the aggregate
+  `SRS-ARCH-001 PASS` output now ends with a
+  `SRS-ARCH-005 configuration system evidence:` bullet group with one
+  line per category.
+- Wired `python3 tools/config_check.py` into `init.sh` after the
+  deployment-check step. `✓ Environment ready` now requires the
+  configuration check to pass.
+- Added `tests/test_configuration.py` (24 tests): catalogue shape,
+  validator behaviour for every type, structured-failure shape,
+  JSON round-trip, public-docstring walk, placeholder constant
+  matches `.env.example`.
+- Added 5 cases to `tests/test_architecture.py`
+  (positive + 4 negative fixtures) and tightened the SRS-ARCH-001
+  assertion to require the SRS-ARCH-005 evidence header.
+- Extended `docs/DEPLOYMENT.md` with a `## Configuration system
+  (SRS-ARCH-005)` section listing all 16 keys by category, the
+  validation rules, the structured failure schema, the
+  staging/production placeholder-escalation rule, and the explicit
+  note that compose-substitution into deploy.resources.limits is
+  deliberately avoided. Added an `SRS-ARCH-005` section to
+  `architecture/README.md` with the direct check command and the
+  five negative fixtures.
+
+What I tested (end-to-end, all 12 verifications from the plan):
+1. `./init.sh` -> "✓ Environment ready" with the new
+   "Running configuration system check..." step appearing after the
+   deployment-check step.
+2. `python3 tools/config_check.py` -> "SRS-ARCH-005 PASS" + 6
+   category evidence bullets + the "16 keys catalogued across 6
+   categories" header + "4 non-blocking warning(s)" for the
+   placeholder secrets in dev mode.
+3. `python3 tools/config_check.py --fixture missing-credential` ->
+   exits 1, structured failure JSON for `DATABENTO_API_KEY`
+   ("required key ... is not set").
+4. `python3 tools/config_check.py --fixture
+   placeholder-secret-in-production` -> exits 1, four structured
+   failures (the four secret keys) all referencing "ATP_ENV='production'".
+5. `python3 tools/config_check.py --fixture invalid-line-limit` ->
+   exits 1, structured failure for `ATP_MARKET_DATA_LINE_LIMIT`
+   ("expected integer, got 'not-a-number'").
+6. `python3 tools/config_check.py --fixture missing-resource-limit` ->
+   exits 1, structured failure for `ATP_LIVE_STRATEGY_MEM_MB`.
+7. `python3 tools/architecture_check.py` -> "SRS-ARCH-001 PASS" with
+   both `SRS-ARCH-004 Phase 1 deployment evidence:` and
+   `SRS-ARCH-005 configuration system evidence:` bullet groups
+   present.
+8. `python3 tools/deployment_check.py` -> still
+   "SRS-ARCH-004 PASS"; "compose passes 16 env vars to Phase 1
+   services" (was 11) and ".env.example enumerates all 16 required
+   env vars" confirm the resource-limit additions are wired through.
+9. `python3 -m unittest tests.test_architecture tests.test_strategy_api
+   tests.test_rest_api tests.test_configuration` -> 62 tests OK
+   (33 prior + 29 new tests across the two files).
+10. `cargo test --workspace --lib` -> 10 crates PASS, no regressions.
+11. `docker compose --profile phase1 config -q` and
+    `docker compose --profile architecture-check config -q` -> both
+    exit cleanly, confirming compose syntactic validity for both
+    profiles after the resource-limit env-var additions.
+12. Direct contract check via
+    `from atp_config import load_and_validate; r = load_and_validate({})`
+    -> 16 structured failures, every failure has
+    {key, category, severity, reason, srs_trace}, JSON line is valid
+    JSON.
+
+Known issues / notes for next agent:
+- Out of scope for SRS-ARCH-005, deferred to future features:
+  * Encryption-at-rest for credentials (NFR-S1, NFR-S4) belongs to
+    SRS-SEC-001. The catalogue's `secret: true` flag identifies the
+    keys that SRS-SEC-001 will need to encrypt.
+  * Rust-runtime startup readiness check (SyRS SYS-76) belongs to
+    SRS-MD-006, not SRS-ARCH-005. The MD-006 implementation should
+    consume the same `configuration.keys` JSON catalogue from
+    runtime_services.json and re-validate at orchestrator boot.
+  * The orchestrator is the eventual enforcement point for the new
+    resource-limit env vars (SRS-ORCH-002). The compose
+    strategy-runtime `deploy.resources.limits` block remains the
+    template default; do NOT change it to substitute from the env
+    vars without also normalising the values into compose's required
+    unit-suffixed format.
+- `init.sh` is now stricter: a broken `atp_config` import or a missing
+  catalogue key fails init. Revert by setting the missing key in env
+  or by running `python3 tools/config_check.py` directly to see the
+  structured failure.
+- Pre-existing dirty/untracked files unrelated to SRS-ARCH-005:
+  `prompts/initializer_prompt.md`, `Cargo.lock`,
+  `prompts/coding_prompt.md`, `requirements.txt`, `.claude/`. They
+  were not reverted.
+- No features were skipped for clarification.
+- Lowest remaining feature is now SRS-ORCH-001 (run each strategy
+  instance in an isolated Docker container managed only by the
+  Strategy Orchestrator).
+
 === SESSION 6 ===
 Date: 2026-05-04
 Feature completed: SRS-ARCH-004 - Phase 1 Docker Compose deployment stack

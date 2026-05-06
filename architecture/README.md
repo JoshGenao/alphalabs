@@ -73,3 +73,32 @@ python3 tools/deployment_check.py --fixture missing-jupyter
 python3 tools/deployment_check.py --fixture missing-ssd
 python3 tools/deployment_check.py --fixture missing-portability-doc
 ```
+
+`SRS-ARCH-005` is enforced by the top-level `configuration` block in
+`architecture/runtime_services.json` and the `python/atp_config` package
+that consumes it. The catalogue documents 16 required keys across six
+categories — credentials, storage paths, IB account settings,
+market-data line limits, resource limits, and notification channels —
+each with type, validator, default, secret flag, and SRS trace.
+`tools/config_check.py` runs `atp_config.load_and_validate` against the
+process env layered over `.env.example` defaults, verifies that
+`.env.example` documents every catalogued key, and emits structured
+readiness failures (`{key, category, severity, reason, srs_trace}`) on
+stderr when a key is missing or invalid. Placeholder secrets are
+warnings in development and hard errors when `ATP_ENV` is `staging` or
+`production`:
+
+```bash
+python3 tools/config_check.py
+```
+
+The negative fixtures prove that each failure mode produces a
+structured readiness failure:
+
+```bash
+python3 tools/config_check.py --fixture missing-credential
+python3 tools/config_check.py --fixture placeholder-secret-in-production
+python3 tools/config_check.py --fixture invalid-line-limit
+python3 tools/config_check.py --fixture missing-resource-limit
+python3 tools/config_check.py --fixture invalid-storage-path
+```

@@ -26,6 +26,13 @@ export ATP_SMS_API_KEY="${ATP_SMS_API_KEY:-placeholder-set-in-environment}"
 export DATABENTO_API_KEY="${DATABENTO_API_KEY:-placeholder-set-in-environment}"
 export SHARADAR_API_KEY="${SHARADAR_API_KEY:-placeholder-set-in-environment}"
 
+# SRS-ARCH-005 / SRS-ORCH-002 / SyRS SYS-57/58 strategy resource limits.
+export ATP_LIVE_STRATEGY_MEM_MB="${ATP_LIVE_STRATEGY_MEM_MB:-512}"
+export ATP_LIVE_STRATEGY_CPU="${ATP_LIVE_STRATEGY_CPU:-0.25}"
+export ATP_PAPER_STRATEGY_MEM_MB="${ATP_PAPER_STRATEGY_MEM_MB:-300}"
+export ATP_PAPER_STRATEGY_CPU="${ATP_PAPER_STRATEGY_CPU:-0.10}"
+export ATP_HOST_MEMORY_SAFETY_MARGIN_MB="${ATP_HOST_MEMORY_SAFETY_MARGIN_MB:-2048}"
+
 echo "→ Installing dependencies..."
 
 VENV_DIR="${ROOT_DIR}/.venv"
@@ -109,6 +116,13 @@ echo "→ Running deployment configuration check..."
 if ! python3 tools/deployment_check.py >/dev/null; then
   echo "✗ Environment failed"
   echo "  Deployment check failed; run python3 tools/deployment_check.py for detail."
+  exit 1
+fi
+
+echo "→ Running configuration system check..."
+if ! python3 tools/config_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Configuration check failed; run python3 tools/config_check.py for detail."
   exit 1
 fi
 

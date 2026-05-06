@@ -22,6 +22,7 @@ class ArchitectureBoundaryTest(unittest.TestCase):
         self.assertIn("SRS-ARCH-001 PASS", result.stdout)
         self.assertIn("SRS-ARCH-002 enforced dependency flow", result.stdout)
         self.assertIn("SRS-ARCH-004 Phase 1 deployment", result.stdout)
+        self.assertIn("SRS-ARCH-005 configuration system", result.stdout)
 
     def test_srs_arch_002_dependency_boundary(self) -> None:
         result = subprocess.run(
@@ -216,6 +217,96 @@ class ArchitectureBoundaryTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("SRS-ARCH-004 FAIL", result.stderr)
         self.assertIn("portability", result.stderr)
+
+    def test_srs_arch_005_configuration_pass(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "tools/config_check.py"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SRS-ARCH-005 PASS", result.stdout)
+        self.assertIn("16 keys catalogued across 6 categories", result.stdout)
+        for category in (
+            "credentials",
+            "storage_paths",
+            "ib_account",
+            "market_data_limits",
+            "resource_limits",
+            "notification_channels",
+        ):
+            self.assertIn(category, result.stdout)
+
+    def test_srs_arch_005_rejects_missing_credential(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/config_check.py",
+                "--fixture",
+                "missing-credential",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SRS-ARCH-005 FAIL", result.stderr)
+        self.assertIn("DATABENTO_API_KEY", result.stderr)
+
+    def test_srs_arch_005_rejects_placeholder_secret_in_production(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/config_check.py",
+                "--fixture",
+                "placeholder-secret-in-production",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SRS-ARCH-005 FAIL", result.stderr)
+        self.assertIn("production", result.stderr)
+        self.assertIn("placeholder-set-in-environment", result.stderr)
+
+    def test_srs_arch_005_rejects_invalid_line_limit(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/config_check.py",
+                "--fixture",
+                "invalid-line-limit",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SRS-ARCH-005 FAIL", result.stderr)
+        self.assertIn("ATP_MARKET_DATA_LINE_LIMIT", result.stderr)
+
+    def test_srs_arch_005_rejects_missing_resource_limit(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/config_check.py",
+                "--fixture",
+                "missing-resource-limit",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SRS-ARCH-005 FAIL", result.stderr)
+        self.assertIn("ATP_LIVE_STRATEGY_MEM_MB", result.stderr)
 
 
 if __name__ == "__main__":

@@ -135,3 +135,61 @@ acceptance criterion is met without precluding a later cloud target.
 These constraints are validated by `tools/deployment_check.py`, which
 fails if this document loses any of the keywords that anchor the
 portability discussion.
+
+## Configuration system (SRS-ARCH-005)
+
+The configuration system is the declarative catalogue of every required
+deployment variable plus a startup validator that surfaces structured
+readiness failures. The catalogue lives in the `configuration` block of
+`architecture/runtime_services.json`; the validator lives in
+`python/atp_config`. Sixteen keys are catalogued across six categories:
+
+| Category | Keys |
+|---|---|
+| `credentials` | `DATABENTO_API_KEY`, `SHARADAR_API_KEY` |
+| `storage_paths` | `ATP_SSD_DATA_DIR`, `ATP_NAS_DATA_DIR` |
+| `ib_account` | `ATP_ENV`, `ATP_IB_HOST`, `ATP_IB_LIVE_PORT`, `ATP_IB_PAPER_PORT` |
+| `market_data_limits` | `ATP_MARKET_DATA_LINE_LIMIT` |
+| `resource_limits` | `ATP_LIVE_STRATEGY_MEM_MB`, `ATP_LIVE_STRATEGY_CPU`, `ATP_PAPER_STRATEGY_MEM_MB`, `ATP_PAPER_STRATEGY_CPU`, `ATP_HOST_MEMORY_SAFETY_MARGIN_MB` |
+| `notification_channels` | `ATP_SMTP_API_KEY`, `ATP_SMS_API_KEY` |
+
+Every key is documented with a type (`int`, `float`, `path`, `host`,
+`enum`, or `secret`), a validator (range bounds, absolute-path,
+non-empty, enum membership), a default suitable for `init.sh` development
+mode, and an SRS trace. Resource-limit defaults match the SRS-ORCH-002
+profiles (live ≤ 512 MB / 0.25 CPU; paper ≤ 300 MB / 0.10 CPU) and the
+SyRS SYS-57 host memory safety margin (2 GB). They drive the
+`x-atp-env` anchor in `docker-compose.yml` for orchestrator consumption;
+the strategy-runtime service's static `deploy.resources.limits` block
+remains the template default and is *not* substituted from these
+variables, because Compose's `memory:` field requires a unit suffix that
+a raw integer value does not provide.
+
+Secret keys default to the literal sentinel `placeholder-set-in-environment`.
+The validator treats this as a non-blocking warning when
+`ATP_ENV=development` and as a hard error when `ATP_ENV` is `staging` or
+`production`, so dev shells continue to pass without leaking real
+credentials and real deployments cannot start with placeholders.
+
+Every readiness failure is structured:
+
+```json
+{
+  "key": "ATP_MARKET_DATA_LINE_LIMIT",
+  "category": "market_data_limits",
+  "severity": "error",
+  "reason": "expected integer, got 'oops'",
+  "srs_trace": ["SRS-MD-002", "SyRS:SYS-70"]
+}
+```
+
+`init.sh` chains `tools/config_check.py` after the deployment check, so
+`✓ Environment ready` requires that every catalogued key parses, every
+range bound holds, and `.env.example` lists every key. The same check is
+aggregated into `tools/architecture_check.py` so the `SRS-ARCH-001 PASS`
+output now includes a `SRS-ARCH-005 configuration system evidence:`
+bullet group with one line per category.
+
+Encryption-at-rest for credentials (NFR-S1, NFR-S4) and the live-trading
+runtime readiness check (SyRS SYS-76, traced to SRS-MD-006) consume this
+catalogue but are out of scope for SRS-ARCH-005 itself.

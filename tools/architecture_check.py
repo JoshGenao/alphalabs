@@ -10,6 +10,7 @@ import tomllib
 from pathlib import Path
 
 from adapter_isolation_check import AdapterIsolationError, assert_adapter_isolation_static
+from config_check import ConfigCheckError, assert_configuration_static
 from dependency_boundary_check import DependencyBoundaryError, assert_dependency_direction
 from deployment_check import DeploymentCheckError, assert_deployment_static
 
@@ -174,6 +175,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_deployment_static(config, ROOT))
     except DeploymentCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_configuration_static(config, ROOT))
+    except ConfigCheckError as error:
         fail(str(error))
     return evidence
 

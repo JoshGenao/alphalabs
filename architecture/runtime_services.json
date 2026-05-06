@@ -346,7 +346,12 @@
       "ATP_SMTP_API_KEY",
       "ATP_SMS_API_KEY",
       "DATABENTO_API_KEY",
-      "SHARADAR_API_KEY"
+      "SHARADAR_API_KEY",
+      "ATP_LIVE_STRATEGY_MEM_MB",
+      "ATP_LIVE_STRATEGY_CPU",
+      "ATP_PAPER_STRATEGY_MEM_MB",
+      "ATP_PAPER_STRATEGY_CPU",
+      "ATP_HOST_MEMORY_SAFETY_MARGIN_MB"
     ],
     "required_volumes": [
       {
@@ -367,6 +372,268 @@
       "cloud VPS",
       "future target",
       "portability constraints"
+    ]
+  },
+  "configuration": {
+    "requirement": "SRS-ARCH-005",
+    "package": "atp_config",
+    "path": "python/atp_config",
+    "categories": [
+      "credentials",
+      "storage_paths",
+      "ib_account",
+      "market_data_limits",
+      "resource_limits",
+      "notification_channels"
+    ],
+    "placeholder_value": "placeholder-set-in-environment",
+    "production_envs": [
+      "staging",
+      "production"
+    ],
+    "keys": [
+      {
+        "name": "ATP_ENV",
+        "category": "ib_account",
+        "type": "enum",
+        "validator": {
+          "choices": [
+            "development",
+            "staging",
+            "production"
+          ]
+        },
+        "default": "development",
+        "secret": false,
+        "srs_trace": [
+          "SRS-ARCH-005",
+          "SRS-ARCH-004"
+        ]
+      },
+      {
+        "name": "ATP_IB_HOST",
+        "category": "ib_account",
+        "type": "host",
+        "validator": {
+          "non_empty": true
+        },
+        "default": "127.0.0.1",
+        "secret": false,
+        "srs_trace": [
+          "SRS-EXE-006",
+          "SyRS:IF-1"
+        ]
+      },
+      {
+        "name": "ATP_IB_LIVE_PORT",
+        "category": "ib_account",
+        "type": "int",
+        "validator": {
+          "min": 1,
+          "max": 65535
+        },
+        "default": "4001",
+        "secret": false,
+        "srs_trace": [
+          "SRS-EXE-006",
+          "SyRS:AC-15"
+        ]
+      },
+      {
+        "name": "ATP_IB_PAPER_PORT",
+        "category": "ib_account",
+        "type": "int",
+        "validator": {
+          "min": 1,
+          "max": 65535
+        },
+        "default": "4002",
+        "secret": false,
+        "srs_trace": [
+          "SRS-EXE-006",
+          "SyRS:AC-15"
+        ]
+      },
+      {
+        "name": "ATP_MARKET_DATA_LINE_LIMIT",
+        "category": "market_data_limits",
+        "type": "int",
+        "validator": {
+          "min": 1,
+          "max": 10000
+        },
+        "default": "100",
+        "secret": false,
+        "srs_trace": [
+          "SRS-MD-002",
+          "SyRS:SYS-70"
+        ]
+      },
+      {
+        "name": "ATP_SSD_DATA_DIR",
+        "category": "storage_paths",
+        "type": "path",
+        "validator": {
+          "non_empty": true,
+          "absolute": true
+        },
+        "default": "/var/lib/atp/ssd",
+        "secret": false,
+        "srs_trace": [
+          "SRS-DATA-008",
+          "SyRS:SYS-67"
+        ]
+      },
+      {
+        "name": "ATP_NAS_DATA_DIR",
+        "category": "storage_paths",
+        "type": "path",
+        "validator": {
+          "non_empty": true,
+          "absolute": true
+        },
+        "default": "/var/lib/atp/nas",
+        "secret": false,
+        "srs_trace": [
+          "SRS-DATA-008",
+          "SRS-DATA-009"
+        ]
+      },
+      {
+        "name": "ATP_SMTP_API_KEY",
+        "category": "notification_channels",
+        "type": "secret",
+        "validator": {
+          "non_empty": true
+        },
+        "default": "placeholder-set-in-environment",
+        "secret": true,
+        "srs_trace": [
+          "SRS-NOTIF-001",
+          "NFR-S4",
+          "StRS:SN-1.12"
+        ]
+      },
+      {
+        "name": "ATP_SMS_API_KEY",
+        "category": "notification_channels",
+        "type": "secret",
+        "validator": {
+          "non_empty": true
+        },
+        "default": "placeholder-set-in-environment",
+        "secret": true,
+        "srs_trace": [
+          "SRS-NOTIF-001",
+          "NFR-S4",
+          "StRS:SN-1.12"
+        ]
+      },
+      {
+        "name": "DATABENTO_API_KEY",
+        "category": "credentials",
+        "type": "secret",
+        "validator": {
+          "non_empty": true
+        },
+        "default": "placeholder-set-in-environment",
+        "secret": true,
+        "srs_trace": [
+          "SRS-DATA-001",
+          "NFR-S1"
+        ]
+      },
+      {
+        "name": "SHARADAR_API_KEY",
+        "category": "credentials",
+        "type": "secret",
+        "validator": {
+          "non_empty": true
+        },
+        "default": "placeholder-set-in-environment",
+        "secret": true,
+        "srs_trace": [
+          "SRS-DATA-005",
+          "NFR-S1"
+        ]
+      },
+      {
+        "name": "ATP_LIVE_STRATEGY_MEM_MB",
+        "category": "resource_limits",
+        "type": "int",
+        "validator": {
+          "min": 64,
+          "max": 65536
+        },
+        "default": "512",
+        "secret": false,
+        "srs_trace": [
+          "SRS-ORCH-002",
+          "SyRS:SYS-11",
+          "SyRS:SYS-57"
+        ]
+      },
+      {
+        "name": "ATP_LIVE_STRATEGY_CPU",
+        "category": "resource_limits",
+        "type": "float",
+        "validator": {
+          "min": 0.05,
+          "max": 16.0
+        },
+        "default": "0.25",
+        "secret": false,
+        "srs_trace": [
+          "SRS-ORCH-002",
+          "SyRS:SYS-11"
+        ]
+      },
+      {
+        "name": "ATP_PAPER_STRATEGY_MEM_MB",
+        "category": "resource_limits",
+        "type": "int",
+        "validator": {
+          "min": 64,
+          "max": 65536
+        },
+        "default": "300",
+        "secret": false,
+        "srs_trace": [
+          "SRS-ORCH-002",
+          "SyRS:SYS-11"
+        ]
+      },
+      {
+        "name": "ATP_PAPER_STRATEGY_CPU",
+        "category": "resource_limits",
+        "type": "float",
+        "validator": {
+          "min": 0.05,
+          "max": 16.0
+        },
+        "default": "0.10",
+        "secret": false,
+        "srs_trace": [
+          "SRS-ORCH-002",
+          "SyRS:SYS-11"
+        ]
+      },
+      {
+        "name": "ATP_HOST_MEMORY_SAFETY_MARGIN_MB",
+        "category": "resource_limits",
+        "type": "int",
+        "validator": {
+          "min": 256,
+          "max": 1048576
+        },
+        "default": "2048",
+        "secret": false,
+        "srs_trace": [
+          "SRS-ORCH-003",
+          "SyRS:SYS-57",
+          "SyRS:SYS-58"
+        ]
+      }
     ]
   }
 }
