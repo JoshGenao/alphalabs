@@ -40,6 +40,15 @@ class ArchitectureBoundaryTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("DataProviderAdapter base", result.stdout)
+        self.assertIn(
+            "atp-adapters unified historical query carries 6 request fields",
+            result.stdout,
+        )
+        self.assertIn(
+            "5 asset classes / 4 normalization modes for 4 consumers",
+            result.stdout,
+        )
+        self.assertIn("API-7, SRS-DATA-007 + SRS-DATA-012", result.stdout)
 
     def test_srs_arch_002_dependency_boundary(self) -> None:
         result = subprocess.run(

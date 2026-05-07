@@ -266,6 +266,7 @@
       "HistoricalData",
       "Indicator",
       "MACD",
+      "NormalizationMode",
       "OrderEvent",
       "OrderEventType",
       "OrderHandle",
@@ -501,6 +502,83 @@
       "trait": "HistoricalDataAdapter",
       "method": "historical_data",
       "srs_ref": "SRS-DATA-007"
+    }
+  },
+  "unified_historical_data": {
+    "requirement": "API-7",
+    "srs_refs": [
+      "SRS-DATA-007",
+      "SRS-DATA-012"
+    ],
+    "syrs_refs": [
+      "SYS-27",
+      "SYS-29",
+      "SYS-53"
+    ],
+    "adapter_crate": {
+      "crate": "atp-adapters",
+      "path": "crates/atp-adapters"
+    },
+    "request_struct": "HistoricalDataRequest",
+    "request_fields": [
+      "symbol",
+      "start",
+      "end",
+      "resolution",
+      "asset_class",
+      "normalization_mode"
+    ],
+    "result_struct": "HistoricalQueryResult",
+    "result_fields": [
+      "symbol",
+      "asset_class",
+      "normalization_mode",
+      "bars"
+    ],
+    "result_forbidden_fields": [
+      "provider",
+      "vendor",
+      "source",
+      "source_provider",
+      "data_source"
+    ],
+    "asset_class_enum": "AssetClass",
+    "asset_class_variants": [
+      "Equity",
+      "Option",
+      "Future",
+      "Etf",
+      "Index"
+    ],
+    "normalization_enum": "NormalizationMode",
+    "normalization_variants": [
+      "Raw",
+      "SplitAdjusted",
+      "FullyAdjusted",
+      "TotalReturn"
+    ],
+    "trait": "HistoricalDataAdapter",
+    "method": "historical_data",
+    "result_type": "AdapterResult<HistoricalQueryResult>",
+    "consumers": [
+      "strategy",
+      "backtest",
+      "factor",
+      "research"
+    ],
+    "python_protocol": {
+      "package": "atp_strategy",
+      "protocol": "HistoricalData",
+      "method": "get_bars",
+      "parameters": [
+        "symbol",
+        "lookback",
+        "frequency",
+        "end",
+        "asset_class",
+        "normalization"
+      ],
+      "normalization_enum": "NormalizationMode"
     }
   },
   "deployment": {

@@ -1,3 +1,210 @@
+=== SESSION 12 ===
+Date: 2026-05-07
+Feature completed: API-7 — Unified historical data interface (query by
+symbol, date range, resolution, asset class, normalization mode, and
+data-source-neutral result shape; traces SRS-DATA-007 + SRS-DATA-012)
+Status: 108 remaining features
+
+What I did:
+- Extended `crates/atp-adapters/src/lib.rs`:
+  * Added `pub enum AssetClass { Equity, Option, Future, Etf, Index }`
+    (Phase 1 SRS-DATA-007 universe).
+  * Added `pub enum NormalizationMode { Raw, SplitAdjusted,
+    FullyAdjusted, TotalReturn }` per SRS-DATA-012 (the four
+    normalization modes options strategies / indicators / benchmarks
+    request).
+  * Extended `HistoricalDataRequest` with `asset_class: AssetClass` +
+    `normalization_mode: NormalizationMode` fields so the unified
+    request shape carries every API-7 description capability.
+  * Added `pub struct HistoricalQueryResult { symbol, asset_class,
+    normalization_mode, bars }` — the source-neutral envelope returned
+    by every provider. Deliberately does NOT carry `provider`,
+    `vendor`, `source`, `source_provider`, or `data_source` — the
+    contract check refuses any of those.
+  * Changed `HistoricalDataAdapter::historical_data` return type from
+    `AdapterResult<Vec<HistoricalBar>>` to
+    `AdapterResult<HistoricalQueryResult>` so every consumer of the
+    unified interface sees the same envelope.
+  * Updated 2 existing tests that build `HistoricalDataRequest`
+    (`brokerage_adapter_exposes_required_surface`,
+    `unified_historical_data_interface_routes_through_historical_adapter`)
+    to pass the new fields.
+  * Added 3 new cargo tests:
+    `unified_historical_query_carries_asset_class_and_normalization`
+    (round-trips every (AssetClass, NormalizationMode) pair through
+    every Phase 1 historical provider — 5 × 4 = 20 pairs),
+    `historical_query_result_envelope_is_source_neutral` (exhaustive
+    destructure proves no extra public fields exist), and
+    `unified_historical_data_interface_supports_phase1_normalizations`
+    (asserts every normalization mode type-checks under
+    `HistoricalDataAdapter` for IB / Databento / UserParquet).
+- Added `unified_historical_data` block to
+  `architecture/runtime_services.json` after the existing
+  `data_provider_contract` block. Declares: `requirement: "API-7"`,
+  `srs_refs` covering SRS-DATA-007 + SRS-DATA-012, `syrs_refs`
+  covering SYS-27 / SYS-29 / SYS-53, the request struct + its 6
+  required fields, the result envelope + its 4 required fields + 5
+  forbidden source-revealing fields, the AssetClass + NormalizationMode
+  enums and their required variants, the trait + method + result type,
+  the 4 consumer roles (strategy/backtest/factor/research), and the
+  Python protocol mirror (atp_strategy.HistoricalData.get_bars + 6
+  parameters + NormalizationMode re-export).
+- Appended `"NormalizationMode"` to the `strategy_api.required_exports`
+  list in the same JSON config so the architecture-check stays
+  authoritative on the Python surface.
+- Extended `python/atp_strategy/api.py`:
+  * Added `class NormalizationMode(StrEnum)` with `RAW`,
+    `SPLIT_ADJUSTED`, `FULLY_ADJUSTED`, `TOTAL_RETURN` values.
+  * Extended `HistoricalData.get_bars` Protocol signature with
+    keyword-only `asset_class: AssetClass = AssetClass.EQUITY` and
+    `normalization: NormalizationMode = NormalizationMode.SPLIT_ADJUSTED`
+    parameters (defaults preserve existing strategy code).
+- Updated `python/atp_strategy/__init__.py` to import and re-export
+  `NormalizationMode` (also added to `__all__`).
+- Added `tools/historical_data_check.py` — peer to
+  `tools/data_provider_check.py`. 7 evidence checks (6 static + cargo
+  smoke):
+  1. Request struct declares the 6 query fields.
+  2. Result envelope declares the 4 fields and rejects the 5 forbidden
+     source-revealing fields.
+  3. AssetClass enum exposes 5 Phase 1 variants.
+  4. NormalizationMode enum exposes 4 SRS-DATA-012 variants.
+  5. `HistoricalDataAdapter::historical_data` returns
+     `AdapterResult<HistoricalQueryResult>` (source-neutral envelope).
+  6. Python `HistoricalData.get_bars` accepts the 6 unified
+     parameters and `atp_strategy` re-exports `NormalizationMode`.
+  7. `cargo test -p atp-adapters --lib` smoke (skip on missing cargo,
+     same skip semantics as `adapter_check`/`data_provider_check`).
+  Reuses `tools/adapter_check.py::_trait_block` (no copy-paste) and
+  exposes `assert_unified_historical_data_static(config, root)` for
+  the architecture-check path.
+- The Python `HistoricalData.get_bars` regex match deliberately skips
+  the doctest single-line `def get_bars(...)` example earlier in the
+  module by requiring a multi-line signature (newline inside the
+  parameter list).
+- Wired the new check into `tools/architecture_check.py` via
+  `assert_unified_historical_data(config)` that emits a summary line:
+  `atp-adapters unified historical query carries 6 request fields and
+  a source-neutral HistoricalQueryResult envelope across 5 asset
+  classes / 4 normalization modes for 4 consumers (API-7,
+  SRS-DATA-007 + SRS-DATA-012)`.
+- Added `python3 tools/historical_data_check.py` to `init.sh` between
+  the data-provider check and the deployment check; `✓ Environment
+  ready` now requires the new check too.
+- Added `tests/test_unified_historical_data.py` (15 tests across 5
+  classes): subprocess contract test (asserts `API-7 PASS` + 10
+  evidence needles), per-Rust-check tests for request struct, result
+  envelope, AssetClass enum, NormalizationMode enum, and trait
+  signature; per-Python-protocol tests for `get_bars` parameter
+  surface; negative spot-checks (mutating
+  `HistoricalQueryResult` to inject `provider` raises with the field
+  name, mutating `TotalReturn` raises with the variant name, removing
+  the Python `asset_class` parameter raises with the parameter name);
+  aggregate evidence count (7/6 for run_checks/static); runtime-services
+  block trace check (requirement == "API-7", SRS-DATA-007 +
+  SRS-DATA-012 in srs_refs, 4 consumer roles); architecture-check
+  evidence assertion.
+- Added 1 test to `tests/test_strategy_api.py`
+  (`UnifiedHistoricalDataProtocolTest`) verifying all 4
+  `NormalizationMode` enum values and that a Protocol-conforming
+  fixture round-trips `asset_class` + `normalization` keyword args.
+- Tightened `tests/test_architecture.py`
+  `test_srs_arch_001_language_boundary` to require the new
+  `unified historical query carries 6 request fields`,
+  `5 asset classes / 4 normalization modes for 4 consumers`, and
+  `API-7, SRS-DATA-007 + SRS-DATA-012` evidence in the
+  architecture-check output.
+- Extended `architecture/README.md` with an `API-7` section parallel
+  to API-5 / API-6: documents the contract block, the request /
+  envelope / enum surface, the source-neutral guarantee, the
+  `tools/historical_data_check.py` command, and the relationship to
+  API-6 (parallel pattern) and DATA-7 / DATA-8..DATA-21 (concrete
+  behaviour landing later).
+
+What I tested (end-to-end, all 4 steps from API-7):
+1. `./init.sh` → `✓ Environment ready` with the new
+   `→ Running unified historical data contract check…` line appearing
+   between the data-provider check and the deployment check.
+2. `python3 tools/historical_data_check.py` → `API-7 PASS` with 7
+   evidence bullets covering every API-7 description capability +
+   the source-neutral envelope guarantee + the Python protocol surface.
+3. Strategy/backtest/factor/research consumer fixture (in-process
+   Python) round-tripped 8 pairs (2 asset classes × 4 normalization
+   modes) through `HistoricalData.get_bars`, asserting the keyword
+   arguments are passed through unchanged.
+4. `python3 tools/architecture_check.py` → `SRS-ARCH-001 PASS` with
+   the new `atp-adapters unified historical query…` summary line,
+   plus the 6 static per-check evidence bullets above it (all
+   API-5 / API-6 evidence still present, no regressions).
+5. `cargo test -p atp-adapters --lib` → 12 tests PASS (9 prior + 3
+   new — query knobs round-trip, source-neutral envelope, all four
+   normalization modes type-check).
+6. `cargo test --workspace --lib` → all 10 crates PASS (22 tests, no
+   regressions despite the `historical_data` return-type change).
+7. `python3 -m unittest tests.test_architecture
+   tests.test_strategy_api tests.test_rest_api tests.test_configuration
+   tests.test_websocket_api tests.test_cli tests.test_adapter_contract
+   tests.test_data_provider_contract tests.test_unified_historical_data`
+   → 145 tests OK (129 prior + 15 new across the new
+   `test_unified_historical_data` module + 1 new in
+   `test_strategy_api` + the tightened
+   `test_srs_arch_001_language_boundary` assertion).
+8. Negative spot-checks (in-process):
+   - mutating `HistoricalQueryResult` to inject a `pub provider:
+     String` field raises `HistoricalDataCheckError` mentioning
+     `provider` (forbidden vendor field).
+   - mutating `NormalizationMode::TotalReturn` to `TotalReturnX`
+     raises mentioning `TotalReturn` (missing required SRS-DATA-012
+     variant).
+   - removing the Python `asset_class: AssetClass = AssetClass.EQUITY`
+     parameter from `HistoricalData.get_bars` raises mentioning
+     `asset_class` (missing required parameter).
+9. Marked `feature_list.json` entry `API-7` `"passes": true` and
+   re-ran tests — still all green.
+
+Known issues / notes for next agent:
+- API-7 declares the unified historical query contract surface only —
+  every `HistoricalDataAdapter::historical_data` call still returns
+  `NotConfigured`. Real ingestion behaviour lands with DATA-1
+  (Databento daily), DATA-2 (IB minute watchlist), DATA-3 (bulk
+  backfill), DATA-4 (IB option-chain captures), DATA-5 (Sharadar
+  fundamentals), DATA-6 (options DBN/Parquet), DATA-7 (unified
+  historical access at runtime), and DATA-8..DATA-21 (cold reads,
+  corporate actions, schema evolution).
+- `HistoricalDataAdapter::historical_data` now returns
+  `AdapterResult<HistoricalQueryResult>` instead of
+  `AdapterResult<Vec<HistoricalBar>>`. This is a breaking change to
+  the trait surface — downstream features that build on the trait
+  must construct the envelope (symbol + asset_class +
+  normalization_mode + bars) and not just bars.
+- `tools/historical_data_check.py` reuses
+  `tools/adapter_check.py::_trait_block` directly (no copy-paste),
+  matching the API-6 import pattern. The new check tool also has its
+  own `_struct_body` and `_enum_body` brace-matching helpers —
+  future contract checks for new envelope-style result types
+  (e.g. factor outputs) should consider promoting them to a shared
+  helper.
+- The Python protocol-method matcher in
+  `tools/historical_data_check.py` deliberately skips single-line
+  `def get_bars(...)` matches inside docstrings (doctest examples)
+  by requiring a newline inside the parameter list. If a future
+  refactor inlines the Protocol method onto a single line, the check
+  will need to be relaxed.
+- Pre-existing dirty/untracked files unrelated to API-7:
+  `prompts/initializer_prompt.md`, `prompts/coding_prompt.md`,
+  `Cargo.lock`, `requirements.txt`, `.claude/`, `.vscode/`. They were
+  not reverted.
+- No features were skipped for clarification.
+- Lowest remaining P1 by ID is ERR-1 (system-error handling for an
+  order submitted by a non-live strategy to live execution), then
+  ERR-2..ERR-9 (IB Gateway unreachable, market data stale,
+  market-data line limit exceeded, ingestion record validation
+  failure, IB pacing budget exceeded, hot-swap demotion liquidation
+  timeout, kill-switch liquidation timeout, missing/invalid startup
+  configuration). These all trace to SRS-EXE / SRS-MD / SRS-DATA /
+  SRS-ARCH error-handling clauses and are the natural next batch
+  before the SRS-API-* / SRS-BT-* feature work.
+
 === SESSION 11 ===
 Date: 2026-05-06
 Feature completed: API-6 — Data provider interface contract for bulk

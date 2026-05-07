@@ -106,6 +106,43 @@ class AssetClassEnforcementTest(unittest.TestCase):
         self.assertEqual(len(ctx.submitted), 1)
 
 
+class UnifiedHistoricalDataProtocolTest(unittest.TestCase):
+    def test_normalization_mode_exposes_srs_data_012_modes(self) -> None:
+        from atp_strategy import NormalizationMode
+
+        self.assertEqual(NormalizationMode.RAW.value, "RAW")
+        self.assertEqual(NormalizationMode.SPLIT_ADJUSTED.value, "SPLIT_ADJUSTED")
+        self.assertEqual(NormalizationMode.FULLY_ADJUSTED.value, "FULLY_ADJUSTED")
+        self.assertEqual(NormalizationMode.TOTAL_RETURN.value, "TOTAL_RETURN")
+        self.assertIn("NormalizationMode", atp_strategy.__all__)
+
+    def test_historical_data_protocol_accepts_unified_query_knobs(self) -> None:
+        from atp_strategy import HistoricalData, NormalizationMode
+
+        class _H:
+            def get_bars(
+                self,
+                symbol,
+                *,
+                lookback,
+                frequency="1m",
+                end=None,
+                asset_class=AssetClass.EQUITY,
+                normalization=NormalizationMode.SPLIT_ADJUSTED,
+            ):
+                return [(symbol, asset_class, normalization)]
+
+        impl = _H()
+        self.assertIsInstance(impl, HistoricalData)
+        bars = impl.get_bars(
+            "AAPL",
+            lookback=1,
+            asset_class=AssetClass.OPTION,
+            normalization=NormalizationMode.RAW,
+        )
+        self.assertEqual(bars, [("AAPL", AssetClass.OPTION, NormalizationMode.RAW)])
+
+
 class PublicDocstringsTest(unittest.TestCase):
     def test_every_public_class_or_function_has_docstring(self) -> None:
         missing: list[str] = []

@@ -1661,7 +1661,7 @@
       "Step 3: Verify required capability: Query by symbol, date range, resolution, asset class, normalization mode, and data source-neutral result shape",
       "Step 4: Confirm the interface contract traces to SRS-DATA-007, SRS-DATA-012 and leave passes false until contract evidence is captured."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {

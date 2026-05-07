@@ -106,18 +106,45 @@ pub struct SubscriptionReceipt {
     pub subscription_id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AssetClass {
+    Equity,
+    Option,
+    Future,
+    Etf,
+    Index,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NormalizationMode {
+    Raw,
+    SplitAdjusted,
+    FullyAdjusted,
+    TotalReturn,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoricalDataRequest {
     pub symbol: String,
     pub start: String,
     pub end: String,
     pub resolution: String,
+    pub asset_class: AssetClass,
+    pub normalization_mode: NormalizationMode,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HistoricalBar {
     pub symbol: String,
     pub close: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoricalQueryResult {
+    pub symbol: String,
+    pub asset_class: AssetClass,
+    pub normalization_mode: NormalizationMode,
+    pub bars: Vec<HistoricalBar>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,7 +237,7 @@ pub trait HistoricalDataAdapter: AdapterBoundary {
     fn historical_data(
         &self,
         _request: HistoricalDataRequest,
-    ) -> AdapterResult<Vec<HistoricalBar>> {
+    ) -> AdapterResult<HistoricalQueryResult> {
         not_configured(self.provider_name(), "historical_data")
     }
 }
@@ -512,6 +539,8 @@ mod tests {
                 start: "2026-01-01".to_string(),
                 end: "2026-02-01".to_string(),
                 resolution: "1m".to_string(),
+                asset_class: AssetClass::Equity,
+                normalization_mode: NormalizationMode::SplitAdjusted,
             }),
             Err(AdapterError::NotConfigured {
                 capability: "historical_data",
@@ -649,6 +678,8 @@ mod tests {
             start: "2026-01-01".to_string(),
             end: "2026-02-01".to_string(),
             resolution: "1d".to_string(),
+            asset_class: AssetClass::Equity,
+            normalization_mode: NormalizationMode::SplitAdjusted,
         };
         assert!(matches!(
             DatabentoAdapter.historical_data(request.clone()),
@@ -664,5 +695,122 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn unified_historical_query_carries_asset_class_and_normalization() {
+        // API-7: every (asset_class, normalization_mode) pair must round-trip
+        // through the unified request shape so strategies, backtests, factor
+        // jobs, and research notebooks can express the SRS-DATA-007 +
+        // SRS-DATA-012 query knobs without leaking vendor specifics.
+        let asset_classes = [
+            AssetClass::Equity,
+            AssetClass::Option,
+            AssetClass::Future,
+            AssetClass::Etf,
+            AssetClass::Index,
+        ];
+        let modes = [
+            NormalizationMode::Raw,
+            NormalizationMode::SplitAdjusted,
+            NormalizationMode::FullyAdjusted,
+            NormalizationMode::TotalReturn,
+        ];
+        for asset_class in asset_classes {
+            for normalization_mode in modes {
+                let request = HistoricalDataRequest {
+                    symbol: "AAPL".to_string(),
+                    start: "2026-01-01".to_string(),
+                    end: "2026-02-01".to_string(),
+                    resolution: "1d".to_string(),
+                    asset_class,
+                    normalization_mode,
+                };
+                assert_eq!(request.asset_class, asset_class);
+                assert_eq!(request.normalization_mode, normalization_mode);
+                assert!(matches!(
+                    DatabentoAdapter.historical_data(request),
+                    Err(AdapterError::NotConfigured {
+                        capability: "historical_data",
+                        ..
+                    })
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn historical_query_result_envelope_is_source_neutral() {
+        // The envelope must carry symbol + asset_class + normalization_mode
+        // + bars and nothing that exposes a vendor source. Constructing the
+        // struct exhaustively would not compile if any forbidden field were
+        // added; the explicit assertion below guards the field set.
+        let result = HistoricalQueryResult {
+            symbol: "AAPL".to_string(),
+            asset_class: AssetClass::Equity,
+            normalization_mode: NormalizationMode::FullyAdjusted,
+            bars: vec![HistoricalBar {
+                symbol: "AAPL".to_string(),
+                close: 100.0,
+            }],
+        };
+        assert_eq!(result.symbol, "AAPL");
+        assert_eq!(result.asset_class, AssetClass::Equity);
+        assert_eq!(result.normalization_mode, NormalizationMode::FullyAdjusted);
+        assert_eq!(result.bars.len(), 1);
+        // The exhaustive destructure proves there are no other public fields.
+        let HistoricalQueryResult {
+            symbol: _,
+            asset_class: _,
+            normalization_mode: _,
+            bars: _,
+        } = result;
+    }
+
+    #[test]
+    fn unified_historical_data_interface_supports_phase1_normalizations() {
+        // SRS-DATA-012 requires raw, split-adjusted, fully adjusted, and
+        // total-return normalization modes per security subscription.
+        fn run_through<T: HistoricalDataAdapter>(
+            adapter: &T,
+            mode: NormalizationMode,
+        ) -> AdapterResult<HistoricalQueryResult> {
+            adapter.historical_data(HistoricalDataRequest {
+                symbol: "AAPL".to_string(),
+                start: "2026-01-01".to_string(),
+                end: "2026-02-01".to_string(),
+                resolution: "1d".to_string(),
+                asset_class: AssetClass::Equity,
+                normalization_mode: mode,
+            })
+        }
+        for mode in [
+            NormalizationMode::Raw,
+            NormalizationMode::SplitAdjusted,
+            NormalizationMode::FullyAdjusted,
+            NormalizationMode::TotalReturn,
+        ] {
+            assert!(matches!(
+                run_through(&DatabentoAdapter, mode),
+                Err(AdapterError::NotConfigured {
+                    capability: "historical_data",
+                    ..
+                })
+            ));
+            assert!(matches!(
+                run_through(&UserParquetAdapter, mode),
+                Err(AdapterError::NotConfigured {
+                    capability: "historical_data",
+                    ..
+                })
+            ));
+            assert!(matches!(
+                run_through(&InteractiveBrokersAdapter, mode),
+                Err(AdapterError::NotConfigured {
+                    capability: "historical_data",
+                    ..
+                })
+            ));
+        }
     }
 }

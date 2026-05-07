@@ -50,6 +50,26 @@ class AssetClass(StrEnum):
     OPTION = "OPTION"
 
 
+class NormalizationMode(StrEnum):
+    """Historical-series normalization mode (``SRS-DATA-012``).
+
+    Selects how splits, dividends, and corporate actions are folded into
+    historical and live subscription data. Options strategies can request
+    ``RAW`` prices; indicators typically request ``SPLIT_ADJUSTED`` or
+    ``FULLY_ADJUSTED`` series; benchmarking workloads request
+    ``TOTAL_RETURN``.
+
+    Example:
+        >>> NormalizationMode.SPLIT_ADJUSTED
+        <NormalizationMode.SPLIT_ADJUSTED: 'SPLIT_ADJUSTED'>
+    """
+
+    RAW = "RAW"
+    SPLIT_ADJUSTED = "SPLIT_ADJUSTED"
+    FULLY_ADJUSTED = "FULLY_ADJUSTED"
+    TOTAL_RETURN = "TOTAL_RETURN"
+
+
 @dataclass(frozen=True, slots=True)
 class StrategyConfig:
     """Container-time configuration handed to a strategy by the orchestrator.
@@ -410,8 +430,18 @@ class HistoricalData(Protocol):
         lookback: int,
         frequency: str = "1m",
         end: _dt.datetime | None = None,
+        asset_class: AssetClass = AssetClass.EQUITY,
+        normalization: NormalizationMode = NormalizationMode.SPLIT_ADJUSTED,
     ) -> list[Bar]:
-        """Return ``lookback`` bars at ``frequency`` ending at ``end`` (default: now)."""
+        """Return ``lookback`` bars at ``frequency`` ending at ``end`` (default: now).
+
+        ``asset_class`` and ``normalization`` route through the unified
+        historical-data interface (``API-7``, ``SRS-DATA-007`` +
+        ``SRS-DATA-012``) so strategies, backtests, factor jobs, and
+        notebooks can request raw, split-adjusted, fully adjusted, or
+        total-return series for equities, options, futures, ETFs, or
+        indices without binding to a specific data provider.
+        """
 
 
 @runtime_checkable

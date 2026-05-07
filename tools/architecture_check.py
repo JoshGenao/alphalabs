@@ -18,6 +18,10 @@ from data_provider_check import (
 )
 from dependency_boundary_check import DependencyBoundaryError, assert_dependency_direction
 from deployment_check import DeploymentCheckError, assert_deployment_static
+from historical_data_check import (
+    HistoricalDataCheckError,
+    assert_unified_historical_data_static,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -309,6 +313,24 @@ def assert_data_provider_contract(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_unified_historical_data(config: dict) -> list[str]:
+    block = config.get("unified_historical_data")
+    if block is None:
+        return []
+
+    static_evidence = assert_unified_historical_data_static(config, ROOT)
+    summary = (
+        f"{block['adapter_crate']['crate']} unified historical query carries "
+        f"{len(block['request_fields'])} request fields and a source-neutral "
+        f"{block['result_struct']} envelope across "
+        f"{len(block['asset_class_variants'])} asset classes / "
+        f"{len(block['normalization_variants'])} normalization modes for "
+        f"{len(block['consumers'])} consumers (API-7, "
+        f"SRS-DATA-007 + SRS-DATA-012)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -354,6 +376,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_data_provider_contract(config))
     except DataProviderContractError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_unified_historical_data(config))
+    except HistoricalDataCheckError as error:
         fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:

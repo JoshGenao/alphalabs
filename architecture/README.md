@@ -214,3 +214,45 @@ downstream features (DATA-1 Databento daily ingestion, DATA-2 IB
 minute watchlist, DATA-3 bulk backfill, DATA-4 IB option-chain
 captures, DATA-5 Sharadar fundamentals, DATA-6 options DBN/Parquet,
 DATA-7 unified historical access).
+
+`API-7` (unified historical data interface) is enforced by the
+`unified_historical_data` block in
+`architecture/runtime_services.json`, the public types in
+`crates/atp-adapters/src/lib.rs`, and the `HistoricalData` Protocol in
+`python/atp_strategy/api.py`. The catalogue extends the
+`HistoricalDataAdapter::historical_data` query so a single call
+expresses every API-7 description capability:
+
+- `HistoricalDataRequest { symbol, start, end, resolution, asset_class,
+  normalization_mode }` carries the six description fields.
+- `AssetClass { Equity, Option, Future, Etf, Index }` types the
+  Phase 1 SRS-DATA-007 universe.
+- `NormalizationMode { Raw, SplitAdjusted, FullyAdjusted, TotalReturn }`
+  enumerates the four SRS-DATA-012 normalization modes; options
+  strategies request `Raw`, indicator pipelines request `SplitAdjusted`
+  or `FullyAdjusted`, benchmarking workloads request `TotalReturn`.
+- `HistoricalQueryResult { symbol, asset_class, normalization_mode,
+  bars }` is the source-neutral envelope returned by every provider —
+  the contract refuses any `provider`, `vendor`, `source`,
+  `source_provider`, or `data_source` field on the envelope.
+- The Python `HistoricalData.get_bars` Protocol accepts the same
+  `asset_class` + `normalization` keyword arguments and `atp_strategy`
+  re-exports `NormalizationMode` so strategies, backtests, factor jobs,
+  and notebooks share one query surface.
+
+```bash
+python3 tools/historical_data_check.py
+```
+
+`tools/historical_data_check.py` parses the Rust source for the request
+struct, the source-neutral envelope (asserting no forbidden vendor
+field is present), the asset-class and normalization-mode enums, the
+trait return type, and the Python Protocol parameters, then runs
+`cargo test -p atp-adapters --lib` end-to-end. The
+`architecture_check.py` path short-circuits the cargo step via
+`assert_unified_historical_data_static`, mirroring the API-5 / API-6
+split.
+
+The contract is parallel to API-5 / API-6; concrete unified historical
+behaviour (cold NAS reads, corporate-action adjustment, schema
+evolution) lands with DATA-7 and DATA-8..DATA-21.
