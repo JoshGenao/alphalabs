@@ -348,6 +348,40 @@
       "hot-swap trigger"
     ]
   },
+  "adapter_contract": {
+    "requirement": "API-5",
+    "srs_refs": ["SRS-EXE-006", "SRS-EXE-007"],
+    "syrs_refs": ["SYS-52", "SYS-65", "AC-2"],
+    "adapter_crate": {
+      "crate": "atp-adapters",
+      "path": "crates/atp-adapters"
+    },
+    "required_methods": {
+      "BrokerageAdapter": [
+        "submit_order",
+        "cancel_order",
+        "account_status",
+        "positions"
+      ],
+      "MarketDataAdapter": ["subscribe_market_data"],
+      "HistoricalDataAdapter": ["historical_data"]
+    },
+    "version_struct": "AdapterVersion",
+    "version_struct_fields": [
+      "adapter_version",
+      "protocol_version",
+      "protocol_label"
+    ],
+    "version_method": "version",
+    "interactive_brokers": {
+      "provider_struct": "InteractiveBrokersAdapter",
+      "protocol_label": "IB TWS API",
+      "protocol_version_constant": "INTERACTIVE_BROKERS_TWS_API_VERSION",
+      "protocol_version": "10.45",
+      "adapter_version_constant": "INTERACTIVE_BROKERS_ADAPTER_VERSION",
+      "protocol_label_constant": "INTERACTIVE_BROKERS_PROTOCOL_LABEL"
+    }
+  },
   "deployment": {
     "requirement": "SRS-ARCH-004",
     "target": "Phase 1 Proxmox Ubuntu VM",

@@ -143,3 +143,35 @@ python3 tools/cli_check.py --update   # regenerate manual snapshot
 The contract is parallel to API-2 (`atp_api`) and API-3 (`atp_ws`);
 concrete CLI handlers land with downstream features (EXE-1, ORCH-1,
 RESV-1, LOG-1, NOTIF-1).
+
+`API-5` (brokerage adapter interface) is enforced by the
+`adapter_contract` block in `architecture/runtime_services.json` and
+the public traits in `crates/atp-adapters/src/lib.rs`. The catalogue
+declares the required methods on `BrokerageAdapter` (`submit_order`,
+`cancel_order`, `account_status`, `positions`), `MarketDataAdapter`
+(`subscribe_market_data`), and `HistoricalDataAdapter`
+(`historical_data`), plus a versioned capability discovery surface:
+`AdapterVersion { adapter_version, protocol_version, protocol_label }`,
+exposed by a default `AdapterBoundary::version()` method and overridden
+by `InteractiveBrokersAdapter` to document the supported IB TWS API
+version (`INTERACTIVE_BROKERS_TWS_API_VERSION = "10.45"` — the latest
+IB TWS API stable release per SRS-EXE-007 / SyRS SYS-65).
+`tools/adapter_check.py` parses the Rust source for the required trait
+methods and version metadata, asserts the IB protocol-version constant
+matches the configuration block, and runs `cargo test -p atp-adapters
+--lib` end-to-end:
+
+```bash
+python3 tools/adapter_check.py
+```
+
+To bump the documented IB TWS API version, change
+`INTERACTIVE_BROKERS_TWS_API_VERSION` in `crates/atp-adapters/src/lib.rs`
+and the matching `interactive_brokers.protocol_version` value in
+`architecture/runtime_services.json`; the contract check refuses to pass
+unless the two agree.
+
+The contract is parallel to API-2/API-3/API-4; concrete brokerage
+behaviour lands with downstream features (EXE-1 live order routing,
+EXE-2 watchdog/outbox reconciliation, MD-1 market-data subscription
+manager, IB-1 IB Gateway integration tests).

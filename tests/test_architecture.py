@@ -27,6 +27,14 @@ class ArchitectureBoundaryTest(unittest.TestCase):
         self.assertIn("/ws/v1", result.stdout)
         self.assertIn("atp_cli covers 6 groups", result.stdout)
         self.assertIn("local-shell", result.stdout)
+        self.assertIn(
+            "atp-adapters declares 6 required trait methods",
+            result.stdout,
+        )
+        self.assertIn(
+            "InteractiveBrokersAdapter documents IB TWS API version 10.45",
+            result.stdout,
+        )
 
     def test_srs_arch_002_dependency_boundary(self) -> None:
         result = subprocess.run(

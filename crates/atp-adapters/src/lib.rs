@@ -46,11 +46,32 @@ fn not_configured<T>(adapter: &'static str, capability: &'static str) -> Adapter
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AdapterVersion {
+    pub adapter_version: &'static str,
+    pub protocol_version: &'static str,
+    pub protocol_label: &'static str,
+}
+
+pub const ADAPTER_VERSION_NOT_APPLICABLE: AdapterVersion = AdapterVersion {
+    adapter_version: "0.1.0",
+    protocol_version: "not-applicable",
+    protocol_label: "not-applicable",
+};
+
+pub const INTERACTIVE_BROKERS_TWS_API_VERSION: &str = "10.45";
+pub const INTERACTIVE_BROKERS_ADAPTER_VERSION: &str = "0.1.0";
+pub const INTERACTIVE_BROKERS_PROTOCOL_LABEL: &str = "IB TWS API";
+
 pub trait AdapterBoundary {
     fn provider_name(&self) -> &'static str;
 
     fn capabilities(&self) -> &'static [AdapterCapability] {
         &[]
+    }
+
+    fn version(&self) -> AdapterVersion {
+        ADAPTER_VERSION_NOT_APPLICABLE
     }
 }
 
@@ -291,6 +312,14 @@ impl AdapterBoundary for InteractiveBrokersAdapter {
     fn capabilities(&self) -> &'static [AdapterCapability] {
         INTERACTIVE_BROKERS_CAPABILITIES
     }
+
+    fn version(&self) -> AdapterVersion {
+        AdapterVersion {
+            adapter_version: INTERACTIVE_BROKERS_ADAPTER_VERSION,
+            protocol_version: INTERACTIVE_BROKERS_TWS_API_VERSION,
+            protocol_label: INTERACTIVE_BROKERS_PROTOCOL_LABEL,
+        }
+    }
 }
 
 impl BrokerageAdapter for InteractiveBrokersAdapter {}
@@ -440,5 +469,72 @@ mod tests {
                 capability: "download_full_universe_daily",
             }
         );
+    }
+
+    #[test]
+    fn brokerage_adapter_exposes_required_surface() {
+        let adapter = InteractiveBrokersAdapter;
+
+        assert!(matches!(
+            adapter.cancel_order("order-1"),
+            Err(AdapterError::NotConfigured {
+                capability: "cancel_order",
+                ..
+            })
+        ));
+        assert!(matches!(
+            adapter.account_status(),
+            Err(AdapterError::NotConfigured {
+                capability: "account_status",
+                ..
+            })
+        ));
+        assert!(matches!(
+            adapter.positions(),
+            Err(AdapterError::NotConfigured {
+                capability: "positions",
+                ..
+            })
+        ));
+        assert!(matches!(
+            adapter.subscribe_market_data(MarketDataSubscription {
+                symbol: "AAPL".to_string(),
+                channel: MarketDataChannel::Quotes,
+            }),
+            Err(AdapterError::NotConfigured {
+                capability: "subscribe_market_data",
+                ..
+            })
+        ));
+        assert!(matches!(
+            adapter.historical_data(HistoricalDataRequest {
+                symbol: "AAPL".to_string(),
+                start: "2026-01-01".to_string(),
+                end: "2026-02-01".to_string(),
+                resolution: "1m".to_string(),
+            }),
+            Err(AdapterError::NotConfigured {
+                capability: "historical_data",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn interactive_brokers_documents_tws_api_version() {
+        let adapter = InteractiveBrokersAdapter;
+        let version = adapter.version();
+        assert_eq!(version.protocol_label, "IB TWS API");
+        assert_eq!(version.protocol_version, INTERACTIVE_BROKERS_TWS_API_VERSION);
+        assert_eq!(version.protocol_version, "10.45");
+        assert!(!version.adapter_version.is_empty());
+    }
+
+    #[test]
+    fn default_adapter_version_is_not_applicable() {
+        let adapter = SharadarAdapter;
+        let version = adapter.version();
+        assert_eq!(version, ADAPTER_VERSION_NOT_APPLICABLE);
+        assert_eq!(version.protocol_label, "not-applicable");
     }
 }

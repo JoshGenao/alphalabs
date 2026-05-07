@@ -1,3 +1,159 @@
+=== SESSION 10 ===
+Date: 2026-05-06
+Feature completed: API-5 — Brokerage adapter interface contract for
+order submission, cancellation, account status, positions, market
+data, historical data, and versioned adapter capability discovery
+(traces SRS-EXE-006 + SRS-EXE-007)
+Status: 110 remaining features
+
+What I did:
+- Extended `crates/atp-adapters/src/lib.rs` with a versioned
+  capability discovery surface:
+  * New `pub struct AdapterVersion { adapter_version,
+    protocol_version, protocol_label }` (all `&'static str`).
+  * New `pub const ADAPTER_VERSION_NOT_APPLICABLE` default for
+    providers without a vendor-protocol version.
+  * New `pub const INTERACTIVE_BROKERS_TWS_API_VERSION = "10.45"`
+    (latest IB TWS API stable release per SRS-EXE-007 / SyRS SYS-65),
+    plus `INTERACTIVE_BROKERS_ADAPTER_VERSION` and
+    `INTERACTIVE_BROKERS_PROTOCOL_LABEL` companion constants.
+  * Added `fn version(&self) -> AdapterVersion` to the
+    `AdapterBoundary` trait with a default of
+    `ADAPTER_VERSION_NOT_APPLICABLE`. Overrode it on
+    `InteractiveBrokersAdapter` to return the IB TWS API version
+    via the documented constants.
+  * Added 3 new cargo tests in the `tests` module:
+    `brokerage_adapter_exposes_required_surface` (asserts every
+    required method on `BrokerageAdapter`/`MarketDataAdapter`/
+    `HistoricalDataAdapter` returns `NotConfigured`),
+    `interactive_brokers_documents_tws_api_version` (asserts
+    `protocol_label == "IB TWS API"`, version `== "10.45"`,
+    `adapter_version` non-empty), and
+    `default_adapter_version_is_not_applicable`.
+- Added `architecture/runtime_services.json` → `adapter_contract`
+  block listing the required trait methods, version struct fields,
+  version method name, and the IB metadata
+  (provider_struct=`InteractiveBrokersAdapter`,
+  protocol_label=`IB TWS API`,
+  protocol_version_constant=`INTERACTIVE_BROKERS_TWS_API_VERSION`,
+  protocol_version=`10.45`).
+- Added `tools/adapter_check.py` mirroring `tools/cli_check.py`:
+  same PASS/FAIL evidence-bullet output style, exit 0/1, no
+  `--update` (snapshot N/A). 7 checks total:
+  `brokerage_methods`, `market_data_methods`, `historical_methods`
+  (each parses the `pub trait …` body for required `fn …(`
+  signatures), `version_struct_present`, `version_default_method`,
+  `interactive_brokers_version` (asserts the IB version constant
+  exists, is non-empty, matches the runtime_services value, and is
+  referenced inside `impl AdapterBoundary for
+  InteractiveBrokersAdapter`'s `version()` override), and
+  `cargo_test_smoke` (runs `cargo test -p atp-adapters --lib
+  --quiet`; gracefully skips if cargo missing). Uses a brace-
+  matching parser to extract each trait body precisely.
+- Extended `tools/architecture_check.py` with
+  `assert_adapter_contract(config)` that delegates to the new
+  `assert_adapter_contract_static()` helper (re-uses the static
+  checks; deliberately does NOT shell out to cargo so
+  architecture_check stays fast). `SRS-ARCH-001 PASS` now adds an
+  `atp-adapters declares 6 required trait methods across 3 adapter
+  traits and InteractiveBrokersAdapter documents IB TWS API version
+  10.45 (API-5)` evidence line on top of the per-check evidence.
+- Wired `python3 tools/adapter_check.py` into `init.sh` between the
+  CLI check and the deployment check; `✓ Environment ready` now
+  requires the new check too.
+- Added `tests/test_adapter_contract.py` (13 tests across 5 classes):
+  subprocess contract test (asserts `API-5 PASS` plus all 7 evidence
+  needles), per-trait method walks with a negative spot-check that
+  mutates `cancel_order` in-memory and asserts the contract error,
+  versioned-discovery walks (struct fields, default method, IB
+  version constant), a constant-mismatch negative test (mutates
+  `"10.45"` → `"9.99"` and asserts the contract error), aggregate
+  evidence count (7/6 lines for run_checks/static), runtime-services
+  block trace check (`SRS-EXE-006`/`SRS-EXE-007` + `requirement ==
+  API-5`), and architecture-check evidence assertion.
+- Tightened `tests/test_architecture.py` SRS-ARCH-001 aggregate test
+  to require the new `atp-adapters declares 6 required trait methods`
+  and `InteractiveBrokersAdapter documents IB TWS API version 10.45`
+  evidence in the architecture-check output.
+- Extended `architecture/README.md` with an `API-5` section
+  documenting the contract, the IB protocol-version constant, the
+  bump recipe (constant + runtime_services value must agree),
+  and the parallel relationship to API-2/API-3/API-4.
+
+What I tested (end-to-end, all 8 steps from API-5 + 1 negative):
+1. `./init.sh` → `✓ Environment ready` with the new
+   `→ Running brokerage adapter contract check…` line appearing
+   between the CLI check and the deployment check.
+2. `python3 tools/adapter_check.py` → `API-5 PASS` with 7 evidence
+   bullets covering every API-5 description capability + the new
+   versioned discovery surface.
+3. `python3 tools/architecture_check.py` → `SRS-ARCH-001 PASS` with
+   the new `atp-adapters declares 6 required trait methods … IB TWS
+   API version 10.45 (API-5)` summary, plus the 6 static
+   per-check evidence bullets above it.
+4. `cargo test -p atp-adapters --lib` → 6 tests PASS (3 prior + 3
+   new — surface coverage, IB version, default not-applicable).
+5. `python3 -m unittest tests.test_architecture tests.test_strategy_api
+   tests.test_rest_api tests.test_configuration tests.test_websocket_api
+   tests.test_cli tests.test_adapter_contract` → 111 tests OK
+   (98 prior + 13 new across the new test_adapter_contract module
+   and the tightened SRS-ARCH-001 assertion).
+6. `cargo test --workspace --lib` → all 10 crates PASS, no
+   regressions.
+7. Negative spot-check: mutated `cancel_order` → `xxx_order` in a
+   copy of the source and ran `check_brokerage_methods` → raised
+   `AdapterContractError: BrokerageAdapter is missing methods:
+   cancel_order` as expected. Companion test in
+   `test_adapter_contract.py` does this in-process.
+8. Step 8 (`from atp_api import build_openapi`-style round-trip) is
+   N/A — adapter contract lives in a Rust crate; equivalent
+   round-trip is the cargo test in step 4.
+9. Marked `feature_list.json` entry `API-5` `"passes": true` and
+   re-ran tests — still all green (test_architecture +
+   test_adapter_contract: 31 tests OK).
+
+Known issues / notes for next agent:
+- API-5 declares the contract surface only — the `BrokerageAdapter`
+  trait methods all still return `NotConfigured`. Real IB Gateway
+  behaviour lands with EXE-1 (live order routing), EXE-2 (watchdog /
+  outbox reconciliation), MD-1 (market data subscription manager),
+  and the IB Gateway integration tests under SRS-EXE-006.
+- The IB TWS API version is documented in two places that MUST stay
+  in sync: `INTERACTIVE_BROKERS_TWS_API_VERSION` in
+  `crates/atp-adapters/src/lib.rs` and
+  `adapter_contract.interactive_brokers.protocol_version` in
+  `architecture/runtime_services.json`. `tools/adapter_check.py`
+  refuses to pass if they disagree. Bump both together when SRS-EXE-007
+  / SyRS SYS-65 require a new IB API version.
+- `tools/adapter_check.py` shells out to `cargo test -p atp-adapters
+  --lib --quiet` for the 7th evidence bullet. If cargo is missing
+  on PATH, the check emits a `skipped` evidence line instead of
+  failing — so an agent on a cargo-less environment can still get a
+  6-of-7 contract pass. The architecture-check path never shells out
+  to cargo (uses `assert_adapter_contract_static`).
+- `AdapterBoundary::version()` is a default method, so existing
+  external implementors continue to compile. New adapters that need
+  a vendor-protocol version (Databento, Sharadar, IB upgrades)
+  should override `version()` and add their constants alongside
+  `INTERACTIVE_BROKERS_TWS_API_VERSION`.
+- Pre-existing dirty/untracked files unrelated to API-5:
+  `prompts/initializer_prompt.md`, `prompts/coding_prompt.md`,
+  `Cargo.lock`, `requirements.txt`, `.claude/`, `.vscode/`. They were
+  not reverted.
+- No features were skipped for clarification.
+- Lowest remaining P1 by ID is API-6 (Data provider interface for
+  bulk equity download, historical backfill, incremental updates,
+  fundamentals, options imports, user-Parquet, alternative data —
+  traces SRS-DATA-001..007). The same Rust-trait contract pattern
+  that landed for API-5 should apply directly: extend
+  `adapter_contract` in `runtime_services.json` with
+  `data_provider_methods`, list the methods already declared on
+  `BulkEquityDataProvider`, `FundamentalDataProvider`,
+  `OptionsDataProvider`, `UserParquetDataProvider`,
+  `AlternativeDataProvider`, and a `data_check.py` (or extend
+  `adapter_check.py`) to enforce them. The existing helper
+  `_trait_block` in `adapter_check.py` is reusable as-is.
+
 === SESSION 9 ===
 Date: 2026-05-06
 Feature completed: API-4 — operator CLI surface for kill switch,

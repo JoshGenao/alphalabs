@@ -9,6 +9,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+from adapter_check import AdapterContractError, assert_adapter_contract_static
 from adapter_isolation_check import AdapterIsolationError, assert_adapter_isolation_static
 from config_check import ConfigCheckError, assert_configuration_static
 from dependency_boundary_check import DependencyBoundaryError, assert_dependency_direction
@@ -265,6 +266,23 @@ def assert_cli(config: dict) -> list[str]:
     ]
 
 
+def assert_adapter_contract(config: dict) -> list[str]:
+    contract = config.get("adapter_contract")
+    if contract is None:
+        return []
+
+    static_evidence = assert_adapter_contract_static(config, ROOT)
+    method_total = sum(len(v) for v in contract["required_methods"].values())
+    ib = contract["interactive_brokers"]
+    summary = (
+        f"{contract['adapter_crate']['crate']} declares {method_total} required "
+        f"trait methods across {len(contract['required_methods'])} adapter traits and "
+        f"{ib['provider_struct']} documents {ib['protocol_label']} version "
+        f"{ib['protocol_version']} (API-5)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -303,6 +321,10 @@ def run_checks() -> list[str]:
     evidence.extend(assert_rest_api(config))
     evidence.extend(assert_websocket_api(config))
     evidence.extend(assert_cli(config))
+    try:
+        evidence.extend(assert_adapter_contract(config))
+    except AdapterContractError as error:
+        fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:
         evidence.extend(assert_deployment_static(config, ROOT))
