@@ -382,6 +382,127 @@
       "protocol_label_constant": "INTERACTIVE_BROKERS_PROTOCOL_LABEL"
     }
   },
+  "data_provider_contract": {
+    "requirement": "API-6",
+    "srs_refs": [
+      "SRS-DATA-001",
+      "SRS-DATA-002",
+      "SRS-DATA-003",
+      "SRS-DATA-004",
+      "SRS-DATA-005",
+      "SRS-DATA-006",
+      "SRS-DATA-007"
+    ],
+    "syrs_refs": [
+      "SYS-22a",
+      "SYS-22b",
+      "SYS-22c",
+      "SYS-23",
+      "SYS-25",
+      "SYS-26",
+      "SYS-27"
+    ],
+    "adapter_crate": {
+      "crate": "atp-adapters",
+      "path": "crates/atp-adapters"
+    },
+    "data_provider_base_trait": "DataProviderAdapter",
+    "required_methods": {
+      "BulkEquityDataProvider": [
+        "download_full_universe_daily",
+        "initial_historical_backfill",
+        "incremental_nightly_update"
+      ],
+      "FundamentalDataProvider": [
+        "ingest_fundamentals"
+      ],
+      "OptionsDataProvider": [
+        "import_options"
+      ],
+      "UserParquetDataProvider": [
+        "import_user_parquet"
+      ],
+      "AlternativeDataProvider": [
+        "fetch_alternative_data"
+      ]
+    },
+    "capability_traces": [
+      {
+        "capability": "bulk_equity_download",
+        "trait": "BulkEquityDataProvider",
+        "method": "download_full_universe_daily",
+        "srs_ref": "SRS-DATA-001"
+      },
+      {
+        "capability": "historical_backfill",
+        "trait": "BulkEquityDataProvider",
+        "method": "initial_historical_backfill",
+        "srs_ref": "SRS-DATA-003"
+      },
+      {
+        "capability": "incremental_update",
+        "trait": "BulkEquityDataProvider",
+        "method": "incremental_nightly_update",
+        "srs_ref": "SRS-DATA-001"
+      },
+      {
+        "capability": "fundamentals_ingestion",
+        "trait": "FundamentalDataProvider",
+        "method": "ingest_fundamentals",
+        "srs_ref": "SRS-DATA-005"
+      },
+      {
+        "capability": "options_import",
+        "trait": "OptionsDataProvider",
+        "method": "import_options",
+        "srs_ref": "SRS-DATA-006"
+      },
+      {
+        "capability": "user_parquet_import",
+        "trait": "UserParquetDataProvider",
+        "method": "import_user_parquet",
+        "srs_ref": "SRS-DATA-006"
+      }
+    ],
+    "provider_bindings": [
+      {
+        "struct": "DatabentoAdapter",
+        "traits": [
+          "DataProviderAdapter",
+          "BulkEquityDataProvider",
+          "OptionsDataProvider",
+          "HistoricalDataAdapter"
+        ]
+      },
+      {
+        "struct": "SharadarAdapter",
+        "traits": [
+          "DataProviderAdapter",
+          "FundamentalDataProvider"
+        ]
+      },
+      {
+        "struct": "UserParquetAdapter",
+        "traits": [
+          "DataProviderAdapter",
+          "UserParquetDataProvider",
+          "HistoricalDataAdapter"
+        ]
+      },
+      {
+        "struct": "FutureStubProvider",
+        "traits": [
+          "DataProviderAdapter",
+          "AlternativeDataProvider"
+        ]
+      }
+    ],
+    "unified_historical_query": {
+      "trait": "HistoricalDataAdapter",
+      "method": "historical_data",
+      "srs_ref": "SRS-DATA-007"
+    }
+  },
   "deployment": {
     "requirement": "SRS-ARCH-004",
     "target": "Phase 1 Proxmox Ubuntu VM",

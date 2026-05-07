@@ -175,3 +175,42 @@ The contract is parallel to API-2/API-3/API-4; concrete brokerage
 behaviour lands with downstream features (EXE-1 live order routing,
 EXE-2 watchdog/outbox reconciliation, MD-1 market-data subscription
 manager, IB-1 IB Gateway integration tests).
+
+`API-6` (data provider interface) is enforced by the
+`data_provider_contract` block in `architecture/runtime_services.json`
+and the public traits in `crates/atp-adapters/src/lib.rs`. The catalogue
+declares the required methods on `BulkEquityDataProvider`
+(`download_full_universe_daily`, `initial_historical_backfill`,
+`incremental_nightly_update`), `FundamentalDataProvider`
+(`ingest_fundamentals`), `OptionsDataProvider` (`import_options`),
+`UserParquetDataProvider` (`import_user_parquet`), and
+`AlternativeDataProvider` (`fetch_alternative_data`). Every Phase 1
+provider (`DatabentoAdapter`, `SharadarAdapter`, `UserParquetAdapter`,
+`FutureStubProvider`) implements the shared `DataProviderAdapter` base
+trait so the data layer can route through one trait family. The block's
+`capability_traces` array binds the six API-6 description capabilities
+(bulk equity download, historical backfill, incremental update,
+fundamentals ingestion, options import, user Parquet import) to a
+specific `(trait, method, srs_ref)` triple, and
+`unified_historical_query` ties SRS-DATA-007 to the existing
+`HistoricalDataAdapter::historical_data` method shared with API-5.
+
+```bash
+python3 tools/data_provider_check.py
+```
+
+`tools/data_provider_check.py` parses the Rust source for every
+required trait method, verifies each declared `impl <Trait> for
+<Provider>` block exists, asserts every API-6 capability resolves to a
+real `(trait, method)` pair with an SRS reference inside
+`data_provider_contract.srs_refs`, and runs `cargo test -p atp-adapters
+--lib` end-to-end (which exercises the per-method
+`NotConfigured`-return surface). The `architecture_check.py` path
+short-circuits the cargo step via
+`assert_data_provider_contract_static`, mirroring the API-5 split.
+
+The contract is parallel to API-5; concrete data behaviour lands with
+downstream features (DATA-1 Databento daily ingestion, DATA-2 IB
+minute watchlist, DATA-3 bulk backfill, DATA-4 IB option-chain
+captures, DATA-5 Sharadar fundamentals, DATA-6 options DBN/Parquet,
+DATA-7 unified historical access).

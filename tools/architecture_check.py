@@ -12,6 +12,10 @@ from pathlib import Path
 from adapter_check import AdapterContractError, assert_adapter_contract_static
 from adapter_isolation_check import AdapterIsolationError, assert_adapter_isolation_static
 from config_check import ConfigCheckError, assert_configuration_static
+from data_provider_check import (
+    DataProviderContractError,
+    assert_data_provider_contract_static,
+)
 from dependency_boundary_check import DependencyBoundaryError, assert_dependency_direction
 from deployment_check import DeploymentCheckError, assert_deployment_static
 
@@ -283,6 +287,28 @@ def assert_adapter_contract(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_data_provider_contract(config: dict) -> list[str]:
+    contract = config.get("data_provider_contract")
+    if contract is None:
+        return []
+
+    static_evidence = assert_data_provider_contract_static(config, ROOT)
+    method_total = sum(len(v) for v in contract["required_methods"].values())
+    bindings = contract["provider_bindings"]
+    provider_short = "/".join(
+        binding["struct"].replace("Adapter", "").replace("Provider", "")
+        for binding in bindings
+    )
+    summary = (
+        f"{contract['adapter_crate']['crate']} declares {method_total} "
+        f"data-provider methods across {len(contract['required_methods'])} traits "
+        f"and binds {len(bindings)} providers ({provider_short}) to the "
+        f"{contract['data_provider_base_trait']} base "
+        f"(API-6, SRS-DATA-001..007)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -324,6 +350,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_adapter_contract(config))
     except AdapterContractError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_data_provider_contract(config))
+    except DataProviderContractError as error:
         fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:

@@ -1,3 +1,170 @@
+=== SESSION 11 ===
+Date: 2026-05-06
+Feature completed: API-6 — Data provider interface contract for bulk
+equity download, historical backfill, incremental update, fundamentals
+ingestion, options import, and user Parquet import (traces SRS-DATA-001
+through SRS-DATA-007)
+Status: 109 remaining features
+
+What I did:
+- Added a new `data_provider_contract` block to
+  `architecture/runtime_services.json` after the existing
+  `adapter_contract` block. It declares:
+  * `requirement: "API-6"`, `srs_refs` covering SRS-DATA-001..007,
+    `syrs_refs` covering SYS-22a..27.
+  * `data_provider_base_trait: "DataProviderAdapter"` (the shared
+    base used by every Phase 1 data provider).
+  * `required_methods` for 5 traits: `BulkEquityDataProvider` (3
+    methods: download_full_universe_daily, initial_historical_backfill,
+    incremental_nightly_update), `FundamentalDataProvider` (1:
+    ingest_fundamentals), `OptionsDataProvider` (1: import_options),
+    `UserParquetDataProvider` (1: import_user_parquet),
+    `AlternativeDataProvider` (1: fetch_alternative_data).
+  * `capability_traces` (6 entries) binding each API-6 description
+    capability — bulk_equity_download, historical_backfill,
+    incremental_update, fundamentals_ingestion, options_import,
+    user_parquet_import — to a (trait, method, srs_ref) triple.
+  * `provider_bindings` (4 providers) listing every `impl <Trait> for
+    <Provider>` block expected for `DatabentoAdapter`,
+    `SharadarAdapter`, `UserParquetAdapter`, `FutureStubProvider`.
+  * `unified_historical_query` pinning SRS-DATA-007 to
+    `HistoricalDataAdapter::historical_data` (re-using the trait
+    landed for API-5).
+- Added 3 cargo tests in `crates/atp-adapters/src/lib.rs`'s `tests`
+  module:
+  * `data_provider_traits_expose_required_surface` — exercises every
+    required trait method on each Phase 1 provider and asserts each
+    returns `NotConfigured { capability: "<method>" }`.
+  * `data_providers_share_data_provider_adapter_base` — proves all
+    four providers satisfy `DataProviderAdapter` by calling the
+    `provider_family()` default.
+  * `unified_historical_data_interface_routes_through_historical_adapter`
+    — proves `HistoricalDataAdapter` is the single entry point for
+    SRS-DATA-007 across `DatabentoAdapter`, `UserParquetAdapter`,
+    `InteractiveBrokersAdapter`.
+- Added `tools/data_provider_check.py` mirroring `tools/adapter_check.py`:
+  same PASS/FAIL evidence-bullet output, exit 0/1, no `--update` flag
+  (no snapshot). 10 evidence-line checks total: 5 per-trait method
+  walks, `data_provider_base_trait` (asserts `pub trait
+  DataProviderAdapter` exists and every binding has `impl
+  DataProviderAdapter for <Provider>`), `provider_bindings`
+  (`DatabentoAdapter(4) / SharadarAdapter(2) / UserParquetAdapter(3) /
+  FutureStubProvider(2) = 11 impls`), `capability_traces` (the
+  description-to-method mapping), `unified_historical_query`, and
+  `cargo_test_smoke` (runs `cargo test -p atp-adapters --lib`;
+  gracefully skips if cargo missing — same pattern as
+  `adapter_check`). Imports `_trait_block` from `adapter_check` so
+  the brace-matching parser is shared, not duplicated.
+- Wired the new check into `tools/architecture_check.py` via
+  `assert_data_provider_contract(config)` that delegates to the
+  static helper (no cargo) and emits a summary line:
+  `atp-adapters declares 7 data-provider methods across 5 traits and
+  binds 4 providers (Databento/Sharadar/UserParquet/FutureStub) to
+  the DataProviderAdapter base (API-6, SRS-DATA-001..007)`.
+- Added `python3 tools/data_provider_check.py` to `init.sh` between
+  the brokerage-adapter check and the deployment check; `✓
+  Environment ready` now requires the new check too.
+- Added `tests/test_data_provider_contract.py` (18 tests across 6
+  classes): subprocess contract test (asserts `API-6 PASS` plus all
+  10 evidence needles), per-trait method walks with a negative
+  spot-check that mutates `import_options` in-memory and asserts the
+  contract error, provider-binding walks (base trait + per-provider
+  trait set) plus a negative test mutating
+  `impl DataProviderAdapter for SharadarAdapter`, capability-trace
+  resolution + SRS-ref subset, unified historical query, aggregate
+  evidence count (10/9 lines for run_checks/static), runtime-services
+  block trace check (`SRS-DATA-001..007` + `requirement == API-6`),
+  and architecture-check evidence assertion.
+- Tightened `tests/test_architecture.py`
+  `test_srs_arch_001_language_boundary` to require the new
+  `7 data-provider methods across 5 traits` and `DataProviderAdapter
+  base` evidence in the architecture-check output.
+- Extended `architecture/README.md` with an `API-6` section parallel
+  to API-5: documents the contract block, the
+  `DataProviderAdapter` base trait role, the `tools/data_provider_check.py`
+  command, and the relationship to API-5 (parallel pattern) and
+  DATA-1..DATA-7 (concrete behaviour landing later).
+
+What I tested (end-to-end, all 4 steps from API-6):
+1. `./init.sh` → `✓ Environment ready` with the new
+   `→ Running data provider contract check…` line appearing between
+   the brokerage-adapter check and the deployment check.
+2. `python3 tools/data_provider_check.py` → `API-6 PASS` with 10
+   evidence bullets covering every API-6 description capability +
+   the unified historical query trait + the 4 Phase 1 provider
+   bindings.
+3. `python3 tools/architecture_check.py` → `SRS-ARCH-001 PASS` with
+   the new `atp-adapters declares 7 data-provider methods across 5
+   traits and binds 4 providers (Databento/Sharadar/UserParquet/FutureStub)
+   to the DataProviderAdapter base (API-6, SRS-DATA-001..007)`
+   summary line, plus the 9 static per-check evidence bullets above
+   it.
+4. `cargo test -p atp-adapters --lib` → 9 tests PASS (6 prior + 3
+   new — data provider surface, base trait, unified historical
+   query).
+5. `cargo test --workspace --lib` → all 10 crates PASS, no
+   regressions.
+6. `python3 -m unittest tests.test_architecture
+   tests.test_strategy_api tests.test_rest_api
+   tests.test_configuration tests.test_websocket_api tests.test_cli
+   tests.test_adapter_contract tests.test_data_provider_contract` →
+   129 tests OK (111 prior + 18 new across the new
+   `test_data_provider_contract` module and the tightened
+   `test_srs_arch_001_language_boundary` assertion).
+7. Negative spot-checks (in-process, in `test_data_provider_contract.py`):
+   mutating `fn import_options(` → `fn import_xx(` raises
+   `DataProviderContractError: OptionsDataProvider is missing
+   methods: import_options`; mutating
+   `impl DataProviderAdapter for SharadarAdapter` →
+   `impl DataProviderXxx for SharadarAdapter` raises
+   `DataProviderContractError: providers missing
+   ``impl DataProviderAdapter for ...``: SharadarAdapter`.
+8. Marked `feature_list.json` entry `API-6` `"passes": true` and
+   re-ran tests — still all green.
+
+Known issues / notes for next agent:
+- API-6 declares the contract surface only — every
+  `BulkEquityDataProvider`, `FundamentalDataProvider`,
+  `OptionsDataProvider`, `UserParquetDataProvider`, and
+  `AlternativeDataProvider` method still returns `NotConfigured`.
+  Real ingestion behaviour lands with DATA-1 (Databento daily),
+  DATA-2 (IB minute watchlist), DATA-3 (bulk backfill), DATA-4
+  (IB option chain), DATA-5 (Sharadar fundamentals), DATA-6
+  (options DBN/Parquet), DATA-7 (unified historical access).
+- `tools/data_provider_check.py` reuses
+  `tools/adapter_check.py::_trait_block` directly (no copy-paste).
+  Future contract checks for new trait families (e.g. notification
+  channels, factor pipeline outputs) should follow the same import
+  pattern to keep one brace-matching parser.
+- The architecture-check path stays cargo-free; only
+  `tools/data_provider_check.py` shells out to `cargo test -p
+  atp-adapters --lib` (10th evidence bullet). Same skip-on-no-cargo
+  semantics as `adapter_check`: if cargo is missing the tool emits
+  a `skipped` evidence line instead of failing, leaving 9 of 10
+  static evidence bullets.
+- `unified_historical_query` deliberately re-uses the API-5
+  `HistoricalDataAdapter::historical_data` method. API-7 (next P1
+  by ID after API-6) extends this contract by asserting the
+  source-neutral query shape covers symbol, date range, resolution,
+  asset class, and normalization mode — likely a new
+  `unified_historical_data` block in `runtime_services.json` plus a
+  `tools/historical_data_check.py`.
+- Pre-existing dirty/untracked files unrelated to API-6:
+  `prompts/initializer_prompt.md`, `prompts/coding_prompt.md`,
+  `Cargo.lock`, `requirements.txt`, `.claude/`, `.vscode/`. They were
+  not reverted.
+- No features were skipped for clarification.
+- Lowest remaining P1 by ID is API-7 (Unified historical data
+  interface — query by symbol, date range, resolution, asset class,
+  normalization mode, source-neutral result shape; traces
+  SRS-DATA-007 + SRS-DATA-012). The same Rust-trait contract
+  pattern that landed for API-5 / API-6 should apply directly:
+  declare a `unified_historical_data` block in
+  `runtime_services.json`, extend the trait surface so requests
+  carry `asset_class` + `normalization_mode`, and add
+  `tools/historical_data_check.py` (or extend
+  `data_provider_check.py`).
+
 === SESSION 10 ===
 Date: 2026-05-06
 Feature completed: API-5 — Brokerage adapter interface contract for

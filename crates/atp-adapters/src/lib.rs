@@ -537,4 +537,132 @@ mod tests {
         assert_eq!(version, ADAPTER_VERSION_NOT_APPLICABLE);
         assert_eq!(version.protocol_label, "not-applicable");
     }
+
+    #[test]
+    fn data_provider_traits_expose_required_surface() {
+        // Bulk equity download / historical backfill / incremental update
+        let bulk = DatabentoAdapter;
+        assert!(matches!(
+            bulk.download_full_universe_daily(UniverseDownloadRequest {
+                dataset: "equities-daily".to_string(),
+            }),
+            Err(AdapterError::NotConfigured {
+                capability: "download_full_universe_daily",
+                ..
+            })
+        ));
+        assert!(matches!(
+            bulk.initial_historical_backfill(BackfillRequest {
+                dataset: "equities-daily".to_string(),
+                years: 15,
+            }),
+            Err(AdapterError::NotConfigured {
+                capability: "initial_historical_backfill",
+                ..
+            })
+        ));
+        assert!(matches!(
+            bulk.incremental_nightly_update(IncrementalUpdateRequest {
+                dataset: "equities-daily".to_string(),
+                date: "2026-05-06".to_string(),
+            }),
+            Err(AdapterError::NotConfigured {
+                capability: "incremental_nightly_update",
+                ..
+            })
+        ));
+
+        // Fundamentals ingestion
+        let fundamental = SharadarAdapter;
+        assert!(matches!(
+            fundamental.ingest_fundamentals(FundamentalsRequest {
+                symbol: "AAPL".to_string(),
+                statement: "income".to_string(),
+            }),
+            Err(AdapterError::NotConfigured {
+                capability: "ingest_fundamentals",
+                ..
+            })
+        ));
+
+        // Options import
+        let options = DatabentoAdapter;
+        assert!(matches!(
+            options.import_options(OptionsImportRequest {
+                underlying: "AAPL".to_string(),
+            }),
+            Err(AdapterError::NotConfigured {
+                capability: "import_options",
+                ..
+            })
+        ));
+
+        // User Parquet import
+        let parquet = UserParquetAdapter;
+        assert!(matches!(
+            parquet.import_user_parquet(UserParquetImportRequest {
+                path: "/tmp/data.parquet".to_string(),
+            }),
+            Err(AdapterError::NotConfigured {
+                capability: "import_user_parquet",
+                ..
+            })
+        ));
+
+        // Alternative data
+        let alt = FutureStubProvider;
+        assert!(matches!(
+            alt.fetch_alternative_data(AlternativeDataRequest {
+                dataset: "altdata".to_string(),
+            }),
+            Err(AdapterError::NotConfigured {
+                capability: "fetch_alternative_data",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn data_providers_share_data_provider_adapter_base() {
+        fn data_family<T: DataProviderAdapter>(adapter: &T) -> &'static str {
+            adapter.provider_family()
+        }
+        assert_eq!(data_family(&DatabentoAdapter), "data-provider");
+        assert_eq!(data_family(&SharadarAdapter), "data-provider");
+        assert_eq!(data_family(&UserParquetAdapter), "data-provider");
+        assert_eq!(data_family(&FutureStubProvider), "data-provider");
+    }
+
+    #[test]
+    fn unified_historical_data_interface_routes_through_historical_adapter() {
+        fn historical_name<T: HistoricalDataAdapter>(adapter: &T) -> &'static str {
+            adapter.provider_name()
+        }
+        // SRS-DATA-007: strategies/backtests/factor jobs query through a
+        // single trait without binding to a specific source provider.
+        assert_eq!(historical_name(&DatabentoAdapter), "databento");
+        assert_eq!(historical_name(&UserParquetAdapter), "user_parquet");
+        assert_eq!(historical_name(&InteractiveBrokersAdapter), "interactive_brokers");
+
+        let request = HistoricalDataRequest {
+            symbol: "AAPL".to_string(),
+            start: "2026-01-01".to_string(),
+            end: "2026-02-01".to_string(),
+            resolution: "1d".to_string(),
+        };
+        assert!(matches!(
+            DatabentoAdapter.historical_data(request.clone()),
+            Err(AdapterError::NotConfigured {
+                capability: "historical_data",
+                ..
+            })
+        ));
+        assert!(matches!(
+            UserParquetAdapter.historical_data(request),
+            Err(AdapterError::NotConfigured {
+                capability: "historical_data",
+                ..
+            })
+        ));
+    }
 }

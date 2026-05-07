@@ -35,6 +35,11 @@ class ArchitectureBoundaryTest(unittest.TestCase):
             "InteractiveBrokersAdapter documents IB TWS API version 10.45",
             result.stdout,
         )
+        self.assertIn(
+            "atp-adapters declares 7 data-provider methods across 5 traits",
+            result.stdout,
+        )
+        self.assertIn("DataProviderAdapter base", result.stdout)
 
     def test_srs_arch_002_dependency_boundary(self) -> None:
         result = subprocess.run(
