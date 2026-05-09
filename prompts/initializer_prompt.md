@@ -81,10 +81,24 @@ done.
       "Step 3: expected result to verify"
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "test_layer": "contract",
+    "safety_critical": false
   }
 ]
 ```
+
+**`test_layer`** must be one of: `unit | property | contract | boundary |
+integration | e2e | domain`. It tells the coding agent which `tests/<layer>/`
+directory the verification test should live in. When in doubt, default to
+`contract`.
+
+**`safety_critical`** is `true` for any feature that touches the kill
+switch, connectivity blocking, stale-data guard, live-mode promotion, or
+any other SRS-SAFE-* requirement. The deterministic critic
+(`tools/critic_check.py`) will BLOCK any commit that marks a
+`safety_critical: true` feature `passes: true` without a corresponding
+`tests/domain/` diff in the same commit.
 
 ### Priority levels
 
@@ -93,6 +107,38 @@ done.
 | P1 | Core — app is non-functional without this |
 | P2 | Important — significantly degrades experience if missing |
 | P3 | Nice-to-have — enhancement or edge case |
+
+---
+
+## Step 3.5 — Scaffold the test-layer directories
+
+Create the seven test-layer directories under `tests/`. Each catches a
+distinct class of bug (see plan at `~/.claude/plans/`). Empty `__init__.py`
+files only — no test code yet.
+
+```
+tests/
+  unit/__init__.py        # L1 — pure-function logic
+  property/__init__.py    # L2 — Hypothesis invariants
+  boundary/__init__.py    # L4 — wiring with stub adapters
+  integration/__init__.py # L5 — real containers (gated by ATP_RUN_INTEGRATION=1)
+  e2e/__init__.py         # L6 — Playwright / WebSocket
+  domain/__init__.py      # L7 — trading-system safety/invariant
+  conftest.py             # shared fixtures + auto-skip gates
+```
+
+L3 contract tests stay at the existing `tests/test_*.py` paths.
+
+Also create the harness scaffold for the Critic Agent (run-once):
+
+- `tools/critic_check.py` — deterministic mechanical checks
+- `tools/install_hooks.sh` — installs `.git/hooks/pre-commit`
+- `tools/run_ci_locally.sh` — local mirror of CI workflow
+- `prompts/critic_prompt.md` — judgment-layer prompt, portable across LLMs
+- `pyproject.toml` (root) — `[tool.pytest.ini_options]`, `[tool.ruff]`,
+  `[tool.mypy]` config + the seven test markers
+- `requirements-dev.txt` — pytest, hypothesis, playwright, testcontainers,
+  ruff, mypy, bandit, pip-audit
 
 ---
 
@@ -149,7 +195,7 @@ Date: [today's date]
 Status: Environment initialised. No features implemented.
 
 Actions taken:
-- Read docs/StRS.md, docs/SyRS.md, docs/SRS.md
+- Read docs/StRS_v0.7.md, docs/SyRS_v0.7.md, docs/SRS.md
 - Generated feature_list.json with [N] test cases
 - Created init.sh
 - Created AGENTS.md
@@ -188,8 +234,8 @@ Read it first. Follow the links. Do not guess.
 
 | Document | Path | Purpose |
 |----------|------|---------|
-| Stakeholder requirements | `docs/StRS.md` | Why we're building this |
-| System requirements | `docs/SyRS.md` | What the system must do |
+| Stakeholder requirements | `docs/StRS_v0.7.md` | Why we're building this |
+| System requirements | `docs/SyRS_v0.7.md` | What the system must do |
 | Software requirements | `docs/SRS.md` | How the software is structured |
 | Feature list | `feature_list.json` | Source of truth for all work |
 | Session log | `progress.txt` | Handoff notes between sessions |

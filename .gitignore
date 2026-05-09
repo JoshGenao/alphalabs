@@ -9,3 +9,26 @@ __pycache__/
 node_modules/
 target/
 data/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+.envrc
+*.key
+*.pem
+secrets.toml
+
+# Build / coverage artifacts
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+pytest.xml
+pytest-*.xml
+dist/
+build/
+*.egg-info/
+
+# Critic Agent local artifacts
+.critic_report.json

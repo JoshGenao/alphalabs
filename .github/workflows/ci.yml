@@ -1,0 +1,106 @@
+# Public-PR-safe CI. Runs on every push and pull_request (including from forks).
+# NO secrets are exposed here — secrets-bearing jobs live in integration.yml.
+#
+# Hardening checklist (see plan §Cybersecurity):
+#   - Trigger is `pull_request`, NOT `pull_request_target` (no base-repo secrets).
+#   - actions/checkout uses persist-credentials: false.
+#   - All actions SHOULD be pinned by full SHA before going public.
+#     Convert tags to SHAs with: pip install pin-github-action && pin-github-action .github/workflows/*.yml
+#     Until then, tags below are placeholders — DO NOT make the repo public until pinning is done.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0   # critic_check needs origin/main to diff against
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install -r requirements-dev.txt
+
+      - name: Lint — ruff check
+        run: ruff check .
+
+      - name: Lint — ruff format
+        run: ruff format --check .
+
+      - name: Typecheck — mypy
+        run: mypy python/
+        continue-on-error: true   # remove once strict typing lands across python/
+
+      - name: Pytest (L1 + L2 + L3 + L4 + L7 — gated layers excluded)
+        env:
+          ATP_RUN_INTEGRATION: "0"
+          ATP_RUN_E2E: "0"
+        run: pytest -m "not integration and not e2e" --junitxml=pytest.xml
+
+      - name: Architecture & contract checks
+        run: |
+          for check in architecture dependency_boundary adapter_isolation deployment config rest_api websocket_api cli adapter data_provider historical_data strategy_api; do
+            echo "→ tools/${check}_check.py"
+            python3 "tools/${check}_check.py"
+          done
+
+      - name: Critic — deterministic
+        run: python3 tools/critic_check.py --range origin/main..HEAD --format text
+
+      - name: Upload pytest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-report
+          path: pytest.xml
+          retention-days: 14
+
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace

@@ -1,0 +1,45 @@
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+pythonpath = ["python", "tools"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+markers = [
+    "unit: L1 — pure-function logic; fast, in-process, no I/O",
+    "property: L2 — Hypothesis/fuzz invariants",
+    "boundary: L4 — service-boundary wiring with stub adapters",
+    "contract: L3 — API/interface drift between Python and Rust",
+    "integration: L5 — real containers / real I/O (requires ATP_RUN_INTEGRATION=1)",
+    "e2e: L6 — end-to-end via Playwright / WebSocket",
+    "domain: L7 — trading-domain-specific safety/invariant tests",
+    "safety: SRS-SAFE-* paired test; must accompany kill-switch / connectivity / stale-data changes",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "target", "data", "node_modules"]
+
+[tool.ruff.lint]
+# Keep the ruff ruleset focused on style + likely-bugs.
+#   E,F = PEP-8 + pyflakes
+#   I   = import sorting
+#   B   = flake8-bugbear (likely-bug patterns)
+# Security (S) is handled by bandit in .github/workflows/security.yml — no
+# need to duplicate it here. pyupgrade (UP) is a future migration; opt in
+# once the codebase is uniformly Python 3.12+.
+select = ["E", "F", "I", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "python"
+exclude = ["target/", ".venv/", "data/"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*", "tools.*"]
+ignore_missing_imports = true

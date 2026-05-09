@@ -6,10 +6,28 @@ Read it first. Follow the links. Do not guess.
 ## Quick-start checklist (run at the start of every session)
 
 1. `pwd` - confirm working directory
-2. `./init.sh` - start dev server, verify environment
+2. `./init.sh` - start dev server, install hooks, verify environment
 3. `cat progress.txt` - read handoff from previous session
 4. `git log --oneline -20` - understand recent changes
 5. `cat feature_list.json | grep '"passes": false' | wc -l` - count remaining work
+
+## Pre-commit gate
+
+Two-layer Critic Agent runs before every commit. **Both must approve.**
+
+- **Layer 1 — deterministic** (`tools/critic_check.py`): mechanical regex/AST
+  checks for committed secrets, deleted/skipped tests, vendor-SDK leakage
+  into core, dependency-direction violations, and safety-critical changes
+  without paired `tests/domain/` diffs. Wired as a git pre-commit hook by
+  `tools/install_hooks.sh` (re-installed by `init.sh`).
+- **Layer 2 — judgment** (`prompts/critic_prompt.md`): LLM-driven
+  adversarial review. Run in a **fresh context** — sub-agent on Claude
+  Code, new chat on Codex, paste-into-anywhere for any other LLM. Same
+  JSON output schema as Layer 1.
+
+Coding agents must NEVER bypass with `ATP_CRITIC_BYPASS=1` or
+`--no-verify`. Only humans bypass; the env-var bypass is grep-able in
+shell history by design.
 
 ## Document map
 
@@ -21,6 +39,12 @@ Read it first. Follow the links. Do not guess.
 | Feature list | `feature_list.json` | Source of truth for all work |
 | Session log | `progress.txt` | Handoff notes between sessions |
 | Environment setup | `init.sh` | How to start and smoke-test the app |
+| Critic Agent | `tools/critic_check.py` + `prompts/critic_prompt.md` | Pre-commit review gate (deterministic + judgment) |
+| CI / CD | `.github/workflows/{ci,integration,security}.yml` | Mirror of local checks; secrets isolated to `integration` env |
+| Local CI mirror | `tools/run_ci_locally.sh` | Run the same step list as `ci.yml` before pushing |
+| Test layout | `tests/{unit,property,boundary,integration,e2e,domain}/` | One bug class per layer (L1–L7) |
+| Coding agent prompt | `prompts/coding_prompt.md` | Per-session workflow; includes Steps 5.5 (test layer) and 6.5 (critic) |
+| Initializer prompt | `prompts/initializer_prompt.md` | First-run scaffolding (test dirs, critic, CI) |
 
 ## Architecture overview
 

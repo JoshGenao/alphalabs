@@ -1,0 +1,107 @@
+# Integration + e2e workflow. THIS workflow has access to vendor API keys and
+# the IB paper account. Secret hygiene is enforced by three layers:
+#
+#   1. Triggers — only `workflow_dispatch`, `push` to main, and `pull_request_target`
+#      gated on the `safe-to-test` label being applied by a maintainer.
+#   2. The `integration` Environment in GitHub requires reviewer approval before
+#      jobs in this workflow can read its secrets.
+#   3. Forked PRs cannot apply labels to themselves — only repo maintainers can.
+#
+# See plan §Cybersecurity step 1 for why we do NOT use `pull_request_target`
+# without a label gate (it would expose secrets to fork-controlled code).
+
+name: integration
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request_target:
+    types: [labeled, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: Authorize fork PR
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name != 'pull_request_target' ||
+      contains(github.event.pull_request.labels.*.name, 'safe-to-test')
+    outputs:
+      ref: ${{ steps.set.outputs.ref }}
+    steps:
+      - id: set
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+            echo "ref=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  integration:
+    name: L5 + L6 (real I/O)
+    needs: guard
+    runs-on: ubuntu-latest
+    environment: integration   # forces "Required reviewers" gate before secrets unlock
+    steps:
+      - name: Checkout (PR head when label-gated)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.ref }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install -r requirements-dev.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Bring up Docker Compose stack
+        run: docker compose up -d
+        # docker-compose.yml exists at repo root per existing deployment_check
+
+      - name: Wait for services
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:3000/ >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+
+      - name: Run L5 integration tests
+        env:
+          ATP_RUN_INTEGRATION: "1"
+          DATABENTO_API_KEY: ${{ secrets.DATABENTO_API_KEY }}
+          SHARADAR_API_KEY: ${{ secrets.SHARADAR_API_KEY }}
+          IB_PAPER_USERNAME: ${{ secrets.IB_PAPER_USERNAME }}
+          IB_PAPER_PASSWORD: ${{ secrets.IB_PAPER_PASSWORD }}
+        run: pytest -m integration --junitxml=pytest-integration.xml
+
+      - name: Run L6 e2e tests
+        env:
+          ATP_RUN_E2E: "1"
+        run: pytest -m e2e --junitxml=pytest-e2e.xml
+
+      - name: Tear down Docker Compose stack
+        if: always()
+        run: docker compose down -v
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-reports
+          path: pytest-*.xml
+          retention-days: 30
