@@ -15,10 +15,9 @@ document is contract evidence only; runtime handlers are out of scope here.
 from __future__ import annotations
 
 import json
-from typing import Iterable, Mapping, MutableMapping, Tuple
+from collections.abc import Iterable, MutableMapping
 
 from .routes import AUTH_MODEL, BIND_HOST, ROUTES, Method, Route
-
 
 OPENAPI_TITLE = "ATP Operator REST API"
 """Document title surfaced under ``info.title`` in the OpenAPI snapshot."""
@@ -37,7 +36,7 @@ _PLACEHOLDER_DESCRIPTION = (
 )
 
 
-def _path_parameters(path: str) -> Tuple[str, ...]:
+def _path_parameters(path: str) -> tuple[str, ...]:
     """Extract ``{name}`` segments from a route path in declaration order."""
 
     parts: list[str] = []

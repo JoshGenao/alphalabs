@@ -15,7 +15,6 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python"))
 
@@ -28,7 +27,6 @@ from atp_config import (  # noqa: E402  (path manipulation must come first)
     merge_env,
     parse_env_example,
 )
-
 
 ENV_EXAMPLE_PATH = ROOT / ".env.example"
 

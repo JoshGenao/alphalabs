@@ -11,7 +11,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"
 

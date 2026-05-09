@@ -27,7 +27,6 @@ from .validate import (
     render_failures,
 )
 
-
 __all__ = [
     "CATEGORIES",
     "Category",

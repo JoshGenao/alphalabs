@@ -31,7 +31,6 @@ from .channels import (
     commands_by_type,
 )
 
-
 __all__ = [
     "ASYNCAPI_SPEC",
     "ASYNCAPI_TITLE",

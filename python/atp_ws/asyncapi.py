@@ -18,7 +18,7 @@ evidence only; runtime publishers are out of scope here.
 from __future__ import annotations
 
 import json
-from typing import Iterable, MutableMapping, Tuple
+from collections.abc import Iterable, MutableMapping
 
 from .channels import (
     AUTH_MODEL,
@@ -32,7 +32,6 @@ from .channels import (
     EventChannel,
     MessageType,
 )
-
 
 ASYNCAPI_TITLE = "ATP Operator WebSocket API"
 """Document title surfaced under ``info.title`` in the AsyncAPI snapshot."""
@@ -141,7 +140,7 @@ def _build_event_channel(channel: EventChannel) -> dict:
     }
 
 
-def _build_control_channel(commands: Tuple[ClientCommand, ...]) -> dict:
+def _build_control_channel(commands: tuple[ClientCommand, ...]) -> dict:
     return {
         "description": (
             "Multiplexed client-to-server control plane: SUBSCRIBE, "

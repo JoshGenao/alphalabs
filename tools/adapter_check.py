@@ -24,8 +24,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable
-
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"

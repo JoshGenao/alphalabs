@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Sequence
+from collections.abc import Sequence
 
 from .commands import (
     ACCESS_MODEL,
@@ -32,7 +32,6 @@ from .commands import (
     Group,
     find_command,
 )
-
 
 _CONTRACT_NOTE = (
     "API-4 contract surface: handler not yet wired. Real behaviour "

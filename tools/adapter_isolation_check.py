@@ -11,9 +11,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
-
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"

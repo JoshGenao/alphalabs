@@ -9,10 +9,9 @@ import shutil
 import sys
 import tempfile
 import tomllib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
-
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"

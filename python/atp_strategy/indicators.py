@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Deque
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .api import Bar
@@ -67,10 +67,10 @@ class SMA(_IndicatorBase):
         if period < 1:
             raise ValueError("period must be >= 1")
         self.period = period
-        self._window: Deque[float] = deque(maxlen=period)
+        self._window: deque[float] = deque(maxlen=period)
         self._sum = 0.0
 
-    def update(self, bar: "Bar") -> float | None:
+    def update(self, bar: Bar) -> float | None:
         if len(self._window) == self.period:
             self._sum -= self._window[0]
         self._window.append(bar.close)
@@ -102,7 +102,7 @@ class EMA(_IndicatorBase):
         self._count = 0
         self._sum = 0.0
 
-    def update(self, bar: "Bar") -> float | None:
+    def update(self, bar: Bar) -> float | None:
         self._count += 1
         if self._count < self.period:
             self._sum += bar.close
@@ -140,7 +140,7 @@ class RSI(_IndicatorBase):
         self._avg_gain = 0.0
         self._avg_loss = 0.0
 
-    def update(self, bar: "Bar") -> float | None:
+    def update(self, bar: Bar) -> float | None:
         close = bar.close
         if self._prev_close is None:
             self._prev_close = close
@@ -224,7 +224,7 @@ class MACD:
     def is_ready(self) -> bool:
         return self._ready
 
-    def update(self, bar: "Bar") -> float | None:
+    def update(self, bar: Bar) -> float | None:
         self._fast.update(bar)
         self._slow.update(bar)
         if not (self._fast.is_ready and self._slow.is_ready):
@@ -274,7 +274,7 @@ class BollingerBands:
             raise ValueError("period must be >= 2")
         self.period = period
         self.num_std = num_std
-        self._window: Deque[float] = deque(maxlen=period)
+        self._window: deque[float] = deque(maxlen=period)
         self._value: BollingerValue | None = None
         self._ready = False
 
@@ -293,7 +293,7 @@ class BollingerBands:
     def is_ready(self) -> bool:
         return self._ready
 
-    def update(self, bar: "Bar") -> float | None:
+    def update(self, bar: Bar) -> float | None:
         self._window.append(bar.close)
         if len(self._window) < self.period:
             return None
@@ -329,7 +329,7 @@ class ATR(_IndicatorBase):
         self._prev_close: float | None = None
         self._trs: list[float] = []
 
-    def update(self, bar: "Bar") -> float | None:
+    def update(self, bar: Bar) -> float | None:
         if self._prev_close is None:
             tr = bar.high - bar.low
         else:

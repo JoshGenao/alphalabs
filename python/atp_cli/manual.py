@@ -18,7 +18,7 @@ scope here.
 from __future__ import annotations
 
 import json
-from typing import Iterable, MutableMapping
+from collections.abc import Iterable, MutableMapping
 
 from .commands import (
     ACCESS_MODEL,
@@ -31,7 +31,6 @@ from .commands import (
     ExitCode,
     Group,
 )
-
 
 MANUAL_TITLE = "ATP Operator CLI"
 """Document title surfaced under ``info.title`` in the JSON manual."""

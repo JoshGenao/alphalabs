@@ -25,8 +25,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Tuple
-
 
 # --------------------------------------------------------------------------- #
 # Auth and bind policy  [SRS-SEC-002]
@@ -134,9 +132,9 @@ class Route:
     path: str
     capability: Capability
     summary: str
-    srs_refs: Tuple[str, ...]
-    request_fields: Tuple[str, ...] = field(default_factory=tuple)
-    response_fields: Tuple[str, ...] = field(default_factory=tuple)
+    srs_refs: tuple[str, ...]
+    request_fields: tuple[str, ...] = field(default_factory=tuple)
+    response_fields: tuple[str, ...] = field(default_factory=tuple)
     requires_confirmation: bool = False
 
 
@@ -145,7 +143,7 @@ class Route:
 # --------------------------------------------------------------------------- #
 
 
-ROUTES: Tuple[Route, ...] = (
+ROUTES: tuple[Route, ...] = (
     # ----- Strategy lifecycle  [SRS-ORCH-004, SRS-ORCH-005, SYS-2c, SYS-79, SYS-80]
     Route(
         method=Method.GET,
@@ -359,7 +357,7 @@ ROUTES: Tuple[Route, ...] = (
 )
 
 
-def routes_by_capability(capability: Capability) -> Tuple[Route, ...]:
+def routes_by_capability(capability: Capability) -> tuple[Route, ...]:
     """Return every route declared for the given capability bucket.
 
     Example:

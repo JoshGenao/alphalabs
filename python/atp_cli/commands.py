@@ -30,8 +30,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
-from typing import Tuple
-
 
 # --------------------------------------------------------------------------- #
 # Access policy  [SRS-SEC-002, StRS C-6]
@@ -183,9 +181,9 @@ class Command:
     group: Group
     name: str
     summary: str
-    srs_refs: Tuple[str, ...]
-    arguments: Tuple[Argument, ...] = field(default_factory=tuple)
-    exit_codes: Tuple[ExitCode, ...] = (ExitCode.OK,)
+    srs_refs: tuple[str, ...]
+    arguments: tuple[Argument, ...] = field(default_factory=tuple)
+    exit_codes: tuple[ExitCode, ...] = (ExitCode.OK,)
     requires_confirmation: bool = False
 
     @property
@@ -225,7 +223,7 @@ _JSON = Argument(
 )
 
 
-COMMANDS: Tuple[Command, ...] = (
+COMMANDS: tuple[Command, ...] = (
     # ----- Kill switch  [SRS-SAFE-001, SYS-44a, SYS-44b, NFR-P3]
     Command(
         group=Group.KILL_SWITCH,
@@ -512,7 +510,7 @@ COMMANDS: Tuple[Command, ...] = (
 )
 
 
-def commands_by_group(group: Group) -> Tuple[Command, ...]:
+def commands_by_group(group: Group) -> tuple[Command, ...]:
     """Return every command declared for the given group bucket.
 
     Example:

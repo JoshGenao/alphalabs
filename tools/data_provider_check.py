@@ -29,7 +29,6 @@ from pathlib import Path
 
 from adapter_check import _trait_block
 
-
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"
 

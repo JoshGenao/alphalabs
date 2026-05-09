@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 import unittest
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = ROOT / "tools"
@@ -15,7 +13,6 @@ CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
-import adapter_check  # noqa: E402
 from adapter_check import (  # noqa: E402
     AdapterContractError,
     adapter_contract,

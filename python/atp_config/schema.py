@@ -13,7 +13,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _RUNTIME_SERVICES_PATH = (
     _PACKAGE_DIR.parents[1] / "architecture" / "runtime_services.json"
@@ -66,7 +65,7 @@ class KeySpec:
     srs_trace: tuple[str, ...]
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "KeySpec":
+    def from_dict(cls, raw: dict[str, Any]) -> KeySpec:
         return cls(
             name=raw["name"],
             category=Category(raw["category"]),

@@ -6,7 +6,6 @@ import sys
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = ROOT / "python"
 
@@ -21,7 +20,6 @@ from atp_config import (  # noqa: E402
     Category,
     KeyType,
     ReadinessFailure,
-    ReadinessReport,
     Severity,
     load_and_validate,
 )

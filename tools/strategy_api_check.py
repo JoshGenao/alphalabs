@@ -18,7 +18,6 @@ import sys
 import typing
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = ROOT / "python"
 README_PATH = ROOT / "python" / "atp_strategy" / "README.md"

@@ -31,7 +31,6 @@ from .manual import (
 )
 from .runner import build_parser, main
 
-
 __all__ = [
     "ACCESS_MODEL",
     "AUTH_MODEL",

@@ -15,9 +15,10 @@ SRS trace
 from __future__ import annotations
 
 import datetime as _dt
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Callable, Iterable, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from .indicators import (
     ATR,
@@ -27,7 +28,6 @@ from .indicators import (
     SMA,
     BollingerBands,
 )
-
 
 # --------------------------------------------------------------------------- #
 # Asset class and configuration  [SRS-SDK-001, SRS-SDK-003, SRS-SDK-005]

@@ -28,10 +28,8 @@ event-level traces to ``SYS-36``..``SYS-39``, ``SYS-39a``, ``SYS-41``,
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import Tuple
-
 
 # --------------------------------------------------------------------------- #
 # Auth and bind policy  [SRS-SEC-002]
@@ -165,8 +163,8 @@ class EventChannel:
 
     name: Channel
     summary: str
-    srs_refs: Tuple[str, ...]
-    payload_fields: Tuple[str, ...]
+    srs_refs: tuple[str, ...]
+    payload_fields: tuple[str, ...]
     refresh_seconds: int = 5
     requires_subscription: bool = True
 
@@ -197,8 +195,8 @@ class ClientCommand:
 
     type: MessageType
     summary: str
-    srs_refs: Tuple[str, ...]
-    request_fields: Tuple[str, ...]
+    srs_refs: tuple[str, ...]
+    request_fields: tuple[str, ...]
     response_message: MessageType
 
 
@@ -207,7 +205,7 @@ class ClientCommand:
 # --------------------------------------------------------------------------- #
 
 
-EVENT_CHANNELS: Tuple[EventChannel, ...] = (
+EVENT_CHANNELS: tuple[EventChannel, ...] = (
     EventChannel(
         name=Channel.PNL,
         summary="Live profit-and-loss updates per active strategy.",
@@ -330,7 +328,7 @@ EVENT_CHANNELS: Tuple[EventChannel, ...] = (
 # --------------------------------------------------------------------------- #
 
 
-CLIENT_COMMANDS: Tuple[ClientCommand, ...] = (
+CLIENT_COMMANDS: tuple[ClientCommand, ...] = (
     ClientCommand(
         type=MessageType.SUBSCRIBE,
         summary="Subscribe to one or more event channels on the same socket.",
@@ -355,7 +353,7 @@ CLIENT_COMMANDS: Tuple[ClientCommand, ...] = (
 )
 
 
-def channels_by_name(name: Channel) -> Tuple[EventChannel, ...]:
+def channels_by_name(name: Channel) -> tuple[EventChannel, ...]:
     """Return every event channel matching the given :class:`Channel`.
 
     Example:
@@ -366,7 +364,7 @@ def channels_by_name(name: Channel) -> Tuple[EventChannel, ...]:
     return tuple(channel for channel in EVENT_CHANNELS if channel.name is name)
 
 
-def commands_by_type(message_type: MessageType) -> Tuple[ClientCommand, ...]:
+def commands_by_type(message_type: MessageType) -> tuple[ClientCommand, ...]:
     """Return every client command matching the given :class:`MessageType`.
 
     Example:

@@ -24,7 +24,6 @@ from .routes import (
     routes_by_capability,
 )
 
-
 __all__ = [
     "AUTH_MODEL",
     "BIND_HOST",

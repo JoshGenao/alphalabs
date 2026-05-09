@@ -6,7 +6,6 @@ import sys
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = ROOT / "python"
 
@@ -15,6 +14,7 @@ if str(PYTHON_ROOT) not in sys.path:
 
 import atp_strategy  # noqa: E402
 from atp_strategy import (  # noqa: E402
+    SMA,
     AssetClass,
     AssetClassViolation,
     Bar,
@@ -22,7 +22,6 @@ from atp_strategy import (  # noqa: E402
     OrderRequest,
     OrderSide,
     OrderType,
-    SMA,
     Strategy,
     StrategyConfig,
     StrategyContext,

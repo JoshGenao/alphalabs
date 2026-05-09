@@ -23,7 +23,6 @@ from historical_data_check import (
     assert_unified_historical_data_static,
 )
 
-
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"
 COMPOSE_PATH = ROOT / "docker-compose.yml"

@@ -7,7 +7,6 @@ import sys
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = ROOT / "python"
 SNAPSHOT_PATH = ROOT / "python" / "atp_api" / "openapi.json"
@@ -19,9 +18,9 @@ import atp_api  # noqa: E402
 from atp_api import (  # noqa: E402
     AUTH_MODEL,
     BIND_HOST,
+    ROUTES,
     Capability,
     Method,
-    ROUTES,
     Route,
     build_openapi,
     render_snapshot,

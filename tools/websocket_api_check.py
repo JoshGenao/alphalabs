@@ -20,9 +20,8 @@ from __future__ import annotations
 import argparse
 import importlib
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
-
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = ROOT / "python"
