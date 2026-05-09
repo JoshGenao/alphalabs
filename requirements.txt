@@ -1,0 +1,3 @@
+# ATP Python runtime dependencies.
+# Add packages here as features land (e.g. pandas-ta for SRS-SDK-006,
+# ib_insync for the IB adapter, databento for DATA-1).

@@ -1,3 +1,6 @@
+.claude/
+.vscode/
+
 .DS_Store
 .devserver.pid
 .devserver.log
