@@ -20,7 +20,10 @@ mod tests {
     #[test]
     fn identifies_market_data_subscription_manager() {
         let manager = MarketDataSubscriptionManager;
-        assert_eq!(manager.service(), RuntimeService::MarketDataSubscriptionManager);
+        assert_eq!(
+            manager.service(),
+            RuntimeService::MarketDataSubscriptionManager
+        );
         assert!(manager.owns_subscription_fanout());
     }
 }

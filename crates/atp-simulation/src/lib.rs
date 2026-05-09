@@ -10,7 +10,10 @@ impl InternalSimulationEngine {
     }
 
     pub fn accepts_paper_boundary(&self, boundary: &StrategyRuntimeBoundary) -> String {
-        format!("paper-simulation-boundary:{}", boundary.strategy_id().as_str())
+        format!(
+            "paper-simulation-boundary:{}",
+            boundary.strategy_id().as_str()
+        )
     }
 }
 

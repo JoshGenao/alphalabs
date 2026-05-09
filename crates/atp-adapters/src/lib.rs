@@ -554,7 +554,10 @@ mod tests {
         let adapter = InteractiveBrokersAdapter;
         let version = adapter.version();
         assert_eq!(version.protocol_label, "IB TWS API");
-        assert_eq!(version.protocol_version, INTERACTIVE_BROKERS_TWS_API_VERSION);
+        assert_eq!(
+            version.protocol_version,
+            INTERACTIVE_BROKERS_TWS_API_VERSION
+        );
         assert_eq!(version.protocol_version, "10.45");
         assert!(!version.adapter_version.is_empty());
     }
@@ -671,7 +674,10 @@ mod tests {
         // single trait without binding to a specific source provider.
         assert_eq!(historical_name(&DatabentoAdapter), "databento");
         assert_eq!(historical_name(&UserParquetAdapter), "user_parquet");
-        assert_eq!(historical_name(&InteractiveBrokersAdapter), "interactive_brokers");
+        assert_eq!(
+            historical_name(&InteractiveBrokersAdapter),
+            "interactive_brokers"
+        );
 
         let request = HistoricalDataRequest {
             symbol: "AAPL".to_string(),

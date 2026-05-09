@@ -25,6 +25,9 @@ mod tests {
         let boundary = StrategyRuntimeBoundary::new(StrategyId::new("live-1"), DataLayer);
         let engine = ExecutionEngine;
         assert_eq!(engine.service(), RuntimeService::ExecutionEngine);
-        assert_eq!(engine.accepts_live_boundary(&boundary), "live-order-boundary:live-1");
+        assert_eq!(
+            engine.accepts_live_boundary(&boundary),
+            "live-order-boundary:live-1"
+        );
     }
 }
