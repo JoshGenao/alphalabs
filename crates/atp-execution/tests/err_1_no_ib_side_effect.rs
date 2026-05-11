@@ -4,13 +4,21 @@
 //!
 //! L7 domain (safety) test. The spy `BrokerageSpy` counts every
 //! `submit_order` invocation; the post-condition is exactly zero calls.
+//!
+//! ERR-2 (SRS-SAFE-003 / SRS-MD-005) added a connectivity gate to
+//! `submit_live_order`. The Paper-mode rejection must remain independent of
+//! connectivity state, so this file uses a `ForbiddenConnectivity` stub that
+//! panics if the engine consults it during a Paper submission — proving the
+//! Paper rejection short-circuits before the connectivity port is reached.
 
-use atp_execution::{ExecutionEngine, LiveBrokerageSubmit};
-use atp_types::{
-    OrderErrorCategory, OrderReceipt, OrderSubmission, StrategyId, StrategyMode,
-    StructuredOrderError,
+use atp_execution::{
+    BrokerageConnectivity, ConnectivityEventSink, ExecutionEngine, LiveBrokerageSubmit,
 };
-use std::cell::Cell;
+use atp_types::{
+    ConnectivityEvent, ConnectivityState, OrderErrorCategory, OrderReceipt, OrderSubmission,
+    StrategyId, StrategyMode, StructuredOrderError,
+};
+use std::cell::{Cell, RefCell};
 
 #[derive(Default)]
 struct BrokerageSpy {
@@ -29,6 +37,43 @@ impl LiveBrokerageSubmit for BrokerageSpy {
     }
 }
 
+/// Always-connected connectivity stub used by the Live control test.
+struct AlwaysConnected;
+
+impl BrokerageConnectivity for AlwaysConnected {
+    fn state(&self) -> ConnectivityState {
+        ConnectivityState::Connected
+    }
+
+    fn request_reconnect(&self) {}
+}
+
+/// Connectivity stub that panics if the engine consults it. Used by the
+/// Paper-rejection tests to prove ERR-1's short-circuit is independent of
+/// the ERR-2 connectivity gate.
+struct ForbiddenConnectivity;
+
+impl BrokerageConnectivity for ForbiddenConnectivity {
+    fn state(&self) -> ConnectivityState {
+        panic!("ERR-1: Paper submissions must not consult the connectivity port");
+    }
+
+    fn request_reconnect(&self) {
+        panic!("ERR-1: Paper submissions must not trigger a reconnect");
+    }
+}
+
+#[derive(Default)]
+struct EventSinkSpy {
+    events: RefCell<Vec<ConnectivityEvent>>,
+}
+
+impl ConnectivityEventSink for EventSinkSpy {
+    fn record(&self, event: ConnectivityEvent) {
+        self.events.borrow_mut().push(event);
+    }
+}
+
 fn submission(strategy: &str, symbol: &str, qty: i64) -> OrderSubmission {
     OrderSubmission {
         strategy_id: StrategyId::new(strategy),
@@ -41,9 +86,17 @@ fn submission(strategy: &str, symbol: &str, qty: i64) -> OrderSubmission {
 fn err_1_paper_strategy_is_rejected_with_no_broker_call() {
     let engine = ExecutionEngine;
     let spy = BrokerageSpy::default();
+    let connectivity = ForbiddenConnectivity;
+    let events = EventSinkSpy::default();
     let order = submission("paper-mean-rev-7", "AAPL", 100);
 
-    let outcome = engine.submit_live_order(StrategyMode::Paper, order.clone(), &spy);
+    let outcome = engine.submit_live_order(
+        StrategyMode::Paper,
+        order.clone(),
+        &spy,
+        &connectivity,
+        &events,
+    );
 
     let error = outcome.expect_err("ERR-1: paper submissions must NOT succeed on the live path");
     assert_eq!(
@@ -69,6 +122,10 @@ fn err_1_paper_strategy_is_rejected_with_no_broker_call() {
         0,
         "no IB order side effect — spy must have observed zero submit_order calls"
     );
+    assert!(
+        events.events.borrow().is_empty(),
+        "Paper rejection must not emit a connectivity event"
+    );
 }
 
 #[test]
@@ -77,6 +134,8 @@ fn err_1_holds_for_many_paper_submissions() {
     // Paper submission must never reach the brokerage port.
     let engine = ExecutionEngine;
     let spy = BrokerageSpy::default();
+    let connectivity = ForbiddenConnectivity;
+    let events = EventSinkSpy::default();
     let cases = [
         ("paper-1", "AAPL", 1),
         ("paper-1", "AAPL", -1),
@@ -87,7 +146,13 @@ fn err_1_holds_for_many_paper_submissions() {
     for (strategy, symbol, qty) in cases {
         let order = submission(strategy, symbol, qty);
         let err = engine
-            .submit_live_order(StrategyMode::Paper, order.clone(), &spy)
+            .submit_live_order(
+                StrategyMode::Paper,
+                order.clone(),
+                &spy,
+                &connectivity,
+                &events,
+            )
             .expect_err("paper submissions are always blocked on the live path");
         assert_eq!(err.category, OrderErrorCategory::NonLiveStrategySubmission);
         assert_eq!(err.original_order, order);
@@ -98,6 +163,7 @@ fn err_1_holds_for_many_paper_submissions() {
         "no IB order side effect across {} paper submissions",
         cases.len()
     );
+    assert!(events.events.borrow().is_empty());
 }
 
 #[test]
@@ -107,12 +173,15 @@ fn err_1_live_strategy_still_routes_through_the_broker() {
     // "no orders ever go through" and silently break the live path.
     let engine = ExecutionEngine;
     let spy = BrokerageSpy::default();
+    let connectivity = AlwaysConnected;
+    let events = EventSinkSpy::default();
     let order = submission("live-alpha-1", "AAPL", 10);
 
     let receipt = engine
-        .submit_live_order(StrategyMode::Live, order, &spy)
+        .submit_live_order(StrategyMode::Live, order, &spy, &connectivity, &events)
         .expect("live submissions must reach the brokerage port");
 
     assert_eq!(receipt.broker_order_id, "ib-AAPL");
     assert_eq!(spy.calls.get(), 1);
+    assert!(events.events.borrow().is_empty());
 }

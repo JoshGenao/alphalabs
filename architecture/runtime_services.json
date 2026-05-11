@@ -653,6 +653,78 @@
       "NonLiveStrategySubmission"
     ]
   },
+  "connectivity_contract": {
+    "requirement": "ERR-2",
+    "srs_refs": [
+      "SRS-SAFE-003",
+      "SRS-MD-005"
+    ],
+    "syrs_refs": [
+      "SYS-45",
+      "SYS-46",
+      "NFR-R2"
+    ],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "execution_crate": {
+      "crate": "atp-execution",
+      "path": "crates/atp-execution"
+    },
+    "connectivity_state": {
+      "enum": "ConnectivityState",
+      "variants": [
+        "Connected",
+        "Unreachable",
+        "ScheduledRestartWindow"
+      ]
+    },
+    "connectivity_event": {
+      "struct": "ConnectivityEvent",
+      "required_fields": [
+        "state",
+        "strategy_id",
+        "symbol",
+        "scheduled_restart"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "vendor",
+        "provider"
+      ]
+    },
+    "brokerage_connectivity_port": {
+      "trait": "BrokerageConnectivity",
+      "methods": [
+        "state",
+        "request_reconnect"
+      ]
+    },
+    "connectivity_event_sink_port": {
+      "trait": "ConnectivityEventSink",
+      "methods": [
+        "record"
+      ]
+    },
+    "entry_point": {
+      "method": "submit_live_order",
+      "type": "ExecutionEngine"
+    },
+    "guard": {
+      "state_enum": "ConnectivityState",
+      "connected_variant": "Connected",
+      "blocked_variants": [
+        "Unreachable",
+        "ScheduledRestartWindow"
+      ],
+      "broker_call": "broker.submit_order",
+      "event_call": "events.record",
+      "reconnect_call": "connectivity.request_reconnect"
+    },
+    "rejection_category": "ConnectivityBlocked"
+  },
   "deployment": {
     "requirement": "SRS-ARCH-004",
     "target": "Phase 1 Proxmox Ubuntu VM",

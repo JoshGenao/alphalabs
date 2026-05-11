@@ -59,6 +59,17 @@ class ArchitectureBoundaryTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("ERR-1, SRS-EXE-001 + SRS-ERR-001", result.stdout)
+        # ERR-2 / SRS-SAFE-003 / SRS-MD-005 connectivity safety gate.
+        self.assertIn(
+            "atp-execution gates live submissions on ConnectivityState",
+            result.stdout,
+        )
+        self.assertIn("3 states", result.stdout)
+        self.assertIn(
+            "publishing ConnectivityEvent + invoking `connectivity.request_reconnect`",
+            result.stdout,
+        )
+        self.assertIn("ERR-2, SRS-SAFE-003 + SRS-MD-005", result.stdout)
 
     def test_srs_arch_002_dependency_boundary(self) -> None:
         result = subprocess.run(

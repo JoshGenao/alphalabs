@@ -307,3 +307,69 @@ The contract lands the rejection vocabulary; the live IB routing
 pipeline, idempotency / correlation-ID handling, and per-category
 adapter-error mapping arrive with later EXE-* and ERR-2..ERR-9
 features.
+
+`ERR-2` (live-path connectivity gate, SRS-SAFE-003 + SRS-MD-005 +
+SyRS SYS-45 / SYS-46 / NFR-R2) is enforced by the
+`connectivity_contract` block in
+`architecture/runtime_services.json`, additional types in
+`crates/atp-types/src/lib.rs`, and a nested match in
+`ExecutionEngine::submit_live_order` inside
+`crates/atp-execution/src/lib.rs`. The catalogue declares the
+connectivity-safety vocabulary the live execution path consults on
+every submission:
+
+- `ConnectivityState { Connected, Unreachable, ScheduledRestartWindow }`
+  types the IB-Gateway readiness state. `Unreachable` is the
+  SRS-SAFE-003 connectivity-loss path; `ScheduledRestartWindow` is the
+  SRS-MD-005 daily-restart suspension window.
+- `ConnectivityEvent { state, strategy_id, symbol, scheduled_restart }`
+  is the structured payload the engine publishes whenever it blocks a
+  live submission. `scheduled_restart` is true iff the state is
+  `ScheduledRestartWindow`, so notification dispatchers / dashboards
+  can apply SRS-MD-005's suppression rule without re-inspecting the
+  enum. The contract refuses any `broker`, `ib_session_id`, `vendor`,
+  or `provider` leak on the event payload.
+- `BrokerageConnectivity { state, request_reconnect }` is the port the
+  execution engine consults at every live submission. The
+  implementation (later: the IB adapter wired by the orchestrator)
+  owns the actual TCP probe / readiness check / restart-window
+  detection. Keeping the port at the execution layer preserves the
+  SRS-ARCH-002 dependency direction.
+- `ConnectivityEventSink { record }` is the publication channel for
+  the structured event; concrete sinks route it to logs, the dashboard
+  WebSocket (`ALERTS` / `ACCOUNT_STATUS` channels), and the
+  notification dispatcher (SRS-NOTIF-001).
+- Inside the `StrategyMode::Live` arm of `submit_live_order`, a nested
+  match on `connectivity.state()` routes `Connected` to
+  `broker.submit_order(...)` and routes `Unreachable` /
+  `ScheduledRestartWindow` to a synchronous rejection that emits
+  `OrderErrorCategory::ConnectivityBlocked` (wire string
+  `CONNECTIVITY_BLOCKED`), records a `ConnectivityEvent`, and calls
+  `connectivity.request_reconnect()` — all with zero broker
+  invocations. The
+  `crates/atp-execution/tests/err_2_connectivity_blocked.rs`
+  integration test pins this with spy implementations of all three
+  ports.
+
+```bash
+python3 tools/connectivity_check.py
+```
+
+`tools/connectivity_check.py` parses the Rust source for the
+`ConnectivityState` enum and the `ConnectivityEvent` struct (rejecting
+forbidden broker/session/vendor fields), the two port traits, and the
+match-arm gating that keeps `broker.submit_order` exclusively on the
+`Connected` sub-arm of the `Live` match. It then runs
+`cargo test -p atp-execution --lib` plus the
+`err_2_connectivity_blocked` integration test end-to-end. The
+`architecture_check.py` path short-circuits the cargo step via
+`assert_connectivity_static`, mirroring the API-5 / API-6 / API-7 /
+ERR-1 split.
+
+ERR-2 lands the connectivity gate at the execution layer; the
+production IB-Gateway TCP probe / readiness check / daily-restart
+detection lands with later EXE-* and IB-adapter features. The
+notification dispatcher fan-out (email + SMS within 60 s,
+SRS-NOTIF-001) and the dashboard WebSocket subscription that surfaces
+the `ConnectivityEvent` to operators arrive with NOTIF-1 and UI-*
+features respectively.

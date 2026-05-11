@@ -140,6 +140,47 @@ impl fmt::Display for StructuredOrderError {
 
 impl std::error::Error for StructuredOrderError {}
 
+// --------------------------------------------------------------------------- //
+// IB Gateway connectivity state and structured event (SRS-SAFE-003, SRS-MD-005)
+// --------------------------------------------------------------------------- //
+//
+// `ConnectivityState` types the three states the live execution path must
+// distinguish between when deciding whether a Live submission may reach the
+// brokerage port:
+//   * `Connected` — IB Gateway is reachable and the readiness checks pass.
+//   * `Unreachable` — IB connectivity is lost (SRS-SAFE-003); live submissions
+//     must be rejected with `CONNECTIVITY_BLOCKED` until reconnection.
+//   * `ScheduledRestartWindow` — the configured daily restart window is
+//     active (SRS-MD-005); submissions are suspended and normal connectivity
+//     notifications are suppressed for the configured window.
+//
+// `ConnectivityEvent` is the structured payload published whenever a live
+// submission is blocked. It carries the state, the submitting strategy, the
+// symbol, and a `scheduled_restart` flag so dashboards and notification
+// dispatchers can apply SRS-MD-005's suppression rule without re-inspecting
+// the enum.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConnectivityState {
+    Connected,
+    Unreachable,
+    ScheduledRestartWindow,
+}
+
+impl ConnectivityState {
+    pub const fn is_blocked(self) -> bool {
+        matches!(self, Self::Unreachable | Self::ScheduledRestartWindow)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectivityEvent {
+    pub state: ConnectivityState,
+    pub strategy_id: StrategyId,
+    pub symbol: String,
+    pub scheduled_restart: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +227,53 @@ mod tests {
             OrderErrorCategory::NonLiveStrategySubmission.as_str(),
             "NON_LIVE_STRATEGY_SUBMISSION"
         );
+    }
+
+    #[test]
+    fn connectivity_state_distinguishes_connected_from_blocked_states() {
+        // SRS-SAFE-003: Unreachable must block live submissions.
+        // SRS-MD-005: ScheduledRestartWindow must also block (and suppress
+        // normal connectivity notifications for the configured window).
+        assert!(!ConnectivityState::Connected.is_blocked());
+        assert!(ConnectivityState::Unreachable.is_blocked());
+        assert!(ConnectivityState::ScheduledRestartWindow.is_blocked());
+    }
+
+    #[test]
+    fn connectivity_event_carries_only_the_four_required_fields() {
+        // The exhaustive destructure proves there are no other public fields
+        // (i.e. nothing that could leak a broker / vendor / IB session id).
+        let event = ConnectivityEvent {
+            state: ConnectivityState::Unreachable,
+            strategy_id: StrategyId::new("live-alpha"),
+            symbol: "AAPL".to_string(),
+            scheduled_restart: false,
+        };
+        let ConnectivityEvent {
+            state: _,
+            strategy_id: _,
+            symbol: _,
+            scheduled_restart: _,
+        } = event.clone();
+        assert_eq!(event.state, ConnectivityState::Unreachable);
+        assert_eq!(event.strategy_id.as_str(), "live-alpha");
+        assert_eq!(event.symbol, "AAPL");
+        assert!(!event.scheduled_restart);
+    }
+
+    #[test]
+    fn connectivity_event_marks_scheduled_restart_window_for_suppression() {
+        // SRS-MD-005: the scheduled_restart flag lets the dashboard and
+        // notification dispatcher recognize the suppression window without
+        // re-inspecting the ConnectivityState enum.
+        let event = ConnectivityEvent {
+            state: ConnectivityState::ScheduledRestartWindow,
+            strategy_id: StrategyId::new("live-alpha"),
+            symbol: "MSFT".to_string(),
+            scheduled_restart: true,
+        };
+        assert!(event.scheduled_restart);
+        assert_eq!(event.state, ConnectivityState::ScheduledRestartWindow);
     }
 
     #[test]
