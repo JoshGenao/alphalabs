@@ -3,6 +3,7 @@
 Property test: across any random sequence of `live promote` / `stop` /
 `rollback` calls, the orchestrator never reports two strategies in live mode.
 """
+
 from __future__ import annotations
 
 try:

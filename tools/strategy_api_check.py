@@ -78,7 +78,9 @@ def check_sdk_002(api: object) -> str:
         fail("SDK-002: ScheduleHandle must expose cancel()")
     cal_methods = {"is_session", "session_open", "session_close", "is_early_close"}
     if not cal_methods.issubset(_proto_methods(api.TradingCalendar)):
-        fail(f"SDK-002: TradingCalendar missing {sorted(cal_methods - _proto_methods(api.TradingCalendar))}")
+        fail(
+            f"SDK-002: TradingCalendar missing {sorted(cal_methods - _proto_methods(api.TradingCalendar))}"
+        )
     instance = api.StaticTradingCalendar()
     if instance.name != "NYSE":
         fail("SDK-002: StaticTradingCalendar.name must default to 'NYSE'")
@@ -117,7 +119,9 @@ def check_sdk_004(api: object) -> str:
     }
     if not required.issubset(fields):
         fail(f"SDK-004: OrderEvent missing fields {sorted(required - fields)}")
-    return "SDK-004: OrderEventType{FILL,PARTIAL_FILL,CANCELLED,REJECTED}; OrderEvent fields complete"
+    return (
+        "SDK-004: OrderEventType{FILL,PARTIAL_FILL,CANCELLED,REJECTED}; OrderEvent fields complete"
+    )
 
 
 def check_sdk_005(api: object) -> str:

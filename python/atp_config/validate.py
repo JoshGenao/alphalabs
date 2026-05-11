@@ -72,9 +72,7 @@ def _validate_path(spec: KeySpec, raw: str) -> ReadinessFailure | None:
     return None
 
 
-def _validate_secret(
-    spec: KeySpec, raw: str, atp_env: str | None
-) -> ReadinessFailure | None:
+def _validate_secret(spec: KeySpec, raw: str, atp_env: str | None) -> ReadinessFailure | None:
     if spec.validator.get("non_empty", True) and not raw:
         return _fail(spec, Severity.ERROR, "secret is empty")
     if raw == PLACEHOLDER_VALUE:
@@ -127,9 +125,7 @@ def _resolve_atp_env(env: Mapping[str, str]) -> str | None:
     return raw
 
 
-def load_and_validate(
-    env: Mapping[str, str], *, atp_env: str | None = None
-) -> ReadinessReport:
+def load_and_validate(env: Mapping[str, str], *, atp_env: str | None = None) -> ReadinessReport:
     """Validate ``env`` against the SRS-ARCH-005 key catalogue.
 
     Returns a :class:`ReadinessReport`. ``ok`` is false when any error-severity
@@ -144,9 +140,7 @@ def load_and_validate(
     for spec in REQUIRED_KEYS:
         raw = env.get(spec.name)
         if raw is None:
-            failures.append(
-                _fail(spec, Severity.ERROR, f"required key {spec.name} is not set")
-            )
+            failures.append(_fail(spec, Severity.ERROR, f"required key {spec.name} is not set"))
             continue
 
         if spec.type is KeyType.SECRET:
@@ -161,9 +155,7 @@ def load_and_validate(
     return ReadinessReport(failures=failures, evidence=evidence)
 
 
-def _build_evidence(
-    failures: list[ReadinessFailure], atp_env: str | None
-) -> list[str]:
+def _build_evidence(failures: list[ReadinessFailure], atp_env: str | None) -> list[str]:
     by_category: dict[Category, list[KeySpec]] = defaultdict(list)
     for spec in REQUIRED_KEYS:
         by_category[spec.category].append(spec)

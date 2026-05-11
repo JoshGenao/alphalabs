@@ -127,9 +127,7 @@ class SubscribeProtocolTest(unittest.TestCase):
                 self.assertIs(command.response_message, MessageType.ACK)
 
     def test_heartbeat_ping_pairs_with_pong(self) -> None:
-        pings = [
-            c for c in CLIENT_COMMANDS if c.type is MessageType.HEARTBEAT_PING
-        ]
+        pings = [c for c in CLIENT_COMMANDS if c.type is MessageType.HEARTBEAT_PING]
         self.assertTrue(pings)
         for command in pings:
             self.assertIs(command.response_message, MessageType.HEARTBEAT_PONG)

@@ -120,11 +120,7 @@ def _build_request_body(route: Route) -> dict | None:
             return None
         return {
             "required": True,
-            "content": {
-                "application/json": {
-                    "schema": _placeholder_object_schema(body_fields)
-                }
-            },
+            "content": {"application/json": {"schema": _placeholder_object_schema(body_fields)}},
         }
     return None
 
@@ -139,13 +135,9 @@ def _operation_description(route: Route) -> str:
 
 def _build_operation(route: Route) -> dict:
     operation_id_segments = [
-        segment.strip("{}")
-        for segment in route.path.strip("/").split("/")
-        if segment
+        segment.strip("{}") for segment in route.path.strip("/").split("/") if segment
     ]
-    operation_id = (
-        f"{route.method.value.lower()}_" + "_".join(operation_id_segments)
-    )
+    operation_id = f"{route.method.value.lower()}_" + "_".join(operation_id_segments)
     operation: dict = {
         "operationId": operation_id,
         "summary": route.summary,
@@ -218,8 +210,7 @@ def build_openapi(routes: Iterable[Route] = ROUTES) -> dict:
             }
         ],
         "tags": [
-            {"name": tag, "description": f"{tag} operator capability."}
-            for tag in sorted(tags_seen)
+            {"name": tag, "description": f"{tag} operator capability."} for tag in sorted(tags_seen)
         ],
         "paths": paths,
         "x-auth-model": AUTH_MODEL,

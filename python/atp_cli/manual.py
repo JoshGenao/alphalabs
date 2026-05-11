@@ -68,9 +68,7 @@ def _command_dict(command: Command) -> dict:
         _PLACEHOLDER_DESCRIPTION,
     ]
     if command.requires_confirmation:
-        description_parts.append(
-            "Requires --confirm (UI-4 / SRS-SAFE-001 two-step modal)."
-        )
+        description_parts.append("Requires --confirm (UI-4 / SRS-SAFE-001 two-step modal).")
     return {
         "group": command.group.value,
         "name": command.name,
@@ -80,9 +78,7 @@ def _command_dict(command: Command) -> dict:
         "x-srs-refs": list(command.srs_refs),
         "x-requires-confirmation": command.requires_confirmation,
         "arguments": [_argument_dict(argument) for argument in command.arguments],
-        "exit_codes": [
-            {"code": int(code), "name": code.name} for code in command.exit_codes
-        ],
+        "exit_codes": [{"code": int(code), "name": code.name} for code in command.exit_codes],
     }
 
 
@@ -97,19 +93,12 @@ def _group_dict(group: Group, commands: Iterable[Command]) -> dict:
 
 
 _GROUP_SUMMARIES: dict[Group, str] = {
-    Group.KILL_SWITCH: (
-        "Operator kill switch (QuantConnect Liquidate sequence)."
-    ),
-    Group.STRATEGY: (
-        "Deployed-strategy lifecycle: list, show, start, stop, restart, "
-        "rollback."
-    ),
+    Group.KILL_SWITCH: ("Operator kill switch (QuantConnect Liquidate sequence)."),
+    Group.STRATEGY: ("Deployed-strategy lifecycle: list, show, start, stop, restart, rollback."),
     Group.LIVE: "Live IB designation: promote a strategy and inspect the live slot.",
     Group.HOT_SWAP: "Reservoir Hot-Swap: manual trigger and status inspection.",
     Group.READINESS: "Startup readiness: state inspection and blocking wait.",
-    Group.ADMIN: (
-        "Basic administration: logs, alerts, configuration, and version."
-    ),
+    Group.ADMIN: ("Basic administration: logs, alerts, configuration, and version."),
 }
 
 _GROUP_TRACES: dict[Group, tuple[str, ...]] = {
@@ -155,14 +144,8 @@ def build_manual(commands: Iterable[Command] = COMMANDS) -> dict:
         },
         "entry_point": CLI_ENTRY_POINT,
         "program": CLI_PROGRAM,
-        "groups": [
-            _group_dict(group, by_group[group])
-            for group in Group
-            if by_group[group]
-        ],
-        "exit_codes": [
-            {"code": int(code), "name": code.name} for code in ExitCode
-        ],
+        "groups": [_group_dict(group, by_group[group]) for group in Group if by_group[group]],
+        "exit_codes": [{"code": int(code), "name": code.name} for code in ExitCode],
         "x-access-model": ACCESS_MODEL,
         "x-auth-model": AUTH_MODEL,
     }

@@ -42,9 +42,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def data_provider_contract(config: dict) -> dict:
@@ -75,9 +73,7 @@ def _check_trait_methods(contract: dict, source: str, trait: str) -> str:
     except AssertionError as error:
         fail(str(error))
     required = _required_methods(contract, trait)
-    missing = [
-        name for name in required if not re.search(rf"\bfn\s+{re.escape(name)}\s*\(", body)
-    ]
+    missing = [name for name in required if not re.search(rf"\bfn\s+{re.escape(name)}\s*\(", body)]
     if missing:
         fail(f"{trait} is missing methods: {', '.join(missing)}")
     return f"{trait} declares {len(required)} required methods: {', '.join(required)}"
@@ -89,33 +85,23 @@ def _check_trait_methods(contract: dict, source: str, trait: str) -> str:
 
 
 def check_bulk_equity_methods(config: dict, source: str) -> str:
-    return _check_trait_methods(
-        data_provider_contract(config), source, "BulkEquityDataProvider"
-    )
+    return _check_trait_methods(data_provider_contract(config), source, "BulkEquityDataProvider")
 
 
 def check_fundamental_methods(config: dict, source: str) -> str:
-    return _check_trait_methods(
-        data_provider_contract(config), source, "FundamentalDataProvider"
-    )
+    return _check_trait_methods(data_provider_contract(config), source, "FundamentalDataProvider")
 
 
 def check_options_methods(config: dict, source: str) -> str:
-    return _check_trait_methods(
-        data_provider_contract(config), source, "OptionsDataProvider"
-    )
+    return _check_trait_methods(data_provider_contract(config), source, "OptionsDataProvider")
 
 
 def check_user_parquet_methods(config: dict, source: str) -> str:
-    return _check_trait_methods(
-        data_provider_contract(config), source, "UserParquetDataProvider"
-    )
+    return _check_trait_methods(data_provider_contract(config), source, "UserParquetDataProvider")
 
 
 def check_alternative_methods(config: dict, source: str) -> str:
-    return _check_trait_methods(
-        data_provider_contract(config), source, "AlternativeDataProvider"
-    )
+    return _check_trait_methods(data_provider_contract(config), source, "AlternativeDataProvider")
 
 
 def check_data_provider_base_trait(config: dict, source: str) -> str:
@@ -133,9 +119,7 @@ def check_data_provider_base_trait(config: dict, source: str) -> str:
         )
     ]
     if missing:
-        fail(
-            f"providers missing `impl {base} for ...`: {', '.join(missing)}"
-        )
+        fail(f"providers missing `impl {base} for ...`: {', '.join(missing)}")
     return (
         f"{base} base trait shared by {len(bindings)} providers: "
         f"{', '.join(b['struct'] for b in bindings)}"
@@ -155,9 +139,7 @@ def check_provider_bindings(config: dict, source: str) -> str:
             ):
                 fail(f"missing `impl {trait} for {struct}` block")
             total += 1
-    summary = ", ".join(
-        f"{b['struct']}({len(b['traits'])})" for b in bindings
-    )
+    summary = ", ".join(f"{b['struct']}({len(b['traits'])})" for b in bindings)
     return f"provider bindings verified: {summary} = {total} impls"
 
 
@@ -220,10 +202,7 @@ def check_unified_historical_query(config: dict, source: str) -> str:
         fail(str(error))
     if not re.search(rf"\bfn\s+{re.escape(method)}\s*\(", body):
         fail(f"{trait}::{method} not found (SRS-DATA-007 unified query)")
-    return (
-        f"{trait}::{method} provides source-neutral historical query "
-        f"({unified['srs_ref']})"
-    )
+    return f"{trait}::{method} provides source-neutral historical query ({unified['srs_ref']})"
 
 
 def check_cargo_test_smoke(config: dict, source: str) -> str:
@@ -240,19 +219,11 @@ def check_cargo_test_smoke(config: dict, source: str) -> str:
         text=True,
     )
     if result.returncode != 0:
-        fail(
-            f"cargo test -p {crate} failed:\n{result.stdout}\n{result.stderr}"
-        )
+        fail(f"cargo test -p {crate} failed:\n{result.stdout}\n{result.stderr}")
     combined = result.stdout + result.stderr
     if "test result: ok" not in combined and "0 failed" not in combined:
-        fail(
-            "cargo test output did not include `test result: ok`:\n"
-            f"{combined}"
-        )
-    return (
-        f"cargo test -p {crate} --lib: PASS "
-        f"(data-provider trait surface verified)"
-    )
+        fail(f"cargo test output did not include `test result: ok`:\n{combined}")
+    return f"cargo test -p {crate} --lib: PASS (data-provider trait surface verified)"
 
 
 # --------------------------------------------------------------------------- #

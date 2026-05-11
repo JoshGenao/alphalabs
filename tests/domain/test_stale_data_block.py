@@ -3,6 +3,7 @@
 When the latest bar timestamp is older than the configured staleness threshold,
 the execution engine must reject new orders rather than trade on stale prices.
 """
+
 from __future__ import annotations
 
 try:

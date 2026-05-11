@@ -7,6 +7,7 @@ reconciliation invariant with explicit relative tolerance:
 
 If this ever tightens, migrate price fields to Decimal first.
 """
+
 from __future__ import annotations
 
 try:

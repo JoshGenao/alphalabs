@@ -1,8 +1,10 @@
 def run():
-	pass
+    pass
+
 
 def main():
-	run()
+    run()
+
 
 if __name__ == "__main__":
-	main()
+    main()

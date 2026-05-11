@@ -230,9 +230,7 @@ class MACD:
         if not (self._fast.is_ready and self._slow.is_ready):
             return None
         macd = self._fast.value - self._slow.value  # type: ignore[operator]
-        synth = type(bar)(
-            bar.symbol, bar.timestamp, bar.open, bar.high, bar.low, macd, bar.volume
-        )
+        synth = type(bar)(bar.symbol, bar.timestamp, bar.open, bar.high, bar.low, macd, bar.volume)
         self._signal_ema.update(synth)
         if not self._signal_ema.is_ready:
             return None

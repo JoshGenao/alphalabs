@@ -6,6 +6,7 @@ Layers (see plan):
     L6 e2e        (gated by ATP_RUN_E2E=1)
     L7 domain     — trading-system-specific safety/invariant tests
 """
+
 from __future__ import annotations
 
 import os
@@ -60,6 +61,7 @@ def fake_brokerage_adapter() -> Iterator[object]:
     Records calls and returns deterministic acks. Use for L4 boundary tests
     where you want real Strategy/Execution wiring without an IB connection.
     """
+
     class _FakeAdapter:
         def __init__(self) -> None:
             self.submitted: list[dict] = []

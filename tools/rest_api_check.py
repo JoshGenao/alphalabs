@@ -63,10 +63,7 @@ def _expect_srs_refs(routes, required: Iterable[str]) -> None:
         refs.update(route.srs_refs)
     missing = sorted(set(required) - refs)
     if missing:
-        fail(
-            "Capability is missing required SRS traces: "
-            f"{', '.join(missing)}"
-        )
+        fail(f"Capability is missing required SRS traces: {', '.join(missing)}")
 
 
 def _expect_method(routes, method_name: str) -> None:
@@ -208,17 +205,11 @@ def check_api_012_openapi_snapshot(module) -> str:
     """Snapshot of the OpenAPI dict must be byte-equal to the committed file."""
 
     if not SNAPSHOT_PATH.exists():
-        fail(
-            "OpenAPI snapshot is missing; "
-            "run: python3 tools/rest_api_check.py --update"
-        )
+        fail("OpenAPI snapshot is missing; run: python3 tools/rest_api_check.py --update")
     actual = SNAPSHOT_PATH.read_text(encoding="utf-8")
     expected = module.render_snapshot()
     if actual != expected:
-        fail(
-            "OpenAPI snapshot is stale; "
-            "regenerate via: python3 tools/rest_api_check.py --update"
-        )
+        fail("OpenAPI snapshot is stale; regenerate via: python3 tools/rest_api_check.py --update")
     return f"OpenAPI snapshot in sync ({SNAPSHOT_PATH.relative_to(ROOT)})"
 
 
@@ -228,10 +219,7 @@ def check_api_013_loopback_policy(module) -> str:
     if module.BIND_HOST != "127.0.0.1":
         fail(f"BIND_HOST must be 127.0.0.1 (SRS-SEC-002); got {module.BIND_HOST!r}")
     if module.AUTH_MODEL != "local-single-user":
-        fail(
-            "AUTH_MODEL must be 'local-single-user' (SRS-SEC-002); "
-            f"got {module.AUTH_MODEL!r}"
-        )
+        fail(f"AUTH_MODEL must be 'local-single-user' (SRS-SEC-002); got {module.AUTH_MODEL!r}")
     return "Loopback bind 127.0.0.1 + local-single-user auth (SRS-SEC-002)"
 
 

@@ -94,9 +94,7 @@ class _FakeContext:
 
 class AssetClassEnforcementTest(unittest.TestCase):
     def test_off_class_order_is_rejected(self) -> None:
-        ctx = _FakeContext(
-            StrategyConfig(strategy_id="s1", tradable_asset_class=AssetClass.EQUITY)
-        )
+        ctx = _FakeContext(StrategyConfig(strategy_id="s1", tradable_asset_class=AssetClass.EQUITY))
         ok = OrderRequest("AAPL", 1, OrderSide.BUY, OrderType.MARKET, AssetClass.EQUITY)
         bad = OrderRequest("AAPL", 1, OrderSide.BUY, OrderType.MARKET, AssetClass.OPTION)
         ctx.order(ok)

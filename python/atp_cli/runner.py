@@ -163,14 +163,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if command.requires_confirmation and not getattr(args, "confirm", False):
         print(
-            f"{command.invocation}: --confirm is required "
-            "(SRS-SAFE-001 / UI-4).",
+            f"{command.invocation}: --confirm is required (SRS-SAFE-001 / UI-4).",
             file=sys.stderr,
         )
         return int(ExitCode.CONFIRMATION_REQUIRED)
 
-    print(
-        f"{command.invocation}: {_CONTRACT_NOTE} "
-        f"(SRS trace: {', '.join(command.srs_refs)})"
-    )
+    print(f"{command.invocation}: {_CONTRACT_NOTE} (SRS trace: {', '.join(command.srs_refs)})")
     return int(ExitCode.NOT_IMPLEMENTED)

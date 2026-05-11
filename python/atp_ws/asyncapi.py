@@ -101,10 +101,7 @@ def _command_message(command: ClientCommand) -> dict:
             "type": "object",
             "properties": {
                 "type": {"const": command.type.value},
-                **{
-                    field_name: {"type": "string"}
-                    for field_name in command.request_fields
-                },
+                **{field_name: {"type": "string"} for field_name in command.request_fields},
             },
             "required": ["type", *command.request_fields],
             "additionalProperties": True,
@@ -122,8 +119,7 @@ def _build_event_channel(channel: EventChannel) -> dict:
         description_parts.append("Event-driven; no fixed refresh cadence.")
     else:
         description_parts.append(
-            f"Periodic publish; refresh ≤ {channel.refresh_seconds}s "
-            "(NFR-P2 ≤ 5s ceiling)."
+            f"Periodic publish; refresh ≤ {channel.refresh_seconds}s (NFR-P2 ≤ 5s ceiling)."
         )
 
     return {
@@ -212,10 +208,7 @@ def build_asyncapi(
                 ),
             }
         },
-        "tags": [
-            {"name": tag, "description": f"{tag} channel."}
-            for tag in sorted(tags_seen)
-        ],
+        "tags": [{"name": tag, "description": f"{tag} channel."} for tag in sorted(tags_seen)],
         "channels": channel_map,
         "x-auth-model": AUTH_MODEL,
         "x-bind-host": BIND_HOST,

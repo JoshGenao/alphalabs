@@ -14,9 +14,7 @@ from pathlib import Path
 from typing import Any
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
-_RUNTIME_SERVICES_PATH = (
-    _PACKAGE_DIR.parents[1] / "architecture" / "runtime_services.json"
-)
+_RUNTIME_SERVICES_PATH = _PACKAGE_DIR.parents[1] / "architecture" / "runtime_services.json"
 
 
 class Category(str, Enum):
@@ -154,9 +152,7 @@ REQUIRED_KEYS: tuple[KeySpec, ...] = _build_required_keys()
 CATEGORIES: tuple[Category, ...] = tuple(Category)
 
 
-PLACEHOLDER_VALUE: str = load_catalogue().get(
-    "placeholder_value", "placeholder-set-in-environment"
-)
+PLACEHOLDER_VALUE: str = load_catalogue().get("placeholder_value", "placeholder-set-in-environment")
 
 
 PRODUCTION_ENVS: frozenset[str] = frozenset(

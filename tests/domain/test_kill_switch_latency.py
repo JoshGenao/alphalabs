@@ -4,6 +4,7 @@ Stub adapter simulates 50 open positions; activation must cancel all resting
 orders, submit market liquidations, halt paper engines, and disconnect IB
 within the 5-second window (NFR-P3).
 """
+
 from __future__ import annotations
 
 try:

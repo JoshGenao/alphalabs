@@ -59,10 +59,7 @@ def _expect_srs_refs(commands, required: Iterable[str]) -> None:
         refs.update(command.srs_refs)
     missing = sorted(set(required) - refs)
     if missing:
-        fail(
-            "Group is missing required SRS traces: "
-            f"{', '.join(missing)}"
-        )
+        fail(f"Group is missing required SRS traces: {', '.join(missing)}")
 
 
 def _expect_command_names(commands, required: Iterable[str]) -> None:
@@ -79,10 +76,7 @@ def _expect_confirmation(commands, names: Iterable[str]) -> None:
         if command is None:
             fail(f"Confirmation-required command missing: {name}")
         if not command.requires_confirmation:
-            fail(
-                f"Command {command.invocation!r} must require --confirm "
-                "(SRS-SAFE-001 / UI-4)"
-            )
+            fail(f"Command {command.invocation!r} must require --confirm (SRS-SAFE-001 / UI-4)")
         if not any(arg.name == "--confirm" for arg in command.arguments):
             fail(
                 f"Command {command.invocation!r} declares "
@@ -114,9 +108,7 @@ def check_api_4_002_strategy(module) -> str:
         commands,
         ("list", "show", "start", "stop", "restart", "rollback"),
     )
-    _expect_srs_refs(
-        commands, ("SRS-API-001", "SRS-ORCH-004", "SRS-ORCH-005", "SYS-79", "SYS-80")
-    )
+    _expect_srs_refs(commands, ("SRS-API-001", "SRS-ORCH-004", "SRS-ORCH-005", "SYS-79", "SYS-80"))
     _expect_confirmation(commands, ("rollback",))
     return _summary("strategy (SRS-ORCH-004, SRS-ORCH-005)", commands)
 
@@ -156,9 +148,7 @@ def check_api_4_005_readiness(module) -> str:
 def check_api_4_006_admin(module) -> str:
     commands = _commands_for(module, "ADMIN")
     _expect_command_names(commands, ("logs", "alerts", "config", "version"))
-    _expect_srs_refs(
-        commands, ("SRS-LOG-001", "SRS-NOTIF-001", "SRS-ARCH-005")
-    )
+    _expect_srs_refs(commands, ("SRS-LOG-001", "SRS-NOTIF-001", "SRS-ARCH-005"))
     return _summary("admin (SRS-LOG-001, SRS-NOTIF-001, SRS-ARCH-005)", commands)
 
 
@@ -184,10 +174,7 @@ def check_api_4_007_confirmation_invariant(module) -> str:
                 "but has no --confirm argument."
             )
         if not flag.required:
-            fail(
-                f"Command {command.invocation!r} --confirm flag must be "
-                "required=True."
-            )
+            fail(f"Command {command.invocation!r} --confirm flag must be required=True.")
         if int(module.ExitCode.CONFIRMATION_REQUIRED) not in [
             int(code) for code in command.exit_codes
         ]:
@@ -195,10 +182,7 @@ def check_api_4_007_confirmation_invariant(module) -> str:
                 f"Command {command.invocation!r} must document "
                 "ExitCode.CONFIRMATION_REQUIRED in exit_codes."
             )
-    return (
-        "Confirmation invariant: "
-        f"{len(irreversible)} irreversible commands enforce --confirm"
-    )
+    return f"Confirmation invariant: {len(irreversible)} irreversible commands enforce --confirm"
 
 
 def check_api_4_008_local_shell_policy(module) -> str:
@@ -210,10 +194,7 @@ def check_api_4_008_local_shell_policy(module) -> str:
             f"local-shell-access constraint); got {module.ACCESS_MODEL!r}"
         )
     if module.AUTH_MODEL != "local-single-user":
-        fail(
-            "AUTH_MODEL must be 'local-single-user' (SRS-SEC-002); "
-            f"got {module.AUTH_MODEL!r}"
-        )
+        fail(f"AUTH_MODEL must be 'local-single-user' (SRS-SEC-002); got {module.AUTH_MODEL!r}")
     document = module.build_manual()
     for key, expected in (
         ("x-access-model", module.ACCESS_MODEL),
@@ -235,17 +216,10 @@ def check_api_4_009_exit_code_contract(module) -> str:
         if not command.exit_codes:
             fail(f"Command {command.invocation!r} declares no exit codes")
         if int(module.ExitCode.OK) not in [int(c) for c in command.exit_codes]:
-            fail(
-                f"Command {command.invocation!r} must document ExitCode.OK"
-            )
-        unknown = [
-            int(c) for c in command.exit_codes if int(c) not in documented
-        ]
+            fail(f"Command {command.invocation!r} must document ExitCode.OK")
+        unknown = [int(c) for c in command.exit_codes if int(c) not in documented]
         if unknown:
-            fail(
-                f"Command {command.invocation!r} declares undocumented "
-                f"exit codes: {unknown}"
-            )
+            fail(f"Command {command.invocation!r} declares undocumented exit codes: {unknown}")
     return f"Exit-code contract enforced across {len(module.COMMANDS)} commands"
 
 
@@ -253,17 +227,11 @@ def check_api_4_010_manual_snapshot(module) -> str:
     """Snapshot of the JSON manual must be byte-equal to the committed file."""
 
     if not SNAPSHOT_PATH.exists():
-        fail(
-            "JSON manual snapshot is missing; "
-            "run: python3 tools/cli_check.py --update"
-        )
+        fail("JSON manual snapshot is missing; run: python3 tools/cli_check.py --update")
     actual = SNAPSHOT_PATH.read_text(encoding="utf-8")
     expected = module.render_snapshot()
     if actual != expected:
-        fail(
-            "JSON manual snapshot is stale; "
-            "regenerate via: python3 tools/cli_check.py --update"
-        )
+        fail("JSON manual snapshot is stale; regenerate via: python3 tools/cli_check.py --update")
     return f"JSON manual snapshot in sync ({SNAPSHOT_PATH.relative_to(ROOT)})"
 
 
@@ -279,10 +247,7 @@ def check_api_4_011_runner_smoke(module) -> str:
         text=True,
     )
     if listing.returncode != 0:
-        fail(
-            "`python -m atp_cli --list` failed: "
-            f"{listing.stderr or listing.stdout}"
-        )
+        fail(f"`python -m atp_cli --list` failed: {listing.stderr or listing.stdout}")
     if "kill-switch activate" not in listing.stdout:
         fail("`python -m atp_cli --list` did not list kill-switch activate")
 
@@ -323,8 +288,7 @@ def check_api_4_011_runner_smoke(module) -> str:
             f"wired; got {confirmed.returncode}"
         )
     return (
-        "Runner: --list, kill-switch confirm gating, NOT_IMPLEMENTED "
-        "stub all behave as contracted"
+        "Runner: --list, kill-switch confirm gating, NOT_IMPLEMENTED stub all behave as contracted"
     )
 
 

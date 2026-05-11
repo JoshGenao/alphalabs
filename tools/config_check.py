@@ -50,9 +50,11 @@ def _env_example_defaults(env_example_path: Path = ENV_EXAMPLE_PATH) -> dict[str
 
 
 def _process_env() -> dict[str, str]:
-    return {key: value for key, value in os.environ.items() if key in {
-        spec.name for spec in REQUIRED_KEYS
-    }}
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key in {spec.name for spec in REQUIRED_KEYS}
+    }
 
 
 def build_default_env(env_example_path: Path = ENV_EXAMPLE_PATH) -> dict[str, str]:
@@ -144,9 +146,7 @@ def main(argv: list[str] | None = None) -> int:
             env = _apply_fixture(args.fixture, env)
             report = load_and_validate(env)
             if report.ok:
-                fail(
-                    f"fixture {args.fixture!r} did not produce a readiness failure"
-                )
+                fail(f"fixture {args.fixture!r} did not produce a readiness failure")
             summary = _render_failure_summary(report)
             print(
                 f"SRS-ARCH-005 FAIL: fixture {args.fixture!r} produced "

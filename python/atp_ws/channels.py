@@ -372,6 +372,4 @@ def commands_by_type(message_type: MessageType) -> tuple[ClientCommand, ...]:
         <MessageType.ACK: 'ACK'>
     """
 
-    return tuple(
-        command for command in CLIENT_COMMANDS if command.type is message_type
-    )
+    return tuple(command for command in CLIENT_COMMANDS if command.type is message_type)

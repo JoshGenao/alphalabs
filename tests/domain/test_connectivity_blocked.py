@@ -3,6 +3,7 @@
 Property test: with IB connectivity flapping, no `submit_order` call may
 succeed against a disconnected adapter. The error must be CONNECTIVITY_BLOCKED.
 """
+
 from __future__ import annotations
 
 try:

@@ -44,9 +44,7 @@ def _load() -> object:
 
 def _channels_for(module, channel_name: str):
     channel = getattr(module.Channel, channel_name)
-    matches = [
-        event for event in module.EVENT_CHANNELS if event.name is channel
-    ]
+    matches = [event for event in module.EVENT_CHANNELS if event.name is channel]
     if not matches:
         fail(f"No event channel declared for bucket {channel_name}")
     return matches
@@ -60,9 +58,7 @@ def _expect_srs_refs(events, required: Iterable[str]) -> None:
         refs.update(event.srs_refs)
     missing = sorted(set(required) - refs)
     if missing:
-        fail(
-            f"Channel is missing required SRS traces: {', '.join(missing)}"
-        )
+        fail(f"Channel is missing required SRS traces: {', '.join(missing)}")
 
 
 def _expect_payload_fields(events, required: Iterable[str]) -> None:
@@ -71,10 +67,7 @@ def _expect_payload_fields(events, required: Iterable[str]) -> None:
         fields.update(event.payload_fields)
     missing = sorted(set(required) - fields)
     if missing:
-        fail(
-            "Channel payload missing required fields: "
-            f"{', '.join(missing)}"
-        )
+        fail(f"Channel payload missing required fields: {', '.join(missing)}")
 
 
 def _expect_subscription(events) -> None:
@@ -97,10 +90,7 @@ def _expect_refresh_window(events, ceiling: int) -> None:
 
 
 def _summary(label: str, events) -> str:
-    items = ", ".join(
-        f"{event.name.value} (refresh<={event.refresh_seconds}s)"
-        for event in events
-    )
+    items = ", ".join(f"{event.name.value} (refresh<={event.refresh_seconds}s)" for event in events)
     return f"{label}: {items}"
 
 
@@ -112,9 +102,7 @@ def _summary(label: str, events) -> str:
 def check_api_3_001_pnl(module) -> str:
     events = _channels_for(module, "PNL")
     _expect_srs_refs(events, ("SRS-UI-001", "SYS-36", "NFR-P2"))
-    _expect_payload_fields(
-        events, ("strategy_id", "daily_pnl", "cumulative_pnl", "as_of")
-    )
+    _expect_payload_fields(events, ("strategy_id", "daily_pnl", "cumulative_pnl", "as_of"))
     _expect_subscription(events)
     return _summary("PNL (SRS-UI-001, SYS-36, NFR-P2)", events)
 
@@ -122,9 +110,7 @@ def check_api_3_001_pnl(module) -> str:
 def check_api_3_002_metrics(module) -> str:
     events = _channels_for(module, "METRICS")
     _expect_srs_refs(events, ("SRS-UI-001", "SYS-36", "SYS-37"))
-    _expect_payload_fields(
-        events, ("sharpe", "sortino", "max_drawdown", "benchmark_return")
-    )
+    _expect_payload_fields(events, ("sharpe", "sortino", "max_drawdown", "benchmark_return"))
     return _summary("METRICS (SRS-UI-001, SYS-36, SYS-37)", events)
 
 
@@ -146,9 +132,7 @@ def check_api_3_003_account_status(module) -> str:
 def check_api_3_004_heartbeat(module) -> str:
     events = _channels_for(module, "HEARTBEAT")
     _expect_srs_refs(events, ("SRS-UI-001", "SYS-39", "SYS-39a"))
-    _expect_payload_fields(
-        events, ("feed", "staleness_seconds", "is_stale")
-    )
+    _expect_payload_fields(events, ("feed", "staleness_seconds", "is_stale"))
     return _summary("HEARTBEAT (SRS-UI-001, SYS-39, SYS-39a)", events)
 
 
@@ -175,9 +159,7 @@ def check_api_3_006_alerts(module) -> str:
 def check_api_3_007_reservoir_ranking(module) -> str:
     events = _channels_for(module, "RESERVOIR_RANKING")
     _expect_srs_refs(events, ("SRS-RESV-002", "SYS-48", "SRS-UI-003"))
-    _expect_payload_fields(
-        events, ("rankings", "sharpe", "sortino", "momentum_score")
-    )
+    _expect_payload_fields(events, ("rankings", "sharpe", "sortino", "momentum_score"))
     return _summary("RESERVOIR_RANKING (SRS-RESV-002, SYS-48)", events)
 
 
@@ -205,14 +187,8 @@ def check_api_3_008_strategy_state(module) -> str:
 def check_api_3_009_subscribe_protocol(module) -> str:
     """SUBSCRIBE / UNSUBSCRIBE commands must accept a channels payload."""
 
-    sub = [
-        c for c in module.CLIENT_COMMANDS if c.type is module.MessageType.SUBSCRIBE
-    ]
-    unsub = [
-        c
-        for c in module.CLIENT_COMMANDS
-        if c.type is module.MessageType.UNSUBSCRIBE
-    ]
+    sub = [c for c in module.CLIENT_COMMANDS if c.type is module.MessageType.SUBSCRIBE]
+    unsub = [c for c in module.CLIENT_COMMANDS if c.type is module.MessageType.UNSUBSCRIBE]
     if not sub:
         fail("CLIENT_COMMANDS missing SUBSCRIBE entry")
     if not unsub:
@@ -220,8 +196,7 @@ def check_api_3_009_subscribe_protocol(module) -> str:
     for command in (*sub, *unsub):
         if "channels" not in command.request_fields:
             fail(
-                f"{command.type.value} command must accept 'channels' "
-                "field for fan-out targeting."
+                f"{command.type.value} command must accept 'channels' field for fan-out targeting."
             )
         if command.response_message is not module.MessageType.ACK:
             fail(
@@ -234,11 +209,7 @@ def check_api_3_009_subscribe_protocol(module) -> str:
 def check_api_3_010_heartbeat_protocol(module) -> str:
     """HEARTBEAT_PING command must pair with HEARTBEAT_PONG and trace SYS-39."""
 
-    pings = [
-        c
-        for c in module.CLIENT_COMMANDS
-        if c.type is module.MessageType.HEARTBEAT_PING
-    ]
+    pings = [c for c in module.CLIENT_COMMANDS if c.type is module.MessageType.HEARTBEAT_PING]
     if not pings:
         fail("CLIENT_COMMANDS missing HEARTBEAT_PING entry (SYS-39)")
     for command in pings:
@@ -258,10 +229,7 @@ def check_api_3_011_refresh_budget(module) -> str:
     ceiling = module.MAX_REFRESH_SECONDS
     _expect_refresh_window(module.EVENT_CHANNELS, ceiling)
     if ceiling != 5:
-        fail(
-            f"MAX_REFRESH_SECONDS must be 5 (NFR-P2 dashboard refresh "
-            f"ceiling); got {ceiling}."
-        )
+        fail(f"MAX_REFRESH_SECONDS must be 5 (NFR-P2 dashboard refresh ceiling); got {ceiling}.")
     return f"All channels refresh within [0, {ceiling}]s (NFR-P2)"
 
 
@@ -269,10 +237,7 @@ def check_api_3_012_asyncapi_snapshot(module) -> str:
     """Snapshot of the AsyncAPI dict must be byte-equal to the committed file."""
 
     if not SNAPSHOT_PATH.exists():
-        fail(
-            "AsyncAPI snapshot is missing; "
-            "run: python3 tools/websocket_api_check.py --update"
-        )
+        fail("AsyncAPI snapshot is missing; run: python3 tools/websocket_api_check.py --update")
     actual = SNAPSHOT_PATH.read_text(encoding="utf-8")
     expected = module.render_snapshot()
     if actual != expected:
@@ -287,15 +252,9 @@ def check_api_3_013_loopback_policy(module) -> str:
     """Bind host, auth model, and WS path encode SRS-SEC-002."""
 
     if module.BIND_HOST != "127.0.0.1":
-        fail(
-            f"BIND_HOST must be 127.0.0.1 (SRS-SEC-002); "
-            f"got {module.BIND_HOST!r}"
-        )
+        fail(f"BIND_HOST must be 127.0.0.1 (SRS-SEC-002); got {module.BIND_HOST!r}")
     if module.AUTH_MODEL != "local-single-user":
-        fail(
-            "AUTH_MODEL must be 'local-single-user' (SRS-SEC-002); "
-            f"got {module.AUTH_MODEL!r}"
-        )
+        fail(f"AUTH_MODEL must be 'local-single-user' (SRS-SEC-002); got {module.AUTH_MODEL!r}")
     if module.WS_PATH != "/ws/v1":
         fail(f"WS_PATH must be '/ws/v1'; got {module.WS_PATH!r}")
     document = module.build_asyncapi()

@@ -60,7 +60,9 @@ class ArchitectureBoundaryTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("SRS-ARCH-002 PASS", result.stdout)
         self.assertIn("Cargo graph checked", result.stdout)
-        self.assertIn("source scan found no dashboard, orchestrator, or vendor imports", result.stdout)
+        self.assertIn(
+            "source scan found no dashboard, orchestrator, or vendor imports", result.stdout
+        )
 
     def test_srs_arch_002_rejects_orchestrator_import_from_lower_layer(self) -> None:
         result = subprocess.run(

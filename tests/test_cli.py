@@ -122,10 +122,7 @@ class ManualSnapshotInSyncTest(unittest.TestCase):
         on_disk = SNAPSHOT_PATH.read_text(encoding="utf-8")
         regenerated = render_snapshot()
         if on_disk != regenerated:
-            self.fail(
-                "manual.json drift; regenerate via "
-                "`python3 tools/cli_check.py --update`"
-            )
+            self.fail("manual.json drift; regenerate via `python3 tools/cli_check.py --update`")
 
     def test_snapshot_is_deterministic(self) -> None:
         first = render_snapshot()
@@ -174,16 +171,12 @@ class RunnerSubprocessTest(unittest.TestCase):
 
     def test_kill_switch_requires_confirm(self) -> None:
         result = _run(["kill-switch", "activate"])
-        self.assertEqual(
-            result.returncode, int(ExitCode.CONFIRMATION_REQUIRED), result.stderr
-        )
+        self.assertEqual(result.returncode, int(ExitCode.CONFIRMATION_REQUIRED), result.stderr)
         self.assertIn("--confirm", result.stderr)
 
     def test_kill_switch_with_confirm_returns_not_implemented(self) -> None:
         result = _run(["kill-switch", "activate", "--confirm"])
-        self.assertEqual(
-            result.returncode, int(ExitCode.NOT_IMPLEMENTED), result.stderr
-        )
+        self.assertEqual(result.returncode, int(ExitCode.NOT_IMPLEMENTED), result.stderr)
         self.assertIn("API-4 contract surface", result.stdout)
 
     def test_readiness_check_returns_not_implemented(self) -> None:

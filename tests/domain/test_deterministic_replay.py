@@ -3,6 +3,7 @@
 Same input bars + same strategy seed must produce a byte-identical trade log.
 This catches hidden time/RNG dependencies that break backtest reproducibility.
 """
+
 from __future__ import annotations
 
 try:

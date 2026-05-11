@@ -246,8 +246,7 @@ COMMANDS: tuple[Command, ...] = (
         group=Group.KILL_SWITCH,
         name="status",
         summary=(
-            "Report current kill-switch state, last activation, and "
-            "liquidation-order outcomes."
+            "Report current kill-switch state, last activation, and liquidation-order outcomes."
         ),
         srs_refs=("SRS-SAFE-001", "SRS-LOG-001"),
         arguments=(_JSON,),
@@ -383,10 +382,7 @@ COMMANDS: tuple[Command, ...] = (
     Command(
         group=Group.HOT_SWAP,
         name="trigger",
-        summary=(
-            "Manually demote the live strategy and promote a Reservoir "
-            "candidate (Hot-Swap)."
-        ),
+        summary=("Manually demote the live strategy and promote a Reservoir candidate (Hot-Swap)."),
         srs_refs=("SRS-RESV-003", "SRS-RESV-004", "SYS-49a"),
         arguments=(
             Argument(
@@ -408,8 +404,7 @@ COMMANDS: tuple[Command, ...] = (
         group=Group.HOT_SWAP,
         name="status",
         summary=(
-            "Report Hot-Swap state, current live strategy, demotion-pending, "
-            "and cool-down expiry."
+            "Report Hot-Swap state, current live strategy, demotion-pending, and cool-down expiry."
         ),
         srs_refs=("SRS-RESV-005", "SRS-RESV-006", "SYS-49b", "SYS-49e"),
         arguments=(_JSON,),

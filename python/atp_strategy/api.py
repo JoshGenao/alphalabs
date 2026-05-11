@@ -553,9 +553,7 @@ class StrategyContext(Protocol):
     calendar: TradingCalendar
     history: HistoricalData
 
-    def subscribe(
-        self, symbol: str, asset_class: AssetClass = AssetClass.EQUITY
-    ) -> None:
+    def subscribe(self, symbol: str, asset_class: AssetClass = AssetClass.EQUITY) -> None:
         """Subscribe to market data for ``symbol`` in ``asset_class``.
 
         A strategy may subscribe to both equities and options for analysis

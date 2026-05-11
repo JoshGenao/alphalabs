@@ -39,9 +39,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def unified_block(config: dict) -> dict:
@@ -71,7 +69,11 @@ def python_protocol_source(config: dict, root: Path = ROOT) -> str:
     init_path = package_path / "__init__.py"
     if not init_path.exists():
         fail(f"Python strategy package __init__ missing: {init_path.relative_to(root)}")
-    return api_path.read_text(encoding="utf-8") + "\n\n# __init__\n" + init_path.read_text(encoding="utf-8")
+    return (
+        api_path.read_text(encoding="utf-8")
+        + "\n\n# __init__\n"
+        + init_path.read_text(encoding="utf-8")
+    )
 
 
 def _struct_body(source: str, struct: str) -> str:
@@ -209,13 +211,9 @@ def check_trait_signature(config: dict, source: str) -> str:
     )
     if not re.search(pattern, body):
         fail(
-            f"{trait}::{method} does not return {result_type} "
-            "(API-7 source-neutral query envelope)"
+            f"{trait}::{method} does not return {result_type} (API-7 source-neutral query envelope)"
         )
-    return (
-        f"{trait}::{method} returns {result_type} "
-        f"(SRS-DATA-007 + SRS-DATA-012)"
-    )
+    return f"{trait}::{method} returns {result_type} (SRS-DATA-007 + SRS-DATA-012)"
 
 
 def check_python_protocol(config: dict, python_source: str) -> str:
@@ -235,7 +233,7 @@ def check_python_protocol(config: dict, python_source: str) -> str:
     # Search the Protocol body (everything after the class header up to the
     # next top-level ``class`` / ``def`` / module-level marker) so doctest
     # examples earlier in the module are skipped.
-    body_after = python_source[class_match.end():]
+    body_after = python_source[class_match.end() :]
     next_top = re.search(r"\n(class\s+\w|def\s+\w|@\w)", body_after)
     body = body_after if next_top is None else body_after[: next_top.start()]
     # Pick the multi-line ``def`` (real Protocol method) over the single-line
@@ -253,15 +251,10 @@ def check_python_protocol(config: dict, python_source: str) -> str:
         fail(f"Python `{protocol}.{method}` not found")
     signature = method_match.group("params")
     missing = [
-        name
-        for name in proto["parameters"]
-        if not re.search(rf"\b{re.escape(name)}\b", signature)
+        name for name in proto["parameters"] if not re.search(rf"\b{re.escape(name)}\b", signature)
     ]
     if missing:
-        fail(
-            f"Python `{protocol}.{method}` is missing parameters: "
-            f"{', '.join(missing)}"
-        )
+        fail(f"Python `{protocol}.{method}` is missing parameters: {', '.join(missing)}")
     if f'"{enum}"' not in python_source and f"'{enum}'" not in python_source:
         # The __init__ marker section embeds the re-export list as plain
         # identifiers, not quoted strings; fall back to a token search.
@@ -288,19 +281,11 @@ def check_cargo_test_smoke(config: dict, source: str) -> str:
         text=True,
     )
     if result.returncode != 0:
-        fail(
-            f"cargo test -p {crate} failed:\n{result.stdout}\n{result.stderr}"
-        )
+        fail(f"cargo test -p {crate} failed:\n{result.stdout}\n{result.stderr}")
     combined = result.stdout + result.stderr
     if "test result: ok" not in combined and "0 failed" not in combined:
-        fail(
-            "cargo test output did not include `test result: ok`:\n"
-            f"{combined}"
-        )
-    return (
-        f"cargo test -p {crate} --lib: PASS "
-        f"(unified historical query trait surface verified)"
-    )
+        fail(f"cargo test output did not include `test result: ok`:\n{combined}")
+    return f"cargo test -p {crate} --lib: PASS (unified historical query trait surface verified)"
 
 
 # --------------------------------------------------------------------------- #
@@ -329,13 +314,10 @@ def run_checks() -> list[str]:
     return evidence
 
 
-def assert_unified_historical_data_static(
-    config: dict, root: Path = ROOT
-) -> list[str]:
+def assert_unified_historical_data_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable from ``tools/architecture_check.py`` (no cargo)."""
     source = (
-        root / config["unified_historical_data"]["adapter_crate"]["path"]
-        / "src" / "lib.rs"
+        root / config["unified_historical_data"]["adapter_crate"]["path"] / "src" / "lib.rs"
     ).read_text(encoding="utf-8")
     python_source = python_protocol_source(config, root)
     evidence: list[str] = []

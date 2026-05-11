@@ -38,9 +38,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def adapter_contract(config: dict) -> dict:
@@ -240,13 +238,9 @@ def check_cargo_test_smoke(config: dict, source: str) -> str:
         )
     combined = result.stdout + result.stderr
     if "test result: ok" not in combined and "0 failed" not in combined:
-        fail(
-            "cargo test output did not include `test result: ok`:\n"
-            f"{combined}"
-        )
+        fail(f"cargo test output did not include `test result: ok`:\n{combined}")
     return (
-        f"cargo test -p {contract['adapter_crate']['crate']} --lib: PASS "
-        f"(crate path {crate_path})"
+        f"cargo test -p {contract['adapter_crate']['crate']} --lib: PASS (crate path {crate_path})"
     )
 
 
@@ -274,9 +268,9 @@ def run_checks() -> list[str]:
 
 def assert_adapter_contract_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable from ``tools/architecture_check.py`` (no cargo)."""
-    source = (root / config["adapter_contract"]["adapter_crate"]["path"] / "src" / "lib.rs").read_text(
-        encoding="utf-8"
-    )
+    source = (
+        root / config["adapter_contract"]["adapter_crate"]["path"] / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
     evidence: list[str] = []
     for check in (
         check_brokerage_methods,

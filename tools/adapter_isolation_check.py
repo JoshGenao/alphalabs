@@ -246,8 +246,7 @@ def assert_structural_fictional_adapter(config: dict, root: Path = ROOT) -> list
         if before != after:
             changed = sorted(path for path in before if before.get(path) != after.get(path))
             fail(
-                "fictional adapter fixture modified core module source files: "
-                + ", ".join(changed)
+                "fictional adapter fixture modified core module source files: " + ", ".join(changed)
             )
 
     return [

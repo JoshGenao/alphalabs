@@ -159,8 +159,7 @@ def make_fixture_root(fixture: str) -> tempfile.TemporaryDirectory[str]:
     if fixture == "lower-layer-orchestrator-import":
         source = temp_root / "crates" / "atp-data" / "src" / "lib.rs"
         source.write_text(
-            source.read_text(encoding="utf-8")
-            + "\nuse atp_orchestrator::StrategyOrchestrator;\n",
+            source.read_text(encoding="utf-8") + "\nuse atp_orchestrator::StrategyOrchestrator;\n",
             encoding="utf-8",
         )
     elif fixture == "lower-layer-vendor-adapter-import":

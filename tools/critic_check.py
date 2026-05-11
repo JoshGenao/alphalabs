@@ -219,9 +219,7 @@ PRICE_FIELD_RE = re.compile(
     r"\b(price|notional|fill_price|limit_price|stop_price|avg_price)\b\s*[+\-*/]"
 )
 
-SKIP_DECORATOR_RE = re.compile(
-    r"@(?:pytest\.mark\.skip|unittest\.skip)\b(?!.*reason\s*=)"
-)
+SKIP_DECORATOR_RE = re.compile(r"@(?:pytest\.mark\.skip|unittest\.skip)\b(?!.*reason\s*=)")
 
 SRS_REF_RE = re.compile(r"\bSRS-[A-Z]+-\d+\b")
 
@@ -336,7 +334,8 @@ def check_srs_refs(diff: DiffSlice, report: Report) -> None:
     if not diff.commit_message:
         return  # only meaningful in --range mode
     public_api_touched = any(
-        p.endswith(".py") and (
+        p.endswith(".py")
+        and (
             p.startswith("python/atp_api/")
             or p.startswith("python/atp_ws/")
             or p.startswith("python/atp_cli/")

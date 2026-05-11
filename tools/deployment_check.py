@@ -20,9 +20,7 @@ class DeploymentCheckError(AssertionError):
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def fail(message: str) -> None:
@@ -68,9 +66,7 @@ def assert_compose_services(config: dict, root: Path = ROOT) -> list[str]:
 
     bind_host = deployment["dashboard_bind_host"]
     if not _service_block_contains(compose_text, "phase1-dashboard-api", f"{bind_host}:"):
-        fail(
-            f"phase1-dashboard-api must publish ports bound to {bind_host} (SRS-SEC-002)"
-        )
+        fail(f"phase1-dashboard-api must publish ports bound to {bind_host} (SRS-SEC-002)")
 
     return [
         f"compose declares {len(deployment['required_services'])} Phase 1 services "
@@ -84,25 +80,16 @@ def assert_compose_env_and_volumes(config: dict, root: Path = ROOT) -> list[str]
     compose_text = (root / deployment["compose_file"]).read_text(encoding="utf-8")
 
     missing_env = [
-        env_var
-        for env_var in deployment["required_env_vars"]
-        if env_var not in compose_text
+        env_var for env_var in deployment["required_env_vars"] if env_var not in compose_text
     ]
     if missing_env:
-        fail(
-            "compose file does not reference required env vars: "
-            + ", ".join(missing_env)
-        )
+        fail("compose file does not reference required env vars: " + ", ".join(missing_env))
 
     for volume in deployment["required_volumes"]:
         env_token = "${" + volume["env"]
         if env_token not in compose_text:
-            fail(
-                f"compose file does not bind {volume['name']} volume to {volume['env']}"
-            )
-        if not re.search(
-            rf"^\s+{re.escape(volume['name'])}:\s*$", compose_text, re.MULTILINE
-        ):
+            fail(f"compose file does not bind {volume['name']} volume to {volume['env']}")
+        if not re.search(rf"^\s+{re.escape(volume['name'])}:\s*$", compose_text, re.MULTILINE):
             fail(f"compose file does not declare named volume {volume['name']}")
 
     return [
@@ -138,10 +125,7 @@ def assert_env_example(config: dict, root: Path = ROOT) -> list[str]:
         if not re.search(rf"^{re.escape(env_var)}=", env_text, re.MULTILINE)
     ]
     if missing:
-        fail(
-            f"{deployment['env_example']} does not list required keys: "
-            + ", ".join(missing)
-        )
+        fail(f"{deployment['env_example']} does not list required keys: " + ", ".join(missing))
     return [
         f"{deployment['env_example']} enumerates all "
         f"{len(deployment['required_env_vars'])} required env vars"

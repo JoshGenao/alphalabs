@@ -72,8 +72,7 @@ class OpenAPISnapshotInSyncTest(unittest.TestCase):
         regenerated = render_snapshot()
         if on_disk != regenerated:
             self.fail(
-                "openapi.json drift; regenerate via "
-                "`python3 tools/rest_api_check.py --update`"
+                "openapi.json drift; regenerate via `python3 tools/rest_api_check.py --update`"
             )
 
     def test_snapshot_is_deterministic(self) -> None:
@@ -103,9 +102,7 @@ class LoopbackPolicyTest(unittest.TestCase):
 
 class ConfirmationGuardTest(unittest.TestCase):
     def test_kill_switch_requires_confirmation(self) -> None:
-        kill_routes = [
-            route for route in ROUTES if route.capability is Capability.KILL_SWITCH
-        ]
+        kill_routes = [route for route in ROUTES if route.capability is Capability.KILL_SWITCH]
         self.assertTrue(kill_routes)
         for route in kill_routes:
             self.assertTrue(
@@ -115,9 +112,7 @@ class ConfirmationGuardTest(unittest.TestCase):
             self.assertIn("confirm", route.request_fields)
 
     def test_live_designation_requires_confirmation(self) -> None:
-        live_routes = [
-            route for route in ROUTES if route.capability is Capability.LIVE_DESIGNATION
-        ]
+        live_routes = [route for route in ROUTES if route.capability is Capability.LIVE_DESIGNATION]
         self.assertTrue(live_routes)
         for route in live_routes:
             self.assertTrue(route.requires_confirmation)

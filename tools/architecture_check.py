@@ -66,8 +66,7 @@ def assert_rust_service_crates(config: dict) -> list[str]:
         package_name = manifest.get("package", {}).get("name")
         if package_name != service["crate"]:
             fail(
-                f"{service['name']} manifest names {package_name!r}, "
-                f"expected {service['crate']!r}"
+                f"{service['name']} manifest names {package_name!r}, expected {service['crate']!r}"
             )
 
         python_files = sorted(crate_path.rglob("*.py"))
@@ -127,15 +126,9 @@ def assert_rest_api(config: dict) -> list[str]:
         fail(f"REST API OpenAPI snapshot is not valid JSON: {error}")
 
     if module.BIND_HOST != rest_api["bind_host"]:
-        fail(
-            f"REST API BIND_HOST is {module.BIND_HOST!r}, "
-            f"expected {rest_api['bind_host']!r}"
-        )
+        fail(f"REST API BIND_HOST is {module.BIND_HOST!r}, expected {rest_api['bind_host']!r}")
     if module.AUTH_MODEL != rest_api["auth_model"]:
-        fail(
-            f"REST API AUTH_MODEL is {module.AUTH_MODEL!r}, "
-            f"expected {rest_api['auth_model']!r}"
-        )
+        fail(f"REST API AUTH_MODEL is {module.AUTH_MODEL!r}, expected {rest_api['auth_model']!r}")
 
     return [
         f"{rest_api['package']} covers {len(rest_api['required_capabilities'])} "
@@ -182,10 +175,7 @@ def assert_websocket_api(config: dict) -> list[str]:
             f"expected {websocket_api['auth_model']!r}"
         )
     if module.WS_PATH != websocket_api["ws_path"]:
-        fail(
-            f"WebSocket API WS_PATH is {module.WS_PATH!r}, "
-            f"expected {websocket_api['ws_path']!r}"
-        )
+        fail(f"WebSocket API WS_PATH is {module.WS_PATH!r}, expected {websocket_api['ws_path']!r}")
     if module.MAX_REFRESH_SECONDS != websocket_api["max_refresh_seconds"]:
         fail(
             "WebSocket API MAX_REFRESH_SECONDS is "
@@ -193,10 +183,7 @@ def assert_websocket_api(config: dict) -> list[str]:
             f"expected {websocket_api['max_refresh_seconds']}"
         )
     for event in module.EVENT_CHANNELS:
-        if (
-            event.refresh_seconds < 0
-            or event.refresh_seconds > module.MAX_REFRESH_SECONDS
-        ):
+        if event.refresh_seconds < 0 or event.refresh_seconds > module.MAX_REFRESH_SECONDS:
             fail(
                 f"WebSocket channel {event.name.value} refresh_seconds="
                 f"{event.refresh_seconds} violates "
@@ -239,32 +226,16 @@ def assert_cli(config: dict) -> list[str]:
         fail(f"CLI manual snapshot is not valid JSON: {error}")
 
     if module.ACCESS_MODEL != cli["access_model"]:
-        fail(
-            f"CLI ACCESS_MODEL is {module.ACCESS_MODEL!r}, "
-            f"expected {cli['access_model']!r}"
-        )
+        fail(f"CLI ACCESS_MODEL is {module.ACCESS_MODEL!r}, expected {cli['access_model']!r}")
     if module.AUTH_MODEL != cli["auth_model"]:
-        fail(
-            f"CLI AUTH_MODEL is {module.AUTH_MODEL!r}, "
-            f"expected {cli['auth_model']!r}"
-        )
+        fail(f"CLI AUTH_MODEL is {module.AUTH_MODEL!r}, expected {cli['auth_model']!r}")
     if module.CLI_ENTRY_POINT != cli["entry_point"]:
-        fail(
-            f"CLI entry point is {module.CLI_ENTRY_POINT!r}, "
-            f"expected {cli['entry_point']!r}"
-        )
+        fail(f"CLI entry point is {module.CLI_ENTRY_POINT!r}, expected {cli['entry_point']!r}")
 
-    declared_irreversible = {
-        c.invocation for c in module.COMMANDS if c.requires_confirmation
-    }
-    missing_confirm = sorted(
-        set(cli["confirmation_required_commands"]) - declared_irreversible
-    )
+    declared_irreversible = {c.invocation for c in module.COMMANDS if c.requires_confirmation}
+    missing_confirm = sorted(set(cli["confirmation_required_commands"]) - declared_irreversible)
     if missing_confirm:
-        fail(
-            "CLI commands missing requires_confirmation flag: "
-            + ", ".join(missing_confirm)
-        )
+        fail("CLI commands missing requires_confirmation flag: " + ", ".join(missing_confirm))
 
     return [
         f"{cli['package']} covers {len(cli['required_groups'])} groups and "
@@ -299,8 +270,7 @@ def assert_data_provider_contract(config: dict) -> list[str]:
     method_total = sum(len(v) for v in contract["required_methods"].values())
     bindings = contract["provider_bindings"]
     provider_short = "/".join(
-        binding["struct"].replace("Adapter", "").replace("Provider", "")
-        for binding in bindings
+        binding["struct"].replace("Adapter", "").replace("Provider", "") for binding in bindings
     )
     summary = (
         f"{contract['adapter_crate']['crate']} declares {method_total} "
@@ -338,7 +308,8 @@ def assert_container_language_boundary(config: dict) -> list[str]:
     missing_crates = [
         service["crate"]
         for service in config["core_runtime_services"]
-        if service["crate"] not in compose_text and service["crate"] not in {"atp-types", "atp-adapters"}
+        if service["crate"] not in compose_text
+        and service["crate"] not in {"atp-types", "atp-adapters"}
     ]
     if missing_crates:
         fail(f"Container config does not reference core Rust crates: {', '.join(missing_crates)}")

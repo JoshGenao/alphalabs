@@ -123,9 +123,7 @@ class PythonProtocolTest(unittest.TestCase):
             self.assertIn(needle, evidence)
 
     def test_missing_python_parameter_is_caught(self) -> None:
-        mutated = self.python_source.replace(
-            "asset_class: AssetClass = AssetClass.EQUITY,", "", 1
-        )
+        mutated = self.python_source.replace("asset_class: AssetClass = AssetClass.EQUITY,", "", 1)
         with self.assertRaises(HistoricalDataCheckError) as ctx:
             check_python_protocol(self.config, mutated)
         self.assertIn("asset_class", str(ctx.exception))
