@@ -1,5 +1,7 @@
-use atp_types::{RuntimeService, StrategyId};
+use atp_types::RuntimeService;
 use std::fmt;
+
+pub use atp_types::{OrderReceipt, OrderSubmission};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AdapterCapability {
@@ -73,18 +75,6 @@ pub trait AdapterBoundary {
     fn version(&self) -> AdapterVersion {
         ADAPTER_VERSION_NOT_APPLICABLE
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OrderSubmission {
-    pub strategy_id: StrategyId,
-    pub symbol: String,
-    pub quantity: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OrderReceipt {
-    pub broker_order_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -423,6 +413,7 @@ impl AlternativeDataProvider for FutureStubProvider {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use atp_types::StrategyId;
 
     fn brokerage_name<T: BrokerageAdapter>(adapter: &T) -> &'static str {
         adapter.provider_name()

@@ -581,6 +581,78 @@
       "normalization_enum": "NormalizationMode"
     }
   },
+  "error_handling_contract": {
+    "requirement": "ERR-1",
+    "srs_refs": [
+      "SRS-EXE-001",
+      "SRS-ERR-001"
+    ],
+    "syrs_refs": [
+      "SYS-1",
+      "SYS-64",
+      "AC-15"
+    ],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "execution_crate": {
+      "crate": "atp-execution",
+      "path": "crates/atp-execution"
+    },
+    "strategy_mode": {
+      "enum": "StrategyMode",
+      "variants": [
+        "Live",
+        "Paper"
+      ]
+    },
+    "error_category": {
+      "enum": "OrderErrorCategory",
+      "variants": [
+        "InvalidSymbol",
+        "InsufficientBuyingPower",
+        "ConnectivityBlocked",
+        "RateLimited",
+        "MarketDataStale",
+        "SubscriptionLimitReached",
+        "NonLiveStrategySubmission"
+      ],
+      "wire_strings": [
+        "INVALID_SYMBOL",
+        "INSUFFICIENT_BUYING_POWER",
+        "CONNECTIVITY_BLOCKED",
+        "RATE_LIMITED",
+        "MARKET_DATA_STALE",
+        "SUBSCRIPTION_LIMIT_REACHED",
+        "NON_LIVE_STRATEGY_SUBMISSION"
+      ]
+    },
+    "structured_error": {
+      "struct": "StructuredOrderError",
+      "required_fields": [
+        "category",
+        "error_type",
+        "message",
+        "original_order"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_order_id",
+        "vendor",
+        "provider"
+      ]
+    },
+    "entry_point": {
+      "method": "submit_live_order",
+      "type": "ExecutionEngine",
+      "result": "Result<OrderReceipt, StructuredOrderError>",
+      "live_only_call": "broker.submit_order"
+    },
+    "rejection_categories": [
+      "NonLiveStrategySubmission"
+    ]
+  },
   "deployment": {
     "requirement": "SRS-ARCH-004",
     "target": "Phase 1 Proxmox Ubuntu VM",

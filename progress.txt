@@ -1,3 +1,261 @@
+=== SESSION 13 ===
+Date: 2026-05-11
+Feature completed: ERR-1 — Order submitted by a non-live strategy to
+live execution path: reject synchronously with structured error and
+no IB order side effect (traces SRS-EXE-001 + SRS-ERR-001 + SyRS
+SYS-1 / SYS-64 / AC-15)
+Status: 107 remaining features
+
+What I did:
+- Extended `crates/atp-types/src/lib.rs`:
+  * Moved `OrderSubmission` + `OrderReceipt` here from
+    `atp-adapters` so both `atp-execution` (sender) and
+    `atp-adapters` (impl side) share one definition without
+    `atp-execution` depending on `atp-adapters` (dependency-direction
+    rule: adapters and execution are siblings, both deps of types).
+    Kept `pub use atp_types::{OrderReceipt, OrderSubmission}` in
+    `atp-adapters` so existing callers compile unchanged.
+  * Added `pub enum StrategyMode { Live, Paper }` with const
+    `is_live()` — types the single-live-strategy designation
+    (SRS-EXE-001 / SyRS AC-15).
+  * Added `pub enum OrderErrorCategory` with 7 variants:
+    `InvalidSymbol`, `InsufficientBuyingPower`,
+    `ConnectivityBlocked`, `RateLimited`, `MarketDataStale`,
+    `SubscriptionLimitReached`, `NonLiveStrategySubmission`. Each
+    variant maps via `as_str()` to its SyRS SYS-64 upper-snake wire
+    string (`"NON_LIVE_STRATEGY_SUBMISSION"` etc.) so the form is
+    identical across Rust / Python / REST / WebSocket.
+  * Added `pub struct StructuredOrderError { category, error_type,
+    message, original_order }` — exactly the four fields
+    SRS-ERR-001 requires, no broker/vendor identifier fields. Impl
+    `Display` (renders `[CATEGORY] error_type: message`) + `Error`.
+- Extended `crates/atp-execution/src/lib.rs`:
+  * Added `pub trait LiveBrokerageSubmit { fn submit_order(...) ->
+    Result<OrderReceipt, StructuredOrderError>; }`. The port lives
+    at the execution layer; adapters do not implement it directly —
+    the orchestrator (later feature) wires an adapter to it. This
+    keeps `atp-execution` free of any dep on `atp-adapters`.
+  * Added `ExecutionEngine::submit_live_order<B: LiveBrokerageSubmit>
+    (&self, mode: StrategyMode, submission: OrderSubmission, broker:
+    &B) -> Result<OrderReceipt, StructuredOrderError>` with a `match
+    mode` whose `StrategyMode::Live` arm is the ONLY call site of
+    `broker.submit_order(...)`. The `StrategyMode::Paper` arm
+    returns `Err(StructuredOrderError { category:
+    NonLiveStrategySubmission, error_type:
+    "NonLiveLiveRouteBlocked", message: "strategy `{id}` is not the
+    designated live strategy...SRS-EXE-001", original_order:
+    submission })` BEFORE any broker call, so a Paper submission can
+    never produce an IB order side effect.
+  * Added 4 new unit tests in the same crate: routing happy path,
+    paper-rejection with `broker.calls == 0` post-condition, the
+    structured error display format, plus the existing boundary
+    test was retained.
+- Added `crates/atp-execution/tests/err_1_no_ib_side_effect.rs`
+  (L7 domain integration test, 3 tests):
+  * `BrokerageSpy` impls `LiveBrokerageSubmit` and increments a
+    `Cell<u32>` on every call.
+  * `err_1_paper_strategy_is_rejected_with_no_broker_call` —
+    asserts the structured error has
+    `category == NonLiveStrategySubmission`, the wire form is
+    `"NON_LIVE_STRATEGY_SUBMISSION"`, `original_order` round-trips
+    unchanged, and `spy.calls == 0`.
+  * `err_1_holds_for_many_paper_submissions` — pseudo-property:
+    sweeps 5 (strategy_id, symbol, qty) combinations including
+    negative qty / zero qty / dotted ticker — spy stays at 0.
+  * `err_1_live_strategy_still_routes_through_the_broker` —
+    negative control: Live submissions DO reach the broker, so the
+    rejection is selective and ERR-1 doesn't silently disable the
+    live path.
+- Added `tools/error_handling_check.py` (peer of
+  `tools/historical_data_check.py`). 5 static checks + 1 cargo
+  smoke:
+  1. `atp-types` declares `StrategyMode` with `Live` + `Paper`.
+  2. `atp-types` declares `OrderErrorCategory` with all 7 variants
+     AND every SyRS SYS-64 wire string appears in the source (the
+     `as_str()` arm encodes it).
+  3. `atp-types` declares `StructuredOrderError` with the 4
+     required fields and rejects the 4 forbidden vendor/broker
+     fields (`broker`, `ib_order_id`, `vendor`, `provider`).
+  4. `atp-execution` declares
+     `ExecutionEngine::submit_live_order` returning
+     `Result<OrderReceipt, StructuredOrderError>`.
+  5. Inside `submit_live_order`, `broker.submit_order(` appears
+     ONLY inside the `StrategyMode::Live =>` match arm — not
+     before the match, not inside the `StrategyMode::Paper =>`
+     arm. The Paper arm must produce
+     `OrderErrorCategory::NonLiveStrategySubmission`.
+  6. `cargo test -p atp-execution --lib` + `--test
+     err_1_no_ib_side_effect` smoke (skip on missing cargo).
+  Reuses `_struct_body` / `_enum_body` from `historical_data_check`
+  (no copy-paste). Exposes `assert_error_handling_static(config,
+  root)` for the architecture-check short-circuit path.
+- Added `error_handling_contract` block to
+  `architecture/runtime_services.json`. Declares: `requirement:
+  "ERR-1"`, `srs_refs` (SRS-EXE-001 + SRS-ERR-001), `syrs_refs`
+  (SYS-1 + SYS-64 + AC-15), the types crate, the execution crate,
+  the `StrategyMode` + `OrderErrorCategory` (with both Rust
+  variants and SyRS wire strings) + `StructuredOrderError` (with
+  required + forbidden fields) descriptors, the entry point
+  (`ExecutionEngine::submit_live_order`, return type, live-only
+  call site `broker.submit_order`), and the rejection categories.
+- Wired `assert_error_handling(config)` into
+  `tools/architecture_check.py` between the unified-historical
+  block and the container-language-boundary block. Emits a summary
+  line: `atp-execution rejects non-live submissions synchronously
+  via ExecutionEngine::submit_live_order with 7 SyRS SYS-64
+  categories and 4 structured error fields, gating
+  `broker.submit_order` on StrategyMode::Live (ERR-1, SRS-EXE-001
+  + SRS-ERR-001)`.
+- Added `python3 tools/error_handling_check.py` to `init.sh`
+  between the historical-data check and the deployment check.
+  `✓ Environment ready` now requires it too.
+- Added `tests/test_error_handling_contract.py` (15 tests across 7
+  classes): subprocess contract test (`ERR-1 PASS` + 12 evidence
+  needles), per-check tests for `StrategyMode`,
+  `OrderErrorCategory` (including wire-string presence),
+  `StructuredOrderError`, the `submit_live_order` signature, and
+  the synchronous-rejection match-arm gate; negative spot-checks
+  (missing `Live` variant raises with `Live`; missing
+  `NonLiveStrategySubmission` raises with the variant; missing
+  wire string raises; injecting `broker`/`vendor` field into
+  `StructuredOrderError` raises with the field name; mutating the
+  Paper arm to call `broker.submit_order` raises with
+  `StrategyMode::Paper`); aggregate evidence counts (6 / 5 for
+  `run_checks` / static).
+- Added `tests/domain/test_non_live_strategy_rejection.py` (L7
+  domain, marked `pytest.mark.domain` + `pytest.mark.safety`).
+  Shells out to `cargo test -p atp-execution --test
+  err_1_no_ib_side_effect <name> -- --exact` and asserts the
+  return code; gracefully `pytest.skip(reason=...)` if cargo is
+  absent. Three tests covering the same three Rust integration
+  scenarios.
+- Tightened `tests/test_architecture.py`
+  `test_srs_arch_001_language_boundary` to require the new
+  `atp-execution rejects non-live submissions synchronously`,
+  `7 SyRS SYS-64 categories`,
+  `gating `broker.submit_order` on StrategyMode::Live`, and
+  `ERR-1, SRS-EXE-001 + SRS-ERR-001` evidence in the
+  architecture-check output.
+- Extended `architecture/README.md` with an `ERR-1` section
+  parallel to API-5 / API-6 / API-7: documents the contract block,
+  the `StrategyMode` + `OrderErrorCategory` + `StructuredOrderError`
+  surface, the synchronous-rejection guarantee with zero broker
+  side effect, the `tools/error_handling_check.py` command, the
+  spy-adapter integration test, and the relationship to the
+  later EXE-* / ERR-2..ERR-9 features that will fill in the
+  remaining adapter-error mappings.
+
+What I tested (end-to-end, all 4 steps from ERR-1):
+1. `./init.sh` → `✓ Environment ready` with the new
+   `→ Running error handling contract check…` line appearing
+   between the historical-data check and the deployment check.
+2. `python3 tools/error_handling_check.py` → `ERR-1 PASS` with 6
+   evidence bullets (5 static + cargo smoke) covering every
+   ERR-1 description capability: synchronous match-arm gating,
+   the source-neutral structured error, the SyRS SYS-64 wire
+   vocabulary, the Phase 1 entry point signature.
+3. `cargo test -p atp-execution --test err_1_no_ib_side_effect`
+   → 3 tests PASS — paper submission rejected with `spy.calls
+   == 0`, pseudo-property sweep across 5 paper cases stayed at
+   0 calls, live submission still routes (selective rejection).
+4. `cargo test --workspace --lib` → all 10 crates PASS (28
+   tests total: 12 atp-adapters + 4 atp-execution + 5
+   atp-types + 1 each in the 7 remaining crates) — no
+   regressions despite the `OrderSubmission` / `OrderReceipt`
+   relocation.
+5. `python3 -m unittest tests.test_architecture
+   tests.test_error_handling_contract tests.test_strategy_api
+   tests.test_rest_api tests.test_websocket_api tests.test_cli
+   tests.test_configuration tests.test_adapter_contract
+   tests.test_data_provider_contract
+   tests.test_unified_historical_data` → 160 tests OK (145
+   prior + 15 new across the new `test_error_handling_contract`
+   module + the tightened
+   `test_srs_arch_001_language_boundary` assertion).
+6. `python3 -m pytest tests/` → 163 passed, 6 skipped
+   (pre-existing domain stubs, all with `reason=`), 118
+   subtests passed; the new
+   `tests/domain/test_non_live_strategy_rejection.py` PASSED
+   all 3 tests via the cargo shell-out.
+7. Negative spot-checks (in-process):
+   - injecting `pub broker: String` or `pub vendor: String`
+     into `StructuredOrderError` raises
+     `ErrorHandlingCheckError` mentioning the leaked field.
+   - mutating `NonLiveStrategySubmission` → `...X` raises
+     mentioning the missing variant.
+   - mutating the wire string `"NON_LIVE_STRATEGY_SUBMISSION"`
+     raises mentioning the missing SyRS SYS-64 string.
+   - mutating the Paper arm to call
+     `broker.submit_order(submission.clone())` raises
+     mentioning `StrategyMode::Paper`.
+   - removing the `submit_live_order` method raises mentioning
+     it.
+8. `python3 tools/architecture_check.py` → `SRS-ARCH-001 PASS`
+   with the new summary line above, all prior evidence
+   preserved.
+9. Marked `feature_list.json` entry `ERR-1` `"passes": true`
+   and re-ran the full unit + pytest suite — still all green.
+
+Critic verdicts:
+  deterministic: APPROVE — 0 findings
+  judgment (general-purpose sub-agent, fresh context): APPROVE — 0 findings
+
+Known issues / notes for next agent:
+- ERR-1 lands the **rejection vocabulary** only. The live IB
+  routing pipeline (real submit, lifecycle state machine,
+  correlation-ID idempotency, IB-pacing handling) lands with
+  later EXE-* features. The brokerage port
+  `LiveBrokerageSubmit` is defined at the execution layer; the
+  orchestrator (later) wires an `atp-adapters` brokerage adapter
+  to it. Right now no production code path constructs an impl
+  of `LiveBrokerageSubmit` — only the test spy does. That is
+  intentional: ERR-1's contract is "if such a port exists, a
+  Paper submission can never invoke it."
+- `OrderSubmission` and `OrderReceipt` now live in `atp-types`
+  with a `pub use` re-export from `atp-adapters`. Any future
+  feature that imports these types directly from
+  `atp_adapters::` will keep working, but new code should
+  prefer `atp_types::{OrderSubmission, OrderReceipt}` to make
+  the dependency direction explicit.
+- The structured-error vocabulary intentionally covers all 7
+  SyRS SYS-64 categories (not just `NonLiveStrategySubmission`)
+  so that ERR-2..ERR-9 can land without revisiting `atp-types`.
+  Each later ERR-* feature should add its own match arm
+  (mapping `AdapterError::*` → `OrderErrorCategory::*`) inside
+  the corresponding execution-engine guard (connectivity,
+  staleness, pacing, market-data-line limit, ingestion
+  validation, hot-swap liquidation, kill-switch liquidation,
+  startup config).
+- `tools/error_handling_check.py` reuses `_struct_body` /
+  `_enum_body` from `historical_data_check.py` (no copy-paste),
+  matching the API-6 / API-7 import pattern. The check also
+  introduces a `_fn_block` helper and a `_match_arm` helper
+  that parses match arms with brace + string-literal awareness.
+  Future ERR-* contract checks can promote these to a shared
+  helper if more arms need pinning.
+- The "no broker call outside Live arm" check is regex-based.
+  A regression that hides the broker call behind a helper
+  function call (e.g. `self.really_route(broker, submission)`)
+  inside the Paper arm would pass the static check. The L7
+  spy-adapter integration test is the runtime defense for this
+  failure mode — the spy counts every call regardless of how
+  it is reached.
+- The `error_type` field in the Paper-arm error is
+  `"NonLiveLiveRouteBlocked"`. If a later feature finds this
+  string awkward, it can be renamed without touching the
+  contract; only the *category* is part of the SRS-ERR-001
+  wire vocabulary.
+- Pre-existing dirty/untracked files unrelated to ERR-1:
+  `.devserver.log`, `.devserver.pid`, `.claude/`, `.vscode/`,
+  `prompts/coding_prompt.md`, `prompts/initializer_prompt.md`.
+  They were not reverted (consistent with prior sessions).
+- No features were skipped for clarification this session.
+- Lowest remaining P1 by ID is ERR-2 (IB Gateway unreachable),
+  then ERR-3..ERR-9 (stale market data, market-data line limit,
+  ingestion validation, IB pacing, Hot-Swap liquidation timeout,
+  kill-switch liquidation timeout, missing/invalid startup
+  config), then SRS-API-001 and beyond.
+
 === SESSION 12 ===
 Date: 2026-05-07
 Feature completed: API-7 — Unified historical data interface (query by

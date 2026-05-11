@@ -18,6 +18,10 @@ from data_provider_check import (
 )
 from dependency_boundary_check import DependencyBoundaryError, assert_dependency_direction
 from deployment_check import DeploymentCheckError, assert_deployment_static
+from error_handling_check import (
+    ErrorHandlingCheckError,
+    assert_error_handling_static,
+)
 from historical_data_check import (
     HistoricalDataCheckError,
     assert_unified_historical_data_static,
@@ -300,6 +304,24 @@ def assert_unified_historical_data(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_error_handling(config: dict) -> list[str]:
+    block = config.get("error_handling_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_error_handling_static(config, ROOT)
+    summary = (
+        f"{block['execution_crate']['crate']} rejects non-live submissions "
+        f"synchronously via {block['entry_point']['type']}::"
+        f"{block['entry_point']['method']} with "
+        f"{len(block['error_category']['variants'])} SyRS SYS-64 categories "
+        f"and {len(block['structured_error']['required_fields'])} structured "
+        f"error fields, gating `{block['entry_point']['live_only_call']}` on "
+        "StrategyMode::Live (ERR-1, SRS-EXE-001 + SRS-ERR-001)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -350,6 +372,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_unified_historical_data(config))
     except HistoricalDataCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_error_handling(config))
+    except ErrorHandlingCheckError as error:
         fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:

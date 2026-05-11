@@ -1676,7 +1676,7 @@
       "Step 3: Verify expected behavior: Reject synchronously with structured error and no IB order side effect.",
       "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-EXE-001, SRS-ERR-001 and leave passes false until evidence is captured."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {

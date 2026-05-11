@@ -48,6 +48,17 @@ class ArchitectureBoundaryTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("API-7, SRS-DATA-007 + SRS-DATA-012", result.stdout)
+        # ERR-1 / SRS-EXE-001 / SRS-ERR-001 structured-error contract.
+        self.assertIn(
+            "atp-execution rejects non-live submissions synchronously",
+            result.stdout,
+        )
+        self.assertIn("7 SyRS SYS-64 categories", result.stdout)
+        self.assertIn(
+            "gating `broker.submit_order` on StrategyMode::Live",
+            result.stdout,
+        )
+        self.assertIn("ERR-1, SRS-EXE-001 + SRS-ERR-001", result.stdout)
 
     def test_srs_arch_002_dependency_boundary(self) -> None:
         result = subprocess.run(

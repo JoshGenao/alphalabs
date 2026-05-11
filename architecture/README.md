@@ -256,3 +256,54 @@ split.
 The contract is parallel to API-5 / API-6; concrete unified historical
 behaviour (cold NAS reads, corporate-action adjustment, schema
 evolution) lands with DATA-7 and DATA-8..DATA-21.
+
+`ERR-1` (live-path rejection for non-live submissions, SRS-EXE-001 +
+SRS-ERR-001 + SyRS SYS-1 / SYS-64 / AC-15) is enforced by the
+`error_handling_contract` block in
+`architecture/runtime_services.json`, the public types in
+`crates/atp-types/src/lib.rs`, and `ExecutionEngine::submit_live_order`
+in `crates/atp-execution/src/lib.rs`. The catalogue declares the
+structured-error vocabulary every later ERR-* and SAFE-* feature
+reuses:
+
+- `StrategyMode { Live, Paper }` types the single-live-strategy
+  designation. Exactly one strategy may be `Live`; everything else is
+  `Paper` and must never route to IB (AC-15).
+- `OrderErrorCategory` carries the seven SyRS SYS-64 categories —
+  `InvalidSymbol`, `InsufficientBuyingPower`, `ConnectivityBlocked`,
+  `RateLimited`, `MarketDataStale`, `SubscriptionLimitReached`, and
+  `NonLiveStrategySubmission` — each mapped to its upper-snake wire
+  string via `as_str()` so the form is identical across Rust, Python,
+  REST, and WebSocket surfaces.
+- `StructuredOrderError { category, error_type, message,
+  original_order }` is the SRS-ERR-001 envelope — exactly four fields,
+  with the check refusing any `broker`, `ib_order_id`, `vendor`, or
+  `provider` leak.
+- `ExecutionEngine::submit_live_order(mode, submission, broker)`
+  routes to the brokerage port ONLY inside the `StrategyMode::Live`
+  match arm. Paper submissions return
+  `Err(StructuredOrderError { category: NonLiveStrategySubmission, .. })`
+  synchronously, with zero broker invocations. The
+  `crates/atp-execution/tests/err_1_no_ib_side_effect.rs` integration
+  test pins this with a spy adapter that counts every `submit_order`
+  call.
+
+```bash
+python3 tools/error_handling_check.py
+```
+
+`tools/error_handling_check.py` parses the Rust source for the
+`StrategyMode` + `OrderErrorCategory` enums (and their SyRS wire
+strings), the `StructuredOrderError` struct (rejecting forbidden
+broker/vendor fields), the `submit_live_order` signature, and the
+match-arm gating that keeps `broker.submit_order` exclusively on the
+`Live` path, then runs `cargo test -p atp-execution --lib` plus the
+`err_1_no_ib_side_effect` integration test end-to-end. The
+`architecture_check.py` path short-circuits the cargo step via
+`assert_error_handling_static`, mirroring the API-5 / API-6 / API-7
+split.
+
+The contract lands the rejection vocabulary; the live IB routing
+pipeline, idempotency / correlation-ID handling, and per-category
+adapter-error mapping arrive with later EXE-* and ERR-2..ERR-9
+features.
