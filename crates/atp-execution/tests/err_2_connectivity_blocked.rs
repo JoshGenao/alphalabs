@@ -14,10 +14,11 @@
 
 use atp_execution::{
     BrokerageConnectivity, ConnectivityEventSink, ExecutionEngine, LiveBrokerageSubmit,
+    MarketDataFreshnessProbe, StaleDataEventSink,
 };
 use atp_types::{
-    ConnectivityEvent, ConnectivityState, OrderErrorCategory, OrderReceipt, OrderSubmission,
-    StrategyId, StrategyMode, StructuredOrderError,
+    ConnectivityEvent, ConnectivityState, MarketDataFreshness, OrderErrorCategory, OrderReceipt,
+    OrderSubmission, StaleDataEvent, StrategyId, StrategyMode, StructuredOrderError,
 };
 use std::cell::{Cell, RefCell};
 
@@ -73,6 +74,47 @@ impl ConnectivityEventSink for EventSinkSpy {
     }
 }
 
+/// Always-fresh freshness stub used by the Connected positive-control test.
+struct AlwaysFresh;
+
+impl MarketDataFreshnessProbe for AlwaysFresh {
+    fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+        MarketDataFreshness::Fresh
+    }
+
+    fn staleness_seconds(&self, _symbol: &str) -> u64 {
+        0
+    }
+}
+
+/// Freshness stub that panics if consulted. Used by the Unreachable /
+/// ScheduledRestartWindow tests to prove the ERR-2 connectivity gate
+/// short-circuits before the ERR-3 freshness gate (the outer match arm
+/// on `ConnectivityState` must reject before the inner freshness match
+/// is reached).
+struct ForbiddenFreshness;
+
+impl MarketDataFreshnessProbe for ForbiddenFreshness {
+    fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+        panic!("ERR-2: blocked-connectivity branch must not consult the freshness port");
+    }
+
+    fn staleness_seconds(&self, _symbol: &str) -> u64 {
+        panic!("ERR-2: blocked-connectivity branch must not consult staleness_seconds");
+    }
+}
+
+#[derive(Default)]
+struct StaleEventSinkSpy {
+    events: RefCell<Vec<StaleDataEvent>>,
+}
+
+impl StaleDataEventSink for StaleEventSinkSpy {
+    fn record(&self, event: StaleDataEvent) {
+        self.events.borrow_mut().push(event);
+    }
+}
+
 fn submission(strategy: &str, symbol: &str, qty: i64) -> OrderSubmission {
     OrderSubmission {
         strategy_id: StrategyId::new(strategy),
@@ -90,6 +132,8 @@ fn err_2_unreachable_state_blocks_live_submission_with_no_broker_call() {
     let broker = BrokerageSpy::default();
     let connectivity = ConnectivitySpy::in_state(ConnectivityState::Unreachable);
     let events = EventSinkSpy::default();
+    let freshness = ForbiddenFreshness;
+    let stale_events = StaleEventSinkSpy::default();
     let order = submission("live-alpha-1", "AAPL", 100);
 
     let error = engine
@@ -99,6 +143,8 @@ fn err_2_unreachable_state_blocks_live_submission_with_no_broker_call() {
             &broker,
             &connectivity,
             &events,
+            &freshness,
+            &stale_events,
         )
         .expect_err("ERR-2: Unreachable state must reject the live submission");
 
@@ -149,6 +195,10 @@ fn err_2_unreachable_state_blocks_live_submission_with_no_broker_call() {
         !recorded[0].scheduled_restart,
         "Unreachable is the unscheduled connectivity-loss path"
     );
+    assert!(
+        stale_events.events.borrow().is_empty(),
+        "Unreachable branch must not emit a stale-data event"
+    );
 }
 
 #[test]
@@ -160,6 +210,8 @@ fn err_2_scheduled_restart_window_blocks_with_suppressed_marker() {
     let broker = BrokerageSpy::default();
     let connectivity = ConnectivitySpy::in_state(ConnectivityState::ScheduledRestartWindow);
     let events = EventSinkSpy::default();
+    let freshness = ForbiddenFreshness;
+    let stale_events = StaleEventSinkSpy::default();
     let order = submission("live-alpha-1", "MSFT", 50);
 
     let error = engine
@@ -169,6 +221,8 @@ fn err_2_scheduled_restart_window_blocks_with_suppressed_marker() {
             &broker,
             &connectivity,
             &events,
+            &freshness,
+            &stale_events,
         )
         .expect_err("ERR-2: ScheduledRestartWindow must reject the live submission");
 
@@ -191,6 +245,10 @@ fn err_2_scheduled_restart_window_blocks_with_suppressed_marker() {
         recorded[0].scheduled_restart,
         "SRS-MD-005 suppression flag must be set on scheduled-restart events"
     );
+    assert!(
+        stale_events.events.borrow().is_empty(),
+        "ScheduledRestartWindow branch must not emit a stale-data event"
+    );
 }
 
 #[test]
@@ -202,11 +260,21 @@ fn err_2_connected_state_still_routes_through_broker() {
     let broker = BrokerageSpy::default();
     let connectivity = ConnectivitySpy::in_state(ConnectivityState::Connected);
     let events = EventSinkSpy::default();
+    let freshness = AlwaysFresh;
+    let stale_events = StaleEventSinkSpy::default();
     let order = submission("live-alpha-1", "AAPL", 10);
 
     let receipt = engine
-        .submit_live_order(StrategyMode::Live, order, &broker, &connectivity, &events)
-        .expect("Connected state must still allow the live submission through");
+        .submit_live_order(
+            StrategyMode::Live,
+            order,
+            &broker,
+            &connectivity,
+            &events,
+            &freshness,
+            &stale_events,
+        )
+        .expect("Connected + Fresh must still allow the live submission through");
 
     assert_eq!(receipt.broker_order_id, "ib-AAPL");
     assert_eq!(broker.calls.get(), 1);
@@ -219,6 +287,7 @@ fn err_2_connected_state_still_routes_through_broker() {
         events.events.borrow().is_empty(),
         "no connectivity event should be emitted on the happy path"
     );
+    assert!(stale_events.events.borrow().is_empty());
 }
 
 #[test]
@@ -231,6 +300,8 @@ fn err_2_unreachable_holds_across_many_live_submissions() {
     let broker = BrokerageSpy::default();
     let connectivity = ConnectivitySpy::in_state(ConnectivityState::Unreachable);
     let events = EventSinkSpy::default();
+    let freshness = ForbiddenFreshness;
+    let stale_events = StaleEventSinkSpy::default();
     let cases = [
         ("live-alpha-1", "AAPL", 1),
         ("live-alpha-1", "AAPL", -1),
@@ -247,6 +318,8 @@ fn err_2_unreachable_holds_across_many_live_submissions() {
                 &broker,
                 &connectivity,
                 &events,
+                &freshness,
+                &stale_events,
             )
             .expect_err("Unreachable always blocks");
         assert_eq!(err.category, OrderErrorCategory::ConnectivityBlocked);
@@ -267,5 +340,9 @@ fn err_2_unreachable_holds_across_many_live_submissions() {
         events.events.borrow().len(),
         cases.len(),
         "one ConnectivityEvent per blocked submission"
+    );
+    assert!(
+        stale_events.events.borrow().is_empty(),
+        "Unreachable branch must not emit any stale-data events"
     );
 }

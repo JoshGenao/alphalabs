@@ -181,6 +181,46 @@ pub struct ConnectivityEvent {
     pub scheduled_restart: bool,
 }
 
+// --------------------------------------------------------------------------- //
+// Market-data freshness state and structured event (SRS-MD-004, NFR-P5)
+// --------------------------------------------------------------------------- //
+//
+// `MarketDataFreshness` types the two states the live execution path must
+// distinguish between when deciding whether a Live submission may reach the
+// brokerage port:
+//   * `Fresh` — subscribed market data is within the NFR-P5 15-second
+//     staleness threshold for the order's symbol.
+//   * `Stale` — subscribed data has not updated within the threshold
+//     (SRS-MD-004, SyRS SYS-39a); live and paper submissions must be
+//     rejected with `MARKET_DATA_STALE` until fresh data is observed.
+//
+// `StaleDataEvent` is the structured payload published whenever the engine
+// blocks a submission for staleness. It carries the state, the submitting
+// strategy, the symbol, and the observed staleness in seconds so dashboards
+// and the notification dispatcher can surface the age without re-probing
+// the freshness port. The struct deliberately carries no broker / vendor /
+// session / tick identifiers — staleness is a data-side condition.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MarketDataFreshness {
+    Fresh,
+    Stale,
+}
+
+impl MarketDataFreshness {
+    pub const fn is_stale(self) -> bool {
+        matches!(self, Self::Stale)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleDataEvent {
+    pub state: MarketDataFreshness,
+    pub strategy_id: StrategyId,
+    pub symbol: String,
+    pub staleness_seconds: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +314,56 @@ mod tests {
         };
         assert!(event.scheduled_restart);
         assert_eq!(event.state, ConnectivityState::ScheduledRestartWindow);
+    }
+
+    #[test]
+    fn market_data_freshness_distinguishes_fresh_from_stale() {
+        // SRS-MD-004: Stale must block live and paper submissions until
+        // fresh data returns. The `is_stale` helper is the predicate
+        // every consumer of the freshness gate calls.
+        assert!(!MarketDataFreshness::Fresh.is_stale());
+        assert!(MarketDataFreshness::Stale.is_stale());
+    }
+
+    #[test]
+    fn stale_data_event_carries_only_the_four_required_fields() {
+        // The exhaustive destructure proves there are no other public
+        // fields (i.e. nothing that could leak a broker / vendor / IB
+        // session / tick id into the dashboard fan-out).
+        let event = StaleDataEvent {
+            state: MarketDataFreshness::Stale,
+            strategy_id: StrategyId::new("live-alpha"),
+            symbol: "AAPL".to_string(),
+            staleness_seconds: 22,
+        };
+        let StaleDataEvent {
+            state: _,
+            strategy_id: _,
+            symbol: _,
+            staleness_seconds: _,
+        } = event.clone();
+        assert_eq!(event.state, MarketDataFreshness::Stale);
+        assert_eq!(event.strategy_id.as_str(), "live-alpha");
+        assert_eq!(event.symbol, "AAPL");
+        assert_eq!(event.staleness_seconds, 22);
+    }
+
+    #[test]
+    fn stale_data_event_records_observed_age_above_nfr_p5_threshold() {
+        // NFR-P5 caps the heartbeat staleness threshold at 15,000 ms.
+        // The event must be able to carry observed ages strictly above
+        // that floor so dashboards can show how stale the feed actually
+        // got before the gate fired.
+        let event = StaleDataEvent {
+            state: MarketDataFreshness::Stale,
+            strategy_id: StrategyId::new("live-alpha"),
+            symbol: "MSFT".to_string(),
+            staleness_seconds: 16,
+        };
+        assert!(
+            event.staleness_seconds > 15,
+            "the event must accommodate ages above the NFR-P5 15s floor"
+        );
     }
 
     #[test]

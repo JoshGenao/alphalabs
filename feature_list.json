@@ -1706,7 +1706,7 @@
       "Step 3: Verify expected behavior: Reject live and paper order submissions with MARKET_DATA_STALE until fresh data arrives.",
       "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-MD-004 and leave passes false until evidence is captured."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {

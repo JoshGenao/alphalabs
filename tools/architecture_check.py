@@ -13,6 +13,7 @@ from adapter_check import AdapterContractError, assert_adapter_contract_static
 from adapter_isolation_check import AdapterIsolationError, assert_adapter_isolation_static
 from config_check import ConfigCheckError, assert_configuration_static
 from connectivity_check import ConnectivityCheckError, assert_connectivity_static
+from freshness_check import FreshnessCheckError, assert_freshness_static
 from data_provider_check import (
     DataProviderContractError,
     assert_data_provider_contract_static,
@@ -340,6 +341,22 @@ def assert_connectivity(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_freshness(config: dict) -> list[str]:
+    block = config.get("freshness_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_freshness_static(config, ROOT)
+    summary = (
+        f"{block['execution_crate']['crate']} gates live submissions on "
+        f"{block['freshness_state']['enum']} "
+        f"({len(block['freshness_state']['variants'])} states), "
+        f"publishing {block['stale_data_event']['struct']} when market "
+        "data is stale (ERR-3, SRS-MD-004, NFR-P5 15s threshold)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -398,6 +415,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_connectivity(config))
     except ConnectivityCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_freshness(config))
+    except FreshnessCheckError as error:
         fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:

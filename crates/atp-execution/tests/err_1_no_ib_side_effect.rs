@@ -6,17 +6,20 @@
 //! `submit_order` invocation; the post-condition is exactly zero calls.
 //!
 //! ERR-2 (SRS-SAFE-003 / SRS-MD-005) added a connectivity gate to
-//! `submit_live_order`. The Paper-mode rejection must remain independent of
-//! connectivity state, so this file uses a `ForbiddenConnectivity` stub that
-//! panics if the engine consults it during a Paper submission — proving the
-//! Paper rejection short-circuits before the connectivity port is reached.
+//! `submit_live_order`. ERR-3 (SRS-MD-004 / NFR-P5) added a market-data
+//! freshness gate nested inside the Connected arm. The Paper-mode
+//! rejection must remain independent of both, so this file uses
+//! `ForbiddenConnectivity` and `ForbiddenFreshness` stubs that panic if
+//! the engine consults them during a Paper submission — proving the
+//! Paper rejection short-circuits before either gate is reached.
 
 use atp_execution::{
     BrokerageConnectivity, ConnectivityEventSink, ExecutionEngine, LiveBrokerageSubmit,
+    MarketDataFreshnessProbe, StaleDataEventSink,
 };
 use atp_types::{
-    ConnectivityEvent, ConnectivityState, OrderErrorCategory, OrderReceipt, OrderSubmission,
-    StrategyId, StrategyMode, StructuredOrderError,
+    ConnectivityEvent, ConnectivityState, MarketDataFreshness, OrderErrorCategory, OrderReceipt,
+    OrderSubmission, StaleDataEvent, StrategyId, StrategyMode, StructuredOrderError,
 };
 use std::cell::{Cell, RefCell};
 
@@ -74,6 +77,45 @@ impl ConnectivityEventSink for EventSinkSpy {
     }
 }
 
+/// Always-fresh freshness stub used by the Live control test.
+struct AlwaysFresh;
+
+impl MarketDataFreshnessProbe for AlwaysFresh {
+    fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+        MarketDataFreshness::Fresh
+    }
+
+    fn staleness_seconds(&self, _symbol: &str) -> u64 {
+        0
+    }
+}
+
+/// Freshness stub that panics if the engine consults it. Used by the
+/// Paper-rejection tests to prove ERR-1's short-circuit also skips the
+/// ERR-3 freshness gate.
+struct ForbiddenFreshness;
+
+impl MarketDataFreshnessProbe for ForbiddenFreshness {
+    fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+        panic!("ERR-1: Paper submissions must not consult the freshness port");
+    }
+
+    fn staleness_seconds(&self, _symbol: &str) -> u64 {
+        panic!("ERR-1: Paper submissions must not consult staleness_seconds");
+    }
+}
+
+#[derive(Default)]
+struct StaleEventSinkSpy {
+    events: RefCell<Vec<StaleDataEvent>>,
+}
+
+impl StaleDataEventSink for StaleEventSinkSpy {
+    fn record(&self, event: StaleDataEvent) {
+        self.events.borrow_mut().push(event);
+    }
+}
+
 fn submission(strategy: &str, symbol: &str, qty: i64) -> OrderSubmission {
     OrderSubmission {
         strategy_id: StrategyId::new(strategy),
@@ -88,6 +130,8 @@ fn err_1_paper_strategy_is_rejected_with_no_broker_call() {
     let spy = BrokerageSpy::default();
     let connectivity = ForbiddenConnectivity;
     let events = EventSinkSpy::default();
+    let freshness = ForbiddenFreshness;
+    let stale_events = StaleEventSinkSpy::default();
     let order = submission("paper-mean-rev-7", "AAPL", 100);
 
     let outcome = engine.submit_live_order(
@@ -96,6 +140,8 @@ fn err_1_paper_strategy_is_rejected_with_no_broker_call() {
         &spy,
         &connectivity,
         &events,
+        &freshness,
+        &stale_events,
     );
 
     let error = outcome.expect_err("ERR-1: paper submissions must NOT succeed on the live path");
@@ -126,6 +172,10 @@ fn err_1_paper_strategy_is_rejected_with_no_broker_call() {
         events.events.borrow().is_empty(),
         "Paper rejection must not emit a connectivity event"
     );
+    assert!(
+        stale_events.events.borrow().is_empty(),
+        "Paper rejection must not emit a stale-data event"
+    );
 }
 
 #[test]
@@ -136,6 +186,8 @@ fn err_1_holds_for_many_paper_submissions() {
     let spy = BrokerageSpy::default();
     let connectivity = ForbiddenConnectivity;
     let events = EventSinkSpy::default();
+    let freshness = ForbiddenFreshness;
+    let stale_events = StaleEventSinkSpy::default();
     let cases = [
         ("paper-1", "AAPL", 1),
         ("paper-1", "AAPL", -1),
@@ -152,6 +204,8 @@ fn err_1_holds_for_many_paper_submissions() {
                 &spy,
                 &connectivity,
                 &events,
+                &freshness,
+                &stale_events,
             )
             .expect_err("paper submissions are always blocked on the live path");
         assert_eq!(err.category, OrderErrorCategory::NonLiveStrategySubmission);
@@ -164,6 +218,7 @@ fn err_1_holds_for_many_paper_submissions() {
         cases.len()
     );
     assert!(events.events.borrow().is_empty());
+    assert!(stale_events.events.borrow().is_empty());
 }
 
 #[test]
@@ -175,13 +230,24 @@ fn err_1_live_strategy_still_routes_through_the_broker() {
     let spy = BrokerageSpy::default();
     let connectivity = AlwaysConnected;
     let events = EventSinkSpy::default();
+    let freshness = AlwaysFresh;
+    let stale_events = StaleEventSinkSpy::default();
     let order = submission("live-alpha-1", "AAPL", 10);
 
     let receipt = engine
-        .submit_live_order(StrategyMode::Live, order, &spy, &connectivity, &events)
+        .submit_live_order(
+            StrategyMode::Live,
+            order,
+            &spy,
+            &connectivity,
+            &events,
+            &freshness,
+            &stale_events,
+        )
         .expect("live submissions must reach the brokerage port");
 
     assert_eq!(receipt.broker_order_id, "ib-AAPL");
     assert_eq!(spy.calls.get(), 1);
     assert!(events.events.borrow().is_empty());
+    assert!(stale_events.events.borrow().is_empty());
 }

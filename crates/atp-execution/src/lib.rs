@@ -1,7 +1,7 @@
 use atp_strategy_engine::StrategyRuntimeBoundary;
 use atp_types::{
-    ConnectivityEvent, ConnectivityState, OrderErrorCategory, OrderReceipt, OrderSubmission,
-    RuntimeService, StrategyMode, StructuredOrderError,
+    ConnectivityEvent, ConnectivityState, MarketDataFreshness, OrderErrorCategory, OrderReceipt,
+    OrderSubmission, RuntimeService, StaleDataEvent, StrategyMode, StructuredOrderError,
 };
 
 #[derive(Debug, Default)]
@@ -43,6 +43,30 @@ pub trait ConnectivityEventSink {
     fn record(&self, event: ConnectivityEvent);
 }
 
+/// ERR-3 / SRS-MD-004 / NFR-P5: port the execution engine consults at
+/// every live submission to decide whether the subscribed market data for
+/// the order's symbol is fresh enough to trade against. The implementation
+/// (later: the market-data subscription manager) owns the actual heartbeat
+/// timestamp / sequence-gap tracking and the configurable 15s threshold.
+/// Defining the port at the execution layer keeps the data-freshness gate
+/// observable from execution without pulling `atp-execution` into a
+/// dependency on `atp-market-data` (SRS-ARCH-002 dependency direction).
+pub trait MarketDataFreshnessProbe {
+    fn freshness(&self, symbol: &str) -> MarketDataFreshness;
+    fn staleness_seconds(&self, symbol: &str) -> u64;
+}
+
+/// ERR-3 / SRS-MD-004: structured-event sink the execution engine pushes a
+/// `StaleDataEvent` into whenever it blocks a submission because market
+/// data is stale. Concrete implementations (later) route the event to
+/// logs (SRS-LOG-001), the dashboard WebSocket, and the notification
+/// dispatcher. The sink lives at the execution layer alongside
+/// `ConnectivityEventSink` so the staleness gate stays observable from
+/// execution without a dependency on `atp-market-data`.
+pub trait StaleDataEventSink {
+    fn record(&self, event: StaleDataEvent);
+}
+
 impl ExecutionEngine {
     pub fn service(&self) -> RuntimeService {
         RuntimeService::ExecutionEngine
@@ -52,31 +76,64 @@ impl ExecutionEngine {
         format!("live-order-boundary:{}", boundary.strategy_id().as_str())
     }
 
-    /// ERR-1 + ERR-2 / SRS-EXE-001 / SRS-ERR-001 / SRS-SAFE-003 / SRS-MD-005:
-    /// route an order to the live broker only if (a) the submitting strategy
-    /// is in `Live` mode AND (b) the IB Gateway is reachable. Both rejections
-    /// are synchronous, return a `StructuredOrderError` matching the SyRS
-    /// SYS-64 wire vocabulary, and produce zero IB order side effect.
+    /// ERR-1 + ERR-2 + ERR-3 / SRS-EXE-001 / SRS-ERR-001 / SRS-SAFE-003 /
+    /// SRS-MD-004 / SRS-MD-005: route an order to the live broker only if
+    /// (a) the submitting strategy is in `Live` mode AND (b) the IB
+    /// Gateway is reachable AND (c) the subscribed market data for the
+    /// order's symbol is fresh. Every rejection is synchronous, returns a
+    /// `StructuredOrderError` matching the SyRS SYS-64 wire vocabulary,
+    /// and produces zero IB order side effect.
     ///
-    /// On `Unreachable` or `ScheduledRestartWindow`, the engine also
-    /// publishes a `ConnectivityEvent` for downstream consumers and
-    /// requests a reconnect — neither side effect runs the broker port.
-    pub fn submit_live_order<B, C, E>(
+    /// On `Unreachable` or `ScheduledRestartWindow`, the engine publishes
+    /// a `ConnectivityEvent` and requests a reconnect — neither side
+    /// effect runs the broker port. On `Stale`, the engine publishes a
+    /// `StaleDataEvent` carrying the observed staleness in seconds — no
+    /// reconnect is requested because staleness is a data-side condition,
+    /// not a transport fault.
+    pub fn submit_live_order<B, C, E, F, S>(
         &self,
         mode: StrategyMode,
         submission: OrderSubmission,
         broker: &B,
         connectivity: &C,
         events: &E,
+        freshness: &F,
+        stale_events: &S,
     ) -> Result<OrderReceipt, StructuredOrderError>
     where
         B: LiveBrokerageSubmit,
         C: BrokerageConnectivity,
         E: ConnectivityEventSink,
+        F: MarketDataFreshnessProbe,
+        S: StaleDataEventSink,
     {
         match mode {
             StrategyMode::Live => match connectivity.state() {
-                ConnectivityState::Connected => broker.submit_order(submission),
+                ConnectivityState::Connected => match freshness.freshness(&submission.symbol) {
+                    MarketDataFreshness::Fresh => broker.submit_order(submission),
+                    MarketDataFreshness::Stale => {
+                        let staleness_seconds = freshness.staleness_seconds(&submission.symbol);
+                        stale_events.record(StaleDataEvent {
+                            state: MarketDataFreshness::Stale,
+                            strategy_id: submission.strategy_id.clone(),
+                            symbol: submission.symbol.clone(),
+                            staleness_seconds,
+                        });
+                        Err(StructuredOrderError {
+                            category: OrderErrorCategory::MarketDataStale,
+                            error_type: "MarketDataStale".to_string(),
+                            message: format!(
+                                "live order submission for strategy `{}` blocked: \
+                                 subscribed market data for `{}` is stale ({}s; \
+                                 threshold 15s per NFR-P5; SRS-MD-004)",
+                                submission.strategy_id.as_str(),
+                                submission.symbol,
+                                staleness_seconds,
+                            ),
+                            original_order: submission,
+                        })
+                    }
+                },
                 state @ (ConnectivityState::Unreachable
                 | ConnectivityState::ScheduledRestartWindow) => {
                     events.record(ConnectivityEvent {
@@ -211,6 +268,53 @@ mod tests {
         }
     }
 
+    /// A freshness probe that always reports `Fresh` (and panics if asked
+    /// for an age — staleness_seconds should never be consulted unless the
+    /// state was `Stale`). Used by Live-mode happy-path tests.
+    struct AlwaysFresh;
+
+    impl MarketDataFreshnessProbe for AlwaysFresh {
+        fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+            MarketDataFreshness::Fresh
+        }
+
+        fn staleness_seconds(&self, _symbol: &str) -> u64 {
+            panic!("staleness_seconds must not be consulted when freshness is Fresh");
+        }
+    }
+
+    /// A freshness probe that panics on every call. Used to prove that the
+    /// Paper and Unreachable branches never consult the freshness gate.
+    struct ForbiddenFreshness;
+
+    impl MarketDataFreshnessProbe for ForbiddenFreshness {
+        fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+            panic!("freshness must not be consulted on this branch");
+        }
+
+        fn staleness_seconds(&self, _symbol: &str) -> u64 {
+            panic!("staleness_seconds must not be consulted on this branch");
+        }
+    }
+
+    struct RecordingStaleEvents {
+        events: RefCell<Vec<StaleDataEvent>>,
+    }
+
+    impl RecordingStaleEvents {
+        fn new() -> Self {
+            Self {
+                events: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl StaleDataEventSink for RecordingStaleEvents {
+        fn record(&self, event: StaleDataEvent) {
+            self.events.borrow_mut().push(event);
+        }
+    }
+
     #[test]
     fn is_a_rust_execution_service_boundary() {
         let boundary = StrategyRuntimeBoundary::new(StrategyId::new("live-1"), DataLayer);
@@ -228,6 +332,8 @@ mod tests {
         let broker = CountingBroker::new();
         let connectivity = StubConnectivity::connected();
         let events = RecordingEvents::new();
+        let freshness = AlwaysFresh;
+        let stale_events = RecordingStaleEvents::new();
         let submission = OrderSubmission {
             strategy_id: StrategyId::new("live-1"),
             symbol: "AAPL".to_string(),
@@ -241,13 +347,16 @@ mod tests {
                 &broker,
                 &connectivity,
                 &events,
+                &freshness,
+                &stale_events,
             )
-            .expect("live mode + connected must route through the brokerage port");
+            .expect("live mode + connected + fresh must route through the brokerage port");
 
         assert_eq!(receipt.broker_order_id, "ib-AAPL");
         assert_eq!(broker.calls.get(), 1);
         assert_eq!(connectivity.reconnect_calls.get(), 0);
         assert!(events.events.borrow().is_empty());
+        assert!(stale_events.events.borrow().is_empty());
     }
 
     #[test]
@@ -261,6 +370,8 @@ mod tests {
         let broker = CountingBroker::new();
         let connectivity = ForbiddenConnectivity;
         let events = RecordingEvents::new();
+        let freshness = ForbiddenFreshness;
+        let stale_events = RecordingStaleEvents::new();
         let submission = OrderSubmission {
             strategy_id: StrategyId::new("paper-research-3"),
             symbol: "TSLA".to_string(),
@@ -274,6 +385,8 @@ mod tests {
                 &broker,
                 &connectivity,
                 &events,
+                &freshness,
+                &stale_events,
             )
             .expect_err("paper mode must be rejected on the live path");
 
@@ -291,6 +404,7 @@ mod tests {
             "the broker port must not be invoked when mode is Paper"
         );
         assert!(events.events.borrow().is_empty());
+        assert!(stale_events.events.borrow().is_empty());
     }
 
     #[test]
@@ -299,6 +413,8 @@ mod tests {
         let broker = CountingBroker::new();
         let connectivity = ForbiddenConnectivity;
         let events = RecordingEvents::new();
+        let freshness = ForbiddenFreshness;
+        let stale_events = RecordingStaleEvents::new();
         let submission = OrderSubmission {
             strategy_id: StrategyId::new("paper-x"),
             symbol: "MSFT".to_string(),
@@ -311,6 +427,8 @@ mod tests {
                 &broker,
                 &connectivity,
                 &events,
+                &freshness,
+                &stale_events,
             )
             .unwrap_err();
         assert!(format!("{error}").contains("NON_LIVE_STRATEGY_SUBMISSION"));
@@ -321,11 +439,15 @@ mod tests {
         // ERR-2 / SRS-SAFE-003: When IB Gateway is unreachable, a live
         // submission must be rejected with CONNECTIVITY_BLOCKED, no broker
         // call must happen, the connectivity port must be asked to
-        // reconnect, and exactly one ConnectivityEvent must be recorded.
+        // reconnect, exactly one ConnectivityEvent must be recorded, and
+        // the freshness port must NOT be consulted (Unreachable short-
+        // circuits the inner freshness match).
         let engine = ExecutionEngine;
         let broker = CountingBroker::new();
         let connectivity = StubConnectivity::in_state(ConnectivityState::Unreachable);
         let events = RecordingEvents::new();
+        let freshness = ForbiddenFreshness;
+        let stale_events = RecordingStaleEvents::new();
         let submission = OrderSubmission {
             strategy_id: StrategyId::new("live-alpha"),
             symbol: "AAPL".to_string(),
@@ -339,6 +461,8 @@ mod tests {
                 &broker,
                 &connectivity,
                 &events,
+                &freshness,
+                &stale_events,
             )
             .expect_err("Unreachable connectivity must block the live submission");
 
@@ -361,6 +485,7 @@ mod tests {
         assert_eq!(recorded[0].strategy_id.as_str(), "live-alpha");
         assert_eq!(recorded[0].symbol, "AAPL");
         assert!(!recorded[0].scheduled_restart);
+        assert!(stale_events.events.borrow().is_empty());
     }
 
     #[test]
@@ -368,11 +493,13 @@ mod tests {
         // ERR-2 / SRS-MD-005: During the configured daily restart window,
         // submissions are suspended; the published event carries
         // scheduled_restart=true so the notification dispatcher can apply
-        // the suppression rule.
+        // the suppression rule. The freshness port must NOT be consulted.
         let engine = ExecutionEngine;
         let broker = CountingBroker::new();
         let connectivity = StubConnectivity::in_state(ConnectivityState::ScheduledRestartWindow);
         let events = RecordingEvents::new();
+        let freshness = ForbiddenFreshness;
+        let stale_events = RecordingStaleEvents::new();
         let submission = OrderSubmission {
             strategy_id: StrategyId::new("live-alpha"),
             symbol: "AAPL".to_string(),
@@ -386,6 +513,8 @@ mod tests {
                 &broker,
                 &connectivity,
                 &events,
+                &freshness,
+                &stale_events,
             )
             .expect_err("ScheduledRestartWindow must block the live submission");
 
@@ -402,5 +531,96 @@ mod tests {
             recorded[0].scheduled_restart,
             "SRS-MD-005 suppression flag must be set"
         );
+        assert!(stale_events.events.borrow().is_empty());
+    }
+
+    /// A freshness probe parameterized over `(state, staleness_seconds)`.
+    /// Counts every call so tests can assert the gate is consulted
+    /// exactly the expected number of times.
+    struct StubFreshness {
+        state: MarketDataFreshness,
+        staleness_seconds: u64,
+        freshness_calls: Cell<u32>,
+    }
+
+    impl StubFreshness {
+        fn stale(seconds: u64) -> Self {
+            Self {
+                state: MarketDataFreshness::Stale,
+                staleness_seconds: seconds,
+                freshness_calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl MarketDataFreshnessProbe for StubFreshness {
+        fn freshness(&self, _symbol: &str) -> MarketDataFreshness {
+            self.freshness_calls.set(self.freshness_calls.get() + 1);
+            self.state
+        }
+
+        fn staleness_seconds(&self, _symbol: &str) -> u64 {
+            self.staleness_seconds
+        }
+    }
+
+    #[test]
+    fn live_submission_is_blocked_when_market_data_is_stale() {
+        // ERR-3 / SRS-MD-004 / NFR-P5: When subscribed market data is
+        // stale, a live submission must be rejected with
+        // MARKET_DATA_STALE, no broker call must happen, no reconnect
+        // request must be issued (staleness is a data-side condition,
+        // not a transport fault), and exactly one StaleDataEvent must
+        // carry the observed staleness in seconds.
+        let engine = ExecutionEngine;
+        let broker = CountingBroker::new();
+        let connectivity = StubConnectivity::connected();
+        let events = RecordingEvents::new();
+        let freshness = StubFreshness::stale(22);
+        let stale_events = RecordingStaleEvents::new();
+        let submission = OrderSubmission {
+            strategy_id: StrategyId::new("live-alpha"),
+            symbol: "AAPL".to_string(),
+            quantity: 10,
+        };
+
+        let error = engine
+            .submit_live_order(
+                StrategyMode::Live,
+                submission.clone(),
+                &broker,
+                &connectivity,
+                &events,
+                &freshness,
+                &stale_events,
+            )
+            .expect_err("Stale market data must block the live submission");
+
+        assert_eq!(error.category, OrderErrorCategory::MarketDataStale);
+        assert_eq!(error.error_type, "MarketDataStale");
+        assert!(error.message.contains("live-alpha"));
+        assert!(error.message.contains("AAPL"));
+        assert!(error.message.contains("SRS-MD-004"));
+        assert!(error.message.contains("NFR-P5"));
+        assert_eq!(error.original_order, submission);
+        assert!(format!("{error}").contains("MARKET_DATA_STALE"));
+
+        assert_eq!(broker.calls.get(), 0, "broker must not be invoked");
+        assert_eq!(
+            connectivity.reconnect_calls.get(),
+            0,
+            "staleness must not trigger a reconnect — that is reserved for transport faults"
+        );
+        assert!(
+            events.events.borrow().is_empty(),
+            "no ConnectivityEvent should be published for a data-side rejection"
+        );
+        let recorded = stale_events.events.borrow();
+        assert_eq!(recorded.len(), 1, "exactly one StaleDataEvent expected");
+        assert_eq!(recorded[0].state, MarketDataFreshness::Stale);
+        assert_eq!(recorded[0].strategy_id.as_str(), "live-alpha");
+        assert_eq!(recorded[0].symbol, "AAPL");
+        assert_eq!(recorded[0].staleness_seconds, 22);
+        assert_eq!(freshness.freshness_calls.get(), 1);
     }
 }

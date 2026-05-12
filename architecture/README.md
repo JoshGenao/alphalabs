@@ -373,3 +373,80 @@ notification dispatcher fan-out (email + SMS within 60 s,
 SRS-NOTIF-001) and the dashboard WebSocket subscription that surfaces
 the `ConnectivityEvent` to operators arrive with NOTIF-1 and UI-*
 features respectively.
+
+`ERR-3` (live-path market-data freshness gate, SRS-MD-004 + SyRS
+SYS-39a / SYS-64 / SYS-87 / NFR-P5) is enforced by the
+`freshness_contract` block in `architecture/runtime_services.json`,
+additional types in `crates/atp-types/src/lib.rs`, and a nested match
+inside the `Connected` sub-arm of `ExecutionEngine::submit_live_order`
+in `crates/atp-execution/src/lib.rs`. The catalogue declares the
+freshness-safety vocabulary the live execution path consults on every
+submission once connectivity is confirmed:
+
+- `MarketDataFreshness { Fresh, Stale }` types whether subscribed
+  market data for the order's symbol is within the NFR-P5 15-second
+  heartbeat staleness threshold. `Stale` is the SRS-MD-004 /
+  SyRS SYS-39a path; live submissions must be rejected with
+  `MARKET_DATA_STALE` until fresh data is observed.
+- `StaleDataEvent { state, strategy_id, symbol, staleness_seconds }`
+  is the structured payload the engine publishes whenever it blocks a
+  submission for staleness. `staleness_seconds` carries the observed
+  age so dashboards and the notification dispatcher can surface how
+  stale the feed actually got before the gate fired. The contract
+  refuses any `broker`, `ib_session_id`, `vendor`, `provider`, or
+  `tick_id` leak on the event payload — staleness is a data-side
+  condition, not a transport / vendor one.
+- `MarketDataFreshnessProbe { freshness, staleness_seconds }` is the
+  port the execution engine consults at every Live + Connected
+  submission. The implementation (later: the market-data subscription
+  manager) owns the heartbeat timestamps, sequence-gap tracking, and
+  the configurable threshold. Keeping the port at the execution layer
+  preserves the SRS-ARCH-002 dependency direction.
+- `StaleDataEventSink { record }` is the publication channel for the
+  structured event; concrete sinks route it to logs (SRS-LOG-001), the
+  dashboard WebSocket, and the notification dispatcher.
+- Inside the `StrategyMode::Live` arm of `submit_live_order`, the
+  freshness match is **nested inside** the `ConnectivityState::Connected`
+  sub-arm — meaning the ERR-2 connectivity gate short-circuits ahead of
+  the ERR-3 freshness gate (you cannot meaningfully measure freshness
+  if disconnected). The inner match routes `Fresh` to
+  `broker.submit_order(...)` and routes `Stale` to a synchronous
+  rejection that emits `OrderErrorCategory::MarketDataStale` (wire
+  string `MARKET_DATA_STALE`) and records a `StaleDataEvent` via
+  `stale_events.record(...)`. The `Stale` leaf does NOT call
+  `connectivity.request_reconnect()` — staleness is a data-side
+  condition, not a transport fault. The
+  `crates/atp-execution/tests/err_3_stale_data_blocked.rs` integration
+  test pins this with spy implementations of all five ports (broker,
+  connectivity, connectivity-event sink, freshness probe, stale-event
+  sink) and a `ForbiddenFreshness` panic stub on the Unreachable
+  branch to prove the nested-match short-circuit.
+
+```bash
+python3 tools/freshness_check.py
+```
+
+`tools/freshness_check.py` parses the Rust source for the
+`MarketDataFreshness` enum and the `StaleDataEvent` struct (rejecting
+forbidden broker/session/vendor/tick fields), the two port traits, and
+the match-arm gating that keeps `broker.submit_order` exclusively on
+the `Fresh` leaf of the freshness match inside the `Connected`
+sub-arm. It then runs `cargo test -p atp-execution --lib` plus the
+`err_3_stale_data_blocked` integration test end-to-end. The
+`architecture_check.py` path short-circuits the cargo step via
+`assert_freshness_static`, mirroring the API-5 / API-6 / API-7 /
+ERR-1 / ERR-2 split.
+
+ERR-3 lands the live-path freshness gate at the execution layer.
+**ERR-3b (deferred):** SRS-MD-004 also requires the internal simulation
+engine to reject paper-on-sim submissions with `MARKET_DATA_STALE`. The
+simulation engine in `crates/atp-simulation/src/lib.rs` currently has
+no submission entry point; the next sub-task will introduce
+`InternalSimulationEngine::submit_simulated_order` with the same
+freshness port and event sink, completing the SRS-MD-004 paper leg.
+The production market-data subscription manager (SRS-MD-007 sequence
+gap detection, SRS-MD-003 continuous heartbeat monitoring) is a future
+caller that will implement `MarketDataFreshnessProbe` and publish
+through `StaleDataEventSink`. The dashboard WebSocket subscription
+that surfaces `StaleDataEvent` to operators arrives with UI-*
+features.

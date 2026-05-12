@@ -725,6 +725,75 @@
     },
     "rejection_category": "ConnectivityBlocked"
   },
+  "freshness_contract": {
+    "requirement": "ERR-3",
+    "srs_refs": [
+      "SRS-MD-004"
+    ],
+    "syrs_refs": [
+      "SYS-39a",
+      "SYS-64",
+      "SYS-87",
+      "NFR-P5"
+    ],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "execution_crate": {
+      "crate": "atp-execution",
+      "path": "crates/atp-execution"
+    },
+    "freshness_state": {
+      "enum": "MarketDataFreshness",
+      "variants": [
+        "Fresh",
+        "Stale"
+      ]
+    },
+    "stale_data_event": {
+      "struct": "StaleDataEvent",
+      "required_fields": [
+        "state",
+        "strategy_id",
+        "symbol",
+        "staleness_seconds"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "vendor",
+        "provider",
+        "tick_id"
+      ]
+    },
+    "freshness_probe_port": {
+      "trait": "MarketDataFreshnessProbe",
+      "methods": [
+        "freshness",
+        "staleness_seconds"
+      ]
+    },
+    "stale_data_event_sink_port": {
+      "trait": "StaleDataEventSink",
+      "methods": [
+        "record"
+      ]
+    },
+    "entry_point": {
+      "method": "submit_live_order",
+      "type": "ExecutionEngine"
+    },
+    "guard": {
+      "state_enum": "MarketDataFreshness",
+      "fresh_variant": "Fresh",
+      "stale_variant": "Stale",
+      "broker_call": "broker.submit_order",
+      "freshness_call": "freshness.freshness",
+      "event_call": "stale_events.record"
+    },
+    "rejection_category": "MarketDataStale"
+  },
   "deployment": {
     "requirement": "SRS-ARCH-004",
     "target": "Phase 1 Proxmox Ubuntu VM",

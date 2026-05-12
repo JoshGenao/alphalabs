@@ -70,6 +70,17 @@ class ArchitectureBoundaryTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("ERR-2, SRS-SAFE-003 + SRS-MD-005", result.stdout)
+        # ERR-3 / SRS-MD-004 / NFR-P5 market-data freshness gate.
+        self.assertIn(
+            "atp-execution gates live submissions on MarketDataFreshness",
+            result.stdout,
+        )
+        self.assertIn("2 states", result.stdout)
+        self.assertIn(
+            "publishing StaleDataEvent when market data is stale",
+            result.stdout,
+        )
+        self.assertIn("ERR-3, SRS-MD-004, NFR-P5 15s threshold", result.stdout)
 
     def test_srs_arch_002_dependency_boundary(self) -> None:
         result = subprocess.run(

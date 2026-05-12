@@ -1,3 +1,322 @@
+=== SESSION 15 ===
+Date: 2026-05-11
+Feature completed: ERR-3 — Market data stale: reject live order
+submission with MARKET_DATA_STALE, publish a structured StaleDataEvent
+carrying the observed staleness in seconds, do NOT request a reconnect
+(staleness is a data-side condition, not a transport fault), and
+produce zero IB order side effect (traces SRS-MD-004 + SyRS SYS-39a /
+SYS-64 / SYS-87 / NFR-P5 15s threshold)
+Status: 105 remaining features
+
+What I did:
+- Extended `crates/atp-types/src/lib.rs`:
+  * Added `pub enum MarketDataFreshness { Fresh, Stale }` with a
+    `const is_stale()` helper. `Stale` types the SRS-MD-004 /
+    SyRS SYS-39a stale-data state.
+  * Added `pub struct StaleDataEvent { state: MarketDataFreshness,
+    strategy_id: StrategyId, symbol: String, staleness_seconds: u64 }`
+    — exactly four fields, no broker / session / vendor / tick
+    identifiers. The `staleness_seconds` scalar lets dashboards and
+    the notification dispatcher surface how stale the feed actually
+    got before the gate fired.
+  * Added 3 new unit tests: `is_stale` coverage of the two states,
+    `StaleDataEvent` exhaustive-destructure (proves no extra public
+    fields exist), and an NFR-P5 above-15s sanity check. Total
+    atp-types unit tests: 11 (was 8 in SESSION 14).
+- Extended `crates/atp-execution/src/lib.rs`:
+  * Added `pub trait MarketDataFreshnessProbe { fn freshness(&self,
+    symbol: &str) -> MarketDataFreshness; fn staleness_seconds(&self,
+    symbol: &str) -> u64; }`. The port lives at the execution layer
+    so the data-freshness gate is observable from execution without
+    pulling `atp-execution` into a dependency on `atp-market-data`
+    (SRS-ARCH-002). The eventual subscription-manager implementation
+    will own the heartbeat timestamps, sequence-gap tracking, and
+    the configurable threshold.
+  * Added `pub trait StaleDataEventSink { fn record(&self, event:
+    StaleDataEvent); }`. Concrete sinks (later) route events to logs
+    (SRS-LOG-001), the dashboard WebSocket, and the notification
+    dispatcher.
+  * Changed `ExecutionEngine::submit_live_order` signature to take
+    five port references: `broker: &B`, `connectivity: &C`,
+    `events: &E`, `freshness: &F`, `stale_events: &S`. The
+    `StrategyMode::Live` Connected sub-arm now nests a match on
+    `freshness.freshness(&submission.symbol)`:
+    `MarketDataFreshness::Fresh => broker.submit_order(submission)`
+    is the happy path. `MarketDataFreshness::Stale =>` reads
+    `staleness_seconds`, pushes a `StaleDataEvent` through
+    `stale_events.record(...)`, then returns
+    `Err(StructuredOrderError { category: MarketDataStale,
+    error_type: "MarketDataStale", message: "...SRS-MD-004 + NFR-P5
+    15s + observed Xs", original_order: submission })`. The broker
+    port is NOT invoked on the Stale leaf, AND
+    `connectivity.request_reconnect()` is NOT called (staleness is a
+    data-side condition, not a transport fault).
+  * Updated all 4 existing in-crate unit tests to thread
+    `AlwaysFresh` (panics on `staleness_seconds`) / `ForbiddenFreshness`
+    (panics on both methods) / `RecordingStaleEvents` (collects every
+    recorded event) stubs through. Added 1 new unit test:
+    `live_submission_is_blocked_when_market_data_is_stale` with a
+    parameterized `StubFreshness` exercising the 22s staleness path.
+    Total atp-execution unit tests: 7 (was 6 in SESSION 14).
+- Updated `crates/atp-execution/tests/err_1_no_ib_side_effect.rs` to
+  thread `AlwaysFresh` + `ForbiddenFreshness` + `StaleEventSinkSpy`
+  stubs through the existing 3 ERR-1 tests. The Paper-mode
+  ForbiddenFreshness stub proves Paper rejection still short-circuits
+  before either the connectivity OR freshness gate is consulted. All
+  3 tests pass under the new signature.
+- Updated `crates/atp-execution/tests/err_2_connectivity_blocked.rs`
+  to thread the new stubs through all 4 ERR-2 tests. The Unreachable
+  / ScheduledRestartWindow tests use `ForbiddenFreshness` to prove
+  the connectivity gate short-circuits ahead of the freshness gate
+  (nested-match invariant). The Connected positive-control test now
+  uses `AlwaysFresh`. All 4 tests still pass.
+- Added `crates/atp-execution/tests/err_3_stale_data_blocked.rs`
+  (L7 domain integration test, 4 tests):
+  * `BrokerageSpy` (counts `submit_order`), `ConnectivitySpy`
+    (parameterized state + counts reconnects), `EventSinkSpy`
+    (connectivity events), `FreshnessSpy` (parameterized state +
+    staleness_seconds + counts both probe methods), `ForbiddenFreshness`
+    (panics on consultation), `StaleEventSinkSpy` (collects every
+    recorded stale event).
+  * `err_3_stale_state_blocks_live_submission_with_no_broker_call`
+    — full ERR-3 contract: error category is `MarketDataStale`, wire
+    string is `"MARKET_DATA_STALE"`, `broker.calls == 0`,
+    `connectivity.reconnect_calls == 0` (data-side, not transport),
+    `events.events.is_empty()` (no connectivity event), exactly one
+    StaleDataEvent with `state == Stale`, `staleness_seconds == 22`,
+    correct strategy/symbol, and freshness probe consulted exactly
+    once with staleness_seconds probed exactly once.
+  * `err_3_fresh_state_still_routes_through_broker` — negative
+    control: Connected + Fresh reaches the broker (rejection is
+    selective); freshness probe consulted once, staleness_seconds
+    NOT probed (the Fresh leaf never asks for the age).
+  * `err_3_unreachable_state_does_not_consult_freshness_port` —
+    nested-match invariant: Unreachable + ForbiddenFreshness still
+    rejects with CONNECTIVITY_BLOCKED (not MARKET_DATA_STALE),
+    proving the ERR-2 connectivity gate short-circuits ahead of the
+    ERR-3 freshness gate.
+  * `err_3_stale_state_holds_across_many_live_submissions` —
+    pseudo-property: sweeps 5 (strategy, symbol, qty, staleness)
+    cases under Stale with staleness values [16, 30, 60, 999, 17]
+    (NFR-P5 floor and well above); broker stays at 0, reconnect
+    stays at 0, exactly 5 StaleDataEvents recorded with the correct
+    per-case symbol and staleness_seconds.
+- Replaced the previously skipped stub at
+  `tests/domain/test_stale_data_block.py` (which used the wrong wire
+  string `STALE_DATA_BLOCKED`) with 4 active L7 Python domain tests
+  marked `pytest.mark.domain` + `pytest.mark.safety`. Shells out to
+  `cargo test -p atp-execution --test err_3_stale_data_blocked
+  <name> -- --exact` (one test per Rust scenario including the
+  pseudo-property sweep); gracefully `pytest.skip(reason=...)` if
+  cargo is absent. The freshness-safety paired-test rule in
+  `tools/critic_check.py::check_safety_critical_paired` now sees a
+  real `tests/domain/` diff alongside the connectivity / safety
+  source change.
+- Added `tools/freshness_check.py` (peer of
+  `tools/connectivity_check.py`). 5 static checks + 1 cargo smoke:
+  1. `atp-types` declares `MarketDataFreshness` with both Fresh +
+     Stale variants.
+  2. `atp-types` declares `StaleDataEvent` with the 4 required
+     fields and rejects the 5 forbidden vendor/broker/tick fields
+     (`broker`, `ib_session_id`, `vendor`, `provider`, `tick_id`).
+  3. `atp-execution` declares `MarketDataFreshnessProbe` with
+     `freshness` + `staleness_seconds`.
+  4. `atp-execution` declares `StaleDataEventSink` with `record`.
+  5. Inside `submit_live_order`, the Connected sub-arm contains a
+     nested match on `freshness.freshness(`, the Fresh leaf is the
+     only call site of `broker.submit_order(`, and the Stale leaf
+     contains `OrderErrorCategory::MarketDataStale`,
+     `stale_events.record(`, and NO
+     `connectivity.request_reconnect(` (data-side, not transport).
+  6. `cargo test -p atp-execution --lib` + `--test
+     err_3_stale_data_blocked` smoke (skip on missing cargo).
+  Reuses `_struct_body` / `_enum_body` from `historical_data_check`,
+  `_fn_block` / `_match_arm` from `error_handling_check`, and
+  `_trait_body` from `connectivity_check` (no copy-paste). Exposes
+  `assert_freshness_static(config, root)` for the architecture-check
+  short-circuit path.
+- Added `freshness_contract` block to
+  `architecture/runtime_services.json`. Declares: `requirement:
+  "ERR-3"`, `srs_refs` (SRS-MD-004), `syrs_refs` (SYS-39a + SYS-64 +
+  SYS-87 + NFR-P5), the types crate, the execution crate, the
+  `MarketDataFreshness` + `StaleDataEvent` shapes (required +
+  forbidden fields), the two port traits with their method lists,
+  the entry-point method, the guard metadata (state enum, Fresh /
+  Stale variants, broker call token, freshness call token, event
+  call token), and the rejection category.
+- Wired `assert_freshness(config)` into
+  `tools/architecture_check.py` between the existing connectivity
+  block and the container-language-boundary block. Emits a summary
+  line: `atp-execution gates live submissions on MarketDataFreshness
+  (2 states), publishing StaleDataEvent when market data is stale
+  (ERR-3, SRS-MD-004, NFR-P5 15s threshold)`.
+- Added `python3 tools/freshness_check.py` to `init.sh` between the
+  connectivity check and the deployment check. `✓ Environment
+  ready` now requires it too.
+- Added `tests/test_freshness_contract.py` (20 tests across 7
+  classes): subprocess contract test (`ERR-3 PASS` + 14 evidence
+  needles), per-check tests for `MarketDataFreshness`,
+  `StaleDataEvent` (including the forbidden-field guards for broker
+  / vendor / tick_id), `MarketDataFreshnessProbe` +
+  `StaleDataEventSink` ports, and the freshness-guard match-arm
+  gate; negative spot-checks (missing `Fresh` / `Stale` variant
+  raises with the name; injecting `broker` / `tick_id` / `vendor`
+  field into `StaleDataEvent` raises with the field name; mutating
+  the Stale leaf to call `broker.submit_order(submission.clone())`
+  raises with `zero broker side effect`; removing
+  `stale_events.record(...)` raises with `stale_events.record`;
+  injecting `connectivity.request_reconnect()` into the Stale leaf
+  raises with `connectivity.request_reconnect`; mutating the
+  Connected sub-arm to skip the freshness match raises with
+  `freshness.freshness`); aggregate evidence counts (6 / 5 for
+  `run_checks` / static).
+- Tightened `tests/test_architecture.py
+  test_srs_arch_001_language_boundary` to require the new
+  `atp-execution gates live submissions on MarketDataFreshness`,
+  `2 states`, `publishing StaleDataEvent when market data is stale`,
+  and `ERR-3, SRS-MD-004, NFR-P5 15s threshold` evidence in the
+  architecture-check output.
+- Extended `architecture/README.md` with an `ERR-3` section parallel
+  to the existing ERR-1 / ERR-2 sections: documents the contract
+  block, the `MarketDataFreshness` + `StaleDataEvent` surface, the
+  two ports, the nested-match guard inside the Connected sub-arm
+  with zero broker side effect AND zero reconnect side effect, the
+  `tools/freshness_check.py` command, the L7 spy integration test,
+  and the relationship to deferred features. Explicitly records
+  ERR-3b: `InternalSimulationEngine::submit_simulated_order` not
+  yet wired; SRS-MD-004's paper-on-sim leg awaits the simulation
+  engine's submission entry point. Also calls out future callers:
+  SRS-MD-007 sequence-gap detection, SRS-MD-003 continuous
+  heartbeat monitoring, dashboard WebSocket fan-out (UI-*).
+
+What I tested (end-to-end, all 4 steps from ERR-3):
+1. `./init.sh` → `✓ Environment ready` with the new
+   `→ Running freshness contract check…` line appearing between
+   the connectivity check and the deployment check.
+2. `python3 tools/freshness_check.py` → `ERR-3 PASS` with 6
+   evidence bullets (5 static + cargo smoke) covering every ERR-3
+   description capability: the 2-state freshness enum, the 4-field
+   structured event with no broker/tick/vendor leakage, the two
+   ports, the nested-match guard that keeps the broker call inside
+   `Connected + Fresh` only, and the SRS-MD-004 publication side
+   effects in the Stale leaf.
+3. `cargo test -p atp-execution --tests` → 3 ERR-1 + 4 ERR-2 +
+   4 ERR-3 integration tests PASS — Stale blocked with `broker
+   calls == 0` and `reconnect_calls == 0`, pseudo-property sweep
+   across 5 Stale cases stayed at 0 broker calls / 0 reconnects /
+   5 stale events with the correct per-case staleness_seconds,
+   Live + Connected + Fresh still routes (selective rejection),
+   Unreachable + ForbiddenFreshness still rejects with
+   CONNECTIVITY_BLOCKED (nested-match invariant).
+4. `cargo test --workspace` → 48 tests total PASS (was 34 in
+   SESSION 14; added 3 in atp-types unit, 1 in atp-execution unit,
+   4 in err_3_stale_data_blocked, plus 6 from threading new stubs
+   through ERR-1 + ERR-2 tests — no regressions despite the
+   `submit_live_order` signature change).
+5. `python3 -m pytest tests/` → 209 passed, 4 skipped (was 185
+   passed / 5 skipped in SESSION 14; the previously-skipped
+   `tests/domain/test_stale_data_block.py` stub is now 4 active
+   tests, and `test_freshness_contract.py` adds 20 passes).
+6. Negative spot-checks (in-process, via the
+   `test_freshness_contract` suite):
+   - injecting `pub broker: String` or `pub tick_id: u64` or
+     `pub vendor: String` into `StaleDataEvent` raises
+     `FreshnessCheckError` mentioning the leaked field.
+   - mutating `Stale` → `StaleX` raises mentioning the missing
+     variant.
+   - removing `Fresh` from the enum raises mentioning it.
+   - mutating the Stale leaf to call
+     `broker.submit_order(submission.clone())` raises mentioning
+     `zero broker side effect`.
+   - removing `stale_events.record(StaleDataEvent {...});` from
+     the Stale leaf raises mentioning `stale_events.record`.
+   - injecting `connectivity.request_reconnect();` into the Stale
+     leaf raises mentioning `connectivity.request_reconnect` (the
+     data-side / transport-fault invariant).
+   - mutating the Connected sub-arm to call a fake function
+     instead of `freshness.freshness(...)` raises mentioning
+     `freshness.freshness`.
+7. `python3 tools/architecture_check.py` → `SRS-ARCH-001 PASS`
+   with the new ERR-3 summary line, all prior evidence preserved.
+8. `python3 tools/connectivity_check.py` → `ERR-2 PASS` (no
+   regression; the nested-match restructure still satisfies the
+   ERR-2 invariant that broker.submit_order lives only inside
+   Connected — verified the connectivity-check still walks the
+   Connected sub-arm to find the broker call even though it is
+   now nested inside the freshness match).
+9. Marked `feature_list.json` entry `ERR-3` `"passes": true` and
+   re-ran the full unit + pytest suite — still all green.
+
+Critic verdicts:
+  deterministic: APPROVE — 0 findings
+  judgment (general-purpose sub-agent, fresh context): APPROVE — 0
+  findings. Reviewer cross-checked architecture (dependency
+  direction via SRS-ARCH-002, port placement choice), nested-match
+  invariant (ERR-2 broker-call invariant still holds after
+  restructure), SRS-MD-004 letter-compliance (live-path scope
+  acknowledged, ERR-3b deferral documented), Stale-leaf
+  side-effect choice (no reconnect — staleness is data-side),
+  spy panic discipline, atomic-commit hygiene (ERR-1 / ERR-2 test
+  changes are signature-forced, not unrelated), doc/code drift,
+  error-message hygiene, and the `error_type: "MarketDataStale"`
+  CamelCase choice (safe under SRS-ARCH-002 dependency-boundary
+  substring matches).
+
+Known issues / notes for next agent:
+- **ERR-3b (deferred):** SRS-MD-004 requires the internal
+  simulation engine to reject paper-on-sim submissions with
+  `MARKET_DATA_STALE` too. The simulation engine in
+  `crates/atp-simulation/src/lib.rs` is currently a stub with no
+  submission entry point. The next sub-task should:
+  (a) introduce `InternalSimulationEngine::submit_simulated_order`
+      with a signature mirroring `submit_live_order` minus the
+      brokerage port (no IB routing on the paper path);
+  (b) wire the same `MarketDataFreshnessProbe` +
+      `StaleDataEventSink` ports through it;
+  (c) add a `crates/atp-simulation/tests/err_3b_sim_stale_data.rs`
+      integration test paralleling
+      `err_3_stale_data_blocked.rs`;
+  (d) extend `tools/freshness_check.py` with an
+      `assert_freshness_sim_static` peer of
+      `assert_freshness_static`, and add a sim-side block to
+      `architecture/runtime_services.json` (or extend the existing
+      `freshness_contract` block with a `simulation_crate` /
+      `sim_entry_point` field — recommend the latter to keep the
+      single freshness gate as one logical contract);
+  (e) flip ERR-3 retains `passes: true` for the live leg; ERR-3b
+      is a fresh feature_list.json entry to be added if it does
+      not already exist.
+- The `submit_live_order` signature now takes five port references
+  (broker, connectivity, connectivity events, freshness, stale
+  events). Any future feature that adds a new guard (ERR-4
+  line-limit, ERR-6 IB pacing, ERR-7 / ERR-8 liquidation timeouts)
+  should follow the same pattern: introduce a port trait at the
+  execution layer, extend the signature, and nest the new match
+  inside the appropriate existing arm. ERR-4 (line-limit) and
+  ERR-6 (pacing) most naturally nest inside Connected + Fresh.
+  ERR-7 / ERR-8 (kill-switch / hot-swap liquidation timeouts) are
+  not order-submission-path features and likely need a different
+  entry point.
+- The `error_type` field for the staleness rejection is
+  `"MarketDataStale"` (CamelCase, like ERR-2's
+  `"IbGatewayUnreachable"`). The SESSION 14 note about avoiding
+  snake_case tokens inside core crates still applies:
+  `market_data` could collide with the SRS-ARCH-002
+  dependency-boundary regex if a future error_type uses it.
+- `tools/freshness_check.py` reuses `_trait_body` from
+  `tools/connectivity_check.py`. If a third ERR-* feature needs
+  the same parser (likely ERR-6 for the IB pacing budget port),
+  consider hoisting `_trait_body` into a shared helper module
+  alongside `_fn_block` / `_match_arm` / `_struct_body` /
+  `_enum_body`. Not urgent — there are only two callers today.
+- The Stale-leaf message string contains the symbol (e.g. "AAPL").
+  Symbols are operator-visible identifiers, not PII / secrets — the
+  ERR-1 and ERR-2 messages already include the strategy ID, so this
+  is consistent with the established pattern. If a future feature
+  ever surfaces an order quantity in an error message, double-check
+  it does not leak position-size information beyond the originating
+  strategy.
+
 === SESSION 14 ===
 Date: 2026-05-11
 Feature completed: ERR-2 — IB Gateway unreachable: reject live order
