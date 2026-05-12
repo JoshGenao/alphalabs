@@ -191,7 +191,8 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ENV_FILE_RE = re.compile(r"(^|/)\.env(\.[A-Za-z0-9_]+)?$")
 
 SAFETY_PATH_RE = re.compile(
-    r"(kill[_-]?switch|connectivity|stale[_-]?data|live[_-]?mode|safety)",
+    r"(kill[_-]?switch|connectivity|stale[_-]?data|live[_-]?mode|safety"
+    r"|subscription[_-]?limit|market[_-]?data[_-]?line)",
     re.IGNORECASE,
 )
 
