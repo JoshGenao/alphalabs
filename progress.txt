@@ -1,3 +1,389 @@
+=== SESSION 16 ===
+Date: 2026-05-12
+Feature completed: ERR-4 — Market-data line limit exceeded: reject the
+subscription request with SUBSCRIPTION_LIMIT_REACHED at the
+MarketDataSubscriptionManager layer, publish a structured
+SubscriptionLimitEvent carrying both current_lines AND configured_limit
+for dashboard fan-out, and produce zero mutation on the subscription
+registry (traces SRS-MD-002 + SyRS SYS-70 + SyRS SYS-64 identical-
+contract + StRS A-13 ~100-line ballpark)
+Status: 104 remaining features
+
+What I did:
+- Extended `crates/atp-types/src/lib.rs`:
+  * Added `pub struct SubscriptionRequest { strategy_id, symbol }` —
+    the source-neutral request envelope the manager gates on
+    (mirrors OrderSubmission minus quantity, since a subscription has
+    no order semantics).
+  * Added `pub enum SubscriptionLimitState { WithinLimit, ExceededLimit }`
+    with a `const is_exceeded()` helper. ExceededLimit types the
+    SRS-MD-002 / SYS-70 rejection path.
+  * Added `pub struct SubscriptionLimitEvent { state, strategy_id,
+    symbol, current_lines: u32, configured_limit: u32 }` — exactly five
+    fields, no broker/session/vendor/tick leakage. Carrying BOTH
+    current_lines AND configured_limit closes a TOCTOU window: the
+    configured value can be re-tuned between rejection and dashboard
+    render, so the event is self-describing.
+  * Added `pub struct StructuredSubscriptionError { category:
+    OrderErrorCategory, error_type, message, original_request:
+    SubscriptionRequest }` with a category-pinned factory
+    `limit_reached(request, current, limit)` that constructs the
+    rejection envelope and `debug_assert!`s the category stays
+    `OrderErrorCategory::SubscriptionLimitReached`. Reuses the
+    pre-declared OrderErrorCategory variant as the single source of
+    truth for the SUBSCRIPTION_LIMIT_REACHED wire string (no parallel
+    enum — that would be a SYS-64 invariant violation waiting to
+    happen the next time someone adds a category).
+  * Added 4 new unit tests: WithinLimit / ExceededLimit predicate
+    coverage, `SubscriptionLimitEvent` exhaustive destructure (proves
+    no extra public fields), StRS A-13 current_lines + configured_limit
+    sanity (~100-line ballpark), and the factory wire-string + Display
+    round-trip. Total atp-types unit tests: 15 (was 11 in SESSION 15).
+- Extended `crates/atp-market-data/src/lib.rs`:
+  * Added `pub trait SubscriptionLineCounter { fn lines_in_use(&self)
+    -> u32; fn line_limit(&self) -> u32; fn try_acquire(&self, request:
+    &SubscriptionRequest) -> SubscriptionLimitState; }`. The port owns
+    the line accounting (concrete impl backed by
+    `ATP_MARKET_DATA_LINE_LIMIT` and the live subscription set is
+    deferred to SRS-MD-001 / SRS-MD-007). `try_acquire` is read-only
+    with respect to the registry — admission happens after the manager
+    observes `WithinLimit`.
+  * Added `pub trait SubscriptionLimitEventSink { fn record(&self,
+    event: SubscriptionLimitEvent); }`. Concrete sinks (later) route
+    events to logs (SRS-LOG-001), the dashboard WebSocket alert pane
+    (SyRS SYS-70's "alert the operator on the dashboard" clause), and
+    the notification dispatcher.
+  * Added `pub struct SubscriptionAccepted { strategy_id, symbol }` as
+    the happy-path envelope. The static check pins it as the only
+    construction site inside the WithinLimit arm.
+  * Added `MarketDataSubscriptionManager::request_subscription<C, S>(...)
+    -> Result<SubscriptionAccepted, StructuredSubscriptionError>` with
+    the match: `WithinLimit => Ok(SubscriptionAccepted { ... })`,
+    `ExceededLimit => { current = counter.lines_in_use();
+    limit = counter.line_limit(); events.record(SubscriptionLimitEvent {
+    ... });
+    Err(StructuredSubscriptionError::limit_reached(request, current,
+    limit)) }`. The gate takes NO `StrategyMode` parameter — SyRS SYS-64
+    mandates an identical error contract for live and paper modes, and
+    SyRS SYS-70 places the gate over the consolidated subscription set
+    for all active strategies regardless of mode.
+  * Added `#[doc(hidden)] pub const _SUBSCRIPTION_LIMIT_CATEGORY:
+    OrderErrorCategory = OrderErrorCategory::SubscriptionLimitReached;`
+    as a workspace-level reference to the canonical wire-string source
+    so a future dead-code scan cannot drop the link.
+  * Added 3 new in-crate unit tests: WithinLimit happy path with
+    forbidden-sink-equivalent, ExceededLimit rejection with one event,
+    and a counter-call-count sanity test proving `try_acquire` is
+    consulted exactly once per request. Total atp-market-data unit
+    tests: 4 (was 1 in SESSION 15).
+- Added `crates/atp-market-data/tests/err_4_subscription_limit_blocked.rs`
+  (L7 domain integration test, 5 tests):
+  * `LineCounterSpy` (parameterized state + current_lines +
+    configured_limit + per-method call counters), `EventSinkSpy`
+    (collects every recorded event), `ForbiddenSink` (panics on
+    `record()`) for cross-state isolation.
+  * `err_4_exceeded_state_blocks_request_with_structured_error` — full
+    ERR-4 contract: error category is `SubscriptionLimitReached`, wire
+    string `"SUBSCRIPTION_LIMIT_REACHED"`, exactly one event recorded
+    with `state == ExceededLimit`, `current_lines == 100`,
+    `configured_limit == 100`, correct strategy_id and symbol; counter
+    probed exactly once for try_acquire / lines_in_use / line_limit.
+    Message asserts trace strings (SRS-MD-002, SYS-70, strategy,
+    symbol, limit value).
+  * `err_4_within_limit_state_returns_accepted_and_emits_no_event` —
+    negative control with the `ForbiddenSink` panic stub: WithinLimit
+    must accept and must NOT record an event; counter probed for
+    try_acquire only (the WithinLimit leaf doesn't populate an event,
+    so lines_in_use / line_limit must not be read).
+  * `err_4_exceeded_state_holds_across_many_requests` — pseudo-property
+    sweep across 5 (strategy, symbol, current_lines, configured_limit)
+    cases including ranges [100..9999], paper and live strategy_ids:
+    zero acceptances, exactly 5 events with per-case current_lines and
+    configured_limit correctly recorded; try_acquire probed exactly
+    `cases.len()` times.
+  * `err_4_identical_contract_for_live_and_paper_subscribers` — SYS-64
+    invariant: the rejection envelope is byte-identical for a
+    strategy_id naming a live strategy and one naming a paper strategy
+    (category + error_type + wire string equal across modes;
+    original_request and message differ by design — they carry the
+    per-caller payload). Two events recorded with identical state and
+    numerics, only strategy_id differing.
+  * `err_4_exceeded_state_anchors_zero_mutation_via_port_shape` — the
+    zero-registry-mutation invariant anchored at the port-shape level:
+    the SubscriptionLineCounter trait exposes NO mutator method, so
+    the manager cannot move the in-use count through the public port
+    API. The PRIMARY enforcement is the static check's
+    `forbidden_mutations` allowlist (13 patterns: registry.insert / add
+    / push, subscriptions.insert / push / add, request.acquire,
+    counter.acquire / commit / reserve, lines.increment, self.register,
+    self.add_subscription); this Rust test anchors the behavioral
+    post-condition. (Renamed from
+    `err_4_exceeded_state_does_not_mutate_subscription_registry` after
+    the judgment-pass critic flagged the original assertion as
+    tautological — see Critic verdicts below.)
+- Added `tests/domain/test_subscription_limit_block.py` (L7 Python,
+  5 tests marked `pytest.mark.domain` + `pytest.mark.safety`). Shells
+  out to `cargo test -p atp-market-data --test
+  err_4_subscription_limit_blocked <name> -- --exact` (one Python test
+  per Rust scenario including the pseudo-property sweep and the SYS-64
+  invariant); gracefully `pytest.skip(reason=...)` if cargo is absent.
+- Added `tools/subscription_limit_check.py` (peer of
+  `tools/freshness_check.py`). 6 static checks + 1 cargo smoke:
+  1. `atp-types` declares `SubscriptionRequest` with the 2 required
+     fields and rejects 4 forbidden vendor/broker/session fields.
+  2. `atp-types` declares `SubscriptionLimitState` with both
+     `WithinLimit` and `ExceededLimit` variants.
+  3. `atp-types` declares `SubscriptionLimitEvent` with the 5 required
+     fields (state, strategy_id, symbol, current_lines,
+     configured_limit) and rejects the 5 forbidden
+     broker/session/vendor/provider/tick_id fields.
+  4. `atp-market-data` declares `SubscriptionLineCounter` with the
+     three methods (lines_in_use, line_limit, try_acquire).
+  5. `atp-market-data` declares `SubscriptionLimitEventSink` with
+     `record`.
+  6. Inside `request_subscription`, the body matches on
+     `counter.try_acquire(`, the WithinLimit arm is the only call site
+     of `SubscriptionAccepted {`, the ExceededLimit arm produces
+     `OrderErrorCategory::SubscriptionLimitReached` (either directly or
+     via the category-pinned factory `StructuredSubscriptionError::
+     limit_reached(`), records via `events.record(`, and contains NO
+     call from the 13-pattern `forbidden_mutations` allowlist.
+  7. `cargo test -p atp-market-data --lib` + `--test
+     err_4_subscription_limit_blocked` smoke (skip on missing cargo).
+  Reuses `_struct_body` / `_enum_body` from `historical_data_check`,
+  `_fn_block` / `_match_arm` from `error_handling_check`, and
+  `_trait_body` from `connectivity_check` (no copy-paste). Exposes
+  `assert_subscription_limit_static(config, root)` for the
+  architecture-check short-circuit path.
+- Added `subscription_limit_contract` block to
+  `architecture/runtime_services.json` (parallel to
+  `freshness_contract`). Declares: `requirement: "ERR-4"`,
+  `srs_refs: ["SRS-MD-002"]`, `syrs_refs: ["SYS-70", "SYS-64"]`,
+  `strs_refs: ["A-13"]`, the types crate, the market-data crate, the
+  SubscriptionRequest shape (required + forbidden fields), the
+  SubscriptionLimitState (WithinLimit + ExceededLimit), the
+  SubscriptionLimitEvent shape (5 required fields including
+  `configured_limit` + 5 forbidden fields), the two port traits with
+  their method lists, the entry-point method, the guard metadata
+  (state enum, within/exceeded variants, counter/event call tokens,
+  accepted_struct token, 13-pattern forbidden_mutations allowlist),
+  the rejection category, the wire string, and a `deferred` array
+  listing the two explicit deferrals (ERR-4b order-path bubble-up,
+  concrete SubscriptionLineCounter impl).
+- Wired `assert_subscription_limit(config)` into
+  `tools/architecture_check.py` between the existing freshness block
+  and the container-language-boundary block. Emits a summary line:
+  `atp-market-data gates subscription requests on
+  SubscriptionLimitState (2 states), publishing SubscriptionLimitEvent
+  when the line limit is reached (ERR-4, SRS-MD-002, SyRS SYS-70 /
+  SYS-64)`.
+- Added `python3 tools/subscription_limit_check.py` to `init.sh`
+  between the freshness check and the deployment check. `✓ Environment
+  ready` now requires it too.
+- Added `tests/test_subscription_limit_contract.py` (23 tests across
+  8 classes): subprocess contract test (`ERR-4 PASS` + 16 evidence
+  needles), per-check tests for `SubscriptionLimitState`,
+  `SubscriptionLimitEvent` (including 5 forbidden-field guards for
+  broker / tick_id / vendor / missing configured_limit / missing
+  current_lines), `SubscriptionRequest`, `SubscriptionLineCounter` +
+  `SubscriptionLimitEventSink` ports, and the subscription-limit-guard
+  match-arm gate; negative spot-checks (mutating
+  `SubscriptionLimitEvent` to add `broker` / `tick_id` / `vendor`;
+  removing `WithinLimit` / `ExceededLimit` variant; stripping the
+  `events.record(SubscriptionLimitEvent { ... });` block; injecting
+  `registry.insert()` into the ExceededLimit leaf; smuggling
+  `SubscriptionAccepted` into the ExceededLimit leaf; mutating
+  `match counter.try_acquire(&request)` to call a fake function);
+  aggregate evidence counts (7 / 6 for `run_checks` / static).
+- Tightened `tests/test_architecture.py
+  test_srs_arch_001_language_boundary` to require the new
+  `atp-market-data gates subscription requests on
+  SubscriptionLimitState`, `publishing SubscriptionLimitEvent when the
+  line limit is reached`, and `ERR-4, SRS-MD-002, SyRS SYS-70 / SYS-64`
+  evidence in the architecture-check output.
+- Extended `architecture/README.md` with an `ERR-4` section parallel
+  to the existing ERR-1 / ERR-2 / ERR-3 sections: documents the
+  contract block, the `SubscriptionRequest` + `SubscriptionLimitState`
+  + `SubscriptionLimitEvent` surface, the two ports, the
+  match-on-state guard inside `request_subscription` with zero
+  registry-mutation side effect, the `tools/subscription_limit_check.py`
+  command, the L7 spy integration test, and the relationship to the
+  deferred ERR-4b (order-path bubble-up) and the deferred concrete
+  `SubscriptionLineCounter` impl.
+
+What I tested (end-to-end, all 4 steps from ERR-4):
+1. `./init.sh` → `✓ Environment ready` with the new
+   `→ Running subscription-limit contract check…` line appearing
+   between the freshness check and the deployment check.
+2. `python3 tools/subscription_limit_check.py` → `ERR-4 PASS` with 7
+   evidence bullets (6 static + cargo smoke) covering every ERR-4
+   description capability: the 2-state subscription-limit enum, the
+   5-field structured event with no broker/tick/vendor leakage, the
+   2-field request envelope, the two ports, and the match-on-state
+   guard that pins SubscriptionAccepted to the WithinLimit leaf and
+   the SUBSCRIPTION_LIMIT_REACHED rejection plus event publication
+   plus zero-mutation invariant to the ExceededLimit leaf.
+3. `cargo test -p atp-market-data --tests` → 4 lib + 5
+   err_4_subscription_limit_blocked integration tests PASS —
+   ExceededLimit blocked with `events.len() == 1` and `try_acquire
+   count == 1`, pseudo-property sweep across 5 ExceededLimit cases
+   stayed at 0 acceptances / 5 events with the correct per-case
+   current_lines + configured_limit, WithinLimit still routes (the
+   ForbiddenSink panic stub never fired), live + paper strategy_ids
+   produced byte-identical rejection envelopes (SYS-64 invariant),
+   zero-mutation port-shape anchor passed.
+4. `cargo test --workspace` → all green (15 atp-types unit + 4
+   atp-market-data lib + 5 err_4 integration + the existing
+   atp-execution suite untouched).
+5. `python3 -m pytest tests/` → 237 passed, 4 skipped (was 209 / 4
+   in SESSION 15; added 23 contract + 5 domain ERR-4 tests).
+6. Negative spot-checks (in-process, via the
+   `test_subscription_limit_contract` suite):
+   - injecting `pub broker: String` or `pub tick_id: u64` or
+     `pub vendor: String` into `SubscriptionLimitEvent` raises
+     `SubscriptionLimitCheckError` mentioning the leaked field.
+   - mutating `ExceededLimit` → `ExceededLimitX` raises mentioning
+     the missing variant.
+   - removing `WithinLimit` from the enum raises mentioning it.
+   - removing `pub configured_limit: u32` field raises mentioning
+     it.
+   - removing `pub current_lines: u32` field raises mentioning it.
+   - removing `events.record(SubscriptionLimitEvent { ... });` from
+     the ExceededLimit leaf raises mentioning `events.record`.
+   - injecting `registry.insert()` into the ExceededLimit leaf
+     raises mentioning `registry.insert` (zero-mutation invariant).
+   - injecting `SubscriptionAccepted { ... }` construction into the
+     ExceededLimit leaf raises mentioning `zero acceptance side
+     effect`.
+   - mutating `match counter.try_acquire(&request)` to call
+     `never_called(...)` raises mentioning `counter.try_acquire`.
+7. `python3 tools/architecture_check.py` → `SRS-ARCH-001 PASS` with
+   the new ERR-4 summary line, all prior evidence preserved.
+8. `python3 tools/connectivity_check.py` + `tools/freshness_check.py`
+   → no regression (ERR-2 / ERR-3 untouched; the new gate at the
+   subscription-manager layer does not perturb either execution-engine
+   gate).
+9. Marked `feature_list.json` entry `ERR-4` `"passes": true` and
+   re-ran the full unit + pytest suite — still all green (237 / 4
+   skipped, cargo workspace green).
+
+Critic verdicts:
+  COMMIT 1 (feat(ERR-4) — bdb4c29):
+    deterministic: APPROVE — 0 findings
+    judgment (general-purpose sub-agent, fresh context): APPROVE — 0
+      findings. Reviewer cross-checked architecture (port placement
+      at atp-market-data preserves SRS-ARCH-002 dependency direction
+      — atp-execution and atp-market-data are sibling crates with no
+      cross-edge), wire-string source-of-truth (single — verified
+      that "SUBSCRIPTION_LIMIT_REACHED" appears as a literal only at
+      atp-types::OrderErrorCategory::SubscriptionLimitReached.as_str
+      and inside its existing unit test; no parallel enum), SYS-64
+      identical-contract test scope (correct — compares category +
+      error_type + wire string; excludes message and original_request
+      as they carry per-caller payload by design), SRS-MD-002 letter-
+      compliance (subscription-manager gate satisfies the acceptance
+      criterion; ERR-4b order-path bubble-up correctly deferred as
+      separate scope), dashboard-alert posture (matches ERR-2 / ERR-3
+      — structured event through a port, concrete dashboard subscriber
+      deferred to UI-* features), atomic-commit hygiene (every file
+      strictly required by ERR-4; no incidental refactors). The
+      first judgment pass had returned `block` on
+      `meta:critic-self-modification` because the original diff
+      included a `tools/critic_check.py` SAFETY_PATH_RE extension;
+      that change was deliberately moved to commit 2 (chore(critic))
+      per the autonomous-agent workflow's "only humans bypass" rule.
+      The first pass had also flagged two substantive `warn`s; both
+      were addressed before commit 1 landed (zero-mutation L7 test
+      renamed to anchor port-shape semantics rather than the
+      previously-tautological before-after counter snapshot; the
+      contract's `forbidden_mutations` allowlist extended from 6 to
+      13 patterns).
+  COMMIT 2 (chore(critic) — 8143ac5):
+    deterministic: APPROVE — 0 findings
+    judgment: would BLOCK by rule `meta:critic-self-modification`
+      (the literal refusal clause #4 in `prompts/critic_prompt.md`).
+      Per the autonomous-agent workflow, only humans bypass this
+      meta-block; the operator explicitly signed off via the
+      AskUserQuestion "Split into two commits" path. The block is
+      unconditional by design — it is the gate's reviewer-facing
+      trigger for changes to itself. The override is recorded in the
+      commit message and here so shell history and commit metadata
+      both carry the audit trail.
+
+Known issues / notes for next agent:
+- **ERR-4b (deferred):** SRS-MD-002 also requires the line-limit
+  gate to fire when an order is placed against a symbol with no
+  existing subscription — `submit_live_order` would acquire a line
+  via the subscription manager and surface `SUBSCRIPTION_LIMIT_REACHED`
+  through the existing `StructuredOrderError` envelope (which is
+  why the variant is pre-declared in `OrderErrorCategory`). This
+  adds another port to `submit_live_order`'s signature (now at five
+  ports; would become six). Next session should:
+  (a) introduce `LiveSubscriptionAcquirer` (or similar) at the
+      execution layer with a method that delegates to the subscription
+      manager;
+  (b) thread it through `submit_live_order` as a sixth port
+      reference, nested inside the existing Connected + Fresh leaf
+      (the deepest happy path);
+  (c) extend `tools/error_handling_check.py` (or its peer) with a
+      static check that the order-submission path also produces
+      `SUBSCRIPTION_LIMIT_REACHED` when the line-limit gate fails;
+  (d) add an `err_4b_*` integration test in
+      `crates/atp-execution/tests/`;
+  (e) add a new feature_list.json entry for ERR-4b (it does not
+      currently exist).
+- **Concrete `SubscriptionLineCounter` impl** wired to
+  `ATP_MARKET_DATA_LINE_LIMIT` and the live subscription set. The
+  actual bookkeeping (the set of open lines, dedup of multi-strategy
+  subscriptions to the same symbol per SyRS SYS-70) belongs to
+  SRS-MD-001 / SRS-MD-007. ERR-4 ships only the port shape and the
+  gate; SRS-MD-001 plugs in the concrete state holder.
+- The `request_subscription` signature now takes two port references
+  (counter + events). Any future feature that adds a new
+  subscription-manager guard (e.g., rotation / priority queuing per
+  StRS A-13 if the line limit is over-subscribed) should follow the
+  same pattern: introduce a port trait at the market-data layer,
+  extend the signature, and nest the new match inside the appropriate
+  existing arm.
+- The `OrderErrorCategory::SubscriptionLimitReached` variant is now
+  consumed by `atp-market-data` via the
+  `StructuredSubscriptionError::limit_reached` factory and a hidden
+  `_SUBSCRIPTION_LIMIT_CATEGORY` const. The constant guards against a
+  future dead-code scan dropping the link between the wire string and
+  this crate. If a third caller emerges (likely ERR-4b at
+  atp-execution), consider promoting the constant out of `doc(hidden)`
+  or hoisting a shared helper.
+- The `error_type` field for the rejection is
+  `"SubscriptionLimitReached"` (CamelCase, like ERR-2's
+  `"IbGatewayUnreachable"` and ERR-3's `"MarketDataStale"`). The
+  SESSION 14 note about avoiding snake_case tokens inside core crates
+  still applies: `market_data` could collide with the SRS-ARCH-002
+  dependency-boundary regex if a future error_type uses it.
+- `tools/subscription_limit_check.py` reuses `_trait_body` from
+  `tools/connectivity_check.py`, `_struct_body` / `_enum_body` from
+  `tools/historical_data_check.py`, and `_fn_block` / `_match_arm`
+  from `tools/error_handling_check.py`. As of this session, four
+  per-feature checkers share these parsers (`error_handling_check`,
+  `connectivity_check`, `freshness_check`,
+  `subscription_limit_check`). If a fifth ERR-* feature needs them
+  (likely ERR-6 for the IB pacing budget port), strongly consider
+  hoisting `_fn_block` / `_match_arm` / `_struct_body` / `_enum_body`
+  / `_trait_body` into a shared helper module
+  (e.g. `tools/_rust_parser.py`).
+- The ExceededLimit-leaf message string contains the symbol and the
+  strategy_id (e.g. `"AAPL"` and `"live-alpha-1"`). Both are
+  operator-visible identifiers, not PII / secrets — the ERR-1 /
+  ERR-2 / ERR-3 messages already include both, so this is consistent
+  with the established pattern. The message also surfaces the
+  configured limit value (e.g. `"100"`) which is operator-set
+  configuration, not sensitive data.
+- The judgment-pass `block` on commit 2 is a permanent feature of
+  the gate, not a one-off. Any future change to `tools/critic_check.py`
+  or `prompts/critic_prompt.md` will trip the same rule. The
+  established procedure (split into two commits, AskUserQuestion
+  sign-off, record the override in the commit message + progress.txt)
+  is the workflow.
+
 === SESSION 15 ===
 Date: 2026-05-11
 Feature completed: ERR-3 — Market data stale: reject live order
