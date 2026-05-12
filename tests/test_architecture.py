@@ -81,6 +81,16 @@ class ArchitectureBoundaryTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("ERR-3, SRS-MD-004, NFR-P5 15s threshold", result.stdout)
+        # ERR-4 / SRS-MD-002 / SyRS SYS-70 subscription-limit gate.
+        self.assertIn(
+            "atp-market-data gates subscription requests on SubscriptionLimitState",
+            result.stdout,
+        )
+        self.assertIn(
+            "publishing SubscriptionLimitEvent when the line limit is reached",
+            result.stdout,
+        )
+        self.assertIn("ERR-4, SRS-MD-002, SyRS SYS-70 / SYS-64", result.stdout)
 
     def test_srs_arch_002_dependency_boundary(self) -> None:
         result = subprocess.run(

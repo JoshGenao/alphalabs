@@ -450,3 +450,99 @@ caller that will implement `MarketDataFreshnessProbe` and publish
 through `StaleDataEventSink`. The dashboard WebSocket subscription
 that surfaces `StaleDataEvent` to operators arrives with UI-*
 features.
+
+`ERR-4` (market-data subscription line-limit gate, SRS-MD-002 +
+SyRS SYS-70 / SYS-64 + StRS A-13) is enforced by the
+`subscription_limit_contract` block in
+`architecture/runtime_services.json`, additional types in
+`crates/atp-types/src/lib.rs`, and a match-on-state gate inside
+`MarketDataSubscriptionManager::request_subscription` in
+`crates/atp-market-data/src/lib.rs`. The catalogue declares the
+subscription-limit vocabulary the market-data subscription manager
+consults on every new subscription request:
+
+- `SubscriptionRequest { strategy_id, symbol }` is the source-neutral
+  request envelope the manager gates on — deliberately mirroring
+  `OrderSubmission` minus the `quantity` field (a subscription has
+  no order semantics).
+- `SubscriptionLimitState { WithinLimit, ExceededLimit }` types
+  whether admitting the request would push past the operator-configured
+  IB market-data line ceiling. `ExceededLimit` is the SRS-MD-002 /
+  SyRS SYS-70 path; the request must be rejected with
+  `SUBSCRIPTION_LIMIT_REACHED` and an operator alert raised.
+- `SubscriptionLimitEvent { state, strategy_id, symbol, current_lines,
+  configured_limit }` is the structured payload the manager publishes
+  whenever it rejects a request. Carrying BOTH `current_lines` and
+  `configured_limit` closes a TOCTOU window: the configured value can
+  be re-read between rejection and dashboard render, so the event
+  must be self-describing. The contract refuses any `broker`,
+  `ib_session_id`, `vendor`, `provider`, or `tick_id` leak on the
+  event payload.
+- `StructuredSubscriptionError { category, error_type, message,
+  original_request }` is the rejection envelope. It reuses the
+  pre-declared `OrderErrorCategory::SubscriptionLimitReached` variant
+  (wire string `SUBSCRIPTION_LIMIT_REACHED`) as the single source of
+  truth for the SyRS SYS-64 vocabulary. A category-pinned factory
+  `StructuredSubscriptionError::limit_reached(...)` is the only
+  blessed construction site.
+- `SubscriptionLineCounter { lines_in_use, line_limit, try_acquire }`
+  is the port the manager consults on every request. `try_acquire`
+  is read-only with respect to the registry — admission happens
+  after the manager observes `WithinLimit`. The eventual concrete
+  implementation (deferred to SRS-MD-001 / SRS-MD-007) will own the
+  consolidated subscription set and the operator-configured
+  `ATP_MARKET_DATA_LINE_LIMIT` value (default 100, range 1–10000,
+  catalogued under `market_data_limits` in the configuration block).
+- `SubscriptionLimitEventSink { record }` is the publication channel
+  for the structured event; concrete sinks route it to logs
+  (SRS-LOG-001), the dashboard WebSocket alert pane (SyRS SYS-70's
+  "alert the operator on the dashboard" clause), and the
+  notification dispatcher.
+- The match on `counter.try_acquire(&request)` routes `WithinLimit`
+  to a `SubscriptionAccepted` envelope and routes `ExceededLimit`
+  to a synchronous rejection that emits the rejection envelope AND
+  records a `SubscriptionLimitEvent` via `events.record(...)`. The
+  `ExceededLimit` leaf must NOT mutate the subscription registry —
+  the `forbidden_mutations` field in the contract block enumerates
+  the call sites the static gate refuses (`registry.insert`,
+  `subscriptions.insert`, `request.acquire`, `counter.acquire`,
+  `counter.commit`, `self.register`). The
+  `crates/atp-market-data/tests/err_4_subscription_limit_blocked.rs`
+  integration test pins this with `LineCounterSpy` /
+  `EventSinkSpy` / `ForbiddenSink` stubs plus an explicit SyRS
+  SYS-64 invariant test that proves the rejection envelope is
+  byte-identical for live and paper subscribers (the manager API
+  takes no `StrategyMode` parameter).
+
+```bash
+python3 tools/subscription_limit_check.py
+```
+
+`tools/subscription_limit_check.py` parses the Rust source for the
+`SubscriptionLimitState` enum, the `SubscriptionLimitEvent` struct
+(rejecting forbidden broker/session/vendor/tick fields), the
+`SubscriptionRequest` request envelope, the two port traits, and the
+match-arm gating that keeps `SubscriptionAccepted` exclusively on the
+`WithinLimit` leaf and `OrderErrorCategory::SubscriptionLimitReached`
+plus `events.record(...)` exclusively on the `ExceededLimit` leaf
+(with the zero-registry-mutation invariant enforced via the
+contract's `forbidden_mutations` list). It then runs
+`cargo test -p atp-market-data --lib` plus the
+`err_4_subscription_limit_blocked` integration test end-to-end. The
+`architecture_check.py` path short-circuits the cargo step via
+`assert_subscription_limit_static`, mirroring the ERR-1 / ERR-2 /
+ERR-3 split.
+
+ERR-4 lands the subscription-manager line-limit gate.
+**ERR-4b (deferred):** when an order is placed against a symbol with
+no existing subscription, `submit_live_order` should acquire a line
+through the subscription manager and bubble `SUBSCRIPTION_LIMIT_REACHED`
+up through the existing `StructuredOrderError` envelope (which is why
+`OrderErrorCategory::SubscriptionLimitReached` is pre-declared in
+`atp-types`). This adds another port to `submit_live_order`'s
+signature and is tracked as a fresh sub-task. The concrete
+`SubscriptionLineCounter` implementation backed by
+`ATP_MARKET_DATA_LINE_LIMIT` and the live subscription set is owned
+by SRS-MD-001 (subscription consolidation) and SRS-MD-007 (sequence-
+gap detection). The dashboard WebSocket subscription that surfaces
+`SubscriptionLimitEvent` to operators arrives with UI-* features.

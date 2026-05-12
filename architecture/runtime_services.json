@@ -794,6 +794,111 @@
     },
     "rejection_category": "MarketDataStale"
   },
+  "subscription_limit_contract": {
+    "requirement": "ERR-4",
+    "srs_refs": [
+      "SRS-MD-002"
+    ],
+    "syrs_refs": [
+      "SYS-70",
+      "SYS-64"
+    ],
+    "strs_refs": [
+      "A-13"
+    ],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "market_data_crate": {
+      "crate": "atp-market-data",
+      "path": "crates/atp-market-data"
+    },
+    "subscription_request": {
+      "struct": "SubscriptionRequest",
+      "required_fields": [
+        "strategy_id",
+        "symbol"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "vendor",
+        "provider"
+      ]
+    },
+    "subscription_limit_state": {
+      "enum": "SubscriptionLimitState",
+      "variants": [
+        "WithinLimit",
+        "ExceededLimit"
+      ]
+    },
+    "subscription_limit_event": {
+      "struct": "SubscriptionLimitEvent",
+      "required_fields": [
+        "state",
+        "strategy_id",
+        "symbol",
+        "current_lines",
+        "configured_limit"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "vendor",
+        "provider",
+        "tick_id"
+      ]
+    },
+    "line_counter_port": {
+      "trait": "SubscriptionLineCounter",
+      "methods": [
+        "lines_in_use",
+        "line_limit",
+        "try_acquire"
+      ]
+    },
+    "event_sink_port": {
+      "trait": "SubscriptionLimitEventSink",
+      "methods": [
+        "record"
+      ]
+    },
+    "entry_point": {
+      "method": "request_subscription",
+      "type": "MarketDataSubscriptionManager"
+    },
+    "guard": {
+      "state_enum": "SubscriptionLimitState",
+      "within_variant": "WithinLimit",
+      "exceeded_variant": "ExceededLimit",
+      "counter_call": "counter.try_acquire",
+      "event_call": "events.record",
+      "accepted_struct": "SubscriptionAccepted",
+      "forbidden_mutations": [
+        "registry.insert",
+        "registry.add",
+        "registry.push",
+        "subscriptions.insert",
+        "subscriptions.push",
+        "subscriptions.add",
+        "request.acquire",
+        "counter.acquire",
+        "counter.commit",
+        "counter.reserve",
+        "lines.increment",
+        "self.register",
+        "self.add_subscription"
+      ]
+    },
+    "rejection_category": "SubscriptionLimitReached",
+    "rejection_wire_string": "SUBSCRIPTION_LIMIT_REACHED",
+    "deferred": [
+      "ERR-4b: order-submission path bubble-up — submit_live_order acquires a line on first use of an unsubscribed symbol and surfaces SUBSCRIPTION_LIMIT_REACHED through StructuredOrderError",
+      "Concrete SubscriptionLineCounter impl backed by ATP_MARKET_DATA_LINE_LIMIT and the live subscription set (owner: SRS-MD-001 / SRS-MD-007)"
+    ]
+  },
   "deployment": {
     "requirement": "SRS-ARCH-004",
     "target": "Phase 1 Proxmox Ubuntu VM",

@@ -14,6 +14,10 @@ from adapter_isolation_check import AdapterIsolationError, assert_adapter_isolat
 from config_check import ConfigCheckError, assert_configuration_static
 from connectivity_check import ConnectivityCheckError, assert_connectivity_static
 from freshness_check import FreshnessCheckError, assert_freshness_static
+from subscription_limit_check import (
+    SubscriptionLimitCheckError,
+    assert_subscription_limit_static,
+)
 from data_provider_check import (
     DataProviderContractError,
     assert_data_provider_contract_static,
@@ -357,6 +361,22 @@ def assert_freshness(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_subscription_limit(config: dict) -> list[str]:
+    block = config.get("subscription_limit_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_subscription_limit_static(config, ROOT)
+    summary = (
+        f"{block['market_data_crate']['crate']} gates subscription requests "
+        f"on {block['subscription_limit_state']['enum']} "
+        f"({len(block['subscription_limit_state']['variants'])} states), "
+        f"publishing {block['subscription_limit_event']['struct']} when "
+        "the line limit is reached (ERR-4, SRS-MD-002, SyRS SYS-70 / SYS-64)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -419,6 +439,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_freshness(config))
     except FreshnessCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_subscription_limit(config))
+    except SubscriptionLimitCheckError as error:
         fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:

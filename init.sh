@@ -168,6 +168,13 @@ if ! python3 tools/freshness_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running subscription-limit contract check..."
+if ! python3 tools/subscription_limit_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Subscription-limit contract check failed; run python3 tools/subscription_limit_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running deployment configuration check..."
 if ! python3 tools/deployment_check.py >/dev/null; then
   echo "✗ Environment failed"
