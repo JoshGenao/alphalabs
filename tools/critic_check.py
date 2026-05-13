@@ -192,7 +192,8 @@ ENV_FILE_RE = re.compile(r"(^|/)\.env(\.[A-Za-z0-9_]+)?$")
 
 SAFETY_PATH_RE = re.compile(
     r"(kill[_-]?switch|connectivity|stale[_-]?data|live[_-]?mode|safety"
-    r"|subscription[_-]?limit|market[_-]?data[_-]?line)",
+    r"|subscription[_-]?limit|market[_-]?data[_-]?line"
+    r"|ingestion[_-]?validation|record[_-]?quarantine)",
     re.IGNORECASE,
 )
 
