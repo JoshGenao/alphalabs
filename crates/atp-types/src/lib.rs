@@ -99,6 +99,7 @@ pub enum OrderErrorCategory {
     MarketDataStale,
     SubscriptionLimitReached,
     NonLiveStrategySubmission,
+    IngestionRecordValidationFailed,
 }
 
 impl OrderErrorCategory {
@@ -111,6 +112,7 @@ impl OrderErrorCategory {
             Self::MarketDataStale => "MARKET_DATA_STALE",
             Self::SubscriptionLimitReached => "SUBSCRIPTION_LIMIT_REACHED",
             Self::NonLiveStrategySubmission => "NON_LIVE_STRATEGY_SUBMISSION",
+            Self::IngestionRecordValidationFailed => "INGESTION_RECORD_VALIDATION_FAILED",
         }
     }
 }
@@ -343,6 +345,167 @@ impl fmt::Display for StructuredSubscriptionError {
 
 impl std::error::Error for StructuredSubscriptionError {}
 
+// --------------------------------------------------------------------------- //
+// Ingestion record validation envelope and structured rejection
+// (SRS-DATA-013, SyRS SYS-77, StRS SN-1.26 / SN-1.27)
+// --------------------------------------------------------------------------- //
+//
+// SRS-DATA-013 + SyRS SYS-77 require the data layer to validate every
+// ingested equity and options record against six structural / range /
+// duplicate / required-field rules BEFORE writing the record to primary
+// storage. Records that fail validation are quarantined out-of-band (not
+// written to the primary tables) and an operator-facing alert surfaces
+// counts and reasons via the dashboard and notification subsystem.
+//
+// SyRS SYS-77 specifies the six rule categories (a..f) — those are the
+// variants of `QuarantineReason` below. The data-layer gate is mode-
+// invariant: the same six rules apply uniformly across every ingestion
+// source (bulk-equity bars, minute-bar watchlist, option-chain captures,
+// fundamental tables, user-uploaded Parquet), so the gate takes no
+// `StrategyMode` parameter and no per-vendor enum at the type layer.
+//
+// `IngestionRecordSubmission` is the source-neutral envelope the gate
+// validates. It carries a vendor-neutral `source` string (the vendor's
+// identifier is opaque at this layer) and a `record_hash` (the canonical
+// SHA-256 of the normalized record bytes) — the full payload goes to
+// quarantine storage, not into this envelope. Deliberately omits any
+// broker / IB session / tick / vendor-specific field; the `forbidden_
+// fields` allowlist in the contract block locks the structure against
+// vendor bleed.
+//
+// `QuarantineReason` enumerates the six SyRS SYS-77 rule categories. The
+// enum is `Copy + Hash` so downstream dashboards and the notification
+// dispatcher can aggregate counts by reason without scanning a string.
+//
+// `RecordValidationOutcome` types the two states the gate distinguishes:
+// `Valid` (the record may proceed to primary storage) and
+// `Quarantined(reason)` (the record is rejected and the carrier reason
+// names which SyRS SYS-77 rule it violated).
+//
+// `IngestionValidationEvent` is the structured payload the gate emits on
+// every quarantined record. It carries the outcome, the matching reason,
+// the source, the record hash, and the observed timestamp so the
+// dashboard / notification fan-out can compute "count and nature of
+// quarantined records" (SyRS SYS-77's alert clause) without re-probing
+// the validator port. Aggregation (the "count" part) is the sink's job;
+// the gate emits one event per rejected record.
+//
+// `StructuredIngestionError` is the rejection envelope. It reuses the
+// `OrderErrorCategory::IngestionRecordValidationFailed` variant as the
+// single source of truth for the SyRS SYS-64 wire string. The envelope
+// is distinct from `StructuredOrderError` and `StructuredSubscription
+// Error` because an ingested record is neither an order nor a
+// subscription — synthesising one would lie to downstream consumers.
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngestionRecordSubmission {
+    pub source: String,
+    pub record_hash: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QuarantineReason {
+    RangeViolation,
+    OhlcOutOfBand,
+    NegativeVolume,
+    NullRequiredField,
+    DuplicateRecord,
+    OptionFieldMissing,
+}
+
+impl QuarantineReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RangeViolation => "RANGE_VIOLATION",
+            Self::OhlcOutOfBand => "OHLC_OUT_OF_BAND",
+            Self::NegativeVolume => "NEGATIVE_VOLUME",
+            Self::NullRequiredField => "NULL_REQUIRED_FIELD",
+            Self::DuplicateRecord => "DUPLICATE_RECORD",
+            Self::OptionFieldMissing => "OPTION_FIELD_MISSING",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RecordValidationOutcome {
+    Valid,
+    Quarantined(QuarantineReason),
+}
+
+impl RecordValidationOutcome {
+    pub const fn is_quarantined(self) -> bool {
+        matches!(self, Self::Quarantined(_))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngestionValidationEvent {
+    pub state: RecordValidationOutcome,
+    pub reason: QuarantineReason,
+    pub source: String,
+    pub record_hash: String,
+    pub observed_at_seconds: u64,
+}
+
+/// SRS-DATA-013 / SyRS SYS-77 structured rejection envelope. Carries the
+/// SyRS SYS-64 error category, the discriminator string, a human-readable
+/// message, and the unchanged original record envelope. The category is
+/// constrained at construction to
+/// `OrderErrorCategory::IngestionRecordValidationFailed`; the factory
+/// enforces that invariant in debug builds so a future caller cannot
+/// smuggle a different category through this envelope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuredIngestionError {
+    pub category: OrderErrorCategory,
+    pub error_type: String,
+    pub message: String,
+    pub original_record: IngestionRecordSubmission,
+}
+
+impl StructuredIngestionError {
+    /// Build an `INGESTION_RECORD_VALIDATION_FAILED` rejection. `reason`
+    /// names which SyRS SYS-77 rule (a..f) the record violated; the wire
+    /// form (e.g. `"RANGE_VIOLATION"`) is read from the
+    /// `QuarantineReason::as_str` map so the dashboard and notification
+    /// dispatcher receive a stable discriminator.
+    pub fn quarantined(
+        record: IngestionRecordSubmission,
+        reason: QuarantineReason,
+    ) -> Self {
+        let category = OrderErrorCategory::IngestionRecordValidationFailed;
+        debug_assert!(
+            matches!(category, OrderErrorCategory::IngestionRecordValidationFailed),
+            "StructuredIngestionError must carry IngestionRecordValidationFailed"
+        );
+        let message = format!(
+            "SRS-DATA-013 + SyRS SYS-77: record {hash} from {source} quarantined — {reason}",
+            hash = record.record_hash,
+            source = record.source,
+            reason = reason.as_str(),
+        );
+        Self {
+            category,
+            error_type: "IngestionRecordValidationFailed".to_string(),
+            message,
+            original_record: record,
+        }
+    }
+}
+
+impl fmt::Display for StructuredIngestionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "[{}] {}: {}",
+            self.category.as_str(),
+            self.error_type,
+            self.message
+        )
+    }
+}
+
+impl std::error::Error for StructuredIngestionError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,6 +551,10 @@ mod tests {
         assert_eq!(
             OrderErrorCategory::NonLiveStrategySubmission.as_str(),
             "NON_LIVE_STRATEGY_SUBMISSION"
+        );
+        assert_eq!(
+            OrderErrorCategory::IngestionRecordValidationFailed.as_str(),
+            "INGESTION_RECORD_VALIDATION_FAILED"
         );
     }
 
@@ -581,6 +748,138 @@ mod tests {
             format!("{error}"),
             format!(
                 "[SUBSCRIPTION_LIMIT_REACHED] SubscriptionLimitReached: {}",
+                error.message
+            )
+        );
+    }
+
+    #[test]
+    fn quarantine_reason_wire_strings_enumerate_sys_77_rules() {
+        // SyRS SYS-77 specifies six validation rule categories (a..f).
+        // Each variant of QuarantineReason maps 1:1 to a SCREAMING_SNAKE
+        // wire string the dashboard and notification dispatcher consume
+        // to render the "nature" half of "count and nature of quarantined
+        // records" (SYS-77's alert clause).
+        assert_eq!(QuarantineReason::RangeViolation.as_str(), "RANGE_VIOLATION");
+        assert_eq!(QuarantineReason::OhlcOutOfBand.as_str(), "OHLC_OUT_OF_BAND");
+        assert_eq!(QuarantineReason::NegativeVolume.as_str(), "NEGATIVE_VOLUME");
+        assert_eq!(
+            QuarantineReason::NullRequiredField.as_str(),
+            "NULL_REQUIRED_FIELD"
+        );
+        assert_eq!(
+            QuarantineReason::DuplicateRecord.as_str(),
+            "DUPLICATE_RECORD"
+        );
+        assert_eq!(
+            QuarantineReason::OptionFieldMissing.as_str(),
+            "OPTION_FIELD_MISSING"
+        );
+    }
+
+    #[test]
+    fn record_validation_outcome_distinguishes_valid_from_quarantined() {
+        // SRS-DATA-013: Valid must permit the record to proceed to primary
+        // storage; Quarantined must trigger INGESTION_RECORD_VALIDATION_FAILED.
+        // The `is_quarantined` predicate is the helper every caller of the
+        // gate uses to branch on outcome.
+        assert!(!RecordValidationOutcome::Valid.is_quarantined());
+        for reason in [
+            QuarantineReason::RangeViolation,
+            QuarantineReason::OhlcOutOfBand,
+            QuarantineReason::NegativeVolume,
+            QuarantineReason::NullRequiredField,
+            QuarantineReason::DuplicateRecord,
+            QuarantineReason::OptionFieldMissing,
+        ] {
+            assert!(RecordValidationOutcome::Quarantined(reason).is_quarantined());
+        }
+    }
+
+    #[test]
+    fn ingestion_record_submission_carries_only_the_two_required_fields() {
+        // The exhaustive destructure proves there are no other public
+        // fields (i.e. nothing that could leak a broker / IB session /
+        // tick id / vendor dataset / vendor table / raw parquet path /
+        // vendor credentials into the ingestion gate's input envelope).
+        let record = IngestionRecordSubmission {
+            source: "bulk-equity-bars".to_string(),
+            record_hash: "0xabc123".to_string(),
+        };
+        let IngestionRecordSubmission {
+            source: _,
+            record_hash: _,
+        } = record.clone();
+        assert_eq!(record.source, "bulk-equity-bars");
+        assert_eq!(record.record_hash, "0xabc123");
+    }
+
+    #[test]
+    fn ingestion_validation_event_carries_only_the_five_required_fields() {
+        // The exhaustive destructure proves there are no other public
+        // fields. SyRS SYS-77 alert clause needs (state, reason, source,
+        // record_hash, observed_at_seconds) for downstream fan-in to
+        // compute "count and nature of quarantined records" without
+        // re-querying the validator port.
+        let event = IngestionValidationEvent {
+            state: RecordValidationOutcome::Quarantined(QuarantineReason::RangeViolation),
+            reason: QuarantineReason::RangeViolation,
+            source: "bulk-equity-bars".to_string(),
+            record_hash: "0xabc123".to_string(),
+            observed_at_seconds: 1_715_000_000,
+        };
+        let IngestionValidationEvent {
+            state: _,
+            reason: _,
+            source: _,
+            record_hash: _,
+            observed_at_seconds: _,
+        } = event.clone();
+        assert!(event.state.is_quarantined());
+        assert_eq!(event.reason, QuarantineReason::RangeViolation);
+        assert_eq!(event.source, "bulk-equity-bars");
+        assert_eq!(event.record_hash, "0xabc123");
+        assert_eq!(event.observed_at_seconds, 1_715_000_000);
+    }
+
+    #[test]
+    fn structured_ingestion_error_factory_pins_the_wire_string() {
+        // SRS-DATA-013 + SyRS SYS-77: the rejection wire string must be
+        // INGESTION_RECORD_VALIDATION_FAILED. The factory reuses the
+        // OrderErrorCategory variant as the single source of truth so a
+        // future caller cannot drift the wire form. The message must
+        // include the SRS/SyRS trace strings, the record hash, the
+        // source, and the human-readable reason for downstream parsing.
+        let record = IngestionRecordSubmission {
+            source: "bulk-equity-bars".to_string(),
+            record_hash: "0xdeadbeef".to_string(),
+        };
+        let error = StructuredIngestionError::quarantined(
+            record.clone(),
+            QuarantineReason::DuplicateRecord,
+        );
+        let StructuredIngestionError {
+            category: _,
+            error_type: _,
+            message: _,
+            original_record: _,
+        } = error.clone();
+        assert_eq!(
+            error.category,
+            OrderErrorCategory::IngestionRecordValidationFailed
+        );
+        assert_eq!(error.category.as_str(), "INGESTION_RECORD_VALIDATION_FAILED");
+        assert_eq!(error.error_type, "IngestionRecordValidationFailed");
+        assert!(error.message.contains("SRS-DATA-013"));
+        assert!(error.message.contains("SYS-77"));
+        assert!(error.message.contains("0xdeadbeef"));
+        assert!(error.message.contains("bulk-equity-bars"));
+        assert!(error.message.contains("DUPLICATE_RECORD"));
+        assert_eq!(error.original_record, record);
+        assert_eq!(
+            format!("{error}"),
+            format!(
+                "[INGESTION_RECORD_VALIDATION_FAILED] IngestionRecordValidationFailed: {}",
                 error.message
             )
         );

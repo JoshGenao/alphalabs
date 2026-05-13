@@ -616,7 +616,8 @@
         "RateLimited",
         "MarketDataStale",
         "SubscriptionLimitReached",
-        "NonLiveStrategySubmission"
+        "NonLiveStrategySubmission",
+        "IngestionRecordValidationFailed"
       ],
       "wire_strings": [
         "INVALID_SYMBOL",
@@ -625,7 +626,8 @@
         "RATE_LIMITED",
         "MARKET_DATA_STALE",
         "SUBSCRIPTION_LIMIT_REACHED",
-        "NON_LIVE_STRATEGY_SUBMISSION"
+        "NON_LIVE_STRATEGY_SUBMISSION",
+        "INGESTION_RECORD_VALIDATION_FAILED"
       ]
     },
     "structured_error": {
@@ -897,6 +899,127 @@
     "deferred": [
       "ERR-4b: order-submission path bubble-up — submit_live_order acquires a line on first use of an unsubscribed symbol and surfaces SUBSCRIPTION_LIMIT_REACHED through StructuredOrderError",
       "Concrete SubscriptionLineCounter impl backed by ATP_MARKET_DATA_LINE_LIMIT and the live subscription set (owner: SRS-MD-001 / SRS-MD-007)"
+    ]
+  },
+  "ingestion_validation_contract": {
+    "requirement": "ERR-5",
+    "srs_refs": [
+      "SRS-DATA-013"
+    ],
+    "syrs_refs": [
+      "SYS-77"
+    ],
+    "strs_refs": [
+      "SN-1.26",
+      "SN-1.27"
+    ],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "data_crate": {
+      "crate": "atp-data",
+      "path": "crates/atp-data"
+    },
+    "ingestion_record_submission": {
+      "struct": "IngestionRecordSubmission",
+      "required_fields": [
+        "source",
+        "record_hash"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "tick_id",
+        "databento_dataset",
+        "sharadar_table",
+        "raw_parquet_path",
+        "vendor_credentials"
+      ]
+    },
+    "record_validation_outcome": {
+      "enum": "RecordValidationOutcome",
+      "variants": [
+        "Valid",
+        "Quarantined"
+      ]
+    },
+    "quarantine_reason": {
+      "enum": "QuarantineReason",
+      "variants": [
+        "RangeViolation",
+        "OhlcOutOfBand",
+        "NegativeVolume",
+        "NullRequiredField",
+        "DuplicateRecord",
+        "OptionFieldMissing"
+      ]
+    },
+    "ingestion_validation_event": {
+      "struct": "IngestionValidationEvent",
+      "required_fields": [
+        "state",
+        "reason",
+        "source",
+        "record_hash",
+        "observed_at_seconds"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "tick_id",
+        "databento_dataset",
+        "sharadar_table",
+        "raw_parquet_path",
+        "vendor_credentials"
+      ]
+    },
+    "validator_port": {
+      "trait": "RecordValidator",
+      "methods": [
+        "validate"
+      ]
+    },
+    "event_sink_port": {
+      "trait": "IngestionValidationEventSink",
+      "methods": [
+        "record"
+      ]
+    },
+    "entry_point": {
+      "method": "ingest_record",
+      "type": "DataLayer"
+    },
+    "guard": {
+      "state_enum": "RecordValidationOutcome",
+      "valid_variant": "Valid",
+      "quarantined_variant": "Quarantined",
+      "validator_call": "validator.validate",
+      "event_call": "events.record",
+      "accepted_struct": "IngestionAccepted",
+      "forbidden_mutations": [
+        "primary.insert",
+        "primary.write",
+        "primary.append",
+        "storage.write",
+        "storage.insert",
+        "tier.write",
+        "ssd.write",
+        "nas.write",
+        "records.append",
+        "table.insert",
+        "self.persist",
+        "self.write_primary",
+        "self.commit_record",
+        "self.flush_to_primary"
+      ]
+    },
+    "rejection_category": "IngestionRecordValidationFailed",
+    "rejection_wire_string": "INGESTION_RECORD_VALIDATION_FAILED",
+    "deferred": [
+      "Concrete RecordValidator implementing the six SyRS SYS-77 rules (a..f) against equity and options records (owner: SRS-DATA-001..006 + SRS-DATA-013)",
+      "Quarantine storage backend that persists the rejected payload + reason + timestamp + source (owner: SRS-DATA-014 / SRS-DATA-015)",
+      "Notification dispatcher hookup that fans the per-record event into dashboard alert counts and SMTP/SMS reason summaries (owner: SRS-NOTIF-001 / SYS-77 alert clause)"
     ]
   },
   "deployment": {

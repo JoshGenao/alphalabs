@@ -53,7 +53,7 @@ class ArchitectureBoundaryTest(unittest.TestCase):
             "atp-execution rejects non-live submissions synchronously",
             result.stdout,
         )
-        self.assertIn("7 SyRS SYS-64 categories", result.stdout)
+        self.assertIn("8 SyRS SYS-64 categories", result.stdout)
         self.assertIn(
             "gating `broker.submit_order` on StrategyMode::Live",
             result.stdout,
@@ -91,6 +91,17 @@ class ArchitectureBoundaryTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("ERR-4, SRS-MD-002, SyRS SYS-70 / SYS-64", result.stdout)
+        # ERR-5 / SRS-DATA-013 / SyRS SYS-77 ingestion-validation gate.
+        self.assertIn(
+            "atp-data gates ingestion writes on RecordValidationOutcome",
+            result.stdout,
+        )
+        self.assertIn("2 states / 6 quarantine reasons", result.stdout)
+        self.assertIn(
+            "publishing IngestionValidationEvent when a record fails",
+            result.stdout,
+        )
+        self.assertIn("ERR-5, SRS-DATA-013, SyRS SYS-77", result.stdout)
 
     def test_srs_arch_002_dependency_boundary(self) -> None:
         result = subprocess.run(
