@@ -1,3 +1,374 @@
+=== SESSION 17 ===
+Date: 2026-05-13
+Feature completed: ERR-5 — Ingestion record validation failure:
+quarantine records that fail any of the six SyRS SYS-77 rules (a..f)
+at the DataLayer layer, publish a structured IngestionValidationEvent
+carrying the QuarantineReason for downstream count-and-nature
+aggregation, and produce zero write to the primary storage tier on
+the failure path (traces SRS-DATA-013 + SyRS SYS-77 + StRS SN-1.26 /
+SN-1.27).
+Status: 103 remaining features
+
+What I did:
+- Prep commit (ff10ef0): extended SAFETY_PATH_RE in
+  `tools/critic_check.py` to add `ingestion[_-]?validation` and
+  `record[_-]?quarantine` to the safety-path alternation. Continues
+  the per-feature precedent (ERR-2 added connectivity, ERR-3 added
+  stale_data, ERR-4 added subscription_limit + market_data_line in
+  SESSION 16 commit 8143ac5). The split-commit shape exactly mirrors
+  SESSION 16's workflow.
+- Feat commit (40fef50):
+- Extended `crates/atp-types/src/lib.rs`:
+  * Added `IngestionRecordValidationFailed` variant to
+    `OrderErrorCategory` (now 8 variants) with wire string
+    `"INGESTION_RECORD_VALIDATION_FAILED"` — single source of truth
+    for the SyRS SYS-64 wire vocabulary; no parallel enum.
+  * Added `pub struct IngestionRecordSubmission { source: String,
+    record_hash: String }` — vendor-neutral envelope. Deliberately
+    omits broker / IB session / tick / vendor-dataset / vendor-table /
+    parquet-path / credential fields (caught by the contract block's
+    7-element forbidden_fields allowlist).
+  * Added `pub enum QuarantineReason` — Copy/Hash/PartialEq/Eq 6-
+    variant enum mapping 1:1 to the SyRS SYS-77 rules (a..f):
+    RangeViolation, OhlcOutOfBand, NegativeVolume, NullRequiredField,
+    DuplicateRecord, OptionFieldMissing. SCREAMING_SNAKE wire strings
+    via `as_str()`. Copy + Hash so dashboards can aggregate by reason
+    via a HashMap key without scanning a string.
+  * Added `pub enum RecordValidationOutcome { Valid,
+    Quarantined(QuarantineReason) }` with `is_quarantined()` helper.
+    2-state cadence mirrors ERR-4's WithinLimit/ExceededLimit; reason
+    is carried in-band as a payload (clean separation of state vs.
+    reason — different from a flat 7-variant enum).
+  * Added `pub struct IngestionValidationEvent { state, reason,
+    source, record_hash, observed_at_seconds }` — exactly five
+    fields, no broker/session/vendor/tick leakage. `state` and
+    `reason` are redundant by design (mirrors ERR-4's state +
+    numerics) so sinks don't need to destructure the outcome.
+  * Added `pub struct StructuredIngestionError { category,
+    error_type, message, original_record: IngestionRecordSubmission }`
+    with a category-pinned factory `quarantined(record, reason)` that
+    `debug_assert!`s the category stays
+    `OrderErrorCategory::IngestionRecordValidationFailed`. Implements
+    `fmt::Display` and `std::error::Error`. Message format:
+    `"SRS-DATA-013 + SyRS SYS-77: record <hash> from <source>
+    quarantined — <REASON_WIRE_STRING>"`.
+  * Added 5 new unit tests: new variant's wire string, all six
+    QuarantineReason wire strings, RecordValidationOutcome
+    predicate, IngestionRecordSubmission + IngestionValidationEvent
+    exhaustive destructures (forbidden-field proofs), factory
+    wire-string + Display round-trip. Total atp-types unit tests:
+    20 (was 15 in SESSION 16).
+- Extended `crates/atp-data/src/lib.rs` (was a 26-line stub; now ~245
+  lines including unit tests):
+  * Added `pub trait RecordValidator { fn validate(&self, record:
+    &IngestionRecordSubmission) -> RecordValidationOutcome; }`. The
+    trait has NO mutator method — the zero-write-to-primary
+    invariant is anchored at the port shape so a concrete validator
+    cannot commit a record through the probe call.
+  * Added `pub trait IngestionValidationEventSink { fn record(&self,
+    event: IngestionValidationEvent); }`. Concrete sinks (deferred)
+    route events to logs, the dashboard WebSocket alert pane, and
+    the notification dispatcher per SyRS SYS-77's alert clause.
+  * Added `pub struct IngestionAccepted { source, record_hash }` —
+    only construction site is the `Valid` arm of `ingest_record`.
+  * Added `DataLayer::ingest_record<V, S>(record,
+    validator, events, observed_at_seconds) -> Result<IngestionAccepted,
+    StructuredIngestionError>` with the match:
+    `Valid => Ok(IngestionAccepted { ... })`,
+    `Quarantined(reason) => { events.record(IngestionValidationEvent
+    { ... }); Err(StructuredIngestionError::quarantined(record,
+    reason)) }`. Takes NO `StrategyMode` parameter — SyRS SYS-77
+    applies the same six rules uniformly across every ingestion
+    source.
+  * Added `#[doc(hidden)] pub const _INGESTION_VALIDATION_CATEGORY:
+    OrderErrorCategory = OrderErrorCategory::IngestionRecordValidationFailed;`
+    as a workspace-level reference to the canonical wire-string
+    source. Mirrors `_SUBSCRIPTION_LIMIT_CATEGORY` in atp-market-data.
+  * Added 3 new in-crate unit tests: Valid happy path with
+    ForbiddenSink-panic stub, Quarantined rejection with one event,
+    validator-call-count sanity (CountingValidator wrapper, asserts
+    validate is probed exactly once per record). Total atp-data
+    unit tests: 4 (was 1 in SESSION 16).
+- Added `crates/atp-data/tests/err_5_record_validation_blocked.rs`
+  (L7 domain integration test, 5 tests, ~400 lines):
+  * `RecordValidatorSpy` (parameterized outcome + call counter),
+    `EventSinkSpy` (collects events), `ForbiddenSink` (panics on
+    `record`) for cross-state isolation.
+  * `err_5_quarantined_state_blocks_record_with_structured_error` —
+    full ERR-5 contract: category, wire string, message trace
+    strings (SRS-DATA-013, SYS-77, record_hash, source, reason
+    wire string), exactly one event recorded with all fields,
+    validator probed exactly once.
+  * `err_5_valid_outcome_returns_accepted_and_emits_no_event` —
+    positive control with `ForbiddenSink` panic stub.
+  * `err_5_quarantined_state_holds_across_many_records` — pseudo-
+    property sweep across all six QuarantineReason variants
+    cycling source strings (bulk-equity-bars, ib-minute-bars,
+    ib-option-chains); per-case reason matches.
+  * `err_5_identical_contract_for_live_feed_and_paper_feed_sources`
+    — SyRS SYS-77 source-invariance: bulk-equity-bars vs
+    user-parquet-replay produce byte-identical category +
+    error_type + wire string. (Analogous to ERR-4's SYS-64 live/
+    paper mode invariant, but ERR-5 has no mode at all — SYS-77 is
+    source-invariant.)
+  * `err_5_quarantined_state_anchors_zero_mutation_via_port_shape`
+    — the RecordValidator trait exposes no mutator, so the gate
+    cannot write to primary storage through the port. PRIMARY
+    enforcement is the static check's 14-pattern
+    `forbidden_mutations` allowlist (primary.insert, primary.write,
+    primary.append, storage.write, storage.insert, tier.write,
+    ssd.write, nas.write, records.append, table.insert,
+    self.persist, self.write_primary, self.commit_record,
+    self.flush_to_primary); this Rust test anchors the behavioral
+    post-condition.
+- Added `tests/domain/test_ingestion_validation_quarantine.py` (L7
+  Python, 5 tests marked `pytest.mark.domain` + `pytest.mark.safety`).
+  Shells out to `cargo test -p atp-data --test
+  err_5_record_validation_blocked <name> -- --exact` (one Python
+  test per Rust scenario); `pytest.skip(reason=...)` if cargo
+  absent. This file's presence satisfies
+  `check_safety_critical_paired` once the prep commit's regex
+  extension is live.
+- Added `tools/ingestion_validation_check.py` (~468 lines, peer of
+  `tools/subscription_limit_check.py`). 7 static checks + 1 cargo
+  smoke:
+  1. `atp-types` declares `IngestionRecordSubmission` with the 2
+     required fields and rejects 7 forbidden vendor/broker fields.
+  2. `atp-types` declares `RecordValidationOutcome` with both
+     `Valid` and `Quarantined` variants.
+  3. `atp-types` declares `QuarantineReason` with all six SyRS
+     SYS-77 rule variants (a..f).
+  4. `atp-types` declares `IngestionValidationEvent` with the 5
+     required fields and rejects the 7 forbidden fields.
+  5. `atp-data` declares `RecordValidator` with the `validate`
+     method.
+  6. `atp-data` declares `IngestionValidationEventSink` with
+     `record`.
+  7. Inside `ingest_record`, the body matches on
+     `validator.validate(`, the Valid arm is the only call site of
+     `IngestionAccepted {`, the Quarantined arm produces
+     `OrderErrorCategory::IngestionRecordValidationFailed` (either
+     directly or via `StructuredIngestionError::quarantined(`),
+     records via `events.record(`, and contains NONE of the
+     14-pattern `forbidden_mutations` allowlist.
+  8. `cargo test -p atp-data --lib` + `--test
+     err_5_record_validation_blocked` smoke (skip on missing cargo).
+  Reuses `_struct_body` / `_enum_body` from `historical_data_check`,
+  `_fn_block` / `_match_arm` from `error_handling_check`, and
+  `_trait_body` from `connectivity_check`. A local `_quarantined_arm`
+  helper handles the payload-binding pattern
+  `Quarantined(reason) =>` (the shared `_match_arm` requires a
+  literal pattern match; the helper finds the variant followed by
+  any `(...)` payload, then extracts the arm via the same
+  brace/paren-balanced scan). Exposes
+  `assert_ingestion_validation_static(config, root)` for the
+  architecture-check short-circuit path. Drops a
+  `TODO(session-17+)` next to the three imports flagging the hoist
+  into `tools/_rust_parser.py` (this is the fifth ERR-* feature
+  reusing the parsers; SESSION 16 already named the trigger
+  condition).
+- Added `ingestion_validation_contract` block to
+  `architecture/runtime_services.json` (parallel to
+  `subscription_limit_contract`). Declares: `requirement: "ERR-5"`,
+  `srs_refs: ["SRS-DATA-013"]`, `syrs_refs: ["SYS-77"]`,
+  `strs_refs: ["SN-1.26", "SN-1.27"]`, the types crate, the data
+  crate, the IngestionRecordSubmission shape (required + forbidden
+  fields), the RecordValidationOutcome (Valid + Quarantined), the
+  QuarantineReason (6 SyRS SYS-77 variants), the
+  IngestionValidationEvent shape (5 required + 7 forbidden), the
+  two port traits with their method lists, the entry-point method,
+  the guard metadata (state enum, valid/quarantined variants,
+  validator/event call tokens, accepted_struct token, 14-pattern
+  forbidden_mutations allowlist), the rejection category, the
+  wire string, and a `deferred` array listing the three explicit
+  deferrals (concrete RecordValidator, quarantine storage backend,
+  notification dispatcher fan-out). Also extends
+  `error_handling_contract.error_category.{variants,wire_strings}`
+  to include `IngestionRecordValidationFailed` +
+  `INGESTION_RECORD_VALIDATION_FAILED` so the SyRS SYS-64 single-
+  source-of-truth invariant holds.
+- Wired `assert_ingestion_validation(config)` into
+  `tools/architecture_check.py` between the existing subscription-
+  limit block and the container-language-boundary block. Emits a
+  summary line: `atp-data gates ingestion writes on
+  RecordValidationOutcome (2 states / 6 quarantine reasons),
+  publishing IngestionValidationEvent when a record fails
+  structural / range / duplicate / required-field validation
+  (ERR-5, SRS-DATA-013, SyRS SYS-77)`. The
+  `assert_error_handling` summary's `len(variants)` substitution
+  auto-renders the new `"8 SyRS SYS-64 categories"` count.
+- Added `python3 tools/ingestion_validation_check.py` to `init.sh`
+  between the subscription-limit check and the deployment check.
+  `✓ Environment ready` now requires it too.
+- Added `tests/test_ingestion_validation_contract.py` (33 tests
+  across 9 classes): subprocess contract test (`ERR-5 PASS` + 18
+  evidence needles), per-check tests for IngestionRecordSubmission,
+  RecordValidationOutcome, QuarantineReason (including drop-tests
+  for 4 of the 6 SyRS SYS-77 variants), IngestionValidationEvent
+  (including 3 forbidden-field guards for broker / tick_id /
+  sharadar_table + 2 required-field guards for observed_at_seconds /
+  reason), RecordValidator + IngestionValidationEventSink ports,
+  and the ingestion-validation-guard match-arm gate; negative
+  spot-checks (dropping events.record block; injecting
+  primary.insert into Quarantined leaf; injecting self.write_primary
+  into Quarantined leaf; smuggling IngestionAccepted into the
+  Quarantined leaf; mutating the match scrutinee to a fake call);
+  aggregate evidence counts (8 / 7 for run_checks / static).
+- Tightened `tests/test_architecture.py
+  test_srs_arch_001_language_boundary` to require the new `atp-data
+  gates ingestion writes on RecordValidationOutcome` summary line
+  with all 4 needles. Bumped the `"7 SyRS SYS-64 categories"`
+  needle to `"8"`. Updated
+  `tests/test_error_handling_contract.py` with the same
+  7→8 needle bump and renamed the variant-presence test to
+  `test_all_eight_syrs_sys_64_categories_present`.
+- Flipped `feature_list.json` ERR-5.passes from `false` to `true`.
+
+What I tested:
+- `cargo test -p atp-types --lib` — 20 tests pass (was 15 in
+  SESSION 16; +5 ERR-5).
+- `cargo test -p atp-data --lib` — 4 tests pass (was 1 in
+  SESSION 16; +3 ERR-5).
+- `cargo test -p atp-data --test err_5_record_validation_blocked`
+  — 5 tests pass.
+- `cargo test --workspace` — all passing crates green.
+- `python3 tools/ingestion_validation_check.py` — `ERR-5 PASS`
+  with 7 evidence bullets + cargo smoke.
+- `python3 tools/architecture_check.py` — `SRS-ARCH-001 PASS`
+  with the new ERR-5 summary line.
+- `pytest -q` — 275 passed, 4 pre-existing skips (unrelated to
+  ERR-5), 0 failures. Includes the 33-test contract suite, the
+  5-test L7 domain wrapper, and the architecture and error-
+  handling needle bumps.
+- `./init.sh` — runs all ERR-1..5 contract checks and prints
+  `✓ Environment ready`.
+- Manual ERR-5.steps[] walk per the coding-prompt's Step 6:
+  Step 1 (configure) — `./init.sh` green.
+  Step 2 (trigger) — gate-level trigger covered by the L7
+    cargo integration test; concrete-validator trigger
+    deferred per contract.
+  Step 3 (verify) — INGESTION_RECORD_VALIDATION_FAILED wire
+    string in the structured error; IngestionValidationEvent
+    recorded by the EventSinkSpy; zero-mutation port-shape
+    anchor proves omission from primary storage; the three
+    `deferred` entries name the concrete-validator / storage /
+    notification dispatcher owners.
+  Step 4 (trace) — `ingestion_validation_contract.srs_refs ==
+    ["SRS-DATA-013"]`, `syrs_refs == ["SYS-77"]`, `strs_refs ==
+    ["SN-1.26", "SN-1.27"]`, visible in `python3 tools/
+    architecture_check.py` output as the new summary line.
+
+Critic verdicts:
+  COMMIT 1 (chore(critic) — ff10ef0):
+    deterministic: APPROVE — 0 findings
+    judgment (fresh-context subagent fallback per AGENTS.md;
+        `/codex:adversarial-review` unavailable in this session
+        as a Skill, so the fallback path was used): BLOCK by
+        rule `meta:critic-self-modification` (refusal clause #4
+        in `prompts/critic_prompt.md` applies unconditionally to
+        any edit of `tools/critic_check.py`, regardless of
+        operator sign-off or workflow precedent — the human
+        reviewer must consciously override).
+    Override: operator signed off via AskUserQuestion on
+        2026-05-13, authorizing the SESSION 16 / commit 8143ac5
+        workflow (regex extension split into a standalone commit;
+        the meta-block is a permanent feature of the gate,
+        recorded in commit metadata for audit trail). No
+        `ATP_CRITIC_BYPASS=1`, no `--no-verify`. The override is
+        documented in the commit body of ff10ef0.
+  COMMIT 2 (feat(ERR-5) — 40fef50):
+    deterministic: APPROVE — 0 findings (the
+        `safety:paired-test-required` rule fires on
+        `tools/ingestion_validation_check.py` thanks to the prep
+        commit's regex extension, and is satisfied by
+        `tests/domain/test_ingestion_validation_quarantine.py`
+        being in the same diff. Secret scan, test-deletion scan,
+        adapter-isolation vendor-token scan, float-on-price
+        scan, SRS-ref hygiene scan — all quiet.)
+    judgment (fresh-context subagent fallback per AGENTS.md;
+        primary `/codex:adversarial-review` path was unavailable
+        due to a session rate limit, so the AGENTS.md fallback
+        path was used): APPROVE — 0 findings. The reviewer
+        spot-checked the load-bearing files (the new contract
+        block, the atp-types additions, the gate body, the
+        integration test, the static checker) against the seven
+        judgment criteria in `prompts/critic_prompt.md`. No
+        refusal clause fired — the diff does not touch
+        `tools/critic_check.py` (the prep commit ff10ef0 is the
+        parent tree, not in this diff).
+
+Known issues / notes for next agent:
+- **Concrete RecordValidator implementation deferred.** The gate
+  is wired-but-empty until a concrete RecordValidator lands.
+  Same wired-but-empty shape ERR-3 and ERR-4 shipped under.
+  Owner: SRS-DATA-001..006 + SRS-DATA-013 (the six SyRS SYS-77
+  rules need actual implementations against equity OHLCV bars
+  and option-chain records). When that lands, it plugs into the
+  existing ingest_record gate without changing the gate's
+  signature.
+- **Quarantine storage backend deferred.** SyRS SYS-77 requires
+  rejected records to be persisted "in a separate store"; the
+  gate emits a record_hash but the full payload goes to
+  storage. Owner: SRS-DATA-014 / SRS-DATA-015. When that lands,
+  it consumes the IngestionValidationEvent stream from a
+  concrete IngestionValidationEventSink implementation.
+- **Notification dispatcher fan-out deferred.** SyRS SYS-77
+  alert clause requires "count and nature of quarantined
+  records" — the count is an aggregation property the sink
+  layer computes. Owner: SRS-NOTIF-001 / SYS-77 alert clause.
+  The gate emits one event per quarantined record (correct
+  semantics for fan-in).
+- **Shared-parser hoist still deferred.** SESSION 16 flagged
+  the hoist into `tools/_rust_parser.py` when the 5th ERR-*
+  feature reused the parsers. ERR-5 is that 5th feature (after
+  error_handling, connectivity, freshness, subscription_limit).
+  A `TODO(session-17+)` comment in `tools/
+  ingestion_validation_check.py` next to the three imports
+  flags it for the next session. The hoist itself is a single
+  refactor commit (move 5 helpers + update 4 import statements
+  + add a one-line entry to the shared parser doc).
+- **`_quarantined_arm` local helper.** ERR-5's match has a
+  payload-binding pattern (`Quarantined(reason) =>`) that the
+  shared `_match_arm` regex can't match literally. Added a
+  local helper `_quarantined_arm(body, variant_token)` that
+  finds the variant followed by `(...)` and extracts the arm
+  body via the same brace/paren-balanced scan. If a sixth
+  ERR-* feature uses a payload-bound variant, consider
+  promoting the helper to the shared parser module alongside
+  the SESSION 16 hoist.
+- **Vendor literal hygiene.** The dependency-boundary checker
+  (`tools/dependency_boundary_check.py`) and the deterministic
+  critic's `adapter-isolation:vendor-import` rule both grep-
+  scan `crates/atp-data/**` (the dep-boundary check scans
+  `src/` only; the deterministic critic scans the whole crate
+  tree including `tests/`). The initial drafts of the new
+  types + gate + integration test used vendor-name source
+  strings (`"databento-equity-bars"`, `"sharadar-fundamentals"`),
+  which tripped both checks. Resolved by switching to
+  neutral source names (`"bulk-equity-bars"`,
+  `"fundamental-records"`) consistent with SyRS terminology
+  (SYS-22a "bulk equity data provider", SYS-26 "fundamental
+  data"). For future ERR-* features that touch ingestion or
+  any path under `crates/atp-data/**`, lead with neutral
+  source names from the first draft. The `forbidden_fields`
+  allowlist on `IngestionRecordSubmission` and
+  `IngestionValidationEvent` still names the vendor-specific
+  literals to reject as field names (databento_dataset,
+  sharadar_table, raw_parquet_path, vendor_credentials) —
+  those are JSON / Python / SRS-doc strings, not in
+  scanned src/ files, so they're fine where they sit.
+- **`/codex:adversarial-review` skill unavailable in this
+  session.** The skill isn't surfaced in the user-invocable
+  list (only codex:setup and codex:rescue are exposed), so
+  the judgment-pass critic ran via the AGENTS.md fallback
+  path: a fresh-context general-purpose subagent given
+  `prompts/critic_prompt.md` + the staged diff. Worked
+  identically to the primary path; same JSON schema, same
+  approve/warn/block rules. If a future session has the
+  Codex skill available, prefer the primary path — the
+  judgment-pass benefits from Codex's git tooling for large
+  diffs (this session's feat commit was 2155 LOC inserted).
+
 === SESSION 16 ===
 Date: 2026-05-12
 Feature completed: ERR-4 — Market-data line limit exceeded: reject the
