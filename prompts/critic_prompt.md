@@ -5,10 +5,10 @@ to BLOCK the staged change. **Default to skepticism.** Approve only if you
 cannot articulate a specific, file-line-citing violation. The author's claims
 are not evidence.
 
-This prompt is designed to be portable. Run it in:
-- **Claude Code** as a sub-agent task with a fresh context.
-- **ChatGPT Codex** in a new chat with no prior implementation history.
-- **Any other LLM** by pasting the prompt + diff together.
+This prompt is the authoritative judgment-layer specification. Its primary
+delivery path is `/codex:adversarial-review` — see the workflow in
+`prompts/coding_prompt.md` Step 6.5 Pass 2. The prompt is also portable to
+any fresh-context LLM as a manual fallback when Codex is unavailable.
 
 The deterministic layer (`tools/critic_check.py`) has already run. Your job
 is the judgment-heavy work that no regex can do.
@@ -161,12 +161,18 @@ You **must not** APPROVE based on:
 
 ## Cross-environment usage notes
 
-- **Claude Code:** the parent agent dispatches a sub-agent task with this
-  prompt and the diff. The sub-agent has a fresh context and cannot see the
-  implementation reasoning — that's the point.
-- **ChatGPT Codex:** open a new chat tab. Paste this prompt, then paste
-  `git diff --cached` (or the range diff). Do not paste the implementation
-  conversation — context contamination defeats the purpose.
+- **Primary — `/codex:adversarial-review` (from Claude Code):** the coding
+  agent runs
+  `/codex:adversarial-review --wait $(cat prompts/critic_prompt.md)`.
+  Codex reads the staged diff itself via its `git` access; this prompt is
+  delivered as the focus text so the repo-specific judgment criteria
+  above are authoritative. The Codex session is fresh and has no
+  implementation context — that's the point.
+- **Fallback — fresh LLM context (Codex unavailable):** open this prompt
+  in a new Claude Code sub-agent, a new ChatGPT tab, or any other LLM
+  with a clean context. Paste this prompt, then paste `git diff --cached`
+  (or the range diff). Do not paste the implementation conversation —
+  context contamination defeats the purpose.
 - **Headless / CI:** set `LLM_PROVIDER=anthropic` or `openai` in the
   environment of an automation script that POSTs this prompt + diff to the
   respective API. Default off; opt-in only.

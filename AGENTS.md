@@ -20,10 +20,14 @@ Two-layer Critic Agent runs before every commit. **Both must approve.**
   into core, dependency-direction violations, and safety-critical changes
   without paired `tests/domain/` diffs. Wired as a git pre-commit hook by
   `tools/install_hooks.sh` (re-installed by `init.sh`).
-- **Layer 2 — judgment** (`prompts/critic_prompt.md`): LLM-driven
-  adversarial review. Run in a **fresh context** — sub-agent on Claude
-  Code, new chat on Codex, paste-into-anywhere for any other LLM. Same
-  JSON output schema as Layer 1.
+- **Layer 2 — judgment** (`prompts/critic_prompt.md` via
+  `/codex:adversarial-review`): LLM-driven adversarial review run in a
+  **fresh Codex context**. The default invocation is
+  `/codex:adversarial-review --wait $(cat prompts/critic_prompt.md)` —
+  the prompt file holds the repo-specific judgment criteria and Codex
+  reads the diff itself. Fallback (Codex unavailable): paste
+  `prompts/critic_prompt.md` + `git diff --cached` into any other
+  fresh-context LLM. Same JSON output schema as Layer 1.
 
 Coding agents must NEVER bypass with `ATP_CRITIC_BYPASS=1` or
 `--no-verify`. Only humans bypass; the env-var bypass is grep-able in

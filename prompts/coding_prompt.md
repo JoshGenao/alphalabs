@@ -176,17 +176,35 @@ If the verdict is `block`, fix the violation and re-run. Do **not** set
 `ATP_CRITIC_BYPASS=1` — that flag is for humans only and shows up in shell
 history. Do **not** use `--no-verify`.
 
-### Pass 2 — judgment (fresh context)
+### Pass 2 — judgment (fresh context via `/codex:adversarial-review`)
 
-Open `prompts/critic_prompt.md` in a fresh LLM context — **do not** review
-in the same window where you implemented the change (the celesteanders
+Run the judgment layer in a **fresh Codex context** — **do not** review in
+the same window where you implemented the change (the celesteanders
 best-practices doc warns: *"agents consistently rate their own work too
 generously"*).
 
-- **Claude Code:** dispatch a sub-agent task. Give it the prompt + the
-  output of `git diff --cached`.
-- **ChatGPT Codex:** open a new chat tab. Paste the prompt, then paste the
-  diff. Do not paste the implementation conversation.
+Invoke from inside Claude Code:
+
+```
+/codex:adversarial-review --wait $(cat prompts/critic_prompt.md)
+```
+
+- `prompts/critic_prompt.md` is the authoritative judgment-layer
+  instructions; pass its contents to Codex as the focus text so the
+  repo-specific criteria (architectural intent, IB race conditions,
+  kill-switch ordering, money math, single-live-strategy invariant, etc.)
+  apply.
+- `--wait` runs in the foreground so the JSON verdict comes back in this
+  session. Use `--background` for large diffs and follow up with
+  `/codex:status` / `/codex:result`.
+- Codex sees the staged diff via its own `git` access — you do not need to
+  paste it.
+
+**Fallback if Codex is unavailable** (`/codex:setup` reports not ready,
+auth failing, etc.): open `prompts/critic_prompt.md` in any fresh LLM
+context (new Claude Code sub-agent, new ChatGPT tab, etc.) and paste the
+prompt + `git diff --cached`. Same JSON schema; same approve/warn/block
+rules.
 
 The judgment pass returns the same JSON schema as Pass 1. Save both
 verdicts.
@@ -199,7 +217,7 @@ this session's entry. Example:
 ```
 Critic verdicts:
   deterministic: APPROVE — 0 findings
-  judgment (claude-code sub-agent): APPROVE — 0 findings
+  judgment (/codex:adversarial-review): APPROVE — 0 findings
 ```
 
 Commit only when both verdicts are `approve`. A `warn` requires a written
