@@ -101,6 +101,7 @@ pub enum OrderErrorCategory {
     NonLiveStrategySubmission,
     IngestionRecordValidationFailed,
     IngestionPacingBudgetExceeded,
+    StrategyStartupDeadlineExceeded,
 }
 
 impl OrderErrorCategory {
@@ -115,6 +116,7 @@ impl OrderErrorCategory {
             Self::NonLiveStrategySubmission => "NON_LIVE_STRATEGY_SUBMISSION",
             Self::IngestionRecordValidationFailed => "INGESTION_RECORD_VALIDATION_FAILED",
             Self::IngestionPacingBudgetExceeded => "INGESTION_PACING_BUDGET_EXCEEDED",
+            Self::StrategyStartupDeadlineExceeded => "STRATEGY_STARTUP_DEADLINE_EXCEEDED",
         }
     }
 }
@@ -644,6 +646,212 @@ impl fmt::Display for StructuredPacingError {
 }
 
 impl std::error::Error for StructuredPacingError {}
+
+// --------------------------------------------------------------------------- //
+// Strategy container lifecycle types
+// (SRS-ORCH-001, SyRS SYS-10 / SYS-13 / AC-12 / NFR-P9 / NFR-R5 / NFR-S5)
+// --------------------------------------------------------------------------- //
+//
+// SYS-10 requires the Strategy Orchestrator to manage the lifecycle of each
+// strategy instance through the five canonical actions (create, start,
+// stop, restart, destroy) and to keep each instance in its own Docker
+// container. AC-12 narrows this to "the Strategy Orchestrator shall be
+// the sole component that manages container lifecycle. No strategy shall
+// directly manage its own container or other containers." NFR-P9 caps the
+// time from orchestrator start command to strategy ready (warm-up
+// excluded) at 30 seconds. SYS-13 requires unresponsive containers to be
+// auto-restarted, logged, and surfaced on the dashboard.
+//
+// These types live in `atp-types` so the orchestrator crate can declare
+// the gate without reaching into another crate, AND so future surfaces
+// (REST `GET /api/v1/strategies/{id}`, the WebSocket STRATEGY_STATE
+// channel) can deserialize the event envelope without depending on
+// `atp-orchestrator`.
+//
+// `ContainerLifecycleAction` enumerates the SYS-10 lifecycle vocabulary.
+// Health-check is exposed as a separate trait method on the runtime port
+// (not a lifecycle action) because it is a read-only probe; conflating
+// the two would lure callers into invoking a mutator when they only
+// wanted to observe.
+//
+// `ContainerHealthState` types SYS-13's two-state observation: `Healthy`
+// or `Unresponsive`. The orchestrator's `observe_health` gate matches on
+// this enum and triggers `runtime.restart` ONLY on the `Unresponsive`
+// branch (the auto-restart guarantee).
+//
+// `LaunchReadiness` types NFR-P9's two-state launch outcome:
+// `ReadyWithinDeadline { elapsed_millis }` or
+// `DeadlineExceeded { elapsed_millis, deadline_millis }`. Carrying
+// `elapsed_millis` on both variants lets the dashboard render percentile
+// histograms without re-probing the runtime; carrying `deadline_millis`
+// on the exceeded variant closes a TOCTOU window if the configured
+// deadline is re-read between rejection and dashboard render.
+//
+// `StrategyLaunchRequest` is the source-neutral launch envelope. Carries
+// the strategy id, the requested `StrategyMode`, the deployment hash
+// (SRS-ORCH-004 / SyRS SYS-79 — recorded here even though SRS-ORCH-004's
+// dashboard exposure is deferred), and the requested `deadline_millis`.
+// Deliberately omits broker / IB session / docker_image / container_id /
+// vendor / host_path fields — the `forbidden_fields` allowlist in the
+// contract block locks the structure against container-runtime bleed
+// (the orchestrator must remain free of Docker-Engine-specific shape).
+//
+// `StrategyLaunchOutcome` is the per-launch evidence the contract gate
+// returns on `ReadyWithinDeadline`. Carries the strategy id, the
+// deadline-pass flag, and the same elapsed/deadline numerics so a
+// caller never needs to re-derive them.
+//
+// `ContainerHealthEvent` is the structured payload the SYS-13 dashboard
+// fan-out consumes. It carries the observed state, the strategy id, the
+// `ContainerLifecycleAction` the orchestrator invoked (e.g. `Restart` on
+// `Unresponsive`), and the observation timestamp. Carrying
+// `action_taken` on the event lets the dashboard render "restarted at
+// T" without a second probe — the same TOCTOU-closure rationale used by
+// `SubscriptionLimitEvent` / `PacingBudgetEvent`.
+//
+// `StructuredOrchestratorError` is the rejection envelope. It reuses the
+// `OrderErrorCategory::StrategyStartupDeadlineExceeded` variant as the
+// single source of truth for the SyRS SYS-64 wire string. The envelope
+// is distinct from the other Structured*Error envelopes because a
+// strategy launch is neither an order, a subscription, an ingested
+// record, nor a scheduled job — synthesising one would lie to
+// downstream consumers.
+
+/// NFR-P9 startup-time ceiling: 30,000 ms (warm-up excluded). Exposed as
+/// a `const u64` so callers and the contract check share one source of
+/// truth and so future tuning has exactly one site to change.
+pub const STRATEGY_STARTUP_DEADLINE_MS: u64 = 30_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContainerLifecycleAction {
+    Create,
+    Start,
+    Stop,
+    Restart,
+    Destroy,
+}
+
+impl ContainerLifecycleAction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Create => "CREATE",
+            Self::Start => "START",
+            Self::Stop => "STOP",
+            Self::Restart => "RESTART",
+            Self::Destroy => "DESTROY",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContainerHealthState {
+    Healthy,
+    Unresponsive,
+}
+
+impl ContainerHealthState {
+    pub const fn is_unresponsive(self) -> bool {
+        matches!(self, Self::Unresponsive)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LaunchReadiness {
+    ReadyWithinDeadline { elapsed_millis: u64 },
+    DeadlineExceeded { elapsed_millis: u64, deadline_millis: u64 },
+}
+
+impl LaunchReadiness {
+    pub const fn is_ready(self) -> bool {
+        matches!(self, Self::ReadyWithinDeadline { .. })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrategyLaunchRequest {
+    pub strategy_id: StrategyId,
+    pub mode: StrategyMode,
+    pub deployment_hash: String,
+    pub deadline_millis: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrategyLaunchOutcome {
+    pub strategy_id: StrategyId,
+    pub ready_within_deadline: bool,
+    pub elapsed_millis: u64,
+    pub deadline_millis: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerHealthEvent {
+    pub state: ContainerHealthState,
+    pub strategy_id: StrategyId,
+    pub action_taken: ContainerLifecycleAction,
+    pub observed_at_seconds: u64,
+}
+
+/// SRS-ORCH-001 / NFR-P9 structured rejection envelope. Carries the
+/// SyRS SYS-64 error category, the discriminator string, a
+/// human-readable message, and the unchanged original launch request.
+/// The category is constrained at construction to
+/// `OrderErrorCategory::StrategyStartupDeadlineExceeded`; the factory
+/// enforces that invariant in debug builds so a future caller cannot
+/// smuggle a different category through this envelope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuredOrchestratorError {
+    pub category: OrderErrorCategory,
+    pub error_type: String,
+    pub message: String,
+    pub original_request: StrategyLaunchRequest,
+}
+
+impl StructuredOrchestratorError {
+    /// Build a `STRATEGY_STARTUP_DEADLINE_EXCEEDED` rejection.
+    /// `elapsed_millis` is the time the runtime reported between the
+    /// orchestrator's start command and the readiness probe failing;
+    /// `deadline_millis` is the deadline that was breached (defaults to
+    /// `STRATEGY_STARTUP_DEADLINE_MS` but is carried explicitly so a
+    /// re-tuned deadline cannot drift away from the event payload).
+    pub fn startup_deadline_exceeded(
+        request: StrategyLaunchRequest,
+        elapsed_millis: u64,
+        deadline_millis: u64,
+    ) -> Self {
+        let category = OrderErrorCategory::StrategyStartupDeadlineExceeded;
+        debug_assert!(
+            matches!(category, OrderErrorCategory::StrategyStartupDeadlineExceeded),
+            "StructuredOrchestratorError must carry StrategyStartupDeadlineExceeded"
+        );
+        let message = format!(
+            "SRS-ORCH-001 + NFR-P9: strategy {strategy} launch exceeded \
+             startup deadline — {elapsed} ms elapsed, {deadline} ms permitted",
+            strategy = request.strategy_id.as_str(),
+            elapsed = elapsed_millis,
+            deadline = deadline_millis,
+        );
+        Self {
+            category,
+            error_type: "StrategyStartupDeadlineExceeded".to_string(),
+            message,
+            original_request: request,
+        }
+    }
+}
+
+impl fmt::Display for StructuredOrchestratorError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "[{}] {}: {}",
+            self.category.as_str(),
+            self.error_type,
+            self.message
+        )
+    }
+}
+
+impl std::error::Error for StructuredOrchestratorError {}
 
 #[cfg(test)]
 mod tests {
@@ -1182,5 +1390,192 @@ mod tests {
             original_order: _,
         } = error.clone();
         assert_eq!(format!("{error}"), "[NON_LIVE_STRATEGY_SUBMISSION] NonLiveLiveRouteBlocked: rejected");
+    }
+
+    // ----------------------------------------------------------------------- //
+    // SRS-ORCH-001 strategy container lifecycle types
+    // ----------------------------------------------------------------------- //
+
+    #[test]
+    fn container_lifecycle_action_covers_the_five_sys_10_actions() {
+        // SyRS SYS-10 enumerates create / start / stop / restart / destroy
+        // as the lifecycle vocabulary the orchestrator must own. Exhaustive
+        // match on the enum below would fail to compile if a variant were
+        // dropped — that's the type-system anchor for the SYS-10 coverage.
+        for action in [
+            ContainerLifecycleAction::Create,
+            ContainerLifecycleAction::Start,
+            ContainerLifecycleAction::Stop,
+            ContainerLifecycleAction::Restart,
+            ContainerLifecycleAction::Destroy,
+        ] {
+            let wire = action.as_str();
+            assert!(!wire.is_empty());
+            assert!(wire.chars().all(|c| c.is_ascii_uppercase()));
+        }
+        assert_eq!(ContainerLifecycleAction::Create.as_str(), "CREATE");
+        assert_eq!(ContainerLifecycleAction::Start.as_str(), "START");
+        assert_eq!(ContainerLifecycleAction::Stop.as_str(), "STOP");
+        assert_eq!(ContainerLifecycleAction::Restart.as_str(), "RESTART");
+        assert_eq!(ContainerLifecycleAction::Destroy.as_str(), "DESTROY");
+    }
+
+    #[test]
+    fn container_health_state_distinguishes_healthy_from_unresponsive() {
+        // SyRS SYS-13's two-state observation: only the Unresponsive
+        // branch may trigger the auto-restart action.
+        assert!(ContainerHealthState::Unresponsive.is_unresponsive());
+        assert!(!ContainerHealthState::Healthy.is_unresponsive());
+    }
+
+    #[test]
+    fn launch_readiness_carries_elapsed_and_deadline_on_breach() {
+        // NFR-P9: the DeadlineExceeded variant must carry BOTH the
+        // observed elapsed time AND the configured deadline so the
+        // dashboard never re-reads a re-tuned deadline from the
+        // orchestrator config and so a "32,500 / 30,000 ms" render is
+        // possible from a single payload.
+        let ready = LaunchReadiness::ReadyWithinDeadline {
+            elapsed_millis: 4_200,
+        };
+        assert!(ready.is_ready());
+        let exceeded = LaunchReadiness::DeadlineExceeded {
+            elapsed_millis: 32_500,
+            deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
+        };
+        assert!(!exceeded.is_ready());
+        match exceeded {
+            LaunchReadiness::DeadlineExceeded {
+                elapsed_millis,
+                deadline_millis,
+            } => {
+                assert_eq!(elapsed_millis, 32_500);
+                assert_eq!(deadline_millis, 30_000);
+            }
+            LaunchReadiness::ReadyWithinDeadline { .. } => {
+                panic!("expected DeadlineExceeded variant")
+            }
+        }
+    }
+
+    #[test]
+    fn strategy_startup_deadline_constant_is_nfr_p9_thirty_seconds() {
+        // NFR-P9 names the single source of truth: 30,000 ms. A future
+        // change to this constant must touch exactly one site.
+        assert_eq!(STRATEGY_STARTUP_DEADLINE_MS, 30_000);
+    }
+
+    #[test]
+    fn strategy_launch_request_carries_only_the_four_required_fields() {
+        // The exhaustive destructure proves there are no other public
+        // fields. AC-12 + NFR-S5 require the launch envelope to be
+        // free of container-runtime bleed (docker_image, container_id,
+        // host_path, vendor) so the orchestrator stays free of
+        // Docker-Engine-specific shape.
+        let request = StrategyLaunchRequest {
+            strategy_id: StrategyId::new("alpha-1"),
+            mode: StrategyMode::Live,
+            deployment_hash: "sha256:abc".to_string(),
+            deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
+        };
+        let StrategyLaunchRequest {
+            strategy_id: _,
+            mode: _,
+            deployment_hash: _,
+            deadline_millis: _,
+        } = request.clone();
+        assert_eq!(request.strategy_id.as_str(), "alpha-1");
+        assert_eq!(request.mode, StrategyMode::Live);
+        assert_eq!(request.deployment_hash, "sha256:abc");
+        assert_eq!(request.deadline_millis, 30_000);
+    }
+
+    #[test]
+    fn strategy_launch_outcome_carries_only_the_four_required_fields() {
+        let outcome = StrategyLaunchOutcome {
+            strategy_id: StrategyId::new("alpha-1"),
+            ready_within_deadline: true,
+            elapsed_millis: 4_200,
+            deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
+        };
+        let StrategyLaunchOutcome {
+            strategy_id: _,
+            ready_within_deadline: _,
+            elapsed_millis: _,
+            deadline_millis: _,
+        } = outcome.clone();
+        assert!(outcome.ready_within_deadline);
+        assert_eq!(outcome.elapsed_millis, 4_200);
+        assert!(outcome.elapsed_millis <= outcome.deadline_millis);
+    }
+
+    #[test]
+    fn container_health_event_carries_only_the_four_required_fields() {
+        // SyRS SYS-13: the dashboard fan-out needs state, strategy id,
+        // the action the orchestrator invoked, and the timestamp. The
+        // exhaustive destructure proves the struct holds no
+        // docker_image / container_id / vendor bleed.
+        let event = ContainerHealthEvent {
+            state: ContainerHealthState::Unresponsive,
+            strategy_id: StrategyId::new("alpha-1"),
+            action_taken: ContainerLifecycleAction::Restart,
+            observed_at_seconds: 1_715_000_000,
+        };
+        let ContainerHealthEvent {
+            state: _,
+            strategy_id: _,
+            action_taken: _,
+            observed_at_seconds: _,
+        } = event.clone();
+        assert_eq!(event.state, ContainerHealthState::Unresponsive);
+        assert_eq!(event.action_taken, ContainerLifecycleAction::Restart);
+        assert_eq!(event.observed_at_seconds, 1_715_000_000);
+    }
+
+    #[test]
+    fn structured_orchestrator_error_factory_pins_the_wire_string() {
+        // SRS-ORCH-001 + NFR-P9 + SyRS SYS-64: the rejection wire
+        // string must be STRATEGY_STARTUP_DEADLINE_EXCEEDED. The
+        // factory reuses the OrderErrorCategory variant as the single
+        // source of truth so a future caller cannot drift the wire
+        // form. The message must include the SRS/NFR trace strings,
+        // the strategy id, and the elapsed/deadline numerics for
+        // downstream parsing.
+        let request = StrategyLaunchRequest {
+            strategy_id: StrategyId::new("alpha-1"),
+            mode: StrategyMode::Live,
+            deployment_hash: "sha256:abc".to_string(),
+            deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
+        };
+        let error = StructuredOrchestratorError::startup_deadline_exceeded(
+            request.clone(),
+            32_500,
+            STRATEGY_STARTUP_DEADLINE_MS,
+        );
+        let StructuredOrchestratorError {
+            category: _,
+            error_type: _,
+            message: _,
+            original_request: _,
+        } = error.clone();
+        assert_eq!(
+            error.category,
+            OrderErrorCategory::StrategyStartupDeadlineExceeded
+        );
+        assert_eq!(error.category.as_str(), "STRATEGY_STARTUP_DEADLINE_EXCEEDED");
+        assert_eq!(error.error_type, "StrategyStartupDeadlineExceeded");
+        assert!(error.message.contains("SRS-ORCH-001"));
+        assert!(error.message.contains("NFR-P9"));
+        assert!(error.message.contains("alpha-1"));
+        assert!(error.message.contains("32500"));
+        assert!(error.message.contains("30000"));
+        assert_eq!(error.original_request, request);
+        assert_eq!(
+            format!("{error}"),
+            format!(
+                "[STRATEGY_STARTUP_DEADLINE_EXCEEDED] StrategyStartupDeadlineExceeded: {}",
+                error.message
+            )
+        );
     }
 }

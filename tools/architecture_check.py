@@ -18,6 +18,10 @@ from ingestion_validation_check import (
     IngestionValidationCheckError,
     assert_ingestion_validation_static,
 )
+from orchestrator_lifecycle_check import (
+    OrchestratorLifecycleCheckError,
+    assert_orchestrator_lifecycle_static,
+)
 from pacing_budget_check import (
     PacingBudgetCheckError,
     assert_pacing_budget_static,
@@ -421,6 +425,25 @@ def assert_pacing_budget(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_orchestrator_lifecycle(config: dict) -> list[str]:
+    block = config.get("orchestrator_lifecycle_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_orchestrator_lifecycle_static(config, ROOT)
+    summary = (
+        f"{block['orchestrator_crate']['crate']} gates strategy container "
+        f"lifecycle on {block['lifecycle_action']['enum']} "
+        f"({len(block['lifecycle_action']['variants'])} actions) + "
+        f"{block['container_health_state']['enum']} "
+        f"({len(block['container_health_state']['variants'])} states), "
+        f"publishing {block['container_health_event']['struct']} when "
+        "a launch breaches NFR-P9 or a container becomes unresponsive "
+        "(SRS-ORCH-001, SyRS SYS-10 / SYS-13 / AC-12 / NFR-P9)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -495,6 +518,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_pacing_budget(config))
     except PacingBudgetCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_orchestrator_lifecycle(config))
+    except OrchestratorLifecycleCheckError as error:
         fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:

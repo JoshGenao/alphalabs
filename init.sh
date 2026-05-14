@@ -189,6 +189,13 @@ if ! python3 tools/pacing_budget_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running orchestrator lifecycle contract check..."
+if ! python3 tools/orchestrator_lifecycle_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Orchestrator lifecycle contract check failed; run python3 tools/orchestrator_lifecycle_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running deployment configuration check..."
 if ! python3 tools/deployment_check.py >/dev/null; then
   echo "✗ Environment failed"

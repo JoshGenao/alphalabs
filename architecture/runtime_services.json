@@ -1143,6 +1143,186 @@
       "Runtime 15-second identical-request throttle (SyRS SYS-31's second pacing clause) — orthogonal to the scheduling-time gate; belongs on the IB historical-data adapter request path, not on the scheduling-time validator (owner: SRS-DATA-002 + SRS-DATA-004 adapter implementation)"
     ]
   },
+  "orchestrator_lifecycle_contract": {
+    "requirement": "SRS-ORCH-001",
+    "srs_refs": [
+      "SRS-ORCH-001"
+    ],
+    "syrs_refs": [
+      "SYS-10",
+      "SYS-13",
+      "AC-12",
+      "NFR-P9",
+      "NFR-R5",
+      "NFR-S5"
+    ],
+    "strs_refs": [
+      "SN-1.10",
+      "SN-2.03",
+      "SN-2.05"
+    ],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "orchestrator_crate": {
+      "crate": "atp-orchestrator",
+      "path": "crates/atp-orchestrator"
+    },
+    "lifecycle_action": {
+      "enum": "ContainerLifecycleAction",
+      "variants": [
+        "Create",
+        "Start",
+        "Stop",
+        "Restart",
+        "Destroy"
+      ]
+    },
+    "container_health_state": {
+      "enum": "ContainerHealthState",
+      "variants": [
+        "Healthy",
+        "Unresponsive"
+      ]
+    },
+    "launch_readiness": {
+      "enum": "LaunchReadiness",
+      "variants": [
+        "ReadyWithinDeadline",
+        "DeadlineExceeded"
+      ]
+    },
+    "strategy_launch_request": {
+      "struct": "StrategyLaunchRequest",
+      "required_fields": [
+        "strategy_id",
+        "mode",
+        "deployment_hash",
+        "deadline_millis"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "docker_image",
+        "container_id",
+        "vendor",
+        "host_path"
+      ]
+    },
+    "strategy_launch_outcome": {
+      "struct": "StrategyLaunchOutcome",
+      "required_fields": [
+        "strategy_id",
+        "ready_within_deadline",
+        "elapsed_millis",
+        "deadline_millis"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "docker_image",
+        "container_id",
+        "vendor",
+        "host_path"
+      ]
+    },
+    "container_health_event": {
+      "struct": "ContainerHealthEvent",
+      "required_fields": [
+        "state",
+        "strategy_id",
+        "action_taken",
+        "observed_at_seconds"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "docker_image",
+        "container_id",
+        "vendor",
+        "host_path"
+      ]
+    },
+    "startup_deadline_constant": {
+      "name": "STRATEGY_STARTUP_DEADLINE_MS",
+      "value": 30000
+    },
+    "container_runtime_port": {
+      "trait": "StrategyContainerRuntime",
+      "methods": [
+        "create",
+        "start",
+        "stop",
+        "restart",
+        "destroy",
+        "health"
+      ]
+    },
+    "health_event_sink_port": {
+      "trait": "HealthCheckEventSink",
+      "methods": [
+        "record"
+      ]
+    },
+    "launch_entry_point": {
+      "method": "launch",
+      "type": "StrategyOrchestrator"
+    },
+    "launch_guard": {
+      "state_enum": "LaunchReadiness",
+      "ready_variant": "ReadyWithinDeadline",
+      "exceeded_variant": "DeadlineExceeded",
+      "runtime_call": "runtime.start",
+      "runtime_destroy_call": "runtime.destroy",
+      "sink_call": "sink.record",
+      "accepted_struct": "StrategyLaunchOutcome",
+      "deadline_constant": "STRATEGY_STARTUP_DEADLINE_MS",
+      "exceeded_action_taken": "ContainerLifecycleAction::Destroy",
+      "forbidden_mutations": [
+        "containers.insert",
+        "containers.push",
+        "containers.add",
+        "registry.insert",
+        "registry.add",
+        "registry.push",
+        "self.spawn_container",
+        "self.run_container",
+        "self.detach_container",
+        "self.suppress_event"
+      ]
+    },
+    "health_observe_entry_point": {
+      "method": "observe_health",
+      "type": "StrategyOrchestrator"
+    },
+    "health_observe_guard": {
+      "state_enum": "ContainerHealthState",
+      "healthy_variant": "Healthy",
+      "unresponsive_variant": "Unresponsive",
+      "runtime_health_call": "runtime.health",
+      "runtime_restart_call": "runtime.restart",
+      "sink_call": "sink.record",
+      "forbidden_mutations_on_healthy": [
+        "runtime.restart",
+        "runtime.destroy",
+        "runtime.stop",
+        "sink.record",
+        "self.notify_dashboard",
+        "self.escalate"
+      ]
+    },
+    "rejection_category": "StrategyStartupDeadlineExceeded",
+    "rejection_wire_string": "STRATEGY_STARTUP_DEADLINE_EXCEEDED",
+    "deferred": [
+      "Concrete StrategyContainerRuntime backed by the Docker Engine API for the Phase 1 Proxmox VM target (owner: SRS-ARCH-004 + SRS-ORCH-002)",
+      "Resource-profile enforcement (live ≤512 MB / 0.25 CPU; paper ≤300 MB / 0.10 CPU) at container creation time (owner: SRS-ORCH-002 / SyRS SYS-11 / SYS-57)",
+      "Workload-priority arbitration when the host memory safety margin would be breached (owner: SRS-ORCH-003 / SyRS SYS-57 / SYS-58)",
+      "Deployment-version recording + dashboard exposure for each strategy instance (owner: SRS-ORCH-004 / SyRS SYS-41 / SYS-79)",
+      "Concrete HealthCheckEventSink wired to the dashboard WebSocket alert pane + the SRS-LOG-001 audit trail + the SRS-NOTIF-001 dispatcher (owner: SRS-LOG-001 / SRS-NOTIF-001 / SyRS SYS-13 dashboard clause)",
+      "Container-runtime cooldown / back-off when an unresponsive container restart or an over-deadline destroy fails repeatedly (orthogonal to the gate; belongs on the concrete StrategyContainerRuntime implementation)"
+    ]
+  },
   "deployment": {
     "requirement": "SRS-ARCH-004",
     "target": "Phase 1 Proxmox Ubuntu VM",
