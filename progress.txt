@@ -61,22 +61,41 @@ Verification:
 - Critic deterministic gate: no test files deleted, no vendor
   imports, no dependency-direction changes — clean.
 
-Known issues / notes for next agent:
-- The four `pytest.mark.skip` decorators still in place
-  (test_deterministic_replay, test_kill_switch_latency,
-  test_money_reconciliation, test_single_live_invariant) are
-  the next four obvious wins. `test_single_live_invariant` is
-  the SESSION-20+1 target — SRS-ORCH-001's lifecycle gate is in
-  place, but the single-Live invariant itself is not enforced
-  yet in `crates/atp-orchestrator/src/lib.rs`. Lifting the skip
-  requires both writing the property test AND extending
-  `StrategyOrchestrator::launch` to refuse a second concurrent
-  Live launch (Live-only; Paper is unconstrained per AC-15).
-- `test_kill_switch_latency`, `test_money_reconciliation`, and
-  `test_deterministic_replay` are blocked on production
-  infrastructure (`DockerStrategyRuntime` via bollard,
-  fill aggregator, internal simulation engine respectively) —
-  none of those are one-PR fixes.
+Carryover-audit conclusion (post-SESSION 20 audit, captured here so
+the next session doesn't re-run the search):
+- The user asked "any missing errors that should have been resolved?"
+  After investigation, the honest answer is **no real carryover**.
+  Every item that looked like a stuck/broken state turned out to be
+  deferred future work properly tracked in feature_list.json.
+- The four `pytest.mark.skip` decorators still in place are NOT
+  one-session fixes — each is correctly blocked on a feature that
+  hasn't shipped yet:
+  * `test_deterministic_replay` → blocked on the internal simulation
+    engine (SRS-SIM-* family).
+  * `test_kill_switch_latency` → blocked on the
+    `crates/atp-execution` kill_switch implementation.
+  * `test_money_reconciliation` → blocked on the fill aggregator.
+  * `test_single_live_invariant` → skip reason CORRECTED in
+    commit dda6f85 to point at Hot-Swap (SRS-RESV-001..006). The
+    SESSION 19 note suggesting SRS-ORCH-001 unblocked it was wrong;
+    the test stub's `promote`/`stop`/`rollback` vocabulary is
+    Hot-Swap operator commands, not orchestrator launch lifecycle.
+    AC-15 enforcement at the order-routing layer is already in
+    place via SRS-EXE-001 / ERR-1, so the system is not exposed.
+- The concrete `StrategyContainerRuntime` Docker driver remains
+  deferred — and that's correct: it is exactly the work SRS-ORCH-002
+  (resource profiles enforcement, the next P1 by ID after
+  SRS-ORCH-001) requires. The Rust workspace is fully sync today
+  (zero tokio / async); a bollard-based driver implies either a
+  workspace-wide async refactor or a `block_on()` anti-pattern, and
+  there is no forcing function until SRS-ORCH-002 lands (`main.py`
+  is still a `pass` stub, no production caller launches containers).
+  Treat the driver work as SRS-ORCH-002 scope, not standalone debt.
+- Net effect of SESSION 20: tooling-debt cleanup only. No feature
+  count change. 101 features open (unchanged from SESSION 19;
+  this session resolved no SRS rows). Real next feature in priority
+  order is SRS-ORCH-002 (resource profile enforcement) — which is
+  also where the Docker driver naturally lands.
 
 === SESSION 19 ===
 Date: 2026-05-14
