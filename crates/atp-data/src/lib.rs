@@ -1,6 +1,7 @@
 use atp_types::{
-    IngestionRecordSubmission, IngestionValidationEvent, OrderErrorCategory,
-    RecordValidationOutcome, RuntimeService, StrategyId, StructuredIngestionError,
+    IngestionJobRequest, IngestionRecordSubmission, IngestionValidationEvent,
+    OrderErrorCategory, PacingBudgetEvent, PacingBudgetState, RecordValidationOutcome,
+    RuntimeService, StrategyId, StructuredIngestionError, StructuredPacingError,
 };
 
 #[derive(Debug, Default)]
@@ -129,6 +130,142 @@ impl DataLayer {
 #[doc(hidden)]
 pub const _INGESTION_VALIDATION_CATEGORY: OrderErrorCategory =
     OrderErrorCategory::IngestionRecordValidationFailed;
+
+// --------------------------------------------------------------------------- //
+// Pacing-budget ports (SRS-DATA-002 / SRS-DATA-004 / SyRS SYS-55)
+// --------------------------------------------------------------------------- //
+//
+// SyRS SYS-55 places the pacing-budget validator at scheduling time —
+// before either SYS-22b (minute-bar watchlist) or SYS-23 (option-chain
+// capture) starts. The validator reads the configured pacing limits
+// (SYS-31's 60-requests-per-10-minute ceiling) for the job's window and
+// compares them against the projected request count for the job's
+// scope. The ports are:
+//
+//   * `PacingBudgetValidator` — the read-only probe that returns
+//     `WithinBudget` if the projected count fits the permitted count or
+//     `BudgetExceeded` if it would push past the cap. Concrete impls
+//     (deferred to SRS-DATA-002 + SRS-DATA-004 + the orchestrator-side
+//     scheduler config) own the actual projection logic against
+//     watchlist sizes, expiry chains, and the IB account's pacing tier.
+//     The trait exposes only read methods — the zero-job-start
+//     invariant is anchored at the port shape so a concrete validator
+//     cannot accidentally dispatch the job through the probe call.
+//
+//   * `PacingBudgetEventSink` — the structured-event publication
+//     channel. Concrete sinks (deferred to SRS-NOTIF-001 +
+//     SRS-LOG-001 + dashboard alert pane) fan the events into the
+//     dashboard's scheduling view and into the notification dispatcher
+//     so the operator can reduce scope or widen the window per SYS-55's
+//     "until scope or window configuration is reduced" clause.
+//
+// Both traits live in `atp-data` (not `atp-types`) because the consumer
+// — `DataLayer::schedule_ingestion_job` — lives here. Placing them in
+// `atp-types` would force the type crate to know about ports,
+// inverting the dependency direction.
+pub trait PacingBudgetValidator {
+    /// Return the count the scheduler currently projects for the
+    /// `schedule.window_seconds` window. Read-only; concrete impls
+    /// compute the projection from watchlist size × expected request
+    /// granularity. Surfaced separately from `check_budget` so the
+    /// rejection event can carry the actual count without re-running
+    /// the classification.
+    fn projected_requests(&self, schedule: &IngestionJobRequest) -> u32;
+
+    /// Return the permitted request count for the
+    /// `schedule.window_seconds` window. Derived from IB's pacing tier
+    /// (SYS-31: 60 historical requests per 10 minutes). Read-only.
+    fn permitted_requests(&self, schedule: &IngestionJobRequest) -> u32;
+
+    /// Classify a scheduled job against the pacing budget. Returns
+    /// `WithinBudget` if the projected count fits or `BudgetExceeded`
+    /// if the cap would be breached. Read-only with respect to any
+    /// scheduler state — the validator never starts the job.
+    fn check_budget(&self, schedule: &IngestionJobRequest) -> PacingBudgetState;
+}
+
+pub trait PacingBudgetEventSink {
+    fn record(&self, event: PacingBudgetEvent);
+}
+
+/// Happy-path admission envelope. Echoes back the job_kind so the
+/// caller can correlate the acceptance with the originating schedule
+/// request. Only constructed inside the `WithinBudget` arm of
+/// `schedule_ingestion_job`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngestionJobScheduled {
+    pub job_kind: String,
+}
+
+impl DataLayer {
+    /// SRS-DATA-002 / SRS-DATA-004 / SyRS SYS-55 pacing-budget gate at
+    /// scheduling time. Matches on the validator's classification of
+    /// the scheduled job; `WithinBudget` returns
+    /// `IngestionJobScheduled`; `BudgetExceeded` reads the projected
+    /// and permitted counts off the validator, emits a structured
+    /// `PacingBudgetEvent` through the sink, AND returns a
+    /// `StructuredPacingError` whose category is
+    /// `OrderErrorCategory::IngestionPacingBudgetExceeded` (wire string
+    /// `INGESTION_PACING_BUDGET_EXCEEDED`).
+    ///
+    /// **Invariants** (statically checked by
+    /// `tools/pacing_budget_check.py`):
+    ///
+    /// * The `BudgetExceeded` arm MUST call `events.record(`.
+    /// * The `BudgetExceeded` arm MUST produce
+    ///   `OrderErrorCategory::IngestionPacingBudgetExceeded` (directly
+    ///   or via the `StructuredPacingError::budget_exceeded(` factory).
+    /// * The `BudgetExceeded` arm MUST NOT start the affected job
+    ///   (no `jobs.insert(`, `scheduler.start(`, `scheduler.run(`,
+    ///   `scheduler.enqueue(`, `scheduler.schedule(`, `job.start(`,
+    ///   `job.run(`, `self.start_job(`, etc.). The refused job must
+    ///   leave the scheduler exactly as it found it.
+    /// * `WithinBudget` is the only call site of
+    ///   `IngestionJobScheduled {`.
+    ///
+    /// The gate takes no `StrategyMode` parameter — SyRS SYS-55
+    /// applies the same pacing-budget validation independent of which
+    /// strategy is live; the scheduled ingestion jobs precede mode
+    /// selection.
+    pub fn schedule_ingestion_job<V, S>(
+        &self,
+        schedule: IngestionJobRequest,
+        validator: &V,
+        events: &S,
+        observed_at_seconds: u64,
+    ) -> Result<IngestionJobScheduled, StructuredPacingError>
+    where
+        V: PacingBudgetValidator,
+        S: PacingBudgetEventSink,
+    {
+        match validator.check_budget(&schedule) {
+            PacingBudgetState::WithinBudget => Ok(IngestionJobScheduled {
+                job_kind: schedule.job_kind,
+            }),
+            PacingBudgetState::BudgetExceeded => {
+                let projected = validator.projected_requests(&schedule);
+                let permitted = validator.permitted_requests(&schedule);
+                events.record(PacingBudgetEvent {
+                    state: PacingBudgetState::BudgetExceeded,
+                    job_kind: schedule.job_kind.clone(),
+                    projected_requests: projected,
+                    permitted_requests: permitted,
+                    observed_at_seconds,
+                });
+                Err(StructuredPacingError::budget_exceeded(
+                    schedule, projected, permitted,
+                ))
+            }
+        }
+    }
+}
+
+// Re-export to satisfy the static checker — references the
+// `OrderErrorCategory` variant by name so a workspace-level dead-code
+// scan cannot drop the link between the wire string and this crate.
+#[doc(hidden)]
+pub const _PACING_BUDGET_CATEGORY: OrderErrorCategory =
+    OrderErrorCategory::IngestionPacingBudgetExceeded;
 
 #[cfg(test)]
 mod tests {
@@ -263,5 +400,159 @@ mod tests {
             1,
             "the gate must probe validate exactly once per record"
         );
+    }
+
+    // ----------------------------------------------------------------------- //
+    // ERR-6 in-crate unit tests (SRS-DATA-002 / SRS-DATA-004 / SyRS SYS-55)
+    // ----------------------------------------------------------------------- //
+
+    struct PacingBudgetStub {
+        state: PacingBudgetState,
+        projected: u32,
+        permitted: u32,
+    }
+
+    impl PacingBudgetValidator for PacingBudgetStub {
+        fn projected_requests(&self, _schedule: &IngestionJobRequest) -> u32 {
+            self.projected
+        }
+        fn permitted_requests(&self, _schedule: &IngestionJobRequest) -> u32 {
+            self.permitted
+        }
+        fn check_budget(&self, _schedule: &IngestionJobRequest) -> PacingBudgetState {
+            self.state
+        }
+    }
+
+    #[derive(Default)]
+    struct PacingBudgetSink {
+        events: RefCell<Vec<PacingBudgetEvent>>,
+    }
+
+    impl PacingBudgetEventSink for PacingBudgetSink {
+        fn record(&self, event: PacingBudgetEvent) {
+            self.events.borrow_mut().push(event);
+        }
+    }
+
+    struct PacingBudgetForbiddenSink;
+
+    impl PacingBudgetEventSink for PacingBudgetForbiddenSink {
+        fn record(&self, _event: PacingBudgetEvent) {
+            panic!("WithinBudget outcome must not record a PacingBudgetEvent");
+        }
+    }
+
+    fn schedule(job_kind: &str, window_seconds: u64) -> IngestionJobRequest {
+        IngestionJobRequest {
+            job_kind: job_kind.to_string(),
+            window_seconds,
+        }
+    }
+
+    #[test]
+    fn within_budget_state_returns_scheduled_and_emits_no_event() {
+        let layer = DataLayer;
+        let validator = PacingBudgetStub {
+            state: PacingBudgetState::WithinBudget,
+            projected: 50,
+            permitted: 60,
+        };
+        let sink = PacingBudgetForbiddenSink;
+
+        let scheduled = layer
+            .schedule_ingestion_job(
+                schedule("minute-bar-watchlist", 61_200),
+                &validator,
+                &sink,
+                1_715_000_000,
+            )
+            .expect("WithinBudget must schedule the job");
+        assert_eq!(scheduled.job_kind, "minute-bar-watchlist");
+    }
+
+    #[test]
+    fn budget_exceeded_state_rejects_with_ingestion_pacing_budget_exceeded() {
+        let layer = DataLayer;
+        let validator = PacingBudgetStub {
+            state: PacingBudgetState::BudgetExceeded,
+            projected: 6_200,
+            permitted: 6_120,
+        };
+        let sink = PacingBudgetSink::default();
+
+        let error = layer
+            .schedule_ingestion_job(
+                schedule("minute-bar-watchlist", 61_200),
+                &validator,
+                &sink,
+                1_715_000_000,
+            )
+            .expect_err("BudgetExceeded must refuse the scheduled job");
+        assert_eq!(
+            error.category,
+            OrderErrorCategory::IngestionPacingBudgetExceeded
+        );
+        assert_eq!(error.category.as_str(), "INGESTION_PACING_BUDGET_EXCEEDED");
+        assert_eq!(error.original_request.job_kind, "minute-bar-watchlist");
+        let events = sink.events.borrow();
+        assert_eq!(events.len(), 1, "exactly one event per refused job");
+        assert_eq!(events[0].state, PacingBudgetState::BudgetExceeded);
+        assert_eq!(events[0].job_kind, "minute-bar-watchlist");
+        assert_eq!(events[0].projected_requests, 6_200);
+        assert_eq!(events[0].permitted_requests, 6_120);
+        assert_eq!(events[0].observed_at_seconds, 1_715_000_000);
+    }
+
+    #[test]
+    fn budget_exceeded_outcome_consults_validator_exactly_once_per_method() {
+        // Sanity check: the gate must consult `check_budget` exactly
+        // once (classification), and on the BudgetExceeded leaf must
+        // also read `projected_requests` and `permitted_requests`
+        // exactly once each (event population). A future refactor that
+        // double-probes any of these would silently distort the
+        // dashboard fan-out.
+        struct CountingValidator {
+            state: PacingBudgetState,
+            projected: u32,
+            permitted: u32,
+            check_calls: Cell<u32>,
+            projected_calls: Cell<u32>,
+            permitted_calls: Cell<u32>,
+        }
+        impl PacingBudgetValidator for CountingValidator {
+            fn projected_requests(&self, _schedule: &IngestionJobRequest) -> u32 {
+                self.projected_calls.set(self.projected_calls.get() + 1);
+                self.projected
+            }
+            fn permitted_requests(&self, _schedule: &IngestionJobRequest) -> u32 {
+                self.permitted_calls.set(self.permitted_calls.get() + 1);
+                self.permitted
+            }
+            fn check_budget(&self, _schedule: &IngestionJobRequest) -> PacingBudgetState {
+                self.check_calls.set(self.check_calls.get() + 1);
+                self.state
+            }
+        }
+
+        let layer = DataLayer;
+        let validator = CountingValidator {
+            state: PacingBudgetState::BudgetExceeded,
+            projected: 65,
+            permitted: 60,
+            check_calls: Cell::new(0),
+            projected_calls: Cell::new(0),
+            permitted_calls: Cell::new(0),
+        };
+        let sink = PacingBudgetSink::default();
+        let _ = layer.schedule_ingestion_job(
+            schedule("option-chain-capture", 600),
+            &validator,
+            &sink,
+            1_715_000_000,
+        );
+        assert_eq!(validator.check_calls.get(), 1);
+        assert_eq!(validator.projected_calls.get(), 1);
+        assert_eq!(validator.permitted_calls.get(), 1);
     }
 }

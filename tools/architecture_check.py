@@ -18,6 +18,10 @@ from ingestion_validation_check import (
     IngestionValidationCheckError,
     assert_ingestion_validation_static,
 )
+from pacing_budget_check import (
+    PacingBudgetCheckError,
+    assert_pacing_budget_static,
+)
 from subscription_limit_check import (
     SubscriptionLimitCheckError,
     assert_subscription_limit_static,
@@ -399,6 +403,24 @@ def assert_ingestion_validation(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_pacing_budget(config: dict) -> list[str]:
+    block = config.get("pacing_budget_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_pacing_budget_static(config, ROOT)
+    summary = (
+        f"{block['data_crate']['crate']} gates ingestion jobs on "
+        f"{block['pacing_budget_state']['enum']} "
+        f"({len(block['pacing_budget_state']['variants'])} states), "
+        f"publishing {block['pacing_budget_event']['struct']} when "
+        "projected IB historical-data requests exceed the configured "
+        "pacing budget for the job window (ERR-6, SRS-DATA-002, "
+        "SRS-DATA-004, SyRS SYS-55)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -469,6 +491,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_ingestion_validation(config))
     except IngestionValidationCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_pacing_budget(config))
+    except PacingBudgetCheckError as error:
         fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:

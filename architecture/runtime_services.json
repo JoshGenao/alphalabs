@@ -617,7 +617,8 @@
         "MarketDataStale",
         "SubscriptionLimitReached",
         "NonLiveStrategySubmission",
-        "IngestionRecordValidationFailed"
+        "IngestionRecordValidationFailed",
+        "IngestionPacingBudgetExceeded"
       ],
       "wire_strings": [
         "INVALID_SYMBOL",
@@ -627,7 +628,8 @@
         "MARKET_DATA_STALE",
         "SUBSCRIPTION_LIMIT_REACHED",
         "NON_LIVE_STRATEGY_SUBMISSION",
-        "INGESTION_RECORD_VALIDATION_FAILED"
+        "INGESTION_RECORD_VALIDATION_FAILED",
+        "INGESTION_PACING_BUDGET_EXCEEDED"
       ]
     },
     "structured_error": {
@@ -1020,6 +1022,125 @@
       "Concrete RecordValidator implementing the six SyRS SYS-77 rules (a..f) against equity and options records (owner: SRS-DATA-001..006 + SRS-DATA-013)",
       "Quarantine storage backend that persists the rejected payload + reason + timestamp + source (owner: SRS-DATA-014 / SRS-DATA-015)",
       "Notification dispatcher hookup that fans the per-record event into dashboard alert counts and SMTP/SMS reason summaries (owner: SRS-NOTIF-001 / SYS-77 alert clause)"
+    ]
+  },
+  "pacing_budget_contract": {
+    "requirement": "ERR-6",
+    "srs_refs": [
+      "SRS-DATA-002",
+      "SRS-DATA-004"
+    ],
+    "syrs_refs": [
+      "SYS-31",
+      "SYS-55",
+      "SYS-22b",
+      "SYS-23"
+    ],
+    "strs_refs": [
+      "A-10",
+      "SN-1.26",
+      "SN-1.27"
+    ],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "data_crate": {
+      "crate": "atp-data",
+      "path": "crates/atp-data"
+    },
+    "ingestion_job_request": {
+      "struct": "IngestionJobRequest",
+      "required_fields": [
+        "job_kind",
+        "window_seconds"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "tick_id",
+        "databento_dataset",
+        "sharadar_table",
+        "raw_parquet_path",
+        "vendor_credentials"
+      ]
+    },
+    "pacing_budget_state": {
+      "enum": "PacingBudgetState",
+      "variants": [
+        "WithinBudget",
+        "BudgetExceeded"
+      ]
+    },
+    "pacing_budget_event": {
+      "struct": "PacingBudgetEvent",
+      "required_fields": [
+        "state",
+        "job_kind",
+        "projected_requests",
+        "permitted_requests",
+        "observed_at_seconds"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "tick_id",
+        "databento_dataset",
+        "sharadar_table",
+        "raw_parquet_path",
+        "vendor_credentials"
+      ]
+    },
+    "validator_port": {
+      "trait": "PacingBudgetValidator",
+      "methods": [
+        "projected_requests",
+        "permitted_requests",
+        "check_budget"
+      ]
+    },
+    "event_sink_port": {
+      "trait": "PacingBudgetEventSink",
+      "methods": [
+        "record"
+      ]
+    },
+    "entry_point": {
+      "method": "schedule_ingestion_job",
+      "type": "DataLayer"
+    },
+    "guard": {
+      "state_enum": "PacingBudgetState",
+      "within_variant": "WithinBudget",
+      "exceeded_variant": "BudgetExceeded",
+      "validator_call": "validator.check_budget",
+      "projected_call": "validator.projected_requests",
+      "permitted_call": "validator.permitted_requests",
+      "event_call": "events.record",
+      "accepted_struct": "IngestionJobScheduled",
+      "forbidden_mutations": [
+        "jobs.insert",
+        "jobs.push",
+        "jobs.add",
+        "scheduler.start",
+        "scheduler.run",
+        "scheduler.enqueue",
+        "scheduler.schedule",
+        "job.start",
+        "job.run",
+        "self.start_job",
+        "self.run_job",
+        "self.dispatch_job",
+        "ingest.start",
+        "self.execute_job"
+      ]
+    },
+    "rejection_category": "IngestionPacingBudgetExceeded",
+    "rejection_wire_string": "INGESTION_PACING_BUDGET_EXCEEDED",
+    "deferred": [
+      "Concrete PacingBudgetValidator that projects watchlist size × per-symbol request granularity against the IB pacing tier (SYS-31's 60-requests-per-10-minute ceiling) for the SYS-22b overnight window and the SYS-23 configured near-close window (owner: SRS-DATA-002 + SRS-DATA-004 + the orchestrator-side scheduler config)",
+      "Dashboard alert pane + notification dispatcher fan-out that surfaces SyRS SYS-55's 'until scope or window configuration is reduced' guidance to the operator (owner: SRS-NOTIF-001 / SRS-LOG-001)",
+      "Runtime 15-second identical-request throttle (SyRS SYS-31's second pacing clause) — orthogonal to the scheduling-time gate; belongs on the IB historical-data adapter request path, not on the scheduling-time validator (owner: SRS-DATA-002 + SRS-DATA-004 adapter implementation)"
     ]
   },
   "deployment": {

@@ -182,6 +182,13 @@ if ! python3 tools/ingestion_validation_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running pacing budget contract check..."
+if ! python3 tools/pacing_budget_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Pacing budget contract check failed; run python3 tools/pacing_budget_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running deployment configuration check..."
 if ! python3 tools/deployment_check.py >/dev/null; then
   echo "✗ Environment failed"

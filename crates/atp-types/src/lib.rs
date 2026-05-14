@@ -100,6 +100,7 @@ pub enum OrderErrorCategory {
     SubscriptionLimitReached,
     NonLiveStrategySubmission,
     IngestionRecordValidationFailed,
+    IngestionPacingBudgetExceeded,
 }
 
 impl OrderErrorCategory {
@@ -113,6 +114,7 @@ impl OrderErrorCategory {
             Self::SubscriptionLimitReached => "SUBSCRIPTION_LIMIT_REACHED",
             Self::NonLiveStrategySubmission => "NON_LIVE_STRATEGY_SUBMISSION",
             Self::IngestionRecordValidationFailed => "INGESTION_RECORD_VALIDATION_FAILED",
+            Self::IngestionPacingBudgetExceeded => "INGESTION_PACING_BUDGET_EXCEEDED",
         }
     }
 }
@@ -506,6 +508,143 @@ impl fmt::Display for StructuredIngestionError {
 
 impl std::error::Error for StructuredIngestionError {}
 
+// --------------------------------------------------------------------------- //
+// IB pacing budget request envelope and structured rejection
+// (SRS-DATA-002, SRS-DATA-004, SyRS SYS-31 / SYS-55, StRS A-10 / SN-1.26 / SN-1.27)
+// --------------------------------------------------------------------------- //
+//
+// SyRS SYS-55 requires the system to validate scheduled IB historical-data
+// request volume against IB's pacing limits (SYS-31: 60 requests per
+// 10-minute window; no identical request within 15 seconds) for each
+// capture-job window. The two SYS-55 jobs are:
+//   * SYS-22b minute-bar watchlist ingestion (overnight window),
+//   * SYS-23 option-chain capture (configured near-close window).
+// When the projected request count for a window exceeds the permitted
+// count, the system must alert the operator at scheduling time and must
+// refuse to start the affected job until scope or window configuration
+// is reduced. SYS-64 mandates the same structured error contract used by
+// every other gate, so the rejection wire vocabulary is
+// `INGESTION_PACING_BUDGET_EXCEEDED` (added to `OrderErrorCategory` above
+// as the canonical source of truth).
+//
+// `IngestionJobRequest` is the source-neutral schedule envelope the gate
+// validates. `job_kind` is a neutral string (e.g. `"minute-bar-watchlist"`
+// for SYS-22b, `"option-chain-capture"` for SYS-23); the window length is
+// carried explicitly as `window_seconds` so the projected/permitted
+// numerics can be reconstructed without re-reading the pacing config.
+// Deliberately omits any broker / IB session / tick / vendor-specific
+// field — the `forbidden_fields` allowlist in the contract block locks
+// the structure against vendor bleed.
+//
+// `PacingBudgetState` types the two states the gate distinguishes:
+// `WithinBudget` (the projected request count fits in the configured
+// window) and `BudgetExceeded` (the projection would push past the cap).
+//
+// `PacingBudgetEvent` is the structured payload the gate emits when it
+// refuses a job. It carries the state, the job_kind, the projected
+// request count, the permitted request count, and the observation
+// timestamp. Carrying BOTH `projected_requests` AND `permitted_requests`
+// closes a TOCTOU window: the configured pacing values can be re-tuned
+// between the refusal and the dashboard render, so the event must be
+// self-describing (same rationale as `SubscriptionLimitEvent` carrying
+// `current_lines` and `configured_limit`).
+//
+// `StructuredPacingError` is the rejection envelope. It reuses the
+// `OrderErrorCategory::IngestionPacingBudgetExceeded` variant as the
+// single source of truth for the SyRS SYS-64 wire string. The envelope
+// is distinct from `StructuredOrderError`, `StructuredSubscriptionError`,
+// and `StructuredIngestionError` because a scheduled ingestion job is
+// neither an order, a subscription, nor an ingested record —
+// synthesising one would lie to downstream consumers.
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngestionJobRequest {
+    pub job_kind: String,
+    pub window_seconds: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PacingBudgetState {
+    WithinBudget,
+    BudgetExceeded,
+}
+
+impl PacingBudgetState {
+    pub const fn is_exceeded(self) -> bool {
+        matches!(self, Self::BudgetExceeded)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PacingBudgetEvent {
+    pub state: PacingBudgetState,
+    pub job_kind: String,
+    pub projected_requests: u32,
+    pub permitted_requests: u32,
+    pub observed_at_seconds: u64,
+}
+
+/// SRS-DATA-002 / SRS-DATA-004 / SyRS SYS-55 structured rejection
+/// envelope. Carries the SyRS SYS-64 error category, the discriminator
+/// string, a human-readable message, and the unchanged original
+/// scheduling request. The category is constrained at construction to
+/// `OrderErrorCategory::IngestionPacingBudgetExceeded`; the factory
+/// enforces that invariant in debug builds so a future caller cannot
+/// smuggle a different category through this envelope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuredPacingError {
+    pub category: OrderErrorCategory,
+    pub error_type: String,
+    pub message: String,
+    pub original_request: IngestionJobRequest,
+}
+
+impl StructuredPacingError {
+    /// Build an `INGESTION_PACING_BUDGET_EXCEEDED` rejection.
+    /// `projected_requests` is the count the scheduler computed for the
+    /// `request.window_seconds` window; `permitted_requests` is the cap
+    /// reported by the pacing-budget validator for the same window
+    /// (derived from SYS-31's 60 requests per 10 minutes).
+    pub fn budget_exceeded(
+        request: IngestionJobRequest,
+        projected_requests: u32,
+        permitted_requests: u32,
+    ) -> Self {
+        let category = OrderErrorCategory::IngestionPacingBudgetExceeded;
+        debug_assert!(
+            matches!(category, OrderErrorCategory::IngestionPacingBudgetExceeded),
+            "StructuredPacingError must carry IngestionPacingBudgetExceeded"
+        );
+        let message = format!(
+            "SRS-DATA-002 + SRS-DATA-004 + SyRS SYS-55: ingestion job {job} over \
+             pacing budget — projected {projected} requests, permitted {permitted}",
+            job = request.job_kind,
+            projected = projected_requests,
+            permitted = permitted_requests,
+        );
+        Self {
+            category,
+            error_type: "IngestionPacingBudgetExceeded".to_string(),
+            message,
+            original_request: request,
+        }
+    }
+}
+
+impl fmt::Display for StructuredPacingError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "[{}] {}: {}",
+            self.category.as_str(),
+            self.error_type,
+            self.message
+        )
+    }
+}
+
+impl std::error::Error for StructuredPacingError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,6 +694,10 @@ mod tests {
         assert_eq!(
             OrderErrorCategory::IngestionRecordValidationFailed.as_str(),
             "INGESTION_RECORD_VALIDATION_FAILED"
+        );
+        assert_eq!(
+            OrderErrorCategory::IngestionPacingBudgetExceeded.as_str(),
+            "INGESTION_PACING_BUDGET_EXCEEDED"
         );
     }
 
@@ -880,6 +1023,138 @@ mod tests {
             format!("{error}"),
             format!(
                 "[INGESTION_RECORD_VALIDATION_FAILED] IngestionRecordValidationFailed: {}",
+                error.message
+            )
+        );
+    }
+
+    #[test]
+    fn pacing_budget_state_distinguishes_within_from_exceeded() {
+        // SRS-DATA-002 / SRS-DATA-004 / SyRS SYS-55: WithinBudget must
+        // permit the scheduled ingestion job to start; BudgetExceeded
+        // must trigger INGESTION_PACING_BUDGET_EXCEEDED. The
+        // `is_exceeded` predicate is the helper every caller of the
+        // gate uses to branch on state.
+        assert!(!PacingBudgetState::WithinBudget.is_exceeded());
+        assert!(PacingBudgetState::BudgetExceeded.is_exceeded());
+    }
+
+    #[test]
+    fn ingestion_job_request_carries_only_the_two_required_fields() {
+        // The exhaustive destructure proves there are no other public
+        // fields (i.e. nothing that could leak a broker / IB session /
+        // tick id / vendor dataset / vendor table / raw parquet path /
+        // vendor credentials into the pacing-budget gate's input
+        // envelope).
+        let request = IngestionJobRequest {
+            job_kind: "minute-bar-watchlist".to_string(),
+            window_seconds: 61_200,
+        };
+        let IngestionJobRequest {
+            job_kind: _,
+            window_seconds: _,
+        } = request.clone();
+        assert_eq!(request.job_kind, "minute-bar-watchlist");
+        assert_eq!(request.window_seconds, 61_200);
+    }
+
+    #[test]
+    fn pacing_budget_event_carries_only_the_five_required_fields() {
+        // The exhaustive destructure proves there are no other public
+        // fields. SyRS SYS-55 alert clause needs (state, job_kind,
+        // projected_requests, permitted_requests, observed_at_seconds)
+        // for the dashboard to render the refusal and for the
+        // notification dispatcher to surface "scope or window
+        // configuration must be reduced" without re-querying the
+        // pacing-budget validator port.
+        let event = PacingBudgetEvent {
+            state: PacingBudgetState::BudgetExceeded,
+            job_kind: "minute-bar-watchlist".to_string(),
+            projected_requests: 6_200,
+            permitted_requests: 6_120,
+            observed_at_seconds: 1_715_000_000,
+        };
+        let PacingBudgetEvent {
+            state: _,
+            job_kind: _,
+            projected_requests: _,
+            permitted_requests: _,
+            observed_at_seconds: _,
+        } = event.clone();
+        assert_eq!(event.state, PacingBudgetState::BudgetExceeded);
+        assert_eq!(event.job_kind, "minute-bar-watchlist");
+        assert_eq!(event.projected_requests, 6_200);
+        assert_eq!(event.permitted_requests, 6_120);
+        assert_eq!(event.observed_at_seconds, 1_715_000_000);
+    }
+
+    #[test]
+    fn pacing_budget_event_records_both_projected_and_permitted_requests() {
+        // StRS A-10 / SyRS SYS-31: IB pacing limits are operator-tunable
+        // (the cap is derived from the configured window length and the
+        // 60-requests-per-10-minute ceiling). The event must carry BOTH
+        // the projected request count AND the permitted cap so the
+        // dashboard can render "N/M requests projected for window" and
+        // the notification subsystem can surface scope-reduction advice
+        // without a TOCTOU re-query against the pacing-budget port.
+        let event = PacingBudgetEvent {
+            state: PacingBudgetState::BudgetExceeded,
+            job_kind: "option-chain-capture".to_string(),
+            projected_requests: 65,
+            permitted_requests: 60,
+            observed_at_seconds: 1_715_000_000,
+        };
+        assert_eq!(
+            event.projected_requests, 65,
+            "the event must record the projected request count"
+        );
+        assert_eq!(
+            event.permitted_requests, 60,
+            "the event must record the permitted request count at refusal time"
+        );
+        assert!(
+            event.projected_requests >= event.permitted_requests,
+            "BudgetExceeded implies projected_requests >= permitted_requests"
+        );
+    }
+
+    #[test]
+    fn structured_pacing_error_factory_pins_the_wire_string() {
+        // SRS-DATA-002 + SRS-DATA-004 + SyRS SYS-64: the rejection wire
+        // string must be INGESTION_PACING_BUDGET_EXCEEDED. The factory
+        // reuses the OrderErrorCategory variant as the single source of
+        // truth so a future caller cannot drift the wire form. The
+        // message must include the SRS/SyRS trace strings, the
+        // job_kind, and the projected/permitted numerics for downstream
+        // parsing.
+        let request = IngestionJobRequest {
+            job_kind: "minute-bar-watchlist".to_string(),
+            window_seconds: 61_200,
+        };
+        let error = StructuredPacingError::budget_exceeded(request.clone(), 6_200, 6_120);
+        let StructuredPacingError {
+            category: _,
+            error_type: _,
+            message: _,
+            original_request: _,
+        } = error.clone();
+        assert_eq!(
+            error.category,
+            OrderErrorCategory::IngestionPacingBudgetExceeded
+        );
+        assert_eq!(error.category.as_str(), "INGESTION_PACING_BUDGET_EXCEEDED");
+        assert_eq!(error.error_type, "IngestionPacingBudgetExceeded");
+        assert!(error.message.contains("SRS-DATA-002"));
+        assert!(error.message.contains("SRS-DATA-004"));
+        assert!(error.message.contains("SYS-55"));
+        assert!(error.message.contains("minute-bar-watchlist"));
+        assert!(error.message.contains("6200"));
+        assert!(error.message.contains("6120"));
+        assert_eq!(error.original_request, request);
+        assert_eq!(
+            format!("{error}"),
+            format!(
+                "[INGESTION_PACING_BUDGET_EXCEEDED] IngestionPacingBudgetExceeded: {}",
                 error.message
             )
         );

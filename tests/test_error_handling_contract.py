@@ -49,7 +49,7 @@ class ErrorHandlingCheckScriptTest(unittest.TestCase):
         for needle in (
             "StrategyMode with 2 variants (Live, Paper)",
             "SRS-EXE-001 / SyRS AC-15",
-            "OrderErrorCategory with 8 SyRS SYS-64 categories",
+            "OrderErrorCategory with 9 SyRS SYS-64 categories",
             "NonLiveStrategySubmission",
             "upper-snake wire string",
             "StructuredOrderError with the 4 SRS-ERR-001 fields",
@@ -85,12 +85,13 @@ class OrderErrorCategoryEnumTest(unittest.TestCase):
         self.config = load_config()
         self.types_src = types_source(self.config)
 
-    def test_all_eight_syrs_sys_64_categories_present(self) -> None:
+    def test_all_nine_syrs_sys_64_categories_present(self) -> None:
         # The ERR-1 evidence string names NonLiveStrategySubmission as the
         # canonical "did the SyRS SYS-64 wire vocabulary land?" anchor.
-        # The count (8) is enforced via the test_err_1_contract_script_
-        # passes needle "OrderErrorCategory with 8 SyRS SYS-64 categories";
-        # the IngestionRecordValidationFailed variant itself is asserted
+        # The count (9) is enforced via the test_err_1_contract_script_
+        # passes needle "OrderErrorCategory with 9 SyRS SYS-64 categories";
+        # the IngestionRecordValidationFailed +
+        # IngestionPacingBudgetExceeded variants themselves are asserted
         # at the atp-types unit-test layer
         # (`order_error_category_wire_strings_track_syrs_sys_64`).
         evidence = check_error_category_enum(self.config, self.types_src)
