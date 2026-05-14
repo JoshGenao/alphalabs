@@ -1,3 +1,263 @@
+=== SESSION 19 ===
+Date: 2026-05-14
+Feature completed: SRS-ORCH-001 — Strategy Orchestrator owns strategy
+container lifecycle (SyRS SYS-10): launch / observe-health gates flow
+exclusively through StrategyContainerRuntime + HealthCheckEventSink
+ports, the NFR-P9 30-second startup budget is enforced via
+LaunchReadiness, an over-deadline launch destroys the half-launched
+container BEFORE recording the dashboard event (SRS-ORCH-002 / SyRS
+SYS-57 resource release; ordered destroy-then-record so a sink
+failure cannot mask the resource release), and an Unresponsive
+container is atomically restarted AND surfaced on the dashboard
+(SYS-13 selectivity: a Healthy probe is read-only). AC-12 boundary
+(no strategy may manage another container) stays enforced by the
+existing dependency_boundary_check `atp_orchestrator` forbidden
+import already on every lower-layer crate.
+Status: 101 remaining features
+
+What I did:
+- Prep commit (7064c49): extended SAFETY_PATH_RE in
+  `tools/critic_check.py` to add `orchestrator[_-]?lifecycle` and
+  `strategy[_-]?container` tokens. Continues the per-feature
+  precedent (ERR-4 added subscription_limit + market_data_line, ERR-5
+  added ingestion_validation + record_quarantine, ERR-6 added
+  pacing_budget + ingestion_schedule). The L7 domain test at
+  `tests/domain/test_orchestrator_lifecycle.py` and the contract
+  tool at `tools/orchestrator_lifecycle_check.py` now trigger
+  safety:paired-test-required if a future change touches either
+  side.
+- Feat commit (00389d5):
+- Extended `crates/atp-types/src/lib.rs`:
+  * Added `StrategyStartupDeadlineExceeded` variant to
+    `OrderErrorCategory` (now 10 variants) with wire string
+    `"STRATEGY_STARTUP_DEADLINE_EXCEEDED"` — single source of truth
+    for the SyRS SYS-64 wire vocabulary; no parallel enum.
+  * Added `pub const STRATEGY_STARTUP_DEADLINE_MS: u64 = 30_000` —
+    the NFR-P9 30-second budget single source of truth. Future
+    tuning has exactly one site.
+  * Added `pub enum ContainerLifecycleAction { Create, Start, Stop,
+    Restart, Destroy }` with `as_str()` map. Five variants exactly
+    cover the SyRS SYS-10 lifecycle vocabulary; an exhaustive match
+    would fail to compile if a variant were dropped.
+  * Added `pub enum ContainerHealthState { Healthy, Unresponsive }`
+    with `is_unresponsive()` helper. Two-state SYS-13 auto-restart
+    trigger classifier.
+  * Added `pub enum LaunchReadiness { ReadyWithinDeadline {
+    elapsed_millis }, DeadlineExceeded { elapsed_millis,
+    deadline_millis } }`. Struct-variant enum: the elapsed time is
+    available on BOTH branches so the dashboard can render
+    percentile histograms without re-probing; the deadline is
+    carried on the exceeded variant for TOCTOU closure (same
+    rationale as ERR-4 / ERR-6's "carry the limit on the event").
+  * Added `pub struct StrategyLaunchRequest { strategy_id,
+    mode: StrategyMode, deployment_hash: String, deadline_millis:
+    u64 }`. Four fields, deliberately no docker_image /
+    container_id / host_path / vendor / broker / ib_session_id
+    (forbidden-list locked by the contract block).
+  * Added `pub struct StrategyLaunchOutcome { strategy_id,
+    ready_within_deadline: bool, elapsed_millis: u64,
+    deadline_millis: u64 }`. Four fields, same forbidden-list.
+  * Added `pub struct ContainerHealthEvent { state:
+    ContainerHealthState, strategy_id, action_taken:
+    ContainerLifecycleAction, observed_at_seconds: u64 }`.
+    Carrying `action_taken` on the event closes a TOCTOU window —
+    the dashboard can render "restarted at T" / "destroyed at T"
+    without a second probe.
+  * Added `pub struct StructuredOrchestratorError` with factory
+    `startup_deadline_exceeded(request, elapsed_millis,
+    deadline_millis)`. Reuses
+    `OrderErrorCategory::StrategyStartupDeadlineExceeded` as the
+    wire-string source of truth (mirrors the
+    StructuredPacingError / StructuredIngestionError /
+    StructuredSubscriptionError pattern).
+  * Added 8 in-crate unit tests in `atp-types` covering: action
+    enum exhaustiveness, health-state exhaustiveness, readiness
+    enum payload shape, the NFR-P9 constant value, the
+    exhaustive-destructure proof of "exactly four fields" for each
+    new struct, and the factory's wire-string / message /
+    Display-format invariants.
+- Extended `crates/atp-orchestrator/src/lib.rs`:
+  * Added `trait StrategyContainerRuntime` with six methods:
+    create, start (returns LaunchReadiness), stop, restart, destroy,
+    health (returns ContainerHealthState). The trait lives in
+    `atp-orchestrator` (NOT `atp-types`) because the consumer
+    lives here; lower-layer crates cannot import
+    `atp_orchestrator` (dependency_boundary_check already lists it
+    as a forbidden token).
+  * Added `trait HealthCheckEventSink { fn record(&self, event:
+    ContainerHealthEvent); }` — the structured-event publication
+    channel (dashboard WebSocket + SRS-LOG-001 audit log +
+    SRS-NOTIF-001 dispatcher fan-out, all deferred to those
+    features).
+  * Added `pub fn launch<R, S>(&self, request:
+    StrategyLaunchRequest, runtime: &R, sink: &S,
+    observed_at_seconds: u64) -> Result<StrategyLaunchOutcome,
+    StructuredOrchestratorError>`. Matches on
+    `LaunchReadiness`; ReadyWithinDeadline returns
+    `StrategyLaunchOutcome` (the ONLY construction site);
+    DeadlineExceeded calls `runtime.destroy(&request.strategy_id)`
+    FIRST (SRS-ORCH-002 / SyRS SYS-57 resource release), THEN
+    `sink.record(ContainerHealthEvent { action_taken: Destroy,
+    ... })`, THEN returns the structured error. The ordering is
+    statically required by the contract — a sink failure must not
+    mask the resource release.
+  * Added `pub fn observe_health<R, S>(&self, strategy_id, runtime,
+    sink, observed_at_seconds) -> ContainerHealthState`. Matches
+    on `ContainerHealthState`; Healthy returns the state read-only
+    (no runtime mutation, no event); Unresponsive calls
+    `runtime.restart(&strategy_id)` AND `sink.record(...)` in one
+    transaction (SYS-13's atomic auto-restart + dashboard
+    fan-out).
+  * Added `pub const fn startup_deadline_millis(&self) -> u64`
+    that re-exports the `atp-types` constant so callers can
+    populate `deadline_millis` without reaching into `atp-types`.
+  * Added 6 in-crate unit tests covering the gate happy-path,
+    refusal, destroy-call assertion, no-op-on-healthy,
+    auto-restart-on-unresponsive, and exactly-once-probe.
+- Added `crates/atp-orchestrator/tests/orch_1_lifecycle_contract.rs`:
+  * Spy implementations of both ports with per-method call
+    counters and a Forbidden* sink that panics if invoked
+    (matches the ERR-3 / ERR-5 / ERR-6 pattern).
+  * Six integration tests anchoring the post-conditions
+    behaviourally: ReadyWithinDeadline outcome + zero event,
+    DeadlineExceeded refusal + destroy_calls == 1 +
+    stop_calls == 0 + restart_calls == 0 + exactly one event,
+    Healthy probe read-only, Unresponsive probe restart +
+    event-once + zero destroy/stop, mode-uniformity (Live and
+    Paper launches share envelope shape), zero-acceptance on
+    refusal.
+- Added `architecture/runtime_services.json` orchestrator_lifecycle_contract
+  block (180 lines): types-crate + orchestrator-crate, all five
+  declared enums/structs with required + forbidden fields, the
+  NFR-P9 constant declaration, the two port declarations, both
+  entry points with full guard metadata including:
+  * launch_guard.runtime_destroy_call = "runtime.destroy"
+  * launch_guard.exceeded_action_taken =
+    "ContainerLifecycleAction::Destroy"
+  * launch_guard.forbidden_mutations: 10 tokens (containers.insert
+    / registry.add / self.spawn_container / self.suppress_event
+    etc. — every plausible regression path)
+  * health_observe_guard.forbidden_mutations_on_healthy: 6 tokens
+    (runtime.restart / runtime.destroy / sink.record /
+    self.notify_dashboard etc. — the SYS-13 selectivity invariant)
+  * 6 deferred-list entries naming the concrete Docker driver,
+    SRS-ORCH-002 resource-profile enforcement, SRS-ORCH-003
+    workload-priority arbitration, SRS-ORCH-004 deployment-version
+    surface, the concrete sink wiring, and restart back-off.
+- Added `tools/orchestrator_lifecycle_check.py` (683 lines):
+  * 11 static checks (lifecycle action enum, health state enum,
+    launch readiness enum, three struct shape checks with
+    forbidden-field allowlist, NFR-P9 constant value check, two
+    port trait checks, the two entry-point guards).
+  * Inline `_variant_arm` helper (not in
+    `tools/_rust_parser.py` — that hoist is still tracked) so the
+    check can handle struct-variant match arms (the existing
+    `_match_arm` from error_handling_check only handles unit
+    variants).
+  * The launch guard check enforces: presence of runtime.start,
+    presence of runtime.destroy, presence of sink.record,
+    presence of the action_taken token, presence of the rejection
+    category or factory call, ABSENCE of any forbidden_mutations
+    token, AND the positional invariant `destroy_pos < sink_pos`
+    (so a refactor that swaps order would be caught).
+  * The observe-health guard check enforces: presence of
+    runtime.health, presence of runtime.restart inside the
+    Unresponsive arm, presence of sink.record inside the
+    Unresponsive arm, AND ABSENCE of any forbidden mutation
+    inside the Healthy arm.
+  * `assert_orchestrator_lifecycle_static(config, root)` returns
+    the 11-bullet evidence list for `tools/architecture_check.py`
+    to consume without invoking cargo.
+  * cargo smoke (`cargo test -p atp-orchestrator --lib` + the new
+    integration test file) gates the final PASS bullet.
+- Wired into `tools/architecture_check.py`: import the static
+  helper, add `assert_orchestrator_lifecycle(config)`, and run it
+  in `run_checks()` between pacing-budget and the container-
+  language-boundary check. `SRS-ARCH-001 PASS` now includes 12
+  new evidence bullets (11 contract + 1 architectural summary).
+- Wired into `init.sh`: new step
+  "Running orchestrator lifecycle contract check..." between the
+  pacing-budget step and the deployment configuration step. Init
+  still reports "✓ Environment ready" at the end.
+- Added `tests/test_orchestrator_lifecycle_contract.py` (554
+  lines, 38 Python contract tests): subprocess contract-script
+  test asserting 27 evidence needles; per-check positive tests;
+  negative mutation tests for every declared structural
+  invariant (missing variants, missing fields, vendor leakage on
+  three of the six forbidden field types, missing port methods,
+  missing sink.record call on refusal, acceptance leak into
+  DeadlineExceeded arm, registry mutation on refusal, missing
+  destroy call, drifted action_taken, swapped destroy/record
+  order, missing restart on Unresponsive, side effect on
+  Healthy). Also asserts the static helper returns exactly 11
+  bullets and `run_checks` returns exactly 12.
+- Added `tests/domain/test_orchestrator_lifecycle.py` (L7 domain
+  / safety): six tests that shell out to
+  `cargo test -p atp-orchestrator --test orch_1_lifecycle_contract`
+  to anchor the integration-layer post-conditions inside the
+  domain-test layer. Matched by the SAFETY_PATH_RE addition from
+  the prep commit so future changes to the orchestrator
+  lifecycle paths cannot land without a paired domain test diff.
+
+What I tested (end-to-end):
+- `./init.sh` -> "✓ Environment ready" with the new orchestrator
+  lifecycle step listed in the readiness chain.
+- `python3 tools/orchestrator_lifecycle_check.py` -> "SRS-ORCH-001
+  PASS" with all 12 evidence bullets, including the new
+  destroy-call + action_taken assertions on the DeadlineExceeded
+  leaf and the destroy-before-record ordering claim.
+- `python3 tools/architecture_check.py` -> "SRS-ARCH-001 PASS"
+  with the orchestrator surface verified architecturally.
+- `cargo test` -> 27 test suites pass, 0 failures (atp-types now
+  33 unit tests with the 8 new orchestrator-type tests;
+  atp-orchestrator now 6 unit + 6 integration tests).
+- `.venv/bin/python -m pytest tests/` -> 358 passed, 4 skipped
+  (pre-existing). All 38 orchestrator contract tests + 6 L7
+  domain tests pass.
+- Both critic passes approved:
+
+Critic verdicts:
+  deterministic (tools/critic_check.py): APPROVE — 0 findings
+  judgment (general-purpose subagent fallback for
+    /codex:adversarial-review): APPROVE — 0 findings on the
+    revised diff. First-pass returned BLOCK on a real defect:
+    the over-deadline arm emitted `action_taken=Destroy` without
+    actually calling `runtime.destroy`, orphaning the
+    half-launched container and lying to the audit log. Fix
+    landed in the same feat commit: destroy call added,
+    metadata + static check + Python regression tests + Rust
+    in-crate + integration assertions all now require the
+    destroy AND the destroy-before-record ordering.
+
+Known issues / notes for next agent:
+- Concrete StrategyContainerRuntime backed by the Docker Engine
+  API is deferred to SRS-ARCH-004 + SRS-ORCH-002. The current
+  contract is port-only; the runtime returns LaunchReadiness so
+  the timing source of truth (the wall-clock measurement) lives
+  inside the concrete driver, not the orchestrator gate.
+- Resource-profile enforcement (live ≤512 MB / 0.25 CPU; paper
+  ≤300 MB / 0.10 CPU per SRS-ORCH-002 / SyRS SYS-11) is also
+  deferred — SRS-ORCH-002 is the next lowest P1 by ID and is the
+  natural sibling for the next session.
+- Workload-priority arbitration (SRS-ORCH-003 / SyRS SYS-57 /
+  SYS-58) is deferred — SRS-ORCH-003 is the third lowest P1.
+- The dashboard fan-out and notification dispatcher hookup is
+  deferred to SRS-LOG-001 / SRS-NOTIF-001 + the SYS-13 dashboard
+  clause. The current HealthCheckEventSink is a port only.
+- The `_variant_arm` helper in
+  `tools/orchestrator_lifecycle_check.py` should eventually
+  hoist into `tools/_rust_parser.py` along with the existing
+  `_fn_block` / `_match_arm` / `_trait_body` / `_struct_body` /
+  `_enum_body` set. SESSION 18 named this trigger; SRS-ORCH-001
+  is now the seventh feature pulling the same helpers (and the
+  first to need struct-variant arm finding).
+- The pre-existing test `tests/domain/test_single_live_invariant.py`
+  is skipped pending the strategy orchestrator state machine —
+  with SRS-ORCH-001's lifecycle gate now in place, a future
+  session can lift the skip and assert the AC-15 single-live
+  invariant against the same StrategyContainerRuntime port shape.
+- Lowest remaining P1 by ID is SRS-ORCH-002.
+
 === SESSION 18 ===
 Date: 2026-05-13
 Feature completed: ERR-6 — IB pacing budget exceeded by configured
