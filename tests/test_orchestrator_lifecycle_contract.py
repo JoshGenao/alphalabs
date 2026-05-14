@@ -63,10 +63,10 @@ class OrchestratorLifecycleCheckScriptTest(unittest.TestCase):
             "Healthy, Unresponsive",
             "LaunchReadiness with 2 variants",
             "ReadyWithinDeadline, DeadlineExceeded",
-            "StrategyLaunchRequest with the 4 required fields",
-            "strategy_id, mode, deployment_hash, deadline_millis",
-            "StrategyLaunchOutcome with the 4 required fields",
-            "strategy_id, ready_within_deadline, elapsed_millis, deadline_millis",
+            "StrategyLaunchRequest with the 5 required fields",
+            "strategy_id, mode, deployment_hash, deadline_millis, profile",
+            "StrategyLaunchOutcome with the 5 required fields",
+            "strategy_id, ready_within_deadline, elapsed_millis, deadline_millis, profile",
             "ContainerHealthEvent with the 4 required fields",
             "state, strategy_id, action_taken, observed_at_seconds",
             "rejects 6 forbidden vendor/container-runtime fields",
@@ -157,15 +157,19 @@ class StrategyLaunchRequestStructTest(unittest.TestCase):
         self.config = load_config()
         self.types_src = types_source(self.config)
 
-    def test_struct_carries_the_four_required_fields(self) -> None:
+    def test_struct_carries_the_five_required_fields(self) -> None:
         evidence = check_strategy_launch_request_struct(self.config, self.types_src)
-        for field in ("strategy_id", "mode", "deployment_hash", "deadline_millis"):
+        for field in ("strategy_id", "mode", "deployment_hash", "deadline_millis", "profile"):
             self.assertIn(field, evidence)
 
     def test_missing_deadline_millis_field_is_caught(self) -> None:
+        # Comment out the deadline_millis field by renaming it; the
+        # forbidden_fields allowlist does not contain `deadline_millis_x`
+        # so the mutated struct still parses but the required-field
+        # presence check fails.
         mutated = self.types_src.replace(
-            "pub deadline_millis: u64,\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub struct StrategyLaunchOutcome",
-            "}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub struct StrategyLaunchOutcome",
+            "pub deadline_millis: u64,",
+            "pub deadline_millis_x: u64,",
             1,
         )
         with self.assertRaises(OrchestratorLifecycleCheckError) as ctx:
@@ -208,13 +212,14 @@ class StrategyLaunchOutcomeStructTest(unittest.TestCase):
         self.config = load_config()
         self.types_src = types_source(self.config)
 
-    def test_struct_carries_the_four_required_fields(self) -> None:
+    def test_struct_carries_the_five_required_fields(self) -> None:
         evidence = check_strategy_launch_outcome_struct(self.config, self.types_src)
         for field in (
             "strategy_id",
             "ready_within_deadline",
             "elapsed_millis",
             "deadline_millis",
+            "profile",
         ):
             self.assertIn(field, evidence)
 

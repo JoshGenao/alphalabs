@@ -1199,7 +1199,8 @@
         "strategy_id",
         "mode",
         "deployment_hash",
-        "deadline_millis"
+        "deadline_millis",
+        "profile"
       ],
       "forbidden_fields": [
         "broker",
@@ -1216,7 +1217,8 @@
         "strategy_id",
         "ready_within_deadline",
         "elapsed_millis",
-        "deadline_millis"
+        "deadline_millis",
+        "profile"
       ],
       "forbidden_fields": [
         "broker",
@@ -1316,11 +1318,168 @@
     "rejection_wire_string": "STRATEGY_STARTUP_DEADLINE_EXCEEDED",
     "deferred": [
       "Concrete StrategyContainerRuntime backed by the Docker Engine API for the Phase 1 Proxmox VM target (owner: SRS-ARCH-004 + SRS-ORCH-002)",
-      "Resource-profile enforcement (live ≤512 MB / 0.25 CPU; paper ≤300 MB / 0.10 CPU) at container creation time (owner: SRS-ORCH-002 / SyRS SYS-11 / SYS-57)",
       "Workload-priority arbitration when the host memory safety margin would be breached (owner: SRS-ORCH-003 / SyRS SYS-57 / SYS-58)",
       "Deployment-version recording + dashboard exposure for each strategy instance (owner: SRS-ORCH-004 / SyRS SYS-41 / SYS-79)",
       "Concrete HealthCheckEventSink wired to the dashboard WebSocket alert pane + the SRS-LOG-001 audit trail + the SRS-NOTIF-001 dispatcher (owner: SRS-LOG-001 / SRS-NOTIF-001 / SyRS SYS-13 dashboard clause)",
       "Container-runtime cooldown / back-off when an unresponsive container restart or an over-deadline destroy fails repeatedly (orthogonal to the gate; belongs on the concrete StrategyContainerRuntime implementation)"
+    ]
+  },
+  "resource_profile_contract": {
+    "requirement": "SRS-ORCH-002",
+    "srs_refs": ["SRS-ORCH-002"],
+    "syrs_refs": ["SYS-11", "SYS-57", "NFR-SC1"],
+    "strs_refs": ["SN-1.10", "BG-6"],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "orchestrator_crate": {
+      "crate": "atp-orchestrator",
+      "path": "crates/atp-orchestrator"
+    },
+    "spec_constants": {
+      "live_mem_mb": {
+        "name": "LIVE_PROFILE_MEM_MB",
+        "value": 512
+      },
+      "live_cpu_hundredths": {
+        "name": "LIVE_PROFILE_CPU_HUNDREDTHS",
+        "value": 25
+      },
+      "paper_mem_mb": {
+        "name": "PAPER_PROFILE_MEM_MB",
+        "value": 300
+      },
+      "paper_cpu_hundredths": {
+        "name": "PAPER_PROFILE_CPU_HUNDREDTHS",
+        "value": 10
+      }
+    },
+    "validation_constants": {
+      "mem_floor_mb": {
+        "name": "RESOURCE_PROFILE_MEM_FLOOR_MB",
+        "value": 64
+      },
+      "mem_ceiling_mb": {
+        "name": "RESOURCE_PROFILE_MEM_CEILING_MB",
+        "value": 65536
+      },
+      "cpu_floor_hundredths": {
+        "name": "RESOURCE_PROFILE_CPU_FLOOR_HUNDREDTHS",
+        "value": 5
+      },
+      "cpu_ceiling_hundredths": {
+        "name": "RESOURCE_PROFILE_CPU_CEILING_HUNDREDTHS",
+        "value": 1600
+      }
+    },
+    "resource_profile": {
+      "struct": "ResourceProfile",
+      "required_fields": [
+        "mem_mb",
+        "cpu_hundredths"
+      ],
+      "forbidden_fields": [
+        "cpu_cores_f32",
+        "cpu_cores",
+        "cpu_quota",
+        "memory_bytes",
+        "docker_image",
+        "container_id",
+        "vendor",
+        "host_path",
+        "cgroup_path",
+        "broker"
+      ]
+    },
+    "resource_profile_error": {
+      "enum": "ResourceProfileError",
+      "variants": [
+        "MemBelowFloor",
+        "MemAboveCeiling",
+        "CpuBelowFloor",
+        "CpuAboveCeiling"
+      ]
+    },
+    "resource_profile_methods": [
+      "live_default",
+      "paper_default",
+      "for_mode",
+      "validate"
+    ],
+    "orchestrator_helper_methods": [
+      "live_profile_default",
+      "paper_profile_default",
+      "profile_for_mode",
+      "profile_for_mode_from_lookup",
+      "profile_for_mode_via_env_lookup",
+      "profile_for_mode_from_env"
+    ],
+    "launch_validate_guard": {
+      "entry_method": "launch",
+      "entry_type": "StrategyOrchestrator",
+      "required_call": "request.profile.validate",
+      "required_position": "before runtime.create",
+      "rejection_factory": "StructuredOrchestratorError::resource_profile_invalid",
+      "rejection_category": "ResourceProfileInvalid",
+      "rejection_wire_string": "RESOURCE_PROFILE_INVALID",
+      "forbidden_calls_on_rejection": [
+        "runtime.create",
+        "runtime.start",
+        "runtime.stop",
+        "runtime.restart",
+        "runtime.destroy",
+        "sink.record",
+        "containers.insert",
+        "containers.push",
+        "registry.insert",
+        "registry.add",
+        "self.spawn_container",
+        "self.run_container"
+      ]
+    },
+    "outcome_profile_equality_guard": {
+      "outcome_struct": "StrategyLaunchOutcome",
+      "required_construction_token": "profile: request.profile",
+      "forbidden_construction_tokens": [
+        "profile: ResourceProfile::live_default",
+        "profile: ResourceProfile::paper_default",
+        "profile: ResourceProfile::for_mode"
+      ]
+    },
+    "config_binding": {
+      "catalogue_path": "configuration.keys",
+      "bindings": [
+        {
+          "config_key": "ATP_LIVE_STRATEGY_MEM_MB",
+          "constant": "LIVE_PROFILE_MEM_MB"
+        },
+        {
+          "config_key": "ATP_LIVE_STRATEGY_CPU",
+          "constant": "LIVE_PROFILE_CPU_HUNDREDTHS",
+          "config_unit": "cores",
+          "constant_unit": "hundredths"
+        },
+        {
+          "config_key": "ATP_PAPER_STRATEGY_MEM_MB",
+          "constant": "PAPER_PROFILE_MEM_MB"
+        },
+        {
+          "config_key": "ATP_PAPER_STRATEGY_CPU",
+          "constant": "PAPER_PROFILE_CPU_HUNDREDTHS",
+          "config_unit": "cores",
+          "constant_unit": "hundredths"
+        }
+      ]
+    },
+    "rejection_category": "ResourceProfileInvalid",
+    "rejection_wire_string": "RESOURCE_PROFILE_INVALID",
+    "deferred": [
+      "Concrete StrategyContainerRuntime that applies ResourceProfile to a real Docker container at create time (owner: SRS-ARCH-004 + SRS-ORCH-002 — same Docker driver entry deferred on the lifecycle contract). Until that lands, the gate validates ResourceProfile as DATA at the orchestrator boundary; no live Docker cgroup limit is applied. Same wired-but-empty shape ERR-2..6 + SRS-ORCH-001 shipped under.",
+      "Typed error surface on StrategyContainerRuntime lifecycle methods (create / stop / restart / destroy currently return unit, so a future Docker/cgroup driver cannot signal cgroup-creation failure or insufficient-host-resource refusal back to the launch gate). Owner: SRS-ORCH-001 trait-signature retrofit, paired with the Docker driver — adding the error surface only matters once a real runtime can produce the errors. The contract block already names this as a paired-feature concern.",
+      "Production caller of StrategyOrchestrator::launch — the env-var → launch-profile wire is built in this session (profile_for_mode_from_env reads ATP_*_STRATEGY_* via std::env::var, falls back to spec defaults, validates against catalogue bounds), but main.py is still a `pass` stub and no Rust orchestrator service binary invokes launch() yet. Owner: SRS-ARCH-001 production wiring (orchestrator service entry point) — once the binary lands, it calls profile_for_mode_from_env(mode) to populate StrategyLaunchRequest.profile.",
+      "Workload-priority arbitration when the host memory safety margin would be breached (owner: SRS-ORCH-003 / SyRS SYS-57 / SYS-58 — separate gate that sits in front of this one once landed)",
+      "Per-strategy override flow from the dashboard / REST API (owner: SRS-API-001 — REST/WebSocket override path layered on top of the env-var lookup once the API surface lands)"
     ]
   },
   "deployment": {

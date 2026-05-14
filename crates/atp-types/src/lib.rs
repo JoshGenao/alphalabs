@@ -102,6 +102,7 @@ pub enum OrderErrorCategory {
     IngestionRecordValidationFailed,
     IngestionPacingBudgetExceeded,
     StrategyStartupDeadlineExceeded,
+    ResourceProfileInvalid,
 }
 
 impl OrderErrorCategory {
@@ -117,6 +118,7 @@ impl OrderErrorCategory {
             Self::IngestionRecordValidationFailed => "INGESTION_RECORD_VALIDATION_FAILED",
             Self::IngestionPacingBudgetExceeded => "INGESTION_PACING_BUDGET_EXCEEDED",
             Self::StrategyStartupDeadlineExceeded => "STRATEGY_STARTUP_DEADLINE_EXCEEDED",
+            Self::ResourceProfileInvalid => "RESOURCE_PROFILE_INVALID",
         }
     }
 }
@@ -722,6 +724,184 @@ impl std::error::Error for StructuredPacingError {}
 /// truth and so future tuning has exactly one site to change.
 pub const STRATEGY_STARTUP_DEADLINE_MS: u64 = 30_000;
 
+// --------------------------------------------------------------------------- //
+// Resource profile (SRS-ORCH-002, SyRS SYS-11 / SYS-57, NFR-SC1)
+// --------------------------------------------------------------------------- //
+//
+// SRS-ORCH-002 requires the orchestrator to enforce per-container resource
+// limits at launch with two named profiles:
+//   * Live (IB execution path): default ≤ 512 MB RAM, ≤ 0.25 CPU cores.
+//   * Paper (internal simulation path): default ≤ 300 MB RAM, ≤ 0.10 CPU cores.
+//
+// CPU is carried as integer hundredths (0.25 cores → 25, 0.10 cores → 10)
+// rather than f32 because the wire form must compare for equality in the
+// contract check and the spy assertions, and float equality is fragile
+// (NaN, denormals, ULP rounding). The forbidden_fields allowlist on the
+// struct locks `cpu_cores_f32` etc. out so a future refactor cannot
+// silently re-introduce float drift.
+//
+// The validation bounds (MEM_FLOOR / MEM_CEILING / CPU_FLOOR / CPU_CEILING)
+// mirror the catalogue min/max in `architecture/runtime_services.json`'s
+// `configuration.keys` block (ATP_LIVE_STRATEGY_MEM_MB / _CPU and
+// ATP_PAPER_STRATEGY_MEM_MB / _CPU). The catalogue is the single source
+// of truth at the configuration boundary; the constants here are the
+// single source of truth at the orchestrator boundary; the contract
+// check (`tools/orchestrator_resource_profile_check.py`) cross-checks
+// that the two agree so a future tuning has exactly two sites that must
+// match, and the gate proves they do.
+
+/// SRS-ORCH-002 / SyRS SYS-11 default live-container memory cap (MB).
+pub const LIVE_PROFILE_MEM_MB: u32 = 512;
+
+/// SRS-ORCH-002 / SyRS SYS-11 default live-container CPU cap, in
+/// hundredths of a core (0.25 cores → 25).
+pub const LIVE_PROFILE_CPU_HUNDREDTHS: u32 = 25;
+
+/// SRS-ORCH-002 / SyRS SYS-11 default paper-container memory cap (MB).
+pub const PAPER_PROFILE_MEM_MB: u32 = 300;
+
+/// SRS-ORCH-002 / SyRS SYS-11 default paper-container CPU cap, in
+/// hundredths of a core (0.10 cores → 10).
+pub const PAPER_PROFILE_CPU_HUNDREDTHS: u32 = 10;
+
+/// Validation floor on memory MB. Mirrors the catalogue
+/// `ATP_*_STRATEGY_MEM_MB.min` value (64).
+pub const RESOURCE_PROFILE_MEM_FLOOR_MB: u32 = 64;
+
+/// Validation ceiling on memory MB. Mirrors the catalogue
+/// `ATP_*_STRATEGY_MEM_MB.max` value (65536).
+pub const RESOURCE_PROFILE_MEM_CEILING_MB: u32 = 65_536;
+
+/// Validation floor on CPU hundredths. Mirrors the catalogue
+/// `ATP_*_STRATEGY_CPU.min` value (0.05 cores → 5 hundredths).
+pub const RESOURCE_PROFILE_CPU_FLOOR_HUNDREDTHS: u32 = 5;
+
+/// Validation ceiling on CPU hundredths. Mirrors the catalogue
+/// `ATP_*_STRATEGY_CPU.max` value (16.0 cores → 1600 hundredths).
+pub const RESOURCE_PROFILE_CPU_CEILING_HUNDREDTHS: u32 = 1_600;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResourceProfile {
+    pub mem_mb: u32,
+    pub cpu_hundredths: u32,
+}
+
+impl ResourceProfile {
+    /// SyRS SYS-11 default live-container profile (512 MB / 0.25 CPU).
+    pub const fn live_default() -> Self {
+        Self {
+            mem_mb: LIVE_PROFILE_MEM_MB,
+            cpu_hundredths: LIVE_PROFILE_CPU_HUNDREDTHS,
+        }
+    }
+
+    /// SyRS SYS-11 default paper-container profile (300 MB / 0.10 CPU).
+    pub const fn paper_default() -> Self {
+        Self {
+            mem_mb: PAPER_PROFILE_MEM_MB,
+            cpu_hundredths: PAPER_PROFILE_CPU_HUNDREDTHS,
+        }
+    }
+
+    /// Mode-keyed dispatch. Live → `live_default()`, Paper → `paper_default()`.
+    /// The match is exhaustive on `StrategyMode` so a future variant addition
+    /// would fail to compile here — the dispatch cannot silently fall through
+    /// to a wrong profile.
+    pub const fn for_mode(mode: StrategyMode) -> Self {
+        match mode {
+            StrategyMode::Live => Self::live_default(),
+            StrategyMode::Paper => Self::paper_default(),
+        }
+    }
+
+    /// SRS-ORCH-002 "configuration overrides are validated" — enforce the
+    /// SRS-ARCH-005 catalogue min/max bounds at the orchestrator boundary
+    /// so the wire type cannot carry an out-of-range value past `launch`.
+    /// The bounds are the SAME values the catalogue validator enforces at
+    /// the configuration boundary; this is the second gate (defence in
+    /// depth) so a programmatically-constructed `ResourceProfile` that
+    /// bypassed the catalogue (e.g. a test fixture, a future REST API
+    /// override) is still rejected before it reaches the runtime port.
+    pub fn validate(&self) -> Result<(), ResourceProfileError> {
+        if self.mem_mb < RESOURCE_PROFILE_MEM_FLOOR_MB {
+            return Err(ResourceProfileError::MemBelowFloor {
+                mem_mb: self.mem_mb,
+                floor_mb: RESOURCE_PROFILE_MEM_FLOOR_MB,
+            });
+        }
+        if self.mem_mb > RESOURCE_PROFILE_MEM_CEILING_MB {
+            return Err(ResourceProfileError::MemAboveCeiling {
+                mem_mb: self.mem_mb,
+                ceiling_mb: RESOURCE_PROFILE_MEM_CEILING_MB,
+            });
+        }
+        if self.cpu_hundredths < RESOURCE_PROFILE_CPU_FLOOR_HUNDREDTHS {
+            return Err(ResourceProfileError::CpuBelowFloor {
+                cpu_hundredths: self.cpu_hundredths,
+                floor_hundredths: RESOURCE_PROFILE_CPU_FLOOR_HUNDREDTHS,
+            });
+        }
+        if self.cpu_hundredths > RESOURCE_PROFILE_CPU_CEILING_HUNDREDTHS {
+            return Err(ResourceProfileError::CpuAboveCeiling {
+                cpu_hundredths: self.cpu_hundredths,
+                ceiling_hundredths: RESOURCE_PROFILE_CPU_CEILING_HUNDREDTHS,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResourceProfileError {
+    MemBelowFloor { mem_mb: u32, floor_mb: u32 },
+    MemAboveCeiling { mem_mb: u32, ceiling_mb: u32 },
+    CpuBelowFloor { cpu_hundredths: u32, floor_hundredths: u32 },
+    CpuAboveCeiling { cpu_hundredths: u32, ceiling_hundredths: u32 },
+}
+
+impl ResourceProfileError {
+    /// Short discriminator string used by the rejection wire form.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MemBelowFloor { .. } => "MemBelowFloor",
+            Self::MemAboveCeiling { .. } => "MemAboveCeiling",
+            Self::CpuBelowFloor { .. } => "CpuBelowFloor",
+            Self::CpuAboveCeiling { .. } => "CpuAboveCeiling",
+        }
+    }
+}
+
+impl fmt::Display for ResourceProfileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MemBelowFloor { mem_mb, floor_mb } => write!(
+                formatter,
+                "memory {mem_mb} MB is below the configured floor of {floor_mb} MB",
+            ),
+            Self::MemAboveCeiling { mem_mb, ceiling_mb } => write!(
+                formatter,
+                "memory {mem_mb} MB exceeds the configured ceiling of {ceiling_mb} MB",
+            ),
+            Self::CpuBelowFloor {
+                cpu_hundredths,
+                floor_hundredths,
+            } => write!(
+                formatter,
+                "CPU {cpu_hundredths} hundredths is below the configured floor of {floor_hundredths} hundredths",
+            ),
+            Self::CpuAboveCeiling {
+                cpu_hundredths,
+                ceiling_hundredths,
+            } => write!(
+                formatter,
+                "CPU {cpu_hundredths} hundredths exceeds the configured ceiling of {ceiling_hundredths} hundredths",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ResourceProfileError {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContainerLifecycleAction {
     Create,
@@ -773,6 +953,12 @@ pub struct StrategyLaunchRequest {
     pub mode: StrategyMode,
     pub deployment_hash: String,
     pub deadline_millis: u64,
+    /// SRS-ORCH-002 / SyRS SYS-11 resource profile carried on the launch
+    /// envelope so the orchestrator can validate it once at the gate and
+    /// the runtime port can apply it inside `create`. Mode-keyed defaults
+    /// (live: 512 MB / 0.25 CPU; paper: 300 MB / 0.10 CPU) are produced by
+    /// `ResourceProfile::for_mode(mode)`.
+    pub profile: ResourceProfile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -781,6 +967,12 @@ pub struct StrategyLaunchOutcome {
     pub ready_within_deadline: bool,
     pub elapsed_millis: u64,
     pub deadline_millis: u64,
+    /// SRS-ORCH-002 evidence: the resource profile the orchestrator
+    /// actually allocated, copied verbatim from `request.profile`. The
+    /// audit log records what was applied; the contract check enforces
+    /// `outcome.profile == request.profile` (no silent re-defaulting at
+    /// the gate).
+    pub profile: ResourceProfile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -833,6 +1025,35 @@ impl StructuredOrchestratorError {
         Self {
             category,
             error_type: "StrategyStartupDeadlineExceeded".to_string(),
+            message,
+            original_request: request,
+        }
+    }
+
+    /// Build a `RESOURCE_PROFILE_INVALID` rejection. SRS-ORCH-002 +
+    /// SyRS SYS-11: a launch whose resource profile fails validation
+    /// at the orchestrator boundary must be refused without invoking
+    /// the runtime port (no `create`, no `start`) so a misconfigured
+    /// override never reaches the host. The error carries the original
+    /// launch request unchanged AND a discriminator string for the
+    /// specific validation failure (MemBelowFloor / MemAboveCeiling /
+    /// CpuBelowFloor / CpuAboveCeiling).
+    pub fn resource_profile_invalid(
+        request: StrategyLaunchRequest,
+        violation: ResourceProfileError,
+    ) -> Self {
+        let category = OrderErrorCategory::ResourceProfileInvalid;
+        debug_assert!(
+            matches!(category, OrderErrorCategory::ResourceProfileInvalid),
+            "StructuredOrchestratorError must carry ResourceProfileInvalid"
+        );
+        let message = format!(
+            "SRS-ORCH-002 + SyRS SYS-11: strategy {strategy} launch refused — {violation}",
+            strategy = request.strategy_id.as_str(),
+        );
+        Self {
+            category,
+            error_type: format!("ResourceProfileInvalid::{}", violation.as_str()),
             message,
             original_request: request,
         }
@@ -1466,47 +1687,54 @@ mod tests {
     }
 
     #[test]
-    fn strategy_launch_request_carries_only_the_four_required_fields() {
+    fn strategy_launch_request_carries_only_the_five_required_fields() {
         // The exhaustive destructure proves there are no other public
         // fields. AC-12 + NFR-S5 require the launch envelope to be
         // free of container-runtime bleed (docker_image, container_id,
         // host_path, vendor) so the orchestrator stays free of
-        // Docker-Engine-specific shape.
+        // Docker-Engine-specific shape. The `profile` field carries the
+        // SRS-ORCH-002 / SyRS SYS-11 resource limits.
         let request = StrategyLaunchRequest {
             strategy_id: StrategyId::new("alpha-1"),
             mode: StrategyMode::Live,
             deployment_hash: "sha256:abc".to_string(),
             deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
+            profile: ResourceProfile::live_default(),
         };
         let StrategyLaunchRequest {
             strategy_id: _,
             mode: _,
             deployment_hash: _,
             deadline_millis: _,
+            profile: _,
         } = request.clone();
         assert_eq!(request.strategy_id.as_str(), "alpha-1");
         assert_eq!(request.mode, StrategyMode::Live);
         assert_eq!(request.deployment_hash, "sha256:abc");
         assert_eq!(request.deadline_millis, 30_000);
+        assert_eq!(request.profile, ResourceProfile::live_default());
     }
 
     #[test]
-    fn strategy_launch_outcome_carries_only_the_four_required_fields() {
+    fn strategy_launch_outcome_carries_only_the_five_required_fields() {
         let outcome = StrategyLaunchOutcome {
             strategy_id: StrategyId::new("alpha-1"),
             ready_within_deadline: true,
             elapsed_millis: 4_200,
             deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
+            profile: ResourceProfile::live_default(),
         };
         let StrategyLaunchOutcome {
             strategy_id: _,
             ready_within_deadline: _,
             elapsed_millis: _,
             deadline_millis: _,
+            profile: _,
         } = outcome.clone();
         assert!(outcome.ready_within_deadline);
         assert_eq!(outcome.elapsed_millis, 4_200);
         assert!(outcome.elapsed_millis <= outcome.deadline_millis);
+        assert_eq!(outcome.profile, ResourceProfile::live_default());
     }
 
     #[test]
@@ -1546,6 +1774,7 @@ mod tests {
             mode: StrategyMode::Live,
             deployment_hash: "sha256:abc".to_string(),
             deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
+            profile: ResourceProfile::live_default(),
         };
         let error = StructuredOrchestratorError::startup_deadline_exceeded(
             request.clone(),
@@ -1576,6 +1805,157 @@ mod tests {
                 "[STRATEGY_STARTUP_DEADLINE_EXCEEDED] StrategyStartupDeadlineExceeded: {}",
                 error.message
             )
+        );
+    }
+
+    // ----------------------------------------------------------------------- //
+    // SRS-ORCH-002 resource profile types (SyRS SYS-11 / SYS-57, NFR-SC1)
+    // ----------------------------------------------------------------------- //
+
+    #[test]
+    fn resource_profile_constants_match_syrs_sys_11_defaults() {
+        // SyRS SYS-11 names exact spec literals: live ≤ 512 MB / 0.25 cores;
+        // paper ≤ 300 MB / 0.10 cores. The constants are the single
+        // source of truth — a future tuning has exactly one site to
+        // touch and the contract check pins these values.
+        assert_eq!(LIVE_PROFILE_MEM_MB, 512);
+        assert_eq!(LIVE_PROFILE_CPU_HUNDREDTHS, 25);
+        assert_eq!(PAPER_PROFILE_MEM_MB, 300);
+        assert_eq!(PAPER_PROFILE_CPU_HUNDREDTHS, 10);
+    }
+
+    #[test]
+    fn resource_profile_struct_carries_only_two_fields() {
+        // Exhaustive destructure proves no other public fields. The
+        // contract check's `forbidden_fields` allowlist locks
+        // `cpu_cores_f32`, `docker_image`, `container_id`, etc. out.
+        let profile = ResourceProfile {
+            mem_mb: 256,
+            cpu_hundredths: 15,
+        };
+        let ResourceProfile {
+            mem_mb: _,
+            cpu_hundredths: _,
+        } = profile;
+        assert_eq!(profile.mem_mb, 256);
+        assert_eq!(profile.cpu_hundredths, 15);
+    }
+
+    #[test]
+    fn resource_profile_live_default_matches_spec_literal() {
+        let profile = ResourceProfile::live_default();
+        assert_eq!(profile.mem_mb, LIVE_PROFILE_MEM_MB);
+        assert_eq!(profile.cpu_hundredths, LIVE_PROFILE_CPU_HUNDREDTHS);
+    }
+
+    #[test]
+    fn resource_profile_paper_default_matches_spec_literal() {
+        let profile = ResourceProfile::paper_default();
+        assert_eq!(profile.mem_mb, PAPER_PROFILE_MEM_MB);
+        assert_eq!(profile.cpu_hundredths, PAPER_PROFILE_CPU_HUNDREDTHS);
+    }
+
+    #[test]
+    fn resource_profile_for_mode_dispatches_by_strategy_mode() {
+        // SyRS SYS-11 binding: Live → live profile, Paper → paper profile.
+        // The match is exhaustive on StrategyMode so a future variant
+        // would force a compile-time fix here, not silent fall-through.
+        assert_eq!(
+            ResourceProfile::for_mode(StrategyMode::Live),
+            ResourceProfile::live_default()
+        );
+        assert_eq!(
+            ResourceProfile::for_mode(StrategyMode::Paper),
+            ResourceProfile::paper_default()
+        );
+    }
+
+    #[test]
+    fn resource_profile_validate_accepts_defaults() {
+        assert!(ResourceProfile::live_default().validate().is_ok());
+        assert!(ResourceProfile::paper_default().validate().is_ok());
+    }
+
+    #[test]
+    fn resource_profile_validate_rejects_below_floor_memory() {
+        let profile = ResourceProfile {
+            mem_mb: RESOURCE_PROFILE_MEM_FLOOR_MB - 1,
+            cpu_hundredths: 25,
+        };
+        let err = profile.validate().expect_err("below-floor mem must be rejected");
+        assert!(matches!(err, ResourceProfileError::MemBelowFloor { .. }));
+        assert_eq!(err.as_str(), "MemBelowFloor");
+    }
+
+    #[test]
+    fn resource_profile_validate_rejects_above_ceiling_memory() {
+        let profile = ResourceProfile {
+            mem_mb: RESOURCE_PROFILE_MEM_CEILING_MB + 1,
+            cpu_hundredths: 25,
+        };
+        let err = profile
+            .validate()
+            .expect_err("above-ceiling mem must be rejected");
+        assert!(matches!(err, ResourceProfileError::MemAboveCeiling { .. }));
+        assert_eq!(err.as_str(), "MemAboveCeiling");
+    }
+
+    #[test]
+    fn resource_profile_validate_rejects_below_floor_cpu() {
+        let profile = ResourceProfile {
+            mem_mb: 512,
+            cpu_hundredths: RESOURCE_PROFILE_CPU_FLOOR_HUNDREDTHS - 1,
+        };
+        let err = profile.validate().expect_err("below-floor cpu must be rejected");
+        assert!(matches!(err, ResourceProfileError::CpuBelowFloor { .. }));
+        assert_eq!(err.as_str(), "CpuBelowFloor");
+    }
+
+    #[test]
+    fn resource_profile_validate_rejects_above_ceiling_cpu() {
+        let profile = ResourceProfile {
+            mem_mb: 512,
+            cpu_hundredths: RESOURCE_PROFILE_CPU_CEILING_HUNDREDTHS + 1,
+        };
+        let err = profile
+            .validate()
+            .expect_err("above-ceiling cpu must be rejected");
+        assert!(matches!(err, ResourceProfileError::CpuAboveCeiling { .. }));
+        assert_eq!(err.as_str(), "CpuAboveCeiling");
+    }
+
+    #[test]
+    fn resource_profile_invalid_factory_pins_the_wire_string() {
+        // SRS-ORCH-002 / SyRS SYS-64: the rejection wire string must
+        // be RESOURCE_PROFILE_INVALID and the error_type discriminator
+        // must encode the specific validation failure variant.
+        let request = StrategyLaunchRequest {
+            strategy_id: StrategyId::new("alpha-1"),
+            mode: StrategyMode::Live,
+            deployment_hash: "sha256:abc".to_string(),
+            deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
+            profile: ResourceProfile {
+                mem_mb: 32,
+                cpu_hundredths: 25,
+            },
+        };
+        let violation = request.profile.validate().expect_err("must be invalid");
+        let error =
+            StructuredOrchestratorError::resource_profile_invalid(request.clone(), violation);
+        assert_eq!(error.category, OrderErrorCategory::ResourceProfileInvalid);
+        assert_eq!(error.category.as_str(), "RESOURCE_PROFILE_INVALID");
+        assert_eq!(error.error_type, "ResourceProfileInvalid::MemBelowFloor");
+        assert!(error.message.contains("SRS-ORCH-002"));
+        assert!(error.message.contains("SYS-11"));
+        assert!(error.message.contains("alpha-1"));
+        assert_eq!(error.original_request, request);
+    }
+
+    #[test]
+    fn order_error_category_resource_profile_invalid_wire_string() {
+        assert_eq!(
+            OrderErrorCategory::ResourceProfileInvalid.as_str(),
+            "RESOURCE_PROFILE_INVALID"
         );
     }
 }

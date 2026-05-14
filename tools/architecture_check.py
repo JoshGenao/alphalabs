@@ -22,6 +22,10 @@ from orchestrator_lifecycle_check import (
     OrchestratorLifecycleCheckError,
     assert_orchestrator_lifecycle_static,
 )
+from orchestrator_resource_profile_check import (
+    ResourceProfileCheckError,
+    assert_orchestrator_resource_profile_static,
+)
 from pacing_budget_check import (
     PacingBudgetCheckError,
     assert_pacing_budget_static,
@@ -444,6 +448,28 @@ def assert_orchestrator_lifecycle(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_orchestrator_resource_profile(config: dict) -> list[str]:
+    block = config.get("resource_profile_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_orchestrator_resource_profile_static(config, ROOT)
+    summary = (
+        f"{block['orchestrator_crate']['crate']} enforces "
+        f"{block['resource_profile']['struct']} at the launch boundary — "
+        f"defaults match SyRS SYS-11 (live: "
+        f"{block['spec_constants']['live_mem_mb']['value']} MB / "
+        f"{block['spec_constants']['live_cpu_hundredths']['value']} hundredths CPU; "
+        f"paper: {block['spec_constants']['paper_mem_mb']['value']} MB / "
+        f"{block['spec_constants']['paper_cpu_hundredths']['value']} hundredths CPU); "
+        "configuration overrides validated against SRS-ARCH-005 catalogue bounds; "
+        "misconfigured launches refused with category "
+        f"{block['rejection_category']} ({block['rejection_wire_string']}) "
+        "before the runtime port is invoked (SRS-ORCH-002, SyRS SYS-11 / SYS-57)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -522,6 +548,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_orchestrator_lifecycle(config))
     except OrchestratorLifecycleCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_orchestrator_resource_profile(config))
+    except ResourceProfileCheckError as error:
         fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:

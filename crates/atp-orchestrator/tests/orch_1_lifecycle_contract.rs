@@ -26,7 +26,7 @@
 use atp_orchestrator::{HealthCheckEventSink, StrategyContainerRuntime, StrategyOrchestrator};
 use atp_types::{
     ContainerHealthEvent, ContainerHealthState, ContainerLifecycleAction, LaunchReadiness,
-    OrderErrorCategory, StrategyId, StrategyLaunchRequest, StrategyMode,
+    OrderErrorCategory, ResourceProfile, StrategyId, StrategyLaunchRequest, StrategyMode,
     STRATEGY_STARTUP_DEADLINE_MS,
 };
 use std::cell::{Cell, RefCell};
@@ -105,6 +105,7 @@ fn request(id: &str, mode: StrategyMode) -> StrategyLaunchRequest {
         mode,
         deployment_hash: "sha256:abcdef".to_string(),
         deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
+        profile: ResourceProfile::for_mode(mode),
     }
 }
 
