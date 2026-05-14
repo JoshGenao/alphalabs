@@ -60,57 +60,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Re-uses the shared rust-source parsers introduced for the per-ERR
-# contracts (SESSION 13..18). The historical TODO to hoist them into a
-# dedicated module remains tracked at SESSION 18. SRS-ORCH-001's
-# `LaunchReadiness` is a struct-variant enum, so the existing
-# `_match_arm` (which only handles unit-variant arms) is supplemented
-# with a local `_variant_arm` finder that accepts `Variant { ... } =>`.
-from connectivity_check import _trait_body
-from error_handling_check import _fn_block
-from historical_data_check import _enum_body, _struct_body
-
-
-def _variant_arm(body: str, variant_token: str) -> str:
-    """Return the body of the match arm whose pattern starts with
-    ``variant_token`` (e.g. ``LaunchReadiness::ReadyWithinDeadline``).
-    Handles both unit variants (``Variant =>``) and struct variants
-    (``Variant { field, .. } =>``). The arm body is everything up to
-    the next top-level ``,`` or the closing ``}`` of the match.
-    """
-    pattern = re.compile(
-        rf"{re.escape(variant_token)}\s*(?:\{{[^}}]*\}})?\s*=>\s*",
-        re.DOTALL,
-    )
-    arm_match = pattern.search(body)
-    if arm_match is None:
-        fail(f"function body is missing match arm for `{variant_token}`")
-    start = arm_match.end()
-    depth = 0
-    index = start
-    in_string = False
-    string_char = ""
-    while index < len(body):
-        char = body[index]
-        if in_string:
-            if char == "\\" and index + 1 < len(body):
-                index += 2
-                continue
-            if char == string_char:
-                in_string = False
-        elif char in ('"', "'"):
-            in_string = True
-            string_char = char
-        elif char in ("{", "("):
-            depth += 1
-        elif char in ("}", ")"):
-            if depth == 0:
-                break
-            depth -= 1
-        elif char == "," and depth == 0:
-            break
-        index += 1
-    return body[start:index]
+# Re-uses the shared rust-source parsers in `tools/_rust_parser.py`.
+# SRS-ORCH-001's `LaunchReadiness` is a struct-variant enum, so the
+# match-arm finder used here is `_variant_arm` (handles `Variant { .. } =>`)
+# rather than the unit-variant `_match_arm`.
+from _rust_parser import _enum_body, _fn_block, _struct_body, _trait_body, _variant_arm
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"

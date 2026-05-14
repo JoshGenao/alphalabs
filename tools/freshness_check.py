@@ -35,9 +35,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from connectivity_check import _trait_body
-from error_handling_check import _fn_block, _match_arm
-from historical_data_check import _enum_body, _struct_body
+from _rust_parser import _enum_body, _fn_block, _match_arm, _struct_body, _trait_body
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"

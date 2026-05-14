@@ -30,7 +30,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from historical_data_check import _enum_body, _struct_body
+from _rust_parser import _enum_body, _fn_block, _match_arm, _struct_body
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"
@@ -70,63 +70,6 @@ def execution_source(config: dict, root: Path = ROOT) -> str:
     if not source_path.exists():
         fail(f"execution crate source missing: {source_path.relative_to(root)}")
     return source_path.read_text(encoding="utf-8")
-
-
-def _fn_block(source: str, fn_name: str) -> str:
-    """Return the body of ``pub fn <fn_name>`` up to its closing brace."""
-    match = re.search(rf"\bpub\s+fn\s+{re.escape(fn_name)}\b[^\{{]*\{{", source)
-    if not match:
-        fail(f"execution crate is missing function `{fn_name}`")
-    start = match.end()
-    depth = 1
-    index = start
-    while index < len(source) and depth:
-        char = source[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-        index += 1
-    if depth:
-        fail(f"could not parse function body for `{fn_name}`")
-    return source[start : index - 1]
-
-
-def _match_arm(body: str, pattern: str) -> str:
-    """Return the body of the match arm whose pattern matches ``pattern``.
-
-    Looks for ``<pattern> =>`` and returns the expression up to the next
-    top-level ``,`` (skipping nested braces).
-    """
-    arm_match = re.search(rf"{re.escape(pattern)}\s*=>\s*", body)
-    if not arm_match:
-        fail(f"submit_live_order is missing match arm for `{pattern}`")
-    start = arm_match.end()
-    depth = 0
-    index = start
-    in_string = False
-    string_char = ""
-    while index < len(body):
-        char = body[index]
-        if in_string:
-            if char == "\\" and index + 1 < len(body):
-                index += 2
-                continue
-            if char == string_char:
-                in_string = False
-        elif char in ('"', "'"):
-            in_string = True
-            string_char = char
-        elif char == "{" or char == "(":
-            depth += 1
-        elif char == "}" or char == ")":
-            if depth == 0:
-                break
-            depth -= 1
-        elif char == "," and depth == 0:
-            break
-        index += 1
-    return body[start:index]
 
 
 # --------------------------------------------------------------------------- #

@@ -167,7 +167,12 @@ You **must not** APPROVE based on:
   Codex reads the staged diff itself via its `git` access; this prompt is
   delivered as the focus text so the repo-specific judgment criteria
   above are authoritative. The Codex session is fresh and has no
-  implementation context — that's the point.
+  implementation context — that's the point. **Note:** this is a slash
+  *command* from the `openai-codex` plugin (`commands/adversarial-review.md`),
+  not a skill — that's why it does not appear in the auto-discovered
+  user-invocable *skills* list alongside `codex:setup` / `codex:rescue`.
+  Past sessions logged it as "skill unavailable"; that was a
+  misclassification — invoke it as a slash command and it works.
 - **Fallback — fresh LLM context (Codex unavailable):** open this prompt
   in a new Claude Code sub-agent, a new ChatGPT tab, or any other LLM
   with a clean context. Paste this prompt, then paste `git diff --cached`

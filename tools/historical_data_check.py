@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 from adapter_check import _trait_block
+from _rust_parser import _enum_body, _struct_body
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"
@@ -74,45 +75,6 @@ def python_protocol_source(config: dict, root: Path = ROOT) -> str:
         + "\n\n# __init__\n"
         + init_path.read_text(encoding="utf-8")
     )
-
-
-def _struct_body(source: str, struct: str) -> str:
-    """Return the body of ``pub struct <struct>`` between braces."""
-    match = re.search(rf"\bpub\s+struct\s+{re.escape(struct)}\b[^\{{]*\{{", source)
-    if not match:
-        fail(f"adapter crate is missing public struct `{struct}`")
-    start = match.end()
-    depth = 1
-    index = start
-    while index < len(source) and depth:
-        char = source[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-        index += 1
-    if depth:
-        fail(f"could not parse struct body for `{struct}`")
-    return source[start : index - 1]
-
-
-def _enum_body(source: str, name: str) -> str:
-    match = re.search(rf"\bpub\s+enum\s+{re.escape(name)}\b[^\{{]*\{{", source)
-    if not match:
-        fail(f"adapter crate is missing public enum `{name}`")
-    start = match.end()
-    depth = 1
-    index = start
-    while index < len(source) and depth:
-        char = source[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-        index += 1
-    if depth:
-        fail(f"could not parse enum body for `{name}`")
-    return source[start : index - 1]
 
 
 # --------------------------------------------------------------------------- #

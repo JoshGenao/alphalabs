@@ -1,3 +1,83 @@
+=== SESSION 20 ===
+Date: 2026-05-14
+Cleanup completed: shared-parser hoist + Codex command-vs-skill
+clarification. Tooling debt only; no feature behavior changes, no
+new SRS/ERR work. The hoist trigger condition was named in SESSION 16
+("hoist when the 5th ERR-* feature reuses these helpers"); 5th was
+ERR-5 (SESSION 17), 6th was ERR-6 (SESSION 18), 7th was SRS-ORCH-001
+(SESSION 19) — this session is the deferred refactor.
+Status: 101 remaining features (unchanged from SESSION 19)
+
+What I did:
+- Cleanup commit:
+- Created `tools/_rust_parser.py` (182 LoC) holding the six shared
+  Rust-source brace-matching helpers (`_fn_block`, `_match_arm`,
+  `_variant_arm`, `_trait_body`, `_struct_body`, `_enum_body`) with a
+  `RustParserError(AssertionError)` exception. Error messages were
+  genericized (e.g. "Rust source is missing function `X`" instead of
+  "execution crate is missing function `X`") so the same helper
+  serves every check script equally — no caller's wording was
+  asserted on in tests so the change is safe.
+- Removed local helper definitions from the 4 scripts that owned
+  canonical copies:
+  * `tools/error_handling_check.py` — dropped `_fn_block`, `_match_arm`
+  * `tools/connectivity_check.py` — dropped `_trait_body`
+  * `tools/historical_data_check.py` — dropped `_struct_body`, `_enum_body`
+  * `tools/orchestrator_lifecycle_check.py` — dropped `_variant_arm`
+- Replaced cross-script imports in all 8 check scripts with a single
+  `from _rust_parser import ...` line. Affected:
+  `error_handling_check`, `connectivity_check`, `historical_data_check`,
+  `orchestrator_lifecycle_check`, `freshness_check`, `pacing_budget_check`,
+  `ingestion_validation_check`, `subscription_limit_check`.
+- Removed the `TODO(post-hoist)` comment in `tools/pacing_budget_check.py`
+  and the `TODO(session-17+)` comment in `tools/ingestion_validation_check.py`.
+- Updated `prompts/critic_prompt.md` "Cross-environment usage notes"
+  section to clarify that `/codex:adversarial-review` is a slash
+  *command* from the `openai-codex` plugin, not a skill — that's why
+  it never appeared in the user-invocable skills list alongside
+  `codex:setup` / `codex:rescue`. Past SESSION notes (17, 18, 19)
+  logged it as "skill unavailable"; that was a misclassification.
+  Invoke as a slash command and it works.
+- Added `tests/domain/test_rust_parser_hoist.py` (9 tests) to anchor
+  the helpers' semantic contract at the L7 domain layer. Required to
+  satisfy the deterministic critic's `safety:paired-test-required`
+  rule — five of the touched check scripts match `SAFETY_PATH_RE`
+  (connectivity, ingestion_validation, orchestrator_lifecycle,
+  pacing_budget, subscription_limit). The test exercises each
+  helper against a small Rust fixture covering structs, enums,
+  traits, fn bodies, unit-variant match arms, struct-variant match
+  arms, nested-brace/string-literal handling, and `RustParserError`
+  on missing constructs. Catches future regressions silently
+  disarming every gate.
+
+Verification:
+- All 8 check scripts run green with full PASS evidence
+  (smoke-tested by running each `python3 tools/<name>.py` end-to-end).
+- `.venv/bin/python -m pytest tests/ -q` → 364 passed (was 355;
+  +9 from the new hoist domain test), 4 skipped, 118 subtests passed.
+  Skip list unchanged from SESSION 19: test_deterministic_replay,
+  test_kill_switch_latency, test_money_reconciliation,
+  test_single_live_invariant.
+- Critic deterministic gate: no test files deleted, no vendor
+  imports, no dependency-direction changes — clean.
+
+Known issues / notes for next agent:
+- The four `pytest.mark.skip` decorators still in place
+  (test_deterministic_replay, test_kill_switch_latency,
+  test_money_reconciliation, test_single_live_invariant) are
+  the next four obvious wins. `test_single_live_invariant` is
+  the SESSION-20+1 target — SRS-ORCH-001's lifecycle gate is in
+  place, but the single-Live invariant itself is not enforced
+  yet in `crates/atp-orchestrator/src/lib.rs`. Lifting the skip
+  requires both writing the property test AND extending
+  `StrategyOrchestrator::launch` to refuse a second concurrent
+  Live launch (Live-only; Paper is unconstrained per AC-15).
+- `test_kill_switch_latency`, `test_money_reconciliation`, and
+  `test_deterministic_replay` are blocked on production
+  infrastructure (`DockerStrategyRuntime` via bollard,
+  fill aggregator, internal simulation engine respectively) —
+  none of those are one-PR fixes.
+
 === SESSION 19 ===
 Date: 2026-05-14
 Feature completed: SRS-ORCH-001 — Strategy Orchestrator owns strategy

@@ -35,8 +35,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from error_handling_check import _fn_block, _match_arm
-from historical_data_check import _enum_body, _struct_body
+from _rust_parser import _enum_body, _fn_block, _match_arm, _struct_body, _trait_body
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"
@@ -76,26 +75,6 @@ def execution_source(config: dict, root: Path = ROOT) -> str:
     if not source_path.exists():
         fail(f"execution crate source missing: {source_path.relative_to(root)}")
     return source_path.read_text(encoding="utf-8")
-
-
-def _trait_body(source: str, name: str) -> str:
-    """Return the body of ``pub trait <name>`` between braces."""
-    match = re.search(rf"\bpub\s+trait\s+{re.escape(name)}\b[^\{{]*\{{", source)
-    if not match:
-        fail(f"execution crate is missing public trait `{name}`")
-    start = match.end()
-    depth = 1
-    index = start
-    while index < len(source) and depth:
-        char = source[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-        index += 1
-    if depth:
-        fail(f"could not parse trait body for `{name}`")
-    return source[start : index - 1]
 
 
 # --------------------------------------------------------------------------- #

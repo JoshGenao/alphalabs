@@ -43,15 +43,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-# TODO(post-hoist): hoist shared rust-source parsers (`_fn_block`,
-# `_match_arm`, `_trait_body`, `_struct_body`, `_enum_body`) into
-# `tools/_rust_parser.py` — pacing_budget_check is the sixth per-ERR
-# feature reusing the same set (after error_handling, connectivity,
-# freshness, subscription_limit, ingestion_validation). See SESSION 16 +
-# SESSION 17 notes; ERR-5 was the named trigger condition.
-from connectivity_check import _trait_body
-from error_handling_check import _fn_block, _match_arm
-from historical_data_check import _enum_body, _struct_body
+from _rust_parser import _enum_body, _fn_block, _match_arm, _struct_body, _trait_body
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"
