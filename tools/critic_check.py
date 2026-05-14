@@ -194,7 +194,8 @@ SAFETY_PATH_RE = re.compile(
     r"(kill[_-]?switch|connectivity|stale[_-]?data|live[_-]?mode|safety"
     r"|subscription[_-]?limit|market[_-]?data[_-]?line"
     r"|ingestion[_-]?validation|record[_-]?quarantine"
-    r"|pacing[_-]?budget|ingestion[_-]?schedule)",
+    r"|pacing[_-]?budget|ingestion[_-]?schedule"
+    r"|orchestrator[_-]?lifecycle|strategy[_-]?container)",
     re.IGNORECASE,
 )
 
