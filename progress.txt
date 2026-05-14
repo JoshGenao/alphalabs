@@ -1,3 +1,352 @@
+=== SESSION 18 ===
+Date: 2026-05-13
+Feature completed: ERR-6 — IB pacing budget exceeded by configured
+ingestion job: refuse over-budget jobs at scheduling time at the
+DataLayer layer, publish a structured PacingBudgetEvent carrying both
+projected_requests AND permitted_requests for dashboard fan-out
+(TOCTOU closure), and produce zero start-side-effect on the scheduler
+(traces SRS-DATA-002 + SRS-DATA-004 + SyRS SYS-31 / SYS-55 / SYS-22b /
+SYS-23 + StRS A-10 / SN-1.26 / SN-1.27).
+Status: 102 remaining features
+
+What I did:
+- Prep commit (24391a0): extended SAFETY_PATH_RE in
+  `tools/critic_check.py` to add `pacing[_-]?budget` and
+  `ingestion[_-]?schedule` to the safety-path alternation. Continues
+  the per-feature precedent (ERR-2 added connectivity, ERR-3 added
+  stale_data, ERR-4 added subscription_limit + market_data_line in
+  SESSION 16 commit 8143ac5, ERR-5 added ingestion_validation +
+  record_quarantine in SESSION 17 commit ff10ef0). The split-commit
+  shape exactly mirrors SESSIONs 16 + 17.
+- Feat commit (2bfa1c4):
+- Extended `crates/atp-types/src/lib.rs`:
+  * Added `IngestionPacingBudgetExceeded` variant to
+    `OrderErrorCategory` (now 9 variants) with wire string
+    `"INGESTION_PACING_BUDGET_EXCEEDED"` — single source of truth for
+    the SyRS SYS-64 wire vocabulary; no parallel enum.
+  * Added `pub struct IngestionJobRequest { job_kind: String,
+    window_seconds: u64 }` — vendor-neutral schedule envelope.
+    Deliberately omits broker / IB session / tick / vendor-dataset /
+    vendor-table / parquet-path / credential fields (caught by the
+    contract block's 7-element forbidden_fields allowlist).
+  * Added `pub enum PacingBudgetState { WithinBudget, BudgetExceeded }`
+    with `const is_exceeded()` helper. 2-state cadence mirrors ERR-4's
+    SubscriptionLimitState.
+  * Added `pub struct PacingBudgetEvent { state, job_kind,
+    projected_requests: u32, permitted_requests: u32,
+    observed_at_seconds: u64 }` — exactly five fields, no
+    broker/session/vendor/tick leakage. Carrying BOTH projected AND
+    permitted closes a TOCTOU window (same rationale as ERR-4's
+    current_lines + configured_limit). `job_kind` semantically encodes
+    the window (minute-bar-watchlist → SYS-22b overnight,
+    option-chain-capture → SYS-23 near-close), so no separate
+    window_label field.
+  * Added `pub struct StructuredPacingError { category, error_type,
+    message, original_request: IngestionJobRequest }` with a
+    category-pinned factory `budget_exceeded(request, projected,
+    permitted)` that `debug_assert!`s the category stays
+    `OrderErrorCategory::IngestionPacingBudgetExceeded`. Implements
+    `fmt::Display` and `std::error::Error`. Message format:
+    `"SRS-DATA-002 + SRS-DATA-004 + SyRS SYS-55: ingestion job <kind>
+    over pacing budget — projected <N> requests, permitted <M>"`.
+  * Added 5 new unit tests: PacingBudgetState predicate,
+    IngestionJobRequest + PacingBudgetEvent exhaustive destructures
+    (forbidden-field proofs), TOCTOU pairing assertion (projected
+    >= permitted on BudgetExceeded), factory wire-string + Display
+    round-trip. Total atp-types unit tests: 25 (was 20 in SESSION 17).
+  * Extended the existing
+    `order_error_category_wire_strings_track_syrs_sys_64` test to
+    cover the 9th variant.
+- Extended `crates/atp-data/src/lib.rs`:
+  * Added `pub trait PacingBudgetValidator` with three read-only
+    methods: `projected_requests`, `permitted_requests`,
+    `check_budget`. The trait has NO mutator method — the
+    zero-job-start invariant is anchored at the port shape so a
+    concrete validator cannot dispatch the job through the probe
+    call.
+  * Added `pub trait PacingBudgetEventSink { fn record(&self, event:
+    PacingBudgetEvent); }`. Concrete sinks (deferred) route events
+    to logs, the dashboard scheduling-view alert pane, and the
+    notification dispatcher per SyRS SYS-55's "until scope or window
+    configuration is reduced" clause.
+  * Added `pub struct IngestionJobScheduled { job_kind: String }` —
+    only construction site is the `WithinBudget` arm of
+    `schedule_ingestion_job`.
+  * Added `DataLayer::schedule_ingestion_job<V, S>(schedule,
+    validator, events, observed_at_seconds) -> Result<
+    IngestionJobScheduled, StructuredPacingError>` with the match:
+    `WithinBudget => Ok(IngestionJobScheduled { ... })`,
+    `BudgetExceeded => { let projected =
+    validator.projected_requests(&schedule); let permitted =
+    validator.permitted_requests(&schedule); events.record(
+    PacingBudgetEvent { ... });
+    Err(StructuredPacingError::budget_exceeded(schedule, projected,
+    permitted)) }`. Takes NO `StrategyMode` parameter — SyRS SYS-55
+    applies the same pacing-budget rule independent of which strategy
+    is live; the scheduled ingestion jobs precede mode selection.
+  * Added `#[doc(hidden)] pub const _PACING_BUDGET_CATEGORY:
+    OrderErrorCategory = OrderErrorCategory::IngestionPacingBudgetExceeded;`
+    workspace-level reference to the canonical wire-string source.
+    Mirrors ERR-4's `_SUBSCRIPTION_LIMIT_CATEGORY` and ERR-5's
+    `_INGESTION_VALIDATION_CATEGORY`.
+  * Added 3 new in-crate unit tests: WithinBudget happy path with
+    `PacingBudgetForbiddenSink`, BudgetExceeded rejection with one
+    event, validator call-count sanity (CountingValidator wrapper
+    asserts check_budget probed once + projected/permitted each read
+    once on the rejection leaf). Total atp-data unit tests: 7 (was 4
+    in SESSION 17).
+- Added `crates/atp-data/tests/err_6_pacing_budget_blocked.rs`
+  (L7 domain integration test, 5 tests, ~456 lines):
+  * `PacingBudgetValidatorSpy` (parameterized state + projected +
+    permitted + per-method call counters), `PacingBudgetEventSinkSpy`
+    (collects events), `PacingBudgetForbiddenSink` (panics on
+    `record`) for cross-state isolation.
+  * `err_6_budget_exceeded_state_blocks_job_with_structured_error` —
+    full ERR-6 contract: category, wire string, message trace
+    strings (SRS-DATA-002, SRS-DATA-004, SYS-55, job_kind, projected,
+    permitted), exactly one event recorded with all five fields,
+    validator probed once for `check_budget` and once each for
+    `projected_requests` / `permitted_requests`.
+  * `err_6_within_budget_state_returns_scheduled_and_emits_no_event`
+    — positive control with `PacingBudgetForbiddenSink` panic stub.
+    Validator probed for `check_budget` only (numerics methods must
+    not be read on the accept path).
+  * `err_6_budget_exceeded_state_holds_across_many_schedules` —
+    pseudo-property sweep over 5 cases mixing both SyRS SYS-55 jobs
+    (SYS-22b minute-bar watchlist + SYS-23 option-chain capture); per-
+    case projected/permitted numerics match.
+  * `err_6_identical_contract_for_minute_bar_and_option_chain_jobs`
+    — SyRS SYS-55 job-invariance: rejection envelope is byte-identical
+    for minute-bar-watchlist and option-chain-capture (category +
+    error_type + wire string equal across jobs; original_request and
+    message differ by design — they carry the per-call payload).
+  * `err_6_budget_exceeded_anchors_zero_job_start_via_port_shape` —
+    PacingBudgetValidator trait exposes no mutator, so the gate
+    cannot start a job through the public port API. Primary
+    enforcement is the static check's 14-pattern
+    `forbidden_mutations` allowlist; this Rust test anchors the
+    behavioral post-condition.
+- Added `tests/domain/test_pacing_budget_refused.py` (L7 Python, 5
+  tests marked `pytest.mark.domain` + `pytest.mark.safety`). Shells
+  out to `cargo test -p atp-data --test err_6_pacing_budget_blocked
+  <name> -- --exact` (one Python test per Rust scenario);
+  `pytest.skip(reason=...)` if cargo absent. This file's presence
+  satisfies `check_safety_critical_paired` once the prep commit's
+  regex extension is live.
+- Added `tools/pacing_budget_check.py` (~425 lines, peer of
+  `tools/subscription_limit_check.py` and
+  `tools/ingestion_validation_check.py`). 6 static checks + 1 cargo
+  smoke:
+  1. `atp-types` declares `IngestionJobRequest` with the 2 required
+     fields and rejects 7 forbidden vendor/broker fields.
+  2. `atp-types` declares `PacingBudgetState` with both `WithinBudget`
+     and `BudgetExceeded` variants.
+  3. `atp-types` declares `PacingBudgetEvent` with the 5 required
+     fields and rejects the 7 forbidden fields.
+  4. `atp-data` declares `PacingBudgetValidator` trait with all 3
+     methods (projected_requests, permitted_requests, check_budget).
+  5. `atp-data` declares `PacingBudgetEventSink` trait with `record`.
+  6. Inside `schedule_ingestion_job`, the body matches on
+     `validator.check_budget(`, the WithinBudget arm is the only call
+     site of `IngestionJobScheduled {`, the BudgetExceeded arm reads
+     `validator.projected_requests(` and
+     `validator.permitted_requests(`, produces
+     `OrderErrorCategory::IngestionPacingBudgetExceeded` (either
+     directly or via `StructuredPacingError::budget_exceeded(`),
+     records via `events.record(`, and contains NONE of the
+     14-pattern `forbidden_mutations` allowlist.
+  7. (cargo) `cargo test -p atp-data --lib` + `--test
+     err_6_pacing_budget_blocked` smoke (skip on missing cargo).
+  Reuses `_struct_body` / `_enum_body` from `historical_data_check`,
+  `_fn_block` / `_match_arm` from `error_handling_check`, and
+  `_trait_body` from `connectivity_check`. ERR-6's match has literal
+  pattern arms (no payload binding), so no `_quarantined_arm`-style
+  local helper needed (only ERR-5 still needs that). Exposes
+  `assert_pacing_budget_static(config, root)` for the architecture-
+  check short-circuit path. Drops a `TODO(post-hoist)` comment next
+  to the three imports — ERR-6 is the 6th feature reusing the
+  parsers, and the cross-tool hoist into `tools/_rust_parser.py` is
+  still pending from SESSION 16's named trigger condition.
+- Added `pacing_budget_contract` block to
+  `architecture/runtime_services.json` parallel to
+  `subscription_limit_contract` and `ingestion_validation_contract`.
+  Declares: `requirement: "ERR-6"`, `srs_refs: ["SRS-DATA-002",
+  "SRS-DATA-004"]`, `syrs_refs: ["SYS-31", "SYS-55", "SYS-22b",
+  "SYS-23"]`, `strs_refs: ["A-10", "SN-1.26", "SN-1.27"]`, the types
+  crate, the data crate, the IngestionJobRequest shape (2 required +
+  7 forbidden), the PacingBudgetState (WithinBudget + BudgetExceeded),
+  the PacingBudgetEvent shape (5 required + 7 forbidden), the two
+  port traits with their method lists, the entry-point method, the
+  guard metadata (state enum, both variants, validator-call +
+  projected-call + permitted-call + event-call tokens,
+  accepted_struct token, 14-pattern forbidden_mutations allowlist),
+  the rejection category, the wire string, and a `deferred` array
+  listing the three explicit deferrals (concrete projector;
+  dashboard alert + notification dispatcher fan-out; the SyRS SYS-31
+  15-second-identical-request runtime throttle — orthogonal to the
+  scheduling-time gate; belongs on the IB adapter request path).
+  Also extends
+  `error_handling_contract.error_category.{variants,wire_strings}`
+  to include `IngestionPacingBudgetExceeded` +
+  `INGESTION_PACING_BUDGET_EXCEEDED` so the SyRS SYS-64 single-
+  source-of-truth invariant holds.
+- Wired `assert_pacing_budget(config)` into
+  `tools/architecture_check.py` between `assert_ingestion_validation`
+  and `assert_container_language_boundary`. Emits a summary line:
+  `atp-data gates ingestion jobs on PacingBudgetState (2 states),
+  publishing PacingBudgetEvent when projected IB historical-data
+  requests exceed the configured pacing budget for the job window
+  (ERR-6, SRS-DATA-002, SRS-DATA-004, SyRS SYS-55)`. The
+  `assert_error_handling` summary's `len(variants)` substitution
+  auto-renders the new "9 SyRS SYS-64 categories" count.
+- Added `python3 tools/pacing_budget_check.py` to `init.sh` between
+  the ingestion-validation check and the deployment check.
+  `✓ Environment ready` now requires it too.
+- Added `tests/test_pacing_budget_contract.py` (31 tests across 9
+  classes): subprocess contract test (`ERR-6 PASS` + 19 evidence
+  needles), per-check tests for IngestionJobRequest,
+  PacingBudgetState, PacingBudgetEvent (including 3 forbidden-field
+  guards for broker / tick_id / sharadar_table + 2 required-field
+  guards for projected_requests / permitted_requests),
+  PacingBudgetValidator + PacingBudgetEventSink ports, and the
+  pacing-budget-guard match-arm gate; negative spot-checks (dropping
+  events.record; injecting scheduler.start into BudgetExceeded leaf;
+  injecting self.start_job into BudgetExceeded leaf; smuggling
+  IngestionJobScheduled into the BudgetExceeded leaf; mutating the
+  match scrutinee to a fake call; dropping the projected_requests /
+  permitted_requests reads); aggregate evidence counts (7 / 6 for
+  run_checks / static).
+- Tightened `tests/test_architecture.py
+  test_srs_arch_001_language_boundary` to require the new `atp-data
+  gates ingestion jobs on PacingBudgetState` summary line with all 4
+  needles. Bumped the `"8 SyRS SYS-64 categories"` needle to `"9"`.
+  Updated `tests/test_error_handling_contract.py` with the same
+  8→9 needle bump and renamed the variant-presence test to
+  `test_all_nine_syrs_sys_64_categories_present`.
+- Flipped `feature_list.json` ERR-6.passes from `false` to `true`.
+
+What I tested:
+- `cargo test -p atp-types --lib` — 25 tests pass (was 20 in
+  SESSION 17; +5 ERR-6).
+- `cargo test -p atp-data --lib` — 7 tests pass (was 4 in SESSION 17;
+  +3 ERR-6).
+- `cargo test -p atp-data --test err_6_pacing_budget_blocked` —
+  5 tests pass.
+- `cargo test --workspace` — all passing crates green.
+- `python3 tools/pacing_budget_check.py` — `ERR-6 PASS` with 6
+  evidence bullets + cargo smoke.
+- `python3 tools/architecture_check.py` — `SRS-ARCH-001 PASS` with
+  the new ERR-6 summary line and "9 SyRS SYS-64 categories".
+- `pytest -q` — 311 passed, 4 pre-existing skips (unrelated to
+  ERR-6), 0 failures. Includes the 31-test contract suite, the
+  5-test L7 domain wrapper, and the architecture / error-handling
+  needle bumps.
+- `./init.sh` — runs all ERR-1..6 contract checks (now 13 stages)
+  and prints `✓ Environment ready`.
+- Manual ERR-6.steps[] walk per the coding-prompt's Step 6:
+  Step 1 (configure) — `./init.sh` green.
+  Step 2 (trigger) — gate-level trigger covered by the L7 cargo
+    integration test
+    (`err_6_budget_exceeded_state_blocks_job_with_structured_error`);
+    concrete-projector trigger deferred per contract.
+  Step 3 (verify) — `INGESTION_PACING_BUDGET_EXCEEDED` wire string in
+    the structured error; PacingBudgetEvent recorded by the
+    EventSinkSpy; zero-mutation port-shape anchor proves omission of
+    any scheduler/job-start side effect; the three `deferred`
+    entries name the concrete-projector / sink / 15-second-throttle
+    owners.
+  Step 4 (trace) — `pacing_budget_contract.srs_refs ==
+    ["SRS-DATA-002", "SRS-DATA-004"]`, `syrs_refs ⊇ ["SYS-55"]`,
+    visible in `python3 tools/architecture_check.py` output as the
+    new summary line.
+
+Critic verdicts:
+  COMMIT 1 (chore(critic) — 24391a0):
+    deterministic: APPROVE — 0 findings.
+    judgment (fallback per AGENTS.md; `/codex:adversarial-review`
+        skill not surfaced in this session, so the SESSION 17
+        fallback path was reused): predictably BLOCK by rule
+        `meta:critic-self-modification` (refusal clause #4 in
+        `prompts/critic_prompt.md` fires unconditionally on any
+        edit of `tools/critic_check.py`).
+    Override: operator signed off via AskUserQuestion on 2026-05-13
+        authorizing the SESSION 16 / commit 8143ac5 + SESSION 17 /
+        commit ff10ef0 workflow precedent. No `ATP_CRITIC_BYPASS=1`,
+        no `--no-verify`. The override is recorded in the commit
+        body of 24391a0 for audit trail.
+  COMMIT 2 (feat(ERR-6) — 2bfa1c4):
+    deterministic: APPROVE — 0 findings. The
+        `safety:paired-test-required` rule fires on
+        `tools/pacing_budget_check.py` (and the gate diff inside
+        `crates/atp-data/src/lib.rs`) thanks to the prep commit's
+        regex extension, and is satisfied by
+        `tests/domain/test_pacing_budget_refused.py` being in the
+        same diff. Secret scan, test-deletion scan, adapter-
+        isolation vendor-token scan, float-on-price scan, SRS-ref
+        hygiene scan — all quiet.
+    judgment (fresh-context subagent fallback per AGENTS.md;
+        primary `/codex:adversarial-review` path was unavailable
+        in this session): APPROVE — 0 findings. The reviewer spot-
+        checked the load-bearing files (the new contract block, the
+        atp-types additions, the gate body, the integration test,
+        the static checker) against the seven judgment criteria in
+        `prompts/critic_prompt.md`. No refusal clause fired — the
+        diff does not touch `tools/critic_check.py` (the prep
+        commit 24391a0 is the parent tree, not in this diff).
+
+Known issues / notes for next agent:
+- **Concrete PacingBudgetValidator implementation deferred.** The
+  gate is wired-but-empty until a concrete validator lands that
+  projects watchlist size × per-symbol request granularity against
+  the IB pacing tier (SYS-31's 60-requests-per-10-minute ceiling)
+  for both windows. Same wired-but-empty shape ERR-2..5 shipped
+  under. Owner: SRS-DATA-002 + SRS-DATA-004 + the orchestrator-side
+  scheduler config. When that lands, it plugs into the existing
+  schedule_ingestion_job gate without changing the gate's signature.
+- **Dashboard alert + notification fan-out deferred.** SyRS SYS-55
+  requires alerting the operator at scheduling time with scope-
+  reduction guidance — the gate emits one structured event per
+  refused job (correct semantics for fan-in); the dashboard/
+  notification side is downstream. Owner: SRS-NOTIF-001 +
+  SRS-LOG-001.
+- **SyRS SYS-31 15-second-identical-request runtime throttle out of
+  scope.** That clause is a runtime concern (during the actual IB
+  historical-data adapter call), not a scheduling-time concern.
+  ERR-6's gate runs at scheduling time and refuses over-budget
+  jobs; the 15-second throttle belongs on the IB adapter request
+  path. Owner: SRS-DATA-002 + SRS-DATA-004 adapter implementation.
+  Explicitly listed in the contract's `deferred` array.
+- **Shared-parser hoist still deferred.** SESSION 16 flagged the
+  hoist into `tools/_rust_parser.py` when the 5th ERR-* feature
+  reused the parsers. ERR-5 was the 5th, ERR-6 is now the 6th
+  (after error_handling, connectivity, freshness, subscription_limit,
+  ingestion_validation). A `TODO(post-hoist)` comment in `tools/
+  pacing_budget_check.py` next to the three imports flags it for
+  the next session. The hoist itself is a single refactor commit
+  (move 5 helpers + update 5 import statements + add a one-line
+  entry to the shared parser doc).
+- **`/codex:adversarial-review` skill still unavailable.** Same as
+  SESSION 17 — the skill isn't surfaced in the user-invocable list
+  (only codex:setup, codex:rescue, codex:gpt-5-4-prompting,
+  codex:codex-cli-runtime, codex:codex-result-handling are
+  exposed), so the judgment-pass critic ran via the AGENTS.md
+  fallback path: a fresh-context general-purpose subagent given
+  `prompts/critic_prompt.md` + the staged diff. Worked identically
+  to the primary path; same JSON schema, same approve/warn/block
+  rules. If a future session has the Codex skill available,
+  prefer the primary path — the judgment pass benefits from
+  Codex's git tooling for large diffs (this session's feat commit
+  was 2192 LOC inserted).
+- **Vendor literal hygiene held.** Same precedent as ERR-5 — neutral
+  source names (`minute-bar-watchlist`, `option-chain-capture`) used
+  throughout test fixtures and source strings. The
+  `forbidden_fields` allowlist on IngestionJobRequest and
+  PacingBudgetEvent still names vendor-specific literals
+  (databento_dataset, sharadar_table, raw_parquet_path,
+  vendor_credentials) as field names to reject — those are JSON /
+  Python / SRS-doc strings, not in scanned src/ files, so they're
+  fine where they sit.
+
 === SESSION 17 ===
 Date: 2026-05-13
 Feature completed: ERR-5 — Ingestion record validation failure:
