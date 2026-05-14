@@ -101,7 +101,7 @@
       "Step 3: Verify acceptance criteria: Default live profile is no more than 512 MB RAM and 0.25 CPU cores; default paper profile is no more than 300 MB RAM and 0.10 CPU cores; configuration overrides are validated.",
       "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {

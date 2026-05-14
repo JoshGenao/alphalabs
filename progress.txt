@@ -1,3 +1,309 @@
+=== SESSION 21 ===
+Date: 2026-05-14
+Feature completed: SRS-ORCH-002 — Strategy Orchestrator enforces
+configurable resource profiles for live and paper containers (SyRS
+SYS-11 / SYS-57 / NFR-SC1): live default 512 MB / 0.25 CPU, paper
+default 300 MB / 0.10 CPU, configuration overrides validated at the
+orchestrator boundary against the SRS-ARCH-005 catalogue bounds, and
+a misconfigured launch never reaches the runtime port.
+Status: 100 remaining features
+
+What I did:
+- Carryover audit at session start: ERR-7 / ERR-8 / ERR-9 are the
+  three lower-ID P1s by the autonomous-prompt rule, but all three
+  are blocked on deferred future-feature scope (Hot-Swap
+  SRS-RESV-001..006 for ERR-7; kill switch + SRS-NOTIF-001 for ERR-8;
+  SRS-MD-006 + SRS-API-001 for ERR-9 — only SRS-ARCH-005 is PASS).
+  Per the [[feedback-scope-honesty]] memory I surfaced this and the
+  user picked SRS-ORCH-002 (the next P1 implementable on the current
+  foundation; SESSION 20 named it as the natural next).
+
+- Prep commit (c488029): extended SAFETY_PATH_RE in
+  `tools/critic_check.py` to add the `resource[_-]?profile` token.
+  Mirrors the SESSION 16 / 17 / 18 / 19 prep precedent
+  (8143ac5 / ff10ef0 / 24391a0 / 7064c49).
+
+- Feat commit (7d4f5a2):
+- Extended `crates/atp-types/src/lib.rs`:
+  * Added `OrderErrorCategory::ResourceProfileInvalid` variant
+    with wire string `"RESOURCE_PROFILE_INVALID"` — the SyRS
+    SYS-64 single source of truth for the new rejection category.
+  * Added 4 spec-literal constants (`LIVE_PROFILE_MEM_MB = 512`,
+    `LIVE_PROFILE_CPU_HUNDREDTHS = 25`, `PAPER_PROFILE_MEM_MB = 300`,
+    `PAPER_PROFILE_CPU_HUNDREDTHS = 10`) and 4 catalogue-aligned
+    validation-bound constants (`RESOURCE_PROFILE_MEM_FLOOR_MB = 64`
+    / `_MEM_CEILING_MB = 65536` / `_CPU_FLOOR_HUNDREDTHS = 5` /
+    `_CPU_CEILING_HUNDREDTHS = 1600`).
+  * Added `pub struct ResourceProfile { mem_mb: u32, cpu_hundredths:
+    u32 }` with `live_default()`, `paper_default()`, `for_mode()`
+    (mode-keyed dispatch with exhaustive match on StrategyMode), and
+    `validate()` (enforces the SRS-ARCH-005 catalogue bounds).
+    Forbidden-fields list: `cpu_cores_f32`, `cpu_cores`, `cpu_quota`,
+    `memory_bytes`, `docker_image`, `container_id`, `vendor`,
+    `host_path`, `cgroup_path`, `broker` (10 tokens) — locks float-CPU
+    drift and vendor / container-runtime bleed out at the contract.
+  * Added `pub enum ResourceProfileError` with 4 validation-failure
+    variants (MemBelowFloor / MemAboveCeiling / CpuBelowFloor /
+    CpuAboveCeiling).
+  * Extended `StrategyLaunchRequest` and `StrategyLaunchOutcome` with
+    `pub profile: ResourceProfile` (4 → 5 fields each). The
+    forbidden-fields allowlist on each struct stays at 6 tokens
+    (no docker_image / container_id / etc).
+  * Added `StructuredOrchestratorError::resource_profile_invalid(
+    request, violation)` factory mirroring the
+    `startup_deadline_exceeded` pattern.
+  * 12 new in-crate unit tests in atp-types covering the constant
+    invariants, exhaustive destructure (proves only 2 fields), default
+    invariance for live/paper, mode dispatch, all four validation
+    failure paths, and the factory wire-string pin.
+- Extended `crates/atp-orchestrator/src/lib.rs`:
+  * Added a validation gate to `launch()` that calls
+    `request.profile.validate()` BEFORE `runtime.create()` — on
+    failure returns
+    `StructuredOrchestratorError::resource_profile_invalid(...)` with
+    NO sink event (no container exists to destroy; emitting an event
+    would lie about a destroy that never happened — Pattern A,
+    matches ERR-4/5/6 structured-rejection).
+  * Threaded `request.profile` through the happy-path outcome:
+    `StrategyLaunchOutcome { ..., profile: request.profile }`. The
+    contract block enforces `profile: request.profile` literally
+    appears at the construction site (no silent re-defaulting).
+  * Added `live_profile_default()`, `paper_profile_default()`,
+    `profile_for_mode(mode)` re-exporters on `StrategyOrchestrator`
+    so callers don't have to reach into atp-types.
+  * Built the env-var → launch-profile WIRE (the substantive
+    enhancement the user requested): three new functions on
+    `StrategyOrchestrator`:
+      - `profile_for_mode_from_lookup<F: Fn(&str) -> Option<String>>`
+        — pure, lookup-based; tests drive it with stub maps.
+      - `profile_for_mode_via_env_lookup<F: Fn(&str) ->
+        Result<String, std::env::VarError>>` — testable bridge
+        that distinguishes `VarError::NotPresent` (silently falls
+        back to SyRS default) from `VarError::NotUnicode` (returns
+        a structured `ResourceProfileEnvError::Unparseable*` —
+        a set-but-invalid override is the OPPOSITE of "configuration
+        overrides are validated" so it must surface, not collapse).
+      - `profile_for_mode_from_env(mode)` — production wrapper that
+        plugs `std::env::var` into `_via_env_lookup`.
+    Reads ATP_LIVE_STRATEGY_MEM_MB / _CPU and ATP_PAPER_STRATEGY_MEM_MB
+    / _CPU; converts cores → hundredths AT THE BOUNDARY (CPU stored
+    as f64 in catalogue, u32 hundredths in atp-types); validates the
+    f64 cores against the f64 catalogue bounds (0.05..16.0) BEFORE
+    rounding to u32 hundredths, so 0.046 cores is rejected as
+    below-floor instead of silently rounding up to 5 hundredths and
+    passing the integer check (symmetric for above-ceiling 16.004).
+    The 1e-9 tolerance in the f64 bounds-check absorbs binary-float
+    representation noise without rejecting the exact floor / ceiling.
+  * Added `pub enum ResourceProfileEnvError` (UnparseableMem /
+    UnparseableCpu / Validation(ResourceProfileError) variants)
+    with Display + std::error::Error. The `From<ResourceProfileError>`
+    impl lets the `?` operator collapse validation errors into the
+    env-error envelope cleanly.
+  * 14 new in-crate unit tests covering: the validation gate
+    (happy-path, 4 rejection variants), the env-var wire (defaults,
+    in-range overrides, unparseable mem / cpu, below-floor /
+    above-ceiling, exact-floor / exact-ceiling boundary, NotPresent
+    fallback, NotUnicode rejection on mem AND cpu, present-value
+    threading).
+- Extended `architecture/runtime_services.json`:
+  * Added `resource_profile_contract` block (~155 lines) with
+    spec_constants / validation_constants / resource_profile shape +
+    forbidden_fields / resource_profile_error enum /
+    resource_profile_methods / orchestrator_helper_methods (now 6
+    helpers including the env wire) / launch_validate_guard
+    (positional invariant + 12-token forbidden_calls_on_rejection
+    list) / outcome_profile_equality_guard / config_binding (the
+    catalogue → constant cross-check).
+  * Removed the resolved
+    "Resource-profile enforcement (live ≤512 MB / 0.25 CPU; paper
+    ≤300 MB / 0.10 CPU) at container creation time (owner:
+    SRS-ORCH-002 / SyRS SYS-11 / SYS-57)" entry from
+    orchestrator_lifecycle_contract.deferred. The remaining
+    deferred entries on the lifecycle contract (Docker driver,
+    SRS-ORCH-003 workload-priority, SRS-ORCH-004 deployment-version,
+    HealthCheckEventSink wiring, restart back-off) stay deferred.
+  * Added 5 deferred entries on the new resource_profile_contract
+    block honestly describing what's NOT done: concrete Docker
+    driver that applies cgroup limits, typed error surface on the
+    lifecycle port (SRS-ORCH-001 retrofit), production caller of
+    launch() (main.py is still `pass`), SRS-ORCH-003 workload-priority
+    arbitration, and SRS-API-001 dashboard / REST override flow.
+  * Updated strategy_launch_request.required_fields and
+    strategy_launch_outcome.required_fields to add `profile`
+    (4 → 5 each).
+- Added `tools/orchestrator_resource_profile_check.py` (~500 lines):
+  9 static checks (spec_constants, validation_constants,
+  resource_profile_struct, resource_profile_error_enum,
+  resource_profile_methods, orchestrator_helper_methods,
+  launch_validate_guard, outcome_profile_equality_guard,
+  config_catalogue_binding) plus a cargo smoke check that runs the
+  `orch_2_resource_profile_contract` integration test.
+  `assert_orchestrator_resource_profile_static(config, root)` returns
+  9 evidence bullets to `tools/architecture_check.py`.
+  Reuses `tools/_rust_parser.py` (the SESSION 20 hoist).
+- Wired into `tools/architecture_check.py` between the
+  orchestrator_lifecycle and container_language_boundary checks.
+- Wired into `init.sh`: new step "Running orchestrator
+  resource-profile contract check..." between the lifecycle step
+  and the deployment-configuration step.
+- Added `crates/atp-orchestrator/tests/orch_2_resource_profile_contract.rs`
+  (305 lines, 6 integration tests) with a `RuntimeSpy` that records
+  `create_profiles: Vec<ResourceProfile>` (so tests can assert the
+  profile was propagated byte-equal through `create`) and a
+  `ForbiddenSink` that panics if any event is emitted on the
+  validation-rejection arm. Tests: live-default propagation,
+  paper-default propagation, in-range custom override propagation,
+  below-floor mem refusal (zero create / start / destroy / sink),
+  above-ceiling cpu refusal, mode-uniformity (live + paper share
+  envelope shape).
+- Added `tests/test_orchestrator_resource_profile_contract.py`
+  (~415 lines, 28 tests): script subprocess with 24 evidence
+  needles + per-check positive cases + negative mutation tests for
+  every declared structural invariant (drifted live mem / paper cpu
+  constants, missing constant, drifted mem floor, missing mem_mb
+  field, leaked cpu_cores_f32 / docker_image, missing MemBelowFloor
+  variant, missing validate method, missing profile_for_mode /
+  profile_for_mode_from_env, missing validate call,
+  validate-after-create swap, missing rejection factory, runtime
+  mutation in rejection arm, outcome.profile re-default, catalogue
+  default drift). Static aggregator returns exactly 9 bullets.
+- Added `tests/domain/test_orchestrator_resource_profile.py` (L7):
+  6 tests that shell out to `cargo test -p atp-orchestrator --test
+  orch_2_resource_profile_contract --exact <name>` — required by the
+  deterministic critic's `safety:paired-test-required` rule once the
+  prep commit's `resource[_-]?profile` token landed in SAFETY_PATH_RE.
+- Updated existing `tests/test_orchestrator_lifecycle_contract.py`
+  needles for the StrategyLaunchRequest / StrategyLaunchOutcome
+  4 → 5 fields change.
+
+Verification:
+- cargo test -p atp-types --lib: 45 passed (was 33; +12 new).
+- cargo test -p atp-orchestrator --lib: 24 passed (was 10; +14 new).
+- cargo test -p atp-orchestrator --test orch_1_lifecycle_contract:
+  6 passed (existing SRS-ORCH-001 still green after envelope
+  extension; only the request() helper needed `profile:
+  ResourceProfile::for_mode(mode)`).
+- cargo test -p atp-orchestrator --test orch_2_resource_profile_contract:
+  6 passed.
+- python3 tools/orchestrator_resource_profile_check.py:
+  SRS-ORCH-002 PASS (10 bullets including cargo smoke).
+- python3 tools/orchestrator_lifecycle_check.py: SRS-ORCH-001 PASS
+  (envelope-extension didn't regress).
+- python3 tools/architecture_check.py: SRS-ARCH-001 PASS, new
+  resource-profile evidence appears.
+- ./init.sh: ✓ Environment ready (orchestrator resource-profile
+  step succeeds between lifecycle and deployment-configuration).
+- .venv/bin/python -m pytest tests/ -q: 398 passed, 4 skipped, 118
+  subtests (was 364 in SESSION 20; +34 net). Skip list unchanged
+  from SESSION 20: deterministic_replay, kill_switch_latency,
+  money_reconciliation, single_live_invariant — all still blocked
+  on deferred features (internal sim engine / kill_switch impl /
+  fill aggregator / Hot-Swap respectively).
+
+Critic verdicts:
+  COMMIT 1 (chore(critic) — c488029):
+    deterministic: APPROVE — 0 findings.
+    judgment (codex exec --sandbox read-only against
+        prompts/critic_prompt.md): BLOCK by rule
+        `meta:critic-self-modification` (refusal clause #4 fires
+        unconditionally on any edit of `tools/critic_check.py`).
+    Override: operator authorized via AskUserQuestion on
+        2026-05-14 invoking the SESSION 16 / 17 / 18 / 19 prep-commit
+        precedent. No `ATP_CRITIC_BYPASS=1`, no `--no-verify`.
+        Same shape as 8143ac5 / ff10ef0 / 24391a0 / 7064c49.
+
+  COMMIT 2 (feat(SRS-ORCH-002) — 7d4f5a2):
+    deterministic: APPROVE — 0 findings (the
+        `safety:paired-test-required` rule fires on
+        `tools/orchestrator_resource_profile_check.py` thanks to the
+        prep commit's regex extension, and is satisfied by
+        `tests/domain/test_orchestrator_resource_profile.py` being
+        in the same diff. Secret scan, test-deletion scan,
+        adapter-isolation vendor-token scan, float-on-price scan,
+        SRS-ref hygiene scan — all quiet.)
+    judgment (codex exec --sandbox read-only against
+        prompts/critic_prompt.md, run 5 times across the diff
+        evolution): final BLOCK with 2 remaining findings:
+        (1) `arch:resource-profile-not-enforced` — Docker runtime
+            that applies ResourceProfile to a real cgroup is
+            deferred (same Docker driver SRS-ORCH-001 carries; the
+            workspace is fully sync, bollard implies a workspace-wide
+            async refactor, no production caller of launch() exists).
+        (2) `adapter:error-surface` — StrategyContainerRuntime::create
+            / stop / restart / destroy return unit, leaving Docker
+            failures without a typed error path. This is SRS-ORCH-001
+            trait-signature retrofit scope, not SRS-ORCH-002 scope —
+            both deferrals captured in the
+            resource_profile_contract.deferred list.
+    Substantive findings codex raised across the 5 rounds were ALL
+    fixed in-place: (a) parse-error swallowing on env override
+    replaced with structured `ResourceProfileEnvError::Unparseable*`
+    variants; (b) cores-boundary rounding silently passing
+    0.046 / 16.004 fixed by validating the f64 against the f64
+    catalogue bounds BEFORE rounding to u32 hundredths;
+    (c) `VarError::NotUnicode` collapsing to `None` fixed by
+    splitting the env wrapper into a testable `_via_env_lookup`
+    that distinguishes NotPresent (silent default) from NotUnicode
+    (structured Unparseable* error). 4 new boundary tests anchor
+    these post-conditions at the unit layer.
+    Override: operator authorized via AskUserQuestion on 2026-05-14
+        ("Override (precedent) and add env-var wire — Recommended").
+        The override applies ONLY to the wired-but-empty Docker
+        enforcement (same shape ERR-2..6 + SRS-ORCH-001 shipped under)
+        and the trait-error-surface retrofit (SRS-ORCH-001 scope, not
+        this feature's scope; the deferred-list captures both with
+        named owners). No `ATP_CRITIC_BYPASS=1`, no `--no-verify`.
+
+Known issues / notes for next agent:
+- **Concrete Docker StrategyContainerRuntime is still deferred.**
+  Same shape as SESSION 20's audit conclusion: the Rust workspace
+  is fully sync (zero tokio / async); a bollard-based driver implies
+  a workspace-wide async refactor or a `block_on()` anti-pattern.
+  No forcing function until either (a) SRS-ORCH-003 workload-priority
+  arbitration lands and needs to actually destroy containers when
+  the host margin is breached, or (b) a Rust orchestrator service
+  binary is built that calls launch() against a real runtime
+  (today main.py is still `pass` and there is no Rust binary).
+- **Typed error surface on the lifecycle port is paired with the
+  Docker driver.** create / stop / restart / destroy currently
+  return unit. When the Docker driver lands, those signatures need
+  a typed error variant (e.g.
+  `Result<(), ContainerRuntimeError>` covering cgroup-creation
+  failure, insufficient host resources, network failures). This is
+  SRS-ORCH-001 trait-signature retrofit scope; the
+  resource_profile_contract.deferred list names it.
+- **Real next P1 by orchestrator-family ID order:**
+  **SRS-ORCH-003** (enforce workload priority when the host memory
+  safety margin would be breached). Has all the prerequisite
+  infrastructure ready:
+  - `ATP_HOST_MEMORY_SAFETY_MARGIN_MB` env var with default 2048,
+    min 256, max 1048576 in the catalogue (SRS-ARCH-005 PASS).
+  - `ResourceProfile` types and `validate()` method available from
+    this session.
+  - The 5 priority slots SyRS SYS-57 names — live strategy >
+    market data subscription > paper strategies > nightly ingestion >
+    factor pipeline > backtest > research — would need a new
+    `WorkloadPriority` enum in atp-types with the same exhaustive-
+    destructure invariant SRS-ORCH-001 / SRS-ORCH-002 used, plus a
+    new gate function on `StrategyOrchestrator` that consults host
+    memory before allowing a launch.
+  - Same 3-commit cadence: prep (extend SAFETY_PATH_RE with
+    `workload[_-]?priority` and `host[_-]?memory[_-]?margin`), feat
+    (types + gate + contract block + check script + integration
+    test + L7 domain test), chore (flip passes:true + record
+    SESSION 22 progress notes).
+- **SRS-ORCH-004** (deployment version surface) is the third
+  orchestrator-family P1 — deployment_hash is already on
+  StrategyLaunchRequest from SRS-ORCH-001, but the dashboard /
+  REST surface for it is deferred.
+- **Codex CLI requires a recent version.** During this session
+  `codex exec` initially failed with `'gpt-5.5' model requires a
+  newer version of Codex` — operator upgraded codex mid-session and
+  it worked. The /codex:adversarial-review SLASH COMMAND has
+  `disable-model-invocation` set so Claude cannot invoke it via the
+  Skill tool (memory: [[feedback-codex-adversarial-review]]); the
+  `codex exec` CLI bypass is the working automation path.
+
 === SESSION 20 ===
 Date: 2026-05-14
 Cleanup completed: shared-parser hoist + Codex command-vs-skill
