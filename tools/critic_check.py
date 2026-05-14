@@ -196,7 +196,8 @@ SAFETY_PATH_RE = re.compile(
     r"|ingestion[_-]?validation|record[_-]?quarantine"
     r"|pacing[_-]?budget|ingestion[_-]?schedule"
     r"|orchestrator[_-]?lifecycle|strategy[_-]?container"
-    r"|resource[_-]?profile)",
+    r"|resource[_-]?profile"
+    r"|workload[_-]?priority|host[_-]?memory[_-]?safety)",
     re.IGNORECASE,
 )
 
