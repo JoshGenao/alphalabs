@@ -1,6 +1,269 @@
-=== SESSION 22 ===
+=== SESSION 23 ===
 Date: 2026-05-15
-Feature completed: SRS-ORCH-003 — Strategy Orchestrator admission gate
+Feature completed: SRS-ORCH-004 — Strategy Orchestrator records the
+deployed code version (source hash + deployment timestamp) for each
+strategy at deployment time and exposes it through a queryable
+DeployedVersionRegistry port. SyRS SYS-79 wire form pinned at
+`sha256:<64-hex>`; misformed hashes refused with
+DEPLOYED_VERSION_INVALID before runtime.create; DeadlineExceeded
+launches skip the version record (a version that was never deployed
+must not appear in the active-strategy inventory or REST API
+listing); deferred dashboard (SYS-41), REST API (IF-9), and backtest
+result rows (SYS-21) will render the same canonical
+version_identifier produced by DeployedVersion::version_identifier.
+Status: 98 remaining features
+
+What I did:
+- Carryover audit at session start: SRS-ORCH-004 is the next P1 by
+  the autonomous-prompt's "lowest ID at the top priority tier" rule.
+  SESSION 22 named it as the natural next after SRS-ORCH-003. The
+  acceptance criterion touches three surfaces (dashboard SYS-41,
+  REST API IF-9, backtest results SYS-21) that are themselves
+  deferred — applied the [[feedback-scope-honesty]] pattern: build
+  the orchestrator-side recording + queryable registry port now,
+  name the three downstream surfaces as deferred entries. Mirrors
+  the SRS-ORCH-001..003 staging precedent.
+
+- Prep commit (ab5314d): extended SAFETY_PATH_RE in
+  `tools/critic_check.py` to add the `deployment[_-]?version` and
+  `source[_-]?hash` tokens. Mirrors the SESSION 16-22 prep precedent
+  (c488029 / 7064c49 / 24391a0 / ff10ef0 / 8143ac5 / 764bd76).
+
+- Feat commit (72c6d47):
+- Extended `crates/atp-types/src/lib.rs`:
+  * Added `OrderErrorCategory::DeployedVersionInvalid` variant with
+    wire string `"DEPLOYED_VERSION_INVALID"`.
+  * Added 3 spec-literal / validation-bound constants
+    (SOURCE_HASH_ALGORITHM_PREFIX = "sha256:",
+    SOURCE_HASH_DIGEST_HEX_LENGTH = 64, SOURCE_HASH_TOTAL_LENGTH = 71).
+  * Added `SourceHash(String)` newtype with new() (infallible,
+    matches ResourceProfile pattern — validation is at-boundary so
+    test fixtures + env-var parsers can build the value the same
+    way the gate does), validate() / validate_str() / as_str() /
+    algorithm() / digest(). Validation enforces the `sha256:`
+    prefix, the 64-hex-char length, AND rejects upper-case hex
+    (the wire form is lower-case so round-trips are stable).
+  * Added `SourceHashError` enum (4 variants): MissingAlgorithmPrefix,
+    UnknownAlgorithm{found}, InvalidDigestLength{found, expected},
+    NonHexDigest{found}.
+  * Added `DeployedVersion { source_hash, deployed_at_seconds }`
+    with new() / version_identifier(). The canonical form is
+    `"<hash>@<timestamp>"` (the `@` separator avoids collision
+    with the algorithm-prefix `:` and the hex alphabet) — single
+    source of truth for the SYS-79 "same version identifier"
+    guarantee. Forbidden-fields list (8 tokens) rejects
+    docker_image / container_id / vendor / host_path / git_commit
+    / git_branch / build_number / ci_run_id (coupling the audit
+    shape to a build-system artifact would force multiple
+    identifiers per code version, breaking the single-identifier
+    guarantee).
+  * Changed `StrategyLaunchRequest.deployment_hash: String →
+    SourceHash` so the typed wrapper marks intent and the gate can
+    validate at the orchestrator boundary.
+  * Added `StrategyLaunchOutcome.deployed_version: DeployedVersion`
+    (5 → 6 fields) carrying the recorded version to callers.
+  * Added `StructuredOrchestratorError::deployed_version_invalid(
+    request, violation)` factory mirroring the
+    `resource_profile_invalid` pattern, with the category invariant
+    pinned via `debug_assert!`.
+  * Updated the enclosing struct Rustdoc to name all four
+    orchestrator-rejection categories.
+  * 12 new in-crate unit tests covering: the spec constants, the
+    SourceHash validate happy path + 6 rejection variants
+    (missing prefix, unknown algorithm md5, short digest, long
+    digest, non-hex digest, upper-case hex), DeployedVersion
+    exhaustive destructure, version_identifier canonical-form
+    pin, deployed_version_invalid factory + wire-string pin,
+    OrderErrorCategory wire string.
+- Extended `crates/atp-orchestrator/src/lib.rs`:
+  * Added new port `DeployedVersionRegistry`:
+      - `fn record(&self, strategy_id: &StrategyId, version:
+        DeployedVersion) -> Result<(), DeployedVersionRegistryError>`
+      - `fn lookup(&self, strategy_id: &StrategyId) ->
+        Result<Option<DeployedVersion>, DeployedVersionRegistryError>`
+    Both methods return Result so concrete adapters (durable-store
+    outage, permission denied, registry desync) surface failures
+    through the typed `DeployedVersionRegistryError`. Forbidden-
+    imports list (sha2 / sha1 / md5 / blake3 / sled / rusqlite /
+    redis / git2) keeps the orchestrator crate clean — concrete
+    registry + hash-compute adapters live in separate crates that
+    haven't shipped yet.
+  * Added `DeployedVersionRegistryError { reason: String }` typed
+    error struct with Display + std::error::Error.
+  * Extended `launch()` with a 5th parameter `version_registry: &V`:
+      1. Validate `request.deployment_hash.validate()` BEFORE
+         `runtime.create` (defence in depth — rejection through
+         `deployed_version_invalid(...)` with NO sink event, NO
+         runtime mutation; no container exists to destroy).
+      2. After resource-profile validation: `runtime.create` +
+         `runtime.start`.
+      3. On `ReadyWithinDeadline`: build `DeployedVersion::new(
+         request.deployment_hash.clone(), observed_at_seconds)` and
+         call `version_registry.record(...)`. Record failures are
+         best-effort (matches WorkloadEventSink pattern) — the
+         typed surface exists for concrete sinks and wrapping
+         callers to observe.
+      4. On `DeadlineExceeded`: skip the record (a version that
+         was never deployed must not appear in the active-
+         strategy inventory or REST API listing).
+  * Added `deployed_version_for(request, observed_at_seconds)`
+    helper that produces the same record the gate would build —
+    callers can preview the version identifier without invoking
+    the runtime port.
+  * 5 new in-crate orchestrator tests covering: happy-path
+    recording + outcome equality, DeadlineExceeded skipping
+    record (ForbiddenVersionRegistry panics if touched),
+    malformed-hash rejection without runtime invocation,
+    record-failure-does-not-abort-launch (FlakyRegistry returning
+    Err), helper-produces-same-record-as-launch.
+- Extended `architecture/runtime_services.json`:
+  * Added `deployment_version_contract` block (~120 lines) with
+    spec_constants, source_hash struct + methods + newtype_inner,
+    source_hash_error variants, deployed_version required +
+    forbidden fields, rejection_category + wire_string,
+    deployed_version_registry_port (signatures + typed error +
+    forbidden_imports), strategy_launch_request_deployment_hash_type,
+    strategy_launch_outcome_deployed_version_field,
+    orchestrator_helper_methods,
+    launch_deployment_version_guard (validation token, rejection
+    factory, record call, forbidden_calls_on_rejection list,
+    forbidden_record_call_on_deadline_exceeded_arm). Deferred list
+    names: concrete durable-store DeployedVersionRegistry adapter,
+    dashboard wiring (SYS-41), REST API endpoint (IF-9), backtest
+    result column (SYS-21), concrete failure variants on the typed
+    error, typed coupling of `launch` to version_registry record,
+    source-hash compute path.
+  * Removed the resolved "Deployment-version recording + dashboard
+    exposure for each strategy instance (owner: SRS-ORCH-004 /
+    SyRS SYS-41 / SYS-79)" entry from
+    `orchestrator_lifecycle_contract.deferred`.
+- Added `tools/orchestrator_deployment_version_check.py` (~480
+  lines): 11 static checks (spec constants, SourceHash newtype +
+  methods, SourceHashError variants, DeployedVersion required +
+  forbidden fields, StrategyLaunchRequest typed hash field,
+  StrategyLaunchOutcome deployed_version field, OrderErrorCategory
+  variant + wire string, factory + debug_assert, registry port +
+  typed errors + forbidden imports, orchestrator helpers, launch
+  validate-before-create + record on happy path + no record on
+  DeadlineExceeded arm) plus cargo smoke for
+  orch_4_deployment_version_contract. Exposes
+  `assert_orchestrator_deployment_version_static` for in-process
+  use.
+- Wired into `tools/architecture_check.py` between workload-
+  priority and container-language-boundary.
+- Wired into `init.sh` after workload-priority and before
+  deployment-configuration.
+- Added `crates/atp-orchestrator/tests/orch_4_deployment_version_contract.rs`
+  (~400 lines, 7 integration tests) with RuntimeSpy, EventSinkSpy,
+  ForbiddenSink, VersionRegistrySpy (records (strategy_id, version)
+  pairs and supports reverse-iteration lookup),
+  ForbiddenVersionRegistry (panics on record/lookup). Tests:
+  ReadyWithinDeadline records version exactly once + outcome
+  equality, registry lookup returns same record + same
+  version_identifier, malformed-hash refused (validate-before-
+  create), unknown-algorithm prefix discriminator, DeadlineExceeded
+  records no version, record failure does not abort launch,
+  distinct strategies carry distinct version identifiers.
+- Added `tests/test_orchestrator_deployment_version_contract.py`
+  (~430 lines, 33 tests): script subprocess with 25 needle
+  assertions + positive case per static check + 11 negative
+  mutation tests (drifted algorithm prefix, drifted digest length,
+  missing total_length, missing validate method [mutates all 3
+  validate occurrences since the contract check just requires ONE
+  to exist — matches SESSION 22's lesson], drifted newtype inner,
+  missing non-hex variant, missing source_hash field, leaked
+  docker_image / git_commit, String type drift on
+  deployment_hash, missing deployed_version field, drifted wire
+  string, missing debug_assert, missing lookup method, forbidden
+  sha2 import, bare unit record signature, missing helper, missing
+  validation call, missing record call, missing rejection factory).
+- Added `tests/domain/test_orchestrator_deployment_version.py` (L7,
+  7 tests) that shell out to `cargo test -p atp-orchestrator
+  --test orch_4_deployment_version_contract --exact <name>` —
+  required by the deterministic critic once the prep commit's
+  `deployment[_-]?version` / `source[_-]?hash` tokens landed in
+  SAFETY_PATH_RE.
+- Updated existing call sites: the orchestrator src test module
+  + orch_1 / orch_2 / orch_3 integration tests now pass a
+  version_registry through `launch()` (VersionRegistrySpy for
+  happy paths, ForbiddenVersionRegistry / no-op for rejection
+  arms). Fixture deployment_hash strings updated to a valid
+  64-hex SHA-256 wire form (`sha256:aaaa...`/`bbbb...`/`cccc...`/
+  `dddd...`) so the new gate accepts them.
+
+Verification:
+- cargo test -p atp-types --lib: 71 passed (was 59 after SESSION 22;
+  +12 new).
+- cargo test -p atp-orchestrator --lib: 47 passed (was 42 after
+  SESSION 22; +5 new).
+- cargo test -p atp-orchestrator --test orch_1_lifecycle_contract:
+  6 passed (no regression after launch-signature change).
+- cargo test -p atp-orchestrator --test orch_2_resource_profile_contract:
+  6 passed (no regression).
+- cargo test -p atp-orchestrator --test orch_3_workload_priority_contract:
+  7 passed (no regression).
+- cargo test -p atp-orchestrator --test orch_4_deployment_version_contract:
+  7 passed.
+- python3 tools/orchestrator_deployment_version_check.py:
+  SRS-ORCH-004 PASS (11 bullets including cargo smoke).
+- python3 tools/orchestrator_workload_priority_check.py:
+  SRS-ORCH-003 PASS (unchanged).
+- python3 tools/orchestrator_resource_profile_check.py:
+  SRS-ORCH-002 PASS (unchanged).
+- python3 tools/orchestrator_lifecycle_check.py: SRS-ORCH-001 PASS
+  (unchanged).
+- python3 tools/architecture_check.py: SRS-ARCH-001 PASS, new
+  deployment-version evidence appears.
+- ./init.sh: ✓ Environment ready (orchestrator deployment-version
+  step succeeds between workload-priority and deployment-
+  configuration).
+- .venv/bin/python -m pytest tests/ -q: 484 passed, 4 skipped, 118
+  subtests (was 444 in SESSION 22; +40 net — 12 atp-types + 5
+  orchestrator-lib were already counted via cargo, the +40 pytest
+  delta is the 33 new wrapper tests + 7 new domain tests). Skip
+  list unchanged: deterministic_replay, kill_switch_latency,
+  money_reconciliation, single_live_invariant.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings
+  judgment (/codex:adversarial-review): APPROVE — verdict reported by
+    user; raw output not captured in session.
+
+Known issues / notes for next agent:
+- The dashboard, REST API, and backtest-result surfaces that render
+  the version_identifier are NOT in scope for this session — they
+  are named explicitly in `deployment_version_contract.deferred`
+  and will land alongside SRS-UI-001 / SRS-UI-002 / SRS-API-001 /
+  SRS-BT-001 / SRS-BT-009 when those features come up. The
+  orchestrator side records the canonical version_identifier today
+  so when the surfaces land they read from the registry rather
+  than re-deriving the format.
+- The launch() signature now has 5 typed parameters (request,
+  runtime, sink, version_registry, observed_at_seconds). The
+  AdmissionToken typestate work named in SESSION 22's deferred
+  list is still deferred; when it lands it will collapse the
+  growing parameter list across SRS-ORCH-001..004 at once.
+- Record failures from version_registry.record(...) are dropped on
+  the floor today (`let _ = ...`); the same best-effort pattern
+  as WorkloadEventSink::record. The typed
+  DeployedVersionRegistryError surface exists for concrete
+  registries and wrapping callers. Gate-level capture is named
+  as a deferred entry, scoped to land alongside durable-delivery
+  semantics on SRS-LOG-001 / SRS-NOTIF-001.
+- The source-hash compute path (where SHA-256 over the strategy
+  source files is calculated) is named as a deferred entry — the
+  launch envelope receives the hash as a parameter today, the
+  caller computes it. A future session will add the orchestrator
+  helper that hashes the on-disk strategy bundle.
+- Next P1 by the lowest-ID rule: SRS-SDK-001 (Python Strategy API
+  that is identical for live IB execution and internal paper
+  simulation). All four SRS-ORCH-* features are now passing; the
+  next P1 group is the SRS-SDK-* Python strategy API surface.
+  The foundation for SDK work is currently thin (python/
+  atp_strategy/ exists but is mostly empty — see SESSION 23
+  workspace audit).
+
+
 enforces the SyRS SYS-57 workload-priority hierarchy against the
 configured host memory safety margin (default 2048 MB; catalogue
 floor/ceiling 256..1048576 MB). New workloads refused when the
