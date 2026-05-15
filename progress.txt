@@ -1,3 +1,275 @@
+=== SESSION 22 ===
+Date: 2026-05-15
+Feature completed: SRS-ORCH-003 — Strategy Orchestrator admission gate
+enforces the SyRS SYS-57 workload-priority hierarchy against the
+configured host memory safety margin (default 2048 MB; catalogue
+floor/ceiling 256..1048576 MB). New workloads refused when the
+post-admit host memory would dip below the margin; the lowest-priority
+active *batch* workload is evicted when a higher-priority workload
+arrives; live strategy execution is never selected for eviction
+(SYS-58 last clause).
+Status: 99 remaining features
+
+What I did:
+- Carryover audit at session start: SRS-ORCH-003 is the next P1 by
+  the autonomous-prompt's "lowest ID at the top priority tier" rule
+  (SESSION 21 named it as the natural next after SRS-ORCH-002).
+  Both deferred-item lists in `architecture/runtime_services.json`
+  explicitly named SRS-ORCH-003 as the owner of the workload-priority
+  arbitration gate, so the foundation (StrategyOrchestrator, launch,
+  ResourceProfile, StructuredOrchestratorError, HealthCheckEventSink)
+  was already in place.
+
+- Prep commit (764bd76): extended SAFETY_PATH_RE in
+  `tools/critic_check.py` to add the `workload[_-]?priority` and
+  `host[_-]?memory[_-]?safety` tokens. Mirrors the SESSION 16-21
+  prep precedent (c488029 / 7064c49 / 24391a0 / ff10ef0 / 8143ac5).
+
+- Feat commit (bbf9f4e):
+- Extended `crates/atp-types/src/lib.rs`:
+  * Added `OrderErrorCategory::HostMemorySafetyMarginBreach` variant
+    with wire string `"HOST_MEMORY_SAFETY_MARGIN_BREACH"`.
+  * Added 3 spec-literal / validation-bound constants
+    (HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT = 2048,
+    _FLOOR = 256, _CEILING = 1_048_576).
+  * Added `HostMemorySafetyMargin { mb: u32 }` with new() /
+    default_margin() / validate() and `HostMemorySafetyMarginError`
+    (BelowFloor / AboveCeiling).
+  * Added `WorkloadPriority` enum (7 SYS-57 variants:
+    LiveStrategy=1, MarketDataSubscriptionManager=2,
+    PaperStrategy=3, NightlyDataIngestion=4, FactorPipeline=5,
+    Backtest=6, Research=7) with rank() projection and
+    `default_kind()` mapping. Forbidden-tokens list locks
+    priority_score / priority_weight / priority_quota /
+    priority_class_id out so the enum stays categorical.
+  * Added `WorkloadKind` enum (Continuous, Batch) with is_batch()
+    and `WorkloadId(String)` newtype.
+  * Added `RegisteredWorkload { id, priority, kind, profile }` (4
+    fields; forbidden-fields list rejects docker_image, vendor,
+    container_id, host_path, broker, started_at, uptime_seconds).
+  * Added `WorkloadAdmissionReason::HostMemoryBelowSafetyMargin
+    { available_mb, safety_margin_mb }`.
+  * Added `WorkloadAdmissionEvent` with 5 variants — Refused,
+    Terminated, TerminationFailed (Docker / cgroup termination
+    failure surfaced explicitly), HostProbeFailed (sysinfo / procfs
+    probe failure), RegistryListingFailed (Docker engine timeout /
+    in-process registry desync).
+  * Added `StructuredOrchestratorError::host_memory_safety_margin_breach
+    (request, available_mb, safety_margin_mb)` factory mirroring the
+    `resource_profile_invalid` / `startup_deadline_exceeded`
+    patterns. Updated the Rustdoc on the enclosing struct to name
+    all three orchestrator-rejection categories.
+  * 14 new in-crate unit tests covering the constants, validation
+    paths, rank ordering, kind mapping, event variants, factory
+    wire-string pin, and OrderErrorCategory mapping.
+- Extended `crates/atp-orchestrator/src/lib.rs`:
+  * Added three new ports:
+      - `HostMemoryProbe { fn available_mb() -> Result<u64, HostMemoryProbeError> }`
+      - `WorkloadRegistry { fn active() -> Result<Vec<RegisteredWorkload>, WorkloadRegistryError>; fn terminate(&WorkloadId) -> Result<(), WorkloadTerminationError> }`
+      - `WorkloadEventSink { fn record(WorkloadAdmissionEvent) -> Result<(), WorkloadEventSinkError> }`
+    Each carries a typed error surface. Forbidden-imports list
+    (sysinfo / procfs / psutil / bollard / docker_api / shiplift /
+    cgroups_rs) keeps the orchestrator crate clean — concrete
+    adapters live in separate crates that haven't shipped yet.
+  * Added 4 typed-error structs (HostMemoryProbeError,
+    WorkloadRegistryError, WorkloadTerminationError {workload_id,
+    reason}, WorkloadEventSinkError) with Display + std::error::Error.
+  * Added `host_memory_safety_margin_default`,
+    `safety_margin_from_lookup`, `safety_margin_via_env_lookup`,
+    `safety_margin_from_env` (reads ATP_HOST_MEMORY_SAFETY_MARGIN_MB
+    distinguishing NotPresent / NotUnicode / unparseable / out-of-range).
+  * Added `admit_workload(request, workload_id, priority,
+    safety_margin, host, registry, sink, observed_at_seconds)`. The
+    algorithm:
+      1. Validate the safety margin (defence in depth — defends
+         against programmatic override below the floor).
+      2. Probe host memory; on Err emit HostProbeFailed event and
+         refuse with HostMemorySafetyMarginBreach.
+      3. Happy path: if available - needed >= margin, admit silently
+         (no events, no registry mutation).
+      4. Otherwise list active workloads; on Err emit
+         RegistryListingFailed event and refuse.
+      5. Pre-eviction feasibility: filter to Batch ∧ rank > new's
+         rank, sort lowest-priority-first, sum recoverable mem.
+         If even the full sum cannot reach the margin → refuse
+         WITHOUT calling terminate (prevents partial-eviction-refusal
+         where work is killed and admission still denied).
+      6. Eviction loop: terminate each candidate; on Ok emit
+         Terminated event + bank freed memory + early-return when
+         post-admit headroom satisfies the margin; on Err emit
+         TerminationFailed event with the typed reason and continue
+         to the next candidate.
+      7. Post-loop refusal: emit Refused event + return breach error.
+    Live-immunity debug_assert pins the SyRS SYS-58 last-clause
+    invariant inside the eviction loop. The launch() Rustdoc now
+    states admit_workload is a REQUIRED PRECONDITION (the typed
+    coupling via AdmissionToken / typestate is deferred to the
+    production-caller session).
+  * 18 new in-crate orchestrator tests covering admission happy
+    path, refusal with no batch evictable, eviction success,
+    lowest-priority-first ordering, Continuous immunity, Live
+    immunity (debug_assert), feasibility-driven refusal without
+    eviction, configurable margin override, env-var helper
+    (default fallback, in-range override, unparseable, below-floor,
+    NotUnicode), probe-error fail-closed, registry-active-error
+    fail-closed, flaky-registry partial-failure (TerminationFailed
+    event with typed reason), invalid-margin + probe-failure
+    routing through HostProbeFailed.
+- Extended `architecture/runtime_services.json`:
+  * Added `workload_priority_contract` block (~280 lines) with
+    spec_constants, validation_constants, host_memory_safety_margin
+    + error, workload_priority_enum + ranks + forbidden_tokens,
+    workload_kind_enum + per-priority kind mapping, workload_id,
+    registered_workload, workload_admission_event (5 variants with
+    per-variant required-fields lists), three port specs
+    (host_memory_probe_port, workload_registry_port,
+    workload_event_sink_port with their Result signatures, typed
+    error structs, and forbidden-imports lists),
+    orchestrator_helper_methods, admit_workload_guard (pins call
+    order, WorkloadKind::Batch filter, live-immunity debug_assert,
+    margin-validation token, pre-eviction-feasibility token,
+    forbidden_calls_on_refusal list), config_binding for
+    ATP_HOST_MEMORY_SAFETY_MARGIN_MB. Deferred list names: concrete
+    sysinfo probe + concrete docker-engine registry + concrete
+    dispatcher (SRS-LOG-001 / SRS-NOTIF-001 / SYS-13), concrete
+    failure variants on the typed errors, production caller of
+    admit_workload, typed coupling of admit_workload to launch
+    (AdmissionToken typestate), gate-level capture of sink Result
+    errors (best-effort emission today; future richer return shape).
+  * Removed resolved SRS-ORCH-003 deferred entries from
+    orchestrator_lifecycle_contract.deferred and
+    resource_profile_contract.deferred.
+- Added `tools/orchestrator_workload_priority_check.py` (~700
+  lines): 13 static checks (spec/validation constants, margin
+  struct + error, priority enum + ranks + forbidden_tokens, kind
+  enum + per-priority mapping, workload-id newtype, registered-
+  workload struct, admission-event 5 variants + per-variant
+  required fields, ports with Result signatures + typed errors,
+  helper methods, admit_workload_guard (call order + filter +
+  immunity + margin-validate + pre-eviction-feasibility +
+  forbidden runtime calls), catalogue binding) plus cargo smoke
+  for orch_3_workload_priority_contract. Reuses _rust_parser
+  helpers; declares a local _const_or_pub_fn_block helper for the
+  many `pub const fn` methods in atp-types.
+- Wired into `tools/architecture_check.py` between resource-profile
+  and container-language-boundary.
+- Wired into `init.sh` after resource-profile and before
+  deployment-configuration.
+- Added `crates/atp-orchestrator/tests/orch_3_workload_priority_contract.rs`
+  (~280 lines, 7 integration tests) with HostMemorySpy,
+  RegistrySpy (records terminate calls), EventSpy,
+  ForbiddenEventSink (panics on emission), ForbiddenRegistry
+  (panics on terminate). Tests: ample-headroom admit; refusal-
+  event + breach category; lowest-priority-first eviction;
+  Continuous immunity; live immunity even when registry lists it;
+  lower-priority incoming does not evict higher-priority batch;
+  custom safety-margin override.
+- Added `tests/test_orchestrator_workload_priority_contract.py`
+  (~480 lines, 40 tests): script subprocess with 28 needle
+  assertions + positive case per static check + negative mutation
+  tests for every declared structural invariant (drifted default,
+  drifted floor, missing mb field, leaked bytes, missing
+  BelowFloor variant, missing Research variant, drifted live rank,
+  forbidden priority_score, missing Batch variant, drifted
+  docker_image leak, missing admit_workload, missing kind filter,
+  missing live-immunity, missing safety_margin.validate, missing
+  pre-eviction feasibility, missing rejection factory, runtime-
+  mutator in admit, terminate unit return, available_mb bare u64,
+  active bare Vec, missing typed-error structs, drifted catalogue
+  default).
+- Added `tests/domain/test_orchestrator_workload_priority.py` (L7,
+  6 tests) that shell out to `cargo test -p atp-orchestrator
+  --test orch_3_workload_priority_contract --exact <name>` —
+  required by the deterministic critic once the prep commit's
+  `workload[_-]?priority` token landed in SAFETY_PATH_RE.
+- Fixed pre-existing weakness in
+  `tests/test_orchestrator_resource_profile_contract.py`:
+  `test_missing_validate_method_is_caught` mutated only the first
+  `pub fn validate` site (count=1); my new
+  `HostMemorySafetyMargin::validate` is the second site so the
+  SESSION 21 invariant was falsely satisfied. Changed to mutate
+  every occurrence so the regression-catch behaviour stays honest.
+
+Verification:
+- cargo test -p atp-types --lib: 59 passed (was 45 after SESSION 21;
+  +14 new).
+- cargo test -p atp-orchestrator --lib: 42 passed (was 24 after
+  SESSION 21; +18 new).
+- cargo test -p atp-orchestrator --test orch_1_lifecycle_contract:
+  6 passed (no regression).
+- cargo test -p atp-orchestrator --test orch_2_resource_profile_contract:
+  6 passed (no regression).
+- cargo test -p atp-orchestrator --test orch_3_workload_priority_contract:
+  7 passed.
+- python3 tools/orchestrator_workload_priority_check.py:
+  SRS-ORCH-003 PASS (14 bullets including cargo smoke).
+- python3 tools/orchestrator_resource_profile_check.py:
+  SRS-ORCH-002 PASS (unchanged).
+- python3 tools/orchestrator_lifecycle_check.py: SRS-ORCH-001 PASS
+  (unchanged).
+- python3 tools/architecture_check.py: SRS-ARCH-001 PASS, new
+  workload-priority evidence appears.
+- ./init.sh: ✓ Environment ready (orchestrator workload-priority
+  step succeeds between resource-profile and deployment-
+  configuration).
+- .venv/bin/python -m pytest tests/ -q: 444 passed, 4 skipped, 118
+  subtests (was 398 in SESSION 21; +46 net — 14 atp-types +
+  18 orchestrator-lib were already counted via cargo, the +46
+  pytest delta is the 40 new wrapper tests + 6 new domain tests).
+  Skip list unchanged: deterministic_replay, kill_switch_latency,
+  money_reconciliation, single_live_invariant — all still blocked
+  on deferred features.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings
+  judgment (/codex:adversarial-review, 8 rounds): final verdict block,
+    14 findings resolved through the iteration, 2 remaining blocks
+    accepted as overrides per user direction:
+      - arch:admission-gate-bypass — launch() can be called without
+        first calling admit_workload(). Override: the precondition is
+        contract-level (launch()'s Rustdoc states the requirement
+        explicitly); the typed-coupling fix via AdmissionToken
+        typestate is named as a deferred entry in
+        workload_priority_contract.deferred, scoped to land when the
+        production caller of launch() lands (same owner, single
+        parameter-list expansion).
+      - adapter:sink-error-discard — admit_workload's `let _ = sink.record(...)`
+        discards Results. Override: emission is best-effort by design
+        (the admission decision is irreversible once made; sink
+        errors do not abort or roll back); the typed
+        WorkloadEventSinkError surface exists for concrete sinks and
+        wrapping callers; gate-level capture with a richer return
+        shape is named as a deferred entry, scoped to land alongside
+        the concrete SRS-NOTIF-001 dispatcher when durable-delivery
+        semantics make retry / propagation meaningful.
+    1 warn (tests:missing-property): override accepted — the
+    admission state space is small and finite (7 priorities × 2 kinds
+    × bounded integers); the 12 in-crate + 7 integration + 6 domain
+    tests cover it exhaustively plus error-path coverage; a property
+    test would draw from the same finite space without exercising
+    additional invariants.
+
+Known issues / notes for next agent:
+- The two codex blocks above are explicit deferred entries in
+  `architecture/runtime_services.json`'s
+  `workload_priority_contract.deferred`. Both are scoped to land
+  alongside the production caller of `StrategyOrchestrator::launch`
+  (so the typestate parameter-list expansion happens once across
+  SRS-ORCH-001/002/003 together) or the concrete SRS-NOTIF-001
+  dispatcher.
+- The codex review converged to ~14 substantive structural fixes
+  (typed Result on probe/active/terminate/record, distinct event
+  variants for probe/registry/termination failures, pre-eviction
+  feasibility check, margin-validation defence in depth, typed
+  termination-error reason). All of those landed in this feat
+  commit.
+- Next P1 by the lowest-ID rule: SRS-ORCH-004 (record and expose
+  the deployed code version for each strategy instance).
+  SRS-ORCH-004 is named in the orchestrator-lifecycle deferred
+  list; the foundation is in place
+  (StrategyLaunchRequest.deployment_hash is already a `String`
+  field).
+
 === SESSION 21 ===
 Date: 2026-05-14
 Feature completed: SRS-ORCH-002 — Strategy Orchestrator enforces

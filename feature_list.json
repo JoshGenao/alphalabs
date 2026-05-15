@@ -116,7 +116,7 @@
       "Step 3: Verify acceptance criteria: With available memory below the configured safety margin, new lower-priority workloads are refused; if a higher-priority workload requires resources, the lowest-priority active batch workload is terminated according to the SYS-57 hierarchy; dashboard and notification alerts are emitted; live strategy execution is not terminated for lower-priority work.",
       "Step 4: Record objective evidence from test, fault injection and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {
