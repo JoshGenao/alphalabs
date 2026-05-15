@@ -103,6 +103,7 @@ pub enum OrderErrorCategory {
     IngestionPacingBudgetExceeded,
     StrategyStartupDeadlineExceeded,
     ResourceProfileInvalid,
+    HostMemorySafetyMarginBreach,
 }
 
 impl OrderErrorCategory {
@@ -119,6 +120,7 @@ impl OrderErrorCategory {
             Self::IngestionPacingBudgetExceeded => "INGESTION_PACING_BUDGET_EXCEEDED",
             Self::StrategyStartupDeadlineExceeded => "STRATEGY_STARTUP_DEADLINE_EXCEEDED",
             Self::ResourceProfileInvalid => "RESOURCE_PROFILE_INVALID",
+            Self::HostMemorySafetyMarginBreach => "HOST_MEMORY_SAFETY_MARGIN_BREACH",
         }
     }
 }
@@ -902,6 +904,352 @@ impl fmt::Display for ResourceProfileError {
 
 impl std::error::Error for ResourceProfileError {}
 
+// --------------------------------------------------------------------------- //
+// Workload priority + host memory safety margin (SRS-ORCH-003,
+// SyRS SYS-57 / SYS-58)
+// --------------------------------------------------------------------------- //
+//
+// SRS-ORCH-003 says: "enforce workload priority when the configured host
+// memory safety margin would be breached." SyRS SYS-57 names the workload
+// priority hierarchy (highest → lowest):
+//
+//   1. live strategy + execution engine
+//   2. market-data subscription manager
+//   3. paper strategy containers
+//   4. nightly data ingestion
+//   5. factor pipeline
+//   6. backtesting engine
+//   7. research / Jupyter
+//
+// SyRS SYS-58 adds the invariants the orchestrator's admission gate
+// must enforce:
+//   * refuse to deploy new strategy containers when available host
+//     memory would dip below the configured safety margin;
+//   * if a higher-priority workload needs resources, terminate the
+//     lowest-priority active *batch* workload (the SYS-58 wording);
+//   * never terminate the live-trading strategy for lower-priority
+//     work — even if a stale registry projection were to list it as
+//     the "lowest priority" item, it must be skipped.
+//
+// `WorkloadPriority` encodes the SYS-57 hierarchy as an ordinal enum
+// rather than a numeric score because the spec wording is categorical
+// (the priorities are *kinds* of workload, not weighted positions). The
+// `rank()` method projects the ordinal onto `1..=7` (lower = higher
+// priority) so the arbitration loop can compare them as integers
+// without committing to a stable wire form for the numeric value.
+//
+// `WorkloadKind` is orthogonal to priority: it splits workloads into
+// `Continuous` (live strategy, market data, paper strategies — these
+// are long-running and SYS-58 (b) protects them from eviction) and
+// `Batch` (nightly ingestion, factor pipeline, backtest, research —
+// SYS-58 (b) explicitly says "terminate the lowest-priority active
+// BATCH workload"). The arbitration loop only walks `Batch` candidates.
+//
+// `HostMemorySafetyMargin` is the configured floor on available host
+// memory (default 2048 MB per SyRS SYS-57). It is validated against the
+// SRS-ARCH-005 catalogue bounds the same way `ResourceProfile` is —
+// the catalogue is the single source of truth at the configuration
+// boundary; the constants here are the single source of truth at the
+// orchestrator boundary; `tools/orchestrator_workload_priority_check.py`
+// cross-checks them.
+//
+// `RegisteredWorkload` is the registry projection the orchestrator's
+// `admit_workload` gate iterates over. Carrying `profile` lets the
+// arbitration loop estimate how much memory each candidate eviction
+// would free without re-querying the runtime port.
+//
+// `WorkloadAdmissionEvent` is the audit / dashboard / notification
+// payload published whenever a refusal or termination happens. It is a
+// separate event family from `ContainerHealthEvent` (which carries
+// `ContainerLifecycleAction`) because the two events are routed to
+// different alert lanes in the deferred dispatcher and conflating them
+// would force the dispatcher to peek inside the payload to discover
+// which lane to fan to.
+
+/// SRS-ORCH-003 / SyRS SYS-57 default host-memory safety margin (MB).
+/// Mirrors the catalogue `ATP_HOST_MEMORY_SAFETY_MARGIN_MB.default`.
+pub const HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT: u32 = 2_048;
+
+/// SRS-ARCH-005 catalogue floor for the safety margin (MB). Mirrors
+/// `ATP_HOST_MEMORY_SAFETY_MARGIN_MB.min`.
+pub const HOST_MEMORY_SAFETY_MARGIN_MB_FLOOR: u32 = 256;
+
+/// SRS-ARCH-005 catalogue ceiling for the safety margin (MB). Mirrors
+/// `ATP_HOST_MEMORY_SAFETY_MARGIN_MB.max`.
+pub const HOST_MEMORY_SAFETY_MARGIN_MB_CEILING: u32 = 1_048_576;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HostMemorySafetyMargin {
+    pub mb: u32,
+}
+
+impl HostMemorySafetyMargin {
+    pub const fn new(mb: u32) -> Self {
+        Self { mb }
+    }
+
+    /// SyRS SYS-57 default (2048 MB).
+    pub const fn default_margin() -> Self {
+        Self {
+            mb: HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT,
+        }
+    }
+
+    /// SRS-ORCH-003 "configuration overrides are validated" — enforce
+    /// the SRS-ARCH-005 catalogue min/max bounds at the orchestrator
+    /// boundary. Defence in depth: a programmatically-constructed
+    /// margin that bypassed the catalogue (test fixture, future REST
+    /// API override) is still rejected before it reaches `admit_workload`.
+    pub fn validate(&self) -> Result<(), HostMemorySafetyMarginError> {
+        if self.mb < HOST_MEMORY_SAFETY_MARGIN_MB_FLOOR {
+            return Err(HostMemorySafetyMarginError::BelowFloor {
+                value_mb: self.mb,
+                floor_mb: HOST_MEMORY_SAFETY_MARGIN_MB_FLOOR,
+            });
+        }
+        if self.mb > HOST_MEMORY_SAFETY_MARGIN_MB_CEILING {
+            return Err(HostMemorySafetyMarginError::AboveCeiling {
+                value_mb: self.mb,
+                ceiling_mb: HOST_MEMORY_SAFETY_MARGIN_MB_CEILING,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HostMemorySafetyMarginError {
+    BelowFloor { value_mb: u32, floor_mb: u32 },
+    AboveCeiling { value_mb: u32, ceiling_mb: u32 },
+}
+
+impl HostMemorySafetyMarginError {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BelowFloor { .. } => "BelowFloor",
+            Self::AboveCeiling { .. } => "AboveCeiling",
+        }
+    }
+}
+
+impl fmt::Display for HostMemorySafetyMarginError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BelowFloor { value_mb, floor_mb } => write!(
+                formatter,
+                "host memory safety margin {value_mb} MB is below the configured floor of {floor_mb} MB",
+            ),
+            Self::AboveCeiling {
+                value_mb,
+                ceiling_mb,
+            } => write!(
+                formatter,
+                "host memory safety margin {value_mb} MB exceeds the configured ceiling of {ceiling_mb} MB",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HostMemorySafetyMarginError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WorkloadPriority {
+    LiveStrategy,
+    MarketDataSubscriptionManager,
+    PaperStrategy,
+    NightlyDataIngestion,
+    FactorPipeline,
+    Backtest,
+    Research,
+}
+
+impl WorkloadPriority {
+    /// SYS-57 ordinal rank: 1 = highest priority, 7 = lowest. Lower
+    /// numeric value means higher priority. The match is exhaustive so
+    /// a future variant addition would fail to compile here — the
+    /// hierarchy cannot silently fall through to an unranked value.
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::LiveStrategy => 1,
+            Self::MarketDataSubscriptionManager => 2,
+            Self::PaperStrategy => 3,
+            Self::NightlyDataIngestion => 4,
+            Self::FactorPipeline => 5,
+            Self::Backtest => 6,
+            Self::Research => 7,
+        }
+    }
+
+    /// SyRS SYS-58 (b): only batch workloads may be terminated for
+    /// lower-priority arbitration. Continuous workloads (live, market
+    /// data, paper) are immune from eviction.
+    pub const fn default_kind(self) -> WorkloadKind {
+        match self {
+            Self::LiveStrategy
+            | Self::MarketDataSubscriptionManager
+            | Self::PaperStrategy => WorkloadKind::Continuous,
+            Self::NightlyDataIngestion
+            | Self::FactorPipeline
+            | Self::Backtest
+            | Self::Research => WorkloadKind::Batch,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LiveStrategy => "LIVE_STRATEGY",
+            Self::MarketDataSubscriptionManager => "MARKET_DATA_SUBSCRIPTION_MANAGER",
+            Self::PaperStrategy => "PAPER_STRATEGY",
+            Self::NightlyDataIngestion => "NIGHTLY_DATA_INGESTION",
+            Self::FactorPipeline => "FACTOR_PIPELINE",
+            Self::Backtest => "BACKTEST",
+            Self::Research => "RESEARCH",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WorkloadKind {
+    Continuous,
+    Batch,
+}
+
+impl WorkloadKind {
+    pub const fn is_batch(self) -> bool {
+        matches!(self, Self::Batch)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Continuous => "CONTINUOUS",
+            Self::Batch => "BATCH",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WorkloadId(String);
+
+impl WorkloadId {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisteredWorkload {
+    pub id: WorkloadId,
+    pub priority: WorkloadPriority,
+    pub kind: WorkloadKind,
+    pub profile: ResourceProfile,
+}
+
+/// SyRS SYS-58 reason payload carried on every refusal and termination
+/// event. Currently single-variant because SYS-57 / SYS-58 name exactly
+/// one trigger (host memory below the safety margin); future SyRS
+/// revisions adding e.g. CPU-margin breaches would extend this enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WorkloadAdmissionReason {
+    HostMemoryBelowSafetyMargin {
+        available_mb: u64,
+        safety_margin_mb: u32,
+    },
+}
+
+impl WorkloadAdmissionReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::HostMemoryBelowSafetyMargin { .. } => "HostMemoryBelowSafetyMargin",
+        }
+    }
+}
+
+impl fmt::Display for WorkloadAdmissionReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::HostMemoryBelowSafetyMargin {
+                available_mb,
+                safety_margin_mb,
+            } => write!(
+                formatter,
+                "host memory {available_mb} MB available falls below safety margin {safety_margin_mb} MB",
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkloadAdmissionEvent {
+    /// SyRS SYS-58 (a): a new lower-priority workload was refused
+    /// because admitting it would breach the safety margin and no
+    /// batch workload could be evicted to make room.
+    Refused {
+        workload_id: WorkloadId,
+        priority: WorkloadPriority,
+        reason: WorkloadAdmissionReason,
+        observed_at_seconds: u64,
+    },
+    /// SyRS SYS-58 (b): a lower-priority batch workload was terminated
+    /// to free memory for a higher-priority arriving workload.
+    Terminated {
+        terminated_workload_id: WorkloadId,
+        terminated_priority: WorkloadPriority,
+        admitted_workload_id: WorkloadId,
+        admitted_priority: WorkloadPriority,
+        reason: WorkloadAdmissionReason,
+        observed_at_seconds: u64,
+    },
+    /// SyRS SYS-58 audit completeness: a registry termination call
+    /// returned `Err` (Docker/cgroup failure, registry desync). The
+    /// gate did NOT bank the workload's memory; operators see the
+    /// failure here rather than silently in logs.
+    TerminationFailed {
+        attempted_workload_id: WorkloadId,
+        attempted_priority: WorkloadPriority,
+        admitted_workload_id: WorkloadId,
+        admitted_priority: WorkloadPriority,
+        failure_reason: String,
+        observed_at_seconds: u64,
+    },
+    /// The host-memory probe (sysinfo / procfs / future adapter)
+    /// returned `Err`. The gate fails closed and refuses the
+    /// admission — operators see the probe failure here distinctly
+    /// from a normal memory-margin breach.
+    HostProbeFailed {
+        workload_id: WorkloadId,
+        priority: WorkloadPriority,
+        failure_reason: String,
+        observed_at_seconds: u64,
+    },
+    /// The workload registry's `active()` call returned `Err` (Docker
+    /// Engine timeout, in-process registry desync, etc.). The gate
+    /// fails closed and refuses the admission — operators see the
+    /// listing failure here distinctly from a normal memory-margin
+    /// breach.
+    RegistryListingFailed {
+        workload_id: WorkloadId,
+        priority: WorkloadPriority,
+        failure_reason: String,
+        observed_at_seconds: u64,
+    },
+}
+
+impl WorkloadAdmissionEvent {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Refused { .. } => "REFUSED",
+            Self::Terminated { .. } => "TERMINATED",
+            Self::TerminationFailed { .. } => "TERMINATION_FAILED",
+            Self::HostProbeFailed { .. } => "HOST_PROBE_FAILED",
+            Self::RegistryListingFailed { .. } => "REGISTRY_LISTING_FAILED",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContainerLifecycleAction {
     Create,
@@ -983,13 +1331,17 @@ pub struct ContainerHealthEvent {
     pub observed_at_seconds: u64,
 }
 
-/// SRS-ORCH-001 / NFR-P9 structured rejection envelope. Carries the
+/// SRS-ORCH-001..003 structured rejection envelope. Carries the
 /// SyRS SYS-64 error category, the discriminator string, a
 /// human-readable message, and the unchanged original launch request.
-/// The category is constrained at construction to
-/// `OrderErrorCategory::StrategyStartupDeadlineExceeded`; the factory
-/// enforces that invariant in debug builds so a future caller cannot
-/// smuggle a different category through this envelope.
+/// The category is constrained at construction to one of the
+/// orchestrator-rejection categories — currently
+/// `StrategyStartupDeadlineExceeded` (SRS-ORCH-001 / NFR-P9),
+/// `ResourceProfileInvalid` (SRS-ORCH-002 / SyRS SYS-11), or
+/// `HostMemorySafetyMarginBreach` (SRS-ORCH-003 / SyRS SYS-57). Each
+/// factory enforces its category invariant in debug builds so a
+/// future caller cannot smuggle a different category through this
+/// envelope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructuredOrchestratorError {
     pub category: OrderErrorCategory,
@@ -1054,6 +1406,38 @@ impl StructuredOrchestratorError {
         Self {
             category,
             error_type: format!("ResourceProfileInvalid::{}", violation.as_str()),
+            message,
+            original_request: request,
+        }
+    }
+
+    /// Build a `HOST_MEMORY_SAFETY_MARGIN_BREACH` rejection. SRS-ORCH-003
+    /// + SyRS SYS-57 / SYS-58: a launch refused because admitting the
+    /// workload would push available host memory below the configured
+    /// safety margin AND no lower-priority batch workload was evictable
+    /// to free enough memory. The error carries the original launch
+    /// request unchanged plus the two numerics the dashboard needs to
+    /// render the refusal cause (`available_mb` at the time of the
+    /// probe, `safety_margin_mb` the configured floor).
+    pub fn host_memory_safety_margin_breach(
+        request: StrategyLaunchRequest,
+        available_mb: u64,
+        safety_margin_mb: u32,
+    ) -> Self {
+        let category = OrderErrorCategory::HostMemorySafetyMarginBreach;
+        debug_assert!(
+            matches!(category, OrderErrorCategory::HostMemorySafetyMarginBreach),
+            "StructuredOrchestratorError must carry HostMemorySafetyMarginBreach"
+        );
+        let message = format!(
+            "SRS-ORCH-003 + SyRS SYS-57 / SYS-58: strategy {strategy} launch refused — host memory {available} MB available falls below safety margin {margin} MB and no batch workload was evictable",
+            strategy = request.strategy_id.as_str(),
+            available = available_mb,
+            margin = safety_margin_mb,
+        );
+        Self {
+            category,
+            error_type: "HostMemorySafetyMarginBreach".to_string(),
             message,
             original_request: request,
         }
@@ -1956,6 +2340,252 @@ mod tests {
         assert_eq!(
             OrderErrorCategory::ResourceProfileInvalid.as_str(),
             "RESOURCE_PROFILE_INVALID"
+        );
+    }
+
+    // ----------------------------------------------------------------------- //
+    // SRS-ORCH-003 workload priority + host memory safety margin
+    // (SyRS SYS-57 / SYS-58)
+    // ----------------------------------------------------------------------- //
+
+    #[test]
+    fn host_memory_safety_margin_constants_match_syrs_sys_57_default() {
+        // SyRS SYS-57 names the default safety margin as 2 GB. The
+        // catalogue exposes the same value (and the floor / ceiling) as
+        // the single source of truth at the configuration boundary; the
+        // constants here are the single source of truth at the
+        // orchestrator boundary; the contract check cross-verifies.
+        assert_eq!(HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT, 2_048);
+        assert_eq!(HOST_MEMORY_SAFETY_MARGIN_MB_FLOOR, 256);
+        assert_eq!(HOST_MEMORY_SAFETY_MARGIN_MB_CEILING, 1_048_576);
+    }
+
+    #[test]
+    fn host_memory_safety_margin_default_matches_spec_literal() {
+        let margin = HostMemorySafetyMargin::default_margin();
+        assert_eq!(margin.mb, HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT);
+        assert!(margin.validate().is_ok());
+    }
+
+    #[test]
+    fn host_memory_safety_margin_validate_rejects_below_floor() {
+        let margin = HostMemorySafetyMargin {
+            mb: HOST_MEMORY_SAFETY_MARGIN_MB_FLOOR - 1,
+        };
+        let err = margin
+            .validate()
+            .expect_err("below-floor margin must be rejected");
+        assert!(matches!(err, HostMemorySafetyMarginError::BelowFloor { .. }));
+        assert_eq!(err.as_str(), "BelowFloor");
+    }
+
+    #[test]
+    fn host_memory_safety_margin_validate_rejects_above_ceiling() {
+        let margin = HostMemorySafetyMargin {
+            mb: HOST_MEMORY_SAFETY_MARGIN_MB_CEILING + 1,
+        };
+        let err = margin
+            .validate()
+            .expect_err("above-ceiling margin must be rejected");
+        assert!(matches!(
+            err,
+            HostMemorySafetyMarginError::AboveCeiling { .. }
+        ));
+        assert_eq!(err.as_str(), "AboveCeiling");
+    }
+
+    #[test]
+    fn host_memory_safety_margin_validate_accepts_floor_and_ceiling_exactly() {
+        // Boundary inclusion: exactly-floor and exactly-ceiling must
+        // pass — the rejection is on strictly-below / strictly-above.
+        assert!(HostMemorySafetyMargin {
+            mb: HOST_MEMORY_SAFETY_MARGIN_MB_FLOOR
+        }
+        .validate()
+        .is_ok());
+        assert!(HostMemorySafetyMargin {
+            mb: HOST_MEMORY_SAFETY_MARGIN_MB_CEILING
+        }
+        .validate()
+        .is_ok());
+    }
+
+    #[test]
+    fn workload_priority_rank_orders_sys_57_hierarchy() {
+        // SYS-57 hierarchy: live (1) > market data (2) > paper (3) >
+        // nightly ingestion (4) > factor (5) > backtest (6) > research (7).
+        assert_eq!(WorkloadPriority::LiveStrategy.rank(), 1);
+        assert_eq!(WorkloadPriority::MarketDataSubscriptionManager.rank(), 2);
+        assert_eq!(WorkloadPriority::PaperStrategy.rank(), 3);
+        assert_eq!(WorkloadPriority::NightlyDataIngestion.rank(), 4);
+        assert_eq!(WorkloadPriority::FactorPipeline.rank(), 5);
+        assert_eq!(WorkloadPriority::Backtest.rank(), 6);
+        assert_eq!(WorkloadPriority::Research.rank(), 7);
+        // Strictly monotonic — no ties, no holes.
+        assert!(
+            WorkloadPriority::LiveStrategy.rank()
+                < WorkloadPriority::MarketDataSubscriptionManager.rank()
+        );
+        assert!(WorkloadPriority::Backtest.rank() < WorkloadPriority::Research.rank());
+    }
+
+    #[test]
+    fn workload_priority_default_kind_matches_sys_58_clause_b() {
+        // SyRS SYS-58 (b): "terminate the lowest-priority active BATCH
+        // workload" — only the bottom four priorities are batch; the
+        // top three (live, market data, paper) are continuous and
+        // immune from eviction.
+        assert_eq!(
+            WorkloadPriority::LiveStrategy.default_kind(),
+            WorkloadKind::Continuous
+        );
+        assert_eq!(
+            WorkloadPriority::MarketDataSubscriptionManager.default_kind(),
+            WorkloadKind::Continuous
+        );
+        assert_eq!(
+            WorkloadPriority::PaperStrategy.default_kind(),
+            WorkloadKind::Continuous
+        );
+        assert_eq!(
+            WorkloadPriority::NightlyDataIngestion.default_kind(),
+            WorkloadKind::Batch
+        );
+        assert_eq!(
+            WorkloadPriority::FactorPipeline.default_kind(),
+            WorkloadKind::Batch
+        );
+        assert_eq!(
+            WorkloadPriority::Backtest.default_kind(),
+            WorkloadKind::Batch
+        );
+        assert_eq!(
+            WorkloadPriority::Research.default_kind(),
+            WorkloadKind::Batch
+        );
+    }
+
+    #[test]
+    fn workload_priority_wire_strings_are_stable() {
+        assert_eq!(WorkloadPriority::LiveStrategy.as_str(), "LIVE_STRATEGY");
+        assert_eq!(
+            WorkloadPriority::MarketDataSubscriptionManager.as_str(),
+            "MARKET_DATA_SUBSCRIPTION_MANAGER"
+        );
+        assert_eq!(WorkloadPriority::PaperStrategy.as_str(), "PAPER_STRATEGY");
+        assert_eq!(
+            WorkloadPriority::NightlyDataIngestion.as_str(),
+            "NIGHTLY_DATA_INGESTION"
+        );
+        assert_eq!(WorkloadPriority::FactorPipeline.as_str(), "FACTOR_PIPELINE");
+        assert_eq!(WorkloadPriority::Backtest.as_str(), "BACKTEST");
+        assert_eq!(WorkloadPriority::Research.as_str(), "RESEARCH");
+    }
+
+    #[test]
+    fn workload_kind_is_batch_distinguishes_continuous() {
+        assert!(WorkloadKind::Batch.is_batch());
+        assert!(!WorkloadKind::Continuous.is_batch());
+    }
+
+    #[test]
+    fn workload_id_carries_its_value() {
+        let id = WorkloadId::new("backtest-2026-05-14-001");
+        assert_eq!(id.as_str(), "backtest-2026-05-14-001");
+    }
+
+    #[test]
+    fn registered_workload_carries_only_four_fields() {
+        // Exhaustive destructure proves no other public fields. The
+        // contract check pins these four — id, priority, kind, profile —
+        // so future drift (adding a `vendor` / `docker_image` /
+        // `cgroup_path` would couple the registry projection to the
+        // container runtime) is caught at the parse level.
+        let workload = RegisteredWorkload {
+            id: WorkloadId::new("factor-pipeline-nightly"),
+            priority: WorkloadPriority::FactorPipeline,
+            kind: WorkloadKind::Batch,
+            profile: ResourceProfile {
+                mem_mb: 1_024,
+                cpu_hundredths: 100,
+            },
+        };
+        let RegisteredWorkload {
+            id: _,
+            priority: _,
+            kind: _,
+            profile: _,
+        } = workload.clone();
+        assert_eq!(workload.priority, WorkloadPriority::FactorPipeline);
+        assert_eq!(workload.kind, WorkloadKind::Batch);
+        assert_eq!(workload.profile.mem_mb, 1_024);
+    }
+
+    #[test]
+    fn workload_admission_event_variants_carry_distinct_payloads() {
+        let refused = WorkloadAdmissionEvent::Refused {
+            workload_id: WorkloadId::new("research-jupyter-01"),
+            priority: WorkloadPriority::Research,
+            reason: WorkloadAdmissionReason::HostMemoryBelowSafetyMargin {
+                available_mb: 1_500,
+                safety_margin_mb: 2_048,
+            },
+            observed_at_seconds: 1_715_700_000,
+        };
+        assert_eq!(refused.as_str(), "REFUSED");
+
+        let terminated = WorkloadAdmissionEvent::Terminated {
+            terminated_workload_id: WorkloadId::new("research-jupyter-01"),
+            terminated_priority: WorkloadPriority::Research,
+            admitted_workload_id: WorkloadId::new("backtest-priority-2"),
+            admitted_priority: WorkloadPriority::Backtest,
+            reason: WorkloadAdmissionReason::HostMemoryBelowSafetyMargin {
+                available_mb: 1_500,
+                safety_margin_mb: 2_048,
+            },
+            observed_at_seconds: 1_715_700_000,
+        };
+        assert_eq!(terminated.as_str(), "TERMINATED");
+    }
+
+    #[test]
+    fn host_memory_safety_margin_breach_factory_pins_the_wire_string() {
+        // SRS-ORCH-003 / SyRS SYS-64: the rejection wire string must be
+        // HOST_MEMORY_SAFETY_MARGIN_BREACH and the error_type
+        // discriminator must be the canonical PascalCase form. The
+        // message must carry the SRS-ORCH-003 anchor and the available
+        // / safety-margin numerics for dashboard rendering.
+        let request = StrategyLaunchRequest {
+            strategy_id: StrategyId::new("research-jupyter-01"),
+            mode: StrategyMode::Paper,
+            deployment_hash: "sha256:def".to_string(),
+            deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
+            profile: ResourceProfile::paper_default(),
+        };
+        let error = StructuredOrchestratorError::host_memory_safety_margin_breach(
+            request.clone(),
+            1_500,
+            2_048,
+        );
+        assert_eq!(
+            error.category,
+            OrderErrorCategory::HostMemorySafetyMarginBreach
+        );
+        assert_eq!(error.category.as_str(), "HOST_MEMORY_SAFETY_MARGIN_BREACH");
+        assert_eq!(error.error_type, "HostMemorySafetyMarginBreach");
+        assert!(error.message.contains("SRS-ORCH-003"));
+        assert!(error.message.contains("SYS-57"));
+        assert!(error.message.contains("research-jupyter-01"));
+        assert!(error.message.contains("1500"));
+        assert!(error.message.contains("2048"));
+        assert_eq!(error.original_request, request);
+    }
+
+    #[test]
+    fn order_error_category_host_memory_safety_margin_breach_wire_string() {
+        assert_eq!(
+            OrderErrorCategory::HostMemorySafetyMarginBreach.as_str(),
+            "HOST_MEMORY_SAFETY_MARGIN_BREACH"
         );
     }
 }

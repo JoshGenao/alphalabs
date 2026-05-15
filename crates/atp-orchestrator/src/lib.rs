@@ -1,9 +1,11 @@
 use atp_types::{
-    ContainerHealthEvent, ContainerHealthState, ContainerLifecycleAction, LaunchReadiness,
+    ContainerHealthEvent, ContainerHealthState, ContainerLifecycleAction,
+    HostMemorySafetyMargin, HostMemorySafetyMarginError, LaunchReadiness, RegisteredWorkload,
     ResourceProfile, ResourceProfileError, RuntimeService, StrategyId, StrategyLaunchOutcome,
-    StrategyLaunchRequest, StrategyMode, StructuredOrchestratorError,
-    RESOURCE_PROFILE_CPU_CEILING_HUNDREDTHS, RESOURCE_PROFILE_CPU_FLOOR_HUNDREDTHS,
-    STRATEGY_STARTUP_DEADLINE_MS,
+    StrategyLaunchRequest, StrategyMode, StructuredOrchestratorError, WorkloadAdmissionEvent,
+    WorkloadAdmissionReason, WorkloadId, WorkloadKind, WorkloadPriority,
+    HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT, RESOURCE_PROFILE_CPU_CEILING_HUNDREDTHS,
+    RESOURCE_PROFILE_CPU_FLOOR_HUNDREDTHS, STRATEGY_STARTUP_DEADLINE_MS,
 };
 use std::fmt;
 
@@ -52,6 +54,256 @@ impl fmt::Display for ResourceProfileEnvError {
 }
 
 impl std::error::Error for ResourceProfileEnvError {}
+
+/// SRS-ORCH-003: host-memory safety margin env-var resolution errors.
+/// Mirrors the SRS-ORCH-002 `ResourceProfileEnvError` shape so the
+/// dashboard / readiness check can render parse failures (operator
+/// typo / catalogue bypass) separately from validation failures
+/// (out-of-range overrides).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostMemorySafetyMarginEnvError {
+    /// `var` was set to `raw_value`, which does not parse as a u32.
+    Unparseable { var: &'static str, raw_value: String },
+    /// The parsed value failed `HostMemorySafetyMargin::validate`.
+    Validation(HostMemorySafetyMarginError),
+}
+
+impl From<HostMemorySafetyMarginError> for HostMemorySafetyMarginEnvError {
+    fn from(error: HostMemorySafetyMarginError) -> Self {
+        Self::Validation(error)
+    }
+}
+
+impl fmt::Display for HostMemorySafetyMarginEnvError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unparseable { var, raw_value } => write!(
+                formatter,
+                "SRS-ORCH-003 env-var override {var}={raw_value:?} is not a valid u32 (megabytes)"
+            ),
+            Self::Validation(error) => write!(formatter, "SRS-ORCH-003 validation: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for HostMemorySafetyMarginEnvError {}
+
+// --------------------------------------------------------------------------- //
+// Workload-priority admission ports
+// (SRS-ORCH-003, SyRS SYS-57 / SYS-58)
+// --------------------------------------------------------------------------- //
+//
+// SRS-ORCH-003 requires the orchestrator to admit new workloads against
+// the configured host memory safety margin per the SYS-57 hierarchy:
+// refuse lower-priority workloads when available memory would dip below
+// the margin, and evict the lowest-priority *batch* workload (SYS-58 (b))
+// to make room for a higher-priority arriving workload — while NEVER
+// terminating the live-trading strategy (SYS-58 last clause).
+//
+// The admission gate is a separate orchestrator method from `launch`
+// (not folded into it) because callers may need to re-check admission
+// periodically: SYS-58 (a) "refuse to deploy new strategy containers"
+// is decided at deployment time, but SYS-58 (b) eviction can also be
+// triggered out-of-band when a higher-priority job arrives at an
+// already-busy host. Keeping admission separate also preserves the
+// existing `launch` signature so SRS-ORCH-001's lifecycle contract is
+// unaffected by this gate. The production flow becomes
+// `orchestrator.admit_workload(&request, …)?; orchestrator.launch(request, …)?`.
+//
+// The gate consumes three NEW ports — `HostMemoryProbe`,
+// `WorkloadRegistry`, and `WorkloadEventSink` — all of which live in
+// `atp-orchestrator` (not `atp-types`) for the same reason as
+// `StrategyContainerRuntime` and `HealthCheckEventSink`: their
+// consumer (the gate) lives here, and pushing them into `atp-types`
+// would invert the dependency direction (SRS-ARCH-002). Concrete
+// implementations of all three remain deferred: the sysinfo-backed
+// `HostMemoryProbe`, the Docker-Engine-backed `WorkloadRegistry`, and
+// the dashboard / SRS-NOTIF-001 dispatcher wiring of
+// `WorkloadEventSink` are all named in
+// `architecture/runtime_services.json`'s
+// `workload_priority_contract.deferred` list.
+
+/// SRS-ORCH-003 / SyRS SYS-58 (a). Reports the host's currently-available
+/// memory in MB. Returns `Result` because the concrete sysinfo /
+/// procfs-backed implementation may genuinely fail (sysinfo refresh
+/// error, /proc/meminfo unavailable, namespace-unsupported call) — the
+/// admission gate cannot safely decide without a valid reading and
+/// must fail closed on probe failure rather than admit blindly.
+/// Concrete implementations are deferred (no `sysinfo::` /
+/// `procfs::` imports inside this crate); tests use stubs.
+pub trait HostMemoryProbe {
+    fn available_mb(&self) -> Result<u64, HostMemoryProbeError>;
+}
+
+/// SRS-ORCH-003 host-memory probe failure surface. Carries a short
+/// reason string so the dashboard can render the failure cause; future
+/// adapter implementations may add structured variants (e.g.
+/// `SysinfoRefreshFailed`, `ProcMeminfoUnavailable`,
+/// `NamespaceUnsupported`) when concrete impls land.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostMemoryProbeError {
+    pub reason: String,
+}
+
+impl HostMemoryProbeError {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for HostMemoryProbeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "SRS-ORCH-003: HostMemoryProbe::available_mb failed — {}",
+            self.reason,
+        )
+    }
+}
+
+impl std::error::Error for HostMemoryProbeError {}
+
+/// SRS-ORCH-003 / SyRS SYS-58 (b). The admission gate iterates over
+/// `active()` (filtered to `WorkloadKind::Batch`) when arbitration is
+/// needed, and calls `terminate(id)` on the lowest-priority batch
+/// workload it picks. Both methods return `Result` because the
+/// concrete registry implementation (Docker Engine-backed or
+/// in-process) may genuinely fail — the gate MUST NOT silently treat
+/// a listing failure as "no active workloads" or a failed termination
+/// as freed memory. Concrete implementations are deferred; the
+/// concrete failure variants will be added when the adapter lands.
+pub trait WorkloadRegistry {
+    fn active(&self) -> Result<Vec<RegisteredWorkload>, WorkloadRegistryError>;
+    fn terminate(&self, id: &WorkloadId) -> Result<(), WorkloadTerminationError>;
+}
+
+/// SRS-ORCH-003 registry-listing failure surface (e.g. Docker API
+/// timeout, in-process registry mutex poisoning, IPC layer
+/// disconnection). Carries a short reason string for dashboard
+/// rendering; future variants will distinguish Docker / registry
+/// specifics when the concrete adapter lands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkloadRegistryError {
+    pub reason: String,
+}
+
+impl WorkloadRegistryError {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for WorkloadRegistryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "SRS-ORCH-003: WorkloadRegistry::active failed — {}",
+            self.reason,
+        )
+    }
+}
+
+impl std::error::Error for WorkloadRegistryError {}
+
+/// SRS-ORCH-003 termination-failure surface. Carries the failed
+/// workload id plus a typed reason — registry termination failures
+/// (Docker shutdown timeout, cgroup permission denied, registry
+/// desync, etc.) must surface the specific cause so the dashboard
+/// can render it and operators can diagnose without grepping logs.
+/// Future Docker / cgroup-driver variants will be added when the
+/// concrete registry lands; until then the reason carries a short
+/// human-readable string supplied by the implementation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkloadTerminationError {
+    pub workload_id: WorkloadId,
+    pub reason: String,
+}
+
+impl WorkloadTerminationError {
+    pub fn new(workload_id: WorkloadId, reason: impl Into<String>) -> Self {
+        Self {
+            workload_id,
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for WorkloadTerminationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "SRS-ORCH-003: WorkloadRegistry::terminate failed for {} — {}",
+            self.workload_id.as_str(),
+            self.reason,
+        )
+    }
+}
+
+impl std::error::Error for WorkloadTerminationError {}
+
+/// SRS-ORCH-003 / SyRS SYS-58 (c). Dashboard + notification audit
+/// channel for admission decisions. Separate trait from
+/// `HealthCheckEventSink` because `WorkloadAdmissionEvent` and
+/// `ContainerHealthEvent` are disjoint payloads routed to different
+/// dispatcher lanes — conflating them would force the dispatcher to
+/// peek inside the payload to decide which alert pane to fan to.
+///
+/// `record` returns `Result` so concrete sink implementations can
+/// signal a typed publication failure (queue full, dashboard
+/// WebSocket disconnected, audit-log unwritable). The orchestrator's
+/// `admit_workload` gate treats emission as **best-effort** by
+/// design: the admission decision is irreversible once made (the
+/// host is already in the post-decision state), so a sink failure
+/// does not abort or roll back the decision. Concrete dispatcher
+/// implementations are responsible for durable delivery semantics
+/// (bounded queue + retry, persistent journal, fan-out to a
+/// secondary channel, etc.) — those concerns belong on the
+/// SRS-LOG-001 / SRS-NOTIF-001 / SYS-13 dispatcher block (deferred).
+/// The typed `WorkloadEventSinkError` exists so a future caller
+/// wrapping the orchestrator can observe sink failures separately
+/// from admission outcomes without retrofitting the trait.
+pub trait WorkloadEventSink {
+    fn record(&self, event: WorkloadAdmissionEvent) -> Result<(), WorkloadEventSinkError>;
+}
+
+/// SRS-ORCH-003 event-sink failure surface (dispatcher queue full,
+/// dashboard WebSocket disconnected, audit log file unwritable, etc.).
+/// Carries a short reason string for now; future variants will be
+/// added when the concrete dispatcher lands. The orchestrator's
+/// `admit_workload` gate emits alerts as best-effort and does NOT
+/// itself capture or surface these errors — the typed surface exists
+/// so concrete sink implementations and wrapping callers (a logger
+/// that retries, a metrics adapter that counts dropped alerts, the
+/// deferred SRS-NOTIF-001 dispatcher with its own durable-delivery
+/// semantics) can observe and act on them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkloadEventSinkError {
+    pub reason: String,
+}
+
+impl WorkloadEventSinkError {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for WorkloadEventSinkError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "SRS-ORCH-003: WorkloadEventSink::record failed — {}",
+            self.reason,
+        )
+    }
+}
+
+impl std::error::Error for WorkloadEventSinkError {}
 
 // --------------------------------------------------------------------------- //
 // Strategy container lifecycle ports
@@ -144,6 +396,22 @@ impl StrategyOrchestrator {
     /// `StructuredOrchestratorError` whose category is
     /// `OrderErrorCategory::StrategyStartupDeadlineExceeded` (wire string
     /// `STRATEGY_STARTUP_DEADLINE_EXCEEDED`).
+    ///
+    /// **Required precondition** (SRS-ORCH-003 / SyRS SYS-57 / SYS-58):
+    /// callers MUST invoke `Self::admit_workload(...)` first and
+    /// proceed to `launch` only when admission returned `Ok(())`. The
+    /// admission gate enforces the host-memory safety margin and the
+    /// workload-priority hierarchy; calling `launch` without it
+    /// bypasses those guarantees. This precondition is contract-level
+    /// today (production callers must observe the sequence
+    /// `admit_workload → launch`); the typed-coupling work that turns
+    /// "must call" into "cannot fail to call" via a typestate /
+    /// builder is named in
+    /// `workload_priority_contract.deferred` and will be applied
+    /// once a production caller of `launch` exists. The contract is
+    /// also pinned by the integration tests
+    /// (`orch_3_workload_priority_contract`) and the domain test
+    /// `tests/domain/test_orchestrator_workload_priority.py`.
     ///
     /// **Invariants** (statically checked by
     /// `tools/orchestrator_lifecycle_check.py`):
@@ -462,6 +730,378 @@ impl StrategyOrchestrator {
         mode: StrategyMode,
     ) -> Result<ResourceProfile, ResourceProfileEnvError> {
         self.profile_for_mode_via_env_lookup(mode, |name: &str| std::env::var(name))
+    }
+
+    /// SRS-ORCH-003 / SyRS SYS-57 default host-memory safety margin
+    /// (2048 MB). Re-exported so callers populating the admission gate
+    /// do not have to reach into `atp_types` — the orchestrator owns
+    /// the lifecycle boundary.
+    pub const fn host_memory_safety_margin_default(&self) -> HostMemorySafetyMargin {
+        HostMemorySafetyMargin::default_margin()
+    }
+
+    /// SRS-ORCH-003: build a `HostMemorySafetyMargin` from the
+    /// `ATP_HOST_MEMORY_SAFETY_MARGIN_MB` configuration value supplied
+    /// by `lookup`. Falls back to the SyRS spec-literal default ONLY
+    /// when the lookup returns `None`. A set-but-unparseable value is
+    /// returned as `Unparseable` — silently substituting a default for
+    /// an invalid override would be the opposite of "configuration
+    /// overrides are validated." The resulting margin is then
+    /// validated against the SRS-ARCH-005 catalogue bounds.
+    pub fn safety_margin_from_lookup<F>(
+        &self,
+        lookup: F,
+    ) -> Result<HostMemorySafetyMargin, HostMemorySafetyMarginEnvError>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let var = "ATP_HOST_MEMORY_SAFETY_MARGIN_MB";
+        let mb = match lookup(var) {
+            Some(raw) => raw.parse::<u32>().map_err(|_| {
+                HostMemorySafetyMarginEnvError::Unparseable {
+                    var,
+                    raw_value: raw,
+                }
+            })?,
+            None => HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT,
+        };
+        let margin = HostMemorySafetyMargin { mb };
+        margin.validate()?;
+        Ok(margin)
+    }
+
+    /// SRS-ORCH-003 testable env-var bridge. Distinguishes
+    /// `VarError::NotPresent` (silently falls back to the SyRS default)
+    /// from `VarError::NotUnicode` (returned as a structured
+    /// `Unparseable` error). Mirrors `profile_for_mode_via_env_lookup`.
+    pub fn safety_margin_via_env_lookup<F>(
+        &self,
+        env_lookup: F,
+    ) -> Result<HostMemorySafetyMargin, HostMemorySafetyMarginEnvError>
+    where
+        F: Fn(&str) -> Result<String, std::env::VarError>,
+    {
+        let var = "ATP_HOST_MEMORY_SAFETY_MARGIN_MB";
+        let value = match env_lookup(var) {
+            Ok(raw) => Some(raw),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(std::env::VarError::NotUnicode(raw)) => {
+                return Err(HostMemorySafetyMarginEnvError::Unparseable {
+                    var,
+                    raw_value: raw.to_string_lossy().into_owned(),
+                });
+            }
+        };
+        self.safety_margin_from_lookup(|name| {
+            if name == var {
+                value.clone()
+            } else {
+                None
+            }
+        })
+    }
+
+    /// SRS-ORCH-003 production env-var wrapper. Plugs `std::env::var`
+    /// into `safety_margin_via_env_lookup`.
+    pub fn safety_margin_from_env(
+        &self,
+    ) -> Result<HostMemorySafetyMargin, HostMemorySafetyMarginEnvError> {
+        self.safety_margin_via_env_lookup(|name: &str| std::env::var(name))
+    }
+
+    /// SRS-ORCH-003 admission gate (SyRS SYS-57 / SYS-58). Decides
+    /// whether a new workload may be deployed against the configured
+    /// host-memory safety margin and the SYS-57 priority hierarchy.
+    ///
+    /// Algorithm (the contract check pins each invariant):
+    ///
+    /// 1. **Margin validation (defence in depth)**: call
+    ///    `safety_margin.validate()`. A programmatically-constructed
+    ///    margin that bypassed the env-helper / catalogue validation
+    ///    (test fixture, future REST API override) must NOT be allowed
+    ///    to disable the gate — refuse synchronously with the breach
+    ///    factory so the dashboard surfaces the operator-configuration
+    ///    error.
+    /// 2. Read `host.available_mb()` once. The value is a snapshot;
+    ///    the gate does NOT re-probe inside the arbitration loop
+    ///    (re-probing would race with the very evictions the gate is
+    ///    deciding about).
+    /// 3. Compute the post-admit headroom — `available - needed`. If
+    ///    that already leaves room above the safety margin, admit
+    ///    immediately with NO events emitted and NO registry mutation.
+    /// 4. **Pre-eviction feasibility (no partial-eviction refusal)**:
+    ///    walk `registry.active()` filtered to `WorkloadKind::Batch`
+    ///    and strictly-lower-priority-than-incoming, sorted by
+    ///    descending `rank()`. Sum their `profile.mem_mb`. If even the
+    ///    full sum cannot bring the post-admit headroom above the
+    ///    safety margin, refuse WITHOUT issuing any `terminate` call
+    ///    (SyRS SYS-58 (b): "if a higher-priority workload requires
+    ///    resources" — if the resources cannot be assembled, no
+    ///    workload is killed).
+    /// 5. Otherwise, iterate the sorted candidates and terminate them
+    ///    one at a time:
+    ///    * **SYS-58 last-clause invariant**: `c.priority` must not be
+    ///      `LiveStrategy`. Live is `Continuous` so the filter above
+    ///      already excludes it; the `debug_assert!` is a belt-and-
+    ///      suspenders that makes the invariant auditable in a stack
+    ///      trace if a registry implementation drifts.
+    ///    * `registry.terminate(&c.id)` returns `Result`. On `Ok`,
+    ///      emit a `Terminated` event AND bank the freed memory. On
+    ///      `Err`, do NOT bank the memory (the workload may still be
+    ///      consuming its resources) — continue to the next eligible
+    ///      candidate. The pre-check above ensures the sum is
+    ///      sufficient IF all terminations succeed; if some fail, the
+    ///      loop attempts the remaining candidates and refuses if
+    ///      still below margin.
+    /// 6. If after the loop the host is still below the safety margin,
+    ///    emit a `Refused` event AND return
+    ///    `StructuredOrchestratorError::host_memory_safety_margin_breach`.
+    ///
+    /// **Invariants** (statically checked by
+    /// `tools/orchestrator_workload_priority_check.py`):
+    ///
+    /// * The refusal arm MUST emit a `WorkloadAdmissionEvent::Refused`
+    ///   through the sink AND return a structured error whose category
+    ///   is `OrderErrorCategory::HostMemorySafetyMarginBreach`.
+    /// * The refusal arm MUST NOT call `runtime.create(`,
+    ///   `runtime.start(`, `runtime.destroy(`, or `runtime.restart(` —
+    ///   the gate sits in front of the runtime port.
+    /// * The arbitration loop MUST iterate ONLY `WorkloadKind::Batch`
+    ///   candidates; the contract check pins the `.kind == WorkloadKind::Batch`
+    ///   filter on the iterator.
+    /// * The arbitration loop MUST contain a `debug_assert!` that the
+    ///   evicted workload's priority is not `LiveStrategy`.
+    /// * The happy path (sufficient headroom) MUST NOT call
+    ///   `registry.terminate(` and MUST NOT emit any event.
+    pub fn admit_workload<H, R, S>(
+        &self,
+        request: &StrategyLaunchRequest,
+        new_workload_id: WorkloadId,
+        new_workload_priority: WorkloadPriority,
+        safety_margin: HostMemorySafetyMargin,
+        host: &H,
+        registry: &R,
+        sink: &S,
+        observed_at_seconds: u64,
+    ) -> Result<(), StructuredOrchestratorError>
+    where
+        H: HostMemoryProbe,
+        R: WorkloadRegistry,
+        S: WorkloadEventSink,
+    {
+        // (1) Margin validation — defence in depth so a
+        // programmatically-constructed invalid margin cannot disable
+        // the gate (codex critic: safety:margin-validation-bypass).
+        if safety_margin.validate().is_err() {
+            // Probe the host so the dashboard sees actual numbers,
+            // and report the (invalid) configured margin so operators
+            // see what was set. If the probe itself fails here, route
+            // through HostProbeFailed (codex critic:
+            // adapter:probe-error-swallowed) — never silently treat
+            // an Err as available_mb=0.
+            match host.available_mb() {
+                Ok(available_mb) => {
+                    // Audit emission is best-effort per WorkloadEventSink's
+                    // trait contract — the admission decision is
+                    // irreversible once made, so a sink failure does not
+                    // abort or roll back the decision. A future wrapping
+                    // caller can observe sink errors through the typed
+                    // WorkloadEventSinkError surface; durable delivery
+                    // belongs to the deferred SRS-NOTIF-001 dispatcher.
+                    let _ = sink.record(WorkloadAdmissionEvent::Refused {
+                        workload_id: new_workload_id,
+                        priority: new_workload_priority,
+                        reason: WorkloadAdmissionReason::HostMemoryBelowSafetyMargin {
+                            available_mb,
+                            safety_margin_mb: safety_margin.mb,
+                        },
+                        observed_at_seconds,
+                    });
+                    return Err(
+                        StructuredOrchestratorError::host_memory_safety_margin_breach(
+                            request.clone(),
+                            available_mb,
+                            safety_margin.mb,
+                        ),
+                    );
+                }
+                Err(probe_error) => {
+                    let _ = sink.record(WorkloadAdmissionEvent::HostProbeFailed {
+                        workload_id: new_workload_id,
+                        priority: new_workload_priority,
+                        failure_reason: probe_error.to_string(),
+                        observed_at_seconds,
+                    });
+                    return Err(
+                        StructuredOrchestratorError::host_memory_safety_margin_breach(
+                            request.clone(),
+                            0,
+                            safety_margin.mb,
+                        ),
+                    );
+                }
+            }
+        }
+
+        // (2) Host probe — fail closed on a probe error (codex critic
+        // adapter:probe-error-surface). The gate cannot safely decide
+        // without a valid reading; emit a distinct HostProbeFailed
+        // event so the dashboard can render the probe-specific
+        // failure cause and refuse the admission.
+        let mut available_mb = match host.available_mb() {
+            Ok(mb) => mb,
+            Err(probe_error) => {
+                let _ = sink.record(WorkloadAdmissionEvent::HostProbeFailed {
+                    workload_id: new_workload_id,
+                    priority: new_workload_priority,
+                    failure_reason: probe_error.to_string(),
+                    observed_at_seconds,
+                });
+                return Err(StructuredOrchestratorError::host_memory_safety_margin_breach(
+                    request.clone(),
+                    0,
+                    safety_margin.mb,
+                ));
+            }
+        };
+        let needed_mb = u64::from(request.profile.mem_mb);
+        let margin_mb = u64::from(safety_margin.mb);
+
+        // (3) SyRS SYS-58 (a) happy path: if admitting leaves the host
+        // above the safety margin, nothing else to do.
+        if available_mb.saturating_sub(needed_mb) >= margin_mb {
+            return Ok(());
+        }
+
+        // (4) SyRS SYS-58 (b) arbitration: walk batch candidates from
+        // lowest priority (highest rank) to highest priority. Only
+        // candidates strictly lower priority than the incoming
+        // workload are eligible for eviction. Fail closed if the
+        // registry listing fails (codex critic adapter:error-surface).
+        let active = match registry.active() {
+            Ok(active) => active,
+            Err(registry_error) => {
+                // codex critic adapter:registry-error-surface — emit a
+                // distinct RegistryListingFailed event so the
+                // dashboard surfaces the typed error cause rather
+                // than collapsing into a generic margin breach.
+                let _ = sink.record(WorkloadAdmissionEvent::RegistryListingFailed {
+                    workload_id: new_workload_id,
+                    priority: new_workload_priority,
+                    failure_reason: registry_error.to_string(),
+                    observed_at_seconds,
+                });
+                return Err(StructuredOrchestratorError::host_memory_safety_margin_breach(
+                    request.clone(),
+                    available_mb,
+                    safety_margin.mb,
+                ));
+            }
+        };
+        let mut eligible_candidates: Vec<RegisteredWorkload> = active
+            .into_iter()
+            .filter(|workload| workload.kind == WorkloadKind::Batch)
+            .filter(|workload| workload.priority.rank() > new_workload_priority.rank())
+            .collect();
+        eligible_candidates.sort_by(|a, b| b.priority.rank().cmp(&a.priority.rank()));
+
+        // (4) Pre-eviction feasibility: if even the SUM of all
+        // eligible candidates' memory cannot bring the host above the
+        // safety margin, refuse without any terminate call. This
+        // prevents the codex partial-eviction-refusal failure mode:
+        // killing lower-priority work and still returning a refusal.
+        let recoverable_mb: u64 = eligible_candidates
+            .iter()
+            .map(|workload| u64::from(workload.profile.mem_mb))
+            .sum();
+        if available_mb
+            .saturating_add(recoverable_mb)
+            .saturating_sub(needed_mb)
+            < margin_mb
+        {
+            let _ = sink.record(WorkloadAdmissionEvent::Refused {
+                workload_id: new_workload_id,
+                priority: new_workload_priority,
+                reason: WorkloadAdmissionReason::HostMemoryBelowSafetyMargin {
+                    available_mb,
+                    safety_margin_mb: safety_margin.mb,
+                },
+                observed_at_seconds,
+            });
+            return Err(StructuredOrchestratorError::host_memory_safety_margin_breach(
+                request.clone(),
+                available_mb,
+                safety_margin.mb,
+            ));
+        }
+
+        // (5) Eviction loop. Each `terminate` returns Result so the
+        // gate distinguishes successful eviction from a Docker /
+        // registry failure: on Err the candidate is NOT banked as
+        // freed memory (the workload may still be running) and the
+        // loop continues to the next eligible candidate.
+        for candidate in eligible_candidates {
+            // SyRS SYS-58 last clause: never terminate the live-trading
+            // strategy. Live is Continuous so the kind-filter already
+            // excludes it; this debug_assert pins the invariant.
+            debug_assert!(
+                candidate.priority != WorkloadPriority::LiveStrategy,
+                "SyRS SYS-58 invariant: live strategy must never be selected for eviction"
+            );
+            match registry.terminate(&candidate.id) {
+                Ok(()) => {
+                    let freed_mb = u64::from(candidate.profile.mem_mb);
+                    let _ = sink.record(WorkloadAdmissionEvent::Terminated {
+                        terminated_workload_id: candidate.id.clone(),
+                        terminated_priority: candidate.priority,
+                        admitted_workload_id: new_workload_id.clone(),
+                        admitted_priority: new_workload_priority,
+                        reason: WorkloadAdmissionReason::HostMemoryBelowSafetyMargin {
+                            available_mb,
+                            safety_margin_mb: safety_margin.mb,
+                        },
+                        observed_at_seconds,
+                    });
+                    available_mb = available_mb.saturating_add(freed_mb);
+                    if available_mb.saturating_sub(needed_mb) >= margin_mb {
+                        return Ok(());
+                    }
+                }
+                Err(termination_error) => {
+                    // codex critic adapter:silent-failure: emit a
+                    // structured TerminationFailed audit event so
+                    // operators see the failed eviction (rather than
+                    // it disappearing into the gate's loop). Don't
+                    // bank the memory — the workload may still be
+                    // consuming it.
+                    let _ = sink.record(WorkloadAdmissionEvent::TerminationFailed {
+                        attempted_workload_id: candidate.id.clone(),
+                        attempted_priority: candidate.priority,
+                        admitted_workload_id: new_workload_id.clone(),
+                        admitted_priority: new_workload_priority,
+                        failure_reason: termination_error.to_string(),
+                        observed_at_seconds,
+                    });
+                }
+            }
+        }
+
+        // (6) Post-loop refusal: all eligible candidates exhausted (or
+        // failed) and host is still below margin. Refuse and alert.
+        let _ = sink.record(WorkloadAdmissionEvent::Refused {
+            workload_id: new_workload_id,
+            priority: new_workload_priority,
+            reason: WorkloadAdmissionReason::HostMemoryBelowSafetyMargin {
+                available_mb,
+                safety_margin_mb: safety_margin.mb,
+            },
+            observed_at_seconds,
+        });
+        Err(StructuredOrchestratorError::host_memory_safety_margin_breach(
+            request.clone(),
+            available_mb,
+            safety_margin.mb,
+        ))
     }
 }
 
@@ -1108,5 +1748,804 @@ mod tests {
             .expect("present mem override + default cpu must validate");
         assert_eq!(profile.mem_mb, 768);
         assert_eq!(profile.cpu_hundredths, 25);
+    }
+
+    // ----------------------------------------------------------------------- //
+    // SRS-ORCH-003 workload-priority admission gate
+    // ----------------------------------------------------------------------- //
+
+    struct HostMemoryStub {
+        available_mb: Cell<u64>,
+        probe_calls: Cell<u32>,
+    }
+
+    impl HostMemoryStub {
+        fn new(available_mb: u64) -> Self {
+            Self {
+                available_mb: Cell::new(available_mb),
+                probe_calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl HostMemoryProbe for HostMemoryStub {
+        fn available_mb(&self) -> Result<u64, HostMemoryProbeError> {
+            self.probe_calls.set(self.probe_calls.get() + 1);
+            Ok(self.available_mb.get())
+        }
+    }
+
+    #[derive(Default)]
+    struct WorkloadRegistrySpy {
+        workloads: RefCell<Vec<RegisteredWorkload>>,
+        terminate_calls: RefCell<Vec<WorkloadId>>,
+    }
+
+    impl WorkloadRegistrySpy {
+        fn with(workloads: Vec<RegisteredWorkload>) -> Self {
+            Self {
+                workloads: RefCell::new(workloads),
+                terminate_calls: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl WorkloadRegistry for WorkloadRegistrySpy {
+        fn active(&self) -> Result<Vec<RegisteredWorkload>, WorkloadRegistryError> {
+            Ok(self.workloads.borrow().clone())
+        }
+
+        fn terminate(&self, id: &WorkloadId) -> Result<(), WorkloadTerminationError> {
+            self.terminate_calls.borrow_mut().push(id.clone());
+            self.workloads
+                .borrow_mut()
+                .retain(|workload| workload.id != *id);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct WorkloadEventSpy {
+        events: RefCell<Vec<WorkloadAdmissionEvent>>,
+    }
+
+    impl WorkloadEventSink for WorkloadEventSpy {
+        fn record(
+            &self,
+            event: WorkloadAdmissionEvent,
+        ) -> Result<(), WorkloadEventSinkError> {
+            self.events.borrow_mut().push(event);
+            Ok(())
+        }
+    }
+
+    struct ForbiddenWorkloadEventSink;
+
+    impl WorkloadEventSink for ForbiddenWorkloadEventSink {
+        fn record(
+            &self,
+            _event: WorkloadAdmissionEvent,
+        ) -> Result<(), WorkloadEventSinkError> {
+            panic!("happy path must not emit a WorkloadAdmissionEvent");
+        }
+    }
+
+    struct ForbiddenWorkloadRegistry;
+
+    impl WorkloadRegistry for ForbiddenWorkloadRegistry {
+        fn active(&self) -> Result<Vec<RegisteredWorkload>, WorkloadRegistryError> {
+            Ok(Vec::new())
+        }
+
+        fn terminate(&self, _id: &WorkloadId) -> Result<(), WorkloadTerminationError> {
+            panic!("happy path must not call WorkloadRegistry::terminate");
+        }
+    }
+
+    fn workload(id: &str, priority: WorkloadPriority, mem_mb: u32) -> RegisteredWorkload {
+        RegisteredWorkload {
+            id: WorkloadId::new(id),
+            priority,
+            kind: priority.default_kind(),
+            profile: ResourceProfile {
+                mem_mb,
+                cpu_hundredths: 10,
+            },
+        }
+    }
+
+    #[test]
+    fn admit_workload_admits_when_headroom_exceeds_safety_margin() {
+        // SyRS SYS-57 happy path: available - needed >= margin →
+        // admit silently. No events, no registry mutation.
+        let orchestrator = StrategyOrchestrator;
+        let host = HostMemoryStub::new(8_192);
+        let registry = ForbiddenWorkloadRegistry;
+        let sink = ForbiddenWorkloadEventSink;
+        let request = request("alpha-paper-1", StrategyMode::Paper);
+        let outcome = orchestrator.admit_workload(
+            &request,
+            WorkloadId::new("alpha-paper-1"),
+            WorkloadPriority::PaperStrategy,
+            HostMemorySafetyMargin::default_margin(),
+            &host,
+            &registry,
+            &sink,
+            1_715_700_000,
+        );
+        assert!(outcome.is_ok(), "ample headroom must admit");
+        assert_eq!(host.probe_calls.get(), 1);
+    }
+
+    #[test]
+    fn admit_workload_refuses_when_no_batch_evictable_and_emits_refused() {
+        // SyRS SYS-58 (a): available below margin AND no batch
+        // workloads to evict → refuse with structured error +
+        // Refused event.
+        let orchestrator = StrategyOrchestrator;
+        // Available 2200 MB, paper needs 300 MB → post-admit 1900 MB,
+        // which is below the 2048 MB safety margin. No batch workloads
+        // in the registry, so no eviction possible.
+        let host = HostMemoryStub::new(2_200);
+        let registry = WorkloadRegistrySpy::with(vec![]);
+        let sink = WorkloadEventSpy::default();
+        let request = request("paper-2", StrategyMode::Paper);
+        let error = orchestrator
+            .admit_workload(
+                &request,
+                WorkloadId::new("paper-2"),
+                WorkloadPriority::PaperStrategy,
+                HostMemorySafetyMargin::default_margin(),
+                &host,
+                &registry,
+                &sink,
+                1_715_700_000,
+            )
+            .expect_err("post-admit below margin with no eviction must refuse");
+        assert_eq!(
+            error.category,
+            atp_types::OrderErrorCategory::HostMemorySafetyMarginBreach
+        );
+        assert_eq!(
+            error.category.as_str(),
+            "HOST_MEMORY_SAFETY_MARGIN_BREACH"
+        );
+        let events = sink.events.borrow();
+        assert_eq!(events.len(), 1, "exactly one Refused event must be emitted");
+        match &events[0] {
+            WorkloadAdmissionEvent::Refused {
+                workload_id,
+                priority,
+                reason,
+                ..
+            } => {
+                assert_eq!(workload_id.as_str(), "paper-2");
+                assert_eq!(*priority, WorkloadPriority::PaperStrategy);
+                match reason {
+                    WorkloadAdmissionReason::HostMemoryBelowSafetyMargin {
+                        available_mb,
+                        safety_margin_mb,
+                    } => {
+                        assert_eq!(*available_mb, 2_200);
+                        assert_eq!(*safety_margin_mb, 2_048);
+                    }
+                }
+            }
+            other => panic!("expected Refused, got {other:?}"),
+        }
+        assert!(
+            registry.terminate_calls.borrow().is_empty(),
+            "refusal with no batch evictable must not call terminate"
+        );
+    }
+
+    #[test]
+    fn admit_workload_admits_after_evicting_lowest_priority_batch() {
+        // SyRS SYS-58 (b): incoming MarketData (rank 2) needs headroom;
+        // a Research batch (rank 7) sits in the registry → evict
+        // Research, admit MarketData. Exactly one Terminated event.
+        let orchestrator = StrategyOrchestrator;
+        let host = HostMemoryStub::new(2_300);
+        let registry = WorkloadRegistrySpy::with(vec![workload(
+            "research-jupyter-01",
+            WorkloadPriority::Research,
+            512,
+        )]);
+        let sink = WorkloadEventSpy::default();
+        // Use a Live request (which trivially outranks Research) and
+        // ask the gate to admit it as MarketData priority. The gate
+        // only cares about new_workload_priority for the arbitration
+        // comparison; the request profile drives `needed_mb`.
+        let request = request("md-subscriber", StrategyMode::Paper);
+        let outcome = orchestrator.admit_workload(
+            &request,
+            WorkloadId::new("md-subscriber"),
+            WorkloadPriority::MarketDataSubscriptionManager,
+            HostMemorySafetyMargin::default_margin(),
+            &host,
+            &registry,
+            &sink,
+            1_715_700_000,
+        );
+        assert!(outcome.is_ok(), "post-eviction headroom must admit");
+        let terminate_calls = registry.terminate_calls.borrow();
+        assert_eq!(terminate_calls.len(), 1);
+        assert_eq!(terminate_calls[0].as_str(), "research-jupyter-01");
+        let events = sink.events.borrow();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            WorkloadAdmissionEvent::Terminated {
+                terminated_workload_id,
+                terminated_priority,
+                admitted_workload_id,
+                admitted_priority,
+                ..
+            } => {
+                assert_eq!(terminated_workload_id.as_str(), "research-jupyter-01");
+                assert_eq!(*terminated_priority, WorkloadPriority::Research);
+                assert_eq!(admitted_workload_id.as_str(), "md-subscriber");
+                assert_eq!(
+                    *admitted_priority,
+                    WorkloadPriority::MarketDataSubscriptionManager
+                );
+            }
+            other => panic!("expected Terminated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn admit_workload_evicts_lowest_priority_first() {
+        // SyRS SYS-57 hierarchy ordering: multiple batch workloads
+        // present, only the lowest-priority one is evicted (Research,
+        // rank 7) and NOT the FactorPipeline (rank 5).
+        let orchestrator = StrategyOrchestrator;
+        let host = HostMemoryStub::new(2_300);
+        let registry = WorkloadRegistrySpy::with(vec![
+            workload("factor-nightly", WorkloadPriority::FactorPipeline, 512),
+            workload("research-jupyter-01", WorkloadPriority::Research, 512),
+            workload("backtest-2026-05-14", WorkloadPriority::Backtest, 512),
+        ]);
+        let sink = WorkloadEventSpy::default();
+        let request = request("md-subscriber", StrategyMode::Paper);
+        orchestrator
+            .admit_workload(
+                &request,
+                WorkloadId::new("md-subscriber"),
+                WorkloadPriority::MarketDataSubscriptionManager,
+                HostMemorySafetyMargin::default_margin(),
+                &host,
+                &registry,
+                &sink,
+                1_715_700_000,
+            )
+            .expect("post-eviction headroom must admit");
+        let terminate_calls = registry.terminate_calls.borrow();
+        assert_eq!(terminate_calls.len(), 1);
+        assert_eq!(
+            terminate_calls[0].as_str(),
+            "research-jupyter-01",
+            "lowest-priority batch (Research, rank 7) must be evicted first"
+        );
+    }
+
+    #[test]
+    fn admit_workload_skips_continuous_workloads_during_arbitration() {
+        // SyRS SYS-58 (b): only BATCH workloads may be terminated.
+        // Paper strategies are Continuous (immune from eviction);
+        // even if they are the lowest-priority active workload, the
+        // arbitration loop must skip them and refuse the admission.
+        let orchestrator = StrategyOrchestrator;
+        // Only Paper continuous workloads in the registry — none of
+        // them are eligible for eviction.
+        let host = HostMemoryStub::new(2_200);
+        let registry = WorkloadRegistrySpy::with(vec![
+            workload("paper-1", WorkloadPriority::PaperStrategy, 300),
+            workload("paper-2", WorkloadPriority::PaperStrategy, 300),
+        ]);
+        let sink = WorkloadEventSpy::default();
+        let request = request("md-subscriber", StrategyMode::Paper);
+        let error = orchestrator
+            .admit_workload(
+                &request,
+                WorkloadId::new("md-subscriber"),
+                WorkloadPriority::MarketDataSubscriptionManager,
+                HostMemorySafetyMargin::default_margin(),
+                &host,
+                &registry,
+                &sink,
+                1_715_700_000,
+            )
+            .expect_err("only-continuous registry must refuse, never evict");
+        assert_eq!(
+            error.category,
+            atp_types::OrderErrorCategory::HostMemorySafetyMarginBreach
+        );
+        assert!(
+            registry.terminate_calls.borrow().is_empty(),
+            "Continuous workloads must never be selected for eviction"
+        );
+    }
+
+    #[test]
+    fn admit_workload_refuses_when_incoming_priority_is_lower_than_all_batch() {
+        // SyRS SYS-58 (b) wording: terminate batch workloads ONLY if a
+        // higher-priority workload requires resources. A Research
+        // (rank 7) workload arriving when only a Backtest (rank 6)
+        // batch is active must NOT evict the Backtest — Research
+        // doesn't outrank Backtest.
+        let orchestrator = StrategyOrchestrator;
+        let host = HostMemoryStub::new(2_200);
+        let registry = WorkloadRegistrySpy::with(vec![workload(
+            "backtest-2026-05-14",
+            WorkloadPriority::Backtest,
+            512,
+        )]);
+        let sink = WorkloadEventSpy::default();
+        let request = request("research-jupyter-02", StrategyMode::Paper);
+        let error = orchestrator
+            .admit_workload(
+                &request,
+                WorkloadId::new("research-jupyter-02"),
+                WorkloadPriority::Research,
+                HostMemorySafetyMargin::default_margin(),
+                &host,
+                &registry,
+                &sink,
+                1_715_700_000,
+            )
+            .expect_err("equal-or-lower-priority incoming must not evict batch");
+        assert_eq!(
+            error.category,
+            atp_types::OrderErrorCategory::HostMemorySafetyMarginBreach
+        );
+        assert!(
+            registry.terminate_calls.borrow().is_empty(),
+            "lower-priority incoming must not trigger any eviction"
+        );
+    }
+
+    #[test]
+    fn admit_workload_refuses_without_eviction_when_pre_check_says_insufficient() {
+        // SyRS SYS-58 (b) + codex orch:partial-eviction-refusal: if
+        // evicting ALL eligible batch workloads cannot free enough
+        // memory, the gate must refuse the new workload WITHOUT
+        // killing any work. The previous design killed work then
+        // refused — a strictly worse outcome (lost work + still no
+        // admission).
+        let orchestrator = StrategyOrchestrator;
+        // Host has 500 MB available, paper needs 300 MB → post-admit
+        // 200 MB. Margin is 2048 MB. Sum of 3 batch (each 100 MB) is
+        // 300 MB → post-admit-after-eviction 500 MB, still 1548 MB
+        // short of the 2048 MB margin.
+        let host = HostMemoryStub::new(500);
+        let registry = WorkloadRegistrySpy::with(vec![
+            workload("factor-1", WorkloadPriority::FactorPipeline, 100),
+            workload("backtest-1", WorkloadPriority::Backtest, 100),
+            workload("research-1", WorkloadPriority::Research, 100),
+        ]);
+        let sink = WorkloadEventSpy::default();
+        let request = request("paper-md", StrategyMode::Paper);
+        let error = orchestrator
+            .admit_workload(
+                &request,
+                WorkloadId::new("paper-md"),
+                WorkloadPriority::MarketDataSubscriptionManager,
+                HostMemorySafetyMargin::default_margin(),
+                &host,
+                &registry,
+                &sink,
+                1_715_700_000,
+            )
+            .expect_err("pre-check below margin must refuse without eviction");
+        assert_eq!(
+            error.category,
+            atp_types::OrderErrorCategory::HostMemorySafetyMarginBreach
+        );
+        // NO workloads were evicted — the pre-check proved
+        // termination would not be enough.
+        assert!(
+            registry.terminate_calls.borrow().is_empty(),
+            "pre-check refusal must not call terminate"
+        );
+        let events = sink.events.borrow();
+        assert_eq!(events.len(), 1, "exactly one Refused event");
+        assert!(matches!(
+            events[0],
+            WorkloadAdmissionEvent::Refused { .. }
+        ));
+    }
+
+    #[test]
+    fn admit_workload_validates_safety_margin_before_arbitration() {
+        // codex critic safety:margin-validation-bypass: a
+        // programmatically-constructed margin below the catalogue
+        // floor must NOT silently disable the gate. The gate calls
+        // validate() defensively and refuses with the breach factory.
+        let orchestrator = StrategyOrchestrator;
+        let host = HostMemoryStub::new(8_192);
+        // Empty registry — no batch evictions possible.
+        let registry = WorkloadRegistrySpy::with(vec![]);
+        let sink = WorkloadEventSpy::default();
+        let request = request("paper-1", StrategyMode::Paper);
+        // Margin 0 would disable the gate; validate() rejects it.
+        let error = orchestrator
+            .admit_workload(
+                &request,
+                WorkloadId::new("paper-1"),
+                WorkloadPriority::PaperStrategy,
+                HostMemorySafetyMargin { mb: 0 },
+                &host,
+                &registry,
+                &sink,
+                1_715_700_000,
+            )
+            .expect_err("invalid safety margin must be refused");
+        assert_eq!(
+            error.category,
+            atp_types::OrderErrorCategory::HostMemorySafetyMarginBreach
+        );
+        // No terminate, no probe-spy at the arbitration loop — just
+        // the early refusal.
+        assert!(registry.terminate_calls.borrow().is_empty());
+        let events = sink.events.borrow();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            WorkloadAdmissionEvent::Refused { .. }
+        ));
+    }
+
+    #[test]
+    fn admit_workload_does_not_bank_memory_for_failed_terminate() {
+        // codex critic adapter:error-surface: terminate returns
+        // Result so the gate can tell whether the registry actually
+        // killed the workload. On Err, the gate must NOT bank the
+        // memory (the workload may still be consuming it) and must
+        // continue trying other candidates.
+        struct FlakyRegistry {
+            workloads: RefCell<Vec<RegisteredWorkload>>,
+            terminate_calls: RefCell<Vec<WorkloadId>>,
+            fail_id: WorkloadId,
+        }
+        impl WorkloadRegistry for FlakyRegistry {
+            fn active(
+                &self,
+            ) -> Result<Vec<RegisteredWorkload>, WorkloadRegistryError> {
+                Ok(self.workloads.borrow().clone())
+            }
+            fn terminate(
+                &self,
+                id: &WorkloadId,
+            ) -> Result<(), WorkloadTerminationError> {
+                self.terminate_calls.borrow_mut().push(id.clone());
+                if *id == self.fail_id {
+                    return Err(WorkloadTerminationError::new(
+                        id.clone(),
+                        "docker shutdown timeout",
+                    ));
+                }
+                self.workloads
+                    .borrow_mut()
+                    .retain(|workload| workload.id != *id);
+                Ok(())
+            }
+        }
+
+        let orchestrator = StrategyOrchestrator;
+        // Host has 2300 MB, paper needs 300 → post-admit 2000 (margin
+        // 2048 → deficit 48). Each batch workload is 100 MB. Research
+        // (rank 7) is the first candidate but terminate fails for it;
+        // Backtest (rank 6, the next eligible candidate) succeeds and
+        // frees 100 MB → post-admit 2100, above margin.
+        let host = HostMemoryStub::new(2_300);
+        let registry = FlakyRegistry {
+            workloads: RefCell::new(vec![
+                workload("backtest-1", WorkloadPriority::Backtest, 100),
+                workload("research-1", WorkloadPriority::Research, 100),
+            ]),
+            terminate_calls: RefCell::new(Vec::new()),
+            fail_id: WorkloadId::new("research-1"),
+        };
+        let sink = WorkloadEventSpy::default();
+        let request = request("paper-md", StrategyMode::Paper);
+        orchestrator
+            .admit_workload(
+                &request,
+                WorkloadId::new("paper-md"),
+                WorkloadPriority::MarketDataSubscriptionManager,
+                HostMemorySafetyMargin::default_margin(),
+                &host,
+                &registry,
+                &sink,
+                1_715_700_000,
+            )
+            .expect("post-flaky-eviction headroom must admit via fallback candidate");
+        // The gate tried Research first (Err), then Backtest (Ok).
+        let calls = registry.terminate_calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].as_str(), "research-1");
+        assert_eq!(calls[1].as_str(), "backtest-1");
+        // The gate emitted TerminationFailed for Research and
+        // Terminated for Backtest (no silent failure).
+        let events = sink.events.borrow();
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            WorkloadAdmissionEvent::TerminationFailed {
+                attempted_workload_id,
+                failure_reason,
+                ..
+            } => {
+                assert_eq!(attempted_workload_id.as_str(), "research-1");
+                // codex adapter:termination-error-surface: the typed
+                // reason must propagate so the dashboard can render
+                // the specific failure (Docker timeout, permission
+                // denied, etc.) rather than collapsing to a generic
+                // string.
+                assert!(failure_reason.contains("docker shutdown timeout"));
+            }
+            other => panic!("expected TerminationFailed for research-1, got {other:?}"),
+        }
+        match &events[1] {
+            WorkloadAdmissionEvent::Terminated {
+                terminated_workload_id,
+                ..
+            } => assert_eq!(terminated_workload_id.as_str(), "backtest-1"),
+            other => panic!("expected Terminated for backtest-1, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn admit_workload_routes_probe_error_through_host_probe_failed_even_with_invalid_margin() {
+        // codex critic adapter:probe-error-swallowed: when both the
+        // configured margin is invalid AND the probe fails, the gate
+        // must NOT use unwrap_or(0) — it must emit HostProbeFailed
+        // so the dashboard sees the typed probe error cause.
+        struct FailingProbe;
+        impl HostMemoryProbe for FailingProbe {
+            fn available_mb(&self) -> Result<u64, HostMemoryProbeError> {
+                Err(HostMemoryProbeError::new("procfs unreadable"))
+            }
+        }
+        let orchestrator = StrategyOrchestrator;
+        let host = FailingProbe;
+        let registry = WorkloadRegistrySpy::with(vec![]);
+        let sink = WorkloadEventSpy::default();
+        let request = request("paper-1", StrategyMode::Paper);
+        // Invalid margin (mb=0 is below the catalogue floor).
+        let error = orchestrator
+            .admit_workload(
+                &request,
+                WorkloadId::new("paper-1"),
+                WorkloadPriority::PaperStrategy,
+                HostMemorySafetyMargin { mb: 0 },
+                &host,
+                &registry,
+                &sink,
+                1_715_700_000,
+            )
+            .expect_err("invalid margin + probe failure must refuse");
+        assert_eq!(
+            error.category,
+            atp_types::OrderErrorCategory::HostMemorySafetyMarginBreach
+        );
+        let events = sink.events.borrow();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            WorkloadAdmissionEvent::HostProbeFailed {
+                failure_reason, ..
+            } => assert!(failure_reason.contains("procfs unreadable")),
+            other => panic!(
+                "expected HostProbeFailed (probe error must not be silently \
+                 unwrap_or(0)'d), got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn admit_workload_fails_closed_on_host_probe_error() {
+        // codex critic adapter:error-surface: a probe error must not
+        // be silently treated as "available_mb = 0 + admit". The gate
+        // refuses with a structured error AND emits a Refused event.
+        struct FailingProbe;
+        impl HostMemoryProbe for FailingProbe {
+            fn available_mb(&self) -> Result<u64, HostMemoryProbeError> {
+                Err(HostMemoryProbeError::new("sysinfo refresh failed"))
+            }
+        }
+        let orchestrator = StrategyOrchestrator;
+        let host = FailingProbe;
+        let registry = WorkloadRegistrySpy::with(vec![]);
+        let sink = WorkloadEventSpy::default();
+        let request = request("paper-1", StrategyMode::Paper);
+        let error = orchestrator
+            .admit_workload(
+                &request,
+                WorkloadId::new("paper-1"),
+                WorkloadPriority::PaperStrategy,
+                HostMemorySafetyMargin::default_margin(),
+                &host,
+                &registry,
+                &sink,
+                1_715_700_000,
+            )
+            .expect_err("probe error must refuse");
+        assert_eq!(
+            error.category,
+            atp_types::OrderErrorCategory::HostMemorySafetyMarginBreach
+        );
+        let events = sink.events.borrow();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            WorkloadAdmissionEvent::HostProbeFailed {
+                failure_reason, ..
+            } => {
+                assert!(failure_reason.contains("sysinfo refresh failed"));
+            }
+            other => panic!("expected HostProbeFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn admit_workload_fails_closed_on_registry_active_error() {
+        // codex critic adapter:error-surface: registry listing
+        // failure must not silently be treated as "no candidates".
+        struct FailingRegistry;
+        impl WorkloadRegistry for FailingRegistry {
+            fn active(
+                &self,
+            ) -> Result<Vec<RegisteredWorkload>, WorkloadRegistryError> {
+                Err(WorkloadRegistryError::new("docker engine timeout"))
+            }
+            fn terminate(
+                &self,
+                _id: &WorkloadId,
+            ) -> Result<(), WorkloadTerminationError> {
+                panic!("must not call terminate when active() failed");
+            }
+        }
+        let orchestrator = StrategyOrchestrator;
+        // Force the arbitration arm: host below margin after admit.
+        let host = HostMemoryStub::new(2_200);
+        let registry = FailingRegistry;
+        let sink = WorkloadEventSpy::default();
+        let request = request("paper-1", StrategyMode::Paper);
+        let error = orchestrator
+            .admit_workload(
+                &request,
+                WorkloadId::new("paper-1"),
+                WorkloadPriority::PaperStrategy,
+                HostMemorySafetyMargin::default_margin(),
+                &host,
+                &registry,
+                &sink,
+                1_715_700_000,
+            )
+            .expect_err("registry listing failure must refuse");
+        assert_eq!(
+            error.category,
+            atp_types::OrderErrorCategory::HostMemorySafetyMarginBreach
+        );
+        let events = sink.events.borrow();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            WorkloadAdmissionEvent::RegistryListingFailed {
+                failure_reason, ..
+            } => {
+                assert!(failure_reason.contains("docker engine timeout"));
+            }
+            other => panic!("expected RegistryListingFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn admit_workload_uses_configurable_safety_margin_override() {
+        // SRS-ORCH-003 "configuration overrides are validated": the
+        // gate honours a non-default margin. With margin=512 and
+        // available=1000, paper needing 300 leaves 700 — above 512,
+        // so admit silently.
+        let orchestrator = StrategyOrchestrator;
+        let host = HostMemoryStub::new(1_000);
+        let registry = ForbiddenWorkloadRegistry;
+        let sink = ForbiddenWorkloadEventSink;
+        let request = request("paper-1", StrategyMode::Paper);
+        let outcome = orchestrator.admit_workload(
+            &request,
+            WorkloadId::new("paper-1"),
+            WorkloadPriority::PaperStrategy,
+            HostMemorySafetyMargin { mb: 512 },
+            &host,
+            &registry,
+            &sink,
+            1_715_700_000,
+        );
+        assert!(outcome.is_ok(), "headroom above custom margin must admit");
+    }
+
+    #[test]
+    fn safety_margin_from_lookup_falls_back_to_default_when_absent() {
+        let orchestrator = StrategyOrchestrator;
+        let margin = orchestrator
+            .safety_margin_from_lookup(|_| None)
+            .expect("absent override must fall back to SyRS default");
+        assert_eq!(margin.mb, 2_048);
+    }
+
+    #[test]
+    fn safety_margin_from_lookup_honours_in_range_override() {
+        let orchestrator = StrategyOrchestrator;
+        let lookup = |name: &str| match name {
+            "ATP_HOST_MEMORY_SAFETY_MARGIN_MB" => Some("4096".to_string()),
+            _ => None,
+        };
+        let margin = orchestrator
+            .safety_margin_from_lookup(lookup)
+            .expect("in-range override must validate");
+        assert_eq!(margin.mb, 4_096);
+    }
+
+    #[test]
+    fn safety_margin_from_lookup_rejects_unparseable_override() {
+        let orchestrator = StrategyOrchestrator;
+        let lookup = |name: &str| match name {
+            "ATP_HOST_MEMORY_SAFETY_MARGIN_MB" => Some("not-a-number".to_string()),
+            _ => None,
+        };
+        let err = orchestrator
+            .safety_margin_from_lookup(lookup)
+            .expect_err("unparseable override must surface, not collapse to default");
+        assert!(matches!(
+            err,
+            HostMemorySafetyMarginEnvError::Unparseable { .. }
+        ));
+    }
+
+    #[test]
+    fn safety_margin_from_lookup_rejects_below_floor() {
+        let orchestrator = StrategyOrchestrator;
+        let lookup = |name: &str| match name {
+            "ATP_HOST_MEMORY_SAFETY_MARGIN_MB" => Some("100".to_string()),
+            _ => None,
+        };
+        let err = orchestrator
+            .safety_margin_from_lookup(lookup)
+            .expect_err("below-floor margin must be rejected");
+        assert!(matches!(
+            err,
+            HostMemorySafetyMarginEnvError::Validation(
+                HostMemorySafetyMarginError::BelowFloor { .. }
+            )
+        ));
+    }
+
+    #[test]
+    fn safety_margin_via_env_lookup_distinguishes_not_present_from_not_unicode() {
+        use std::ffi::OsString;
+        #[cfg(unix)]
+        fn invalid_unicode_osstring() -> OsString {
+            use std::os::unix::ffi::OsStringExt;
+            OsString::from_vec(vec![0xFF])
+        }
+        #[cfg(not(unix))]
+        fn invalid_unicode_osstring() -> OsString {
+            OsString::from("placeholder-non-unicode")
+        }
+        let orchestrator = StrategyOrchestrator;
+        let bad = invalid_unicode_osstring();
+        let env_lookup = |name: &str| -> Result<String, std::env::VarError> {
+            if name == "ATP_HOST_MEMORY_SAFETY_MARGIN_MB" {
+                Err(std::env::VarError::NotUnicode(bad.clone()))
+            } else {
+                Err(std::env::VarError::NotPresent)
+            }
+        };
+        let err = orchestrator
+            .safety_margin_via_env_lookup(env_lookup)
+            .expect_err("NotUnicode must surface as Unparseable");
+        match err {
+            HostMemorySafetyMarginEnvError::Unparseable { var, .. } => {
+                assert_eq!(var, "ATP_HOST_MEMORY_SAFETY_MARGIN_MB");
+            }
+            other => panic!("expected Unparseable, got {other:?}"),
+        }
     }
 }

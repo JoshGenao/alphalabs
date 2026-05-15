@@ -26,6 +26,10 @@ from orchestrator_resource_profile_check import (
     ResourceProfileCheckError,
     assert_orchestrator_resource_profile_static,
 )
+from orchestrator_workload_priority_check import (
+    WorkloadPriorityCheckError,
+    assert_orchestrator_workload_priority_static,
+)
 from pacing_budget_check import (
     PacingBudgetCheckError,
     assert_pacing_budget_static,
@@ -470,6 +474,26 @@ def assert_orchestrator_resource_profile(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_orchestrator_workload_priority(config: dict) -> list[str]:
+    block = config.get("workload_priority_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_orchestrator_workload_priority_static(config, ROOT)
+    summary = (
+        f"{block['orchestrator_crate']['crate']} enforces the SyRS SYS-57 "
+        "workload-priority hierarchy at admission — "
+        f"new workloads refused when admitting would drop available host "
+        f"memory below the {block['spec_constants']['safety_margin_default_mb']['value']} MB "
+        "default safety margin; lowest-priority active batch workload "
+        "evicted to make room for a higher-priority arriving workload; "
+        "live strategy never selected for eviction; refusals carry "
+        f"category {block['rejection_category']} "
+        f"({block['rejection_wire_string']}) (SRS-ORCH-003, SyRS SYS-57 / SYS-58)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -552,6 +576,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_orchestrator_resource_profile(config))
     except ResourceProfileCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_orchestrator_workload_priority(config))
+    except WorkloadPriorityCheckError as error:
         fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:

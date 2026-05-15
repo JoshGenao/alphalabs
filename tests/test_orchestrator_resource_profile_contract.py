@@ -226,11 +226,17 @@ class ResourceProfileMethodsTest(unittest.TestCase):
             self.assertIn(method, evidence)
 
     def test_missing_validate_method_is_caught(self) -> None:
+        # Rename every `pub fn validate` so the existence check at this
+        # layer sees no match. SRS-ORCH-003 introduced a second
+        # `validate` on `HostMemorySafetyMargin`; the check at this
+        # layer is name-scoped (not impl-scoped), so the regression
+        # mutation must rename both — otherwise the SRS-ORCH-002
+        # invariant would be falsely satisfied by the SRS-ORCH-003
+        # method.
         mutated = re.sub(
             r"\bpub fn validate\b",
             "pub fn validateX",
             self.types_src,
-            count=1,
         )
         with self.assertRaises(ResourceProfileCheckError) as ctx:
             check_resource_profile_methods(self.config, mutated)

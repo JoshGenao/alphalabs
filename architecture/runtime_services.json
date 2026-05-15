@@ -1318,7 +1318,6 @@
     "rejection_wire_string": "STRATEGY_STARTUP_DEADLINE_EXCEEDED",
     "deferred": [
       "Concrete StrategyContainerRuntime backed by the Docker Engine API for the Phase 1 Proxmox VM target (owner: SRS-ARCH-004 + SRS-ORCH-002)",
-      "Workload-priority arbitration when the host memory safety margin would be breached (owner: SRS-ORCH-003 / SyRS SYS-57 / SYS-58)",
       "Deployment-version recording + dashboard exposure for each strategy instance (owner: SRS-ORCH-004 / SyRS SYS-41 / SYS-79)",
       "Concrete HealthCheckEventSink wired to the dashboard WebSocket alert pane + the SRS-LOG-001 audit trail + the SRS-NOTIF-001 dispatcher (owner: SRS-LOG-001 / SRS-NOTIF-001 / SyRS SYS-13 dashboard clause)",
       "Container-runtime cooldown / back-off when an unresponsive container restart or an over-deadline destroy fails repeatedly (orthogonal to the gate; belongs on the concrete StrategyContainerRuntime implementation)"
@@ -1478,8 +1477,257 @@
       "Concrete StrategyContainerRuntime that applies ResourceProfile to a real Docker container at create time (owner: SRS-ARCH-004 + SRS-ORCH-002 — same Docker driver entry deferred on the lifecycle contract). Until that lands, the gate validates ResourceProfile as DATA at the orchestrator boundary; no live Docker cgroup limit is applied. Same wired-but-empty shape ERR-2..6 + SRS-ORCH-001 shipped under.",
       "Typed error surface on StrategyContainerRuntime lifecycle methods (create / stop / restart / destroy currently return unit, so a future Docker/cgroup driver cannot signal cgroup-creation failure or insufficient-host-resource refusal back to the launch gate). Owner: SRS-ORCH-001 trait-signature retrofit, paired with the Docker driver — adding the error surface only matters once a real runtime can produce the errors. The contract block already names this as a paired-feature concern.",
       "Production caller of StrategyOrchestrator::launch — the env-var → launch-profile wire is built in this session (profile_for_mode_from_env reads ATP_*_STRATEGY_* via std::env::var, falls back to spec defaults, validates against catalogue bounds), but main.py is still a `pass` stub and no Rust orchestrator service binary invokes launch() yet. Owner: SRS-ARCH-001 production wiring (orchestrator service entry point) — once the binary lands, it calls profile_for_mode_from_env(mode) to populate StrategyLaunchRequest.profile.",
-      "Workload-priority arbitration when the host memory safety margin would be breached (owner: SRS-ORCH-003 / SyRS SYS-57 / SYS-58 — separate gate that sits in front of this one once landed)",
       "Per-strategy override flow from the dashboard / REST API (owner: SRS-API-001 — REST/WebSocket override path layered on top of the env-var lookup once the API surface lands)"
+    ]
+  },
+  "workload_priority_contract": {
+    "requirement": "SRS-ORCH-003",
+    "srs_refs": ["SRS-ORCH-003"],
+    "syrs_refs": ["SYS-57", "SYS-58"],
+    "strs_refs": ["SN-1.10", "C-6", "BG-1", "BG-6"],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "orchestrator_crate": {
+      "crate": "atp-orchestrator",
+      "path": "crates/atp-orchestrator"
+    },
+    "spec_constants": {
+      "safety_margin_default_mb": {
+        "name": "HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT",
+        "value": 2048
+      }
+    },
+    "validation_constants": {
+      "safety_margin_floor_mb": {
+        "name": "HOST_MEMORY_SAFETY_MARGIN_MB_FLOOR",
+        "value": 256
+      },
+      "safety_margin_ceiling_mb": {
+        "name": "HOST_MEMORY_SAFETY_MARGIN_MB_CEILING",
+        "value": 1048576
+      }
+    },
+    "host_memory_safety_margin": {
+      "struct": "HostMemorySafetyMargin",
+      "required_fields": ["mb"],
+      "forbidden_fields": [
+        "bytes",
+        "kilobytes",
+        "gigabytes",
+        "docker_image",
+        "cgroup_path",
+        "vendor"
+      ],
+      "methods": ["new", "default_margin", "validate"]
+    },
+    "host_memory_safety_margin_error": {
+      "enum": "HostMemorySafetyMarginError",
+      "variants": ["BelowFloor", "AboveCeiling"]
+    },
+    "workload_priority_enum": {
+      "enum": "WorkloadPriority",
+      "variants": [
+        "LiveStrategy",
+        "MarketDataSubscriptionManager",
+        "PaperStrategy",
+        "NightlyDataIngestion",
+        "FactorPipeline",
+        "Backtest",
+        "Research"
+      ],
+      "rank_method": "rank",
+      "ranks": {
+        "LiveStrategy": 1,
+        "MarketDataSubscriptionManager": 2,
+        "PaperStrategy": 3,
+        "NightlyDataIngestion": 4,
+        "FactorPipeline": 5,
+        "Backtest": 6,
+        "Research": 7
+      },
+      "forbidden_tokens": [
+        "priority_score",
+        "priority_weight",
+        "priority_quota",
+        "priority_class_id"
+      ]
+    },
+    "workload_kind_enum": {
+      "enum": "WorkloadKind",
+      "variants": ["Continuous", "Batch"],
+      "kind_for_priority": {
+        "LiveStrategy": "Continuous",
+        "MarketDataSubscriptionManager": "Continuous",
+        "PaperStrategy": "Continuous",
+        "NightlyDataIngestion": "Batch",
+        "FactorPipeline": "Batch",
+        "Backtest": "Batch",
+        "Research": "Batch"
+      }
+    },
+    "workload_id": {
+      "struct": "WorkloadId",
+      "newtype_inner": "String",
+      "methods": ["new", "as_str"]
+    },
+    "registered_workload": {
+      "struct": "RegisteredWorkload",
+      "required_fields": ["id", "priority", "kind", "profile"],
+      "forbidden_fields": [
+        "docker_image",
+        "container_id",
+        "cgroup_path",
+        "vendor",
+        "host_path",
+        "broker",
+        "started_at",
+        "uptime_seconds"
+      ]
+    },
+    "workload_admission_reason": {
+      "enum": "WorkloadAdmissionReason",
+      "variants": ["HostMemoryBelowSafetyMargin"]
+    },
+    "workload_admission_event": {
+      "enum": "WorkloadAdmissionEvent",
+      "variants": [
+        "Refused",
+        "Terminated",
+        "TerminationFailed",
+        "HostProbeFailed",
+        "RegistryListingFailed"
+      ],
+      "refused_required_fields": [
+        "workload_id",
+        "priority",
+        "reason",
+        "observed_at_seconds"
+      ],
+      "terminated_required_fields": [
+        "terminated_workload_id",
+        "terminated_priority",
+        "admitted_workload_id",
+        "admitted_priority",
+        "reason",
+        "observed_at_seconds"
+      ],
+      "termination_failed_required_fields": [
+        "attempted_workload_id",
+        "attempted_priority",
+        "admitted_workload_id",
+        "admitted_priority",
+        "failure_reason",
+        "observed_at_seconds"
+      ],
+      "host_probe_failed_required_fields": [
+        "workload_id",
+        "priority",
+        "failure_reason",
+        "observed_at_seconds"
+      ],
+      "registry_listing_failed_required_fields": [
+        "workload_id",
+        "priority",
+        "failure_reason",
+        "observed_at_seconds"
+      ],
+      "forbidden_fields": [
+        "severity_score",
+        "message_template",
+        "slack_channel",
+        "email_to",
+        "pagerduty_id"
+      ]
+    },
+    "host_memory_probe_port": {
+      "trait": "HostMemoryProbe",
+      "methods": ["available_mb"],
+      "available_mb_signature": "fn available_mb(&self) -> Result<u64, HostMemoryProbeError>",
+      "probe_error_struct": "HostMemoryProbeError",
+      "forbidden_imports_in_orchestrator_crate": [
+        "use sysinfo",
+        "use procfs",
+        "use psutil"
+      ]
+    },
+    "workload_registry_port": {
+      "trait": "WorkloadRegistry",
+      "methods": ["active", "terminate"],
+      "active_signature": "fn active(&self) -> Result<Vec<RegisteredWorkload>, WorkloadRegistryError>",
+      "terminate_signature": "fn terminate(&self, id: &WorkloadId) -> Result<(), WorkloadTerminationError>",
+      "registry_error_struct": "WorkloadRegistryError",
+      "termination_error_struct": "WorkloadTerminationError",
+      "forbidden_imports_in_orchestrator_crate": [
+        "use bollard",
+        "use docker_api",
+        "use shiplift",
+        "use cgroups_rs"
+      ]
+    },
+    "workload_event_sink_port": {
+      "trait": "WorkloadEventSink",
+      "methods": ["record"],
+      "record_signature": "fn record(&self, event: WorkloadAdmissionEvent) -> Result<(), WorkloadEventSinkError>",
+      "event_sink_error_struct": "WorkloadEventSinkError"
+    },
+    "orchestrator_helper_methods": [
+      "host_memory_safety_margin_default",
+      "safety_margin_from_lookup",
+      "safety_margin_via_env_lookup",
+      "safety_margin_from_env",
+      "admit_workload"
+    ],
+    "admit_workload_guard": {
+      "entry_method": "admit_workload",
+      "entry_type": "StrategyOrchestrator",
+      "required_call_order": [
+        "host.available_mb",
+        "registry.active",
+        "registry.terminate"
+      ],
+      "required_calls_without_order": [
+        "sink.record"
+      ],
+      "required_kind_filter_token": "WorkloadKind::Batch",
+      "required_live_immunity_token": "WorkloadPriority::LiveStrategy",
+      "required_margin_validation_token": "safety_margin.validate(",
+      "required_pre_eviction_feasibility_token": "saturating_add(recoverable_mb)",
+      "rejection_factory": "StructuredOrchestratorError::host_memory_safety_margin_breach",
+      "rejection_category": "HostMemorySafetyMarginBreach",
+      "rejection_wire_string": "HOST_MEMORY_SAFETY_MARGIN_BREACH",
+      "forbidden_calls_on_refusal": [
+        "runtime.create",
+        "runtime.start",
+        "runtime.stop",
+        "runtime.restart",
+        "runtime.destroy"
+      ]
+    },
+    "config_binding": {
+      "catalogue_path": "configuration.keys",
+      "bindings": [
+        {
+          "config_key": "ATP_HOST_MEMORY_SAFETY_MARGIN_MB",
+          "constant": "HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT",
+          "floor_constant": "HOST_MEMORY_SAFETY_MARGIN_MB_FLOOR",
+          "ceiling_constant": "HOST_MEMORY_SAFETY_MARGIN_MB_CEILING"
+        }
+      ]
+    },
+    "rejection_category": "HostMemorySafetyMarginBreach",
+    "rejection_wire_string": "HOST_MEMORY_SAFETY_MARGIN_BREACH",
+    "deferred": [
+      "Concrete HostMemoryProbe backed by sysinfo / procfs / /proc/meminfo (owner: SRS-ARCH-004 + SRS-ORCH-003 — Phase 1 Proxmox VM target). Until that lands, the gate consumes the probe trait through stubs in tests; no real host memory is observed. The contract pin on `forbidden_imports_in_orchestrator_crate` prevents the orchestrator crate itself from depending on sysinfo — the concrete impl will live in a separate adapter crate.",
+      "Concrete WorkloadRegistry that lists active strategy containers, ingestion jobs, factor jobs, backtest runs, and Jupyter sessions (owner: SRS-ORCH-001 + SRS-ARCH-004 — same Docker driver entry deferred on the lifecycle contract). Until that lands, the registry is consumed through stubs.",
+      "Concrete WorkloadEventSink wired to the dashboard alert pane + SRS-LOG-001 audit trail + SRS-NOTIF-001 dispatcher. SRS-ORCH-003's acceptance criterion 'dashboard and notification alerts are emitted' is satisfied at the orchestrator boundary today — every refusal / eviction / probe-failure / registry-failure / termination-failure path issues a structured `WorkloadAdmissionEvent` through the typed port, and the 5 audit-event variants (Refused, Terminated, TerminationFailed, HostProbeFailed, RegistryListingFailed) discriminate the failure mode for the dashboard alert lane. Emission is best-effort by design: the gate calls `sink.record(...)` and does not abort or roll back the admission decision on a sink Err (the decision is irreversible once made). The typed `WorkloadEventSinkError` exists so a future caller wrapping the orchestrator can observe sink failures separately from admission outcomes without retrofitting the trait. Durable delivery semantics (bounded queue + retry, persistent journal, fan-out to a secondary channel) belong on the SRS-LOG-001 (audit log) + SRS-NOTIF-001 (notification dispatcher) + SyRS SYS-13 (dashboard) implementations — same deferred dispatcher block that consumes HealthCheckEventSink in the orchestrator-lifecycle contract.",
+      "Concrete failure variants on WorkloadTerminationError, HostMemoryProbeError, and WorkloadRegistryError. The gate already consumes all three port methods as Result<..., Error> and refuses safely on any failure (probe error → refuse; active() error → refuse; terminate() error → emit TerminationFailed + skip banking), but the error types today carry only a short reason string. Future variants — sysinfo refresh failed, /proc/meminfo unavailable, Docker engine timeout, cgroup permission denied, registry desynchronized, etc. — will be added when the concrete adapters land so the dashboard can render the specific failure cause.",
+      "Workload-agnostic admission envelope. SRS-ORCH-003 ships the SyRS SYS-57 hierarchy as a workload-agnostic data model (WorkloadPriority + WorkloadKind + RegisteredWorkload) but the admission gate currently accepts a StrategyLaunchRequest, which is the right shape for strategy admission (the orchestrator's primary domain — SRS-5.2). Non-strategy admission paths (ingestion-job, factor-pipeline-job, backtest-run, research-session) belong to their owning services and will introduce their own gate methods consuming the same WorkloadPriority library. The structural separation between request envelope and workload-priority is intentional, not drift — the priority parameter is decoupled from request.mode because SYS-57 ranks workloads categorically, not by strategy mode.",
+      "Production caller of StrategyOrchestrator::admit_workload — main.py is still a `pass` stub and no Rust orchestrator service binary invokes the gate. Owner: SRS-ARCH-001 production wiring (orchestrator service entry point).",
+      "Typed coupling of `admit_workload` to `launch`. Today the two gates are separate methods and `launch`'s Rustdoc states that calling it without first calling `admit_workload` bypasses the SyRS SYS-57 / SYS-58 enforcement. A future session will turn that 'must call' precondition into 'cannot fail to call' via a typestate (`admit_workload` returns an `AdmissionToken`; `launch` consumes the token) or a builder pattern. The typestate change is scoped to land when the production caller of `launch` is wired (same owner as the deferred entry above) so the parameter-list expansion happens once. Until then, the contract-level requirement is exercised by the integration + domain tests for SRS-ORCH-003 (codex critic: arch:admission-gate-bypass).",
+      "Gate-level capture and propagation of WorkloadEventSink::record errors. Today emission is best-effort (see WorkloadEventSink trait doc) — the gate does not capture or surface sink failures because the admission decision is irreversible once made. A future session will introduce a richer return shape (e.g. AdmissionOutcome { decision, sink_failures: Vec<...> } or a side-channel collector) once durable-delivery semantics are owned by the concrete SRS-NOTIF-001 dispatcher and gate-level retry / propagation becomes meaningful (codex critic: adapter:sink-error-discard).",
+      "Per-strategy / per-job override of the safety margin from the dashboard / REST API (owner: SRS-API-001 — REST/WebSocket override path layered on top of the env-var lookup once the API surface lands)."
     ]
   },
   "deployment": {
