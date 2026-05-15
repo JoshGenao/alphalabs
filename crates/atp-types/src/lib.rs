@@ -104,6 +104,7 @@ pub enum OrderErrorCategory {
     StrategyStartupDeadlineExceeded,
     ResourceProfileInvalid,
     HostMemorySafetyMarginBreach,
+    DeployedVersionInvalid,
 }
 
 impl OrderErrorCategory {
@@ -121,6 +122,7 @@ impl OrderErrorCategory {
             Self::StrategyStartupDeadlineExceeded => "STRATEGY_STARTUP_DEADLINE_EXCEEDED",
             Self::ResourceProfileInvalid => "RESOURCE_PROFILE_INVALID",
             Self::HostMemorySafetyMarginBreach => "HOST_MEMORY_SAFETY_MARGIN_BREACH",
+            Self::DeployedVersionInvalid => "DEPLOYED_VERSION_INVALID",
         }
     }
 }
@@ -1295,11 +1297,248 @@ impl LaunchReadiness {
     }
 }
 
+// --------------------------------------------------------------------------- //
+// Deployed-version recording (SRS-ORCH-004, SyRS SYS-79)
+// --------------------------------------------------------------------------- //
+//
+// SyRS SYS-79: "The Strategy Orchestrator shall record the deployed
+// version of each strategy container's code at deployment time, using
+// at minimum: a hash of the strategy source file(s) and the deployment
+// timestamp. The deployed version shall be displayed on the dashboard
+// (SYS-41) and queryable via the REST API (IF-9). Backtest results
+// (SYS-21) shall record the strategy code version used for each
+// backtest run."
+//
+// `SourceHash` is a newtype around `String` that pins the wire format
+// of the strategy source hash. The format is `sha256:<64-hex-chars>`
+// (SHA-256 produces 32 bytes = 64 hex characters). The newtype marks
+// intent at the type level (a free-form `String` cannot drift into a
+// docker-image tag, a git commit SHA, or some vendor-specific
+// identifier); the validation lives in `validate()` and is called at
+// the orchestrator launch boundary so a programmatically-constructed
+// malformed hash cannot reach the runtime port. This mirrors the
+// SRS-ORCH-002 `ResourceProfile` / `validate()` pattern — fields are
+// public for ergonomic destructure, but the construction path does
+// not pre-validate so test fixtures and env-var parsers can build
+// the value the same way the gate does.
+//
+// `DeployedVersion` is the audit-trail record: hash + deployment
+// timestamp. The two together form the "version identifier" SYS-79
+// names; `version_identifier()` projects them onto a canonical string
+// suitable for the dashboard (SYS-41), the REST API (IF-9), and
+// backtest result rows (SYS-21) so the three surfaces render the
+// same identifier without each computing its own (SRS-ORCH-004
+// acceptance criterion: "display or return the same version
+// identifier").
+//
+// The forbidden-fields allowlist on `DeployedVersion` keeps the
+// audit shape free of container-runtime / vendor / git bleed: no
+// docker_image, container_id, vendor, git_commit, git_branch,
+// build_number, ci_run_id. The hash is the single source of truth
+// for the source-file fingerprint; coupling to a build-system
+// artifact would force the audit trail to track multiple identifiers
+// for the same code, breaking SYS-79's "same version identifier"
+// guarantee.
+
+/// SyRS SYS-79 hash algorithm prefix. Pins the wire form so a
+/// future caller cannot drift to `md5:` / `sha1:` / `blake3:` etc.
+/// without an explicit spec change.
+pub const SOURCE_HASH_ALGORITHM_PREFIX: &str = "sha256:";
+
+/// Hex digest length for SHA-256. 32 bytes × 2 hex chars per byte = 64.
+pub const SOURCE_HASH_DIGEST_HEX_LENGTH: usize = 64;
+
+/// Total expected length of a serialized `SourceHash`: `"sha256:"` (7)
+/// + 64 hex chars = 71. Exposed as a const so callers and the contract
+/// check share one source of truth.
+pub const SOURCE_HASH_TOTAL_LENGTH: usize = 7 + SOURCE_HASH_DIGEST_HEX_LENGTH;
+
+/// SRS-ORCH-004 / SyRS SYS-79 source-file fingerprint. Wraps a
+/// validated `sha256:<64-hex>` string. Construction does NOT validate
+/// (test fixtures and env-var parsers may build the value the same
+/// way the gate does); `validate()` enforces the format at the
+/// orchestrator launch boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SourceHash(String);
+
+impl SourceHash {
+    /// Wraps `raw` as a `SourceHash` without validating. Callers must
+    /// invoke `validate()` at the trust boundary (the orchestrator's
+    /// launch gate does this) — a programmatically-constructed
+    /// malformed hash will be rejected there.
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+
+    /// SyRS SYS-79 / SRS-ORCH-004 wire-form validation. Enforces the
+    /// `sha256:` prefix, the 64-hex-char digest length, and the
+    /// lower-case-hex alphabet. The orchestrator's `launch` gate
+    /// calls this BEFORE invoking the runtime port so a misformed
+    /// hash never reaches `runtime.create`.
+    pub fn validate(&self) -> Result<(), SourceHashError> {
+        Self::validate_str(&self.0)
+    }
+
+    /// Stand-alone validator over a borrowed string. Used by
+    /// `validate()` and by env-var / config parsers that want to
+    /// reject a bad value before constructing the newtype.
+    pub fn validate_str(raw: &str) -> Result<(), SourceHashError> {
+        if !raw.starts_with(SOURCE_HASH_ALGORITHM_PREFIX) {
+            // Discriminate between "missing prefix entirely" and
+            // "wrong algorithm prefix" so the dashboard can render
+            // the cause precisely.
+            if let Some((prefix, _)) = raw.split_once(':') {
+                if !prefix.is_empty() {
+                    return Err(SourceHashError::UnknownAlgorithm {
+                        found: prefix.to_string(),
+                    });
+                }
+            }
+            return Err(SourceHashError::MissingAlgorithmPrefix);
+        }
+        let digest = &raw[SOURCE_HASH_ALGORITHM_PREFIX.len()..];
+        if digest.len() != SOURCE_HASH_DIGEST_HEX_LENGTH {
+            return Err(SourceHashError::InvalidDigestLength {
+                found: digest.len(),
+                expected: SOURCE_HASH_DIGEST_HEX_LENGTH,
+            });
+        }
+        for ch in digest.chars() {
+            if !ch.is_ascii_hexdigit() || ch.is_ascii_uppercase() {
+                // Reject upper-case hex too: the wire form is
+                // lower-case so a re-serialization round-trip is
+                // stable across producers (SHA-256 implementations
+                // commonly emit lower-case; pinning the case avoids
+                // a future drift on the dashboard / REST surface).
+                return Err(SourceHashError::NonHexDigest { found: ch });
+            }
+        }
+        Ok(())
+    }
+
+    /// Borrow the full `sha256:<digest>` wire form.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Borrow the algorithm name (currently always `"sha256"`). Does
+    /// not validate; assumes the value was already accepted by
+    /// `validate()`. Returns an empty string if the prefix is
+    /// missing (so callers don't have to handle `Option` for the
+    /// happy path).
+    pub fn algorithm(&self) -> &str {
+        match self.0.split_once(':') {
+            Some((prefix, _)) => prefix,
+            None => "",
+        }
+    }
+
+    /// Borrow the hex-digest portion (everything after the
+    /// `sha256:` prefix). Returns an empty string if the prefix is
+    /// missing.
+    pub fn digest(&self) -> &str {
+        match self.0.split_once(':') {
+            Some((_, digest)) => digest,
+            None => "",
+        }
+    }
+}
+
+impl fmt::Display for SourceHash {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// SRS-ORCH-004 source-hash validation failure surface. Each variant
+/// carries the offending value so the rejection message can render
+/// it for operators.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceHashError {
+    MissingAlgorithmPrefix,
+    UnknownAlgorithm { found: String },
+    InvalidDigestLength { found: usize, expected: usize },
+    NonHexDigest { found: char },
+}
+
+impl SourceHashError {
+    /// Short discriminator string for the rejection wire form.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::MissingAlgorithmPrefix => "MissingAlgorithmPrefix",
+            Self::UnknownAlgorithm { .. } => "UnknownAlgorithm",
+            Self::InvalidDigestLength { .. } => "InvalidDigestLength",
+            Self::NonHexDigest { .. } => "NonHexDigest",
+        }
+    }
+}
+
+impl fmt::Display for SourceHashError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingAlgorithmPrefix => write!(
+                formatter,
+                "source hash is missing the `sha256:` algorithm prefix",
+            ),
+            Self::UnknownAlgorithm { found } => write!(
+                formatter,
+                "source hash uses unknown algorithm `{found}` — only `sha256` is supported (SyRS SYS-79)",
+            ),
+            Self::InvalidDigestLength { found, expected } => write!(
+                formatter,
+                "source hash digest is {found} hex characters, expected {expected} (SHA-256 = 32 bytes = 64 hex chars)",
+            ),
+            Self::NonHexDigest { found } => write!(
+                formatter,
+                "source hash digest contains non-lower-case-hex character `{found}`",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SourceHashError {}
+
+/// SRS-ORCH-004 / SyRS SYS-79 deployed-version record. The audit
+/// trail published at deployment time, queryable by the deferred
+/// dashboard (SYS-41), REST API (IF-9), and backtest result rows
+/// (SYS-21). `version_identifier()` is the single canonical string
+/// rendered across all three surfaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployedVersion {
+    pub source_hash: SourceHash,
+    pub deployed_at_seconds: u64,
+}
+
+impl DeployedVersion {
+    pub fn new(source_hash: SourceHash, deployed_at_seconds: u64) -> Self {
+        Self {
+            source_hash,
+            deployed_at_seconds,
+        }
+    }
+
+    /// SRS-ORCH-004 acceptance criterion: dashboard, REST API, and
+    /// backtest results "display or return the same version
+    /// identifier". This is the canonical string form — the hash
+    /// (which already encodes the source) followed by the deployment
+    /// timestamp. The `@` separator avoids collision with the
+    /// algorithm-prefix `:` and the hex alphabet.
+    pub fn version_identifier(&self) -> String {
+        format!("{}@{}", self.source_hash.as_str(), self.deployed_at_seconds)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StrategyLaunchRequest {
     pub strategy_id: StrategyId,
     pub mode: StrategyMode,
-    pub deployment_hash: String,
+    /// SRS-ORCH-004 / SyRS SYS-79 source-file fingerprint. A
+    /// `SourceHash` is a typed wrapper around `sha256:<64-hex>` —
+    /// the orchestrator's launch gate calls `validate()` before
+    /// invoking the runtime port so a malformed override is
+    /// refused with `OrderErrorCategory::DeployedVersionInvalid`
+    /// instead of reaching `runtime.create`.
+    pub deployment_hash: SourceHash,
     pub deadline_millis: u64,
     /// SRS-ORCH-002 / SyRS SYS-11 resource profile carried on the launch
     /// envelope so the orchestrator can validate it once at the gate and
@@ -1321,6 +1560,13 @@ pub struct StrategyLaunchOutcome {
     /// `outcome.profile == request.profile` (no silent re-defaulting at
     /// the gate).
     pub profile: ResourceProfile,
+    /// SRS-ORCH-004 / SyRS SYS-79 evidence: the deployed version
+    /// the orchestrator recorded at deployment time. Carries the
+    /// source hash from `request.deployment_hash` plus the
+    /// deployment timestamp the gate observed. The contract check
+    /// enforces `outcome.deployed_version.source_hash == request.deployment_hash`
+    /// so the gate cannot silently re-hash or substitute.
+    pub deployed_version: DeployedVersion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1331,14 +1577,15 @@ pub struct ContainerHealthEvent {
     pub observed_at_seconds: u64,
 }
 
-/// SRS-ORCH-001..003 structured rejection envelope. Carries the
+/// SRS-ORCH-001..004 structured rejection envelope. Carries the
 /// SyRS SYS-64 error category, the discriminator string, a
 /// human-readable message, and the unchanged original launch request.
 /// The category is constrained at construction to one of the
 /// orchestrator-rejection categories — currently
 /// `StrategyStartupDeadlineExceeded` (SRS-ORCH-001 / NFR-P9),
-/// `ResourceProfileInvalid` (SRS-ORCH-002 / SyRS SYS-11), or
-/// `HostMemorySafetyMarginBreach` (SRS-ORCH-003 / SyRS SYS-57). Each
+/// `ResourceProfileInvalid` (SRS-ORCH-002 / SyRS SYS-11),
+/// `HostMemorySafetyMarginBreach` (SRS-ORCH-003 / SyRS SYS-57), or
+/// `DeployedVersionInvalid` (SRS-ORCH-004 / SyRS SYS-79). Each
 /// factory enforces its category invariant in debug builds so a
 /// future caller cannot smuggle a different category through this
 /// envelope.
@@ -1411,6 +1658,39 @@ impl StructuredOrchestratorError {
         }
     }
 
+    /// Build a `DEPLOYED_VERSION_INVALID` rejection. SRS-ORCH-004 +
+    /// SyRS SYS-79: a launch whose source-hash fails wire-form
+    /// validation at the orchestrator boundary must be refused
+    /// without invoking the runtime port (no `create`, no `start`)
+    /// so a misconfigured override never reaches the host. The
+    /// error carries the original launch request unchanged AND a
+    /// discriminator string for the specific validation failure
+    /// (MissingAlgorithmPrefix / UnknownAlgorithm / InvalidDigestLength
+    /// / NonHexDigest). The rejection is a pure structured error
+    /// with NO sink event (no container exists to destroy; emitting
+    /// an event would lie about a destroy that never happened).
+    pub fn deployed_version_invalid(
+        request: StrategyLaunchRequest,
+        violation: SourceHashError,
+    ) -> Self {
+        let category = OrderErrorCategory::DeployedVersionInvalid;
+        debug_assert!(
+            matches!(category, OrderErrorCategory::DeployedVersionInvalid),
+            "StructuredOrchestratorError must carry DeployedVersionInvalid"
+        );
+        let message = format!(
+            "SRS-ORCH-004 + SyRS SYS-79: strategy {strategy} launch refused — {violation}",
+            strategy = request.strategy_id.as_str(),
+        );
+        let discriminator = violation.as_str().to_string();
+        Self {
+            category,
+            error_type: format!("DeployedVersionInvalid::{discriminator}"),
+            message,
+            original_request: request,
+        }
+    }
+
     /// Build a `HOST_MEMORY_SAFETY_MARGIN_BREACH` rejection. SRS-ORCH-003
     /// + SyRS SYS-57 / SYS-58: a launch refused because admitting the
     /// workload would push available host memory below the configured
@@ -1461,6 +1741,18 @@ impl std::error::Error for StructuredOrchestratorError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test fixture: a valid 64-hex SHA-256 wire-form source hash for
+    /// strategy "alpha" — 64 lower-case `a` characters after the
+    /// `sha256:` prefix. Chosen so test fixtures stay readable while
+    /// satisfying the SRS-ORCH-004 wire-form validator.
+    const SAMPLE_SOURCE_HASH_ALPHA: &str =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    /// Test fixture: a second valid 64-hex SHA-256 wire-form hash for
+    /// fixtures that need a distinct value from `SAMPLE_SOURCE_HASH_ALPHA`.
+    const SAMPLE_SOURCE_HASH_BETA: &str =
+        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     #[test]
     fn names_strategy_ids() {
@@ -2081,7 +2373,7 @@ mod tests {
         let request = StrategyLaunchRequest {
             strategy_id: StrategyId::new("alpha-1"),
             mode: StrategyMode::Live,
-            deployment_hash: "sha256:abc".to_string(),
+            deployment_hash: SourceHash::new(SAMPLE_SOURCE_HASH_ALPHA),
             deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
             profile: ResourceProfile::live_default(),
         };
@@ -2094,19 +2386,23 @@ mod tests {
         } = request.clone();
         assert_eq!(request.strategy_id.as_str(), "alpha-1");
         assert_eq!(request.mode, StrategyMode::Live);
-        assert_eq!(request.deployment_hash, "sha256:abc");
+        assert_eq!(request.deployment_hash.as_str(), SAMPLE_SOURCE_HASH_ALPHA);
         assert_eq!(request.deadline_millis, 30_000);
         assert_eq!(request.profile, ResourceProfile::live_default());
     }
 
     #[test]
-    fn strategy_launch_outcome_carries_only_the_five_required_fields() {
+    fn strategy_launch_outcome_carries_only_the_six_required_fields() {
         let outcome = StrategyLaunchOutcome {
             strategy_id: StrategyId::new("alpha-1"),
             ready_within_deadline: true,
             elapsed_millis: 4_200,
             deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
             profile: ResourceProfile::live_default(),
+            deployed_version: DeployedVersion::new(
+                SourceHash::new(SAMPLE_SOURCE_HASH_ALPHA),
+                1_715_000_000,
+            ),
         };
         let StrategyLaunchOutcome {
             strategy_id: _,
@@ -2114,11 +2410,17 @@ mod tests {
             elapsed_millis: _,
             deadline_millis: _,
             profile: _,
+            deployed_version: _,
         } = outcome.clone();
         assert!(outcome.ready_within_deadline);
         assert_eq!(outcome.elapsed_millis, 4_200);
         assert!(outcome.elapsed_millis <= outcome.deadline_millis);
         assert_eq!(outcome.profile, ResourceProfile::live_default());
+        assert_eq!(
+            outcome.deployed_version.source_hash.as_str(),
+            SAMPLE_SOURCE_HASH_ALPHA
+        );
+        assert_eq!(outcome.deployed_version.deployed_at_seconds, 1_715_000_000);
     }
 
     #[test]
@@ -2156,7 +2458,7 @@ mod tests {
         let request = StrategyLaunchRequest {
             strategy_id: StrategyId::new("alpha-1"),
             mode: StrategyMode::Live,
-            deployment_hash: "sha256:abc".to_string(),
+            deployment_hash: SourceHash::new(SAMPLE_SOURCE_HASH_ALPHA),
             deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
             profile: ResourceProfile::live_default(),
         };
@@ -2316,7 +2618,7 @@ mod tests {
         let request = StrategyLaunchRequest {
             strategy_id: StrategyId::new("alpha-1"),
             mode: StrategyMode::Live,
-            deployment_hash: "sha256:abc".to_string(),
+            deployment_hash: SourceHash::new(SAMPLE_SOURCE_HASH_ALPHA),
             deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
             profile: ResourceProfile {
                 mem_mb: 32,
@@ -2558,7 +2860,7 @@ mod tests {
         let request = StrategyLaunchRequest {
             strategy_id: StrategyId::new("research-jupyter-01"),
             mode: StrategyMode::Paper,
-            deployment_hash: "sha256:def".to_string(),
+            deployment_hash: SourceHash::new(SAMPLE_SOURCE_HASH_BETA),
             deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
             profile: ResourceProfile::paper_default(),
         };
@@ -2586,6 +2888,198 @@ mod tests {
         assert_eq!(
             OrderErrorCategory::HostMemorySafetyMarginBreach.as_str(),
             "HOST_MEMORY_SAFETY_MARGIN_BREACH"
+        );
+    }
+
+    // ----------------------------------------------------------------------- //
+    // SRS-ORCH-004 source-hash + deployed-version (SyRS SYS-79)
+    // ----------------------------------------------------------------------- //
+
+    #[test]
+    fn source_hash_constants_match_sha256_wire_form() {
+        // SyRS SYS-79 names "a hash of the strategy source file(s)"
+        // without prescribing the algorithm; SHA-256 is the chosen
+        // wire form (32 bytes = 64 hex chars + `sha256:` prefix = 71
+        // chars). Pin the constants so a future drift to MD5 / SHA-1
+        // requires touching these literals AND the catalogue.
+        assert_eq!(SOURCE_HASH_ALGORITHM_PREFIX, "sha256:");
+        assert_eq!(SOURCE_HASH_DIGEST_HEX_LENGTH, 64);
+        assert_eq!(SOURCE_HASH_TOTAL_LENGTH, 71);
+    }
+
+    #[test]
+    fn source_hash_validate_accepts_canonical_wire_form() {
+        let hash = SourceHash::new(SAMPLE_SOURCE_HASH_ALPHA);
+        assert!(hash.validate().is_ok());
+        assert_eq!(hash.as_str(), SAMPLE_SOURCE_HASH_ALPHA);
+        assert_eq!(hash.algorithm(), "sha256");
+        assert_eq!(hash.digest().len(), SOURCE_HASH_DIGEST_HEX_LENGTH);
+    }
+
+    #[test]
+    fn source_hash_validate_rejects_missing_prefix() {
+        let hash = SourceHash::new(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        let err = hash
+            .validate()
+            .expect_err("missing prefix must be rejected");
+        assert!(matches!(err, SourceHashError::MissingAlgorithmPrefix));
+        assert_eq!(err.as_str(), "MissingAlgorithmPrefix");
+    }
+
+    #[test]
+    fn source_hash_validate_rejects_unknown_algorithm() {
+        let hash = SourceHash::new(
+            "md5:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        let err = hash
+            .validate()
+            .expect_err("unknown algorithm must be rejected");
+        assert!(matches!(
+            err,
+            SourceHashError::UnknownAlgorithm { ref found } if found == "md5"
+        ));
+        assert_eq!(err.as_str(), "UnknownAlgorithm");
+    }
+
+    #[test]
+    fn source_hash_validate_rejects_short_digest() {
+        let hash = SourceHash::new("sha256:abc");
+        let err = hash
+            .validate()
+            .expect_err("short digest must be rejected");
+        assert!(matches!(
+            err,
+            SourceHashError::InvalidDigestLength {
+                found: 3,
+                expected: 64
+            }
+        ));
+        assert_eq!(err.as_str(), "InvalidDigestLength");
+    }
+
+    #[test]
+    fn source_hash_validate_rejects_long_digest() {
+        // 65 hex chars after the prefix → off-by-one, must be rejected.
+        let hash = SourceHash::new(format!(
+            "sha256:{}",
+            "a".repeat(SOURCE_HASH_DIGEST_HEX_LENGTH + 1)
+        ));
+        let err = hash
+            .validate()
+            .expect_err("long digest must be rejected");
+        assert!(matches!(
+            err,
+            SourceHashError::InvalidDigestLength {
+                found: 65,
+                expected: 64
+            }
+        ));
+    }
+
+    #[test]
+    fn source_hash_validate_rejects_non_hex_digest() {
+        // Replace one char in the otherwise-valid digest with a
+        // non-hex character.
+        let hash = SourceHash::new(format!(
+            "sha256:{}{}",
+            "a".repeat(SOURCE_HASH_DIGEST_HEX_LENGTH - 1),
+            "z"
+        ));
+        let err = hash
+            .validate()
+            .expect_err("non-hex digest must be rejected");
+        assert!(matches!(
+            err,
+            SourceHashError::NonHexDigest { found: 'z' }
+        ));
+        assert_eq!(err.as_str(), "NonHexDigest");
+    }
+
+    #[test]
+    fn source_hash_validate_rejects_upper_case_hex_for_stable_wire_form() {
+        // Upper-case hex is *technically* valid hex, but the SyRS
+        // SYS-79 wire form is lower-case so re-serialization round-trips
+        // are stable. The validator must reject upper-case so future
+        // producers don't drift.
+        let hash = SourceHash::new(format!(
+            "sha256:{}{}",
+            "a".repeat(SOURCE_HASH_DIGEST_HEX_LENGTH - 1),
+            "A"
+        ));
+        let err = hash
+            .validate()
+            .expect_err("upper-case hex must be rejected");
+        assert!(matches!(
+            err,
+            SourceHashError::NonHexDigest { found: 'A' }
+        ));
+    }
+
+    #[test]
+    fn deployed_version_carries_only_two_required_fields() {
+        let version = DeployedVersion::new(
+            SourceHash::new(SAMPLE_SOURCE_HASH_ALPHA),
+            1_715_700_000,
+        );
+        let DeployedVersion {
+            source_hash: _,
+            deployed_at_seconds: _,
+        } = version.clone();
+        assert_eq!(version.source_hash.as_str(), SAMPLE_SOURCE_HASH_ALPHA);
+        assert_eq!(version.deployed_at_seconds, 1_715_700_000);
+    }
+
+    #[test]
+    fn deployed_version_identifier_is_stable_canonical_string() {
+        // SRS-ORCH-004 acceptance: dashboard, REST API, and backtest
+        // results "display or return the same version identifier".
+        // The canonical form is `<hash>@<timestamp>`. Pinning this
+        // here is the single source of truth — future surfaces must
+        // render this exact string.
+        let version = DeployedVersion::new(
+            SourceHash::new(SAMPLE_SOURCE_HASH_ALPHA),
+            1_715_700_000,
+        );
+        assert_eq!(
+            version.version_identifier(),
+            format!("{SAMPLE_SOURCE_HASH_ALPHA}@1715700000")
+        );
+    }
+
+    #[test]
+    fn deployed_version_invalid_factory_pins_the_wire_string() {
+        // SRS-ORCH-004 / SyRS SYS-64: the rejection wire string must
+        // be DEPLOYED_VERSION_INVALID and the error_type discriminator
+        // must encode the specific validation failure variant.
+        let request = StrategyLaunchRequest {
+            strategy_id: StrategyId::new("alpha-1"),
+            mode: StrategyMode::Live,
+            deployment_hash: SourceHash::new("sha256:abc"),
+            deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
+            profile: ResourceProfile::live_default(),
+        };
+        let violation = request
+            .deployment_hash
+            .validate()
+            .expect_err("must be invalid");
+        let error =
+            StructuredOrchestratorError::deployed_version_invalid(request.clone(), violation);
+        assert_eq!(error.category, OrderErrorCategory::DeployedVersionInvalid);
+        assert_eq!(error.category.as_str(), "DEPLOYED_VERSION_INVALID");
+        assert_eq!(error.error_type, "DeployedVersionInvalid::InvalidDigestLength");
+        assert!(error.message.contains("SRS-ORCH-004"));
+        assert!(error.message.contains("SYS-79"));
+        assert!(error.message.contains("alpha-1"));
+        assert_eq!(error.original_request, request);
+    }
+
+    #[test]
+    fn order_error_category_deployed_version_invalid_wire_string() {
+        assert_eq!(
+            OrderErrorCategory::DeployedVersionInvalid.as_str(),
+            "DEPLOYED_VERSION_INVALID"
         );
     }
 }

@@ -129,7 +129,9 @@ fn request(id: &str, mode: StrategyMode) -> StrategyLaunchRequest {
     StrategyLaunchRequest {
         strategy_id: StrategyId::new(id),
         mode,
-        deployment_hash: "sha256:abc".to_string(),
+        deployment_hash: atp_types::SourceHash::new(
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
         deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
         profile: ResourceProfile::for_mode(mode),
     }

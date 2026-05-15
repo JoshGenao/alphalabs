@@ -210,6 +210,13 @@ if ! python3 tools/orchestrator_workload_priority_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running orchestrator deployment-version contract check..."
+if ! python3 tools/orchestrator_deployment_version_check.py --skip-cargo >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Orchestrator deployment-version contract check failed; run python3 tools/orchestrator_deployment_version_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running deployment configuration check..."
 if ! python3 tools/deployment_check.py >/dev/null; then
   echo "✗ Environment failed"

@@ -1,5 +1,5 @@
 use atp_types::{
-    ContainerHealthEvent, ContainerHealthState, ContainerLifecycleAction,
+    ContainerHealthEvent, ContainerHealthState, ContainerLifecycleAction, DeployedVersion,
     HostMemorySafetyMargin, HostMemorySafetyMarginError, LaunchReadiness, RegisteredWorkload,
     ResourceProfile, ResourceProfileError, RuntimeService, StrategyId, StrategyLaunchOutcome,
     StrategyLaunchRequest, StrategyMode, StructuredOrchestratorError, WorkloadAdmissionEvent,
@@ -306,6 +306,80 @@ impl fmt::Display for WorkloadEventSinkError {
 impl std::error::Error for WorkloadEventSinkError {}
 
 // --------------------------------------------------------------------------- //
+// Deployed-version registry port (SRS-ORCH-004, SyRS SYS-79 / SYS-41 /
+// IF-9 / SYS-21)
+// --------------------------------------------------------------------------- //
+//
+// SRS-ORCH-004 says the orchestrator must record the deployed code
+// version for each strategy instance, and that the same version
+// identifier must be queryable from the dashboard (SYS-41), the REST
+// API (IF-9), and recorded onto backtest result rows (SYS-21).
+// `DeployedVersionRegistry` is the port the orchestrator's `launch`
+// gate calls on successful deployment. `record` is the write path
+// and `lookup` is the read path — concrete implementations of this
+// trait will sit behind the dashboard, the REST API handler, and
+// the backtest pipeline (all deferred).
+//
+// Both methods return `Result` because concrete implementations may
+// genuinely fail (durable store unavailable, file-system permission,
+// in-process registry desync). The orchestrator's `launch` gate
+// treats a `record` failure as best-effort — once the container is
+// running, refusing the launch retroactively would lie to operators
+// and force the orchestrator to also destroy the running container.
+// The typed `DeployedVersionRegistryError` lets concrete registries
+// and wrapping callers observe the failure separately from the
+// launch outcome.
+pub trait DeployedVersionRegistry {
+    /// SyRS SYS-79 write path. Called by `launch` on the
+    /// `ReadyWithinDeadline` arm so the deployed version is recorded
+    /// at deployment time exactly once per successful launch.
+    fn record(
+        &self,
+        strategy_id: &StrategyId,
+        version: DeployedVersion,
+    ) -> Result<(), DeployedVersionRegistryError>;
+
+    /// SyRS SYS-79 read path. Future dashboard / REST API / backtest
+    /// readers query this to render the version identifier. Returns
+    /// `Ok(None)` if no version has been recorded for `strategy_id`
+    /// (e.g. the strategy was never deployed, or the registry is
+    /// not durable across restarts and the record was lost).
+    fn lookup(
+        &self,
+        strategy_id: &StrategyId,
+    ) -> Result<Option<DeployedVersion>, DeployedVersionRegistryError>;
+}
+
+/// SRS-ORCH-004 registry-failure surface (durable-store outage,
+/// permission denied, in-process registry mutex poisoning, etc.).
+/// Future concrete-registry variants will discriminate the cause;
+/// the reason string is the dashboard's rendering source for now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployedVersionRegistryError {
+    pub reason: String,
+}
+
+impl DeployedVersionRegistryError {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for DeployedVersionRegistryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "SRS-ORCH-004: DeployedVersionRegistry call failed — {}",
+            self.reason,
+        )
+    }
+}
+
+impl std::error::Error for DeployedVersionRegistryError {}
+
+// --------------------------------------------------------------------------- //
 // Strategy container lifecycle ports
 // (SRS-ORCH-001, SyRS SYS-10 / SYS-13 / AC-12 / NFR-P9 / NFR-R5 / NFR-S5)
 // --------------------------------------------------------------------------- //
@@ -443,17 +517,55 @@ impl StrategyOrchestrator {
     /// containers (resource profiles differ per SRS-ORCH-002 but the
     /// lifecycle vocabulary is identical), so the launch envelope is
     /// uniform regardless of mode.
-    pub fn launch<R, S>(
+    ///
+    /// **SRS-ORCH-004 / SyRS SYS-79 deployed-version recording**:
+    ///
+    /// * The gate validates `request.deployment_hash` BEFORE invoking
+    ///   the runtime port. A malformed override is refused with
+    ///   `OrderErrorCategory::DeployedVersionInvalid` and NO sink
+    ///   event (no container exists to destroy; emitting an event
+    ///   would lie about a destroy that never happened — same
+    ///   pattern as the resource-profile gate).
+    /// * On the `ReadyWithinDeadline` arm, the gate records the
+    ///   deployed version (hash + `observed_at_seconds`) through the
+    ///   `version_registry` port BEFORE constructing the outcome.
+    ///   Registry-record failures are best-effort by design: once
+    ///   the container is running, refusing the launch retroactively
+    ///   would lie to operators and force a destroy. Concrete
+    ///   registries surface failures through the typed
+    ///   `DeployedVersionRegistryError` for wrapping callers
+    ///   (dashboard / REST API / backtest pipeline) to observe.
+    /// * On the `DeadlineExceeded` arm, the gate does NOT call
+    ///   `version_registry.record` — a version that was never
+    ///   deployed must not appear in the active-strategy inventory
+    ///   (SYS-41) or the REST API listing (IF-9).
+    pub fn launch<R, S, V>(
         &self,
         request: StrategyLaunchRequest,
         runtime: &R,
         sink: &S,
+        version_registry: &V,
         observed_at_seconds: u64,
     ) -> Result<StrategyLaunchOutcome, StructuredOrchestratorError>
     where
         R: StrategyContainerRuntime,
         S: HealthCheckEventSink,
+        V: DeployedVersionRegistry,
     {
+        // SRS-ORCH-004 + SyRS SYS-79: validate the source-hash wire
+        // form at the orchestrator boundary BEFORE invoking the
+        // runtime port. A misconfigured override (missing prefix,
+        // wrong algorithm, wrong digest length, non-hex) must never
+        // reach `runtime.create` — there is no container to destroy
+        // because none was ever created, so this rejection is a pure
+        // structured error with NO sink event (an event would lie
+        // about a destroy that never happened). Pattern matches the
+        // SRS-ORCH-002 resource-profile gate.
+        if let Err(violation) = request.deployment_hash.validate() {
+            return Err(StructuredOrchestratorError::deployed_version_invalid(
+                request, violation,
+            ));
+        }
         // SRS-ORCH-002 + SyRS SYS-11: validate the resource profile at
         // the orchestrator boundary BEFORE invoking the runtime port.
         // A misconfigured override (out-of-range mem / CPU) must never
@@ -472,12 +584,28 @@ impl StrategyOrchestrator {
         let readiness = runtime.start(&request);
         match readiness {
             LaunchReadiness::ReadyWithinDeadline { elapsed_millis } => {
+                // SRS-ORCH-004 / SyRS SYS-79: record the deployed
+                // version at the deployment moment so the deferred
+                // dashboard (SYS-41), REST API (IF-9), and backtest
+                // result rows (SYS-21) can render the same version
+                // identifier. Registry failures are best-effort by
+                // design (see the launch Rustdoc); concrete
+                // registries surface them via the typed
+                // DeployedVersionRegistryError so wrapping callers
+                // can observe without aborting the launch.
+                let deployed_version = DeployedVersion::new(
+                    request.deployment_hash.clone(),
+                    observed_at_seconds,
+                );
+                let _ = version_registry
+                    .record(&request.strategy_id, deployed_version.clone());
                 Ok(StrategyLaunchOutcome {
                     strategy_id: request.strategy_id,
                     ready_within_deadline: true,
                     elapsed_millis,
                     deadline_millis: request.deadline_millis,
                     profile: request.profile,
+                    deployed_version,
                 })
             }
             LaunchReadiness::DeadlineExceeded {
@@ -505,6 +633,20 @@ impl StrategyOrchestrator {
                 ))
             }
         }
+    }
+
+    /// SRS-ORCH-004 / SyRS SYS-79 read-only helper. Constructs a
+    /// `DeployedVersion` from the launch envelope without invoking
+    /// the runtime port, so callers can preview the version
+    /// identifier (e.g. for a dashboard tooltip) before deployment.
+    /// The orchestrator's `launch` gate builds the same record on
+    /// the `ReadyWithinDeadline` arm.
+    pub fn deployed_version_for(
+        &self,
+        request: &StrategyLaunchRequest,
+        observed_at_seconds: u64,
+    ) -> DeployedVersion {
+        DeployedVersion::new(request.deployment_hash.clone(), observed_at_seconds)
     }
 
     /// SyRS SYS-13 auto-restart gate. Matches on the runtime port's
@@ -1108,7 +1250,7 @@ impl StrategyOrchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use atp_types::StrategyMode;
+    use atp_types::{SourceHash, StrategyMode};
     use std::cell::{Cell, RefCell};
 
     struct RuntimeStub {
@@ -1179,11 +1321,66 @@ mod tests {
         }
     }
 
+    /// Test fixture: a valid 64-hex SHA-256 wire-form source hash so
+    /// SRS-ORCH-004 launch validation passes the gate. The orchestrator
+    /// crate's tests share one canonical fixture string so a future
+    /// drift in the validator catches every test at once.
+    const TEST_SOURCE_HASH: &str =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[derive(Default)]
+    struct VersionRegistrySpy {
+        records: RefCell<Vec<(StrategyId, DeployedVersion)>>,
+    }
+
+    impl DeployedVersionRegistry for VersionRegistrySpy {
+        fn record(
+            &self,
+            strategy_id: &StrategyId,
+            version: DeployedVersion,
+        ) -> Result<(), DeployedVersionRegistryError> {
+            self.records
+                .borrow_mut()
+                .push((strategy_id.clone(), version));
+            Ok(())
+        }
+        fn lookup(
+            &self,
+            strategy_id: &StrategyId,
+        ) -> Result<Option<DeployedVersion>, DeployedVersionRegistryError> {
+            Ok(self
+                .records
+                .borrow()
+                .iter()
+                .rev()
+                .find(|(id, _)| id == strategy_id)
+                .map(|(_, v)| v.clone()))
+        }
+    }
+
+    struct ForbiddenVersionRegistry;
+
+    impl DeployedVersionRegistry for ForbiddenVersionRegistry {
+        fn record(
+            &self,
+            _strategy_id: &StrategyId,
+            _version: DeployedVersion,
+        ) -> Result<(), DeployedVersionRegistryError> {
+            panic!("DeadlineExceeded / pre-create rejection must not record a deployed version");
+        }
+        fn lookup(
+            &self,
+            _strategy_id: &StrategyId,
+        ) -> Result<Option<DeployedVersion>, DeployedVersionRegistryError> {
+            panic!("DeadlineExceeded / pre-create rejection must not query the version registry");
+        }
+    }
+
     fn request(id: &str, mode: StrategyMode) -> StrategyLaunchRequest {
         StrategyLaunchRequest {
             strategy_id: StrategyId::new(id),
             mode,
-            deployment_hash: "sha256:abc".to_string(),
+            deployment_hash: SourceHash::new(TEST_SOURCE_HASH),
             deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
             profile: ResourceProfile::for_mode(mode),
         }
@@ -1197,7 +1394,7 @@ mod tests {
         StrategyLaunchRequest {
             strategy_id: StrategyId::new(id),
             mode,
-            deployment_hash: "sha256:abc".to_string(),
+            deployment_hash: SourceHash::new(TEST_SOURCE_HASH),
             deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
             profile,
         }
@@ -1219,8 +1416,15 @@ mod tests {
             ContainerHealthState::Healthy,
         );
         let sink = ForbiddenSink;
+        let version_registry = VersionRegistrySpy::default();
         let outcome = orchestrator
-            .launch(request("alpha-1", StrategyMode::Live), &runtime, &sink, 1_715_000_000)
+            .launch(
+                request("alpha-1", StrategyMode::Live),
+                &runtime,
+                &sink,
+                &version_registry,
+                1_715_000_000,
+            )
             .expect("ReadyWithinDeadline must accept the launch");
         assert_eq!(outcome.strategy_id.as_str(), "alpha-1");
         assert!(outcome.ready_within_deadline);
@@ -1241,8 +1445,15 @@ mod tests {
             ContainerHealthState::Healthy,
         );
         let sink = SinkSpy::default();
+        let version_registry = ForbiddenVersionRegistry;
         let error = orchestrator
-            .launch(request("alpha-1", StrategyMode::Live), &runtime, &sink, 1_715_000_000)
+            .launch(
+                request("alpha-1", StrategyMode::Live),
+                &runtime,
+                &sink,
+                &version_registry,
+                1_715_000_000,
+            )
             .expect_err("DeadlineExceeded must refuse the launch");
         assert_eq!(
             error.category,
@@ -1358,6 +1569,7 @@ mod tests {
             ContainerHealthState::Healthy,
         );
         let sink = ForbiddenSink;
+        let version_registry = VersionRegistrySpy::default();
         let custom = ResourceProfile {
             mem_mb: 384,
             cpu_hundredths: 20,
@@ -1367,6 +1579,7 @@ mod tests {
                 request_with_profile("alpha-1", StrategyMode::Live, custom),
                 &runtime,
                 &sink,
+                &version_registry,
                 1_715_000_000,
             )
             .expect("in-range custom profile must be accepted");
@@ -1384,6 +1597,7 @@ mod tests {
             ContainerHealthState::Healthy,
         );
         let sink = ForbiddenSink;
+        let version_registry = ForbiddenVersionRegistry;
         let bad = ResourceProfile {
             mem_mb: 32,
             cpu_hundredths: 25,
@@ -1393,6 +1607,7 @@ mod tests {
                 request_with_profile("alpha-1", StrategyMode::Live, bad),
                 &runtime,
                 &sink,
+                &version_registry,
                 1_715_000_000,
             )
             .expect_err("below-floor mem must be refused");
@@ -1415,6 +1630,7 @@ mod tests {
             ContainerHealthState::Healthy,
         );
         let sink = ForbiddenSink;
+        let version_registry = ForbiddenVersionRegistry;
         let bad = ResourceProfile {
             mem_mb: 512,
             cpu_hundredths: 9_999,
@@ -1424,6 +1640,7 @@ mod tests {
                 request_with_profile("alpha-1", StrategyMode::Live, bad),
                 &runtime,
                 &sink,
+                &version_registry,
                 1_715_000_000,
             )
             .expect_err("above-ceiling cpu must be refused");
@@ -2547,5 +2764,163 @@ mod tests {
             }
             other => panic!("expected Unparseable, got {other:?}"),
         }
+    }
+
+    // ---------------------------------------------------------------- //
+    // SRS-ORCH-004 deployed-version recording (SyRS SYS-79)
+    // ---------------------------------------------------------------- //
+
+    #[test]
+    fn launch_records_deployed_version_on_ready_within_deadline() {
+        let orchestrator = StrategyOrchestrator;
+        let runtime = RuntimeStub::new(
+            LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 4_200 },
+            ContainerHealthState::Healthy,
+        );
+        let sink = ForbiddenSink;
+        let version_registry = VersionRegistrySpy::default();
+        let outcome = orchestrator
+            .launch(
+                request("alpha-1", StrategyMode::Live),
+                &runtime,
+                &sink,
+                &version_registry,
+                1_715_700_000,
+            )
+            .expect("ReadyWithinDeadline must accept the launch");
+
+        // SRS-ORCH-004 acceptance: the outcome carries the deployed
+        // version (hash + deployment timestamp) and the same record
+        // appears in the registry.
+        assert_eq!(
+            outcome.deployed_version.source_hash.as_str(),
+            TEST_SOURCE_HASH
+        );
+        assert_eq!(outcome.deployed_version.deployed_at_seconds, 1_715_700_000);
+
+        let records = version_registry.records.borrow();
+        assert_eq!(records.len(), 1, "exactly one record per successful launch");
+        assert_eq!(records[0].0.as_str(), "alpha-1");
+        assert_eq!(records[0].1, outcome.deployed_version);
+    }
+
+    #[test]
+    fn launch_does_not_record_version_on_deadline_exceeded() {
+        // SRS-ORCH-004: a version that was never deployed must not
+        // appear in the active-strategy inventory (SYS-41) or the
+        // REST API listing (IF-9). The over-deadline path destroys
+        // the container; it must also skip the version record.
+        let orchestrator = StrategyOrchestrator;
+        let runtime = RuntimeStub::new(
+            LaunchReadiness::DeadlineExceeded {
+                elapsed_millis: 32_500,
+                deadline_millis: 30_000,
+            },
+            ContainerHealthState::Healthy,
+        );
+        let sink = SinkSpy::default();
+        let version_registry = ForbiddenVersionRegistry;
+        let _error = orchestrator
+            .launch(
+                request("alpha-1", StrategyMode::Live),
+                &runtime,
+                &sink,
+                &version_registry,
+                1_715_700_000,
+            )
+            .expect_err("DeadlineExceeded must refuse the launch");
+    }
+
+    #[test]
+    fn launch_rejects_malformed_source_hash_without_invoking_runtime() {
+        // SRS-ORCH-004: validate-before-create. A malformed hash must
+        // never reach `runtime.create` — the gate short-circuits with
+        // DeployedVersionInvalid and emits no event.
+        let orchestrator = StrategyOrchestrator;
+        let runtime = RuntimeStub::new(
+            LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 1 },
+            ContainerHealthState::Healthy,
+        );
+        let sink = ForbiddenSink;
+        let version_registry = ForbiddenVersionRegistry;
+        let bad_request = StrategyLaunchRequest {
+            strategy_id: StrategyId::new("alpha-1"),
+            mode: StrategyMode::Live,
+            deployment_hash: SourceHash::new("sha256:not-a-real-hash"),
+            deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
+            profile: ResourceProfile::live_default(),
+        };
+        let error = orchestrator
+            .launch(bad_request, &runtime, &sink, &version_registry, 1_715_700_000)
+            .expect_err("malformed hash must be refused");
+        assert_eq!(
+            error.category,
+            atp_types::OrderErrorCategory::DeployedVersionInvalid
+        );
+        assert!(error.error_type.starts_with("DeployedVersionInvalid::"));
+        assert_eq!(runtime.create_calls.get(), 0, "validation gate must short-circuit");
+        assert_eq!(runtime.start_calls.get(), 0);
+    }
+
+    #[test]
+    fn launch_succeeds_even_when_version_registry_record_fails() {
+        // SRS-ORCH-004: the version record is best-effort. Once the
+        // container is running, a registry-record failure must NOT
+        // abort the launch or destroy the container — the launch
+        // outcome carries the deployed version regardless.
+        struct FlakyRegistry;
+        impl DeployedVersionRegistry for FlakyRegistry {
+            fn record(
+                &self,
+                _strategy_id: &StrategyId,
+                _version: DeployedVersion,
+            ) -> Result<(), DeployedVersionRegistryError> {
+                Err(DeployedVersionRegistryError::new(
+                    "simulated durable-store outage",
+                ))
+            }
+            fn lookup(
+                &self,
+                _strategy_id: &StrategyId,
+            ) -> Result<Option<DeployedVersion>, DeployedVersionRegistryError> {
+                Ok(None)
+            }
+        }
+        let orchestrator = StrategyOrchestrator;
+        let runtime = RuntimeStub::new(
+            LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 4_200 },
+            ContainerHealthState::Healthy,
+        );
+        let sink = ForbiddenSink;
+        let version_registry = FlakyRegistry;
+        let outcome = orchestrator
+            .launch(
+                request("alpha-1", StrategyMode::Live),
+                &runtime,
+                &sink,
+                &version_registry,
+                1_715_700_000,
+            )
+            .expect("record failure must not abort the launch");
+        assert_eq!(
+            outcome.deployed_version.source_hash.as_str(),
+            TEST_SOURCE_HASH
+        );
+    }
+
+    #[test]
+    fn deployed_version_for_helper_builds_same_record_as_launch() {
+        // SRS-ORCH-004: callers can preview the deployed version
+        // identifier without invoking the runtime port. The helper
+        // produces the same record the gate would build.
+        let orchestrator = StrategyOrchestrator;
+        let req = request("alpha-1", StrategyMode::Live);
+        let preview = orchestrator.deployed_version_for(&req, 1_715_700_000);
+        assert_eq!(preview.source_hash, req.deployment_hash);
+        assert_eq!(preview.deployed_at_seconds, 1_715_700_000);
+        assert_eq!(
+            preview.version_identifier(),
+            format!("{TEST_SOURCE_HASH}@1715700000")
+        );
     }
 }

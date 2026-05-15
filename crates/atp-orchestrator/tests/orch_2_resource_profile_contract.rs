@@ -26,13 +26,58 @@
 //!   * Mode-uniformity: live and paper launches share envelope shape;
 //!     only the default profile differs.
 
-use atp_orchestrator::{HealthCheckEventSink, StrategyContainerRuntime, StrategyOrchestrator};
+use atp_orchestrator::{
+    DeployedVersionRegistry, DeployedVersionRegistryError, HealthCheckEventSink,
+    StrategyContainerRuntime, StrategyOrchestrator,
+};
 use atp_types::{
-    ContainerHealthEvent, ContainerHealthState, LaunchReadiness, OrderErrorCategory,
-    ResourceProfile, StrategyId, StrategyLaunchRequest, StrategyMode,
-    STRATEGY_STARTUP_DEADLINE_MS,
+    ContainerHealthEvent, ContainerHealthState, DeployedVersion, LaunchReadiness,
+    OrderErrorCategory, ResourceProfile, SourceHash, StrategyId, StrategyLaunchRequest,
+    StrategyMode, STRATEGY_STARTUP_DEADLINE_MS,
 };
 use std::cell::{Cell, RefCell};
+
+/// Test fixture: a valid 64-hex SHA-256 wire-form source hash so the
+/// SRS-ORCH-004 launch validation passes.
+const TEST_SOURCE_HASH: &str =
+    "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+#[derive(Default)]
+struct VersionRegistryNoop;
+
+impl DeployedVersionRegistry for VersionRegistryNoop {
+    fn record(
+        &self,
+        _strategy_id: &StrategyId,
+        _version: DeployedVersion,
+    ) -> Result<(), DeployedVersionRegistryError> {
+        Ok(())
+    }
+    fn lookup(
+        &self,
+        _strategy_id: &StrategyId,
+    ) -> Result<Option<DeployedVersion>, DeployedVersionRegistryError> {
+        Ok(None)
+    }
+}
+
+struct ForbiddenVersionRegistry;
+
+impl DeployedVersionRegistry for ForbiddenVersionRegistry {
+    fn record(
+        &self,
+        _strategy_id: &StrategyId,
+        _version: DeployedVersion,
+    ) -> Result<(), DeployedVersionRegistryError> {
+        panic!("ResourceProfileInvalid rejection must not record a deployed version");
+    }
+    fn lookup(
+        &self,
+        _strategy_id: &StrategyId,
+    ) -> Result<Option<DeployedVersion>, DeployedVersionRegistryError> {
+        panic!("ResourceProfileInvalid rejection must not query the version registry");
+    }
+}
 
 struct RuntimeSpy {
     readiness: LaunchReadiness,
@@ -103,7 +148,7 @@ fn request(id: &str, mode: StrategyMode, profile: ResourceProfile) -> StrategyLa
     StrategyLaunchRequest {
         strategy_id: StrategyId::new(id),
         mode,
-        deployment_hash: "sha256:resource-profile".to_string(),
+        deployment_hash: SourceHash::new(TEST_SOURCE_HASH),
         deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
         profile,
     }
@@ -122,11 +167,13 @@ fn orch_2_live_default_profile_is_propagated_through_create_to_outcome() {
         ContainerHealthState::Healthy,
     );
     let sink = ForbiddenSink;
+    let version_registry = VersionRegistryNoop;
     let outcome = orchestrator
         .launch(
             request("alpha-1", StrategyMode::Live, ResourceProfile::live_default()),
             &runtime,
             &sink,
+            &version_registry,
             1_715_000_000,
         )
         .expect("Live launch with default profile must accept");
@@ -149,11 +196,13 @@ fn orch_2_paper_default_profile_is_propagated_through_create_to_outcome() {
         ContainerHealthState::Healthy,
     );
     let sink = ForbiddenSink;
+    let version_registry = VersionRegistryNoop;
     let outcome = orchestrator
         .launch(
             request("paper-1", StrategyMode::Paper, ResourceProfile::paper_default()),
             &runtime,
             &sink,
+            &version_registry,
             1_715_000_000,
         )
         .expect("Paper launch with default profile must accept");
@@ -176,6 +225,7 @@ fn orch_2_in_range_custom_override_is_propagated_unchanged() {
         ContainerHealthState::Healthy,
     );
     let sink = ForbiddenSink;
+    let version_registry = VersionRegistryNoop;
     let custom = ResourceProfile {
         mem_mb: 1_024,
         cpu_hundredths: 80,
@@ -185,6 +235,7 @@ fn orch_2_in_range_custom_override_is_propagated_unchanged() {
             request("alpha-2", StrategyMode::Live, custom),
             &runtime,
             &sink,
+            &version_registry,
             1_715_000_000,
         )
         .expect("in-range custom profile must accept");
@@ -207,6 +258,7 @@ fn orch_2_below_floor_memory_is_refused_without_invoking_runtime() {
         ContainerHealthState::Healthy,
     );
     let sink = ForbiddenSink;
+    let version_registry = ForbiddenVersionRegistry;
     let bad = ResourceProfile {
         mem_mb: 16,
         cpu_hundredths: 25,
@@ -216,6 +268,7 @@ fn orch_2_below_floor_memory_is_refused_without_invoking_runtime() {
             request("alpha-3", StrategyMode::Live, bad),
             &runtime,
             &sink,
+            &version_registry,
             1_715_000_000,
         )
         .expect_err("below-floor mem must be refused");
@@ -246,6 +299,7 @@ fn orch_2_above_ceiling_cpu_is_refused_without_invoking_runtime() {
         ContainerHealthState::Healthy,
     );
     let sink = ForbiddenSink;
+    let version_registry = ForbiddenVersionRegistry;
     let bad = ResourceProfile {
         mem_mb: 512,
         cpu_hundredths: 9_999,
@@ -255,6 +309,7 @@ fn orch_2_above_ceiling_cpu_is_refused_without_invoking_runtime() {
             request("alpha-4", StrategyMode::Live, bad),
             &runtime,
             &sink,
+            &version_registry,
             1_715_000_000,
         )
         .expect_err("above-ceiling cpu must be refused");
@@ -277,11 +332,13 @@ fn orch_2_launch_envelope_is_mode_uniform_with_distinct_default_profiles() {
         LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 3_100 },
         ContainerHealthState::Healthy,
     );
+    let version_registry = VersionRegistryNoop;
     let live_outcome = orchestrator
         .launch(
             request("live-1", StrategyMode::Live, ResourceProfile::live_default()),
             &runtime_live,
             &ForbiddenSink,
+            &version_registry,
             1,
         )
         .expect("Live launch must accept");
@@ -290,6 +347,7 @@ fn orch_2_launch_envelope_is_mode_uniform_with_distinct_default_profiles() {
             request("paper-1", StrategyMode::Paper, ResourceProfile::paper_default()),
             &runtime_paper,
             &ForbiddenSink,
+            &version_registry,
             1,
         )
         .expect("Paper launch must accept");

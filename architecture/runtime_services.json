@@ -1318,7 +1318,6 @@
     "rejection_wire_string": "STRATEGY_STARTUP_DEADLINE_EXCEEDED",
     "deferred": [
       "Concrete StrategyContainerRuntime backed by the Docker Engine API for the Phase 1 Proxmox VM target (owner: SRS-ARCH-004 + SRS-ORCH-002)",
-      "Deployment-version recording + dashboard exposure for each strategy instance (owner: SRS-ORCH-004 / SyRS SYS-41 / SYS-79)",
       "Concrete HealthCheckEventSink wired to the dashboard WebSocket alert pane + the SRS-LOG-001 audit trail + the SRS-NOTIF-001 dispatcher (owner: SRS-LOG-001 / SRS-NOTIF-001 / SyRS SYS-13 dashboard clause)",
       "Container-runtime cooldown / back-off when an unresponsive container restart or an over-deadline destroy fails repeatedly (orthogonal to the gate; belongs on the concrete StrategyContainerRuntime implementation)"
     ]
@@ -1728,6 +1727,121 @@
       "Typed coupling of `admit_workload` to `launch`. Today the two gates are separate methods and `launch`'s Rustdoc states that calling it without first calling `admit_workload` bypasses the SyRS SYS-57 / SYS-58 enforcement. A future session will turn that 'must call' precondition into 'cannot fail to call' via a typestate (`admit_workload` returns an `AdmissionToken`; `launch` consumes the token) or a builder pattern. The typestate change is scoped to land when the production caller of `launch` is wired (same owner as the deferred entry above) so the parameter-list expansion happens once. Until then, the contract-level requirement is exercised by the integration + domain tests for SRS-ORCH-003 (codex critic: arch:admission-gate-bypass).",
       "Gate-level capture and propagation of WorkloadEventSink::record errors. Today emission is best-effort (see WorkloadEventSink trait doc) — the gate does not capture or surface sink failures because the admission decision is irreversible once made. A future session will introduce a richer return shape (e.g. AdmissionOutcome { decision, sink_failures: Vec<...> } or a side-channel collector) once durable-delivery semantics are owned by the concrete SRS-NOTIF-001 dispatcher and gate-level retry / propagation becomes meaningful (codex critic: adapter:sink-error-discard).",
       "Per-strategy / per-job override of the safety margin from the dashboard / REST API (owner: SRS-API-001 — REST/WebSocket override path layered on top of the env-var lookup once the API surface lands)."
+    ]
+  },
+  "deployment_version_contract": {
+    "requirement": "SRS-ORCH-004",
+    "srs_refs": ["SRS-ORCH-004"],
+    "syrs_refs": ["SYS-79", "SYS-41", "SYS-21", "IF-9"],
+    "strs_refs": ["SN-1.01", "SN-1.10", "SN-1.02"],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "orchestrator_crate": {
+      "crate": "atp-orchestrator",
+      "path": "crates/atp-orchestrator"
+    },
+    "spec_constants": {
+      "algorithm_prefix": {
+        "name": "SOURCE_HASH_ALGORITHM_PREFIX",
+        "value": "sha256:"
+      },
+      "digest_hex_length": {
+        "name": "SOURCE_HASH_DIGEST_HEX_LENGTH",
+        "value": 64
+      },
+      "total_length": {
+        "name": "SOURCE_HASH_TOTAL_LENGTH",
+        "value": 71
+      }
+    },
+    "source_hash": {
+      "struct": "SourceHash",
+      "newtype_inner": "String",
+      "methods": [
+        "new",
+        "validate",
+        "validate_str",
+        "as_str",
+        "algorithm",
+        "digest"
+      ]
+    },
+    "source_hash_error": {
+      "enum": "SourceHashError",
+      "variants": [
+        "MissingAlgorithmPrefix",
+        "UnknownAlgorithm",
+        "InvalidDigestLength",
+        "NonHexDigest"
+      ]
+    },
+    "deployed_version": {
+      "struct": "DeployedVersion",
+      "required_fields": ["source_hash", "deployed_at_seconds"],
+      "forbidden_fields": [
+        "docker_image",
+        "container_id",
+        "vendor",
+        "host_path",
+        "git_commit",
+        "git_branch",
+        "build_number",
+        "ci_run_id"
+      ],
+      "methods": ["new", "version_identifier"]
+    },
+    "rejection_category": "DeployedVersionInvalid",
+    "rejection_wire_string": "DEPLOYED_VERSION_INVALID",
+    "deployed_version_invalid_factory": "deployed_version_invalid",
+    "deployed_version_registry_port": {
+      "trait": "DeployedVersionRegistry",
+      "methods": ["record", "lookup"],
+      "record_signature": "fn record(\n        &self,\n        strategy_id: &StrategyId,\n        version: DeployedVersion,\n    ) -> Result<(), DeployedVersionRegistryError>",
+      "lookup_signature": "fn lookup(\n        &self,\n        strategy_id: &StrategyId,\n    ) -> Result<Option<DeployedVersion>, DeployedVersionRegistryError>",
+      "registry_error_struct": "DeployedVersionRegistryError",
+      "forbidden_imports_in_orchestrator_crate": [
+        "sha2::",
+        "sha1::",
+        "md5::",
+        "blake3::",
+        "sled::",
+        "rusqlite::",
+        "redis::",
+        "git2::"
+      ]
+    },
+    "strategy_launch_request_deployment_hash_type": "SourceHash",
+    "strategy_launch_outcome_deployed_version_field": "deployed_version",
+    "orchestrator_helper_methods": ["deployed_version_for"],
+    "launch_deployment_version_guard": {
+      "entry_method": "launch",
+      "required_validation_token": "request.deployment_hash.validate()",
+      "required_rejection_factory": "StructuredOrchestratorError::deployed_version_invalid",
+      "required_record_call": "version_registry.record",
+      "forbidden_calls_on_deployment_version_rejection": [
+        "runtime.create",
+        "runtime.start",
+        "runtime.destroy",
+        "runtime.stop",
+        "runtime.restart",
+        "sink.record",
+        "version_registry.record",
+        "self.containers.insert",
+        "self.registry.add",
+        "self.spawn_container"
+      ],
+      "forbidden_record_call_on_deadline_exceeded_arm": "version_registry.record"
+    },
+    "deferred": [
+      "Concrete DeployedVersionRegistry implementation backed by a durable store (SQLite, sled, or the SRS-DATA-* state layer once the data layer lands). Today the trait is consumed only by spy implementations in tests; the production caller will land alongside the dashboard / REST API surface (owner: SRS-API-001 / SRS-UI-002).",
+      "Dashboard wiring (SyRS SYS-41) that renders the version_identifier on the active-strategy inventory. Owner: SRS-UI-002 + SRS-UI-001.",
+      "REST API endpoint (SyRS IF-9) that returns the version_identifier per strategy id. Owner: SRS-API-001.",
+      "Backtest result column carrying the strategy code version (SyRS SYS-21). The orchestrator's DeployedVersion record is the source of truth; the backtest pipeline (SRS-BT-001 / SRS-BT-009) will project it onto each backtest result row when those surfaces land.",
+      "Concrete failure variants on DeployedVersionRegistryError (durable-store outage / permission denied / mutex poisoning / file-system full). The reason string carries the cause for now; structured variants will be added when the concrete registry adapter lands.",
+      "Typed coupling of `launch` to the version_registry record (today emission is best-effort by design — a record failure does not abort the launch). Future durable-delivery semantics on the SRS-LOG-001 / SRS-NOTIF-001 dispatcher path may add gate-level capture of the registry-record Result for retry / propagation.",
+      "Source-hash compute path: where the SHA-256 over the strategy source files is calculated. Today the launch envelope receives the hash as a parameter (the caller computes it); the deferred work is the orchestrator helper that hashes the on-disk strategy bundle. Owner: SRS-ORCH-004 follow-up alongside the production orchestrator entry point."
     ]
   },
   "deployment": {

@@ -30,6 +30,10 @@ from orchestrator_workload_priority_check import (
     WorkloadPriorityCheckError,
     assert_orchestrator_workload_priority_static,
 )
+from orchestrator_deployment_version_check import (
+    DeploymentVersionCheckError,
+    assert_orchestrator_deployment_version_static,
+)
 from pacing_budget_check import (
     PacingBudgetCheckError,
     assert_pacing_budget_static,
@@ -494,6 +498,26 @@ def assert_orchestrator_workload_priority(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_orchestrator_deployment_version(config: dict) -> list[str]:
+    block = config.get("deployment_version_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_orchestrator_deployment_version_static(config, ROOT)
+    summary = (
+        f"{block['orchestrator_crate']['crate']} records the deployed code "
+        "version (source hash + deployment timestamp) for each strategy at "
+        "deployment time and exposes it through the "
+        f"{block['deployed_version_registry_port']['trait']} port; "
+        f"misformed source hashes refused with category "
+        f"{block['rejection_category']} "
+        f"({block['rejection_wire_string']}); DeadlineExceeded launches "
+        "skip the version record (SRS-ORCH-004, SyRS SYS-79 / SYS-41 / "
+        "SYS-21 / IF-9)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -580,6 +604,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_orchestrator_workload_priority(config))
     except WorkloadPriorityCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_orchestrator_deployment_version(config))
+    except DeploymentVersionCheckError as error:
         fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:

@@ -23,13 +23,70 @@
 //!     the same gate with the same envelope shape (AC-14 / AC-15
 //!     uniformity — the gate takes no mode-branch).
 
-use atp_orchestrator::{HealthCheckEventSink, StrategyContainerRuntime, StrategyOrchestrator};
+use atp_orchestrator::{
+    DeployedVersionRegistry, DeployedVersionRegistryError, HealthCheckEventSink,
+    StrategyContainerRuntime, StrategyOrchestrator,
+};
 use atp_types::{
-    ContainerHealthEvent, ContainerHealthState, ContainerLifecycleAction, LaunchReadiness,
-    OrderErrorCategory, ResourceProfile, StrategyId, StrategyLaunchRequest, StrategyMode,
-    STRATEGY_STARTUP_DEADLINE_MS,
+    ContainerHealthEvent, ContainerHealthState, ContainerLifecycleAction, DeployedVersion,
+    LaunchReadiness, OrderErrorCategory, ResourceProfile, SourceHash, StrategyId,
+    StrategyLaunchRequest, StrategyMode, STRATEGY_STARTUP_DEADLINE_MS,
 };
 use std::cell::{Cell, RefCell};
+
+/// Test fixture: a valid 64-hex SHA-256 wire-form source hash so the
+/// SRS-ORCH-004 launch validation passes. All `orch_1_*` integration
+/// tests use this single value.
+const TEST_SOURCE_HASH: &str =
+    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+#[derive(Default)]
+struct VersionRegistrySpy {
+    records: RefCell<Vec<(StrategyId, DeployedVersion)>>,
+}
+
+impl DeployedVersionRegistry for VersionRegistrySpy {
+    fn record(
+        &self,
+        strategy_id: &StrategyId,
+        version: DeployedVersion,
+    ) -> Result<(), DeployedVersionRegistryError> {
+        self.records
+            .borrow_mut()
+            .push((strategy_id.clone(), version));
+        Ok(())
+    }
+    fn lookup(
+        &self,
+        strategy_id: &StrategyId,
+    ) -> Result<Option<DeployedVersion>, DeployedVersionRegistryError> {
+        Ok(self
+            .records
+            .borrow()
+            .iter()
+            .rev()
+            .find(|(id, _)| id == strategy_id)
+            .map(|(_, v)| v.clone()))
+    }
+}
+
+struct ForbiddenVersionRegistry;
+
+impl DeployedVersionRegistry for ForbiddenVersionRegistry {
+    fn record(
+        &self,
+        _strategy_id: &StrategyId,
+        _version: DeployedVersion,
+    ) -> Result<(), DeployedVersionRegistryError> {
+        panic!("DeadlineExceeded / pre-create rejection must not record a deployed version");
+    }
+    fn lookup(
+        &self,
+        _strategy_id: &StrategyId,
+    ) -> Result<Option<DeployedVersion>, DeployedVersionRegistryError> {
+        panic!("DeadlineExceeded / pre-create rejection must not query the version registry");
+    }
+}
 
 struct RuntimeSpy {
     readiness: LaunchReadiness,
@@ -103,7 +160,7 @@ fn request(id: &str, mode: StrategyMode) -> StrategyLaunchRequest {
     StrategyLaunchRequest {
         strategy_id: StrategyId::new(id),
         mode,
-        deployment_hash: "sha256:abcdef".to_string(),
+        deployment_hash: SourceHash::new(TEST_SOURCE_HASH),
         deadline_millis: STRATEGY_STARTUP_DEADLINE_MS,
         profile: ResourceProfile::for_mode(mode),
     }
@@ -117,8 +174,15 @@ fn orch_1_ready_within_deadline_state_returns_outcome_and_emits_no_event() {
         ContainerHealthState::Healthy,
     );
     let sink = ForbiddenSink;
+    let version_registry = VersionRegistrySpy::default();
     let outcome = orchestrator
-        .launch(request("alpha-1", StrategyMode::Live), &runtime, &sink, 1_715_000_000)
+        .launch(
+            request("alpha-1", StrategyMode::Live),
+            &runtime,
+            &sink,
+            &version_registry,
+            1_715_000_000,
+        )
         .expect("ReadyWithinDeadline must accept the launch");
     assert_eq!(outcome.strategy_id.as_str(), "alpha-1");
     assert!(outcome.ready_within_deadline);
@@ -139,8 +203,15 @@ fn orch_1_deadline_exceeded_state_blocks_launch_with_structured_error() {
         ContainerHealthState::Healthy,
     );
     let sink = EventSinkSpy::default();
+    let version_registry = ForbiddenVersionRegistry;
     let error = orchestrator
-        .launch(request("alpha-1", StrategyMode::Live), &runtime, &sink, 1_715_000_000)
+        .launch(
+            request("alpha-1", StrategyMode::Live),
+            &runtime,
+            &sink,
+            &version_registry,
+            1_715_000_000,
+        )
         .expect_err("DeadlineExceeded must refuse the launch");
     assert_eq!(
         error.category,
@@ -254,11 +325,24 @@ fn orch_1_launch_is_mode_uniform_across_live_and_paper() {
         LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 3_100 },
         ContainerHealthState::Healthy,
     );
+    let version_registry = VersionRegistrySpy::default();
     let live_outcome = orchestrator
-        .launch(request("live-1", StrategyMode::Live), &runtime_live, &ForbiddenSink, 1)
+        .launch(
+            request("live-1", StrategyMode::Live),
+            &runtime_live,
+            &ForbiddenSink,
+            &version_registry,
+            1,
+        )
         .expect("Live launch must accept");
     let paper_outcome = orchestrator
-        .launch(request("paper-1", StrategyMode::Paper), &runtime_paper, &ForbiddenSink, 1)
+        .launch(
+            request("paper-1", StrategyMode::Paper),
+            &runtime_paper,
+            &ForbiddenSink,
+            &version_registry,
+            1,
+        )
         .expect("Paper launch must accept");
     assert!(live_outcome.ready_within_deadline);
     assert!(paper_outcome.ready_within_deadline);
@@ -287,8 +371,14 @@ fn orch_1_deadline_exceeded_anchors_zero_outcome_on_refusal() {
         ContainerHealthState::Healthy,
     );
     let sink = EventSinkSpy::default();
-    let result =
-        orchestrator.launch(request("alpha-1", StrategyMode::Live), &runtime, &sink, 0);
+    let version_registry = ForbiddenVersionRegistry;
+    let result = orchestrator.launch(
+        request("alpha-1", StrategyMode::Live),
+        &runtime,
+        &sink,
+        &version_registry,
+        0,
+    );
     assert!(
         result.is_err(),
         "DeadlineExceeded must never return a StrategyLaunchOutcome"
