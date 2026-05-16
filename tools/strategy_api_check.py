@@ -18,6 +18,12 @@ import sys
 import typing
 from pathlib import Path
 
+from strategy_api_parity_check import (
+    StrategyApiParityCheckError,
+    assert_strategy_api_parity_static,
+    load_config as load_parity_config,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = ROOT / "python"
 README_PATH = ROOT / "python" / "atp_strategy" / "README.md"
@@ -54,6 +60,16 @@ def check_sdk_001(api: object) -> str:
     ctx = api.StrategyContext
     if not isinstance(ctx, type) or not issubclass(ctx, typing.Protocol):  # type: ignore[arg-type]
         fail("SDK-001: StrategyContext must be a typing.Protocol")
+    # Delegate the full AC-14 / SYS-82..SYS-87 parity invariant to
+    # strategy_api_parity_check (AST scan for mode-discriminator leakage,
+    # vendor-SDK import scan, full 8-method protocol surface check,
+    # signature + StrategyConfig forbidden-name scans). Keep the
+    # 6-method param-name scan below as a defensive backstop so this
+    # script remains useful even if the parity tool is misconfigured.
+    try:
+        assert_strategy_api_parity_static(load_parity_config())
+    except StrategyApiParityCheckError as error:
+        fail(f"SDK-001 parity invariant: {error}")
     forbidden = {"execution_mode", "is_paper", "is_live", "mode"}
     for method in ("subscribe", "order", "cancel", "log", "get_state", "set_state"):
         if not hasattr(ctx, method):
@@ -65,7 +81,11 @@ def check_sdk_001(api: object) -> str:
                 f"SDK-001: StrategyContext.{method} leaks execution-mode parameter "
                 f"{sorted(leak)}; same surface must serve live and paper."
             )
-    return "SDK-001: identical context surface across live and paper (no execution-mode leakage)"
+    return (
+        "SDK-001: identical context surface across live and paper (no "
+        "execution-mode leakage; AC-14 + SyRS SYS-82..SYS-87 parity "
+        "invariant enforced via strategy_api_parity_check)"
+    )
 
 
 def check_sdk_002(api: object) -> str:

@@ -217,6 +217,13 @@ if ! python3 tools/orchestrator_deployment_version_check.py --skip-cargo >/dev/n
   exit 1
 fi
 
+echo "→ Running Python Strategy API parity contract check..."
+if ! python3 tools/strategy_api_parity_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Strategy API parity contract check failed; run python3 tools/strategy_api_parity_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running deployment configuration check..."
 if ! python3 tools/deployment_check.py >/dev/null; then
   echo "✗ Environment failed"

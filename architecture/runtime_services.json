@@ -1844,6 +1844,43 @@
       "Source-hash compute path: where the SHA-256 over the strategy source files is calculated. Today the launch envelope receives the hash as a parameter (the caller computes it); the deferred work is the orchestrator helper that hashes the on-disk strategy bundle. Owner: SRS-ORCH-004 follow-up alongside the production orchestrator entry point."
     ]
   },
+  "strategy_api_parity_contract": {
+    "requirement": "SRS-SDK-001",
+    "srs_refs": ["SRS-SDK-001"],
+    "syrs_refs": ["SYS-82", "SYS-83", "SYS-84", "SYS-85", "SYS-86", "SYS-87", "AC-14", "SYS-2e"],
+    "strs_refs": ["SN-1.01", "SN-1.29", "SN-3.01"],
+    "sdk_package": "atp_strategy",
+    "sdk_path": "python/atp_strategy",
+    "forbidden_attribute_names": ["execution_mode", "is_paper", "is_live", "mode"],
+    "forbidden_symbol_names": ["ExecutionMode", "StrategyMode"],
+    "forbidden_param_names": ["execution_mode", "is_paper", "is_live", "mode"],
+    "forbidden_config_fields": ["execution_mode", "is_paper", "is_live", "mode"],
+    "forbidden_vendor_imports": [
+      "ibapi",
+      "ib_insync",
+      "ib_async",
+      "ibapi_client",
+      "databento",
+      "sharadar",
+      "polygon"
+    ],
+    "required_context_methods": [
+      "subscribe",
+      "order",
+      "cancel",
+      "log",
+      "get_state",
+      "set_state",
+      "indicator",
+      "consolidate"
+    ],
+    "required_context_attrs": ["config", "schedule", "calendar", "history"],
+    "deferred": [
+      "SYS-2e IB paper account integration smoke (gated by ATP_RUN_INTEGRATION=1, owner: SRS-EXE-001 + the future paper-simulation engine). The in-process L7 stub parity test covers the same-strategy-source-runs-both-paths invariant; the real-IB-Gateway round-trip is deferred.",
+      "Concrete LiveIBStrategyContext and PaperSimStrategyContext drivers — only stub drivers live in tests/domain/ today; the real drivers land with SRS-EXE-001 and SRS-SIM-*. The parity invariant added here will naturally cover them once they subclass StrategyContext.",
+      "Performance-parity surface (SRS-SDK-004 callback latencies: <1000ms p95 live, <100ms p95 paper). Only the shape parity is enforced here; the latency parity rides on the real engines."
+    ]
+  },
   "deployment": {
     "requirement": "SRS-ARCH-004",
     "target": "Phase 1 Proxmox Ubuntu VM",

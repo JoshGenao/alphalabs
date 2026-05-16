@@ -34,6 +34,10 @@ from orchestrator_deployment_version_check import (
     DeploymentVersionCheckError,
     assert_orchestrator_deployment_version_static,
 )
+from strategy_api_parity_check import (
+    StrategyApiParityCheckError,
+    assert_strategy_api_parity_static,
+)
 from pacing_budget_check import (
     PacingBudgetCheckError,
     assert_pacing_budget_static,
@@ -518,6 +522,24 @@ def assert_orchestrator_deployment_version(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_strategy_api_parity(config: dict) -> list[str]:
+    block = config.get("strategy_api_parity_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_strategy_api_parity_static(config, ROOT)
+    summary = (
+        f"python/{block['sdk_package']}/ enforces SRS-SDK-001 parity: "
+        "no execution-mode discriminator leakage, no vendor-SDK imports, "
+        f"all {len(block['required_context_methods'])} required "
+        "StrategyContext methods + "
+        f"{len(block['required_context_attrs'])} required attributes "
+        "present, no mode parameters on any method, no mode fields on "
+        "StrategyConfig (SRS-SDK-001, SyRS AC-14 / SYS-82..SYS-87)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -608,6 +630,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_orchestrator_deployment_version(config))
     except DeploymentVersionCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_strategy_api_parity(config))
+    except StrategyApiParityCheckError as error:
         fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:
