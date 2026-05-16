@@ -214,7 +214,8 @@ class ParityProbeStrategy(Strategy):
 
     def on_warmup_complete(self, ctx) -> None:
         ctx.set_state("warm", True)
-        ctx.log("warm-up complete")
+        prior = ctx.get_state("started", default=False)
+        ctx.log(f"warm-up complete (prior={prior})")
 
     def on_bar(self, ctx, bar) -> None:
         handle = ctx.order(
