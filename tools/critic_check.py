@@ -200,7 +200,8 @@ SAFETY_PATH_RE = re.compile(
     r"|workload[_-]?priority|host[_-]?memory[_-]?safety"
     r"|deployment[_-]?version|source[_-]?hash"
     r"|strategy[_-]?api[_-]?parity|paper[_-]?live[_-]?parity"
-    r"|trading[_-]?calendar|scheduler[_-]?contract)",
+    r"|trading[_-]?calendar|scheduler[_-]?contract"
+    r"|strategy[_-]?api[_-]?subscriptions|asset[_-]?class[_-]?guard)",
     re.IGNORECASE,
 )
 
