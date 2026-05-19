@@ -32,6 +32,13 @@ from strategy_api_scheduler_check import (
 from strategy_api_scheduler_check import (
     load_config as load_scheduler_config,
 )
+from strategy_api_subscriptions_check import (
+    StrategyApiSubscriptionsCheckError,
+    assert_strategy_api_subscriptions_static,
+)
+from strategy_api_subscriptions_check import (
+    load_config as load_subscriptions_config,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = ROOT / "python"
@@ -129,6 +136,10 @@ def check_sdk_002(api: object) -> str:
 
 
 def check_sdk_003(api: object) -> str:
+    # Defensive backstop: keep the original four static assertions even
+    # after delegation, so this script remains useful when run against a
+    # working tree where the dedicated subscriptions tool is missing or
+    # misconfigured (same pattern as check_sdk_001 / check_sdk_002).
     if {"EQUITY", "OPTION"} != {m.name for m in api.AssetClass}:
         fail("SDK-003: AssetClass must contain EQUITY and OPTION")
     cfg_fields = {f.name for f in dataclasses.fields(api.StrategyConfig)}
@@ -139,7 +150,19 @@ def check_sdk_003(api: object) -> str:
         fail("SDK-003: StrategyContext.subscribe must accept asset_class")
     if not issubclass(api.AssetClassViolation, api.StrategyAPIError):
         fail("SDK-003: AssetClassViolation must derive from StrategyAPIError")
-    return "SDK-003: AssetClass{EQUITY,OPTION}; subscribe(asset_class=...); AssetClassViolation"
+    # Delegate the full SYS-5 / SYS-64 single-tradable-class invariant to
+    # strategy_api_subscriptions_check (behavioural runtime exercise of
+    # assert_asset_class; required_exports list; Protocol-docstring tokens;
+    # required_request_default_asset_class).
+    try:
+        assert_strategy_api_subscriptions_static(load_subscriptions_config())
+    except StrategyApiSubscriptionsCheckError as error:
+        fail(f"SDK-003 subscriptions invariant: {error}")
+    return (
+        "SDK-003: AssetClass{EQUITY,OPTION}; subscribe(asset_class=...); "
+        "AssetClassViolation; SYS-5 / SYS-64 single-tradable-class invariant "
+        "enforced via strategy_api_subscriptions_check (assert_asset_class helper)"
+    )
 
 
 def check_sdk_004(api: object) -> str:

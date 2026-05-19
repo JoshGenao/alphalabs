@@ -39,6 +39,7 @@ from .api import (
     StrategyContext,
     TradingCalendar,
     WarmupNotComplete,
+    assert_asset_class,
 )
 from .calendar import UsEquityTradingCalendar
 from .scheduler import InMemoryScheduler
@@ -47,6 +48,7 @@ __all__ = [
     "ATR",
     "AssetClass",
     "AssetClassViolation",
+    "assert_asset_class",
     "Bar",
     "BarConsolidator",
     "BollingerBands",

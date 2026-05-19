@@ -263,6 +263,45 @@ class AssetClassViolation(StrategyAPIError):
     """
 
 
+def assert_asset_class(config: "StrategyConfig", request: "OrderRequest") -> None:
+    """Raise ``AssetClassViolation`` when ``request.asset_class`` is not the
+    strategy's configured tradable class.
+
+    Reference enforcement for ``SRS-SDK-003`` and SyRS ``SYS-5``. Any
+    concrete ``StrategyContext.order`` implementation — live IB execution or
+    internal paper simulation — must invoke this guard before routing the
+    order. The same surface is enforced identically in both modes per
+    ``SRS-SDK-001`` (``AC-14``). Subscriptions are not gated by this helper:
+    a strategy of either tradable class may subscribe to both asset classes
+    for analysis (``SRS-SDK-003`` AC, half A).
+
+    Args:
+        config: The strategy's container-time configuration.
+        request: The order parameters supplied by user code.
+
+    Raises:
+        AssetClassViolation: ``request.asset_class`` does not match
+            ``config.tradable_asset_class``. The message names the
+            strategy and the offending class for the structured-error
+            contract (``SyRS SYS-64``).
+
+    Example:
+        >>> cfg = StrategyConfig(strategy_id="s1", tradable_asset_class=AssetClass.EQUITY)
+        >>> req = OrderRequest("AAPL", 1, OrderSide.BUY, OrderType.MARKET,
+        ...                    asset_class=AssetClass.OPTION)
+        >>> assert_asset_class(cfg, req)
+        Traceback (most recent call last):
+        ...
+        atp_strategy.api.AssetClassViolation: strategy s1 configured for EQUITY cannot trade OPTION
+    """
+    if request.asset_class != config.tradable_asset_class:
+        raise AssetClassViolation(
+            f"strategy {config.strategy_id} configured for "
+            f"{config.tradable_asset_class.value} cannot trade "
+            f"{request.asset_class.value}"
+        )
+
+
 class WarmupNotComplete(StrategyAPIError):
     """Raised when user code touches data or orders before warm-up finishes.
 
@@ -641,7 +680,10 @@ class StrategyContext(Protocol):
         """Submit an order through the runtime-selected execution path.
 
         Raises ``AssetClassViolation`` if ``request.asset_class`` does not
-        match ``config.tradable_asset_class``.
+        match ``config.tradable_asset_class``. Concrete implementations
+        must enforce this by calling :func:`assert_asset_class` before
+        routing to live IB execution or internal paper simulation
+        (``SRS-SDK-003``).
         """
 
     def cancel(self, handle: OrderHandle) -> None:
@@ -705,6 +747,7 @@ __all__ = [
     "ATR",
     "AssetClass",
     "AssetClassViolation",
+    "assert_asset_class",
     "Bar",
     "BarConsolidator",
     "BollingerBands",

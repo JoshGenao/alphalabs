@@ -289,7 +289,8 @@
       "StrategyContext",
       "TradingCalendar",
       "UsEquityTradingCalendar",
-      "WarmupNotComplete"
+      "WarmupNotComplete",
+      "assert_asset_class"
     ]
   },
   "rest_api": {
@@ -2279,6 +2280,56 @@
       "Live wall-clock fire loop is owned by SRS-EXE-001 + SRS-ORCH-* (orchestrator dispatches scheduled callbacks; this module resolves fire times).",
       "Pre-market and after-hours market-data subscription routing is owned by SRS-MD-* (market-data subscription manager).",
       "CBOE Options is aliased to XNYS — exchange_calendars ships no dedicated CBOE Options calendar (XCBF is CBOE Futures with a 16:15 ET close, wrong asset class). NYSE / NASDAQ / CBOE-Options share the SIFMA U.S.-equity-class regular-session holiday calendar in practice for 2026; the alias is correct for the strategy SDK's equity-class option workflows. CBOE-specific option-only early closes (e.g., quad-witching schedule adjustments that diverge from NYSE) are deferred. Owner: future feature that ships maintained CBOE Options session tables. Update _EXCHANGE_HANDLES in python/atp_strategy/calendar.py and re-target the L7 documented-alias test when a real handle lands."
+    ]
+  },
+  "strategy_api_subscriptions_contract": {
+    "description": "Single tradable asset class invariant for SRS-SDK-003 (SyRS SYS-5 single-tradable-class + SyRS SYS-64 structured-error contract; StRS SN-1.07 / BG-1 / BG-5). A strategy configured for equities or options may subscribe to both asset classes for analysis; order submission against the non-configured class raises AssetClassViolation. Identical contract for live IB execution and internal paper simulation per SRS-SDK-001 AC-14.",
+    "required_helper_functions": [
+      "assert_asset_class"
+    ],
+    "required_subscribe_params": [
+      "self",
+      "symbol",
+      "asset_class"
+    ],
+    "required_subscribe_default_asset_class": "EQUITY",
+    "required_order_protocol_docstring_tokens": [
+      "AssetClassViolation",
+      "assert_asset_class"
+    ],
+    "required_config_fields": [
+      "strategy_id",
+      "tradable_asset_class"
+    ],
+    "required_request_fields": [
+      "symbol",
+      "asset_class"
+    ],
+    "required_request_default_asset_class": "EQUITY",
+    "required_asset_class_members": [
+      "EQUITY",
+      "OPTION"
+    ],
+    "required_exports": [
+      "AssetClass",
+      "AssetClassViolation",
+      "OrderRequest",
+      "OrderSide",
+      "OrderType",
+      "StrategyAPIError",
+      "StrategyConfig",
+      "StrategyContext",
+      "assert_asset_class"
+    ],
+    "ac_traces": [
+      "SRS-SDK-003",
+      "SYS-5",
+      "SYS-64",
+      "AC-14"
+    ],
+    "deferred": [
+      "MARKET_DATA_STALE and SUBSCRIPTION_LIMIT_REACHED structured-error types (per SyRS SYS-64) are owned by SRS-MD-002 (market-data line-limit enforcement) and SRS-MD-004 (stale-data order blocking); the SDK surface here exposes the asset-class guard only.",
+      "Live IB and internal paper simulation StrategyContext implementations are owned by SRS-EXE-001 / SRS-SIM-001 — they must call assert_asset_class before routing the order. The L7 domain test for SRS-SDK-003 ships a reference _RefStrategyContext that exercises this contract; production drivers re-use the SDK helper rather than reimplementing the comparison."
     ]
   }
 }

@@ -231,6 +231,13 @@ if ! python3 tools/strategy_api_scheduler_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running Python Strategy API subscriptions contract check..."
+if ! python3 tools/strategy_api_subscriptions_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Strategy API subscriptions contract check failed; run python3 tools/strategy_api_subscriptions_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running deployment configuration check..."
 if ! python3 tools/deployment_check.py >/dev/null; then
   echo "✗ Environment failed"

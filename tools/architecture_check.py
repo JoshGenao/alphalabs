@@ -60,6 +60,10 @@ from strategy_api_scheduler_check import (
     StrategyApiSchedulerCheckError,
     assert_strategy_api_scheduler_static,
 )
+from strategy_api_subscriptions_check import (
+    StrategyApiSubscriptionsCheckError,
+    assert_strategy_api_subscriptions_static,
+)
 from subscription_limit_check import (
     SubscriptionLimitCheckError,
     assert_subscription_limit_static,
@@ -563,6 +567,26 @@ def assert_strategy_api_scheduler(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_strategy_api_subscriptions(config: dict) -> list[str]:
+    block = config.get("strategy_api_subscriptions_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_strategy_api_subscriptions_static(config, ROOT)
+    summary = (
+        f"python/atp_strategy/ enforces SRS-SDK-003 single tradable asset "
+        f"class invariant: AssetClass{{{', '.join(block['required_asset_class_members'])}}} "
+        f"enum, StrategyConfig.tradable_asset_class required (no default), "
+        f"OrderRequest.asset_class default = "
+        f"AssetClass.{block['required_request_default_asset_class']}, "
+        f"StrategyContext.subscribe(asset_class=...) for both-class "
+        f"analysis subscriptions, shipped {', '.join(block['required_helper_functions'])} "
+        f"guard raises AssetClassViolation on mismatched orders "
+        "(SRS-SDK-003, SyRS SYS-5 / SYS-64)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -661,6 +685,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_strategy_api_scheduler(config))
     except StrategyApiSchedulerCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_strategy_api_subscriptions(config))
+    except StrategyApiSubscriptionsCheckError as error:
         fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:
