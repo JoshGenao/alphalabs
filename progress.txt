@@ -1,3 +1,277 @@
+=== SESSION 25 ===
+Date: 2026-05-18
+Feature completed: SRS-SDK-002 — trading-calendar-aware scheduling
+primitives. The Python Strategy SDK now ships real NYSE / NASDAQ /
+CBOE-aliased calendar resolution backed by exchange_calendars: NYSE
+2026 holidays and early closes, DST spring-forward (2026-03-08) and
+fall-back (2026-11-01) wall-clock preservation, 04:00–20:00 ET pre-
+market and after-hours session boundaries, and a concrete
+InMemoryScheduler resolving the four Scheduler Protocol methods
+(at_market_open, at_market_close, every_n_minutes, cron) against the
+calendar. Calendar horizon pinned to [2000-01-01, 2035-12-31] for
+date-deterministic resolution; cron preserves wall-clock across DST
+by localizing via pytz internally; cron registration uses a fixed
+sentinel (no host-clock read); every_n_minutes snaps post-close
+candidates to the next session open; offset and cron candidates are
+validated against the [04:00, 20:00] ET window; cross-scheduler
+handles are rejected by scheduler-identity check. NotATradingSession
+and CalendarHorizonExceeded surface programming errors / stale-data
+conditions cleanly. SyRS AC: SYS-6 + SYS-50 + SYS-51.
+Status: 96 remaining features
+
+What I did:
+- Carryover audit at session start: SESSION 24's "Next P1 by the
+  lowest-ID rule within the SRS-SDK chain: SRS-SDK-002" was sound.
+  Independent re-verification of ERR-7 / ERR-8 / ERR-9 / SRS-API-001
+  (also P1, alphabetically lower) confirmed they remain blocked on
+  prerequisite subsystems that do not yet exist (Reservoir/Hot-Swap,
+  kill-switch dispatcher + SMS/email, startup-readiness state machine,
+  dashboard UI + HTTP/WS server). Per [[feedback-scope-honesty]] those
+  are surfaced as deferred-because-blocked rather than promoted.
+  Plan refined via /Users/joshgenao/.claude/plans/coding-agent-prompt
+  -zippy-dragonfly.md; user confirmed scope and chose exchange_calendars
+  + croniter as the library path per SRS:558 ("Trading calendar library
+  or maintained calendar data — either is acceptable").
+
+- Prep commit (d389b56): extended SAFETY_PATH_RE in
+  `tools/critic_check.py` to add `trading[_-]?calendar` and
+  `scheduler[_-]?contract` tokens. Mirrors the SESSION 16-24 per-
+  feature prep precedent (88d1f53 / ab5314d / 764bd76 / c488029 /
+  7064c49 / 24391a0 / ff10ef0 / 8143ac5).
+
+- Feat commit (b0eaece, +2428 / -24, 15 files):
+  - Added `python/atp_strategy/calendar.py` (~220 lines):
+    UsEquityTradingCalendar(frozen-slot dataclass) implementing
+    TradingCalendar Protocol. for_exchange("NYSE" | "NASDAQ" | "CBOE")
+    factory; CBOE aliased to XNYS (see Override below);
+    `_HORIZON_START="2000-01-01"`, `_HORIZON_END="2035-12-31"` pinned via
+    `exchange_calendars.get_calendar(iso, start=, end=)`; is_session
+    runs SDK-local `_ensure_within_horizon` BEFORE delegating to the
+    lib (defense-in-depth); session_open / session_close /
+    premarket_open / afterhours_close raise NotATradingSession on
+    non-session dates; next_session walks up to 14 days forward.
+  - Added `python/atp_strategy/scheduler.py` (~370 lines):
+    InMemoryScheduler(dataclass) implementing the four Scheduler
+    Protocol methods. _CronAdapter wraps croniter — localizes base via
+    pytz so wall-clock time is preserved across DST (zoneinfo + croniter
+    drifts), then converts results back to zoneinfo on return. cron()
+    validates syntax against a fixed sentinel `2000-01-01T12:00`
+    (no datetime.now() — deterministic-time rule). next_fire_time
+    rejects cross-scheduler handles by checking handle.scheduler is
+    self. _resolve_market_open/close validate offset-derived fire is
+    inside [premarket_open, afterhours_close] of the same session.
+    _resolve_every_n snaps post-close candidates to next session open.
+    _resolve_cron walks until elapsed-time deadline
+    (_CRON_LOOKAHEAD_DAYS = 380; covers monthly crons with leap-year
+    slack; yearly crons explicitly out of scope). All paths catch the
+    lib's CalendarHorizonExceeded and convert to clear ValueError.
+  - Modified `python/atp_strategy/api.py`: added CalendarHorizonExceeded
+    and NotATradingSession (both subclass StrategyAPIError); extended
+    TradingCalendar Protocol with premarket_open + afterhours_close +
+    next_session; tightened StaticTradingCalendar to refuse fabricated
+    boundary times on closed days (Protocol uniformity with
+    UsEquityTradingCalendar).
+  - Modified `python/atp_strategy/__init__.py`: re-exported
+    UsEquityTradingCalendar, InMemoryScheduler, CalendarHorizonExceeded,
+    NotATradingSession; added to __all__.
+  - Modified `architecture/runtime_services.json`: added
+    strategy_api_scheduler_contract block (required_scheduler_methods,
+    required_calendar_methods, required_exchange_handles,
+    canonical_holidays_2026, canonical_early_closes_2026,
+    dst_transition_dates_2026, calendar_horizon_start /
+    calendar_horizon_end pinning constants, deferred[] documenting the
+    CBOE alias + live-fire-loop ownership + pre/after-hours subscription
+    routing ownership). Extended strategy_api.required_exports with
+    CalendarHorizonExceeded, InMemoryScheduler, NotATradingSession,
+    UsEquityTradingCalendar.
+  - Added `tools/strategy_api_scheduler_check.py` (~320 lines): six AST
+    + inspect contract checks (Scheduler Protocol methods, TradingCalendar
+    Protocol methods + name attribute, concrete class exports, exchange
+    handles, tz-aware ET session times, pinned-horizon assertion). CLI
+    prints `SRS-SDK-002 PASS` plus six evidence bullets. Exposes
+    `assert_strategy_api_scheduler_static` for the L3 mutation rig.
+  - Modified `tools/strategy_api_check.py::check_sdk_002` to delegate
+    to assert_strategy_api_scheduler_static (defensive backstop on the
+    existing Scheduler/Calendar Protocol scan retained).
+  - Modified `tools/architecture_check.py`: imported
+    `assert_strategy_api_scheduler_static`; added
+    `assert_strategy_api_scheduler` wrapper; called it from the main
+    aggregator after assert_strategy_api_parity.
+  - Modified `init.sh`: added scheduler contract-check step between
+    parity-check and deployment-configuration steps.
+  - Modified `.github/workflows/ci.yml:66`: appended
+    `strategy_api_scheduler` to the for-loop contract list.
+  - Added `requirements.txt` runtime deps: `exchange_calendars>=4.5,<5`
+    and `croniter>=2.0,<3` (pulls pandas + pytz transitively per SRS:558
+    library-path).
+  - Tests landed (65 new across L1 / L3 / L7):
+    - tests/unit/test_trading_calendar.py: 19 cases — exchange-factory,
+      session/holiday lookup, session-times (regular + early close),
+      premarket/afterhours, boundary-refusal on weekend + holiday,
+      horizon guard (far-future + dependency-raise-independence),
+      horizon-pin matches contract block, StaticTradingCalendar
+      Protocol coverage (premarket/afterhours, weekend refusal),
+      next_session skips weekend + holiday.
+    - tests/unit/test_scheduler.py: 11 cases — Static-calendar
+      compatibility, cross-scheduler handle rejection, idempotent
+      cancel, next_fire_time after cancel, n<=0 / malformed cron /
+      naive-after rejection, every_n_minutes advance / next-session
+      jump / only_during_session=False raw-step.
+    - tests/test_strategy_api_scheduler_contract.py: 11 cases —
+      cancelled handle returns None, unresolvable cron raises ValueError,
+      offset-out-of-window raises ValueError, cron registration source
+      contains no datetime.now reference, positive subprocess test with
+      9 evidence-needles, six mutation classes (Scheduler / TradingCalendar
+      Protocol drops, concrete class export drops, CBOE handle removal,
+      naive session_open, premarket_open Protocol drop).
+    - tests/domain/test_trading_calendar_scheduler.py: 22 cases marked
+      pytest.mark.domain + pytest.mark.safety — CBOE alias documented
+      override locked, all 10 canonical 2026 holidays non-session on
+      all three exchange names, both 2026 early-closes (Nov 27 / Dec
+      24) close at 13:00 ET, DST spring-forward / fall-back UTC-offset
+      transitions, cron skips MLK Monday, at_market_close fires at
+      13:00 ET on early-close days, at_market_open skips MLK weekend
+      to Tue 2026-01-20, every_n_minutes(15) skips MLK Monday, daily
+      every_n_minutes(1440) after Fri 16:01 ET snaps to Tue 09:30 ET,
+      intraday every_n_minutes(15) at 15:46 jumps to next session,
+      cron("0 9 * * 1-5") across spring-forward fires at 09:00 EDT on
+      Mon 2026-03-09, same across fall-back fires at 09:00 EST on Mon
+      2026-11-02, minute-cron survives MLK long weekend (Fri 20:01 →
+      Tue 04:00), monthly cron "0 9 1 * *" walks past Feb 1 + Mar 1
+      2026 Sundays to Apr 1, yearly crons outside the 380-day lookahead
+      raise ValueError, market_open/close offsets that escape the
+      pre/after-hours window raise ValueError (and boundary-equal
+      offsets are allowed), cron at 02:00 ET / 21:00 ET raise
+      ValueError, cron at 04:30 ET / 19:00 ET fire inside the window.
+
+- Chore commit (this commit): flipped feature_list.json passes:true
+  for SRS-SDK-002; appended this SESSION 25 entry.
+
+Verification:
+- ./init.sh -> `→ Running Python Strategy API scheduler contract check...`
+  appears and PASSes; environment reaches `✓ Environment ready`.
+- python3 tools/strategy_api_scheduler_check.py -> SRS-SDK-002 PASS
+  with 6 evidence bullets.
+- python3 tools/strategy_api_check.py -> API-1 PASS (SDK-002 evidence
+  line now names SYS-6 / SYS-50 / SYS-51 explicitly and delegates to
+  strategy_api_scheduler_check).
+- python3 tools/architecture_check.py -> top-level PASS with new
+  scheduler-contract evidence appended after parity evidence.
+- .venv/bin/python -m pytest tests/ -q -> 572 passed, 4 skipped, 118
+  subtests (was 504 / 4 / 118 in SESSION 24; +68 net = 65 new feat tests
+  + small L3 mutation additions). Skip list unchanged:
+  deterministic_replay, kill_switch_latency, money_reconciliation,
+  single_live_invariant.
+- Step-by-step walkthrough of `feature_list.json` `SRS-SDK-002.steps[]`:
+  Step 1 = `./init.sh` reports Environment ready;
+  Step 2 = exercised via the new tools/strategy_api_scheduler_check.py
+    CLI plus the existing tools/strategy_api_check.py API-1 script and
+    the L7 domain test against real UsEquityTradingCalendar /
+    InMemoryScheduler;
+  Step 3 = each AC bullet traced into the new check's evidence strings
+    AND the L7 test cases (cron + at_market_{open,close} +
+    every_n_minutes for SYS-6; holidays / early closes / pre-market /
+    after-hours / US-Eastern + DST for SYS-50; cron + every_n_minutes
+    + at_market_close on early-close + DST cron preservation for SYS-51);
+  Step 4 = this SESSION 25 entry is the recorded evidence.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged) on the prep commit:
+    APPROVE — 0 findings.
+  deterministic (tools/critic_check.py --staged) on the feat commit:
+    APPROVE — 0 findings. SAFETY_PATH_RE matches via the
+    `trading[_-]?calendar` / `scheduler[_-]?contract` tokens (prep
+    commit) plus inherited `strategy[_-]?api[_-]?parity`; the same
+    feat diff includes tests/domain/test_trading_calendar_scheduler.py
+    closing the safety-paired-test rule.
+  deterministic (tools/critic_check.py --staged) on the chore-mark-
+    passes diff: APPROVE — 0 findings (touches feature_list.json +
+    progress.txt only; no safety-path edits).
+  judgment (/codex:adversarial-review): 14 rounds. Rounds 1-12 found 14
+    distinct HIGH defects (boundary fabrication, cron-window
+    enforcement, premarket/afterhours Protocol gap, offset-window
+    validation, horizon-guard defense-in-depth ordering, candidate-
+    count vs elapsed-time cron lookahead, cron DST drift via zoneinfo,
+    public-contract docstring drift, host-date-rolling exchange_calendars
+    horizon, sparse monthly cron 45-day rejection, post-close
+    every_n_minutes stuck-advance, registration clock determinism,
+    handle_id cross-scheduler collision, Static calendar boundary
+    fabrication, next_session Protocol gap) — all fixed and locked
+    with L1/L3/L7 regression tests in the same feat commit. Rounds
+    13-14 surfaced the CBOE alias; user-authorized documented override
+    applies, locked by
+    tests/domain/test_trading_calendar_scheduler.py
+    ::CboeAliasDocumentedOverrideTest.
+
+Override (CBOE alias):
+- exchange_calendars ships no dedicated CBOE Options calendar
+  (XCBO unavailable; XCBF is CBOE Futures with 16:15 ET close + Chicago
+  tz — wrong asset class). NYSE / NASDAQ / CBOE-Options share the SIFMA
+  U.S.-equity-class regular-session holiday calendar in practice for
+  2026; the alias is correct for the strategy SDK's equity-class option
+  workflows. CBOE-specific option-only early closes are deferred.
+  Locked by CboeAliasDocumentedOverrideTest which asserts both the
+  _EXCHANGE_HANDLES["CBOE"] = "XNYS" mapping AND the deferred[] string
+  mentioning the alias rationale, so any silent regression trips the
+  test. _EXCHANGE_HANDLES is the single point of update if a real
+  handle lands. Owner: future feature shipping maintained CBOE Options
+  session tables.
+
+Pre-existing ruff issues:
+- ruff check . on the whole repo reports 5 issues in pre-existing files
+  outside SRS-SDK-002 scope: tests/domain/test_strategy_api_parity.py
+  (B905 zip-without-strict + I001 import order), tests/test_orchestrator
+  _deployment_version_contract.py (I001), tools/historical_data_check.py
+  (I001), tools/strategy_api_parity_check.py (I001). Verified these
+  existed at a7f78c6 (the commit before this feat) — 7 errors there,
+  5 after this feat (this feat's edits to adjacent files happen to
+  reduce some pre-existing failures incidentally). User-authorized
+  deferral to a separate chore(ruff) commit; this feat commit's diff
+  (all Python files within scope) passes both ruff check and
+  ruff format --check.
+
+Known issues / notes for next agent:
+- Pre-existing ruff issues (5 errors in 4 files; full list above).
+  Recommend a focused chore(ruff) commit that runs `ruff check . --fix`
+  on those 4 files plus the manual `strict=True` fix on
+  tests/domain/test_strategy_api_parity.py:277 (1-line). Should land
+  alongside whatever the next P1 needs to touch (or as a standalone
+  cleanup). The 4 files are all in safety paths but the changes are
+  cosmetic (import-order); the deterministic critic should approve
+  without paired tests.
+- ERR-7 / ERR-8 / ERR-9 / SRS-API-001 remain failing P1 but are blocked
+  on subsystems not yet built (Reservoir/Hot-Swap, kill-switch
+  dispatcher + SMS/email, startup-readiness state machine, dashboard
+  UI + HTTP/WS server). Independent Phase-1 audit this session
+  confirmed each: API contract routes are declared but no HTTP server
+  or backend handlers exist; per AGENTS.md "the orchestrator does not
+  contain pre-trade state logic" and "No SMS/email notification
+  dispatcher module exists."
+- CBOE alias deferral above. The XNYS-aliased CBOE calendar is correct
+  for U.S.-equity-class option strategies in 2026 but does not capture
+  CBOE-specific option-only early closes if/when they diverge from the
+  NYSE schedule. Owner: future feature shipping maintained CBOE Options
+  session tables. _EXCHANGE_HANDLES is the single point of update.
+- Calendar horizon pin (2000-2035) is wide but finite. Widen
+  _HORIZON_START / _HORIZON_END together when SRS-BT-* needs older
+  history or live scheduling exceeds 2035. CalendarHorizonExceeded
+  surfaces this cleanly when hit.
+- Cron lookahead horizon is 380 days. Yearly crons (`0 9 1 1 *` from
+  mid-year) raise ValueError because Jan 1 2027 is a holiday and Jan 1
+  2028 is a Saturday, pushing the first valid candidate past the
+  bound. Trading-platform crons are intraday-to-monthly per SyRS SYS-6;
+  yearly-or-larger sparsity is out of scope.
+- The cron resolver localizes the base via pytz internally to preserve
+  wall-clock across DST. pytz is a transitive dependency of
+  exchange_calendars — no new direct dep was added.
+- Next P1 by the lowest-ID rule within the SRS-SDK chain: SRS-SDK-003
+  (single-asset-class enforcement — subscribe accepts both equity +
+  option, order submission for the unconfigured class raises
+  AssetClassViolation). Foundation: api.py::AssetClass StrEnum,
+  AssetClassViolation exception, and StrategyConfig.tradable_asset_class
+  already exist; the actual order-submission enforcement is what's
+  missing.
+
 === SESSION 24 ===
 Date: 2026-05-17
 Feature completed: SRS-SDK-001 — Python Strategy API parity invariant

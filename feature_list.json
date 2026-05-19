@@ -176,7 +176,7 @@
       "Step 3: Verify acceptance criteria: Strategies can schedule actions at market open, market close, every N minutes, and cron-like expressions; NYSE, NASDAQ, and CBOE holidays, early closes, pre-market and after-hours session boundaries, US Eastern time zone behavior, and daylight saving transitions resolve according to the trading calendar.",
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {
