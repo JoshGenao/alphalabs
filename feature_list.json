@@ -191,7 +191,7 @@
       "Step 3: Verify acceptance criteria: A strategy configured for equities or options can subscribe to both asset classes for analysis; order submission is rejected when the strategy attempts to trade an unconfigured asset class.",
       "Step 4: Record objective evidence from contract test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {

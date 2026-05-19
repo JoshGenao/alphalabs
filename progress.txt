@@ -1,3 +1,273 @@
+=== SESSION 26 ===
+Date: 2026-05-18
+Feature completed: SRS-SDK-003 — enforce single tradable asset class
+invariant. The Python Strategy SDK now ships a public
+``assert_asset_class(config, request)`` helper (raises
+``AssetClassViolation`` when ``request.asset_class !=
+config.tradable_asset_class``, with a message naming the strategy_id
+and offending class for the SyRS SYS-64 structured-error contract).
+``StrategyContext.order``'s Protocol docstring publicly commits to
+the guard so live IB execution and internal paper simulation
+drivers re-use the shipped helper rather than reimplementing the
+comparison (AC-14 parity). Subscriptions remain ungated:
+``StrategyContext.subscribe(symbol, asset_class=AssetClass.EQUITY)``
+accepts either ``EQUITY`` or ``OPTION`` for both tradable classes per
+SRS-SDK-003 AC half-A.
+Status: 95 remaining features
+
+What I did:
+- Carryover audit at session start: SESSION 25's "ERR-7 / ERR-8 /
+  ERR-9 / SRS-API-001 remain blocked on prerequisite subsystems
+  (Reservoir/Hot-Swap, kill-switch dispatcher + SMS/email, startup-
+  readiness state machine, dashboard UI + HTTP/WS server)" was
+  re-verified. ERR-7 traces SRS-RESV-004 (Hot-Swap demotion) and
+  ERR-8 traces SRS-SAFE-002 (kill-switch liquidation timeout +
+  email/SMS) — neither has a paired runtime module; ``crates/atp-
+  notification/src/lib.rs`` exists but no SMS/email dispatcher
+  surface is wired through orchestrator. Continuing the SRS-SDK
+  chain to the next lower-ID failing feature lands on SRS-SDK-003.
+  Per [[feedback-scope-honesty]] those blocked-on-prerequisite IDs
+  stay deferred rather than promoted; per [[project-workflow]] the
+  next pick is the per-feature 3-commit cadence on SDK-003.
+  Plan refined via /Users/joshgenao/.claude/plans/coding-agent-
+  prompt-mossy-pebble.md; user confirmed the "full SDK-002-style
+  mirror" scope and the "defer ruff cleanup" carry-forward.
+
+- Prep commit (b194b9e): extended SAFETY_PATH_RE in
+  ``tools/critic_check.py`` to add ``strategy[_-]?api[_-]?subscriptions``
+  and ``asset[_-]?class[_-]?guard`` tokens. Mirrors the SESSION
+  16-25 per-feature prep precedent (88d1f53 / ab5314d / 764bd76 /
+  c488029 / d389b56).
+
+- Feat commit (718642b, +1265 / -4, 11 files):
+  - python/atp_strategy/api.py (~+45):
+    ``assert_asset_class(config, request) -> None`` shipped as a
+    public free function. Raises ``AssetClassViolation`` with a
+    message naming ``config.strategy_id`` plus
+    ``config.tradable_asset_class.value`` and
+    ``request.asset_class.value`` when the classes disagree. The
+    helper is the reference enforcement for SRS-SDK-003 / SyRS
+    SYS-5; ``StrategyContext.order`` Protocol docstring updated to
+    point at it. ``__all__`` extended.
+  - python/atp_strategy/__init__.py: re-export
+    ``assert_asset_class``; added to ``__all__``.
+  - tools/strategy_api_subscriptions_check.py (~+390 lines): new
+    dedicated contract check mirroring tools/strategy_api_scheduler
+    _check.py. ``load_config`` + ``contract_block`` +
+    ``_load_sdk_module(root)`` (reload tmpdir copies for the L3
+    mutation rig). Seven evidence collectors:
+      1. AssetClass enum members are exactly {EQUITY, OPTION}.
+      2. StrategyConfig.tradable_asset_class field is required (no
+         default) — operators must declare each container's class.
+      3. OrderRequest.asset_class default is AssetClass.EQUITY,
+         enforced via ``type(default) is api.AssetClass`` identity
+         (StrEnum subclasses str so ``"EQUITY" == AssetClass.EQUITY``
+         would silently pass an equality check).
+      4. StrategyContext.subscribe signature is exactly
+         ``(self, symbol, asset_class)`` with
+         ``asset_class: AssetClass = AssetClass.EQUITY`` and the
+         docstring affirms both-class analysis subscriptions.
+      5. StrategyContext.order docstring names
+         ``AssetClassViolation`` and ``assert_asset_class``.
+      6. Behavioural runtime exercise: helper is silent on matched
+         EQUITY/EQUITY + OPTION/OPTION and raises with the expected
+         message content on mismatched EQUITY/OPTION + OPTION/EQUITY.
+         This is what catches "silenced body" and "inverted ==/!="
+         mutation classes that pure-static scans miss.
+      7. AssetClassViolation is exported and subclasses
+         StrategyAPIError per SyRS SYS-64.
+    Exposes ``assert_strategy_api_subscriptions_static(config, *,
+    root=)`` for the L3 mutation rig. CLI prints
+    ``SRS-SDK-003 PASS`` + 7 bullet evidence lines.
+  - tools/strategy_api_check.py::check_sdk_003 delegates to
+    ``assert_strategy_api_subscriptions_static`` (defensive backstop
+    of the four original static assertions retained — mirrors the
+    SDK-001 / SDK-002 backstop precedent).
+  - tools/architecture_check.py: imported
+    ``assert_strategy_api_subscriptions_static``; added
+    ``assert_strategy_api_subscriptions()`` wrapper; called it from
+    ``run_checks()`` right after the scheduler hook.
+  - init.sh: ``→ Running Python Strategy API subscriptions contract
+    check...`` inserted between the scheduler step and the
+    deployment-configuration step.
+  - .github/workflows/ci.yml:66: appended
+    ``strategy_api_subscriptions`` to the contract-check for-loop.
+  - architecture/runtime_services.json: new
+    ``strategy_api_subscriptions_contract`` block (~+50 lines) at
+    the same nesting as the parity / scheduler contracts.
+    required_helper_functions, required_subscribe_params,
+    required_subscribe_default_asset_class,
+    required_order_protocol_docstring_tokens,
+    required_config_fields, required_request_fields,
+    required_request_default_asset_class,
+    required_asset_class_members, required_exports, ac_traces, plus
+    a deferred[] note. Extended ``strategy_api.required_exports``
+    with ``assert_asset_class``.
+  - Tests landed (37 new across L1 / L3 / L7):
+    - tests/unit/test_asset_class_guard.py (L1, 8 cases): re-export
+      identity (package + .api module via module-level imports —
+      the L3 mutation rig leaves
+      ``sys.modules['atp_strategy']`` pointing at a tmpdir tearDown
+      copy, so fresh imports inside test bodies would shadow the
+      real package), two-positional signature, silent on matched
+      EQUITY/EQUITY + OPTION/OPTION, raises on mismatched
+      EQUITY/OPTION + OPTION/EQUITY, violation message contains
+      strategy_id and both class names, AssetClassViolation
+      subclasses StrategyAPIError.
+    - tests/test_strategy_api_subscriptions_contract.py (L3, 16
+      cases): ``_MutationRig`` copies python/atp_strategy/ to a
+      tmpdir and reloads. Positive subprocess case asserts
+      ``SRS-SDK-003 PASS`` and 11 evidence needles. Mutation
+      classes: drop AssetClass.OPTION, drop AssetClass.EQUITY,
+      drop StrategyConfig.tradable_asset_class field, give that
+      field a default, drop OrderRequest.asset_class field, flip
+      that field's default, drop the asset_class kwarg from
+      subscribe, change subscribe default to literal ``"EQUITY"``,
+      drop the both-class analysis docstring, drop the
+      AssetClassViolation reference from order docstring, rename
+      assert_asset_class out, silence the helper body to
+      ``return None``, invert the != to ==, strip strategy_id from
+      the violation message, remove assert_asset_class from the
+      package __init__'s import list.
+    - tests/domain/test_asset_class_invariant.py (L7, 13 cases,
+      pytest.mark.domain + pytest.mark.safety): a
+      ``_RefStrategyContext`` reference impl whose ``order()``
+      delegates to the SDK-shipped helper (no shadow comparison).
+      SubscriptionHalfATest (4 cases) covers both AC half-A
+      permutations: EQUITY-tradable subscribes to EQUITY data;
+      EQUITY-tradable subscribes to OPTION analysis;
+      OPTION-tradable subscribes to EQUITY analysis;
+      OPTION-tradable subscribes to OPTION data. Routing none of
+      these touches ``_route_order``. OrderRoutingHalfBTest (4
+      cases) covers both AC half-B permutations
+      (EQUITY-tradable blocks OPTION order; OPTION-tradable blocks
+      EQUITY order) plus the matched-class passthrough on each
+      side. GuardInvocationTest (2 cases) asserts the router is
+      unreached when the guard raises and that the reference impl
+      invokes the SDK helper (sentinel-patched). StructuredError
+      ContractTest (2 cases) locks the SyRS SYS-64 catch-via-
+      ``StrategyAPIError`` path and the message-content contract
+      ("alpha-momentum-7", "OPTION", "EQUITY" all appear).
+
+- Chore commit (this commit): flipped feature_list.json passes:true
+  for SRS-SDK-003; appended this SESSION 26 entry.
+
+Verification:
+- ./init.sh -> ``→ Running Python Strategy API subscriptions
+  contract check...`` appears between the scheduler step and the
+  deployment-configuration step; reaches ``✓ Environment ready``.
+- python3 tools/strategy_api_subscriptions_check.py ->
+  ``SRS-SDK-003 PASS`` with 7 evidence bullets.
+- python3 tools/strategy_api_check.py -> ``API-1 PASS`` with the
+  SDK-003 evidence line now naming the delegated SYS-5 / SYS-64
+  invariant.
+- python3 tools/architecture_check.py -> top-level PASS with the
+  subscriptions-contract evidence appended after the scheduler
+  block.
+- .venv/bin/python -m pytest tests/ -q -> 608 passed, 4 skipped,
+  118 subtests (was 572 / 4 / 118 in SESSION 25; +36 net). Skip
+  list unchanged: deterministic_replay, kill_switch_latency,
+  money_reconciliation, single_live_invariant.
+- .venv/bin/ruff check + .venv/bin/ruff format --check on all
+  in-scope files: clean.
+- Step-by-step walkthrough of ``feature_list.json``
+  ``SRS-SDK-003.steps[]``:
+  Step 1 = ``./init.sh`` reports Environment ready;
+  Step 2 = exercised via tools/strategy_api_subscriptions_check.py
+    CLI + tools/strategy_api_check.py API-1 path + the L7 domain
+    test exercising both AC halves against the reference impl;
+  Step 3 = AC half-A traced into SubscriptionHalfATest's 4 cases
+    plus the subscribe-Protocol contract-check evidence; AC
+    half-B traced into OrderRoutingHalfBTest's 4 cases plus the
+    behavioural runtime exercise inside
+    check_assert_asset_class_helper;
+  Step 4 = this SESSION 26 entry is the recorded evidence.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged) on the prep
+  commit (b194b9e): APPROVE — 0 findings.
+  deterministic (tools/critic_check.py --staged) on the feat
+  commit (718642b): APPROVE — 0 findings. SAFETY_PATH_RE matches
+  via the ``strategy[_-]?api[_-]?subscriptions`` token added in
+  the prep commit; the same feat diff includes
+  tests/domain/test_asset_class_invariant.py to satisfy the
+  safety-paired-test rule.
+  deterministic (tools/critic_check.py --staged) on the chore-
+  mark-passes diff: APPROVE — 0 findings (touches
+  feature_list.json + progress.txt only; no safety-path edits).
+  judgment (codex:rescue --review --focus-file
+  prompts/critic_prompt.md): APPROVE — 0 findings. Fresh Codex
+  context, codex-cli 0.130.0. Note for future sessions:
+  ``/codex:adversarial-review`` was not available as a separate
+  skill in this session's plugin set; codex:rescue's ``--review``
+  mode is the unified adversarial-review entry point in codex-cli
+  0.130.0 and emits the same JSON schema (verdict + findings).
+  [[feedback-codex-adversarial-review]] should be re-checked when
+  the next session loads — if the skill is restored, prefer the
+  named skill; otherwise codex:rescue --review with
+  prompts/critic_prompt.md as the focus file is the working
+  fallback that produces a same-schema verdict.
+
+Override:
+- None this session. Ruff debt deferral (see Known issues below)
+  is not an override; SESSION 25 already documented the deferral
+  rationale and this session did not touch any of the affected
+  files.
+
+Pre-existing ruff issues:
+- The 5 ruff errors in 4 files outside SDK-003 scope
+  (tests/domain/test_strategy_api_parity.py B905+I001,
+  tests/test_orchestrator_deployment_version_contract.py I001,
+  tools/historical_data_check.py I001,
+  tools/strategy_api_parity_check.py I001) continue to be
+  deferred per SESSION 25's user-authorized note. Verified at
+  session start: still 5 errors, still in the same 4 files; none
+  overlap this session's diff. Ruff on the in-scope diff
+  (python/atp_strategy/api.py, python/atp_strategy/__init__.py,
+  tools/strategy_api_subscriptions_check.py,
+  tools/strategy_api_check.py, tools/architecture_check.py,
+  tests/unit/test_asset_class_guard.py,
+  tests/test_strategy_api_subscriptions_contract.py,
+  tests/domain/test_asset_class_invariant.py) is clean after
+  ``ruff check --fix`` + ``ruff format`` applied to the 5
+  files ruff auto-fixed (import-order + reformat — no behavioural
+  change).
+
+Known issues / notes for next agent:
+- Pre-existing ruff debt (5 errors in 4 files; same list as
+  SESSION 25). Recommend the focused chore(ruff) commit
+  described in SESSION 25's note — should land alongside whatever
+  the next P1 needs to touch.
+- ERR-7 / ERR-8 / ERR-9 / SRS-API-001 / SRS-BT-001..010 /
+  SRS-DATA-001..021 / SRS-MD-001..007 / SRS-RESV-001..006 /
+  SRS-SAFE-001..003 / SRS-EXE-001..009 / SRS-SIM-001..004 remain
+  failing P1 but are blocked on subsystems not yet built
+  (Reservoir/Hot-Swap state machine, kill-switch dispatcher +
+  SMS/email delivery, startup-readiness state machine, dashboard
+  HTTP/WS server, IB live execution, internal simulation engine,
+  market-data subscription manager, backtest engine, Databento /
+  IB / Sharadar ingestion pipelines). Continuing the SRS-SDK
+  chain to the next lower-ID failing feature lands on SRS-SDK-004
+  (deliver order event callbacks to Python strategy code; SyRS
+  SYS-?? / verification = contract test). SDK-005 (warm-up)
+  passes already; check feature_list.json before picking.
+- L3 mutation rig sys.modules side effect: any future L1 test
+  that does a fresh ``import atp_strategy`` inside a test body
+  (not at module level) will silently get the last L3 tmpdir's
+  mutated module after teardown. The contract-check tool's
+  ``_load_sdk_module`` does not restore sys.modules on close.
+  Two safe patterns: (a) module-level imports only in L1 tests
+  (current convention; both test_scheduler.py and the new
+  test_asset_class_guard.py follow this); (b) harden
+  ``_load_sdk_module`` and the L3 _MutationRig to track and
+  restore the original sys.modules['atp_strategy'] entry on
+  close. (a) is the established repo convention; (b) is a
+  defensive hardening that could ship alongside whatever feature
+  next touches the scheduler or subscriptions check tools.
+- Plan file: /Users/joshgenao/.claude/plans/coding-agent-prompt-
+  mossy-pebble.md captures the SESSION 26 plan as approved by the
+  user. Safe to delete after this session.
+
 === SESSION 25 ===
 Date: 2026-05-18
 Feature completed: SRS-SDK-002 — trading-calendar-aware scheduling
