@@ -16,9 +16,11 @@ from .api import (
     Bar,
     BarConsolidator,
     BollingerBands,
+    CalendarHorizonExceeded,
     HistoricalData,
     Indicator,
     NormalizationMode,
+    NotATradingSession,
     OrderEvent,
     OrderEventType,
     OrderHandle,
@@ -38,6 +40,8 @@ from .api import (
     TradingCalendar,
     WarmupNotComplete,
 )
+from .calendar import UsEquityTradingCalendar
+from .scheduler import InMemoryScheduler
 
 __all__ = [
     "ATR",
@@ -46,11 +50,14 @@ __all__ = [
     "Bar",
     "BarConsolidator",
     "BollingerBands",
+    "CalendarHorizonExceeded",
     "EMA",
     "HistoricalData",
+    "InMemoryScheduler",
     "Indicator",
     "MACD",
     "NormalizationMode",
+    "NotATradingSession",
     "OrderEvent",
     "OrderEventType",
     "OrderHandle",
@@ -70,5 +77,6 @@ __all__ = [
     "StrategyConfig",
     "StrategyContext",
     "TradingCalendar",
+    "UsEquityTradingCalendar",
     "WarmupNotComplete",
 ]

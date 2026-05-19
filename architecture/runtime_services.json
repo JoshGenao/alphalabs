@@ -262,11 +262,14 @@
       "Bar",
       "BarConsolidator",
       "BollingerBands",
+      "CalendarHorizonExceeded",
       "EMA",
       "HistoricalData",
+      "InMemoryScheduler",
       "Indicator",
       "MACD",
       "NormalizationMode",
+      "NotATradingSession",
       "OrderEvent",
       "OrderEventType",
       "OrderHandle",
@@ -285,6 +288,7 @@
       "StrategyConfig",
       "StrategyContext",
       "TradingCalendar",
+      "UsEquityTradingCalendar",
       "WarmupNotComplete"
     ]
   },
@@ -2208,6 +2212,73 @@
           "SyRS:SYS-58"
         ]
       }
+    ]
+  },
+  "strategy_api_scheduler_contract": {
+    "description": "Trading-calendar-aware scheduling primitives for SRS-SDK-002 (SyRS SYS-6 / SYS-50 / SYS-51; StRS SN-1.09 / SN-1.19 / BG-1 / BG-7).",
+    "required_scheduler_methods": [
+      "at_market_open",
+      "at_market_close",
+      "every_n_minutes",
+      "cron"
+    ],
+    "required_calendar_methods": [
+      "is_session",
+      "session_open",
+      "session_close",
+      "is_early_close",
+      "premarket_open",
+      "afterhours_close",
+      "next_session"
+    ],
+    "required_calendar_attrs": [
+      "name"
+    ],
+    "required_exchange_handles": {
+      "NYSE": "XNYS",
+      "NASDAQ": "XNAS",
+      "CBOE": "XNYS"
+    },
+    "calendar_module": "python/atp_strategy/calendar.py",
+    "scheduler_module": "python/atp_strategy/scheduler.py",
+    "calendar_class": "UsEquityTradingCalendar",
+    "scheduler_class": "InMemoryScheduler",
+    "regular_session_open_et": "09:30",
+    "regular_session_close_et": "16:00",
+    "early_close_et": "13:00",
+    "premarket_open_et": "04:00",
+    "afterhours_close_et": "20:00",
+    "timezone": "America/New_York",
+    "canonical_holidays_2026": [
+      "2026-01-01",
+      "2026-01-19",
+      "2026-02-16",
+      "2026-04-03",
+      "2026-05-25",
+      "2026-06-19",
+      "2026-07-03",
+      "2026-09-07",
+      "2026-11-26",
+      "2026-12-25"
+    ],
+    "canonical_early_closes_2026": [
+      "2026-11-27",
+      "2026-12-24"
+    ],
+    "dst_transition_dates_2026": {
+      "spring_forward": "2026-03-08",
+      "fall_back": "2026-11-01",
+      "first_edt_session_after_spring": "2026-03-09",
+      "first_est_session_after_fall": "2026-11-02"
+    },
+    "underlying_library": "exchange_calendars",
+    "calendar_horizon_start": "2000-01-01",
+    "calendar_horizon_end": "2035-12-31",
+    "calendar_horizon_pin_rationale": "exchange_calendars.get_calendar without explicit start/end uses a host-date-rolling default window (~20y backward, ~1y forward). Pinning to a fixed [2000-01-01, 2035-12-31] window makes session-validity decisions date-deterministic across runs so the same historical or scheduled query does not silently flip from valid to CalendarHorizonExceeded as the wall clock advances. Widen the window when SRS-BT-* needs older data or live scheduling exceeds 2035.",
+    "deferred": [
+      "Live wall-clock fire loop is owned by SRS-EXE-001 + SRS-ORCH-* (orchestrator dispatches scheduled callbacks; this module resolves fire times).",
+      "Pre-market and after-hours market-data subscription routing is owned by SRS-MD-* (market-data subscription manager).",
+      "CBOE Options is aliased to XNYS — exchange_calendars ships no dedicated CBOE Options calendar (XCBF is CBOE Futures with a 16:15 ET close, wrong asset class). NYSE / NASDAQ / CBOE-Options share the SIFMA U.S.-equity-class regular-session holiday calendar in practice for 2026; the alias is correct for the strategy SDK's equity-class option workflows. CBOE-specific option-only early closes (e.g., quad-witching schedule adjustments that diverge from NYSE) are deferred. Owner: future feature that ships maintained CBOE Options session tables. Update _EXCHANGE_HANDLES in python/atp_strategy/calendar.py and re-target the L7 documented-alias test when a real handle lands."
     ]
   }
 }

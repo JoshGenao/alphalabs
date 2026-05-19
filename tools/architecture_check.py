@@ -13,10 +13,28 @@ from adapter_check import AdapterContractError, assert_adapter_contract_static
 from adapter_isolation_check import AdapterIsolationError, assert_adapter_isolation_static
 from config_check import ConfigCheckError, assert_configuration_static
 from connectivity_check import ConnectivityCheckError, assert_connectivity_static
+from data_provider_check import (
+    DataProviderContractError,
+    assert_data_provider_contract_static,
+)
+from dependency_boundary_check import DependencyBoundaryError, assert_dependency_direction
+from deployment_check import DeploymentCheckError, assert_deployment_static
+from error_handling_check import (
+    ErrorHandlingCheckError,
+    assert_error_handling_static,
+)
 from freshness_check import FreshnessCheckError, assert_freshness_static
+from historical_data_check import (
+    HistoricalDataCheckError,
+    assert_unified_historical_data_static,
+)
 from ingestion_validation_check import (
     IngestionValidationCheckError,
     assert_ingestion_validation_static,
+)
+from orchestrator_deployment_version_check import (
+    DeploymentVersionCheckError,
+    assert_orchestrator_deployment_version_static,
 )
 from orchestrator_lifecycle_check import (
     OrchestratorLifecycleCheckError,
@@ -30,35 +48,21 @@ from orchestrator_workload_priority_check import (
     WorkloadPriorityCheckError,
     assert_orchestrator_workload_priority_static,
 )
-from orchestrator_deployment_version_check import (
-    DeploymentVersionCheckError,
-    assert_orchestrator_deployment_version_static,
+from pacing_budget_check import (
+    PacingBudgetCheckError,
+    assert_pacing_budget_static,
 )
 from strategy_api_parity_check import (
     StrategyApiParityCheckError,
     assert_strategy_api_parity_static,
 )
-from pacing_budget_check import (
-    PacingBudgetCheckError,
-    assert_pacing_budget_static,
+from strategy_api_scheduler_check import (
+    StrategyApiSchedulerCheckError,
+    assert_strategy_api_scheduler_static,
 )
 from subscription_limit_check import (
     SubscriptionLimitCheckError,
     assert_subscription_limit_static,
-)
-from data_provider_check import (
-    DataProviderContractError,
-    assert_data_provider_contract_static,
-)
-from dependency_boundary_check import DependencyBoundaryError, assert_dependency_direction
-from deployment_check import DeploymentCheckError, assert_deployment_static
-from error_handling_check import (
-    ErrorHandlingCheckError,
-    assert_error_handling_static,
-)
-from historical_data_check import (
-    HistoricalDataCheckError,
-    assert_unified_historical_data_static,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -540,6 +544,25 @@ def assert_strategy_api_parity(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_strategy_api_scheduler(config: dict) -> list[str]:
+    block = config.get("strategy_api_scheduler_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_strategy_api_scheduler_static(config, ROOT)
+    summary = (
+        f"python/atp_strategy/ enforces SRS-SDK-002 scheduling: "
+        f"Scheduler Protocol with {len(block['required_scheduler_methods'])} "
+        f"required methods, TradingCalendar Protocol with "
+        f"{len(block['required_calendar_methods'])} required methods, "
+        f"concrete {block['calendar_class']} resolving "
+        f"{len(block['required_exchange_handles'])} exchange handles "
+        "(NYSE / NASDAQ / CBOE), tz-aware US-Eastern session times "
+        "(SRS-SDK-002, SyRS SYS-6 / SYS-50 / SYS-51)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -634,6 +657,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_strategy_api_parity(config))
     except StrategyApiParityCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_strategy_api_scheduler(config))
+    except StrategyApiSchedulerCheckError as error:
         fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:

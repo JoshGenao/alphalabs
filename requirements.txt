@@ -1,3 +1,13 @@
 # ATP Python runtime dependencies.
 # Add packages here as features land (e.g. pandas-ta for SRS-SDK-006,
 # ib_insync for the IB adapter, databento for DATA-1).
+
+# SRS-SDK-002 — trading-calendar-aware scheduling.
+# exchange_calendars supplies NYSE/NASDAQ holiday and early-close data;
+# croniter parses the cron-expression arm of the Scheduler Protocol.
+# Per SRS:558 the trading calendar can come from a library or maintained
+# data — this is the library path. Both are isolated inside
+# python/atp_strategy/calendar.py and python/atp_strategy/scheduler.py
+# so the SRS-SDK-001 parity AST scan does not see the vendor imports.
+exchange_calendars>=4.5,<5
+croniter>=2.0,<3

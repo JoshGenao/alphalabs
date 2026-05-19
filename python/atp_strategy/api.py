@@ -276,6 +276,38 @@ class WarmupNotComplete(StrategyAPIError):
     """
 
 
+class CalendarHorizonExceeded(StrategyAPIError):
+    """Raised when a calendar query targets a date past the bundled horizon.
+
+    See ``SRS-SDK-002`` / SyRS ``SYS-50``. The underlying calendar data ages
+    out; this signals that the platform needs a calendar refresh rather than
+    silently returning a fabricated open/close time.
+
+    Example:
+        >>> raise CalendarHorizonExceeded("2099-01-01 past bundled horizon")
+        Traceback (most recent call last):
+        ...
+        atp_strategy.api.CalendarHorizonExceeded: 2099-01-01 past bundled horizon
+    """
+
+
+class NotATradingSession(StrategyAPIError):
+    """Raised when a boundary query targets a holiday or weekend.
+
+    See ``SRS-SDK-002`` / SyRS ``SYS-50``. Concrete calendars must not
+    fabricate ``session_open`` / ``session_close`` / pre-market / after-
+    hours times on closed-market days — callers asking for a hypothetical
+    open on a holiday have made a programming error that would otherwise
+    silently leak into scheduled order submission.
+
+    Example:
+        >>> raise NotATradingSession("2026-01-19 is a holiday (MLK Day)")
+        Traceback (most recent call last):
+        ...
+        atp_strategy.api.NotATradingSession: 2026-01-19 is a holiday (MLK Day)
+    """
+
+
 # --------------------------------------------------------------------------- #
 # Scheduling and trading calendar  [SRS-SDK-002]
 # --------------------------------------------------------------------------- #
@@ -365,6 +397,15 @@ class TradingCalendar(Protocol):
     def is_early_close(self, date: _dt.date) -> bool:
         """Return True if ``date`` has an early close."""
 
+    def premarket_open(self, date: _dt.date) -> _dt.datetime:
+        """Return the pre-market open for ``date`` in US Eastern time."""
+
+    def afterhours_close(self, date: _dt.date) -> _dt.datetime:
+        """Return the after-hours close for ``date`` in US Eastern time."""
+
+    def next_session(self, after: _dt.date) -> _dt.date:
+        """Return the first regular trading session date strictly after ``after``."""
+
 
 _EASTERN = _dt.timezone(_dt.timedelta(hours=-5), name="US/Eastern")
 
@@ -375,8 +416,13 @@ class StaticTradingCalendar:
 
     Sessions: weekdays, 09:30–16:00 in a fixed UTC-5 offset. Holidays and
     DST handling are intentionally omitted; the full holiday/DST calendar
-    is delivered by a sibling feature (see SRS-SDK-002 trace in
-    ``docs/SRS.md``).
+    is delivered by ``UsEquityTradingCalendar`` (SRS-SDK-002).
+
+    All boundary methods (``session_open`` / ``session_close`` /
+    ``premarket_open`` / ``afterhours_close``) raise ``NotATradingSession``
+    on weekends so the contract matches ``UsEquityTradingCalendar`` and the
+    scheduler cannot fabricate trading times on closed days, regardless of
+    which ``TradingCalendar`` implementation is wired in.
 
     Example:
         >>> import datetime as dt
@@ -393,13 +439,44 @@ class StaticTradingCalendar:
         return date.weekday() < 5
 
     def session_open(self, date: _dt.date) -> _dt.datetime:
+        self._require_session(date)
         return _dt.datetime(date.year, date.month, date.day, 9, 30, tzinfo=_EASTERN)
 
     def session_close(self, date: _dt.date) -> _dt.datetime:
+        self._require_session(date)
         return _dt.datetime(date.year, date.month, date.day, 16, 0, tzinfo=_EASTERN)
 
     def is_early_close(self, date: _dt.date) -> bool:
         return False
+
+    def premarket_open(self, date: _dt.date) -> _dt.datetime:
+        self._require_session(date)
+        return _dt.datetime(date.year, date.month, date.day, 4, 0, tzinfo=_EASTERN)
+
+    def afterhours_close(self, date: _dt.date) -> _dt.datetime:
+        self._require_session(date)
+        return _dt.datetime(date.year, date.month, date.day, 20, 0, tzinfo=_EASTERN)
+
+    def next_session(self, after: _dt.date) -> _dt.date:
+        """Return the first weekday strictly after ``after`` (≤ 3-day skip)."""
+        cursor = after + _dt.timedelta(days=1)
+        for _ in range(7):
+            if self.is_session(cursor):
+                return cursor
+            cursor += _dt.timedelta(days=1)
+        # Static calendar has no holiday concept; a 7-day weekday gap is
+        # impossible, so this branch is unreachable in practice.
+        raise AssertionError(  # pragma: no cover
+            f"StaticTradingCalendar.next_session: no weekday after {after}"
+        )
+
+    def _require_session(self, date: _dt.date) -> None:
+        if not self.is_session(date):
+            raise NotATradingSession(
+                f"{date.isoformat()} is not a regular {self.name} trading "
+                "session (weekend) — boundary methods refuse to fabricate "
+                "trading times on closed days; see TradingCalendar Protocol"
+            )
 
 
 # --------------------------------------------------------------------------- #

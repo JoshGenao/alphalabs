@@ -21,7 +21,16 @@ from pathlib import Path
 from strategy_api_parity_check import (
     StrategyApiParityCheckError,
     assert_strategy_api_parity_static,
+)
+from strategy_api_parity_check import (
     load_config as load_parity_config,
+)
+from strategy_api_scheduler_check import (
+    StrategyApiSchedulerCheckError,
+    assert_strategy_api_scheduler_static,
+)
+from strategy_api_scheduler_check import (
+    load_config as load_scheduler_config,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -104,7 +113,19 @@ def check_sdk_002(api: object) -> str:
     instance = api.StaticTradingCalendar()
     if instance.name != "NYSE":
         fail("SDK-002: StaticTradingCalendar.name must default to 'NYSE'")
-    return "SDK-002: schedule.{at_market_open, at_market_close, every_n_minutes, cron} + TradingCalendar"
+    # Delegate the full SYS-6 / SYS-50 / SYS-51 trading-calendar invariant
+    # to strategy_api_scheduler_check (concrete UsEquityTradingCalendar +
+    # InMemoryScheduler exports, three-exchange handle resolution, tz-aware
+    # session times). Keep the protocol-method scan above as a backstop.
+    try:
+        assert_strategy_api_scheduler_static(load_scheduler_config())
+    except StrategyApiSchedulerCheckError as error:
+        fail(f"SDK-002 scheduler invariant: {error}")
+    return (
+        "SDK-002: schedule.{at_market_open, at_market_close, every_n_minutes, "
+        "cron} + TradingCalendar; SYS-6 / SYS-50 / SYS-51 trading-calendar "
+        "invariant enforced via strategy_api_scheduler_check"
+    )
 
 
 def check_sdk_003(api: object) -> str:
