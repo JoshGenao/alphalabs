@@ -98,9 +98,14 @@ class Crossover(Strategy):
 
 ## Warm-up (`SRS-SDK-005`)
 
-`warmup_bars` declares how many historical bars to replay before live
-execution. The runtime drives `on_bar` for warm-up bars first, then calls
-`on_warmup_complete`, then begins live processing.
+`warmup_bars` declares how many historical bars to replay before live,
+paper, or backtest execution begins. The orchestrator constructs a
+`WarmupController` per container which walks the
+`PENDING → IN_PROGRESS → COMPLETE` lifecycle: historical bars flow
+through `on_bar` first, then `on_warmup_complete` fires exactly once,
+then executable bars are allowed through. `assert_warmup_complete(state)`
+is the executable-boundary guard production dispatchers call; user
+code never instantiates the controller directly.
 
 Example:
 

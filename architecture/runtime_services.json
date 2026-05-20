@@ -2406,5 +2406,71 @@
       "Internal paper simulation dispatcher (simulated fill -> assert_order_event_payload -> Strategy.on_order_event) is owned by SRS-SIM-001. End-to-end paper p95 latency proof requires a running simulation engine and is verified by SRS-SIM-001's contract / performance tests.",
       "The L7 domain test for SRS-SDK-004 ships a reference _RefDispatcher exercising both the field-presence guard and a deterministic synthetic in-process latency measurement under the PAPER budget; production dispatchers re-use the SDK helper and budget constants rather than redefining them."
     ]
+  },
+  "strategy_api_warmup_contract": {
+    "description": "Warm-up mechanism for SRS-SDK-005 (SyRS SYS-8 warm-up + NFR-R3 restart re-execution; StRS SN-1.23 / SC-18 200-bar warm-up / BG-1 / BG-2 / BG-7). The SDK ships a WarmupController + WarmupState lifecycle + assert_warmup_complete guard that every concrete dispatcher (live IB execution per SRS-EXE-001, internal paper simulation per SRS-SIM-001, backtest engine per SRS-BT-001) must drive before delivering the first executable bar. The AC ordering rule (historical bars replayed via Strategy.on_bar before any executable bar, indicator buffers and rolling windows initialised before any trading signal can be generated, on_warmup_complete fired exactly once at the boundary) is enforced at the SDK surface. The controller is fail-closed on a short historical replay: if HistoricalData.get_bars returns fewer than warmup_bars bars for any subscribed symbol the controller raises WarmupNotComplete, leaves WarmupState at IN_PROGRESS, does not invoke on_warmup_complete, and keeps the executable gate (assert_warmup_complete) closed. Identical surface in live and paper modes per SRS-SDK-001 AC-14. The cross-language source of truth lives here; Rust core runtime dispatchers re-implement the same gate locally per AGENTS.md dependency direction (no Rust -> Python SDK dependency).",
+    "warmup_module": "python/atp_strategy/warmup.py",
+    "warmup_controller_class": "WarmupController",
+    "warmup_state_class": "WarmupState",
+    "required_state_machine_members": [
+      "PENDING",
+      "IN_PROGRESS",
+      "COMPLETE"
+    ],
+    "required_warmup_bars_canonical": 200,
+    "required_history_count_minimum_per_symbol": "warmup_bars",
+    "required_history_shortfall_behavior": "raise WarmupNotComplete (StrategyAPIError); keep WarmupState at IN_PROGRESS; do not call Strategy.on_warmup_complete; keep assert_warmup_complete closed",
+    "required_helper_functions": [
+      "assert_warmup_complete"
+    ],
+    "required_controller_methods": [
+      "run"
+    ],
+    "required_controller_properties": [
+      "state",
+      "warmup_bars",
+      "bars_replayed",
+      "symbols_replayed"
+    ],
+    "required_strategy_callbacks": [
+      "on_warmup_complete"
+    ],
+    "required_on_warmup_complete_docstring_tokens": [
+      "SRS-SDK-005",
+      "SRS-EXE-001",
+      "SRS-SIM-001",
+      "SRS-BT-001",
+      "WarmupController",
+      "WarmupState",
+      "assert_warmup_complete",
+      "AC-14",
+      "SC-18"
+    ],
+    "required_exports": [
+      "Bar",
+      "HistoricalData",
+      "Strategy",
+      "StrategyAPIError",
+      "StrategyConfig",
+      "WarmupController",
+      "WarmupNotComplete",
+      "WarmupState",
+      "assert_warmup_complete"
+    ],
+    "ac_traces": [
+      "SRS-SDK-005",
+      "SYS-8",
+      "NFR-R3",
+      "SN-1.23",
+      "SC-18",
+      "AC-14"
+    ],
+    "deferred": [
+      "Live IB execution dispatcher (live market-data stream gated on WarmupState.COMPLETE) is owned by SRS-EXE-001. The live dispatcher must construct WarmupController, invoke run() before subscribing to live executable bars, and call assert_warmup_complete at the executable boundary.",
+      "Internal paper simulation dispatcher (shared live market-data stream gated on WarmupState.COMPLETE) is owned by SRS-SIM-001. Mirror of the live path; the dispatcher must drive the same controller.",
+      "Backtest engine warm-up phase (historical replay window split between warm-up and evaluation regions) is owned by SRS-BT-001. Same controller drives the warm-up segment; executable bars begin after WarmupState.COMPLETE.",
+      "NFR-R3 restart re-execution of the warm-up mechanism is owned by SRS-EXE-005 (live persistence + restart) and SRS-SIM-004 (paper persistence + restart). On container restart the dispatcher constructs a fresh WarmupController and replays history; the SDK contract here is the same surface both restart paths consume.",
+      "The L7 domain test for SRS-SDK-005 ships a reference _RefDispatcher and _StubHistoricalData that exercise the AC end-to-end with a 200-bar warm-up + a 200-period SMA. The test proves: (a) all 200 historical bars hit on_bar before the first executable bar; (b) indicator buffers (SMA.is_ready) are True at the executable boundary; (c) order submission attempted during warm-up raises WarmupNotComplete; (d) on_warmup_complete fires exactly once."
+    ]
   }
 }

@@ -47,6 +47,7 @@ from .api import (
 )
 from .calendar import UsEquityTradingCalendar
 from .scheduler import InMemoryScheduler
+from .warmup import WarmupController, WarmupState, assert_warmup_complete
 
 __all__ = [
     "ATR",
@@ -88,5 +89,8 @@ __all__ = [
     "StrategyContext",
     "TradingCalendar",
     "UsEquityTradingCalendar",
+    "WarmupController",
     "WarmupNotComplete",
+    "WarmupState",
+    "assert_warmup_complete",
 ]

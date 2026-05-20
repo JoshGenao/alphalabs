@@ -68,6 +68,10 @@ from strategy_api_subscriptions_check import (
     StrategyApiSubscriptionsCheckError,
     assert_strategy_api_subscriptions_static,
 )
+from strategy_api_warmup_check import (
+    StrategyApiWarmupCheckError,
+    assert_strategy_api_warmup_static,
+)
 from subscription_limit_check import (
     SubscriptionLimitCheckError,
     assert_subscription_limit_static,
@@ -591,6 +595,28 @@ def assert_strategy_api_subscriptions(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_strategy_api_warmup(config: dict) -> list[str]:
+    block = config.get("strategy_api_warmup_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_strategy_api_warmup_static(config, ROOT)
+    summary = (
+        f"python/atp_strategy/ enforces SRS-SDK-005 warm-up mechanism: "
+        f"WarmupState{{{', '.join(block['required_state_machine_members'])}}} "
+        f"lifecycle, WarmupController shipped with run() + "
+        f"{len(block['required_controller_properties'])} introspection "
+        f"properties, shipped {', '.join(block['required_helper_functions'])} "
+        f"guard gates the executable boundary, behavioural check exercises "
+        f"the AC at the canonical "
+        f"{block['required_warmup_bars_canonical']}-bar warm-up — the "
+        "architecture metadata block is the cross-language source of "
+        "truth (Rust core dispatchers re-implement the gate locally per "
+        "AGENTS.md dependency direction)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_strategy_api_order_events(config: dict) -> list[str]:
     block = config.get("strategy_api_order_events_contract")
     if block is None:
@@ -726,6 +752,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_strategy_api_order_events(config))
     except StrategyApiOrderEventsCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_strategy_api_warmup(config))
+    except StrategyApiWarmupCheckError as error:
         fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:

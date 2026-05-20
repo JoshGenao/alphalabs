@@ -1131,7 +1131,10 @@ class Strategy:
     ``on_schedule`` and ``on_order_event``.
 
     Class attribute ``warmup_bars`` (mirrors ``StrategyConfig.warmup_bars``)
-    is the SRS-SDK-005 declaration when not configured externally.
+    is the SRS-SDK-005 declaration when not configured externally; the
+    warm-up replay itself is driven by
+    :class:`atp_strategy.warmup.WarmupController` (see also the L7
+    reference dispatcher in ``tests/domain/test_warmup_replay.py``).
 
     Example:
         >>> class MyStrategy(Strategy):
@@ -1148,7 +1151,31 @@ class Strategy:
         """Run once after the strategy container has initialized."""
 
     def on_warmup_complete(self, context: StrategyContext) -> None:
-        """Run once after the warm-up replay completes (``SRS-SDK-005``)."""
+        """Run once after the warm-up replay completes (``SRS-SDK-005``).
+
+        Concrete dispatchers (live IB execution per ``SRS-EXE-001``,
+        internal paper simulation per ``SRS-SIM-001``, and the backtest
+        engine per ``SRS-BT-001``) must drive
+        :class:`atp_strategy.warmup.WarmupController` before delivering
+        the first executable bar — the controller replays
+        ``StrategyConfig.warmup_bars`` historical bars per subscribed
+        symbol through :meth:`on_bar`, transitions through
+        :class:`atp_strategy.warmup.WarmupState`
+        ``PENDING → IN_PROGRESS → COMPLETE``, and fires this callback
+        exactly once before executable bars may flow. Dispatchers gate
+        executable delivery on
+        :func:`atp_strategy.warmup.assert_warmup_complete` so the
+        SRS-SDK-005 AC ordering (historical bars before the first
+        executable bar so indicator buffers are initialised before any
+        trading signal can be generated; see also StRS ``SC-18``) is
+        enforced at the SDK surface. The same surface is used in live
+        and paper modes per ``SRS-SDK-001`` ``AC-14``. The cross-
+        language source of truth for the state machine and AC numbers
+        lives in ``architecture/runtime_services.json`` under
+        ``strategy_api_warmup_contract`` so Rust core dispatchers
+        re-implement the same gate locally per AGENTS.md dependency
+        direction.
+        """
 
     def on_bar(self, context: StrategyContext, bar: Bar) -> None:
         """Run when a subscribed bar arrives."""
