@@ -52,6 +52,10 @@ from pacing_budget_check import (
     PacingBudgetCheckError,
     assert_pacing_budget_static,
 )
+from strategy_api_order_events_check import (
+    StrategyApiOrderEventsCheckError,
+    assert_strategy_api_order_events_static,
+)
 from strategy_api_parity_check import (
     StrategyApiParityCheckError,
     assert_strategy_api_parity_static,
@@ -587,6 +591,35 @@ def assert_strategy_api_subscriptions(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_strategy_api_order_events(config: dict) -> list[str]:
+    block = config.get("strategy_api_order_events_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_strategy_api_order_events_static(config, ROOT)
+    summary = (
+        f"python/atp_strategy/ enforces the SDK-surface half of "
+        f"SRS-SDK-004 order event callback contract: OrderEventType "
+        f"covers {block['required_event_type_members']}, OrderEvent "
+        f"dataclass carries fill_price / fill_quantity / commission + "
+        f"order identifiers, shipped "
+        f"{', '.join(block['required_helper_functions'])} guard raises "
+        f"OrderEventContractError on FILL/PARTIAL_FILL/CANCELLED/"
+        f"REJECTED missing fill_price/fill_quantity/commission, "
+        f"LIVE_CALLBACK_LATENCY_P95_MS = "
+        f"{block['required_live_callback_latency_p95_ms']} ms / "
+        f"PAPER_CALLBACK_LATENCY_P95_MS = "
+        f"{block['required_paper_callback_latency_p95_ms']} ms — the "
+        "architecture metadata block is the cross-language source of "
+        "truth (Rust core dispatchers read directly per AGENTS.md "
+        "dependency direction; Python SDK constants are the Python-"
+        "side view kept in parity) — NFR-P4 latency proof gated on "
+        "SRS-EXE-001 + SRS-SIM-001; SRS-SDK-004 stays passes:false "
+        "until those ship"
+    )
+    return static_evidence + [summary]
+
+
 def assert_container_language_boundary(config: dict) -> list[str]:
     if not COMPOSE_PATH.exists():
         fail("docker-compose.yml is missing")
@@ -689,6 +722,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_strategy_api_subscriptions(config))
     except StrategyApiSubscriptionsCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_strategy_api_order_events(config))
+    except StrategyApiOrderEventsCheckError as error:
         fail(str(error))
     evidence.extend(assert_container_language_boundary(config))
     try:

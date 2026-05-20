@@ -290,7 +290,11 @@
       "TradingCalendar",
       "UsEquityTradingCalendar",
       "WarmupNotComplete",
-      "assert_asset_class"
+      "assert_asset_class",
+      "assert_order_event_payload",
+      "OrderEventContractError",
+      "LIVE_CALLBACK_LATENCY_P95_MS",
+      "PAPER_CALLBACK_LATENCY_P95_MS"
     ]
   },
   "rest_api": {
@@ -2330,6 +2334,77 @@
     "deferred": [
       "MARKET_DATA_STALE and SUBSCRIPTION_LIMIT_REACHED structured-error types (per SyRS SYS-64) are owned by SRS-MD-002 (market-data line-limit enforcement) and SRS-MD-004 (stale-data order blocking); the SDK surface here exposes the asset-class guard only.",
       "Live IB and internal paper simulation StrategyContext implementations are owned by SRS-EXE-001 / SRS-SIM-001 — they must call assert_asset_class before routing the order. The L7 domain test for SRS-SDK-003 ships a reference _RefStrategyContext that exercises this contract; production drivers re-use the SDK helper rather than reimplementing the comparison."
+    ]
+  },
+  "strategy_api_order_events_contract": {
+    "description": "SDK-surface contract for SRS-SDK-004 order event callback delivery (SyRS SYS-7 live-callback delivery + SYS-85 paper engine reuses the same IF-7 API surface + NFR-P4 p95 latency budgets; StRS SN-1.22 / SN-1.29 / BG-1). SCOPE: this contract covers the AC-required *field presence* half of SRS-SDK-004 ONLY. The NFR-P4 *latency proof* half (live <1,000 ms p95 from broker fill acknowledgement; paper <100 ms p95 from simulated fill) requires the real SRS-EXE-001 live dispatcher and SRS-SIM-001 paper dispatcher to exist and is gated on those features. Until then, SRS-SDK-004 stays passes:false in feature_list.json; the SDK surface here is the prerequisite production dispatchers will consume. The SDK ships the OrderEvent / OrderEventType surface plus an assert_order_event_payload guard Python dispatchers must call before invoking Strategy.on_order_event so user code can rely on the documented field-presence contract; Rust core runtime dispatchers apply the same field-presence rules locally per the AGENTS.md one-way dependency direction (Rust core must not depend on the Python SDK). This metadata block is the cross-language source of truth — the Python SDK constants LIVE_CALLBACK_LATENCY_P95_MS / PAPER_CALLBACK_LATENCY_P95_MS are the Python-side view kept in parity with required_live_callback_latency_p95_ms / required_paper_callback_latency_p95_ms below, and Rust dispatchers read those same keys directly (or from a generated Rust constants file derived from them). The four AC-named callback categories (FILL, PARTIAL_FILL, CANCELLED, REJECTED) must include fill_price, fill_quantity, and commission per docs/SRS.md row SRS-SDK-004; dispatchers populate explicit zeros on a never-filled cancel or reject and cumulative average / total on a partially-filled cancel or reject. Live and paper modes use the same delivery surface per SRS-SDK-001 AC-14.",
+    "ac_named_callback_categories": [
+      "FILL",
+      "PARTIAL_FILL",
+      "CANCELLED",
+      "REJECTED"
+    ],
+    "required_helper_functions": [
+      "assert_order_event_payload"
+    ],
+    "required_event_type_members": [
+      "FILL",
+      "PARTIAL_FILL",
+      "CANCELLED",
+      "REJECTED"
+    ],
+    "required_event_fields": [
+      "event_type",
+      "order_id",
+      "client_order_id",
+      "strategy_id",
+      "symbol",
+      "fill_price",
+      "fill_quantity",
+      "cumulative_filled",
+      "remaining_quantity",
+      "commission",
+      "reason",
+      "timestamp"
+    ],
+    "required_live_callback_latency_p95_ms": 1000,
+    "required_paper_callback_latency_p95_ms": 100,
+    "required_on_order_event_params": [
+      "self",
+      "context",
+      "event"
+    ],
+    "required_on_order_event_docstring_tokens": [
+      "assert_order_event_payload",
+      "LIVE_CALLBACK_LATENCY_P95_MS",
+      "PAPER_CALLBACK_LATENCY_P95_MS",
+      "SRS-SDK-004",
+      "SRS-EXE-001",
+      "SRS-SIM-001",
+      "AC-14",
+      "NFR-P4"
+    ],
+    "required_exports": [
+      "LIVE_CALLBACK_LATENCY_P95_MS",
+      "OrderEvent",
+      "OrderEventContractError",
+      "OrderEventType",
+      "PAPER_CALLBACK_LATENCY_P95_MS",
+      "Strategy",
+      "StrategyAPIError",
+      "assert_order_event_payload"
+    ],
+    "ac_traces": [
+      "SRS-SDK-004",
+      "SYS-7",
+      "SYS-85",
+      "NFR-P4",
+      "AC-14"
+    ],
+    "deferred": [
+      "Live IB execution dispatcher (broker fill acknowledgement -> assert_order_event_payload -> Strategy.on_order_event) is owned by SRS-EXE-001. End-to-end live p95 latency proof requires a running IB Gateway and is verified by SRS-EXE-001's contract / performance tests rather than the SDK contract here.",
+      "Internal paper simulation dispatcher (simulated fill -> assert_order_event_payload -> Strategy.on_order_event) is owned by SRS-SIM-001. End-to-end paper p95 latency proof requires a running simulation engine and is verified by SRS-SIM-001's contract / performance tests.",
+      "The L7 domain test for SRS-SDK-004 ships a reference _RefDispatcher exercising both the field-presence guard and a deterministic synthetic in-process latency measurement under the PAPER budget; production dispatchers re-use the SDK helper and budget constants rather than redefining them."
     ]
   }
 }

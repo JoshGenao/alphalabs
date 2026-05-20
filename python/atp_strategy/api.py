@@ -15,6 +15,7 @@ SRS trace
 from __future__ import annotations
 
 import datetime as _dt
+import math as _math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -191,8 +192,10 @@ class OrderHandle:
 class OrderEventType(StrEnum):
     """Lifecycle event categories delivered to ``Strategy.on_order_event``.
 
-    Covers acknowledgement, fills, partial fills, cancellation, rejection
-    and expiry per ``SRS-SDK-004``.
+    The four event categories named in the ``SRS-SDK-004`` acceptance
+    criteria — ``FILL``, ``PARTIAL_FILL``, ``CANCELLED``, ``REJECTED`` —
+    are required surface; ``ACK`` and ``EXPIRED`` cover the broker
+    acknowledgement and time-in-force lapsed paths for completeness.
 
     Example:
         >>> OrderEventType.PARTIAL_FILL.value
@@ -209,10 +212,48 @@ class OrderEventType(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class OrderEvent:
-    """Order lifecycle event payload (``SRS-SDK-004``).
+    """Order lifecycle event payload delivered to ``Strategy.on_order_event``.
 
-    Includes fill price, fill quantity, commission and order identifiers
-    required by the SRS-SDK-004 acceptance criteria.
+    The ``SRS-SDK-004`` acceptance criteria require every event to carry
+    fill price, fill quantity, commission, and order identifiers. The
+    structural contract is enforced by ``assert_order_event_payload``,
+    which any concrete dispatcher (live IB execution or internal paper
+    simulation) must call before invoking user code.
+
+    Attributes:
+        event_type: The ``OrderEventType`` category (FILL, PARTIAL_FILL,
+            CANCELLED, REJECTED, ACK, or EXPIRED).
+        order_id: Broker-assigned order identifier. Required, non-empty.
+        client_order_id: Strategy-assigned client identifier. Required,
+            non-empty.
+        strategy_id: Owning strategy instance identifier.
+        symbol: The contract symbol associated with the order.
+        fill_price: Fill price. Required (non-``None``) for the four
+            AC-named callback categories ``FILL``, ``PARTIAL_FILL``,
+            ``CANCELLED``, ``REJECTED``. On a never-filled cancel or
+            reject the dispatcher populates ``0.0``; on a partially-
+            filled cancel or reject it populates the cumulative
+            average fill price. ``None`` is permitted only on ``ACK``
+            and ``EXPIRED``.
+        fill_quantity: Quantity filled. Required (non-``None``) for the
+            four AC-named categories. Strictly positive on ``FILL`` /
+            ``PARTIAL_FILL``; ``0`` on a never-filled cancel or reject
+            and the cumulative total on a partially-filled cancel or
+            reject. ``None`` permitted only on ``ACK`` / ``EXPIRED``.
+        cumulative_filled: Total quantity filled so far on this order.
+        remaining_quantity: Quantity still working on this order.
+        commission: Commission attributed to fills on this order.
+            Required (non-``None``) for the four AC-named categories
+            so paper / live P&L reconciles without out-of-band
+            lookups. ``0.0`` on a never-filled cancel or reject;
+            cumulative total on a partially-filled cancel or reject.
+            ``None`` permitted only on ``ACK`` / ``EXPIRED``.
+        reason: Broker- or engine-supplied reason string. Required for
+            ``CANCELLED``, ``REJECTED``, and ``EXPIRED`` so user strategy
+            code can route on the structured-error contract (SyRS
+            ``SYS-64``).
+        timestamp: ISO-8601 timestamp of the event from the broker (live)
+            or simulator (paper).
 
     Example:
         >>> OrderEvent(OrderEventType.FILL, "ord-1", "cli-1", "s1", "AAPL",
@@ -232,6 +273,53 @@ class OrderEvent:
     commission: float | None
     reason: str | None
     timestamp: str
+
+
+# --------------------------------------------------------------------------- #
+# Callback latency budgets (SRS-SDK-004 / SyRS NFR-P4)
+# --------------------------------------------------------------------------- #
+# These constants are the **Python-side view** of the p95 callback
+# latency budgets named in SyRS NFR-P4. The cross-language source of
+# truth is the architecture metadata file ``architecture/runtime_
+# services.json`` (block ``strategy_api_order_events_contract``,
+# keys ``required_live_callback_latency_p95_ms`` /
+# ``required_paper_callback_latency_p95_ms``). Per AGENTS.md the Rust
+# core runtime services — including live IB execution
+# (``SRS-EXE-001``) and internal paper simulation (``SRS-SIM-001``) —
+# are not allowed to depend on the Python Strategy SDK; the Rust
+# dispatchers read the budgets directly from the architecture metadata
+# (or from a Rust constants file generated from it), and the contract
+# check ``tools/strategy_api_order_events_check.py`` enforces that
+# the Python constants below stay in lock-step with the metadata so a
+# future SyRS revision changes the number in exactly one place
+# (``architecture/runtime_services.json``) and the Python view
+# follows automatically.
+
+
+LIVE_CALLBACK_LATENCY_P95_MS: int = 1000
+"""p95 budget for live order event callback delivery, milliseconds.
+
+Measured from broker fill acknowledgement (IB Gateway) to the
+``Strategy.on_order_event`` callback returning. The canonical number
+lives in ``architecture/runtime_services.json`` under
+``strategy_api_order_events_contract.required_live_callback_latency_p95_ms``;
+this constant is the Python-side view kept in parity with that
+metadata by the SDK-surface contract check. Locked by SyRS
+``NFR-P4`` and SRS ``SRS-SDK-004`` acceptance criterion (b).
+"""
+
+
+PAPER_CALLBACK_LATENCY_P95_MS: int = 100
+"""p95 budget for paper order event callback delivery, milliseconds.
+
+Measured from the internal simulation engine's simulated fill to the
+``Strategy.on_order_event`` callback returning. The canonical number
+lives in ``architecture/runtime_services.json`` under
+``strategy_api_order_events_contract.required_paper_callback_latency_p95_ms``;
+this constant is the Python-side view kept in parity with that
+metadata. Locked by SyRS ``NFR-P4`` and SRS ``SRS-SDK-004``
+acceptance criterion (c).
+"""
 
 
 # --------------------------------------------------------------------------- #
@@ -300,6 +388,335 @@ def assert_asset_class(config: "StrategyConfig", request: "OrderRequest") -> Non
             f"{config.tradable_asset_class.value} cannot trade "
             f"{request.asset_class.value}"
         )
+
+
+class OrderEventContractError(StrategyAPIError):
+    """Raised when an ``OrderEvent`` payload violates the ``SRS-SDK-004`` AC.
+
+    Concrete dispatchers — live IB execution and internal paper
+    simulation — call ``assert_order_event_payload`` before invoking
+    ``Strategy.on_order_event``. A violation indicates a runtime bug:
+    a fill event missing its price/quantity/commission, a terminal
+    event missing its reason, or an order identifier the strategy
+    cannot route on. Raising at the dispatch boundary surfaces the
+    integration drift loudly (SyRS ``SYS-64``).
+
+    Example:
+        >>> raise OrderEventContractError("fill missing fill_price")
+        Traceback (most recent call last):
+        ...
+        atp_strategy.api.OrderEventContractError: fill missing fill_price
+    """
+
+
+def assert_order_event_payload(event: "OrderEvent") -> None:
+    """Raise ``OrderEventContractError`` when ``event`` violates ``SRS-SDK-004``.
+
+    Reference enforcement of the ``SRS-SDK-004`` acceptance criterion
+    (a): every order event delivered to user code for the four AC-
+    named callback categories — ``FILL``, ``PARTIAL_FILL``, ``CANCELLED``,
+    and ``REJECTED`` — must carry order identifiers, fill price, fill
+    quantity, and commission. Concrete dispatchers (live IB execution
+    per ``SRS-EXE-001`` and internal paper simulation per
+    ``SRS-SIM-001``) must invoke this helper before calling
+    ``Strategy.on_order_event`` so user strategy code can rely on the
+    documented field-presence contract.
+
+    Required field presence by event type:
+
+    * ``FILL``, ``PARTIAL_FILL``, ``CANCELLED``, ``REJECTED`` (the four
+      AC-named categories): ``fill_price``, ``fill_quantity`` and
+      ``commission`` must be non-``None``. For ``FILL`` and
+      ``PARTIAL_FILL`` both ``fill_quantity`` and ``fill_price`` must
+      be strictly positive (a fill of zero shares or at zero price is
+      a runtime bug). Lifecycle-consistency: ``FILL`` events must
+      carry ``remaining_quantity == 0`` (the order finished) and
+      ``PARTIAL_FILL`` events must carry ``remaining_quantity > 0``
+      (more is still working); a mismatch silently corrupts user
+      order-state machines. For ``CANCELLED`` and ``REJECTED`` the
+      fill-bearing fields report the cumulative state of the order
+      at the terminal event — concrete dispatchers populate explicit
+      zeros (``0.0`` / ``0`` / ``0.0``) on a never-filled cancel or
+      reject and the cumulative average / total on a partially-
+      filled cancel or reject. ``fill_price`` is never negative.
+    * ``CANCELLED``, ``REJECTED``, ``EXPIRED``: ``reason`` must be a
+      non-empty string so user code can route on the structured-error
+      contract (SyRS ``SYS-64``).
+    * ``ACK`` and ``EXPIRED`` are completeness members outside the
+      AC's named four; the helper does not require ``fill_price`` /
+      ``fill_quantity`` / ``commission`` on them. ``EXPIRED`` still
+      requires ``reason``.
+    * All event types: ``order_id``, ``client_order_id``,
+      ``strategy_id``, ``symbol``, and ``timestamp`` must be non-empty
+      ``str``; ``reason`` (when present) must be ``str``.
+      ``fill_price`` and ``commission`` (when present) must be finite
+      ``int``/``float`` (no NaN / inf, no booleans). ``fill_quantity``
+      (when present), ``cumulative_filled``, and ``remaining_quantity``
+      must be non-negative ``int`` (no booleans). Type / finite
+      enforcement runs at the dispatch boundary so a Rust/Python
+      schema-drift payload (e.g. ``order_id=123``, ``symbol=['AAPL']``,
+      ``fill_price='100.0'``, ``commission=float('nan')``) surfaces as
+      a structured ``OrderEventContractError`` rather than crashing
+      downstream P&L / routing code.
+
+    Args:
+        event: The order event payload about to be delivered to
+            ``Strategy.on_order_event``.
+
+    Raises:
+        OrderEventContractError: ``event`` is missing one or more
+            required fields for its ``event_type``. The message names
+            ``event.event_type``, ``event.order_id``, and the missing
+            field so the runtime bug is locatable.
+
+    Example:
+        >>> good = OrderEvent(OrderEventType.FILL, "ord-1", "cli-1", "s1",
+        ...                   "AAPL", 100.0, 10, 10, 0, 0.05, None,
+        ...                   "2026-05-03T13:30:00Z")
+        >>> assert_order_event_payload(good)
+        >>> bad = OrderEvent(OrderEventType.FILL, "ord-2", "cli-2", "s1",
+        ...                  "AAPL", None, 10, 10, 0, 0.05, None,
+        ...                  "2026-05-03T13:30:00Z")
+        >>> assert_order_event_payload(bad)
+        Traceback (most recent call last):
+        ...
+        atp_strategy.api.OrderEventContractError: FILL event ord-2 missing fill_price
+    """
+    # Payload-shape guard FIRST. A dispatcher crossing the Rust/Python
+    # boundary, an un-deserialized dict, a schema-drifted OrderEvent
+    # from a different SDK version, or a ``None`` placeholder all
+    # need to surface as a structured ``OrderEventContractError`` —
+    # not as an ``AttributeError`` on the first field access (which
+    # would leak past the SyRS ``SYS-64`` structured-error surface).
+    if not isinstance(event, OrderEvent):
+        raise OrderEventContractError(
+            f"order event payload is not an OrderEvent (got "
+            f"{type(event).__name__}); concrete dispatchers must construct "
+            "OrderEvent instances rather than dicts or schema-drifted "
+            "objects so SyRS SYS-64 structured errors reach user code"
+        )
+    # Validate the event_type discriminant next. ``OrderEventType`` is
+    # a ``StrEnum`` so a caller that passes a bare string like
+    # ``"FILL"`` (or ``"UNKNOWN"``) would silently equality-match
+    # against enum members below and then crash on the later
+    # ``.value`` access with an untyped ``AttributeError`` — leaking
+    # past the structured-error contract. Reject anything that is not
+    # an ``OrderEventType`` instance at the dispatch boundary. Use
+    # ``getattr`` for ``order_id`` here so a malformed payload that
+    # somehow passes ``isinstance(event, OrderEvent)`` but is missing
+    # ``order_id`` (e.g., subclass that overrode ``__init__``) still
+    # surfaces a structured error rather than an AttributeError.
+    if not isinstance(event.event_type, OrderEventType):
+        raise OrderEventContractError(
+            f"order event {getattr(event, 'order_id', '<unknown>')!r} "
+            f"has invalid event_type {event.event_type!r} (expected "
+            f"OrderEventType, got {type(event.event_type).__name__})"
+        )
+
+    # Runtime type validation. The dataclass annotations declare the
+    # schema (str / int / float | None); the runtime must enforce it
+    # so a Rust/Python boundary that emits ``order_id=123``,
+    # ``symbol=['AAPL']``, ``fill_price='100.0'``, or
+    # ``commission=float('nan')`` is caught here rather than crashing
+    # downstream P&L / routing code.
+    event_value = event.event_type.value
+    order_id_for_msg = getattr(event, "order_id", "<unknown>")
+
+    def _require_str(field_name: str, value: object) -> None:
+        if not isinstance(value, str):
+            raise OrderEventContractError(
+                f"{event_value} event {order_id_for_msg!r} has invalid "
+                f"{field_name} type: expected str, got "
+                f"{type(value).__name__}={value!r}"
+            )
+
+    def _require_optional_str(field_name: str, value: object) -> None:
+        if value is not None and not isinstance(value, str):
+            raise OrderEventContractError(
+                f"{event_value} event {order_id_for_msg!r} has invalid "
+                f"{field_name} type: expected str or None, got "
+                f"{type(value).__name__}={value!r}"
+            )
+
+    def _require_finite_number(field_name: str, value: object) -> None:
+        # Bools are an ``int`` subclass; reject them on numeric fields.
+        if value is None:
+            return
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise OrderEventContractError(
+                f"{event_value} event {order_id_for_msg!r} has invalid "
+                f"{field_name} type: expected finite number, got "
+                f"{type(value).__name__}={value!r}"
+            )
+        if not _math.isfinite(float(value)):
+            raise OrderEventContractError(
+                f"{event_value} event {order_id_for_msg!r} has invalid "
+                f"{field_name} value: expected finite number, got "
+                f"{value!r}"
+            )
+
+    def _require_non_negative_int(
+        field_name: str, value: object, *, allow_none: bool = False
+    ) -> None:
+        if value is None:
+            if allow_none:
+                return
+            raise OrderEventContractError(
+                f"{event_value} event {order_id_for_msg!r} has invalid "
+                f"{field_name} type: expected int (non-Optional), got None"
+            )
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise OrderEventContractError(
+                f"{event_value} event {order_id_for_msg!r} has invalid "
+                f"{field_name} type: expected int, got "
+                f"{type(value).__name__}={value!r}"
+            )
+        if value < 0:
+            raise OrderEventContractError(
+                f"{event_value} event {order_id_for_msg!r} has invalid "
+                f"{field_name} value: expected non-negative int, got "
+                f"{value!r}"
+            )
+
+    # Strings: identifiers + symbol + timestamp are non-Optional.
+    _require_str("order_id", event.order_id)
+    _require_str("client_order_id", event.client_order_id)
+    _require_str("strategy_id", event.strategy_id)
+    _require_str("symbol", event.symbol)
+    _require_str("timestamp", event.timestamp)
+    _require_optional_str("reason", event.reason)
+    # Numerics: fill_price + commission are float | None.
+    _require_finite_number("fill_price", event.fill_price)
+    _require_finite_number("commission", event.commission)
+    # ``fill_price`` must be non-negative when present. Negative
+    # prices have no physical meaning for equities or options and
+    # would silently corrupt downstream P&L if they reached user code.
+    # Zero is permitted as the never-filled-cancel convention for
+    # CANCELLED/REJECTED events; the strict-positive rule for actual
+    # fills lives in the FILL/PARTIAL_FILL branch below.
+    if event.fill_price is not None and event.fill_price < 0:
+        raise OrderEventContractError(
+            f"{event_value} event {event.order_id!r} has invalid "
+            f"fill_price value: expected non-negative, got "
+            f"{event.fill_price!r}"
+        )
+    # Integers: ``fill_quantity`` is ``int | None`` (the dataclass
+    # annotation permits ``None`` on ``ACK`` / ``EXPIRED`` and on
+    # never-acknowledged events at the runtime boundary), but
+    # ``cumulative_filled`` and ``remaining_quantity`` are
+    # non-Optional in the dataclass schema. Enforce that at the
+    # dispatch boundary so ``PARTIAL_FILL`` / terminal events with
+    # ``remaining_quantity=None`` cannot reach user state machines.
+    _require_non_negative_int("fill_quantity", event.fill_quantity, allow_none=True)
+    _require_non_negative_int("cumulative_filled", event.cumulative_filled)
+    _require_non_negative_int("remaining_quantity", event.remaining_quantity)
+
+    # Field-presence (non-empty) checks. Type checks above guarantee
+    # these are now safe to apply.
+    if not event.order_id:
+        raise OrderEventContractError(f"{event.event_type.value} event missing order_id")
+    if not event.client_order_id:
+        raise OrderEventContractError(
+            f"{event.event_type.value} event {event.order_id} missing client_order_id"
+        )
+    if not event.strategy_id:
+        raise OrderEventContractError(
+            f"{event.event_type.value} event {event.order_id} missing strategy_id"
+        )
+    if not event.symbol:
+        raise OrderEventContractError(
+            f"{event.event_type.value} event {event.order_id} missing symbol"
+        )
+    if not event.timestamp:
+        raise OrderEventContractError(
+            f"{event.event_type.value} event {event.order_id} missing timestamp"
+        )
+
+    ac_named_four = (
+        OrderEventType.FILL,
+        OrderEventType.PARTIAL_FILL,
+        OrderEventType.CANCELLED,
+        OrderEventType.REJECTED,
+    )
+    if event.event_type in ac_named_four:
+        if event.fill_price is None:
+            raise OrderEventContractError(
+                f"{event.event_type.value} event {event.order_id} missing fill_price"
+            )
+        if event.fill_quantity is None:
+            raise OrderEventContractError(
+                f"{event.event_type.value} event {event.order_id} missing fill_quantity"
+            )
+        if event.commission is None:
+            raise OrderEventContractError(
+                f"{event.event_type.value} event {event.order_id} missing commission"
+            )
+
+    if event.event_type in (OrderEventType.FILL, OrderEventType.PARTIAL_FILL):
+        if event.fill_quantity is not None and event.fill_quantity <= 0:
+            raise OrderEventContractError(
+                f"{event.event_type.value} event {event.order_id} fill_quantity must "
+                f"be positive (got {event.fill_quantity})"
+            )
+        # An actual fill at zero price is physically impossible and
+        # would corrupt downstream P&L. Demand strictly positive
+        # fill_price on FILL / PARTIAL_FILL events.
+        if event.fill_price is not None and event.fill_price <= 0:
+            raise OrderEventContractError(
+                f"{event.event_type.value} event {event.order_id} fill_price must "
+                f"be positive (got {event.fill_price!r})"
+            )
+
+    # Lifecycle-consistency: ``FILL`` and ``PARTIAL_FILL`` carry opposite
+    # remaining-quantity invariants. A ``PARTIAL_FILL`` with
+    # ``remaining_quantity == 0`` is actually a final fill mislabeled as
+    # partial; a ``FILL`` with ``remaining_quantity > 0`` is actually a
+    # partial fill mislabeled as final. Either mismatch silently
+    # corrupts user-side order-state machines, so reject at the
+    # dispatch boundary.
+    if event.event_type == OrderEventType.PARTIAL_FILL:
+        if event.remaining_quantity == 0:
+            raise OrderEventContractError(
+                f"PARTIAL_FILL event {event.order_id} has remaining_quantity=0; "
+                "a partial fill that leaves nothing working is a final FILL — "
+                "set event_type=FILL or set remaining_quantity > 0"
+            )
+    if event.event_type == OrderEventType.FILL:
+        if event.remaining_quantity != 0:
+            raise OrderEventContractError(
+                f"FILL event {event.order_id} has remaining_quantity="
+                f"{event.remaining_quantity}; a final fill must leave nothing "
+                "working — set event_type=PARTIAL_FILL or set remaining_quantity=0"
+            )
+
+    if event.event_type in (
+        OrderEventType.CANCELLED,
+        OrderEventType.REJECTED,
+        OrderEventType.EXPIRED,
+    ):
+        if not event.reason:
+            raise OrderEventContractError(
+                f"{event.event_type.value} event {event.order_id} missing reason"
+            )
+
+    # Cross-field cumulative-state invariant on the AC-named terminal
+    # events. The documented convention is that CANCELLED / REJECTED
+    # report ``fill_quantity`` as the cumulative shares filled at the
+    # terminal event — explicit zeros on a never-filled cancel or
+    # reject, cumulative total on a partially-filled cancel or
+    # reject. A dispatcher that emits ``fill_quantity=4`` while
+    # ``cumulative_filled=0`` (or vice versa) contradicts the
+    # documented contract and would corrupt downstream position /
+    # P&L reconciliation.
+    if event.event_type in (OrderEventType.CANCELLED, OrderEventType.REJECTED):
+        if event.fill_quantity is not None and event.fill_quantity != event.cumulative_filled:
+            raise OrderEventContractError(
+                f"{event.event_type.value} event {event.order_id} has "
+                f"inconsistent cumulative state: fill_quantity="
+                f"{event.fill_quantity} != cumulative_filled="
+                f"{event.cumulative_filled} — on a terminal event "
+                "these must agree (the cumulative-state convention)"
+            )
 
 
 class WarmupNotComplete(StrategyAPIError):
@@ -737,7 +1154,24 @@ class Strategy:
         """Run when a subscribed bar arrives."""
 
     def on_order_event(self, context: StrategyContext, event: OrderEvent) -> None:
-        """Run when an order lifecycle event is delivered (``SRS-SDK-004``)."""
+        """Run when an order lifecycle event is delivered (``SRS-SDK-004``).
+
+        Concrete dispatchers (live IB execution per ``SRS-EXE-001`` and
+        internal paper simulation per ``SRS-SIM-001``) must validate
+        the payload against the field-presence contract before
+        invoking this callback. Python dispatchers do so via
+        ``assert_order_event_payload``; Rust dispatchers apply the
+        same field-presence rules locally — per AGENTS.md the Rust
+        core runtime services are not allowed to depend on the
+        Python Strategy SDK. The same user-facing delivery surface is
+        used in both modes per ``SRS-SDK-001`` (``AC-14``); the
+        cross-language source of truth for the SyRS ``NFR-P4`` p95
+        budgets lives in ``architecture/runtime_services.json``
+        (``strategy_api_order_events_contract``) — the Python
+        constants ``LIVE_CALLBACK_LATENCY_P95_MS`` and
+        ``PAPER_CALLBACK_LATENCY_P95_MS`` are the Python-side view
+        kept in parity with that metadata.
+        """
 
     def on_schedule(self, context: StrategyContext, tag: str) -> None:
         """Run when a scheduled trigger fires (``SRS-SDK-002``)."""
@@ -748,19 +1182,23 @@ __all__ = [
     "AssetClass",
     "AssetClassViolation",
     "assert_asset_class",
+    "assert_order_event_payload",
     "Bar",
     "BarConsolidator",
     "BollingerBands",
     "EMA",
     "HistoricalData",
     "Indicator",
+    "LIVE_CALLBACK_LATENCY_P95_MS",
     "MACD",
     "OrderEvent",
+    "OrderEventContractError",
     "OrderEventType",
     "OrderHandle",
     "OrderRequest",
     "OrderSide",
     "OrderType",
+    "PAPER_CALLBACK_LATENCY_P95_MS",
     "RSI",
     "RangeBarBuilder",
     "RenkoBuilder",

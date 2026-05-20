@@ -63,7 +63,7 @@ jobs:
 
       - name: Architecture & contract checks
         run: |
-          for check in architecture dependency_boundary adapter_isolation deployment config rest_api websocket_api cli adapter data_provider historical_data strategy_api strategy_api_parity strategy_api_scheduler strategy_api_subscriptions; do
+          for check in architecture dependency_boundary adapter_isolation deployment config rest_api websocket_api cli adapter data_provider historical_data strategy_api strategy_api_parity strategy_api_scheduler strategy_api_subscriptions strategy_api_order_events; do
             echo "→ tools/${check}_check.py"
             python3 "tools/${check}_check.py"
           done

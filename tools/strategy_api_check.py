@@ -18,6 +18,13 @@ import sys
 import typing
 from pathlib import Path
 
+from strategy_api_order_events_check import (
+    StrategyApiOrderEventsCheckError,
+    assert_strategy_api_order_events_static,
+)
+from strategy_api_order_events_check import (
+    load_config as load_order_events_config,
+)
 from strategy_api_parity_check import (
     StrategyApiParityCheckError,
     assert_strategy_api_parity_static,
@@ -166,6 +173,9 @@ def check_sdk_003(api: object) -> str:
 
 
 def check_sdk_004(api: object) -> str:
+    # Defensive backstop of the original static assertions (OrderEventType
+    # members, OrderEvent field set) kept so a regression flagged here
+    # still names "SDK-004" rather than the delegated check's identifier.
     expected = {"FILL", "PARTIAL_FILL", "CANCELLED", "REJECTED"}
     have = {m.name for m in api.OrderEventType}
     missing = expected - have
@@ -183,8 +193,24 @@ def check_sdk_004(api: object) -> str:
     }
     if not required.issubset(fields):
         fail(f"SDK-004: OrderEvent missing fields {sorted(required - fields)}")
+    # Delegate the full SyRS SYS-7 / SYS-85 / NFR-P4 callback contract to
+    # strategy_api_order_events_check (assert_order_event_payload behavioural
+    # exercise; LIVE_/PAPER_CALLBACK_LATENCY_P95_MS constants; Strategy.on_
+    # order_event signature + docstring tokens; required_exports list).
+    try:
+        assert_strategy_api_order_events_static(load_order_events_config())
+    except StrategyApiOrderEventsCheckError as error:
+        fail(f"SDK-004 order-events invariant: {error}")
     return (
-        "SDK-004: OrderEventType{FILL,PARTIAL_FILL,CANCELLED,REJECTED}; OrderEvent fields complete"
+        "SDK-004 (SDK-surface only): OrderEventType{FILL,PARTIAL_FILL,"
+        "CANCELLED,REJECTED}; OrderEvent fields complete; "
+        "assert_order_event_payload guard + LIVE_/PAPER_CALLBACK_"
+        "LATENCY_P95_MS budgets (Python-side view of the cross-"
+        "language source of truth in architecture/runtime_services."
+        "json) enforced via strategy_api_order_events_check (SyRS "
+        "SYS-7 / SYS-85 — NFR-P4 latency proof gated on SRS-EXE-001 "
+        "+ SRS-SIM-001; Rust core dispatchers read the metadata "
+        "directly per AGENTS.md dependency direction)"
     )
 
 
