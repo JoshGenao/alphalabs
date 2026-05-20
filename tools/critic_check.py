@@ -203,7 +203,10 @@ SAFETY_PATH_RE = re.compile(
     r"|trading[_-]?calendar|scheduler[_-]?contract"
     r"|strategy[_-]?api[_-]?subscriptions|asset[_-]?class[_-]?guard"
     r"|strategy[_-]?api[_-]?order[_-]?events|order[_-]?event[_-]?payload"
-    r"|callback[_-]?latency)",
+    r"|callback[_-]?latency"
+    r"|strategy[_-]?api[_-]?warmup|warm[_-]?up[_-]?replay"
+    r"|warmup[_-]?controller|warmup[_-]?state|warmup[_-]?bars"
+    r"|indicator[_-]?initialization|historical[_-]?replay)",
     re.IGNORECASE,
 )
 
