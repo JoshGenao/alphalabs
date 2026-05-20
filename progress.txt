@@ -1,3 +1,153 @@
+=== SESSION 27 ===
+Date: 2026-05-19
+Feature completed: NONE — SDK-surface for SRS-SDK-004 shipped as
+prep, SRS-SDK-004 stays passes:false. Per /codex:adversarial-review
+the NFR-P4 latency-proof half of the AC (live <1000 ms p95 from
+broker fill acknowledgement; paper <100 ms p95 from simulated fill)
+requires SRS-EXE-001 (live IB execution) and SRS-SIM-001 (internal
+paper simulation) which are not yet built. Marking passes:true on
+the SDK surface alone would let CI green-light a feature whose
+performance gate is not actually verified. Per
+[[feedback-scope-honesty]] the honest move is to surface the
+finding and defer: the SDK surface is real value (future
+dispatchers will satisfy this contract), but the feature stays
+failing until its end-to-end AC can be proven.
+Status: 95 remaining features (unchanged from SESSION 26).
+
+What I did:
+- Carryover audit at session start: SESSION 26's "Next P1 by the
+  lowest-ID rule within the SRS-SDK chain: SRS-SDK-004" was sound.
+  Independent re-verification of ERR-7 / ERR-8 / ERR-9 / SRS-API-001
+  and the SRS-BT-* / SRS-DATA-* / SRS-RESV-* / SRS-SAFE-* / SRS-EXE-*
+  / SRS-SIM-* / SRS-MD-* clusters confirmed they remain blocked on
+  subsystems not yet built — same conclusion as SESSION 26.
+
+- Prep commit (c7f1029): extended SAFETY_PATH_RE in
+  tools/critic_check.py to add `strategy[_-]?api[_-]?order[_-]?events`,
+  `order[_-]?event[_-]?payload`, and `callback[_-]?latency` tokens.
+  Mirrors the SESSION 16-26 per-feature prep precedent.
+
+- Feat commit (f4c34e1, +3413 / -9, 11 files): shipped the SDK
+  boundary that the future live (SRS-EXE-001) and paper
+  (SRS-SIM-001) dispatchers will satisfy. After 9 rounds of
+  /codex:adversarial-review iterative deepening, the boundary
+  enforces (1) payload-shape (rejects None, dict, schema-drifted
+  payloads with a structured error), (2) event-type discriminant
+  (rejects bare-string / unknown / non-enum event_type), (3)
+  runtime type + finite validation (str identifiers; finite int/
+  float fill_price + commission; non-negative int fill_quantity +
+  cumulative_filled + remaining_quantity), (4) AC-named-four
+  field-presence (FILL/PARTIAL_FILL/CANCELLED/REJECTED must carry
+  fill_price/fill_quantity/commission), (5) sign discipline
+  (fill_price never negative; FILL/PARTIAL_FILL require strictly
+  positive fill_price + fill_quantity), (6) lifecycle consistency
+  (FILL.remaining_quantity == 0; PARTIAL_FILL.remaining_quantity
+  > 0; CANCELLED/REJECTED.fill_quantity == cumulative_filled), (7)
+  terminal reason on CANCELLED/REJECTED/EXPIRED. Latency budgets
+  exposed as LIVE_/PAPER_CALLBACK_LATENCY_P95_MS — the Python-
+  side view of the cross-language source of truth in
+  architecture/runtime_services.json (Rust core dispatchers read
+  the metadata directly per AGENTS.md dependency direction; the
+  contract check enforces parity).
+
+- This SESSION 27 chore commit: appends this entry to
+  progress.txt. feature_list.json is NOT modified — SRS-SDK-004
+  stays passes:false.
+
+What I tested:
+- ./init.sh -> "→ Running Python Strategy API order-events
+  contract check..." between subscriptions and deployment-config
+  steps; reaches ✓ Environment ready.
+- python3 tools/strategy_api_order_events_check.py -> SRS-SDK-004
+  SDK-SURFACE PASS — order event callback contract (NFR-P4 p95
+  latency proof deferred to SRS-EXE-001 + SRS-SIM-001), 6
+  evidence bullets.
+- python3 tools/strategy_api_check.py -> API-1 PASS with the
+  SDK-004 line naming the delegated SDK-surface scope.
+- python3 tools/architecture_check.py -> top-level PASS with the
+  order-events-contract block.
+- .venv/bin/python -m pytest tests/ -q -> 726 passed, 4 skipped,
+  118 subtests (was 608 / 4 / 118 in SESSION 26; +118 net).
+- ruff check + format on every in-scope file: clean.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged) on the prep
+  commit (c7f1029): APPROVE — 0 findings.
+  deterministic (tools/critic_check.py --staged) on the feat
+  commit (f4c34e1): WARN — 14 finding(s), all the same false-
+  positive `money:float-arithmetic` pattern matching docstring/
+  comment text that contains `fill_price/fill_quantity/commission`
+  as a slash-separated field-name list. None of the flagged lines
+  do arithmetic on a price-named field; the matches are
+  documentation/error-message text only. Override accepted on the
+  same precedent as prior SDK-002 / SDK-003 sessions: documented
+  prose listing field names is not in scope for the money-math
+  rule.
+  judgment (/codex:adversarial-review --wait
+  $(cat prompts/critic_prompt.md)): APPROVE — no material
+  findings (10th pass). Passes 1-9 each surfaced a genuine
+  defensive gap and were addressed before approval. The
+  trajectory of findings: (1) AC half-A weakening on CANCELLED/
+  REJECTED → fixed via AC-named-four enforcement; (2) scope
+  honesty (PASS claim implied full SRS-SDK-004 evidence) → fixed
+  via SDK-SURFACE rename + passes:false + architecture metadata
+  scoping; (3) event_type discriminant validation against StrEnum
+  bare-string slip → fixed with isinstance check; (4) payload-
+  shape guard (None / dict / schema-drift) → fixed with
+  isinstance(event, OrderEvent) first; (5) runtime type + finite
+  validation → fixed with type/finite helpers; (6) negative
+  fill_price → fixed with sign rules; (7) PARTIAL_FILL.rem == 0
+  → fixed with lifecycle consistency; (8) terminal cumulative-
+  state inconsistency → fixed with fill_quantity ==
+  cumulative_filled cross-field check; (9) Rust-core depends-on-
+  Python-SDK framing → fixed by moving the cross-language source
+  of truth to architecture/runtime_services.json.
+
+Override:
+- The 14 deterministic Layer-1 WARNs are accepted as false
+  positives (above). The override sentence is "the regex matches
+  `fill_price\\s*/` because `/` is in `[+\\-*/]`, but the matched
+  lines are documentation prose listing field names — not
+  arithmetic — and the SAFETY_PATH_RE / safety-pair rule already
+  caught the paired tests/domain/ diff in the same commit."
+
+Pre-existing ruff issues:
+- The 5 ruff errors in 4 files outside SDK-004 scope (same list
+  as SESSION 25 / 26) continue to be deferred per the user-
+  authorized note. None overlap this session's diff. Ruff on the
+  in-scope diff is clean.
+
+Known issues / notes for next agent:
+- SRS-SDK-004 STAYS passes:false — the SDK surface is shipped
+  but the NFR-P4 latency proof half of the AC remains gated on
+  SRS-EXE-001 + SRS-SIM-001. Do NOT flip passes:true until those
+  features ship and the live + paper p95 latency proofs land.
+- Lowest remaining P1 by ID in the SRS-SDK chain is SRS-SDK-005
+  (warm-up mechanism). SDK-006 (indicators), SDK-007 (P2 bar
+  consolidation), SDK-008 (P3 non-standard bars), SDK-009 (docs)
+  follow. ERR-7 / ERR-8 / ERR-9 / SRS-API-001 / SRS-BT-* /
+  SRS-DATA-* / SRS-RESV-* / SRS-SAFE-* / SRS-EXE-* / SRS-SIM-*
+  / SRS-MD-* remain blocked on subsystems not yet built.
+- Codex /codex:adversarial-review is now confirmed available via
+  the plugin slash command (codex-cli 0.130.0, ChatGPT auth).
+  The 9-round iterative-deepening pattern in this session
+  demonstrated genuine defensive value but also shows the
+  adversarial-review can find new gaps indefinitely on a complex
+  boundary. For future SDK / boundary features, expect 1-3 rounds
+  of iteration on the first feature in a new boundary category;
+  later features within the same category should converge faster
+  because the helper / pattern is established.
+- The SDK-surface guard ships a comprehensive validation
+  helper that future production dispatchers (SRS-EXE-001 live
+  IB execution; SRS-SIM-001 internal paper simulation) should
+  call before invoking Strategy.on_order_event. The same is true
+  for any Rust-side dispatchers — the AGENTS.md dependency
+  direction forbids Rust importing the Python SDK, so Rust
+  dispatchers must reimplement the same field-presence rules
+  locally. The architecture metadata block lists the rules
+  explicitly so the Rust implementation has a single source of
+  truth to consult.
+
 === SESSION 26 ===
 Date: 2026-05-18
 Feature completed: SRS-SDK-003 — enforce single tradable asset class
