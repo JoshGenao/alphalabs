@@ -221,7 +221,7 @@
       "Step 3: Verify acceptance criteria: A strategy configured with a 200-bar warm-up receives historical bars before the first executable bar and begins with indicator buffers initialized.",
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {

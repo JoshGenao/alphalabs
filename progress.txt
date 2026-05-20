@@ -1,3 +1,169 @@
+=== SESSION 28 ===
+Date: 2026-05-19
+Feature completed: SRS-SDK-005 — Python Strategy API warm-up
+mechanism. The SDK ships a WarmupController + WarmupState
+lifecycle + assert_warmup_complete guard that future
+dispatchers (live SRS-EXE-001, paper SRS-SIM-001, backtest
+SRS-BT-001) drive before the first executable bar; the L7
+reference dispatcher exercises the AC end-to-end with a 200-
+bar replay + SMA(200) ready-at-boundary check. Unlike
+SRS-SDK-004 (which deferred for NFR-P4 latency proof), SDK-005
+has no NFR latency gate — its AC is purely behavioural ordering
++ indicator buffer state, fully provable at the SDK surface.
+Status: 94 remaining features (was 95 at start of session).
+
+What I did:
+- Carryover audit at session start: SESSION 27's "Lowest
+  remaining P1 by ID in the SRS-SDK chain is SRS-SDK-005" was
+  sound. ERR-7 / ERR-8 / ERR-9 / SRS-API-001 / SRS-BT-* /
+  SRS-DATA-* / SRS-RESV-* / SRS-SAFE-* / SRS-EXE-* / SRS-SIM-* /
+  SRS-MD-* remain blocked on subsystems not yet built.
+
+- Prep commit (cae811f): extended SAFETY_PATH_RE in
+  tools/critic_check.py to add `strategy[_-]?api[_-]?warmup`,
+  `warm[_-]?up[_-]?replay`, `warmup[_-]?controller`,
+  `warmup[_-]?state`, `warmup[_-]?bars`,
+  `indicator[_-]?initialization`, `historical[_-]?replay`
+  tokens. Mirrors the SESSION 16-27 per-feature prep precedent.
+
+- Feat commit (76c0f00, +1786 / -5, 10 files): shipped the
+  warm-up SDK surface. New python/atp_strategy/warmup.py
+  exposes WarmupState (PENDING / IN_PROGRESS / COMPLETE),
+  WarmupController (state / warmup_bars / bars_replayed /
+  symbols_replayed properties, run() method), and
+  assert_warmup_complete(state) guard. The controller pulls
+  warmup_bars historical bars per subscribed symbol, replays
+  them through Strategy.on_bar in order, transitions to
+  COMPLETE, then fires on_warmup_complete exactly once.
+
+  Critical safety property the first /codex:adversarial-review
+  pass surfaced (and the second pass approved after the fix):
+  the controller is fail-closed on a short historical replay.
+  If HistoricalData.get_bars returns fewer than warmup_bars
+  bars for any subscribed symbol the controller raises
+  WarmupNotComplete with a "short by N bars" message, leaves
+  WarmupState at IN_PROGRESS, does NOT fire on_warmup_complete,
+  and keeps assert_warmup_complete closed. Production
+  dispatchers must halt the container and surface the failure
+  to the operator rather than enter live trading with an
+  unready indicator (a 200-period SMA needs at least 200 bars
+  to become ready).
+
+  Architecture metadata block strategy_api_warmup_contract is
+  the cross-language source of truth: state members, canonical
+  200-bar warm-up, helper functions, exports, docstring tokens,
+  AC traces, deferred dispatcher ownership, and the explicit
+  fail-closed history-shortfall behaviour Rust core dispatchers
+  re-implement locally per AGENTS.md dependency direction (no
+  Rust -> Python SDK dependency).
+
+  Contract evidence script tools/strategy_api_warmup_check.py
+  + wiring in tools/architecture_check.py + init.sh.
+
+  L7 domain test tests/domain/test_warmup_replay.py: reference
+  _RefDispatcher exercises the AC end-to-end with 200 historical
+  bars + SMA(200), executable-bar / order-submission gating
+  during warm-up, on_warmup_complete fires-exactly-once at the
+  boundary, live/paper parity (same surface), NFR-R3 restart
+  re-execution, short-history fail-closed cases (single + multi-
+  subscription), and the zero-warmup degenerate path. 13 tests.
+
+  L3 contract tests/test_strategy_api_warmup_contract.py:
+  subprocess positive-evidence check + mutation rig that locks
+  WarmupState members, controller method/property shape, the
+  on_warmup_complete signature + docstring tokens, the short-
+  history shortfall guard, the assert_warmup_complete body, and
+  the package-level exports. 15 tests.
+
+- This SESSION 28 chore commit: appends this entry to
+  progress.txt and flips SRS-SDK-005 passes:true in
+  feature_list.json.
+
+What I tested:
+- ./init.sh -> "→ Running Python Strategy API warm-up contract
+  check..." between order-events and deployment-config steps;
+  reaches ✓ Environment ready.
+- python3 tools/strategy_api_warmup_check.py -> SRS-SDK-005
+  PASS — Python Strategy API warm-up mechanism, 5 evidence
+  bullets including the fail-closed short-replay clause.
+- python3 tools/architecture_check.py (via .venv) -> top-level
+  PASS with the warmup contract block.
+- .venv/bin/python -m pytest tests/ -q -> 754 passed, 4 skipped,
+  118 subtests (was 726 in SESSION 26 / 26+118 in 27; +28 net
+  this session covering the warmup surface).
+- ruff check + format on every in-scope file: clean.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged) on the prep
+  commit (cae811f): APPROVE — 0 findings.
+  deterministic (tools/critic_check.py --staged) on the feat
+  commit (76c0f00): APPROVE — 0 findings.
+  judgment (/codex:adversarial-review --wait
+  $(cat prompts/critic_prompt.md)): APPROVE — 0 findings
+  (second pass). First pass BLOCKED on two genuine findings:
+  (1) safety:warmup-short-history — the controller flipped to
+  COMPLETE without verifying get_bars returned warmup_bars
+  bars per subscription, letting a 200-bar strategy open the
+  gate with SMA(200) still unready; (2) arch:cross-language-
+  contract-incomplete — the architecture metadata omitted the
+  fail-closed shortfall rule, so Rust dispatchers re-implementing
+  it could reproduce the same bug. Both fixed before the second
+  pass approval: shortfall length-check in
+  python/atp_strategy/warmup.py, new keys
+  required_history_count_minimum_per_symbol +
+  required_history_shortfall_behavior in
+  architecture/runtime_services.json, behavioural sub-case in
+  tools/strategy_api_warmup_check.py + L7 negative test in
+  tests/domain/test_warmup_replay.py + L3 mutation case in
+  tests/test_strategy_api_warmup_contract.py.
+
+Known issues / notes for next agent:
+- SRS-SDK-005 is passes:true based on the SDK-surface contract
+  + L7 reference dispatcher exercising the AC end-to-end. The
+  cross-language source of truth in
+  architecture/runtime_services.json strategy_api_warmup_contract
+  pins (a) state machine, (b) canonical 200-bar warm-up,
+  (c) fail-closed history-shortfall behaviour, (d) deferred
+  dispatcher ownership (SRS-EXE-001 live / SRS-SIM-001 paper /
+  SRS-BT-001 backtest / SRS-EXE-005 + SRS-SIM-004 restart
+  re-execution per NFR-R3).
+
+- The /codex:adversarial-review caught a real safety property
+  (fail-closed on short replay) that the deterministic critic
+  could not. This validates the SDK-boundary defensive
+  checklist [[feedback-sdk-boundary-defensive-checklist]] —
+  next SDK feature pre-check should explicitly include "what
+  if the upstream data source returns less than the requested
+  amount" as a category alongside the existing 11.
+
+- Codex /codex:adversarial-review converged in 2 rounds
+  (versus 9 rounds on SDK-004). The faster convergence
+  matches SESSION 27's prediction that later SDK features
+  within the same boundary category converge faster because
+  the pattern is established.
+
+- Lowest remaining P1 by ID in the SRS-SDK chain is now
+  SRS-SDK-006 (built-in technical indicators through wrappers
+  around pandas-ta and TA-Lib). SDK-006 introduces new
+  dependencies (pandas-ta, TA-Lib) — pre-check SyRS for
+  whether they are in scope before pulling them in; the
+  existing python/atp_strategy/indicators.py ships pure-Python
+  SMA / EMA / RSI / MACD / BollingerBands / ATR satisfying the
+  incremental-update half of the AC, but numerical parity
+  with pandas-ta / TA-Lib reference outputs is the deferred
+  half. SDK-007 (P2 bar consolidation), SDK-008 (P3 non-
+  standard bars), SDK-009 (docs) follow. SRS-SDK-004 stays
+  passes:false until SRS-EXE-001 + SRS-SIM-001 ship and the
+  NFR-P4 p95 latency proofs land. ERR-7 / ERR-8 / ERR-9 /
+  SRS-API-001 / SRS-BT-* / SRS-DATA-* / SRS-RESV-* /
+  SRS-SAFE-* / SRS-EXE-* / SRS-SIM-* / SRS-MD-* remain blocked
+  on subsystems not yet built.
+
+- Pre-existing ruff issues in 4 files outside SDK-005 scope
+  (same list as SESSION 25 / 26 / 27) continue to be deferred
+  per the user-authorized note. None overlap this session's
+  diff. Ruff on the in-scope diff is clean.
+
 === SESSION 27 ===
 Date: 2026-05-19
 Feature completed: NONE — SDK-surface for SRS-SDK-004 shipped as
