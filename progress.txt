@@ -1,3 +1,270 @@
+=== SESSION 30 ===
+Date: 2026-05-21
+Feature completed: SRS-SDK-009 — Python Strategy API author
+documentation surface. The SDK now ships tier-1 docstrings on every
+public name in atp_strategy.__all__ (Strategy hooks, StrategyContext
+methods, Scheduler / TradingCalendar / Indicator / BarConsolidator
+Protocols, the Bar / Order* / Indicator dataclasses + enums, the
+warm-up surface, every error type), an expanded
+python/atp_strategy/README.md with Getting started + Callback
+reference + StrategyContext reference + Errors and assertions +
+Configuration reference sections, and a new
+python/atp_strategy/examples/ subpackage with three self-contained
+runnable Strategy subclasses (hello / sma_crossover /
+dual_asset_analytics) plus an in-process _harness that drives them
+end-to-end. The author-grade contract is pinned in
+architecture/runtime_services.json#strategy_api_documentation_contract
+and enforced by tools/strategy_api_documentation_check.py +
+tests/test_strategy_api_documentation_contract.py L3 mutation
+suite + tests/domain/test_api_documentation.py L7 end-to-end
+runner. The SRS-SDK-009 AC ("Python-proficient trader can author a
+new strategy without reading platform internals") is provable:
+every code fence in every public docstring and every README block
+is AST-validated to import only from the atp_strategy facade,
+relative imports are normalized before checking, repo-layout
+imports (python.atp_strategy.*) are rejected, and every example
+module runs through the harness without ever opening api.py /
+warmup.py / indicators.py / scheduler.py / calendar.py.
+Status: 92 remaining features (was 93 at start of session).
+
+What I did:
+- Carryover audit at session start: SESSION 29's "Lowest remaining
+  P1 by ID in the SRS-SDK chain is now SRS-SDK-009 (document the
+  Python Strategy API for strategy authors)" was sound. SRS-SDK-004
+  stays passes:false until SRS-EXE-001 + SRS-SIM-001 ship the
+  NFR-P4 p95 latency proofs. Plan-mode exploration confirmed the
+  existing python/atp_strategy/ surface was 60-70% documented;
+  Strategy.on_start/on_bar/on_schedule, StrategyContext Protocol
+  methods, Scheduler / TradingCalendar / Indicator Protocol stubs
+  were all one-liners; no example file on disk; no contract-
+  enforced documentation coverage anywhere.
+
+- Prep commit (5e662c8): extended SAFETY_PATH_RE in
+  tools/critic_check.py to add strategy[_-]?api[_-]?documentation,
+  api[_-]?documentation, strategy[_-]?example, and
+  example[_-]?strateg(y|ies) tokens. Mirrors the SESSION 16-29
+  per-feature prep precedent. Deterministic critic on the staged
+  prep commit: APPROVE — no findings.
+
+- Feat commit (25375d0, +2836 / -66, 19 files): shipped the
+  documentation surface. Six deliverable groups:
+
+  (a) Beefed up under-documented docstrings to meet the tier-1
+  100/200-char minima plus a doctest example fence. api.py grew
+  by ~338 lines covering Strategy.on_* hooks, StrategyContext.*
+  Protocol methods, Scheduler/TradingCalendar Protocol stubs,
+  HistoricalData.get_bars Args/Returns, Indicator/BarConsolidator/
+  RenkoBuilder/RangeBarBuilder Protocol method stubs, and the
+  three constants/aliases that needed tier-3 attribute
+  docstrings (LIVE_CALLBACK_LATENCY_P95_MS,
+  PAPER_CALLBACK_LATENCY_P95_MS, ScheduleCallback).
+
+  (b) New python/atp_strategy/examples/ subpackage. _harness.py is
+  a 260-line in-process StrategyContext / HistoricalData /
+  Scheduler stub that walks the full warm-up + executable +
+  fill-event sequence. The harness's order() gate mirrors the
+  production dispatcher contract: assert_warmup_complete is called
+  before every order so author-side warm-up-leak bugs surface
+  locally rather than only in live. Three examples:
+    * hello.py: minimal subscribe + on_bar logger
+    * sma_crossover.py: 200-bar warm-up + SMA(10)/SMA(50)
+      crossover + scheduled at_market_close(-5m) flatten +
+      ctx.cancel + ctx.get_state/set_state position persistence
+    * dual_asset_analytics.py: EQUITY-tradable strategy
+      subscribed to both EQUITY and OPTION; demonstrates the
+      SRS-SDK-003 single-tradable-asset invariant by catching
+      the AssetClassViolation on an attempted OPTION order
+
+  (c) python/atp_strategy/README.md expanded by 118 lines.
+  New sections: Getting started (3 required config fields +
+  python -m atp_strategy.examples.* invocations), Callback
+  reference (5-hook table), StrategyContext reference (11-row
+  member table), Errors and assertions (6-error + 2-helper
+  table), Configuration reference (StrategyConfig field table).
+
+  (d) architecture/runtime_services.json
+  strategy_api_documentation_contract block (134 lines new):
+  documentation_module_paths, readme_path,
+  required_readme_sections (14), examples_package_path,
+  required_example_modules (3), fully_documented_symbols (36),
+  summary_documented_symbols (6), one_line_documented_symbols
+  (3), min_docstring_chars_per_tier {full:200, summary:80,
+  one_line:20}, required_strategy_overridable_hooks (5),
+  required_strategy_context_methods (8),
+  min_docstring_chars_for_hook_or_context_method (100),
+  tier_one_example_marker_regex_alternatives,
+  six anti_drift_rules, ac_traces, deferred.
+
+  (e) tools/strategy_api_documentation_check.py (827 lines):
+  14 evidence collectors run in dependency order — AST-only
+  passes first (tier partition / docstring lengths / hook +
+  StrategyContext method minima / README sections / docstring
+  fence facade / README fence facade / no-mode-branch /
+  example anti-drift), import-based passes last (example
+  modules importable + define exactly one Strategy subclass).
+  _resolve_relative_import normalizes relative ImportFrom
+  nodes; FORBIDDEN_INTERNAL_PREFIXES is shared between example
+  scanner and docstring/README scanners so the anti-internals
+  set is single-sourced.
+
+  (f) Wired into init.sh (between indicators check and
+  deployment-config check) and into .github/workflows/ci.yml
+  architecture-check loop.
+
+  (g) tests/test_strategy_api_documentation_contract.py L3:
+  StrategyApiDocumentationScriptTest (subprocess positive
+  evidence) + _MutationRig (sys.path-restoring tmpdir copy) +
+  mutation suites covering: dropped Strategy.on_bar docstring,
+  demoted StrategyContext.order docstring, stripped SMA tier-1
+  example fence, removed README section, removed example
+  pointer, neutered example with no Strategy subclass, deleted
+  example file, deep-path internal import in example, anti-
+  drift import of non-__all__ name in example, execution-mode
+  string literal in example, deep-path import in class
+  docstring doctest, repo-layout (python.atp_strategy.*) import
+  in docstring, deep-path import in README fence, unparseable
+  fence, README schedule-tag wording, dropped tier-3 attribute
+  docstring, repo-layout import in example module, relative
+  internal import in example, bare relative-alias import,
+  permitted sibling relative import.
+
+  (h) tests/domain/test_api_documentation.py L7 (marked
+  domain + safety): ExampleStrategyEndToEndTest drives all
+  three examples through the harness; ExampleDoesNotReadInternalsTest
+  AST-walks every example's imports; DocstringCodeFenceRoundtripTest
+  compile()s the tier-1 doctest blocks; NoExecutionModeBranchInExamplesTest
+  asserts no example branches on live/paper/backtest;
+  ReadmePointersResolveTest validates every
+  python -m atp_strategy.examples.X reference resolves to a
+  declared example module; StrategyContextProtocolSurfaceCoveredByExamplesTest
+  drives coverage from the contract block's
+  required_strategy_context_methods (exempting indicator /
+  consolidate which README documents as "equivalent to
+  importing the class directly").
+
+- Also updated three pre-existing L3 contract tests for parity /
+  scheduler / subscriptions to match the new multi-line docstring
+  shapes on StrategyContext.cancel/order and TradingCalendar.
+  is_session / premarket_open.
+
+- This SESSION 30 chore commit: appends this entry to progress.txt
+  and flips SRS-SDK-009 passes:true in feature_list.json.
+
+What I tested:
+- ./init.sh -> "→ Running Python Strategy API documentation
+  contract check..." between indicators and deployment-config
+  steps; reaches ✓ Environment ready.
+- python3 tools/strategy_api_documentation_check.py -> SRS-SDK-009
+  PASS with 14 evidence bullets, including "every code fence in
+  the 45 public docstrings uses only the atp_strategy facade"
+  and "every ``python`` code fence in the README (10 blocks) uses
+  only the atp_strategy facade".
+- PYTHONPATH=python NUMBA_DISABLE_JIT=1 .venv/bin/python -m
+  atp_strategy.examples.{hello,sma_crossover,dual_asset_analytics}
+  -> each example exits 0 and logs the expected lines through the
+  in-process harness.
+- .venv/bin/python -m pytest tests/test_strategy_api_documentation_contract.py
+  tests/domain/test_api_documentation.py -q -> 30 passed.
+- .venv/bin/python -m pytest -m "not integration and not e2e" -q
+  -> 837 passed, 4 skipped, 118 subtests (was 807 in SESSION 29;
+  +30 net this session). Net new test count covers L3 mutations,
+  L7 end-to-end runs, and the schedule-tag wording assertion.
+- ruff check + format on every in-scope file: clean.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged) on the prep
+  commit (5e662c8): APPROVE — 0 findings.
+  deterministic (tools/critic_check.py --staged) on the feat
+  commit (25375d0): APPROVE — 0 findings.
+  judgment (/codex:adversarial-review --wait
+  $(cat prompts/critic_prompt.md)): APPROVE — 0 findings on
+  round 7. Rounds 1-6 BLOCKED on (1) schedule tag docstring /
+  example contract mismatch (Strategy.on_schedule said authors
+  supply the tag, but Scheduler.* accept no tag arg) — fixed by
+  clarifying the docstring + rewriting sma_crossover to use the
+  direct-callback path; (2) Indicator Protocol docstring used
+  a deep-path import + the new check did not scan docstring or
+  README code fences — fixed by switching the import to the
+  facade and adding check_docstring_code_fences_use_facade +
+  check_readme_code_fences_use_facade; (3) L7 coverage was
+  hardcoded to subscribe/order/log — fixed by driving from the
+  contract block's required_strategy_context_methods and
+  extending sma_crossover to demonstrate cancel + get_state /
+  set_state; (4) README on_schedule row still said "tag you
+  registered" — fixed plus added a ReadmeScheduleTagWordingTest
+  positive-evidence assertion; (5) docstring fence extractor
+  flattened continuation indentation and silently skipped
+  SyntaxErrors — fixed by preserving the `>>>` /  `...` indent and
+  failing closed on parse errors; the markdown extractor regex
+  was tightened to require an explicit python / py language tag;
+  (6) InMemoryScheduler docstring used a python.atp_strategy.
+  calendar repo-layout import — fixed plus extended
+  FORBIDDEN_INTERNAL_PREFIXES to cover the python.atp_strategy
+  subtree; (7) the example scanner had its own narrow local
+  forbidden-prefix tuple — fixed by sharing the global
+  constant; (8) the example scanner didn't normalize relative
+  imports — `from ..api import X` slipped through; fixed by
+  adding _resolve_relative_import; (9) a bare relative-alias
+  `from .. import api` slipped through because the scanner only
+  validated the base path — fixed by also validating each alias
+  against <resolved_base>.<alias.name>. Each round added at
+  least one new L3 mutation test pinning the regression.
+
+Known issues / notes for next agent:
+- SRS-SDK-009 is passes:true based on (a) the
+  architecture/runtime_services.json#strategy_api_documentation_contract
+  cross-language contract block, (b) the
+  tools/strategy_api_documentation_check.py evidence script
+  wired into init.sh + ci.yml, (c) the L3 mutation suite
+  covering tier partition / docstring lengths / Strategy hook +
+  StrategyContext method minima / README sections / example
+  modules / anti-internals on examples + docstring fences +
+  README fences (including relative imports + bare relative
+  aliases + repo-layout paths), and (d) the L7 end-to-end
+  runner that exercises every example through the harness.
+  The AC ("Python-proficient trader can author a new strategy
+  without reading platform internals") is enforced not just at
+  the prose level but at the AST level: every import path
+  surfaced to authors via docstrings, README, or example files
+  is checked against the FORBIDDEN_INTERNAL_PREFIXES tuple.
+
+- /codex:adversarial-review converged in 7 rounds (vs 9 for
+  SDK-004, 2 for SDK-005, 9 for SDK-006). The high round count
+  reflects how many ways an "anti-internals" rule can be
+  circumvented (deep paths, repo-layout paths, relative
+  imports, bare relative aliases, README vs docstring,
+  example file vs docstring example block, executed vs guarded
+  imports). Sub-checklist addition to
+  [[feedback-sdk-boundary-defensive-checklist]] for future
+  documentation/contract features: (a) share forbidden-prefix
+  constants across all scanners instead of duplicating; (b)
+  normalize relative imports before checking; (c) for each
+  named guard, also check the alias form of `from <pkg>
+  import <name>`; (d) when extracting code from docstrings,
+  preserve original indentation on continuation lines; (e)
+  fail closed on SyntaxError so broken examples surface
+  rather than being silently skipped; (f) tighten markdown
+  fence regex to require explicit language tags so prose
+  between fences cannot be mistaken for code.
+
+- Lowest remaining P1 by ID in the SRS-SDK chain after SDK-009
+  closes: SRS-SDK-004 (still passes:false pending NFR-P4
+  latency proofs that depend on SRS-EXE-001 + SRS-SIM-001).
+  The next honest P1 to attempt would be one of the
+  ERR-7 / ERR-8 / ERR-9 / SRS-API-001 / SRS-BT-* / SRS-DATA-* /
+  SRS-RESV-* / SRS-SAFE-* / SRS-EXE-* / SRS-SIM-* / SRS-MD-*
+  clusters, each of which is blocked on substantial subsystem
+  work not yet built (per [[feedback-scope-honesty]]: surface
+  the finding and defer rather than mark passing on partial
+  evidence). SDK-007 (P2 bar consolidation) and SDK-008 (P3
+  non-standard bars) remain in scope for future docs-shaped
+  passes.
+
+- Pre-existing ruff issues in 4 files outside SDK-009 scope
+  (same list as SESSION 25-29) continue to be deferred per the
+  user-authorized note. None overlap this session's diff. Ruff
+  on the in-scope diff is clean.
+
 === SESSION 29 ===
 Date: 2026-05-20
 Feature completed: SRS-SDK-006 — built-in technical indicator
