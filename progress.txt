@@ -1,3 +1,207 @@
+=== SESSION 29 ===
+Date: 2026-05-20
+Feature completed: SRS-SDK-006 — built-in technical indicator
+library wrapping pandas-ta + TA-Lib per SyRS SYS-35 / AC-6 / StRS
+SN-1.20 / C-9. The SDK ships SMA / EMA / RSI / MACD / BollingerBands /
+ATR + the MACDValue / BollingerValue dataclasses as thin glue
+wrappers — buffering, dtype conversion, and NaN -> None glue only,
+no arithmetic — over both reference libraries. SMA + BollingerBands
+route through pandas_ta; EMA / RSI / MACD / ATR route through TA-Lib.
+Both libraries are exercised in the runtime path so AC-6's "wrap
+both" requirement is satisfied end-to-end, not just at the import
+line. Numerical parity is pinned against the OTHER library too via
+the L7 + L2 + evidence-script paths. Public surface stays byte-
+compatible with the prior pure-Python placeholder so existing call
+sites (tests/test_strategy_api.py, tests/domain/test_warmup_replay.py,
+tests/domain/test_strategy_api_parity.py) keep passing without edits.
+Status: 93 remaining features (was 94 at start of session).
+
+What I did:
+- Carryover audit at session start: SESSION 28's "Lowest remaining
+  P1 by ID in the SRS-SDK chain is now SRS-SDK-006" was sound.
+  Plan-mode exploration confirmed the prior pure-Python
+  python/atp_strategy/indicators.py was explicitly a placeholder
+  (its own docstring named SRS-SDK-006 as the sibling feature that
+  would replace it). ERR-7 / ERR-8 / ERR-9 / SRS-API-001 / SRS-BT-* /
+  SRS-DATA-* / SRS-RESV-* / SRS-SAFE-* / SRS-EXE-* / SRS-SIM-* /
+  SRS-MD-* remain blocked on subsystems not yet built.
+
+- Pre-implementation scope check: SyRS AC-6 prohibits custom
+  reimplementations of indicators available in pandas-ta / TA-Lib;
+  the existing pure-Python file was non-compliant. User confirmed
+  the wrap (both libraries mandatory) + delete the existing
+  pure-Python math.
+
+- Prep commit (b1a84b3): extended SAFETY_PATH_RE in
+  tools/critic_check.py to add strategy[_-]?api[_-]?indicators,
+  indicator[_-]?parity, pandas[_-]?ta, ta[_-]?lib,
+  technical[_-]?indicators tokens. Mirrors the SESSION 16-28
+  per-feature prep precedent. Deterministic critic on the staged
+  prep commit: APPROVE — no findings.
+
+- Feat commit (4381cca, +2449 / -154, 15 files): shipped the
+  indicator wrapper surface.
+
+  python/atp_strategy/indicators.py rewrite: pure-Python math
+  deleted; each class wraps either talib.<name> or
+  pandas_ta.<name> over a collections.deque. NaN -> None converter
+  for trailing TA-Lib output; per-indicator buffer caps
+  (period for SMA/BB; period * 30 for EMA/RSI/ATR; slow*30+signal*30
+  for MACD) sized so (1-alpha)^N decays below the parity tolerance.
+  Each MACD/BollingerBands also exposes the three-leg reading via
+  .reading. Public surface (SMA, EMA, RSI, MACD, BollingerBands,
+  ATR, MACDValue, BollingerValue, Indicator) byte-compatible with
+  the prior implementation. MACDValue + BollingerValue added to
+  the atp_strategy package __all__.
+
+  requirements.txt exact-pins: numpy==2.2.6, pandas==2.3.3,
+  pandas-ta==0.4.71b0, TA-Lib==0.6.8. Comment block names the
+  numba JIT / Python 3.14 incompatibility and the C library
+  version coupling.
+
+  Infrastructure: docker/strategy-python.Dockerfile +
+  docker/jupyter.Dockerfile install TA-Lib C library 0.6.4 from
+  https://github.com/TA-Lib/ta-lib/releases (not the older
+  sourceforge 0.4.0 tarball, which would link-fail against the
+  pinned Python wrapper 0.6.x). Both Dockerfiles set
+  ENV NUMBA_DISABLE_JIT=1.
+  .github/workflows/ci.yml caches the C library by version,
+  exports NUMBA_DISABLE_JIT=1 on the pytest step, and adds both
+  strategy_api_warmup and strategy_api_indicators to the
+  architecture check loop (warmup was wired into init.sh in
+  SESSION 28 but never added to CI — folded in here).
+  init.sh now enforces python/pyproject.toml requires-python
+  (>=3.12,<3.14) at venv-creation time via a discover_python()
+  helper; refuses to proceed on Python 3.14 (pandas-ta/numba
+  unsupported). Exports NUMBA_DISABLE_JIT=1.
+  tests/conftest.py sets NUMBA_DISABLE_JIT=1 before any test
+  import that could pull in pandas_ta.
+
+  Architecture metadata block strategy_api_indicators_contract is
+  the cross-language source of truth: primary_backend_per_indicator
+  (SMA -> pandas_ta.sma, BollingerBands -> pandas_ta.bbands, others
+  -> talib.*), parity_tolerance_abs_vs_talib + _vs_pandas_ta per
+  indicator, pandas_ta_seed_skip_bars_factor (3 for Wilder/MACD
+  seeding indicators), prohibited_custom_math_tokens (verbatim
+  arithmetic tokens from the prior pure-Python file),
+  required_imports_in_indicators_module, required_exports,
+  is_ready_min_bars, nan_to_none_convention.
+
+  Evidence script tools/strategy_api_indicators_check.py: 10
+  checks (exports, class shape, required imports, no-custom-math
+  text/AST scan, Protocol conformance, behavioural parity on a
+  300-bar seeded walk vs both backends, NaN -> None convention
+  across both backends, incremental-vs-batch parity for all six
+  indicators, is_ready transition boundaries, backwards-compat
+  spot-check). Wired into init.sh between the warm-up and
+  deployment-config checks.
+
+  L3 contract test tests/test_strategy_api_indicators_contract.py
+  (12 tests): subprocess positive-evidence check + _MutationRig
+  copy-to-tmpdir rig that locks dropping talib / pandas_ta
+  imports, reintroducing prohibited custom-math tokens, dropping
+  the update method or demoting .value from property, dropping
+  SMA from __all__, reordering MACDValue fields, adding a constant
+  offset to the SMA wrapper output, dropping both short-buffer
+  guards on EMA (NaN leak), and renaming the SMA period kwarg.
+
+  L7 domain test tests/domain/test_indicators_parity.py
+  (34 tests): IndicatorTaLibParityTest +
+  IndicatorPandasTaParityTest (with seed-bar skip on
+  RSI/MACD/ATR), IncrementalVsBatchParityTest covering all six
+  indicators, NanToNoneTest, BackwardsCompatibilityTest replicating
+  the existing call sites in process, IsReadyTransitionsTest, and
+  Ac6DependencyDirectionTest asserting both library imports +
+  absence of prohibited custom-math tokens.
+
+  L2 property test tests/property/test_indicators_property.py
+  (7 tests, marked pytest.mark.property): Hypothesis-driven
+  parity check over varied periods + input lengths for all six
+  indicators, plus an explicit test_ema_maxlen_truncation_does_not
+  _break_parity_on_long_history that exercises the period * 30
+  buffer cap at N = 50 * period bars (the architecture-contract
+  bounded-buffer claim).
+
+- This SESSION 29 chore commit: appends this entry to progress.txt
+  and flips SRS-SDK-006 passes:true in feature_list.json.
+
+What I tested:
+- ./init.sh -> "→ Running Python Strategy API indicators contract
+  check..." between order-events/warm-up and deployment-config
+  steps; reaches ✓ Environment ready under the new Python-version
+  guard (>=3.12,<3.13).
+- python3 tools/strategy_api_indicators_check.py -> SRS-SDK-006
+  PASS with 11 evidence bullets, including per-indicator max
+  drifts ATR=0e+00, BB=5.62e-11, EMA=0, MACD=0, RSI=0, SMA=4.26e-14
+  on the incremental-vs-batch all-six-indicators sweep.
+- .venv/bin/python -m pytest tests/test_strategy_api_indicators_contract.py
+  tests/domain/test_indicators_parity.py tests/property/test_indicators_property.py
+  -q -> 53 passed.
+- .venv/bin/python -m pytest -m "not integration and not e2e" -q
+  -> 807 passed, 4 skipped, 118 subtests (was 754 in SESSION 28 /
+  +53 net this session covering the indicator surface).
+- ruff check + format on every in-scope file: clean.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged) on the prep
+  commit (b1a84b3): APPROVE — 0 findings.
+  deterministic (tools/critic_check.py --staged) on the feat
+  commit (4381cca): APPROVE — 0 findings.
+  judgment (/codex:adversarial-review --wait
+  $(cat prompts/critic_prompt.md)): APPROVE — 0 findings on pass 9.
+  Earlier passes blocked on (1) pandas_ta imported but never used
+  — fixed by routing SMA + BollingerBands through it; (2) pandas-ta
+  parity coverage gap on MACD/ATR/BB — fixed by extending the
+  evidence script + L7 test; (3) NumPy / TA-Lib version mismatch
+  — fixed by pinning numpy<3 then exact-pinning all four deps;
+  (4) Python-version reachability through pandas-ta/numba — fixed
+  by setting NUMBA_DISABLE_JIT=1 at every entry point and narrowing
+  requires-python in pyproject.toml; (5) doc/contract drift on
+  which backend each indicator uses — fixed; (6) init.sh accepting
+  Python 3.14 — fixed via the discover_python guard; (7) range-
+  pinned deps vs SRS §12 — fixed via exact pins; (8) docstring
+  drift on EMA Wilder seeding — fixed.
+
+Known issues / notes for next agent:
+- SRS-SDK-006 is passes:true based on the SDK-surface contract
+  (architecture/runtime_services.json#strategy_api_indicators_contract)
+  + L2 property tests + L7 domain tests proving parity vs both
+  backends end-to-end on seeded walks + Hypothesis-generated
+  inputs. The architecture metadata pins per-indicator tolerances
+  + the prohibited-custom-math token list; future indicator
+  additions (ADX, OBV, Stochastic, Ichimoku, etc.) follow the
+  same wrap-talib-and-pandas-ta pattern enforced by this contract.
+
+- /codex:adversarial-review converged in 9 rounds versus 2 for
+  SDK-005 / 9 for SDK-004. The larger blast radius (Docker + CI
+  + Python version pinning + dual-backend dispatch) drove the
+  iteration count up. Sub-checklist additions to
+  [[feedback-sdk-boundary-defensive-checklist]] for future SDK
+  features that introduce native deps: (a) does requirements.txt
+  carry exact pins? (b) is the version pinned in deps consistent
+  with the C-library version installed in Docker? (c) is the
+  Python-version range narrowed wherever a transitive dep
+  constrains it? (d) is the per-indicator backend routing
+  faithfully reflected in BOTH the module docstring AND the
+  architecture metadata description? (e) is incremental-vs-batch
+  coverage exhaustive across the AC-named indicators?
+
+- Lowest remaining P1 by ID in the SRS-SDK chain is now
+  SRS-SDK-009 (document the Python Strategy API for strategy
+  authors). SDK-007 (P2 bar consolidation) and SDK-008 (P3
+  non-standard bars) follow. SRS-SDK-004 stays passes:false
+  until SRS-EXE-001 + SRS-SIM-001 ship and the NFR-P4 p95
+  latency proofs land. ERR-7 / ERR-8 / ERR-9 / SRS-API-001 /
+  SRS-BT-* / SRS-DATA-* / SRS-RESV-* / SRS-SAFE-* / SRS-EXE-* /
+  SRS-SIM-* / SRS-MD-* remain blocked on subsystems not yet
+  built. Per [[feedback-scope-honesty]] the honest next pick is
+  SDK-009 (docs-only, fully implementable in one session).
+
+- Pre-existing ruff issues in 4 files outside SDK-006 scope
+  (same list as SESSION 25 / 26 / 27 / 28) continue to be
+  deferred per the user-authorized note. None overlap this
+  session's diff. Ruff on the in-scope diff is clean.
+
 === SESSION 28 ===
 Date: 2026-05-19
 Feature completed: SRS-SDK-005 — Python Strategy API warm-up
