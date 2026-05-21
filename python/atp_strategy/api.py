@@ -21,14 +21,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
-from .indicators import (
-    ATR,
-    EMA,
-    MACD,
-    RSI,
-    SMA,
-    BollingerBands,
-)
+from .indicators import ATR as ATR  # re-exported through the api facade
+from .indicators import EMA as EMA
+from .indicators import MACD as MACD
+from .indicators import RSI as RSI
+from .indicators import SMA as SMA
+from .indicators import BollingerBands as BollingerBands
+from .indicators import BollingerValue as BollingerValue
+from .indicators import MACDValue as MACDValue
 
 # --------------------------------------------------------------------------- #
 # Asset class and configuration  [SRS-SDK-001, SRS-SDK-003, SRS-SDK-005]

@@ -1,30 +1,94 @@
 """Built-in technical indicators for the Python Strategy API (``SRS-SDK-006``).
 
-Each indicator is incremental: it consumes one ``Bar`` per ``update()`` call,
-maintains rolling state internally, and exposes the latest ``value`` and an
-``is_ready`` readiness flag. This matches the SRS-SDK-006 acceptance criterion
-that indicators "support incremental updates on each new bar".
+Each indicator is incremental: it consumes one :class:`atp_strategy.api.Bar`
+per :py:meth:`update` call, maintains a rolling buffer of recent bar history
+internally, and exposes the latest ``value`` plus an ``is_ready`` readiness
+flag. This matches the SRS-SDK-006 acceptance criterion that indicators
+"support incremental updates on each new bar".
 
-Backend dispatch
-----------------
-The implementations here are pure-Python and stand alone with no external
-dependencies. SRS-SDK-006 also references ``pandas-ta`` and ``TA-Lib`` as
-reference outputs; numerical parity with those libraries is delivered by a
-sibling feature once the dependencies are introduced. Code that wants the
-optional backend should import ``pandas_ta`` / ``talib`` directly inside the
-strategy until the dispatcher lands.
+Backend dispatch — SyRS AC-6 / StRS C-9
+---------------------------------------
+Every indicator in this module is a thin glue wrapper around either
+`TA-Lib <https://ta-lib.org/>`_ or
+`pandas-ta <https://github.com/twopirllc/pandas-ta>`_, whichever is the
+canonical numerical reference for that particular indicator. SyRS AC-6
+prohibits custom reimplementations of indicators available in these
+libraries — the wrappers below contain buffering, dtype conversion, and
+``NaN -> None`` glue ONLY. No arithmetic.
 
-All public classes implement the :class:`atp_strategy.api.Indicator` Protocol.
+Backend routing (the cross-language source of truth lives at
+``architecture/runtime_services.json#strategy_api_indicators_contract``
+under ``primary_backend_per_indicator``):
+
+* ``SMA`` -> ``pandas_ta.sma``
+* ``BollingerBands`` -> ``pandas_ta.bbands`` (matype = SMA, population stdev)
+* ``EMA`` -> ``talib.EMA`` (alpha = 2 / (period + 1); seeded by SMA at
+  index period - 1)
+* ``RSI`` -> ``talib.RSI`` (canonical Wilder smoothing on gains/losses)
+* ``MACD`` -> ``talib.MACD`` (12/26/9 EMA convention; signal-line EMA
+  applied to the MACD line)
+* ``ATR`` -> ``talib.ATR`` (canonical Wilder smoothing on true range)
+
+Both libraries are exercised in the runtime path so the indicator library
+genuinely wraps both, per SyRS AC-6. The L7 parity test
+(``tests/domain/test_indicators_parity.py``) and the contract evidence
+script (``tools/strategy_api_indicators_check.py``) cross-check every
+indicator against the OTHER library too — so every indicator pins parity
+against both backends, not just its primary. Known seed-bar divergences
+between the two libraries on RSI / MACD / ATR (different Wilder/EMA
+seeding conventions) are documented in the architecture contract under
+``pandas_ta_seed_skip_bars_factor`` and ``parity_tolerance_*``.
+
+The TA-Lib C library is a mandatory native dependency of this module
+(see ``docker/strategy-python.Dockerfile``, ``docker/jupyter.Dockerfile``,
+and ``.github/workflows/ci.yml`` for the install recipe; ``brew install
+ta-lib`` for local macOS development). Importing this module before the
+C library is on the loader path raises :class:`ImportError`.
+
+All public classes implement the :class:`atp_strategy.api.Indicator`
+Protocol. ``MACD`` additionally exposes ``MACDValue`` via ``.reading``;
+``BollingerBands`` exposes ``BollingerValue`` via ``.reading``.
+
+Cost model
+----------
+Each ``update()`` appends one bar to an internal :class:`collections.deque`
+and re-invokes the TA-Lib function on the buffer (``O(N)`` where ``N`` is
+the buffer size, dominated by the TA-Lib C loop). Buffers are capped per
+indicator at a multiple of the period that is large enough for the
+TA-Lib output at index ``-1`` to be identical to the unbounded
+equivalent (verified by the incremental-vs-batch parity test). The
+SRS-SDK-006 AC requires "incremental updates" not "O(1) per update";
+``O(period)`` is acceptable.
 """
 
 from __future__ import annotations
 
+import math
+import os
 from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+# SRS-SDK-006 / SyRS C-9: pandas-ta pulls in numba transitively. Numba's
+# JIT path can fail at import time on edge-case interpreter / LLVM
+# combinations and is irrelevant to the SDK's actual code paths (we only
+# call pandas_ta.sma and pandas_ta.bbands, both of which are plain
+# pandas/numpy under the hood with no numba kernels). Disabling the JIT
+# before the first pandas_ta import makes the import deterministic across
+# every supported interpreter without any runtime-managed env var. Must
+# be set BEFORE pandas_ta / numba is imported anywhere in the process.
+os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
+
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+import pandas_ta  # noqa: E402
+import talib  # noqa: E402
+
 if TYPE_CHECKING:
     from .api import Bar
+
+
+_FLOAT64 = np.float64
 
 
 class _IndicatorBase:
@@ -48,8 +112,15 @@ class _IndicatorBase:
         return self._ready
 
 
+def _nan_to_none(x: float) -> float | None:
+    """Convert a TA-Lib trailing-output float to Python ``None`` if NaN."""
+    if math.isnan(x):
+        return None
+    return x
+
+
 class SMA(_IndicatorBase):
-    """Simple moving average over the last ``period`` closes (``SRS-SDK-006``).
+    """Simple moving average wrapping :func:`pandas_ta.sma` (``SRS-SDK-006``).
 
     Example:
         >>> from atp_strategy.api import Bar
@@ -67,22 +138,28 @@ class SMA(_IndicatorBase):
         if period < 1:
             raise ValueError("period must be >= 1")
         self.period = period
-        self._window: deque[float] = deque(maxlen=period)
-        self._sum = 0.0
+        self._closes: deque[float] = deque(maxlen=period)
 
     def update(self, bar: Bar) -> float | None:
-        if len(self._window) == self.period:
-            self._sum -= self._window[0]
-        self._window.append(bar.close)
-        self._sum += bar.close
-        if len(self._window) == self.period:
-            self._value = self._sum / self.period
-            self._ready = True
-        return self._value
+        # SMA is routed through pandas-ta so the indicator library genuinely
+        # wraps BOTH pandas-ta and TA-Lib per SyRS AC-6, not just imports one
+        # and runs the other. SMA is a trivial mean so pandas-ta and TA-Lib
+        # are exact to float epsilon; the L7 test pins both parities.
+        self._closes.append(bar.close)
+        if len(self._closes) < self.period:
+            return None
+        ser = pd.Series(self._closes, dtype=_FLOAT64)
+        out = pandas_ta.sma(ser, length=self.period)
+        v = _nan_to_none(float(out.iloc[-1]))
+        if v is None:
+            return None
+        self._value = v
+        self._ready = True
+        return v
 
 
 class EMA(_IndicatorBase):
-    """Exponential moving average with smoothing factor ``2 / (period + 1)``.
+    """Exponential moving average wrapping :func:`talib.EMA` (``SRS-SDK-006``).
 
     Example:
         >>> from atp_strategy.api import Bar
@@ -98,27 +175,31 @@ class EMA(_IndicatorBase):
         if period < 1:
             raise ValueError("period must be >= 1")
         self.period = period
-        self._alpha = 2.0 / (period + 1.0)
-        self._count = 0
-        self._sum = 0.0
+        # 30 * period bars is enough for (1 - alpha)^N decay to fall below
+        # 1e-9 vs the full-history batch result: alpha = 2 / (period + 1) so
+        # (1 - alpha)^(30 * period) ~ exp(-60 * period / (period + 1)) << 1e-9.
+        self._closes: deque[float] = deque(maxlen=period * 30)
 
     def update(self, bar: Bar) -> float | None:
-        self._count += 1
-        if self._count < self.period:
-            self._sum += bar.close
+        self._closes.append(bar.close)
+        if len(self._closes) < self.period:
             return None
-        if self._count == self.period:
-            self._sum += bar.close
-            self._value = self._sum / self.period
-            self._ready = True
-            return self._value
-        assert self._value is not None
-        self._value = (bar.close - self._value) * self._alpha + self._value
-        return self._value
+        arr = np.asarray(self._closes, dtype=_FLOAT64)
+        out = talib.EMA(arr, timeperiod=self.period)
+        v = _nan_to_none(float(out[-1]))
+        if v is None:
+            return None
+        self._value = v
+        self._ready = True
+        return v
 
 
 class RSI(_IndicatorBase):
-    """Relative strength index over ``period`` closes using Wilder smoothing.
+    """Relative strength index wrapping :func:`talib.RSI` (``SRS-SDK-006``).
+
+    TA-Lib uses Wilder smoothing on gains/losses, which is the de-facto
+    canonical RSI convention. pandas-ta's default seeding differs at the
+    first ``period`` bars (see contract block parity tolerances).
 
     Example:
         >>> from atp_strategy.api import Bar
@@ -134,40 +215,22 @@ class RSI(_IndicatorBase):
         if period < 1:
             raise ValueError("period must be >= 1")
         self.period = period
-        self._prev_close: float | None = None
-        self._gains: list[float] = []
-        self._losses: list[float] = []
-        self._avg_gain = 0.0
-        self._avg_loss = 0.0
+        # Wilder smoothing decays as (1 - 1/period)^N; 30 * period bars
+        # drops the seed contribution well below 1e-6 vs full-history batch.
+        self._closes: deque[float] = deque(maxlen=period * 30 + 1)
 
     def update(self, bar: Bar) -> float | None:
-        close = bar.close
-        if self._prev_close is None:
-            self._prev_close = close
+        self._closes.append(bar.close)
+        if len(self._closes) < self.period + 1:
             return None
-        change = close - self._prev_close
-        self._prev_close = close
-        gain = max(change, 0.0)
-        loss = max(-change, 0.0)
-
-        if not self._ready:
-            self._gains.append(gain)
-            self._losses.append(loss)
-            if len(self._gains) < self.period:
-                return None
-            self._avg_gain = sum(self._gains) / self.period
-            self._avg_loss = sum(self._losses) / self.period
-            self._ready = True
-        else:
-            self._avg_gain = (self._avg_gain * (self.period - 1) + gain) / self.period
-            self._avg_loss = (self._avg_loss * (self.period - 1) + loss) / self.period
-
-        if self._avg_loss == 0.0:
-            self._value = 100.0
-        else:
-            rs = self._avg_gain / self._avg_loss
-            self._value = 100.0 - (100.0 / (1.0 + rs))
-        return self._value
+        arr = np.asarray(self._closes, dtype=_FLOAT64)
+        out = talib.RSI(arr, timeperiod=self.period)
+        v = _nan_to_none(float(out[-1]))
+        if v is None:
+            return None
+        self._value = v
+        self._ready = True
+        return v
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,14 +248,12 @@ class MACDValue:
 
 
 class MACD:
-    """MACD = EMA(fast) - EMA(slow), with signal-line EMA and histogram.
-
-    Default parameters follow the standard 12/26/9 convention.
+    """MACD wrapping :func:`talib.MACD` with the standard 12/26/9 defaults.
 
     Example:
         >>> from atp_strategy.api import Bar
         >>> macd = MACD()
-        >>> for c in range(40):
+        >>> for c in range(60):
         ...     _ = macd.update(Bar("X", "t", c, c, c, float(c), 1))
         >>> macd.is_ready
         True
@@ -203,42 +264,49 @@ class MACD:
             raise ValueError("MACD periods must be >= 1")
         if fast >= slow:
             raise ValueError("fast period must be smaller than slow period")
-        self._fast = EMA(fast)
-        self._slow = EMA(slow)
-        self._signal_ema = EMA(signal)
-        self._value: MACDValue | None = None
+        self.fast = fast
+        self.slow = slow
+        self.signal = signal
+        # 30 * slow bars covers the slow-EMA seed decay (alpha = 2/(slow+1));
+        # plus 30 * signal bars for the signal-line EMA over the MACD series.
+        self._closes: deque[float] = deque(maxlen=slow * 30 + signal * 30)
+        self._reading: MACDValue | None = None
         self._ready = False
 
     @property
     def value(self) -> float | None:
-        if self._value is None:
+        if self._reading is None:
             return None
-        return self._value.macd
+        return self._reading.macd
 
     @property
     def reading(self) -> MACDValue | None:
         """Full ``(macd, signal, histogram)`` tuple, or ``None`` until ready."""
-        return self._value
+        return self._reading
 
     @property
     def is_ready(self) -> bool:
         return self._ready
 
     def update(self, bar: Bar) -> float | None:
-        self._fast.update(bar)
-        self._slow.update(bar)
-        if not (self._fast.is_ready and self._slow.is_ready):
+        self._closes.append(bar.close)
+        if len(self._closes) < self.slow + self.signal - 1:
             return None
-        macd = self._fast.value - self._slow.value  # type: ignore[operator]
-        synth = type(bar)(bar.symbol, bar.timestamp, bar.open, bar.high, bar.low, macd, bar.volume)
-        self._signal_ema.update(synth)
-        if not self._signal_ema.is_ready:
+        arr = np.asarray(self._closes, dtype=_FLOAT64)
+        macd_out, signal_out, hist_out = talib.MACD(
+            arr,
+            fastperiod=self.fast,
+            slowperiod=self.slow,
+            signalperiod=self.signal,
+        )
+        macd_v = float(macd_out[-1])
+        signal_v = float(signal_out[-1])
+        hist_v = float(hist_out[-1])
+        if math.isnan(macd_v) or math.isnan(signal_v) or math.isnan(hist_v):
             return None
-        signal = self._signal_ema.value
-        assert signal is not None
-        self._value = MACDValue(macd=macd, signal=signal, histogram=macd - signal)
+        self._reading = MACDValue(macd=macd_v, signal=signal_v, histogram=hist_v)
         self._ready = True
-        return macd
+        return macd_v
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,7 +324,10 @@ class BollingerValue:
 
 
 class BollingerBands:
-    """Middle SMA plus ``num_std`` upper/lower bands on rolling close stdev.
+    """Bollinger bands wrapping :func:`pandas_ta.bbands` (``SRS-SDK-006``).
+
+    pandas-ta's bbands uses an SMA middle band and population standard
+    deviation, matching ``talib.BBANDS(matype=0)`` exactly.
 
     Example:
         >>> from atp_strategy.api import Bar
@@ -272,43 +343,60 @@ class BollingerBands:
             raise ValueError("period must be >= 2")
         self.period = period
         self.num_std = num_std
-        self._window: deque[float] = deque(maxlen=period)
-        self._value: BollingerValue | None = None
+        self._closes: deque[float] = deque(maxlen=period)
+        self._reading: BollingerValue | None = None
         self._ready = False
 
     @property
     def value(self) -> float | None:
-        if self._value is None:
+        if self._reading is None:
             return None
-        return self._value.middle
+        return self._reading.middle
 
     @property
     def reading(self) -> BollingerValue | None:
         """Full ``(middle, upper, lower)`` tuple, or ``None`` until ready."""
-        return self._value
+        return self._reading
 
     @property
     def is_ready(self) -> bool:
         return self._ready
 
     def update(self, bar: Bar) -> float | None:
-        self._window.append(bar.close)
-        if len(self._window) < self.period:
+        # BollingerBands is routed through pandas-ta so the indicator library
+        # genuinely wraps both backends per SyRS AC-6. pandas-ta's bbands uses
+        # the same population stdev + SMA middle that talib.BBANDS uses with
+        # matype=0; parity vs talib stays within 1e-9 (verified by L7 test).
+        self._closes.append(bar.close)
+        if len(self._closes) < self.period:
             return None
-        mean = sum(self._window) / self.period
-        var = sum((x - mean) ** 2 for x in self._window) / self.period
-        std = var**0.5
-        self._value = BollingerValue(
-            middle=mean,
-            upper=mean + self.num_std * std,
-            lower=mean - self.num_std * std,
+        ser = pd.Series(self._closes, dtype=_FLOAT64)
+        out = pandas_ta.bbands(ser, length=self.period, std=self.num_std)
+        if out is None:
+            return None
+        cols = list(out.columns)
+        lower_col = next(c for c in cols if c.startswith("BBL_"))
+        middle_col = next(c for c in cols if c.startswith("BBM_"))
+        upper_col = next(c for c in cols if c.startswith("BBU_"))
+        upper_v = float(out[upper_col].iloc[-1])
+        middle_v = float(out[middle_col].iloc[-1])
+        lower_v = float(out[lower_col].iloc[-1])
+        if math.isnan(upper_v) or math.isnan(middle_v) or math.isnan(lower_v):
+            return None
+        self._reading = BollingerValue(
+            middle=middle_v,
+            upper=upper_v,
+            lower=lower_v,
         )
         self._ready = True
-        return mean
+        return middle_v
 
 
 class ATR(_IndicatorBase):
-    """Average true range over ``period`` bars using Wilder smoothing.
+    """Average true range wrapping :func:`talib.ATR` (``SRS-SDK-006``).
+
+    TA-Lib ATR uses Wilder smoothing seeded with the SMA of the first
+    ``period`` true-range values, the canonical convention.
 
     Example:
         >>> from atp_strategy.api import Bar
@@ -324,30 +412,27 @@ class ATR(_IndicatorBase):
         if period < 1:
             raise ValueError("period must be >= 1")
         self.period = period
-        self._prev_close: float | None = None
-        self._trs: list[float] = []
+        # Wilder smoothing seed decay; 30 * period bars covers it under 1e-6.
+        self._highs: deque[float] = deque(maxlen=period * 30 + 1)
+        self._lows: deque[float] = deque(maxlen=period * 30 + 1)
+        self._closes: deque[float] = deque(maxlen=period * 30 + 1)
 
     def update(self, bar: Bar) -> float | None:
-        if self._prev_close is None:
-            tr = bar.high - bar.low
-        else:
-            tr = max(
-                bar.high - bar.low,
-                abs(bar.high - self._prev_close),
-                abs(bar.low - self._prev_close),
-            )
-        self._prev_close = bar.close
-
-        if not self._ready:
-            self._trs.append(tr)
-            if len(self._trs) < self.period:
-                return None
-            self._value = sum(self._trs) / self.period
-            self._ready = True
-        else:
-            assert self._value is not None
-            self._value = (self._value * (self.period - 1) + tr) / self.period
-        return self._value
+        self._highs.append(bar.high)
+        self._lows.append(bar.low)
+        self._closes.append(bar.close)
+        if len(self._closes) < self.period + 1:
+            return None
+        high = np.asarray(self._highs, dtype=_FLOAT64)
+        low = np.asarray(self._lows, dtype=_FLOAT64)
+        close = np.asarray(self._closes, dtype=_FLOAT64)
+        out = talib.ATR(high, low, close, timeperiod=self.period)
+        v = _nan_to_none(float(out[-1]))
+        if v is None:
+            return None
+        self._value = v
+        self._ready = True
+        return v
 
 
 __all__ = [

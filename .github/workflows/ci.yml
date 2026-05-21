@@ -39,6 +39,37 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
+      # SRS-SDK-006 / SyRS C-9: TA-Lib C library is a mandatory native
+      # dependency for the Python TA-Lib wrapper installed by requirements.txt.
+      # Cache the built library so subsequent runs skip the ~2 min build.
+      - name: Cache TA-Lib C library
+        id: cache-talib
+        uses: actions/cache@d4323d4df104b026a6aa633fdb11d772146be0bf # ratchet:actions/cache@v4
+        with:
+          path: |
+            /usr/local/lib/libta-lib.*
+            /usr/local/lib/libta_lib.*
+            /usr/local/include/ta-lib
+          key: talib-c-0.6.4-${{ runner.os }}
+
+      - name: Install TA-Lib C library 0.6.4 (SRS-SDK-006 / SyRS C-9)
+        if: steps.cache-talib.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential wget ca-certificates
+          cd /tmp
+          wget -q https://github.com/TA-Lib/ta-lib/releases/download/v0.6.4/ta-lib-0.6.4-src.tar.gz
+          tar -xzf ta-lib-0.6.4-src.tar.gz
+          cd ta-lib-0.6.4
+          ./configure --prefix=/usr/local
+          make
+          sudo make install
+          sudo ldconfig
+
+      - name: Refresh ldconfig (TA-Lib cache restore path)
+        if: steps.cache-talib.outputs.cache-hit == 'true'
+        run: sudo ldconfig
+
       - name: Install dev dependencies
         run: |
           python -m pip install --upgrade pip
@@ -59,11 +90,14 @@ jobs:
         env:
           ATP_RUN_INTEGRATION: "0"
           ATP_RUN_E2E: "0"
+          # SRS-SDK-006: numba JIT disabled (pandas-ta path; irrelevant
+          # to the SDK's pandas_ta.sma / bbands callers).
+          NUMBA_DISABLE_JIT: "1"
         run: pytest -m "not integration and not e2e" --junitxml=pytest.xml
 
       - name: Architecture & contract checks
         run: |
-          for check in architecture dependency_boundary adapter_isolation deployment config rest_api websocket_api cli adapter data_provider historical_data strategy_api strategy_api_parity strategy_api_scheduler strategy_api_subscriptions strategy_api_order_events; do
+          for check in architecture dependency_boundary adapter_isolation deployment config rest_api websocket_api cli adapter data_provider historical_data strategy_api strategy_api_parity strategy_api_scheduler strategy_api_subscriptions strategy_api_order_events strategy_api_warmup strategy_api_indicators; do
             echo "→ tools/${check}_check.py"
             python3 "tools/${check}_check.py"
           done

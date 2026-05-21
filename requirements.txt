@@ -1,6 +1,6 @@
 # ATP Python runtime dependencies.
-# Add packages here as features land (e.g. pandas-ta for SRS-SDK-006,
-# ib_insync for the IB adapter, databento for DATA-1).
+# Add packages here as features land (e.g. ib_insync for the IB adapter,
+# databento for DATA-1).
 
 # SRS-SDK-002 — trading-calendar-aware scheduling.
 # exchange_calendars supplies NYSE/NASDAQ holiday and early-close data;
@@ -11,3 +11,25 @@
 # so the SRS-SDK-001 parity AST scan does not see the vendor imports.
 exchange_calendars>=4.5,<5
 croniter>=2.0,<3
+
+# SRS-SDK-006 — built-in technical indicators wrap pandas-ta and TA-Lib.
+# SyRS SYS-35 + AC-6 + StRS C-9 require the indicator library to wrap
+# these two reference implementations; "custom reimplementations of
+# indicators available in these libraries are prohibited" (AC-6).
+#
+# Version pins are deliberately tight so the runtime never resolves to an
+# incompatible combination:
+#   - pandas-ta 0.4.71b0 is NumPy-2 compatible (0.3.14b is NOT — it pins
+#     numpy<2 transitively, blocking the import chain).
+#   - pandas-ta pulls in numba transitively, which does NOT yet support
+#     Python 3.14. python/pyproject.toml pins requires-python = ">=3.12,<3.14"
+#     so users on a supported interpreter always see a working import chain.
+#   - TA-Lib python wrapper 0.6.x is built against TA-Lib C library 0.6.x;
+#     mixing wrapper 0.6.x with the older 0.4.0 C library leaves the
+#     ctypes lookups dangling at import time. The Dockerfile +
+#     ci.yml install TA-Lib C 0.6.4 to match.
+# `brew install ta-lib` on macOS gets 0.6.x; matches the Docker layer.
+numpy==2.2.6
+pandas==2.3.3
+pandas-ta==0.4.71b0
+TA-Lib==0.6.8

@@ -26,6 +26,13 @@ export ATP_SMS_API_KEY="${ATP_SMS_API_KEY:-placeholder-set-in-environment}"
 export DATABENTO_API_KEY="${DATABENTO_API_KEY:-placeholder-set-in-environment}"
 export SHARADAR_API_KEY="${SHARADAR_API_KEY:-placeholder-set-in-environment}"
 
+# SRS-SDK-006: pandas-ta pulls in numba transitively. Numba's JIT path is
+# irrelevant to the SDK code paths (only pandas_ta.sma + pandas_ta.bbands
+# are called, both plain pandas / numpy) and can fail at import time on
+# edge-case interpreter / LLVM combinations. Disabling the JIT here makes
+# the import deterministic across every supported interpreter.
+export NUMBA_DISABLE_JIT="${NUMBA_DISABLE_JIT:-1}"
+
 # SRS-ARCH-005 / SRS-ORCH-002 / SyRS SYS-57/58 strategy resource limits.
 export ATP_LIVE_STRATEGY_MEM_MB="${ATP_LIVE_STRATEGY_MEM_MB:-512}"
 export ATP_LIVE_STRATEGY_CPU="${ATP_LIVE_STRATEGY_CPU:-0.25}"
@@ -36,14 +43,56 @@ export ATP_HOST_MEMORY_SAFETY_MARGIN_MB="${ATP_HOST_MEMORY_SAFETY_MARGIN_MB:-204
 echo "→ Installing dependencies..."
 
 VENV_DIR="${ROOT_DIR}/.venv"
+
+# SRS-SDK-006: enforce the python/pyproject.toml requires-python window
+# (>=3.12,<3.14) on the Python used to build the venv. pandas-ta (via
+# numba) does not support 3.14; picking 3.14 here lets pip install fail
+# obscurely several steps later. Allow ATP_PYTHON to override the
+# discovered interpreter so CI / Docker can pin the exact minor version.
+discover_python() {
+  if [[ -n "${ATP_PYTHON:-}" ]]; then
+    echo "$ATP_PYTHON"
+    return
+  fi
+  for candidate in python3.13 python3.12 python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      local version
+      version=$("$candidate" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null)
+      case "$version" in
+        3.12|3.13)
+          echo "$candidate"
+          return
+          ;;
+      esac
+    fi
+  done
+  echo ""
+}
+
+PYTHON_BIN="$(discover_python)"
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "✗ Environment failed"
+  echo "  No Python interpreter in the supported range 3.12 - 3.13 was found."
+  echo "  python/pyproject.toml requires-python = >=3.12,<3.14 (SRS-SDK-006)."
+  echo "  Install a supported interpreter or set ATP_PYTHON to one explicitly."
+  exit 1
+fi
+
 if [[ ! -d "$VENV_DIR" ]]; then
-  echo "  Creating Python venv at $VENV_DIR..."
-  python3 -m venv "$VENV_DIR"
+  echo "  Creating Python venv at $VENV_DIR with $PYTHON_BIN..."
+  "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
 
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
-echo "  Using $(python -c 'import sys; print(sys.executable)')"
+VENV_PY_VERSION=$(python -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
+if [[ "$VENV_PY_VERSION" != "3.12" && "$VENV_PY_VERSION" != "3.13" ]]; then
+  echo "✗ Environment failed"
+  echo "  Existing .venv is Python $VENV_PY_VERSION but the project requires >=3.12,<3.14."
+  echo "  Remove .venv and re-run, or set ATP_PYTHON to a supported interpreter."
+  exit 1
+fi
+echo "  Using $(python -c 'import sys; print(sys.executable)') (Python $VENV_PY_VERSION)"
 
 python -m pip install --quiet --upgrade pip
 if [[ -f requirements.txt ]]; then
@@ -249,6 +298,13 @@ echo "→ Running Python Strategy API warm-up contract check..."
 if ! python3 tools/strategy_api_warmup_check.py >/dev/null; then
   echo "✗ Environment failed"
   echo "  Strategy API warm-up contract check failed; run python3 tools/strategy_api_warmup_check.py for detail."
+  exit 1
+fi
+
+echo "→ Running Python Strategy API indicators contract check..."
+if ! python3 tools/strategy_api_indicators_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Strategy API indicators contract check failed; run python3 tools/strategy_api_indicators_check.py for detail."
   exit 1
 fi
 

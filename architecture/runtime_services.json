@@ -2472,5 +2472,116 @@
       "NFR-R3 restart re-execution of the warm-up mechanism is owned by SRS-EXE-005 (live persistence + restart) and SRS-SIM-004 (paper persistence + restart). On container restart the dispatcher constructs a fresh WarmupController and replays history; the SDK contract here is the same surface both restart paths consume.",
       "The L7 domain test for SRS-SDK-005 ships a reference _RefDispatcher and _StubHistoricalData that exercise the AC end-to-end with a 200-bar warm-up + a 200-period SMA. The test proves: (a) all 200 historical bars hit on_bar before the first executable bar; (b) indicator buffers (SMA.is_ready) are True at the executable boundary; (c) order submission attempted during warm-up raises WarmupNotComplete; (d) on_warmup_complete fires exactly once."
     ]
+  },
+  "strategy_api_indicators_contract": {
+    "description": "Built-in technical indicators for SRS-SDK-006 (SyRS SYS-35 + AC-6 + StRS SN-1.20 + C-9). The SDK ships SMA, EMA, RSI, MACD, BollingerBands, and ATR as thin glue wrappers around BOTH TA-Lib and pandas-ta, choosing the per-indicator canonical reference (see primary_backend_per_indicator: SMA and BollingerBands route through pandas-ta; EMA / RSI / MACD / ATR route through TA-Lib). SyRS AC-6 prohibits custom reimplementations of indicators available in these libraries; the wrappers contain buffering, dtype-conversion, and NaN -> None glue ONLY, with no arithmetic. Each indicator class implements atp_strategy.api.Indicator (value / is_ready / update). MACD additionally exposes MACDValue via .reading (macd, signal, histogram); BollingerBands exposes BollingerValue via .reading (middle, upper, lower). All six classes support incremental updates: a fresh Bar appended to an internal rolling deque triggers a recompute (TA-Lib for EMA/RSI/MACD/ATR; pandas-ta for SMA/BollingerBands) over the buffer and the wrapper exposes the last finite output. The L7 parity test additionally cross-checks every indicator against the OTHER library so AC-6 'wraps both' is verified end-to-end, not just at the import line. The same public surface is used in live IB execution (SRS-EXE-001), internal paper simulation (SRS-SIM-001), backtest (SRS-BT-001), and Jupyter research (SRS-RES-002) per SRS-SDK-001 AC-14. TA-Lib's C library is a mandatory native dependency (see docker/strategy-python.Dockerfile, docker/jupyter.Dockerfile, and .github/workflows/ci.yml install TA-Lib 0.6.4); the Python wrapper requires the C shared library on the loader path.",
+    "indicators_module": "python/atp_strategy/indicators.py",
+    "required_indicator_classes": [
+      "ATR",
+      "BollingerBands",
+      "EMA",
+      "MACD",
+      "RSI",
+      "SMA"
+    ],
+    "required_dataclasses": [
+      "BollingerValue",
+      "MACDValue"
+    ],
+    "required_indicator_methods": [
+      "update"
+    ],
+    "required_indicator_properties": [
+      "value",
+      "is_ready"
+    ],
+    "required_compound_indicator_properties": {
+      "MACD": ["reading"],
+      "BollingerBands": ["reading"]
+    },
+    "required_dataclass_fields": {
+      "MACDValue": ["macd", "signal", "histogram"],
+      "BollingerValue": ["middle", "upper", "lower"]
+    },
+    "primary_backend": "mixed: pandas-ta for SMA / BollingerBands; TA-Lib for EMA / RSI / MACD / ATR",
+    "parity_reference": "the OTHER library — every indicator pins parity against both backends in the L7 test",
+    "primary_backend_per_indicator": {
+      "SMA": "pandas_ta.sma",
+      "EMA": "talib.EMA",
+      "RSI": "talib.RSI",
+      "MACD": "talib.MACD",
+      "BollingerBands": "pandas_ta.bbands",
+      "ATR": "talib.ATR"
+    },
+    "parity_tolerance_abs_vs_talib": {
+      "SMA": 1e-9,
+      "EMA": 1e-9,
+      "RSI": 1e-6,
+      "MACD": 1e-6,
+      "BollingerBands": 1e-9,
+      "ATR": 1e-6
+    },
+    "parity_tolerance_abs_vs_pandas_ta": {
+      "SMA": 1e-9,
+      "EMA": 1e-6,
+      "RSI": 1e-3,
+      "MACD": 1e-4,
+      "BollingerBands": 1e-6,
+      "ATR": 1e-3
+    },
+    "pandas_ta_seed_skip_bars_factor": 3,
+    "prohibited_custom_math_tokens": [
+      "self._sum +=",
+      "self._alpha",
+      "self._avg_gain",
+      "self._avg_loss",
+      "(x - mean) ** 2",
+      "max(change, 0.0)",
+      "self.num_std * std"
+    ],
+    "required_imports_in_indicators_module": [
+      "talib",
+      "pandas_ta"
+    ],
+    "required_dependency_specs_in_requirements": [
+      "TA-Lib",
+      "pandas-ta",
+      "numpy",
+      "pandas"
+    ],
+    "required_exports": [
+      "ATR",
+      "BollingerBands",
+      "BollingerValue",
+      "EMA",
+      "Indicator",
+      "MACD",
+      "MACDValue",
+      "RSI",
+      "SMA"
+    ],
+    "is_ready_min_bars": {
+      "SMA": "period",
+      "EMA": "period",
+      "RSI": "period + 1",
+      "MACD": "slow + signal - 1",
+      "BollingerBands": "period",
+      "ATR": "period + 1"
+    },
+    "nan_to_none_convention": "TA-Lib emits np.nan for warm-up positions where the indicator buffer is not yet full. Wrappers MUST convert the trailing NaN to Python None on .value and .reading so user strategy code does not need to special-case NaN. For compound indicators (MACD, BollingerBands) the whole reading is None if any component leg is NaN.",
+    "ac_traces": [
+      "SRS-SDK-006",
+      "SYS-35",
+      "AC-6",
+      "C-9",
+      "SN-1.20",
+      "AC-14"
+    ],
+    "deferred": [
+      "Extended indicator coverage (ADX, OBV, Stochastic, Ichimoku, etc.) is intentionally out of scope; SRS-SDK-006 names exactly SMA / EMA / RSI / MACD / BollingerBands / ATR. Future indicator additions follow the same wrap-talib-and-pandas-ta pattern enforced by this contract.",
+      "Strategy-author-facing documentation for the indicator surface (usage examples, edge-case guide, performance notes) is owned by SRS-SDK-009 (P1, docs).",
+      "Optimising for O(1) per-update cost is out of scope. The SRS-SDK-006 AC says 'support incremental updates', not 'O(1) per update'. O(period) recompute per bar via TA-Lib's C-level loop is acceptable and matches the prior pure-Python implementation's effective cost.",
+      "Documented seed-bar divergence between TA-Lib and pandas-ta on RSI / MACD / ATR (different Wilder/EMA seeding conventions) is not a bug. The L7 IndicatorPandasTaParityTest slices the first pandas_ta_seed_skip_bars_factor * period bars before comparing, and the divergence is documented in the indicators.py module docstring."
+    ]
   }
 }

@@ -10,12 +10,21 @@ Layers (see plan):
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
-from collections.abc import Iterator
-from pathlib import Path
 
-import pytest
+# SRS-SDK-006: pandas-ta pulls in numba transitively. Numba's JIT path is
+# irrelevant to the SDK code paths (only pandas_ta.sma + pandas_ta.bbands
+# are called, both plain pandas/numpy) and can fail at import time on edge
+# interpreter / LLVM combinations. Disable the JIT BEFORE any test module
+# (and therefore any pandas_ta import) loads. setdefault preserves an
+# explicit override via the env.
+os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
+
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+from collections.abc import Iterator  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import pytest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 

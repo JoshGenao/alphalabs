@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "atp-strategy"
 version = "0.1.0"
 description = "Python Strategy API boundary for ATP user-authored strategies."
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"  # pandas-ta (via numba) does not support 3.14 yet (SRS-SDK-006)
 
 [tool.setuptools.packages.find]
 where = ["."]
