@@ -208,7 +208,9 @@ SAFETY_PATH_RE = re.compile(
     r"|warmup[_-]?controller|warmup[_-]?state|warmup[_-]?bars"
     r"|indicator[_-]?initialization|historical[_-]?replay"
     r"|strategy[_-]?api[_-]?indicators|indicator[_-]?parity"
-    r"|pandas[_-]?ta|ta[_-]?lib|technical[_-]?indicators)",
+    r"|pandas[_-]?ta|ta[_-]?lib|technical[_-]?indicators"
+    r"|strategy[_-]?api[_-]?documentation|api[_-]?documentation"
+    r"|strategy[_-]?example|example[_-]?strateg(y|ies))",
     re.IGNORECASE,
 )
 
