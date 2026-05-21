@@ -106,7 +106,10 @@ class StrategyConfig:
 
 
 class OrderSide(StrEnum):
-    """Direction of an order.
+    """Direction of an order — ``BUY`` opens or adds to a long
+    position (or reduces a short); ``SELL`` opens / adds to a short or
+    reduces a long. Combined with ``OrderType`` and ``asset_class`` on
+    every ``OrderRequest``.
 
     Example:
         >>> OrderSide.BUY.value
@@ -119,6 +122,12 @@ class OrderSide(StrEnum):
 
 class OrderType(StrEnum):
     """Order type supported by the Strategy API.
+
+    ``MARKET`` orders fill immediately at the prevailing price.
+    ``LIMIT`` orders fill only at the specified ``limit_price`` or
+    better. ``STOP`` orders become market orders once ``stop_price``
+    is touched. ``STOP_LIMIT`` becomes a limit order at ``limit_price``
+    once ``stop_price`` is touched.
 
     Example:
         >>> OrderType.LIMIT.value
@@ -134,6 +143,12 @@ class OrderType(StrEnum):
 @dataclass(frozen=True, slots=True)
 class Bar:
     """A single OHLCV bar delivered to ``Strategy.on_bar``.
+
+    Bars carry the standard open / high / low / close prices, integer
+    ``volume``, and an ISO-8601 ``timestamp`` string. Bars are immutable
+    and hashable. Frequency is implied by the subscription (defaults to
+    1-minute via ``ctx.subscribe``); ``ctx.consolidate`` produces
+    higher-frequency bars without a separate subscription.
 
     Example:
         >>> Bar("AAPL", "2026-05-03T09:30:00-04:00", 1.0, 2.0, 0.5, 1.5, 100).close
@@ -152,6 +167,13 @@ class Bar:
 @dataclass(frozen=True, slots=True)
 class OrderRequest:
     """Order parameters submitted via ``StrategyContext.order``.
+
+    ``order_type=LIMIT`` and ``order_type=STOP`` require ``limit_price``
+    / ``stop_price`` respectively. ``client_order_id`` is optional and
+    lets a strategy correlate the eventual ``OrderEvent`` callbacks
+    back to the originating request (``SRS-SDK-004``). ``asset_class``
+    must equal ``StrategyConfig.tradable_asset_class`` or the dispatcher
+    raises ``AssetClassViolation`` (``SRS-SDK-003``).
 
     Example:
         >>> OrderRequest("AAPL", 10, OrderSide.BUY, OrderType.MARKET).quantity
@@ -172,8 +194,11 @@ class OrderRequest:
 class OrderHandle:
     """Opaque reference to a submitted order.
 
-    Returned by ``StrategyContext.order`` and accepted by
-    ``StrategyContext.cancel``.
+    Returned by ``StrategyContext.order``. The strategy keeps the
+    handle if it ever needs to cancel via ``StrategyContext.cancel``,
+    or to correlate ``OrderEvent`` callbacks back to the submitting
+    code by comparing ``handle.order_id`` to ``event.order_id``.
+    Immutable and hashable so handles can be stored in sets / dicts.
 
     Example:
         >>> OrderHandle("ord-1", "s1").order_id
@@ -777,6 +802,11 @@ ScheduleCallback = Callable[["StrategyContext"], None]
 class ScheduleHandle(Protocol):
     """Cancellation handle returned by every ``Scheduler`` method.
 
+    Holds the reference a strategy uses to ``handle.cancel()`` a
+    previously-registered scheduled trigger. Cancellation is
+    idempotent: calling ``cancel()`` on an already-cancelled handle
+    is a no-op. Subsequent fires are suppressed once cancelled.
+
     Example:
         >>> class _H:
         ...     def cancel(self) -> None: ...
@@ -785,7 +815,12 @@ class ScheduleHandle(Protocol):
     """
 
     def cancel(self) -> None:
-        """Cancel this scheduled trigger; idempotent."""
+        """Cancel this scheduled trigger; idempotent.
+
+        Subsequent fires are suppressed. Cancelling an already-
+        cancelled handle is a no-op (no exception is raised), so
+        teardown code can call this freely.
+        """
 
 
 @runtime_checkable
@@ -809,12 +844,25 @@ class Scheduler(Protocol):
     def at_market_open(
         self, callback: ScheduleCallback, *, offset_minutes: int = 0
     ) -> ScheduleHandle:
-        """Fire ``callback`` at the regular session open, plus an optional offset."""
+        """Fire ``callback`` at the regular session open, plus an optional offset.
+
+        Negative ``offset_minutes`` schedules the trigger before the
+        open (e.g. ``-30`` for 09:00 ET pre-market work); positive
+        schedules after. The calendar refuses offsets that escape the
+        same session's ``[04:00, 20:00]`` ET pre-market / after-hours
+        window (raises ``ValueError`` at resolution time).
+        """
 
     def at_market_close(
         self, callback: ScheduleCallback, *, offset_minutes: int = 0
     ) -> ScheduleHandle:
-        """Fire ``callback`` at the regular session close, plus an optional offset."""
+        """Fire ``callback`` at the regular (or early) session close + offset.
+
+        Early-close days (e.g. day after Thanksgiving) resolve against
+        the 13:00 ET close, so ``at_market_close(offset_minutes=-5)``
+        fires at 12:55 ET on those days. Same out-of-window guard as
+        ``at_market_open``.
+        """
 
     def every_n_minutes(
         self,
@@ -823,15 +871,36 @@ class Scheduler(Protocol):
         *,
         only_during_session: bool = True,
     ) -> ScheduleHandle:
-        """Fire ``callback`` every ``n`` minutes, optionally only during a session."""
+        """Fire ``callback`` every ``n`` minutes, optionally only during a session.
+
+        ``only_during_session=True`` (the default) suppresses ticks
+        outside the regular ``[session_open, session_close]`` window
+        and snaps the next candidate to the next session's open. Set
+        to ``False`` for 24/7 ticks (e.g. health checks). ``n`` must
+        be a positive integer.
+        """
 
     def cron(self, expression: str, callback: ScheduleCallback) -> ScheduleHandle:
-        """Fire ``callback`` on a cron-like schedule expression."""
+        """Fire ``callback`` on a cron-like schedule expression.
+
+        Standard 5-field cron syntax (``"min hr dom mon dow"``).
+        Resolution walks against the trading calendar and skips
+        candidates that land off-session or outside the
+        ``[04:00, 20:00]`` ET pre-market / after-hours window. A
+        malformed expression raises ``ValueError`` at registration.
+        """
 
 
 @runtime_checkable
 class TradingCalendar(Protocol):
     """Read-only trading-calendar Protocol (``SRS-SDK-002``).
+
+    The runtime binds a concrete ``TradingCalendar`` (usually
+    ``UsEquityTradingCalendar``) to each strategy container. The
+    scheduler resolves every fire time through this Protocol so
+    NYSE / NASDAQ / CBOE holidays, early closes, pre-market and
+    after-hours boundaries, US Eastern time, and DST transitions
+    are handled centrally — user strategy code never has to know.
 
     Example:
         >>> cal = StaticTradingCalendar()
@@ -842,25 +911,58 @@ class TradingCalendar(Protocol):
     name: str
 
     def is_session(self, date: _dt.date) -> bool:
-        """Return True if ``date`` is a regular trading session."""
+        """Return True if ``date`` is a regular trading session.
+
+        False for weekends, US-equity holidays, and dates outside the
+        bundled calendar horizon (raises ``CalendarHorizonExceeded``
+        in that case rather than returning False, so a stale calendar
+        cannot silently misclassify a real session as a holiday).
+        """
 
     def session_open(self, date: _dt.date) -> _dt.datetime:
-        """Return the regular session open for ``date`` in US Eastern time."""
+        """Return the regular session open for ``date`` in US Eastern time.
+
+        Always 09:30 ET on regular sessions. Raises
+        ``NotATradingSession`` on weekends / holidays — the calendar
+        refuses to fabricate an open on a closed-market day.
+        """
 
     def session_close(self, date: _dt.date) -> _dt.datetime:
-        """Return the regular session close for ``date`` in US Eastern time."""
+        """Return the regular session close for ``date`` in US Eastern time.
+
+        16:00 ET on regular sessions; 13:00 ET on early-close days
+        (e.g. day after Thanksgiving). Raises ``NotATradingSession``
+        on weekends / holidays.
+        """
 
     def is_early_close(self, date: _dt.date) -> bool:
-        """Return True if ``date`` has an early close."""
+        """Return True if ``date`` has an early close.
+
+        Early-close days close at 13:00 ET. False for weekends,
+        holidays, and dates outside the bundled calendar horizon.
+        """
 
     def premarket_open(self, date: _dt.date) -> _dt.datetime:
-        """Return the pre-market open for ``date`` in US Eastern time."""
+        """Return the pre-market open for ``date`` in US Eastern time.
+
+        Platform-fixed at 04:00 ET on regular sessions. Raises
+        ``NotATradingSession`` on weekends / holidays.
+        """
 
     def afterhours_close(self, date: _dt.date) -> _dt.datetime:
-        """Return the after-hours close for ``date`` in US Eastern time."""
+        """Return the after-hours close for ``date`` in US Eastern time.
+
+        Platform-fixed at 20:00 ET on regular sessions. Raises
+        ``NotATradingSession`` on weekends / holidays.
+        """
 
     def next_session(self, after: _dt.date) -> _dt.date:
-        """Return the first regular trading session date strictly after ``after``."""
+        """Return the first regular trading session date strictly after ``after``.
+
+        Walks calendar days forward to skip weekends / holidays.
+        Raises ``CalendarHorizonExceeded`` if no session is found
+        within the bundled horizon.
+        """
 
 
 _EASTERN = _dt.timezone(_dt.timedelta(hours=-5), name="US/Eastern")
@@ -974,6 +1076,19 @@ class HistoricalData(Protocol):
         notebooks can request raw, split-adjusted, fully adjusted, or
         total-return series for equities, options, futures, ETFs, or
         indices without binding to a specific data provider.
+
+        Args:
+            symbol: The contract symbol (e.g. ``"AAPL"``).
+            lookback: Number of bars to return, ending at ``end``.
+            frequency: Bar period — typically ``"1m"`` (minute),
+                ``"5m"``, ``"1h"``, or ``"1d"``.
+            end: ISO-timestamp end (exclusive); ``None`` for "now".
+            asset_class: ``EQUITY`` or ``OPTION``.
+            normalization: ``RAW``, ``SPLIT_ADJUSTED``,
+                ``FULLY_ADJUSTED``, or ``TOTAL_RETURN``.
+
+        Returns:
+            List of ``Bar`` in ascending-timestamp order.
         """
 
 
@@ -985,7 +1100,7 @@ class Indicator(Protocol):
     plus a readiness flag. See ``atp_strategy.indicators`` for built-ins.
 
     Example:
-        >>> from atp_strategy.indicators import SMA
+        >>> from atp_strategy import SMA
         >>> ind = SMA(period=2)
         >>> ind.is_ready
         False
@@ -993,14 +1108,29 @@ class Indicator(Protocol):
 
     @property
     def value(self) -> float | None:
-        """Latest indicator value, or ``None`` if not yet ready."""
+        """Latest indicator value, or ``None`` if not yet ready.
+
+        Compound indicators (``MACD``, ``BollingerBands``) return the
+        primary leg here; use ``.reading`` on those classes for the
+        full multi-component value.
+        """
 
     @property
     def is_ready(self) -> bool:
-        """True once the indicator has consumed enough bars to emit a value."""
+        """True once the indicator has consumed enough bars to emit a value.
+
+        Strategy authors should always gate signal logic on
+        ``is_ready`` rather than ``value is not None`` — the
+        readiness flag latches once the warm-up window completes.
+        """
 
     def update(self, bar: Bar) -> float | None:
-        """Consume a new bar; return the latest value or ``None``."""
+        """Consume a new bar; return the latest value or ``None``.
+
+        Typically called from ``Strategy.on_bar``. Returns ``None``
+        until the indicator's warm-up window is full. After warm-up
+        each call returns the freshly-recomputed value.
+        """
 
 
 @runtime_checkable
@@ -1019,7 +1149,13 @@ class BarConsolidator(Protocol):
     """
 
     def consolidate(self, source_symbol: str, *, period: str) -> Iterable[Bar]:
-        """Yield consolidated bars for ``source_symbol`` at ``period`` (e.g. ``"5m"``)."""
+        """Yield consolidated bars for ``source_symbol`` at ``period`` (e.g. ``"5m"``).
+
+        Iterate the returned object to receive each newly-completed
+        consolidated ``Bar``. The consolidator buffers ticks from the
+        minute subscription internally; no separate higher-frequency
+        subscription is required.
+        """
 
 
 @runtime_checkable
@@ -1037,7 +1173,12 @@ class RenkoBuilder(Protocol):
     brick_size: float
 
     def update(self, bar: Bar) -> Bar | None:
-        """Consume a tick/bar; emit a completed Renko bar or ``None``."""
+        """Consume a tick/bar; emit a completed Renko bar or ``None``.
+
+        Returns a new Renko ``Bar`` only when the price has moved a
+        full ``brick_size`` from the previous brick; otherwise
+        returns ``None``.
+        """
 
 
 @runtime_checkable
@@ -1055,7 +1196,11 @@ class RangeBarBuilder(Protocol):
     range_size: float
 
     def update(self, bar: Bar) -> Bar | None:
-        """Consume a tick/bar; emit a completed range bar or ``None``."""
+        """Consume a tick/bar; emit a completed range bar or ``None``.
+
+        Returns a new range ``Bar`` only when the high-low span has
+        reached ``range_size``; otherwise returns ``None``.
+        """
 
 
 # --------------------------------------------------------------------------- #
@@ -1089,37 +1234,94 @@ class StrategyContext(Protocol):
     def subscribe(self, symbol: str, asset_class: AssetClass = AssetClass.EQUITY) -> None:
         """Subscribe to market data for ``symbol`` in ``asset_class``.
 
-        A strategy may subscribe to both equities and options for analysis
-        regardless of its tradable asset class (``SRS-SDK-003``).
+        Each subscription causes ``Strategy.on_bar`` to fire for every
+        bar emitted by the runtime for that ``(symbol, asset_class)``
+        pair. A strategy may subscribe to both asset classes
+        (``EQUITY`` and ``OPTION``) for analysis regardless of its
+        configured ``tradable_asset_class`` (``SRS-SDK-003`` AC half
+        A); only order submission is gated on the configured tradable
+        class. Typically called from ``on_start``.
         """
 
     def order(self, request: OrderRequest) -> OrderHandle:
         """Submit an order through the runtime-selected execution path.
 
-        Raises ``AssetClassViolation`` if ``request.asset_class`` does not
-        match ``config.tradable_asset_class``. Concrete implementations
-        must enforce this by calling :func:`assert_asset_class` before
-        routing to live IB execution or internal paper simulation
-        (``SRS-SDK-003``).
+        Returns an ``OrderHandle`` the strategy keeps if it needs to
+        cancel the order later (``cancel(handle)``). Fill / partial-
+        fill / cancellation / rejection events arrive asynchronously
+        on ``Strategy.on_order_event`` (``SRS-SDK-004``). Raises
+        ``AssetClassViolation`` if ``request.asset_class`` does not
+        match the strategy's configured tradable class
+        (``SRS-SDK-003``) — concrete implementations enforce this by
+        calling :func:`assert_asset_class` before routing. Raises
+        ``WarmupNotComplete`` if warm-up has not finished
+        (``SRS-SDK-005``). Concrete implementations route identically
+        in live IB execution and internal paper simulation per
+        ``SRS-SDK-001`` ``AC-14``.
         """
 
     def cancel(self, handle: OrderHandle) -> None:
-        """Cancel a previously submitted order."""
+        """Cancel a previously submitted order.
+
+        Idempotent: cancelling a handle whose order has already filled,
+        already cancelled, or already been rejected is a no-op (no
+        exception is raised, no second cancellation event is fired).
+        The cancellation event itself is delivered asynchronously on
+        ``Strategy.on_order_event`` with
+        ``event_type == OrderEventType.CANCELLED`` and the cumulative
+        fill-state populated per the ``OrderEvent`` field-presence
+        contract (``SRS-SDK-004``).
+        """
 
     def log(self, message: str) -> None:
-        """Write a strategy log message."""
+        """Write a structured strategy log line.
+
+        Lines surface on the dashboard live-log stream
+        (``SRS-DASH-*``) and in the per-strategy log file. Cheap
+        enough to call in tight loops, but plain Python strings only —
+        not a structured-event channel.
+        """
 
     def get_state(self, key: str, default: object | None = None) -> object | None:
-        """Read a JSON-serializable value from strategy state."""
+        """Read a JSON-serializable value from strategy state.
+
+        Returns ``default`` (or ``None`` if no default was supplied)
+        when ``key`` has never been written. State survives container
+        restart (``SRS-EXE-005`` live; ``SRS-SIM-004`` paper) so a
+        strategy can rebuild rolling counters / position-state /
+        intent flags on restart without external storage.
+        """
 
     def set_state(self, key: str, value: object) -> None:
-        """Persist a JSON-serializable value to strategy state."""
+        """Persist a JSON-serializable value to strategy state.
+
+        ``value`` must be JSON-serializable (``str`` / ``int`` /
+        ``float`` / ``bool`` / ``None`` / ``list`` / ``dict`` of the
+        same). State written here survives container restart
+        (``SRS-EXE-005``). Callers do not need to flush — the runtime
+        commits state atomically between event callbacks.
+        """
 
     def indicator(self, name: str, **params: object) -> Indicator:
-        """Construct a built-in technical indicator (``SRS-SDK-006``)."""
+        """Construct a built-in technical indicator (``SRS-SDK-006``).
+
+        Equivalent to importing the class directly from
+        ``atp_strategy`` (e.g. ``SMA(period=20)``) but lets the runtime
+        track which indicators a strategy uses for warm-up sizing
+        diagnostics. ``name`` is the indicator class name (case-
+        insensitive); ``params`` are forwarded to the constructor.
+        Returns an object implementing the ``Indicator`` Protocol.
+        """
 
     def consolidate(self, symbol: str, period: str) -> BarConsolidator:
-        """Open a time-based consolidator for ``symbol`` at ``period`` (``SRS-SDK-007``)."""
+        """Open a time-based consolidator for ``symbol`` at ``period`` (``SRS-SDK-007``).
+
+        ``period`` accepts ``"5m"``, ``"15m"``, ``"1h"``, and ``"1d"``
+        — the runtime consolidates the subscribed minute bars into
+        the requested period without requiring a separate
+        subscription. Iterate the returned ``BarConsolidator`` to
+        receive each completed consolidated ``Bar``.
+        """
 
 
 class Strategy:
@@ -1148,7 +1350,21 @@ class Strategy:
     warmup_bars: int = 0
 
     def on_start(self, context: StrategyContext) -> None:
-        """Run once after the strategy container has initialized."""
+        """Run once after the strategy container has initialized.
+
+        Override this to declare market-data subscriptions, construct
+        long-lived indicator instances, seed strategy state, register
+        scheduled triggers, and run any other one-time setup. Fires
+        before warm-up replay begins; ``context.subscribe`` /
+        ``context.schedule`` calls made here apply for the lifetime of
+        the container.
+
+        Example:
+            >>> class S(Strategy):
+            ...     def on_start(self, ctx):
+            ...         ctx.subscribe("AAPL")
+            ...         ctx.log("started")
+        """
 
     def on_warmup_complete(self, context: StrategyContext) -> None:
         """Run once after the warm-up replay completes (``SRS-SDK-005``).
@@ -1178,7 +1394,27 @@ class Strategy:
         """
 
     def on_bar(self, context: StrategyContext, bar: Bar) -> None:
-        """Run when a subscribed bar arrives."""
+        """Run when a subscribed bar arrives.
+
+        Fires once per ``Bar`` emitted by the runtime for any symbol /
+        asset class the strategy has subscribed to. During warm-up the
+        ``bar`` is a replayed historical bar (no executable order
+        submission permitted — ``context.order`` raises
+        ``WarmupNotComplete`` until ``on_warmup_complete`` has fired).
+        After warm-up the ``bar`` is a live (or paper-simulated)
+        executable bar.
+
+        Args:
+            context: Runtime services (``StrategyContext``) bound to this
+                strategy instance.
+            bar: The newly arrived OHLCV bar. ``bar.symbol`` identifies
+                which subscription it belongs to.
+
+        Example:
+            >>> class S(Strategy):
+            ...     def on_bar(self, ctx, bar):
+            ...         ctx.log(f"{bar.symbol} close={bar.close}")
+        """
 
     def on_order_event(self, context: StrategyContext, event: OrderEvent) -> None:
         """Run when an order lifecycle event is delivered (``SRS-SDK-004``).
@@ -1201,7 +1437,33 @@ class Strategy:
         """
 
     def on_schedule(self, context: StrategyContext, tag: str) -> None:
-        """Run when a scheduled trigger fires (``SRS-SDK-002``)."""
+        """Run when a scheduled trigger fires (``SRS-SDK-002``).
+
+        Fires once per scheduled trigger the orchestrator dispatches.
+        ``tag`` is the runtime-emitted label identifying which kind of
+        scheduled trigger fired (``"market_open"``, ``"market_close"``,
+        ``"every_n_minutes"``, ``"cron"``, or a dispatcher-assigned
+        identifier — strategy authors should not depend on the exact
+        format and instead match on the kinds they registered). The
+        direct callback the strategy passed to ``ctx.schedule.*`` is
+        the typical authoring surface; ``on_schedule`` is the secondary
+        hook for runtimes that funnel every dispatched trigger through
+        a single entry point. All scheduling resolves through the
+        bound ``TradingCalendar``, so NYSE / NASDAQ / CBOE holidays,
+        early closes, pre-market and after-hours session boundaries,
+        US Eastern time, and DST transitions are handled centrally.
+
+        Args:
+            context: Runtime services (``StrategyContext``) bound to this
+                strategy instance.
+            tag: Runtime-emitted label identifying which scheduled
+                trigger fired.
+
+        Example:
+            >>> class S(Strategy):
+            ...     def on_schedule(self, ctx, tag):
+            ...         ctx.log(f"scheduled: {tag}")
+        """
 
 
 __all__ = [

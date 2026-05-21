@@ -6,6 +6,39 @@ contains no execution-mode branches (`SRS-SDK-001`).
 
 SRS trace: `SRS-SDK-001` through `SRS-SDK-009` in `docs/SRS.md` §5.2.
 
+## Getting started
+
+The SDK lives inside the strategy container the orchestrator builds for you
+— `pip install atp-strategy` is not needed. Every name in this guide is
+imported from the package facade:
+
+```python
+from atp_strategy import Strategy, StrategyContext, Bar, SMA, OrderRequest
+```
+
+Three things every strategy needs:
+
+1. A subclass of `Strategy` that overrides the callbacks you care about.
+2. A `StrategyConfig` (built by the orchestrator from your container
+   manifest): `strategy_id`, `tradable_asset_class` (`EQUITY` or `OPTION`),
+   and `warmup_bars` (how many historical bars to replay before the first
+   executable bar). Calendar / scheduling defaults to `America/New_York`.
+3. At least one `ctx.subscribe(...)` call inside `on_start` so the runtime
+   knows which market-data streams to fan in.
+
+Verify your environment by running one of the bundled example strategies:
+
+```bash
+python -m atp_strategy.examples.hello
+python -m atp_strategy.examples.sma_crossover
+python -m atp_strategy.examples.dual_asset_analytics
+```
+
+Each example is a self-contained `Strategy` subclass plus a small
+`__main__` block that walks it through warm-up + a handful of bars + a
+sample fill against an in-process stub dispatcher. Clone whichever
+example is closest to your idea and edit from there.
+
 ## Minimal strategy skeleton
 
 Every strategy subclasses `Strategy` and overrides the callbacks it cares
@@ -177,3 +210,88 @@ def on_bar(self, ctx, bar):
     ctx.log(f"working order {handle.order_id}")
     ctx.cancel(handle)
 ```
+
+## Callback reference
+
+Override these `Strategy` methods. The runtime invokes them in this order:
+`on_start` once at container init, then warm-up replay (each replayed
+historical bar is delivered to `on_bar`), then `on_warmup_complete` once,
+then live executable bars (interleaved with `on_order_event` and
+`on_schedule`).
+
+| Hook                  | When it fires                                                                                       |
+|-----------------------|-----------------------------------------------------------------------------------------------------|
+| `on_start`            | Once after the strategy container initializes. Declare subscriptions, register schedules, seed state. |
+| `on_bar`              | Once per `Bar`. During warm-up: a replayed historical bar. After warm-up: a live executable bar.     |
+| `on_warmup_complete`  | Once, between the last warm-up bar and the first executable bar. Indicator buffers are ready.        |
+| `on_order_event`      | Per `OrderEvent` — fill, partial fill, cancellation, rejection, ack, expiry (`SRS-SDK-004`).         |
+| `on_schedule`         | Per scheduled trigger fire. `tag` is a runtime-emitted label (e.g. `"market_open"`); the direct callback passed to `ctx.schedule.*` is the typical authoring path (`SRS-SDK-002`). |
+
+Strategy authors should gate order submission on warm-up completion. The
+production dispatchers raise `WarmupNotComplete` if `ctx.order` is called
+before `on_warmup_complete` has fired; track a `self._warmup_complete`
+flag in your strategy and check it in `on_bar` (see
+`atp_strategy.examples.sma_crossover` for the canonical pattern).
+
+## StrategyContext reference
+
+Every callback receives a `StrategyContext`. Attributes give read-only
+access to runtime services; methods drive actions.
+
+| Member                              | Purpose                                                                                       |
+|-------------------------------------|-----------------------------------------------------------------------------------------------|
+| `ctx.config`                        | The `StrategyConfig` for this strategy instance.                                              |
+| `ctx.schedule`                      | `Scheduler` with `at_market_open` / `at_market_close` / `every_n_minutes` / `cron`.           |
+| `ctx.calendar`                      | `TradingCalendar` (sessions, holidays, early closes, pre/post-market hours).                  |
+| `ctx.history`                       | `HistoricalData.get_bars(symbol, lookback=..., frequency="1m", normalization=...)`.            |
+| `ctx.subscribe(sym, asset_class)`   | Add a market-data subscription. Both `EQUITY` and `OPTION` may be subscribed for analysis.    |
+| `ctx.order(request)`                | Submit an `OrderRequest`; returns an `OrderHandle`. Async events arrive on `on_order_event`.  |
+| `ctx.cancel(handle)`                | Cancel a previously submitted order; idempotent.                                              |
+| `ctx.log(message)`                  | Write a structured strategy log line.                                                         |
+| `ctx.get_state(key, default=None)`  | Read a JSON-serializable value from persisted strategy state (survives restart).               |
+| `ctx.set_state(key, value)`         | Persist a JSON-serializable value.                                                            |
+| `ctx.indicator(name, **params)`     | Construct a built-in indicator (equivalent to importing the class directly).                  |
+| `ctx.consolidate(symbol, period)`   | Open a time-based bar consolidator (`SRS-SDK-007`).                                           |
+
+## Errors and assertions
+
+Every exception a strategy can encounter from the SDK inherits from
+`StrategyAPIError` so user code can catch one base class for the
+structured-error surface (`SyRS SYS-64`).
+
+| Exception                    | Raised when                                                                                       |
+|------------------------------|---------------------------------------------------------------------------------------------------|
+| `StrategyAPIError`           | Base class — catch this to handle any SDK runtime error generically.                              |
+| `AssetClassViolation`        | `ctx.order` called with `asset_class` other than `config.tradable_asset_class` (`SRS-SDK-003`).    |
+| `WarmupNotComplete`          | Executable action attempted before `on_warmup_complete` has fired (`SRS-SDK-005`).                |
+| `OrderEventContractError`    | A dispatcher delivered an `OrderEvent` missing AC-required fields (`SRS-SDK-004`).                |
+| `CalendarHorizonExceeded`    | Calendar query targets a date past the bundled calendar horizon (`SRS-SDK-002` / `SYS-50`).       |
+| `NotATradingSession`         | Calendar boundary query (open / close / pre / post) targets a weekend or holiday.                 |
+
+Two assertion helpers a strategy author may call directly:
+
+- `assert_asset_class(config, request)` — the reference enforcement for
+  `SRS-SDK-003`. Raises `AssetClassViolation`. Concrete dispatchers call
+  this before routing an order; user code rarely needs to.
+- `assert_warmup_complete(state)` — the executable-bar / order-submission
+  gate. Raises `WarmupNotComplete` until the controller reaches
+  `WarmupState.COMPLETE`. Useful inside `on_bar` if you want a typed
+  failure instead of a silent gate.
+
+## Configuration reference
+
+`StrategyConfig` is constructed by the orchestrator from your container
+manifest and handed to every callback through `ctx.config`. Strategy
+authors do not construct it directly; the fields below are documented for
+reference so you know what is available on `ctx.config`.
+
+| Field                     | Type           | Default              | Meaning                                                                                    |
+|---------------------------|----------------|----------------------|--------------------------------------------------------------------------------------------|
+| `strategy_id`             | `str`          | required             | Stable identifier for this strategy instance.                                              |
+| `tradable_asset_class`    | `AssetClass`   | required             | The single asset class this strategy may submit orders against (`EQUITY` or `OPTION`).      |
+| `warmup_bars`             | `int`          | `0`                  | Number of historical bars to replay before the first executable bar (`SRS-SDK-005`).        |
+| `timezone`                | `str`          | `"America/New_York"` | IANA zone for scheduling resolution (`SRS-SDK-002`).                                       |
+
+The `Strategy` class attribute `warmup_bars` mirrors the config field and
+is the developer-friendly default when no orchestrator config is wired in
+(useful for local tests and the bundled example strategies).

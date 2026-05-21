@@ -123,7 +123,7 @@ class SMA(_IndicatorBase):
     """Simple moving average wrapping :func:`pandas_ta.sma` (``SRS-SDK-006``).
 
     Example:
-        >>> from atp_strategy.api import Bar
+        >>> from atp_strategy import Bar
         >>> sma = SMA(period=3)
         >>> for c in (1.0, 2.0, 3.0):
         ...     _ = sma.update(Bar("X", "t", c, c, c, c, 1))
@@ -162,7 +162,7 @@ class EMA(_IndicatorBase):
     """Exponential moving average wrapping :func:`talib.EMA` (``SRS-SDK-006``).
 
     Example:
-        >>> from atp_strategy.api import Bar
+        >>> from atp_strategy import Bar
         >>> ema = EMA(period=3)
         >>> for c in (1.0, 2.0, 3.0, 4.0):
         ...     _ = ema.update(Bar("X", "t", c, c, c, c, 1))
@@ -202,7 +202,7 @@ class RSI(_IndicatorBase):
     first ``period`` bars (see contract block parity tolerances).
 
     Example:
-        >>> from atp_strategy.api import Bar
+        >>> from atp_strategy import Bar
         >>> rsi = RSI(period=2)
         >>> for c in (1.0, 2.0, 1.5, 2.5):
         ...     _ = rsi.update(Bar("X", "t", c, c, c, c, 1))
@@ -237,6 +237,12 @@ class RSI(_IndicatorBase):
 class MACDValue:
     """Three-component MACD reading: line, signal, histogram.
 
+    ``macd`` is the fast-EMA minus slow-EMA value. ``signal`` is the
+    EMA of the MACD line over ``signal`` periods. ``histogram`` is
+    ``macd - signal`` and is what most crossover strategies trade.
+    Returned by ``MACD.reading``; ``MACD.value`` returns just the
+    ``macd`` field for compatibility with the ``Indicator`` Protocol.
+
     Example:
         >>> MACDValue(0.5, 0.3, 0.2).histogram
         0.2
@@ -251,7 +257,7 @@ class MACD:
     """MACD wrapping :func:`talib.MACD` with the standard 12/26/9 defaults.
 
     Example:
-        >>> from atp_strategy.api import Bar
+        >>> from atp_strategy import Bar
         >>> macd = MACD()
         >>> for c in range(60):
         ...     _ = macd.update(Bar("X", "t", c, c, c, float(c), 1))
@@ -313,6 +319,12 @@ class MACD:
 class BollingerValue:
     """Three-component Bollinger reading: middle, upper, lower bands.
 
+    ``middle`` is the SMA of the close over the indicator's period.
+    ``upper`` and ``lower`` are ``middle ± num_std * stdev`` (population
+    standard deviation, matching ``talib.BBANDS(matype=0)``). Returned
+    by ``BollingerBands.reading``; ``BollingerBands.value`` returns
+    ``middle`` alone for the ``Indicator`` Protocol.
+
     Example:
         >>> BollingerValue(10.0, 12.0, 8.0).upper
         12.0
@@ -330,7 +342,7 @@ class BollingerBands:
     deviation, matching ``talib.BBANDS(matype=0)`` exactly.
 
     Example:
-        >>> from atp_strategy.api import Bar
+        >>> from atp_strategy import Bar
         >>> bb = BollingerBands(period=3, num_std=2.0)
         >>> for c in (1.0, 2.0, 3.0):
         ...     _ = bb.update(Bar("X", "t", c, c, c, c, 1))
@@ -399,7 +411,7 @@ class ATR(_IndicatorBase):
     ``period`` true-range values, the canonical convention.
 
     Example:
-        >>> from atp_strategy.api import Bar
+        >>> from atp_strategy import Bar
         >>> atr = ATR(period=2)
         >>> for h, l, c in ((2.0, 1.0, 1.5), (3.0, 1.5, 2.5), (3.5, 2.0, 3.0)):
         ...     _ = atr.update(Bar("X", "t", l, h, l, c, 1))

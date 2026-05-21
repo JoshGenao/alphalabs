@@ -196,8 +196,8 @@ class ProtocolSurfaceTest(unittest.TestCase):
     def test_dropping_cancel_method_is_caught(self) -> None:
         self.rig.mutate(
             "api.py",
-            find='    def cancel(self, handle: OrderHandle) -> None:\n        """Cancel a previously submitted order."""',
-            replace='    def _removed_cancel(self, handle: OrderHandle) -> None:\n        """Renamed away."""',
+            find="    def cancel(self, handle: OrderHandle) -> None:",
+            replace="    def _removed_cancel(self, handle: OrderHandle) -> None:",
         )
         with self.assertRaises(StrategyApiParityCheckError) as cm:
             self.rig.run(self.config)

@@ -2583,5 +2583,139 @@
       "Optimising for O(1) per-update cost is out of scope. The SRS-SDK-006 AC says 'support incremental updates', not 'O(1) per update'. O(period) recompute per bar via TA-Lib's C-level loop is acceptable and matches the prior pure-Python implementation's effective cost.",
       "Documented seed-bar divergence between TA-Lib and pandas-ta on RSI / MACD / ATR (different Wilder/EMA seeding conventions) is not a bug. The L7 IndicatorPandasTaParityTest slices the first pandas_ta_seed_skip_bars_factor * period bars before comparing, and the divergence is documented in the indicators.py module docstring."
     ]
+  },
+  "strategy_api_documentation_contract": {
+    "description": "User-facing documentation surface for SRS-SDK-009 (SyRS NFR-U2, StRS SN-1.01, C-1). The Python Strategy API ships with author-grade docstrings on every public name in atp_strategy.__all__, a README guide under python/atp_strategy/README.md that walks the full SDK surface, and a python/atp_strategy/examples/ subpackage containing self-contained runnable Strategy subclasses that demonstrate every documented capability end-to-end. The acceptance bar (per SRS-SDK-009 AC) is that a Python-proficient trader can author a new strategy using only the docstrings + README + example files, without ever needing to open python/atp_strategy/api.py or any other internal file. The contract block here is the cross-language source of truth for the tier system, README sections, and example modules; the evidence script tools/strategy_api_documentation_check.py and the L3/L7 tests under tests/test_strategy_api_documentation_contract.py and tests/domain/test_api_documentation.py enforce it.",
+    "documentation_module_paths": [
+      "python/atp_strategy/__init__.py",
+      "python/atp_strategy/api.py",
+      "python/atp_strategy/warmup.py",
+      "python/atp_strategy/indicators.py",
+      "python/atp_strategy/scheduler.py",
+      "python/atp_strategy/calendar.py"
+    ],
+    "readme_path": "python/atp_strategy/README.md",
+    "required_readme_sections": [
+      "Getting started",
+      "Minimal strategy skeleton",
+      "Scheduling",
+      "Subscriptions and asset class",
+      "Indicators",
+      "Warm-up",
+      "Order events",
+      "Historical data",
+      "State access",
+      "Logging and cancellation",
+      "Callback reference",
+      "StrategyContext reference",
+      "Errors and assertions",
+      "Configuration reference"
+    ],
+    "examples_package_path": "python/atp_strategy/examples",
+    "required_example_modules": [
+      "hello",
+      "sma_crossover",
+      "dual_asset_analytics"
+    ],
+    "fully_documented_symbols": [
+      "ATR",
+      "Bar",
+      "BarConsolidator",
+      "BollingerBands",
+      "BollingerValue",
+      "EMA",
+      "HistoricalData",
+      "InMemoryScheduler",
+      "Indicator",
+      "MACD",
+      "MACDValue",
+      "OrderEvent",
+      "OrderEventType",
+      "OrderHandle",
+      "OrderRequest",
+      "OrderSide",
+      "OrderType",
+      "RSI",
+      "RangeBarBuilder",
+      "RenkoBuilder",
+      "SMA",
+      "ScheduleHandle",
+      "Scheduler",
+      "StaticTradingCalendar",
+      "Strategy",
+      "StrategyConfig",
+      "StrategyContext",
+      "TradingCalendar",
+      "UsEquityTradingCalendar",
+      "WarmupController",
+      "WarmupState",
+      "AssetClass",
+      "NormalizationMode",
+      "assert_asset_class",
+      "assert_order_event_payload",
+      "assert_warmup_complete"
+    ],
+    "summary_documented_symbols": [
+      "AssetClassViolation",
+      "CalendarHorizonExceeded",
+      "NotATradingSession",
+      "OrderEventContractError",
+      "StrategyAPIError",
+      "WarmupNotComplete"
+    ],
+    "one_line_documented_symbols": [
+      "LIVE_CALLBACK_LATENCY_P95_MS",
+      "PAPER_CALLBACK_LATENCY_P95_MS",
+      "ScheduleCallback"
+    ],
+    "min_docstring_chars_per_tier": {
+      "full": 200,
+      "summary": 80,
+      "one_line": 20
+    },
+    "required_strategy_overridable_hooks": [
+      "on_start",
+      "on_bar",
+      "on_warmup_complete",
+      "on_order_event",
+      "on_schedule"
+    ],
+    "required_strategy_context_methods": [
+      "subscribe",
+      "order",
+      "cancel",
+      "log",
+      "get_state",
+      "set_state",
+      "indicator",
+      "consolidate"
+    ],
+    "min_docstring_chars_for_hook_or_context_method": 100,
+    "tier_one_example_marker_regex_alternatives": [
+      "(?m)^\\s*>>> ",
+      "```python"
+    ],
+    "anti_drift_rules": [
+      "Every identifier referenced by a from atp_strategy import statement in any example module under python/atp_strategy/examples/ MUST appear in atp_strategy.__all__.",
+      "Every example module under python/atp_strategy/examples/ MUST import only from atp_strategy (the package facade), from atp_strategy.examples (sibling scaffolding such as the local _harness helper), or the Python standard library. Deep-path imports into platform internals (from atp_strategy.api import _x, from atp_strategy.warmup import _y, from atp_strategy.indicators import _z, from atp_strategy.scheduler import _w, from atp_strategy.calendar import _q) are forbidden because they tell strategy authors to read platform internals.",
+      "Every example module MUST define exactly one class that is a strict subclass of atp_strategy.Strategy.",
+      "No example module may contain conditional branches discriminating on the strings 'live', 'paper', or 'backtest' (case-insensitive) — SRS-SDK-001 AC-14 requires the same source to run in all three modes.",
+      "Every `python -m atp_strategy.examples.<name>` invocation referenced in python/atp_strategy/README.md MUST resolve to a module name in required_example_modules.",
+      "Every code fence (``>>> `` doctest or ```python``` fenced block) inside the docstring of any public symbol in atp_strategy.__all__ MUST import only from atp_strategy (the facade) and reference only names in __all__. Deep-path imports in docstring examples teach strategy authors that platform internals are the supported surface, contradicting the SRS-SDK-009 AC.",
+      "Every ```python``` code fence inside python/atp_strategy/README.md MUST import only from atp_strategy and reference only names in __all__. The same anti-internals rule applies to the README as to the docstrings."
+    ],
+    "ac_traces": [
+      "SRS-SDK-009",
+      "NFR-U2",
+      "SN-1.01",
+      "C-1",
+      "AC-14"
+    ],
+    "deferred": [
+      "Sphinx / mkdocs / readthedocs HTML rendering of the docstring + README surface is out of scope for SRS-SDK-009. The AC is satisfied by the in-source docstring + README + runnable examples surface; auto-rendered HTML can be added later without changing the SDK contract.",
+      "Doctest-style ``>>> `` execution via pytest --doctest-modules is intentionally NOT wired in. The author-facing convention chosen here is single-language ```python``` code fences in the README and example-runner verification in the L7 domain test; pytest --doctest-modules would constrain docstring style (mock everything, single-line scenes) without adding signal beyond the L7 example-runner.",
+      "Translation / internationalization of docstring content is out of scope; the platform is single-locale per StRS scope.",
+      "A formal style guide for future docstring additions (e.g., enforced Google-style or NumPy-style Args/Returns/Raises sections) is intentionally deferred. The contract here pins minimum docstring length per tier, a usable example fence on tier-1 names, and the runnable-example coverage rule — sufficient for the SRS-SDK-009 AC without forcing a particular section header format on the existing surface."
+    ]
   }
 }

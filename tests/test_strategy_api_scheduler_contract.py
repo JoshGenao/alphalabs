@@ -200,12 +200,13 @@ class CalendarProtocolMutationTest(unittest.TestCase):
         self.rig.close()
 
     def test_renaming_is_session_is_caught(self) -> None:
+        # Rename the Protocol method's def line; the contract check
+        # locates it via the required_calendar_methods list, so this
+        # mutation surfaces independently of the docstring shape.
         self.rig.mutate(
             "api.py",
-            find="    def is_session(self, date: _dt.date) -> bool:\n"
-            '        """Return True if ``date`` is a regular trading session."""',
-            replace="    def renamed_is_session(self, date: _dt.date) -> bool:\n"
-            '        """Return True if ``date`` is a regular trading session."""',
+            find="    def is_session(self, date: _dt.date) -> bool:",
+            replace="    def renamed_is_session(self, date: _dt.date) -> bool:",
         )
         with self.assertRaisesRegex(
             StrategyApiSchedulerCheckError,
@@ -219,10 +220,8 @@ class CalendarProtocolMutationTest(unittest.TestCase):
         # trip the scheduler check via the required_calendar_methods list.
         self.rig.mutate(
             "api.py",
-            find="    def premarket_open(self, date: _dt.date) -> _dt.datetime:\n"
-            '        """Return the pre-market open for ``date`` in US Eastern time."""',
-            replace="    def renamed_premarket_open(self, date: _dt.date) -> _dt.datetime:\n"
-            '        """Return the pre-market open for ``date`` in US Eastern time."""',
+            find="    def premarket_open(self, date: _dt.date) -> _dt.datetime:",
+            replace="    def renamed_premarket_open(self, date: _dt.date) -> _dt.datetime:",
         )
         with self.assertRaisesRegex(
             StrategyApiSchedulerCheckError,

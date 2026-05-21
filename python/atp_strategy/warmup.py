@@ -106,7 +106,7 @@ class WarmupController:
     fires ``on_warmup_complete``; no history requests are issued.
 
     Example:
-        >>> from atp_strategy.warmup import WarmupController, WarmupState
+        >>> from atp_strategy import WarmupController, WarmupState
         >>> WarmupController.__init__.__name__  # construction is dispatcher-driven
         '__init__'
     """
@@ -268,7 +268,7 @@ def assert_warmup_complete(state: WarmupState | None) -> None:
     ``SYS-64`` so user strategy code sees a structured error.
 
     Example:
-        >>> from atp_strategy.warmup import assert_warmup_complete, WarmupState
+        >>> from atp_strategy import WarmupState, assert_warmup_complete
         >>> assert_warmup_complete(WarmupState.COMPLETE)
     """
     if state is None or state is not WarmupState.COMPLETE:

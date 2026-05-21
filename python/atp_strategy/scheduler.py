@@ -147,7 +147,7 @@ class InMemoryScheduler:
 
     Example:
         >>> import datetime as dt
-        >>> from python.atp_strategy.calendar import UsEquityTradingCalendar
+        >>> from atp_strategy import UsEquityTradingCalendar
         >>> cal = UsEquityTradingCalendar.for_exchange("NYSE")
         >>> s = InMemoryScheduler(calendar=cal)
         >>> h = s.at_market_open(lambda ctx: None)
@@ -162,7 +162,14 @@ class InMemoryScheduler:
     # -- Scheduler Protocol methods -------------------------------------- #
 
     def at_market_open(self, callback: ScheduleCallback, *, offset_minutes: int = 0) -> _Handle:
-        """Fire ``callback`` at the regular session open, plus an optional offset."""
+        """Fire ``callback`` at the regular session open, plus an optional offset.
+
+        Resolves against the bound ``TradingCalendar`` so holidays,
+        early closes, and DST transitions are handled centrally.
+        ``offset_minutes`` outside the session's
+        ``[premarket_open, afterhours_close]`` window raises
+        ``ValueError`` at resolution time.
+        """
         return self._register(
             _Entry(
                 handle_id=next(self._counter),
@@ -173,7 +180,13 @@ class InMemoryScheduler:
         )
 
     def at_market_close(self, callback: ScheduleCallback, *, offset_minutes: int = 0) -> _Handle:
-        """Fire ``callback`` at the regular (or early) session close + offset."""
+        """Fire ``callback`` at the regular (or early) session close + offset.
+
+        On early-close sessions (e.g. day after Thanksgiving) the
+        anchor is the 13:00 ET close, so ``offset_minutes=-5`` fires
+        at 12:55 ET on those days. Same out-of-window guard as
+        ``at_market_open``.
+        """
         return self._register(
             _Entry(
                 handle_id=next(self._counter),
@@ -190,7 +203,13 @@ class InMemoryScheduler:
         *,
         only_during_session: bool = True,
     ) -> _Handle:
-        """Fire ``callback`` every ``n`` minutes, optionally only during a session."""
+        """Fire ``callback`` every ``n`` minutes, optionally only during a session.
+
+        ``only_during_session=True`` (default) suppresses ticks
+        outside ``[session_open, session_close]`` and snaps the next
+        candidate to the next session's open. Set ``False`` for 24/7
+        ticks. ``n`` must be a positive integer.
+        """
         if n <= 0:
             raise ValueError(f"every_n_minutes requires n > 0; got {n}")
         return self._register(
@@ -204,7 +223,14 @@ class InMemoryScheduler:
         )
 
     def cron(self, expression: str, callback: ScheduleCallback) -> _Handle:
-        """Fire ``callback`` on a cron-like schedule expression (calendar-filtered)."""
+        """Fire ``callback`` on a cron-like schedule expression (calendar-filtered).
+
+        Standard 5-field cron syntax (``"min hr dom mon dow"``).
+        Resolution walks against the bound trading calendar and
+        skips candidates that land off-session or outside
+        ``[04:00, 20:00]`` ET. Malformed expressions raise
+        ``ValueError`` at registration time.
+        """
         # Validate eagerly so the caller sees malformed expressions at
         # registration time, but use a fixed sentinel base — never the host
         # wall clock — so registration produces identical state under an

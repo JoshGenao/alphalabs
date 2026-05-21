@@ -219,11 +219,19 @@ class SubscribeProtocolMutationTest(unittest.TestCase):
             self.rig.run(self.config)
 
     def test_dropping_both_class_analysis_docstring_is_caught(self) -> None:
+        # The SDK-003 check accepts either "both equities and options"
+        # or "both asset classes" in the StrategyContext.subscribe
+        # docstring as the AC-half-A affirmation. Drop both wordings
+        # by replacing the relevant sentence with one that names
+        # neither.
         self.rig.mutate(
             "api.py",
             find=(
-                "A strategy may subscribe to both equities and options for analysis\n"
-                "        regardless of its tradable asset class (``SRS-SDK-003``)."
+                "A strategy may subscribe to both asset classes\n"
+                "        (``EQUITY`` and ``OPTION``) for analysis regardless of its\n"
+                "        configured ``tradable_asset_class`` (``SRS-SDK-003`` AC half\n"
+                "        A); only order submission is gated on the configured tradable\n"
+                "        class."
             ),
             replace="See ``SRS-SDK-003``.",
         )
@@ -242,10 +250,21 @@ class OrderProtocolDocstringMutationTest(unittest.TestCase):
         self.rig.close()
 
     def test_dropping_assetclass_violation_from_order_docstring_is_caught(self) -> None:
+        # The SDK-003 check requires the StrategyContext.order
+        # docstring to publicly promise ``AssetClassViolation`` AND
+        # ``assert_asset_class`` so authors and Rust dispatcher
+        # implementers see the guard. Drop the AssetClassViolation
+        # token by rewriting the sentence around it.
         self.rig.mutate(
             "api.py",
-            find="        Raises ``AssetClassViolation`` if ``request.asset_class`` does not\n",
-            replace="        Routes the order to the runtime execution path.\n",
+            find=(
+                "Raises\n"
+                "        ``AssetClassViolation`` if ``request.asset_class`` does not\n"
+                "        match the strategy's configured tradable class\n"
+                "        (``SRS-SDK-003``) — concrete implementations enforce this by\n"
+                "        calling :func:`assert_asset_class` before routing."
+            ),
+            replace="Routes the order to the runtime execution path.",
         )
         with self.assertRaisesRegex(
             StrategyApiSubscriptionsCheckError,
