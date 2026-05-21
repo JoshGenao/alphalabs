@@ -2717,5 +2717,126 @@
       "Translation / internationalization of docstring content is out of scope; the platform is single-locale per StRS scope.",
       "A formal style guide for future docstring additions (e.g., enforced Google-style or NumPy-style Args/Returns/Raises sections) is intentionally deferred. The contract here pins minimum docstring length per tier, a usable example fence on tier-1 names, and the runnable-example coverage rule — sufficient for the SRS-SDK-009 AC without forcing a particular section header format on the existing surface."
     ]
+  },
+  "startup_readiness_gate_contract": {
+    "description": "SDK-surface contract for ERR-9 (Missing or invalid startup configuration: hold system in pre-trade state and expose readiness failure through logs, dashboard, and API). SCOPE: this contract covers the *gate state machine* + *structured payload* halves of ERR-9 only. (a) The pre-trade hold state machine that consumes the SRS-ARCH-005 validator output and gates live and paper order submission. (b) The structured payload shape that the downstream log sink (SRS-LOG-001), dashboard (SRS-UI-001), and REST/WebSocket API (SRS-API-001) read when those surfaces land. (c) The four-field operator-override audit-trail contract SRS-MD-006 requires for any manual release of the hold. The DEFERRED halves are: (1) the concrete log sink that persists as_log_records (SRS-LOG-001); (2) the dashboard pane rendering as_dashboard_payload (SRS-UI-001); (3) the live REST/WebSocket endpoint serving as_dashboard_payload (SRS-API-001); (4) the runtime readiness probes for IB connectivity, IB account authentication, SSD data layer access, ingestion freshness within one trading day, system service health, and NAS reachability (SRS-MD-006); (5) the persistent operator-override audit log + notification dispatch (SRS-LOG-001 + SRS-NOTIF-001). Until those land, ERR-9 stays passes:false in feature_list.json; the SDK-surface here is the seam those features will plug into. Identical to the SDK-004 / SDK-005 partial-pass pattern. The cross-language source of truth lives here; Rust core runtime services that need to consult the pre-trade hold state (e.g., the orchestrator gating live order routing per SRS-EXE-001) re-implement the same gate locally per the AGENTS.md dependency direction (Rust core must not depend on the Python SDK). The Python module path and required exports below are the Python-side view; the cross-language gate_state_variants / allowed_transitions / forbidden_transitions / operator_override_required_fields keys are the contract Rust dispatchers consume directly (or from a generated Rust constants file derived from this block).",
+    "package": "atp_readiness",
+    "path": "python/atp_readiness",
+    "module_paths": [
+      "python/atp_readiness/__init__.py",
+      "python/atp_readiness/gate.py",
+      "python/atp_readiness/errors.py",
+      "python/atp_readiness/override.py"
+    ],
+    "readme_path": "python/atp_readiness/README.md",
+    "gate_class": "ReadinessGate",
+    "gate_state_class": "GateState",
+    "gate_state_variants": [
+      "initializing",
+      "pre_trade_blocked",
+      "ready",
+      "overridden"
+    ],
+    "allowed_transitions": [
+      ["initializing", "pre_trade_blocked"],
+      ["initializing", "ready"],
+      ["pre_trade_blocked", "pre_trade_blocked"],
+      ["pre_trade_blocked", "ready"],
+      ["pre_trade_blocked", "overridden"],
+      ["ready", "pre_trade_blocked"],
+      ["ready", "ready"],
+      ["overridden", "pre_trade_blocked"],
+      ["overridden", "ready"]
+    ],
+    "forbidden_transitions": [
+      ["initializing", "initializing"],
+      ["initializing", "overridden"],
+      ["pre_trade_blocked", "initializing"],
+      ["ready", "initializing"],
+      ["ready", "overridden"],
+      ["overridden", "initializing"],
+      ["overridden", "overridden"]
+    ],
+    "operator_override_class": "OperatorOverride",
+    "operator_override_required_fields": [
+      "actor",
+      "reason",
+      "audit_trail_id",
+      "timestamp_ns"
+    ],
+    "operator_override_string_fields": [
+      "actor",
+      "reason",
+      "audit_trail_id"
+    ],
+    "operator_override_int_fields": [
+      "timestamp_ns"
+    ],
+    "required_gate_methods": [
+      "from_env",
+      "reevaluate",
+      "operator_override",
+      "assert_ready_or_hold",
+      "as_dashboard_payload",
+      "as_log_records"
+    ],
+    "required_gate_properties": [
+      "state",
+      "report",
+      "overrides"
+    ],
+    "required_log_record_fields": [
+      "timestamp_ns",
+      "severity",
+      "key",
+      "category",
+      "reason",
+      "srs_trace"
+    ],
+    "required_dashboard_payload_fields": [
+      "state",
+      "ok",
+      "errors",
+      "warnings",
+      "evidence",
+      "overrides"
+    ],
+    "required_error_exports": [
+      "GateTransitionError",
+      "OverrideAuditError",
+      "PreTradeHoldError",
+      "ReadinessGateError"
+    ],
+    "required_exports": [
+      "GateState",
+      "GateTransitionError",
+      "OperatorOverride",
+      "OverrideAuditError",
+      "PreTradeHoldError",
+      "ReadinessGate",
+      "ReadinessGateError"
+    ],
+    "ac_traces": [
+      "ERR-9",
+      "SRS-ARCH-005",
+      "SRS-MD-006"
+    ],
+    "syrs_refs": [
+      "SYS-76",
+      "NFR-R6"
+    ],
+    "strs_refs": [
+      "SN-2.04",
+      "SN-2.05",
+      "BG-6"
+    ],
+    "deferred": [
+      "Concrete log sink that consumes as_log_records is owned by SRS-LOG-001. The SDK pins the JSON-line field set (timestamp_ns, severity, key, category, reason, srs_trace) so the persistent log surface can ingest without renegotiation when it lands; the sink itself, retention, and rotation policy belong to SRS-LOG-001.",
+      "Dashboard rendering of as_dashboard_payload (operations view + readiness pane) is owned by SRS-UI-001 / UI-1. The SDK pins the document field set (state, ok, errors, warnings, evidence, overrides) so the dashboard backend can render without renegotiation when it lands.",
+      "Live REST/WebSocket endpoint serving as_dashboard_payload (e.g., GET /api/v1/system/readiness) is owned by SRS-API-001 / API-2. The endpoint declaration in python/atp_api/routes.py already references readiness as a future capability; the body schema will be the dataclass-serialised dashboard payload defined here.",
+      "Runtime readiness probes for IB connectivity, IB account authentication, SSD data layer access, ingestion freshness within one trading day, system service health, and NAS reachability are owned by SRS-MD-006. The SDK contract here is the gate state machine those probes will write into; today the gate is seeded only by the SRS-ARCH-005 static-config half. SRS-MD-006 will extend reevaluate (or add a sibling assert_runtime_ready_or_hold) to fold the runtime-probe outcomes into the same state machine. ERR-9 cannot flip passes:true until both halves are wired.",
+      "Persistent operator-override audit log + SRS-NOTIF-001 alert dispatch on override issuance are owned by SRS-LOG-001 + SRS-NOTIF-001. The OperatorOverride dataclass + the four-field audit-trail contract are pinned here; the durable record keeping + the audit-event fan-out are downstream consumers.",
+      "Manual-override-mode escalation (e.g., dashboard banner indicating the system is running on an active operator override, time-to-live on overrides) is intentionally not part of the SDK contract. The gate exposes the override audit list so a future SRS-UI-001 / SRS-NOTIF-001 follow-up can implement the banner without renegotiation."
+    ]
   }
 }

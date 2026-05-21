@@ -71,6 +71,7 @@ for check in \
     adapter_isolation_check \
     deployment_check \
     config_check \
+    startup_readiness_gate_check \
     rest_api_check \
     websocket_api_check \
     cli_check \

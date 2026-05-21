@@ -329,4 +329,11 @@ if ! python3 tools/config_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running startup readiness gate contract check..."
+if ! python3 tools/startup_readiness_gate_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Startup readiness gate check failed; run python3 tools/startup_readiness_gate_check.py for detail."
+  exit 1
+fi
+
 echo "✓ Environment ready"
