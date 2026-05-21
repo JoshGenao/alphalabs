@@ -210,7 +210,9 @@ SAFETY_PATH_RE = re.compile(
     r"|strategy[_-]?api[_-]?indicators|indicator[_-]?parity"
     r"|pandas[_-]?ta|ta[_-]?lib|technical[_-]?indicators"
     r"|strategy[_-]?api[_-]?documentation|api[_-]?documentation"
-    r"|strategy[_-]?example|example[_-]?strateg(y|ies))",
+    r"|strategy[_-]?example|example[_-]?strateg(y|ies)"
+    r"|readiness[_-]?gate|startup[_-]?readiness|pre[_-]?trade"
+    r"|operator[_-]?override|atp[_-]?readiness)",
     re.IGNORECASE,
 )
 
