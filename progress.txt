@@ -1,3 +1,334 @@
+=== SESSION 32 ===
+Date: 2026-05-22
+Feature completed: SRS-API-001 SDK-SURFACE — operator workflow
+coverage contract for the system-level "expose dashboard, CLI, and
+REST/WebSocket interfaces for operator workflows" requirement per
+docs/SRS.md row SRS-API-001 (traces SRS-5.8 SRS-API-001 + §7 rows
+API-2 / API-3 / API-4; SyRS IF-8, IF-9, SYS-2c, SYS-44a, SYS-48,
+SYS-49a; StRS SN-1.11, SN-1.25). The three per-surface contracts
+(rest_api / cli / websocket_api) already verify each surface in
+isolation; this session adds the cross-surface AC-coverage binding
+that ties REST Capability + CLI Group + (optional) WebSocket Channel
+buckets to the 8 operator workflows the AC enumerates verbatim —
+"Live designation, strategy management, kill switch, Hot-Swap,
+Reservoir ranking, backtests, system status, and logs" — so a CLI
+group rename, a REST route deletion, or a Capability / Group / Channel
+bucket renaming cannot silently drop an operator workflow. The
+cross-surface contract is pinned in architecture/runtime_services.json
+#operator_workflow_surface_contract and enforced by
+tools/operator_workflow_surface_check.py (20 evidence collectors) +
+tests/test_operator_workflow_surface_contract.py L3 mutation suite +
+tests/domain/test_operator_workflow_surface.py L7 reference-operator-
+client end-to-end runner.
+Status: 92 remaining features (unchanged — SRS-API-001 stays
+passes:false per the SDK-surface partial-pass pattern; see "What I
+tested" for the precise scope and "Known issues / notes for next
+agent" for the deferred[] audit).
+
+Carryover audit at session start: SESSION 31's "The next honest P1
+to attempt would be one of the SDK-004 / SRS-LOG-001 (SDK-surface
+candidate similar to this session's pattern) / SRS-API-001 (SDK-
+surface candidate; the OpenAPI contract already exists in
+python/atp_api/) clusters" was sound. Plan-mode exploration confirmed:
+  * python/atp_api/ + python/atp_cli/ + python/atp_ws/ already exist
+    with declarative ROUTES (14, 11 Capability buckets) / COMMANDS
+    (18, 6 Group buckets) / EVENT_CHANNELS (8 Channel buckets) +
+    OpenAPI / manual / AsyncAPI snapshots that pass their per-surface
+    contract checks (tools/rest_api_check.py, tools/cli_check.py,
+    tools/websocket_api_check.py).
+  * The gap was the SRS-API-001 cross-surface AC: each of the 8
+    operator workflows must have >=1 documented entry across REST +
+    CLI, and confirmation-required workflows (KILL_SWITCH /
+    LIVE_DESIGNATION / HOT_SWAP) must guard every state-mutating
+    entry. No existing check enforces this; a CLI rename would land
+    silently today.
+Surfaced two choices to the user via AskUserQuestion: (1) feature pick
+(SRS-API-001 SDK-surface vs CI re-sync chore vs SRS-LOG-001 SDK-surface
+vs ERR-7/8 attempt), (2) contract depth (cross-surface AC coverage vs
+WebSocket parity vs full surface re-validation). User chose
+"SRS-API-001 SDK-surface" + "Cross-surface AC coverage only" — the
+smallest blast radius (~20 collectors), mirroring the SESSION 31
+ERR-9 collector count.
+
+What I did:
+- Prep commit (2da727e): extended SAFETY_PATH_RE in
+  tools/critic_check.py to add operator[_-]?workflow[_-]?surface,
+  operator[_-]?workflow, api[_-]?surface[_-]?coverage, and
+  ac[_-]?workflow tokens. Mirrors the SESSION 16-31 per-feature prep
+  precedent. Verified the new tokens match
+  tools/operator_workflow_surface_check.py and
+  tests/{,domain/}test_operator_workflow_surface*.py and do NOT match
+  unrelated paths (architecture/runtime_services.json,
+  python/atp_strategy/api.py). Deterministic critic on the staged prep
+  commit: APPROVE — 0 findings.
+
+- Feat commit (309ff67, +1547 / -3, 9 files): shipped the
+  SRS-API-001 SDK-surface. Five deliverable groups:
+
+  (a) architecture/runtime_services.json
+  operator_workflow_surface_contract block (~212 lines new):
+  description naming the cross-surface AC scope + the deferred halves;
+  ac_traces (SRS-API-001); syrs_refs (IF-8, IF-9, SYS-2c, SYS-44a,
+  SYS-48, SYS-49a); strs_refs (SN-1.11, SN-1.25); surface_packages
+  triple (rest/cli/websocket each with id + package + module +
+  collection + bucket_enum + bucket_attr + snapshot); ac_workflows
+  list of 8 dicts (LIVE_DESIGNATION / STRATEGY_MANAGEMENT /
+  KILL_SWITCH / HOT_SWAP / RESERVOIR_RANKING / BACKTESTS /
+  SYSTEM_STATUS / LOGS, each with rest_capabilities + cli_groups +
+  websocket_channels + requires_confirmation); required_workflow_ids
+  in AC order (pinned by the AC verbatim); ac_phrase_canonical (the
+  exact AC sentence verbatim); orphan_buckets_allowed allow-list for
+  buckets that exist for non-SRS-API-001 reasons (e.g.
+  WATCHLIST_CONFIG, ALERTS REST; PNL / METRICS / ACCOUNT_STATUS /
+  ALERTS WS); min_surface_entries_per_workflow=1; loopback_bind_host
+  127.0.0.1; expected_auth_model local-single-user;
+  forbidden_remote_bind_tokens [0.0.0.0, ::, 0:0:0:0:0:0:0:0];
+  confirmation_required_workflows [LIVE_DESIGNATION, KILL_SWITCH,
+  HOT_SWAP]; snapshot_paths (3 files); vendor_forbidden_tokens
+  (interactive_brokers, ib_insync, ibapi, databento, sharadar);
+  deferred[] (13 entries naming SRS-EXE-001 / SRS-EXE-006 /
+  SRS-ORCH-004 / SRS-ORCH-005 / SRS-RESV-003 / SRS-RESV-002 /
+  SRS-BT-001 / SRS-BT-009 / SRS-DATA-002 / SRS-LOG-001 / SRS-NOTIF-001
+  / SRS-UI-001 / operator-interface-runtime as the downstream owners
+  that must land for SRS-API-001 to flip passes:true).
+
+  (b) tools/operator_workflow_surface_check.py (~570 lines):
+  20 evidence collectors — contract_block_shape /
+  surface_packages on disk / surface_collections_resolve via
+  importlib + StrEnum verification / required_workflow_ids match /
+  ac_phrase_spells_workflow_labels verbatim /
+  workflow_id_to_phrase_uniqueness / workflow_buckets_exist /
+  workflow_min_surface_coverage / capability_orphans /
+  group_orphans / channel_orphans /
+  confirmation_required_workflows (write methods POST/PUT/DELETE on
+  mapped routes + state-mutating tokens on mapped CLI commands all
+  carry requires_confirmation=True) / loopback_bind_policy
+  (SRS-SEC-002) / auth_model_parity (all three surfaces declare
+  local-single-user) / snapshots_present + JSON-parseable /
+  workflow_routes_carry_srs_refs / no_remote_bind_in_declarations
+  (defence-in-depth string survey across declarations) /
+  cross_surface_dependency_direction (AST walk: atp_api / atp_cli /
+  atp_ws must not import each other) / vendor_token_isolation (no
+  ibapi / databento / sharadar tokens in surface packages) /
+  deferred_list (non-empty + every entry has feature+what + names
+  the six required-deferred downstream features). Prints
+  "SRS-API-001 SDK-SURFACE PASS" + every deferred owner so the
+  partial-pass status is loud.
+
+  (c) Pre-existing cross-surface drift FIXED:
+  python/atp_api/routes.py POST /api/v1/hot-swap had
+  requires_confirmation=False while the CLI counterpart
+  `hot-swap trigger` had requires_confirmation=True. The new
+  cross-surface check IMMEDIATELY surfaced this as a BLOCK on first
+  run — exactly the drift class the check is designed to catch.
+  Fix: flip requires_confirmation=True on the route, regenerate
+  python/atp_api/openapi.json via tools/rest_api_check.py --update.
+  This is the new check's first real catch.
+
+  (d) Wired into init.sh between "Running CLI contract check..."
+  and "Running brokerage adapter contract check..." (lines ~178-183).
+  Wired into .github/workflows/ci.yml architecture-check loop between
+  cli and adapter (line 100). Wired into tools/run_ci_locally.sh
+  between cli_check and adapter_check (this slot mirrors ci.yml
+  position exactly — SESSION 31 ERR-9 round-1 BLOCK pattern from
+  [[feedback-ci-mirror-check-script]]).
+
+  (e) tests/test_operator_workflow_surface_contract.py L3 (26 tests):
+    * OperatorWorkflowSurfaceScriptTest — subprocess positive
+      evidence; asserts PASS line names every downstream owner.
+    * _MutationRig — copies architecture/, python/, tools/ into a
+      tmpdir, applies one mutation, re-runs check with --root. Adds
+      a patch_contract helper that round-trips the JSON so contract
+      block edits stay readable.
+    * OperatorWorkflowSurfaceMutationTest — 19 mutations, each must
+      BLOCK: dropped required id; missing required keys; zero/bool
+      min_surface_entries_per_workflow; unknown bucket reference;
+      workflow with no REST and no CLI; orphan capability dropped
+      from allow-list; missing snapshot file; kill-switch /
+      live-promote drops requires_confirmation; REST + WS remote
+      bind (0.0.0.0); CLI auth-model drift; empty deferred list;
+      drops SRS-LOG-001 from deferred; cross-surface import
+      (atp_cli imported from atp_api); ibapi vendor token leaked
+      into atp_api/__init__.py; ac_phrase_canonical drift;
+      duplicate ac_phrase value.
+    * ContractBlockParityTest — 6 pure-Python parity tests
+      (required_workflow_ids order matches ac_workflows order;
+      surface_packages modules + snapshots exist; confirmation
+      workflows are subset of required; every deferred entry has
+      non-empty feature+what; ac_phrase_canonical matches verbatim;
+      workflow bucket references all resolve).
+  Total: 26 passed.
+
+  (f) tests/domain/test_operator_workflow_surface.py L7 (marked
+  safety + domain, 20 tests). Reference operator client stub
+  (_RefOperatorClient) loads OpenAPI / CLI manual / AsyncAPI
+  snapshots once and exposes .access(workflow_id) returning a list
+  of (surface, identifier, srs_refs, requires_confirmation,
+  sample_payload) tuples. For each AC workflow .access() resolves
+  declared routes against the OpenAPI snapshot, declared CLI
+  commands against the manual snapshot, and declared WS channels
+  against the AsyncAPI snapshot (case-insensitive substring match
+  because AsyncAPI keys are url-shaped: /ws/v1/account_status,
+  etc.); JSON-round-trips every payload tuple so a non-serialisable
+  field surfaces here rather than at handler-implementation time.
+  Test classes:
+    * OperatorWorkflowAccessTest — 8 tests (one per AC workflow),
+      asserts >=min_surface_entries_per_workflow + every entry has
+      non-empty identifier + non-empty srs_refs.
+    * OperatorWorkflowConfirmationTest — 3 tests (KILL_SWITCH /
+      LIVE_DESIGNATION / HOT_SWAP), asserts every state-mutating
+      entry (POST/PUT/DELETE REST + activate/promote/rollback/trigger
+      CLI) carries requires_confirmation truthy.
+    * OperatorWorkflowDeferredTest — 8 tests asserting the deferred
+      list names SRS-EXE-001 / SRS-EXE-006 / SRS-ORCH-004 /
+      SRS-RESV-003 / SRS-BT-001 / SRS-LOG-001 / SRS-NOTIF-001 /
+      operator-interface-runtime. One test per name so a silent
+      drop of one is loud.
+    * OperatorWorkflowPayloadSerialisableTest — 1 test walking
+      every workflow's every entry, JSON-round-tripping every
+      payload.
+  Total: 20 passed.
+
+  (g) Critic-paired domain test path explicit:
+  tests/domain/test_operator_workflow_surface.py satisfies the
+  deterministic critic's "safety_critical change requires paired
+  tests/domain/* test" rule (the new SAFETY_PATH_RE tokens added in
+  the prep commit match tools/operator_workflow_surface_check.py).
+
+- This SESSION 32 chore commit: appends this entry to progress.txt.
+  feature_list.json is NOT modified — SRS-API-001 stays passes:false
+  per the SDK-004 / SDK-005 / ERR-9 SDK-surface partial-pass pattern.
+  The contract-block deferred[] list is the durable audit of what
+  remains for the next session(s) to flip SRS-API-001 to passes:true.
+
+What I tested:
+- ./init.sh -> "→ Running operator workflow surface check..."
+  between CLI contract check and brokerage adapter contract check;
+  reaches ✓ Environment ready cleanly.
+- python3 tools/operator_workflow_surface_check.py -> SRS-API-001
+  SDK-SURFACE PASS with 20 evidence bullets — "surface collections
+  resolved: rest=14 entries, 11 buckets; cli=18 entries, 6 buckets;
+  websocket=8 entries, 8 buckets", "every workflow has >= 1
+  documented REST+CLI entry", "every state-mutating entry on the 3
+  confirmation-required workflows carries requires_confirmation=True",
+  "atp_api / atp_cli / atp_ws do not import from each other",
+  "deferred list has 13 entries, all required downstream features
+  named", etc.
+- .venv/bin/python -m pytest tests/test_operator_workflow_surface_
+  contract.py tests/domain/test_operator_workflow_surface.py -q ->
+  46 passed.
+- .venv/bin/python -m pytest -m "not integration and not e2e" -q ->
+  929 passed, 4 skipped, 118 subtests (was 883 at start of session;
+  +46 net — exactly matches the 26 L3 + 20 L7 new tests). The four
+  legacy skips (test_deterministic_replay / test_kill_switch_latency
+  / test_money_reconciliation / test_single_live_invariant) all
+  retain their pre-existing reason strings; none overlap this diff.
+- Architecture checks via .venv python (init.sh / ci.yml path):
+  architecture / dependency_boundary / adapter_isolation /
+  deployment / config / startup_readiness_gate / rest_api /
+  websocket_api / cli / operator_workflow_surface / adapter /
+  data_provider / historical_data / strategy_api -> all OK.
+- ruff check + format on every in-scope file: clean (one
+  reformatting pass was applied after the first run; final state is
+  ruff-clean).
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged) on the prep
+  commit (2da727e): APPROVE — 0 findings.
+  deterministic (tools/critic_check.py --staged) on the feat
+  commit (309ff67): APPROVE — 0 findings.
+  judgment (fresh-context Agent fallback per
+  [[feedback-codex-adversarial-review]] — /codex:adversarial-review
+  is a slash command and Claude cannot invoke it directly): APPROVE
+  — 0 findings on round 1. The agent's rationale called out the
+  pre-existing cross-surface drift fix on POST /api/v1/hot-swap as
+  exactly the drift class the check is designed to catch, confirmed
+  CI mirror parity (init.sh + ci.yml + run_ci_locally.sh updated
+  in the same commit), and confirmed the SDK-surface partial-pass
+  convention (passes:false + deferred[] audit) matches the prior
+  ERR-9 / SRS-SDK-009 cadence.
+
+Known issues / notes for next agent:
+- SRS-API-001 stays passes:false in feature_list.json. The thirteen
+  consumers required for end-to-end verification are itemised in
+  architecture/runtime_services.json#operator_workflow_surface_contract.deferred[]:
+    (1) SRS-EXE-001 + SRS-EXE-006 — kill-switch + live-designation
+        handlers + IB cancel/liquidate/halt/disconnect sequence;
+    (2) SRS-ORCH-004 + SRS-ORCH-005 — strategy lifecycle +
+        rollback dispatcher;
+    (3) SRS-RESV-003 + SRS-RESV-002 — Hot-Swap demotion+promotion
+        + ranking engine;
+    (4) SRS-BT-001 + SRS-BT-009 — backtest launch + query;
+    (5) SRS-DATA-002 — watchlist handler;
+    (6) SRS-LOG-001 — logs handler + sink + WS publisher;
+    (7) SRS-NOTIF-001 — alerts handler + WS publisher;
+    (8) SRS-UI-001 — dashboard binding to the WS channels;
+    (9) operator-interface-runtime — HTTP/WS server + CLI runner
+        dispatcher that bind the declared routes/channels/commands
+        to the handlers.
+  SRS-API-001 can flip passes:true when all thirteen land. Until
+  then, the deferred[] list in the contract block is the durable
+  record.
+
+- Cross-surface drift CAUGHT + FIXED in this session: POST
+  /api/v1/hot-swap had requires_confirmation=False while the CLI
+  `hot-swap trigger` had requires_confirmation=True. The new
+  operator_workflow_surface_check immediately BLOCKed on first run
+  ("state-mutating entries on confirmation-required workflows are
+  missing requires_confirmation: ['REST POST /api/v1/hot-swap']").
+  Fixed in this feat commit (set requires_confirmation=True on the
+  route + regenerate openapi.json). This is the first real catch of
+  cross-surface drift that the per-surface checks (rest_api_check /
+  cli_check / websocket_api_check) cannot see in isolation.
+
+- Pre-existing drift between ci.yml's architecture-check loop and
+  tools/run_ci_locally.sh: the local mirror is missing eight recent
+  SDK contract checks (strategy_api_parity_check,
+  strategy_api_scheduler_check, strategy_api_subscriptions_check,
+  strategy_api_order_events_check, strategy_api_warmup_check,
+  strategy_api_indicators_check, strategy_api_documentation_check —
+  same 7 noted in SESSION 31 — PLUS operator_workflow_surface_check
+  is now wired in run_ci_locally.sh per CI-mirror parity, so the
+  count of missing checks does NOT grow). This diff only re-syncs
+  the new check; the other seven remain unfixed to keep this
+  session's per-feature audit clean per [[project-workflow]]
+  "Never bundle unrelated work into one commit". A future cleanup
+  commit (chore(ci): re-sync run_ci_locally.sh with ci.yml
+  architecture-check loop) should add the seven missing checks in
+  one batch.
+
+- /codex:adversarial-review judgment pass routed through the
+  fresh-context Agent fallback. The user explicitly corrected past
+  sessions that the slash command cannot be invoked by Claude; the
+  Agent fallback fed prompts/critic_prompt.md + git diff --cached
+  into a general-purpose subagent and returned the same JSON
+  schema. Verdict: APPROVE on round 1 (faster convergence than the
+  9-round SDK-004 / 7-round SDK-009 / 2-round ERR-9 because
+  (a) the pre-applied 11-category SDK-boundary defensive checklist
+  caught all the usual classes before commit, (b) CI-mirror parity
+  was applied in the same commit per the SESSION 31
+  [[feedback-ci-mirror-check-script]] memory, and (c) the new check
+  surfaced and self-fixed its first real drift in the same commit
+  which the reviewer noted as exactly the drift class the check
+  exists to catch).
+
+- Lowest remaining P1 by ID: ERR-7 (still blocked on Hot-Swap),
+  ERR-8 (still blocked on kill switch + IB adapter), SRS-API-001
+  (this session, stays passes:false). The next honest P1 to attempt
+  would be SRS-LOG-001 (SDK-surface candidate: define the LogRecord
+  schema, severity/source/event-type enums, correlation-ID
+  propagation, and the persistent-sink boundary — the contract
+  hooks already exist via the as_log_records callout in the ERR-9
+  contract block + the /api/v1/logs REST route + LOGS WS channel +
+  `admin logs` CLI command pinned by this session's contract).
+  Alternative: SRS-MD-001 (SDK-surface candidate for the
+  MarketDataSubscriptionManager fan-out contract).
+
+- Pre-existing ruff issues in 4 files outside the in-scope diff
+  (same list as SESSION 25-31) continue to be deferred per the
+  user-authorized note. None overlap this session's diff. Ruff on
+  the in-scope diff is clean.
+
 === SESSION 31 ===
 Date: 2026-05-21
 Feature completed: ERR-9 SDK-SURFACE — pre-trade readiness gate
