@@ -211,8 +211,19 @@
     },
     "/api/v1/hot-swap": {
       "post": {
-        "description": "Manually trigger a Reservoir-strategy promotion (demote-then-promote). SRS trace: SRS-RESV-003, SRS-RESV-004, SYS-49a. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "description": "Manually trigger a Reservoir-strategy promotion (demote-then-promote). SRS trace: SRS-RESV-003, SRS-RESV-004, SYS-49a. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1). Requires UI-4 confirmation; pass ``confirm`` query param.",
         "operationId": "post_api_v1_hot-swap",
+        "parameters": [
+          {
+            "description": "Confirmation token (UI-4 two-step modal).",
+            "in": "query",
+            "name": "confirm",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -258,7 +269,7 @@
           "HOT_SWAP"
         ],
         "x-capability": "HOT_SWAP",
-        "x-requires-confirmation": false,
+        "x-requires-confirmation": true,
         "x-srs-refs": [
           "SRS-RESV-003",
           "SRS-RESV-004",

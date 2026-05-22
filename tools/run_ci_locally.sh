@@ -75,6 +75,7 @@ for check in \
     rest_api_check \
     websocket_api_check \
     cli_check \
+    operator_workflow_surface_check \
     adapter_check \
     data_provider_check \
     historical_data_check \

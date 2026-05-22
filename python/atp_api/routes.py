@@ -207,6 +207,7 @@ ROUTES: tuple[Route, ...] = (
         srs_refs=("SRS-RESV-003", "SRS-RESV-004", "SYS-49a"),
         request_fields=("candidate_strategy_id", "confirm"),
         response_fields=("swap_id", "demotion_state", "promotion_state"),
+        requires_confirmation=True,
     ),
     Route(
         method=Method.GET,

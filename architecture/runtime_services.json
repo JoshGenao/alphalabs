@@ -2838,5 +2838,217 @@
       "Persistent operator-override audit log + SRS-NOTIF-001 alert dispatch on override issuance are owned by SRS-LOG-001 + SRS-NOTIF-001. The OperatorOverride dataclass + the four-field audit-trail contract are pinned here; the durable record keeping + the audit-event fan-out are downstream consumers.",
       "Manual-override-mode escalation (e.g., dashboard banner indicating the system is running on an active operator override, time-to-live on overrides) is intentionally not part of the SDK contract. The gate exposes the override audit list so a future SRS-UI-001 / SRS-NOTIF-001 follow-up can implement the banner without renegotiation."
     ]
+  },
+  "operator_workflow_surface_contract": {
+    "description": "SDK-surface contract for SRS-API-001 (expose dashboard, CLI, and REST/WebSocket interfaces for operator workflows). SCOPE: this contract is the cross-surface AC-coverage half of SRS-API-001 only. The three per-surface contracts (rest_api, cli, websocket_api) above already pin each surface in isolation; this block adds the SRS-API-001 AC binding that ties REST Capability + CLI Group + (optionally) WebSocket Channel buckets to the eight operator workflows the AC enumerates verbatim: 'Live designation, strategy management, kill switch, Hot-Swap, Reservoir ranking, backtests, system status, and logs are available through documented API paths or CLI commands.' Without this contract a CLI group rename, a REST route deletion, or a Capability/Group bucket renaming would not be caught by any existing test; the per-surface checks verify their own slice but not the SRS-API-001 cross-surface requirement. The DEFERRED halves (concrete request/response handlers, the HTTP server, the WebSocket server, the CLI runner dispatcher, and every downstream subsystem that the handlers will route to: SRS-EXE-001 / SRS-EXE-006 for kill-switch and live-designation IB sequencing, SRS-ORCH-004 / SRS-ORCH-005 for strategy lifecycle, SRS-RESV-002..006 for Hot-Swap and Reservoir ranking, SRS-BT-001 / SRS-BT-009 for backtests, SRS-DATA-002 for watchlist, SRS-LOG-001 for the logs sink, SRS-NOTIF-001 for alerts) are owned by the features named in the deferred[] list below. Until those land, SRS-API-001 stays passes:false in feature_list.json; the SDK-surface here is the seam those features will plug into. Identical to the SDK-004 / SDK-005 / ERR-9 partial-pass pattern. The cross-language source of truth lives here; Rust core runtime services that need to consult the documented operator workflow set re-derive the same workflow IDs locally per the AGENTS.md dependency direction (Rust core must not depend on the Python SDK).",
+    "ac_traces": [
+      "SRS-API-001"
+    ],
+    "syrs_refs": [
+      "IF-8",
+      "IF-9",
+      "SYS-2c",
+      "SYS-44a",
+      "SYS-48",
+      "SYS-49a"
+    ],
+    "strs_refs": [
+      "SN-1.11",
+      "SN-1.25"
+    ],
+    "surface_packages": [
+      {
+        "id": "rest",
+        "package": "atp_api",
+        "module": "python/atp_api/routes.py",
+        "collection": "ROUTES",
+        "bucket_enum": "Capability",
+        "bucket_attr": "capability",
+        "snapshot": "python/atp_api/openapi.json"
+      },
+      {
+        "id": "cli",
+        "package": "atp_cli",
+        "module": "python/atp_cli/commands.py",
+        "collection": "COMMANDS",
+        "bucket_enum": "Group",
+        "bucket_attr": "group",
+        "snapshot": "python/atp_cli/manual.json"
+      },
+      {
+        "id": "websocket",
+        "package": "atp_ws",
+        "module": "python/atp_ws/channels.py",
+        "collection": "EVENT_CHANNELS",
+        "bucket_enum": "Channel",
+        "bucket_attr": "name",
+        "snapshot": "python/atp_ws/asyncapi.json"
+      }
+    ],
+    "required_workflow_ids": [
+      "LIVE_DESIGNATION",
+      "STRATEGY_MANAGEMENT",
+      "KILL_SWITCH",
+      "HOT_SWAP",
+      "RESERVOIR_RANKING",
+      "BACKTESTS",
+      "SYSTEM_STATUS",
+      "LOGS"
+    ],
+    "ac_workflows": [
+      {
+        "id": "LIVE_DESIGNATION",
+        "label": "Live designation",
+        "ac_phrase": "Live designation",
+        "rest_capabilities": ["LIVE_DESIGNATION"],
+        "cli_groups": ["live"],
+        "websocket_channels": [],
+        "requires_confirmation": true
+      },
+      {
+        "id": "STRATEGY_MANAGEMENT",
+        "label": "Strategy management",
+        "ac_phrase": "strategy management",
+        "rest_capabilities": ["STRATEGY_LIFECYCLE"],
+        "cli_groups": ["strategy"],
+        "websocket_channels": ["STRATEGY_STATE"],
+        "requires_confirmation": false
+      },
+      {
+        "id": "KILL_SWITCH",
+        "label": "Kill switch",
+        "ac_phrase": "kill switch",
+        "rest_capabilities": ["KILL_SWITCH"],
+        "cli_groups": ["kill-switch"],
+        "websocket_channels": [],
+        "requires_confirmation": true
+      },
+      {
+        "id": "HOT_SWAP",
+        "label": "Hot-Swap",
+        "ac_phrase": "Hot-Swap",
+        "rest_capabilities": ["HOT_SWAP"],
+        "cli_groups": ["hot-swap"],
+        "websocket_channels": [],
+        "requires_confirmation": true
+      },
+      {
+        "id": "RESERVOIR_RANKING",
+        "label": "Reservoir ranking",
+        "ac_phrase": "Reservoir ranking",
+        "rest_capabilities": ["RESERVOIR_RANKING"],
+        "cli_groups": [],
+        "websocket_channels": ["RESERVOIR_RANKING"],
+        "requires_confirmation": false
+      },
+      {
+        "id": "BACKTESTS",
+        "label": "Backtests",
+        "ac_phrase": "backtests",
+        "rest_capabilities": ["BACKTEST_LAUNCH", "BACKTEST_QUERY"],
+        "cli_groups": [],
+        "websocket_channels": [],
+        "requires_confirmation": false
+      },
+      {
+        "id": "SYSTEM_STATUS",
+        "label": "System status",
+        "ac_phrase": "system status",
+        "rest_capabilities": ["SYSTEM_STATUS"],
+        "cli_groups": ["readiness"],
+        "websocket_channels": ["HEARTBEAT"],
+        "requires_confirmation": false
+      },
+      {
+        "id": "LOGS",
+        "label": "Logs",
+        "ac_phrase": "logs",
+        "rest_capabilities": ["LOGS"],
+        "cli_groups": ["admin"],
+        "websocket_channels": ["LOGS"],
+        "requires_confirmation": false
+      }
+    ],
+    "ac_phrase_canonical": "Live designation, strategy management, kill switch, Hot-Swap, Reservoir ranking, backtests, system status, and logs",
+    "orphan_buckets_allowed": {
+      "rest": ["WATCHLIST_CONFIG", "ALERTS"],
+      "cli": [],
+      "websocket": ["PNL", "METRICS", "ACCOUNT_STATUS", "ALERTS"]
+    },
+    "min_surface_entries_per_workflow": 1,
+    "loopback_bind_host": "127.0.0.1",
+    "expected_auth_model": "local-single-user",
+    "forbidden_remote_bind_tokens": ["0.0.0.0", "::", "0:0:0:0:0:0:0:0"],
+    "confirmation_required_workflows": [
+      "LIVE_DESIGNATION",
+      "KILL_SWITCH",
+      "HOT_SWAP"
+    ],
+    "snapshot_paths": [
+      "python/atp_api/openapi.json",
+      "python/atp_cli/manual.json",
+      "python/atp_ws/asyncapi.json"
+    ],
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "deferred": [
+      {
+        "feature": "SRS-EXE-001",
+        "what": "Real kill-switch + live-designation route handlers + IB cancel / liquidate / halt / disconnect sequence. The SDK pins the route paths, request fields, response fields, and the requires_confirmation guard so the handler can land without renegotiation; the IB-side sequencing belongs to SRS-EXE-001."
+      },
+      {
+        "feature": "SRS-EXE-006",
+        "what": "Headless IB Gateway brokerage adapter the kill-switch / live-designation handlers route to. Until this lands the kill-switch and live-designation REST routes have no IB-side execution partner."
+      },
+      {
+        "feature": "SRS-ORCH-004",
+        "what": "Strategy lifecycle dispatcher behind /api/v1/strategies and the `strategy` CLI group (start / stop / restart / rollback). The SDK pins the action vocabulary and the deployment_version_hash response field; the orchestrator wiring belongs to SRS-ORCH-004."
+      },
+      {
+        "feature": "SRS-ORCH-005",
+        "what": "Strategy rollback target_version_hash resolution + live-rollback confirmation guard. The SDK pins requires_confirmation on the lifecycle rollback action; the orchestrator-side rollback semantics belong to SRS-ORCH-005."
+      },
+      {
+        "feature": "SRS-RESV-003",
+        "what": "Hot-Swap trigger handler + demotion-then-promotion sequencing behind /api/v1/hot-swap and the `hot-swap trigger` CLI command. The SDK pins requires_confirmation and the candidate_strategy_id request field; the Reservoir-side sequencing belongs to SRS-RESV-003."
+      },
+      {
+        "feature": "SRS-RESV-002",
+        "what": "Reservoir ranking query handler behind /api/v1/reservoir/ranking. The SDK pins eval_window_days, rankings, sharpe, sortino, and momentum_score field shapes; the ranking engine belongs to SRS-RESV-002."
+      },
+      {
+        "feature": "SRS-BT-001",
+        "what": "Backtest launch handler behind /api/v1/backtests. The SDK pins strategy_id, start_date, end_date, parameter_overrides, cost_model, uploaded_parquet_id request fields and the backtest_id + queued_at response; the backtest runner belongs to SRS-BT-001."
+      },
+      {
+        "feature": "SRS-BT-009",
+        "what": "Backtest results query handler behind GET /api/v1/backtests/{backtest_id}. The SDK pins the metrics + trade_log + equity_curve + benchmark_comparison response shape; the persistence layer belongs to SRS-BT-009."
+      },
+      {
+        "feature": "SRS-DATA-002",
+        "what": "Watchlist GET/PUT handlers behind /api/v1/watchlist. The SDK pins the symbols list and pacing_budget_remaining response field; the IB minute-bar pacing budget belongs to SRS-DATA-002."
+      },
+      {
+        "feature": "SRS-LOG-001",
+        "what": "Log query handler behind /api/v1/logs + the `admin logs` CLI command + the LOGS WebSocket channel publisher. The SDK pins the log_class / severity / source / event_type / correlation_id / start_time / end_time request fields and the events response shape; the system-log vs strategy-log separation and the persistent sink belong to SRS-LOG-001."
+      },
+      {
+        "feature": "SRS-NOTIF-001",
+        "what": "Alert query handler behind /api/v1/alerts + the `admin alerts` CLI command + the ALERTS WebSocket channel publisher. The SDK pins the alert_id / raised_at / severity / channel / delivery_status / acknowledged response shape; the notification dispatch and delivery accounting belong to SRS-NOTIF-001."
+      },
+      {
+        "feature": "SRS-UI-001",
+        "what": "Dashboard binding to the WebSocket channels (PNL, METRICS, ACCOUNT_STATUS, HEARTBEAT, STRATEGY_STATE, RESERVOIR_RANKING) and the REST surface. The SDK pins the channel set and refresh ceilings (NFR-P2 ≤5 s); the dashboard rendering belongs to SRS-UI-001."
+      },
+      {
+        "feature": "operator-interface-runtime",
+        "what": "The HTTP server + WebSocket server + CLI runner that bind the declared routes / channels / commands to the handlers above. The SDK contract here is server-framework-agnostic: a future runtime session picks the framework (e.g. starlette + uvicorn for REST/WS, argparse + python -m atp_cli for CLI) and wires the dispatchers; the contract block names the surface shape so the runtime cannot drift from it."
+      }
+    ]
   }
 }

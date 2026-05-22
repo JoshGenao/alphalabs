@@ -175,6 +175,13 @@ if ! python3 tools/cli_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running operator workflow surface check..."
+if ! python3 tools/operator_workflow_surface_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Operator workflow surface check failed; run python3 tools/operator_workflow_surface_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running brokerage adapter contract check..."
 if ! python3 tools/adapter_check.py >/dev/null; then
   echo "✗ Environment failed"
