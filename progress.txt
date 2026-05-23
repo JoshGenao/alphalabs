@@ -1,3 +1,398 @@
+=== SESSION 33 ===
+Date: 2026-05-22
+Feature completed: SRS-LOG-001 SDK-SURFACE — log record schema +
+sink-routing boundary for the system-level "separate persistent system
+logs from user strategy logs; render each entry with timestamp /
+severity / source / event type / message / correlation ID; both
+classes viewable from the dashboard" requirement per docs/SRS.md row
+SRS-LOG-001 (traces SyRS SYS-38 + SYS-61; StRS SN-2.02, C-6). The SDK
+now ships a python/atp_logging/ package — LogRecord frozen dataclass
+with the 8 contracted fields, AC-pinned StrEnums Severity (DEBUG /
+INFO / WARN / ERROR / CRITICAL verbatim from SYS-61), LogClass (SYSTEM
+/ STRATEGY — the SRS-LOG-001 separation discriminant), Source (8
+SYSTEM emitter components from SYS-61 + 1 STRATEGY), EVENT_TYPES_BY_
+SOURCE map pinning the 17 AC-named system event types, RoutedLog-
+Dispatcher that validates every record at the dispatch boundary +
+routes on log_class so SYSTEM and STRATEGY land in separate persistent
+sinks, LogSink Protocol the downstream sinks plug into, and a LogRecord
+Error family (LogPayloadError / LogClassError / LogRoutingError /
+LogSinkError) so callers catch the boundary with one except clause.
+The cross-language contract is pinned in
+architecture/runtime_services.json#log_record_contract and enforced by
+tools/log_record_check.py (31 evidence collectors) +
+tests/test_log_record_contract.py L3 mutation suite +
+tests/domain/test_log_record_dispatch.py L7 reference-dispatcher
+end-to-end runner.
+Status: 92 remaining features (unchanged — SRS-LOG-001 stays
+passes:false per the SDK-004 / SDK-005 / ERR-9 / SRS-API-001 SDK-
+surface partial-pass pattern; see "What I tested" for the precise
+scope and "Known issues / notes for next agent" for the deferred[]
+audit).
+
+Carryover audit at session start: SESSION 32's "The next honest P1 to
+attempt would be SRS-LOG-001 (SDK-surface candidate: define the
+LogRecord schema, severity/source/event-type enums, correlation-ID
+propagation, and the persistent-sink boundary — the contract hooks
+already exist via the as_log_records callout in the ERR-9 contract
+block + the /api/v1/logs REST route + LOGS WS channel + `admin logs`
+CLI command pinned by this session's contract)" was sound. Phase-1
+exploration confirmed:
+  * python/atp_api/routes.py declares GET /api/v1/logs with
+    request_fields (log_class, severity, source, event_type,
+    correlation_id, start_time, end_time) and response_fields
+    (events, timestamp, severity, source, event_type, message,
+    correlation_id);
+  * python/atp_ws/channels.py declares the LOGS WebSocket channel
+    with payload_fields (timestamp, severity, source, event_type,
+    message, correlation_id);
+  * python/atp_cli/commands.py declares the `admin logs` command
+    with arguments (--log-class, --severity, --source, --since,
+    --follow, --json);
+  * the SRS AC + SyRS SYS-61 verbatim enumerate the 5 severity
+    levels, 8 system-log emitter sources, and 17 event types per
+    source — all AC-pinnable;
+  * no python/atp_logging/ existed yet — clean slate for the SDK
+    surface.
+Surfaced two choices to the user via AskUserQuestion: (1) feature pick
+(SRS-LOG-001 SDK-surface vs CI re-sync chore vs SRS-MD-001 SDK-surface
+vs ERR-7/8 attempt), (2) contract depth (schema + enums + sink boundary
+vs add correlation-ID contextvars vs full SDK + dashboard payload
+renderers). User chose "SRS-LOG-001 SDK-surface" + "Schema + enums +
+sink boundary" — the smallest blast radius matching SESSION 32's mode
+(deferred correlation-ID context, dashboard renderers, and the runtime
+sinks all stay deferred[]).
+
+What I did:
+- Prep commit (165dad9): extended SAFETY_PATH_RE in
+  tools/critic_check.py to add log[_-]?record, atp[_-]?logging,
+  log[_-]?sink, log[_-]?dispatch, log[_-]?class, log[_-]?route tokens.
+  Mirrors the SESSION 16-32 per-feature prep precedent. Verified the
+  new tokens match python/atp_logging/*, tools/log_record_check.py,
+  and tests/{,domain/}test_log_record_*.py and do NOT match unrelated
+  paths (python/atp_strategy/api.py, python/atp_api/routes.py,
+  docs/SRS.md, architecture/runtime_services.json). Repo-wide grep
+  confirmed zero pre-existing files have "log" in their path so no
+  false positives are possible. Deterministic critic on the staged
+  prep commit: APPROVE — 0 findings.
+
+- Feat commit (525f830, +2836 / -1, 12 files): shipped the
+  SRS-LOG-001 SDK-surface. Seven deliverable groups:
+
+  (a) python/atp_logging/ package (5 files, ~700 lines):
+    * __init__.py: facade exports the 15 contracted symbols.
+    * records.py: LogRecord frozen dataclass with the 8 contracted
+      fields (timestamp_ns / severity / source / event_type /
+      message / correlation_id / log_class / strategy_id); Severity
+      StrEnum (DEBUG/INFO/WARN/ERROR/CRITICAL — SYS-61 verbatim);
+      LogClass StrEnum (system/strategy — SRS-LOG-001 separation
+      discriminant); Source StrEnum (8 SYSTEM emitter components +
+      STRATEGY); SYSTEM_SOURCES / STRATEGY_SOURCES frozensets
+      partitioning the 9 Source variants; EVENT_TYPES_BY_SOURCE dict
+      pinning the 17 AC-named event types (order_routing → 2,
+      ingestion → 3, container_lifecycle → 4, ib_gateway → 3,
+      kill_switch → 1, hot_swap → 2, resource_monitor → 1,
+      market_data → 1; strategy intentionally empty per SN-2.02 —
+      strategy event types are user-defined);
+      is_finite_non_negative_int predicate exported so external
+      consumers can re-use the same timestamp guard.
+    * dispatcher.py: LogSink runtime_checkable Protocol with a
+      single write method + RoutedLogDispatcher with register_sink /
+      dispatch / sink_for + _assert_payload_shape (discriminant +
+      timestamp + non-empty string guards) + _assert_log_class_
+      invariants (SRS-LOG-001 separation + cross-field invariants +
+      event_type allowlist for SYSTEM records).
+    * errors.py: LogRecordError base + 4 specific subclasses
+      (LogPayloadError, LogClassError, LogRoutingError,
+      LogSinkError) so downstream callers catch the family with one
+      except clause.
+    * README.md: operator-facing summary with the schema table,
+      sources × event types table, dispatcher usage snippet, error
+      semantics table, and the deferred halves enumeration.
+
+  (b) architecture/runtime_services.json log_record_contract block
+  (~140 lines new): description naming the SDK-surface scope + the
+  deferred halves; package + path + module_paths (4) + readme_path;
+  record_class + severity_class + log_class_class + source_class +
+  severity_variants (5) + log_class_variants (2) + source_variants
+  (9) + system_source_variants (8) + strategy_source_variants (1) +
+  event_types_by_source (8 keys, 17 type names); required_log_record_
+  fields (8) + string_record_fields (3) + int_record_fields (1) +
+  enum_record_fields (3) + optional_record_fields (1) +
+  log_record_is_frozen=true; dispatcher_class + sink_protocol +
+  required_dispatcher_methods (3) + required_sink_protocol_methods (1)
+  + required_error_exports (5) + required_exports (15); ac_traces
+  (SRS-LOG-001); syrs_refs (SYS-38, SYS-61); strs_refs (SN-2.02, C-6);
+  downstream_surface_snapshots (openapi.json, manual.json,
+  asyncapi.json); vendor_forbidden_tokens (5); deferred[] (6 entries
+  naming SRS-LOG-001-runtime / SRS-UI-001 / SRS-API-001 /
+  SRS-NOTIF-001 / SRS-SDK-007 / operator-interface-runtime as the
+  downstream owners that must land for SRS-LOG-001 to flip
+  passes:true).
+
+  (c) tools/log_record_check.py (~570 lines): 31 evidence collectors
+  walking the 12 SDK-boundary defensive categories per
+  [[feedback-sdk-boundary-defensive-checklist]] —
+  module_paths / required_exports / error hierarchy / enum variants
+  per contract / SYSTEM-vs-STRATEGY source partition exhaustive /
+  EVENT_TYPES_BY_SOURCE matches contract + every SYSTEM source has
+  >=1 event type / log_record_field_set / log_record_is_frozen /
+  dispatcher_methods / sink_protocol_methods / dispatch_routes_by_
+  log_class / dispatch_rejects_non_record (5 negative cases) /
+  dispatch_validates_enum_fields (raw str rejected on all 3 enum
+  fields) / dispatch_validates_timestamp (8 negative cases:
+  negative / bool / float / str / None / inf / nan) /
+  dispatch_validates_non_empty_strings (3 fields × 3 bad values) /
+  dispatch_validates_string_field_type (3 fields × 5 non-str types)
+  / system_records_reject_strategy_id / strategy_records_require_
+  strategy_id (3 bad values) / system_source_invariant (cross-field
+  SYSTEM↔STRATEGY) / event_type_constraints_on_system /
+  event_type_free_form_on_strategy / routing_error_without_
+  registered_sink / sink_exceptions_wrapped (preserves __cause__) /
+  register_sink_validates_inputs / record_as_dict_json_roundtrip /
+  dependency_direction (6 forbidden upstreams source-text + AST
+  level) / vendor_token_isolation (5 vendor tokens) /
+  downstream_surface_snapshots (3 referenced) / deferred_list
+  populated + names 4 required downstreams /
+  is_finite_non_negative_int_predicate (3 valid + 8 invalid).
+  Prints "SRS-LOG-001 SDK-SURFACE PASS" naming every downstream
+  owner so the partial-pass status is loud.
+
+  (d) Wired into init.sh between "Running operator workflow surface
+  check..." and "Running brokerage adapter contract check..."
+  (lines ~185-190). Wired into .github/workflows/ci.yml architecture-
+  check loop between operator_workflow_surface and adapter. Wired
+  into tools/run_ci_locally.sh between operator_workflow_surface_check
+  and adapter_check (this slot mirrors ci.yml position exactly per
+  [[feedback-ci-mirror-check-script]] — applied in the same commit so
+  Codex does not BLOCK on round-1 mirror drift).
+
+  (e) tests/test_log_record_contract.py L3 (46 tests):
+    * LogRecordScriptTest — subprocess positive evidence; asserts
+      PASS line names every downstream owner (SRS-LOG-001 runtime /
+      SRS-UI-001 / SRS-API-001 / SRS-NOTIF-001).
+    * DispatcherBehaviourTest — 15 behavioural tests: routing,
+      non-record rejection, timestamp guard, empty string guard,
+      strategy_id presence/absence, source/log_class cross-field,
+      event_type allowlist, user-defined strategy event_type, routing
+      error without sink, sink exception wrapping, register_sink
+      input validation, frozen invariant, as_dict JSON round-trip.
+    * _MutationRig — copies architecture/ + python/ + tools/ into a
+      tmpdir, applies one mutation, re-runs check with --root. Adds
+      a patch_contract helper that round-trips the JSON.
+    * LogRecordMutationTest — 22 mutations, each must BLOCK:
+      dropped required export; broken error hierarchy
+      (LogPayloadError → Exception); renamed Severity value;
+      renamed LogClass value; dropped Source variant + dependent
+      references; broken SYSTEM/STRATEGY partition; dropped event
+      type for source; added event type for STRATEGY; dropped
+      strategy_id field; unfreeze LogRecord; dropped timestamp
+      guard; dropped empty-string guard; dropped enum discriminant
+      check; dropped strategy_id check on SYSTEM; dropped event_type
+      constraint; routed STRATEGY to SYSTEM sink; swallowed sink
+      exception; cross-surface import from atp_strategy; emptied
+      deferred list; dropped SRS-LOG-001-runtime from deferred;
+      leaked vendor token (interactive_brokers comment).
+    * LogRecordContractBlockParityTest — 9 pure-Python parity tests
+      (severity / log_class / source variants order matches enum;
+      SYSTEM∪STRATEGY exhaustive; EVENT_TYPES_BY_SOURCE matches;
+      module_paths exist; required_exports == __all__; deferred
+      names required downstreams; is_finite_non_negative_int
+      predicate exported).
+  Total: 46 passed.
+
+  (f) tests/domain/test_log_record_dispatch.py L7 (marked safety +
+  domain, 27 tests). Reference dispatcher stub
+  (_RefPersistentSink) JSON-round-trips every record on write so
+  a non-serialisable field surfaces here rather than at
+  SRS-LOG-001 runtime integration time. Reference fan-out builds
+  on a system sink wrapper that also calls
+  _RefNotificationFilter.maybe_deliver to demonstrate that the SDK
+  pins the severity enum tightly enough for SRS-NOTIF-001 to
+  subscribe to an ERROR/CRITICAL slice without re-parsing every
+  record.
+  Test classes:
+    * SystemStrategySeparationTest — 3 tests asserting the core
+      SRS-LOG-001 AC: SYSTEM and STRATEGY records land in separate
+      sinks; a STRATEGY record never lands in the SYSTEM sink; a
+      SYSTEM record never lands in the STRATEGY sink.
+    * AcFieldShapeTest — 3 tests asserting every persisted record
+      carries the 8 AC fields and JSON round-trips across every
+      severity.
+    * ApiQueryShapeTest — 3 tests asserting the GET /api/v1/logs
+      filter shape (severity / source / correlation_id) resolves
+      against the captured records.
+    * NotificationFanOutTest — 2 tests asserting SRS-NOTIF-001
+      receives only ERROR + CRITICAL system records (not strategy).
+    * DefensiveChecklistTest — 12 anchor tests, one per item on
+      the [[feedback-sdk-boundary-defensive-checklist]] memory:
+      non-record / negative timestamp / bool timestamp / inf
+      timestamp / empty message / whitespace correlation_id /
+      raw string severity / SYSTEM with strategy source /
+      STRATEGY with system source / STRATEGY without strategy_id
+      / SYSTEM with strategy_id / unlisted system event_type.
+      Each anchor confirms the dispatcher raises the right
+      LogRecordError subclass AND no sink received the bad record
+      (defence in depth).
+    * AcEventCoverageMatrixTest — 1 test asserting every AC-pinned
+      (source, event_type) pair dispatches cleanly and lands
+      observable in the system sink (17 distinct pairs).
+    * FailClosedTest — 3 tests asserting the dispatcher fails
+      closed: no sink → LogRoutingError; partial registration →
+      strategy dispatch raises; sink exception → LogSinkError with
+      original on __cause__.
+  Total: 27 passed.
+
+  (g) Critic-paired domain test path explicit:
+  tests/domain/test_log_record_dispatch.py satisfies the
+  deterministic critic's "safety_critical change requires paired
+  tests/domain/* test" rule (the new SAFETY_PATH_RE tokens added in
+  the prep commit match tools/log_record_check.py).
+
+- This SESSION 33 chore commit: appends this entry to progress.txt.
+  feature_list.json is NOT modified — SRS-LOG-001 stays passes:false
+  per the SDK-004 / SDK-005 / ERR-9 / SRS-API-001 SDK-surface
+  partial-pass pattern. The contract-block deferred[] list is the
+  durable audit of what remains for the next session(s) to flip
+  SRS-LOG-001 to passes:true.
+
+What I tested:
+- ./init.sh -> "→ Running log record contract check..." between
+  CLI / operator workflow surface check and brokerage adapter contract
+  check; reaches ✓ Environment ready cleanly.
+- python3 tools/log_record_check.py -> SRS-LOG-001 SDK-SURFACE PASS
+  with 31 evidence bullets — "Severity (5) / LogClass (2) / Source (9)
+  declare the contracted variants in order", "SYSTEM_SOURCES (8) and
+  STRATEGY_SOURCES (1) partition all 9 Source variants",
+  "EVENT_TYPES_BY_SOURCE pins 17 AC-named event types across 8 SYSTEM
+  sources; STRATEGY is intentionally empty", "dispatch routes SYSTEM
+  records to system_sink, STRATEGY records to strategy_sink",
+  "dispatch rejects bad timestamp_ns values (8 negative cases: ...)",
+  "SYSTEM<->STRATEGY cross-field invariant enforced", "AST-level:
+  atp_logging imports no upstream package", "deferred list has 6
+  entries; all required downstream features named", etc.
+- .venv/bin/python -m pytest tests/test_log_record_contract.py
+  tests/domain/test_log_record_dispatch.py -q -> 73 passed.
+- .venv/bin/python -m pytest -m "not integration and not e2e" -q ->
+  1002 passed, 4 skipped, 118 subtests (was 929 at start of session;
+  +73 net — exactly matches the 46 L3 + 27 L7 new tests). The four
+  legacy skips (test_deterministic_replay / test_kill_switch_latency
+  / test_money_reconciliation / test_single_live_invariant) all
+  retain their pre-existing reason strings; none overlap this diff.
+- Architecture checks via .venv python (init.sh / ci.yml path):
+  architecture / dependency_boundary / adapter_isolation /
+  deployment / config / startup_readiness_gate / rest_api /
+  websocket_api / cli / operator_workflow_surface / log_record /
+  adapter / data_provider / historical_data / strategy_api -> all OK
+  (15/15).
+- ruff check + format on every in-scope file: clean (one autofix
+  pass was applied after the first run; final state is ruff-clean).
+- CI mirror parity verified: log_record appears in identical slot
+  (after operator_workflow_surface, before adapter) in BOTH
+  .github/workflows/ci.yml and tools/run_ci_locally.sh per
+  [[feedback-ci-mirror-check-script]].
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged) on the prep
+  commit (165dad9): APPROVE — 0 findings.
+  deterministic (tools/critic_check.py --staged) on the feat
+  commit (525f830): APPROVE — 0 findings.
+  judgment (fresh-context Agent fallback per
+  [[feedback-codex-adversarial-review]] — /codex:adversarial-review
+  is a slash command with disable-model-invocation and Claude cannot
+  invoke it directly): APPROVE — 0 findings on round 1. The agent's
+  rationale walked all 12 SDK-boundary defensive categories
+  explicitly (payload-shape / discriminant / type / sign-range /
+  lifecycle / cross-field / Optional / dependency direction /
+  reason/message / upstream-shortfall / mirror in tests + AC
+  coverage), confirmed the CI mirror parity (log_record in identical
+  slot in both ci.yml and run_ci_locally.sh), confirmed the SDK-
+  surface partial-pass convention (passes:false + deferred[] audit)
+  matches the prior ERR-9 / SRS-API-001 cadence, and noted that the
+  prep commit's SAFETY_PATH_RE addition broadens coverage rather
+  than weakening the gate (so the meta:critic-self-modification rule
+  does not apply). One-round convergence — same as SESSION 32 (which
+  also converged in 1 round after the pre-applied 11-category
+  checklist + CI-mirror parity in the same commit).
+
+Known issues / notes for next agent:
+- SRS-LOG-001 stays passes:false in feature_list.json. The six
+  consumers required for end-to-end verification are itemised in
+  architecture/runtime_services.json#log_record_contract.deferred[]:
+    (1) SRS-LOG-001-runtime — concrete persistent sinks (file /
+        SQLite / Loki / whatever the runtime picks), retention +
+        rotation policy, queryable index that GET /api/v1/logs
+        reads;
+    (2) SRS-UI-001 — dashboard log pane rendering for both classes;
+    (3) SRS-API-001 — live GET /api/v1/logs REST handler body +
+        LOGS WebSocket channel publisher + admin logs CLI runner;
+    (4) SRS-NOTIF-001 — notification dispatch for ERROR/CRITICAL
+        records (the SDK already pins the severity enum tightly
+        enough for a filtered subscription);
+    (5) SRS-SDK-007 — strategy-side logging API exposed within the
+        Python Strategy API (e.g., self.log.info() inside on_data);
+        the LogRecord schema + LogClass.STRATEGY + Source.STRATEGY
+        are the seam this future SDK helper plugs into;
+    (6) operator-interface-runtime — the HTTP / WS / CLI runner
+        binding the route + channel + command to the sinks.
+  SRS-LOG-001 can flip passes:true when the SRS-LOG-001-runtime
+  sinks + SRS-UI-001 dashboard pane + SRS-API-001 endpoints all
+  land. Until then, the deferred[] list in the contract block is
+  the durable record.
+
+- Pre-existing drift between ci.yml's architecture-check loop and
+  tools/run_ci_locally.sh: the local mirror is missing seven recent
+  SDK contract checks (strategy_api_parity_check,
+  strategy_api_scheduler_check, strategy_api_subscriptions_check,
+  strategy_api_order_events_check, strategy_api_warmup_check,
+  strategy_api_indicators_check, strategy_api_documentation_check —
+  same 7 noted in SESSION 31 and SESSION 32 — PLUS log_record_check
+  is now wired in run_ci_locally.sh per CI-mirror parity, so the
+  count of missing checks does NOT grow). This diff only re-syncs
+  the new check; the other seven remain unfixed to keep this
+  session's per-feature audit clean per [[project-workflow]] "Never
+  bundle unrelated work into one commit". A future cleanup commit
+  (chore(ci): re-sync run_ci_locally.sh with ci.yml architecture-
+  check loop) should add the seven missing checks in one batch.
+
+- /codex:adversarial-review judgment pass routed through the
+  fresh-context Agent fallback. The user explicitly corrected past
+  sessions that the slash command cannot be invoked by Claude
+  (disable-model-invocation flag); the Agent fallback fed
+  prompts/critic_prompt.md + git diff --cached into a general-purpose
+  subagent and returned the same JSON schema. Verdict: APPROVE on
+  round 1 (matches the SESSION 32 cadence; the 11-category SDK-
+  boundary defensive checklist was pre-applied + CI-mirror parity
+  was applied in the same commit + the deterministic critic was
+  green twice + no money-math / kill-switch ordering / single-live-
+  strategy paths were touched).
+
+- Lowest remaining P1 by ID: ERR-7 (still blocked on Hot-Swap),
+  ERR-8 (still blocked on kill switch + IB adapter), SRS-API-001
+  (SESSION 32, stays passes:false), SRS-LOG-001 (this session,
+  stays passes:false). The next honest P1 to attempt would be one
+  of:
+    * SRS-MD-001 SDK-surface — MarketDataSubscriptionManager
+      fan-out contract (single IB subscription, multi-strategy
+      fan-out via Source.MARKET_DATA + subscription-change event
+      types; the LogRecord pins the SUBSCRIPTION_CHANGE event_type
+      so the new SDK can emit through atp_logging without
+      renegotiation);
+    * SRS-NOTIF-001 SDK-surface — notification dispatch fan-out
+      that subscribes to ERROR/CRITICAL system records (the
+      SDK-surface SDK that the SRS-LOG-001 deferred[] item (4)
+      names); the SDK pins severity + source so this is a thin
+      consumer.
+    * SRS-SDK-007 SDK-surface — strategy-side logging API
+      (self.log.info() / .warn() / .error()); thin convenience
+      helper that constructs LogRecord(log_class=STRATEGY,
+      source=STRATEGY, ...) from the strategy boundary; the SDK
+      contract already exists.
+
+- Pre-existing ruff issues in 4 files outside the in-scope diff
+  (same list as SESSION 25-32) continue to be deferred per the
+  user-authorized note. None overlap this session's diff. Ruff on
+  the in-scope diff is clean.
+
 === SESSION 32 ===
 Date: 2026-05-22
 Feature completed: SRS-API-001 SDK-SURFACE — operator workflow
