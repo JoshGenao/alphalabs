@@ -3050,5 +3050,145 @@
         "what": "The HTTP server + WebSocket server + CLI runner that bind the declared routes / channels / commands to the handlers above. The SDK contract here is server-framework-agnostic: a future runtime session picks the framework (e.g. starlette + uvicorn for REST/WS, argparse + python -m atp_cli for CLI) and wires the dispatchers; the contract block names the surface shape so the runtime cannot drift from it."
       }
     ]
+  },
+  "log_record_contract": {
+    "description": "SDK-surface contract for SRS-LOG-001 (separate persistent system logs from user strategy logs; render each entry with timestamp / severity / source / event type / message / correlation ID; both classes viewable from the dashboard). SCOPE: this contract covers the *structured record schema* + *sink-routing boundary* halves of SRS-LOG-001 only. (a) The LogRecord dataclass + Severity / Source / LogClass StrEnums pin the six AC-named fields + the SRS-LOG-001 separation discriminant + the optional strategy_id that the strategy half requires. (b) The RoutedLogDispatcher + LogSink Protocol pin the seam SRS-LOG-001's persistent sinks plug into when they land; the dispatcher validates the schema at the dispatch boundary and routes on log_class so a SYSTEM record cannot land in the strategy sink or vice versa. (c) EVENT_TYPES_BY_SOURCE pins the SyRS SYS-61 / SRS-LOG-001 enumerations of system event types (order routing decisions/outcomes, ingestion start/completion/failure, container start/stop/restart/OOM-kill, IB Gateway connect/disconnect/reconnect, kill switch activations, Hot-Swap promotion/demotion, resource threshold alerts, market data subscription changes). The DEFERRED halves are: (1) the concrete persistent sinks (file / SQLite / Loki / whatever the runtime picks) owned by SRS-LOG-001's runtime half; (2) the dashboard log pane rendering owned by SRS-UI-001; (3) the live GET /api/v1/logs REST handler body owned by SRS-API-001; (4) the LOGS WebSocket channel publisher owned by SRS-API-001; (5) the admin logs CLI runner owned by SRS-API-001's operator-interface-runtime; (6) the audit-log retention + rotation policy owned by SRS-LOG-001. Until those land, SRS-LOG-001 stays passes:false in feature_list.json; the SDK-surface here is the seam those features will plug into. Identical to the SDK-004 / SDK-005 / ERR-9 / SRS-API-001 partial-pass pattern. The cross-language source of truth lives here; Rust core runtime services that emit logs re-implement the same record locally per the AGENTS.md dependency direction (Rust core must not depend on the Python SDK). The Python module path and required exports below are the Python-side view; the cross-language severity_variants / log_class_variants / source_variants / system_source_variants / event_types_by_source keys are the contract Rust emitters consume directly (or from a generated Rust constants file derived from this block).",
+    "package": "atp_logging",
+    "path": "python/atp_logging",
+    "module_paths": [
+      "python/atp_logging/__init__.py",
+      "python/atp_logging/records.py",
+      "python/atp_logging/dispatcher.py",
+      "python/atp_logging/errors.py"
+    ],
+    "readme_path": "python/atp_logging/README.md",
+    "record_class": "LogRecord",
+    "severity_class": "Severity",
+    "severity_variants": ["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"],
+    "log_class_class": "LogClass",
+    "log_class_variants": ["system", "strategy"],
+    "source_class": "Source",
+    "source_variants": [
+      "order_routing",
+      "ingestion",
+      "container_lifecycle",
+      "ib_gateway",
+      "kill_switch",
+      "hot_swap",
+      "resource_monitor",
+      "market_data",
+      "strategy"
+    ],
+    "system_source_variants": [
+      "order_routing",
+      "ingestion",
+      "container_lifecycle",
+      "ib_gateway",
+      "kill_switch",
+      "hot_swap",
+      "resource_monitor",
+      "market_data"
+    ],
+    "strategy_source_variants": ["strategy"],
+    "event_types_by_source": {
+      "order_routing": ["ROUTING_DECISION", "ROUTING_OUTCOME"],
+      "ingestion": ["JOB_START", "JOB_COMPLETION", "JOB_FAILURE"],
+      "container_lifecycle": [
+        "CONTAINER_START",
+        "CONTAINER_STOP",
+        "CONTAINER_RESTART",
+        "OOM_KILL"
+      ],
+      "ib_gateway": ["CONNECT", "DISCONNECT", "RECONNECT"],
+      "kill_switch": ["ACTIVATION"],
+      "hot_swap": ["PROMOTION", "DEMOTION"],
+      "resource_monitor": ["THRESHOLD_ALERT"],
+      "market_data": ["SUBSCRIPTION_CHANGE"],
+      "strategy": []
+    },
+    "required_log_record_fields": [
+      "timestamp_ns",
+      "severity",
+      "source",
+      "event_type",
+      "message",
+      "correlation_id",
+      "log_class",
+      "strategy_id"
+    ],
+    "string_record_fields": ["event_type", "message", "correlation_id"],
+    "int_record_fields": ["timestamp_ns"],
+    "enum_record_fields": ["severity", "source", "log_class"],
+    "optional_record_fields": ["strategy_id"],
+    "log_record_is_frozen": true,
+    "dispatcher_class": "RoutedLogDispatcher",
+    "sink_protocol": "LogSink",
+    "required_dispatcher_methods": ["register_sink", "dispatch", "sink_for"],
+    "required_sink_protocol_methods": ["write"],
+    "required_error_exports": [
+      "LogClassError",
+      "LogPayloadError",
+      "LogRecordError",
+      "LogRoutingError",
+      "LogSinkError"
+    ],
+    "required_exports": [
+      "EVENT_TYPES_BY_SOURCE",
+      "LogClass",
+      "LogClassError",
+      "LogPayloadError",
+      "LogRecord",
+      "LogRecordError",
+      "LogRoutingError",
+      "LogSink",
+      "LogSinkError",
+      "RoutedLogDispatcher",
+      "STRATEGY_SOURCES",
+      "SYSTEM_SOURCES",
+      "Severity",
+      "Source",
+      "is_finite_non_negative_int"
+    ],
+    "ac_traces": ["SRS-LOG-001"],
+    "syrs_refs": ["SYS-38", "SYS-61"],
+    "strs_refs": ["SN-2.02", "C-6"],
+    "downstream_surface_snapshots": [
+      "python/atp_api/openapi.json",
+      "python/atp_cli/manual.json",
+      "python/atp_ws/asyncapi.json"
+    ],
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "deferred": [
+      {
+        "feature": "SRS-LOG-001-runtime",
+        "what": "Concrete persistent sinks for the system + strategy halves (file / SQLite / Loki / whatever the runtime picks), retention + rotation policy, and the queryable index that GET /api/v1/logs reads from. The SDK pins the record schema, the LogSink Protocol, and the system-vs-strategy separation invariant so the runtime sinks can plug in without renegotiation; the persistence + retention belong to SRS-LOG-001's runtime half."
+      },
+      {
+        "feature": "SRS-UI-001",
+        "what": "Dashboard log pane rendering for both the system and strategy log classes (per the AC 'both log classes are viewable from the dashboard' half). The SDK pins the LogRecord.as_dict() shape so the dashboard backend can render without renegotiation; the rendering belongs to SRS-UI-001."
+      },
+      {
+        "feature": "SRS-API-001",
+        "what": "Live GET /api/v1/logs REST handler body + LOGS WebSocket channel publisher + admin logs CLI runner. The route / channel / command declarations already exist in python/atp_api/routes.py, python/atp_ws/channels.py, and python/atp_cli/commands.py (pinned by the operator_workflow_surface_contract block); the request/response wiring + the SSE/WS streaming belong to SRS-API-001's operator-interface-runtime."
+      },
+      {
+        "feature": "SRS-NOTIF-001",
+        "what": "Notification dispatch when ERROR / CRITICAL records land (IB connectivity loss, kill-switch activation, resource alerts). The SDK pins the severity enum + the source enum so the notification subsystem can subscribe to a filtered stream without renegotiation; the dispatcher fan-out + email/SMS delivery belong to SRS-NOTIF-001."
+      },
+      {
+        "feature": "SRS-SDK-007",
+        "what": "Strategy-side logging API exposed within the Python Strategy API (e.g., self.log.info(...) inside on_data). The LogRecord schema + LogClass.STRATEGY half + Source.STRATEGY pinning are the seam this future SDK convenience helper plugs into; the helper itself belongs to a follow-up SRS-SDK feature."
+      },
+      {
+        "feature": "operator-interface-runtime",
+        "what": "The HTTP server + WebSocket server + CLI runner that bind the GET /api/v1/logs route, LOGS WebSocket channel, and admin logs CLI command to the persistent sinks. Same downstream owner as the SRS-API-001 deferral above; named here so the contract block enumerates every consumer of the SDK seam."
+      }
+    ]
   }
 }

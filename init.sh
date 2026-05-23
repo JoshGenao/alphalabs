@@ -182,6 +182,13 @@ if ! python3 tools/operator_workflow_surface_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running log record contract check..."
+if ! python3 tools/log_record_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Log record contract check failed; run python3 tools/log_record_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running brokerage adapter contract check..."
 if ! python3 tools/adapter_check.py >/dev/null; then
   echo "✗ Environment failed"
