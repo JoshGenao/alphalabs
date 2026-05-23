@@ -214,7 +214,9 @@ SAFETY_PATH_RE = re.compile(
     r"|readiness[_-]?gate|startup[_-]?readiness|pre[_-]?trade"
     r"|operator[_-]?override|atp[_-]?readiness"
     r"|operator[_-]?workflow[_-]?surface|operator[_-]?workflow"
-    r"|api[_-]?surface[_-]?coverage|ac[_-]?workflow)",
+    r"|api[_-]?surface[_-]?coverage|ac[_-]?workflow"
+    r"|log[_-]?record|atp[_-]?logging|log[_-]?sink"
+    r"|log[_-]?dispatch|log[_-]?class|log[_-]?route)",
     re.IGNORECASE,
 )
 
