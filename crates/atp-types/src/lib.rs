@@ -356,6 +356,96 @@ impl fmt::Display for StructuredSubscriptionError {
 impl std::error::Error for StructuredSubscriptionError {}
 
 // --------------------------------------------------------------------------- //
+// Consolidated market-data subscription fan-out (SRS-MD-001, SyRS SYS-70)
+// --------------------------------------------------------------------------- //
+//
+// SRS-MD-001 requires the subscription manager to CONSOLIDATE duplicate
+// real-time subscriptions: when multiple strategy containers subscribe to the
+// same security the manager maintains a SINGLE upstream IB market-data
+// subscription and FANS the received data out to every subscriber. These
+// shared types model that surface; the consolidated registry that owns the
+// live subscription set lives in `atp-market-data`
+// (`ConsolidatedSubscriptionRegistry`).
+//
+// `MarketDataTick` is the source-neutral fan-out payload the manager
+// distributes. It carries the routing `symbol` and an opaque `tick_seq`
+// identifier used to correlate a fan-out delivery with its upstream tick.
+// `tick_seq` is a plain delivery counter the registry does not interpret —
+// sequence-GAP detection is a DISTINCT concern (SRS-MD-007) and is
+// deliberately NOT modeled here. The
+// struct carries no broker / vendor / session identifiers: fan-out is a
+// source-neutral operation.
+//
+// `SubscriptionChange` classifies what a subscribe/unsubscribe did to the
+// consolidated set, distinguishing the line-affecting transitions
+// (`Opened` = first subscriber for a symbol → one NEW upstream IB line;
+// `Closed` = last subscriber left → upstream line released) from the dedup
+// transitions that consume NO additional line (`SubscriberAdded`,
+// `SubscriberRemoved`) and the idempotent no-ops (`AlreadySubscribed`,
+// `NotSubscribed`).
+//
+// `SubscriptionChangeEvent` is the structured payload the manager publishes
+// on every line-affecting / dedup transition. It is the SyRS SYS-61 /
+// SRS-LOG-001 `subscription_change` event the Source.MARKET_DATA emitter
+// logs. It carries the post-transition `subscriber_count` for the affected
+// symbol and the post-transition `lines_in_use` (distinct upstream
+// subscriptions) so a dashboard / log consumer never re-probes the registry.
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketDataTick {
+    pub symbol: String,
+    pub tick_seq: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SubscriptionChange {
+    Opened,
+    SubscriberAdded,
+    AlreadySubscribed,
+    SubscriberRemoved,
+    Closed,
+    NotSubscribed,
+}
+
+impl SubscriptionChange {
+    /// True when the transition changed the number of distinct upstream IB
+    /// subscriptions: `Opened` adds one line, `Closed` releases one. Dedup
+    /// transitions and idempotent no-ops leave the line count unchanged —
+    /// this is the SRS-MD-001 consolidation property in one predicate.
+    pub const fn changes_line_count(self) -> bool {
+        matches!(self, Self::Opened | Self::Closed)
+    }
+
+    /// True when the transition actually mutated the consolidated set and
+    /// must therefore be published as a `SubscriptionChangeEvent`
+    /// (SRS-LOG-001 `subscription_change`). The idempotent no-ops
+    /// (`AlreadySubscribed` / `NotSubscribed`) are not published.
+    pub const fn is_published(self) -> bool {
+        !matches!(self, Self::AlreadySubscribed | Self::NotSubscribed)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Opened => "OPENED",
+            Self::SubscriberAdded => "SUBSCRIBER_ADDED",
+            Self::AlreadySubscribed => "ALREADY_SUBSCRIBED",
+            Self::SubscriberRemoved => "SUBSCRIBER_REMOVED",
+            Self::Closed => "CLOSED",
+            Self::NotSubscribed => "NOT_SUBSCRIBED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubscriptionChangeEvent {
+    pub change: SubscriptionChange,
+    pub strategy_id: StrategyId,
+    pub symbol: String,
+    pub subscriber_count: u32,
+    pub lines_in_use: u32,
+}
+
+// --------------------------------------------------------------------------- //
 // Ingestion record validation envelope and structured rejection
 // (SRS-DATA-013, SyRS SYS-77, StRS SN-1.26 / SN-1.27)
 // --------------------------------------------------------------------------- //
@@ -1999,6 +2089,95 @@ mod tests {
                 error.message
             )
         );
+    }
+
+    #[test]
+    fn market_data_tick_carries_only_symbol_and_seq() {
+        // SRS-MD-001 fan-out payload: routing symbol + opaque delivery
+        // counter, nothing else. The exhaustive destructure proves no
+        // broker / vendor / session field can ride along on the fan-out.
+        let tick = MarketDataTick {
+            symbol: "AAPL".to_string(),
+            tick_seq: 7,
+        };
+        let MarketDataTick {
+            symbol: _,
+            tick_seq: _,
+        } = tick.clone();
+        assert_eq!(tick.symbol, "AAPL");
+        assert_eq!(tick.tick_seq, 7);
+    }
+
+    #[test]
+    fn subscription_change_line_count_predicate_is_open_close_only() {
+        // SRS-MD-001 consolidation property: only Opened/Closed move the
+        // distinct upstream subscription count; dedup transitions and
+        // no-ops never do.
+        assert!(SubscriptionChange::Opened.changes_line_count());
+        assert!(SubscriptionChange::Closed.changes_line_count());
+        assert!(!SubscriptionChange::SubscriberAdded.changes_line_count());
+        assert!(!SubscriptionChange::SubscriberRemoved.changes_line_count());
+        assert!(!SubscriptionChange::AlreadySubscribed.changes_line_count());
+        assert!(!SubscriptionChange::NotSubscribed.changes_line_count());
+    }
+
+    #[test]
+    fn subscription_change_publishes_everything_but_the_idempotent_noops() {
+        // Only the idempotent no-ops are suppressed from the
+        // SRS-LOG-001 subscription_change stream.
+        assert!(SubscriptionChange::Opened.is_published());
+        assert!(SubscriptionChange::SubscriberAdded.is_published());
+        assert!(SubscriptionChange::SubscriberRemoved.is_published());
+        assert!(SubscriptionChange::Closed.is_published());
+        assert!(!SubscriptionChange::AlreadySubscribed.is_published());
+        assert!(!SubscriptionChange::NotSubscribed.is_published());
+    }
+
+    #[test]
+    fn subscription_change_wire_strings_are_screaming_snake() {
+        assert_eq!(SubscriptionChange::Opened.as_str(), "OPENED");
+        assert_eq!(
+            SubscriptionChange::SubscriberAdded.as_str(),
+            "SUBSCRIBER_ADDED"
+        );
+        assert_eq!(
+            SubscriptionChange::AlreadySubscribed.as_str(),
+            "ALREADY_SUBSCRIBED"
+        );
+        assert_eq!(
+            SubscriptionChange::SubscriberRemoved.as_str(),
+            "SUBSCRIBER_REMOVED"
+        );
+        assert_eq!(SubscriptionChange::Closed.as_str(), "CLOSED");
+        assert_eq!(SubscriptionChange::NotSubscribed.as_str(), "NOT_SUBSCRIBED");
+    }
+
+    #[test]
+    fn subscription_change_event_carries_only_the_five_required_fields() {
+        // Exhaustive destructure pins the field set: change discriminant,
+        // strategy_id, symbol, and the post-transition subscriber_count +
+        // lines_in_use the dashboard / log consumer reads without
+        // re-probing the registry.
+        let event = SubscriptionChangeEvent {
+            change: SubscriptionChange::SubscriberAdded,
+            strategy_id: StrategyId::new("paper-bravo-2"),
+            symbol: "AAPL".to_string(),
+            subscriber_count: 3,
+            lines_in_use: 1,
+        };
+        let SubscriptionChangeEvent {
+            change: _,
+            strategy_id: _,
+            symbol: _,
+            subscriber_count: _,
+            lines_in_use: _,
+        } = event.clone();
+        assert_eq!(event.change, SubscriptionChange::SubscriberAdded);
+        assert_eq!(event.strategy_id.as_str(), "paper-bravo-2");
+        assert_eq!(event.symbol, "AAPL");
+        assert_eq!(event.subscriber_count, 3);
+        // Dedup: three subscribers, still exactly one upstream line.
+        assert_eq!(event.lines_in_use, 1);
     }
 
     #[test]

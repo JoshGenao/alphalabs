@@ -238,6 +238,13 @@ if ! python3 tools/subscription_limit_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running subscription fan-out contract check..."
+if ! python3 tools/subscription_fanout_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Subscription fan-out contract check failed; run python3 tools/subscription_fanout_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running ingestion validation contract check..."
 if ! python3 tools/ingestion_validation_check.py >/dev/null; then
   echo "✗ Environment failed"

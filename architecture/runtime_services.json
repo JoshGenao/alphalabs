@@ -3190,5 +3190,91 @@
         "what": "The HTTP server + WebSocket server + CLI runner that bind the GET /api/v1/logs route, LOGS WebSocket channel, and admin logs CLI command to the persistent sinks. Same downstream owner as the SRS-API-001 deferral above; named here so the contract block enumerates every consumer of the SDK seam."
       }
     ]
+  },
+  "subscription_fanout_contract": {
+    "description": "SRS-MD-001 is the consolidation + fan-out half of SyRS SYS-70 (the line-limit half is SRS-MD-002 / subscription_limit_contract). This SDK-surface models the structural contract: ConsolidatedSubscriptionRegistry in atp-market-data owns the live subscription set, keeps exactly ONE upstream IB market-data subscription per distinct security regardless of how many strategy containers subscribe, fans received MarketDataTicks out to every subscriber of the tick symbol (and to no other subscriber), publishes a SubscriptionChangeEvent (SyRS SYS-61 / SRS-LOG-001 subscription_change, Source.MARKET_DATA) on every line-affecting / dedup transition, and serves as the concrete SubscriptionLineCounter the SRS-MD-002 limit gate consumes (closing subscription_limit_contract.deferred[]'s 'owner: SRS-MD-001' item). The check PASS line is 'SRS-MD-001 SDK-SURFACE PASS'; feature_list.json keeps passes:false because the AC's runtime halves (real IB feed, async fan-out transport, the <=100 ms latency NFR) are deferred (see deferred[]).",
+    "requirement": "SRS-MD-001",
+    "srs_refs": ["SRS-MD-001"],
+    "syrs_refs": ["SYS-70"],
+    "strs_refs": ["SN-1.10", "SN-1.29", "SC-25", "A-13"],
+    "ac_traces": ["SRS-MD-001", "SYS-70"],
+    "types_crate": { "crate": "atp-types", "path": "crates/atp-types" },
+    "market_data_crate": { "crate": "atp-market-data", "path": "crates/atp-market-data" },
+    "market_data_tick": {
+      "struct": "MarketDataTick",
+      "required_fields": ["symbol", "tick_seq"],
+      "forbidden_fields": ["broker", "ib_session_id", "vendor", "provider", "exchange_token"]
+    },
+    "subscription_change_enum": {
+      "enum": "SubscriptionChange",
+      "variants": ["Opened", "SubscriberAdded", "AlreadySubscribed", "SubscriberRemoved", "Closed", "NotSubscribed"],
+      "line_affecting_variants": ["Opened", "Closed"],
+      "noop_variants": ["AlreadySubscribed", "NotSubscribed"]
+    },
+    "subscription_change_event": {
+      "struct": "SubscriptionChangeEvent",
+      "required_fields": ["change", "strategy_id", "symbol", "subscriber_count", "lines_in_use"],
+      "forbidden_fields": ["broker", "ib_session_id", "vendor", "provider", "tick_id"]
+    },
+    "change_sink_port": {
+      "trait": "SubscriptionChangeSink",
+      "methods": ["record"]
+    },
+    "registry_error_enum": {
+      "enum": "SubscriptionRegistryError",
+      "variants": ["EmptySymbol", "EmptyStrategyId"]
+    },
+    "registry": {
+      "struct": "ConsolidatedSubscriptionRegistry",
+      "methods": ["new", "distinct_subscriptions", "subscriber_count", "is_subscribed", "subscribe", "unsubscribe", "fan_out"],
+      "line_counter_impl_trait": "SubscriptionLineCounter",
+      "line_counter_impl_methods": ["lines_in_use", "line_limit", "try_acquire"],
+      "subscribe_method": "subscribe",
+      "fan_out_method": "fan_out"
+    },
+    "dedup_invariant": {
+      "match_scrutinee": "self.subscribers.get_mut(",
+      "opened_variant": "SubscriptionChange::Opened",
+      "subscriber_added_variant": "SubscriptionChange::SubscriberAdded",
+      "new_line_insert": "self.subscribers.insert(",
+      "dedup_push": "existing.push(",
+      "first_subscriber_arm": "None",
+      "additional_subscriber_arm": "Some(existing)"
+    },
+    "validation": {
+      "validate_symbol_fn": "validate_symbol",
+      "validate_strategy_id_fn": "validate_strategy_id",
+      "fan_out_validates_symbol_token": "Self::validate_symbol(",
+      "subscribe_validates_symbol_token": "Self::validate_symbol(",
+      "subscribe_validates_strategy_token": "Self::validate_strategy_id("
+    },
+    "rust_integration_test": "srs_md_001_subscription_fanout",
+    "vendor_forbidden_tokens": ["interactive_brokers", "ib_insync", "ibapi", "databento", "sharadar"],
+    "deferred": [
+      {
+        "feature": "SRS-MD-001-runtime",
+        "what": "The real IB upstream binding (reqMktData / cancelMktData driven by the registry's Opened / Closed transitions), live tick ingestion, the async fan-out transport that delivers MarketDataTicks to subscriber containers, and thread-safe concurrency. ConsolidatedSubscriptionRegistry is single-threaded and models the structural dedup + fan-out + line-accounting only; the runtime that wraps it flips SRS-MD-001 passes:true together with SRS-PERF-001."
+      },
+      {
+        "feature": "SRS-PERF-001",
+        "what": "The <=100 ms fan-out latency acceptance criterion measured against a PTP-disciplined host clock with p50/p95/p99/p99.9 reporting. The structural fan-out contract lives here; the latency measurement harness is the deferred performance half (same pattern as SRS-SDK-004's deferred p95 callback latency)."
+      },
+      {
+        "feature": "SRS-EXE-006",
+        "what": "The headless IB Gateway brokerage adapter that owns the actual reqMktData / cancelMktData API calls the registry's Opened (first subscriber) and Closed (last subscriber) transitions must drive. The adapter is isolated behind the broker interface per SRS-ARCH-003; the registry never names a vendor token."
+      },
+      {
+        "feature": "SRS-MD-003 / SRS-MD-007",
+        "what": "Heartbeat freshness monitoring (SRS-MD-003) and tick sequence-gap detection (SRS-MD-007) that mark a consolidated subscription stale. MarketDataTick.tick_seq is an opaque per-delivery counter for fan-out correlation only; sequence-GAP semantics are deliberately MD-007's concern, not modeled here."
+      },
+      {
+        "feature": "SRS-LOG-001-runtime",
+        "what": "The persistent system-log sink for the subscription_change events (Source.MARKET_DATA, event_type subscription_change pinned in log_record_contract). SubscriptionChangeEvent is shaped to feed the LogRecord seam; the concrete sink + routing is owned by the SRS-LOG-001 runtime."
+      },
+      {
+        "feature": "SRS-UI-001 / SRS-API-001",
+        "what": "The dashboard subscription / line-usage pane and the REST/WebSocket surfacing of lines_in_use, subscriber_count, and consolidated-subscription operator alerts. The registry exposes the read accessors (distinct_subscriptions, subscriber_count); binding them to the dashboard/API is the deferred operator-interface half."
+      }
+    ]
   }
 }
