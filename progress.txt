@@ -1,3 +1,217 @@
+=== SESSION 34 ===
+Date: 2026-05-30
+Feature completed: SRS-MD-001 SDK-SURFACE — consolidated market-data
+subscription dedup + fan-out for the "consolidate duplicate real-time
+market data subscriptions across active strategies" requirement per
+docs/SRS.md row SRS-MD-001 (traces SyRS SYS-70; StRS SN-1.10, SN-1.29,
+SC-25, A-13). This is the *consolidation + fan-out* half of SYS-70; the
+line-limit half is SRS-MD-002 (subscription_limit_contract), already
+shipped. The new Rust surface is ConsolidatedSubscriptionRegistry in
+crates/atp-market-data: it owns the live subscription set and enforces
+the SRS-MD-001 invariant — exactly ONE upstream IB subscription per
+distinct security regardless of how many strategy containers subscribe;
+fan_out routes a received MarketDataTick to every subscriber of its
+symbol and to NO other subscriber. It publishes a SubscriptionChange-
+Event (the SyRS SYS-61 / SRS-LOG-001 subscription_change event for
+Source.MARKET_DATA) on every line-affecting / dedup transition through a
+SubscriptionChangeSink port, fails closed (SubscriptionRegistryError)
+on empty symbol / strategy id, and — the cross-feature seam — IS the
+concrete SubscriptionLineCounter the SRS-MD-002 gate consumes, closing
+subscription_limit_contract.deferred[]'s "owner: SRS-MD-001" item
+(try_acquire is dedup-aware: a duplicate of an already-subscribed
+security consumes no new line). New shared types live in
+crates/atp-types (MarketDataTick, SubscriptionChange,
+SubscriptionChangeEvent). The contract is pinned in
+architecture/runtime_services.json#subscription_fanout_contract and
+enforced by tools/subscription_fanout_check.py (10 static evidence
+collectors + cargo smoke) + tests/test_subscription_fanout_contract.py
+L3 mutation suite + tests/domain/test_subscription_fanout_dedup.py L7
+runner over crates/atp-market-data/tests/srs_md_001_subscription_fanout.rs.
+Status: 92 remaining features (unchanged — SRS-MD-001 stays passes:false
+per the SDK-surface partial-pass pattern; the AC's <=100 ms fan-out
+latency NFR + the real IB feed + the async fan-out transport are the
+deferred runtime halves).
+
+Feature pick: surfaced the choice to the user via AskUserQuestion
+(SRS-MD-001 SDK-surface vs SRS-NOTIF-001 SDK-surface vs a CI-mirror
+cleanup chore). User chose SRS-MD-001 SDK-surface at the established
+smallest-blast-radius depth. Correction to SESSION 33's handoff:
+SRS-SDK-007 is actually P2 (bar consolidation/resampling), not a
+strategy-side logging API, so it was out of priority order; the two
+genuine next-honest P1 candidates were SRS-MD-001 (lower ID, top
+recommendation) and SRS-NOTIF-001.
+
+Carryover audit at session start: SESSION 33's recommendation that
+SRS-MD-001 was a clean next P1 was sound. Phase-1 exploration confirmed
+the seam was already half-modeled in Rust: crates/atp-market-data
+already had MarketDataSubscriptionManager with owns_subscription_fanout()
+-> true but NO actual fan-out, and a SubscriptionLineCounter trait whose
+deferred[] (in subscription_limit_contract) explicitly names SRS-MD-001
+as the owner of "the live subscription set". So SRS-MD-001's honest home
+is RUST extending crates/atp-market-data (AC-16: the subscription
+manager is a core Rust runtime service) — NOT a python/atp_* SDK package
+like the recent LOG-001/API-001/ERR-9 sessions (those are Python
+Strategy-API / cross-cutting surfaces). Closest template was
+SRS-MD-002 / subscription_limit_check.py (same crate, same Rust static-
+check style via tools/_rust_parser.py + a cargo smoke step).
+
+What I did:
+- Prep commit (aaa5234): extended SAFETY_PATH_RE in tools/critic_check.py
+  to add subscription[_-]?fanout, subscription[_-]?fan[_-]?out,
+  consolidated[_-]?subscription, subscription[_-]?registry,
+  subscription[_-]?change, market[_-]?data[_-]?fan[_-]?out tokens.
+  Verified the new tokens match the planned check script + L3/L7 tests
+  and ZERO existing tracked files (no false positives); subscription_
+  limit / strategy_api_subscriptions paths unaffected. Deterministic
+  critic on the staged prep: APPROVE - 0 findings.
+
+- Feat commit (0729700, +1939 / -2, 8 files):
+  (a) crates/atp-types/src/lib.rs (+~95 src, +~90 tests): MarketDataTick
+      { symbol, tick_seq } (tick_seq is an opaque delivery counter;
+      sequence-GAP detection is SRS-MD-007, deferred); SubscriptionChange
+      StrEnum-equivalent (Opened / SubscriberAdded / AlreadySubscribed /
+      SubscriberRemoved / Closed / NotSubscribed) with changes_line_count
+      (Opened|Closed only) + is_published (suppresses the idempotent
+      no-ops) + as_str; SubscriptionChangeEvent { change, strategy_id,
+      symbol, subscriber_count, lines_in_use }. All forbid broker /
+      vendor / session / tick-id leakage. 5 new unit tests.
+  (b) crates/atp-market-data/src/lib.rs (+~275 src, +~205 tests):
+      SubscriptionChangeSink port; SubscriptionRegistryError { Empty-
+      Symbol, EmptyStrategyId } + Display/Error; ConsolidatedSubscription-
+      Registry (BTreeMap<String, Vec<StrategyId>> + line_limit) with
+      new / distinct_subscriptions / subscriber_count / is_subscribed /
+      subscribe / unsubscribe / fan_out + private publish/validate_*;
+      impl SubscriptionLineCounter for the registry (lines_in_use ==
+      distinct count; try_acquire dedup-aware). 9 new unit tests incl.
+      the MD-002-gate seam test.
+  (c) architecture/runtime_services.json: subscription_fanout_contract
+      block (19 keys) — type/port/registry specs, dedup_invariant +
+      validation token maps, vendor_forbidden_tokens, and deferred[]
+      naming 6 runtime owners (SRS-MD-001-runtime, SRS-PERF-001,
+      SRS-EXE-006, SRS-MD-003 / SRS-MD-007, SRS-LOG-001-runtime,
+      SRS-UI-001 / SRS-API-001).
+  (d) tools/subscription_fanout_check.py (~430 lines): 10 static
+      collectors (struct/enum/trait field+variant+method checks, the
+      registry inherent-impl + SubscriptionLineCounter trait-impl,
+      a whitespace-tolerant dedup-invariant check that asserts
+      self.subscribers.insert( appears EXACTLY ONCE in subscribe +
+      existing.push( present, the fan_out/subscribe input validation,
+      vendor isolation) + cargo smoke (skips gracefully when cargo
+      absent). PASS line "SRS-MD-001 SDK-SURFACE PASS" names the
+      deferred owners. Wired into init.sh next to subscription_limit.
+  (e) crates/atp-market-data/tests/srs_md_001_subscription_fanout.rs
+      (L7, 7 tests): dedup-to-one-line, fan-out isolation, unsubscribe
+      lifecycle releasing the line, change-event counts, the MD-002-gate
+      seam, empty-input rejection, and a multi-symbol pseudo-property
+      sweep.
+  (f) tests/test_subscription_fanout_contract.py (L3): subprocess PASS
+      + needle assertions + per-collector tests with negative mutation
+      spot-checks (dropped field, leaked vendor/tick field, missing
+      variant, removed line-counter impl, a SECOND upstream insert that
+      breaks dedup, removed fan-out validation, leaked vendor token).
+  (g) tests/domain/test_subscription_fanout_dedup.py (L7, marked
+      domain+safety): shells each srs_md_001_* Rust test with --exact.
+
+- Chore commit (this entry): records SESSION 34; SRS-MD-001 stays
+  passes:false in feature_list.json (unchanged).
+
+What I tested:
+- cargo test --workspace: green. New atp-market-data lib unit tests +
+  the srs_md_001_subscription_fanout integration test (7) +
+  atp-types unit tests all pass; SRS-MD-002's err_4 integration test
+  still passes (the registry impl is additive — the gate is untouched).
+- python L3 (tests/test_subscription_fanout_contract.py): pass incl. all
+  mutation spot-checks (each tamper is caught).
+- python L7 (tests/domain/test_subscription_fanout_dedup.py): pass.
+- Full suite: pytest -m "not integration and not e2e" -> 1036 passed,
+  4 skipped (pre-existing pending-impl skips), 118 subtests passed,
+  0 failed. SRS-MD-002 check + architecture_check + the whole contract
+  suite still green.
+- tools/subscription_fanout_check.py: SRS-MD-001 SDK-SURFACE PASS (11
+  evidence items). My crates are clippy-clean and rustfmt-clean (added
+  lines have ZERO overlap with rustfmt's wanted changes — verified by
+  intersecting git-added line numbers with rustfmt's diff).
+
+Critic verdicts:
+  deterministic: APPROVE - 0 findings (staged feat diff; does NOT include
+    tools/critic_check.py, which was the separate prep commit — so the
+    judgment refusal-clause #4 self-modification gate does not fire on
+    the feature diff, by design of the 3-commit cadence).
+  judgment (fresh-context Agent fallback over prompts/critic_prompt.md +
+    git diff --cached): APPROVE - 0 findings. The one sub-threshold nit
+    it raised (calling tick_seq "monotonic" vs "opaque") was tightened in
+    the committed diff before the feat commit. /codex:adversarial-review
+    is a slash command from the openai-codex plugin and is NOT in this
+    session's user-invocable skills list, so per SESSION 31-33 precedent
+    the judgment pass routed through a fresh-context general-purpose
+    sub-agent fed the prompt + staged diff (same JSON schema).
+
+Known issues / notes for next agent:
+- SRS-MD-001 stays passes:false. The runtime consumers required for
+  end-to-end verification are in
+  architecture/runtime_services.json#subscription_fanout_contract.deferred[]:
+    (1) SRS-MD-001-runtime — real IB reqMktData/cancelMktData binding
+        driven by the registry's Opened/Closed transitions, live tick
+        ingestion, the async fan-out transport, and thread-safe
+        concurrency (the registry is single-threaded by design);
+    (2) SRS-PERF-001 — the <=100 ms fan-out latency NFR measured against
+        a PTP-disciplined clock (the deferred performance half, same
+        pattern as SRS-SDK-004's deferred p95);
+    (3) SRS-EXE-006 — the headless IB Gateway adapter owning the actual
+        market-data API calls;
+    (4) SRS-MD-003 / SRS-MD-007 — heartbeat freshness + tick sequence-gap
+        detection that mark a consolidated subscription stale
+        (tick_seq is the opaque hook; gap semantics are MD-007's);
+    (5) SRS-LOG-001-runtime — the persistent sink for the
+        subscription_change events (Source.MARKET_DATA);
+    (6) SRS-UI-001 / SRS-API-001 — dashboard line-usage pane + REST/WS
+        surfacing of lines_in_use / subscriber_count + operator alerts.
+  SRS-MD-001 can flip passes:true when the SRS-MD-001-runtime fan-out
+  transport + SRS-PERF-001 latency evidence land.
+
+- IMPORTANT — pre-existing workspace toolchain drift discovered this
+  session (NOT introduced by this diff; deferred, mirrors the long-
+  standing deferred-ruff note): the locally-installed Rust toolchain
+  (rust-1.95.0 clippy/rustfmt) is NEWER than whatever last linted the
+  repo and surfaces lints across MANY pre-existing files:
+    * `cargo fmt --check` flags 13 pre-existing files (atp-data/src +
+      its err_5/err_6 tests, atp-execution/src + err_2 test,
+      atp-market-data/src + err_4 test, atp-orchestrator/src + its 4
+      orch_* tests, atp-types/src) — ALL drift at pure HEAD too.
+    * `cargo clippy --workspace` has ~4-5 pre-existing errors in
+      atp-orchestrator (large-Err-variant, too-many-arguments,
+      sort_by_key) — present at HEAD.
+  TRAP for the next agent: do NOT run `cargo fmt` (whole-crate) as part
+  of a feature — it reformats pre-existing single-line enum struct-
+  variants (e.g. `MemBelowFloor { mem_mb: u32, floor_mb: u32 },`) into
+  multi-line, which (a) is unrelated churn and (b) BREAKS the orchestrator
+  / MD-002 L3 contract tests that do literal `.replace()` on the Rust
+  source (test_orchestrator_resource_profile_contract / _lifecycle).
+  This session hit exactly that, reverted, and re-applied additions via
+  Edit so pre-existing lines stayed byte-identical. Hand-format new lines
+  to match the COMMITTED style instead. A future `chore(fmt): re-run
+  rustfmt across the workspace` would need to ALSO update the literal-
+  replace strings in the affected L3 tests in the same commit.
+
+- Pre-existing ci.yml <-> run_ci_locally.sh mirror drift persists (the
+  7 strategy_api_* checks still missing from run_ci_locally.sh, same as
+  SESSION 31-33). subscription_fanout_check.py is a cargo-based check,
+  so — like its sibling subscription_limit_check.py — it is intentionally
+  NOT in either loop; its static evidence runs in CI via the L3 pytest
+  contract test and its Rust behavior via `cargo test --workspace`.
+  A future `chore(ci): re-sync run_ci_locally.sh with ci.yml` should add
+  the 7 missing python-loop checks in one batch.
+
+- Lowest remaining P1 by ID still blocked: ERR-7 (Hot-Swap), ERR-8
+  (kill switch + IB adapter). The next honest P1 SDK-surface candidate
+  is SRS-NOTIF-001 (notification dispatch fan-out for IB connectivity
+  loss + ERROR/CRITICAL records; named as deferred[] item by the LOG-001
+  contract and now by subscription_fanout_contract's operator-alert
+  half). Other clean candidates in the MD family: SRS-MD-003 (heartbeat
+  freshness — partly modeled by the existing freshness_contract) and
+  SRS-MD-007 (sequence-gap detection — tick_seq is the seam this session
+  pinned). Crate home for all of these is Rust (core runtime services).
+
 === SESSION 33 ===
 Date: 2026-05-22
 Feature completed: SRS-LOG-001 SDK-SURFACE — log record schema +
