@@ -216,7 +216,10 @@ SAFETY_PATH_RE = re.compile(
     r"|operator[_-]?workflow[_-]?surface|operator[_-]?workflow"
     r"|api[_-]?surface[_-]?coverage|ac[_-]?workflow"
     r"|log[_-]?record|atp[_-]?logging|log[_-]?sink"
-    r"|log[_-]?dispatch|log[_-]?class|log[_-]?route)",
+    r"|log[_-]?dispatch|log[_-]?class|log[_-]?route"
+    r"|subscription[_-]?fanout|subscription[_-]?fan[_-]?out"
+    r"|consolidated[_-]?subscription|subscription[_-]?registry"
+    r"|subscription[_-]?change|market[_-]?data[_-]?fan[_-]?out)",
     re.IGNORECASE,
 )
 
