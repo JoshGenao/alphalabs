@@ -103,3 +103,29 @@ def test_fan_out_holds_across_many_symbols_and_subscribers() -> None:
     # Pseudo-property sweep: dedup + isolation hold across a multi-symbol
     # book (one upstream line per distinct symbol, exact fan-out per symbol).
     _assert_passed(_run_cargo_test("srs_md_001_fan_out_holds_across_many_symbols_and_subscribers"))
+
+
+def test_case_and_whitespace_variants_dedup_onto_one_line() -> None:
+    # Canonical key: AAPL / "  aapl " / Aapl name one security and share one
+    # upstream line; a tick for any variant fans out to every subscriber.
+    _assert_passed(_run_cargo_test("srs_md_001_case_and_whitespace_variants_dedup_onto_one_line"))
+
+
+def test_distinct_asset_classes_are_separate_lines() -> None:
+    # An equity and an option on the same display ticker are distinct
+    # securities (two lines); a tick for one never reaches the other.
+    _assert_passed(_run_cargo_test("srs_md_001_distinct_asset_classes_are_separate_lines"))
+
+
+def test_subscribe_enforces_line_limit_atomically() -> None:
+    # The mutating admission path itself refuses a new line past the cap and
+    # registers nothing on rejection (a duplicate is still admitted).
+    _assert_passed(_run_cargo_test("srs_md_001_subscribe_enforces_line_limit_atomically"))
+
+
+def test_interleaved_probe_then_subscribe_cannot_exceed_limit() -> None:
+    # A stale WithinLimit probe cannot push the set past the cap — subscribe
+    # re-checks the ceiling atomically at insert time.
+    _assert_passed(
+        _run_cargo_test("srs_md_001_interleaved_probe_then_subscribe_cannot_exceed_limit")
+    )

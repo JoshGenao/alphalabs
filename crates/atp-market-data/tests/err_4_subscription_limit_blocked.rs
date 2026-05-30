@@ -39,7 +39,7 @@ use atp_market_data::{
     MarketDataSubscriptionManager, SubscriptionLimitEventSink, SubscriptionLineCounter,
 };
 use atp_types::{
-    OrderErrorCategory, StrategyId, SubscriptionLimitEvent, SubscriptionLimitState,
+    AssetClass, OrderErrorCategory, StrategyId, SubscriptionLimitEvent, SubscriptionLimitState,
     SubscriptionRequest,
 };
 use std::cell::{Cell, RefCell};
@@ -120,6 +120,7 @@ fn request(strategy: &str, symbol: &str) -> SubscriptionRequest {
     SubscriptionRequest {
         strategy_id: StrategyId::new(strategy),
         symbol: symbol.to_string(),
+        asset_class: AssetClass::Equity,
     }
 }
 

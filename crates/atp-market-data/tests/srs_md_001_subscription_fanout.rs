@@ -35,8 +35,8 @@ use atp_market_data::{
     SubscriptionLimitEventSink, SubscriptionLineCounter, SubscriptionRegistryError,
 };
 use atp_types::{
-    MarketDataTick, OrderErrorCategory, StrategyId, SubscriptionChange, SubscriptionChangeEvent,
-    SubscriptionLimitEvent, SubscriptionLimitState, SubscriptionRequest,
+    AssetClass, MarketDataTick, OrderErrorCategory, SecurityKey, StrategyId, SubscriptionChange,
+    SubscriptionChangeEvent, SubscriptionLimitEvent, SubscriptionLimitState, SubscriptionRequest,
 };
 use std::cell::RefCell;
 
@@ -77,6 +77,19 @@ fn sub(strategy: &str, symbol: &str) -> SubscriptionRequest {
     SubscriptionRequest {
         strategy_id: StrategyId::new(strategy),
         symbol: symbol.to_string(),
+        asset_class: AssetClass::Equity,
+    }
+}
+
+fn eq_key(symbol: &str) -> SecurityKey {
+    SecurityKey::new(symbol, AssetClass::Equity).expect("non-empty symbol")
+}
+
+fn eq_tick(symbol: &str, tick_seq: u64) -> MarketDataTick {
+    MarketDataTick {
+        symbol: symbol.to_string(),
+        asset_class: AssetClass::Equity,
+        tick_seq,
     }
 }
 
@@ -107,8 +120,8 @@ fn srs_md_001_duplicate_subscriptions_consume_one_upstream_line() {
         1,
         "five subscribers must consume exactly one upstream IB subscription"
     );
-    assert_eq!(registry.subscriber_count("AAPL"), 5);
-    assert!(registry.is_subscribed(&StrategyId::new("paper-c"), "AAPL"));
+    assert_eq!(registry.subscriber_count(&eq_key("AAPL")), 5);
+    assert!(registry.is_subscribed(&StrategyId::new("paper-c"), &eq_key("AAPL")));
 }
 
 #[test]
@@ -124,12 +137,7 @@ fn srs_md_001_fan_out_isolates_by_symbol() {
     registry.subscribe(&sub("paper-b", "AAPL"), &sink).unwrap();
     registry.subscribe(&sub("paper-c", "MSFT"), &sink).unwrap();
 
-    let aapl = registry
-        .fan_out(&MarketDataTick {
-            symbol: "AAPL".to_string(),
-            tick_seq: 42,
-        })
-        .unwrap();
+    let aapl = registry.fan_out(&eq_tick("AAPL", 42)).unwrap();
     let aapl_ids: Vec<&str> = aapl.iter().map(StrategyId::as_str).collect();
     assert_eq!(
         aapl_ids,
@@ -141,24 +149,14 @@ fn srs_md_001_fan_out_isolates_by_symbol() {
         "the MSFT subscriber must never receive an AAPL tick"
     );
 
-    let msft = registry
-        .fan_out(&MarketDataTick {
-            symbol: "MSFT".to_string(),
-            tick_seq: 43,
-        })
-        .unwrap();
+    let msft = registry.fan_out(&eq_tick("MSFT", 43)).unwrap();
     assert_eq!(
         msft.iter().map(StrategyId::as_str).collect::<Vec<_>>(),
         vec!["paper-c"]
     );
 
     // A tick for a symbol nobody subscribes to reaches no one.
-    let none = registry
-        .fan_out(&MarketDataTick {
-            symbol: "NFLX".to_string(),
-            tick_seq: 44,
-        })
-        .unwrap();
+    let none = registry.fan_out(&eq_tick("NFLX", 44)).unwrap();
     assert!(none.is_empty());
 }
 
@@ -173,17 +171,17 @@ fn srs_md_001_unsubscribe_lifecycle_releases_line() {
 
     assert_eq!(
         registry
-            .unsubscribe(&StrategyId::new("live-alpha"), "AAPL", &sink)
+            .unsubscribe(&StrategyId::new("live-alpha"), &eq_key("AAPL"), &sink)
             .unwrap(),
         SubscriptionChange::SubscriberRemoved,
         "removing a non-last subscriber holds the line"
     );
     assert_eq!(registry.distinct_subscriptions(), 1);
-    assert!(!registry.is_subscribed(&StrategyId::new("live-alpha"), "AAPL"));
+    assert!(!registry.is_subscribed(&StrategyId::new("live-alpha"), &eq_key("AAPL")));
 
     assert_eq!(
         registry
-            .unsubscribe(&StrategyId::new("paper-b"), "AAPL", &sink)
+            .unsubscribe(&StrategyId::new("paper-b"), &eq_key("AAPL"), &sink)
             .unwrap(),
         SubscriptionChange::Closed,
         "removing the last subscriber releases the upstream line"
@@ -297,12 +295,13 @@ fn srs_md_001_rejects_empty_symbol_and_strategy() {
     assert_eq!(
         registry.fan_out(&MarketDataTick {
             symbol: String::new(),
+            asset_class: AssetClass::Equity,
             tick_seq: 1,
         }),
         Err(SubscriptionRegistryError::EmptySymbol)
     );
     assert_eq!(
-        registry.unsubscribe(&StrategyId::new(""), "AAPL", &sink),
+        registry.unsubscribe(&StrategyId::new(""), &eq_key("AAPL"), &sink),
         Err(SubscriptionRegistryError::EmptyStrategyId)
     );
 
@@ -333,17 +332,124 @@ fn srs_md_001_fan_out_holds_across_many_symbols_and_subscribers() {
     assert_eq!(registry.distinct_subscriptions(), book.len() as u32);
 
     for (symbol, subs) in book {
-        let recipients = registry
-            .fan_out(&MarketDataTick {
-                symbol: symbol.to_string(),
-                tick_seq: 1,
-            })
-            .unwrap();
+        let recipients = registry.fan_out(&eq_tick(symbol, 1)).unwrap();
         let ids: Vec<&str> = recipients.iter().map(StrategyId::as_str).collect();
         assert_eq!(
             ids, subs,
             "{symbol} must fan out to exactly its subscribers, in order"
         );
-        assert_eq!(registry.subscriber_count(symbol), subs.len() as u32);
+        assert_eq!(
+            registry.subscriber_count(&eq_key(symbol)),
+            subs.len() as u32
+        );
     }
+}
+
+// --- Codex adversarial-review follow-up: canonical key + atomic admission --- //
+
+#[test]
+fn srs_md_001_case_and_whitespace_variants_dedup_onto_one_line() {
+    // Canonical key: "AAPL", "  aapl ", "Aapl" name the SAME security and
+    // must consolidate onto ONE upstream line; a tick for any variant fans
+    // out to every variant's subscriber.
+    let mut registry = ConsolidatedSubscriptionRegistry::new(100);
+    let sink = ChangeSinkSpy::default();
+    registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
+    assert_eq!(
+        registry
+            .subscribe(&sub("paper-b", "  aapl "), &sink)
+            .unwrap(),
+        SubscriptionChange::SubscriberAdded
+    );
+    assert_eq!(
+        registry.subscribe(&sub("paper-c", "Aapl"), &sink).unwrap(),
+        SubscriptionChange::SubscriberAdded
+    );
+    assert_eq!(registry.distinct_subscriptions(), 1);
+
+    let recipients = registry.fan_out(&eq_tick(" aapl ", 1)).unwrap();
+    let ids: Vec<&str> = recipients.iter().map(StrategyId::as_str).collect();
+    assert_eq!(ids, vec!["live-a", "paper-b", "paper-c"]);
+}
+
+#[test]
+fn srs_md_001_distinct_asset_classes_are_separate_lines() {
+    // An equity and an option on the same display ticker are DISTINCT
+    // securities — two upstream lines — and a tick for one never fans out
+    // to the other's subscriber.
+    let mut registry = ConsolidatedSubscriptionRegistry::new(100);
+    let sink = ChangeSinkSpy::default();
+    let equity = SubscriptionRequest {
+        strategy_id: StrategyId::new("equity-strat"),
+        symbol: "AAPL".to_string(),
+        asset_class: AssetClass::Equity,
+    };
+    let option = SubscriptionRequest {
+        strategy_id: StrategyId::new("option-strat"),
+        symbol: "AAPL".to_string(),
+        asset_class: AssetClass::Option,
+    };
+    registry.subscribe(&equity, &sink).unwrap();
+    assert_eq!(
+        registry.subscribe(&option, &sink).unwrap(),
+        SubscriptionChange::Opened,
+        "an option on the same ticker opens its OWN line"
+    );
+    assert_eq!(registry.distinct_subscriptions(), 2);
+
+    let option_tick = MarketDataTick {
+        symbol: "AAPL".to_string(),
+        asset_class: AssetClass::Option,
+        tick_seq: 1,
+    };
+    let recipients = registry.fan_out(&option_tick).unwrap();
+    let ids: Vec<&str> = recipients.iter().map(StrategyId::as_str).collect();
+    assert_eq!(
+        ids,
+        vec!["option-strat"],
+        "an option tick must reach only the option subscriber"
+    );
+}
+
+#[test]
+fn srs_md_001_subscribe_enforces_line_limit_atomically() {
+    // The mutating admission path itself refuses a new line past the cap,
+    // and a rejected over-limit subscribe registers nothing.
+    let mut registry = ConsolidatedSubscriptionRegistry::new(2);
+    let sink = ChangeSinkSpy::default();
+    registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
+    registry.subscribe(&sub("paper-b", "MSFT"), &sink).unwrap();
+    assert_eq!(
+        registry.subscribe(&sub("paper-c", "SPY"), &sink),
+        Err(SubscriptionRegistryError::LineLimitReached {
+            configured_limit: 2
+        })
+    );
+    assert_eq!(registry.distinct_subscriptions(), 2);
+    // A duplicate of an existing security is still admitted (no new line).
+    assert_eq!(
+        registry.subscribe(&sub("paper-c", "AAPL"), &sink).unwrap(),
+        SubscriptionChange::SubscriberAdded
+    );
+    assert_eq!(registry.distinct_subscriptions(), 2);
+}
+
+#[test]
+fn srs_md_001_interleaved_probe_then_subscribe_cannot_exceed_limit() {
+    // The probe-then-mutate race: a stale WithinLimit probe cannot push the
+    // set past the cap, because subscribe re-checks atomically at insert.
+    let mut registry = ConsolidatedSubscriptionRegistry::new(1);
+    let sink = ChangeSinkSpy::default();
+    assert_eq!(
+        registry.try_acquire(&sub("paper-b", "MSFT")),
+        SubscriptionLimitState::WithinLimit
+    );
+    registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
+    assert_eq!(
+        registry.subscribe(&sub("paper-b", "MSFT"), &sink),
+        Err(SubscriptionRegistryError::LineLimitReached {
+            configured_limit: 1
+        })
+    );
+    assert_eq!(registry.distinct_subscriptions(), 1);
 }

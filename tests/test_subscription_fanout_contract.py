@@ -28,13 +28,17 @@ if str(TOOLS_ROOT) not in sys.path:
 from subscription_fanout_check import (  # noqa: E402
     SubscriptionFanoutCheckError,
     assert_subscription_fanout_static,
+    check_asset_class_enum,
+    check_atomic_admission,
     check_change_sink_port,
     check_dedup_invariant,
     check_input_validation,
     check_line_counter_impl,
     check_market_data_tick,
     check_registry_error_enum,
+    check_registry_key_type,
     check_registry_struct,
+    check_security_key,
     check_subscription_change_enum,
     check_subscription_change_event,
     check_vendor_isolation,
@@ -57,17 +61,26 @@ class SubscriptionFanoutScriptTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("SRS-MD-001 SDK-SURFACE PASS", result.stdout)
         for needle in (
-            "MarketDataTick with the 2 fan-out fields (symbol, tick_seq)",
+            "MarketDataTick with the 3 fan-out fields (symbol, asset_class, tick_seq)",
+            "AssetClass with 2 tradable classes (Equity, Option)",
+            "SecurityKey (private symbol+asset_class, normalizing `new`)",
+            "carried by SubscriptionRequest, MarketDataTick via .security_key()",
             "SubscriptionChange with 6 transitions",
             "Opened/Closed are the only line-affecting ones",
             "SubscriptionChangeEvent with the 5 required fields",
             "subscriber_count, lines_in_use",
             "SubscriptionChangeSink with 1 method (record)",
-            "SubscriptionRegistryError with 2 fail-closed variants",
+            "SubscriptionRegistryError with 3 fail-closed variants",
+            "EmptySymbol, EmptyStrategyId, LineLimitReached",
             "ConsolidatedSubscriptionRegistry with the 7 dedup + fan-out methods",
+            "keys the consolidated set on SecurityKey",
+            "no raw-symbol conflation",
             "IS the concrete SubscriptionLineCounter",
             "closes subscription_limit_contract deferral 'owner: SRS-MD-001'",
             "inserts a new upstream subscription EXACTLY ONCE",
+            "enforces the IB line ceiling atomically",
+            "the probe-then-mutate race",
+            "canonicalize via SecurityKey",
             "fail closed on empty symbol / strategy id",
             "free of all 5 forbidden vendor SDK tokens",
             "feature_list.json keeps SRS-MD-001 passes:false",
@@ -85,13 +98,23 @@ class _Fixture(unittest.TestCase):
 class MarketDataTickTest(_Fixture):
     def test_required_fields_present(self) -> None:
         evidence = check_market_data_tick(self.config, self.types_src)
-        self.assertIn("symbol, tick_seq", evidence)
+        self.assertIn("symbol, asset_class, tick_seq", evidence)
 
     def test_dropped_field_is_caught(self) -> None:
         mutated = self.types_src.replace("    pub tick_seq: u64,", "", 1)
         with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
             check_market_data_tick(self.config, mutated)
         self.assertIn("tick_seq", str(ctx.exception))
+
+    def test_dropped_asset_class_field_is_caught(self) -> None:
+        mutated = self.types_src.replace(
+            "pub struct MarketDataTick {\n    pub symbol: String,\n    pub asset_class: AssetClass,",
+            "pub struct MarketDataTick {\n    pub symbol: String,",
+            1,
+        )
+        with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
+            check_market_data_tick(self.config, mutated)
+        self.assertIn("asset_class", str(ctx.exception))
 
     def test_leaked_broker_field_is_caught(self) -> None:
         mutated = self.types_src.replace(
@@ -102,6 +125,55 @@ class MarketDataTickTest(_Fixture):
         with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
             check_market_data_tick(self.config, mutated)
         self.assertIn("broker", str(ctx.exception))
+
+
+class AssetClassEnumTest(_Fixture):
+    def test_tradable_classes_present(self) -> None:
+        evidence = check_asset_class_enum(self.config, self.types_src)
+        self.assertIn("Equity, Option", evidence)
+
+    def test_dropped_variant_is_caught(self) -> None:
+        mutated = self.types_src.replace(
+            "pub enum AssetClass {\n    #[default]\n    Equity,",
+            "pub enum AssetClass {\n    #[default]\n    EquityX,",
+            1,
+        )
+        with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
+            check_asset_class_enum(self.config, mutated)
+        self.assertIn("Equity", str(ctx.exception))
+
+
+class SecurityKeyTest(_Fixture):
+    def test_canonical_key_evidence(self) -> None:
+        evidence = check_security_key(self.config, self.types_src)
+        self.assertIn("SecurityKey", evidence)
+        self.assertIn("security_key()", evidence)
+
+    def test_public_field_breaks_normalization_guarantee(self) -> None:
+        # Making a field public lets a caller bypass the normalizing
+        # constructor — the check must reject it.
+        mutated = self.types_src.replace(
+            "pub struct SecurityKey {\n    symbol: String,",
+            "pub struct SecurityKey {\n    pub symbol: String,",
+            1,
+        )
+        with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
+            check_security_key(self.config, mutated)
+        self.assertIn("private", str(ctx.exception))
+
+    def test_missing_normalization_is_caught(self) -> None:
+        mutated = self.types_src.replace(".trim().to_uppercase()", ".to_string()")
+        with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
+            check_security_key(self.config, mutated)
+        self.assertIn("normalize", str(ctx.exception))
+
+    def test_missing_carrier_accessor_is_caught(self) -> None:
+        # Rename the first carrier's (SubscriptionRequest) security_key()
+        # accessor so the canonical key can't be derived from it.
+        mutated = self.types_src.replace("pub fn security_key(", "pub fn dropped_key(", 1)
+        with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
+            check_security_key(self.config, mutated)
+        self.assertIn("security_key", str(ctx.exception))
 
 
 class SubscriptionChangeEnumTest(_Fixture):
@@ -160,12 +232,67 @@ class RegistryErrorEnumTest(_Fixture):
         evidence = check_registry_error_enum(self.config, self.md_src)
         self.assertIn("EmptySymbol", evidence)
         self.assertIn("EmptyStrategyId", evidence)
+        self.assertIn("LineLimitReached", evidence)
 
     def test_dropped_variant_is_caught(self) -> None:
         mutated = self.md_src.replace("    EmptyStrategyId,", "", 1)
         with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
             check_registry_error_enum(self.config, mutated)
         self.assertIn("EmptyStrategyId", str(ctx.exception))
+
+    def test_dropped_line_limit_variant_is_caught(self) -> None:
+        mutated = self.md_src.replace("    LineLimitReached { configured_limit: u32 },", "", 1)
+        with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
+            check_registry_error_enum(self.config, mutated)
+        self.assertIn("LineLimitReached", str(ctx.exception))
+
+
+class RegistryKeyTypeTest(_Fixture):
+    def test_keyed_on_security_key(self) -> None:
+        evidence = check_registry_key_type(self.config, self.md_src)
+        self.assertIn("SecurityKey", evidence)
+
+    def test_raw_string_key_is_caught(self) -> None:
+        # Reverting to a raw-symbol key is the exact conflation regression
+        # the canonical SecurityKey closes.
+        mutated = self.md_src.replace(
+            "subscribers: BTreeMap<SecurityKey, Vec<StrategyId>>,",
+            "subscribers: BTreeMap<String, Vec<StrategyId>>,",
+            1,
+        )
+        with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
+            check_registry_key_type(self.config, mutated)
+        self.assertIn("SecurityKey", str(ctx.exception))
+
+
+class AtomicAdmissionTest(_Fixture):
+    def test_atomic_enforcement_evidence(self) -> None:
+        evidence = check_atomic_admission(self.config, self.md_src)
+        self.assertIn("atomically", evidence)
+
+    def test_removed_limit_check_is_caught(self) -> None:
+        # Drop the ceiling check from subscribe — the over-limit / race
+        # regression Codex flagged.
+        mutated = self.md_src.replace(
+            "if self.subscribers.len() as u32 >= self.line_limit {",
+            "if false {",
+            1,
+        )
+        with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
+            check_atomic_admission(self.config, mutated)
+        self.assertIn(">= self.line_limit", str(ctx.exception))
+
+    def test_removed_limit_error_is_caught(self) -> None:
+        # Rename only subscribe's return variant (braces stay balanced); the
+        # enum/Display occurrences are untouched.
+        mutated = self.md_src.replace(
+            "Err(SubscriptionRegistryError::LineLimitReached {",
+            "Err(SubscriptionRegistryError::SomethingElse {",
+            1,
+        )
+        with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
+            check_atomic_admission(self.config, mutated)
+        self.assertIn("LineLimitReached", str(ctx.exception))
 
 
 class RegistryStructTest(_Fixture):
@@ -244,10 +371,11 @@ class InputValidationTest(_Fixture):
         self.assertIn("fail closed", evidence)
 
     def test_removed_fan_out_validation_is_caught(self) -> None:
-        # Replace fan_out's symbol validation with a direct, unchecked read.
+        # Replace fan_out's fail-closed canonicalization with an unchecked
+        # unwrap — a tick with an empty symbol would no longer be rejected.
         mutated = self.md_src.replace(
-            "let symbol = Self::validate_symbol(&tick.symbol)?;",
-            "let symbol = tick.symbol.as_str();",
+            "let key = tick\n            .security_key()\n            .ok_or(SubscriptionRegistryError::EmptySymbol)?;",
+            "let key = tick.security_key().unwrap();",
             1,
         )
         with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
@@ -268,12 +396,12 @@ class VendorIsolationTest(_Fixture):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_eleven_items(self) -> None:
-        # 10 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(run_checks()), 11)
+    def test_run_checks_emits_fifteen_items(self) -> None:
+        # 14 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(run_checks()), 15)
 
-    def test_static_evidence_is_ten_items(self) -> None:
-        self.assertEqual(len(assert_subscription_fanout_static(load_config(), ROOT)), 10)
+    def test_static_evidence_is_fourteen_items(self) -> None:
+        self.assertEqual(len(assert_subscription_fanout_static(load_config(), ROOT)), 14)
 
 
 if __name__ == "__main__":

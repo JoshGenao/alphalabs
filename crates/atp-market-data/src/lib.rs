@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use atp_types::{
-    MarketDataTick, OrderErrorCategory, RuntimeService, StrategyId, StructuredSubscriptionError,
-    SubscriptionChange, SubscriptionChangeEvent, SubscriptionLimitEvent, SubscriptionLimitState,
-    SubscriptionRequest,
+    MarketDataTick, OrderErrorCategory, RuntimeService, SecurityKey, StrategyId,
+    StructuredSubscriptionError, SubscriptionChange, SubscriptionChangeEvent,
+    SubscriptionLimitEvent, SubscriptionLimitState, SubscriptionRequest,
 };
 
 #[derive(Debug, Default)]
@@ -161,11 +161,11 @@ pub trait SubscriptionChangeSink {
     fn record(&self, event: SubscriptionChangeEvent);
 }
 
-/// Precondition violations the consolidated registry rejects at its public
-/// boundary. The registry is the seam between untrusted strategy-supplied
-/// identifiers and the consolidated IB subscription set, so it fails closed
-/// on malformed input rather than registering a bad key or fanning a tick
-/// out under an empty symbol.
+/// Precondition / admission violations the consolidated registry rejects at
+/// its public boundary. The registry is the seam between untrusted
+/// strategy-supplied identifiers and the consolidated IB subscription set, so
+/// it fails closed rather than registering a bad key, fanning a tick out
+/// under an empty symbol, or opening a line past the configured ceiling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubscriptionRegistryError {
     /// A subscription / fan-out routing key was empty (or whitespace). An
@@ -175,15 +175,27 @@ pub enum SubscriptionRegistryError {
     /// A subscriber identifier was empty (or whitespace). Fan-out delivery
     /// requires a non-empty strategy identity.
     EmptyStrategyId,
+    /// Opening a NEW upstream subscription would exceed the operator-
+    /// configured IB market-data line limit. SRS-MD-001 enforces this in the
+    /// same mutable borrow that performs the insert, so a rejected request
+    /// never registers a line (no probe-then-mutate race window).
+    LineLimitReached { configured_limit: u32 },
 }
 
 impl fmt::Display for SubscriptionRegistryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
-            Self::EmptySymbol => "SRS-MD-001: subscription symbol must be non-empty",
-            Self::EmptyStrategyId => "SRS-MD-001: subscriber strategy_id must be non-empty",
-        };
-        formatter.write_str(message)
+        match self {
+            Self::EmptySymbol => {
+                formatter.write_str("SRS-MD-001: subscription symbol must be non-empty")
+            }
+            Self::EmptyStrategyId => {
+                formatter.write_str("SRS-MD-001: subscriber strategy_id must be non-empty")
+            }
+            Self::LineLimitReached { configured_limit } => write!(
+                formatter,
+                "SRS-MD-001/SYS-70: a new upstream subscription would exceed the IB line limit ({configured_limit})"
+            ),
+        }
     }
 }
 
@@ -195,19 +207,21 @@ impl std::error::Error for SubscriptionRegistryError {}
 /// across all active strategy containers (live and paper). Maintains the
 /// SRS-MD-001 core invariant: **for any security with one or more
 /// subscribers there is exactly ONE upstream IB market-data subscription**,
-/// regardless of how many strategy containers subscribe. Received market
-/// data is fanned out to every subscriber of the tick's symbol — and to no
-/// other subscriber.
+/// regardless of how many strategy containers subscribe. The consolidated
+/// set is keyed on a canonical [`SecurityKey`] (normalized symbol +
+/// asset class), so `AAPL` / `aapl` / ` AAPL ` share one line while an
+/// equity and an option on the same display ticker stay distinct lines.
+/// Received market data is fanned out to every subscriber of the tick's
+/// security — and to no other subscriber.
 ///
-/// This registry is the concrete `SubscriptionLineCounter` the SRS-MD-002
-/// limit gate (`MarketDataSubscriptionManager::request_subscription`) was
-/// declared to consume: `lines_in_use()` returns the number of DISTINCT
-/// upstream subscriptions (one IB line per security), which is exactly the
-/// line accounting the operator-configured limit gates on. `try_acquire`
-/// is dedup-aware — admitting a subscriber to an ALREADY-subscribed security
-/// consumes no new line (always within limit); admitting the FIRST
-/// subscriber to a new security consumes one line (within limit only while
-/// `lines_in_use() < line_limit()`).
+/// Admission is ATOMIC: `subscribe` enforces the configured line ceiling in
+/// the same `&mut self` borrow that performs the insert, so neither a direct
+/// caller nor a probe-then-mutate race can push the consolidated set past the
+/// IB line cap. The registry is also the concrete `SubscriptionLineCounter`
+/// the SRS-MD-002 gate consumes: `lines_in_use()` returns the number of
+/// DISTINCT upstream subscriptions and `try_acquire` is the dedup-aware
+/// read-only probe the gate uses to produce its structured
+/// `SUBSCRIPTION_LIMIT_REACHED` envelope before admission.
 ///
 /// Deferred to the SRS-MD-001 runtime (see the architecture metadata
 /// `subscription_fanout_contract.deferred[]`): the real IB upstream
@@ -217,19 +231,19 @@ impl std::error::Error for SubscriptionRegistryError {}
 /// and models the structural dedup + fan-out + line-accounting contract.
 #[derive(Debug, Default)]
 pub struct ConsolidatedSubscriptionRegistry {
-    // symbol -> subscribers in subscription order, kept duplicate-free by
-    // `subscribe`. BTreeMap gives deterministic symbol iteration for the
-    // line accounting; the per-symbol Vec preserves fan-out order.
-    subscribers: BTreeMap<String, Vec<StrategyId>>,
+    // SecurityKey -> subscribers in subscription order, kept duplicate-free
+    // by `subscribe`. BTreeMap gives deterministic key iteration for the line
+    // accounting; the per-key Vec preserves fan-out order.
+    subscribers: BTreeMap<SecurityKey, Vec<StrategyId>>,
     line_limit: u32,
 }
 
 impl ConsolidatedSubscriptionRegistry {
     /// Build a registry with the operator-configured IB line ceiling
     /// (`ATP_MARKET_DATA_LINE_LIMIT`, wired by SRS-ARCH-005 config — the
-    /// concrete plumbing is deferred). The ceiling is consulted by the
-    /// `SubscriptionLineCounter` impl only; `subscribe` itself does not
-    /// enforce it (the SRS-MD-002 gate owns admission).
+    /// concrete plumbing is deferred). `subscribe` enforces this ceiling
+    /// atomically; the SRS-MD-002 gate additionally probes it via
+    /// `try_acquire` to produce the operator-facing structured error.
     pub fn new(line_limit: u32) -> Self {
         Self {
             subscribers: BTreeMap::new(),
@@ -245,59 +259,68 @@ impl ConsolidatedSubscriptionRegistry {
         self.subscribers.len() as u32
     }
 
-    /// Number of subscribers fanned out to for `symbol` (0 if none).
-    pub fn subscriber_count(&self, symbol: &str) -> u32 {
-        self.subscribers.get(symbol).map_or(0, |s| s.len() as u32)
+    /// Number of subscribers fanned out to for `key` (0 if none).
+    pub fn subscriber_count(&self, key: &SecurityKey) -> u32 {
+        self.subscribers.get(key).map_or(0, |s| s.len() as u32)
     }
 
-    /// True when `strategy_id` is a registered subscriber of `symbol`.
-    pub fn is_subscribed(&self, strategy_id: &StrategyId, symbol: &str) -> bool {
+    /// True when `strategy_id` is a registered subscriber of `key`.
+    pub fn is_subscribed(&self, strategy_id: &StrategyId, key: &SecurityKey) -> bool {
         self.subscribers
-            .get(symbol)
+            .get(key)
             .is_some_and(|s| s.contains(strategy_id))
     }
 
-    /// Register `request.strategy_id` as a subscriber of `request.symbol`,
-    /// returning the `SubscriptionChange` describing the effect. Every
-    /// line-affecting / dedup transition (i.e. everything but the
-    /// idempotent `AlreadySubscribed` no-op) is published as a
-    /// `SubscriptionChangeEvent` through `events`.
+    /// Register `request.strategy_id` as a subscriber of the canonical
+    /// security named by `request`, returning the `SubscriptionChange`
+    /// describing the effect. Every line-affecting / dedup transition (i.e.
+    /// everything but the idempotent `AlreadySubscribed` no-op) is published
+    /// as a `SubscriptionChangeEvent` through `events`.
     ///
     /// SRS-MD-001 dedup invariant: a second (and subsequent) subscriber to
-    /// the same symbol does NOT open a new upstream subscription — the
+    /// the same security does NOT open a new upstream subscription — the
     /// return is `SubscriberAdded` and `distinct_subscriptions()` is
-    /// unchanged. Only the FIRST subscriber returns `Opened` and adds a
-    /// line.
+    /// unchanged. Only the FIRST subscriber returns `Opened` and adds a line,
+    /// and only when the configured ceiling has headroom — otherwise
+    /// `subscribe` returns `LineLimitReached` WITHOUT registering anything.
     pub fn subscribe<S: SubscriptionChangeSink>(
         &mut self,
         request: &SubscriptionRequest,
         events: &S,
     ) -> Result<SubscriptionChange, SubscriptionRegistryError> {
-        let symbol = Self::validate_symbol(&request.symbol)?;
+        let key = request
+            .security_key()
+            .ok_or(SubscriptionRegistryError::EmptySymbol)?;
         Self::validate_strategy_id(&request.strategy_id)?;
 
-        let change = match self.subscribers.get_mut(symbol) {
-            None => {
-                // First subscriber for this security → one NEW upstream line.
-                let subscribers = vec![request.strategy_id.clone()];
-                self.subscribers.insert(symbol.to_string(), subscribers);
-                SubscriptionChange::Opened
+        let change = if let Some(existing) = self.subscribers.get_mut(&key) {
+            if existing.contains(&request.strategy_id) {
+                SubscriptionChange::AlreadySubscribed
+            } else {
+                // Dedup: additional subscriber, SAME upstream line.
+                existing.push(request.strategy_id.clone());
+                SubscriptionChange::SubscriberAdded
             }
-            Some(existing) => {
-                if existing.contains(&request.strategy_id) {
-                    SubscriptionChange::AlreadySubscribed
-                } else {
-                    // Dedup: additional subscriber, SAME upstream line.
-                    existing.push(request.strategy_id.clone());
-                    SubscriptionChange::SubscriberAdded
-                }
+        } else {
+            // First subscriber for this security → one NEW upstream line.
+            // Enforce the configured ceiling ATOMICALLY in the same &mut
+            // borrow that performs the insert: a new line past the limit is
+            // refused here, so no caller — and no probe-then-mutate race —
+            // can push the consolidated set past the IB line cap.
+            if self.subscribers.len() as u32 >= self.line_limit {
+                return Err(SubscriptionRegistryError::LineLimitReached {
+                    configured_limit: self.line_limit,
+                });
             }
+            self.subscribers
+                .insert(key.clone(), vec![request.strategy_id.clone()]);
+            SubscriptionChange::Opened
         };
-        self.publish(change, &request.strategy_id, symbol, events);
+        self.publish(change, &request.strategy_id, &key, events);
         Ok(change)
     }
 
-    /// Remove `strategy_id` from `symbol`'s subscriber set, returning the
+    /// Remove `strategy_id` from `key`'s subscriber set, returning the
     /// `SubscriptionChange`. When the LAST subscriber leaves, the upstream
     /// subscription is released (`Closed`, `distinct_subscriptions()`
     /// decremented). Publishes every transition but the `NotSubscribed`
@@ -305,13 +328,12 @@ impl ConsolidatedSubscriptionRegistry {
     pub fn unsubscribe<S: SubscriptionChangeSink>(
         &mut self,
         strategy_id: &StrategyId,
-        symbol: &str,
+        key: &SecurityKey,
         events: &S,
     ) -> Result<SubscriptionChange, SubscriptionRegistryError> {
-        let symbol = Self::validate_symbol(symbol)?;
         Self::validate_strategy_id(strategy_id)?;
 
-        let change = match self.subscribers.get_mut(symbol) {
+        let change = match self.subscribers.get_mut(key) {
             None => SubscriptionChange::NotSubscribed,
             Some(existing) => {
                 let before = existing.len();
@@ -320,35 +342,39 @@ impl ConsolidatedSubscriptionRegistry {
                     SubscriptionChange::NotSubscribed
                 } else if existing.is_empty() {
                     // Last subscriber left → release the upstream line.
-                    self.subscribers.remove(symbol);
+                    self.subscribers.remove(key);
                     SubscriptionChange::Closed
                 } else {
                     SubscriptionChange::SubscriberRemoved
                 }
             }
         };
-        self.publish(change, strategy_id, symbol, events);
+        self.publish(change, strategy_id, key, events);
         Ok(change)
     }
 
-    /// Fan a received tick out to every subscriber of its symbol, in
-    /// subscription order. Returns the recipient list (empty when no
-    /// strategy subscribes to the tick's symbol). SRS-MD-001 isolation
-    /// invariant: a subscriber of one security NEVER receives a tick for
-    /// another — the routing key is the tick's `symbol`.
+    /// Fan a received tick out to every subscriber of its security, in
+    /// subscription order. Returns the recipient list (empty when no strategy
+    /// subscribes to the tick's security). SRS-MD-001 isolation invariant: a
+    /// subscriber of one security NEVER receives a tick for another — the
+    /// routing key is the tick's canonical `SecurityKey`, so a tick whose
+    /// symbol normalizes differently or whose asset class differs reaches
+    /// only the matching subscribers.
     pub fn fan_out(
         &self,
         tick: &MarketDataTick,
     ) -> Result<Vec<StrategyId>, SubscriptionRegistryError> {
-        let symbol = Self::validate_symbol(&tick.symbol)?;
-        Ok(self.subscribers.get(symbol).cloned().unwrap_or_default())
+        let key = tick
+            .security_key()
+            .ok_or(SubscriptionRegistryError::EmptySymbol)?;
+        Ok(self.subscribers.get(&key).cloned().unwrap_or_default())
     }
 
     fn publish<S: SubscriptionChangeSink>(
         &self,
         change: SubscriptionChange,
         strategy_id: &StrategyId,
-        symbol: &str,
+        key: &SecurityKey,
         events: &S,
     ) {
         if !change.is_published() {
@@ -357,17 +383,10 @@ impl ConsolidatedSubscriptionRegistry {
         events.record(SubscriptionChangeEvent {
             change,
             strategy_id: strategy_id.clone(),
-            symbol: symbol.to_string(),
-            subscriber_count: self.subscriber_count(symbol),
+            symbol: key.symbol().to_string(),
+            subscriber_count: self.subscriber_count(key),
             lines_in_use: self.distinct_subscriptions(),
         });
-    }
-
-    fn validate_symbol(symbol: &str) -> Result<&str, SubscriptionRegistryError> {
-        if symbol.trim().is_empty() {
-            return Err(SubscriptionRegistryError::EmptySymbol);
-        }
-        Ok(symbol)
     }
 
     fn validate_strategy_id(strategy_id: &StrategyId) -> Result<(), SubscriptionRegistryError> {
@@ -383,8 +402,9 @@ impl ConsolidatedSubscriptionRegistry {
 /// `subscription_limit_contract.deferred[]` item "Concrete
 /// SubscriptionLineCounter impl backed by ... the live subscription set
 /// (owner: SRS-MD-001 / SRS-MD-007)". The methods are read-only with
-/// respect to the registry: the gate probes, then admission happens via
-/// `subscribe`.
+/// respect to the registry: the gate probes here to build its structured
+/// `SUBSCRIPTION_LIMIT_REACHED` envelope, while `subscribe` independently
+/// enforces the same ceiling atomically at insert time.
 impl SubscriptionLineCounter for ConsolidatedSubscriptionRegistry {
     fn lines_in_use(&self) -> u32 {
         self.distinct_subscriptions()
@@ -396,16 +416,16 @@ impl SubscriptionLineCounter for ConsolidatedSubscriptionRegistry {
 
     fn try_acquire(&self, request: &SubscriptionRequest) -> SubscriptionLimitState {
         // Dedup-aware probe: an already-subscribed security consumes no new
-        // line, so admitting it is unconditionally within limit. A new
-        // security would consume one line — within limit only while the
-        // current distinct count is below the configured ceiling.
-        if self.subscribers.contains_key(request.symbol.as_str()) {
-            return SubscriptionLimitState::WithinLimit;
-        }
-        if self.distinct_subscriptions() < self.line_limit {
-            SubscriptionLimitState::WithinLimit
-        } else {
-            SubscriptionLimitState::ExceededLimit
+        // line, so admitting it is unconditionally within limit. A new (or
+        // uncanonicalizable) security would consume one line — within limit
+        // only while the current distinct count is below the configured
+        // ceiling.
+        match request.security_key() {
+            Some(key) if self.subscribers.contains_key(&key) => SubscriptionLimitState::WithinLimit,
+            _ if self.distinct_subscriptions() < self.line_limit => {
+                SubscriptionLimitState::WithinLimit
+            }
+            _ => SubscriptionLimitState::ExceededLimit,
         }
     }
 }
@@ -413,6 +433,7 @@ impl SubscriptionLineCounter for ConsolidatedSubscriptionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use atp_types::AssetClass;
     use std::cell::{Cell, RefCell};
 
     #[test]
@@ -466,6 +487,7 @@ mod tests {
         let request = SubscriptionRequest {
             strategy_id: StrategyId::new("paper-alpha-1"),
             symbol: "AAPL".to_string(),
+            asset_class: AssetClass::Equity,
         };
 
         let accepted = manager
@@ -491,6 +513,7 @@ mod tests {
         let request = SubscriptionRequest {
             strategy_id: StrategyId::new("live-alpha"),
             symbol: "AAPL".to_string(),
+            asset_class: AssetClass::Equity,
         };
 
         let error = manager
@@ -546,6 +569,7 @@ mod tests {
         let request = SubscriptionRequest {
             strategy_id: StrategyId::new("live-alpha"),
             symbol: "MSFT".to_string(),
+            asset_class: AssetClass::Equity,
         };
         let _ = manager.request_subscription(request, &counter, &sink);
         assert_eq!(
@@ -584,6 +608,19 @@ mod tests {
         SubscriptionRequest {
             strategy_id: StrategyId::new(strategy),
             symbol: symbol.to_string(),
+            asset_class: AssetClass::Equity,
+        }
+    }
+
+    fn eq_key(symbol: &str) -> SecurityKey {
+        SecurityKey::new(symbol, AssetClass::Equity).expect("non-empty symbol")
+    }
+
+    fn tick(symbol: &str, tick_seq: u64) -> MarketDataTick {
+        MarketDataTick {
+            symbol: symbol.to_string(),
+            asset_class: AssetClass::Equity,
+            tick_seq,
         }
     }
 
@@ -612,7 +649,7 @@ mod tests {
             1,
             "three subscribers must still consume one upstream line"
         );
-        assert_eq!(registry.subscriber_count("AAPL"), 3);
+        assert_eq!(registry.subscriber_count(&eq_key("AAPL")), 3);
     }
 
     #[test]
@@ -629,7 +666,7 @@ mod tests {
                 .unwrap(),
             SubscriptionChange::AlreadySubscribed
         );
-        assert_eq!(registry.subscriber_count("AAPL"), 1);
+        assert_eq!(registry.subscriber_count(&eq_key("AAPL")), 1);
         assert_eq!(registry.distinct_subscriptions(), 1);
     }
 
@@ -643,12 +680,7 @@ mod tests {
         registry.subscribe(&sub("paper-b", "AAPL"), &sink).unwrap();
         registry.subscribe(&sub("paper-c", "MSFT"), &sink).unwrap();
 
-        let recipients = registry
-            .fan_out(&MarketDataTick {
-                symbol: "AAPL".to_string(),
-                tick_seq: 1,
-            })
-            .unwrap();
+        let recipients = registry.fan_out(&tick("AAPL", 1)).unwrap();
         let ids: Vec<&str> = recipients.iter().map(StrategyId::as_str).collect();
         assert_eq!(ids, vec!["live-a", "paper-b"]);
         assert!(
@@ -660,12 +692,7 @@ mod tests {
     #[test]
     fn fan_out_to_unsubscribed_symbol_reaches_no_one() {
         let registry = ConsolidatedSubscriptionRegistry::new(100);
-        let recipients = registry
-            .fan_out(&MarketDataTick {
-                symbol: "NFLX".to_string(),
-                tick_seq: 9,
-            })
-            .unwrap();
+        let recipients = registry.fan_out(&tick("NFLX", 9)).unwrap();
         assert!(recipients.is_empty());
     }
 
@@ -678,7 +705,7 @@ mod tests {
 
         assert_eq!(
             registry
-                .unsubscribe(&StrategyId::new("live-a"), "AAPL", &sink)
+                .unsubscribe(&StrategyId::new("live-a"), &eq_key("AAPL"), &sink)
                 .unwrap(),
             SubscriptionChange::SubscriberRemoved
         );
@@ -686,7 +713,7 @@ mod tests {
 
         assert_eq!(
             registry
-                .unsubscribe(&StrategyId::new("paper-b"), "AAPL", &sink)
+                .unsubscribe(&StrategyId::new("paper-b"), &eq_key("AAPL"), &sink)
                 .unwrap(),
             SubscriptionChange::Closed
         );
@@ -702,7 +729,11 @@ mod tests {
         let mut registry = ConsolidatedSubscriptionRegistry::new(100);
         assert_eq!(
             registry
-                .unsubscribe(&StrategyId::new("ghost"), "AAPL", &ForbiddenChangeSink)
+                .unsubscribe(
+                    &StrategyId::new("ghost"),
+                    &eq_key("AAPL"),
+                    &ForbiddenChangeSink,
+                )
                 .unwrap(),
             SubscriptionChange::NotSubscribed
         );
@@ -741,6 +772,7 @@ mod tests {
         assert_eq!(
             registry.fan_out(&MarketDataTick {
                 symbol: String::new(),
+                asset_class: AssetClass::Equity,
                 tick_seq: 1,
             }),
             Err(SubscriptionRegistryError::EmptySymbol)
@@ -787,5 +819,122 @@ mod tests {
         assert_eq!(err.category, OrderErrorCategory::SubscriptionLimitReached);
         assert_eq!(registry.lines_in_use(), 1);
         assert_eq!(registry.line_limit(), 1);
+    }
+
+    // --- Codex adversarial-review follow-up: TDD tests (RED first) --- //
+
+    #[test]
+    fn case_and_whitespace_variants_dedup_onto_one_line() {
+        // SRS-MD-001: "AAPL", "  aapl ", "Aapl" name the SAME security and
+        // must consolidate onto ONE upstream line. A raw-string key would
+        // open three lines and silently drop fan-out for the variants.
+        let mut registry = ConsolidatedSubscriptionRegistry::new(100);
+        let sink = ChangeSinkSpy::default();
+        registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
+        assert_eq!(
+            registry
+                .subscribe(&sub("paper-b", "  aapl "), &sink)
+                .unwrap(),
+            SubscriptionChange::SubscriberAdded,
+            "a case/whitespace variant must dedup onto the existing line"
+        );
+        assert_eq!(
+            registry.distinct_subscriptions(),
+            1,
+            "case/whitespace variants must not open extra upstream lines"
+        );
+    }
+
+    #[test]
+    fn subscribe_enforces_line_limit_atomically() {
+        // SRS-MD-001 / SyRS SYS-70: the mutating admission path must itself
+        // refuse to open a new upstream line past the configured ceiling —
+        // not rely on a separate read-only probe the caller might skip or
+        // race against.
+        let mut registry = ConsolidatedSubscriptionRegistry::new(1);
+        let sink = ChangeSinkSpy::default();
+        registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
+        let result = registry.subscribe(&sub("paper-b", "MSFT"), &sink);
+        assert!(
+            result.is_err(),
+            "a NEW security past the line limit must be rejected by subscribe itself"
+        );
+        assert_eq!(
+            registry.distinct_subscriptions(),
+            1,
+            "a rejected over-limit subscribe must not register a line"
+        );
+    }
+
+    #[test]
+    fn interleaved_probe_then_subscribe_cannot_exceed_the_limit() {
+        // The probe-then-mutate window Codex flagged: a caller probes a
+        // symbol while there is headroom, another subscription fills the
+        // last line, and the first caller then subscribes. Because subscribe
+        // re-checks the ceiling atomically at insert time, the stale probe
+        // cannot push the set past the cap.
+        let mut registry = ConsolidatedSubscriptionRegistry::new(1);
+        let sink = ChangeSinkSpy::default();
+        // Probe MSFT while the registry is empty → WithinLimit (stale).
+        assert_eq!(
+            registry.try_acquire(&sub("paper-b", "MSFT")),
+            SubscriptionLimitState::WithinLimit
+        );
+        // Another request consumes the only line.
+        registry.subscribe(&sub("live-a", "AAPL"), &sink).unwrap();
+        // The stale-probed subscribe must now be refused atomically.
+        assert_eq!(
+            registry.subscribe(&sub("paper-b", "MSFT"), &sink),
+            Err(SubscriptionRegistryError::LineLimitReached {
+                configured_limit: 1
+            })
+        );
+        assert_eq!(registry.distinct_subscriptions(), 1);
+    }
+
+    #[test]
+    fn distinct_asset_classes_are_separate_upstream_lines() {
+        // SRS-MD-001: an equity and an option on the same display ticker are
+        // DISTINCT securities — two upstream lines — and a tick for one must
+        // never fan out to the other's subscriber.
+        let mut registry = ConsolidatedSubscriptionRegistry::new(100);
+        let sink = ChangeSinkSpy::default();
+        let equity = SubscriptionRequest {
+            strategy_id: StrategyId::new("equity-strat"),
+            symbol: "AAPL".to_string(),
+            asset_class: AssetClass::Equity,
+        };
+        let option = SubscriptionRequest {
+            strategy_id: StrategyId::new("option-strat"),
+            symbol: "AAPL".to_string(),
+            asset_class: AssetClass::Option,
+        };
+        assert_eq!(
+            registry.subscribe(&equity, &sink).unwrap(),
+            SubscriptionChange::Opened
+        );
+        assert_eq!(
+            registry.subscribe(&option, &sink).unwrap(),
+            SubscriptionChange::Opened,
+            "an option on the same ticker must open its OWN line"
+        );
+        assert_eq!(
+            registry.distinct_subscriptions(),
+            2,
+            "equity + option on one ticker are two upstream lines"
+        );
+
+        let equity_tick = MarketDataTick {
+            symbol: "AAPL".to_string(),
+            asset_class: AssetClass::Equity,
+            tick_seq: 1,
+        };
+        let recipients = registry.fan_out(&equity_tick).unwrap();
+        let ids: Vec<&str> = recipients.iter().map(StrategyId::as_str).collect();
+        assert_eq!(
+            ids,
+            vec!["equity-strat"],
+            "an equity tick must reach only the equity subscriber"
+        );
     }
 }

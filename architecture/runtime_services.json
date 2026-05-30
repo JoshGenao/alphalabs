@@ -3192,7 +3192,7 @@
     ]
   },
   "subscription_fanout_contract": {
-    "description": "SRS-MD-001 is the consolidation + fan-out half of SyRS SYS-70 (the line-limit half is SRS-MD-002 / subscription_limit_contract). This SDK-surface models the structural contract: ConsolidatedSubscriptionRegistry in atp-market-data owns the live subscription set, keeps exactly ONE upstream IB market-data subscription per distinct security regardless of how many strategy containers subscribe, fans received MarketDataTicks out to every subscriber of the tick symbol (and to no other subscriber), publishes a SubscriptionChangeEvent (SyRS SYS-61 / SRS-LOG-001 subscription_change, Source.MARKET_DATA) on every line-affecting / dedup transition, and serves as the concrete SubscriptionLineCounter the SRS-MD-002 limit gate consumes (closing subscription_limit_contract.deferred[]'s 'owner: SRS-MD-001' item). The check PASS line is 'SRS-MD-001 SDK-SURFACE PASS'; feature_list.json keeps passes:false because the AC's runtime halves (real IB feed, async fan-out transport, the <=100 ms latency NFR) are deferred (see deferred[]).",
+    "description": "SRS-MD-001 is the consolidation + fan-out half of SyRS SYS-70 (the line-limit half is SRS-MD-002 / subscription_limit_contract). This SDK-surface models the structural contract: ConsolidatedSubscriptionRegistry in atp-market-data owns the live subscription set, keeps exactly ONE upstream IB market-data subscription per distinct security regardless of how many strategy containers subscribe, fans received MarketDataTicks out to every subscriber of the tick symbol (and to no other subscriber), publishes a SubscriptionChangeEvent (SyRS SYS-61 / SRS-LOG-001 subscription_change, Source.MARKET_DATA) on every line-affecting / dedup transition, and serves as the concrete SubscriptionLineCounter the SRS-MD-002 limit gate consumes (closing subscription_limit_contract.deferred[]'s 'owner: SRS-MD-001' item). The consolidated set is keyed on a canonical SecurityKey (normalized symbol + AssetClass) so case/whitespace variants share one line while an equity and an option on the same ticker stay distinct; admission is ATOMIC — subscribe enforces the configured line ceiling in the same mutable borrow that performs the insert (no probe-then-mutate race) and returns SubscriptionRegistryError::LineLimitReached when a new line would exceed the cap. The check PASS line is 'SRS-MD-001 SDK-SURFACE PASS'; feature_list.json keeps passes:false because the AC's runtime halves (real IB feed, async fan-out transport, the <=100 ms latency NFR) are deferred (see deferred[]).",
     "requirement": "SRS-MD-001",
     "srs_refs": ["SRS-MD-001"],
     "syrs_refs": ["SYS-70"],
@@ -3202,8 +3202,19 @@
     "market_data_crate": { "crate": "atp-market-data", "path": "crates/atp-market-data" },
     "market_data_tick": {
       "struct": "MarketDataTick",
-      "required_fields": ["symbol", "tick_seq"],
+      "required_fields": ["symbol", "asset_class", "tick_seq"],
       "forbidden_fields": ["broker", "ib_session_id", "vendor", "provider", "exchange_token"]
+    },
+    "asset_class_enum": {
+      "enum": "AssetClass",
+      "variants": ["Equity", "Option"]
+    },
+    "security_key": {
+      "struct": "SecurityKey",
+      "constructor": "new",
+      "accessors": ["symbol", "asset_class"],
+      "carriers": ["SubscriptionRequest", "MarketDataTick"],
+      "carrier_method": "security_key"
     },
     "subscription_change_enum": {
       "enum": "SubscriptionChange",
@@ -3222,11 +3233,13 @@
     },
     "registry_error_enum": {
       "enum": "SubscriptionRegistryError",
-      "variants": ["EmptySymbol", "EmptyStrategyId"]
+      "variants": ["EmptySymbol", "EmptyStrategyId", "LineLimitReached"]
     },
     "registry": {
       "struct": "ConsolidatedSubscriptionRegistry",
       "methods": ["new", "distinct_subscriptions", "subscriber_count", "is_subscribed", "subscribe", "unsubscribe", "fan_out"],
+      "key_type": "SecurityKey",
+      "key_field_decl": "BTreeMap<SecurityKey, Vec<StrategyId>>",
       "line_counter_impl_trait": "SubscriptionLineCounter",
       "line_counter_impl_methods": ["lines_in_use", "line_limit", "try_acquire"],
       "subscribe_method": "subscribe",
@@ -3237,16 +3250,21 @@
       "opened_variant": "SubscriptionChange::Opened",
       "subscriber_added_variant": "SubscriptionChange::SubscriberAdded",
       "new_line_insert": "self.subscribers.insert(",
-      "dedup_push": "existing.push(",
-      "first_subscriber_arm": "None",
-      "additional_subscriber_arm": "Some(existing)"
+      "dedup_push": "existing.push("
+    },
+    "atomic_admission": {
+      "subscribe_method": "subscribe",
+      "limit_check_token": ">= self.line_limit",
+      "limit_error_variant": "SubscriptionRegistryError::LineLimitReached",
+      "new_line_insert": "self.subscribers.insert("
     },
     "validation": {
-      "validate_symbol_fn": "validate_symbol",
       "validate_strategy_id_fn": "validate_strategy_id",
-      "fan_out_validates_symbol_token": "Self::validate_symbol(",
-      "subscribe_validates_symbol_token": "Self::validate_symbol(",
-      "subscribe_validates_strategy_token": "Self::validate_strategy_id("
+      "security_key_method": "security_key",
+      "empty_symbol_error": "SubscriptionRegistryError::EmptySymbol",
+      "fan_out_method": "fan_out",
+      "subscribe_method": "subscribe",
+      "subscribe_validates_strategy_token": "validate_strategy_id("
     },
     "rust_integration_test": "srs_md_001_subscription_fanout",
     "vendor_forbidden_tokens": ["interactive_brokers", "ib_insync", "ibapi", "databento", "sharadar"],

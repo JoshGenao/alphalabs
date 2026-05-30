@@ -289,23 +289,105 @@ def check_dedup_invariant(config: dict, md_src: str) -> str:
 
 def check_input_validation(config: dict, md_src: str) -> str:
     spec = contract_block(config)["validation"]
-    registry = contract_block(config)["registry"]
-    fan_out = _compact(_fn_block(md_src, registry["fan_out_method"]))
-    if _compact(spec["fan_out_validates_symbol_token"]) not in fan_out:
+    key_method = _compact(spec["security_key_method"] + "(")
+    empty_err = _compact(spec["empty_symbol_error"])
+    fan_out = _compact(_fn_block(md_src, spec["fan_out_method"]))
+    if key_method not in fan_out or empty_err not in fan_out:
         fail(
-            f"{registry['fan_out_method']} does not validate its routing symbol via "
-            f"`{spec['fan_out_validates_symbol_token']}` (must fail closed on empty symbol)"
+            f"{spec['fan_out_method']} must canonicalize its routing key via "
+            f".{spec['security_key_method']}() and fail closed with "
+            f"`{spec['empty_symbol_error']}` on an empty symbol"
         )
-    subscribe = _compact(_fn_block(md_src, registry["subscribe_method"]))
-    for token_key in ("subscribe_validates_symbol_token", "subscribe_validates_strategy_token"):
-        if _compact(spec[token_key]) not in subscribe:
+    subscribe = _compact(_fn_block(md_src, spec["subscribe_method"]))
+    if key_method not in subscribe or empty_err not in subscribe:
+        fail(
+            f"{spec['subscribe_method']} must canonicalize via "
+            f".{spec['security_key_method']}() and fail closed with "
+            f"`{spec['empty_symbol_error']}` on an empty symbol"
+        )
+    if _compact(spec["subscribe_validates_strategy_token"]) not in subscribe:
+        fail(
+            f"{spec['subscribe_method']} must reject an empty strategy id via "
+            f"`{spec['subscribe_validates_strategy_token']}`"
+        )
+    return (
+        "atp-market-data: fan_out + subscribe canonicalize via SecurityKey "
+        "(.security_key()) and fail closed on empty symbol / strategy id"
+    )
+
+
+def check_asset_class_enum(config: dict, types_src: str) -> str:
+    spec = contract_block(config)["asset_class_enum"]
+    body = _enum_body(types_src, spec["enum"])
+    missing = [v for v in spec["variants"] if not re.search(rf"\b{re.escape(v)}\b", body)]
+    if missing:
+        fail(f"{spec['enum']} enum is missing variants: {', '.join(missing)}")
+    return (
+        f"atp-types declares {spec['enum']} with {len(spec['variants'])} tradable classes "
+        f"({', '.join(spec['variants'])}) — the security-identity dimension (SRS-SDK-003 scope)"
+    )
+
+
+def check_security_key(config: dict, types_src: str) -> str:
+    spec = contract_block(config)["security_key"]
+    # The struct must exist; its fields are private (no `pub`) so a key can
+    # only be built through the normalizing constructor.
+    body = _struct_body(types_src, spec["struct"])
+    if re.search(r"\bpub\s+\w+\s*:", body):
+        fail(
+            f"{spec['struct']} must keep its fields private so every key is "
+            "built through the normalizing constructor"
+        )
+    if not re.search(rf"\bpub\s+fn\s+{re.escape(spec['constructor'])}\b", types_src):
+        fail(f"{spec['struct']} is missing its public constructor `{spec['constructor']}`")
+    for accessor in spec["accessors"]:
+        if not re.search(rf"\bpub\s+fn\s+{re.escape(accessor)}\b", types_src):
+            fail(f"{spec['struct']} is missing accessor `{accessor}`")
+    compact = _compact(types_src)
+    if "trim()" not in compact or "to_uppercase()" not in compact:
+        fail(
+            f"{spec['struct']}::{spec['constructor']} must normalize the symbol "
+            "(trim + to_uppercase) so case/whitespace variants are one security"
+        )
+    for carrier in spec["carriers"]:
+        impl = _impl_block(types_src, rf"impl\s+{re.escape(carrier)}\b[^{{]*\{{", f"impl {carrier}")
+        if not re.search(rf"\bfn\s+{re.escape(spec['carrier_method'])}\b", impl):
+            fail(f"{carrier} is missing the canonical `{spec['carrier_method']}()` accessor")
+    return (
+        f"atp-types declares {spec['struct']} (private symbol+asset_class, normalizing "
+        f"`{spec['constructor']}`) carried by {', '.join(spec['carriers'])} via "
+        f".{spec['carrier_method']}() — the canonical dedup / fan-out key"
+    )
+
+
+def check_registry_key_type(config: dict, md_src: str) -> str:
+    spec = contract_block(config)["registry"]
+    decl = _compact(spec["key_field_decl"])
+    if decl not in _compact(md_src):
+        fail(
+            f"{spec['struct']} must key the consolidated set on {spec['key_type']} "
+            f"(expected field declaration `{spec['key_field_decl']}`)"
+        )
+    return (
+        f"atp-market-data: {spec['struct']} keys the consolidated set on "
+        f"{spec['key_type']} (`{spec['key_field_decl']}`) — no raw-symbol conflation"
+    )
+
+
+def check_atomic_admission(config: dict, md_src: str) -> str:
+    spec = contract_block(config)["atomic_admission"]
+    body = _compact(_fn_block(md_src, spec["subscribe_method"]))
+    for token_key in ("limit_check_token", "limit_error_variant", "new_line_insert"):
+        if _compact(spec[token_key]) not in body:
             fail(
-                f"{registry['subscribe_method']} does not validate input via "
-                f"`{spec[token_key]}` (must fail closed on empty symbol / strategy id)"
+                f"{spec['subscribe_method']} must enforce the line limit ATOMICALLY in "
+                f"the admission path — missing `{spec[token_key]}` (a new line past the "
+                "cap must be refused in the same borrow that inserts)"
             )
     return (
-        "atp-market-data: fan_out + subscribe fail closed on empty symbol / strategy id "
-        f"(via {spec['validate_symbol_fn']} / {spec['validate_strategy_id_fn']})"
+        "atp-market-data::subscribe enforces the IB line ceiling atomically (checks "
+        ">= self.line_limit and returns LineLimitReached before the insert) — closes "
+        "the probe-then-mutate race"
     )
 
 
@@ -360,13 +442,17 @@ def check_cargo_test_smoke(config: dict) -> str:
 
 _STATIC_CHECKS = (
     ("market_data_tick", check_market_data_tick, "types"),
+    ("asset_class_enum", check_asset_class_enum, "types"),
+    ("security_key", check_security_key, "types"),
     ("subscription_change_enum", check_subscription_change_enum, "types"),
     ("subscription_change_event", check_subscription_change_event, "types"),
     ("change_sink_port", check_change_sink_port, "market_data"),
     ("registry_error_enum", check_registry_error_enum, "market_data"),
     ("registry_struct", check_registry_struct, "market_data"),
+    ("registry_key_type", check_registry_key_type, "market_data"),
     ("line_counter_impl", check_line_counter_impl, "market_data"),
     ("dedup_invariant", check_dedup_invariant, "market_data"),
+    ("atomic_admission", check_atomic_admission, "market_data"),
     ("input_validation", check_input_validation, "market_data"),
     ("vendor_isolation", check_vendor_isolation, "market_data"),
 )

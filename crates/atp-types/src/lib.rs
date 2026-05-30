@@ -273,6 +273,17 @@ pub struct StaleDataEvent {
 pub struct SubscriptionRequest {
     pub strategy_id: StrategyId,
     pub symbol: String,
+    pub asset_class: AssetClass,
+}
+
+impl SubscriptionRequest {
+    /// Canonical security identity for dedup + line-counting (SRS-MD-001),
+    /// or `None` when `symbol` is empty / whitespace. The subscription
+    /// manager keys the consolidated set on this, so two requests for the
+    /// same normalized symbol + asset class share one upstream IB line.
+    pub fn security_key(&self) -> Option<SecurityKey> {
+        SecurityKey::new(&self.symbol, self.asset_class)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -391,10 +402,83 @@ impl std::error::Error for StructuredSubscriptionError {}
 // symbol and the post-transition `lines_in_use` (distinct upstream
 // subscriptions) so a dashboard / log consumer never re-probes the registry.
 
+/// The tradable / subscribable asset class for a security. SRS-SDK-003
+/// constrains a strategy to one tradable asset class (equities OR options);
+/// futures / crypto are out of the release baseline per the SyRS. This is
+/// the security-identity dimension the market-data subscription manager
+/// keys on. It is intentionally narrower than the instrument-catalog
+/// `AssetClass` in `atp-adapters` (which also models Future / Etf / Index):
+/// that enum lives ABOVE the dependency boundary (adapters depend on
+/// `atp-types`, not the reverse), so the core subscription types cannot
+/// reuse it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+pub enum AssetClass {
+    #[default]
+    Equity,
+    Option,
+}
+
+impl AssetClass {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Equity => "EQUITY",
+            Self::Option => "OPTION",
+        }
+    }
+}
+
+/// Canonical security identity used to deduplicate market-data subscriptions
+/// and route fan-out (SRS-MD-001). Two subscription requests name the SAME
+/// security — and therefore share ONE upstream IB line — iff their
+/// `SecurityKey`s are equal. The key NORMALIZES the symbol (trimmed +
+/// upper-cased) so `AAPL`, `aapl`, and ` AAPL ` resolve to one security, and
+/// carries the `asset_class` so an equity and an option sharing a display
+/// ticker stay DISTINCT securities (distinct upstream lines). The fields are
+/// private: a `SecurityKey` can only be built through `new`, which enforces
+/// normalization. It carries no broker / vendor / session identifier.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SecurityKey {
+    symbol: String,
+    asset_class: AssetClass,
+}
+
+impl SecurityKey {
+    /// Build a canonical key, normalizing the symbol (trim + upper-case).
+    /// Returns `None` when the symbol is empty or whitespace — an empty
+    /// symbol can never name a tradable security and must not open a line.
+    pub fn new(symbol: &str, asset_class: AssetClass) -> Option<Self> {
+        let normalized = symbol.trim().to_uppercase();
+        if normalized.is_empty() {
+            return None;
+        }
+        Some(Self {
+            symbol: normalized,
+            asset_class,
+        })
+    }
+
+    pub fn symbol(&self) -> &str {
+        &self.symbol
+    }
+
+    pub fn asset_class(&self) -> AssetClass {
+        self.asset_class
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarketDataTick {
     pub symbol: String,
+    pub asset_class: AssetClass,
     pub tick_seq: u64,
+}
+
+impl MarketDataTick {
+    /// Canonical security identity this tick routes to, or `None` when its
+    /// `symbol` is empty / whitespace.
+    pub fn security_key(&self) -> Option<SecurityKey> {
+        SecurityKey::new(&self.symbol, self.asset_class)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2066,6 +2150,7 @@ mod tests {
         let request = SubscriptionRequest {
             strategy_id: StrategyId::new("live-alpha"),
             symbol: "AAPL".to_string(),
+            asset_class: AssetClass::Equity,
         };
         let error = StructuredSubscriptionError::limit_reached(request.clone(), 100, 100);
         let StructuredSubscriptionError {
@@ -2092,20 +2177,50 @@ mod tests {
     }
 
     #[test]
-    fn market_data_tick_carries_only_symbol_and_seq() {
-        // SRS-MD-001 fan-out payload: routing symbol + opaque delivery
-        // counter, nothing else. The exhaustive destructure proves no
-        // broker / vendor / session field can ride along on the fan-out.
+    fn market_data_tick_carries_only_symbol_asset_class_and_seq() {
+        // SRS-MD-001 fan-out payload: routing symbol + asset class + opaque
+        // delivery counter, nothing else. The exhaustive destructure proves
+        // no broker / vendor / session field can ride along on the fan-out.
         let tick = MarketDataTick {
             symbol: "AAPL".to_string(),
+            asset_class: AssetClass::Equity,
             tick_seq: 7,
         };
         let MarketDataTick {
             symbol: _,
+            asset_class: _,
             tick_seq: _,
         } = tick.clone();
         assert_eq!(tick.symbol, "AAPL");
+        assert_eq!(tick.asset_class, AssetClass::Equity);
         assert_eq!(tick.tick_seq, 7);
+        assert_eq!(
+            tick.security_key(),
+            SecurityKey::new("AAPL", AssetClass::Equity)
+        );
+    }
+
+    #[test]
+    fn security_key_normalizes_symbol_and_separates_asset_class() {
+        // Case + whitespace variants resolve to ONE security ...
+        let a = SecurityKey::new("AAPL", AssetClass::Equity).unwrap();
+        let b = SecurityKey::new("  aapl ", AssetClass::Equity).unwrap();
+        assert_eq!(a, b, "case/whitespace variants must canonicalize equal");
+        assert_eq!(a.symbol(), "AAPL");
+        assert_eq!(a.asset_class(), AssetClass::Equity);
+        // ... but an equity and an option sharing a ticker stay DISTINCT.
+        let opt = SecurityKey::new("AAPL", AssetClass::Option).unwrap();
+        assert_ne!(a, opt, "asset class must separate otherwise-equal tickers");
+        // Empty / whitespace symbol cannot name a security.
+        assert_eq!(SecurityKey::new("", AssetClass::Equity), None);
+        assert_eq!(SecurityKey::new("   ", AssetClass::Equity), None);
+    }
+
+    #[test]
+    fn asset_class_wire_strings_are_screaming_snake() {
+        assert_eq!(AssetClass::Equity.as_str(), "EQUITY");
+        assert_eq!(AssetClass::Option.as_str(), "OPTION");
+        assert_eq!(AssetClass::default(), AssetClass::Equity);
     }
 
     #[test]
