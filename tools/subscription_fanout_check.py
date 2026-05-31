@@ -289,30 +289,36 @@ def check_dedup_invariant(config: dict, md_src: str) -> str:
 
 def check_input_validation(config: dict, md_src: str) -> str:
     spec = contract_block(config)["validation"]
-    key_method = _compact(spec["security_key_method"] + "(")
-    empty_err = _compact(spec["empty_symbol_error"])
+    # fan_out + subscribe canonicalize AND fail closed via `.security_key()?`
+    # — the `?` propagates a SecurityKeyError (empty symbol / option) through
+    # the `From<SecurityKeyError>` conversion into the registry's error.
+    failclosed = _compact(spec["security_key_method"] + "()?")
     fan_out = _compact(_fn_block(md_src, spec["fan_out_method"]))
-    if key_method not in fan_out or empty_err not in fan_out:
+    if failclosed not in fan_out:
         fail(
-            f"{spec['fan_out_method']} must canonicalize its routing key via "
-            f".{spec['security_key_method']}() and fail closed with "
-            f"`{spec['empty_symbol_error']}` on an empty symbol"
+            f"{spec['fan_out_method']} must canonicalize + fail closed via "
+            f".{spec['security_key_method']}()? (propagating empty-symbol / option errors)"
         )
     subscribe = _compact(_fn_block(md_src, spec["subscribe_method"]))
-    if key_method not in subscribe or empty_err not in subscribe:
+    if failclosed not in subscribe:
         fail(
-            f"{spec['subscribe_method']} must canonicalize via "
-            f".{spec['security_key_method']}() and fail closed with "
-            f"`{spec['empty_symbol_error']}` on an empty symbol"
+            f"{spec['subscribe_method']} must canonicalize + fail closed via "
+            f".{spec['security_key_method']}()?"
         )
     if _compact(spec["subscribe_validates_strategy_token"]) not in subscribe:
         fail(
             f"{spec['subscribe_method']} must reject an empty strategy id via "
             f"`{spec['subscribe_validates_strategy_token']}`"
         )
+    if _compact(spec["from_impl"]) not in _compact(md_src):
+        fail(
+            f"missing `{spec['from_impl']}` — `.security_key()?` cannot fail closed "
+            "into the registry error without it"
+        )
     return (
-        "atp-market-data: fan_out + subscribe canonicalize via SecurityKey "
-        "(.security_key()) and fail closed on empty symbol / strategy id"
+        "atp-market-data: fan_out + subscribe canonicalize + fail closed via "
+        ".security_key()? (SecurityKeyError -> SubscriptionRegistryError on empty "
+        "symbol / option); subscribe also rejects an empty strategy id"
     )
 
 
@@ -353,9 +359,37 @@ def check_security_key(config: dict, types_src: str) -> str:
         impl = _impl_block(types_src, rf"impl\s+{re.escape(carrier)}\b[^{{]*\{{", f"impl {carrier}")
         if not re.search(rf"\bfn\s+{re.escape(spec['carrier_method'])}\b", impl):
             fail(f"{carrier} is missing the canonical `{spec['carrier_method']}()` accessor")
+    # The constructor fails closed (returns the typed error enum) on inputs it
+    # cannot canonicalize — empty symbol AND, until the option contract model
+    # lands (SRS-DATA-004 / SRS-EXE-004), AssetClass::Option.
+    error_body = _enum_body(types_src, spec["error_enum"])
+    missing_err = [
+        v for v in spec["error_variants"] if not re.search(rf"\b{re.escape(v)}\b", error_body)
+    ]
+    if missing_err:
+        fail(f"{spec['error_enum']} is missing variants: {', '.join(missing_err)}")
+    sk_impl = _compact(
+        _impl_block(
+            types_src,
+            rf"impl\s+{re.escape(spec['struct'])}\b[^{{]*\{{",
+            f"impl {spec['struct']}",
+        )
+    )
+    if (
+        _compact(spec["option_failclosed_token"]) not in sk_impl
+        or "OptionContractIdentityRequired" not in sk_impl
+    ):
+        fail(
+            f"{spec['struct']}::{spec['constructor']} must fail closed on "
+            f"{spec['option_failclosed_token']} (return "
+            "SecurityKeyError::OptionContractIdentityRequired) — option contracts "
+            "need a full identity (deferred to SRS-DATA-004 / SRS-EXE-004) and must "
+            "not conflate by underlying ticker"
+        )
     return (
         f"atp-types declares {spec['struct']} (private symbol+asset_class, normalizing "
-        f"`{spec['constructor']}`) carried by {', '.join(spec['carriers'])} via "
+        f"`{spec['constructor']}` that fails closed on empty symbol + AssetClass::Option "
+        f"via {spec['error_enum']}) carried by {', '.join(spec['carriers'])} via "
         f".{spec['carrier_method']}() — the canonical dedup / fan-out key"
     )
 

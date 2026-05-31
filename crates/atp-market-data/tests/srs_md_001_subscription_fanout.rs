@@ -373,42 +373,45 @@ fn srs_md_001_case_and_whitespace_variants_dedup_onto_one_line() {
 }
 
 #[test]
-fn srs_md_001_distinct_asset_classes_are_separate_lines() {
-    // An equity and an option on the same display ticker are DISTINCT
-    // securities — two upstream lines — and a tick for one never fans out
-    // to the other's subscriber.
+fn srs_md_001_option_subscriptions_fail_closed() {
+    // SRS-MD-001 fail-closed: a real option contract needs underlying +
+    // expiration + strike + right, which is not yet modeled (deferred to
+    // SRS-DATA-004 / SRS-EXE-004). Keying an option by its underlying alone
+    // would conflate distinct contracts onto one upstream line, so the
+    // manager REJECTS option subscriptions + fan-out rather than silently
+    // consolidating. The equity path on the same ticker is unaffected.
     let mut registry = ConsolidatedSubscriptionRegistry::new(100);
     let sink = ChangeSinkSpy::default();
-    let equity = SubscriptionRequest {
-        strategy_id: StrategyId::new("equity-strat"),
-        symbol: "AAPL".to_string(),
-        asset_class: AssetClass::Equity,
-    };
     let option = SubscriptionRequest {
         strategy_id: StrategyId::new("option-strat"),
         symbol: "AAPL".to_string(),
         asset_class: AssetClass::Option,
     };
-    registry.subscribe(&equity, &sink).unwrap();
     assert_eq!(
-        registry.subscribe(&option, &sink).unwrap(),
-        SubscriptionChange::Opened,
-        "an option on the same ticker opens its OWN line"
+        registry.subscribe(&option, &sink),
+        Err(SubscriptionRegistryError::OptionContractUnsupported),
+        "an option subscription must fail closed until its contract model lands"
     );
-    assert_eq!(registry.distinct_subscriptions(), 2);
-
     let option_tick = MarketDataTick {
         symbol: "AAPL".to_string(),
         asset_class: AssetClass::Option,
         tick_seq: 1,
     };
-    let recipients = registry.fan_out(&option_tick).unwrap();
-    let ids: Vec<&str> = recipients.iter().map(StrategyId::as_str).collect();
     assert_eq!(
-        ids,
-        vec!["option-strat"],
-        "an option tick must reach only the option subscriber"
+        registry.fan_out(&option_tick),
+        Err(SubscriptionRegistryError::OptionContractUnsupported)
     );
+    assert_eq!(registry.distinct_subscriptions(), 0, "nothing registered");
+
+    // The equity AAPL line is a fully independent, working subscription.
+    registry
+        .subscribe(&sub("equity-strat", "AAPL"), &sink)
+        .unwrap();
+    let recipients = registry.fan_out(&eq_tick("AAPL", 1)).unwrap();
+    let ids: Vec<&str> = recipients.iter().map(StrategyId::as_str).collect();
+    assert_eq!(ids, vec!["equity-strat"]);
+    let events = sink.events.borrow();
+    assert_eq!(events[0].asset_class, AssetClass::Equity);
 }
 
 #[test]

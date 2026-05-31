@@ -3192,7 +3192,7 @@
     ]
   },
   "subscription_fanout_contract": {
-    "description": "SRS-MD-001 is the consolidation + fan-out half of SyRS SYS-70 (the line-limit half is SRS-MD-002 / subscription_limit_contract). This SDK-surface models the structural contract: ConsolidatedSubscriptionRegistry in atp-market-data owns the live subscription set, keeps exactly ONE upstream IB market-data subscription per distinct security regardless of how many strategy containers subscribe, fans received MarketDataTicks out to every subscriber of the tick symbol (and to no other subscriber), publishes a SubscriptionChangeEvent (SyRS SYS-61 / SRS-LOG-001 subscription_change, Source.MARKET_DATA) on every line-affecting / dedup transition, and serves as the concrete SubscriptionLineCounter the SRS-MD-002 limit gate consumes (closing subscription_limit_contract.deferred[]'s 'owner: SRS-MD-001' item). The consolidated set is keyed on a canonical SecurityKey (normalized symbol + AssetClass) so case/whitespace variants share one line while an equity and an option on the same ticker stay distinct; admission is ATOMIC — subscribe enforces the configured line ceiling in the same mutable borrow that performs the insert (no probe-then-mutate race) and returns SubscriptionRegistryError::LineLimitReached when a new line would exceed the cap. The check PASS line is 'SRS-MD-001 SDK-SURFACE PASS'; feature_list.json keeps passes:false because the AC's runtime halves (real IB feed, async fan-out transport, the <=100 ms latency NFR) are deferred (see deferred[]).",
+    "description": "SRS-MD-001 is the consolidation + fan-out half of SyRS SYS-70 (the line-limit half is SRS-MD-002 / subscription_limit_contract). This SDK-surface models the structural contract: ConsolidatedSubscriptionRegistry in atp-market-data owns the live subscription set, keeps exactly ONE upstream IB market-data subscription per distinct security regardless of how many strategy containers subscribe, fans received MarketDataTicks out to every subscriber of the tick symbol (and to no other subscriber), publishes a SubscriptionChangeEvent (SyRS SYS-61 / SRS-LOG-001 subscription_change, Source.MARKET_DATA) on every line-affecting / dedup transition, and serves as the concrete SubscriptionLineCounter the SRS-MD-002 limit gate consumes (closing subscription_limit_contract.deferred[]'s 'owner: SRS-MD-001' item). The consolidated set is keyed on a canonical SecurityKey (normalized symbol + AssetClass) so case/whitespace variants share one line; admission is ATOMIC — subscribe enforces the configured line ceiling in the same mutable borrow that performs the insert (no probe-then-mutate race) and returns SubscriptionRegistryError::LineLimitReached when a new line would exceed the cap. SecurityKey fails closed on AssetClass::Option (SecurityKeyError::OptionContractIdentityRequired -> SubscriptionRegistryError::OptionContractUnsupported): a real option contract needs underlying + expiration + strike + right, which is deferred to SRS-DATA-004 / SRS-EXE-004, so the manager rejects option subscriptions rather than conflating distinct contracts on one underlying. SubscriptionChangeEvent carries asset_class so the line-usage stream stays unambiguous. The check PASS line is 'SRS-MD-001 SDK-SURFACE PASS'; feature_list.json keeps passes:false because the AC's runtime halves (real IB feed, async fan-out transport, the <=100 ms latency NFR) are deferred (see deferred[]).",
     "requirement": "SRS-MD-001",
     "srs_refs": ["SRS-MD-001"],
     "syrs_refs": ["SYS-70"],
@@ -3214,7 +3214,10 @@
       "constructor": "new",
       "accessors": ["symbol", "asset_class"],
       "carriers": ["SubscriptionRequest", "MarketDataTick"],
-      "carrier_method": "security_key"
+      "carrier_method": "security_key",
+      "error_enum": "SecurityKeyError",
+      "error_variants": ["EmptySymbol", "OptionContractIdentityRequired"],
+      "option_failclosed_token": "AssetClass::Option"
     },
     "subscription_change_enum": {
       "enum": "SubscriptionChange",
@@ -3224,7 +3227,7 @@
     },
     "subscription_change_event": {
       "struct": "SubscriptionChangeEvent",
-      "required_fields": ["change", "strategy_id", "symbol", "subscriber_count", "lines_in_use"],
+      "required_fields": ["change", "strategy_id", "symbol", "asset_class", "subscriber_count", "lines_in_use"],
       "forbidden_fields": ["broker", "ib_session_id", "vendor", "provider", "tick_id"]
     },
     "change_sink_port": {
@@ -3233,7 +3236,7 @@
     },
     "registry_error_enum": {
       "enum": "SubscriptionRegistryError",
-      "variants": ["EmptySymbol", "EmptyStrategyId", "LineLimitReached"]
+      "variants": ["EmptySymbol", "EmptyStrategyId", "LineLimitReached", "OptionContractUnsupported"]
     },
     "registry": {
       "struct": "ConsolidatedSubscriptionRegistry",
@@ -3261,7 +3264,7 @@
     "validation": {
       "validate_strategy_id_fn": "validate_strategy_id",
       "security_key_method": "security_key",
-      "empty_symbol_error": "SubscriptionRegistryError::EmptySymbol",
+      "from_impl": "impl From<SecurityKeyError> for SubscriptionRegistryError",
       "fan_out_method": "fan_out",
       "subscribe_method": "subscribe",
       "subscribe_validates_strategy_token": "validate_strategy_id("
@@ -3276,6 +3279,10 @@
       {
         "feature": "SRS-PERF-001",
         "what": "The <=100 ms fan-out latency acceptance criterion measured against a PTP-disciplined host clock with p50/p95/p99/p99.9 reporting. The structural fan-out contract lives here; the latency measurement harness is the deferred performance half (same pattern as SRS-SDK-004's deferred p95 callback latency)."
+      },
+      {
+        "feature": "SRS-DATA-004 / SRS-EXE-004 (option contract identity)",
+        "what": "The canonical option contract identity (underlying + expiration + strike + call/put right, or a normalized vendor-neutral contract id) that AssetClass::Option requires. SecurityKey::new fails closed on options (SecurityKeyError::OptionContractIdentityRequired) so distinct contracts on one underlying never silently consolidate; AssetClass::Option + the asset_class field are the forward-compatible seam those features extend. Raised by the /codex:adversarial-review round-2 [high] finding; deferred per the user's scope decision rather than modeling option contracts ahead of the features that own them."
       },
       {
         "feature": "SRS-EXE-006",

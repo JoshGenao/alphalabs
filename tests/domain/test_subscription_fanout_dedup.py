@@ -111,10 +111,11 @@ def test_case_and_whitespace_variants_dedup_onto_one_line() -> None:
     _assert_passed(_run_cargo_test("srs_md_001_case_and_whitespace_variants_dedup_onto_one_line"))
 
 
-def test_distinct_asset_classes_are_separate_lines() -> None:
-    # An equity and an option on the same display ticker are distinct
-    # securities (two lines); a tick for one never reaches the other.
-    _assert_passed(_run_cargo_test("srs_md_001_distinct_asset_classes_are_separate_lines"))
+def test_option_subscriptions_fail_closed() -> None:
+    # SRS-MD-001 fail-closed: option subscriptions/fan-out are rejected
+    # (full option contract identity is deferred to SRS-DATA-004 /
+    # SRS-EXE-004) so distinct contracts on one underlying never conflate.
+    _assert_passed(_run_cargo_test("srs_md_001_option_subscriptions_fail_closed"))
 
 
 def test_subscribe_enforces_line_limit_atomically() -> None:

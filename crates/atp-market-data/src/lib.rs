@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use atp_types::{
-    MarketDataTick, OrderErrorCategory, RuntimeService, SecurityKey, StrategyId,
+    MarketDataTick, OrderErrorCategory, RuntimeService, SecurityKey, SecurityKeyError, StrategyId,
     StructuredSubscriptionError, SubscriptionChange, SubscriptionChangeEvent,
     SubscriptionLimitEvent, SubscriptionLimitState, SubscriptionRequest,
 };
@@ -180,6 +180,21 @@ pub enum SubscriptionRegistryError {
     /// same mutable borrow that performs the insert, so a rejected request
     /// never registers a line (no probe-then-mutate race window).
     LineLimitReached { configured_limit: u32 },
+    /// The request named `AssetClass::Option`, whose full contract identity
+    /// (underlying + expiration + strike + right) is not yet modeled — the
+    /// manager fails closed on options (deferred to SRS-DATA-004 /
+    /// SRS-EXE-004) rather than conflating distinct contracts on one
+    /// underlying onto a single upstream line.
+    OptionContractUnsupported,
+}
+
+impl From<SecurityKeyError> for SubscriptionRegistryError {
+    fn from(error: SecurityKeyError) -> Self {
+        match error {
+            SecurityKeyError::EmptySymbol => Self::EmptySymbol,
+            SecurityKeyError::OptionContractIdentityRequired => Self::OptionContractUnsupported,
+        }
+    }
 }
 
 impl fmt::Display for SubscriptionRegistryError {
@@ -194,6 +209,10 @@ impl fmt::Display for SubscriptionRegistryError {
             Self::LineLimitReached { configured_limit } => write!(
                 formatter,
                 "SRS-MD-001/SYS-70: a new upstream subscription would exceed the IB line limit ({configured_limit})"
+            ),
+            Self::OptionContractUnsupported => formatter.write_str(
+                "SRS-MD-001: option subscriptions are not yet supported \
+                 (deferred to SRS-DATA-004 / SRS-EXE-004)",
             ),
         }
     }
@@ -288,9 +307,7 @@ impl ConsolidatedSubscriptionRegistry {
         request: &SubscriptionRequest,
         events: &S,
     ) -> Result<SubscriptionChange, SubscriptionRegistryError> {
-        let key = request
-            .security_key()
-            .ok_or(SubscriptionRegistryError::EmptySymbol)?;
+        let key = request.security_key()?;
         Self::validate_strategy_id(&request.strategy_id)?;
 
         let change = if let Some(existing) = self.subscribers.get_mut(&key) {
@@ -364,9 +381,7 @@ impl ConsolidatedSubscriptionRegistry {
         &self,
         tick: &MarketDataTick,
     ) -> Result<Vec<StrategyId>, SubscriptionRegistryError> {
-        let key = tick
-            .security_key()
-            .ok_or(SubscriptionRegistryError::EmptySymbol)?;
+        let key = tick.security_key()?;
         Ok(self.subscribers.get(&key).cloned().unwrap_or_default())
     }
 
@@ -384,6 +399,7 @@ impl ConsolidatedSubscriptionRegistry {
             change,
             strategy_id: strategy_id.clone(),
             symbol: key.symbol().to_string(),
+            asset_class: key.asset_class(),
             subscriber_count: self.subscriber_count(key),
             lines_in_use: self.distinct_subscriptions(),
         });
@@ -421,7 +437,7 @@ impl SubscriptionLineCounter for ConsolidatedSubscriptionRegistry {
         // only while the current distinct count is below the configured
         // ceiling.
         match request.security_key() {
-            Some(key) if self.subscribers.contains_key(&key) => SubscriptionLimitState::WithinLimit,
+            Ok(key) if self.subscribers.contains_key(&key) => SubscriptionLimitState::WithinLimit,
             _ if self.distinct_subscriptions() < self.line_limit => {
                 SubscriptionLimitState::WithinLimit
             }
@@ -893,48 +909,41 @@ mod tests {
     }
 
     #[test]
-    fn distinct_asset_classes_are_separate_upstream_lines() {
-        // SRS-MD-001: an equity and an option on the same display ticker are
-        // DISTINCT securities — two upstream lines — and a tick for one must
-        // never fan out to the other's subscriber.
+    fn option_subscriptions_fail_closed() {
+        // SRS-MD-001 fail-closed: a real option contract is identified by
+        // underlying + expiration + strike + right, which the platform does
+        // not yet model (deferred to SRS-DATA-004 / SRS-EXE-004). Keying an
+        // option by its underlying symbol alone would conflate distinct
+        // contracts onto one line, so the manager REJECTS option
+        // subscriptions and fan-out instead of silently consolidating them.
+        // The equity path on the same ticker is unaffected.
         let mut registry = ConsolidatedSubscriptionRegistry::new(100);
         let sink = ChangeSinkSpy::default();
-        let equity = SubscriptionRequest {
-            strategy_id: StrategyId::new("equity-strat"),
-            symbol: "AAPL".to_string(),
-            asset_class: AssetClass::Equity,
-        };
         let option = SubscriptionRequest {
             strategy_id: StrategyId::new("option-strat"),
             symbol: "AAPL".to_string(),
             asset_class: AssetClass::Option,
         };
         assert_eq!(
-            registry.subscribe(&equity, &sink).unwrap(),
-            SubscriptionChange::Opened
+            registry.subscribe(&option, &sink),
+            Err(SubscriptionRegistryError::OptionContractUnsupported)
         );
-        assert_eq!(
-            registry.subscribe(&option, &sink).unwrap(),
-            SubscriptionChange::Opened,
-            "an option on the same ticker must open its OWN line"
-        );
-        assert_eq!(
-            registry.distinct_subscriptions(),
-            2,
-            "equity + option on one ticker are two upstream lines"
-        );
-
-        let equity_tick = MarketDataTick {
+        let option_tick = MarketDataTick {
             symbol: "AAPL".to_string(),
-            asset_class: AssetClass::Equity,
+            asset_class: AssetClass::Option,
             tick_seq: 1,
         };
-        let recipients = registry.fan_out(&equity_tick).unwrap();
-        let ids: Vec<&str> = recipients.iter().map(StrategyId::as_str).collect();
         assert_eq!(
-            ids,
-            vec!["equity-strat"],
-            "an equity tick must reach only the equity subscriber"
+            registry.fan_out(&option_tick),
+            Err(SubscriptionRegistryError::OptionContractUnsupported)
         );
+        // Nothing registered; the equity AAPL line is independent and works.
+        assert_eq!(registry.distinct_subscriptions(), 0);
+        registry
+            .subscribe(&sub("equity-strat", "AAPL"), &sink)
+            .unwrap();
+        assert_eq!(registry.distinct_subscriptions(), 1);
+        assert!(sink.events.borrow()[0].change.changes_line_count());
+        assert_eq!(sink.events.borrow()[0].asset_class, AssetClass::Equity);
     }
 }

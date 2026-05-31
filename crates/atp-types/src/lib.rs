@@ -278,10 +278,11 @@ pub struct SubscriptionRequest {
 
 impl SubscriptionRequest {
     /// Canonical security identity for dedup + line-counting (SRS-MD-001),
-    /// or `None` when `symbol` is empty / whitespace. The subscription
-    /// manager keys the consolidated set on this, so two requests for the
-    /// same normalized symbol + asset class share one upstream IB line.
-    pub fn security_key(&self) -> Option<SecurityKey> {
+    /// or a [`SecurityKeyError`] when it cannot be canonicalized (empty
+    /// symbol or a not-yet-modeled option contract). The subscription manager
+    /// keys the consolidated set on this, so two requests for the same
+    /// normalized symbol + asset class share one upstream IB line.
+    pub fn security_key(&self) -> Result<SecurityKey, SecurityKeyError> {
         SecurityKey::new(&self.symbol, self.asset_class)
     }
 }
@@ -427,15 +428,57 @@ impl AssetClass {
     }
 }
 
+/// Why a [`SecurityKey`] could not be built. Returned by `SecurityKey::new`
+/// so the subscription manager fails closed with a precise reason instead of
+/// silently dropping or conflating a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityKeyError {
+    /// The symbol was empty or whitespace — it can never name a security.
+    EmptySymbol,
+    /// The request named `AssetClass::Option`, but a canonical option
+    /// contract identity (underlying + expiration + strike + call/put right,
+    /// or a normalized vendor-neutral contract id) is NOT yet modeled in the
+    /// platform — it is owned by SRS-DATA-004 (live option-chain snapshots)
+    /// and SRS-EXE-004 (multi-leg option orders). Keying an option by its
+    /// underlying symbol alone would conflate distinct contracts onto one
+    /// upstream IB line, so the subscription manager fails closed on options
+    /// until that contract model lands. Equity keys are unaffected.
+    OptionContractIdentityRequired,
+}
+
+impl fmt::Display for SecurityKeyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::EmptySymbol => "SRS-MD-001: security symbol must be non-empty",
+            Self::OptionContractIdentityRequired => {
+                "SRS-MD-001: option subscriptions require a full contract identity \
+                 (deferred to SRS-DATA-004 / SRS-EXE-004); rejected to avoid \
+                 conflating distinct contracts on one underlying"
+            }
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for SecurityKeyError {}
+
 /// Canonical security identity used to deduplicate market-data subscriptions
 /// and route fan-out (SRS-MD-001). Two subscription requests name the SAME
 /// security — and therefore share ONE upstream IB line — iff their
 /// `SecurityKey`s are equal. The key NORMALIZES the symbol (trimmed +
 /// upper-cased) so `AAPL`, `aapl`, and ` AAPL ` resolve to one security, and
-/// carries the `asset_class` so an equity and an option sharing a display
-/// ticker stay DISTINCT securities (distinct upstream lines). The fields are
-/// private: a `SecurityKey` can only be built through `new`, which enforces
-/// normalization. It carries no broker / vendor / session identifier.
+/// carries the `asset_class`. The fields are private: a `SecurityKey` can
+/// only be built through `new`, which enforces normalization and fails closed
+/// on inputs it cannot canonicalize. It carries no broker / vendor / session
+/// identifier.
+///
+/// **Scope (SRS-MD-001 SDK-surface):** only `AssetClass::Equity` is currently
+/// representable. `AssetClass::Option` is rejected by `new` because a real
+/// option contract is identified by underlying + expiration + strike +
+/// call/put, which the platform does not yet model (owned by SRS-DATA-004 /
+/// SRS-EXE-004). The `asset_class` field + the `AssetClass::Option` variant
+/// are the forward-compatible seam those features extend; until then the
+/// manager fails closed on options rather than conflating them.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SecurityKey {
     symbol: String,
@@ -444,14 +487,18 @@ pub struct SecurityKey {
 
 impl SecurityKey {
     /// Build a canonical key, normalizing the symbol (trim + upper-case).
-    /// Returns `None` when the symbol is empty or whitespace — an empty
-    /// symbol can never name a tradable security and must not open a line.
-    pub fn new(symbol: &str, asset_class: AssetClass) -> Option<Self> {
+    /// Fails closed with [`SecurityKeyError::EmptySymbol`] on an empty symbol
+    /// and [`SecurityKeyError::OptionContractIdentityRequired`] on an option
+    /// (whose full contract identity is deferred — see the type docs).
+    pub fn new(symbol: &str, asset_class: AssetClass) -> Result<Self, SecurityKeyError> {
         let normalized = symbol.trim().to_uppercase();
         if normalized.is_empty() {
-            return None;
+            return Err(SecurityKeyError::EmptySymbol);
         }
-        Some(Self {
+        if matches!(asset_class, AssetClass::Option) {
+            return Err(SecurityKeyError::OptionContractIdentityRequired);
+        }
+        Ok(Self {
             symbol: normalized,
             asset_class,
         })
@@ -474,9 +521,10 @@ pub struct MarketDataTick {
 }
 
 impl MarketDataTick {
-    /// Canonical security identity this tick routes to, or `None` when its
-    /// `symbol` is empty / whitespace.
-    pub fn security_key(&self) -> Option<SecurityKey> {
+    /// Canonical security identity this tick routes to, or a
+    /// [`SecurityKeyError`] when it cannot be canonicalized (empty symbol or
+    /// a not-yet-modeled option contract).
+    pub fn security_key(&self) -> Result<SecurityKey, SecurityKeyError> {
         SecurityKey::new(&self.symbol, self.asset_class)
     }
 }
@@ -525,6 +573,12 @@ pub struct SubscriptionChangeEvent {
     pub change: SubscriptionChange,
     pub strategy_id: StrategyId,
     pub symbol: String,
+    /// The asset class of the affected line. The registry keys on a
+    /// `SecurityKey` (normalized symbol + asset class), so the event carries
+    /// `asset_class` alongside `symbol` to keep the SRS-LOG-001 /
+    /// dashboard line-usage stream unambiguous when distinct securities share
+    /// a display ticker.
+    pub asset_class: AssetClass,
     pub subscriber_count: u32,
     pub lines_in_use: u32,
 }
@@ -2201,19 +2255,30 @@ mod tests {
     }
 
     #[test]
-    fn security_key_normalizes_symbol_and_separates_asset_class() {
-        // Case + whitespace variants resolve to ONE security ...
+    fn security_key_normalizes_symbol_and_fails_closed() {
+        // Case + whitespace variants resolve to ONE equity security ...
         let a = SecurityKey::new("AAPL", AssetClass::Equity).unwrap();
         let b = SecurityKey::new("  aapl ", AssetClass::Equity).unwrap();
         assert_eq!(a, b, "case/whitespace variants must canonicalize equal");
         assert_eq!(a.symbol(), "AAPL");
         assert_eq!(a.asset_class(), AssetClass::Equity);
-        // ... but an equity and an option sharing a ticker stay DISTINCT.
-        let opt = SecurityKey::new("AAPL", AssetClass::Option).unwrap();
-        assert_ne!(a, opt, "asset class must separate otherwise-equal tickers");
-        // Empty / whitespace symbol cannot name a security.
-        assert_eq!(SecurityKey::new("", AssetClass::Equity), None);
-        assert_eq!(SecurityKey::new("   ", AssetClass::Equity), None);
+        // ... an empty / whitespace symbol cannot name a security ...
+        assert_eq!(
+            SecurityKey::new("", AssetClass::Equity),
+            Err(SecurityKeyError::EmptySymbol)
+        );
+        assert_eq!(
+            SecurityKey::new("   ", AssetClass::Equity),
+            Err(SecurityKeyError::EmptySymbol)
+        );
+        // ... and options fail closed: a real option contract needs
+        // underlying + expiration + strike + right, which is deferred to
+        // SRS-DATA-004 / SRS-EXE-004. Keying by underlying alone would
+        // conflate distinct contracts, so `new` refuses it.
+        assert_eq!(
+            SecurityKey::new("AAPL", AssetClass::Option),
+            Err(SecurityKeyError::OptionContractIdentityRequired)
+        );
     }
 
     #[test]
@@ -2268,15 +2333,17 @@ mod tests {
     }
 
     #[test]
-    fn subscription_change_event_carries_only_the_five_required_fields() {
+    fn subscription_change_event_carries_only_the_six_required_fields() {
         // Exhaustive destructure pins the field set: change discriminant,
-        // strategy_id, symbol, and the post-transition subscriber_count +
-        // lines_in_use the dashboard / log consumer reads without
-        // re-probing the registry.
+        // strategy_id, symbol, asset_class (so the line is unambiguous when
+        // securities share a ticker), and the post-transition
+        // subscriber_count + lines_in_use the dashboard / log consumer reads
+        // without re-probing the registry.
         let event = SubscriptionChangeEvent {
             change: SubscriptionChange::SubscriberAdded,
             strategy_id: StrategyId::new("paper-bravo-2"),
             symbol: "AAPL".to_string(),
+            asset_class: AssetClass::Equity,
             subscriber_count: 3,
             lines_in_use: 1,
         };
@@ -2284,12 +2351,14 @@ mod tests {
             change: _,
             strategy_id: _,
             symbol: _,
+            asset_class: _,
             subscriber_count: _,
             lines_in_use: _,
         } = event.clone();
         assert_eq!(event.change, SubscriptionChange::SubscriberAdded);
         assert_eq!(event.strategy_id.as_str(), "paper-bravo-2");
         assert_eq!(event.symbol, "AAPL");
+        assert_eq!(event.asset_class, AssetClass::Equity);
         assert_eq!(event.subscriber_count, 3);
         // Dedup: three subscribers, still exactly one upstream line.
         assert_eq!(event.lines_in_use, 1);

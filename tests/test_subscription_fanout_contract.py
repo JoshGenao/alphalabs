@@ -63,15 +63,15 @@ class SubscriptionFanoutScriptTest(unittest.TestCase):
         for needle in (
             "MarketDataTick with the 3 fan-out fields (symbol, asset_class, tick_seq)",
             "AssetClass with 2 tradable classes (Equity, Option)",
-            "SecurityKey (private symbol+asset_class, normalizing `new`)",
+            "normalizing `new` that fails closed on empty symbol + AssetClass::Option",
             "carried by SubscriptionRequest, MarketDataTick via .security_key()",
             "SubscriptionChange with 6 transitions",
             "Opened/Closed are the only line-affecting ones",
-            "SubscriptionChangeEvent with the 5 required fields",
-            "subscriber_count, lines_in_use",
+            "SubscriptionChangeEvent with the 6 required fields",
+            "change, strategy_id, symbol, asset_class, subscriber_count, lines_in_use",
             "SubscriptionChangeSink with 1 method (record)",
-            "SubscriptionRegistryError with 3 fail-closed variants",
-            "EmptySymbol, EmptyStrategyId, LineLimitReached",
+            "SubscriptionRegistryError with 4 fail-closed variants",
+            "EmptySymbol, EmptyStrategyId, LineLimitReached, OptionContractUnsupported",
             "ConsolidatedSubscriptionRegistry with the 7 dedup + fan-out methods",
             "keys the consolidated set on SecurityKey",
             "no raw-symbol conflation",
@@ -80,8 +80,7 @@ class SubscriptionFanoutScriptTest(unittest.TestCase):
             "inserts a new upstream subscription EXACTLY ONCE",
             "enforces the IB line ceiling atomically",
             "the probe-then-mutate race",
-            "canonicalize via SecurityKey",
-            "fail closed on empty symbol / strategy id",
+            "fail closed via .security_key()? (SecurityKeyError -> SubscriptionRegistryError on empty symbol / option)",
             "free of all 5 forbidden vendor SDK tokens",
             "feature_list.json keeps SRS-MD-001 passes:false",
         ):
@@ -175,6 +174,21 @@ class SecurityKeyTest(_Fixture):
             check_security_key(self.config, mutated)
         self.assertIn("security_key", str(ctx.exception))
 
+    def test_removed_option_fail_closed_is_caught(self) -> None:
+        # Drop the option rejection from SecurityKey::new — the exact
+        # underlying-ticker conflation Codex flagged. Removing the early
+        # return lets an option key through.
+        mutated = self.types_src.replace(
+            "        if matches!(asset_class, AssetClass::Option) {\n"
+            "            return Err(SecurityKeyError::OptionContractIdentityRequired);\n"
+            "        }\n",
+            "",
+            1,
+        )
+        with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
+            check_security_key(self.config, mutated)
+        self.assertIn("AssetClass::Option", str(ctx.exception))
+
 
 class SubscriptionChangeEnumTest(_Fixture):
     def test_all_variants_present(self) -> None:
@@ -233,6 +247,13 @@ class RegistryErrorEnumTest(_Fixture):
         self.assertIn("EmptySymbol", evidence)
         self.assertIn("EmptyStrategyId", evidence)
         self.assertIn("LineLimitReached", evidence)
+        self.assertIn("OptionContractUnsupported", evidence)
+
+    def test_dropped_option_variant_is_caught(self) -> None:
+        mutated = self.md_src.replace("    OptionContractUnsupported,", "", 1)
+        with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
+            check_registry_error_enum(self.config, mutated)
+        self.assertIn("OptionContractUnsupported", str(ctx.exception))
 
     def test_dropped_variant_is_caught(self) -> None:
         mutated = self.md_src.replace("    EmptyStrategyId,", "", 1)
@@ -371,16 +392,28 @@ class InputValidationTest(_Fixture):
         self.assertIn("fail closed", evidence)
 
     def test_removed_fan_out_validation_is_caught(self) -> None:
-        # Replace fan_out's fail-closed canonicalization with an unchecked
-        # unwrap — a tick with an empty symbol would no longer be rejected.
+        # Replace fan_out's fail-closed `?` with an unchecked unwrap — a tick
+        # with an empty symbol or an option would no longer be rejected.
         mutated = self.md_src.replace(
-            "let key = tick\n            .security_key()\n            .ok_or(SubscriptionRegistryError::EmptySymbol)?;",
+            "let key = tick.security_key()?;",
             "let key = tick.security_key().unwrap();",
             1,
         )
         with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
             check_input_validation(self.config, mutated)
         self.assertIn("fan_out", str(ctx.exception))
+
+    def test_removed_from_impl_is_caught(self) -> None:
+        # Without From<SecurityKeyError>, `.security_key()?` cannot fail closed
+        # into the registry error.
+        mutated = self.md_src.replace(
+            "impl From<SecurityKeyError> for SubscriptionRegistryError {",
+            "impl From<SecurityKeyError> for SomethingElse {",
+            1,
+        )
+        with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
+            check_input_validation(self.config, mutated)
+        self.assertIn("From<SecurityKeyError>", str(ctx.exception))
 
 
 class VendorIsolationTest(_Fixture):
