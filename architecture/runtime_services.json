@@ -3299,6 +3299,10 @@
       {
         "feature": "SRS-UI-001 / SRS-API-001",
         "what": "The dashboard subscription / line-usage pane and the REST/WebSocket surfacing of lines_in_use, subscriber_count, and consolidated-subscription operator alerts. The registry exposes the read accessors (distinct_subscriptions, subscriber_count); binding them to the dashboard/API is the deferred operator-interface half."
+      },
+      {
+        "feature": "SRS-DATA-004 / SRS-EXE-004 + operator-interface-runtime (gate error precision)",
+        "what": "Distinguishing an UNSUPPORTED / uncanonicalizable security identity from genuine line-capacity exhaustion at the SRS-MD-002 gate. try_acquire fails closed by returning ExceededLimit for an option / empty-symbol request, so the gate REJECTS it correctly (no false acceptance) but labels it SUBSCRIPTION_LIMIT_REACHED and emits a SubscriptionLimitEvent even below capacity. A precise unsupported/invalid-identity error requires either widening SubscriptionLineCounter::try_acquire to a typed result or adding a pre-probe validation stage to MarketDataSubscriptionManager::request_subscription (both MD-002 gate surface) — and lands naturally with the option-support features (which make options representable) plus the operator-interface runtime (which surfaces alerts). Deferred per the user's scope decision: raised by /codex:adversarial-review round-4 [medium]; the request is already rejected fail-closed (safe), and the runtime that would surface a misleading alert does not exist yet (SRS-MD-001 stays passes:false)."
       }
     ]
   }

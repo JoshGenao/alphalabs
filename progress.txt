@@ -1,3 +1,166 @@
+=== SESSION 34 ADDENDUM 4 — Codex round-4 (deferred) ===
+Date: 2026-05-30
+/codex:adversarial-review round-4 (base a178016) raised one [medium]:
+the round-3 fail-closed at the gate now REJECTS an unsupported option
+correctly, but labels it SUBSCRIPTION_LIMIT_REACHED + emits a
+SubscriptionLimitEvent even below capacity (try_acquire collapses the
+uncanonicalizable case into ExceededLimit, the only non-WithinLimit state
+the SubscriptionLineCounter trait offers). The precise unsupported-vs-
+exhausted error needs an MD-002 gate/trait change (widen try_acquire to a
+typed result, or pre-validate in request_subscription).
+
+User decision: DEFER + document (not fix). Rationale (scope honesty +
+the SDK-boundary iterative-deepening warning): it is a [medium]
+DIAGNOSTIC-precision gap (the request is already rejected fail-closed —
+safe — only the label/event is imprecise) on the ALREADY-deferred option
+path, whose runtime (which would surface a misleading operator alert)
+does not exist; the proper fix expands a previously-shipped feature
+(MD-002) and lands naturally with the option-support features
+(SRS-DATA-004 / SRS-EXE-004) + the operator-interface runtime. Recorded
+in subscription_fanout_contract.deferred[] ("gate error precision").
+This closes the Codex review loop for SRS-MD-001 this session.
+
+=== SESSION 34 ADDENDUM 3 — Codex round-3 follow-up ===
+Date: 2026-05-30
+/codex:adversarial-review round-3 (base 14676d7) raised one [high]: the
+option fail-closed was only enforced at subscribe/fan_out, while the
+registry's try_acquire (the SubscriptionLineCounter the SRS-MD-002 gate
+consumes) collapsed an uncanonicalizable request into the capacity
+wildcard — so an option BELOW the line limit returned WithinLimit and
+MarketDataSubscriptionManager::request_subscription falsely returned
+SubscriptionAccepted (and at the limit misreported SUBSCRIPTION_LIMIT_
+REACHED). Real bug I introduced in round 2.
+
+Fixed (Codex's primary recommendation, in-scope MD-001 only — the MD-002
+gate/trait are untouched): try_acquire now canonicalizes first via
+`let Ok(key) = request.security_key() else { return ExceededLimit; }`, so
+an uncanonicalizable request (option / empty symbol) fails closed and the
+gate rejects it instead of falsely admitting. The precise
+OptionContractUnsupported still surfaces at subscribe; a dedicated
+gate-level validation stage stays deferred with the runtime. Added the
+gate-level tests Codex asked for (lib option_request_is_rejected_at_the_
+md_002_gate + integration srs_md_001_option_request_is_rejected_by_the_
+md_002_gate, both routing an option through request_subscription with the
+ConsolidatedSubscriptionRegistry as the counter, asserting rejection
+below capacity) + L7 shell + a check_line_counter_impl guard requiring
+try_acquire to canonicalize (request.security_key()) + its L3 mutation
+spot-check. cargo test --workspace green (atp-market-data lib 18 +
+srs_md_001 12 + err_4 5); full pytest 1058 passed / 0 failed; clippy +
+rustfmt clean on my crates. SRS-MD-001 stays passes:false.
+
+=== SESSION 34 ADDENDUM 2 — Codex round-2 follow-up ===
+Date: 2026-05-30
+The user re-ran /codex:adversarial-review against the round-1 fix
+(base ca81628). Verdict: needs-attention, 2 findings:
+  (#1, [high]) SecurityKey { symbol, asset_class } cannot identify an
+      option contract — two AAPL options with different expiry/strike/
+      right would dedup onto one line. (#2, [medium]) SubscriptionChange-
+      Event still carried only `symbol`, losing the asset_class the
+      registry now keys on (ambiguous equity-vs-option line in the
+      log/dashboard stream).
+User chose "Fix #2; defer #1 (fail-closed)" — the scope-honest path,
+since no OptionContract model exists yet (owned by SRS-DATA-004 /
+SRS-EXE-004) and building expiry/strike/right only in the subscription
+key would be premature (see [[feedback-scope-honesty]]).
+
+Round-2 changes:
+- #2 fixed: SubscriptionChangeEvent now carries `asset_class`; publish()
+  populates it from the key (key.asset_class()). Contract required_fields
+  + check + L3 needles updated to 6 fields; the L7 + lib change-event
+  tests assert asset_class.
+- #1 deferred fail-closed: SecurityKey::new now returns
+  Result<SecurityKey, SecurityKeyError> and REJECTS AssetClass::Option
+  with SecurityKeyError::OptionContractIdentityRequired (empty symbol ->
+  EmptySymbol). The carriers' .security_key() return Result;
+  subscribe/fan_out use `.security_key()?` with
+  `impl From<SecurityKeyError> for SubscriptionRegistryError`
+  (-> new SubscriptionRegistryError::OptionContractUnsupported). So an
+  option subscription / fan-out fails closed instead of conflating
+  distinct contracts on one underlying. AssetClass::Option + the
+  asset_class field remain the forward-compatible seam SRS-DATA-004 /
+  SRS-EXE-004 extend (recorded in the contract deferred[] block).
+  The two earlier "asset-class separation" tests were flipped to
+  "option_subscriptions_fail_closed" (option subscribe + fan_out both
+  return OptionContractUnsupported; the equity path is unaffected).
+- New check collector logic: check_security_key verifies the
+  SecurityKeyError enum variants + the AssetClass::Option early-return in
+  SecurityKey::new; check_input_validation verifies the `.security_key()?`
+  fail-closed path + the From<SecurityKeyError> impl. L3 grew matching
+  mutation spot-checks (dropped option rejection, dropped From impl,
+  dropped OptionContractUnsupported variant).
+
+Verified: cargo test --workspace green (atp-types 78, atp-market-data
+lib 17 + srs_md_001 11 + err_4 5); full pytest 1056 passed / 0 failed;
+my crates clippy-clean + rustfmt-clean (zero overlap with rustfmt's
+wanted changes on all touched files); MD-002 + architecture checks
+still pass; pre-existing workspace fmt/clippy drift untouched.
+SRS-MD-001 stays passes:false.
+
+=== SESSION 34 ADDENDUM — Codex adversarial-review follow-up ===
+Date: 2026-05-30
+After the three SRS-MD-001 commits landed, the user ran the real
+/codex:adversarial-review (slash command via the openai-codex plugin
+runtime) against base 5a05068. Verdict: needs-attention, 2 [high]
+findings (both legitimate design critiques, not test bugs):
+  (1) line-limit admission was not atomic with registry mutation —
+      subscribe opened a new upstream line without checking line_limit;
+      only the read-only try_acquire probe (MD-002 gate path) checked,
+      leaving a probe-then-mutate race and letting a direct subscribe
+      caller exceed the IB line cap;
+  (2) dedup + fan-out keyed on a raw, uncanonicalized symbol String —
+      "AAPL"/"aapl"/" AAPL " became different lines, and a symbol-only
+      key conflated an equity vs option subscription sharing a ticker.
+User chose Option 1 (fix both now). Implemented TDD-first (two tests
+written RED against the old code, confirmed failing, then fixed):
+
+- atp-types: new AssetClass { Equity, Option } (the SRS-SDK-003 tradable
+  classes; futures/crypto are out of release scope; intentionally
+  narrower than atp-adapters' instrument-catalog AssetClass, which lives
+  ABOVE the dependency boundary so the core types cannot reuse it) and
+  SecurityKey { symbol, asset_class } — PRIVATE fields, normalizing
+  constructor SecurityKey::new(symbol, asset_class) that trims +
+  upper-cases the symbol and returns None on empty, so a key can only be
+  built canonical. asset_class added to SubscriptionRequest (MD-002's
+  type) + MarketDataTick; both expose .security_key() -> Option<SecurityKey>.
+
+- atp-market-data: ConsolidatedSubscriptionRegistry now keys the
+  consolidated set on BTreeMap<SecurityKey, Vec<StrategyId>>. subscribe
+  enforces the line ceiling ATOMICALLY in the same &mut borrow that
+  inserts (checks `self.subscribers.len() as u32 >= self.line_limit`
+  BEFORE insert, returns the new SubscriptionRegistryError::LineLimitReached
+  { configured_limit } without registering anything) — closing the
+  probe-then-mutate race. subscribe/unsubscribe/fan_out/subscriber_count/
+  is_subscribed/try_acquire all canonicalize via SecurityKey;
+  subscriber_count/is_subscribed/unsubscribe now take &SecurityKey.
+
+- The MD-002 gate (request_subscription) is unchanged: it still consumes
+  the registry as SubscriptionLineCounter (try_acquire now builds the key
+  from the request). subscription_limit_contract is untouched — it only
+  requires strategy_id+symbol, and asset_class is additive/non-forbidden,
+  so the MD-002 check + its "2 required fields" L3 assertions still pass.
+
+- Contract (subscription_fanout_contract): added asset_class_enum,
+  security_key, registry.key_type/key_field_decl, registry_error_enum
+  += LineLimitReached, an atomic_admission block, and rewrote validation
+  for the security_key() fail-closed path. Check script grew from 10 to
+  14 static collectors (+ asset_class_enum / security_key /
+  registry_key_type / atomic_admission); L3 grew matching mutation
+  spot-checks (raw-String key, public SecurityKey field, missing
+  normalization, dropped LineLimitReached, removed atomic limit check).
+  4 new Rust integration tests (case/whitespace dedup, asset-class
+  separation, atomic over-limit, interleaved probe-then-subscribe) +
+  their L7 Python shells.
+
+Verified: cargo test --workspace green (atp-market-data lib 17 +
+srs_md_001 integration 11 + err_4 5); full pytest 1053 passed / 0
+failed; my crates clippy-clean and rustfmt-clean (zero overlap between
+my added lines and rustfmt's wanted changes on all touched files); the
+pre-existing workspace fmt/clippy drift remains untouched (NOT re-run
+cargo fmt — would break the orchestrator/MD-002 literal-replace L3
+tests per [[feedback-no-whole-crate-cargo-fmt]]). SRS-MD-001 stays
+passes:false (runtime halves still deferred). Critic verdicts for the
+follow-up commit recorded in this session's git trailer.
+
 === SESSION 34 ===
 Date: 2026-05-30
 Feature completed: SRS-MD-001 SDK-SURFACE — consolidated market-data
