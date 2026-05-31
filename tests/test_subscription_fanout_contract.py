@@ -356,6 +356,18 @@ class LineCounterImplTest(_Fixture):
             check_line_counter_impl(self.config, mutated)
         self.assertIn("contains_key", str(ctx.exception))
 
+    def test_try_acquire_not_canonicalizing_is_caught(self) -> None:
+        # Reverting try_acquire to skip request.security_key() lets the gate
+        # falsely admit an uncanonicalizable option — the round-3 regression.
+        mutated = self.md_src.replace(
+            "let Ok(key) = request.security_key() else {",
+            "let Ok(key) = always_ok() else {",
+            1,
+        )
+        with self.assertRaises(SubscriptionFanoutCheckError) as ctx:
+            check_line_counter_impl(self.config, mutated)
+        self.assertIn("security_key", str(ctx.exception))
+
 
 class DedupInvariantTest(_Fixture):
     def test_invariant_evidence(self) -> None:

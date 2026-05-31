@@ -118,6 +118,13 @@ def test_option_subscriptions_fail_closed() -> None:
     _assert_passed(_run_cargo_test("srs_md_001_option_subscriptions_fail_closed"))
 
 
+def test_option_request_is_rejected_by_the_md_002_gate() -> None:
+    # The fail-closed extends to the MD-002 gate seam: an option request is
+    # not admitted by request_subscription even with capacity headroom
+    # (try_acquire fails closed on an uncanonicalizable request).
+    _assert_passed(_run_cargo_test("srs_md_001_option_request_is_rejected_by_the_md_002_gate"))
+
+
 def test_subscribe_enforces_line_limit_atomically() -> None:
     # The mutating admission path itself refuses a new line past the cap and
     # registers nothing on rejection (a duplicate is still admitted).

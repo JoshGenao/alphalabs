@@ -456,3 +456,35 @@ fn srs_md_001_interleaved_probe_then_subscribe_cannot_exceed_limit() {
     );
     assert_eq!(registry.distinct_subscriptions(), 1);
 }
+
+#[test]
+fn srs_md_001_option_request_is_rejected_by_the_md_002_gate() {
+    // Codex round-3: an uncanonicalizable option must not be admitted by the
+    // SRS-MD-002 gate even with ample capacity — try_acquire fails closed so
+    // request_subscription rejects it instead of falsely accepting a request
+    // the registry's subscribe would itself refuse.
+    let registry = ConsolidatedSubscriptionRegistry::new(100);
+    let manager = MarketDataSubscriptionManager;
+    let limit_sink = LimitSinkSpy::default();
+    let option = SubscriptionRequest {
+        strategy_id: StrategyId::new("opt-strat"),
+        symbol: "AAPL".to_string(),
+        asset_class: AssetClass::Option,
+    };
+    assert_eq!(
+        registry.try_acquire(&option),
+        SubscriptionLimitState::ExceededLimit,
+        "an option probe must fail closed even below capacity"
+    );
+    assert!(
+        manager
+            .request_subscription(option, &registry, &limit_sink)
+            .is_err(),
+        "the gate must not admit an unsupported option"
+    );
+    // The equity path on the same ticker remains admissible.
+    assert_eq!(
+        registry.try_acquire(&sub("equity-strat", "AAPL")),
+        SubscriptionLimitState::WithinLimit
+    );
+}

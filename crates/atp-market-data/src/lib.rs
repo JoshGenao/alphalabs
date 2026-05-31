@@ -431,17 +431,28 @@ impl SubscriptionLineCounter for ConsolidatedSubscriptionRegistry {
     }
 
     fn try_acquire(&self, request: &SubscriptionRequest) -> SubscriptionLimitState {
+        // A request that cannot be canonicalized — an empty symbol, or an
+        // option whose full contract identity is not yet modeled — is NEVER
+        // admissible. Fail closed so the SRS-MD-002 gate rejects it rather
+        // than reporting capacity headroom for a request the registry's
+        // `subscribe` would refuse (`OptionContractUnsupported`). The gate
+        // maps this to SUBSCRIPTION_LIMIT_REACHED; the precise option error
+        // surfaces at `subscribe`, and a dedicated gate-level validation
+        // stage is deferred with the runtime.
+        let Ok(key) = request.security_key() else {
+            return SubscriptionLimitState::ExceededLimit;
+        };
         // Dedup-aware probe: an already-subscribed security consumes no new
-        // line, so admitting it is unconditionally within limit. A new (or
-        // uncanonicalizable) security would consume one line — within limit
-        // only while the current distinct count is below the configured
-        // ceiling.
-        match request.security_key() {
-            Ok(key) if self.subscribers.contains_key(&key) => SubscriptionLimitState::WithinLimit,
-            _ if self.distinct_subscriptions() < self.line_limit => {
-                SubscriptionLimitState::WithinLimit
-            }
-            _ => SubscriptionLimitState::ExceededLimit,
+        // line, so admitting it is unconditionally within limit. A new
+        // security would consume one line — within limit only while the
+        // current distinct count is below the configured ceiling.
+        if self.subscribers.contains_key(&key) {
+            return SubscriptionLimitState::WithinLimit;
+        }
+        if self.distinct_subscriptions() < self.line_limit {
+            SubscriptionLimitState::WithinLimit
+        } else {
+            SubscriptionLimitState::ExceededLimit
         }
     }
 }
@@ -879,6 +890,40 @@ mod tests {
             registry.distinct_subscriptions(),
             1,
             "a rejected over-limit subscribe must not register a line"
+        );
+    }
+
+    #[test]
+    fn option_request_is_rejected_at_the_md_002_gate() {
+        // Codex round-3: an uncanonicalizable option must NOT be admitted by
+        // the SRS-MD-002 gate even with ample capacity. try_acquire fails
+        // closed so request_subscription rejects it instead of returning
+        // SubscriptionAccepted (a request the registry's subscribe would
+        // itself refuse).
+        let registry = ConsolidatedSubscriptionRegistry::new(100);
+        let manager = MarketDataSubscriptionManager;
+        let limit_sink = StubSink::default();
+        let option = SubscriptionRequest {
+            strategy_id: StrategyId::new("opt-strat"),
+            symbol: "AAPL".to_string(),
+            asset_class: AssetClass::Option,
+        };
+        // Below capacity, yet the probe fails closed — no false acceptance.
+        assert_eq!(
+            registry.try_acquire(&option),
+            SubscriptionLimitState::ExceededLimit
+        );
+        assert!(
+            manager
+                .request_subscription(option, &registry, &limit_sink)
+                .is_err(),
+            "the gate must not admit an unsupported option even with capacity headroom"
+        );
+        // And the registry's own admission path rejects it precisely.
+        assert_eq!(
+            registry.try_acquire(&sub("equity-strat", "AAPL")),
+            SubscriptionLimitState::WithinLimit,
+            "a canonicalizable equity is still admissible with capacity"
         );
     }
 

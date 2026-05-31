@@ -240,18 +240,29 @@ def check_line_counter_impl(config: dict, md_src: str) -> str:
             f"impl {trait} for {struct} is missing methods: {', '.join(missing)} "
             "(the registry must be the concrete line counter the SRS-MD-002 gate consumes)"
         )
+    compact_impl = _compact(impl)
     # The dedup-aware probe must be able to recognise an already-subscribed
     # security (it consumes no new line) — the `contains_key` short-circuit.
-    if "contains_key" not in _compact(impl):
+    if "contains_key" not in compact_impl:
         fail(
             f"impl {trait} for {struct}::try_acquire must short-circuit on an "
             "already-subscribed security (contains_key) so a duplicate consumes no new line"
         )
+    # try_acquire must CANONICALIZE the request (request.security_key()) and
+    # fail closed on an uncanonicalizable one, so the SRS-MD-002 gate cannot
+    # falsely admit an option / empty-symbol request that subscribe rejects.
+    if "request.security_key()" not in compact_impl:
+        fail(
+            f"impl {trait} for {struct}::try_acquire must canonicalize via "
+            "request.security_key() and fail closed on an uncanonicalizable request "
+            "(otherwise the gate falsely admits an unsupported option)"
+        )
     return (
         f"atp-market-data: {struct} IS the concrete {trait} "
         f"({', '.join(spec['line_counter_impl_methods'])}); try_acquire is dedup-aware "
-        "(an existing symbol consumes no new line) — closes subscription_limit_contract "
-        "deferral 'owner: SRS-MD-001'"
+        "(an existing symbol consumes no new line) and fails closed on an "
+        "uncanonicalizable request — closes subscription_limit_contract deferral "
+        "'owner: SRS-MD-001'"
     )
 
 
