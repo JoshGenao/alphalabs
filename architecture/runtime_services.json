@@ -3305,5 +3305,180 @@
         "what": "Distinguishing an UNSUPPORTED / uncanonicalizable security identity from genuine line-capacity exhaustion at the SRS-MD-002 gate. try_acquire fails closed by returning ExceededLimit for an option / empty-symbol request, so the gate REJECTS it correctly (no false acceptance) but labels it SUBSCRIPTION_LIMIT_REACHED and emits a SubscriptionLimitEvent even below capacity. A precise unsupported/invalid-identity error requires either widening SubscriptionLineCounter::try_acquire to a typed result or adding a pre-probe validation stage to MarketDataSubscriptionManager::request_subscription (both MD-002 gate surface) — and lands naturally with the option-support features (which make options representable) plus the operator-interface runtime (which surfaces alerts). Deferred per the user's scope decision: raised by /codex:adversarial-review round-4 [medium]; the request is already rejected fail-closed (safe), and the runtime that would surface a misleading alert does not exist yet (SRS-MD-001 stays passes:false)."
       }
     ]
+  },
+  "hot_swap_demotion_contract": {
+    "requirement": "ERR-7",
+    "srs_refs": [
+      "SRS-RESV-004"
+    ],
+    "syrs_refs": [
+      "SYS-49b",
+      "SYS-49c"
+    ],
+    "strs_refs": [
+      "SN-1.25"
+    ],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "orchestrator_crate": {
+      "crate": "atp-orchestrator",
+      "path": "crates/atp-orchestrator"
+    },
+    "demotion_request": {
+      "struct": "HotSwapDemotionRequest",
+      "required_fields": [
+        "demoting_strategy_id",
+        "candidate_strategy_id",
+        "timeout_seconds"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "ib_order_id",
+        "tick_id",
+        "databento_dataset",
+        "sharadar_table",
+        "raw_parquet_path",
+        "vendor_credentials",
+        "container_id",
+        "docker_image"
+      ]
+    },
+    "demotion_outcome": {
+      "enum": "HotSwapDemotionOutcome",
+      "variants": [
+        "FlatBeforeTimeout",
+        "TimedOutDemotionPending"
+      ]
+    },
+    "operator_alert_channel": {
+      "enum": "OperatorAlertChannel",
+      "variants": [
+        "Dashboard",
+        "Email",
+        "Sms"
+      ]
+    },
+    "operator_alert_event": {
+      "struct": "OperatorAlertEvent",
+      "required_fields": [
+        "demoting_strategy_id",
+        "candidate_strategy_id",
+        "channels",
+        "elapsed_seconds",
+        "timeout_seconds",
+        "observed_at_seconds"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "ib_order_id",
+        "tick_id",
+        "databento_dataset",
+        "sharadar_table",
+        "raw_parquet_path",
+        "vendor_credentials",
+        "container_id",
+        "docker_image"
+      ]
+    },
+    "side_effect_outcome": {
+      "enum": "SideEffectOutcome",
+      "variants": [
+        "NotAttempted",
+        "Succeeded",
+        "Failed"
+      ]
+    },
+    "demotion_event": {
+      "struct": "HotSwapDemotionEvent",
+      "required_fields": [
+        "outcome",
+        "demoting_strategy_id",
+        "candidate_strategy_id",
+        "promotion_blocked",
+        "liquidation_cancel",
+        "operator_alert",
+        "observed_at_seconds"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "ib_order_id",
+        "tick_id",
+        "databento_dataset",
+        "sharadar_table",
+        "raw_parquet_path",
+        "vendor_credentials",
+        "container_id",
+        "docker_image"
+      ]
+    },
+    "liquidation_probe_port": {
+      "trait": "HotSwapLiquidationProbe",
+      "methods": [
+        "await_flat_or_timeout"
+      ]
+    },
+    "unfilled_order_canceller_port": {
+      "trait": "UnfilledOrderCanceller",
+      "methods": [
+        "cancel_unfilled_liquidation_orders"
+      ]
+    },
+    "operator_alert_sink_port": {
+      "trait": "OperatorAlertSink",
+      "methods": [
+        "dispatch"
+      ]
+    },
+    "demotion_event_sink_port": {
+      "trait": "HotSwapDemotionEventSink",
+      "methods": [
+        "record"
+      ]
+    },
+    "entry_point": {
+      "method": "resolve_demotion",
+      "type": "StrategyOrchestrator"
+    },
+    "guard": {
+      "outcome_enum": "HotSwapDemotionOutcome",
+      "flat_variant": "FlatBeforeTimeout",
+      "timeout_variant": "TimedOutDemotionPending",
+      "probe_call": "liquidation.await_flat_or_timeout",
+      "cancel_call": "canceller.cancel_unfilled_liquidation_orders",
+      "alert_call": "alerts.dispatch",
+      "event_call": "events.record",
+      "accepted_struct": "HotSwapDemotionResolved",
+      "error_factory": "StructuredHotSwapDemotionError::demotion_timeout",
+      "alert_channels": [
+        "OperatorAlertChannel::Dashboard",
+        "OperatorAlertChannel::Email",
+        "OperatorAlertChannel::Sms"
+      ],
+      "forbidden_promotions": [
+        "promote",
+        "complete_swap",
+        "go_live",
+        "mark_promoted",
+        "set_live",
+        "transition_to_live",
+        "candidate.go_live"
+      ]
+    },
+    "rejection_category": "HotSwapDemotionTimeout",
+    "rejection_wire_string": "HOT_SWAP_DEMOTION_TIMEOUT",
+    "deferred": [
+      "Concrete HotSwapLiquidationProbe driving the real SRS-RESV-004 demotion sequence (stop new signals, cancel resting IB orders, submit liquidation orders) and the 60-second async wait loop awaiting flat confirmation (owner: SRS-RESV-003 / SRS-RESV-004 / SRS-RESV-006 Hot-Swap runtime) \u2014 the slice models only the binary outcome the loop produces.",
+      "Full probe outcome-consistency hardening: the gate normalises a FlatBeforeTimeout-over-deadline into a timeout (fail closed toward blocking promotion — always safe), but it does NOT defend the inverse — a TimedOutDemotionPending reported before request.timeout_seconds elapses (or with a mismatched timeout_seconds) would fire the destructive unfilled-order cancel early and return a misleading 'liquidation timeout'. Handling that correctly requires a distinct probe-inconsistency rejection that blocks promotion WITHOUT the premature cancel (block-without-cancel vs block-with-cancel), which is the deferred Hot-Swap runtime's richer demotion semantics. Until then the probe's outcome-consistency (flat ⟹ within deadline; timeout ⟹ at/after the deadline with a matching timeout_seconds) is the HotSwapLiquidationProbe contract precondition; the shipped slice has no concrete probe so none can violate it. Raised by /codex:adversarial-review round-4 [high]; deferred per the user's scope decision (owner: SRS-RESV-003 / SRS-RESV-004 / SRS-RESV-006 Hot-Swap runtime probe).",
+      "Durable demotion-pending lockout + manual-resolution clearing: resolve_demotion is a STATELESS single-attempt decision surface \u2014 on timeout it cancels, alerts, records, fails closed, and blocks promotion for THAT call, but it does not persist a demotion-pending lock keyed by the attempt, so SRS-RESV-004's 'promotion is blocked until manual resolution' is not enforced across a later retry whose probe reports flat. The persistent demotion-pending store/registry (written before the timeout error, consulted before accepting any later flat result) plus the operator manual-resolution command that clears it are the deferred Hot-Swap runtime (owner: SRS-RESV-003 / SRS-RESV-004 / SRS-RESV-006 state machine + the SRS-API-001 manual-resolution operator workflow) \u2014 the same promote/demote/rollback subsystem tracked by the skipped tests/domain/test_single_live_invariant.py. Raised by /codex:adversarial-review round-3 [high]; deferred per the user's scope decision (building the stateful lockout here would expand the SDK-surface slice into the multi-session Hot-Swap runtime; ERR-7 stays passes:false).",
+      "Concrete UnfilledOrderCanceller routing the timeout-branch cancel to the IB adapter's BrokerageAdapter::cancel_order (owner: SRS-EXE-006 + the atp-adapters IB integration). The port is fallible (returns Result<(), HotSwapSideEffectError>) and resolve_demotion records the outcome on HotSwapDemotionEvent.liquidation_cancel; the typed CONNECTIVITY_BLOCKED / STALE_DATA_BLOCKED / transport-timeout failure taxonomy (vs today's reason-string HotSwapSideEffectError) lands with the IB-cancel runtime.",
+      "Concrete OperatorAlertSink email/SMS transport \u2014 atp-notification is a stub today; the dashboard/email/SMS dispatcher is the deferred SRS-NOTIF-001 fan-out. The port is fallible (returns Result<(), HotSwapSideEffectError>) and resolve_demotion records the outcome on HotSwapDemotionEvent.operator_alert; the typed transport-failure taxonomy lands with the SRS-NOTIF-001 dispatcher.",
+      "SRS-LOG-001 persistent sink consuming HotSwapDemotionEvent (the Hot-Swap demotion/promotion log event class) and SRS-UI-001 dashboard demotion-pending pane (UI-5 'inspect demotion-pending state').",
+      "SRS-API-001 /api/v1/hot-swap REST handler + 'hot-swap' CLI body that drive resolve_demotion and surface the demotion-pending / promotion-blocked state to the operator (owner: SRS-RESV-003 live sequencing)."
+    ]
   }
 }

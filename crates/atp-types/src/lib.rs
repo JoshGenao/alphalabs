@@ -105,6 +105,7 @@ pub enum OrderErrorCategory {
     ResourceProfileInvalid,
     HostMemorySafetyMarginBreach,
     DeployedVersionInvalid,
+    HotSwapDemotionTimeout,
 }
 
 impl OrderErrorCategory {
@@ -123,6 +124,7 @@ impl OrderErrorCategory {
             Self::ResourceProfileInvalid => "RESOURCE_PROFILE_INVALID",
             Self::HostMemorySafetyMarginBreach => "HOST_MEMORY_SAFETY_MARGIN_BREACH",
             Self::DeployedVersionInvalid => "DEPLOYED_VERSION_INVALID",
+            Self::HotSwapDemotionTimeout => "HOT_SWAP_DEMOTION_TIMEOUT",
         }
     }
 }
@@ -1966,6 +1968,210 @@ impl fmt::Display for StructuredOrchestratorError {
 
 impl std::error::Error for StructuredOrchestratorError {}
 
+// --------------------------------------------------------------------------- //
+// Hot-Swap demotion liquidation-timeout types (ERR-7, SRS-RESV-004)
+// (SyRS SYS-49b / SYS-49c; StRS SN-1.25)
+// --------------------------------------------------------------------------- //
+//
+// SRS-RESV-004 requires Hot-Swap demotion to run before promotion: the
+// current live strategy stops new signals, cancels resting IB orders,
+// submits liquidation orders, and waits for flat confirmation OR a
+// configured timeout (default 60 seconds). On flat-before-timeout the swap
+// proceeds to paper normally; ON TIMEOUT the swap enters demotion-pending
+// state, dashboard/email/SMS notifications are sent, the unfilled
+// liquidation order is canceled, and promotion is blocked until manual
+// resolution.
+//
+// This SDK surface models only the timeout *decision point* — a binary
+// outcome mirroring `LaunchReadiness` (the unbuilt 60 s async wait loop,
+// the real IB cancel, and the real email/SMS transport are the deferred
+// runtime, enumerated in `architecture/runtime_services.json`
+// `hot_swap_demotion_contract.deferred[]`). The orchestrator's
+// `resolve_demotion` gate matches on `HotSwapDemotionOutcome` and triggers
+// the demotion-pending side effects (cancel + alert + promotion-block)
+// ONLY on the `TimedOutDemotionPending` branch.
+//
+// `HotSwapDemotionRequest` is the source-neutral demotion envelope: it
+// names the demoting (currently-live) strategy and the candidate awaiting
+// promotion, plus the configured timeout. It deliberately omits every
+// broker / IB-order / vendor / container identifier — the unfilled-order
+// cancel flows through the `UnfilledOrderCanceller` port, not a field on
+// the envelope.
+//
+// `OperatorAlertChannel` types SRS-RESV-004's dashboard/email/SMS triad;
+// `OperatorAlertEvent` is the structured notification payload carrying all
+// three channels so the contract can assert the full fan-out was
+// requested. `HotSwapDemotionEvent` is the structured state-transition
+// record for the dashboard/log fan-out, carrying the outcome and the
+// `promotion_blocked` flag.
+//
+// `StructuredHotSwapDemotionError` is the rejection envelope. It reuses
+// `OrderErrorCategory::HotSwapDemotionTimeout` as the single source of
+// truth for the SyRS SYS-64 wire string. The envelope is distinct from the
+// order / subscription / ingestion / pacing / orchestrator-launch errors
+// because a Hot-Swap demotion is none of those — synthesising one would
+// lie to downstream consumers.
+
+/// SRS-RESV-004 default Hot-Swap demotion liquidation timeout (seconds).
+/// Carried explicitly on every request/event so a re-tuned timeout cannot
+/// drift away from the payload the dashboard renders.
+pub const HOT_SWAP_DEMOTION_TIMEOUT_SECONDS: u64 = 60;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HotSwapDemotionOutcome {
+    FlatBeforeTimeout { elapsed_seconds: u64 },
+    TimedOutDemotionPending { elapsed_seconds: u64, timeout_seconds: u64 },
+}
+
+impl HotSwapDemotionOutcome {
+    pub const fn is_demotion_pending(self) -> bool {
+        matches!(self, Self::TimedOutDemotionPending { .. })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotSwapDemotionRequest {
+    pub demoting_strategy_id: StrategyId,
+    pub candidate_strategy_id: StrategyId,
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OperatorAlertChannel {
+    Dashboard,
+    Email,
+    Sms,
+}
+
+impl OperatorAlertChannel {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Dashboard => "DASHBOARD",
+            Self::Email => "EMAIL",
+            Self::Sms => "SMS",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorAlertEvent {
+    pub demoting_strategy_id: StrategyId,
+    pub candidate_strategy_id: StrategyId,
+    pub channels: Vec<OperatorAlertChannel>,
+    pub elapsed_seconds: u64,
+    pub timeout_seconds: u64,
+    pub observed_at_seconds: u64,
+}
+
+/// Observable outcome of a timeout-branch side effect (the unfilled-order
+/// cancel and the operator-alert dispatch). Per SRS-RESV-004 the cancel
+/// routes to the IB adapter and the alert to the email/SMS transport —
+/// both are fallible IO in the deferred runtime, so the gate records the
+/// outcome on `HotSwapDemotionEvent` rather than treating the side effect
+/// as infallible: a failed cancel could otherwise leave a live liquidation
+/// order, and a missed alert could leave the operator unpaged, each
+/// indistinguishable from success. `NotAttempted` is the flat-branch value
+/// (no cancel / no alert is required when the demotion reaches flat in
+/// time). The typed CONNECTIVITY_BLOCKED / STALE_DATA_BLOCKED / timeout
+/// failure taxonomy is the deferred runtime's concern; this enum records
+/// only whether the side effect was not attempted, succeeded, or failed
+/// (carrying the reason so the failure is observable end to end).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SideEffectOutcome {
+    NotAttempted,
+    Succeeded,
+    Failed { reason: String },
+}
+
+impl SideEffectOutcome {
+    pub fn is_failed(&self) -> bool {
+        matches!(self, Self::Failed { .. })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotSwapDemotionEvent {
+    pub outcome: HotSwapDemotionOutcome,
+    pub demoting_strategy_id: StrategyId,
+    pub candidate_strategy_id: StrategyId,
+    pub promotion_blocked: bool,
+    /// SRS-RESV-004 observability: the outcome of the unfilled-liquidation-
+    /// order cancel on the timeout branch (`NotAttempted` on the flat
+    /// branch). A `Failed` value means a live order may remain — the
+    /// dashboard / log surface must not read a timeout demotion as "cleanly
+    /// liquidated" without inspecting this field.
+    pub liquidation_cancel: SideEffectOutcome,
+    /// SRS-RESV-004 observability: the outcome of the dashboard/email/SMS
+    /// operator-alert dispatch on the timeout branch (`NotAttempted` on the
+    /// flat branch). A `Failed` value means the operator may not have been
+    /// paged.
+    pub operator_alert: SideEffectOutcome,
+    pub observed_at_seconds: u64,
+}
+
+/// SRS-RESV-004 / SyRS SYS-49b / SYS-49c structured rejection envelope.
+/// Carries the SyRS SYS-64 error category, the discriminator string, a
+/// human-readable message, and the unchanged original demotion request.
+/// The category is constrained at construction to
+/// `OrderErrorCategory::HotSwapDemotionTimeout`; the factory enforces that
+/// invariant in debug builds so a future caller cannot smuggle a different
+/// category through this envelope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuredHotSwapDemotionError {
+    pub category: OrderErrorCategory,
+    pub error_type: String,
+    pub message: String,
+    pub original_request: HotSwapDemotionRequest,
+}
+
+impl StructuredHotSwapDemotionError {
+    /// Build a `HOT_SWAP_DEMOTION_TIMEOUT` rejection. `elapsed_seconds` is
+    /// the time the liquidation probe reported before the deadline fired;
+    /// `timeout_seconds` is the configured timeout that was breached
+    /// (defaults to `HOT_SWAP_DEMOTION_TIMEOUT_SECONDS` but is carried
+    /// explicitly so a re-tuned timeout cannot drift away from the payload).
+    pub fn demotion_timeout(
+        request: HotSwapDemotionRequest,
+        elapsed_seconds: u64,
+        timeout_seconds: u64,
+    ) -> Self {
+        let category = OrderErrorCategory::HotSwapDemotionTimeout;
+        debug_assert!(
+            matches!(category, OrderErrorCategory::HotSwapDemotionTimeout),
+            "StructuredHotSwapDemotionError must carry HotSwapDemotionTimeout"
+        );
+        let message = format!(
+            "SRS-RESV-004 + SyRS SYS-49b / SYS-49c: hot-swap demotion of strategy \
+             {demoting} (candidate {candidate}) liquidation timed out — {elapsed} s \
+             elapsed, {timeout} s permitted; entering demotion-pending, promotion blocked",
+            demoting = request.demoting_strategy_id.as_str(),
+            candidate = request.candidate_strategy_id.as_str(),
+            elapsed = elapsed_seconds,
+            timeout = timeout_seconds,
+        );
+        Self {
+            category,
+            error_type: "HotSwapDemotionTimeout".to_string(),
+            message,
+            original_request: request,
+        }
+    }
+}
+
+impl fmt::Display for StructuredHotSwapDemotionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "[{}] {}: {}",
+            self.category.as_str(),
+            self.error_type,
+            self.message
+        )
+    }
+}
+
+impl std::error::Error for StructuredHotSwapDemotionError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2032,6 +2238,73 @@ mod tests {
             OrderErrorCategory::IngestionPacingBudgetExceeded.as_str(),
             "INGESTION_PACING_BUDGET_EXCEEDED"
         );
+        assert_eq!(
+            OrderErrorCategory::HotSwapDemotionTimeout.as_str(),
+            "HOT_SWAP_DEMOTION_TIMEOUT"
+        );
+    }
+
+    #[test]
+    fn hot_swap_demotion_outcome_distinguishes_flat_from_timeout() {
+        // SRS-RESV-004: only the timeout branch enters demotion-pending.
+        let flat = HotSwapDemotionOutcome::FlatBeforeTimeout {
+            elapsed_seconds: 12,
+        };
+        let timed_out = HotSwapDemotionOutcome::TimedOutDemotionPending {
+            elapsed_seconds: 60,
+            timeout_seconds: HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+        };
+        assert!(!flat.is_demotion_pending());
+        assert!(timed_out.is_demotion_pending());
+        assert_eq!(HOT_SWAP_DEMOTION_TIMEOUT_SECONDS, 60);
+    }
+
+    #[test]
+    fn operator_alert_channel_wire_strings_cover_the_resv_004_triad() {
+        // SRS-RESV-004: notifications are sent over dashboard, email, and SMS.
+        assert_eq!(OperatorAlertChannel::Dashboard.as_str(), "DASHBOARD");
+        assert_eq!(OperatorAlertChannel::Email.as_str(), "EMAIL");
+        assert_eq!(OperatorAlertChannel::Sms.as_str(), "SMS");
+    }
+
+    #[test]
+    fn structured_hot_swap_demotion_error_pins_category_and_traces_srs() {
+        let request = HotSwapDemotionRequest {
+            demoting_strategy_id: StrategyId::new("live-momentum"),
+            candidate_strategy_id: StrategyId::new("paper-reversal"),
+            timeout_seconds: HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+        };
+        let error = StructuredHotSwapDemotionError::demotion_timeout(
+            request.clone(),
+            72,
+            HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+        );
+        assert_eq!(error.category, OrderErrorCategory::HotSwapDemotionTimeout);
+        assert_eq!(error.category.as_str(), "HOT_SWAP_DEMOTION_TIMEOUT");
+        assert_eq!(error.error_type, "HotSwapDemotionTimeout");
+        assert_eq!(error.original_request, request);
+        assert!(error.message.contains("SRS-RESV-004"));
+        assert!(error.message.contains("SYS-49b"));
+        assert!(error.message.contains("SYS-49c"));
+        assert!(error.message.contains("live-momentum"));
+        assert!(error.message.contains("paper-reversal"));
+        assert!(error.message.contains("72"));
+        assert!(error.message.contains("60"));
+        // Display renders the SyRS SYS-64 wire string in the bracket prefix.
+        assert!(error.to_string().starts_with("[HOT_SWAP_DEMOTION_TIMEOUT]"));
+    }
+
+    #[test]
+    fn side_effect_outcome_makes_a_failed_cancel_observable() {
+        // SRS-RESV-004: a failed timeout-branch side effect must be
+        // distinguishable from success on the demotion event.
+        assert!(!SideEffectOutcome::NotAttempted.is_failed());
+        assert!(!SideEffectOutcome::Succeeded.is_failed());
+        let failed = SideEffectOutcome::Failed {
+            reason: "IB cancel timed out".to_string(),
+        };
+        assert!(failed.is_failed());
+        assert_ne!(failed, SideEffectOutcome::Succeeded);
     }
 
     #[test]

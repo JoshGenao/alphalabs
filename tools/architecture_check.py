@@ -28,6 +28,10 @@ from historical_data_check import (
     HistoricalDataCheckError,
     assert_unified_historical_data_static,
 )
+from hot_swap_demotion_check import (
+    HotSwapDemotionCheckError,
+    assert_hot_swap_demotion_static,
+)
 from ingestion_validation_check import (
     IngestionValidationCheckError,
     assert_ingestion_validation_static,
@@ -457,6 +461,25 @@ def assert_pacing_budget(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_hot_swap_demotion(config: dict) -> list[str]:
+    block = config.get("hot_swap_demotion_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_hot_swap_demotion_static(config, ROOT)
+    summary = (
+        f"{block['orchestrator_crate']['crate']} gates Hot-Swap demotion on "
+        f"{block['demotion_outcome']['enum']} "
+        f"({len(block['demotion_outcome']['variants'])} outcomes): the timeout "
+        f"branch cancels the unfilled order, dispatches the operator alert over "
+        f"{len(block['operator_alert_channel']['variants'])} channels "
+        f"({', '.join(block['operator_alert_channel']['variants'])}), records "
+        f"{block['demotion_event']['struct']}, and blocks promotion (ERR-7, "
+        "SRS-RESV-004, SyRS SYS-49b / SYS-49c)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_orchestrator_lifecycle(config: dict) -> list[str]:
     block = config.get("orchestrator_lifecycle_contract")
     if block is None:
@@ -720,6 +743,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_pacing_budget(config))
     except PacingBudgetCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_hot_swap_demotion(config))
+    except HotSwapDemotionCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_orchestrator_lifecycle(config))

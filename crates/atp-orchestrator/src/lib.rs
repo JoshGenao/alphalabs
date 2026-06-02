@@ -1,8 +1,10 @@
 use atp_types::{
     ContainerHealthEvent, ContainerHealthState, ContainerLifecycleAction, DeployedVersion,
-    HostMemorySafetyMargin, HostMemorySafetyMarginError, LaunchReadiness, RegisteredWorkload,
-    ResourceProfile, ResourceProfileError, RuntimeService, StrategyId, StrategyLaunchOutcome,
-    StrategyLaunchRequest, StrategyMode, StructuredOrchestratorError, WorkloadAdmissionEvent,
+    HostMemorySafetyMargin, HostMemorySafetyMarginError, HotSwapDemotionEvent,
+    HotSwapDemotionOutcome, HotSwapDemotionRequest, LaunchReadiness, OperatorAlertChannel,
+    OperatorAlertEvent, RegisteredWorkload, ResourceProfile, ResourceProfileError, RuntimeService,
+    SideEffectOutcome, StrategyId, StrategyLaunchOutcome, StrategyLaunchRequest, StrategyMode,
+    StructuredHotSwapDemotionError, StructuredOrchestratorError, WorkloadAdmissionEvent,
     WorkloadAdmissionReason, WorkloadId, WorkloadKind, WorkloadPriority,
     HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT, RESOURCE_PROFILE_CPU_CEILING_HUNDREDTHS,
     RESOURCE_PROFILE_CPU_FLOOR_HUNDREDTHS, STRATEGY_STARTUP_DEADLINE_MS,
@@ -454,6 +456,167 @@ pub trait HealthCheckEventSink {
     fn record(&self, event: ContainerHealthEvent);
 }
 
+// --------------------------------------------------------------------------- //
+// Hot-Swap demotion liquidation-timeout ports (ERR-7, SRS-RESV-004)
+// (SyRS SYS-49b / SYS-49c; StRS SN-1.25)
+// --------------------------------------------------------------------------- //
+//
+// SRS-RESV-004 requires Hot-Swap demotion to run before promotion: the
+// current live strategy stops new signals, cancels resting IB orders,
+// submits liquidation orders, and waits for flat confirmation OR the
+// configured 60 s timeout. The orchestrator owns the demotion→promotion
+// ordering, so the `resolve_demotion` gate and the ports it consumes live
+// here (not in `atp-types`) for the same dependency-direction reason the
+// lifecycle ports do (SRS-ARCH-002): placing them in the type crate would
+// invert the boundary. Lower-layer crates MUST NOT import
+// `atp_orchestrator` (enforced by `tools/dependency_boundary_check.py`).
+//
+// Four ports mediate the timeout decision:
+//
+//   * `HotSwapLiquidationProbe` — the timing authority. Returns a
+//     `HotSwapDemotionOutcome` discriminating `FlatBeforeTimeout` from
+//     `TimedOutDemotionPending` so the gate matches on the decision
+//     without re-implementing the 60 s async wait loop (deferred runtime).
+//     Read-only — no mutators, so the gate cannot promote through this port.
+//
+//   * `UnfilledOrderCanceller` — the SRS-RESV-004 "cancel the unfilled
+//     liquidation order" action. The concrete impl routes to the IB
+//     adapter's `cancel_order` (deferred runtime); the gate calls it ONLY
+//     on the timeout branch.
+//
+//   * `OperatorAlertSink` — the SRS-RESV-004 dashboard/email/SMS
+//     notification fan-out. Fire-and-forget (mirrors `HealthCheckEventSink`):
+//     the demotion-pending decision is irreversible once the timeout fires,
+//     so an alert-dispatch failure does not roll it back. The concrete
+//     email/SMS transport is the deferred SRS-NOTIF-001 dispatcher
+//     (`atp-notification`, today a stub) — kept behind this port so
+//     `atp-orchestrator` does not depend on `atp-notification`.
+//
+//   * `HotSwapDemotionEventSink` — the structured state-transition audit
+//     record for the dashboard/log fan-out (the deferred SRS-LOG-001 /
+//     SRS-UI-001 consumers). Recorded on BOTH arms so the dashboard sees
+//     "flat, swap proceeded" and "timed out, demotion-pending" alike.
+//
+// Concrete impls of all four ports are the deferred runtime, enumerated in
+// `architecture/runtime_services.json` `hot_swap_demotion_contract.deferred[]`.
+
+pub trait HotSwapLiquidationProbe {
+    /// Await flat confirmation OR the configured timeout. Returns
+    /// `FlatBeforeTimeout { elapsed_seconds }` if live positions reach
+    /// flat within `request.timeout_seconds`, or
+    /// `TimedOutDemotionPending { elapsed_seconds, timeout_seconds }` if
+    /// the deadline is breached. The orchestrator's `resolve_demotion`
+    /// gate matches on the returned `HotSwapDemotionOutcome` so it never
+    /// re-implements the wait-loop timing (the probe is the source of
+    /// truth). No mutators: the gate cannot promote through this port.
+    fn await_flat_or_timeout(&self, request: &HotSwapDemotionRequest) -> HotSwapDemotionOutcome;
+}
+
+pub trait UnfilledOrderCanceller {
+    /// SRS-RESV-004 "cancel the unfilled liquidation order". Called ONLY on
+    /// the `TimedOutDemotionPending` branch of `resolve_demotion`. The
+    /// concrete impl routes to the IB adapter's `cancel_order` (deferred
+    /// runtime). Returns `Result` so an IB-cancel failure is surfaced rather
+    /// than silently dropped: a failed cancel can leave a live liquidation
+    /// order, which must be observable to the operator. The gate does NOT
+    /// abort on failure (the timeout already blocks promotion) — it records
+    /// the outcome on `HotSwapDemotionEvent::liquidation_cancel`.
+    fn cancel_unfilled_liquidation_orders(
+        &self,
+        request: &HotSwapDemotionRequest,
+    ) -> Result<(), HotSwapSideEffectError>;
+}
+
+pub trait OperatorAlertSink {
+    /// SRS-RESV-004 dashboard/email/SMS notification dispatch. Called ONLY
+    /// on the `TimedOutDemotionPending` branch. Returns `Result` so a
+    /// transport failure (email/SMS unreachable, dashboard channel down) is
+    /// surfaced rather than silently dropped — a missed page on a liquidation
+    /// timeout is itself a safety event. The gate does NOT abort on failure
+    /// (the demotion-pending decision is irreversible once the timeout
+    /// fires); it records the outcome on
+    /// `HotSwapDemotionEvent::operator_alert`. The concrete email/SMS
+    /// transport is the deferred SRS-NOTIF-001 dispatcher.
+    fn dispatch(&self, event: OperatorAlertEvent) -> Result<(), HotSwapSideEffectError>;
+}
+
+/// ERR-7 / SRS-RESV-004 side-effect failure surface for the timeout-branch
+/// IB-cancel and operator-alert ports. Mirrors `WorkloadEventSinkError`:
+/// carries a short reason string for now; the typed CONNECTIVITY_BLOCKED /
+/// STALE_DATA_BLOCKED / transport-timeout taxonomy is added when the
+/// concrete IB-cancel (`atp-adapters`) and email/SMS (`atp-notification`)
+/// runtimes land (named in the contract's `deferred[]`). The orchestrator's
+/// `resolve_demotion` gate maps an `Err` into
+/// `SideEffectOutcome::Failed { reason }` on the demotion event so the
+/// failure is observable end to end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotSwapSideEffectError {
+    pub reason: String,
+}
+
+impl HotSwapSideEffectError {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for HotSwapSideEffectError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "SRS-RESV-004: hot-swap demotion side effect failed — {}",
+            self.reason,
+        )
+    }
+}
+
+impl std::error::Error for HotSwapSideEffectError {}
+
+/// Map a timeout-branch side-effect port result into the observable
+/// `SideEffectOutcome` recorded on `HotSwapDemotionEvent`. An `Err` is
+/// preserved as `Failed { reason }` (carrying the port's reason string) so
+/// the failure is surfaced on the audit event rather than silently dropped.
+fn into_outcome(result: Result<(), HotSwapSideEffectError>) -> SideEffectOutcome {
+    match result {
+        Ok(()) => SideEffectOutcome::Succeeded,
+        Err(error) => SideEffectOutcome::Failed {
+            reason: error.reason,
+        },
+    }
+}
+
+pub trait HotSwapDemotionEventSink {
+    /// Structured demotion state-transition record for the dashboard / log
+    /// fan-out (deferred SRS-LOG-001 / SRS-UI-001 consumers). Recorded on
+    /// both arms of `resolve_demotion`. Returns `Result` so a concrete sink
+    /// cannot silently swallow a publication failure (audit log unwritable,
+    /// dashboard channel disconnected, queue full) — the failure surfaces to
+    /// the concrete durable sink and any wrapping caller. The gate treats
+    /// emission as **best-effort** (mirrors `WorkloadEventSink`): the demotion
+    /// decision is already made and the safety side effects (cancel + alert)
+    /// have already been attempted, so a sink failure does not roll them back
+    /// or change the promotion-block outcome. Durable delivery (bounded queue
+    /// + journal/retry) is the deferred SRS-LOG-001 sink's responsibility.
+    fn record(&self, event: HotSwapDemotionEvent) -> Result<(), HotSwapSideEffectError>;
+}
+
+/// SRS-RESV-004 acceptance evidence: the demotion reached flat before the
+/// timeout, so promotion of the candidate is allowed. The `Err` counterpart
+/// (`StructuredHotSwapDemotionError`) is the only other outcome of
+/// `resolve_demotion`; a caller that promotes ONLY on `Ok` therefore blocks
+/// promotion on every timeout. `promotion_allowed` is carried explicitly
+/// (always `true` on this struct) so the dashboard / REST surface renders
+/// the gate decision without re-deriving it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotSwapDemotionResolved {
+    pub demoting_strategy_id: StrategyId,
+    pub candidate_strategy_id: StrategyId,
+    pub promotion_allowed: bool,
+    pub elapsed_seconds: u64,
+}
+
 impl StrategyOrchestrator {
     pub fn service(&self) -> RuntimeService {
         RuntimeService::StrategyOrchestrator
@@ -690,6 +853,188 @@ impl StrategyOrchestrator {
                     observed_at_seconds,
                 });
                 state
+            }
+        }
+    }
+
+    /// ERR-7 / SRS-RESV-004 Hot-Swap demotion liquidation-timeout gate.
+    /// Matches on the liquidation probe's `HotSwapDemotionOutcome`
+    /// classification of the demotion:
+    ///
+    ///   * `FlatBeforeTimeout` — live positions reached flat within the
+    ///     configured timeout. The swap proceeds to paper: the gate records
+    ///     a `HotSwapDemotionEvent` with `promotion_blocked = false` and
+    ///     returns `Ok(HotSwapDemotionResolved { promotion_allowed: true, .. })`.
+    ///     NO operator alert is dispatched and NO unfilled-order cancel is
+    ///     issued (there is nothing unfilled to cancel).
+    ///
+    ///   * `TimedOutDemotionPending` — the liquidation timed out. Per
+    ///     SRS-RESV-004 the gate cancels the unfilled liquidation order,
+    ///     dispatches the dashboard/email/SMS operator alert, records a
+    ///     `HotSwapDemotionEvent` with `promotion_blocked = true`, and
+    ///     refuses with a `StructuredHotSwapDemotionError` whose category is
+    ///     `OrderErrorCategory::HotSwapDemotionTimeout` (wire string
+    ///     `HOT_SWAP_DEMOTION_TIMEOUT`). Promotion is blocked because the
+    ///     caller promotes the candidate ONLY on `Ok`.
+    ///
+    /// **Invariants** (statically checked by
+    /// `tools/hot_swap_demotion_check.py`):
+    ///
+    /// * The `TimedOutDemotionPending` arm MUST call
+    ///   `canceller.cancel_unfilled_liquidation_orders(`,
+    ///   `alerts.dispatch(`, and `events.record(`, and MUST produce
+    ///   `OrderErrorCategory::HotSwapDemotionTimeout` (directly or via the
+    ///   `StructuredHotSwapDemotionError::demotion_timeout(` factory).
+    /// * The `TimedOutDemotionPending` arm MUST NOT construct
+    ///   `HotSwapDemotionResolved` and MUST NOT call any promotion path
+    ///   (`promote`, `complete_swap`, `go_live`, …) — a timed-out demotion
+    ///   is not an acceptance and must block promotion.
+    /// * The `FlatBeforeTimeout` arm MUST NOT call `alerts.dispatch(` or
+    ///   `canceller.cancel_unfilled_liquidation_orders(` — a clean,
+    ///   in-time demotion raises no operator alert and cancels nothing.
+    /// * `FlatBeforeTimeout` is the only call site of
+    ///   `HotSwapDemotionResolved {`.
+    ///
+    /// The `liquidation` probe is the timing authority for the 60 s async
+    /// wait loop (deferred runtime), but the gate does NOT blindly trust its
+    /// label: a `FlatBeforeTimeout` whose `elapsed_seconds` exceeds
+    /// `request.timeout_seconds` is a probe inconsistency (buggy or
+    /// version-skewed) and is **normalised to a timeout** so it cannot bypass
+    /// the promotion block (fail closed). This defends the safety-critical
+    /// direction — failing closed toward *blocking promotion* is always safe.
+    /// The inverse inconsistency (a `TimedOutDemotionPending` reported before
+    /// `request.timeout_seconds` elapses, or with a mismatched
+    /// `timeout_seconds`) is NOT normalised here: handling it correctly means
+    /// blocking promotion *without* firing the premature destructive cancel
+    /// and surfacing a distinct probe-inconsistency rejection (not a
+    /// misleading "liquidation timeout"), which is the deferred Hot-Swap
+    /// runtime's richer demotion semantics. Until then the probe's
+    /// outcome-consistency (flat ⟹ within deadline; timeout ⟹ at/after the
+    /// deadline with a matching `timeout_seconds`) is the probe's contract
+    /// precondition — see `hot_swap_demotion_contract.deferred[]`. (The
+    /// shipped slice has no concrete probe, so no real probe can violate
+    /// this; the spies in the L7 tests return consistent outcomes.)
+    ///
+    /// All three side effects are surfaced rather than swallowed: the cancel
+    /// and alert ports return `Result` and their outcomes are recorded on the
+    /// event (`SideEffectOutcome::Failed` preserves the reason); the event
+    /// sink also returns `Result`. Event emission is best-effort (mirrors
+    /// `WorkloadEventSink`) — the demotion decision is irreversible once the
+    /// timeout fires, so a sink failure does not roll back the cancel/alert
+    /// or change the promotion-block outcome; durable delivery is the
+    /// deferred SRS-LOG-001 sink's concern.
+    ///
+    /// **Scope — stateless single-attempt gate.** This gate decides ONE
+    /// demotion attempt: a timeout blocks promotion for THAT call (it returns
+    /// `Err`, and a caller promotes only on `Ok`). It does NOT persist a
+    /// demotion-pending lockout, so SRS-RESV-004's "promotion is blocked
+    /// until manual resolution" is not yet enforced across a later retry
+    /// whose probe reports flat. The durable demotion-pending store + the
+    /// operator manual-resolution command that clears it are the deferred
+    /// Hot-Swap runtime (SRS-RESV-003 / SRS-RESV-004 / SRS-RESV-006 — the
+    /// promote/demote/rollback subsystem tracked by the skipped
+    /// `tests/domain/test_single_live_invariant.py`), recorded in
+    /// `hot_swap_demotion_contract.deferred[]`.
+    pub fn resolve_demotion<P, C, A, E>(
+        &self,
+        request: HotSwapDemotionRequest,
+        liquidation: &P,
+        canceller: &C,
+        alerts: &A,
+        events: &E,
+        observed_at_seconds: u64,
+    ) -> Result<HotSwapDemotionResolved, StructuredHotSwapDemotionError>
+    where
+        P: HotSwapLiquidationProbe,
+        C: UnfilledOrderCanceller,
+        A: OperatorAlertSink,
+        E: HotSwapDemotionEventSink,
+    {
+        let reported = liquidation.await_flat_or_timeout(&request);
+        // Defense-in-depth fail-closed: the probe is the timing authority,
+        // but a FlatBeforeTimeout whose elapsed exceeds the configured
+        // timeout is a probe inconsistency (buggy / version-skewed). Normalise
+        // it to a timeout BEFORE the match so a mislabelled over-deadline
+        // demotion cannot bypass the promotion block.
+        let outcome = match reported {
+            HotSwapDemotionOutcome::FlatBeforeTimeout { elapsed_seconds }
+                if elapsed_seconds > request.timeout_seconds =>
+            {
+                HotSwapDemotionOutcome::TimedOutDemotionPending {
+                    elapsed_seconds,
+                    timeout_seconds: request.timeout_seconds,
+                }
+            }
+            other => other,
+        };
+        match outcome {
+            HotSwapDemotionOutcome::FlatBeforeTimeout { elapsed_seconds } => {
+                // SRS-RESV-004: positions reached flat in time — the swap
+                // proceeds. Record the audit transition (promotion NOT
+                // blocked) and return the acceptance; no alert, no cancel
+                // (both side effects are NotAttempted on this branch). Event
+                // emission is best-effort (see the gate Rustdoc).
+                let _ = events.record(HotSwapDemotionEvent {
+                    outcome,
+                    demoting_strategy_id: request.demoting_strategy_id.clone(),
+                    candidate_strategy_id: request.candidate_strategy_id.clone(),
+                    promotion_blocked: false,
+                    liquidation_cancel: SideEffectOutcome::NotAttempted,
+                    operator_alert: SideEffectOutcome::NotAttempted,
+                    observed_at_seconds,
+                });
+                Ok(HotSwapDemotionResolved {
+                    demoting_strategy_id: request.demoting_strategy_id,
+                    candidate_strategy_id: request.candidate_strategy_id,
+                    promotion_allowed: true,
+                    elapsed_seconds,
+                })
+            }
+            HotSwapDemotionOutcome::TimedOutDemotionPending {
+                elapsed_seconds,
+                timeout_seconds,
+            } => {
+                // SRS-RESV-004 timeout branch: cancel the unfilled
+                // liquidation order, notify the operator over all three
+                // channels, record the demotion-pending transition with
+                // promotion blocked, and refuse with the structured error.
+                // BOTH side effects are attempted unconditionally (a failed
+                // cancel must NOT suppress the operator page, and vice
+                // versa) and their outcomes are recorded on the event so a
+                // failed cancel / missed alert is observable rather than
+                // indistinguishable from success. Promotion is blocked
+                // regardless via the returned `Err`.
+                let liquidation_cancel =
+                    into_outcome(canceller.cancel_unfilled_liquidation_orders(&request));
+                let operator_alert = into_outcome(alerts.dispatch(OperatorAlertEvent {
+                    demoting_strategy_id: request.demoting_strategy_id.clone(),
+                    candidate_strategy_id: request.candidate_strategy_id.clone(),
+                    channels: vec![
+                        OperatorAlertChannel::Dashboard,
+                        OperatorAlertChannel::Email,
+                        OperatorAlertChannel::Sms,
+                    ],
+                    elapsed_seconds,
+                    timeout_seconds,
+                    observed_at_seconds,
+                }));
+                // Best-effort audit emission (see the gate Rustdoc): a sink
+                // failure does not roll back the cancel/alert above or change
+                // the promotion-block outcome below.
+                let _ = events.record(HotSwapDemotionEvent {
+                    outcome,
+                    demoting_strategy_id: request.demoting_strategy_id.clone(),
+                    candidate_strategy_id: request.candidate_strategy_id.clone(),
+                    promotion_blocked: true,
+                    liquidation_cancel,
+                    operator_alert,
+                    observed_at_seconds,
+                });
+                Err(StructuredHotSwapDemotionError::demotion_timeout(
+                    request,
+                    elapsed_seconds,
+                    timeout_seconds,
+                ))
             }
         }
     }
