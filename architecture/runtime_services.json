@@ -3480,5 +3480,199 @@
       "SRS-LOG-001 persistent sink consuming HotSwapDemotionEvent (the Hot-Swap demotion/promotion log event class) and SRS-UI-001 dashboard demotion-pending pane (UI-5 'inspect demotion-pending state').",
       "SRS-API-001 /api/v1/hot-swap REST handler + 'hot-swap' CLI body that drive resolve_demotion and surface the demotion-pending / promotion-blocked state to the operator (owner: SRS-RESV-003 live sequencing)."
     ]
+  },
+  "kill_switch_timeout_contract": {
+    "requirement": "ERR-8",
+    "srs_refs": [
+      "SRS-SAFE-002"
+    ],
+    "syrs_refs": [
+      "SYS-44b"
+    ],
+    "strs_refs": [
+      "SN-1.11"
+    ],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "execution_crate": {
+      "crate": "atp-execution",
+      "path": "crates/atp-execution"
+    },
+    "timeout_request": {
+      "struct": "KillSwitchTimeoutRequest",
+      "required_fields": [
+        "live_strategy_id",
+        "unfilled_order",
+        "timeout_seconds"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "ib_order_id",
+        "tick_id",
+        "databento_dataset",
+        "sharadar_table",
+        "raw_parquet_path",
+        "vendor_credentials",
+        "container_id",
+        "docker_image"
+      ]
+    },
+    "unfilled_order": {
+      "struct": "UnfilledLiquidationOrder",
+      "required_fields": [
+        "order_id",
+        "symbol",
+        "side",
+        "quantity"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "ib_order_id",
+        "tick_id",
+        "databento_dataset",
+        "sharadar_table",
+        "raw_parquet_path",
+        "vendor_credentials",
+        "container_id",
+        "docker_image"
+      ]
+    },
+    "liquidation_outcome": {
+      "enum": "KillSwitchLiquidationOutcome",
+      "variants": [
+        "FilledBeforeTimeout",
+        "TimedOutUnfilled"
+      ]
+    },
+    "operator_alert_channel": {
+      "enum": "OperatorAlertChannel",
+      "variants": [
+        "Email",
+        "Sms"
+      ]
+    },
+    "alert_event": {
+      "struct": "KillSwitchAlertEvent",
+      "required_fields": [
+        "live_strategy_id",
+        "unfilled_order",
+        "channels",
+        "elapsed_seconds",
+        "timeout_seconds",
+        "observed_at_seconds"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "ib_order_id",
+        "tick_id",
+        "databento_dataset",
+        "sharadar_table",
+        "raw_parquet_path",
+        "vendor_credentials",
+        "container_id",
+        "docker_image"
+      ]
+    },
+    "side_effect_outcome": {
+      "enum": "SideEffectOutcome",
+      "variants": [
+        "NotAttempted",
+        "Succeeded",
+        "Failed"
+      ]
+    },
+    "timeout_event": {
+      "struct": "KillSwitchTimeoutEvent",
+      "required_fields": [
+        "outcome",
+        "live_strategy_id",
+        "unfilled_order",
+        "manual_resolution_required",
+        "operator_alert",
+        "liquidation_cancel",
+        "ib_disconnect",
+        "observed_at_seconds"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "ib_order_id",
+        "tick_id",
+        "databento_dataset",
+        "sharadar_table",
+        "raw_parquet_path",
+        "vendor_credentials",
+        "container_id",
+        "docker_image"
+      ]
+    },
+    "liquidation_probe_port": {
+      "trait": "KillSwitchLiquidationProbe",
+      "methods": [
+        "await_filled_or_timeout"
+      ]
+    },
+    "operator_alert_sink_port": {
+      "trait": "KillSwitchOperatorAlertSink",
+      "methods": [
+        "dispatch"
+      ]
+    },
+    "ib_cleanup_port": {
+      "trait": "IbLiquidationCleanup",
+      "methods": [
+        "cancel_unfilled_liquidation_order",
+        "disconnect"
+      ]
+    },
+    "timeout_event_sink_port": {
+      "trait": "KillSwitchTimeoutEventSink",
+      "methods": [
+        "record"
+      ]
+    },
+    "entry_point": {
+      "method": "resolve_kill_switch_timeout",
+      "type": "ExecutionEngine"
+    },
+    "guard": {
+      "outcome_enum": "KillSwitchLiquidationOutcome",
+      "filled_variant": "FilledBeforeTimeout",
+      "timeout_variant": "TimedOutUnfilled",
+      "probe_call": "liquidation.await_filled_or_timeout",
+      "alert_call": "alerts.dispatch",
+      "cancel_call": "cleanup.cancel_unfilled_liquidation_order",
+      "disconnect_call": "cleanup.disconnect",
+      "event_call": "events.record",
+      "accepted_struct": "KillSwitchLiquidationResolved",
+      "error_factory": "StructuredKillSwitchTimeoutError::liquidation_timeout",
+      "probe_error_factory": "StructuredKillSwitchTimeoutError::probe_unavailable",
+      "alert_channels": [
+        "OperatorAlertChannel::Email",
+        "OperatorAlertChannel::Sms"
+      ],
+      "filled_forbidden_calls": [
+        "alerts.dispatch",
+        "cleanup.cancel_unfilled_liquidation_order",
+        "cleanup.disconnect"
+      ]
+    },
+    "rejection_category": "KillSwitchLiquidationTimeout",
+    "rejection_wire_string": "KILL_SWITCH_LIQUIDATION_TIMEOUT",
+    "deferred": [
+      "Concrete KillSwitchLiquidationProbe driving the real SRS-SAFE-001 QuantConnect Liquidate sequence (cancel all resting IB orders, submit market liquidation orders for every open live-strategy position, halt the paper simulation engines, disconnect from IB) and the 30-second async wait loop awaiting fill confirmation (owner: SRS-SAFE-001 kill-switch runtime + NFR-P3 5-second activation budget) — the slice models only the binary SRS-SAFE-002 timeout outcome the loop produces.",
+      "Typed KillSwitchProbeError taxonomy: the fill-confirmation probe returns Result<KillSwitchLiquidationOutcome, KillSwitchProbeError> so connectivity loss / order-state unavailability / probe timeout surface as a typed error (the gate fails closed via StructuredKillSwitchTimeoutError::probe_unavailable — distinct category KILL_SWITCH_LIQUIDATION_PROBE_UNAVAILABLE — taking NO automated cancel/disconnect on the unconfirmable order state). Today KillSwitchProbeError carries a reason string; the structured CONNECTIVITY_BLOCKED / order-state / transport-timeout variants land with the concrete probe runtime (owner: SRS-EXE-006 IB adapter). The operator notification + order resolution on the unconfirmable state are the caller's / deferred kill-switch runtime's responsibility.",
+      "Full probe outcome-consistency hardening: the gate normalises a FilledBeforeTimeout-over-deadline into a timeout (fail closed toward running the SYS-44b cleanup — the safe direction), but it does NOT defend the inverse — a TimedOutUnfilled reported before request.timeout_seconds elapses (or with a mismatched timeout_seconds) would fire the destructive cancel + disconnect early. Handling that correctly requires a distinct probe-inconsistency rejection without the premature cancel/disconnect, which is the deferred kill-switch runtime's richer semantics. Until then the probe's outcome-consistency (filled ⟹ within deadline; timeout ⟹ at/after the deadline with a matching timeout_seconds) is the KillSwitchLiquidationProbe contract precondition; the shipped slice has no concrete probe so none can violate it.",
+      "Durable post-timeout lockout: resolve_kill_switch_timeout is a STATELESS single-attempt decision surface — on timeout it pages, cancels, disconnects, records, and refuses for THAT call, but it does not persist a kill-switch lockout, so SYS-44b's 'the operator shall resolve remaining positions manually' is not enforced across a later retry. The persistent post-timeout store + operator manual-resolution command are the deferred kill-switch runtime (owner: SRS-SAFE-001 + the SRS-API-001 manual-resolution operator workflow).",
+      "Concrete IbLiquidationCleanup routing the timeout-branch cancel + disconnect to the IB adapter's BrokerageAdapter::cancel_order and disconnect (owner: SRS-EXE-006 + the atp-adapters IB integration). The port is fallible (returns Result<(), KillSwitchSideEffectError>) and resolve_kill_switch_timeout records each outcome on KillSwitchTimeoutEvent.liquidation_cancel / .ib_disconnect; the typed CONNECTIVITY_BLOCKED / transport-timeout failure taxonomy (vs today's reason-string KillSwitchSideEffectError) lands with the IB runtime.",
+      "Concrete KillSwitchOperatorAlertSink email/SMS transport — atp-notification is a stub today; the email/SMS dispatcher is the deferred SRS-NOTIF-001 fan-out. The port is fallible (returns Result<(), KillSwitchSideEffectError>) and resolve_kill_switch_timeout records the outcome on KillSwitchTimeoutEvent.operator_alert; the typed transport-failure taxonomy lands with the SRS-NOTIF-001 dispatcher.",
+      "SRS-LOG-001 persistent sink consuming KillSwitchTimeoutEvent (the kill-switch-activation log event class, SYS-61) and SRS-UI-001 dashboard kill-switch pane (UI-4 'see cancellation, liquidation submission, timeout, notification, and disconnect status').",
+      "SRS-SAFE-002 fault-injection scenario + performance test driving resolve_kill_switch_timeout through the live kill-switch + IB-adapter runtime; ERR-8 stays passes:false until that end-to-end path exists."
+    ]
   }
 }

@@ -1,8 +1,12 @@
 use atp_strategy_engine::StrategyRuntimeBoundary;
 use atp_types::{
-    ConnectivityEvent, ConnectivityState, MarketDataFreshness, OrderErrorCategory, OrderReceipt,
-    OrderSubmission, RuntimeService, StaleDataEvent, StrategyMode, StructuredOrderError,
+    ConnectivityEvent, ConnectivityState, KillSwitchAlertEvent, KillSwitchCleanupOutcome,
+    KillSwitchLiquidationOutcome, KillSwitchTimeoutEvent, KillSwitchTimeoutRequest,
+    MarketDataFreshness, OperatorAlertChannel, OrderErrorCategory, OrderReceipt, OrderSubmission,
+    RuntimeService, SideEffectOutcome, StaleDataEvent, StrategyMode,
+    StructuredKillSwitchTimeoutError, StructuredOrderError,
 };
+use std::fmt;
 
 #[derive(Debug, Default)]
 pub struct ExecutionEngine;
@@ -65,6 +69,223 @@ pub trait MarketDataFreshnessProbe {
 /// execution without a dependency on `atp-market-data`.
 pub trait StaleDataEventSink {
     fn record(&self, event: StaleDataEvent);
+}
+
+// --------------------------------------------------------------------------- //
+// Kill-switch liquidation-timeout ports (ERR-8, SRS-SAFE-002)
+// (SyRS SYS-44b; StRS SN-1.11)
+// --------------------------------------------------------------------------- //
+//
+// SRS-SAFE-002 is the kill-switch error path: when a liquidation order
+// submitted by the kill switch (SRS-SAFE-001) stays unfilled past the
+// configured timeout (default 30 s), the system logs the unfilled order
+// details, notifies the operator by email AND SMS, cancels the unfilled
+// liquidation order, and disconnects from IB. The execution engine owns
+// kill-switch behavior (SRS-ARCH-001 service map), so the
+// `resolve_kill_switch_timeout` gate and the ports it consumes live here —
+// NOT in `atp-types` (which would invert the dependency direction
+// SRS-ARCH-002) and NOT in `atp-orchestrator` (a higher layer that
+// `atp-execution` must not depend on). The ERR-7 Hot-Swap demotion gate
+// defines the analogous ports in `atp-orchestrator`; `atp-execution` cannot
+// import them, so it declares its own — reusing only the shared `atp-types`
+// vocabulary (`OperatorAlertChannel`, `SideEffectOutcome`).
+//
+// Four ports mediate the timeout decision:
+//
+//   * `KillSwitchLiquidationProbe` — the timing authority. Returns a
+//     `KillSwitchLiquidationOutcome` discriminating `FilledBeforeTimeout`
+//     from `TimedOutUnfilled` so the gate matches on the decision without
+//     re-implementing the 30 s async wait loop (deferred runtime). Read-only.
+//
+//   * `KillSwitchOperatorAlertSink` — the SYS-44b email/SMS page. Fallible
+//     so a missed page on a liquidation timeout (itself a safety event) is
+//     surfaced, not silently dropped.
+//
+//   * `IbLiquidationCleanup` — the two SYS-44b IB Gateway actions performed
+//     by the SAME adapter (deferred SRS-EXE-006), grouped under one owner:
+//     `cancel_unfilled_liquidation_order` ("cancel the unfilled liquidation
+//     order") and `disconnect` ("disconnect from IB"). Both fallible: a
+//     failed cancel can leave a live order and a failed disconnect can leave
+//     IB connected, each of which must be observable. (ERR-7 kept these as
+//     separate ports, but cancel + disconnect are operations on the one IB
+//     connection; grouping them keeps the gate at the same arity as
+//     `resolve_demotion` and maps cleanly to the single deferred adapter.)
+//
+//   * `KillSwitchTimeoutEventSink` — the structured audit record (the logged
+//     unfilled-order details + each side-effect outcome) for the deferred
+//     SRS-LOG-001 / SRS-UI-001 consumers. Recorded on BOTH arms.
+//
+// Concrete impls of all four ports are the deferred runtime, enumerated in
+// `architecture/runtime_services.json` `kill_switch_timeout_contract
+// .deferred[]`.
+
+pub trait KillSwitchLiquidationProbe {
+    /// Await fill confirmation OR the configured timeout. On success returns
+    /// `FilledBeforeTimeout { elapsed_seconds }` if the liquidation order
+    /// fills within `request.timeout_seconds`, or `TimedOutUnfilled
+    /// { elapsed_seconds, timeout_seconds }` if the deadline is breached. The
+    /// `resolve_kill_switch_timeout` gate matches on the returned
+    /// `KillSwitchLiquidationOutcome` so it never re-implements the wait-loop
+    /// timing. No mutators: the gate has no side-effecting path through it.
+    ///
+    /// Returns `Result` because fill confirmation is an IB-touching boundary:
+    /// the concrete probe (deferred SRS-EXE-006 runtime) can lose connectivity,
+    /// find the order state unavailable, or itself time out while awaiting
+    /// confirmation. Those degraded paths MUST surface as a typed error rather
+    /// than be misclassified as `FilledBeforeTimeout` (which would pretend a
+    /// liquidation that never confirmed succeeded) or `TimedOutUnfilled` (which
+    /// would fire the destructive cancel on an unconfirmable order state). The
+    /// gate handles the `Err` by failing closed WITHOUT any automated
+    /// order/session change — see `resolve_kill_switch_timeout`. The typed
+    /// connectivity / order-state / transport-timeout taxonomy (vs today's
+    /// reason-string `KillSwitchProbeError`) lands with the concrete probe
+    /// runtime (contract `deferred[]`).
+    fn await_filled_or_timeout(
+        &self,
+        request: &KillSwitchTimeoutRequest,
+    ) -> Result<KillSwitchLiquidationOutcome, KillSwitchProbeError>;
+}
+
+pub trait KillSwitchOperatorAlertSink {
+    /// SYS-44b email/SMS operator page. Called ONLY on the `TimedOutUnfilled`
+    /// branch. Returns `Result` so a transport failure (email/SMS
+    /// unreachable) is surfaced rather than silently dropped — a missed page
+    /// on a liquidation timeout is itself a safety event. The gate does NOT
+    /// abort on failure; it records the outcome on
+    /// `KillSwitchTimeoutEvent::operator_alert`. The concrete email/SMS
+    /// transport is the deferred SRS-NOTIF-001 dispatcher.
+    fn dispatch(&self, event: KillSwitchAlertEvent) -> Result<(), KillSwitchSideEffectError>;
+}
+
+pub trait IbLiquidationCleanup {
+    /// SYS-44b "cancel the unfilled liquidation order". Called ONLY on the
+    /// `TimedOutUnfilled` branch. The concrete impl routes to the IB
+    /// adapter's `cancel_order` (deferred SRS-EXE-006). Returns `Result` so
+    /// an IB-cancel failure is surfaced rather than silently dropped: a
+    /// failed cancel can leave a live liquidation order. The gate does NOT
+    /// abort on failure; it records the outcome on
+    /// `KillSwitchTimeoutEvent::liquidation_cancel`.
+    fn cancel_unfilled_liquidation_order(
+        &self,
+        request: &KillSwitchTimeoutRequest,
+    ) -> Result<(), KillSwitchSideEffectError>;
+
+    /// SYS-44b "disconnect from IB". Called ONLY on the `TimedOutUnfilled`
+    /// branch, after the cancel — the final safety action when a liquidation
+    /// will not fill. The concrete impl routes to the IB adapter's disconnect
+    /// (deferred SRS-EXE-006). Returns `Result` so a disconnect failure (IB
+    /// session wedged) is surfaced; the gate records the outcome on
+    /// `KillSwitchTimeoutEvent::ib_disconnect`. Distinct from
+    /// `BrokerageConnectivity::request_reconnect` (the opposite direction).
+    fn disconnect(&self) -> Result<(), KillSwitchSideEffectError>;
+}
+
+/// ERR-8 / SRS-SAFE-002 side-effect failure surface for the timeout-branch
+/// alert / cancel / disconnect ports. Mirrors `HotSwapSideEffectError`:
+/// carries a short reason string for now; the typed CONNECTIVITY_BLOCKED /
+/// transport-timeout taxonomy is added when the concrete IB-cancel/disconnect
+/// (`atp-adapters`, SRS-EXE-006) and email/SMS (`atp-notification`,
+/// SRS-NOTIF-001) runtimes land (named in the contract's `deferred[]`). The
+/// gate maps an `Err` into `SideEffectOutcome::Failed { reason }` on the
+/// audit event so the failure is observable end to end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KillSwitchSideEffectError {
+    pub reason: String,
+}
+
+impl KillSwitchSideEffectError {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for KillSwitchSideEffectError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "SRS-SAFE-002: kill-switch liquidation-timeout side effect failed — {}",
+            self.reason,
+        )
+    }
+}
+
+impl std::error::Error for KillSwitchSideEffectError {}
+
+/// ERR-8 / SRS-SAFE-002 failure surface for the fill-confirmation probe. The
+/// concrete probe (deferred SRS-EXE-006 runtime) reaches the IB boundary to
+/// confirm liquidation fills, so it can fail (connectivity lost, order state
+/// unavailable, probe timeout). Carries a reason string for now; the typed
+/// CONNECTIVITY_BLOCKED / order-state / transport-timeout taxonomy lands with
+/// that runtime (contract `deferred[]`). When the probe returns this error the
+/// gate fails closed WITHOUT any automated order/session change (see
+/// `resolve_kill_switch_timeout`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KillSwitchProbeError {
+    pub reason: String,
+}
+
+impl KillSwitchProbeError {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for KillSwitchProbeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "SRS-SAFE-002: kill-switch liquidation fill-confirmation probe failed — {}",
+            self.reason,
+        )
+    }
+}
+
+impl std::error::Error for KillSwitchProbeError {}
+
+/// Map a timeout-branch side-effect port result into the observable
+/// `SideEffectOutcome` recorded on `KillSwitchTimeoutEvent`. An `Err` is
+/// preserved as `Failed { reason }` so the failure is surfaced on the audit
+/// event rather than silently dropped.
+fn into_outcome(result: Result<(), KillSwitchSideEffectError>) -> SideEffectOutcome {
+    match result {
+        Ok(()) => SideEffectOutcome::Succeeded,
+        Err(error) => SideEffectOutcome::Failed {
+            reason: error.reason,
+        },
+    }
+}
+
+pub trait KillSwitchTimeoutEventSink {
+    /// Structured kill-switch timeout audit record for the dashboard / log
+    /// fan-out (deferred SRS-LOG-001 / SRS-UI-001 consumers). Recorded on
+    /// both arms of `resolve_kill_switch_timeout`. Returns `Result` so a
+    /// concrete sink cannot silently swallow a publication failure; the gate
+    /// treats emission as **best-effort** (mirrors ERR-7's
+    /// `HotSwapDemotionEventSink`): the timeout decision is already made and
+    /// the safety side effects (alert + cancel + disconnect) have already been
+    /// attempted, so a sink failure does not roll them back. Durable delivery
+    /// is the deferred SRS-LOG-001 sink's responsibility.
+    fn record(&self, event: KillSwitchTimeoutEvent) -> Result<(), KillSwitchSideEffectError>;
+}
+
+/// SRS-SAFE-002 acceptance evidence: the kill-switch liquidation reached fill
+/// before the timeout, so the SYS-44b error path did not engage. The `Err`
+/// counterpart (`StructuredKillSwitchTimeoutError`) is the only other outcome
+/// of `resolve_kill_switch_timeout`. `filled_before_timeout` is carried
+/// explicitly (always `true` on this struct) so the dashboard / REST surface
+/// renders the gate decision without re-deriving it. (The full SRS-SAFE-001
+/// liquidate sequence — halt paper engines, always disconnect — is the
+/// deferred kill-switch runtime; this slice models only the SRS-SAFE-002
+/// timeout decision.)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KillSwitchLiquidationResolved {
+    pub live_strategy_id: atp_types::StrategyId,
+    pub filled_before_timeout: bool,
+    pub elapsed_seconds: u64,
 }
 
 impl ExecutionEngine {
@@ -169,6 +390,197 @@ impl ExecutionEngine {
                 ),
                 original_order: submission,
             }),
+        }
+    }
+
+    /// ERR-8 / SRS-SAFE-002 / SyRS SYS-44b — decide a single kill-switch
+    /// liquidation-timeout outcome. The probe (`KillSwitchLiquidationProbe`)
+    /// is the timing authority: on `FilledBeforeTimeout` the liquidation
+    /// reached fill in time and the SYS-44b error path does NOT engage (the
+    /// gate records the audit transition and returns `Ok`, no alert / no
+    /// cancel / no disconnect). On `TimedOutUnfilled` the gate runs the
+    /// SYS-44b sequence — notify the operator by email AND SMS, cancel the
+    /// unfilled liquidation order, disconnect from IB — records each
+    /// side-effect outcome plus the logged unfilled-order details on the audit
+    /// event, and refuses with `OrderErrorCategory::KillSwitchLiquidationTimeout`
+    /// (the operator then resolves remaining positions manually).
+    ///
+    /// **Unconfirmable fill (probe error):** the probe is fallible — if it
+    /// cannot confirm whether the liquidation filled (connectivity loss, order
+    /// state unavailable, probe timeout) the gate fails closed by refusing with
+    /// the DISTINCT `KillSwitchLiquidationProbeUnavailable` category and takes
+    /// NO automated order/session action (auto-canceling or auto-disconnecting
+    /// on an unconfirmable order state would be a premature destructive
+    /// action). Notification and order resolution on that state are the
+    /// caller's / deferred runtime's responsibility.
+    ///
+    /// **Fail closed:** the probe is the timing authority, but a
+    /// `FilledBeforeTimeout` whose `elapsed_seconds` exceeds
+    /// `request.timeout_seconds` is a probe inconsistency (buggy /
+    /// version-skewed) and is normalised to a timeout BEFORE the match so a
+    /// mislabelled over-deadline liquidation cannot skip the cancel +
+    /// disconnect. Failing closed toward *running the SYS-44b cleanup* is the
+    /// safe direction. The inverse inconsistency (a `TimedOutUnfilled`
+    /// reported before the deadline, or with a mismatched `timeout_seconds`)
+    /// is NOT normalised here — handling it correctly means a distinct
+    /// probe-inconsistency rejection that does not fire the premature
+    /// destructive cancel/disconnect, which is the deferred kill-switch
+    /// runtime's richer semantics. The probe's outcome-consistency (filled ⟹
+    /// within deadline; timeout ⟹ at/after the deadline with a matching
+    /// `timeout_seconds`) is its contract precondition — see
+    /// `kill_switch_timeout_contract.deferred[]`. The shipped slice has no
+    /// concrete probe, so none can violate it.
+    ///
+    /// All three timeout-branch side effects are surfaced rather than
+    /// swallowed: the alert / cancel / disconnect ports return `Result` and
+    /// their outcomes are recorded on the event (`SideEffectOutcome::Failed`
+    /// preserves the reason). Event emission is best-effort — a sink failure
+    /// does not roll back the side effects or change the refusal.
+    ///
+    /// **Scope — stateless single-attempt gate.** This decides ONE timeout
+    /// outcome. The full SRS-SAFE-001 kill-switch sequence (cancel all resting
+    /// orders, submit liquidation orders, halt paper engines, always
+    /// disconnect), the 30 s async wait loop, the real IB cancel/disconnect
+    /// (SRS-EXE-006), the real email/SMS transport (SRS-NOTIF-001), and any
+    /// durable post-timeout lockout are the deferred runtime, enumerated in
+    /// `architecture/runtime_services.json` `kill_switch_timeout_contract
+    /// .deferred[]`. ERR-8 stays `passes:false` until that runtime lands.
+    // The error is boxed (`Box<StructuredKillSwitchTimeoutError>`): the SYS-44b
+    // envelope carries the full unfilled-order details (order id, symbol, side,
+    // quantity) the operator needs to resolve positions manually, which makes
+    // it exceed clippy's `result_large_err` threshold. ERR-7's smaller demotion
+    // error stayed under the threshold and is returned unboxed; boxing here
+    // keeps `atp-execution` clippy-clean without dropping `original_request`.
+    pub fn resolve_kill_switch_timeout<P, A, C, E>(
+        &self,
+        request: KillSwitchTimeoutRequest,
+        liquidation: &P,
+        alerts: &A,
+        cleanup: &C,
+        events: &E,
+        observed_at_seconds: u64,
+    ) -> Result<KillSwitchLiquidationResolved, Box<StructuredKillSwitchTimeoutError>>
+    where
+        P: KillSwitchLiquidationProbe,
+        A: KillSwitchOperatorAlertSink,
+        C: IbLiquidationCleanup,
+        E: KillSwitchTimeoutEventSink,
+    {
+        let reported = match liquidation.await_filled_or_timeout(&request) {
+            Ok(outcome) => outcome,
+            Err(probe_error) => {
+                // SRS-SAFE-002 fail-closed on an UNCONFIRMABLE fill: the probe
+                // could not determine whether the liquidation filled
+                // (connectivity loss, order state unavailable, probe timeout).
+                // The gate must NOT pretend it filled, and must NOT fire the
+                // destructive SYS-44b cleanup (cancel / disconnect) on an order
+                // state it cannot confirm. It therefore takes NO automated
+                // order/session action and refuses with a distinct, typed
+                // probe-unavailable error (its own OrderErrorCategory, never
+                // mislabelled as a confirmed timeout). Notifying the operator
+                // and resolving the unknown order state are the caller's /
+                // deferred kill-switch runtime's responsibility (contract
+                // `deferred[]`).
+                return Err(Box::new(
+                    StructuredKillSwitchTimeoutError::probe_unavailable(
+                        request,
+                        probe_error.reason,
+                    ),
+                ));
+            }
+        };
+        // Defense-in-depth fail-closed: normalise a FilledBeforeTimeout whose
+        // elapsed exceeds the configured timeout into a timeout BEFORE the
+        // match so a mislabelled over-deadline liquidation cannot skip the
+        // SYS-44b cancel + disconnect.
+        let outcome = match reported {
+            KillSwitchLiquidationOutcome::FilledBeforeTimeout { elapsed_seconds }
+                if elapsed_seconds > request.timeout_seconds =>
+            {
+                KillSwitchLiquidationOutcome::TimedOutUnfilled {
+                    elapsed_seconds,
+                    timeout_seconds: request.timeout_seconds,
+                }
+            }
+            other => other,
+        };
+        match outcome {
+            KillSwitchLiquidationOutcome::FilledBeforeTimeout { elapsed_seconds } => {
+                // SRS-SAFE-002: liquidation filled in time — the SYS-44b error
+                // path does not engage. Record the audit transition (no manual
+                // resolution required) and return acceptance; no alert, no
+                // cancel, no disconnect (all NotAttempted). Event emission is
+                // best-effort.
+                let _ = events.record(KillSwitchTimeoutEvent {
+                    outcome,
+                    live_strategy_id: request.live_strategy_id.clone(),
+                    unfilled_order: request.unfilled_order.clone(),
+                    manual_resolution_required: false,
+                    operator_alert: SideEffectOutcome::NotAttempted,
+                    liquidation_cancel: SideEffectOutcome::NotAttempted,
+                    ib_disconnect: SideEffectOutcome::NotAttempted,
+                    observed_at_seconds,
+                });
+                Ok(KillSwitchLiquidationResolved {
+                    live_strategy_id: request.live_strategy_id,
+                    filled_before_timeout: true,
+                    elapsed_seconds,
+                })
+            }
+            KillSwitchLiquidationOutcome::TimedOutUnfilled {
+                elapsed_seconds,
+                timeout_seconds,
+            } => {
+                // SRS-SAFE-002 / SyRS SYS-44b timeout branch: notify the
+                // operator by email AND SMS, cancel the unfilled liquidation
+                // order, and disconnect from IB. ALL THREE are attempted
+                // unconditionally (a failed cancel must not suppress the page
+                // or the disconnect) and each outcome is recorded on the event
+                // so a missed page / failed cancel / failed disconnect is
+                // observable rather than indistinguishable from success.
+                let operator_alert = into_outcome(alerts.dispatch(KillSwitchAlertEvent {
+                    live_strategy_id: request.live_strategy_id.clone(),
+                    unfilled_order: request.unfilled_order.clone(),
+                    channels: vec![OperatorAlertChannel::Email, OperatorAlertChannel::Sms],
+                    elapsed_seconds,
+                    timeout_seconds,
+                    observed_at_seconds,
+                }));
+                let liquidation_cancel =
+                    into_outcome(cleanup.cancel_unfilled_liquidation_order(&request));
+                let ib_disconnect = into_outcome(cleanup.disconnect());
+                // Best-effort audit emission: the logged unfilled-order details
+                // + each side-effect outcome. A sink failure does not roll back
+                // the side effects above or change the refusal below — but it
+                // would lose the durable record, so `audit_recorded` captures
+                // whether it persisted and the per-side-effect outcomes are ALSO
+                // carried on the returned error (`cleanup`) so the
+                // recovery-critical facts survive a failed audit emission.
+                let timeout_event = KillSwitchTimeoutEvent {
+                    outcome,
+                    live_strategy_id: request.live_strategy_id.clone(),
+                    unfilled_order: request.unfilled_order.clone(),
+                    manual_resolution_required: true,
+                    operator_alert: operator_alert.clone(),
+                    liquidation_cancel: liquidation_cancel.clone(),
+                    ib_disconnect: ib_disconnect.clone(),
+                    observed_at_seconds,
+                };
+                let audit_recorded = events.record(timeout_event).is_ok();
+                Err(Box::new(
+                    StructuredKillSwitchTimeoutError::liquidation_timeout(
+                        request,
+                        elapsed_seconds,
+                        timeout_seconds,
+                        KillSwitchCleanupOutcome {
+                            operator_alert,
+                            liquidation_cancel,
+                            ib_disconnect,
+                            audit_recorded,
+                        },
+                    ),
+                ))
+            }
         }
     }
 }

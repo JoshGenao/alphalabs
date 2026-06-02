@@ -266,6 +266,13 @@ if ! python3 tools/hot_swap_demotion_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running kill-switch liquidation-timeout contract check..."
+if ! python3 tools/kill_switch_timeout_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Kill-switch timeout contract check failed; run python3 tools/kill_switch_timeout_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running orchestrator lifecycle contract check..."
 if ! python3 tools/orchestrator_lifecycle_check.py >/dev/null; then
   echo "✗ Environment failed"

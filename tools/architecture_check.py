@@ -36,6 +36,10 @@ from ingestion_validation_check import (
     IngestionValidationCheckError,
     assert_ingestion_validation_static,
 )
+from kill_switch_timeout_check import (
+    KillSwitchTimeoutCheckError,
+    assert_kill_switch_timeout_static,
+)
 from orchestrator_deployment_version_check import (
     DeploymentVersionCheckError,
     assert_orchestrator_deployment_version_static,
@@ -480,6 +484,26 @@ def assert_hot_swap_demotion(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_kill_switch_timeout(config: dict) -> list[str]:
+    block = config.get("kill_switch_timeout_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_kill_switch_timeout_static(config, ROOT)
+    summary = (
+        f"{block['execution_crate']['crate']} gates kill-switch liquidation on "
+        f"{block['liquidation_outcome']['enum']} "
+        f"({len(block['liquidation_outcome']['variants'])} outcomes): the timeout "
+        f"branch pages the operator over "
+        f"{len(block['operator_alert_channel']['variants'])} channels "
+        f"({', '.join(block['operator_alert_channel']['variants'])}), cancels the "
+        f"unfilled order, disconnects from IB, records "
+        f"{block['timeout_event']['struct']}, and refuses (ERR-8, SRS-SAFE-002, "
+        "SyRS SYS-44b)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_orchestrator_lifecycle(config: dict) -> list[str]:
     block = config.get("orchestrator_lifecycle_contract")
     if block is None:
@@ -747,6 +771,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_hot_swap_demotion(config))
     except HotSwapDemotionCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_kill_switch_timeout(config))
+    except KillSwitchTimeoutCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_orchestrator_lifecycle(config))
