@@ -1,3 +1,122 @@
+=== SESSION 36 ===
+Date: 2026-06-02
+Feature completed: ERR-8 SDK-SURFACE — Kill-switch liquidation-timeout decision
+gate for the "system handles Kill-switch liquidation timeout" requirement
+(docs/SRS.md ERR-8, traces SRS-SAFE-002; SyRS SYS-44b; StRS SN-1.11). Stateless
+gate ExecutionEngine::resolve_kill_switch_timeout: on filled-before-timeout the
+liquidation completed (Ok, no side effects); on TimedOutUnfilled it pages the
+operator by email AND SMS, cancels the unfilled liquidation order, disconnects
+from IB, records each SideEffectOutcome, and refuses with
+OrderErrorCategory::KillSwitchLiquidationTimeout (wire KILL_SWITCH_LIQUIDATION_
+TIMEOUT); on an unconfirmable probe it fails closed with the DISTINCT category
+KillSwitchLiquidationProbeUnavailable taking NO automated cancel/disconnect.
+Status: 92 remaining features (unchanged — ERR-8 stays passes:false per the
+SDK-surface partial-pass pattern; the live kill-switch runtime is deferred).
+
+Feature pick: surfaced to the user via AskUserQuestion. ERR-7 (strict lowest-ID
+P1) was already sliced in SESSION 35 and its remainder is the deferred Hot-Swap
+runtime, so it is not single-session-actionable; the next unsliced P1 is ERR-8,
+which SESSION 35 explicitly flagged as the natural sibling reusing the
+OperatorAlertChannel/SideEffectOutcome seam. User chose "ERR-8 SDK-surface
+slice, passes:false". Architectural home is RUST atp-execution (the Execution
+Engine owns kill-switch behavior per AGENTS.md; ERR-7 lived in atp-orchestrator
+because Hot-Swap is orchestrator-owned). Closest template: ERR-7
+hot_swap_demotion (types + ports + gate + contract + check + L3/L7/domain).
+
+What I did:
+- No prep commit: SAFETY_PATH_RE already covers kill[_-]?switch (line 194) and
+  liquidation[_-]?timeout (line 223, added for ERR-7), so the new kill_switch_*
+  files already trigger the deterministic critic's domain-test requirement.
+  Verified the tools/kill_switch_timeout_check.py path is the safety file that
+  triggers it; tests/domain/test_kill_switch_liquidation_timeout.py satisfies it.
+- Feat commit (48abd31, 9 files): atp-types domain types (binary
+  KillSwitchLiquidationOutcome, KillSwitchTimeoutRequest +
+  UnfilledLiquidationOrder [domain order_id, no vendor ib_order_id leakage],
+  KillSwitchAlertEvent, KillSwitchTimeoutEvent, two OrderErrorCategory variants,
+  StructuredKillSwitchTimeoutError + KillSwitchCleanupOutcome + liquidation_
+  timeout/probe_unavailable factories; reuses OperatorAlertChannel +
+  SideEffectOutcome); atp-execution 4 fallible ports + KillSwitchProbeError +
+  KillSwitchSideEffectError + resolve_kill_switch_timeout gate;
+  architecture/runtime_services.json kill_switch_timeout_contract;
+  tools/kill_switch_timeout_check.py (12 static collectors + cargo smoke)
+  registered in tools/architecture_check.py (NOT the ci.yml/run_ci_locally
+  loops — they run `architecture` which dispatches it transitively, matching
+  the ERR-7 precedent); init.sh smoke block; L3 contract test (36 cases incl.
+  mutation spot-checks), L7 Rust test (7 tests), L7 domain safety test (5 cases).
+- Chore commit (this entry): records SESSION 36; ERR-8 stays passes:false
+  in feature_list.json (unchanged, ERR-7 precedent).
+
+Design notes (divergences from ERR-7, all defensible):
+- IbLiquidationCleanup groups cancel + disconnect (one port, two methods) —
+  both are IB Gateway adapter ops with the same deferred owner SRS-EXE-006,
+  invoked as the SYS-44b cleanup pair; keeps the gate at 7 args (clippy
+  too_many_arguments) vs ERR-7's separate ports.
+- StructuredKillSwitchTimeoutError is boxed at the Result boundary
+  (Result<_, Box<...>>): the SYS-44b envelope carries the full unfilled-order
+  details so it exceeds clippy result_large_err's 128-byte threshold; ERR-7's
+  smaller demotion error stayed unboxed. Boxing keeps atp-execution clippy-clean.
+- The probe is fallible (Result<Outcome, KillSwitchProbeError>) — ERR-7's probe
+  was infallible; Codex flagged the missing IO-failure channel (round 1).
+
+What I tested:
+- cargo test --workspace: green (atp-types 85, atp-execution lib 7 + err_8 7 +
+  err_1/2/3; all crates pass). pytest -m "not integration and not e2e": 1141
+  passed / 4 skipped (pre-existing pending-impl skips) / 118 subtests.
+  tools/kill_switch_timeout_check.py: ERR-8 PASS (13 evidence items).
+  architecture_check.py PASS. ruff clean. My crates clippy-clean (resolve_kill_
+  switch_timeout has ZERO clippy warnings; the only atp-execution warnings are
+  pre-existing toolchain drift on submit_live_order + a doc-list lint).
+  rustfmt: my new lines are fmt-clean; the remaining whole-crate fmt drift is
+  pre-existing newer-rustfmt drift (single-line enum-variant convention kept for
+  the L3 literal .replace() contract — see [[feedback_no_whole_crate_cargo_fmt]]).
+
+Critic verdicts:
+  deterministic: APPROVE — 0 findings (final staged feat; pre-commit hook also
+    APPROVE on commit).
+  judgment (/codex:adversarial-review): converged over 3 rounds, final APPROVE.
+    round-1 [high]x2 FIXED: (a) the timeout error message claimed the side
+      effects SUCCEEDED ("order canceled, IB disconnected") even when the ports
+      failed -> reworded to "attempted" + the outcomes live on the event/error;
+      (b) the liquidation probe was infallible -> made it return
+      Result<KillSwitchLiquidationOutcome, KillSwitchProbeError>; on probe
+      failure the gate fails closed with the DISTINCT
+      KILL_SWITCH_LIQUIDATION_PROBE_UNAVAILABLE category and NO automated
+      cancel/disconnect on the unconfirmable order state.
+    round-2 [high] FIXED: best-effort audit emission could drop the
+      per-side-effect outcomes if the event sink failed, while the error told
+      operators to read that (possibly-missing) event -> carried the outcomes ON
+      the error via StructuredKillSwitchTimeoutError.cleanup
+      (KillSwitchCleanupOutcome with audit_recorded flag) so the
+      recovery-critical facts survive a failed audit emission. New L7 assertions
+      cover both the audit-failure and failed-side-effect paths.
+    round-3: APPROVE — no material findings.
+  No overrides needed; all findings fixed (none deferred this session). Applied
+  the SDK-boundary defensive checklist up front but still missed probe
+  fallibility (round-1) and the error<->event observability coupling that my own
+  round-1 message fix introduced (round-2) — see [[feedback_sdk_boundary_
+  defensive_checklist]].
+
+Known issues / notes for next agent:
+- ERR-8 stays passes:false: true end-to-end needs the live kill-switch runtime
+  (SRS-SAFE-001 QuantConnect Liquidate sequence + the 30s async wait loop), the
+  real IB cancel/disconnect (atp-adapters, SRS-EXE-006), real email/SMS
+  (atp-notification, SRS-NOTIF-001), and the SRS-LOG-001/UI-001 consumers — all
+  in kill_switch_timeout_contract.deferred[]. When that runtime lands, wire the
+  real ports, flip ERR-8 -> passes:true, and add the typed KillSwitchProbeError
+  / KillSwitchSideEffectError taxonomy (CONNECTIVITY_BLOCKED / transport-timeout)
+  in place of today's reason strings.
+- ERR-9 (missing/invalid startup configuration, SRS-ARCH-005/SRS-MD-006) was
+  already sliced in SESSION 31. After the ERR-* family, the next unsliced P1s are
+  in the SRS-* runtime families (SRS-API-001, then SRS-BT / SRS-DATA verticals).
+  These need real runtime + e2e, so they will likely also be SDK-surface slices
+  unless the user pivots to building a foundational runtime vertical deep enough
+  to flip a feature to passes:true (raised as an option in this session's pick
+  question; user chose to continue the slice cadence).
+- CI-wiring convention for per-feature ERR-* checks: register the
+  assert_<feature>_static in tools/architecture_check.py (import + wrapper +
+  dispatch); do NOT add to the ci.yml / run_ci_locally.sh for-loops (they run
+  `architecture` which covers it transitively). init.sh gets a smoke block.
+
 === SESSION 35 ===
 Date: 2026-06-01
 Feature completed: ERR-7 SDK-SURFACE — Hot-Swap demotion liquidation-timeout
