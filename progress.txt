@@ -1,3 +1,121 @@
+=== SESSION 35 ===
+Date: 2026-06-01
+Feature completed: ERR-7 SDK-SURFACE — Hot-Swap demotion liquidation-timeout
+decision gate for the "system handles Hot-Swap demotion liquidation timeout"
+requirement (docs/SRS.md ERR-7, traces SRS-RESV-004; SyRS SYS-49b/49c; StRS
+SN-1.25). Stateless gate StrategyOrchestrator::resolve_demotion: on a
+flat-before-timeout outcome the swap proceeds (Ok, promotion allowed); on a
+timeout it cancels the unfilled liquidation order, dispatches the
+dashboard/email/SMS operator alert, records a demotion-pending transition,
+and refuses with OrderErrorCategory::HotSwapDemotionTimeout (wire string
+HOT_SWAP_DEMOTION_TIMEOUT) so promotion is blocked.
+Status: 92 remaining features (unchanged — ERR-7 stays passes:false per the
+SDK-surface partial-pass pattern; the live Hot-Swap runtime is deferred).
+
+Feature pick: surfaced to the user via AskUserQuestion. All 92 remaining are
+P1+; strict rule (lowest-ID P1 failing) -> ERR-7. ERR-1..ERR-6 PASS because
+they are self-contained single-layer rejections; ERR-7/ERR-8 require a
+timeout-driven liquidation SEQUENCE against the Hot-Swap/kill-switch runtimes
+that do not exist (SESSION 31's audit confirmed: "ERR-7 needs Hot-Swap
+SRS-RESV-001..006, all failing"). User chose ERR-7 + "SDK-surface slice,
+passes:false". Plan validated by a Plan agent; the binary-outcome enum
+(mirroring LaunchReadiness) was chosen over a multi-state FSM to avoid
+modeling the unbuilt runtime.
+
+Carryover audit at session start: SESSION 34's SRS-MD-001 Codex loop was
+closed (round-4 [medium] deferred). Phase-1 exploration confirmed ERR-7's
+honest home is RUST: crates/atp-orchestrator owns Hot-Swap (no demotion
+state machine existed), crates/atp-notification is a 26-line stub (so the
+operator-alert PORT lives in atp-orchestrator, dependency-clean — atp-
+orchestrator depends only on atp-types; no orchestrator->notification edge),
+and the IB cancel lives in atp-adapters (deferred). Closest template: ERR-6
+pacing_budget (check + contract block + L3 + L7).
+
+What I did:
+- Prep commit (fb84f51): extended SAFETY_PATH_RE in tools/critic_check.py
+  with hot[_-]?swap, demotion, liquidation[_-]?timeout, promotion[_-]?block,
+  operator[_-]?alert. Verified the tokens match the planned feat files and
+  ZERO existing tracked files. Deterministic critic on the staged prep:
+  APPROVE.
+- Feat commit (82ef06f, 9 files): atp-types domain types (binary
+  HotSwapDemotionOutcome, request/event structs, OperatorAlertChannel triad,
+  SideEffectOutcome, OrderErrorCategory::HotSwapDemotionTimeout + structured
+  error/factory); atp-orchestrator 4 in-crate ports + resolve_demotion gate;
+  architecture/runtime_services.json hot_swap_demotion_contract;
+  tools/hot_swap_demotion_check.py (11 static collectors + cargo smoke)
+  registered in tools/architecture_check.py (NOT the ci.yml/run_ci_locally
+  loops — those run architecture transitively, so no mirror drift); init.sh
+  smoke block; L3 contract test (+ mutation spot-checks); L7 Rust test (6
+  tests); L7 domain safety test (5 cases). CI-wiring note: the per-feature
+  ERR-* checks register via architecture_check.py, NOT the ci.yml /
+  run_ci_locally.sh for-loops (corrects this session's initial plan
+  assumption; verified pacing_budget/subscription_fanout follow the same
+  registration path).
+- Chore commit (this entry): records SESSION 35; ERR-7 stays passes:false
+  in feature_list.json (unchanged).
+
+What I tested:
+- cargo test --workspace: green (atp-types 82, atp-orchestrator lib 47 +
+  err_7 6; all other crates pass). pytest -m "not integration and not e2e":
+  1100 passed / 4 skipped (pre-existing pending-impl skips, incl.
+  test_single_live_invariant.py) / 118 subtests. tools/hot_swap_demotion_
+  check.py: ERR-7 PASS (12 evidence items). architecture_check.py PASS.
+  ruff clean. My crates clippy-clean + rustfmt-clean (added lines have ZERO
+  overlap with rustfmt's wanted diff — only the HotSwapDemotionOutcome enum
+  definition matches the committed single-line LaunchReadiness convention,
+  which the newer local rustfmt 1.9.0 flags identically as pre-existing
+  drift; kept single-line for codebase consistency).
+
+Critic verdicts:
+  deterministic: APPROVE — 0 findings (final staged feat).
+  judgment (/codex:adversarial-review): converged over 4 rounds.
+    round-1 [high] FIXED: cancel/alert ports were infallible -> made them
+      return Result<(), HotSwapSideEffectError>; resolve_demotion records
+      each SideEffectOutcome on the event so a failed cancel / missed alert
+      is observable (user chose "fix now").
+    round-2 [high]x2 FIXED: (a) flat-arm could bypass the timeout -> the gate
+      now fail-closed NORMALISES a FlatBeforeTimeout-over-deadline into a
+      timeout before the match; (b) event sink was infallible -> made
+      HotSwapDemotionEventSink::record fallible (best-effort at the gate,
+      matching the WorkloadEventSink precedent). New L7 tests cover both.
+    round-3 [high] DEFERRED (override, user-approved): no durable demotion-
+      pending lockout / manual-resolution, so "blocked until manual
+      resolution" is not enforced across a retry. A persistent store +
+      operator manual-resolution command IS the deferred Hot-Swap runtime
+      (SRS-RESV-003/004/006, the promote/demote/rollback subsystem tracked
+      by the skipped test_single_live_invariant.py). Encoded explicitly in
+      the contract deferred[] + resolve_demotion Rustdoc.
+    round-4 [high] DEFERRED (override, same category as round-3): the
+      timeout-direction probe inconsistency (a TimedOutDemotionPending
+      reported before the deadline would fire a premature destructive cancel
+      + misleading error) — handling it correctly needs a block-without-
+      cancel probe-inconsistency rejection, the deferred runtime's richer
+      demotion semantics. The shipped slice has no concrete probe, so none
+      can violate the documented probe outcome-consistency precondition.
+      Encoded in the contract deferred[] + Rustdoc.
+  Override rationale: rounds 3-4 are unbuilt-Hot-Swap-runtime semantics,
+  out of the approved SDK-surface-slice scope; per prompts/critic_prompt.md
+  ("If intentionally deferred, encode that deferral explicitly") the
+  deferrals are documented. Stopped at round 4 to avoid iterative-deepening
+  into the deferred runtime (see [[feedback_sdk_boundary_defensive_checklist]]).
+
+Known issues / notes for next agent:
+- ERR-7 stays passes:false: true end-to-end needs the live Hot-Swap demotion
+  runtime (SRS-RESV-003/004/006), the 60s async wait loop, real IB cancel
+  (atp-adapters), real email/SMS (atp-notification SRS-NOTIF-001), and the
+  SRS-LOG-001/UI-001/API-001 consumers — all in hot_swap_demotion_contract
+  .deferred[]. When that runtime lands, also close the two deferred
+  probe-consistency/lockout items recorded there.
+- ERR-8 (kill-switch liquidation timeout, SRS-SAFE-002) is the natural next
+  ERR sibling and reuses the OperatorAlertChannel/OperatorAlertEvent +
+  OperatorAlertSink seam established here. It also needs kill switch +
+  IB adapter (SRS-SAFE-001 + SRS-EXE-006, both failing).
+- CI-wiring convention for per-feature ERR-* checks: register the
+  assert_<feature>_static in tools/architecture_check.py (import + wrapper +
+  dispatch); do NOT add to the ci.yml / run_ci_locally.sh for-loops (they
+  run `architecture` which covers it transitively). init.sh gets a smoke
+  block for parity.
+
 === SESSION 34 ADDENDUM 4 — Codex round-4 (deferred) ===
 Date: 2026-05-30
 /codex:adversarial-review round-4 (base a178016) raised one [medium]:
