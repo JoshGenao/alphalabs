@@ -3674,5 +3674,218 @@
       "SRS-LOG-001 persistent sink consuming KillSwitchTimeoutEvent (the kill-switch-activation log event class, SYS-61) and SRS-UI-001 dashboard kill-switch pane (UI-4 'see cancellation, liquidation submission, timeout, notification, and disconnect status').",
       "SRS-SAFE-002 fault-injection scenario + performance test driving resolve_kill_switch_timeout through the live kill-switch + IB-adapter runtime; ERR-8 stays passes:false until that end-to-end path exists."
     ]
+  },
+  "backtest_contract": {
+    "description": "SRS-BT-001 (backtest Python strategies against stored data and user-uploaded Parquet data over configurable date ranges). This SDK-surface ships a GENUINELY RUNNABLE deterministic backtest engine in crates/atp-simulation (module `backtest`): BacktestEngine::run takes a BacktestRequest (a configurable inclusive DateRange, a BacktestDataSource = SystemData | UploadedData, and a starting cash balance), a BarSource, and a BacktestStrategy; it restricts replay to the configurable window, replays bars in deterministic timestamp order, drives the strategy bar-by-bar, applies deterministic fills, and produces a real trade log (Vec<Fill>) + equity curve (Vec<EquityPoint>) + final equity. All money math is in integer minor units (i64) with i128 intermediates and checked_add / checked_sub / try_from arithmetic (the free fn checked_notional) — never f64 — so it is exact and overflow-safe (BacktestError::Overflow). The engine fails closed on an empty symbol (EmptySymbol), an inverted window (InvalidDateRange), and a window with no bars (EmptyData). Because the BarSource (uploaded Parquet / system catalog) is a trust boundary, the engine validates provenance — BarSource::source() must equal request.data_source or the run fails closed (DataSourceMismatch), so a result can never misreport which dataset it ran against — and also rejects a source that returns a bar for a different symbol (UnexpectedSymbol — never silently trade foreign prices), duplicate bars for one symbol+timestamp (DuplicateBar — a duplicate market record would double-fill one instant and make replay order-dependent), and any replayed bar with a non-positive close price (NonPositivePrice — a negative close would otherwise flip a buy's checked_sub into a cash-fabricating addition) before any fill is applied. The strategy port BacktestStrategy::on_bar is fallible (returns Result<i64, BacktestError>): because the deferred Python host can raise / time out / fail to marshal, a strategy failure surfaces as StrategyFailed and the engine aborts before applying any fill, never silently treating a failure as a 0 delta. The engine also fails closed (TooManyBars) when the IN-WINDOW replay set exceeds MAX_BACKTEST_BARS — counted AFTER date-range filtering (bars.retain), so the cap is consistent with source-superset tolerance (a large out-of-window response never fails a valid narrow backtest) and bounds the sort + equity-curve allocation; BacktestEngine::with_max_bars sets a custom cap. Bounding the source's own materialization of the raw response needs the full streaming/bounded-cursor BarSource, deferred to the real Parquet reader (see deferred[]). The engine is co-located with the Internal Simulation Engine because SRS-BT-003 mandates the SAME transaction-cost model family for paper simulation and backtesting (home_rationale). Identical inputs produce an identical BacktestResult — the deterministic-replay seam SRS-BT-010 owns. The PASS line is 'SRS-BT-001 SDK-SURFACE PASS'; feature_list.json keeps SRS-BT-001 passes:false because the launch + data + strategy-execution halves are deferred behind the BarSource / BacktestStrategy ports (see deferred[]): there is no live REST/dashboard launch surface, no real Parquet reader, and no Rust<->Python strategy host yet.",
+    "requirement": "SRS-BT-001",
+    "srs_refs": [
+      "SRS-BT-001"
+    ],
+    "syrs_refs": [
+      "SYS-14",
+      "SYS-43a"
+    ],
+    "strs_refs": [
+      "SN-1.02",
+      "SN-1.13",
+      "C-4"
+    ],
+    "ac_traces": [
+      "SRS-BT-001",
+      "SYS-14"
+    ],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "simulation_crate": {
+      "crate": "atp-simulation",
+      "path": "crates/atp-simulation"
+    },
+    "module": "backtest",
+    "home_rationale": "The SRS module table lists Backtesting and Optimization as a distinct Rust runtime, but SRS-BT-003 mandates the same transaction-cost model family for the internal simulation engine and for backtesting. Co-locating the backtest engine with the InternalSimulationEngine in atp-simulation keeps that shared fill/cost model in one crate; this is the operator-directed home for the slice.",
+    "data_source_enum": {
+      "enum": "BacktestDataSource",
+      "variants": [
+        "SystemData",
+        "UploadedData"
+      ]
+    },
+    "date_range": {
+      "struct": "DateRange",
+      "fields": [
+        "start",
+        "end"
+      ],
+      "validate_method": "validate",
+      "invalid_variant": "InvalidDateRange",
+      "inverted_check_token": "self.start > self.end"
+    },
+    "bar_struct": {
+      "struct": "BacktestBar",
+      "required_fields": [
+        "symbol",
+        "ts",
+        "close_minor"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "vendor",
+        "provider",
+        "source_provider",
+        "ib_session_id"
+      ]
+    },
+    "request_struct": {
+      "struct": "BacktestRequest",
+      "required_fields": [
+        "strategy_id",
+        "symbol",
+        "data_source",
+        "range",
+        "starting_cash_minor"
+      ]
+    },
+    "fill_struct": {
+      "struct": "Fill",
+      "required_fields": [
+        "ts",
+        "symbol",
+        "quantity",
+        "price_minor"
+      ]
+    },
+    "equity_point_struct": {
+      "struct": "EquityPoint",
+      "required_fields": [
+        "ts",
+        "equity_minor"
+      ]
+    },
+    "result_struct": {
+      "struct": "BacktestResult",
+      "required_fields": [
+        "data_source",
+        "range",
+        "bars_processed",
+        "trade_log",
+        "equity_curve",
+        "final_equity_minor"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "vendor",
+        "provider",
+        "ib_session_id"
+      ]
+    },
+    "error_enum": {
+      "enum": "BacktestError",
+      "variants": [
+        "EmptySymbol",
+        "InvalidDateRange",
+        "UnexpectedSymbol",
+        "NonPositivePrice",
+        "DuplicateBar",
+        "EmptyData",
+        "StrategyFailed",
+        "Overflow",
+        "TooManyBars",
+        "DataSourceMismatch"
+      ]
+    },
+    "bar_source_port": {
+      "trait": "BarSource",
+      "methods": [
+        "source",
+        "bars"
+      ],
+      "bounded_read_param": "max_bars"
+    },
+    "strategy_port": {
+      "trait": "BacktestStrategy",
+      "methods": [
+        "on_bar"
+      ],
+      "fallible_return": "Result<i64, BacktestError>"
+    },
+    "engine": {
+      "struct": "BacktestEngine",
+      "methods": [
+        "new",
+        "run"
+      ],
+      "run_method": "run",
+      "range_validate_token": "request.range.validate()?",
+      "empty_symbol_token": "BacktestError::EmptySymbol",
+      "provenance_check_token": "request.data_source != source.source()",
+      "provenance_error_token": "BacktestError::DataSourceMismatch",
+      "symbol_guard_token": "BacktestError::UnexpectedSymbol",
+      "duplicate_guard_token": "BacktestError::DuplicateBar",
+      "price_guard_token": "BacktestError::NonPositivePrice",
+      "strategy_fallible_token": "strategy.on_bar(bar, position)?",
+      "row_limit_token": "BacktestError::TooManyBars",
+      "row_limit_const": "MAX_BACKTEST_BARS",
+      "source_cap_pass_token": "request.range, self.max_bars",
+      "range_restrict_token": "bars.retain(",
+      "determinism_sort_token": "sort_by_key",
+      "strategy_drive_token": "strategy.on_bar(",
+      "empty_data_token": "BacktestError::EmptyData"
+    },
+    "money_invariant": {
+      "minor_unit_fields": [
+        "close_minor",
+        "starting_cash_minor",
+        "price_minor",
+        "equity_minor",
+        "final_equity_minor"
+      ],
+      "forbidden_float_token": "f64",
+      "notional_helper": "checked_notional",
+      "overflow_variant": "Overflow",
+      "wide_intermediate_token": "i128::from",
+      "checked_ops": [
+        "checked_sub",
+        "checked_add"
+      ]
+    },
+    "rust_integration_test": "srs_bt_001_backtest_engine",
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "deferred": [
+      {
+        "feature": "SRS-BT-001-runtime (data + strategy host)",
+        "what": "The concrete BarSource implementations — the system catalog reader backed by the unified historical data interface (HistoricalDataAdapter, atp-adapters) and the real arrow/parquet-backed reader for user-uploaded Parquet files (a new external Rust dependency that needs SyRS scope approval; the workspace currently has zero third-party crates) — and the concrete BacktestStrategy that marshals on_bar calls to a Python strategy running under the orchestrator (the Rust<->Python execution boundary, e.g. PyO3 or a subprocess strategy host, also SyRS-gated). The engine models the deterministic replay + integer-money fill loop only; the runtime that supplies real bars and runs real Python strategies flips SRS-BT-001 passes:true."
+      },
+      {
+        "feature": "SRS-API-001 / SRS-UI (launch surface)",
+        "what": "The live REST handler for POST /api/v1/backtests (declared today as route metadata in python/atp_api/routes.py, which explicitly does not start an HTTP server) and the dashboard backtest controls with start/end date pickers. The acceptance criterion 'start and end dates are selectable through API and dashboard' needs this operator-interface runtime; the engine already accepts a configurable DateRange and echoes it on BacktestResult.range."
+      },
+      {
+        "feature": "SRS-BT-001-runtime (streaming BarSource + strategy-failure taxonomy)",
+        "what": "BarSource::bars takes a max_bars cap (the engine passes self.max_bars) and its contract requires a source to fail closed with TooManyBars before materializing an oversized Vec; the engine re-checks the in-window count as defense in depth. The FULLY streaming/bounded sorted cursor that never materializes a Vec at all (chunked record-batch iteration) is still deferred to the real arrow/parquet-backed reader, because that shape depends on the library's reader API; the bounded max_bars parameter is the forward-compatible seam, and the Vec port has no concrete implementors yet, so it is not a baked-in external contract. Likewise the fallible strategy port surfaces failures as the single StrategyFailed { reason } today; the typed StrategyTimedOut / StrategyPanicked / marshaling-error taxonomy lands with the concrete Rust<->Python strategy host (same reason-string-now / typed-later pattern as the kill_switch_timeout_contract probe error). Raised by /codex:adversarial-review round-2: the symbol/duplicate/non-positive-price/strategy-failure guards were added in this slice; the streaming-cursor redesign is deferred per the scope decision."
+      },
+      {
+        "feature": "SRS-BT-002 / SRS-BT-003 (cost models)",
+        "what": "Configurable commission, slippage, and spread-impact models from the shared transaction-cost model family. This slice fills deterministically at the bar close with zero cost; the configurable cost-model overrides (and the shared simulation/backtest model family) are the SRS-BT-002/003 deferred half."
+      },
+      {
+        "feature": "SRS-BT-004 (metrics)",
+        "what": "The full performance metric set (Sharpe, Sortino, alpha, beta, maximum drawdown, annualized return/volatility, win rate). The engine emits the raw trade log + equity curve those metrics are computed from; the metric computations are SRS-BT-004's concern."
+      },
+      {
+        "feature": "SRS-BT-009 (persistence)",
+        "what": "Persisted, queryable backtest results (parameters, metrics, trade log, equity curve, benchmark comparison, strategy code version, timestamp). BacktestResult is the in-memory shape; the durable store + query API are SRS-BT-009."
+      },
+      {
+        "feature": "SRS-BT-010 (determinism guarantee)",
+        "what": "The end-to-end deterministic-backtest guarantee under the real Python strategy host (two identical runs produce identical trade logs, equity curves, and metrics). This slice demonstrates determinism for the Rust engine (stable sort_by_key replay + integer money math); the guarantee across the full Python execution path is SRS-BT-010."
+      }
+    ]
   }
 }

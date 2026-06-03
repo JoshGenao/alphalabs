@@ -1,6 +1,11 @@
 use atp_strategy_engine::StrategyRuntimeBoundary;
 use atp_types::RuntimeService;
 
+/// Deterministic backtest engine (SRS-BT-001). Co-located with the internal
+/// simulation engine because SRS-BT-003 mandates a shared transaction-cost model
+/// family for paper simulation and backtesting.
+pub mod backtest;
+
 #[derive(Debug, Default)]
 pub struct InternalSimulationEngine;
 

@@ -273,6 +273,13 @@ if ! python3 tools/kill_switch_timeout_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running backtest engine contract check..."
+if ! python3 tools/backtest_check.py --require-cargo >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Backtest engine contract check failed; run python3 tools/backtest_check.py --require-cargo for detail."
+  exit 1
+fi
+
 echo "→ Running orchestrator lifecycle contract check..."
 if ! python3 tools/orchestrator_lifecycle_check.py >/dev/null; then
   echo "✗ Environment failed"

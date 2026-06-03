@@ -11,6 +11,7 @@ from pathlib import Path
 
 from adapter_check import AdapterContractError, assert_adapter_contract_static
 from adapter_isolation_check import AdapterIsolationError, assert_adapter_isolation_static
+from backtest_check import BacktestCheckError, assert_backtest_static
 from config_check import ConfigCheckError, assert_configuration_static
 from connectivity_check import ConnectivityCheckError, assert_connectivity_static
 from data_provider_check import (
@@ -504,6 +505,24 @@ def assert_kill_switch_timeout(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_backtest(config: dict) -> list[str]:
+    block = config.get("backtest_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_backtest_static(config, ROOT)
+    summary = (
+        f"{block['simulation_crate']['crate']} runs the deterministic backtest engine "
+        f"{block['engine']['struct']}::{block['engine']['run_method']} over the "
+        f"{len(block['data_source_enum']['variants'])} launch sources "
+        f"({', '.join(block['data_source_enum']['variants'])}) with a configurable "
+        f"{block['date_range']['struct']}, integer minor-unit money math, and "
+        f"{len(block['error_enum']['variants'])} fail-closed errors (SRS-BT-001, "
+        "SyRS SYS-14 / SYS-43a)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_orchestrator_lifecycle(config: dict) -> list[str]:
     block = config.get("orchestrator_lifecycle_contract")
     if block is None:
@@ -775,6 +794,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_kill_switch_timeout(config))
     except KillSwitchTimeoutCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_backtest(config))
+    except BacktestCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_orchestrator_lifecycle(config))
