@@ -1,3 +1,138 @@
+=== SESSION 38 ===
+Date: 2026-06-03
+Feature completed: SRS-BT-002 — "apply configurable commission, slippage, and
+spread-impact models to backtests" (docs/SRS.md SRS-BT-002; traces SyRS
+SYS-15a/SYS-15b/SYS-15c/SYS-15d; StRS SN-1.03). This slice ships the configurable
+transaction-cost model FAMILY in crates/atp-simulation/src/cost.rs (module cost)
+and wires it into the SESSION-37 runnable backtest engine (module backtest).
+Status: 92 remaining features (UNCHANGED — SRS-BT-002 stays passes:false; the
+operator override SURFACE + real data/Python-strategy runtime are deferred).
+
+Feature pick: the next UNSLICED lowest-ID P1. ERR-7/8/9 (S35/S36/S31),
+SRS-API-001 (S32), SRS-MD-001 (S34), SRS-LOG-001 (S33), and SRS-BT-001 (S37) are
+all already sliced and intentionally stay passes:false, so SRS-BT-002 was the
+natural next pick — and a direct follow-on to SESSION 37, whose backtest_contract
+deferred[] explicitly named "SRS-BT-002/003 (cost models)" as its deferred half.
+NO depth AskUserQuestion this time: unlike S37's new-crate-vs-deeper-vertical
+fork, there was no fork here — BT-002 obviously extends the BT-001 engine in the
+same crate (atp-simulation), per SRS-BT-003's shared-cost-model-family mandate.
+
+What I did (one feat commit 7144ece, 10 files, +2045):
+- crates/atp-simulation/src/cost.rs (NEW, the shared family home): CostConfig
+  { commission, slippage, spread_impact } with three configurable enums —
+  CommissionModel (IbTiered default + PerShare/PerTrade/None overrides),
+  SlippageModel (NotionalBps default + None), SpreadImpactModel
+  (ObservedOrFallbackBps default + FixedBps/None). CostConfig derives Default =
+  the SyRS baseline, plus zero() (frictionless), validate() (fail-closed on
+  negative params), cost_breakdown() -> CostBreakdown { commission_minor,
+  slippage_minor, spread_impact_minor } + total_minor(). 10-variant... actually
+  CostError has 3 fail-closed variants (NegativeParameter / NegativeSpread /
+  Overflow). 17 in-module unit tests (L1).
+- SyRS defaults encoded as named constants so the default is PROVABLY the
+  published value: DEFAULT_SLIPPAGE_BPS=5 (0.05%), DEFAULT_SPREAD_FALLBACK_BPS=10
+  (0.10%), IB_TIERED_RATE_CENTIMINOR_PER_SHARE=35 ($0.0035/share),
+  IB_TIERED_MIN_PER_ORDER_MINOR=35 ($0.35 floor), IB_TIERED_MAX_PCT_BPS=100
+  (1% cap), COMMISSION_RATE_SCALE=100.
+- crates/atp-simulation/src/backtest.rs: BacktestRequest gained a per-run
+  cost_config: CostConfig (the SYS-15d override seam — lives on the REQUEST, not
+  the strategy); BacktestBar gained spread_minor: Option<i64> (observed bid-ask
+  spread, SYS-15c observed path); Fill gained commission_minor/slippage_minor/
+  spread_impact_minor (transparent decomposition for SRS-BT-004 metrics);
+  BacktestError gained NegativeSpread + Cost(CostError) (+ From<CostError>).
+  run() now: validate()s the cost config up front, fails closed on a negative
+  observed spread on ANY bar (even no-trade bars, mirroring the BT-001
+  non-positive-price guard), and per fill computes cost_breakdown and SUBTRACTS
+  the total from cash via checked_sub (a cost can NEVER fabricate cash, regardless
+  of buy/sell direction — a sell's proceeds are reduced, not increased).
+- crates/atp-simulation/src/lib.rs: pub mod cost (the shared-family re-export
+  for SRS-BT-003).
+- crates/atp-simulation/tests/srs_bt_002_cost_models.rs (NEW): 8 integration
+  tests — defaults match SyRS values (exact integer assertions), observed-vs-
+  fallback spread, per-run overrides via the SAME strategy class (SYS-15d),
+  zero-config frictionless, costs-strictly-reduce-equity (default-vs-zero run:
+  the equity gap equals the summed fill costs, each strictly positive),
+  determinism with default costs, negative-spread + negative-param fail-closed.
+- BT-001 tests (srs_bt_001_backtest_engine.rs + in-module): their request()
+  helpers now pass cost_config: CostConfig::zero() so the frictionless
+  replay/ledger assertions stay exactly valid (necessary field-integration, not
+  a refactor); bar() helpers set spread_minor: None.
+- tools/backtest_cost_check.py (NEW): 13 static collectors + cargo smoke
+  (--require-cargo fail-closed for init.sh, same convention as backtest_check.py).
+  Registered TRANSITIVELY in tools/architecture_check.py (import + assert_
+  backtest_cost wrapper + dispatch) — NOT the ci.yml/run_ci_locally for-loops,
+  matching the SESSION-36/37 convention (verified: backtest_check.py is wired the
+  same way; both for-loops invoke architecture_check). init.sh smoke line added.
+- architecture/runtime_services.json: new backtest_cost_contract block (40 keys
+  total now); updated the backtest_contract cost-models deferred note to say
+  BT-002 is now IMPLEMENTED with only the override surface + BT-003 sharing left.
+- tests/test_backtest_cost_contract.py (NEW): 38 L3 cases (subprocess PASS +
+  16 evidence needles + a negative mutation spot-check per collector, incl. a
+  wrong-SyRS-constant-value mutation, a dropped model variant, an injected f64,
+  a renamed validate guard, a removed cost deduction, a dropped neg-spread guard,
+  a leaked vendor token).
+
+Money/safety design notes: integer minor units everywhere; i128 intermediates;
+deterministic div_round_half_up (ties up, non-negative inputs only); i64::try_from
+narrowing -> CostError::Overflow. Sub-cent IB per-share rate is expressed in
+"centi-minor per share" (1/100 of a cent) so commission stays exact in integers.
+IB tiered clamp order is min(max(per_share, floor), cap) — the 1% cap is a hard
+upper bound, so a sub-$0.35 tiny trade is capped below the floor (documented;
+the cumulative monthly-volume tier ladder is deferred — needs cross-run state).
+Observed-spread cost = half the spread per share (a single execution crosses half
+the bid-ask from mid) — an interpretive but documented/overridable choice the
+judgment critic explicitly accepted (SYS-15c does not prescribe a fraction).
+
+What I tested: cargo test --workspace green (atp-simulation 30 lib + 13 BT-001 +
+8 BT-002 integration; all crates pass). pytest -m "not integration and not e2e":
+1219 passed / 4 skipped (pre-existing pending-impl) / 118 subtests (+38 from the
+new L3 test). backtest_cost_check.py --require-cargo PASS (14 evidence items),
+architecture_check.py PASS, backtest_check.py (BT-001) still PASS. ruff +
+ruff-format clean on the new Python; my new Rust is clippy-clean (fixed one
+derivable_impls: CommissionModel uses #[derive(Default)] + #[default] on IbTiered)
+and cargo-fmt-clean (hand-applied fmt's wrapping to my new lines; the residual
+whole-workspace fmt drift on OTHER crates is pre-existing newer-local-toolchain
+noise — see [[feedback_no_whole_crate_cargo_fmt]] — verified my 4 files are absent
+from cargo fmt --check's diff). ./init.sh -> ✓ Environment ready with the new
+cost-model smoke gate.
+
+Critic verdicts:
+  deterministic: APPROVE — 0 findings (--staged; pre-commit hook also APPROVE on
+    commit 7144ece). The money:float-arithmetic warn was pre-empted by naming
+    every cost variable with a _minor suffix so PRICE_FIELD_RE never matched.
+  judgment (fresh-context adversarial review): APPROVE — 0 findings. The user
+    triggered /codex:adversarial-review (disable-model-invocation, so only the
+    user can — see [[feedback_codex_adversarial_review]]); its JSON did not
+    surface into my context, so I ran the documented fresh-context Agent fallback
+    (a cold general-purpose subagent given prompts/critic_prompt.md + the staged
+    diff, NO implementation context). It independently re-derived the IB-tiered/
+    slippage/spread math against the SyRS values, confirmed costs are always
+    subtracted (never fabricate cash), determinism holds (stable sort, no
+    datetime.now), the commit is atomic (one crate + its check/tests/metadata),
+    no doc/code drift, CI wiring reachable, and passes:false is consistent with
+    the deferred surface (matches the BT-001 precedent). Only interpretive item
+    (half-spread) judged defensible -> not a finding.
+  No overrides.
+
+Known issues / notes for next agent:
+- SRS-BT-002 stays passes:false. A true end-to-end pass needs (in
+  backtest_cost_contract.deferred[]): the operator override SURFACE — REST/CLI/
+  dashboard controls that let an operator pick a cost model per run (SRS-API-001/
+  SRS-UI) — and the real data + Python-strategy runtime (SRS-BT-001-runtime).
+  The engine already accepts + applies a per-run CostConfig; only the surface
+  that constructs the override from a form/flag/payload is missing.
+- SRS-BT-003 is now the natural next pick (next unsliced P1 after BT-002): "use
+  the same transaction-cost model family for internal simulation and backtesting
+  unless configured otherwise." The shared family ALREADY EXISTS — cost::CostConfig
+  in atp-simulation, re-exported via `pub mod cost`. BT-003's slice is wiring the
+  SAME CostConfig into InternalSimulationEngine paper-fill simulation (lib.rs has
+  the engine stub). That makes the "same family" claim structural (one type, two
+  consumers). The deferred[] in both backtest_contract and backtest_cost_contract
+  point at it.
+- Deferred for BT-002 itself: the IB tiered MONTHLY-VOLUME tier ladder (cheaper
+  per-share rates at higher cumulative monthly volume) — needs cross-run state;
+  today IbTiered is the published base (<=300k shares/month) tier. And the typed
+  StrategyTimedOut/marshaling taxonomy is still BT-001-runtime's concern.
+
 === SESSION 37 ===
 Date: 2026-06-03
 Feature completed: SRS-BT-001 RUNNABLE-ENGINE VERTICAL — a genuinely runnable
