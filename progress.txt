@@ -1,3 +1,148 @@
+=== SESSION 39 ===
+Date: 2026-06-03
+Feature completed: SRS-BT-003 — "use the same transaction-cost model family for
+internal simulation and backtesting unless configured otherwise" (docs/SRS.md
+SRS-5.6 SRS-BT-003; traces SyRS SYS-15e / SYS-83d; StRS SN-1.03 / SN-1.29). This
+slice ships the internal simulation engine's paper-fill cost path in
+crates/atp-simulation (new module `sim`) that CONSUMES the SAME cost::CostConfig
+family (built in SESSION 38, module `cost`) the SESSION-37 backtest engine
+applies.
+Status: 92 remaining features (UNCHANGED — SRS-BT-003 stays passes:false; the
+SYS-83 fill models, live-data fills, full SYS-84 ledger, persistence, and the
+operator override surface + Python runtime are deferred).
+
+Feature pick: the next UNSLICED lowest-ID P1. ERR-7/8/9, SRS-API-001, SRS-MD-001,
+SRS-LOG-001, SRS-BT-001 (S37), and SRS-BT-002 (S38) are all already sliced and
+intentionally stay passes:false, so SRS-BT-003 was the natural next pick — and a
+direct follow-on to SESSION 38, whose backtest_cost_contract.deferred[] explicitly
+named "SRS-BT-003 (shared simulation/backtest cost family)" as BT-002's deferred
+half. NO depth AskUserQuestion this time: there was no fork — BT-003 obviously
+extends the BT-002 cost family in the same crate (atp-simulation), per SYS-15e's
+"same default ... unless explicitly configured otherwise" mandate.
+
+What I did (one feat commit 789bb9a, 8 files, +1475/-1):
+- crates/atp-simulation/src/sim.rs (NEW): PaperSimulationEngine { cost_config:
+  CostConfig } derives Default, so its default cost family is PROVABLY
+  CostConfig::default() — the IDENTICAL SyRS baseline the backtest engine defaults
+  to (SYS-15e). with_cost_config() is the per-strategy override ("unless explicitly
+  configured otherwise") and never mutates the shared default. simulate_fill()
+  computes the per-fill CostBreakdown via self.cost_config.cost_breakdown(quantity,
+  price_minor, observed_spread_minor) — the IDENTICAL entry point BacktestEngine::
+  run calls — and folds the total into a signed cash_delta_minor that ALWAYS
+  SUBTRACTS the cost (a buy pays notional plus cost; a sell receives proceeds less
+  cost), so a cost can never fabricate cash, mirroring the backtest engine exactly.
+  PaperFill carries the same commission/slippage/spread-impact decomposition as the
+  backtest Fill plus cash_delta_minor + an overflow-checked total_cost_minor().
+  Minimal PaperLedger { cash_minor, position, commission_paid_minor } with
+  apply_fill() is the SYS-84 seam (full ledger = SRS-SIM-003, deferred). SimError
+  { EmptySymbol, NonPositivePrice, NegativeSpread, Overflow, Cost(CostError) } +
+  From<CostError>; fails closed before any cost on each bad input. Integer minor
+  units (i128 intermediates, i64::try_from -> Overflow, checked_*; never f64);
+  every money var carries the _minor suffix so the critic's PRICE_FIELD_RE never
+  matches. 11 in-module L1 unit tests.
+- crates/atp-simulation/src/lib.rs: pub mod sim; (the shared-family re-export
+  alongside pub mod cost;).
+- crates/atp-simulation/tests/srs_bt_003_shared_cost_family.rs (NEW): 9 integration
+  tests — the PARITY proof. assert_same_costs() runs a backtest with a CostConfig to
+  get a Fill, then calls simulate_fill with the SAME config + same (qty, price,
+  spread), and asserts commission/slippage/spread-impact are EQUAL between the two
+  engines (the SRS-BT-003 acceptance criterion), under the default family, an
+  operator override, and the observed-spread path. Plus: sim default == backtest
+  default (SYS-15e), a cost never fabricates cash on a sell, a per-strategy override
+  doesn't mutate the shared default, negative-spread + negative-param fail closed,
+  determinism.
+- architecture/runtime_services.json: new sim_cost_contract block (41 keys total
+  now); updated backtest_cost_contract.deferred[]'s SRS-BT-003 entry to say it is
+  now IMPLEMENTED (shared family consumed by the sim fill path; see
+  sim_cost_contract) with only the sub-halves left. Spliced as ASCII text (the file
+  mixes literal em-dashes and — escapes, so a whole-file json.dump would churn
+  the entire file) — diff is +125/-1, valid JSON.
+- tools/sim_cost_check.py (NEW): 9 static collectors + cargo smoke (--require-cargo
+  fail-closed for init.sh, same convention as backtest_cost_check.py). Registered
+  TRANSITIVELY in tools/architecture_check.py (import + assert_sim_cost wrapper +
+  dispatch) — NOT the ci.yml/run_ci_locally for-loops, matching the S36/37/38
+  convention (architecture_check IS the CI entry point; backtest_check/
+  backtest_cost_check are wired the same way and absent from ci.yml directly). Ruff
+  auto-sorted the import (and first DROPPED it as F401-unused until I added the
+  usage in the same pass). init.sh smoke line added after the backtest cost gate.
+- tests/test_sim_cost_contract.py (NEW): 28 L3 cases (subprocess PASS + 10 evidence
+  needles + a negative mutation spot-check per collector: dropped Default derive,
+  dropped cost_config field, renamed shared cost_breakdown call, removed cost
+  deduction, dropped PaperFill/PaperLedger field, dropped SimError variant, removed
+  validate, removed price guard, injected f64, removed i128 intermediate, dropped
+  pub mod sim;/pub mod cost; re-export, leaked vendor token).
+
+Money/safety design notes: the sim fill reuses the cost family's cost_breakdown
+verbatim, so by construction sim and backtest cannot diverge — the parity test
+makes that an executable, regression-proof contract rather than a claim. The cost
+is subtracted in BOTH trade directions via checked arithmetic, so a sell's proceeds
+are reduced (never increased). ts is an injected u64 (no datetime.now), so the fill
+is deterministic. The PaperLedger is intentionally minimal (cash/position/
+commission only) to stay atomic to BT-003; avg-cost + realized/unrealized P&L is
+SRS-SIM-003's SYS-84 work.
+
+What I tested: cargo test --workspace green (atp-simulation 41 lib + 13 BT-001 +
+8 BT-002 + 9 BT-003 integration; all crates pass). pytest -m "not integration and
+not e2e": 1247 passed / 4 skipped (pre-existing pending-impl) / 118 subtests (+28
+from the new L3 test). sim_cost_check.py --require-cargo PASS (10 evidence items),
+architecture_check.py PASS (transitive, sim evidence surfaced), backtest_check.py +
+backtest_cost_check.py --require-cargo still PASS. ruff + ruff-format clean on the
+new Python; my new Rust is clippy-clean (cargo clippy -p atp-simulation: only
+atp-types has the 7 pre-existing doc-lazy-continuation warnings — newer-local-
+toolchain noise, NOT my files; verified none of my files are flagged) and
+cargo-fmt-clean (hand-applied the local rustfmt's wrapping to my new lines — method
+chain to the committed cost.rs style, long-line wraps, struct compaction — and
+restructured one unit-test comment to avoid a rustfmt comment-alignment quirk;
+verified my files are absent from cargo fmt --check's diff). ./init.sh -> ✓
+Environment ready with the new sim shared-cost smoke gate.
+
+Critic verdicts:
+  deterministic: APPROVE — 0 findings (--staged; pre-commit hook also APPROVE on
+    commit 789bb9a). The money:float-arithmetic warn was pre-empted by the _minor
+    suffix on every cost variable and by rewording two comments that had "notional
+    + cost" (bare `notional` + operator matches PRICE_FIELD_RE even in a comment).
+  judgment (fresh-context adversarial review): APPROVE — 0 findings. The user can
+    trigger /codex:adversarial-review (disable-model-invocation, so only the user
+    can — see [[feedback_codex_adversarial_review]]); I ran the documented fresh-
+    context Agent fallback (a cold general-purpose subagent given prompts/
+    critic_prompt.md + the staged diff, NO implementation context). It independently
+    re-derived: the change is confined to atp-simulation (correct layer, no cross-
+    crate edits, no dashboard/orchestrator dependency, no vendor tokens); all paths
+    return typed SimError (no silent unwrap on the fill path); no async/shared-state
+    races; the sim_cost_contract JSON matches the Rust API; feature_list.json
+    passes:false is consistent with the documented deferrals; one atomic feature, no
+    unrelated refactor; integer minor units throughout with no f64; ts is injected
+    (no datetime.now) so determinism holds; cost is always subtracted so it never
+    fabricates cash. No refusal clause triggered (critic_check.py / the prompt are
+    untouched). (Minor factual slip in its report — it claimed run_ci_locally.sh
+    doesn't exist; it does, at tools/run_ci_locally.sh:69, and invokes
+    architecture_check, so the transitive wiring holds in both ci.yml and the local
+    mirror. The slip did not affect the verdict.)
+  No overrides.
+
+Known issues / notes for next agent:
+- SRS-BT-003 stays passes:false. A true end-to-end pass needs (in
+  sim_cost_contract.deferred[]): the SYS-83 limit/stop/stop-limit fill models +
+  fill-probability + bar-volume cap and live-market-data-driven fills (SRS-SIM-002),
+  the full SYS-84 virtual ledger — avg cost + realized/unrealized P&L (SRS-SIM-003),
+  paper-state persistence SYS-89 (SRS-SIM-004), the operator per-strategy cost-
+  override surface (SRS-API-001/SRS-UI), and the real data + Python strategy runtime
+  (SRS-BT-001-runtime).
+- tests/domain/test_deterministic_replay.py stays SKIPPED ("pending implementation
+  of internal simulation engine") — it wants the full runnable sim engine, not just
+  the shared cost path; out of scope for this slice. The skip has a reason, so it is
+  not a critic violation.
+- Pre-existing (NOT introduced this session): atp-types has 7 clippy doc-lazy-
+  continuation warnings and the workspace has cargo-fmt drift on OTHER crates, both
+  from the newer local toolchain (see [[feedback_no_whole_crate_cargo_fmt]]). CI uses
+  dtolnay/rust-toolchain@stable (>= local 1.95.0), so cargo clippy --workspace -D
+  warnings would flag those atp-types lines — a pre-existing repo condition outside
+  any one feature's scope; do NOT fix it inside a feature commit.
+- Next pick by the established heuristic: the next UNSLICED lowest-ID P1. SRS-BT-004
+  (compute backtest/paper/live performance metrics) is the natural follow-on — it
+  consumes BT-003's fills/equity and the cost decomposition; SRS-BT-009/010 and the
+  SRS-SIM-00x / SRS-DATA-00x families are also open.
+
 === SESSION 38 ===
 Date: 2026-06-03
 Feature completed: SRS-BT-002 — "apply configurable commission, slippage, and
