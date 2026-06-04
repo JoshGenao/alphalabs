@@ -6,6 +6,12 @@ use atp_types::RuntimeService;
 /// family for paper simulation and backtesting.
 pub mod backtest;
 
+/// The configurable transaction-cost model family (SRS-BT-002): commission,
+/// slippage, and spread-impact models with SyRS-matching defaults. The backtest
+/// engine applies it to fills; the internal simulation engine shares the same
+/// family for paper fills (SRS-BT-003).
+pub mod cost;
+
 #[derive(Debug, Default)]
 pub struct InternalSimulationEngine;
 

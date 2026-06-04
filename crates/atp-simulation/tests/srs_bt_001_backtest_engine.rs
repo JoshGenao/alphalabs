@@ -11,6 +11,7 @@ use atp_simulation::backtest::{
     BacktestBar, BacktestDataSource, BacktestEngine, BacktestError, BacktestRequest,
     BacktestStrategy, BarSource, DateRange,
 };
+use atp_simulation::cost::CostConfig;
 use atp_types::StrategyId;
 
 /// A fixture catalog of bars that declares which catalog it reads from and
@@ -107,6 +108,7 @@ fn bar(ts: u64, close_minor: i64) -> BacktestBar {
         symbol: "AAPL".to_string(),
         ts,
         close_minor,
+        spread_minor: None,
     }
 }
 
@@ -130,6 +132,9 @@ fn request(data_source: BacktestDataSource, range: DateRange) -> BacktestRequest
         data_source,
         range,
         starting_cash_minor: 10_000,
+        // These SRS-BT-001 tests assert the frictionless replay/ledger; the
+        // SRS-BT-002 cost models are exercised in srs_bt_002_cost_models.rs.
+        cost_config: CostConfig::zero(),
     }
 }
 
@@ -273,6 +278,7 @@ fn foreign_symbol_from_source_fails_closed() {
                 symbol: "MSFT".to_string(),
                 ts: 2,
                 close_minor: 110,
+                spread_minor: None,
             },
         ],
     };

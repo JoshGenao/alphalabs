@@ -35,6 +35,8 @@ use std::fmt;
 
 use atp_types::StrategyId;
 
+use crate::cost::{CostConfig, CostError};
+
 /// Which catalog a backtest reads its bars from.
 ///
 /// SRS-BT-001 requires a backtest to be "launched with system data **or**
@@ -100,11 +102,18 @@ impl DateRange {
 /// `close_minor` is the close in the smallest currency unit (e.g. cents) so all
 /// downstream money math stays exact. Converting a vendor floating-point close
 /// into minor units happens at the (deferred) adapter boundary, never here.
+///
+/// `spread_minor` is the bar's **observed bid-ask spread** in minor units, when
+/// the data source provides quote data (`None` for close-only daily bars). The
+/// default spread-impact model (SYS-15c) uses it when present and falls back to a
+/// fixed fraction of notional when it is `None`. A negative observed spread is
+/// corrupt quote data and the engine fails closed on it before any fill.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BacktestBar {
     pub symbol: String,
     pub ts: u64,
     pub close_minor: i64,
+    pub spread_minor: Option<i64>,
 }
 
 /// Source of historical bars for a backtest — the deferred Parquet/system-catalog
@@ -149,6 +158,11 @@ pub trait BacktestStrategy {
 }
 
 /// A backtest launch request.
+///
+/// `cost_config` carries the per-run transaction-cost model family (SRS-BT-002):
+/// it defaults to the SyRS baseline ([`CostConfig::default`]) and an operator
+/// overrides it for an individual run (SYS-15d) without changing strategy code —
+/// the override lives on the request, not in the strategy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BacktestRequest {
     pub strategy_id: StrategyId,
@@ -156,15 +170,25 @@ pub struct BacktestRequest {
     pub data_source: BacktestDataSource,
     pub range: DateRange,
     pub starting_cash_minor: i64,
+    pub cost_config: CostConfig,
 }
 
 /// A single deterministic fill recorded in the trade log.
+///
+/// `price_minor` is the bar close the fill is referenced to; the configured
+/// transaction-cost models (SRS-BT-002) are recorded as the separate
+/// `commission_minor` / `slippage_minor` / `spread_impact_minor` components (each
+/// non-negative) rather than folded into the price, so the cost decomposition is
+/// transparent for downstream metrics (SRS-BT-004).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fill {
     pub ts: u64,
     pub symbol: String,
     pub quantity: i64,
     pub price_minor: i64,
+    pub commission_minor: i64,
+    pub slippage_minor: i64,
+    pub spread_impact_minor: i64,
 }
 
 /// One point on the equity curve (mark-to-market at a bar close).
@@ -223,6 +247,20 @@ pub enum BacktestError {
         requested: BacktestDataSource,
         actual: BacktestDataSource,
     },
+    /// A replayed bar carried a negative observed bid-ask spread (corrupt quote
+    /// data). Rejected before any fill so a negative spread can never produce a
+    /// cash-fabricating spread-impact cost (mirrors the `NonPositivePrice` guard).
+    NegativeSpread { ts: u64, spread_minor: i64 },
+    /// A configured transaction-cost model rejected the run or a fill (SRS-BT-002
+    /// cost-model family — e.g. a negative parameter, a negative spread, or
+    /// cost-math overflow). Carries the underlying [`CostError`].
+    Cost(CostError),
+}
+
+impl From<CostError> for BacktestError {
+    fn from(error: CostError) -> Self {
+        Self::Cost(error)
+    }
 }
 
 impl fmt::Display for BacktestError {
@@ -258,6 +296,11 @@ impl fmt::Display for BacktestError {
                 actual.as_str(),
                 requested.as_str()
             ),
+            Self::NegativeSpread { ts, spread_minor } => write!(
+                f,
+                "backtest bar at ts {ts} has a negative observed spread {spread_minor} minor units"
+            ),
+            Self::Cost(error) => write!(f, "backtest cost model rejected the run: {error}"),
         }
     }
 }
@@ -318,6 +361,9 @@ impl BacktestEngine {
             return Err(BacktestError::EmptySymbol);
         }
         request.range.validate()?;
+        // Fail closed on a misconfigured cost model before any data is read: a
+        // negative cost parameter would otherwise fabricate cash (SRS-BT-002).
+        request.cost_config.validate()?;
         // Provenance: the supplied source must be the catalog the request names,
         // so BacktestResult.data_source is trustworthy (never replay the system
         // catalog while reporting UploadedData, or vice versa).
@@ -376,6 +422,19 @@ impl BacktestEngine {
                 close_minor: bad.close_minor,
             });
         }
+        // Fail closed on a corrupt negative observed spread on ANY bar (even a
+        // no-trade bar), before any fill: a negative spread would otherwise drive
+        // a cash-fabricating spread-impact cost (SRS-BT-002, mirrors the price
+        // guard above).
+        if let Some(bad) = bars
+            .iter()
+            .find(|bar| matches!(bar.spread_minor, Some(spread) if spread < 0))
+        {
+            return Err(BacktestError::NegativeSpread {
+                ts: bad.ts,
+                spread_minor: bad.spread_minor.unwrap_or_default(),
+            });
+        }
 
         let mut cash_minor = request.starting_cash_minor;
         let mut position: i64 = 0;
@@ -393,12 +452,26 @@ impl BacktestEngine {
                 cash_minor = cash_minor
                     .checked_sub(notional)
                     .ok_or(BacktestError::Overflow)?;
+                // Apply the configured transaction-cost models (SRS-BT-002). Each
+                // component is non-negative and is always SUBTRACTED from cash —
+                // a cost can never fabricate cash, regardless of trade direction.
+                let costs =
+                    request
+                        .cost_config
+                        .cost_breakdown(delta, bar.close_minor, bar.spread_minor)?;
+                let total_cost_minor = costs.total_minor()?;
+                cash_minor = cash_minor
+                    .checked_sub(total_cost_minor)
+                    .ok_or(BacktestError::Overflow)?;
                 position = position.checked_add(delta).ok_or(BacktestError::Overflow)?;
                 trade_log.push(Fill {
                     ts: bar.ts,
                     symbol: bar.symbol.clone(),
                     quantity: delta,
                     price_minor: bar.close_minor,
+                    commission_minor: costs.commission_minor,
+                    slippage_minor: costs.slippage_minor,
+                    spread_impact_minor: costs.spread_impact_minor,
                 });
             }
             // Mark-to-market: equity = cash + position valued at this close.
@@ -532,9 +605,13 @@ mod tests {
             symbol: symbol.to_string(),
             ts,
             close_minor,
+            spread_minor: None,
         }
     }
 
+    // These BT-001 engine tests assert the raw replay/ledger mechanics, so they
+    // run frictionless (CostConfig::zero); the cost-model application is covered
+    // by cost.rs unit tests and the SRS-BT-002 integration test.
     fn request(range: DateRange) -> BacktestRequest {
         BacktestRequest {
             strategy_id: StrategyId::new("bt-1"),
@@ -542,6 +619,7 @@ mod tests {
             data_source: BacktestDataSource::SystemData,
             range,
             starting_cash_minor: 1000,
+            cost_config: CostConfig::zero(),
         }
     }
 

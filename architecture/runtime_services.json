@@ -3872,7 +3872,7 @@
       },
       {
         "feature": "SRS-BT-002 / SRS-BT-003 (cost models)",
-        "what": "Configurable commission, slippage, and spread-impact models from the shared transaction-cost model family. This slice fills deterministically at the bar close with zero cost; the configurable cost-model overrides (and the shared simulation/backtest model family) are the SRS-BT-002/003 deferred half."
+        "what": "SRS-BT-002 is now IMPLEMENTED on this engine: the configurable transaction-cost model family (commission / slippage / spread-impact, SyRS-default matching) lives in the `cost` module and BacktestEngine::run applies it per fill via the per-run BacktestRequest.cost_config — see the backtest_cost_contract block. BT-001's own engine tests still run frictionless (CostConfig::zero). Still deferred: the operator override SURFACE that lets an operator pick a cost model per run (SRS-BT-002, SRS-API-001/SRS-UI) and the internal simulation engine sharing the SAME family for paper fills (SRS-BT-003)."
       },
       {
         "feature": "SRS-BT-004 (metrics)",
@@ -3885,6 +3885,171 @@
       {
         "feature": "SRS-BT-010 (determinism guarantee)",
         "what": "The end-to-end deterministic-backtest guarantee under the real Python strategy host (two identical runs produce identical trade logs, equity curves, and metrics). This slice demonstrates determinism for the Rust engine (stable sort_by_key replay + integer money math); the guarantee across the full Python execution path is SRS-BT-010."
+      }
+    ]
+  },
+  "backtest_cost_contract": {
+    "description": "SRS-BT-002 (apply configurable commission, slippage, and spread-impact models to backtests). The configurable transaction-cost model FAMILY lives in crates/atp-simulation (module `cost`) and is APPLIED by the runnable backtest engine (module `backtest`). CostConfig bundles three configurable models: CommissionModel (default IbTiered = the published Interactive Brokers tiered schedule \u2014 IB_TIERED_RATE_CENTIMINOR_PER_SHARE per share, floored at IB_TIERED_MIN_PER_ORDER_MINOR per order, capped at IB_TIERED_MAX_PCT_BPS of trade value, SYS-15a), SlippageModel (default NotionalBps at DEFAULT_SLIPPAGE_BPS = 0.05% of trade notional, SYS-15b), and SpreadImpactModel (default ObservedOrFallbackBps = half the observed bid-ask spread per share when the bar carries one, else DEFAULT_SPREAD_FALLBACK_BPS = 0.10% of notional, SYS-15c). CostConfig::default() is the SyRS baseline encoded as named constants, so the default is PROVABLY the published value; an operator overrides any model for an individual run (SYS-15d) by building a different CostConfig on BacktestRequest.cost_config \u2014 no strategy code changes. All cost math is integer minor units (i128 intermediates, deterministic round-half-up division via div_round_half_up, i64::try_from narrowing -> CostError::Overflow; never f64); every cost is non-negative and the engine always SUBTRACTS it from cash via checked_sub, so a cost can never fabricate cash. The engine fails closed before any fill on a negative configured parameter (CostConfig::validate -> CostError::NegativeParameter) and on a corrupt negative observed bid-ask spread on ANY bar (BacktestError::NegativeSpread, mirroring the BT-001 non-positive-price guard). cost.rs is the SAME transaction-cost model family the internal simulation engine shares for paper fills (SRS-BT-003 deferred half \u2014 see deferred[]). The PASS line is 'SRS-BT-002 SDK-SURFACE PASS'; feature_list.json keeps SRS-BT-002 passes:false because the operator override SURFACE (the REST/CLI/dashboard controls that let an operator pick a cost model per run, SRS-API-001/SRS-UI) and the real data + Python strategy runtime (SRS-BT-001-runtime) are still deferred.",
+    "requirement": "SRS-BT-002",
+    "srs_refs": [
+      "SRS-BT-002"
+    ],
+    "syrs_refs": [
+      "SYS-15a",
+      "SYS-15b",
+      "SYS-15c",
+      "SYS-15d"
+    ],
+    "strs_refs": [
+      "SN-1.03"
+    ],
+    "ac_traces": [
+      "SRS-BT-002",
+      "SYS-15a",
+      "SYS-15b",
+      "SYS-15c",
+      "SYS-15d"
+    ],
+    "simulation_crate": {
+      "crate": "atp-simulation",
+      "path": "crates/atp-simulation"
+    },
+    "cost_module": "cost",
+    "backtest_module": "backtest",
+    "commission_model": {
+      "enum": "CommissionModel",
+      "variants": [
+        "IbTiered",
+        "PerShare",
+        "PerTrade",
+        "None"
+      ],
+      "default_variant": "IbTiered",
+      "default_token": "#[default]IbTiered"
+    },
+    "slippage_model": {
+      "enum": "SlippageModel",
+      "variants": [
+        "NotionalBps",
+        "None"
+      ],
+      "default_token": "Self::NotionalBps{bps:DEFAULT_SLIPPAGE_BPS"
+    },
+    "spread_impact_model": {
+      "enum": "SpreadImpactModel",
+      "variants": [
+        "ObservedOrFallbackBps",
+        "FixedBps",
+        "None"
+      ],
+      "default_token": "Self::ObservedOrFallbackBps{fallback_bps:DEFAULT_SPREAD_FALLBACK_BPS"
+    },
+    "syrs_default_constants": {
+      "DEFAULT_SLIPPAGE_BPS": 5,
+      "DEFAULT_SPREAD_FALLBACK_BPS": 10,
+      "IB_TIERED_RATE_CENTIMINOR_PER_SHARE": 35,
+      "IB_TIERED_MIN_PER_ORDER_MINOR": 35,
+      "IB_TIERED_MAX_PCT_BPS": 100,
+      "COMMISSION_RATE_SCALE": 100
+    },
+    "cost_config_struct": {
+      "struct": "CostConfig",
+      "required_fields": [
+        "commission",
+        "slippage",
+        "spread_impact"
+      ],
+      "zero_method": "zero",
+      "validate_method": "validate",
+      "breakdown_method": "cost_breakdown"
+    },
+    "cost_breakdown_struct": {
+      "struct": "CostBreakdown",
+      "required_fields": [
+        "commission_minor",
+        "slippage_minor",
+        "spread_impact_minor"
+      ],
+      "total_method": "total_minor"
+    },
+    "cost_error_enum": {
+      "enum": "CostError",
+      "variants": [
+        "NegativeParameter",
+        "NegativeSpread",
+        "Overflow"
+      ]
+    },
+    "validate_fail_closed": {
+      "method": "validate",
+      "error_token": "CostError::NegativeParameter",
+      "guarded_fields": [
+        "rate_centiminor_per_share",
+        "min_per_order_minor",
+        "fee_minor"
+      ]
+    },
+    "money_invariant": {
+      "forbidden_float_token": "f64",
+      "wide_intermediate_token": "i128::from",
+      "round_helper": "div_round_half_up",
+      "narrow_token": "i64::try_from",
+      "checked_op": "checked_add",
+      "overflow_variant": "Overflow"
+    },
+    "engine_application": {
+      "run_method": "run",
+      "validate_token": "request.cost_config.validate()?",
+      "breakdown_token": "request.cost_config.cost_breakdown(delta,bar.close_minor,bar.spread_minor)?",
+      "deduct_token": "checked_sub(total_cost_minor)",
+      "negative_spread_guard": "BacktestError::NegativeSpread",
+      "fill_population_tokens": [
+        "commission_minor:costs.commission_minor",
+        "slippage_minor:costs.slippage_minor",
+        "spread_impact_minor:costs.spread_impact_minor"
+      ]
+    },
+    "wiring": {
+      "request_struct": "BacktestRequest",
+      "request_field": "cost_config",
+      "request_field_type": "CostConfig",
+      "bar_struct": "BacktestBar",
+      "bar_field": "spread_minor",
+      "fill_struct": "Fill",
+      "fill_fields": [
+        "commission_minor",
+        "slippage_minor",
+        "spread_impact_minor"
+      ]
+    },
+    "shared_family": {
+      "lib_reexport_token": "pub mod cost;",
+      "note": "SRS-BT-003 shares the cost::CostConfig family for internal simulation paper fills."
+    },
+    "rust_integration_test": "srs_bt_002_cost_models",
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "deferred": [
+      {
+        "feature": "SRS-API-001 / SRS-UI (operator override surface)",
+        "what": "The REST/CLI/dashboard controls that let an operator select or override the commission, slippage, and spread-impact models for an individual backtest run (SYS-15d). The engine already accepts a per-run CostConfig on BacktestRequest and applies it to fills; the operator-facing surface that constructs that override from a form / CLI flag / API payload is the deferred half, so feature_list.json keeps SRS-BT-002 passes:false."
+      },
+      {
+        "feature": "SRS-BT-003 (shared simulation/backtest cost family)",
+        "what": "The internal simulation engine consuming this exact cost::CostConfig family for paper fills 'unless explicitly configured otherwise'. cost.rs is the shared home and the backtest engine is its first consumer; wiring it into the InternalSimulationEngine fill simulation is SRS-BT-003's half."
+      },
+      {
+        "feature": "SRS-BT-002 (IB tiered monthly-volume tiers)",
+        "what": "IbTiered models the published base (<=300k shares/month) per-share rate, the per-order minimum, and the 1%-of-trade-value cap. The cumulative monthly-volume tier ladder (cheaper per-share rates at higher monthly volume) needs cross-run state and is deferred; the per-run rate/floor/cap is the SyRS default baseline."
+      },
+      {
+        "feature": "SRS-BT-001-runtime (real data + Python strategy host)",
+        "what": "Same deferral as SRS-BT-001: the real Parquet / system-catalog BarSource and the Rust<->Python strategy host. The cost models are applied by the runnable engine over the in-memory port fixtures today; a true end-to-end pass also needs that runtime."
       }
     ]
   }

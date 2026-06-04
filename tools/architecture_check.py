@@ -12,6 +12,7 @@ from pathlib import Path
 from adapter_check import AdapterContractError, assert_adapter_contract_static
 from adapter_isolation_check import AdapterIsolationError, assert_adapter_isolation_static
 from backtest_check import BacktestCheckError, assert_backtest_static
+from backtest_cost_check import BacktestCostCheckError, assert_backtest_cost_static
 from config_check import ConfigCheckError, assert_configuration_static
 from connectivity_check import ConnectivityCheckError, assert_connectivity_static
 from data_provider_check import (
@@ -523,6 +524,22 @@ def assert_backtest(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_backtest_cost(config: dict) -> list[str]:
+    block = config.get("backtest_cost_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_backtest_cost_static(config, ROOT)
+    summary = (
+        f"{block['simulation_crate']['crate']} applies the configurable transaction-cost model "
+        f"family ({block['commission_model']['enum']} / {block['slippage_model']['enum']} / "
+        f"{block['spread_impact_model']['enum']}) to backtest fills with SyRS-default-matching "
+        "constants, a per-run BacktestRequest.cost_config override, and integer minor-unit cost "
+        "math that can never fabricate cash (SRS-BT-002, SyRS SYS-15a/b/c/d)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_orchestrator_lifecycle(config: dict) -> list[str]:
     block = config.get("orchestrator_lifecycle_contract")
     if block is None:
@@ -798,6 +815,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_backtest(config))
     except BacktestCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_backtest_cost(config))
+    except BacktestCostCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_orchestrator_lifecycle(config))
