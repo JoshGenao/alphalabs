@@ -4041,7 +4041,7 @@
       },
       {
         "feature": "SRS-BT-003 (shared simulation/backtest cost family)",
-        "what": "The internal simulation engine consuming this exact cost::CostConfig family for paper fills 'unless explicitly configured otherwise'. cost.rs is the shared home and the backtest engine is its first consumer; wiring it into the InternalSimulationEngine fill simulation is SRS-BT-003's half."
+        "what": "IMPLEMENTED in SESSION 39 (SRS-BT-003): the internal simulation engine now consumes this exact cost::CostConfig family for paper fills via the `sim` module -- PaperSimulationEngine::simulate_fill calls the IDENTICAL CostConfig::cost_breakdown entry point the backtest engine calls, and defaults to the same SyRS baseline (SYS-15e). See `sim_cost_contract`. The remaining SRS-BT-003 deferrals (SYS-83 limit/stop/fill-probability/volume-cap fill models, live-market-data fills, the full SYS-84 ledger, paper-state persistence, and the operator per-strategy override surface) live in sim_cost_contract.deferred[]."
       },
       {
         "feature": "SRS-BT-002 (IB tiered monthly-volume tiers)",
@@ -4050,6 +4050,130 @@
       {
         "feature": "SRS-BT-001-runtime (real data + Python strategy host)",
         "what": "Same deferral as SRS-BT-001: the real Parquet / system-catalog BarSource and the Rust<->Python strategy host. The cost models are applied by the runnable engine over the in-memory port fixtures today; a true end-to-end pass also needs that runtime."
+      }
+    ]
+  },
+  "sim_cost_contract": {
+    "description": "SRS-BT-003 (use the same transaction-cost model family for internal simulation and backtesting unless configured otherwise; SyRS SYS-15e / SYS-83d; StRS SN-1.03 / SN-1.29). The internal simulation engine applies the SAME transaction-cost model FAMILY (crates/atp-simulation module `cost`, SRS-BT-002) the runnable backtest engine applies, via the new module `sim` paper-fill path. PaperSimulationEngine holds a `cost_config: CostConfig` that derives Default = CostConfig::default(), the IDENTICAL SyRS baseline the backtest engine defaults to (SYS-15e 'same default ... unless explicitly configured otherwise'); an operator overrides it per strategy via with_cost_config without touching strategy code. simulate_fill computes the per-fill CostBreakdown by calling self.cost_config.cost_breakdown(quantity, price_minor, observed_spread_minor) -- the IDENTICAL entry point BacktestEngine::run calls -- and folds the total into a signed cash_delta_minor that ALWAYS SUBTRACTS the cost (a buy pays notional plus cost; a sell receives proceeds less cost), so a cost can never fabricate cash. All money math is integer minor units (i128::from intermediates, i64::try_from -> SimError::Overflow, checked_*; never f64). The fill fails closed before computing any cost on an empty symbol (SimError::EmptySymbol), a non-positive price (SimError::NonPositivePrice), a negative observed spread (SimError::NegativeSpread), and a misconfigured negative cost parameter (SimError::Cost(CostError::NegativeParameter)). The minimal PaperLedger accumulates cash, position, and commission_paid (the full SYS-84 virtual ledger is SRS-SIM-003). The Rust integration test srs_bt_003_shared_cost_family asserts the paper fill's commission / slippage / spread-impact EQUAL the backtest fill's for identical config and inputs (the SRS-BT-003 acceptance criterion). The PASS line is 'SRS-BT-003 SDK-SURFACE PASS'; feature_list.json keeps SRS-BT-003 passes:false because the SYS-83 limit/stop/fill-probability/volume-cap fill models, live-market-data fills, the full SYS-84 ledger, paper-state persistence (SYS-89), and the operator per-strategy override surface (SRS-API-001/SRS-UI) plus the Python strategy runtime are still deferred.",
+    "requirement": "SRS-BT-003",
+    "srs_refs": [
+      "SRS-BT-003"
+    ],
+    "syrs_refs": [
+      "SYS-15e",
+      "SYS-83"
+    ],
+    "strs_refs": [
+      "SN-1.03",
+      "SN-1.29"
+    ],
+    "ac_traces": [
+      "SRS-BT-003",
+      "SYS-15e",
+      "SYS-83"
+    ],
+    "simulation_crate": {
+      "crate": "atp-simulation",
+      "path": "crates/atp-simulation"
+    },
+    "cost_module": "cost",
+    "sim_module": "sim",
+    "engine_struct": {
+      "struct": "PaperSimulationEngine",
+      "cost_field": "cost_config",
+      "cost_field_type": "CostConfig",
+      "default_derive_token": "#[derive(Debug,Default,Clone,PartialEq,Eq)]pub struct PaperSimulationEngine",
+      "methods": [
+        "new",
+        "with_cost_config",
+        "cost_config",
+        "simulate_fill"
+      ]
+    },
+    "shared_entry_point": {
+      "fn": "simulate_fill",
+      "use_cost_token": "use crate::cost::",
+      "breakdown_token": "self.cost_config.cost_breakdown(quantity,price_minor,observed_spread_minor)",
+      "subtract_cost_token": "checked_sub(total_cost_minor)"
+    },
+    "paper_fill_struct": {
+      "struct": "PaperFill",
+      "cost_fields": [
+        "commission_minor",
+        "slippage_minor",
+        "spread_impact_minor"
+      ],
+      "cash_field": "cash_delta_minor",
+      "total_method": "total_cost_minor"
+    },
+    "paper_ledger_struct": {
+      "struct": "PaperLedger",
+      "fields": [
+        "cash_minor",
+        "position",
+        "commission_paid_minor"
+      ],
+      "apply_method": "apply_fill"
+    },
+    "sim_error_enum": {
+      "enum": "SimError",
+      "variants": [
+        "EmptySymbol",
+        "NonPositivePrice",
+        "NegativeSpread",
+        "Overflow",
+        "Cost"
+      ]
+    },
+    "fail_closed": {
+      "fn": "simulate_fill",
+      "validate_token": "self.cost_config.validate()?",
+      "guard_tokens": [
+        "SimError::EmptySymbol",
+        "SimError::NonPositivePrice",
+        "SimError::NegativeSpread"
+      ]
+    },
+    "money_invariant": {
+      "forbidden_float_token": "f64",
+      "wide_intermediate_token": "i128::from",
+      "narrow_token": "i64::try_from",
+      "checked_op": "checked_sub",
+      "overflow_variant": "Overflow"
+    },
+    "shared_family": {
+      "lib_sim_reexport_token": "pub mod sim;",
+      "lib_cost_reexport_token": "pub mod cost;",
+      "note": "lib.rs re-exports both `pub mod cost;` and `pub mod sim;`; the internal simulation engine and the backtest engine apply the SAME cost::CostConfig family through the identical CostConfig::cost_breakdown entry point (SRS-BT-003 / SYS-15e)."
+    },
+    "rust_integration_test": "srs_bt_003_shared_cost_family",
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "deferred": [
+      {
+        "feature": "SRS-SIM-002 (fill models + live-data fills)",
+        "what": "The SYS-83 market/limit/stop/stop-limit fill models, the configurable fill-probability model, the bar-volume fill cap, and fills driven by live bid/ask/last from the market data subscription manager (SYS-70). This slice computes the shared cost decomposition over explicit (quantity, price, spread) fill inputs; the order-type fill logic, volume constraints, and live-data fill source are SRS-SIM-002's half."
+      },
+      {
+        "feature": "SRS-SIM-003 (full virtual ledger)",
+        "what": "The full SYS-84 virtual position ledger -- per-symbol average cost, realized and unrealized P&L marked to live data, independent per strategy. PaperLedger here is a minimal cash + position + commission-paid accumulator that proves the shared family's commissions actually accumulate; the full ledger is SRS-SIM-003."
+      },
+      {
+        "feature": "SRS-SIM-004 (paper-state persistence)",
+        "what": "Persisting and restoring the paper ledger, pending simulated orders, and accumulated metrics across container restarts (SYS-89)."
+      },
+      {
+        "feature": "SRS-API-001 / SRS-UI (operator override surface)",
+        "what": "The REST/CLI/dashboard controls that let an operator select or override the per-strategy cost model. The engine already accepts a per-strategy CostConfig via PaperSimulationEngine::with_cost_config; the operator-facing surface that constructs that override is the deferred half."
+      },
+      {
+        "feature": "SRS-BT-001-runtime (real data + Python strategy host)",
+        "what": "Same deferral as SRS-BT-001/002: the Python strategy host that drives paper fills end to end. The shared cost family is exercised over in-memory fill fixtures today; a true end-to-end pass also needs that runtime, so feature_list.json keeps SRS-BT-003 passes:false."
       }
     ]
   }

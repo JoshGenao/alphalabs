@@ -62,6 +62,7 @@ from pacing_budget_check import (
     PacingBudgetCheckError,
     assert_pacing_budget_static,
 )
+from sim_cost_check import SimCostCheckError, assert_sim_cost_static
 from strategy_api_order_events_check import (
     StrategyApiOrderEventsCheckError,
     assert_strategy_api_order_events_static,
@@ -540,6 +541,23 @@ def assert_backtest_cost(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_sim_cost(config: dict) -> list[str]:
+    block = config.get("sim_cost_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_sim_cost_static(config, ROOT)
+    summary = (
+        f"{block['simulation_crate']['crate']} internal simulation engine "
+        f"({block['engine_struct']['struct']}) applies the SAME cost::CostConfig family the "
+        "backtest engine applies — defaulting to the identical SyRS baseline (SYS-15e) and computing "
+        "each paper fill via the shared CostConfig::cost_breakdown entry point, so a paper strategy "
+        "and a backtest with identical cost configuration compute fills and commissions from the "
+        "same model family (SRS-BT-003, SyRS SYS-15e/SYS-83)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_orchestrator_lifecycle(config: dict) -> list[str]:
     block = config.get("orchestrator_lifecycle_contract")
     if block is None:
@@ -819,6 +837,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_backtest_cost(config))
     except BacktestCostCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_sim_cost(config))
+    except SimCostCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_orchestrator_lifecycle(config))

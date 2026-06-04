@@ -12,6 +12,13 @@ pub mod backtest;
 /// family for paper fills (SRS-BT-003).
 pub mod cost;
 
+/// The internal simulation engine's paper-fill cost path (SRS-BT-003). It
+/// consumes the SAME [`cost::CostConfig`] family the [`backtest`] engine applies
+/// — defaulting to the identical SyRS baseline (SYS-15e) — so a paper strategy
+/// and a backtest with identical cost configuration compute fills and
+/// commissions from the same model family.
+pub mod sim;
+
 #[derive(Debug, Default)]
 pub struct InternalSimulationEngine;
 
