@@ -1,3 +1,119 @@
+=== SESSION 41 ===
+Date: 2026-06-05
+Feature completed: SRS-SIM-002 SDK-SURFACE — "simulate fills using live market data
+and configurable fill models" (docs/SRS.md SRS-5.7 SRS-SIM-002; traces SyRS SYS-83
+fill simulation / SYS-87 realism constraints; StRS SN-1.29 / SN-1.03). This slice
+ships the internal simulation engine's fill-model / TRIGGERING path in
+crates/atp-simulation (new module `fill_model`) — the layer that sits between the
+SESSION 40 order-intake seam (paper_order: OrderType/Side) and the SESSION 39 shared
+cost path (sim: simulate_fill). It turns a routed order + live market data into a
+fill DECISION (whether / at what price / at what volume-capped quantity).
+Status: 92 remaining features (UNCHANGED — SRS-SIM-002 stays passes:false; the SYS-87a
+market-hours gate, SYS-87c stale-data threshold, SYS-70 live feed, stochastic
+fill-probability model, full SYS-84 ledger, persistence, orchestrator routing, and the
+Python runtime are deferred).
+
+Feature pick: SRS-SIM-002, the natural next pick the SESSION 40 handoff named — it
+consumes BOTH this session's order-intake model (OrderType/Side) and the SESSION
+38/39 cost family (simulate_fill). It is the lowest-ID unsliced P1 on the active
+simulation front and the documented deferred half of SRS-SIM-001. No depth
+AskUserQuestion: there was no fork (BT/ERR/MD/API/SIM-001 are all already sliced).
+
+What I did (3 commits):
+- prep 5a9109a (chore(critic)): extended SAFETY_PATH_RE with fill[_-]?model,
+  sim[_-]?fill, fill[_-]?decision, fill[_-]?trigger, market[_-]?snapshot, and
+  volume[_-]?cap tokens. Verified they match the planned non-test feat files
+  (fill_model.rs, tools/sim_fill_check.py) and ZERO existing tracked files, so the
+  fill-safety invariant forces a paired tests/domain/ diff. Continues the
+  S40/S35/S34 prep precedent.
+- feat 733509b (9 files, +3290): fill_model.rs (MarketSnapshot / FillModelConfig /
+  LimitFillModel / FillDecision / NoFillReason / FillModelError / BarVolumeBudget +
+  evaluate_fill + evaluate_fill_against_budget + 28 L1 tests); lib.rs
+  `pub mod fill_model;`; the new sim_fill_contract block in
+  architecture/runtime_services.json (ASCII-spliced, additive, no em-dashes per the
+  S39 note); tools/sim_fill_check.py (12 static collectors + --require-cargo smoke,
+  wired TRANSITIVELY into architecture_check.py + an init.sh smoke gate after the
+  sim_order gate); L3 tests/test_sim_fill_contract.py (negative mutation spot-checks);
+  L7 tests/domain/test_sim_fill_no_broker_route.py (behavioral cargo-run + structural
+  no-broker/binding checks, each with a non-vacuity control).
+
+Design / safety notes: evaluate_fill is &self with no clock/random, so the fill model
+is DETERMINISTIC (the stochastic SYS-83b fill-probability model is deferred to keep it
+so). All prices are integer minor units (no f64). The SYS-87b volume constraint is
+enforced per-order (evaluate_fill caps at min(requested, bar_volume)) AND in aggregate:
+a per-bar BarVolumeBudget caps each fill at its REMAINING volume and CONSUMES it, so
+the SUM of fills against one bar cannot exceed observed volume even across orders; the
+budget is BOUND to its bar (a budget/snapshot mismatch fails closed) so a stale or
+oversized budget cannot overfill a thinner bar. The configurable per-strategy fill
+model ships two BEHAVIOR-CHANGING deterministic variants (ImmediateOnCross fills a
+touch, RequireThroughCross requires a strict cross). A FillDecision::Filled feeds
+simulate_fill, so a triggered fill flows through the SAME cost family the backtest
+engine uses and stays inside the engine (no IB API order call, reusing the SIM-001
+no-broker-route crate-boundary guarantee). 7 typed FillModelError variants fail closed
+before any fill.
+
+What I tested: cargo test -p atp-simulation (84 lib unit + 10 srs_sim_002 integration)
++ cargo test --workspace green. cargo fmt --check clean (hand-applied the local
+rustfmt's wrapping to new lines; NO whole-crate fmt per the no_whole_crate_cargo_fmt
+note — pre-existing newer-rustfmt drift in atp-data/atp-execution/atp-orchestrator/
+atp-types/atp-market-data is untouched). clippy clean on fill_model.rs + the
+integration test (only the pre-existing atp-types doc-lazy-continuation warnings
+remain). python3 tools/sim_fill_check.py --require-cargo PASS (7 FillModelError
+variants; 13 evidence items). architecture_check.py exit 0 surfacing the sim_fill
+evidence; sim_order / sim_cost / backtest_cost still PASS. L3 + L7 pass; full pytest
+-m "not integration and not e2e" 1338 passed / 4 pre-existing pending-impl skips / 118
+subtests; ruff check+format clean on the new Python. ./init.sh -> Environment ready
+with the new "simulation fill-model contract check" gate firing after the sim_order
+gate.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings (pre-commit hook
+    also APPROVE on prep 5a9109a + feat 733509b). NOTE: the first deterministic run
+    returned WARN (7 money:float-arithmetic findings) — all FALSE POSITIVES from the
+    PRICE_FIELD_RE heuristic matching bare "price" followed by markdown ** / + / - in
+    DOC-COMMENT prose (the module has no f64 and no float arithmetic at all). Reworded
+    the prose to clear the heuristic; the re-run was APPROVE.
+  judgment (/codex:adversarial-review --wait $(cat prompts/critic_prompt.md),
+    user-triggered): APPROVE — no material findings on round 5. The FIRST FOUR Codex
+    rounds each returned needs-attention with a DIFFERENT real [high], each fixed before
+    the next: (1) evaluate_fill accepted a raw OrderType and did not fail closed on a
+    non-positive limit/stop price (a sell limit at -1 crossed a valid bid and returned a
+    fill AT -1) — fixed with validate_order_type + NonPositiveLimitPrice/StopPrice; (2)
+    FillModelConfig was a no-op (LimitFillModel had one variant), so "configurable" was
+    hollow — fixed by adding the behavior-changing RequireThroughCross variant + tests
+    proving two configs differ on a touch; (3) the volume cap was per-call/stateless, so
+    two orders could each fill the whole bar — fixed with the stateful per-bar
+    BarVolumeBudget + evaluate_fill_against_budget (consumes the budget) + aggregate
+    tests; (4) the budget was decoupled from the snapshot (BarVolumeBudget::new is
+    public), so an oversized budget could overfill a thin bar — fixed by binding the
+    budget to its bar (observed_bar_volume) and failing closed on a mismatch
+    (BudgetSnapshotMismatch). Round 5 approved. This is exactly the value of the real
+    adversarial pass: the deterministic critic and the SDK-boundary self-check passed
+    every round, but Codex's deeper pass caught four genuine correctness gaps the
+    structural checks could not.
+
+Known issues / notes for next agent:
+- SRS-SIM-002 stays passes:false BY DESIGN (honest partial-pass). The end-to-end AC
+  needs SYS-87a market-hours gating (SYS-50 trading calendar), SYS-87c stale-data
+  threshold rejection (SYS-39 freshness), live bid/ask/last from the SYS-70 subscription
+  manager (the MarketSnapshot is an in-memory fixture today), the stochastic SYS-83b
+  fill-probability model (needs a seeded RNG), the full SYS-84 virtual ledger
+  (SRS-SIM-003), paper-state persistence (SRS-SIM-004), the orchestrator routing of all
+  non-live strategies into this engine (SRS-EXE-002), and the Python strategy runtime.
+- The bar-replay LOOP that sequences multiple orders against one bar and threads one
+  BarVolumeBudget per bar is the deferred SRS-SIM-003 owner; evaluate_fill_against_budget
+  is its per-order step, and evaluate_fill is exactly that method with a fresh per-call
+  budget (per-order semantics).
+- Natural next pick in the active sim front: SRS-SIM-003 (SYS-84 full virtual position
+  ledger — per-symbol average cost, realized/unrealized P&L, per strategy). It consumes
+  this session's FillDecision and the SESSION 39 PaperFill/PaperLedger seam.
+- sim_fill_check.py is wired TRANSITIVELY via architecture_check.py (the CI entry point
+  invoked by both .github/workflows/ci.yml and tools/run_ci_locally.sh) plus an init.sh
+  smoke line — same convention as sim_order/sim_cost; it is NOT a direct ci.yml for-loop
+  entry.
+- feature_list.json was NOT modified this session (SRS-SIM-002 entry untouched at
+  passes:false).
+
 === SESSION 40 ===
 Date: 2026-06-04
 Feature completed: SRS-SIM-001 SDK-SURFACE — "simulate paper strategy orders
