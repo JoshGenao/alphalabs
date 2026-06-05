@@ -4336,5 +4336,214 @@
         "what": "Same deferral as SRS-BT/SRS-SIM siblings: the Python strategy host that actually submits these orders end to end. Intake is exercised over in-memory request fixtures today; a true end-to-end pass also needs that runtime, so feature_list.json keeps SRS-SIM-001 passes:false."
       }
     ]
+  },
+  "sim_fill_contract": {
+    "description": "SRS-SIM-002 (simulate fills using live market data and configurable fill models; SyRS SYS-83 fill simulation, SYS-87 realism constraints; StRS SN-1.29 / SN-1.03). The internal simulation engine's fill-model / triggering path lives in crates/atp-simulation (module `fill_model`) and adds an `evaluate_fill` method to PaperSimulationEngine that turns a routed OrderType (from the SRS-SIM-001 intake path) plus a MarketSnapshot (bid, ask, last, volume from the SYS-70 subscription manager) into a FillDecision. The SYS-83 fill rules: a Market order fills at the ask (buy) or bid (sell); a Limit order fills only when the market crosses the limit under the configurable per-strategy LimitFillModel and takes the limit price as its conservative no-improvement reference. Two behavior-changing deterministic limit models ship: ImmediateOnCross (the SYS-83b default) fills a touch at the limit (buy when ask <= limit, sell when bid >= limit), while RequireThroughCross fills only on a strict cross (buy when ask < limit, sell when bid > limit), so the two configs produce different decisions on the same touch snapshot. a Stop order triggers when the last trade crosses the stop (buy when last >= stop, sell when last <= stop) and then fills as a market order; a StopLimit order triggers at the stop then rests as a limit. The SYS-87b volume constraint is enforced both per-order and in aggregate: evaluate_fill caps a single order at the bar volume (fill_quantity = min(requested, bar_volume)), while evaluate_fill_against_budget caps each fill at a per-bar BarVolumeBudget's REMAINING volume and CONSUMES it, so the SUM of fills against one bar (the SYS-87b 'bar period') cannot exceed its observed volume even across orders; evaluate_fill is exactly evaluate_fill_against_budget with a fresh per-call budget. The budget is BOUND to its bar: evaluate_fill_against_budget fails closed with FillModelError::BudgetSnapshotMismatch when the budget's observed_bar_volume does not equal the snapshot's bar_volume, so a stale or oversized budget cannot be used against a thinner bar to fill past its observed volume. An exhausted bar yields NoFillReason::ZeroVolume, the trigger/cross test runs BEFORE the cap so an order that never crosses reports LimitNotCrossed / StopNotTriggered and consumes no budget, and the bar-replay loop that sequences orders within a bar is the deferred SRS-SIM-003 owner. evaluate_fill is &self with no clock or randomness, so it is deterministic. It fails closed BEFORE any fill decision on a non-positive requested quantity (FillModelError::NonPositiveQuantity), a non-positive limit/stop price on the raw order type (NonPositiveLimitPrice / NonPositiveStopPrice via validate_order_type, so a negative limit can never cross a valid snapshot and return a fill at that negative price), a non-positive quote (NonPositiveQuote), a crossed book (CrossedBook), and a negative bar volume (NegativeVolume); the order-price guards live in validate_order_type and the snapshot guards in validate_snapshot. A FillDecision::Filled feeds simulate_fill (SRS-BT-003), so a triggered fill flows through the SAME transaction-cost family the backtest engine applies and stays entirely inside the internal simulation engine -- it creates no IB API order call, reusing the SRS-SIM-001 no-broker-route crate-boundary guarantee (atp-simulation depends on neither atp-execution nor atp-adapters). Every price is an integer minor unit with the _minor suffix; the module contains no f64. The Rust integration test srs_sim_002_fill_models asserts every order type resolves a deterministic decision, limit/stop orders hold until the market crosses, the two limit fill models produce different decisions on a touch, the per-order volume cap is enforced, the aggregate of fills against one BarVolumeBudget cannot exceed the bar volume, a budget that does not match the snapshot's bar volume fails closed (cannot overfill a thinner bar), a filled decision flows through the cost family, corrupt market data fails closed, and no malformed (negative/zero) limit/stop price can produce a fill. The PASS line is 'SRS-SIM-002 SDK-SURFACE PASS'; feature_list.json keeps SRS-SIM-002 passes:false because the SYS-87a market-hours gating needs the SYS-50 trading calendar, the SYS-87c stale-data threshold rejection needs the SYS-39 freshness wiring, the live bid/ask/last feed comes from the SYS-70 subscription manager (the snapshot is an in-memory fixture today), the STOCHASTIC fill-probability model (SYS-83b) needs a seeded RNG and stays deferred (the two deterministic LimitFillModel variants that ship already satisfy the configurable-fill-model requirement), the full SYS-84 virtual ledger is SRS-SIM-003, paper-state persistence (SYS-89) is SRS-SIM-004, the orchestrator routing of all non-live strategies is SRS-EXE-002, and the Python strategy runtime is still deferred.",
+    "requirement": "SRS-SIM-002",
+    "srs_refs": [
+      "SRS-SIM-002"
+    ],
+    "syrs_refs": [
+      "SYS-83",
+      "SYS-87"
+    ],
+    "strs_refs": [
+      "SN-1.29",
+      "SN-1.03"
+    ],
+    "ac_traces": [
+      "SRS-SIM-002",
+      "SYS-83",
+      "SYS-87"
+    ],
+    "simulation_crate": {
+      "crate": "atp-simulation",
+      "path": "crates/atp-simulation"
+    },
+    "fill_module": "fill_model",
+    "engine_struct": "PaperSimulationEngine",
+    "market_snapshot_struct": {
+      "struct": "MarketSnapshot",
+      "fields": [
+        "bid_minor",
+        "ask_minor",
+        "last_minor",
+        "bar_volume"
+      ]
+    },
+    "fill_model_config": {
+      "struct": "FillModelConfig",
+      "fields": [
+        "limit_fill"
+      ],
+      "syrs_defaults_fn": "syrs_defaults"
+    },
+    "limit_fill_enum": {
+      "enum": "LimitFillModel",
+      "variants": [
+        "ImmediateOnCross",
+        "RequireThroughCross"
+      ]
+    },
+    "fill_decision_enum": {
+      "enum": "FillDecision",
+      "variants": [
+        "Filled",
+        "NoFill"
+      ]
+    },
+    "no_fill_reason_enum": {
+      "enum": "NoFillReason",
+      "variants": [
+        "LimitNotCrossed",
+        "StopNotTriggered",
+        "ZeroVolume"
+      ]
+    },
+    "fill_model_error_enum": {
+      "enum": "FillModelError",
+      "variants": [
+        "NonPositiveQuote",
+        "CrossedBook",
+        "NegativeVolume",
+        "NonPositiveQuantity",
+        "NonPositiveLimitPrice",
+        "NonPositiveStopPrice",
+        "BudgetSnapshotMismatch"
+      ]
+    },
+    "evaluate_fn": {
+      "fn": "evaluate_fill_against_budget",
+      "validate_token": "validate_snapshot(snapshot)?",
+      "validate_order_token": "validate_order_type(order_type)?",
+      "dispatch_token": "resolve_trigger(order_type, side, snapshot, fill_model)",
+      "guard_tokens": [
+        "FillModelError::NonPositiveQuantity"
+      ]
+    },
+    "single_order_fn": {
+      "fn": "evaluate_fill",
+      "delegate_tokens": [
+        "BarVolumeBudget::new(snapshot.bar_volume)?",
+        "self.evaluate_fill_against_budget("
+      ]
+    },
+    "bar_volume_budget": {
+      "struct": "BarVolumeBudget",
+      "new_fn": "new",
+      "for_snapshot_fn": "for_snapshot",
+      "remaining_fn": "remaining",
+      "observed_fn": "observed_bar_volume",
+      "consume_fn": "consume",
+      "negative_guard": "FillModelError::NegativeVolume",
+      "binding_guard": "budget.observed_bar_volume() != snapshot.bar_volume",
+      "mismatch_error": "FillModelError::BudgetSnapshotMismatch"
+    },
+    "validate_fn": {
+      "fn": "validate_snapshot",
+      "guard_tokens": [
+        "FillModelError::NonPositiveQuote",
+        "FillModelError::CrossedBook",
+        "FillModelError::NegativeVolume"
+      ]
+    },
+    "validate_order_fn": {
+      "fn": "validate_order_type",
+      "guard_tokens": [
+        "FillModelError::NonPositiveLimitPrice",
+        "FillModelError::NonPositiveStopPrice"
+      ]
+    },
+    "fill_rules": {
+      "order_type_tokens": [
+        "OrderType::Market",
+        "OrderType::Limit",
+        "OrderType::Stop",
+        "OrderType::StopLimit"
+      ],
+      "market_tokens": [
+        "Side::Buy => snapshot.ask_minor,",
+        "Side::Sell => snapshot.bid_minor,"
+      ],
+      "stop_tokens": [
+        "snapshot.last_minor >= stop_price_minor",
+        "snapshot.last_minor <= stop_price_minor"
+      ],
+      "limit_tokens": [
+        "snapshot.ask_minor <= limit_price_minor",
+        "snapshot.bid_minor >= limit_price_minor"
+      ],
+      "through_cross_tokens": [
+        "snapshot.ask_minor < limit_price_minor",
+        "snapshot.bid_minor > limit_price_minor"
+      ]
+    },
+    "volume_cap": {
+      "fn": "evaluate_fill_against_budget",
+      "cap_token": "requested_quantity.min(budget.remaining())",
+      "zero_volume_token": "NoFillReason::ZeroVolume",
+      "consume_token": "budget.consume(fill_quantity)"
+    },
+    "money_invariant": {
+      "forbidden_float_token": "f64",
+      "minor_price_fields": [
+        "bid_minor",
+        "ask_minor",
+        "last_minor",
+        "fill_price_minor"
+      ]
+    },
+    "module_reexport": {
+      "lib_reexport_token": "pub mod fill_model;"
+    },
+    "no_broker_dependency": {
+      "cargo_toml": "Cargo.toml",
+      "forbidden_dep_tokens": [
+        "atp-adapters",
+        "atp-execution"
+      ]
+    },
+    "rust_integration_test": "srs_sim_002_fill_models",
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "deferred": [
+      {
+        "feature": "SYS-87a market-hours gating (SYS-50 trading calendar)",
+        "what": "Gating simulated fills to market hours per the trading calendar (SYS-87a). evaluate_fill models the price/volume realism of a fill; the market-hours gate needs the SYS-50 trading-calendar service, which is unbuilt, so it is deferred to SRS-MD / the calendar feature."
+      },
+      {
+        "feature": "SYS-87c stale-data threshold rejection (SYS-39 freshness)",
+        "what": "Rejecting order submissions when market data is stale per the configurable staleness threshold (SYS-87c / SYS-39a). This slice validates the SHAPE of the snapshot (positive quotes, an uncrossed book, non-negative volume) but does not yet consult a freshness clock; the staleness-threshold check belongs on the SYS-70 fan-out / freshness_contract seam and is deferred."
+      },
+      {
+        "feature": "Live market-data feed (SYS-70 subscription manager)",
+        "what": "Sourcing the MarketSnapshot's live bid/ask/last/volume from the market data subscription manager (SYS-70) fan-out. The snapshot is an in-memory fixture today; the live feed wiring is the SYS-70 / SRS-MD owner's half."
+      },
+      {
+        "feature": "Stochastic fill-probability model (SYS-83b)",
+        "what": "The STOCHASTIC fill-probability variant of LimitFillModel (SYS-83b 'subject to configurable fill probability model'). Two DETERMINISTIC, behavior-changing limit models already ship (ImmediateOnCross fills a touch, RequireThroughCross requires a strict cross), so the SRS-SIM-002 configurable-fill-model acceptance path is met; a probabilistic model that fills a crossed limit with probability p < 1 needs a seeded RNG and is deferred to keep evaluate_fill deterministic. The LimitFillModel enum is the structural seam it will extend."
+      },
+      {
+        "feature": "SRS-SIM-003 (full virtual ledger)",
+        "what": "Applying filled decisions to the full SYS-84 virtual position ledger (per-symbol average cost, realized and unrealized P&L), independent per strategy. evaluate_fill stops at the fill decision; simulate_fill records cash/position/commission into the minimal PaperLedger seam, and the full ledger is SRS-SIM-003."
+      },
+      {
+        "feature": "SRS-SIM-004 (paper-state persistence)",
+        "what": "Persisting and restoring pending simulated orders and accumulated metrics across container restarts (SYS-89)."
+      },
+      {
+        "feature": "SRS-EXE-002 (orchestrator routing of non-live strategies)",
+        "what": "The Strategy Orchestrator wiring that routes ALL non-live strategy orders through this fill model. evaluate_fill is the per-engine fill surface; the system-level guarantee that every non-live strategy fills here (and only the single live strategy reaches IB) is SRS-EXE-002 / SRS-EXE-001."
+      },
+      {
+        "feature": "SRS-SDK runtime (Python strategy host)",
+        "what": "Same deferral as the SRS-BT / SRS-SIM siblings: the Python strategy host that submits the orders these fills satisfy end to end. The fill model is exercised over in-memory snapshot fixtures today; a true end-to-end pass also needs that runtime, so feature_list.json keeps SRS-SIM-002 passes:false."
+      }
+    ]
   }
 }

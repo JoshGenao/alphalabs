@@ -26,6 +26,15 @@ pub mod sim;
 /// (SyRS SYS-82).
 pub mod paper_order;
 
+/// The internal simulation engine's fill-model / triggering path (SRS-SIM-002).
+/// It turns a routed [`paper_order::OrderType`] plus a live [`fill_model::MarketSnapshot`]
+/// (bid/ask/last/volume) into a [`fill_model::FillDecision`] — market fills at the
+/// touch, limit on price cross, stop on a last crossing the stop, stop-limit on a
+/// triggered stop then the limit rule (SyRS SYS-83) — capped at the bar's observed
+/// volume (SYS-87b). A filled decision feeds [`sim::PaperSimulationEngine::simulate_fill`],
+/// so a triggered fill flows through the SAME cost family the backtest engine uses.
+pub mod fill_model;
+
 #[derive(Debug, Default)]
 pub struct InternalSimulationEngine;
 

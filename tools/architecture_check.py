@@ -63,6 +63,7 @@ from pacing_budget_check import (
     assert_pacing_budget_static,
 )
 from sim_cost_check import SimCostCheckError, assert_sim_cost_static
+from sim_fill_check import SimFillCheckError, assert_sim_fill_static
 from sim_order_check import SimOrderCheckError, assert_sim_order_static
 from strategy_api_order_events_check import (
     StrategyApiOrderEventsCheckError,
@@ -577,6 +578,25 @@ def assert_sim_order(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_sim_fill(config: dict) -> list[str]:
+    block = config.get("sim_fill_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_sim_fill_static(config, ROOT)
+    summary = (
+        f"{block['simulation_crate']['crate']} internal simulation engine "
+        f"({block['engine_struct']}) simulates fills from live market data "
+        f"({block['market_snapshot_struct']['struct']}: "
+        f"{', '.join(block['market_snapshot_struct']['fields'])}) using configurable fill models "
+        f"({block['limit_fill_enum']['enum']} default), modelling the SYS-83 market/limit/stop/"
+        "stop-limit rules and enforcing the SYS-87b volume cap; a filled decision feeds the shared "
+        "cost family and stays inside the internal engine — no IB API order call (SRS-SIM-002, SyRS "
+        "SYS-83 / SYS-87)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_orchestrator_lifecycle(config: dict) -> list[str]:
     block = config.get("orchestrator_lifecycle_contract")
     if block is None:
@@ -864,6 +884,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_sim_order(config))
     except SimOrderCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_sim_fill(config))
+    except SimFillCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_orchestrator_lifecycle(config))
