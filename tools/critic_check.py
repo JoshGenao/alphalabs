@@ -223,7 +223,9 @@ SAFETY_PATH_RE = re.compile(
     r"|hot[_-]?swap|demotion|liquidation[_-]?timeout"
     r"|promotion[_-]?block|operator[_-]?alert"
     r"|paper[_-]?order|sim[_-]?order|order[_-]?intake|order[_-]?routing"
-    r"|no[_-]?broker[_-]?route|internal[_-]?simulation[_-]?route)",
+    r"|no[_-]?broker[_-]?route|internal[_-]?simulation[_-]?route"
+    r"|fill[_-]?model|sim[_-]?fill|fill[_-]?decision|fill[_-]?trigger"
+    r"|market[_-]?snapshot|volume[_-]?cap)",
     re.IGNORECASE,
 )
 
