@@ -1,3 +1,101 @@
+=== SESSION 40 ===
+Date: 2026-06-04
+Feature completed: SRS-SIM-001 SDK-SURFACE — "simulate paper strategy orders
+locally without routing to any brokerage" (SRS-5.7 SRS-SIM-001; traces SyRS
+SYS-82 local paper order execution / SYS-3 order types / SYS-4 multi-leg composite;
+StRS SN-1.29 / SN-1.08 / SN-1.24). This slice ships the internal simulation
+engine's paper ORDER-INTAKE path in crates/atp-simulation (new module
+`paper_order`), building on the SESSION 39 PaperSimulationEngine seam.
+Status: 92 remaining features (UNCHANGED — SRS-SIM-001 stays passes:false; the
+SYS-83 fill triggering, live-data fills, the full SYS-84 ledger, persistence,
+orchestrator non-live routing, and the Python runtime are deferred).
+
+Feature pick: the active build front is the simulation/backtest engine
+(atp-simulation; S37 BT-001, S38 BT-002, S39 BT-003). SRS-SIM-001 is the
+foundational, unblocked, lowest-ID entry of the SIM family and the prerequisite
+for SIM-002/003/004; the live-execution SRS-EXE-* family stays deferred (blocked
+on the unbuilt IB Gateway adapter SRS-EXE-006), consistent with every prior
+session. Confirmed the pick with the user via AskUserQuestion (literal lowest-ID
+would point at SRS-EXE-001, but the de-facto build-order pattern picks SIM-001).
+
+What I did (3 commits):
+- prep 653cb25 (chore(critic)): extended SAFETY_PATH_RE with paper[_-]?order,
+  sim[_-]?order, order[_-]?intake, order[_-]?routing, no[_-]?broker[_-]?route,
+  internal[_-]?simulation[_-]?route tokens. Verified they match the planned feat
+  files and ZERO existing tracked files, so the no-IB-route safety invariant forces
+  a paired tests/domain/ diff. Continues the S27/S34/ERR-7 prep precedent.
+- docs 65cb3cb (docs(workflow)): split a pre-existing operator note in
+  prompts/coding_prompt.md (M at session start, NOT mine) into its own commit per
+  the Codex adversarial-review [high] finding, keeping the feat atomic. User chose
+  this via AskUserQuestion.
+- feat 1ca6fc5 (9 files, +1813): paper_order.rs (AssetClass / Side / OrderType /
+  OrderLeg / PaperOrderRequest / OrderRouting / OrderError + accept_order +
+  validate_leg + 15 L1 tests); lib.rs `pub mod paper_order;`; the new
+  sim_order_contract block in architecture/runtime_services.json (ASCII-spliced,
+  purely additive, no em-dashes per the S39 churn note); tools/sim_order_check.py
+  (10 static collectors + --require-cargo smoke, wired TRANSITIVELY into
+  architecture_check.py import+wrapper+dispatch and an init.sh smoke gate after the
+  sim_cost gate); L3 tests/test_sim_order_contract.py (33 cases incl. negative
+  mutation spot-checks); L7 tests/domain/test_paper_order_no_broker_route.py (5
+  cases — behavioral cargo run + structural no-broker-dep, each with a non-vacuity
+  control).
+
+Design / safety notes: OrderRouting has exactly ONE variant (InternalSimulation)
+and the crate declares no atp-execution/atp-adapters dependency, so "no IB API
+order calls" (SYS-82) is a COMPILE-TIME guarantee, not a runtime check. A MultiLeg
+composite (SYS-4) fails closed unless it carries >= 2 OPTION legs
+(SingleLegComposite / NonOptionCompositeLeg) — tightened in direct response to the
+Codex finding that the first impl accepted one-leg / equity / mixed composites
+despite tracing SYS-4 OPTIONS composites. Prices are integer minor units (_minor
+suffix); intake does no fill arithmetic and contains no f64. accept_order is pure
+(&self, no clock/random), so intake is deterministic.
+
+What I tested: cargo test -p atp-simulation (15 lib unit + 6 srs_sim_001
+integration) + cargo test --workspace green. cargo fmt --check clean (hand-applied
+the local rustfmt's wrapping to my new lines; NO whole-crate fmt, per the
+no_whole_crate_cargo_fmt note). clippy clean on paper_order.rs + the integration
+test (only the pre-existing atp-types doc-lazy-continuation warnings, newer-local-
+toolchain noise, remain). python3 tools/sim_order_check.py --require-cargo PASS (7
+OrderError variants; 11 evidence items). architecture_check.py exit 0 surfacing the
+sim_order evidence; sim_cost / backtest_cost / backtest checks still PASS. L3 33 +
+L7 5 pass; full pytest -m "not integration and not e2e" 1285 passed / 4 pre-existing
+pending-impl skips / 118 subtests; ruff check+format clean on the new Python.
+./init.sh -> ✓ Environment ready with the new "simulation paper order-intake
+contract check" gate firing after the sim_cost gate.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings (pre-commit
+    hook also APPROVE on the 1ca6fc5 feat commit, and on prep 653cb25 + docs
+    65cb3cb).
+  judgment (/codex:adversarial-review --wait $(cat prompts/critic_prompt.md),
+    user-triggered): APPROVE — 0 findings on the corrected diff. The FIRST Codex
+    pass returned needs-attention with two findings: [high] the working tree mixed
+    a pre-existing prompts/coding_prompt.md edit with the feature (resolved by the
+    standalone docs commit 65cb3cb), and [medium] MultiLeg accepted one-leg / non-
+    option composites despite tracing SYS-4 options composites (resolved by the
+    >= 2-option-leg fail-closed guards + negative L1/integration/L3 tests). The
+    re-review returned approve with no material findings. Note: I also ran the
+    documented fresh-context Agent fallback before the user's first Codex run and it
+    returned approve — Codex's deeper pass caught the MultiLeg shape gap the fallback
+    missed, which is exactly the value of the real adversarial pass.
+
+Known issues / notes for next agent:
+- SRS-SIM-001 stays passes:false BY DESIGN (honest partial-pass). The end-to-end AC
+  needs SYS-83 fill triggering (SRS-SIM-002), live market data, the full SYS-84
+  ledger (SRS-SIM-003), persistence (SRS-SIM-004), SRS-EXE-002 orchestrator routing
+  of all non-live strategies into this engine, and the Python strategy runtime.
+- Natural next pick in the active sim front: SRS-SIM-002 (SYS-83 fill models) — it
+  consumes BOTH the SESSION 39 cost family (cost_breakdown) AND this session's
+  order-intake model (OrderType / OrderLeg / OrderRouting). The intake is the seam
+  SIM-002 builds on: turn a routed OrderType into a triggered fill (price cross,
+  fill probability, bar-volume cap) over live bid/ask/last.
+- sim_order_check.py is wired TRANSITIVELY via architecture_check.py (the CI entry
+  point invoked by both .github/workflows/ci.yml and tools/run_ci_locally.sh) plus
+  an init.sh smoke line — same convention as sim_cost/backtest_cost; it is NOT a
+  direct ci.yml for-loop entry.
+- feature_list.json was NOT modified this session (SRS-SIM-001 entry untouched at
+  passes:false).
+
 === SESSION 39 ===
 Date: 2026-06-03
 Feature completed: SRS-BT-003 — "use the same transaction-cost model family for
