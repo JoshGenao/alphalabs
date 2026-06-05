@@ -183,6 +183,8 @@ the same window where you implemented the change (the celesteanders
 best-practices doc warns: *"agents consistently rate their own work too
 generously"*).
 
+Do not skip this step. If you can't invoke this. Pause and let me know. Give me options on what to do. 
+
 Invoke from inside Claude Code:
 
 ```
