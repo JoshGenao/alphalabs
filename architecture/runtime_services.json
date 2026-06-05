@@ -4176,5 +4176,165 @@
         "what": "Same deferral as SRS-BT-001/002: the Python strategy host that drives paper fills end to end. The shared cost family is exercised over in-memory fill fixtures today; a true end-to-end pass also needs that runtime, so feature_list.json keeps SRS-BT-003 passes:false."
       }
     ]
+  },
+  "sim_order_contract": {
+    "description": "SRS-SIM-001 (simulate paper strategy orders locally without routing to any brokerage; SyRS SYS-82 local paper order execution, SYS-3 order types, SYS-4 multi-leg composite; StRS SN-1.29 / SN-1.08 / SN-1.24). The internal simulation engine's paper order-intake path lives in crates/atp-simulation (module `paper_order`) and adds an `accept_order` method to PaperSimulationEngine that accepts a PaperOrderRequest (a single OrderLeg or a MultiLeg composite), validates every leg, and returns an OrderRouting. The CRITICAL safety design: OrderRouting has exactly ONE variant, InternalSimulation, so there is structurally no Broker/Ib variant to construct and a paper order can never reach a brokerage -- 'creates no IB API order calls' (SRS-SIM-001) is a COMPILE-TIME guarantee, not a runtime check. The atp-simulation crate also has no dependency on atp-execution or atp-adapters (the live/broker path), reinforcing the no-broker-route invariant at the crate boundary. accept_order processes every OrderType (Market, Limit, Stop, StopLimit) and AssetClass (Equity, Option); a MultiLeg request routes as one composite transaction (composite: true, SYS-4) so its legs fill atomically, and because SYS-4 / SRS-EXE-004 scope multi-leg to OPTIONS composites a MultiLeg must carry two or more legs that are all options. Intake fails closed before routing on an empty symbol (OrderError::EmptySymbol), a non-positive quantity (NonPositiveQuantity), a non-positive limit/stop price (NonPositiveLimitPrice / NonPositiveStopPrice), an empty multi-leg request (EmptyMultiLeg), a single-leg composite (SingleLegComposite), and a non-option composite leg (NonOptionCompositeLeg); the per-leg guards live in the private validate_leg helper and the composite-shape guards in accept_order. Every price an order carries is an integer minor unit with the _minor suffix (limit_price_minor, stop_price_minor); intake performs no fill arithmetic and the module contains no f64. The Rust integration test srs_sim_001_paper_order_intake asserts every order type / asset class / single + multi-leg request routes to InternalSimulation and that the routing enum exposes no broker variant. The PASS line is 'SRS-SIM-001 SDK-SURFACE PASS'; feature_list.json keeps SRS-SIM-001 passes:false because the SYS-83 fill TRIGGERING (price-cross fills, fill probability, bar-volume cap) and live-market-data fills are SRS-SIM-002, the full SYS-84 virtual ledger is SRS-SIM-003, paper-state persistence (SYS-89) is SRS-SIM-004, the orchestrator routing of all non-live strategies into this engine is SRS-EXE-002, and the Python strategy runtime that submits these orders end to end is still deferred.",
+    "requirement": "SRS-SIM-001",
+    "srs_refs": [
+      "SRS-SIM-001"
+    ],
+    "syrs_refs": [
+      "SYS-82",
+      "SYS-3",
+      "SYS-4"
+    ],
+    "strs_refs": [
+      "SN-1.29",
+      "SN-1.08",
+      "SN-1.24"
+    ],
+    "ac_traces": [
+      "SRS-SIM-001",
+      "SYS-82"
+    ],
+    "simulation_crate": {
+      "crate": "atp-simulation",
+      "path": "crates/atp-simulation"
+    },
+    "order_module": "paper_order",
+    "engine_struct": "PaperSimulationEngine",
+    "asset_class_enum": {
+      "enum": "AssetClass",
+      "variants": [
+        "Equity",
+        "Option"
+      ]
+    },
+    "side_enum": {
+      "enum": "Side",
+      "variants": [
+        "Buy",
+        "Sell"
+      ]
+    },
+    "order_type_enum": {
+      "enum": "OrderType",
+      "variants": [
+        "Market",
+        "Limit",
+        "Stop",
+        "StopLimit"
+      ]
+    },
+    "order_leg_struct": {
+      "struct": "OrderLeg",
+      "fields": [
+        "symbol",
+        "asset_class",
+        "side",
+        "quantity",
+        "order_type"
+      ]
+    },
+    "order_request_enum": {
+      "enum": "PaperOrderRequest",
+      "variants": [
+        "Single",
+        "MultiLeg"
+      ]
+    },
+    "routing": {
+      "enum": "OrderRouting",
+      "intake_fn": "accept_order",
+      "allowed_variants": [
+        "InternalSimulation"
+      ],
+      "forbidden_variant_tokens": [
+        "Broker",
+        "Brokerage",
+        "Ib",
+        "InteractiveBrokers",
+        "Gateway"
+      ],
+      "internal_route_token": "OrderRouting::InternalSimulation",
+      "composite_token": "composite: true"
+    },
+    "order_error_enum": {
+      "enum": "OrderError",
+      "variants": [
+        "EmptySymbol",
+        "NonPositiveQuantity",
+        "NonPositiveLimitPrice",
+        "NonPositiveStopPrice",
+        "EmptyMultiLeg",
+        "SingleLegComposite",
+        "NonOptionCompositeLeg"
+      ]
+    },
+    "fail_closed": {
+      "fn": "accept_order",
+      "validate_token": "validate_leg(leg)?",
+      "guard_tokens": [
+        "OrderError::EmptyMultiLeg",
+        "OrderError::SingleLegComposite",
+        "OrderError::NonOptionCompositeLeg"
+      ]
+    },
+    "validate_fn": {
+      "fn": "validate_leg",
+      "guard_tokens": [
+        "OrderError::EmptySymbol",
+        "OrderError::NonPositiveQuantity",
+        "OrderError::NonPositiveLimitPrice",
+        "OrderError::NonPositiveStopPrice"
+      ]
+    },
+    "money_invariant": {
+      "forbidden_float_token": "f64",
+      "minor_price_fields": [
+        "limit_price_minor",
+        "stop_price_minor"
+      ]
+    },
+    "module_reexport": {
+      "lib_reexport_token": "pub mod paper_order;"
+    },
+    "no_broker_dependency": {
+      "cargo_toml": "Cargo.toml",
+      "forbidden_dep_tokens": [
+        "atp-adapters",
+        "atp-execution"
+      ]
+    },
+    "rust_integration_test": "srs_sim_001_paper_order_intake",
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "deferred": [
+      {
+        "feature": "SRS-SIM-002 (fill models + live-data fills)",
+        "what": "The SYS-83 fill TRIGGERING for market/limit/stop/stop-limit orders (fill at ask/bid for market, fill on price cross for limit, trigger on stop cross), the configurable fill-probability model, the bar-volume fill cap, and fills driven by live bid/ask/last from the market data subscription manager (SYS-70). This slice accepts, validates, and routes the orders; the logic that turns a routed order into a fill is SRS-SIM-002's half."
+      },
+      {
+        "feature": "SRS-SIM-003 (full virtual ledger)",
+        "what": "Applying accepted/filled orders to the full SYS-84 virtual position ledger (per-symbol average cost, realized and unrealized P&L), independent per strategy. SRS-SIM-001 stops at routing; the ledger application is SRS-SIM-003."
+      },
+      {
+        "feature": "SRS-SIM-004 (paper-state persistence)",
+        "what": "Persisting and restoring pending simulated orders and accumulated metrics across container restarts (SYS-89)."
+      },
+      {
+        "feature": "SRS-EXE-002 (orchestrator routing of non-live strategies)",
+        "what": "The Strategy Orchestrator wiring that routes ALL non-live strategy orders into this engine. accept_order is the per-engine intake; the system-level guarantee that every non-live strategy lands here (and only the single live strategy reaches IB) is SRS-EXE-002 / SRS-EXE-001."
+      },
+      {
+        "feature": "SRS-SDK runtime (Python strategy host)",
+        "what": "Same deferral as SRS-BT/SRS-SIM siblings: the Python strategy host that actually submits these orders end to end. Intake is exercised over in-memory request fixtures today; a true end-to-end pass also needs that runtime, so feature_list.json keeps SRS-SIM-001 passes:false."
+      }
+    ]
   }
 }

@@ -19,6 +19,13 @@ pub mod cost;
 /// commissions from the same model family.
 pub mod sim;
 
+/// The internal simulation engine's paper order-intake path (SRS-SIM-001). It
+/// accepts market/limit/stop/stop-limit, equity/option, and multi-leg composite
+/// orders and routes every one to the internal simulation engine — there is no
+/// brokerage routing variant, so paper orders create no IB API order calls
+/// (SyRS SYS-82).
+pub mod paper_order;
+
 #[derive(Debug, Default)]
 pub struct InternalSimulationEngine;
 

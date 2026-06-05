@@ -294,6 +294,13 @@ if ! python3 tools/sim_cost_check.py --require-cargo >/dev/null; then
   exit 1
 fi
 
+echo "→ Running simulation paper order-intake contract check..."
+if ! python3 tools/sim_order_check.py --require-cargo >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Simulation paper order-intake contract check failed; run python3 tools/sim_order_check.py --require-cargo for detail."
+  exit 1
+fi
+
 echo "→ Running orchestrator lifecycle contract check..."
 if ! python3 tools/orchestrator_lifecycle_check.py >/dev/null; then
   echo "✗ Environment failed"

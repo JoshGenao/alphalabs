@@ -63,6 +63,7 @@ from pacing_budget_check import (
     assert_pacing_budget_static,
 )
 from sim_cost_check import SimCostCheckError, assert_sim_cost_static
+from sim_order_check import SimOrderCheckError, assert_sim_order_static
 from strategy_api_order_events_check import (
     StrategyApiOrderEventsCheckError,
     assert_strategy_api_order_events_static,
@@ -558,6 +559,24 @@ def assert_sim_cost(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_sim_order(config: dict) -> list[str]:
+    block = config.get("sim_order_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_sim_order_static(config, ROOT)
+    summary = (
+        f"{block['simulation_crate']['crate']} internal simulation engine accepts paper orders "
+        f"({block['order_request_enum']['enum']}: "
+        f"{', '.join(block['order_request_enum']['variants'])}) for every "
+        f"{block['order_type_enum']['enum']} and {block['asset_class_enum']['enum']}, routing each "
+        f"to {block['routing']['enum']}::{block['routing']['allowed_variants'][0]} with NO "
+        "brokerage variant — paper orders create no IB API order calls (SRS-SIM-001, SyRS "
+        "SYS-82 / SYS-3 / SYS-4)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_orchestrator_lifecycle(config: dict) -> list[str]:
     block = config.get("orchestrator_lifecycle_contract")
     if block is None:
@@ -841,6 +860,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_sim_cost(config))
     except SimCostCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_sim_order(config))
+    except SimOrderCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_orchestrator_lifecycle(config))
