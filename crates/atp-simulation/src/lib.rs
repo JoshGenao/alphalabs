@@ -35,6 +35,19 @@ pub mod paper_order;
 /// so a triggered fill flows through the SAME cost family the backtest engine uses.
 pub mod fill_model;
 
+/// The internal simulation engine's per-paper-strategy virtual position ledger
+/// (SRS-SIM-003 / SyRS SYS-84). It consumes a priced [`sim::PaperFill`] and
+/// maintains, per strategy and per symbol, the signed quantity, average cost,
+/// realized P&L, and commission paid, plus an unrealized P&L marked to market
+/// against a live [`fill_model::MarketSnapshot`]. Each strategy's ledger is an
+/// independent map entry holding only virtual state, so it is independent of
+/// every other strategy and of the IB account's actual positions. The deferred
+/// halves (the SYS-70 live feed, SYS-88 corporate actions / SRS-DATA-021,
+/// SYS-89 persistence / SRS-SIM-004, SYS-85 paper metrics, SRS-EXE-002
+/// orchestrator routing, and the Python runtime) keep SRS-SIM-003 at
+/// `passes:false`.
+pub mod virtual_ledger;
+
 #[derive(Debug, Default)]
 pub struct InternalSimulationEngine;
 

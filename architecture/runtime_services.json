@@ -4545,5 +4545,191 @@
         "what": "Same deferral as the SRS-BT / SRS-SIM siblings: the Python strategy host that submits the orders these fills satisfy end to end. The fill model is exercised over in-memory snapshot fixtures today; a true end-to-end pass also needs that runtime, so feature_list.json keeps SRS-SIM-002 passes:false."
       }
     ]
+  },
+  "virtual_ledger_contract": {
+    "description": "SRS-SIM-003 (maintain an independent virtual position ledger for each paper strategy; SyRS SYS-84; StRS SN-1.29 / SN-1.07). The internal simulation engine's per-strategy virtual position ledger lives in crates/atp-simulation (module `virtual_ledger`) and consumes a priced sim::PaperFill (the SRS-BT-003 cost path) without any new dependency. Three nested layers, each isolated from the next: VirtualPosition is one symbol's signed quantity (i64), signed cost_basis_minor (i128, the source of truth for average cost: positive for a long = cash laid out, negative for a short = proceeds received), accumulated realized_pnl_minor (i128, GROSS of every transaction cost), and the FULL transaction-cost decomposition the cost family charges -- commission_paid_minor, slippage_paid_minor, and spread_impact_paid_minor (each i128), summed by transaction_cost_paid_minor. Tracking every cost component (not just commission) keeps the ledger faithful to the simulator: a closed position's realized_pnl_minor minus transaction_cost_paid_minor reconciles EXACTLY with the sum of the fills' cash_delta_minor (the simulator's actual cash impact), so no charged cost (commission, slippage, or spread) silently disappears from the ledger. StrategyLedger holds one paper strategy's VirtualPosition values keyed by symbol (positions: HashMap<String, VirtualPosition>); the symbol is canonicalized via canonical_symbol (symbol.trim().to_uppercase(), the same policy as atp_types::SecurityKey) before every key and lookup, so AAPL / aapl / ' AAPL ' resolve to ONE position instead of splitting one security's quantity and P&L across aliases. The ledger's instrument identity is the canonical symbol STRING, which uniquely identifies the instrument under the system's symbol conventions (equities by ticker, options by the full OCC contract string such as 'AAPL  240119C00190000', so an option and its underlying do NOT share a key). A SecurityKey is not used directly because the simulated fill (sim::PaperFill) carries a bare symbol with NO asset class and SecurityKey rejects options that SRS-SIM-001 intake accepts; formal (symbol + asset_class + full option-contract) keying needs the upstream PaperFill / simulate_fill cost-path contract (SRS-BT-003 / SRS-SIM-001) to carry that identity, which is the Data Layer's normalization responsibility and is DEFERRED (see deferred[]). VirtualLedgerBook holds every paper strategy's ledger keyed by StrategyId (ledgers: HashMap<StrategyId, StrategyLedger>), and apply_fill routes a fill to exactly one strategy's ledger via self.ledgers.get_mut(strategy) (existing) or self.ledgers.insert(strategy.clone(), ledger) on first touch, so one strategy's fills can never read or mutate another's quantities or P&L, and the book holds NO IB / broker account position at all (it imports no broker, adapter, or live-position type), so a virtual position is structurally independent of the IB account (SYS-84). The book and the per-strategy ledger both insert a new entry ONLY after the fill applies successfully (the fresh value is built and ledger.apply_fill(fill)? / position.apply_fill(fill)? propagates the error BEFORE the insert), so a rejected first fill never leaves a phantom strategy or phantom symbol behind to pollute later metrics, persistence, or orchestrator accounting. Average-cost accounting on apply_fill: opening or adding in the same direction grows cost_basis by q*px and quantity by q with no realized P&L; reducing or closing (q opposes the held quantity, |q| <= |held|) releases the PROPORTIONAL slice of the basis cost_removed = cost_basis * |q| / |held| (cost_basis.checked_mul(fill_abs) / held_abs), recognises realized += -(q*px) - cost_removed, drops cost_removed from the basis, and adds q to the quantity, so closing the whole position releases EXACTLY the whole basis and leaves cost_basis at 0; flipping through zero (|q| > |held|) fully closes the existing position (releasing all its basis and recognising its realized P&L) then opens the remainder q_open = q + held at px as a fresh position. Realized P&L is kept GROSS of commission and commission_paid_minor accumulates SEPARATELY (SYS-84 lists them as distinct fields). average_cost_minor returns cost_basis / quantity (truncated, None when flat) -- a DERIVED view of the exact signed cost basis. The rounding policy is chosen for EXACT BASIS CONSERVATION: cost_removed truncates toward zero and the remainder stays in the residual basis, so across any fill sequence realized P&L plus the remaining basis equals the exact cash from prices and a full close always lands at cost_basis == 0 (no value created or destroyed). The deliberate trade-off is that the truncated per-unit average_cost_minor can shift by up to one minor unit on a partial close even with no acquisition; the basis itself is always exact, and the conservation invariant is pinned by a property-style unit test over many generated fill sequences (including an indivisible basis-32-over-3 case). unrealized_pnl_minor marks the open position to market against the live MarketSnapshot's last trade price (mark * quantity - cost_basis, exact and correct for both longs and shorts, 0 when flat). StrategyLedger and VirtualLedgerBook expose a SYMBOL-KEYED unrealized_pnl_minor(symbol, snapshot) surface that selects the position BY the named symbol, so a quote is never applied to a different instrument's position by mistake; rejecting a wrong-symbol quote by its CONTENT needs the SRS-SIM-002 MarketSnapshot to carry instrument identity (it is an identity-free fixture today), which is deferred with the SYS-70 live feed. It fails closed BEFORE any mutation on a non-positive fill price (LedgerError::NonPositiveFillPrice), a zero-quantity fill (LedgerError::ZeroQuantityFill), a negative transaction-cost component (LedgerError::NegativeCost{component} -- PaperFill fields are public, so the ledger validates commission, slippage, and spread_impact rather than trusting them, since a negative value would decrease its accumulator and could fabricate cash on reconciliation), a cash_delta_minor that disagrees with -(notional) - total_cost (LedgerError::InconsistentCashDelta -- the ledger does not accumulate cash from the public cash_delta field but enforces the simulate_fill invariant on it before mutating, so a tampered/inconsistent fill cannot silently break the reconciliation guarantee), an empty symbol (LedgerError::EmptySymbol, at the StrategyLedger seam), a non-positive mark (LedgerError::NonPositiveMark), and money-math overflow (LedgerError::Overflow). VirtualPosition::apply_fill is ATOMIC: it computes every prospective value (quantity, cost basis, realized P&L, commission) into locals with checked arithmetic and commits them to the position only after EVERY checked op succeeds, so an overflow in the basis/quantity accounting can never leave a moved commission behind that a retry would double-count. apply_fill is &mut self with no clock or randomness, so the ledger is deterministic. Every quantity and money figure is an integer minor unit; intermediates are i128 with checked_* accumulation; the module contains no f64. The Rust integration test srs_sim_003_virtual_ledger drives the ledger end to end from real simulate_fill output and asserts a long round trip realizes price-based P&L while commission accumulates separately, average cost blends across adds, mark-to-market values longs and shorts, a flip through zero realizes only the closed portion and reopens at the fill price, two strategies holding the same symbol stay independent (mutating one leaves the other untouched), corrupt input fails closed, aliased symbols (AAPL / aapl / ' AAPL ') share ONE position, and a rejected first fill for a brand-new strategy leaves no phantom strategy behind (strategy_count stays 0). The unit tests additionally prove a negative cost component (commission / slippage / spread) fails closed, an inconsistent cash_delta_minor fails closed, every cost component accumulates, a rejected fill rolls back atomically including the commission (a rejected fill leaves the position byte-for-byte unchanged), basis conservation holds over many generated fill sequences (full close to cost_basis == 0 with exact realized P&L, even for an indivisible basis), the ledger reconciles with the simulator -- a round trip's realized_pnl_minor minus transaction_cost_paid_minor equals the sum of the fills' cash_delta_minor, and a same-price round trip nets a loss exactly equal to the costs charged (no cost silently disappears), and the symbol-keyed marking surface selects the position named by the symbol. The PASS line is 'SRS-SIM-003 SDK-SURFACE PASS'; feature_list.json keeps SRS-SIM-003 passes:false because the live bid/ask/last feed that drives the mark comes from the SYS-70 subscription manager (the MarketSnapshot is an in-memory fixture today), corporate-action adjustment of virtual positions (SYS-88) is SRS-DATA-021, ledger persistence and restore (SYS-89) is SRS-SIM-004, the accumulated paper performance metrics (SYS-85) are their own feature, the orchestrator routing of all non-live strategies into this engine is SRS-EXE-002, and the Python strategy runtime is still deferred.",
+    "requirement": "SRS-SIM-003",
+    "srs_refs": [
+      "SRS-SIM-003"
+    ],
+    "syrs_refs": [
+      "SYS-84"
+    ],
+    "strs_refs": [
+      "SN-1.29",
+      "SN-1.07"
+    ],
+    "ac_traces": [
+      "SRS-SIM-003",
+      "SYS-84"
+    ],
+    "simulation_crate": {
+      "crate": "atp-simulation",
+      "path": "crates/atp-simulation"
+    },
+    "ledger_module": "virtual_ledger",
+    "virtual_position_struct": {
+      "struct": "VirtualPosition",
+      "quantity_field": "quantity",
+      "money_fields": [
+        "cost_basis_minor",
+        "realized_pnl_minor",
+        "commission_paid_minor",
+        "slippage_paid_minor",
+        "spread_impact_paid_minor"
+      ]
+    },
+    "strategy_ledger_struct": {
+      "struct": "StrategyLedger",
+      "map_field": "positions",
+      "map_key": "String",
+      "map_value": "VirtualPosition"
+    },
+    "ledger_book_struct": {
+      "struct": "VirtualLedgerBook",
+      "map_field": "ledgers",
+      "map_key": "StrategyId",
+      "map_value": "StrategyLedger"
+    },
+    "ledger_error_enum": {
+      "enum": "LedgerError",
+      "variants": [
+        "EmptySymbol",
+        "NonPositiveFillPrice",
+        "ZeroQuantityFill",
+        "NegativeCost",
+        "InconsistentCashDelta",
+        "NonPositiveMark",
+        "Overflow"
+      ]
+    },
+    "cost_tracking": {
+      "fields": [
+        "commission_paid_minor",
+        "slippage_paid_minor",
+        "spread_impact_paid_minor"
+      ],
+      "total_fn": "transaction_cost_paid_minor",
+      "accumulate_tokens": [
+        "i128::from(fill.commission_minor)",
+        "i128::from(fill.slippage_minor)",
+        "i128::from(fill.spread_impact_minor)"
+      ]
+    },
+    "cash_delta_check": {
+      "expected_token": "let expected_cash_delta_minor = fill_notional",
+      "compare_token": "expected_cash_delta_minor != i128::from(fill.cash_delta_minor)",
+      "error_token": "LedgerError::InconsistentCashDelta"
+    },
+    "mark_surface": {
+      "fn": "unrealized_pnl_minor",
+      "ledger_keyed_token": "self.position(symbol)",
+      "book_keyed_token": "ledger.unrealized_pnl_minor(symbol, snapshot)"
+    },
+    "symbol_normalization": {
+      "fn": "canonical_symbol",
+      "policy_token": "symbol.trim().to_uppercase()",
+      "key_token": "canonical_symbol(&fill.symbol)",
+      "lookup_token": "canonical_symbol(symbol)"
+    },
+    "average_cost_fn": {
+      "fn": "average_cost_minor",
+      "flat_token": "if self.quantity == 0",
+      "basis_token": "self.cost_basis_minor / i128::from(self.quantity)"
+    },
+    "unrealized_fn": {
+      "fn": "unrealized_pnl_minor",
+      "mark_token": "snapshot.last_minor",
+      "mark_to_market_token": "i128::from(mark_minor) * i128::from(self.quantity)",
+      "basis_subtract_token": "checked_sub(self.cost_basis_minor)",
+      "guard_token": "LedgerError::NonPositiveMark"
+    },
+    "apply_fill_accounting": {
+      "guard_tokens": [
+        "LedgerError::NonPositiveFillPrice",
+        "LedgerError::ZeroQuantityFill",
+        "LedgerError::NegativeCost",
+        "LedgerError::InconsistentCashDelta"
+      ],
+      "commission_token": "self.commission_paid_minor",
+      "cost_removed_token": "cost_removed",
+      "proportional_token": "checked_mul(fill_abs)",
+      "realized_token": "self.realized_pnl_minor",
+      "flip_token": "q_open"
+    },
+    "isolation": {
+      "book_struct": "VirtualLedgerBook",
+      "strategy_key_token": "strategy: &StrategyId",
+      "lookup_token": "self.ledgers.get_mut(strategy)",
+      "insert_token": "self.ledgers.insert(strategy.clone()",
+      "fail_closed_token": "ledger.apply_fill(fill)?;"
+    },
+    "money_invariant": {
+      "forbidden_float_token": "f64",
+      "quantity_field": "quantity",
+      "i128_money_fields": [
+        "cost_basis_minor",
+        "realized_pnl_minor",
+        "commission_paid_minor",
+        "slippage_paid_minor",
+        "spread_impact_paid_minor"
+      ]
+    },
+    "module_reexport": {
+      "lib_reexport_token": "pub mod virtual_ledger;"
+    },
+    "no_broker_dependency": {
+      "cargo_toml": "Cargo.toml",
+      "forbidden_dep_tokens": [
+        "atp-adapters",
+        "atp-execution"
+      ]
+    },
+    "rust_integration_test": "srs_sim_003_virtual_ledger",
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "deferred": [
+      {
+        "feature": "Asset-class / option-contract instrument identity in the position key",
+        "what": "The SyRS Position (Virtual) model lists asset class alongside symbol, but the ledger keys positions by the canonical symbol STRING only, because the upstream sim::PaperFill (the SRS-BT-003 cost-path output) carries a bare symbol with NO asset class. Under the system's symbol conventions distinct instruments already get distinct keys (equities by ticker, options by the full OCC contract string), so no actual merge occurs today; formal (symbol + asset_class + full option-contract) keying needs PaperFill / simulate_fill to carry that identity, which is a cross-feature change to the SRS-BT-003 / SRS-SIM-001 contract and is deferred to that owner rather than threaded through this ledger slice."
+      },
+      {
+        "feature": "MarketSnapshot instrument identity for mark-to-market",
+        "what": "The mark-to-market surface selects the position BY symbol (StrategyLedger / VirtualLedgerBook unrealized_pnl_minor(symbol, snapshot)), so a quote is never applied to a different instrument's position. But the SRS-SIM-002 MarketSnapshot carries no instrument identity (it is an identity-free in-memory fixture pending the SYS-70 live feed), so the ledger cannot reject a snapshot whose CONTENT is actually another instrument's quote. Binding the snapshot to an instrument (so a wrong-symbol quote fails closed) needs MarketSnapshot to carry identity, which is the SRS-SIM-002 / SYS-70 owner's shape and is deferred with the live feed."
+      },
+      {
+        "feature": "Fill idempotency / duplicate-delivery dedup",
+        "what": "apply_fill is a PURE state transition: it applies exactly the fill it is given, so replaying an already-applied fill double-counts quantity, basis, P&L, and costs. Deduplicating duplicate delivery needs (a) a unique execution/fill identifier on sim::PaperFill -- which it does not carry -- a cross-feature change to the SRS-BT-003 cost-path contract, and (b) exactly-once delivery semantics owned by the orchestrator routing layer (SRS-EXE-002), which routes non-live strategy fills into this engine and is itself deferred. SYS-84 / SRS-SIM-003 specify the ledger's tracked fields, not delivery semantics, so dedup is deferred to the PaperFill-identity + SRS-EXE-002 owners rather than guessed at here (a content-hash dedup would wrongly drop two legitimately-identical fills)."
+      },
+      {
+        "feature": "Live market-data feed (SYS-70 subscription manager)",
+        "what": "Sourcing the MarketSnapshot's live last trade price (the mark-to-market reference) from the market data subscription manager (SYS-70) fan-out. The snapshot is an in-memory fixture today; the live feed wiring is the SYS-70 / SRS-MD owner's half, so unrealized P&L is marked against a fixture, not a live feed."
+      },
+      {
+        "feature": "SYS-88 corporate-action adjustment (SRS-DATA-021)",
+        "what": "Adjusting virtual position quantities and average cost for splits, dividends, and mergers, and cancelling virtual orders for delisted securities, using the same corporate-action data as live trading and backtesting (SYS-88). This slice keeps the raw fill-driven ledger; the corporate-action adjustment is SRS-DATA-021."
+      },
+      {
+        "feature": "SRS-SIM-004 (paper-state persistence)",
+        "what": "Persisting and restoring the virtual ledger, pending simulated orders, and accumulated metrics across container restarts (SYS-89). The ledger is in-memory here; persistence is SRS-SIM-004."
+      },
+      {
+        "feature": "SYS-85 accumulated paper performance metrics",
+        "what": "Computing the accumulated paper performance metrics (returns, drawdown, ratios) over the ledger's realized/unrealized P&L (SYS-85). The ledger exposes the per-position P&L primitives; the metric aggregation is its own feature (the SRS-BT-004 metric family for paper)."
+      },
+      {
+        "feature": "SRS-EXE-002 (orchestrator routing of non-live strategies)",
+        "what": "The Strategy Orchestrator wiring that routes ALL non-live strategy fills into this ledger. VirtualLedgerBook is the per-engine ledger surface keyed by StrategyId; the system-level guarantee that every non-live strategy's fills land here (and only the single live strategy reaches IB) is SRS-EXE-002 / SRS-EXE-001."
+      },
+      {
+        "feature": "SRS-SDK runtime (Python strategy host)",
+        "what": "Same deferral as the SRS-BT / SRS-SIM siblings: the Python strategy host whose orders produce the fills this ledger records end to end. The ledger is exercised over in-memory PaperFill fixtures today; a true end-to-end pass also needs that runtime, so feature_list.json keeps SRS-SIM-003 passes:false."
+      }
+    ]
   }
 }

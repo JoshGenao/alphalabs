@@ -308,6 +308,13 @@ if ! python3 tools/sim_fill_check.py --require-cargo >/dev/null; then
   exit 1
 fi
 
+echo "→ Running simulation virtual-ledger contract check..."
+if ! python3 tools/sim_ledger_check.py --require-cargo >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Simulation virtual-ledger contract check failed; run python3 tools/sim_ledger_check.py --require-cargo for detail."
+  exit 1
+fi
+
 echo "→ Running orchestrator lifecycle contract check..."
 if ! python3 tools/orchestrator_lifecycle_check.py >/dev/null; then
   echo "✗ Environment failed"

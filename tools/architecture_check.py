@@ -64,6 +64,7 @@ from pacing_budget_check import (
 )
 from sim_cost_check import SimCostCheckError, assert_sim_cost_static
 from sim_fill_check import SimFillCheckError, assert_sim_fill_static
+from sim_ledger_check import SimLedgerCheckError, assert_sim_ledger_static
 from sim_order_check import SimOrderCheckError, assert_sim_order_static
 from strategy_api_order_events_check import (
     StrategyApiOrderEventsCheckError,
@@ -597,6 +598,25 @@ def assert_sim_fill(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_sim_ledger(config: dict) -> list[str]:
+    block = config.get("virtual_ledger_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_sim_ledger_static(config, ROOT)
+    summary = (
+        f"{block['simulation_crate']['crate']} internal simulation engine maintains an independent "
+        f"virtual position ledger per paper strategy ({block['ledger_book_struct']['struct']} keyed "
+        f"by {block['ledger_book_struct']['map_key']}): {block['virtual_position_struct']['struct']} "
+        f"tracks {block['virtual_position_struct']['quantity_field']} + "
+        f"{', '.join(block['virtual_position_struct']['money_fields'])} per symbol, with "
+        f"{block['average_cost_fn']['fn']} / {block['unrealized_fn']['fn']} derived on demand, so "
+        "quantity, average cost, realized/unrealized P&L, and commission paid are isolated per "
+        "strategy and independent of the IB account (SRS-SIM-003, SyRS SYS-84)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_orchestrator_lifecycle(config: dict) -> list[str]:
     block = config.get("orchestrator_lifecycle_contract")
     if block is None:
@@ -888,6 +908,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_sim_fill(config))
     except SimFillCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_sim_ledger(config))
+    except SimLedgerCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_orchestrator_lifecycle(config))
