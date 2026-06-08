@@ -4731,5 +4731,162 @@
         "what": "Same deferral as the SRS-BT / SRS-SIM siblings: the Python strategy host whose orders produce the fills this ledger records end to end. The ledger is exercised over in-memory PaperFill fixtures today; a true end-to-end pass also needs that runtime, so feature_list.json keeps SRS-SIM-003 passes:false."
       }
     ]
+  },
+  "sim_persistence_contract": {
+    "description": "SRS-SIM-004 (persist paper strategy simulation state; SyRS SYS-89; StRS SN-1.29 / SN-2.05). The internal simulation engine's paper-state persistence path lives in crates/atp-simulation (module `paper_state`) and consumes the SRS-SIM-003 VirtualLedgerBook without any new dependency (no serde): money stays integer minor units (i64 quantity, i128 money) with no f64. A PaperStateSnapshot is a versioned envelope holding schema_version (i64), the PersistenceConfig in force, and a clone of the VirtualLedgerBook. SYS-89 names four sub-states (virtual position ledger, pending simulated orders, accumulated metrics, and the user-state dictionary), but only the virtual ledger has a runtime type today, so the snapshot captures the FULL ledger (every strategy, every symbol, all six VirtualPosition fields) and reserves three forward-compatible, always-empty slots for the other three sub-states; deserialize fails closed (PersistenceError::UnsupportedSection) on a non-zero reserved-slot count rather than silently dropping data a v1 reader has no type to restore. PersistenceConfig carries the SYS-89 cadence: interval_secs (u64, default DEFAULT_INTERVAL_SECS = 60), restore_deadline_secs (u64, default DEFAULT_RESTORE_DEADLINE_SECS = 30), and persist_on_shutdown (bool). PersistenceConfig::new takes only the interval and the restore deadline (NOT a shutdown flag) and fails closed on a cadence that cannot meet SYS-89: a zero-second interval or restore deadline (PersistenceError::NonPositiveConfig), and a restore deadline ABOVE the 30s ceiling (PersistenceError::RestoreDeadlineTooLong), so the config CANNOT encode an SLA slower than the 30 seconds the requirement mandates (an operator may only tighten it). The persist interval has no upper ceiling because SYS-89 makes 60s the default, not a maximum, so a longer cadence is a permitted operator trade-off. Shutdown persistence is MANDATORY: SYS-89 requires state to be persisted at the interval AND on container shutdown, so persist_on_shutdown is always true and the caller cannot disable it; a snapshot that encodes shutdown persistence as disabled is out of contract and rejected on restore (PersistenceError::ShutdownPersistenceRequired). The serializer is DETERMINISTIC: HashMap iteration order is unspecified, so serialize sorts strategies by id (StrategyId is not Ord, so by as_str()) and positions by canonical symbol before emitting, so the same state always serializes to byte-identical output (an unchanged 60s checkpoint never churns). The codec is hand-rolled and dependency-free: integers are decimal lines and variable-length strings are length-prefixed (value.len().to_string()), so a canonical symbol containing spaces (an OCC option contract such as 'AAPL  240119C00190000') round-trips losslessly. The serialized frame is the MAGIC line, a 64-bit FNV-1a integrity checksum over the body, then the body; deserialize verifies the checksum BEFORE building any state, so a structurally-valid byte change (a tampered-but-sign-consistent quantity/basis pair, a flipped digit, truncation, or appended bytes) fails closed with PersistenceError::ChecksumMismatch under fault injection rather than restoring fabricated positions or P&L. The checksum is a non-cryptographic integrity guard for ACCIDENTAL corruption (the SYS-89 fault-injection criterion), not a security MAC -- defending against a deliberate tamperer who can recompute the checksum needs a keyed MAC and key management, which is out of scope for the single-user, local-only release baseline (no multi-user auth per the system constraints). capture() builds a snapshot at SCHEMA_VERSION; serialize() emits the text; deserialize() parses it back; restore() is the convenience round-trip restore(serialized) = PaperStateSnapshot::deserialize(serialized).map(PaperStateSnapshot::into_book), so restore(serialize(capture(book))) == book exactly (quantity, signed cost basis, realized P&L, and every cost component survive, including a FLAT fully-closed position that still carries realized P&L and commission). deserialize is fail-closed and atomic: it validates the magic header (MAGIC = 'ATP-PAPER-STATE') and the schema version (a foreign blob or unknown version is rejected, not mis-read: PersistenceError::CorruptSnapshot / UnknownSchemaVersion), validates the config, validates every position field invariant BEFORE the position is built (cost components non-negative; the quantity/basis biconditional (quantity == 0) iff (cost_basis_minor == 0); sign agreement between a non-flat quantity and its basis; a canonical, non-empty symbol; a non-empty strategy id; no duplicate strategy id or duplicate symbol within a strategy: PersistenceError::InconsistentField / DuplicateRecord), and requires the cursor to be exhausted at the end (trailing bytes are corrupt). It builds the whole VirtualLedgerBook in a local and returns it only on full success, so a corrupt, truncated, or tampered snapshot returns an Err and yields NO partially-restored book (never a phantom strategy or symbol). paper_state adds no broker/adapter/live-position dependency and carries no vendor SDK token, so persisted paper state is structurally independent of the IB account (the SYS-84 isolation property holds through persistence too). The Rust integration test srs_sim_004_paper_state drives capture/serialize/restore end to end from real simulate_fill output. The PASS line is 'SRS-SIM-004 SDK-SURFACE PASS'; feature_list.json keeps SRS-SIM-004 passes:false because the live 60s persistence timer firing inside a running container and a real restart restoring within 30s need the SRS-EXE-002 orchestrator wiring and the SYS-89 container lifecycle, the pending_orders slot needs a paper-order pending store (SRS-SIM-001 / SRS-SIM-002 own no such store yet), the metrics slot needs the SYS-85 / SRS-BT-004 paper metric family, and the user_state slot needs the Python strategy runtime.",
+    "requirement": "SRS-SIM-004",
+    "srs_refs": [
+      "SRS-SIM-004"
+    ],
+    "syrs_refs": [
+      "SYS-89"
+    ],
+    "strs_refs": [
+      "SN-1.29",
+      "SN-2.05"
+    ],
+    "ac_traces": [
+      "SRS-SIM-004",
+      "SYS-89"
+    ],
+    "simulation_crate": {
+      "crate": "atp-simulation",
+      "path": "crates/atp-simulation"
+    },
+    "persistence_module": "paper_state",
+    "snapshot_struct": {
+      "struct": "PaperStateSnapshot",
+      "fields": [
+        "schema_version",
+        "config",
+        "book"
+      ]
+    },
+    "config_struct": {
+      "struct": "PersistenceConfig",
+      "u64_fields": [
+        "interval_secs",
+        "restore_deadline_secs"
+      ],
+      "bool_field": "persist_on_shutdown"
+    },
+    "config_defaults": {
+      "interval_const": "DEFAULT_INTERVAL_SECS",
+      "interval_value": "60",
+      "deadline_const": "DEFAULT_RESTORE_DEADLINE_SECS",
+      "deadline_value": "30",
+      "shutdown_default_token": "persist_on_shutdown: true"
+    },
+    "config_validation": {
+      "fn": "new",
+      "interval_guard": "if interval_secs == 0",
+      "deadline_guard": "if restore_deadline_secs == 0",
+      "error_token": "PersistenceError::NonPositiveConfig",
+      "ceiling_guard": "if restore_deadline_secs > DEFAULT_RESTORE_DEADLINE_SECS",
+      "ceiling_error_token": "PersistenceError::RestoreDeadlineTooLong"
+    },
+    "error_enum": {
+      "enum": "PersistenceError",
+      "variants": [
+        "CorruptSnapshot",
+        "UnknownSchemaVersion",
+        "InconsistentField",
+        "DuplicateRecord",
+        "UnsupportedSection",
+        "NonPositiveConfig",
+        "RestoreDeadlineTooLong",
+        "ChecksumMismatch",
+        "ShutdownPersistenceRequired"
+      ]
+    },
+    "integrity": {
+      "checksum_fn": "fn checksum",
+      "write_token": "checksum(body.as_bytes())",
+      "verify_token": "checksum(body) != stored_checksum",
+      "error_token": "PersistenceError::ChecksumMismatch"
+    },
+    "schema_version": {
+      "const_token": "pub const SCHEMA_VERSION: i64 = 1;",
+      "magic_const_token": "pub const MAGIC: &str = \"ATP-PAPER-STATE\";",
+      "version_guard_token": "if schema_version != SCHEMA_VERSION",
+      "version_error_token": "PersistenceError::UnknownSchemaVersion",
+      "magic_guard_token": "if magic != MAGIC"
+    },
+    "codec": {
+      "capture_fn": "capture",
+      "serialize_fn": "serialize",
+      "deserialize_fn": "deserialize",
+      "restore_fn": "restore",
+      "into_book_fn": "into_book",
+      "restore_body_token": "PaperStateSnapshot::deserialize(serialized).map(PaperStateSnapshot::into_book)"
+    },
+    "determinism": {
+      "strategy_sort_token": "strategies.sort_by",
+      "position_sort_token": "positions.sort_by",
+      "ledger_iter_token": "self.book.ledgers_iter()",
+      "position_iter_token": "ledger.positions_iter()",
+      "length_prefix_token": "value.len().to_string()"
+    },
+    "fail_closed": {
+      "negative_cost_token": "if value < 0",
+      "biconditional_token": "(quantity == 0) != (cost_basis_minor == 0)",
+      "sign_token": "quantity.signum() as i128 != cost_basis_minor.signum()",
+      "canonical_token": "symbol != symbol.to_uppercase()",
+      "duplicate_token": "PersistenceError::DuplicateRecord",
+      "trailing_token": "cursor.expect_end()",
+      "expect_end_token": "fn expect_end",
+      "shutdown_required_token": "if !persist_on_shutdown"
+    },
+    "reserved_slots": {
+      "slots": [
+        "pending simulated orders",
+        "accumulated paper metrics",
+        "user-state dictionary"
+      ],
+      "unsupported_error_token": "Err(PersistenceError::UnsupportedSection { context })"
+    },
+    "money_invariant": {
+      "forbidden_float_token": "f64"
+    },
+    "module_reexport": {
+      "lib_reexport_token": "pub mod paper_state;"
+    },
+    "no_broker_dependency": {
+      "cargo_toml": "Cargo.toml",
+      "forbidden_dep_tokens": [
+        "atp-adapters",
+        "atp-execution"
+      ]
+    },
+    "rust_integration_test": "srs_sim_004_paper_state",
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "deferred": [
+      {
+        "feature": "Live 60s persistence timer and 30s-restore on a real container restart",
+        "what": "SYS-89 requires the state to be persisted every 60 seconds (and on shutdown) and restored within 30 seconds of a container restart. This slice ships the deterministic capture/serialize/restore codec and the cadence config, but the live timer firing inside a running container and the restart that reads the blob back need the SRS-EXE-002 orchestrator wiring and the SYS-89 container lifecycle, which own the strategy container and its restart, so the timing guarantees are deferred to that owner and feature_list.json keeps SRS-SIM-004 passes:false."
+      },
+      {
+        "feature": "Pending simulated orders sub-state",
+        "what": "SYS-89 lists pending simulated orders among the persisted sub-states, but the SRS-SIM-001 / SRS-SIM-002 paper-order path only accepts and routes orders; nothing holds an accepted-but-unfilled order as runtime state, so there is no pending-order store to persist. The snapshot reserves a forward-compatible pending_orders slot (always empty in v1, fail-closed on non-empty); populating it needs a paper-order pending store owned by the SRS-SIM-001 / SRS-SIM-002 fill path."
+      },
+      {
+        "feature": "Accumulated paper performance metrics sub-state",
+        "what": "SYS-89 lists accumulated performance metrics among the persisted sub-states, but no PaperMetrics type exists yet (the SYS-85 / SRS-BT-004 metric family computes returns, drawdown, and ratios over the ledger's P&L primitives and is its own feature). The snapshot reserves a forward-compatible metrics slot (always empty in v1, fail-closed on non-empty); populating it needs the SYS-85 / SRS-BT-004 metric family."
+      },
+      {
+        "feature": "User-state dictionary sub-state",
+        "what": "SYS-89 lists the user-state dictionary (the JSON-serializable key-value state a user strategy writes via the strategy API) among the persisted sub-states, but that dictionary is produced by the Python strategy runtime, which is not built yet. The snapshot reserves a forward-compatible user_state slot (always empty in v1, fail-closed on non-empty); populating it needs the SRS-SDK Python strategy host."
+      },
+      {
+        "feature": "Corporate-action adjustment of persisted positions (SYS-88 / SRS-DATA-021)",
+        "what": "Adjusting the persisted virtual positions for splits, dividends, and mergers, and cancelling persisted virtual orders for delisted securities, is SYS-88 / SRS-DATA-021. This slice persists and restores the raw ledger; corporate-action adjustment is that owner's responsibility."
+      }
+    ]
   }
 }

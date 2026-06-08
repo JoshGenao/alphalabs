@@ -48,6 +48,19 @@ pub mod fill_model;
 /// `passes:false`.
 pub mod virtual_ledger;
 
+/// The internal simulation engine's paper-state persistence path (SRS-SIM-004 /
+/// SyRS SYS-89). It captures a [`virtual_ledger::VirtualLedgerBook`] plus the
+/// [`paper_state::PersistenceConfig`] cadence (default 60s interval, 30s restore
+/// deadline) into a versioned [`paper_state::PaperStateSnapshot`], serializes it to
+/// a deterministic, dependency-free text form (sorted keys, length-prefixed
+/// symbols), and restores it fail-closed on a corrupt or tampered blob. Only the
+/// virtual ledger has a runtime type today, so the pending-order, metric, and
+/// user-state sub-states SYS-89 also names are reserved, forward-compatible slots;
+/// the live 60s timer + 30s-restore container wiring (SRS-EXE-002 / SYS-89), the
+/// paper-order pending store, the SYS-85 / SRS-BT-004 metric family, and the Python
+/// runtime are deferred, so SRS-SIM-004 stays `passes:false`.
+pub mod paper_state;
+
 #[derive(Debug, Default)]
 pub struct InternalSimulationEngine;
 

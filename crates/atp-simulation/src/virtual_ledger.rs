@@ -151,6 +151,32 @@ impl VirtualPosition {
         Self::default()
     }
 
+    /// Reconstruct a position from already-validated persisted components
+    /// (SRS-SIM-004 restore). Crate-internal: the
+    /// [`paper_state`](crate::paper_state) deserializer validates the field
+    /// invariants (the quantity/basis biconditional, sign agreement, and
+    /// non-negative cost components) BEFORE calling this, so this is a pure field
+    /// constructor with no I/O and no clock. Kept `pub(crate)` so persistence can
+    /// rebuild a position without widening the public mutation surface (the only
+    /// public way to change a position stays [`apply_fill`](Self::apply_fill)).
+    pub(crate) fn from_components(
+        quantity: i64,
+        cost_basis: i128,
+        realized_pnl: i128,
+        commission_paid: i128,
+        slippage_paid: i128,
+        spread_impact_paid: i128,
+    ) -> Self {
+        Self {
+            quantity,
+            cost_basis_minor: cost_basis,
+            realized_pnl_minor: realized_pnl,
+            commission_paid_minor: commission_paid,
+            slippage_paid_minor: slippage_paid,
+            spread_impact_paid_minor: spread_impact_paid,
+        }
+    }
+
     /// The signed quantity held (`> 0` long, `< 0` short, `0` flat).
     pub fn quantity(&self) -> i64 {
         self.quantity
@@ -492,6 +518,20 @@ impl StrategyLedger {
     pub fn symbol_count(&self) -> usize {
         self.positions.len()
     }
+
+    /// Iterate this strategy's `(canonical symbol, position)` entries (SRS-SIM-004
+    /// capture). Crate-internal; `HashMap` iteration order is unspecified, so the
+    /// [`paper_state`](crate::paper_state) serializer sorts by symbol to produce a
+    /// deterministic snapshot.
+    pub(crate) fn positions_iter(&self) -> impl Iterator<Item = (&String, &VirtualPosition)> {
+        self.positions.iter()
+    }
+
+    /// Reconstruct a strategy ledger from an already-validated, canonical-keyed
+    /// position map (SRS-SIM-004 restore). Crate-internal.
+    pub(crate) fn from_positions(positions: HashMap<String, VirtualPosition>) -> Self {
+        Self { positions }
+    }
 }
 
 /// Every paper strategy's virtual ledger, keyed by [`StrategyId`] (SYS-84).
@@ -562,6 +602,22 @@ impl VirtualLedgerBook {
     /// The number of distinct strategies the book tracks.
     pub fn strategy_count(&self) -> usize {
         self.ledgers.len()
+    }
+
+    /// Iterate the book's `(strategy, ledger)` entries (SRS-SIM-004 capture).
+    /// Crate-internal; `HashMap` iteration order is unspecified, so the
+    /// [`paper_state`](crate::paper_state) serializer sorts by strategy id to
+    /// produce a deterministic snapshot.
+    pub(crate) fn ledgers_iter(&self) -> impl Iterator<Item = (&StrategyId, &StrategyLedger)> {
+        self.ledgers.iter()
+    }
+
+    /// Reconstruct a ledger book from an already-validated ledger map (SRS-SIM-004
+    /// restore). Crate-internal: persistence rebuilds the book without widening the
+    /// public mutation surface (the only public way to populate a book stays
+    /// [`apply_fill`](Self::apply_fill)).
+    pub(crate) fn from_ledgers(ledgers: HashMap<StrategyId, StrategyLedger>) -> Self {
+        Self { ledgers }
     }
 }
 

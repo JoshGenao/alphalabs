@@ -66,6 +66,10 @@ from sim_cost_check import SimCostCheckError, assert_sim_cost_static
 from sim_fill_check import SimFillCheckError, assert_sim_fill_static
 from sim_ledger_check import SimLedgerCheckError, assert_sim_ledger_static
 from sim_order_check import SimOrderCheckError, assert_sim_order_static
+from sim_persistence_check import (
+    SimPersistenceCheckError,
+    assert_sim_persistence_static,
+)
 from strategy_api_order_events_check import (
     StrategyApiOrderEventsCheckError,
     assert_strategy_api_order_events_static,
@@ -617,6 +621,25 @@ def assert_sim_ledger(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_sim_persistence(config: dict) -> list[str]:
+    block = config.get("sim_persistence_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_sim_persistence_static(config, ROOT)
+    summary = (
+        f"{block['simulation_crate']['crate']} internal simulation engine persists paper state "
+        f"({block['snapshot_struct']['struct']} envelope over the SRS-SIM-003 "
+        f"{block['config_struct']['struct']}: interval {block['config_defaults']['interval_value']}s "
+        f"/ restore deadline {block['config_defaults']['deadline_value']}s default) with a "
+        "deterministic, dependency-free codec — capture/serialize/restore round-trips the virtual "
+        "ledger exactly and fails closed on a corrupt snapshot, with reserved forward-compatible "
+        "slots for the not-yet-built pending-order, metric, and user-state sub-states (SRS-SIM-004, "
+        "SyRS SYS-89)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_orchestrator_lifecycle(config: dict) -> list[str]:
     block = config.get("orchestrator_lifecycle_contract")
     if block is None:
@@ -912,6 +935,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_sim_ledger(config))
     except SimLedgerCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_sim_persistence(config))
+    except SimPersistenceCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_orchestrator_lifecycle(config))
