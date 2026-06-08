@@ -230,7 +230,9 @@ SAFETY_PATH_RE = re.compile(
     r"|sim[_-]?ledger|average[_-]?cost|avg[_-]?cost"
     r"|realized[_-]?pnl|unrealized[_-]?pnl|mark[_-]?to[_-]?market"
     r"|paper[_-]?state|sim[_-]?state|state[_-]?persistence"
-    r"|persist|snapshot|restore|checkpoint|paper[_-]?persist)",
+    r"|persist|snapshot|restore|checkpoint|paper[_-]?persist"
+    r"|performance[_-]?metric|paper[_-]?metric|perf[_-]?metric|metric"
+    r"|sharpe|sortino|drawdown|annualized|win[_-]?rate)",
     re.IGNORECASE,
 )
 
