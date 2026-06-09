@@ -1,3 +1,126 @@
+=== SESSION 44 ===
+Date: 2026-06-08
+Feature completed: SRS-BT-004 SDK-SURFACE — "compute required backtest and paper/live
+performance metrics" (docs/SRS.md SRS-5.6 SRS-BT-004; traces SyRS SYS-16 / SYS-86; StRS
+SN-1.04 / SN-1.05 / SN-1.29). The SESSION 43 handoff named this as the natural next pick;
+user-confirmed via AskUserQuestion (over SRS-EXE-002), AND user-directed to pull in the
+SPY-default benchmark plumbing (SRS-BT-005's selection mechanism is seeded here; SRS-BT-005
+itself stays passes:false). This slice ships the deterministic, dependency-free
+computation of the eight SYS-16 metrics (Sharpe, Sortino, alpha, beta, max drawdown,
+annualized return, annualized volatility, win rate) in a new crates/atp-simulation module
+`metrics`, consuming the SESSION 37 backtest EquityPoint curve + Fill trade log and the
+SESSION 42 ledger's canonical-symbol policy.
+Status: 92 remaining features (UNCHANGED — SRS-BT-004 stays passes:false; the live
+dashboard reporting path (SRS-UI/SRS-API, SYS-36 <=5s), the paper/live runtime
+accumulators that feed this family (the SRS-SIM-004 snapshot reserves the metrics slot),
+the SRS-BT-005 benchmark RESOLUTION + report identification, and the full atomic
+run-snapshot identity are deferred).
+
+What I did (3 commits, the standard prep -> feat -> chore cadence):
+- prep 2655ca9 (chore(critic)): extended SAFETY_PATH_RE in tools/critic_check.py with
+  collision-free metric tokens (performance[_-]?metric, paper[_-]?metric, perf[_-]?metric,
+  metric, sharpe, sortino, drawdown, annualized, win[_-]?rate). Verified each matches the
+  planned feat paths (metrics.rs, metrics_check.py) and ZERO existing tracked files;
+  deliberately NO bare 'benchmark' token (collides with docs/tradestudies/nas_benchmark.sh).
+- feat 145908a (10 files): crates/atp-simulation/src/metrics.rs (compute() + Benchmark
+  (SPY default) + BenchmarkPoint + MetricsConfig + PerformanceMetrics + MetricsError(16
+  variants) + per-metric helper fns + 43 L1 tests); lib.rs `pub mod metrics;`;
+  virtual_ledger.rs canonical_symbol exposed pub(crate) for win-rate ledger parity; the
+  sim_metrics_contract block in architecture/runtime_services.json (ASCII splice);
+  tools/metrics_check.py (19 static collectors + --require-cargo smoke, wired TRANSITIVELY
+  via architecture_check.py + an init.sh gate after the persistence gate — same convention
+  as sim_*); L3 tests/test_sim_metrics_contract.py; L7 tests/domain/test_paper_metrics.py;
+  Rust integration srs_bt_004_metrics.rs (16 tests).
+- chore (this entry).
+
+Design / safety notes (the headline is the numeric boundary + the 7-round adversarial hardening):
+- NUMERIC BOUNDARY: money enters in integer minor units (EquityPoint.equity_minor: i64,
+  BenchmarkPoint.level_minor: i64, every Fill money field: i64); the eight metrics are
+  dimensionless f64 RATIOS. Unlike paper_state, metrics.rs DOES contain f64 — that is the
+  metric domain, not a money leak. The f64 work is DETERMINISTIC (SRS-BT-010): fixed
+  left-to-right folds over ts-sorted series, no parallelism/RNG/clock; a non-monotonic ts
+  is rejected. A metric undefined on the input is None (never a fabricated 0.0); every
+  result is verified finite (NonFiniteComputation) so no NaN/inf leaks into a ranking.
+- The metric formulas, each pinned by an L1 test: returns r_i = (E_i - E_{i-1})/E_{i-1}
+  from a [baseline, ...marks] series; geometric annualized return; sample (ddof=1) vol;
+  Sharpe/Sortino on excess returns over the per-period rf; beta = cov/var; JENSEN ALPHA on
+  EXCESS returns ((mean_r - rf) - beta*(mean_b - rf)); max drawdown peak-to-trough; win
+  rate = fraction of COMPLETE flat-to-flat round trips with strictly positive NET P&L.
+- The pre-trade baseline (starting_equity_minor) is a REQUIRED compute arg, so the first
+  period's P&L (incl. entry costs) is ALWAYS captured and never silently omitted; the
+  benchmark carries its baseline as benchmark_levels[0] (len == equity_curve.len()+1). A
+  TERMINAL-ZERO equity mark is a defined -100% total loss / 100% drawdown (not an abort);
+  only a non-final non-positive or a negative final mark is rejected.
+- WIN RATE robustness (the deepest-reviewed surface): NET of transaction costs (a
+  gross-positive but net-negative trade is a loss); FRAGMENTATION-INVARIANT (a round trip
+  closed in one fill or N volume-capped partial fills is the same trade — SYS-86
+  comparability of backtest vs paper); canonicalized symbols (ledger parity); a single-fill
+  reversal attributes its full cost to the closing round trip (no integer-floor bias);
+  same-timestamp fills apply in execution (slice) order rather than being rejected; the
+  trade log must fall within the equity curve's run window (TradeLogOutsideRun coherence
+  guard).
+
+What I tested: cargo test -p atp-simulation green (43 lib metrics + 16 srs_bt_004
+integration + the prior sim suites). cargo fmt --check clean on the new files only (NO
+whole-crate fmt per the no_whole_crate_cargo_fmt note). clippy clean on the new module +
+tests (only the pre-existing atp-types doc-lazy-continuation warnings remain). python3
+tools/metrics_check.py --require-cargo PASS (8 metrics, 16 MetricsError variants, SPY
+default, 20 evidence items). architecture_check.py exit 0 surfacing the metric evidence;
+the five prior sim checks (cost/order/fill/ledger/persistence) still PASS. L3 + L7 pass;
+full pytest -m "not integration and not e2e" 1528 passed / 4 pre-existing pending-impl
+skips / 118 subtests; ruff check+format clean on the new Python. ./init.sh -> Environment
+ready with the new "performance-metric contract check" gate firing after the paper-state
+persistence gate.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings (pre-commit hook
+    also APPROVE on prep 2655ca9 + feat 145908a). One WARN (money:float-arithmetic) early
+    was a false positive on the prose "fill price -- a" in metrics_check.py; reworded to ";"
+    and re-ran to APPROVE.
+  judgment (/codex:adversarial-review --wait $(cat prompts/critic_prompt.md), user-triggered,
+    7 ROUNDS): rounds 1-6 each returned needs-attention with REAL findings, every one fixed
+    before the next pass — this is the value of the adversarial layer (the deterministic
+    critic + SDK-boundary self-check passed every round; Codex's deeper pass caught design/
+    scope gaps the structural checks could not):
+      R1: alpha ignored rf (excess-return Jensen alpha); win rate depended on unvalidated
+          fill order (non-decreasing-ts guard).
+      R2: alpha excess-return formula + nonzero-rf test; win-rate ordering tests.
+      R3: win rate net-of-cost (not gross); symbol canonicalization for ledger parity;
+          near-zero dispersion tolerance (no spurious Sharpe/beta).
+      R4: win rate fragmentation-invariant (complete round trips); reject ambiguous
+          same-symbol/same-ts; (later revised — see R6).
+      R5: required-baseline API (first period never omitted) — user-chose the robust API
+          fix over the minimal one.
+      R6: terminal-zero equity is a defined total loss (not an abort); flip cost attributed
+          fully to the closing round trip (no integer-floor bias).
+      R7 (this round, ONE finding): the same-ts REJECTION (added R4) over-rejected valid
+          same-bar paper fills -> switched to slice/execution order; added a run-window
+          coherence guard (TradeLogOutsideRun); fixed a doc/API contradiction (baseline is a
+          required arg, not a prepended curve point).
+    Round 7's FINAL finding (timestamp containment does not establish full run IDENTITY) is
+    ACCEPTED AS A WRITTEN DEFERRED-SCOPE OVERRIDE (user-confirmed via AskUserQuestion): true
+    run-identity binding needs producer-stamped run/snapshot ids, which require the deferred
+    paper/live accumulator (the half keeping SRS-BT-004 passes:false) and SRS-BT-001 to add
+    a run id to BacktestResult/Fill. The only CURRENT producer (the backtest) already binds
+    equity_curve + trade_log via one BacktestResult; the in-scope window guard catches the
+    easy mismatch. Documented in sim_metrics_contract.win_rate + the deferred[] block.
+
+Known issues / notes for next agent:
+- SRS-BT-004 stays passes:false BY DESIGN (honest partial-pass). feature_list.json was NOT
+  modified this session.
+- DEFERRED (the passes:false owners): (1) live dashboard performance reporting (SRS-UI /
+  SRS-API; SYS-36 <=5s refresh); (2) the paper/live runtime metric accumulators that
+  accumulate the equity curve + trade log and feed this module — the SRS-SIM-004 snapshot
+  reserves the metrics slot for them; (3) SRS-BT-005 benchmark RESOLUTION (resolving SPY's
+  actual historical level series) + dashboard/report benchmark identification — only the
+  SPY-default SELECTION mechanism is seeded here; (4) the full atomic run-snapshot IDENTITY
+  (a run id binding equity curve + trade log + metrics) — the round-7 judgment finding,
+  deferred to the accumulator + SRS-BT-001.
+- Natural next pick: SRS-BT-005 (consume the Benchmark/BenchmarkPoint surface this slice
+  seeded — resolve SPY's level series + wire report identification), OR SRS-BT-009 (persist
+  completed backtest results incl. these metrics), OR SRS-EXE-002 (orchestrator routing,
+  which flips several sim-front deferrals).
+
 === SESSION 43 ===
 Date: 2026-06-07
 Feature completed: SRS-SIM-004 SDK-SURFACE — "persist paper strategy simulation state"
