@@ -61,6 +61,22 @@ pub mod virtual_ledger;
 /// runtime are deferred, so SRS-SIM-004 stays `passes:false`.
 pub mod paper_state;
 
+/// The shared performance-metric family (SRS-BT-004 / SyRS SYS-16, SYS-86). It
+/// computes the eight required metrics (Sharpe, Sortino, alpha, beta, maximum
+/// drawdown, annualized return, annualized volatility, win rate) deterministically
+/// from the [`backtest::EquityPoint`] curve and [`backtest::Fill`] trade log this
+/// engine already produces, against a [`metrics::Benchmark`] that defaults to SPY.
+/// Money enters in integer minor units; the metrics themselves are dimensionless
+/// `f64` ratios, computed with fixed left-to-right folds (no parallelism, RNG, or
+/// clock) so identical inputs yield identical metrics (SRS-BT-010). A metric that is
+/// undefined on the input is reported `None` rather than a fabricated zero, and a
+/// non-finite result fails closed. The same family serves backtest, paper, and live
+/// reporting (SYS-86); the live dashboard path, the paper/live runtime accumulators
+/// that feed it (the SRS-SIM-004 snapshot reserves the metrics slot for them), and
+/// the SRS-BT-005 benchmark-resolution surface are deferred, so SRS-BT-004 stays
+/// `passes:false`.
+pub mod metrics;
+
 #[derive(Debug, Default)]
 pub struct InternalSimulationEngine;
 

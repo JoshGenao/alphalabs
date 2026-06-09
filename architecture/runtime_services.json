@@ -4888,5 +4888,209 @@
         "what": "Adjusting the persisted virtual positions for splits, dividends, and mergers, and cancelling persisted virtual orders for delisted securities, is SYS-88 / SRS-DATA-021. This slice persists and restores the raw ledger; corporate-action adjustment is that owner's responsibility."
       }
     ]
+  },
+  "sim_metrics_contract": {
+    "description": "SRS-BT-004 (compute required backtest and paper/live performance metrics; SyRS SYS-16, SYS-86; StRS SN-1.04 / SN-1.05 / SN-1.29). The shared performance-metric family lives in crates/atp-simulation (module `metrics`) and computes the eight SYS-16 metrics -- Sharpe ratio, Sortino ratio, alpha, beta, maximum drawdown, annualized return, annualized volatility, and win rate -- for one completed run. SYS-86 requires the internal simulation engine to compute the SAME family for paper strategies that the backtest engine and the live dashboard compute, so the module consumes the primitives the engine already produces: a mark-to-market backtest::EquityPoint curve and a backtest::Fill trade log, both in integer minor units. The headline design decision is the numeric boundary: money enters in integer minor units (EquityPoint.equity_minor: i64, BenchmarkPoint.level_minor: i64, every Fill money field i64), but the metrics themselves are dimensionless f64 ratios -- so unlike paper_state this module DOES contain f64, which is the metric domain, not a money-correctness leak. The f64 work is made deterministic (the SRS-BT-010 criterion this family must honor): every reduction is a fixed left-to-right fold over the timestamp-ordered series, with no parallelism, no platform RNG, and no wall-clock read, so identical inputs always produce bit-identical metrics; the deserializer rejects a non-strictly-increasing timestamp (MetricsError::NonMonotonicTimestamps) so the period returns are never order-dependent. A metric that is mathematically undefined on the given input -- Sharpe/Sortino/volatility when there are fewer than two returns or zero dispersion, alpha/beta when no benchmark series was supplied or the benchmark has zero variance, win rate when no trade closed -- is reported as None, never as a fabricated 0.0 and never as a leaked NaN/inf; every computed metric is verified finite before it is returned (MetricsError::NonFiniteComputation), so a pathological input fails closed rather than emitting a poison value. Period returns require a strictly positive equity curve (MetricsError::NonPositiveEquity) because a return divides by the prior equity. Alpha and beta are defined only against a benchmark (SYS-16 computes them relative to the SYS-17 benchmark): Benchmark defaults to SPY (DEFAULT_BENCHMARK_SYMBOL) when the operator selects none and the chosen symbol is echoed on PerformanceMetrics.benchmark_symbol so a report identifies its benchmark; the caller-supplied benchmark level series must align 1:1 by timestamp with the equity curve (MetricsError::BenchmarkLengthMismatch / BenchmarkTimestampMismatch) and be strictly positive (MetricsError::NonPositiveBenchmarkLevel). The win rate is the fraction of COMPLETE round trips whose NET P&L was strictly positive. A trade is a round trip -- the flat-to-flat span over which a symbol's position leaves zero, through any number of fills, and returns to zero -- not an individual fill, so the win rate is INVARIANT to fill fragmentation: a position closed in one fill versus three volume-capped partial fills (SRS-SIM-002) is the SAME one winning/losing round trip, keeping backtest (aggregated) and paper/live (fragmented) win rates comparable (SYS-86). A round trip's net P&L is its realized cash flow minus all its transaction costs (net = -sum(signed_qty_i * price_i) - sum(cost_i) over the round trip's fills, via closing_cash_flow); because both are sums over the whole flat-to-flat span, the result is INVARIANT to the order of fills within the round trip, so it cannot silently depend on intra-bar fill ordering, and a win counts only when that NET P&L is strictly positive (a gross profit overwhelmed by costs is correctly a loss). A single fill that REVERSES through zero settles the closed round trip and opens the next; because there is no fragmentation-invariant way to split one fill's integer cost across the two round trips it spans, the reversing fill's FULL cost is deterministically attributed to the closing round trip (equivalent to writing the reversal as a close-to-flat fill with the cost on the close, then a zero-cost open), which avoids the integer-floor bias that would charge a small reversing close zero cost and record a spurious win. Symbols are canonicalized with the ledger's canonical_symbol policy (trim + upper-case) so an open on AAPL and a close on aapl close the SAME round trip (SYS-86 parity); a negative cost component is rejected (MetricsError::NegativeFillCost), a non-positive fill price is rejected (MetricsError::NonPositiveFillPrice), and the i128 money math is checked (MetricsError::Overflow). The trade log must be time-ordered: a backwards timestamp is rejected (MetricsError::NonMonotonicTradeLog), but MULTIPLE fills may share a timestamp (several orders, or volume-capped partial fills, can fill against one bar) and are applied in TRADE-LOG (slice) ORDER -- the producer's authoritative execution sequence -- so a legitimate multi-fill bar is processed in order rather than rejected, and the result is deterministic for a given trade log. The trade log and the equity curve must describe the SAME run: every fill timestamp must fall within the equity curve's observed window [first mark ts, last mark ts] or it is rejected as incoherent (MetricsError::TradeLogOutsideRun), catching a stale or mismatched (e.g. asynchronously-snapshotted later) trade log paired with a different run's equity curve so the win rate and the equity-derived metrics cannot silently disagree. The FULL atomic run-snapshot identity (a run id binding the equity curve, trade log, and metrics into one consistent snapshot) is the deferred paper/live accumulator's responsibility; this window check is the in-scope coherence guard. The pre-trade baseline is a REQUIRED compute input (starting_equity_minor: i64), NOT an implicit first curve point, so the first period's P&L (including opening-fill entry costs) can never be silently omitted: period returns are [(equity_curve[0] - starting) / starting, ...], the drawdown peak starts at the baseline (let mut peak = starting_equity_minor as f64), and annualized return runs from the baseline (let first = starting_equity_minor as f64). Producers pass their starting cash here (the backtest engine passes BacktestResult's request.starting_cash_minor), so the metric never guesses a baseline. The baseline and every NON-final mark must be strictly positive (each is the denominator of a return), but the FINAL mark may be exactly zero -- a total loss / bankruptcy is a defined -100% final return (and a 100% drawdown), so it is computed, not rejected; only a non-final non-positive mark or a negative final mark is rejected (MetricsError::NonPositiveEquity), so one bad mark never aborts an otherwise-valid run. The benchmark's pre-trade baseline is the FIRST element of benchmark_levels (its remaining points align 1:1 by timestamp with equity_curve, so benchmark_levels has equity_curve.len() + 1 entries and yields the same number of returns as the strategy). Beta is cov(strategy, benchmark) / var(benchmark); Jensen's alpha is computed on EXCESS returns over the per-period risk-free rate ((mean_strategy - rf) - beta * (mean_benchmark - rf), annualized arithmetically), since omitting the risk-free rate is only correct when rf == 0 or beta == 1. Sharpe, Sortino, and beta divide by a dispersion; rather than an exact == 0.0 denominator check (which floating-point aggregation of near-identical returns can slip past, dividing by ~1e-17 to produce an enormous but finite, meaningless ratio), a scale-aware tolerance (negligible_dispersion / DISPERSION_EPSILON, relative to the largest absolute observation) treats a noise-level standard deviation, downside deviation, or benchmark variance as zero so a near-degenerate series yields None rather than a spurious ranking-corrupting value. MetricsConfig carries the annualization factor (periods_per_year: u32, default DEFAULT_PERIODS_PER_YEAR = 252) and the per-period risk-free rate (risk_free_rate_per_period: f64, default 0.0); MetricsConfig::new fails closed on a zero annualization factor (MetricsError::NonPositivePeriodsPerYear) and a non-finite or <= -100%/period risk-free rate (MetricsError::InvalidRiskFreeRate). metrics adds no broker/adapter/live dependency and carries no vendor SDK token, so the family is structurally independent of the IB account; lib.rs re-exports `pub mod metrics;`. The Rust integration test srs_bt_004_metrics drives compute() end to end from a real BacktestResult. The PASS line is 'SRS-BT-004 SDK-SURFACE PASS'; feature_list.json keeps SRS-BT-004 passes:false because the live dashboard reporting path and the paper/live runtime accumulators that feed this family at runtime (the SRS-SIM-004 snapshot reserves the metrics slot for them, still empty until an accumulator exists), and the SRS-BT-005 benchmark-resolution surface (resolving SPY's actual price history and wiring the dashboard/report benchmark identification), are deferred owners.",
+    "requirement": "SRS-BT-004",
+    "srs_refs": [
+      "SRS-BT-004"
+    ],
+    "syrs_refs": [
+      "SYS-16",
+      "SYS-86"
+    ],
+    "strs_refs": [
+      "SN-1.04",
+      "SN-1.05",
+      "SN-1.29"
+    ],
+    "ac_traces": [
+      "SRS-BT-004",
+      "SYS-16",
+      "SYS-86"
+    ],
+    "simulation_crate": {
+      "crate": "atp-simulation",
+      "path": "crates/atp-simulation"
+    },
+    "metrics_module": "metrics",
+    "metrics_struct": {
+      "struct": "PerformanceMetrics",
+      "metric_fields": [
+        "sharpe_ratio",
+        "sortino_ratio",
+        "alpha",
+        "beta",
+        "max_drawdown",
+        "annualized_return",
+        "annualized_volatility",
+        "win_rate"
+      ],
+      "metric_type": "Option<f64>",
+      "benchmark_field": "benchmark_symbol: String"
+    },
+    "benchmark": {
+      "struct": "Benchmark",
+      "default_const_token": "pub const DEFAULT_BENCHMARK_SYMBOL: &str = \"SPY\";",
+      "spy_fn_token": "pub fn spy",
+      "default_impl_token": "impl Default for Benchmark",
+      "symbol_validation_token": "if symbol != symbol.to_uppercase()"
+    },
+    "config_struct": {
+      "struct": "MetricsConfig",
+      "u32_field": "periods_per_year",
+      "f64_field": "risk_free_rate_per_period",
+      "default_const_token": "pub const DEFAULT_PERIODS_PER_YEAR: u32 = 252;"
+    },
+    "config_validation": {
+      "fn": "new",
+      "ppy_guard": "if periods_per_year == 0",
+      "ppy_error_token": "MetricsError::NonPositivePeriodsPerYear",
+      "rf_guard": "risk_free_rate_per_period <= -1.0",
+      "rf_error_token": "MetricsError::InvalidRiskFreeRate"
+    },
+    "error_enum": {
+      "enum": "MetricsError",
+      "variants": [
+        "EmptyEquityCurve",
+        "NonMonotonicTimestamps",
+        "NonPositiveEquity",
+        "NonPositivePeriodsPerYear",
+        "InvalidRiskFreeRate",
+        "EmptyBenchmarkSymbol",
+        "NonCanonicalBenchmarkSymbol",
+        "BenchmarkLengthMismatch",
+        "BenchmarkTimestampMismatch",
+        "NonPositiveBenchmarkLevel",
+        "NonPositiveFillPrice",
+        "NegativeFillCost",
+        "TradeLogOutsideRun",
+        "NonMonotonicTradeLog",
+        "Overflow",
+        "NonFiniteComputation"
+      ]
+    },
+    "compute_fn": {
+      "fn": "compute",
+      "param_tokens": [
+        "starting_equity_minor",
+        "equity_curve",
+        "trade_log",
+        "benchmark",
+        "benchmark_levels",
+        "config"
+      ]
+    },
+    "baseline": {
+      "compute_param_token": "starting_equity_minor: i64",
+      "period_returns_signature_token": "fn period_returns(\n    starting_equity_minor: i64,",
+      "drawdown_peak_token": "let mut peak = starting_equity_minor as f64",
+      "annualized_return_token": "let first = starting_equity_minor as f64"
+    },
+    "metric_fns": [
+      "period_returns",
+      "annualized_return",
+      "annualized_volatility",
+      "sharpe_ratio",
+      "sortino_ratio",
+      "max_drawdown",
+      "beta_and_alpha",
+      "win_rate"
+    ],
+    "determinism": {
+      "forbidden_tokens": [
+        "par_iter",
+        "rayon",
+        "thread::spawn",
+        "rand::",
+        "SystemTime",
+        "Instant::now"
+      ],
+      "monotonic_guard_token": "MetricsError::NonMonotonicTimestamps"
+    },
+    "fail_closed": {
+      "non_positive_equity_token": "MetricsError::NonPositiveEquity",
+      "non_positive_benchmark_token": "MetricsError::NonPositiveBenchmarkLevel",
+      "length_mismatch_token": "MetricsError::BenchmarkLengthMismatch",
+      "timestamp_mismatch_token": "MetricsError::BenchmarkTimestampMismatch",
+      "non_positive_price_token": "MetricsError::NonPositiveFillPrice"
+    },
+    "undefined_semantics": {
+      "option_token": "Option<f64>",
+      "win_rate_none_guard": "if completed == 0",
+      "none_token": "return Ok(None)"
+    },
+    "nan_guard": {
+      "finite_fn_token": "fn finite",
+      "is_finite_token": "is_finite()",
+      "error_token": "MetricsError::NonFiniteComputation"
+    },
+    "win_rate": {
+      "fn": "win_rate",
+      "round_trip_settle_token": "if new_qty == 0",
+      "cash_flow_token": "fn closing_cash_flow",
+      "win_token": "if net > 0",
+      "flip_token": "let crosses_zero",
+      "order_guard_token": "MetricsError::NonMonotonicTradeLog",
+      "canonical_symbol_token": "canonical_symbol(&fill.symbol)",
+      "negative_cost_token": "MetricsError::NegativeFillCost"
+    },
+    "run_coherence": {
+      "window_token": "let run_start = equity_curve[0].ts",
+      "guard_token": "fill.ts < run_start || fill.ts > run_end",
+      "error_token": "MetricsError::TradeLogOutsideRun"
+    },
+    "dispersion_tolerance": {
+      "fn_token": "fn negligible_dispersion",
+      "const_token": "DISPERSION_EPSILON",
+      "sharpe_usage_token": "negligible_dispersion(stddev, returns)",
+      "sortino_usage_token": "negligible_dispersion(downside_dev, returns)",
+      "beta_usage_token": "negligible_dispersion(benchmark_variance.sqrt(), &benchmark_returns)"
+    },
+    "numeric_boundary": {
+      "benchmark_level_token": "level_minor: i64",
+      "equity_consume_token": "point.equity_minor",
+      "metric_output_token": "Option<f64>"
+    },
+    "module_reexport": {
+      "lib_reexport_token": "pub mod metrics;"
+    },
+    "no_broker_dependency": {
+      "cargo_toml": "Cargo.toml",
+      "forbidden_dep_tokens": [
+        "atp-adapters",
+        "atp-execution"
+      ]
+    },
+    "rust_integration_test": "srs_bt_004_metrics",
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "deferred": [
+      {
+        "feature": "Live dashboard performance reporting",
+        "what": "SYS-16 / SYS-86 require these metrics to be reported for completed backtests, paper strategies, AND the live dashboard. This slice ships the deterministic computation, but the dashboard/API path that surfaces them at a <= 5s refresh (SYS-36) is the SRS-UI / SRS-API owner, so the live-reporting half is deferred and feature_list.json keeps SRS-BT-004 passes:false."
+      },
+      {
+        "feature": "Paper/live runtime metric accumulators",
+        "what": "Computing the family for a paper or live strategy needs a runtime that accumulates the mark-to-market equity curve and trade log over the strategy's life and feeds this module on demand. The SRS-SIM-004 snapshot reserves a metrics slot for exactly this accumulated state (still empty until an accumulator exists). The accumulator is owned by the paper/live execution runtime, so the paper/live half is deferred."
+      },
+      {
+        "feature": "Producers supplying the pre-trade baseline to compute",
+        "what": "The pre-trade baseline is a REQUIRED compute argument (starting_equity_minor), so the metric module never guesses it and never treats equity_curve[0] as the baseline -- a producer must NOT prepend a baseline mark to equity_curve (doing so would fabricate a zero-return first period). The backtest path passes BacktestResult's request.starting_cash_minor; the deferred paper/live accumulators will likewise pass their own starting equity. Resolving and threading that starting equity from each runtime mode is the producer's responsibility; this slice fully handles the baseline at the metric boundary and tests it (a single-mark curve still has a first period from the baseline, and an initial drawdown below starting equity is captured)."
+      },
+      {
+        "feature": "SRS-BT-005 benchmark resolution and report identification",
+        "what": "This slice computes alpha/beta from a caller-supplied benchmark level series and defaults the Benchmark selection to SPY. Resolving SPY's (or a user-selected benchmark's) actual historical price level series from the data layer, and wiring the dashboard/backtest report to identify the benchmark, is SRS-BT-005 (SYS-17, SYS-37). SRS-BT-005 remains passes:false; only its SPY-default selection mechanism is seeded here."
+      },
+      {
+        "feature": "SRS-BT-006 factor analysis and tear-sheet outputs",
+        "what": "Factor returns, information coefficient, and turnover analysis (the tear-sheet) are SRS-BT-006 (SYS-18) and the atp-factor-pipeline crate, a separate feature. This module is the core SYS-16 metric family only."
+      }
+    ]
   }
 }

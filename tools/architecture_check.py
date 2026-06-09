@@ -42,6 +42,7 @@ from kill_switch_timeout_check import (
     KillSwitchTimeoutCheckError,
     assert_kill_switch_timeout_static,
 )
+from metrics_check import MetricsCheckError, assert_sim_metrics_static
 from orchestrator_deployment_version_check import (
     DeploymentVersionCheckError,
     assert_orchestrator_deployment_version_static,
@@ -640,6 +641,23 @@ def assert_sim_persistence(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_sim_metrics(config: dict) -> list[str]:
+    block = config.get("sim_metrics_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_sim_metrics_static(config, ROOT)
+    summary = (
+        f"{block['simulation_crate']['crate']} internal simulation engine computes the shared "
+        f"{block['metrics_struct']['struct']} family (Sharpe, Sortino, alpha, beta, max drawdown, "
+        "annualized return, annualized volatility, win rate) deterministically from the backtest "
+        "equity curve and trade log against an SPY-default benchmark; money enters in integer minor "
+        "units and the metrics are dimensionless f64 ratios, an undefined metric is None (never a "
+        "fabricated zero), and a non-finite result fails closed (SRS-BT-004, SyRS SYS-16 / SYS-86)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_orchestrator_lifecycle(config: dict) -> list[str]:
     block = config.get("orchestrator_lifecycle_contract")
     if block is None:
@@ -939,6 +957,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_sim_persistence(config))
     except SimPersistenceCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_sim_metrics(config))
+    except MetricsCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_orchestrator_lifecycle(config))

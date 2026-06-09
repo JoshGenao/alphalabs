@@ -122,7 +122,12 @@ use crate::sim::PaperFill;
 /// keying needs the upstream `PaperFill` / `simulate_fill` cost-path contract
 /// (SRS-BT-003 / SRS-SIM-001) to carry that identity and is **deferred** to that
 /// owner rather than threaded through this ledger slice.
-fn canonical_symbol(symbol: &str) -> String {
+///
+/// Exposed `pub(crate)` so the SRS-BT-004 metric family (win rate) keys its
+/// reconstructed positions with the SAME canonicalization policy, keeping paper and
+/// backtest win rates in parity (SYS-86): an open on `AAPL` and a close on `aapl`
+/// close the same position in both.
+pub(crate) fn canonical_symbol(symbol: &str) -> String {
     symbol.trim().to_uppercase()
 }
 
