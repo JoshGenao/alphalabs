@@ -13,6 +13,7 @@ from adapter_check import AdapterContractError, assert_adapter_contract_static
 from adapter_isolation_check import AdapterIsolationError, assert_adapter_isolation_static
 from backtest_check import BacktestCheckError, assert_backtest_static
 from backtest_cost_check import BacktestCostCheckError, assert_backtest_cost_static
+from benchmark_check import BenchmarkCheckError, assert_sim_benchmark_static
 from config_check import ConfigCheckError, assert_configuration_static
 from connectivity_check import ConnectivityCheckError, assert_connectivity_static
 from data_provider_check import (
@@ -658,6 +659,25 @@ def assert_sim_metrics(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_sim_benchmark(config: dict) -> list[str]:
+    block = config.get("sim_benchmark_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_sim_benchmark_static(config, ROOT)
+    summary = (
+        f"{block['simulation_crate']['crate']} internal simulation engine compares strategy "
+        f"performance against a selected benchmark defaulting to SPY ({block['selection']['struct']} "
+        f"resolves an unselected benchmark to SPY; {block['source_trait']['trait']} is the deferred "
+        f"stored-data resolution port; {block['comparison_struct']['struct']} carries the benchmark "
+        "identity plus alpha/beta and total/excess return as Option<f64> ratios) -- the resolved "
+        "series is re-validated fail-closed at the trust boundary before metrics::compute, money "
+        "enters in integer minor units and the comparison emits dimensionless f64 ratios (SRS-BT-005, "
+        "SyRS SYS-17 / SYS-36 / SYS-37)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_orchestrator_lifecycle(config: dict) -> list[str]:
     block = config.get("orchestrator_lifecycle_contract")
     if block is None:
@@ -961,6 +981,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_sim_metrics(config))
     except MetricsCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_sim_benchmark(config))
+    except BenchmarkCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_orchestrator_lifecycle(config))

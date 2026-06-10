@@ -77,6 +77,19 @@ pub mod paper_state;
 /// `passes:false`.
 pub mod metrics;
 
+/// Benchmark selection, resolution, and comparison (SRS-BT-005 / SyRS SYS-17, SYS-36,
+/// SYS-37). It wraps the [`metrics`] family: [`benchmark::BenchmarkSelection`] resolves
+/// to SPY when the operator selects none; the [`benchmark::BenchmarkSource`] port turns
+/// a selected [`metrics::Benchmark`] into the integer-minor level series
+/// [`metrics::compute`] needs (the real stored-data resolver is the deferred SRS-DATA-007
+/// owner); and [`benchmark::compare`] computes alpha/beta against the resolved benchmark
+/// and packages a [`benchmark::BenchmarkComparison`] that identifies it. The resolved
+/// series is re-validated fail-closed at the source trust boundary before any metric is
+/// reported. Resolving the benchmark's actual historical levels from stored data
+/// (SRS-DATA-007) and rendering the dashboard/report identification (SRS-UI / SRS-API,
+/// SYS-36 <=5s) are deferred, so SRS-BT-005 stays `passes:false`.
+pub mod benchmark;
+
 #[derive(Debug, Default)]
 pub struct InternalSimulationEngine;
 

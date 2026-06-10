@@ -329,6 +329,13 @@ if ! python3 tools/metrics_check.py --require-cargo >/dev/null; then
   exit 1
 fi
 
+echo "→ Running benchmark-comparison contract check..."
+if ! python3 tools/benchmark_check.py --require-cargo >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Benchmark-comparison contract check failed; run python3 tools/benchmark_check.py --require-cargo for detail."
+  exit 1
+fi
+
 echo "→ Running orchestrator lifecycle contract check..."
 if ! python3 tools/orchestrator_lifecycle_check.py >/dev/null; then
   echo "✗ Environment failed"
