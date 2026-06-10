@@ -1,3 +1,118 @@
+=== SESSION 45 ===
+Date: 2026-06-10
+Feature completed: SRS-BT-005 SDK-SURFACE — "compare strategy performance against a
+user-selected benchmark defaulting to SPY" (docs/SRS.md SRS-5.6 SRS-BT-005; traces SyRS
+SYS-17 / SYS-36 / SYS-37; StRS SN-1.04). User-confirmed via AskUserQuestion (over
+SRS-BT-009 / SRS-EXE-002 / the strict-rule ERR-* group, which traces to unbuilt
+SRS-RESV-004 / SRS-SAFE-002 / SRS-MD-006 and is premature). This slice consumes the
+Benchmark/BenchmarkPoint surface SESSION 44 deliberately seeded in metrics.rs and adds the
+deterministic, dependency-free benchmark SELECTION + RESOLUTION-SEAM + COMPARISON-REPORT
+layer in a new crates/atp-simulation module `benchmark`.
+Status: 92 remaining features (UNCHANGED — SRS-BT-005 stays passes:false; honest partial
+pass). feature_list.json was NOT modified.
+
+What I did (3 commits, the standard prep -> feat -> chore cadence):
+- prep 5484c0b (chore(critic)): extended SAFETY_PATH_RE in tools/critic_check.py with
+  collision-free benchmark tokens (/benchmark\.rs, benchmark[_-]?check,
+  benchmark[_-]?comparison/selection/source/contract, srs[_-]?bt[_-]?005). Deliberately NO
+  bare 'benchmark' token (collides with docs/tradestudies/nas_benchmark.sh — the S44 note).
+  Verified each matches the planned feat paths and ZERO existing tracked files.
+- feat 5e1c176 (9 files): crates/atp-simulation/src/benchmark.rs (BenchmarkSelection +
+  BenchmarkSource port + ResolvedBenchmark + SourceFailure + BenchmarkComparison +
+  BenchmarkReport + compare() + BenchmarkError(12 variants) + 24 L1 tests); lib.rs
+  `pub mod benchmark;`; sim_benchmark_contract block in architecture/runtime_services.json;
+  tools/benchmark_check.py (18 static collectors + --require-cargo smoke, imported
+  TRANSITIVELY via architecture_check.py + an init.sh gate after the performance-metric
+  gate — same convention as metrics/sim_*); L3 tests/test_benchmark_contract.py; L7
+  tests/domain/test_benchmark_comparison.py; Rust integration srs_bt_005_benchmark.rs (9
+  tests).
+- chore (this entry).
+
+Design notes (the headline is the 6-round adversarial hardening of the run-window/baseline
+model):
+- The metric family (SRS-BT-004) already computes alpha/beta given a Benchmark + a
+  BenchmarkPoint series. This slice WRAPS it: BenchmarkSelection::resolve() applies the SPY
+  default exactly once (unwrap_or_default, SYS-17); BenchmarkSource::levels(symbol, window,
+  axis) -> Result<ResolvedBenchmark, SourceFailure> is the deferred SRS-DATA-007 resolution
+  seam; compare() binds the comparison to the run's INCLUSIVE window, validates the returned
+  series at the trust boundary, delegates to metrics::compute, and packages a
+  BenchmarkComparison that IDENTIFIES the benchmark.
+- NUMERIC BOUNDARY inherited: levels/equity enter as integer minor units (i64); the
+  comparison emits dimensionless f64 ratios, each verified finite (NonFiniteComparison).
+  Deterministic (SRS-BT-010): fixed left-to-right folds, no parallelism/RNG/clock.
+
+What I tested: cargo test -p atp-simulation green (200 lib incl. 24 benchmark + 9 BT-005
+integration + all prior suites); fmt --check clean on the new files only (NO whole-crate
+fmt per no_whole_crate_cargo_fmt); clippy clean on the new module/tests (only pre-existing
+atp-types doc warnings remain). benchmark_check.py --require-cargo PASS (18 static + cargo
+smoke). architecture_check.py exit 0 surfacing the benchmark evidence with the prior sim
+checks still PASS. L3 + L7 pass; pytest -m "not integration and not e2e" 1591 passed / 4
+pre-existing pending-impl skips / 118 subtests; ruff clean. ./init.sh -> Environment ready
+with the new "benchmark-comparison contract check" gate after the performance-metric gate.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings (pre-commit hook
+    also APPROVE on prep 5484c0b + feat 5e1c176). The SAFETY_PATH_RE prep made benchmark.rs
+    + benchmark_check.py safety paths, so the critic required the paired tests/domain/ diff
+    (present) and did not block.
+  judgment (/codex:adversarial-review --wait $(cat prompts/critic_prompt.md), user-triggered,
+    6 ROUNDS — the value of the adversarial layer; each round's in-scope findings fixed
+    before the next pass; the deterministic critic + SDK-boundary self-check passed every
+    round but Codex caught design gaps the structural checks could not):
+      R1: compare() took a free baseline_ts -> bound the comparison to the run window.
+      R2: BenchmarkError had no operational read-failure variant -> added typed
+          SourceFailure (Timeout/Unavailable/NotFound/StaleData) via SourceUnavailable.
+      R3: benchmark identity was checked pre-fetch (decoupled from the returned data) ->
+          levels() returns ResolvedBenchmark{symbol,levels}; compare validates the RETURNED
+          symbol post-fetch (rejects a substituted series).
+      R4: BenchmarkSource::levels returned the broad BenchmarkError -> narrowed to
+          Result<ResolvedBenchmark, SourceFailure>; compare owns the SourceUnavailable map.
+      R5/R5b/R6 (the run-window/baseline model — Codex OSCILLATED): R5 said accept a first
+          mark == range.start (inclusive backtest); R5b said bind the baseline as-of
+          window.start (rejecting an arbitrarily stale baseline), which rejects the inclusive
+          case; R6 reverted to accept-inclusive. The contradiction is fundamental (accept
+          inclusive <=> allow baseline before window.start <=> the tight staleness bound is
+          unverifiable here). USER-ADJUDICATED via AskUserQuestion to the prior-close model
+          (LOCKED): the baseline is the pre-trade prior close, strictly before the first
+          mark (BaselineNotBeforeRun); the comparison is bound to the inclusive window
+          (equity marks within [start,end], EquityMarkOutsideWindow); a backtest whose first
+          mark lands on range.start is ACCEPTED. Verifying the baseline is the IMMEDIATE
+          prior close (not arbitrarily stale) needs the data layer's bar grid — deferred to
+          SRS-DATA-007. R6 also flagged a real doc/code drift (the R5b code contradicted the
+          trait doc) — fixed by landing the prior-close model consistently across code,
+          contract, check, and tests.
+  WRITTEN DEFERRED-SCOPE OVERRIDES (user-confirmed via AskUserQuestion):
+    - Benchmark-read TIMEOUT/CANCELLATION enforcement (Codex R3/R4 high): a hung resolver
+      can block compare. Enforcement needs a clock + threads/async, which the deterministic
+      core forbids (SRS-BT-010; thread::spawn/SystemTime/Instant::now are in the determinism
+      forbidden-token list). It is the WRONG LAYER for a pure synchronous fn: enforcement is
+      owned by the deferred SRS-DATA-007 I/O adapter (the real external read) + the async
+      SRS-UI/SRS-API dashboard layer (the SYS-36 <=5s budget). SourceFailure::Timeout is the
+      in-scope contract by which a deadline-aware adapter REPORTS a timeout into this core.
+    - Immediate-prior-close baseline verification: deferred to the SRS-DATA-007 bar grid (as
+      above). In-scope guard: baseline strictly before the first mark + equity marks within
+      the inclusive window.
+
+Known issues / notes for next agent:
+- SRS-BT-005 stays passes:false BY DESIGN (honest partial-pass). DEFERRED (the passes:false
+  owners): (1) real SPY/benchmark level-series RESOLUTION from stored data — SRS-DATA-007
+  behind the BenchmarkSource port (+ the immediate-prior-close baseline + read-timeout
+  enforcement); (2) dashboard/backtest report RENDERING that identifies the benchmark at the
+  SYS-36 (<=5s) refresh — SRS-UI / SRS-API; (3) persisting the BenchmarkComparison into the
+  queryable backtest record — SRS-BT-009. The full atomic run-snapshot identity (a
+  producer-stamped run id binding equity curve + trade log + benchmark window) remains the
+  same deferred boundary as SRS-BT-004 (the in-scope window binding is the coherence guard).
+- Natural next pick: SRS-BT-009 (persist completed backtest results incl. this
+  BenchmarkComparison + the SRS-BT-004 metrics), OR SRS-EXE-002 (orchestrator routing of
+  non-live orders to the internal simulation engine, which flips several sim-front
+  deferrals), OR SRS-DATA-007 (the unified historical interface that unblocks the BT-005 /
+  BT-004 resolution + the BenchmarkSource real resolver).
+- Adversarial-layer lesson (for the SDK-boundary checklist): when Codex OSCILLATES between
+  two valid-but-conflicting positions on a design fork (here R5<->R5b<->R6 on the
+  window/baseline model), do not thrash — surface the contradiction to the user, pick a
+  principled model, LOCK it (document the decision in code + contract so a later pass sees
+  it is deliberate), and stop re-running the judgment layer on that settled axis.
+
 === SESSION 44 ===
 Date: 2026-06-08
 Feature completed: SRS-BT-004 SDK-SURFACE — "compute required backtest and paper/live
