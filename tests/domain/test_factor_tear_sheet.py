@@ -339,3 +339,28 @@ def test_spread_is_withheld_off_option_so_undefined_is_not_fabricated() -> None:
     )
     with pytest.raises(FactorAnalysisCheckError):
         check_factor_returns(config, mutated)
+
+
+def test_mean_spread_is_not_overclaimed_as_horizon_agnostic() -> None:
+    # Safety (Codex round-7): mean_spread is NOT horizon-agnostic -- a spread scales with the
+    # forward-return horizon, so averaging across mixed horizons mixes magnitudes. The evidence
+    # must state the regular-panel precondition, never call mean_spread horizon-agnostic; only the
+    # rank-based IC family is genuinely horizon-agnostic. Locks the round-7 doc-scrub.
+    config = load_config()
+    evidence = check_factor_returns(config, module_source(config))
+    assert "horizon-agnostic" not in evidence, (
+        "mean_spread evidence must not claim horizon-agnostic"
+    )
+    assert "regular panel" in evidence, (
+        "mean_spread evidence must state its regular-panel precondition"
+    )
+    src = module_source(config)
+    # mean_spread's precondition is documented...
+    assert "CONSISTENT forward-return horizon" in src
+    # ...and every remaining "horizon-agnostic" mention in the module is about the rank-based IC
+    # family (which genuinely is), never the magnitude-scaled spread.
+    for line in src.splitlines():
+        if "horizon-agnostic" in line:
+            assert "InformationCoefficient" in line or "rank" in line.lower(), (
+                f"only the IC family may be called horizon-agnostic: {line.strip()!r}"
+            )

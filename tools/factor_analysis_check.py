@@ -20,10 +20,10 @@ returns one ``FactorTearSheet`` bundling the three deliverables SYS-18 names:
       ``per_period: Vec<(u64, Option<f64>)>`` series), never a fabricated zero.
   (b) ``FactorReturns`` -- the per-period quantile-sorted mean returns
       (``per_quantile_mean``, each bucket ``None`` when its bounding cutoff is tied) plus the
-      top-minus-bottom long-short ``spread_per_period`` series with its ``mean_spread``. Only
-      these horizon-agnostic statistics are reported; a compounded cumulative spread is deferred
-      (the panel has a start timestamp only, so it cannot validate non-overlapping forward
-      windows).
+      top-minus-bottom long-short ``spread_per_period`` series with its ``mean_spread`` (which
+      assumes a REGULAR panel -- a spread scales with the forward-return horizon, so the average
+      is the producer's contract). A compounded cumulative spread is deferred (the panel has a
+      start timestamp only, so it cannot validate non-overlapping forward windows).
   (c) ``TurnoverAnalysis`` -- the per-period top/bottom-quantile TARGET turnover
       (``top_turnover`` / ``bottom_turnover``) with ``mean_top`` / ``mean_bottom`` (the
       factor-signal turnover; realized return-driven drift turnover is deferred to the backtest
@@ -200,8 +200,9 @@ def check_factor_returns(config: dict, src: str) -> str:
         "atp-factor-pipeline declares FactorReturns: per-period quantile mean returns as "
         "Vec<Vec<Option<f64>>> (a bucket mean is None when its bounding cutoff is tied, so a "
         "constant/tied factor exposes no identity-driven ladder) plus the top-minus-bottom "
-        "long-short spread as Option<f64> and its arithmetic mean_spread -- only horizon-agnostic "
-        "statistics; the compounded cumulative spread is deferred (the panel cannot validate "
+        "long-short spread as Option<f64> and its arithmetic mean_spread (which assumes a "
+        "regular panel -- a spread scales with the forward-return horizon, the producer's "
+        "contract); the compounded cumulative spread is deferred (the panel cannot validate "
         "non-overlapping forward windows)"
     )
 
@@ -505,6 +506,9 @@ _DEFERRED_OWNERS = (
     "compound only non-overlapping windows; the panel has a start timestamp only)",
     "realized return-driven drift turnover (needs holding-period returns + a rebalancing "
     "convention -- the deferred backtest engine; the turnover here is factor-signal/target turnover)",
+    "validating panel regularity (consistent forward-return horizon + rebalance interval) before "
+    "the aggregate means -- the panel has a start timestamp only, so regularity is the producer's "
+    "contract (mean_spread/mean turnover assume it; the per-period series + rank-based IC are exempt)",
 )
 
 

@@ -338,6 +338,40 @@ re-raised, which caught a real overclaim in MY round-4 doc; 12 findings total ac
      that the KEPT outputs' docs don't overclaim the very property you deferred. Also: rank-based stats
      (IC) are horizon-agnostic; magnitude/interval-based stats (returns, turnover) are not — don't blanket-
      label a family.
+
+POST-REVIEW HARDENING — ROUND 7 (7th pass: the horizon scope axis re-raised AGAIN, now LOCKED, plus
+a stale-prose doc-drift the round-6 fix missed; 13 findings total across 7 passes):
+  R7 [high] "Aggregate means combine incomparable periods" — TWO halves: (a) "the code always averages
+     defined spreads/turnovers; mixed horizons/intervals mis-rank" = the round-6 user-SETTLED scope axis
+     (document the regular-panel precondition; defer horizon/interval VALIDATION to the producer). The
+     judgment layer keeps re-raising it because it treats "no horizon validation" as a blocker, but the
+     decision is made — LOCKED (user re-confirmed via AskUserQuestion "fix the prose, lock the scope"); I
+     will NOT keep re-running the adversarial pass on this axis, per the SRS-BT-009 settled-axis STOP.
+     (b) "the architecture contract incorrectly calls mean_spread horizon-agnostic" = a REAL stale-prose
+     doc-drift I missed in round 6: I corrected the RUST docs but left FOUR overclaims in prose I didn't
+     grep — runtime_services.json `description` + `deferred[]`, and factor_analysis_check.py module
+     docstring + check_factor_returns evidence — all still calling mean_spread "horizon-agnostic". FIXED:
+     scrubbed all four to the accurate regular-panel-precondition language; added an explicit deferred
+     owner for panel-regularity validation; the only two surviving "horizon-agnostic" mentions are the
+     RUST IC-family lines (correct). Added an L7 lock test
+     (test_mean_spread_is_not_overclaimed_as_horizon_agnostic) asserting the evidence + module never call
+     mean_spread horizon-agnostic and that EVERY such mention is IC-family — so the overclaim cannot regress.
+  CRITIC-PAIRING NOTE: this was a DOCS-ONLY round (no .rs change), but tools/factor_analysis_check.py is a
+     SAFETY path (factor-analysis-check token in SAFETY_PATH_RE), so the deterministic critic required a
+     paired tests/domain/ diff — the L7 lock test satisfies it AND is the round-7 regression. (Takeaway: a
+     change to a *_check.py safety path needs an L7 diff even when no Rust changes.)
+  Re-verified: no Rust change (cargo unchanged: 29 L1 + 12 integration still green from R6); JSON valid;
+     factor_analysis_check --require-cargo PASS; architecture_check exit 0; pytest 1722+1 passed / 4 skips;
+     ruff clean. Deterministic critic APPROVE on the R7 diff.
+  LESSON (the round-5 grep-all-prose lesson, now THIRD recurrence): after correcting a claim in code docs,
+     grep the EXACT claim string across the JSON contract `description`/`deferred[]` blobs AND the check
+     script docstring/evidence — these long prose blobs are the easiest place a corrected claim survives
+     stale. And once the user has RATIFIED a scope deferral twice, LOCK it: stop re-running the judgment
+     layer on that axis (it will re-raise the deferred model indefinitely); only act on genuinely-new
+     within-surface items. (Also fixed: my round-6 progress edit had accidentally dropped the
+     "=== SESSION 46 ===" header; restored here.)
+
+=== SESSION 46 ===
 Date: 2026-06-11
 Feature completed: SRS-BT-009 SDK-SURFACE — "persist completed backtest results" (docs/SRS.md
 SRS-5.6 SRS-BT-009; traces SyRS SYS-21 / SYS-79; StRS SN-1.02 / SN-1.04). User-confirmed via
