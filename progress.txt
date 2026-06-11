@@ -1,3 +1,137 @@
+=== SESSION 46 ===
+Date: 2026-06-11
+Feature completed: SRS-BT-009 SDK-SURFACE — "persist completed backtest results" (docs/SRS.md
+SRS-5.6 SRS-BT-009; traces SyRS SYS-21 / SYS-79; StRS SN-1.02 / SN-1.04). User-confirmed via
+AskUserQuestion (over SRS-EXE-002 / SRS-DATA-007). This is the natural continuation the
+SESSION 44/45 metric+benchmark slices deliberately seeded: the sim_benchmark_contract deferred
+list named "persisting the benchmark comparison into the queryable backtest record" as the
+SRS-BT-009 owner. Adds the deterministic, dependency-free backtest-record PERSISTENCE + QUERY
+layer in a new crates/atp-simulation module `backtest_store`.
+Status: 92 remaining features (UNCHANGED — SRS-BT-009 stays passes:false; honest partial pass).
+feature_list.json was NOT modified.
+
+What I did (3 commits, the standard prep -> feat -> chore cadence):
+- prep 27fe46d (chore(critic)): extended SAFETY_PATH_RE in tools/critic_check.py with
+  collision-free backtest-record tokens (/backtest_store\.rs, backtest[_-]?store[_-]?check,
+  backtest[_-]?store[_-]?contract, backtest[_-]?record, srs[_-]?bt[_-]?009). NO bare 'backtest'
+  token (collides with the existing backtest.rs / backtest_check / backtest_cost). Verified
+  each matches the planned feat paths and ZERO existing tracked files (the S45 lesson).
+- feat 5faa470 (9 files, 4084 insertions): crates/atp-simulation/src/backtest_store.rs
+  (BacktestRecord + StrategyParameters + RunId/CodeVersion + BacktestResultStore + RecordQuery
+  + from_result + serialize/restore codec + validate_record + StoreError(6 variants) + 23 L1
+  tests); lib.rs `pub mod backtest_store;`; sim_backtest_store_contract in
+  architecture/runtime_services.json; tools/backtest_store_check.py (16 static collectors +
+  --require-cargo smoke, imported TRANSITIVELY via architecture_check.py + an init.sh gate after
+  the benchmark gate — the metrics/benchmark/sim_* convention); L3
+  tests/test_backtest_store_contract.py; L7 tests/domain/test_backtest_record_query.py; Rust
+  integration srs_bt_009_backtest_store.rs (5 tests).
+- chore (this entry).
+
+Design notes (the headline is the WRAP-don't-reinvent shape + 6-round adversarial hardening):
+- The record bundles the seven artifacts the acceptance names, all of which already exist as
+  producer types: BacktestRequest params, the SRS-BT-004 PerformanceMetrics, the Fill trade log,
+  the EquityPoint equity curve, the SRS-BT-005 BenchmarkComparison, a CodeVersion, and a
+  producer-supplied completed_at_ts. PLUS a StrategyParameters tuned-parameter set (the SYS-21
+  "parameter set" query axis — distinct from the launch BacktestRequest; the only axis that tells
+  two points of a parameter sweep apart). Codec mirrors the SRS-SIM-004 paper_state.rs discipline
+  (MAGIC + FNV-1a checksum verified BEFORE building state, length-prefixed strings, sorted records,
+  enum-tagged cost models); the new twist is exact f64 ratio round-trip via to_bits/from_bits.
+  Restore is O(n log n) (decode -> validate -> dedup via HashSet -> sort ONCE -> construct), NOT
+  the O(n^2) of a per-record sorted insert, and is allocation-safe on untrusted counts (no
+  Vec::with_capacity from a decoded count, so a checksum-valid oversized count fails closed by
+  exhausting the cursor). Money stays integer minor units; ratios are the metric-domain f64.
+- DATE-RANGE AXIS (user-adjudicated): query_by_run_window (overlap with request.range — the SYS-21
+  "find a 2020 backtest" axis) AND query_by_completion_window (the completed_at_ts axis). Both
+  optional in RecordQuery. (My plan defaulted to completion-time only; Codex challenged it; user
+  chose "support both".)
+- COHERENCE (fail-closed validate_record, the trust boundary): trade-log coherence (fill symbol ==
+  run symbol, within the equity-curve window, non-decreasing ts, positive price, non-zero qty,
+  non-negative costs); the SRS-BT-004 metric-PRODUCER input invariants (non-empty + strictly
+  increasing + strictly positive equity curve over positive starting cash; terminal-zero allowed);
+  benchmark-identity coherence (metrics & comparison identify the SAME benchmark and share
+  alpha/beta) + the excess_return == strategy_total - benchmark_total algebraic identity; per-metric
+  DOMAIN bounds (win_rate & max_drawdown in [0,1], non-negative annualized_volatility); finiteness.
+  from_result is the SAFE producer constructor: it takes the trade log + equity curve FROM the
+  authoritative BacktestResult and verifies the result's data_source + range match the request, so
+  a record cannot be persisted under false provenance.
+
+What I tested: cargo test -p atp-simulation green (23 backtest_store L1 + 5 srs_bt_009 integration
++ all prior suites; 0 failures); fmt --check clean on the new files only (NO whole-crate fmt per
+no_whole_crate_cargo_fmt); clippy clean on the new module/tests (only pre-existing atp-types doc
+warnings remain). backtest_store_check.py --require-cargo PASS (16 static + cargo smoke).
+architecture_check.py exit 0 surfacing the backtest-store evidence with the prior sim checks PASS.
+L3 + L7 pass; pytest -m "not integration and not e2e" 1654 passed / 4 pre-existing pending-impl
+skips / 118 subtests; ruff clean. ./init.sh -> Environment ready with the new "backtest-record
+persistence contract check" gate after the benchmark gate.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings (pre-commit hook also
+    APPROVE on prep 27fe46d + feat 5faa470). The SAFETY_PATH_RE prep made backtest_store.rs +
+    backtest_store_check.py safety paths, so the critic required the paired tests/domain/ diff
+    (present) and did not block.
+  judgment (/codex:adversarial-review --wait $(cat prompts/critic_prompt.md), user-triggered,
+    6 ROUNDS — the value of the adversarial layer; each round's IN-SCOPE findings fixed before the
+    next pass; the deterministic critic + SDK-boundary self-check passed every round but Codex
+    caught design gaps the structural checks could not):
+      R1: (a) query_by_parameter_set equated "parameter set" with BacktestRequest, which has no
+          strategy params -> added StrategyParameters (the scope-tightening only the real Codex
+          pass caught); (b) trade-log coherence unvalidated -> fill symbol/window/cost guards;
+          (c) contradictory benchmark identities accepted -> metrics==comparison symbol + alpha/beta.
+      R2: (a) unbounded Vec::with_capacity from untrusted counts -> incremental Vec::new() (the
+          paper_state precedent); (b) validation accepted artifacts metrics::compute would reject
+          -> enforce its curve/trade-log input invariants.
+      R3 (user-adjudicated, AskUserQuestion x2): (a) date-range axis = run window not completion ts
+          -> "support both"; (b) full metric value-verification -> "defer full verify, fix fixtures"
+          (SRS-BT-009 persists metrics as an artifact; the recompute inputs MetricsConfig + benchmark
+          levels are NOT in its persisted-field list; correctness is SRS-BT-004's job). Softened the
+          "reproducible" overclaim to "structurally coherent with the producer's input contract".
+      R4: (a) restore O(n^2) -> O(n log n) single sort; (b) contradictory metrics -> added the cheap
+          excess_return identity (same class as the alpha/beta agreement; the value-recomputes stayed
+          deferred per R3).
+      R5 (Codex was right on the conventions I had backwards): (a) impossible metric values ->
+          per-value DOMAIN bounds (win_rate/drawdown in [0,1], non-negative vol — verified
+          max_drawdown=(peak-equity)/peak is NON-negative in metrics.rs); (b) constructor doesn't
+          bind request to result -> from_result (artifacts + data_source/range provenance).
+      R6 (user-adjudicated): (a) tamper-resistance OVERCLAIM (FNV-1a is recomputable) -> FIXED:
+          scoped every integrity claim to ACCIDENTAL corruption with the keyed-MAC-is-out-of-scope
+          caveat (the checksum() doc already carried it; the evidence/docstrings did not); (b)
+          from_result doesn't bind METRICS to the result -> this is the round-3 user-DEFERRED full
+          producer-run-aggregate / value-recompute boundary, which Codex re-raised in R3/R4/R6.
+  WRITTEN OVERRIDE (user-ratified via AskUserQuestion "Commit now — deferral locked"): the residual
+    R6 high finding (full metric/provenance binding) is the deliberately-deferred run-snapshot-
+    identity boundary; it needs the unpersisted MetricsConfig + benchmark level series, metric
+    correctness is SRS-BT-004's, and SRS-BT-009 does not list those as persisted fields. Committed
+    on the deterministic-critic APPROVE + 6 rounds of in-scope hardening, with the deferral honestly
+    documented. The judgment layer will not "approve" while it treats the deferred binding as
+    essential — this is the settled-axis stop (per the S45 oscillation lesson: surface, pick a
+    principled model, LOCK it, stop re-running the judgment layer on the settled axis).
+
+Known issues / notes for next agent:
+- SRS-BT-009 stays passes:false BY DESIGN (honest partial-pass). DEFERRED (the passes:false owners):
+  (1) writing the serialized blob to the SSD-primary / NAS-archival tier — SRS-DATA-008; (2)
+  rendering the queryable history TO AN OPERATOR (backtest result history view) — SRS-UI-004 /
+  SRS-API; (3) a full orchestrated run that stamps a real run id / code version / completion
+  timestamp AND binds the metrics+comparison to one producer-stamped run snapshot (the value-level
+  verification) — SRS-BT-001 / orchestrator + the deferred accumulator. This slice ships only the
+  deterministic record + store + query + codec + structural-coherence surface.
+- Adversarial-layer lesson (for the SDK-boundary checklist): the structural checks + the
+  deterministic critic + my own SDK-boundary pre-check passed EVERY round, but Codex still found a
+  real in-scope gap in 5 of 6 rounds (scope-tightening on the "parameter set" shape; metrics::compute
+  input-invariant coherence; O(n^2) restore; metric domain bounds with the conventions I had
+  backwards; the tamper overclaim). Pre-check additions worth carrying forward: (a) when an SRS
+  axis says "queryable by X", trace X to a REAL persisted field — a launch-config proxy (here
+  BacktestRequest) is not the strategy "parameter set"; (b) any untrusted decoded count must not
+  drive Vec::with_capacity; (c) every persisted metric must be range-checked to its mathematical
+  domain (trace the producer's sign convention — do not assume); (d) integrity claims must scope
+  to accidental vs deliberate (non-cryptographic checksum != tamper-proof). And: when the judgment
+  layer re-raises a USER-RATIFIED deferred boundary across rounds, do NOT thrash — fix the in-scope
+  half, flag the deferred half, and surface the commit/expand decision to the user.
+- Natural next pick: SRS-EXE-002 (orchestrator routing of non-live orders to the internal simulation
+  engine — the sim front SIM-001..004 is now built), OR SRS-DATA-007 (the unified historical
+  interface that unblocks the BT-004/BT-005 real benchmark/data resolution AND the SRS-BT-009
+  durable record store), OR SRS-BT-001 (the real backtest run producer that would let SRS-BT-009 +
+  SRS-BT-004/005 flip to passes:true together via a producer-stamped run snapshot).
+
 === SESSION 45 ===
 Date: 2026-06-10
 Feature completed: SRS-BT-005 SDK-SURFACE — "compare strategy performance against a
