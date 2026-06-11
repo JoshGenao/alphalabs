@@ -79,9 +79,9 @@ class FactorAnalysisScriptTest(unittest.TestCase):
             "declares FactorPanel (periods + quantiles) with a fail-closed",
             "declares InformationCoefficient",
             "declares FactorReturns",
-            "the compounded cumulative spread is withheld (None) when any period is undefined",
+            "the compounded cumulative spread is deferred",
             "declares TurnoverAnalysis",
-            "measured as half the L1 distance between the equal-weight portfolios",
+            "measured as half the L1 distance between the equal-weight target portfolios",
             "BOTH the q0|q1 and q(Q-2)|q(Q-1) bounding cutoffs untied",
             "declares FactorTearSheet bundling the IC, factor-return, and turnover",
             "exposes `pub fn compute_tear_sheet",
@@ -185,19 +185,11 @@ class FactorReturnsTest(_Fixture):
             check_factor_returns(self.config, mutated)
         self.assertIn("Option<f64>", str(ctx.exception))
 
-    def test_dropped_cumulative_gap_gate_is_caught(self) -> None:
-        # Removing the undefined-gap gate lets the cumulative spread compound across an
-        # undefined period, fabricating a continuously-held return (Codex round-2 finding).
-        mutated = self.src.replace("any_spread_undefined", "gate_disabled")
-        with self.assertRaises(FactorAnalysisCheckError) as ctx:
-            check_factor_returns(self.config, mutated)
-        self.assertIn("any_spread_undefined", str(ctx.exception))
-
 
 class TurnoverTest(_Fixture):
     def test_turnover_evidence(self) -> None:
         self.assertIn(
-            "half the L1 distance between the equal-weight portfolios",
+            "half the L1 distance between the equal-weight target portfolios",
             check_turnover(self.config, self.src),
         )
 

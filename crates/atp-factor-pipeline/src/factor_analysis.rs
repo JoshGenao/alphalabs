@@ -16,10 +16,14 @@
 //!    are sorted into `quantiles` buckets by factor value, each bucket's mean forward
 //!    return is reported, and the top-minus-bottom long-short **spread** (the period
 //!    return of a dollar-neutral portfolio long the top quantile and short the bottom)
-//!    is tracked, with its mean and cumulative (compounded) value.
-//! 3. [`TurnoverAnalysis`] -- the per-period membership churn of the top (and bottom)
-//!    quantile between consecutive rebalances, i.e. the fraction of names that changed.
-//!    High turnover implies high transaction-cost drag on the factor.
+//!    is tracked, with its arithmetic mean. (A compounded cumulative spread is NOT reported
+//!    -- compounding assumes contiguous non-overlapping forward windows, which the panel's
+//!    start-timestamp-only model cannot validate; see [`FactorReturns`].)
+//! 3. [`TurnoverAnalysis`] -- the per-period TARGET-portfolio turnover of the top (and
+//!    bottom) quantile between consecutive rebalances: how much trading the factor's RANKING
+//!    change implies, measured as the weight turnover between the equal-weight target
+//!    quantile portfolios. (Realized return-driven drift turnover is a backtest concern; see
+//!    [`TurnoverAnalysis`].)
 //!
 //! ## Numeric boundary (the headline design decision)
 //!
@@ -72,6 +76,15 @@
 //! rendering the tear-sheet to an operator (SRS-UI / SRS-API), and bundling the
 //! SRS-BT-004 `PerformanceMetrics` family into one cross-crate report are each their own
 //! feature and remain `passes:false`.
+//!
+//! Two outputs are deliberately SCOPED OUT of this surface because they need modeling the
+//! minimal panel cannot carry, and that modeling belongs to the deferred producer / backtest
+//! layer (not the offline analysis): (1) a validated COMPOUNDED cumulative spread -- it needs
+//! each period's forward-return horizon to compound only contiguous non-overlapping windows
+//! (the panel has a start timestamp only), so only the horizon-agnostic per-period spread and
+//! its mean are reported here; (2) realized return-driven DRIFT turnover -- the turnover here
+//! is the factor-signal (target-portfolio) turnover, and the drift component needs holding-
+//! period returns and a rebalancing convention, i.e. the backtest engine.
 
 use std::collections::HashSet;
 
@@ -202,7 +215,7 @@ pub struct InformationCoefficient {
 }
 
 /// The factor-return analysis: per-period quantile mean returns and the top-minus-bottom
-/// long-short spread series with its summary statistics.
+/// long-short spread series with its mean.
 ///
 /// The spread is **undefined** (`None`) for a period whose factor does not separate the top
 /// and bottom quantiles -- i.e. the largest factor value in the bottom bucket is not strictly
@@ -213,6 +226,16 @@ pub struct InformationCoefficient {
 /// "alpha". As with the IC, that case is reported as `None`, never a fabricated number. The
 /// `per_quantile_mean` buckets are still reported (each is a real mean of whatever landed in
 /// the bucket), but the spread -- the headline factor return -- is withheld.
+///
+/// Only HORIZON-AGNOSTIC statistics are reported: the per-period spread series and its
+/// arithmetic `mean_spread` (the average per-period long-short return). A COMPOUNDED cumulative
+/// spread is deliberately NOT reported here, because compounding period spreads as sequential
+/// returns assumes the forward-return windows are contiguous and non-overlapping -- and a
+/// [`FactorPeriod`] carries only a start timestamp, not the forward-return horizon, so this
+/// surface cannot validate that assumption (a daily panel of 5-day forward returns would
+/// compound overlapping windows and fabricate cumulative performance). The validated
+/// compounded series is deferred to a horizon-aware panel (the SRS-DATA-007 / SRS-FAC-001
+/// producer that knows each forward window).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FactorReturns {
     /// Per period, the mean forward return of each quantile bucket (length `quantiles`,
@@ -222,21 +245,28 @@ pub struct FactorReturns {
     /// per-period return of the dollar-neutral long-short factor portfolio); `None` for a
     /// period whose factor does not separate the top and bottom quantiles.
     pub spread_per_period: Vec<(u64, Option<f64>)>,
-    /// Arithmetic mean of the defined per-period spreads; `None` when no period had one.
+    /// Arithmetic mean of the defined per-period spreads (an average statistic, not a
+    /// compounded path, so it is horizon-agnostic); `None` when no period had a defined spread.
     pub mean_spread: Option<f64>,
-    /// Cumulative (compounded) spread `∏(1 + spread_t) − 1`; a path-dependent return, so it is
-    /// `None` unless EVERY analyzed period has a defined spread (compounding across an undefined
-    /// gap would fabricate a continuously-held return through a period the factor did not rank).
-    pub cumulative_spread: Option<f64>,
 }
 
-/// The turnover analysis: per-period one-way transaction-cost turnover of the top and bottom
-/// quantiles between consecutive rebalances, with the mean of each. Turnover is half the L1
-/// distance between the prior and current EQUAL-WEIGHT quantile portfolios (the standard
-/// portfolio-turnover / total-variation distance, in `[0, 1]`), so it counts both names that
-/// ENTERED or EXITED the quantile AND the weight change of RETAINED names when the quantile's
-/// size changes. It reduces to the set-membership churn (and to the one-sided fraction of new
-/// names) when the two quantiles are the same size.
+/// The turnover analysis: per-period TARGET-portfolio turnover of the top and bottom quantiles
+/// between consecutive rebalances, with the mean of each. This measures how much trading the
+/// factor's RANKING change implies -- half the L1 distance between the prior and current
+/// EQUAL-WEIGHT TARGET quantile portfolios (the total-variation distance, in `[0, 1]`), which
+/// counts names that ENTERED or EXITED the quantile AND the weight change of RETAINED names
+/// when the quantile's size changes. It reduces to the set-membership churn (and to the
+/// one-sided fraction of new names) when the two quantiles are the same size.
+///
+/// **Scope -- target turnover, not realized cost.** This is the turnover of the factor's
+/// *target* portfolios: the trading driven by the SIGNAL (the ranking changing which names are
+/// in each quantile). It deliberately does NOT include the return-driven WEIGHT DRIFT of held
+/// positions -- a held equal-weight portfolio drifts away from equal weights as each name earns
+/// a different return, and rebalancing that drift is real trading too. Capturing it needs each
+/// security's realized holding-period return and the rebalancing convention -- i.e. portfolio
+/// simulation, which is the deferred backtest engine's domain, not this offline factor-analysis
+/// surface. So this number is a lower bound on realized transaction-cost turnover and should be
+/// read as factor-signal turnover.
 ///
 /// A period's turnover is **undefined** (`None`) unless BOTH it and the prior period separate
 /// their extremes by factor value (see [`FactorReturns`]). When either endpoint's top/bottom
@@ -546,18 +576,19 @@ fn bucket_period(period: &FactorPeriod, quantiles: usize) -> PeriodBuckets {
     }
 }
 
-/// One-way transaction-cost turnover between the `previous` and `current` EQUAL-WEIGHT
-/// quantile portfolios: half the L1 distance between their normalized weight vectors (the
-/// standard portfolio-turnover / total-variation distance), in `[0, 1]`. Each portfolio
-/// equal-weights its names (`1 / |current|`, `1 / |previous|`), so the turnover captures both
-/// names that ENTERED or EXITED the quantile AND the weight change of RETAINED names when the
-/// quantile's size changes.
+/// Target-portfolio turnover between the `previous` and `current` EQUAL-WEIGHT quantile
+/// portfolios: half the L1 distance between their normalized TARGET weight vectors (the
+/// total-variation distance), in `[0, 1]`. Each portfolio equal-weights its names
+/// (`1 / |current|`, `1 / |previous|`), so the turnover captures both names that ENTERED or
+/// EXITED the quantile AND the target-weight change of RETAINED names when the quantile's size
+/// changes. It measures the trading the factor's RANKING change implies, NOT the realized
+/// return-driven drift of held positions (a backtest concern -- see [`TurnoverAnalysis`]).
 ///
 /// A set-membership ratio (`|current △ previous| / (|current| + |previous|)`) ignores the
 /// retained-name weight change, so shrinking an equal-weight bucket from four names to two
-/// (which trades 50% of the book) would report only 33%. This weight measure reports 50%, and
-/// reduces EXACTLY to the set ratio (and to the one-sided fraction-of-new-names) when the two
-/// quantiles are the same size, so an equal-universe panel is unaffected.
+/// (which retargets 50% of the book) would report only 33%. This weight measure reports 50%,
+/// and reduces EXACTLY to the set ratio (and to the one-sided fraction-of-new-names) when the
+/// two quantiles are the same size, so an equal-universe panel is unaffected.
 ///
 /// Computed in CLOSED FORM from integer membership COUNTS, NOT as a float sum over `HashSet`
 /// iteration: a `HashSet`'s iteration order depends on its per-process random hash seed, so
@@ -711,22 +742,6 @@ pub fn compute_tear_sheet(panel: &FactorPanel) -> Result<FactorTearSheet, Factor
         [] => None,
         values => Some(finite("mean_spread", mean(values))?),
     };
-    // Cumulative spread is a COMPOUNDED (path-dependent) return, so it is only meaningful
-    // over a CONTIGUOUS series: if any period's spread is undefined (the factor did not
-    // separate its extremes), compounding the rest would silently treat the gap as a
-    // continuously-held position and fabricate a return across it. Withhold it (None) unless
-    // every analyzed period has a defined spread. (mean_spread, an average statistic rather
-    // than a path, legitimately stays over the defined periods.)
-    let any_spread_undefined = spread_per_period.iter().any(|&(_, value)| value.is_none());
-    let cumulative_spread = if spreads.is_empty() || any_spread_undefined {
-        None
-    } else {
-        let mut compounded = 1.0_f64;
-        for &spread in &spreads {
-            compounded *= 1.0 + spread;
-        }
-        Some(finite("cumulative_spread", compounded - 1.0)?)
-    };
 
     // Turnover aggregates over the DEFINED per-period turnovers.
     let mean_top = defined_mean("mean_top_turnover", &top_turnover)?;
@@ -743,7 +758,6 @@ pub fn compute_tear_sheet(panel: &FactorPanel) -> Result<FactorTearSheet, Factor
             per_quantile_mean,
             spread_per_period,
             mean_spread,
-            cumulative_spread,
         },
         turnover: TurnoverAnalysis {
             top_turnover,
@@ -852,7 +866,6 @@ mod tests {
         // driven by security identity rather than the factor.
         assert_eq!(sheet.returns.spread_per_period[0].1, None);
         assert_eq!(sheet.returns.mean_spread, None);
-        assert_eq!(sheet.returns.cumulative_spread, None);
         // The quantile means are still reported (each is a real mean of whatever landed).
         assert_eq!(sheet.returns.per_quantile_mean[0].len(), 2);
     }
@@ -867,7 +880,6 @@ mod tests {
         approx(means[1], 0.35);
         approx(sheet.returns.spread_per_period[0].1.expect("spread"), 0.20);
         approx(sheet.returns.mean_spread.expect("mean spread"), 0.20);
-        approx(sheet.returns.cumulative_spread.expect("cumulative"), 0.20);
     }
 
     #[test]
@@ -1062,11 +1074,10 @@ mod tests {
     }
 
     #[test]
-    fn cumulative_spread_withheld_across_an_undefined_period() {
+    fn undefined_period_withholds_its_spread_but_mean_spans_the_defined_ones() {
         // Periods 1 and 3 strictly rank the factor (defined spread); period 2 is a constant
-        // factor (undefined spread). Compounding 1 and 3 across the gap would fabricate a
-        // continuously-held return, so cumulative_spread is withheld -- but mean_spread, an
-        // average over the defined periods, legitimately remains.
+        // factor (undefined spread). The undefined period's spread is withheld (None), while
+        // mean_spread -- an average over the DEFINED periods -- legitimately remains.
         let ranked = |ts: u64| {
             FactorPeriod::new(
                 ts,
@@ -1092,9 +1103,7 @@ mod tests {
         assert!(sheet.returns.spread_per_period[0].1.is_some());
         assert_eq!(sheet.returns.spread_per_period[1].1, None);
         assert!(sheet.returns.spread_per_period[2].1.is_some());
-        // mean over the two defined spreads is reported; the compounded path is not.
         assert!(sheet.returns.mean_spread.is_some());
-        assert_eq!(sheet.returns.cumulative_spread, None);
     }
 
     #[test]

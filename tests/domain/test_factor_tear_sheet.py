@@ -175,13 +175,14 @@ def test_turnover_counts_removals_on_a_shrinking_universe() -> None:
     )
 
 
-def test_cumulative_spread_is_not_compounded_across_an_undefined_period() -> None:
-    # Safety: the cumulative spread is a path-dependent compounded return. Compounding across
-    # a period whose factor gave no signal would fabricate a continuously-held return, so it is
-    # withheld (None) when any period's spread is undefined.
+def test_undefined_period_withholds_its_spread_but_mean_remains() -> None:
+    # Safety: a period whose factor gives no signal has its spread withheld (None) -- never a
+    # fabricated SecurityKey-driven number -- while mean_spread, an average over the DEFINED
+    # periods, remains. (A compounded cumulative spread is deliberately not reported; the panel
+    # cannot validate non-overlapping forward windows, so compounding is deferred.)
     _assert_one_passed(
-        _run_cargo_test("cumulative_spread_withheld_across_an_undefined_period"),
-        "SRS-BT-006 cumulative-gap withholding",
+        _run_cargo_test("undefined_period_withholds_its_spread_but_mean_spans_the_defined_ones"),
+        "SRS-BT-006 undefined-period spread withholding",
     )
 
 
@@ -303,12 +304,17 @@ def test_turnover_is_weight_based_so_reweighting_counts() -> None:
         check_turnover(config, mutated)
 
 
-def test_cumulative_spread_does_not_compound_across_gaps() -> None:
+def test_spread_is_withheld_off_option_so_undefined_is_not_fabricated() -> None:
     config = load_config()
-    # Safety (Codex round-2): the real module withholds the compounded cumulative spread when
-    # any period's spread is undefined, so it never fabricates a return across an unranked gap.
+    # Safety: the per-period spread is Option<f64> so an unranked period is None, never a
+    # fabricated SecurityKey-driven number. (The compounded cumulative spread is deliberately
+    # deferred -- the panel cannot validate non-overlapping forward windows.)
     check_factor_returns(config, module_source(config))
-    # ...and the guard must not be vacuous: removing the gap gate is caught.
-    mutated = module_source(config).replace("any_spread_undefined", "gate_disabled")
+    # ...and the guard must not be vacuous: demoting the spread off Option is caught.
+    mutated = module_source(config).replace(
+        "pub spread_per_period: Vec<(u64, Option<f64>)>,",
+        "pub spread_per_period: Vec<(u64, f64)>,",
+        1,
+    )
     with pytest.raises(FactorAnalysisCheckError):
         check_factor_returns(config, mutated)

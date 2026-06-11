@@ -5499,9 +5499,8 @@
     },
     "factor_returns": {
       "struct": "FactorReturns",
-      "fields": ["per_quantile_mean", "spread_per_period", "mean_spread", "cumulative_spread"],
-      "spread_option_token": "spread_per_period: Vec<(u64, Option<f64>)>",
-      "cumulative_gate_token": "any_spread_undefined"
+      "fields": ["per_quantile_mean", "spread_per_period", "mean_spread"],
+      "spread_option_token": "spread_per_period: Vec<(u64, Option<f64>)>"
     },
     "turnover": {
       "struct": "TurnoverAnalysis",
@@ -5576,7 +5575,9 @@
       "the scheduled full-universe factor job that produces the panel (SRS-FAC-001)",
       "wiring real factor values and forward returns from the unified historical data interface (SRS-DATA-007)",
       "rendering the factor tear-sheet to an operator (SRS-UI / SRS-API)",
-      "bundling the SRS-BT-004 PerformanceMetrics family into one cross-crate tear-sheet report"
+      "bundling the SRS-BT-004 PerformanceMetrics family into one cross-crate tear-sheet report",
+      "a validated COMPOUNDED cumulative spread -- needs each period's forward-return horizon to compound only contiguous non-overlapping windows (FactorPeriod carries a start timestamp only); only the horizon-agnostic per-period spread and mean_spread are reported here (owner: the SRS-DATA-007 / SRS-FAC-001 horizon-aware producer)",
+      "realized return-driven DRIFT turnover -- the turnover here is the factor-signal (target-portfolio) turnover; the held-position drift component needs holding-period returns and a rebalancing convention, i.e. the deferred backtest engine"
     ]
   }
 }

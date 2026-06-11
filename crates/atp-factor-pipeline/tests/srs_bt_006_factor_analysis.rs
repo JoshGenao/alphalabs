@@ -76,9 +76,6 @@ fn end_to_end_tear_sheet_is_coherent() {
     }
     let mean_spread = sheet.returns.mean_spread.expect("mean spread");
     assert!((mean_spread - 0.04).abs() < 1e-9);
-    // Compounded: (1.04)^3 - 1.
-    let cumulative = sheet.returns.cumulative_spread.expect("cumulative");
-    assert!((cumulative - (1.04_f64.powi(3) - 1.0)).abs() < 1e-9);
 
     // (3) Turnover: stable membership -> zero churn for the two later periods.
     assert_eq!(sheet.turnover.top_turnover.len(), 2);
@@ -184,7 +181,6 @@ fn constant_factor_withholds_spread_and_turnover() {
     assert_eq!(sheet.returns.spread_per_period[0].1, None);
     assert_eq!(sheet.returns.spread_per_period[1].1, None);
     assert_eq!(sheet.returns.mean_spread, None);
-    assert_eq!(sheet.returns.cumulative_spread, None);
     // Turnover is likewise withheld for the non-factor-driven membership.
     assert_eq!(sheet.turnover.top_turnover[0].1, None);
     assert_eq!(sheet.turnover.mean_top, None);
@@ -276,11 +272,10 @@ fn inner_cutoff_tie_withholds_spread_with_three_quantiles() {
 }
 
 #[test]
-fn cumulative_spread_withheld_across_an_undefined_period() {
-    // Periods 1 and 3 rank the factor; period 2 is a constant factor (undefined spread).
-    // Compounding only periods 1 and 3 across the gap would fabricate a continuously-held
-    // return, so cumulative_spread is withheld (None) -- but mean_spread, an average over the
-    // defined periods, remains.
+fn undefined_period_withholds_its_spread_but_mean_spans_the_defined_ones() {
+    // Periods 1 and 3 rank the factor; period 2 is a constant factor (undefined spread). The
+    // undefined period's spread is withheld (None), while mean_spread -- an average over the
+    // DEFINED periods (a horizon-agnostic statistic, not a compounded path) -- remains.
     let ranked = |ts: u64| {
         FactorPeriod::new(
             ts,
@@ -303,9 +298,9 @@ fn cumulative_spread_withheld_across_an_undefined_period() {
     );
     let sheet = compute_tear_sheet(&FactorPanel::new(vec![ranked(1), flat, ranked(3)], 2))
         .expect("tear sheet");
+    assert!(sheet.returns.spread_per_period[0].1.is_some());
     assert_eq!(sheet.returns.spread_per_period[1].1, None);
     assert!(sheet.returns.mean_spread.is_some());
-    assert_eq!(sheet.returns.cumulative_spread, None);
 }
 
 /// A tiny deterministic LCG so the property sweep below is reproducible without pulling in

@@ -219,6 +219,47 @@ a third fix commit; 6 high findings total across 3 passes):
   2-case generalizes. And the meta-lesson stands: numeric features took THREE adversarial rounds to
   converge; budget for iterate-and-reverify, and run the REAL Codex pass (not the fallback) each round.
 
+POST-REVIEW HARDENING — ROUND 4 = SCOPE-HONEST DESCOPE (the STOP). A FOURTH
+/codex:adversarial-review --base 860df19 found TWO more high findings, but BOTH had crossed the
+deferred-scope boundary: they asked for portfolio-return MODELING the minimal panel deliberately does
+not carry, which belongs to the deferred producer / backtest layer — NOT more analysis-surface code.
+This is the SRS-BT-009 "user-ratified-deferral STOP" lesson applied: I surfaced the scope decision via
+AskUserQuestion (descope+redoc / build-richer-model / accept+document) and the user chose DESCOPE+REDOC.
+  R4-A [high] "Cumulative spread compounds potentially OVERLAPPING forward windows": FactorPeriod has a
+     start ts only, no forward-return HORIZON, so a daily panel of 5-day forwards would compound
+     overlapping windows and fabricate cumulative performance — and this surface cannot validate
+     non-overlap. RESOLUTION (descope): REMOVED the cumulative_spread field + its compute entirely.
+     The honest horizon-agnostic primitives stay — the per-period spread series + mean_spread (an
+     average, not a compounded path). The validated compounded series is deferred to a horizon-aware
+     panel (SRS-DATA-007 / SRS-FAC-001 producer that knows each forward window).
+  R4-B [high] "Turnover ignores return-driven weight DRIFT of retained names": even with unchanged
+     membership, a real equal-weight book drifts as each name earns a different return, and rebalancing
+     that drift is real trading the metric omits. RESOLUTION (redoc, not recompute): what I compute is
+     the standard TARGET / factor-SIGNAL turnover (the trading the factor's RANKING change implies) —
+     a legitimate, well-defined quantity; the drift component needs holding-period returns + a
+     rebalancing convention = portfolio simulation = the deferred backtest engine. REFRAMED every doc /
+     evidence string from "transaction-cost turnover" to "target-portfolio (factor-signal) turnover",
+     and recorded drift turnover as a deferred owner. The weight-L1 computation is UNCHANGED (it is the
+     correct target turnover); only the CLAIM was softened to stop overclaiming realized cost.
+  Both descopes recorded in the module Deferred doc + factor_analysis_contract.deferred[] + the check
+  _DEFERRED_OWNERS, so the partial-pass scope is loud. Net surface change: FactorReturns drops
+  cumulative_spread (now per_quantile_mean + spread_per_period + mean_spread); TurnoverAnalysis
+  unchanged in shape, reframed in docs.
+  Re-verified: cargo test 26 L1 + 11 integration green; fmt/clippy clean; factor_analysis_check
+  --require-cargo PASS (18 static); architecture_check exit 0; pytest 1719 passed / 4 skips; ruff clean.
+  Deterministic critic APPROVE on the R4 diff (removing struct fields + individual test fns is NOT a
+  critic violation — it only blocks whole test-FILE deletion + reason-less skips, neither present).
+  LESSON (the headline process lesson, extends section-16 + the SRS-BT-009 STOP): on a numeric feature,
+  distinguish two kinds of adversarial finding — (i) a DEFECT/INCOMPLETENESS WITHIN the surface (rounds
+  1-3 here: false-alpha, inf-leak, inner-cutoff, weight-turnover) → FIX it; vs (ii) a request for MODELING
+  THE DATA MODEL CANNOT CARRY (round 4: forward-horizon, holding-period drift) → that is a SCOPE call,
+  not a defect. For (ii), do NOT reflexively expand the deterministic core into the deferred producer/
+  simulation layer (it never converges — the next finding is the transaction-cost model, then the
+  rebalancing convention…). Instead DESCOPE the overclaiming output (remove cumulative_spread) and REDOC
+  the honest one (target- not cost-turnover), record the deferral, and STOP. The tell that you've hit
+  (ii): the metric keeps getting a more sophisticated PORTFOLIO model each round (one-sided → set →
+  weight-L1 → drift-adjusted → cost-model…) — that escalation is the deferred backtest engine's domain.
+
 === SESSION 46 ===
 Date: 2026-06-11
 Feature completed: SRS-BT-009 SDK-SURFACE — "persist completed backtest results" (docs/SRS.md

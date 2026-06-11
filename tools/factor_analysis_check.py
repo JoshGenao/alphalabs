@@ -184,17 +184,12 @@ def check_factor_returns(config: dict, src: str) -> str:
             f"(`{spec['spread_option_token']}`) so a period whose factor does not separate the "
             "extremes is None, not a fabricated SecurityKey-driven spread"
         )
-    if _compact(spec["cumulative_gate_token"]) not in _compact(src):
-        fail(
-            f"the cumulative (compounded) spread must be withheld when any period's spread is "
-            f"undefined (`{spec['cumulative_gate_token']}`) -- compounding across an undefined gap "
-            "would fabricate a continuously-held return through an unranked period"
-        )
     return (
         "atp-factor-pipeline declares FactorReturns: per-period quantile mean returns plus the "
         "top-minus-bottom long-short spread as Option<f64> (None when the factor does not separate "
-        "the extremes); the compounded cumulative spread is withheld (None) when any period is "
-        "undefined, so it never compounds across a gap"
+        "the extremes) and its arithmetic mean_spread -- only horizon-agnostic statistics; the "
+        "compounded cumulative spread is deferred (the panel cannot validate non-overlapping "
+        "forward windows)"
     )
 
 
@@ -208,15 +203,16 @@ def check_turnover(config: dict, src: str) -> str:
         )
     if _compact(spec["weight_turnover_token"]) not in _compact(src):
         fail(
-            f"membership turnover must be WEIGHT-BASED (`{spec['weight_turnover_token']}`: half the "
-            "L1 distance between the equal-weight quantile portfolios) so a shrinking universe -- "
-            "which reweights the retained names -- is not understated by a set-membership ratio"
+            f"target turnover must be WEIGHT-BASED (`{spec['weight_turnover_token']}`: half the "
+            "L1 distance between the equal-weight target quantile portfolios) so a shrinking universe "
+            "-- which reweights the retained names -- is not understated by a set-membership ratio"
         )
     return (
-        "atp-factor-pipeline declares TurnoverAnalysis: per-period top/bottom-quantile turnover as "
-        "Option<f64> (None when not factor-driven), measured as half the L1 distance between the "
-        "equal-weight portfolios (counts entries, exits, AND retained-name reweighting), with means "
-        "over the defined values"
+        "atp-factor-pipeline declares TurnoverAnalysis: per-period top/bottom-quantile TARGET "
+        "turnover as Option<f64> (None when not factor-driven), measured as half the L1 distance "
+        "between the equal-weight target portfolios (the factor-signal turnover; realized "
+        "return-driven drift turnover is the deferred backtest engine's), with means over the "
+        "defined values"
     )
 
 
@@ -488,6 +484,10 @@ _DEFERRED_OWNERS = (
     "real factor-value / forward-return data wiring (SRS-DATA-007 unified historical interface)",
     "operator factor tear-sheet rendering (SRS-UI / SRS-API)",
     "cross-crate bundle with the SRS-BT-004 PerformanceMetrics family into one report",
+    "a validated compounded cumulative spread (needs each period's forward-return horizon to "
+    "compound only non-overlapping windows; the panel has a start timestamp only)",
+    "realized return-driven drift turnover (needs holding-period returns + a rebalancing "
+    "convention -- the deferred backtest engine; the turnover here is factor-signal/target turnover)",
 )
 
 
