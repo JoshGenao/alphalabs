@@ -232,28 +232,32 @@ def check_turnover(config: dict, src: str) -> str:
 def check_separation(config: dict, src: str) -> str:
     spec = contract_block(config)["separation"]
     compact_src = _compact(src)
-    if _compact(spec["predicate_token"]) not in compact_src:
-        fail(
-            f"factor_analysis must compute the extreme-separation predicate "
-            f"(`{spec['predicate_token']}`) so a constant or cutoff-tied factor cannot attribute a "
-            "SecurityKey-driven spread to the factor"
-        )
-    if _compact(spec["spread_gate_token"]) not in compact_src:
-        fail(
-            f"the spread must be gated on the separation predicate (`{spec['spread_gate_token']}`) "
-            "so it is withheld (None) when the factor does not separate the extremes"
-        )
-    if _compact(spec["inner_cutoff_token"]) not in compact_src:
-        fail(
-            f"the separation predicate must check BOTH bounding cutoffs (`{spec['inner_cutoff_token']}`), "
-            "not just extreme-to-extreme -- for 3+ quantiles a tie can straddle an inner cutoff and "
-            "decide the bottom/top composition by SecurityKey while the extremes look separated"
-        )
+    for key, label in (
+        ("cutoff_clean_token", "test each inter-bucket cutoff for ties (per-bucket min/max)"),
+        ("bottom_clean_token", "derive bottom-bucket cleanliness from its bounding cutoff"),
+        ("top_clean_token", "derive top-bucket cleanliness from its bounding cutoff"),
+        ("spread_both_token", "gate the spread on BOTH extremes being clean (top minus bottom)"),
+        ("spread_gate_token", "withhold the spread (None) unless both extreme means are defined"),
+        (
+            "top_turnover_gate_token",
+            "gate top turnover ONLY on the top bucket clean at both endpoints",
+        ),
+        (
+            "bottom_turnover_gate_token",
+            "gate bottom turnover ONLY on the bottom bucket clean at both endpoints",
+        ),
+    ):
+        if _compact(spec[key]) not in compact_src:
+            fail(
+                f"factor_analysis must {label} (`{spec[key]}`) -- a constant/cutoff-tied factor must "
+                "not fabricate a spread/turnover, AND a tie at one extreme must not suppress the "
+                "other extreme's unambiguous turnover"
+            )
     return (
-        "atp-factor-pipeline gates the spread and turnover on a strict extreme-separation predicate "
-        "(separates_extremes: BOTH the q0|q1 and q(Q-2)|q(Q-1) bounding cutoffs untied), so a "
-        "constant or cutoff-tied factor (incl. an inner-cutoff tie at 3+ quantiles) reports None "
-        "rather than a fabricated SecurityKey-driven spread/turnover"
+        "atp-factor-pipeline gates the spread and turnover on per-bucket factor-cleanliness (both "
+        "bounding cutoffs untied): the spread needs BOTH extremes clean, while each turnover series "
+        "is gated only on ITS OWN bucket -- so a constant/cutoff-tied factor reports None, and a tie "
+        "at one extreme withholds only that extreme's turnover, not the other's"
     )
 
 

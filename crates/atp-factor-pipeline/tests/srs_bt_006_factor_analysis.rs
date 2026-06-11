@@ -310,6 +310,32 @@ fn undefined_period_withholds_its_spread_but_mean_spans_the_defined_ones() {
     assert!(sheet.returns.mean_spread.is_some());
 }
 
+#[test]
+fn bottom_only_tie_keeps_top_turnover_defined() {
+    // A tie at the bottom (q0|q1) cutoff must NOT suppress the unambiguous top-quantile
+    // turnover: the two series are gated on their own bucket's cleanliness, not jointly.
+    let tied_bottom = |ts: u64| {
+        FactorPeriod::new(
+            ts,
+            vec![
+                observation("AAA", 1.0, 0.01),
+                observation("BBB", 2.0, 0.02),
+                observation("CCC", 2.0, 0.03),
+                observation("DDD", 3.0, 0.04),
+                observation("EEE", 4.0, 0.05),
+                observation("FFF", 5.0, 0.06),
+            ],
+        )
+    };
+    let sheet = compute_tear_sheet(&FactorPanel::new(vec![tied_bottom(1), tied_bottom(2)], 3))
+        .expect("tear sheet");
+    assert!(
+        sheet.turnover.top_turnover[0].1.is_some(),
+        "top turnover must stay defined despite a bottom-only tie"
+    );
+    assert_eq!(sheet.turnover.bottom_turnover[0].1, None);
+}
+
 /// A tiny deterministic LCG so the property sweep below is reproducible without pulling in
 /// an external `rand` dependency (which would itself be a nondeterminism smell in this
 /// crate). Numerical Recipes constants.

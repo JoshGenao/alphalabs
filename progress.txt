@@ -297,7 +297,47 @@ fixed; 10 findings total across 5 passes):
   and a descope doc-drift — i.e. convergence (cleanup of known patterns), not new escalation; the round-4
   scope axes (forward horizon, drift turnover) stayed settled.
 
-=== SESSION 46 ===
+POST-REVIEW HARDENING — ROUND 6 (a 6th pass: one within-surface DEFECT + the round-4 horizon axis
+re-raised, which caught a real overclaim in MY round-4 doc; 12 findings total across 6 passes):
+  R6-A [medium] "Top turnover suppressed by unrelated bottom-quantile ties": I gated BOTH turnover
+     series on `separates` (both extremes clean). But top turnover depends only on the TOP bucket and
+     bottom only on the BOTTOM, so a bottom-only tie wrongly suppressed a well-defined top turnover.
+     A genuine within-surface precision DEFECT → FIX. PeriodBuckets now exposes bottom_clean + top_clean
+     SEPARATELY (replacing separates_extremes); compute tracks previous_top_clean/previous_bottom_clean;
+     top_turnover gated on (top_clean && previous_top_clean), bottom on the bottom pair; the SPREAD still
+     needs both (it's top−bottom: let separates = bottom_clean && top_clean). Regression:
+     bottom_only_tie_keeps_top_turnover_defined + top_only_tie_keeps_bottom_turnover_defined (L1 +
+     integration + L7).
+  R6-B [high] "Aggregate means mix incomparable horizons/intervals": mean_spread averages per-period
+     spreads whose MAGNITUDE scales with the forward-return horizon, and the turnover means depend on the
+     rebalance interval — so averaging across a panel mixing 1-day/5-day forwards or daily/monthly
+     rebalances mixes incomparable quantities. This is the round-4 horizon axis re-raised, BUT it caught a
+     real overclaim: my round-4 doc literally called mean_spread "horizon-agnostic", which is FALSE.
+     RESOLUTION (user-chosen: document precondition + fix the claim, NOT expand the model): corrected the
+     wrong claim and documented that mean_spread + turnover means assume a REGULAR panel (consistent
+     forward-return horizon + rebalance interval) — the producer's contract, which this surface cannot
+     validate (the panel has a start ts only); recorded horizon/interval validation as the deferred
+     producer's job (new module "Panel-regularity precondition" section + per-field docs + contract). KEY
+     correctness note that bounded this: the IC family (mean/std/IR) IS genuinely horizon-agnostic — it's
+     a RANK correlation, independent of return magnitude — so it carries NO precondition; only the
+     magnitude/interval-sensitive aggregates (mean_spread, mean turnover) do. The per-period series are
+     all unaffected. Did NOT build horizon metadata (that's the deferred producer scope, same as the R4
+     cumulative descope).
+  Contract: separation block reworked to the split-gate design (cutoff_clean / bottom_clean / top_clean /
+     spread_both / spread_gate / top_turnover_gate / bottom_turnover_gate tokens); check_separation asserts
+     each with L3 + L7 non-vacuity mutation tests (incl. "jointly gating top turnover on the bottom bucket
+     is caught").
+  Re-verified: cargo test 29 L1 + 12 integration green; fmt/clippy clean (fixed an if-let→flatten lint);
+     factor_analysis_check --require-cargo PASS (18 static); architecture_check exit 0; pytest 1722 passed
+     / 4 skips; ruff clean. Deterministic critic APPROVE on the R6 diff.
+  LESSON: (i) a "gate" that bundles two independent conditions (here both extremes) is a precision smell —
+     gate each consumer on ONLY what it depends on (top turnover on top, bottom on bottom; spread on both).
+     (ii) When the producer's-contract scope axis is re-raised, separate the SCOPE (defer — don't build the
+     model) from any OVERCLAIM the prior round left in the docs (fix it): round 4 descoped cumulative_spread
+     but left mean_spread mislabeled "horizon-agnostic"; round 6 caught that. After a scope deferral, audit
+     that the KEPT outputs' docs don't overclaim the very property you deferred. Also: rank-based stats
+     (IC) are horizon-agnostic; magnitude/interval-based stats (returns, turnover) are not — don't blanket-
+     label a family.
 Date: 2026-06-11
 Feature completed: SRS-BT-009 SDK-SURFACE — "persist completed backtest results" (docs/SRS.md
 SRS-5.6 SRS-BT-009; traces SyRS SYS-21 / SYS-79; StRS SN-1.02 / SN-1.04). User-confirmed via

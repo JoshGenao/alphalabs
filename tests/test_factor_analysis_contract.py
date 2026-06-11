@@ -82,12 +82,12 @@ class FactorAnalysisScriptTest(unittest.TestCase):
             "the compounded cumulative spread is deferred",
             "declares TurnoverAnalysis",
             "measured as half the L1 distance between the equal-weight target portfolios",
-            "BOTH the q0|q1 and q(Q-2)|q(Q-1) bounding cutoffs untied",
             "declares FactorTearSheet bundling the IC, factor-return, and turnover",
             "exposes `pub fn compute_tear_sheet",
             "declares FactorAnalysisError with 8 fail-closed variants",
             "computes the IC as Spearman = Pearson of average tie ranks",
-            "gates the spread and turnover on a strict extreme-separation predicate",
+            "gates the spread and turnover on per-bucket factor-cleanliness",
+            "each turnover series is gated only on ITS OWN bucket",
             "a constant/tied factor exposes no identity-driven ladder",
             "turnover as Option<f64> (None when not factor-driven)",
             "FactorPanel::validate fails closed at the trust boundary",
@@ -226,17 +226,15 @@ class TurnoverTest(_Fixture):
 
 class SeparationTest(_Fixture):
     def test_separation_evidence(self) -> None:
-        self.assertIn(
-            "strict extreme-separation predicate", check_separation(self.config, self.src)
-        )
+        self.assertIn("per-bucket factor-cleanliness", check_separation(self.config, self.src))
 
-    def test_dropped_predicate_is_caught(self) -> None:
-        # Renaming the predicate everywhere removes the factor-separation gate, so a constant
-        # or cutoff-tied factor could fabricate a spread again.
-        mutated = self.src.replace("separates_extremes", "always_true")
+    def test_dropped_per_cutoff_check_is_caught(self) -> None:
+        # Removing the per-cutoff cleanliness fn collapses the factor-separation gate, so a
+        # constant or cutoff-tied factor could fabricate a spread/ladder again.
+        mutated = self.src.replace("let cutoff_clean", "let always_clean")
         with self.assertRaises(FactorAnalysisCheckError) as ctx:
             check_separation(self.config, mutated)
-        self.assertIn("separates_extremes", str(ctx.exception))
+        self.assertIn("cutoff_clean", str(ctx.exception))
 
     def test_dropped_spread_gate_is_caught(self) -> None:
         # Dropping the `separates` arm of the spread match (taking the spread regardless)
@@ -248,13 +246,15 @@ class SeparationTest(_Fixture):
             check_separation(self.config, mutated)
         self.assertIn("(true, Some(bottom), Some(top))", str(ctx.exception))
 
-    def test_extreme_only_separation_is_caught(self) -> None:
-        # Reverting the predicate to extremes-only (not derived from per-bucket cleanliness)
-        # would let a 3+-quantile inner-cutoff tie fabricate a SecurityKey-driven spread.
-        mutated = self.src.replace("bucket_clean[0] && bucket_clean[quantiles - 1]", "true", 1)
+    def test_jointly_gated_top_turnover_is_caught(self) -> None:
+        # Gating the top turnover on the BOTTOM bucket's cleanliness (instead of its own) would
+        # suppress an unambiguous top turnover on a bottom-only tie (Codex round-6 finding).
+        mutated = self.src.replace(
+            "top_clean && previous_top_clean", "bottom_clean && previous_bottom_clean", 1
+        )
         with self.assertRaises(FactorAnalysisCheckError) as ctx:
             check_separation(self.config, mutated)
-        self.assertIn("bucket_clean", str(ctx.exception))
+        self.assertIn("top_clean && previous_top_clean", str(ctx.exception))
 
 
 class TearSheetTest(_Fixture):

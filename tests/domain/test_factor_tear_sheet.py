@@ -257,26 +257,27 @@ def test_module_verifies_aggregates_are_finite() -> None:
         check_nan_guard(config, mutated)
 
 
-def test_spread_is_withheld_when_factor_does_not_separate_extremes() -> None:
+def test_spread_and_turnover_gated_on_per_bucket_cleanliness() -> None:
     config = load_config()
-    # Safety (Codex finding #2): the real module gates the spread/turnover on a strict
-    # extreme-separation predicate, so a constant or cutoff-tied factor cannot attribute a
-    # SecurityKey-driven spread to the factor (false alpha).
+    # Safety: the real module gates the spread on BOTH extremes being factor-clean and each
+    # turnover series on ITS OWN bucket, so a constant/cutoff-tied factor cannot attribute a
+    # SecurityKey-driven spread (false alpha) and an unrelated tie does not suppress an
+    # unambiguous turnover.
     check_separation(config, module_source(config))
-    # ...and the guard must not be vacuous: removing the predicate is caught.
-    mutated = module_source(config).replace("separates_extremes", "always_true")
+    # ...and the guards must not be vacuous: removing the per-cutoff cleanliness fn is caught.
+    mutated = module_source(config).replace("let cutoff_clean", "let always_clean")
     with pytest.raises(FactorAnalysisCheckError):
         check_separation(config, mutated)
-    # ...nor is the spread gate vacuous: dropping the `separates` arm of the spread match is caught.
+    # ...nor the spread gate: dropping the `separates` arm of the spread match is caught.
     mutated = module_source(config).replace(
         "(true, Some(bottom), Some(top))", "(_, Some(bottom), Some(top))", 1
     )
     with pytest.raises(FactorAnalysisCheckError):
         check_separation(config, mutated)
-    # ...nor is the inner-cutoff-aware predicate vacuous: reverting to a constant `true` is caught
-    # (a 3+-quantile inner-cutoff tie would otherwise fabricate a SecurityKey-driven spread).
+    # ...nor the per-series turnover gate: jointly gating top turnover on the bottom bucket is
+    # caught (it would suppress an unambiguous top turnover on a bottom-only tie).
     mutated = module_source(config).replace(
-        "bucket_clean[0] && bucket_clean[quantiles - 1]", "true", 1
+        "top_clean && previous_top_clean", "bottom_clean && previous_bottom_clean", 1
     )
     with pytest.raises(FactorAnalysisCheckError):
         check_separation(config, mutated)
@@ -288,6 +289,15 @@ def test_constant_factor_withholds_the_quantile_return_ladder() -> None:
     _assert_one_passed(
         _run_cargo_test("constant_factor_withholds_spread_and_turnover"),
         "SRS-BT-006 identity-driven ladder withheld",
+    )
+
+
+def test_bottom_only_tie_keeps_top_turnover_defined() -> None:
+    # Safety (Codex round-6): a tie at one extreme must not suppress the other extreme's
+    # unambiguous turnover -- the two series are gated on their own bucket's cleanliness.
+    _assert_one_passed(
+        _run_cargo_test("bottom_only_tie_keeps_top_turnover_defined"),
+        "SRS-BT-006 per-series turnover gating",
     )
 
 

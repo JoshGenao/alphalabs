@@ -5554,10 +5554,14 @@
       "quantile_mean_guard_token": "finite(\"quantile_mean\""
     },
     "separation": {
-      "predicate_token": "separates_extremes",
+      "cutoff_clean_token": "let cutoff_clean",
+      "bottom_clean_token": "let bottom_clean = bucket_clean[0]",
+      "top_clean_token": "let top_clean = bucket_clean[quantiles - 1]",
+      "spread_both_token": "let separates = bottom_clean && top_clean",
       "spread_gate_token": "(true, Some(bottom), Some(top))",
-      "inner_cutoff_token": "bucket_clean[0] && bucket_clean[quantiles - 1]",
-      "comment": "The spread/turnover are factor-attributable only when the factor strictly separates the top and bottom quantiles AT BOTH BOUNDING CUTOFFS (q0|q1 and q(Q-2)|q(Q-1)), not just extreme-to-extreme -- for 3+ quantiles a tie can straddle an inner cutoff and decide the bottom/top composition by SecurityKey. Otherwise the value is withheld (None), so a constant or cutoff-tied factor cannot fabricate alpha."
+      "top_turnover_gate_token": "top_clean && previous_top_clean",
+      "bottom_turnover_gate_token": "bottom_clean && previous_bottom_clean",
+      "comment": "A bucket is factor-clean iff BOTH its bounding cutoffs are untied (cutoff_clean over per-bucket min/max) -- only then is its composition factor-determined, not a SecurityKey tiebreak. Per-bucket cleanliness is tracked SEPARATELY (bottom_clean / top_clean): the spread needs BOTH (top minus bottom) so it is gated on (true, Some(bottom), Some(top)); each turnover series is gated only on ITS OWN bucket clean at both endpoints, so a tie at one extreme withholds only that extreme's turnover, not the other's. A constant or cutoff-tied factor therefore cannot fabricate alpha, and an unrelated tie does not suppress an unambiguous turnover."
     },
     "numeric_boundary": {
       "factor_input_token": "factor_value: f64",

@@ -81,10 +81,24 @@
 //! minimal panel cannot carry, and that modeling belongs to the deferred producer / backtest
 //! layer (not the offline analysis): (1) a validated COMPOUNDED cumulative spread -- it needs
 //! each period's forward-return horizon to compound only contiguous non-overlapping windows
-//! (the panel has a start timestamp only), so only the horizon-agnostic per-period spread and
-//! its mean are reported here; (2) realized return-driven DRIFT turnover -- the turnover here
-//! is the factor-signal (target-portfolio) turnover, and the drift component needs holding-
-//! period returns and a rebalancing convention, i.e. the backtest engine.
+//! (the panel has a start timestamp only), so only the per-period spread and its mean are
+//! reported here; (2) realized return-driven DRIFT turnover -- the turnover here is the
+//! factor-signal (target-portfolio) turnover, and the drift component needs holding-period
+//! returns and a rebalancing convention, i.e. the backtest engine.
+//!
+//! ## Panel-regularity precondition (the producer's contract)
+//!
+//! The cross-period AGGREGATE means of the MAGNITUDE/INTERVAL-sensitive series --
+//! [`FactorReturns::mean_spread`] and [`TurnoverAnalysis::mean_top`] / `mean_bottom` -- are only
+//! meaningful over a REGULAR panel: every period sharing the same forward-return horizon (a
+//! spread scales with the horizon) and the same rebalance interval (turnover scales with the
+//! gap between rebalances). A [`FactorPeriod`] carries only a start timestamp, not a horizon or
+//! an interval, so this surface CANNOT validate regularity -- it is the producer's contract
+//! (owner: the deferred SRS-DATA-007 / SRS-FAC-001 horizon-aware producer). A panel that mixes
+//! 1-day and 5-day forward returns, or daily and monthly rebalances, yields aggregate means that
+//! mix incomparable quantities. The PER-PERIOD series are unaffected (each value is valid for
+//! its own period), and the [`InformationCoefficient`] family is genuinely horizon-agnostic (a
+//! RANK correlation, independent of return magnitude), so it carries no such precondition.
 
 use std::collections::HashSet;
 
@@ -227,15 +241,24 @@ pub struct InformationCoefficient {
 /// `0` and last are not both clean): any spread there would attribute a portfolio's realized
 /// return to a factor that carries no ranking signal -- fabricated "alpha".
 ///
-/// Only HORIZON-AGNOSTIC statistics are reported: the per-period spread series and its
-/// arithmetic `mean_spread` (the average per-period long-short return). A COMPOUNDED cumulative
-/// spread is deliberately NOT reported here, because compounding period spreads as sequential
-/// returns assumes the forward-return windows are contiguous and non-overlapping -- and a
-/// [`FactorPeriod`] carries only a start timestamp, not the forward-return horizon, so this
-/// surface cannot validate that assumption (a daily panel of 5-day forward returns would
-/// compound overlapping windows and fabricate cumulative performance). The validated
-/// compounded series is deferred to a horizon-aware panel (the SRS-DATA-007 / SRS-FAC-001
-/// producer that knows each forward window).
+/// No COMPOUNDED cumulative spread is reported here, because compounding period spreads as
+/// sequential returns assumes the forward-return windows are contiguous and non-overlapping --
+/// and a [`FactorPeriod`] carries only a start timestamp, not the forward-return horizon, so
+/// this surface cannot validate that assumption (a daily panel of 5-day forward returns would
+/// compound overlapping windows and fabricate cumulative performance). The validated compounded
+/// series is deferred to a horizon-aware panel (the SRS-DATA-007 / SRS-FAC-001 producer that
+/// knows each forward window).
+///
+/// **`mean_spread` precondition (the panel must be REGULAR).** `mean_spread` averages the
+/// per-period spreads, and a spread's MAGNITUDE scales with the forward-return horizon (a 5-day
+/// spread is ~5x a 1-day spread). So the average is only meaningful when every period shares the
+/// same forward-return horizon. This surface cannot enforce that (the panel has no horizon
+/// field), so a CONSISTENT forward-return horizon is the producer's contract (owner: the
+/// deferred SRS-DATA-007 / SRS-FAC-001 horizon-aware producer); a panel that mixes horizons
+/// yields a `mean_spread` that mixes magnitudes. The per-period `spread_per_period` series is
+/// unaffected (each spread is valid for its own period). NOTE that the [`InformationCoefficient`]
+/// family is genuinely horizon-agnostic -- it is a RANK correlation, independent of return
+/// magnitude -- so its mean/std/IR carry no such precondition.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FactorReturns {
     /// Per period, the mean forward return of each quantile bucket (length `quantiles`,
@@ -247,8 +270,10 @@ pub struct FactorReturns {
     /// per-period return of the dollar-neutral long-short factor portfolio); `None` for a
     /// period whose factor does not separate the top and bottom quantiles.
     pub spread_per_period: Vec<(u64, Option<f64>)>,
-    /// Arithmetic mean of the defined per-period spreads (an average statistic, not a
-    /// compounded path, so it is horizon-agnostic); `None` when no period had a defined spread.
+    /// Arithmetic mean of the defined per-period spreads; `None` when no period had a defined
+    /// spread. Meaningful only over a panel with a CONSISTENT forward-return horizon -- a spread
+    /// scales with the horizon, so averaging across mixed horizons mixes magnitudes (this surface
+    /// cannot validate horizon regularity; it is the producer's contract -- see the type docs).
     pub mean_spread: Option<f64>,
 }
 
@@ -270,22 +295,32 @@ pub struct FactorReturns {
 /// surface. So this number is a lower bound on realized transaction-cost turnover and should be
 /// read as factor-signal turnover.
 ///
-/// A period's turnover is **undefined** (`None`) unless BOTH it and the prior period separate
-/// their extremes by factor value (see [`FactorReturns`]). When either endpoint's top/bottom
-/// membership is decided by the `SecurityKey` tiebreak rather than the factor, the churn
-/// between the two is not factor-driven, so it is reported as `None` rather than presented as
-/// a factor property.
+/// Each series is gated INDEPENDENTLY on ITS OWN quantile: a period's top turnover is `None`
+/// unless the TOP bucket is factor-clean in both it and the prior period, and likewise the
+/// bottom turnover on the BOTTOM bucket. A tie at one extreme (whose composition is then a
+/// `SecurityKey` tiebreak) therefore withholds only that extreme's turnover, not the other's
+/// unambiguous one.
+///
+/// **`mean_top` / `mean_bottom` precondition (a consistent REBALANCE INTERVAL).** The means
+/// average per-period turnovers, and turnover depends on the gap between rebalances (a daily
+/// rebalance churns less per period than a monthly one), so the average is only meaningful when
+/// the periods are evenly spaced. This surface cannot enforce that, so a consistent rebalance
+/// interval is the producer's contract (the same horizon/interval regularity [`FactorReturns`]
+/// notes); a panel with irregular gaps yields means that mix intervals. The per-period series is
+/// unaffected.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TurnoverAnalysis {
     /// `(period ts, top-quantile turnover)` for each period after the first; `None` where the
-    /// churn is not factor-driven.
+    /// top bucket's membership is not factor-driven (tied) in either endpoint.
     pub top_turnover: Vec<(u64, Option<f64>)>,
-    /// `(period ts, bottom-quantile turnover)` for each period after the first; `None` where
-    /// the churn is not factor-driven.
+    /// `(period ts, bottom-quantile turnover)` for each period after the first; `None` where the
+    /// bottom bucket's membership is not factor-driven (tied) in either endpoint.
     pub bottom_turnover: Vec<(u64, Option<f64>)>,
-    /// Mean of the defined top-quantile turnovers; `None` when none were defined.
+    /// Mean of the defined top-quantile turnovers; `None` when none were defined. Meaningful only
+    /// over an evenly-spaced (consistent rebalance interval) panel -- see the type docs.
     pub mean_top: Option<f64>,
-    /// Mean of the defined bottom-quantile turnovers; `None` when none were defined.
+    /// Mean of the defined bottom-quantile turnovers; `None` when none were defined. Same
+    /// rebalance-interval precondition as `mean_top`.
     pub mean_bottom: Option<f64>,
 }
 
@@ -497,12 +532,15 @@ struct PeriodBuckets {
     /// (and hence its mean) is decided by the `SecurityKey` tiebreak rather than the factor. A
     /// constant factor therefore yields an all-`None` ladder rather than an identity-driven one.
     quantile_means: Vec<Option<f64>>,
-    /// Whether the factor strictly separates the extremes: BOTH the cutoff bounding the bottom
-    /// bucket (q0 | q1) and the cutoff bounding the top bucket (q(Q-2) | q(Q-1)) are untied, so
-    /// the bottom and top bucket COMPOSITIONS are factor-determined (equivalently, buckets `0`
-    /// and `quantiles - 1` are clean). When `false` the split was decided by the `SecurityKey`
-    /// tiebreak rather than the factor, so the spread and turnover are withheld (`None`).
-    separates_extremes: bool,
+    /// Whether the BOTTOM bucket (`0`) is factor-clean -- its bounding cutoff (q0 | q1) is untied,
+    /// so its composition is factor-determined rather than a `SecurityKey` tiebreak. Gates the
+    /// bottom-quantile turnover and (with `top_clean`) the spread.
+    bottom_clean: bool,
+    /// Whether the TOP bucket (`quantiles - 1`) is factor-clean -- its bounding cutoff
+    /// (q(Q-2) | q(Q-1)) is untied. Gates the top-quantile turnover and (with `bottom_clean`)
+    /// the spread. The two are tracked separately so a tie at one extreme does not suppress the
+    /// other extreme's turnover.
+    top_clean: bool,
     /// The securities in the bottom (`0`) and top (`quantiles - 1`) buckets.
     bottom_members: HashSet<SecurityKey>,
     top_members: HashSet<SecurityKey>,
@@ -568,13 +606,15 @@ fn bucket_period(period: &FactorPeriod, quantiles: usize) -> PeriodBuckets {
         .map(|k| bucket_clean[k].then(|| mean(&bucket_returns[k])))
         .collect();
 
-    // The extremes are separated iff buckets 0 and Q-1 are both clean (their bounding cutoffs --
-    // q0|q1 and q(Q-2)|q(Q-1) -- are untied), which is what the spread and turnover require.
-    let separates_extremes = bucket_clean[0] && bucket_clean[quantiles - 1];
+    // Bottom (`0`) and top (`Q-1`) bucket cleanliness, tracked SEPARATELY: the bottom turnover
+    // depends only on the bottom bucket, the top turnover only on the top, and the spread on both.
+    let bottom_clean = bucket_clean[0];
+    let top_clean = bucket_clean[quantiles - 1];
 
     PeriodBuckets {
         quantile_means,
-        separates_extremes,
+        bottom_clean,
+        top_clean,
         bottom_members,
         top_members,
     }
@@ -645,7 +685,8 @@ pub fn compute_tear_sheet(panel: &FactorPanel) -> Result<FactorTearSheet, Factor
 
     let mut previous_top: Option<HashSet<SecurityKey>> = None;
     let mut previous_bottom: Option<HashSet<SecurityKey>> = None;
-    let mut previous_separates: Option<bool> = None;
+    let mut previous_top_clean: Option<bool> = None;
+    let mut previous_bottom_clean: Option<bool> = None;
 
     for period in &panel.periods {
         // Information coefficient: Spearman rank correlation of factor vs forward return.
@@ -675,15 +716,15 @@ pub fn compute_tear_sheet(panel: &FactorPanel) -> Result<FactorTearSheet, Factor
         // function -- a bucket mean can overflow to +/-inf even on finite inputs (e.g. two
         // near-f64::MAX returns), and a middle bucket never passes through the spread, so guard
         // each defined one directly.
-        for quantile_mean in &buckets.quantile_means {
-            if let Some(value) = quantile_mean {
-                finite("quantile_mean", *value)?;
-            }
+        for value in buckets.quantile_means.iter().flatten() {
+            finite("quantile_mean", *value)?;
         }
-        let separates = buckets.separates_extremes;
-        // The spread is factor-attributable only when the factor separates the extremes;
-        // otherwise the top/bottom split is a SecurityKey tiebreak, so the spread is withheld.
-        // When `separates` holds, buckets 0 and the last are both clean, so both means are `Some`.
+        let bottom_clean = buckets.bottom_clean;
+        let top_clean = buckets.top_clean;
+        // The spread = top mean − bottom mean, so it is factor-attributable only when BOTH the
+        // top and bottom buckets are clean; otherwise an extreme's composition is a SecurityKey
+        // tiebreak and the spread is withheld. When both are clean both means are `Some`.
+        let separates = bottom_clean && top_clean;
         let spread = match (
             separates,
             buckets.quantile_means[0],
@@ -695,34 +736,28 @@ pub fn compute_tear_sheet(panel: &FactorPanel) -> Result<FactorTearSheet, Factor
         spread_per_period.push((period.ts, spread));
         per_quantile_mean.push(buckets.quantile_means);
 
-        // Turnover is factor-driven only when BOTH endpoints separate their extremes.
+        // Each turnover series is gated ONLY on its OWN bucket being clean at both endpoints, so
+        // a tie at one extreme does not suppress the other extreme's (unambiguous) turnover.
         if let Some(prior_top) = &previous_top {
-            let both_separate = separates && previous_separates.unwrap_or(false);
-            let value = if both_separate {
-                Some(finite(
-                    "top_turnover",
-                    membership_turnover(&buckets.top_members, prior_top),
-                )?)
-            } else {
-                None
-            };
-            top_turnover.push((period.ts, value));
+            let value = (top_clean && previous_top_clean.unwrap_or(false))
+                .then(|| membership_turnover(&buckets.top_members, prior_top));
+            top_turnover.push((
+                period.ts,
+                value.map(|v| finite("top_turnover", v)).transpose()?,
+            ));
         }
         if let Some(prior_bottom) = &previous_bottom {
-            let both_separate = separates && previous_separates.unwrap_or(false);
-            let value = if both_separate {
-                Some(finite(
-                    "bottom_turnover",
-                    membership_turnover(&buckets.bottom_members, prior_bottom),
-                )?)
-            } else {
-                None
-            };
-            bottom_turnover.push((period.ts, value));
+            let value = (bottom_clean && previous_bottom_clean.unwrap_or(false))
+                .then(|| membership_turnover(&buckets.bottom_members, prior_bottom));
+            bottom_turnover.push((
+                period.ts,
+                value.map(|v| finite("bottom_turnover", v)).transpose()?,
+            ));
         }
         previous_top = Some(buckets.top_members);
         previous_bottom = Some(buckets.bottom_members);
-        previous_separates = Some(separates);
+        previous_top_clean = Some(top_clean);
+        previous_bottom_clean = Some(bottom_clean);
     }
 
     // IC aggregates over the DEFINED per-period ICs.
@@ -1026,6 +1061,72 @@ mod tests {
                 .1
                 .expect("bottom turnover"),
             0.0,
+        );
+    }
+
+    #[test]
+    fn bottom_only_tie_keeps_top_turnover_defined() {
+        // 6 securities, 3 quantiles. Factor [1,2,2,3,4,5] ties the q0|q1 (bottom) cutoff but
+        // leaves the q1|q2 (top) cutoff untied, both periods, with a stable top {EEE,FFF}. The
+        // top turnover must stay DEFINED (0 churn) even though the bottom is tied -- the bottom
+        // tie must not suppress the unambiguous top turnover.
+        let tied_bottom = |ts: u64| {
+            FactorPeriod::new(
+                ts,
+                vec![
+                    observation("AAA", 1.0, 0.01),
+                    observation("BBB", 2.0, 0.02),
+                    observation("CCC", 2.0, 0.03),
+                    observation("DDD", 3.0, 0.04),
+                    observation("EEE", 4.0, 0.05),
+                    observation("FFF", 5.0, 0.06),
+                ],
+            )
+        };
+        let sheet = compute_tear_sheet(&FactorPanel::new(vec![tied_bottom(1), tied_bottom(2)], 3))
+            .expect("tear sheet");
+        approx(
+            sheet.turnover.top_turnover[0]
+                .1
+                .expect("top turnover defined"),
+            0.0,
+        );
+        assert_eq!(
+            sheet.turnover.bottom_turnover[0].1, None,
+            "bottom turnover withheld (bottom cutoff tied)"
+        );
+        // The spread needs BOTH extremes clean, so a tied bottom still withholds it.
+        assert_eq!(sheet.returns.spread_per_period[0].1, None);
+    }
+
+    #[test]
+    fn top_only_tie_keeps_bottom_turnover_defined() {
+        // The inverse: factor [1,2,3,4,4,5] ties the q1|q2 (top) cutoff but leaves the q0|q1
+        // (bottom) cutoff untied, so the bottom turnover stays defined while the top is withheld.
+        let tied_top = |ts: u64| {
+            FactorPeriod::new(
+                ts,
+                vec![
+                    observation("AAA", 1.0, 0.01),
+                    observation("BBB", 2.0, 0.02),
+                    observation("CCC", 3.0, 0.03),
+                    observation("DDD", 4.0, 0.04),
+                    observation("EEE", 4.0, 0.05),
+                    observation("FFF", 5.0, 0.06),
+                ],
+            )
+        };
+        let sheet = compute_tear_sheet(&FactorPanel::new(vec![tied_top(1), tied_top(2)], 3))
+            .expect("tear sheet");
+        approx(
+            sheet.turnover.bottom_turnover[0]
+                .1
+                .expect("bottom turnover defined"),
+            0.0,
+        );
+        assert_eq!(
+            sheet.turnover.top_turnover[0].1, None,
+            "top turnover withheld (top cutoff tied)"
         );
     }
 
