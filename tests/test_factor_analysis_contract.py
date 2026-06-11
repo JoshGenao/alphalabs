@@ -79,7 +79,9 @@ class FactorAnalysisScriptTest(unittest.TestCase):
             "declares FactorPanel (periods + quantiles) with a fail-closed",
             "declares InformationCoefficient",
             "declares FactorReturns",
+            "the compounded cumulative spread is withheld (None) when any period is undefined",
             "declares TurnoverAnalysis",
+            "computed symmetrically (entered + exited names) so removals are counted",
             "declares FactorTearSheet bundling the IC, factor-return, and turnover",
             "exposes `pub fn compute_tear_sheet",
             "declares FactorAnalysisError with 8 fail-closed variants",
@@ -182,6 +184,14 @@ class FactorReturnsTest(_Fixture):
             check_factor_returns(self.config, mutated)
         self.assertIn("Option<f64>", str(ctx.exception))
 
+    def test_dropped_cumulative_gap_gate_is_caught(self) -> None:
+        # Removing the undefined-gap gate lets the cumulative spread compound across an
+        # undefined period, fabricating a continuously-held return (Codex round-2 finding).
+        mutated = self.src.replace("any_spread_undefined", "gate_disabled")
+        with self.assertRaises(FactorAnalysisCheckError) as ctx:
+            check_factor_returns(self.config, mutated)
+        self.assertIn("any_spread_undefined", str(ctx.exception))
+
 
 class TurnoverTest(_Fixture):
     def test_turnover_evidence(self) -> None:
@@ -196,6 +206,14 @@ class TurnoverTest(_Fixture):
         with self.assertRaises(FactorAnalysisCheckError) as ctx:
             check_turnover(self.config, mutated)
         self.assertIn("Option<f64>", str(ctx.exception))
+
+    def test_one_sided_turnover_is_caught(self) -> None:
+        # Reverting to a one-sided "entered only" numerator would hide pure removals as zero
+        # churn on a shrinking universe (Codex round-2 finding).
+        mutated = self.src.replace("(entered + exited) as f64", "(entered) as f64", 1)
+        with self.assertRaises(FactorAnalysisCheckError) as ctx:
+            check_turnover(self.config, mutated)
+        self.assertIn("entered + exited", str(ctx.exception))
 
 
 class SeparationTest(_Fixture):

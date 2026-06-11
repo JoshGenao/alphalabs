@@ -5500,12 +5500,14 @@
     "factor_returns": {
       "struct": "FactorReturns",
       "fields": ["per_quantile_mean", "spread_per_period", "mean_spread", "cumulative_spread"],
-      "spread_option_token": "spread_per_period: Vec<(u64, Option<f64>)>"
+      "spread_option_token": "spread_per_period: Vec<(u64, Option<f64>)>",
+      "cumulative_gate_token": "any_spread_undefined"
     },
     "turnover": {
       "struct": "TurnoverAnalysis",
       "fields": ["top_turnover", "bottom_turnover", "mean_top", "mean_bottom"],
-      "turnover_option_token": "top_turnover: Vec<(u64, Option<f64>)>"
+      "turnover_option_token": "top_turnover: Vec<(u64, Option<f64>)>",
+      "symmetric_token": "entered + exited"
     },
     "tear_sheet": {
       "struct": "FactorTearSheet",

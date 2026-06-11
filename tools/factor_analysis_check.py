@@ -184,10 +184,17 @@ def check_factor_returns(config: dict, src: str) -> str:
             f"(`{spec['spread_option_token']}`) so a period whose factor does not separate the "
             "extremes is None, not a fabricated SecurityKey-driven spread"
         )
+    if _compact(spec["cumulative_gate_token"]) not in _compact(src):
+        fail(
+            f"the cumulative (compounded) spread must be withheld when any period's spread is "
+            f"undefined (`{spec['cumulative_gate_token']}`) -- compounding across an undefined gap "
+            "would fabricate a continuously-held return through an unranked period"
+        )
     return (
         "atp-factor-pipeline declares FactorReturns: per-period quantile mean returns plus the "
         "top-minus-bottom long-short spread as Option<f64> (None when the factor does not separate "
-        "the extremes) with mean and compounded cumulative spread"
+        "the extremes); the compounded cumulative spread is withheld (None) when any period is "
+        "undefined, so it never compounds across a gap"
     )
 
 
@@ -199,9 +206,16 @@ def check_turnover(config: dict, src: str) -> str:
             f"TurnoverAnalysis.top_turnover must carry the turnover as `Option<f64>` "
             f"(`{spec['turnover_option_token']}`) so churn that is not factor-driven is None"
         )
+    if _compact(spec["symmetric_token"]) not in _compact(src):
+        fail(
+            f"membership turnover must be SYMMETRIC (`{spec['symmetric_token']}`: count names that "
+            "ENTERED or EXITED) so a shrinking universe (pure removals) is not understated as zero "
+            "churn by a one-sided fraction-of-new-names measure"
+        )
     return (
         "atp-factor-pipeline declares TurnoverAnalysis: per-period top/bottom-quantile membership "
-        "churn as Option<f64> (None when not factor-driven), with means over the defined values"
+        "churn as Option<f64> (None when not factor-driven), computed symmetrically (entered + "
+        "exited names) so removals are counted, with means over the defined values"
     )
 
 

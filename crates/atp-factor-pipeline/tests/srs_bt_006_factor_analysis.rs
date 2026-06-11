@@ -215,6 +215,76 @@ fn extreme_returns_in_a_quantile_fail_closed() {
     );
 }
 
+#[test]
+fn turnover_counts_removals_when_the_universe_shrinks() {
+    // P2's top quantile is a strict subset of P1's (the universe shrank), so a one-sided
+    // "fraction of new names" measure would hide the removals as 0 churn. The symmetric
+    // measure reports the dropped names as turnover, so transaction-cost drag is not
+    // understated.
+    let p1 = FactorPeriod::new(
+        1,
+        vec![
+            observation("AAA", 1.0, 0.01),
+            observation("BBB", 2.0, 0.02),
+            observation("CCC", 3.0, 0.03),
+            observation("DDD", 4.0, 0.04),
+            observation("EEE", 5.0, 0.05),
+            observation("FFF", 6.0, 0.06),
+            observation("GGG", 7.0, 0.07),
+            observation("HHH", 8.0, 0.08),
+        ],
+    );
+    let p2 = FactorPeriod::new(
+        2,
+        vec![
+            observation("EEE", 1.0, 0.05),
+            observation("FFF", 2.0, 0.06),
+            observation("GGG", 3.0, 0.07),
+            observation("HHH", 4.0, 0.08),
+        ],
+    );
+    let sheet = compute_tear_sheet(&FactorPanel::new(vec![p1, p2], 2)).expect("tear sheet");
+    let top = sheet.turnover.top_turnover[0].1.expect("top turnover");
+    assert!(
+        top > 0.0,
+        "a pure-removal rebalance must not report zero churn"
+    );
+    assert!((top - 1.0 / 3.0).abs() < 1e-9, "top turnover = {top}");
+}
+
+#[test]
+fn cumulative_spread_withheld_across_an_undefined_period() {
+    // Periods 1 and 3 rank the factor; period 2 is a constant factor (undefined spread).
+    // Compounding only periods 1 and 3 across the gap would fabricate a continuously-held
+    // return, so cumulative_spread is withheld (None) -- but mean_spread, an average over the
+    // defined periods, remains.
+    let ranked = |ts: u64| {
+        FactorPeriod::new(
+            ts,
+            vec![
+                observation("AAA", 1.0, 0.1),
+                observation("BBB", 2.0, 0.2),
+                observation("CCC", 3.0, 0.3),
+                observation("DDD", 4.0, 0.4),
+            ],
+        )
+    };
+    let flat = FactorPeriod::new(
+        2,
+        vec![
+            observation("AAA", 5.0, 0.1),
+            observation("BBB", 5.0, 0.2),
+            observation("CCC", 5.0, 0.3),
+            observation("DDD", 5.0, 0.4),
+        ],
+    );
+    let sheet = compute_tear_sheet(&FactorPanel::new(vec![ranked(1), flat, ranked(3)], 2))
+        .expect("tear sheet");
+    assert_eq!(sheet.returns.spread_per_period[1].1, None);
+    assert!(sheet.returns.mean_spread.is_some());
+    assert_eq!(sheet.returns.cumulative_spread, None);
+}
+
 /// A tiny deterministic LCG so the property sweep below is reproducible without pulling in
 /// an external `rand` dependency (which would itself be a nondeterminism smell in this
 /// crate). Numerical Recipes constants.

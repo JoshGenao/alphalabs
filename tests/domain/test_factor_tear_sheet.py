@@ -56,11 +56,13 @@ from factor_analysis_check import (  # noqa: E402
     FactorAnalysisCheckError,
     cargo_source,
     check_determinism,
+    check_factor_returns,
     check_nan_guard,
     check_no_broker_dependency,
     check_separation,
     check_spearman,
     check_trust_boundary,
+    check_turnover,
     check_vendor_isolation,
     load_config,
     module_source,
@@ -163,6 +165,26 @@ def test_extreme_returns_in_a_quantile_fail_closed() -> None:
     )
 
 
+def test_turnover_counts_removals_on_a_shrinking_universe() -> None:
+    # Safety: turnover drives transaction-cost estimates. A shrinking universe (the current
+    # quantile a strict subset of the prior) must NOT report zero churn -- the removed names
+    # are real turnover, and hiding them would understate cost and mis-rank the factor.
+    _assert_one_passed(
+        _run_cargo_test("turnover_counts_removals_when_the_universe_shrinks"),
+        "SRS-BT-006 shrinking-universe turnover",
+    )
+
+
+def test_cumulative_spread_is_not_compounded_across_an_undefined_period() -> None:
+    # Safety: the cumulative spread is a path-dependent compounded return. Compounding across
+    # a period whose factor gave no signal would fabricate a continuously-held return, so it is
+    # withheld (None) when any period's spread is undefined.
+    _assert_one_passed(
+        _run_cargo_test("cumulative_spread_withheld_across_an_undefined_period"),
+        "SRS-BT-006 cumulative-gap withholding",
+    )
+
+
 def test_factor_crate_has_no_broker_or_simulation_dependency() -> None:
     config = load_config()
     # The real Cargo.toml must declare no live/broker/simulation dependency, so the offline
@@ -250,3 +272,25 @@ def test_spread_is_withheld_when_factor_does_not_separate_extremes() -> None:
     )
     with pytest.raises(FactorAnalysisCheckError):
         check_separation(config, mutated)
+
+
+def test_turnover_is_symmetric_so_removals_count() -> None:
+    config = load_config()
+    # Safety (Codex round-2): the real module measures turnover symmetrically (entered +
+    # exited) so a shrinking universe is not understated as zero churn.
+    check_turnover(config, module_source(config))
+    # ...and the guard must not be vacuous: a one-sided "entered only" numerator is caught.
+    mutated = module_source(config).replace("(entered + exited) as f64", "(entered) as f64", 1)
+    with pytest.raises(FactorAnalysisCheckError):
+        check_turnover(config, mutated)
+
+
+def test_cumulative_spread_does_not_compound_across_gaps() -> None:
+    config = load_config()
+    # Safety (Codex round-2): the real module withholds the compounded cumulative spread when
+    # any period's spread is undefined, so it never fabricates a return across an unranked gap.
+    check_factor_returns(config, module_source(config))
+    # ...and the guard must not be vacuous: removing the gap gate is caught.
+    mutated = module_source(config).replace("any_spread_undefined", "gate_disabled")
+    with pytest.raises(FactorAnalysisCheckError):
+        check_factor_returns(config, mutated)

@@ -145,6 +145,42 @@ considered done — fix commit on top of the feat):
   the per-bucket means and the spread), not just the headline aggregates. Prefer the real Codex pass
   over the fallback before declaring a numeric feature done.
 
+POST-REVIEW HARDENING — ROUND 2 (the user re-ran /codex:adversarial-review --base 860df19 AFTER the
+round-1 fix; the re-scoped pass found TWO MORE high findings, both valid, both downstream of the
+same design choice — the panel permits a DIFFERENT security set each period — both fixed in a second
+fix commit on top):
+  R2-A [high] "Turnover ignores removals when quantile sizes shrink": membership_turnover was the
+     one-sided alphalens convention 1 - |current ∩ prior|/|current| (fraction of NEW names), which
+     silently assumes a stable universe. When the current quantile is a strict SUBSET of the prior
+     (the universe shrank), retained == current.len() -> turnover 0, hiding the removed names and
+     understating transaction-cost drag. FIX: SYMMETRIC churn |current △ prior|/(|current|+|prior|)
+     (entered + exited names). It is in [0,1], counts removals, and PROVABLY equals the one-sided
+     value when the two quantiles are the same size (2k/2n == k/n) — so every existing equal-size
+     turnover test stays green; only a changing universe diverges. Regression:
+     shrinking_universe_turnover_counts_removals (L1) +
+     turnover_counts_removals_when_the_universe_shrinks (integration + L7 behavioral).
+  R2-B [high] "Cumulative spread compounds across undefined periods": cumulative_spread filtered out
+     the None spreads and compounded the rest, so Some(0.1), None, Some(0.1) reported 21% — implicitly
+     holding the long-short portfolio continuously THROUGH the unranked middle period (fabricated
+     continuity). FIX: cumulative_spread is None unless EVERY analyzed period has a defined spread
+     (path-dependent compounding requires a contiguous series). mean_spread — an average statistic,
+     not a path — legitimately stays over the defined periods. Regression:
+     cumulative_spread_withheld_across_an_undefined_period (L1 + integration + L7 behavioral).
+  Contract locked the fixes: factor_returns gained cumulative_gate_token (any_spread_undefined),
+  turnover gained symmetric_token (entered + exited); check_factor_returns / check_turnover assert
+  them, each with L3 + L7 non-vacuity mutation tests. Struct docs updated (the turnover churn formula
+  is now the symmetric one; cumulative_spread doc states the no-gap requirement).
+  Re-verified: cargo test 24 L1 + 10 integration green; fmt/clippy clean; factor_analysis_check
+  --require-cargo PASS (18 static); architecture_check exit 0; pytest 1718 passed / 4 skips (L3 39,
+  L7 17); ruff clean. Deterministic critic APPROVE on the R2 diff.
+  LESSON (extends the section-16 numeric-compute checklist): once a numeric series can be Option
+  (undefined per period), AUDIT EVERY consumer of that series for two failure modes — (a) a
+  path-dependent reduction (compounding) that must NOT silently skip the gaps, and (b) a
+  cardinality-sensitive denominator (turnover, weights) that breaks when the universe size varies
+  between periods. The real Codex pass found BOTH on the SECOND run, AFTER the first round already
+  introduced the Option — i.e. fixing one undefined-handling bug can surface the next; re-run the
+  adversarial pass after each fix round on a numeric feature, don't assume one round converges.
+
 === SESSION 46 ===
 Date: 2026-06-11
 Feature completed: SRS-BT-009 SDK-SURFACE — "persist completed backtest results" (docs/SRS.md

@@ -224,14 +224,18 @@ pub struct FactorReturns {
     pub spread_per_period: Vec<(u64, Option<f64>)>,
     /// Arithmetic mean of the defined per-period spreads; `None` when no period had one.
     pub mean_spread: Option<f64>,
-    /// Cumulative (compounded) spread `∏(1 + spread_t) − 1` over the defined spreads; `None`
-    /// when no period had one.
+    /// Cumulative (compounded) spread `∏(1 + spread_t) − 1`; a path-dependent return, so it is
+    /// `None` unless EVERY analyzed period has a defined spread (compounding across an undefined
+    /// gap would fabricate a continuously-held return through a period the factor did not rank).
     pub cumulative_spread: Option<f64>,
 }
 
 /// The turnover analysis: per-period membership churn of the top and bottom quantiles
-/// between consecutive rebalances, with the mean of each. The churn fraction is
-/// `1 − |members_t ∩ members_{t−1}| / |members_t|`.
+/// between consecutive rebalances, with the mean of each. The churn fraction is the
+/// SYMMETRIC `|members_t △ members_{t−1}| / (|members_t| + |members_{t−1}|)` -- it counts
+/// names that ENTERED or EXITED the quantile, so a shrinking universe (pure removals) is not
+/// understated; it reduces to the one-sided "fraction of new names" when the two quantiles
+/// are the same size.
 ///
 /// A period's turnover is **undefined** (`None`) unless BOTH it and the prior period separate
 /// their extremes by factor value (see [`FactorReturns`]). When either endpoint's top/bottom
@@ -520,11 +524,23 @@ fn bucket_period(period: &FactorPeriod, quantiles: usize) -> PeriodBuckets {
     }
 }
 
-/// Membership churn of `current` relative to `previous`:
-/// `1 − |current ∩ previous| / |current|`. `current` is non-empty (a validated quantile).
+/// Symmetric membership churn between `current` and `previous`:
+/// `|current △ previous| / (|current| + |previous|)` -- the share of names that ENTERED or
+/// EXITED the quantile, normalized by the two memberships' total size. Both sets are
+/// non-empty (validated quantiles), so the denominator is >= 2.
+///
+/// A one-sided `|current \ previous| / |current|` (the fraction of NEW names) would report
+/// `0` for a pure-removal rebalance -- when `current` is a strict subset of `previous`
+/// because the universe shrank -- and so understate the transaction-cost churn. The
+/// symmetric measure counts removals too. It reduces EXACTLY to the one-sided value when the
+/// two quantiles are the same size (`2k / 2n == k / n`), so an equal-universe panel is
+/// unaffected; only a changing universe diverges.
 fn membership_turnover(current: &HashSet<SecurityKey>, previous: &HashSet<SecurityKey>) -> f64 {
-    let retained = current.iter().filter(|key| previous.contains(*key)).count();
-    1.0 - (retained as f64) / (current.len() as f64)
+    let shared = current.iter().filter(|key| previous.contains(*key)).count();
+    let entered = current.len() - shared; // |current \ previous|
+    let exited = previous.len() - shared; // |previous \ current|
+    let total = current.len() + previous.len();
+    ((entered + exited) as f64) / (total as f64)
 }
 
 /// Mean of the DEFINED (`Some`) values of a `(ts, Option<f64>)` series, verified finite.
@@ -661,7 +677,14 @@ pub fn compute_tear_sheet(panel: &FactorPanel) -> Result<FactorTearSheet, Factor
         [] => None,
         values => Some(finite("mean_spread", mean(values))?),
     };
-    let cumulative_spread = if spreads.is_empty() {
+    // Cumulative spread is a COMPOUNDED (path-dependent) return, so it is only meaningful
+    // over a CONTIGUOUS series: if any period's spread is undefined (the factor did not
+    // separate its extremes), compounding the rest would silently treat the gap as a
+    // continuously-held position and fabricate a return across it. Withhold it (None) unless
+    // every analyzed period has a defined spread. (mean_spread, an average statistic rather
+    // than a path, legitimately stays over the defined periods.)
+    let any_spread_undefined = spread_per_period.iter().any(|&(_, value)| value.is_none());
+    let cumulative_spread = if spreads.is_empty() || any_spread_undefined {
         None
     } else {
         let mut compounded = 1.0_f64;
@@ -926,6 +949,78 @@ mod tests {
         assert!(sheet.turnover.top_turnover.is_empty());
         assert_eq!(sheet.turnover.mean_top, None);
         assert_eq!(sheet.turnover.mean_bottom, None);
+    }
+
+    #[test]
+    fn shrinking_universe_turnover_counts_removals() {
+        // P1 top bucket = {EEE,FFF,GGG,HHH} (8 names, 2 quantiles). P2 has only those four,
+        // so its top bucket = {GGG,HHH} is a strict SUBSET of P1's top: every current name was
+        // already there (zero ENTERED). A one-sided "fraction of new names" would report 0
+        // churn and hide the two REMOVED names; the symmetric measure counts them.
+        let p1 = FactorPeriod::new(
+            1,
+            vec![
+                observation("AAA", 1.0, 0.01),
+                observation("BBB", 2.0, 0.02),
+                observation("CCC", 3.0, 0.03),
+                observation("DDD", 4.0, 0.04),
+                observation("EEE", 5.0, 0.05),
+                observation("FFF", 6.0, 0.06),
+                observation("GGG", 7.0, 0.07),
+                observation("HHH", 8.0, 0.08),
+            ],
+        );
+        let p2 = FactorPeriod::new(
+            2,
+            vec![
+                observation("EEE", 1.0, 0.05),
+                observation("FFF", 2.0, 0.06),
+                observation("GGG", 3.0, 0.07),
+                observation("HHH", 4.0, 0.08),
+            ],
+        );
+        let sheet = compute_tear_sheet(&FactorPanel::new(vec![p1, p2], 2)).expect("tear sheet");
+        // current top {GGG,HHH} (2), prior top {EEE,FFF,GGG,HHH} (4): entered 0, exited 2 ->
+        // 2 / (2 + 4) = 1/3. The key point: NOT zero -- removals are counted.
+        let top = sheet.turnover.top_turnover[0].1.expect("top turnover");
+        approx(top, 1.0 / 3.0);
+        assert!(top > 0.0, "removals must not be hidden as zero churn");
+    }
+
+    #[test]
+    fn cumulative_spread_withheld_across_an_undefined_period() {
+        // Periods 1 and 3 strictly rank the factor (defined spread); period 2 is a constant
+        // factor (undefined spread). Compounding 1 and 3 across the gap would fabricate a
+        // continuously-held return, so cumulative_spread is withheld -- but mean_spread, an
+        // average over the defined periods, legitimately remains.
+        let ranked = |ts: u64| {
+            FactorPeriod::new(
+                ts,
+                vec![
+                    observation("AAA", 1.0, 0.1),
+                    observation("BBB", 2.0, 0.2),
+                    observation("CCC", 3.0, 0.3),
+                    observation("DDD", 4.0, 0.4),
+                ],
+            )
+        };
+        let flat = FactorPeriod::new(
+            2,
+            vec![
+                observation("AAA", 5.0, 0.1),
+                observation("BBB", 5.0, 0.2),
+                observation("CCC", 5.0, 0.3),
+                observation("DDD", 5.0, 0.4),
+            ],
+        );
+        let sheet = compute_tear_sheet(&FactorPanel::new(vec![ranked(1), flat, ranked(3)], 2))
+            .expect("tear sheet");
+        assert!(sheet.returns.spread_per_period[0].1.is_some());
+        assert_eq!(sheet.returns.spread_per_period[1].1, None);
+        assert!(sheet.returns.spread_per_period[2].1.is_some());
+        // mean over the two defined spreads is reported; the compounded path is not.
+        assert!(sheet.returns.mean_spread.is_some());
+        assert_eq!(sheet.returns.cumulative_spread, None);
     }
 
     #[test]
