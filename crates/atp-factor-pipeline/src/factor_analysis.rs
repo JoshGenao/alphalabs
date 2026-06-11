@@ -217,15 +217,15 @@ pub struct InformationCoefficient {
 /// The factor-return analysis: per-period quantile mean returns and the top-minus-bottom
 /// long-short spread series with its mean.
 ///
-/// The spread is **undefined** (`None`) for a period whose factor does not separate the top
-/// and bottom quantiles -- i.e. the largest factor value in the bottom bucket is not strictly
-/// less than the smallest in the top bucket (a constant factor, or a tie spanning the
-/// top/bottom cutoff). In that case the top-vs-bottom membership is decided by the
-/// `SecurityKey` tiebreak rather than the factor, so any resulting spread would attribute a
-/// portfolio's realized return to a factor that carries no ranking signal there -- fabricated
-/// "alpha". As with the IC, that case is reported as `None`, never a fabricated number. The
-/// `per_quantile_mean` buckets are still reported (each is a real mean of whatever landed in
-/// the bucket), but the spread -- the headline factor return -- is withheld.
+/// Both outputs apply the same undefined-not-fabricated rule. A quantile bucket's mean is
+/// reported only when that bucket is factor-CLEAN -- both of its bounding cutoffs are untied,
+/// so its membership is determined by the factor and not by the `SecurityKey` tiebreak at a
+/// straddling tie; otherwise the bucket's mean is `None`. A constant (or cutoff-tied) factor
+/// therefore yields `None`s rather than an identity-driven quantile-return ladder that would
+/// look like a factor signal but is only symbol ordering. The spread is likewise **undefined**
+/// (`None`) for a period whose factor does not separate the top and bottom quantiles (buckets
+/// `0` and last are not both clean): any spread there would attribute a portfolio's realized
+/// return to a factor that carries no ranking signal -- fabricated "alpha".
 ///
 /// Only HORIZON-AGNOSTIC statistics are reported: the per-period spread series and its
 /// arithmetic `mean_spread` (the average per-period long-short return). A COMPOUNDED cumulative
@@ -239,8 +239,10 @@ pub struct InformationCoefficient {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FactorReturns {
     /// Per period, the mean forward return of each quantile bucket (length `quantiles`,
-    /// bucket `0` = bottom, last = top). Outer vector is in period order.
-    pub per_quantile_mean: Vec<Vec<f64>>,
+    /// bucket `0` = bottom, last = top); a bucket's entry is `None` when it is not factor-clean
+    /// (a bounding cutoff is tied), so the ladder never presents a `SecurityKey`-driven mean as
+    /// a factor signal. Outer vector is in period order.
+    pub per_quantile_mean: Vec<Vec<Option<f64>>>,
     /// `(period ts, spread)` where spread = top-quantile mean − bottom-quantile mean (the
     /// per-period return of the dollar-neutral long-short factor portfolio); `None` for a
     /// period whose factor does not separate the top and bottom quantiles.
@@ -490,14 +492,16 @@ fn quantile_of(position: usize, count: usize, quantiles: usize) -> usize {
 /// The per-period analysis derived once from a single cross-section, reused by the factor
 /// returns and the turnover.
 struct PeriodBuckets {
-    /// Mean forward return of each quantile bucket (length `quantiles`).
-    quantile_means: Vec<f64>,
+    /// Mean forward return of each quantile bucket (length `quantiles`), `None` for a bucket
+    /// that is not factor-CLEAN -- one of whose bounding cutoffs is tied, so its membership
+    /// (and hence its mean) is decided by the `SecurityKey` tiebreak rather than the factor. A
+    /// constant factor therefore yields an all-`None` ladder rather than an identity-driven one.
+    quantile_means: Vec<Option<f64>>,
     /// Whether the factor strictly separates the extremes: BOTH the cutoff bounding the bottom
     /// bucket (q0 | q1) and the cutoff bounding the top bucket (q(Q-2) | q(Q-1)) are untied, so
-    /// the bottom and top bucket COMPOSITIONS are factor-determined. When `false` (a constant
-    /// factor, or a tie straddling either bounding cutoff), the split was decided by the
-    /// `SecurityKey` tiebreak rather than the factor, so the spread and turnover are not
-    /// factor-driven and are withheld (reported as `None`).
+    /// the bottom and top bucket COMPOSITIONS are factor-determined (equivalently, buckets `0`
+    /// and `quantiles - 1` are clean). When `false` the split was decided by the `SecurityKey`
+    /// tiebreak rather than the factor, so the spread and turnover are withheld (`None`).
     separates_extremes: bool,
     /// The securities in the bottom (`0`) and top (`quantiles - 1`) buckets.
     bottom_members: HashSet<SecurityKey>,
@@ -516,57 +520,57 @@ fn bucket_period(period: &FactorPeriod, quantiles: usize) -> PeriodBuckets {
 
     let count = sorted.len();
     let mut bucket_returns: Vec<Vec<f64>> = vec![Vec::new(); quantiles];
+    // Each bucket's min and max factor value (sorted ascending, so a bucket's first write is its
+    // min and its last is its max). Used to test whether each inter-bucket cutoff is untied.
+    let mut bucket_min_factor: Vec<Option<f64>> = vec![None; quantiles];
+    let mut bucket_max_factor: Vec<Option<f64>> = vec![None; quantiles];
     let mut bottom_members: HashSet<SecurityKey> = HashSet::new();
     let mut top_members: HashSet<SecurityKey> = HashSet::new();
-    // The factor values straddling the two cutoffs that bound the bottom and top buckets
-    // (sorted ascending, so a bucket's first write is its min and its last write is its max):
-    //   * `bottom_max` / `above_bottom_min` straddle the q0 | q1 cutoff (bounds the BOTTOM bucket)
-    //   * `below_top_max` / `top_min` straddle the q(Q-2) | q(Q-1) cutoff (bounds the TOP bucket)
-    // For Q == 2 both cutoffs are the single q0 | q1 boundary (q1 == top, q0 == below-top).
-    let mut bottom_max_factor: Option<f64> = None;
-    let mut above_bottom_min_factor: Option<f64> = None;
-    let mut below_top_max_factor: Option<f64> = None;
-    let mut top_min_factor: Option<f64> = None;
 
     for (position, observation) in sorted.iter().enumerate() {
         let bucket = quantile_of(position, count, quantiles);
         bucket_returns[bucket].push(observation.forward_return);
+        if bucket_min_factor[bucket].is_none() {
+            bucket_min_factor[bucket] = Some(observation.factor_value);
+        }
+        bucket_max_factor[bucket] = Some(observation.factor_value);
         if bucket == 0 {
             bottom_members.insert(observation.security.clone());
-            bottom_max_factor = Some(observation.factor_value);
-        }
-        if bucket == 1 && above_bottom_min_factor.is_none() {
-            above_bottom_min_factor = Some(observation.factor_value);
-        }
-        if bucket == quantiles - 2 {
-            below_top_max_factor = Some(observation.factor_value);
         }
         if bucket == quantiles - 1 {
             top_members.insert(observation.security.clone());
-            if top_min_factor.is_none() {
-                top_min_factor = Some(observation.factor_value);
-            }
         }
     }
 
-    // The factor separates the extremes iff BOTH cutoffs that bound the bottom and top buckets
-    // are untied: the bottom bucket's max factor strictly below its upper neighbour's min, AND
-    // the top bucket's lower neighbour's max strictly below the top's min. Checking only
-    // `bottom_max < top_min` is sufficient for Q == 2 (the lone cutoff) but NOT for Q >= 3, where
-    // a tie can straddle an inner cutoff (deciding the bottom/top COMPOSITION by SecurityKey)
-    // while the extremes stay apart. All four bounds are `Some` (every bucket is non-empty).
-    let bottom_cutoff_clean = matches!(
-        (bottom_max_factor, above_bottom_min_factor),
-        (Some(lo), Some(hi)) if lo < hi
-    );
-    let top_cutoff_clean = matches!(
-        (below_top_max_factor, top_min_factor),
-        (Some(lo), Some(hi)) if lo < hi
-    );
-    let separates_extremes = bottom_cutoff_clean && top_cutoff_clean;
+    // The cutoff between bucket k and k+1 is untied iff the max factor in k is strictly below the
+    // min factor in k+1 (adjacent sorted positions; both buckets non-empty -> both `Some`). A
+    // bucket is factor-CLEAN iff BOTH its bounding cutoffs are untied -- only then is its
+    // membership (and mean) factor-determined rather than decided by the `SecurityKey` tiebreak
+    // at a straddling tie.
+    let cutoff_clean = |k: usize| -> bool {
+        matches!(
+            (bucket_max_factor[k], bucket_min_factor[k + 1]),
+            (Some(lo), Some(hi)) if lo < hi
+        )
+    };
+    let bucket_clean: Vec<bool> = (0..quantiles)
+        .map(|k| {
+            let lower_clean = k == 0 || cutoff_clean(k - 1);
+            let upper_clean = k == quantiles - 1 || cutoff_clean(k);
+            lower_clean && upper_clean
+        })
+        .collect();
 
-    // Every bucket is non-empty (validated), so each mean is defined.
-    let quantile_means = bucket_returns.iter().map(|returns| mean(returns)).collect();
+    // A bucket's mean is reported only when the bucket is factor-clean; otherwise it is withheld
+    // (`None`) so a tie cannot expose an identity-driven quantile-return ladder. (Buckets are
+    // non-empty, so a clean bucket's mean is always defined.)
+    let quantile_means: Vec<Option<f64>> = (0..quantiles)
+        .map(|k| bucket_clean[k].then(|| mean(&bucket_returns[k])))
+        .collect();
+
+    // The extremes are separated iff buckets 0 and Q-1 are both clean (their bounding cutoffs --
+    // q0|q1 and q(Q-2)|q(Q-1) -- are untied), which is what the spread and turnover require.
+    let separates_extremes = bucket_clean[0] && bucket_clean[quantiles - 1];
 
     PeriodBuckets {
         quantile_means,
@@ -634,7 +638,7 @@ pub fn compute_tear_sheet(panel: &FactorPanel) -> Result<FactorTearSheet, Factor
 
     let mut ic_per_period: Vec<(u64, Option<f64>)> = Vec::with_capacity(panel.periods.len());
     let mut defined_ic: Vec<f64> = Vec::new();
-    let mut per_quantile_mean: Vec<Vec<f64>> = Vec::with_capacity(panel.periods.len());
+    let mut per_quantile_mean: Vec<Vec<Option<f64>>> = Vec::with_capacity(panel.periods.len());
     let mut spread_per_period: Vec<(u64, Option<f64>)> = Vec::with_capacity(panel.periods.len());
     let mut top_turnover: Vec<(u64, Option<f64>)> = Vec::new();
     let mut bottom_turnover: Vec<(u64, Option<f64>)> = Vec::new();
@@ -667,22 +671,26 @@ pub fn compute_tear_sheet(panel: &FactorPanel) -> Result<FactorTearSheet, Factor
 
         // Quantile factor returns + turnover membership (one cross-section sort).
         let buckets = bucket_period(period, quantiles);
-        // Every quantile mean must be finite before it leaves this function -- a bucket mean
-        // can overflow to +/-inf even on finite inputs (e.g. two near-f64::MAX returns), and a
-        // middle bucket never passes through the spread, so guard each one directly.
-        for &quantile_mean in &buckets.quantile_means {
-            finite("quantile_mean", quantile_mean)?;
+        // Every REPORTED (factor-clean) quantile mean must be finite before it leaves this
+        // function -- a bucket mean can overflow to +/-inf even on finite inputs (e.g. two
+        // near-f64::MAX returns), and a middle bucket never passes through the spread, so guard
+        // each defined one directly.
+        for quantile_mean in &buckets.quantile_means {
+            if let Some(value) = quantile_mean {
+                finite("quantile_mean", *value)?;
+            }
         }
         let separates = buckets.separates_extremes;
         // The spread is factor-attributable only when the factor separates the extremes;
         // otherwise the top/bottom split is a SecurityKey tiebreak, so the spread is withheld.
-        let spread = if separates {
-            Some(finite(
-                "factor_return_spread",
-                buckets.quantile_means[quantiles - 1] - buckets.quantile_means[0],
-            )?)
-        } else {
-            None
+        // When `separates` holds, buckets 0 and the last are both clean, so both means are `Some`.
+        let spread = match (
+            separates,
+            buckets.quantile_means[0],
+            buckets.quantile_means[quantiles - 1],
+        ) {
+            (true, Some(bottom), Some(top)) => Some(finite("factor_return_spread", top - bottom)?),
+            _ => None,
         };
         spread_per_period.push((period.ts, spread));
         per_quantile_mean.push(buckets.quantile_means);
@@ -866,18 +874,50 @@ mod tests {
         // driven by security identity rather than the factor.
         assert_eq!(sheet.returns.spread_per_period[0].1, None);
         assert_eq!(sheet.returns.mean_spread, None);
-        // The quantile means are still reported (each is a real mean of whatever landed).
+        // EVERY quantile bucket mean is withheld too: a constant factor must NOT expose an
+        // identity-driven quantile-return ladder (the buckets are SecurityKey-decided).
         assert_eq!(sheet.returns.per_quantile_mean[0].len(), 2);
+        assert!(
+            sheet.returns.per_quantile_mean[0]
+                .iter()
+                .all(Option::is_none),
+            "a constant factor must not publish any quantile mean"
+        );
+    }
+
+    #[test]
+    fn inner_cutoff_tie_withholds_only_the_adjacent_bucket_means() {
+        // 6 securities, 3 quantiles -> buckets {0,1},{2,3},{4,5}. Factor 2.0 straddles the q0|q1
+        // cutoff (positions 1,2). Bucket 0 (lower) and bucket 1 (its upper neighbour share the
+        // tie) are SecurityKey-decided -> None; bucket 2's cutoffs are untied -> Some. Per-bucket
+        // precision: a single tie voids only the adjacent buckets, not the whole ladder.
+        let period = FactorPeriod::new(
+            1,
+            vec![
+                observation("AAA", 1.0, 0.1),
+                observation("BBB", 2.0, 0.2),
+                observation("CCC", 2.0, 0.3),
+                observation("DDD", 3.0, 0.4),
+                observation("EEE", 4.0, 0.5),
+                observation("FFF", 5.0, 0.6),
+            ],
+        );
+        let sheet = compute_tear_sheet(&FactorPanel::new(vec![period], 3)).expect("tear sheet");
+        let means = &sheet.returns.per_quantile_mean[0];
+        assert_eq!(means[0], None, "bottom bucket sits on the tie");
+        assert_eq!(means[1], None, "middle bucket sits on the tie");
+        assert!(means[2].is_some(), "top bucket is cleanly separated");
     }
 
     #[test]
     fn quantile_spread_is_top_minus_bottom() {
         let sheet =
             compute_tear_sheet(&FactorPanel::new(vec![perfect_period(1)], 2)).expect("tear sheet");
-        // bottom bucket {AAA,BBB} mean 0.15, top {CCC,DDD} mean 0.35 -> spread 0.20.
+        // bottom bucket {AAA,BBB} mean 0.15, top {CCC,DDD} mean 0.35 -> spread 0.20. The factor
+        // strictly ranks, so both bucket means are defined.
         let means = &sheet.returns.per_quantile_mean[0];
-        approx(means[0], 0.15);
-        approx(means[1], 0.35);
+        approx(means[0].expect("bottom mean"), 0.15);
+        approx(means[1].expect("top mean"), 0.35);
         approx(sheet.returns.spread_per_period[0].1.expect("spread"), 0.20);
         approx(sheet.returns.mean_spread.expect("mean spread"), 0.20);
     }
@@ -929,7 +969,8 @@ mod tests {
 
     #[test]
     fn uneven_quantiles_keep_every_bucket_nonempty() {
-        // 10 securities into 3 quantiles -> sizes 4,3,3, all defined.
+        // 10 securities with distinct (strictly increasing) factors into 3 quantiles -> sizes
+        // 4,3,3, every cutoff untied, so every bucket mean is defined and finite.
         let observations: Vec<FactorObservation> = (0..10)
             .map(|i| observation(&format!("S{i:02}"), i as f64, (i as f64) / 100.0))
             .collect();
@@ -940,7 +981,7 @@ mod tests {
         .expect("tear sheet");
         assert_eq!(sheet.returns.per_quantile_mean[0].len(), 3);
         for mean_value in &sheet.returns.per_quantile_mean[0] {
-            assert!(mean_value.is_finite());
+            assert!(mean_value.expect("clean bucket mean").is_finite());
         }
     }
 

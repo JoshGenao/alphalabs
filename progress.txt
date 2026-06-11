@@ -260,6 +260,43 @@ AskUserQuestion (descope+redoc / build-richer-model / accept+document) and the u
   (ii): the metric keeps getting a more sophisticated PORTFOLIO model each round (one-sided → set →
   weight-L1 → drift-adjusted → cost-model…) — that escalation is the deferred backtest engine's domain.
 
+POST-REVIEW HARDENING — ROUND 5 (the descope held — Codex did NOT re-raise the round-4 settled axes;
+a fifth pass found one WITHIN-surface defect + one of MY OWN doc-drifts from the round-4 descope, both
+fixed; 10 findings total across 5 passes):
+  R5-A [high] "Tied factors emit fabricated per-quantile RETURNS": I had applied undefined-not-fabricated
+     to IC, spread, and turnover, but kept per_quantile_mean UNCONDITIONAL (I even documented "each is a
+     real mean of whatever landed"). Codex correctly challenged that the quantile-return LADDER is the
+     "does this factor sort returns?" visualization, so publishing it for a constant/cutoff-tied factor
+     presents symbol-ordering noise as a factor signal — the SAME false-signal class I already fixed for
+     the spread. This was a genuine missed application of my own doctrine (a DEFECT, not scope). FIX:
+     generalized the cleanliness check to ALL cutoffs. bucket_period now tracks each bucket's min/max
+     factor, a cutoff(k|k+1) is clean iff max(k) < min(k+1), and a bucket is CLEAN iff BOTH its bounding
+     cutoffs are untied. per_quantile_mean is now Vec<Vec<Option<f64>>> — a bucket mean is Some only when
+     its bucket is clean, else None (per-bucket precision: a single deep tie voids only the two adjacent
+     buckets, not the whole ladder). separates_extremes is now DERIVED from the same per-bucket
+     cleanliness (= bucket_clean[0] && bucket_clean[Q-1]), unifying the spread/turnover gate with the
+     ladder gate. Regression: constant_factor→all-None ladder; inner_cutoff_tie→only adjacent buckets
+     None, far bucket Some (L1 + integration + L7).
+  R5-B [medium] "Architecture contract advertises nonexistent cumulative spread": MY OWN doc-drift — the
+     round-4 descope removed the field + updated the fields list + most docs, but missed the JSON block's
+     prose `description` and the factor_analysis_check.py module docstring, both of which still named the
+     compounded cumulative spread. FIX: scrubbed both (now describe it as deferred), and reframed the
+     turnover prose to "target turnover". Lesson: when descoping, grep the FEATURE NAME across ALL prose
+     (json description blobs, module/file docstrings), not just the typed fields + the nearest doc-comment.
+  Contract locked R5-A: factor_returns gained per_quantile_option_token (per_quantile_mean: Vec<Vec<
+     Option<f64>>>); separation's tokens updated to the match-arm gate (true, Some(bottom), Some(top)) +
+     the per-bucket-derived predicate bucket_clean[0] && bucket_clean[quantiles - 1]; check_factor_returns
+     asserts the ladder Option, each with L3 + L7 non-vacuity mutation tests.
+  Re-verified: cargo test 27 L1 + 11 integration green; fmt/clippy clean; factor_analysis_check
+  --require-cargo PASS (18 static); architecture_check exit 0; pytest 1721 passed / 4 skips; ruff clean.
+  Deterministic critic APPROVE on the R5 diff.
+  LESSON (final convergence note for this feature): once an undefined-not-fabricated doctrine is
+  established for SOME outputs, audit it against EVERY output of the same class — here the per-bucket
+  ladder was the last unguarded one (IC/spread/turnover were already guarded). And after a DESCOPE,
+  feature-name-grep ALL prose for stale claims. Round 5 found exactly these two — a missed-doctrine defect
+  and a descope doc-drift — i.e. convergence (cleanup of known patterns), not new escalation; the round-4
+  scope axes (forward horizon, drift turnover) stayed settled.
+
 === SESSION 46 ===
 Date: 2026-06-11
 Feature completed: SRS-BT-009 SDK-SURFACE — "persist completed backtest results" (docs/SRS.md

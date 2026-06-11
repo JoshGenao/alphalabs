@@ -19,10 +19,15 @@ returns one ``FactorTearSheet`` bundling the three deliverables SYS-18 names:
       period whose factor values or returns have zero rank dispersion carries ``None`` (the
       ``per_period: Vec<(u64, Option<f64>)>`` series), never a fabricated zero.
   (b) ``FactorReturns`` -- the per-period quantile-sorted mean returns
-      (``per_quantile_mean``) plus the top-minus-bottom long-short ``spread_per_period``
-      series with its ``mean_spread`` and compounded ``cumulative_spread``.
-  (c) ``TurnoverAnalysis`` -- the per-period top/bottom-quantile membership churn
-      (``top_turnover`` / ``bottom_turnover``) with ``mean_top`` / ``mean_bottom``.
+      (``per_quantile_mean``, each bucket ``None`` when its bounding cutoff is tied) plus the
+      top-minus-bottom long-short ``spread_per_period`` series with its ``mean_spread``. Only
+      these horizon-agnostic statistics are reported; a compounded cumulative spread is deferred
+      (the panel has a start timestamp only, so it cannot validate non-overlapping forward
+      windows).
+  (c) ``TurnoverAnalysis`` -- the per-period top/bottom-quantile TARGET turnover
+      (``top_turnover`` / ``bottom_turnover``) with ``mean_top`` / ``mean_bottom`` (the
+      factor-signal turnover; realized return-driven drift turnover is deferred to the backtest
+      engine).
 
 The surface is fail-closed at the trust boundary (``FactorPanel::validate`` rejects an empty
 panel, an invalid quantile count, a period with fewer securities than quantiles, a duplicate
@@ -178,18 +183,26 @@ def check_information_coefficient(config: dict, src: str) -> str:
 def check_factor_returns(config: dict, src: str) -> str:
     spec = contract_block(config)["factor_returns"]
     _check_struct_fields(src, spec, "factor returns")
-    if _compact(spec["spread_option_token"]) not in _compact(_struct_body(src, spec["struct"])):
+    body = _compact(_struct_body(src, spec["struct"]))
+    if _compact(spec["spread_option_token"]) not in body:
         fail(
             f"FactorReturns.spread_per_period must carry the spread as `Option<f64>` "
             f"(`{spec['spread_option_token']}`) so a period whose factor does not separate the "
             "extremes is None, not a fabricated SecurityKey-driven spread"
         )
+    if _compact(spec["per_quantile_option_token"]) not in body:
+        fail(
+            f"FactorReturns.per_quantile_mean must carry each bucket mean as `Option<f64>` "
+            f"(`{spec['per_quantile_option_token']}`) so a bucket on a tied cutoff is None -- a "
+            "constant/tied factor must not expose an identity-driven quantile-return ladder"
+        )
     return (
-        "atp-factor-pipeline declares FactorReturns: per-period quantile mean returns plus the "
-        "top-minus-bottom long-short spread as Option<f64> (None when the factor does not separate "
-        "the extremes) and its arithmetic mean_spread -- only horizon-agnostic statistics; the "
-        "compounded cumulative spread is deferred (the panel cannot validate non-overlapping "
-        "forward windows)"
+        "atp-factor-pipeline declares FactorReturns: per-period quantile mean returns as "
+        "Vec<Vec<Option<f64>>> (a bucket mean is None when its bounding cutoff is tied, so a "
+        "constant/tied factor exposes no identity-driven ladder) plus the top-minus-bottom "
+        "long-short spread as Option<f64> and its arithmetic mean_spread -- only horizon-agnostic "
+        "statistics; the compounded cumulative spread is deferred (the panel cannot validate "
+        "non-overlapping forward windows)"
     )
 
 

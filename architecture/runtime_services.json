@@ -5467,7 +5467,7 @@
     }
   },
   "factor_analysis_contract": {
-    "description": "SRS-BT-006 (produce factor analysis and tear-sheet outputs; SyRS SYS-18; StRS SN-1.05). The deterministic, dependency-free factor-analysis surface lives in crates/atp-factor-pipeline (module `factor_analysis`). compute_tear_sheet consumes a FactorPanel -- a per-rebalance-period panel of (SecurityKey, factor value, forward return) observations plus a quantile count -- and returns one FactorTearSheet bundling the three deliverables SYS-18 names: (1) InformationCoefficient, the per-period Spearman rank correlation between factor value and forward return (average tie ranks; Pearson of ranks; clamped to its [-1,1] domain) with mean / std / risk-adjusted IC; (2) FactorReturns, the per-period quantile-sorted mean returns plus the top-minus-bottom long-short spread with mean and compounded cumulative spread; (3) TurnoverAnalysis, the per-period top/bottom-quantile membership churn with means. Factor values and returns are dimensionless f64 (the factor domain, not a money leak); the work is deterministic (fixed left-to-right folds; cross-sections sorted by the total order (factor_value, SecurityKey)); an undefined statistic is None (never a fabricated zero); a non-finite aggregate fails closed; and FactorPanel::validate rejects an empty or degenerate panel at the trust boundary. Deferred (SRS-BT-006 stays passes:false): the scheduled full-universe factor job that produces the panel (SRS-FAC-001), wiring real factor values/returns from the unified historical data interface (SRS-DATA-007), rendering the tear-sheet to an operator (SRS-UI / SRS-API), and bundling the SRS-BT-004 PerformanceMetrics family into one cross-crate report.",
+    "description": "SRS-BT-006 (produce factor analysis and tear-sheet outputs; SyRS SYS-18; StRS SN-1.05). The deterministic, dependency-free factor-analysis surface lives in crates/atp-factor-pipeline (module `factor_analysis`). compute_tear_sheet consumes a FactorPanel -- a per-rebalance-period panel of (SecurityKey, factor value, forward return) observations plus a quantile count -- and returns one FactorTearSheet bundling the three deliverables SYS-18 names: (1) InformationCoefficient, the per-period Spearman rank correlation between factor value and forward return (average tie ranks; Pearson of ranks; clamped to its [-1,1] domain) with mean / std / risk-adjusted IC; (2) FactorReturns, the per-period quantile-sorted mean returns (each bucket mean None when its bounding cutoffs are tied, so a constant/tied factor cannot expose an identity-driven ladder) plus the top-minus-bottom long-short spread with its mean (a horizon-agnostic average; a compounded cumulative spread is deferred -- the panel cannot validate non-overlapping forward windows); (3) TurnoverAnalysis, the per-period top/bottom-quantile TARGET turnover (factor-signal; realized drift turnover deferred to the backtest engine) with means. Factor values and returns are dimensionless f64 (the factor domain, not a money leak); the work is deterministic (fixed left-to-right folds; cross-sections sorted by the total order (factor_value, SecurityKey)); an undefined statistic is None (never a fabricated zero); a non-finite aggregate fails closed; and FactorPanel::validate rejects an empty or degenerate panel at the trust boundary. Deferred (SRS-BT-006 stays passes:false): the scheduled full-universe factor job that produces the panel (SRS-FAC-001), wiring real factor values/returns from the unified historical data interface (SRS-DATA-007), rendering the tear-sheet to an operator (SRS-UI / SRS-API), and bundling the SRS-BT-004 PerformanceMetrics family into one cross-crate report.",
     "requirement": "SRS-BT-006",
     "srs_refs": ["SRS-BT-006"],
     "syrs_refs": ["SYS-18"],
@@ -5500,7 +5500,8 @@
     "factor_returns": {
       "struct": "FactorReturns",
       "fields": ["per_quantile_mean", "spread_per_period", "mean_spread"],
-      "spread_option_token": "spread_per_period: Vec<(u64, Option<f64>)>"
+      "spread_option_token": "spread_per_period: Vec<(u64, Option<f64>)>",
+      "per_quantile_option_token": "per_quantile_mean: Vec<Vec<Option<f64>>>"
     },
     "turnover": {
       "struct": "TurnoverAnalysis",
@@ -5554,8 +5555,8 @@
     },
     "separation": {
       "predicate_token": "separates_extremes",
-      "spread_gate_token": "if separates",
-      "inner_cutoff_token": "top_cutoff_clean",
+      "spread_gate_token": "(true, Some(bottom), Some(top))",
+      "inner_cutoff_token": "bucket_clean[0] && bucket_clean[quantiles - 1]",
       "comment": "The spread/turnover are factor-attributable only when the factor strictly separates the top and bottom quantiles AT BOTH BOUNDING CUTOFFS (q0|q1 and q(Q-2)|q(Q-1)), not just extreme-to-extreme -- for 3+ quantiles a tie can straddle an inner cutoff and decide the bottom/top composition by SecurityKey. Otherwise the value is withheld (None), so a constant or cutoff-tied factor cannot fabricate alpha."
     },
     "numeric_boundary": {

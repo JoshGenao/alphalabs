@@ -88,7 +88,7 @@ class FactorAnalysisScriptTest(unittest.TestCase):
             "declares FactorAnalysisError with 8 fail-closed variants",
             "computes the IC as Spearman = Pearson of average tie ranks",
             "gates the spread and turnover on a strict extreme-separation predicate",
-            "long-short spread as Option<f64> (None when the factor does not separate",
+            "a constant/tied factor exposes no identity-driven ladder",
             "turnover as Option<f64> (None when not factor-driven)",
             "FactorPanel::validate fails closed at the trust boundary",
             "factor analysis is deterministic",
@@ -185,6 +185,18 @@ class FactorReturnsTest(_Fixture):
             check_factor_returns(self.config, mutated)
         self.assertIn("Option<f64>", str(ctx.exception))
 
+    def test_per_quantile_mean_demoted_off_option_is_caught(self) -> None:
+        # Typing the quantile means as bare f64 would publish an identity-driven ladder for a
+        # constant/tied factor (Codex round-5 finding).
+        mutated = self.src.replace(
+            "pub per_quantile_mean: Vec<Vec<Option<f64>>>,",
+            "pub per_quantile_mean: Vec<Vec<f64>>,",
+            1,
+        )
+        with self.assertRaises(FactorAnalysisCheckError) as ctx:
+            check_factor_returns(self.config, mutated)
+        self.assertIn("per_quantile_mean", str(ctx.exception))
+
 
 class TurnoverTest(_Fixture):
     def test_turnover_evidence(self) -> None:
@@ -227,19 +239,22 @@ class SeparationTest(_Fixture):
         self.assertIn("separates_extremes", str(ctx.exception))
 
     def test_dropped_spread_gate_is_caught(self) -> None:
-        # Always taking the spread (ignoring the predicate) reintroduces the false-alpha bug.
-        mutated = self.src.replace("let spread = if separates {", "let spread = if true {", 1)
+        # Dropping the `separates` arm of the spread match (taking the spread regardless)
+        # reintroduces the false-alpha bug.
+        mutated = self.src.replace(
+            "(true, Some(bottom), Some(top))", "(_, Some(bottom), Some(top))", 1
+        )
         with self.assertRaises(FactorAnalysisCheckError) as ctx:
             check_separation(self.config, mutated)
-        self.assertIn("if separates", str(ctx.exception))
+        self.assertIn("(true, Some(bottom), Some(top))", str(ctx.exception))
 
     def test_extreme_only_separation_is_caught(self) -> None:
-        # Removing the inner-cutoff check (reverting to extremes-only) would let a 3+-quantile
-        # inner-cutoff tie fabricate a SecurityKey-driven spread (Codex round-3 finding).
-        mutated = self.src.replace("top_cutoff_clean", "always_clean")
+        # Reverting the predicate to extremes-only (not derived from per-bucket cleanliness)
+        # would let a 3+-quantile inner-cutoff tie fabricate a SecurityKey-driven spread.
+        mutated = self.src.replace("bucket_clean[0] && bucket_clean[quantiles - 1]", "true", 1)
         with self.assertRaises(FactorAnalysisCheckError) as ctx:
             check_separation(self.config, mutated)
-        self.assertIn("top_cutoff_clean", str(ctx.exception))
+        self.assertIn("bucket_clean", str(ctx.exception))
 
 
 class TearSheetTest(_Fixture):

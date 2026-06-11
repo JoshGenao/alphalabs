@@ -68,6 +68,8 @@ fn end_to_end_tear_sheet_is_coherent() {
     assert_eq!(sheet.returns.per_quantile_mean.len(), 3);
     for quantile_means in &sheet.returns.per_quantile_mean {
         assert_eq!(quantile_means.len(), 3);
+        // The factor strictly ranks, so every bucket is clean and its mean is defined.
+        assert!(quantile_means.iter().all(Option::is_some));
     }
     for (_, spread) in &sheet.returns.spread_per_period {
         // The factor strictly ranks every period, so each spread is defined.
@@ -181,6 +183,11 @@ fn constant_factor_withholds_spread_and_turnover() {
     assert_eq!(sheet.returns.spread_per_period[0].1, None);
     assert_eq!(sheet.returns.spread_per_period[1].1, None);
     assert_eq!(sheet.returns.mean_spread, None);
+    // EVERY quantile bucket mean is withheld too -- a constant factor must not expose an
+    // identity-driven quantile-return ladder.
+    for quantile_means in &sheet.returns.per_quantile_mean {
+        assert!(quantile_means.iter().all(Option::is_none));
+    }
     // Turnover is likewise withheld for the non-factor-driven membership.
     assert_eq!(sheet.turnover.top_turnover[0].1, None);
     assert_eq!(sheet.turnover.mean_top, None);
@@ -384,10 +391,13 @@ fn invariants_hold_over_generated_panels() {
             }
         }
         for (i, (_, spread)) in sheet.returns.spread_per_period.iter().enumerate() {
-            // A defined spread must be exactly the top-minus-bottom quantile difference.
+            // A defined spread must be exactly the top-minus-bottom quantile difference. When the
+            // spread is defined the extreme buckets are clean, so their means are defined too.
             if let Some(value) = spread {
                 let means = &sheet.returns.per_quantile_mean[i];
-                let expected = means[means.len() - 1] - means[0];
+                let top = means[means.len() - 1].expect("clean top bucket");
+                let bottom = means[0].expect("clean bottom bucket");
+                let expected = top - bottom;
                 assert!(
                     (value - expected).abs() < 1e-12,
                     "spread != top - bottom (seed {seed})"

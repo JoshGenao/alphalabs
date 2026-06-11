@@ -267,17 +267,28 @@ def test_spread_is_withheld_when_factor_does_not_separate_extremes() -> None:
     mutated = module_source(config).replace("separates_extremes", "always_true")
     with pytest.raises(FactorAnalysisCheckError):
         check_separation(config, mutated)
-    # ...nor is the spread gate vacuous: always taking the spread is caught.
+    # ...nor is the spread gate vacuous: dropping the `separates` arm of the spread match is caught.
     mutated = module_source(config).replace(
-        "let spread = if separates {", "let spread = if true {", 1
+        "(true, Some(bottom), Some(top))", "(_, Some(bottom), Some(top))", 1
     )
     with pytest.raises(FactorAnalysisCheckError):
         check_separation(config, mutated)
-    # ...nor is the inner-cutoff check vacuous: reverting to extremes-only is caught (a 3+-
-    # quantile inner-cutoff tie would otherwise fabricate a SecurityKey-driven spread).
-    mutated = module_source(config).replace("top_cutoff_clean", "always_clean")
+    # ...nor is the inner-cutoff-aware predicate vacuous: reverting to a constant `true` is caught
+    # (a 3+-quantile inner-cutoff tie would otherwise fabricate a SecurityKey-driven spread).
+    mutated = module_source(config).replace(
+        "bucket_clean[0] && bucket_clean[quantiles - 1]", "true", 1
+    )
     with pytest.raises(FactorAnalysisCheckError):
         check_separation(config, mutated)
+
+
+def test_constant_factor_withholds_the_quantile_return_ladder() -> None:
+    # Safety (Codex round-5): a constant/tied factor must NOT expose a quantile-return ladder
+    # driven only by SecurityKey ordering -- every bucket mean is withheld (None).
+    _assert_one_passed(
+        _run_cargo_test("constant_factor_withholds_spread_and_turnover"),
+        "SRS-BT-006 identity-driven ladder withheld",
+    )
 
 
 def test_inner_cutoff_tie_withholds_spread_with_three_quantiles() -> None:
