@@ -1,3 +1,111 @@
+=== SESSION 47 ===
+Date: 2026-06-11
+Feature completed: SRS-BT-006 SDK-SURFACE — "produce factor analysis and tear-sheet outputs"
+(docs/SRS.md SRS-5.6 SRS-BT-006; traces SyRS SYS-18; StRS SN-1.05). User-confirmed via
+AskUserQuestion (over SRS-BT-010 deterministic-backtest). The natural genuinely-new P1 in the
+backtest numeric thread: SIM-001..004 -> BT-004 (metrics) -> BT-005 (benchmark) -> BT-009
+(record store) -> BT-006 (factor tear-sheet). Adds the deterministic, dependency-free
+factor-analysis surface in a NEW module of the previously near-empty atp-factor-pipeline crate
+(its 32-line lib.rs stub was the only prior content).
+Status: 92 remaining features (UNCHANGED — SRS-BT-006 stays passes:false; honest partial pass).
+feature_list.json was NOT modified.
+
+What I did (3 commits, the standard prep -> feat -> chore cadence):
+- prep 860df19 (chore(critic)): extended SAFETY_PATH_RE in tools/critic_check.py with
+  collision-free factor tokens (/factor_analysis\.rs, factor[_-]?analysis[_-]?check,
+  factor[_-]?analysis[_-]?contract, factor[_-]?tear[_-]?sheet, srs[_-]?bt[_-]?006). NO bare
+  'factor' token (collides with atp-factor-pipeline everywhere). Verified each matches the
+  planned feat paths and ZERO existing tracked files (the S45 lesson). This made
+  factor_analysis.rs + factor_analysis_check.py safety paths so the critic requires the paired
+  tests/domain/ diff — committed SEPARATELY so the feat diff under judgment does not self-modify
+  the gate (critic_prompt refusal clause #4).
+- feat a69f87e (9 files, 2352 insertions): crates/atp-factor-pipeline/src/factor_analysis.rs
+  (FactorObservation/FactorPeriod/FactorPanel + InformationCoefficient/FactorReturns/
+  TurnoverAnalysis/FactorTearSheet + compute_tear_sheet + average_ranks/pearson/mean/sample_std/
+  finite/quantile_of/bucket_period/membership_turnover + FactorAnalysisError(8 variants) + 20 L1
+  tests); lib.rs `pub mod factor_analysis;`; factor_analysis_contract in
+  architecture/runtime_services.json; tools/factor_analysis_check.py (17 static collectors +
+  --require-cargo smoke, imported TRANSITIVELY via architecture_check.py + an init.sh gate after
+  the backtest-record gate — the metrics/benchmark/backtest_store convention); L3
+  tests/test_factor_analysis_contract.py; L7 tests/domain/test_factor_tear_sheet.py; Rust
+  integration srs_bt_006_factor_analysis.rs (6 tests incl. an L2-style 64-panel property sweep).
+- chore (this entry).
+
+Design notes (the headline is the THREE-DELIVERABLE numeric surface + the determinism discipline):
+- The tear-sheet bundles exactly the three SYS-18 names. (1) IC = per-period Spearman rank
+  correlation between factor value and forward return: average tie ranks (average_ranks) -> Pearson
+  of the ranks (pearson) -> CLAMPED to the [-1,1] domain (the BT-009-R5-style domain bound Codex
+  cares about; FP can overflow a rank-Pearson to 1.0000002). A period with zero rank dispersion
+  (constant factor OR constant returns) yields None — the per_period series is Vec<(u64,Option<f64>)>,
+  never a fabricated zero. mean/std/risk-adjusted IC (the IC information ratio) aggregate over the
+  DEFINED ICs only. (2) Factor returns: securities sorted into `quantiles` buckets by the total order
+  (factor_value, SecurityKey); quantile_of(pos,count,Q) = pos*Q/count gives buckets that differ in
+  size by at most one and are ALL non-empty when count>=Q (validated); the spread is top mean - bottom
+  mean (the dollar-neutral long-short period return), so cumulative_spread is the COMPOUNDED
+  Pi(1+spread)-1. (3) Turnover: 1 - |current ∩ previous|/|current| churn of the top and bottom
+  quantile between consecutive periods (denominator = current quantile size).
+- NUMERIC BOUNDARY (mirrors metrics.rs doctrine): factor scores and returns are dimensionless f64
+  — this is the factor domain, NOT a money-correctness leak (no integer-minor money enters this
+  module). Determinism (the SRS-BT-010 criterion): fixed left-to-right folds, total-order tie breaks,
+  no parallelism/RNG/clock; the property sweep proves bit-identical output under re-run AND under
+  per-period observation reversal.
+- TRUST BOUNDARY (fail-closed FactorPanel::validate): non-empty panel; quantiles>=2; each period
+  non-empty with finite factor/return; strictly increasing period ts; no duplicate SecurityKey in a
+  period; each period holds >= quantiles securities. The runtime_services.json trust_boundary tokens
+  are the CONSTRUCTION form (Err(FactorAnalysisError::X) so the check verifies validate actually
+  RAISES each — the bare-variant form was non-unique because the validate construction site precedes
+  the enum decl in file order; this also made the L3/L7 negative-mutation tests meaningful).
+- HOME = atp-factor-pipeline (the AGENTS.md-named owner; deps atp-data + atp-types only). The three
+  deliverables are self-contained numerics, so NO atp-simulation dependency was introduced —
+  dependency direction stays clean. Reuses atp_types::SecurityKey (Eq/Hash/Ord) as the security id.
+
+What I tested: cargo test -p atp-factor-pipeline green (20 factor_analysis L1 + 6 srs_bt_006
+integration incl. the 64-panel property sweep over IC∈[-1,1] / turnover∈[0,1] / spread==top-bottom /
+determinism / observation-order invariance; 0 failures); fmt --check clean on the new files only (NO
+whole-crate fmt per no_whole_crate_cargo_fmt — hand-applied rustfmt to just the new files); clippy
+clean on the new module/tests (only pre-existing atp-types doc warnings remain).
+factor_analysis_check.py --require-cargo PASS (17 static + cargo smoke). architecture_check.py exit 0
+surfacing the factor evidence with the prior sim checks PASS. L3 (33 cases) + L7 (11 cases) pass;
+pytest -m "not integration and not e2e" 1703 passed / 4 pre-existing pending-impl skips / 118
+subtests; ruff clean. ./init.sh -> Environment ready with the new "factor-analysis contract check"
+gate after the backtest-record gate.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings (pre-commit hook also APPROVE
+    on prep 860df19 + feat a69f87e). The SAFETY_PATH_RE prep made factor_analysis.rs +
+    factor_analysis_check.py safety paths, so the critic required the paired tests/domain/ diff
+    (present) and did not block.
+  judgment (critic_prompt.md, FRESH-CONTEXT sub-agent fallback — /codex:adversarial-review is a
+    user-only plugin command Claude cannot invoke via the Skill tool, per the
+    codex_adversarial_review memory; the sub-agent ran the authoritative prompt against the staged
+    diff with no implementation-context contamination): APPROVE — 0 findings. It independently
+    confirmed: dependency direction clean (atp-data + atp-types only; no dashboard/orchestrator/
+    simulation dep; single crate touched); no IO/IB/async/adapter surface (pure computation, no
+    silent unwrap / None-on-error); no datetime.now()/clock branch (deterministic); doc/contract/
+    feature_list coherent (passes:false retained); atomic commit (prep split out so the feat diff
+    does not self-modify the gate); test layers L1+L2(property)+L3+L7+integration present; and the CI
+    mirror is satisfied transitively via architecture_check (no ci.yml/run_ci_locally.sh drift — the
+    ci_mirror_check_script memory applies to STANDALONE CI entries, not aggregator-imported checks).
+
+Known issues / notes for next agent:
+- SRS-BT-006 stays passes:false BY DESIGN (honest partial-pass). DEFERRED (the passes:false owners):
+  (1) the scheduled full-universe factor job that PRODUCES the panel across 8,000+ securities —
+  SRS-FAC-001 / SYS-32,33; (2) wiring real factor values + forward returns from the unified historical
+  data interface — SRS-DATA-007; (3) rendering the tear-sheet TO AN OPERATOR — SRS-UI / SRS-API; (4)
+  bundling the SRS-BT-004 PerformanceMetrics family into one cross-crate report (a full tear-sheet is
+  metrics + factor analysis; that bundle crosses atp-simulation <-> atp-factor-pipeline and is its own
+  feature). This slice ships only the deterministic factor-return / IC / turnover compute + tear-sheet
+  bundle + fail-closed validation surface.
+- atp-factor-pipeline is no longer a stub: it now owns factor_analysis.rs. A natural sibling next
+  step is SRS-FAC-001 (the scheduled factor job that feeds this panel) or SRS-BT-010 (deterministic
+  backtest — the determinism property this module already honors). The convention for the next feature
+  is unchanged: new module + lib re-export + *_contract json + tools/*_check.py imported transitively
+  by architecture_check.py + init.sh gate + L1/L3/L7/integration + the SAFETY_PATH_RE prep commit.
+- Adversarial-layer note: /codex:adversarial-review (the PREFERRED judgment path) is user-only;
+  this session used the fresh-context sub-agent fallback (sanctioned by coding_prompt Step 6.5 +
+  critic_prompt.md + the codex_adversarial_review memory). If you want the real Codex pass, the USER
+  must type `/codex:adversarial-review --wait $(cat prompts/critic_prompt.md)`.
+
 === SESSION 46 ===
 Date: 2026-06-11
 Feature completed: SRS-BT-009 SDK-SURFACE — "persist completed backtest results" (docs/SRS.md
