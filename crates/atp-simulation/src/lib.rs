@@ -90,6 +90,23 @@ pub mod metrics;
 /// SYS-36 <=5s) are deferred, so SRS-BT-005 stays `passes:false`.
 pub mod benchmark;
 
+/// Completed-backtest result persistence + query (SRS-BT-009 / SyRS SYS-21, SYS-79). It
+/// bundles the seven artifacts the acceptance names — the [`backtest::BacktestRequest`]
+/// parameters, the [`metrics::PerformanceMetrics`] family (SRS-BT-004), the
+/// [`backtest::Fill`] trade log, the [`backtest::EquityPoint`] equity curve, the
+/// [`benchmark::BenchmarkComparison`] (SRS-BT-005), a strategy code version, and a
+/// producer-supplied completion timestamp — into one queryable
+/// [`backtest_store::BacktestRecord`], and holds them in a
+/// [`backtest_store::BacktestResultStore`] that answers the three query axes (by strategy,
+/// by date range, by parameter set) in a deterministic canonical order and serializes the
+/// whole store to a checksummed, dependency-free text blob that restores fail-closed.
+/// Trade-log/equity money stays integer minor units; the metric/comparison ratios round-trip
+/// exactly via `f64::to_bits` and are verified finite on restore (SRS-BT-010). Writing the
+/// blob to the SSD/NAS tier (SRS-DATA-008), rendering the history to an operator
+/// (SRS-UI-004 / SRS-API), and a full orchestrated run that stamps real provenance
+/// (SRS-BT-001 / orchestrator) are deferred, so SRS-BT-009 stays `passes:false`.
+pub mod backtest_store;
+
 #[derive(Debug, Default)]
 pub struct InternalSimulationEngine;
 

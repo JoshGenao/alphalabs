@@ -5286,5 +5286,184 @@
       "post_fetch_guard": "resolved.symbol != benchmark.symbol()",
       "mismatch_error": "BenchmarkError::SourceSymbolMismatch"
     }
+  },
+  "sim_backtest_store_contract": {
+    "description": "SRS-BT-009 (persist completed backtest results; SyRS SYS-21 / SYS-79; StRS SN-1.02 / SN-1.04). The completed-backtest result persistence + query surface lives in crates/atp-simulation (module `backtest_store`) and WRAPS the producer types the prior slices already build -- it recomputes nothing. The acceptance criterion names seven artifacts that must be queryable by strategy, date range, and parameter set: BacktestRecord bundles all seven -- the BacktestRequest parameters (the parameter set), the SRS-BT-004 PerformanceMetrics family, the Vec<Fill> trade log, the Vec<EquityPoint> equity curve, the SRS-BT-005 BenchmarkComparison (the record's benchmark identity), an opaque caller-supplied CodeVersion (the strategy code version), and a producer-supplied completed_at_ts (the timestamp). RunId is the record's identity; BacktestRecord::new and BacktestResultStore::insert share one fail-closed validate_record (rejecting an empty id, an inverted run window, a negative starting cash, an invalid cost family, an equity mark outside the run window, a missing benchmark identity, or a non-finite ratio). BacktestResultStore answers the three SRS-BT-009 query axes -- query_by_strategy, query_by_run_window (the SYS-21 date-range axis -- records whose backtest run window request.range OVERLAPS the queried period, e.g. every 2020 backtest regardless of when it executed), query_by_completion_window (the distinct completion-timestamp axis), query_by_parameter_set (the StrategyParameters tuned set -- the named values that tell two points of a parameter sweep apart, distinct from the launch BacktestRequest), and a combined RecordQuery that ANDs them -- and holds records in a single canonical (completed_at_ts, run_id) order (a total order because run ids are unique, enforced by insert rejecting StoreError::DuplicateRunId), so every query returns deterministically and the serialized form is byte-identical for the same record set regardless of insertion order. serialize/restore is a deterministic, dependency-free text codec (MAGIC header + FNV-1a integrity checksum over the body, length-prefixed strings, sorted records, enum-tagged cost models): restore validates the magic, the checksum BEFORE building any state, the schema version, and every record invariant, decoding into a local Vec and sorting ONCE by order_key (O(n log n) bulk restore, not the O(n^2) of a per-record sorted insert) before constructing the store so a corrupt / truncated / checksum-mismatching blob yields no partially-restored store (StoreError::CorruptRecord, ChecksumMismatch, UnknownSchemaVersion). The numeric boundary: trade-log/equity money stays integer minor units (i128::from over the i64 *_minor fields) end to end, while the metric/comparison ratios are dimensionless f64 (the metric domain, inherited from SRS-BT-004/005, not a money leak) round-tripped EXACTLY via f64::to_bits / f64::from_bits and verified finite on restore (is_finite, StoreError::NonFiniteRatio) so a NaN/inf can never re-enter a ranking from a tampered blob. The work is deterministic (SRS-BT-010): fixed folds, no parallelism / RNG / wall-clock read; the completion timestamp is supplied by the producer. backtest_store adds no broker/adapter dependency and carries no vendor SDK token; lib.rs re-exports `pub mod backtest_store;`. The Rust integration test srs_bt_009_backtest_store drives a real BacktestEngine run -> metrics::compute -> benchmark::compare -> BacktestRecord -> store insert -> serialize -> restore -> query by all three axes end to end, including the corrupt-blob fail-closed and duplicate-run-id degraded paths. The FNV-1a integrity checksum is non-cryptographic: it detects ACCIDENTAL corruption (a change that does not also recompute it), NOT a deliberate checksum-recomputing tamperer (that needs a keyed MAC + key management, out of scope for the single-user, local-only baseline, the same stance as paper_state); the per-record invariant + domain checks are the independent defense that still rejects an impossible-valued recomputed blob. The PASS line is 'SRS-BT-009 SDK-SURFACE PASS'; feature_list.json keeps SRS-BT-009 passes:false because writing the serialized blob to the SSD-primary / NAS-archival tier is the deferred SRS-DATA-008 owner, rendering the queryable history to an operator in the dashboard / backtest report is the deferred SRS-UI-004 / SRS-API owner, and a full orchestrated run stamping a real run id / code version / completion timestamp end to end (the atomic run-snapshot identity) is the deferred SRS-BT-001 / orchestrator owner -- only the deterministic record + store + query + codec surface is shipped here.",
+    "requirement": "SRS-BT-009",
+    "srs_refs": [
+      "SRS-BT-009"
+    ],
+    "syrs_refs": [
+      "SYS-21",
+      "SYS-79"
+    ],
+    "strs_refs": [
+      "SN-1.02",
+      "SN-1.04"
+    ],
+    "ac_traces": [
+      "SRS-BT-009",
+      "SYS-21"
+    ],
+    "simulation_crate": {
+      "crate": "atp-simulation",
+      "path": "crates/atp-simulation"
+    },
+    "backtest_store_module": "backtest_store",
+    "record_struct": {
+      "struct": "BacktestRecord",
+      "fields": [
+        "run_id: RunId",
+        "request: BacktestRequest",
+        "parameters: StrategyParameters",
+        "metrics: PerformanceMetrics",
+        "comparison: BenchmarkComparison",
+        "trade_log: Vec<Fill>",
+        "equity_curve: Vec<EquityPoint>",
+        "code_version: CodeVersion",
+        "completed_at_ts: u64"
+      ]
+    },
+    "identity_newtypes": {
+      "run_id": "RunId",
+      "code_version": "CodeVersion"
+    },
+    "store_struct": {
+      "struct": "BacktestResultStore",
+      "records_field": "records: Vec<BacktestRecord>"
+    },
+    "query_fns": {
+      "by_strategy": "pub fn query_by_strategy",
+      "by_run_window": "pub fn query_by_run_window",
+      "by_completion_window": "pub fn query_by_completion_window",
+      "by_parameter_set": "pub fn query_by_parameter_set",
+      "combined": "pub fn query",
+      "query_struct": "RecordQuery",
+      "run_window_overlap_token": "windows_overlap"
+    },
+    "insert": {
+      "insert_fn": "pub fn insert",
+      "duplicate_guard_token": "StoreError::DuplicateRunId",
+      "canonical_order_token": "order_key"
+    },
+    "codec": {
+      "magic_token": "pub const MAGIC",
+      "schema_version_token": "pub const SCHEMA_VERSION",
+      "serialize_fn": "pub fn serialize",
+      "restore_fn": "pub fn restore",
+      "checksum_fn": "fn checksum",
+      "checksum_first_token": "if checksum(body) != stored_checksum",
+      "to_bits_token": "to_bits()",
+      "from_bits_token": "from_bits(",
+      "finite_guard_token": "is_finite()",
+      "non_finite_error_token": "StoreError::NonFiniteRatio",
+      "forbidden_alloc_token": "Vec::with_capacity",
+      "bulk_restore_sort_token": "records.sort_by"
+    },
+    "error_enum": {
+      "enum": "StoreError",
+      "variants": [
+        "CorruptRecord",
+        "UnknownSchemaVersion",
+        "InconsistentField",
+        "DuplicateRunId",
+        "NonFiniteRatio",
+        "ChecksumMismatch"
+      ]
+    },
+    "numeric_boundary": {
+      "integer_minor_tokens": [
+        "i128::from(point.equity_minor)",
+        "i128::from(fill.price_minor)"
+      ],
+      "ratio_exact_tokens": [
+        "to_bits()",
+        "from_bits("
+      ]
+    },
+    "determinism": {
+      "forbidden_tokens": [
+        "par_iter",
+        "rayon",
+        "thread::spawn",
+        "rand::",
+        "SystemTime",
+        "Instant::now"
+      ]
+    },
+    "metrics_reuse": {
+      "import_token": "use crate::metrics::PerformanceMetrics",
+      "comparison_import_token": "use crate::benchmark::BenchmarkComparison"
+    },
+    "module_reexport": {
+      "lib_reexport_token": "pub mod backtest_store;"
+    },
+    "no_broker_dependency": {
+      "cargo_toml": "Cargo.toml",
+      "forbidden_dep_tokens": [
+        "atp-adapters",
+        "atp-execution"
+      ]
+    },
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "rust_integration_test": "srs_bt_009_backtest_store",
+    "deferred": [
+      {
+        "feature": "Durable SSD/NAS persisted-record storage",
+        "what": "serialize/restore round-trips the whole store through a deterministic, dependency-free text blob (the in-scope 'persist' verb at the data-shape level), but writing that blob to the SSD-primary / NAS-archival tier (and reading it back tiered) is SRS-DATA-008, which is not built. So SRS-BT-009 keeps passes:false."
+      },
+      {
+        "feature": "Dashboard / backtest report history rendering",
+        "what": "BacktestResultStore answers the three SRS-BT-009 query axes in-process, but rendering the queryable history TO AN OPERATOR (the backtest result history view, SYS-21) is the SRS-UI-004 / SRS-API owner consuming BacktestRecord, which is not built. The data + query contract is shipped here; the rendering surface is deferred."
+      },
+      {
+        "feature": "Orchestrated run producer / real provenance",
+        "what": "BacktestRecord accepts a caller-supplied RunId, CodeVersion, and completed_at_ts and persists them, but a full orchestrated run that STAMPS a real run id, the strategy container image digest as the code version, and the completion timestamp end to end is SRS-BT-001 / the orchestrator. This slice persists provenance; it does not produce it."
+      },
+      {
+        "feature": "Atomic run-snapshot identity",
+        "what": "A record binds its parameters, metrics, trade log, equity curve, and benchmark comparison together and validates the equity curve falls within the run window (the in-scope coherence guard), but the FULL run identity -- a producer-stamped run id atomically binding the equity curve, trade log, and benchmark window into one consistent snapshot -- needs the deferred paper/live accumulator + an SRS-BT-001 run id, the same boundary deferred by SRS-BT-004/005. Likewise, full VALUE-LEVEL metric verification (recomputing all eight metrics + alpha/beta from the stored curve/trade-log and confirming they match the stored values) needs the MetricsConfig (periods-per-year, risk-free rate) and the benchmark level series, neither of which SRS-BT-009 lists among its persisted fields; metric CORRECTNESS is the SRS-BT-004 producer's responsibility, and this layer enforces STRUCTURAL coherence (curve shape, trade-log ordering/window, benchmark identity, finiteness) -- the value-binding is this same deferred boundary."
+      }
+    ],
+    "strategy_parameters": {
+      "struct": "StrategyParameters",
+      "from_pairs_fn": "pub fn from_pairs",
+      "query_fn": "pub fn query_by_parameter_set",
+      "query_field_token": "record.parameters == *params",
+      "empty_key_guard": "empty strategy parameter key",
+      "duplicate_key_guard": "duplicate strategy parameter key"
+    },
+    "record_coherence": {
+      "fill_symbol_guard": "fill.symbol != record.request.symbol",
+      "fill_window_guard": "fill.ts < run_start || fill.ts > run_end",
+      "fill_negative_cost_guard": "fill.commission_minor < 0",
+      "benchmark_identity_guard": "record.metrics.benchmark_symbol != record.comparison.benchmark_symbol",
+      "coefficient_agreement_guard": "record.metrics.alpha != record.comparison.alpha",
+      "producer_invariant_contexts": [
+        "empty equity curve",
+        "non-positive starting cash",
+        "non-positive equity mark",
+        "non-monotonic equity timestamps",
+        "non-monotonic trade log"
+      ],
+      "excess_return_identity_guard": "strategy - benchmark - excess",
+      "metric_domain_contexts": [
+        "win rate outside [0, 1]",
+        "max drawdown outside [0, 1]",
+        "negative annualized volatility"
+      ]
+    },
+    "from_result": {
+      "fn": "pub fn from_result",
+      "data_source_guard": "result.data_source != request.data_source",
+      "range_guard": "result.range != request.range",
+      "binds_artifacts_token": "result.trade_log.clone()"
+    }
   }
 }

@@ -336,6 +336,13 @@ if ! python3 tools/benchmark_check.py --require-cargo >/dev/null; then
   exit 1
 fi
 
+echo "→ Running backtest-record persistence contract check..."
+if ! python3 tools/backtest_store_check.py --require-cargo >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Backtest-record persistence contract check failed; run python3 tools/backtest_store_check.py --require-cargo for detail."
+  exit 1
+fi
+
 echo "→ Running orchestrator lifecycle contract check..."
 if ! python3 tools/orchestrator_lifecycle_check.py >/dev/null; then
   echo "✗ Environment failed"

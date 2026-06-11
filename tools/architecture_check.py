@@ -13,6 +13,7 @@ from adapter_check import AdapterContractError, assert_adapter_contract_static
 from adapter_isolation_check import AdapterIsolationError, assert_adapter_isolation_static
 from backtest_check import BacktestCheckError, assert_backtest_static
 from backtest_cost_check import BacktestCostCheckError, assert_backtest_cost_static
+from backtest_store_check import BacktestStoreCheckError, assert_backtest_store_static
 from benchmark_check import BenchmarkCheckError, assert_sim_benchmark_static
 from config_check import ConfigCheckError, assert_configuration_static
 from connectivity_check import ConnectivityCheckError, assert_connectivity_static
@@ -678,6 +679,26 @@ def assert_sim_benchmark(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_sim_backtest_store(config: dict) -> list[str]:
+    block = config.get("sim_backtest_store_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_backtest_store_static(config, ROOT)
+    summary = (
+        f"{block['simulation_crate']['crate']} internal simulation engine persists completed "
+        f"backtest results ({block['record_struct']['struct']} bundles the seven SRS-BT-009 "
+        "artifacts -- parameters, metrics, trade log, equity curve, benchmark comparison, code "
+        f"version, and timestamp -- into one queryable record; {block['store_struct']['struct']} "
+        "answers the by-strategy / by-date-range / by-parameter-set query axes in a deterministic "
+        "canonical order and round-trips the whole store through a checksummed, dependency-free "
+        "codec that fails closed on a corrupt / tampered / non-finite blob) -- trade-log/equity "
+        "money stays integer minor units and the metric/comparison ratios round-trip exactly via "
+        "to_bits/from_bits (SRS-BT-009, SyRS SYS-21 / SYS-79)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_orchestrator_lifecycle(config: dict) -> list[str]:
     block = config.get("orchestrator_lifecycle_contract")
     if block is None:
@@ -985,6 +1006,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_sim_benchmark(config))
     except BenchmarkCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_sim_backtest_store(config))
+    except BacktestStoreCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_orchestrator_lifecycle(config))
