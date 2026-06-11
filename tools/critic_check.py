@@ -237,7 +237,9 @@ SAFETY_PATH_RE = re.compile(
     r"|benchmark[_-]?selection|benchmark[_-]?source|benchmark[_-]?contract"
     r"|srs[_-]?bt[_-]?005"
     r"|/backtest_store\.rs|backtest[_-]?store[_-]?check|backtest[_-]?store[_-]?contract"
-    r"|backtest[_-]?record|srs[_-]?bt[_-]?009)",
+    r"|backtest[_-]?record|srs[_-]?bt[_-]?009"
+    r"|/factor_analysis\.rs|factor[_-]?analysis[_-]?check|factor[_-]?analysis[_-]?contract"
+    r"|factor[_-]?tear[_-]?sheet|srs[_-]?bt[_-]?006)",
     re.IGNORECASE,
 )
 
