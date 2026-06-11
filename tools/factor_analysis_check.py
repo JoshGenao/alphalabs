@@ -178,18 +178,52 @@ def check_information_coefficient(config: dict, src: str) -> str:
 def check_factor_returns(config: dict, src: str) -> str:
     spec = contract_block(config)["factor_returns"]
     _check_struct_fields(src, spec, "factor returns")
+    if _compact(spec["spread_option_token"]) not in _compact(_struct_body(src, spec["struct"])):
+        fail(
+            f"FactorReturns.spread_per_period must carry the spread as `Option<f64>` "
+            f"(`{spec['spread_option_token']}`) so a period whose factor does not separate the "
+            "extremes is None, not a fabricated SecurityKey-driven spread"
+        )
     return (
         "atp-factor-pipeline declares FactorReturns: per-period quantile mean returns plus the "
-        "top-minus-bottom long-short spread series with mean and compounded cumulative spread"
+        "top-minus-bottom long-short spread as Option<f64> (None when the factor does not separate "
+        "the extremes) with mean and compounded cumulative spread"
     )
 
 
 def check_turnover(config: dict, src: str) -> str:
     spec = contract_block(config)["turnover"]
     _check_struct_fields(src, spec, "turnover analysis")
+    if _compact(spec["turnover_option_token"]) not in _compact(_struct_body(src, spec["struct"])):
+        fail(
+            f"TurnoverAnalysis.top_turnover must carry the turnover as `Option<f64>` "
+            f"(`{spec['turnover_option_token']}`) so churn that is not factor-driven is None"
+        )
     return (
         "atp-factor-pipeline declares TurnoverAnalysis: per-period top/bottom-quantile membership "
-        "churn with means (None with fewer than two periods)"
+        "churn as Option<f64> (None when not factor-driven), with means over the defined values"
+    )
+
+
+def check_separation(config: dict, src: str) -> str:
+    spec = contract_block(config)["separation"]
+    compact_src = _compact(src)
+    if _compact(spec["predicate_token"]) not in compact_src:
+        fail(
+            f"factor_analysis must compute the extreme-separation predicate "
+            f"(`{spec['predicate_token']}`) so a constant or cutoff-tied factor cannot attribute a "
+            "SecurityKey-driven spread to the factor"
+        )
+    if _compact(spec["spread_gate_token"]) not in compact_src:
+        fail(
+            f"the spread must be gated on the separation predicate (`{spec['spread_gate_token']}`) "
+            "so it is withheld (None) when the factor does not separate the extremes"
+        )
+    return (
+        "atp-factor-pipeline gates the spread and turnover on a strict extreme-separation predicate "
+        "(separates_extremes: the bottom bucket's max factor < the top bucket's min factor), so a "
+        "constant or cutoff-tied factor reports None rather than a fabricated SecurityKey-driven "
+        "spread/turnover"
     )
 
 
@@ -295,9 +329,16 @@ def check_nan_guard(config: dict, src: str) -> str:
         fail(f"factor_analysis must verify each aggregate is finite (`{spec['is_finite_token']}`)")
     if _compact(spec["error_token"]) not in compact_src:
         fail(f"a non-finite statistic must fail closed with `{spec['error_token']}`")
+    if _compact(spec["quantile_mean_guard_token"]) not in compact_src:
+        fail(
+            f"every quantile mean must pass through finite() before leaving the function "
+            f"(`{spec['quantile_mean_guard_token']}`) -- a middle-bucket mean can overflow to inf on "
+            "finite inputs and never reaches the spread guard"
+        )
     return (
-        "atp-factor-pipeline verifies every computed aggregate is finite (fn finite + is_finite) and "
-        "fails closed (NonFiniteComputation) rather than leaking NaN/inf into a ranking or tear-sheet"
+        "atp-factor-pipeline verifies every computed aggregate AND every quantile mean is finite "
+        '(fn finite + is_finite, incl. finite("quantile_mean")) and fails closed '
+        "(NonFiniteComputation) rather than leaking NaN/inf into a ranking or tear-sheet"
     )
 
 
@@ -411,6 +452,7 @@ _STATIC_CHECKS = (
     ("compute_fn", check_compute_fn, "module"),
     ("error_enum", check_error_enum, "module"),
     ("spearman", check_spearman, "module"),
+    ("separation", check_separation, "module"),
     ("trust_boundary", check_trust_boundary, "module"),
     ("determinism", check_determinism, "module"),
     ("nan_guard", check_nan_guard, "module"),

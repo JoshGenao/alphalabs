@@ -70,6 +70,8 @@ fn end_to_end_tear_sheet_is_coherent() {
         assert_eq!(quantile_means.len(), 3);
     }
     for (_, spread) in &sheet.returns.spread_per_period {
+        // The factor strictly ranks every period, so each spread is defined.
+        let spread = spread.expect("defined spread");
         assert!((spread - 0.04).abs() < 1e-9, "spread = {spread}");
     }
     let mean_spread = sheet.returns.mean_spread.expect("mean spread");
@@ -82,7 +84,7 @@ fn end_to_end_tear_sheet_is_coherent() {
     assert_eq!(sheet.turnover.top_turnover.len(), 2);
     assert_eq!(sheet.turnover.bottom_turnover.len(), 2);
     for (_, turnover) in &sheet.turnover.top_turnover {
-        assert!(turnover.abs() < 1e-9);
+        assert!(turnover.expect("defined turnover").abs() < 1e-9);
     }
     assert!(sheet.turnover.mean_top.expect("mean top").abs() < 1e-9);
 }
@@ -104,9 +106,10 @@ fn turnover_tracks_membership_churn_across_periods() {
     let panel = FactorPanel::new(vec![aligned_period(1), inverted], 3);
     let sheet = compute_tear_sheet(&panel).expect("tear sheet");
 
-    // Top was {EEE,FFF}, now {AAA,BBB}: complete churn.
-    assert!((sheet.turnover.top_turnover[0].1 - 1.0).abs() < 1e-9);
-    assert!((sheet.turnover.bottom_turnover[0].1 - 1.0).abs() < 1e-9);
+    // Top was {EEE,FFF}, now {AAA,BBB}: complete churn. Both periods strictly rank the
+    // factor, so the turnover is defined.
+    assert!((sheet.turnover.top_turnover[0].1.expect("top") - 1.0).abs() < 1e-9);
+    assert!((sheet.turnover.bottom_turnover[0].1.expect("bottom") - 1.0).abs() < 1e-9);
 }
 
 #[test]
@@ -154,6 +157,61 @@ fn non_finite_input_fails_closed() {
     assert_eq!(
         compute_tear_sheet(&panel).unwrap_err(),
         FactorAnalysisError::NonFiniteInput { ts: 7 }
+    );
+}
+
+#[test]
+fn constant_factor_withholds_spread_and_turnover() {
+    // A factor that gives every security the same score carries no ranking signal, so the
+    // top/bottom quantile split is decided purely by SecurityKey. The spread and turnover are
+    // therefore withheld (None) -- never a fabricated number presented as factor performance.
+    let flat = |ts: u64| {
+        FactorPeriod::new(
+            ts,
+            vec![
+                observation("AAA", 1.0, 0.01),
+                observation("BBB", 1.0, 0.02),
+                observation("CCC", 1.0, 0.03),
+                observation("DDD", 1.0, 0.04),
+            ],
+        )
+    };
+    let sheet =
+        compute_tear_sheet(&FactorPanel::new(vec![flat(1), flat(2)], 2)).expect("tear sheet");
+
+    // IC undefined (no rank signal), and crucially the spread is withheld, not fabricated.
+    assert_eq!(sheet.ic.per_period[0].1, None);
+    assert_eq!(sheet.returns.spread_per_period[0].1, None);
+    assert_eq!(sheet.returns.spread_per_period[1].1, None);
+    assert_eq!(sheet.returns.mean_spread, None);
+    assert_eq!(sheet.returns.cumulative_spread, None);
+    // Turnover is likewise withheld for the non-factor-driven membership.
+    assert_eq!(sheet.turnover.top_turnover[0].1, None);
+    assert_eq!(sheet.turnover.mean_top, None);
+    assert_eq!(sheet.turnover.mean_bottom, None);
+}
+
+#[test]
+fn extreme_returns_in_a_quantile_fail_closed() {
+    // Two near-f64::MAX returns in the median (non-edge) quantile overflow its mean to +inf.
+    // The spread uses only the top and bottom buckets, so the infinity would otherwise slip
+    // into a "successful" tear sheet; the per-quantile finiteness guard fails it closed.
+    let period = FactorPeriod::new(
+        1,
+        vec![
+            observation("AAA", 1.0, 0.01),
+            observation("BBB", 2.0, 0.02),
+            observation("CCC", 3.0, f64::MAX),
+            observation("DDD", 4.0, f64::MAX),
+            observation("EEE", 5.0, 0.05),
+            observation("FFF", 6.0, 0.06),
+        ],
+    );
+    assert_eq!(
+        compute_tear_sheet(&FactorPanel::new(vec![period], 3)).unwrap_err(),
+        FactorAnalysisError::NonFiniteComputation {
+            metric: "quantile_mean"
+        }
     );
 }
 
@@ -229,18 +287,24 @@ fn invariants_hold_over_generated_panels() {
             .iter()
             .chain(sheet.turnover.bottom_turnover.iter())
         {
-            assert!(
-                (0.0..=1.0).contains(turnover),
-                "turnover {turnover} outside [0, 1] (seed {seed})"
-            );
+            // Defined turnovers (factor-driven periods) must sit in [0, 1].
+            if let Some(value) = turnover {
+                assert!(
+                    (0.0..=1.0).contains(value),
+                    "turnover {value} outside [0, 1] (seed {seed})"
+                );
+            }
         }
         for (i, (_, spread)) in sheet.returns.spread_per_period.iter().enumerate() {
-            let means = &sheet.returns.per_quantile_mean[i];
-            let expected = means[means.len() - 1] - means[0];
-            assert!(
-                (spread - expected).abs() < 1e-12,
-                "spread != top - bottom (seed {seed})"
-            );
+            // A defined spread must be exactly the top-minus-bottom quantile difference.
+            if let Some(value) = spread {
+                let means = &sheet.returns.per_quantile_mean[i];
+                let expected = means[means.len() - 1] - means[0];
+                assert!(
+                    (value - expected).abs() < 1e-12,
+                    "spread != top - bottom (seed {seed})"
+                );
+            }
         }
 
         // Determinism: a second compute is bit-identical.

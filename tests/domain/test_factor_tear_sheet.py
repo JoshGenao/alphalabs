@@ -24,12 +24,15 @@ the invariant from two angles:
   2. Structural -- it asserts, via ``tools/factor_analysis_check.py``, that the
      ``atp-factor-pipeline`` crate declares no live/broker/simulation dependency, that the
      ``factor_analysis`` module leaks no vendor SDK token, that it uses no nondeterminism
-     source, that it clamps the IC to its [-1, 1] domain, that it fails closed at the trust
-     boundary, and that it verifies every aggregate is finite.
+     source, that it clamps the IC to its [-1, 1] domain, that it gates the spread/turnover on
+     a strict extreme-separation predicate (so a constant or cutoff-tied factor cannot
+     fabricate alpha), that it fails closed at the trust boundary, and that it verifies every
+     aggregate AND every per-quantile mean is finite.
 
 Each structural guard is checked for non-vacuity: an injected dependency, a leaked vendor
-token, an injected nondeterminism source, a removed IC domain clamp, a removed
-trust-boundary guard, and a removed finite check are each shown to be caught.
+token, an injected nondeterminism source, a removed IC domain clamp, a removed separation
+predicate / spread gate, a removed trust-boundary guard, and a removed finite check (aggregate
+and per-quantile) are each shown to be caught.
 """
 
 from __future__ import annotations
@@ -55,6 +58,7 @@ from factor_analysis_check import (  # noqa: E402
     check_determinism,
     check_nan_guard,
     check_no_broker_dependency,
+    check_separation,
     check_spearman,
     check_trust_boundary,
     check_vendor_isolation,
@@ -139,6 +143,26 @@ def test_non_finite_input_fails_closed() -> None:
     )
 
 
+def test_constant_factor_withholds_spread_and_turnover() -> None:
+    # Safety: a factor with no ranking signal (all equal) must NOT produce a non-zero spread
+    # or turnover driven by the SecurityKey tiebreak -- that would present false alpha as
+    # factor performance. The spread/turnover are withheld (None).
+    _assert_one_passed(
+        _run_cargo_test("constant_factor_withholds_spread_and_turnover"),
+        "SRS-BT-006 constant-factor withholds spread",
+    )
+
+
+def test_extreme_returns_in_a_quantile_fail_closed() -> None:
+    # Safety: a quantile mean that overflows to infinity on finite inputs (a non-edge bucket
+    # that never reaches the spread guard) must fail closed, never leak a poison value into a
+    # successful tear sheet.
+    _assert_one_passed(
+        _run_cargo_test("extreme_returns_in_a_quantile_fail_closed"),
+        "SRS-BT-006 quantile-overflow fail-closed",
+    )
+
+
 def test_factor_crate_has_no_broker_or_simulation_dependency() -> None:
     config = load_config()
     # The real Cargo.toml must declare no live/broker/simulation dependency, so the offline
@@ -197,10 +221,32 @@ def test_computation_fails_closed_at_the_trust_boundary() -> None:
 
 def test_module_verifies_aggregates_are_finite() -> None:
     config = load_config()
-    # The real module verifies each aggregate is finite before returning it, so a NaN/inf
-    # never leaks into a factor ranking or tear-sheet.
+    # The real module verifies each aggregate AND each quantile mean is finite before
+    # returning it, so a NaN/inf never leaks into a factor ranking or tear-sheet.
     check_nan_guard(config, module_source(config))
     # ...and the guard must not be vacuous: dropping the finite check is caught.
     mutated = module_source(config).replace("is_finite()", "is_nan()")
     with pytest.raises(FactorAnalysisCheckError):
         check_nan_guard(config, mutated)
+    # ...nor is the per-quantile-mean guard vacuous: dropping it is caught.
+    mutated = module_source(config).replace('finite("quantile_mean"', 'skip("quantile_mean"', 1)
+    with pytest.raises(FactorAnalysisCheckError):
+        check_nan_guard(config, mutated)
+
+
+def test_spread_is_withheld_when_factor_does_not_separate_extremes() -> None:
+    config = load_config()
+    # Safety (Codex finding #2): the real module gates the spread/turnover on a strict
+    # extreme-separation predicate, so a constant or cutoff-tied factor cannot attribute a
+    # SecurityKey-driven spread to the factor (false alpha).
+    check_separation(config, module_source(config))
+    # ...and the guard must not be vacuous: removing the predicate is caught.
+    mutated = module_source(config).replace("separates_extremes", "always_true")
+    with pytest.raises(FactorAnalysisCheckError):
+        check_separation(config, mutated)
+    # ...nor is the spread gate vacuous: always taking the spread is caught.
+    mutated = module_source(config).replace(
+        "let spread = if separates {", "let spread = if true {", 1
+    )
+    with pytest.raises(FactorAnalysisCheckError):
+        check_separation(config, mutated)

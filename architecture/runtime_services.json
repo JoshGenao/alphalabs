@@ -5499,11 +5499,13 @@
     },
     "factor_returns": {
       "struct": "FactorReturns",
-      "fields": ["per_quantile_mean", "spread_per_period", "mean_spread", "cumulative_spread"]
+      "fields": ["per_quantile_mean", "spread_per_period", "mean_spread", "cumulative_spread"],
+      "spread_option_token": "spread_per_period: Vec<(u64, Option<f64>)>"
     },
     "turnover": {
       "struct": "TurnoverAnalysis",
-      "fields": ["top_turnover", "bottom_turnover", "mean_top", "mean_bottom"]
+      "fields": ["top_turnover", "bottom_turnover", "mean_top", "mean_bottom"],
+      "turnover_option_token": "top_turnover: Vec<(u64, Option<f64>)>"
     },
     "tear_sheet": {
       "struct": "FactorTearSheet",
@@ -5546,7 +5548,13 @@
     "nan_guard": {
       "finite_fn_token": "fn finite",
       "is_finite_token": "is_finite()",
-      "error_token": "FactorAnalysisError::NonFiniteComputation"
+      "error_token": "FactorAnalysisError::NonFiniteComputation",
+      "quantile_mean_guard_token": "finite(\"quantile_mean\""
+    },
+    "separation": {
+      "predicate_token": "separates_extremes",
+      "spread_gate_token": "if separates",
+      "comment": "The spread/turnover are factor-attributable only when the factor strictly separates the top and bottom quantiles; otherwise the split is a SecurityKey tiebreak and the value is withheld (None), so a constant or cutoff-tied factor cannot fabricate alpha."
     },
     "numeric_boundary": {
       "factor_input_token": "factor_value: f64",

@@ -41,10 +41,17 @@
 //! whose factor values (or returns) have zero rank dispersion, the mean IC when no period
 //! had a defined IC, the IC std with fewer than two defined ICs, turnover with only one
 //! rebalance -- is reported as `None`, NEVER a fabricated `0.0` and never a leaked
-//! `NaN`/`inf`. Each computed aggregate is verified finite before it is returned
-//! ([`FactorAnalysisError::NonFiniteComputation`]), and each per-period IC is clamped to
-//! its mathematical `[-1, 1]` domain, so a pathological input fails closed rather than
-//! emitting a poison value that would corrupt a ranking or a tear-sheet.
+//! `NaN`/`inf`. The same rule covers the **factor return**: when the factor does not strictly
+//! separate the top and bottom quantiles (a constant factor, or a tie spanning the cutoff),
+//! the top-vs-bottom split is decided by the `SecurityKey` tiebreak rather than the factor, so
+//! the spread -- and the turnover that depends on that membership -- is `None` rather than a
+//! number that would present security-identity noise as factor performance (false alpha).
+//! Each computed aggregate AND each per-quantile mean is verified finite before it is returned
+//! ([`FactorAnalysisError::NonFiniteComputation`]) -- a bucket mean can overflow to `inf` even
+//! on finite inputs, and a middle bucket never passes through the spread, so each is guarded
+//! directly -- and each per-period IC is clamped to its mathematical `[-1, 1]` domain, so a
+//! pathological input fails closed rather than emitting a poison value that would corrupt a
+//! ranking or a tear-sheet.
 //!
 //! ## Trust boundary (fail-closed [`FactorPanel::validate`])
 //!
@@ -196,33 +203,52 @@ pub struct InformationCoefficient {
 
 /// The factor-return analysis: per-period quantile mean returns and the top-minus-bottom
 /// long-short spread series with its summary statistics.
+///
+/// The spread is **undefined** (`None`) for a period whose factor does not separate the top
+/// and bottom quantiles -- i.e. the largest factor value in the bottom bucket is not strictly
+/// less than the smallest in the top bucket (a constant factor, or a tie spanning the
+/// top/bottom cutoff). In that case the top-vs-bottom membership is decided by the
+/// `SecurityKey` tiebreak rather than the factor, so any resulting spread would attribute a
+/// portfolio's realized return to a factor that carries no ranking signal there -- fabricated
+/// "alpha". As with the IC, that case is reported as `None`, never a fabricated number. The
+/// `per_quantile_mean` buckets are still reported (each is a real mean of whatever landed in
+/// the bucket), but the spread -- the headline factor return -- is withheld.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FactorReturns {
     /// Per period, the mean forward return of each quantile bucket (length `quantiles`,
     /// bucket `0` = bottom, last = top). Outer vector is in period order.
     pub per_quantile_mean: Vec<Vec<f64>>,
-    /// `(period ts, spread)` where spread = top-quantile mean − bottom-quantile mean, the
-    /// per-period return of the dollar-neutral long-short factor portfolio.
-    pub spread_per_period: Vec<(u64, f64)>,
-    /// Arithmetic mean of the per-period spreads; `None` when there are no periods.
+    /// `(period ts, spread)` where spread = top-quantile mean − bottom-quantile mean (the
+    /// per-period return of the dollar-neutral long-short factor portfolio); `None` for a
+    /// period whose factor does not separate the top and bottom quantiles.
+    pub spread_per_period: Vec<(u64, Option<f64>)>,
+    /// Arithmetic mean of the defined per-period spreads; `None` when no period had one.
     pub mean_spread: Option<f64>,
-    /// Cumulative (compounded) spread `∏(1 + spread_t) − 1`; `None` when there are no
-    /// periods.
+    /// Cumulative (compounded) spread `∏(1 + spread_t) − 1` over the defined spreads; `None`
+    /// when no period had one.
     pub cumulative_spread: Option<f64>,
 }
 
 /// The turnover analysis: per-period membership churn of the top and bottom quantiles
 /// between consecutive rebalances, with the mean of each. The churn fraction is
 /// `1 − |members_t ∩ members_{t−1}| / |members_t|`.
+///
+/// A period's turnover is **undefined** (`None`) unless BOTH it and the prior period separate
+/// their extremes by factor value (see [`FactorReturns`]). When either endpoint's top/bottom
+/// membership is decided by the `SecurityKey` tiebreak rather than the factor, the churn
+/// between the two is not factor-driven, so it is reported as `None` rather than presented as
+/// a factor property.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TurnoverAnalysis {
-    /// `(period ts, top-quantile turnover)` for each period after the first.
-    pub top_turnover: Vec<(u64, f64)>,
-    /// `(period ts, bottom-quantile turnover)` for each period after the first.
-    pub bottom_turnover: Vec<(u64, f64)>,
-    /// Mean top-quantile turnover; `None` with fewer than two periods.
+    /// `(period ts, top-quantile turnover)` for each period after the first; `None` where the
+    /// churn is not factor-driven.
+    pub top_turnover: Vec<(u64, Option<f64>)>,
+    /// `(period ts, bottom-quantile turnover)` for each period after the first; `None` where
+    /// the churn is not factor-driven.
+    pub bottom_turnover: Vec<(u64, Option<f64>)>,
+    /// Mean of the defined top-quantile turnovers; `None` when none were defined.
     pub mean_top: Option<f64>,
-    /// Mean bottom-quantile turnover; `None` with fewer than two periods.
+    /// Mean of the defined bottom-quantile turnovers; `None` when none were defined.
     pub mean_bottom: Option<f64>,
 }
 
@@ -431,6 +457,12 @@ fn quantile_of(position: usize, count: usize, quantiles: usize) -> usize {
 struct PeriodBuckets {
     /// Mean forward return of each quantile bucket (length `quantiles`).
     quantile_means: Vec<f64>,
+    /// Whether the factor strictly separates the extremes: the largest factor value in the
+    /// bottom bucket is strictly less than the smallest in the top bucket. When `false`
+    /// (a constant factor, or a tie spanning the top/bottom cutoff), the top-vs-bottom split
+    /// was decided by the `SecurityKey` tiebreak rather than the factor, so the spread and
+    /// turnover are not factor-driven and are withheld (reported as `None`).
+    separates_extremes: bool,
     /// The securities in the bottom (`0`) and top (`quantiles - 1`) buckets.
     bottom_members: HashSet<SecurityKey>,
     top_members: HashSet<SecurityKey>,
@@ -450,23 +482,39 @@ fn bucket_period(period: &FactorPeriod, quantiles: usize) -> PeriodBuckets {
     let mut bucket_returns: Vec<Vec<f64>> = vec![Vec::new(); quantiles];
     let mut bottom_members: HashSet<SecurityKey> = HashSet::new();
     let mut top_members: HashSet<SecurityKey> = HashSet::new();
+    // Bottom bucket's largest factor and top bucket's smallest factor (sorted ascending, so
+    // the last write to the bottom bucket is its max and the first to the top is its min).
+    let mut bottom_max_factor: Option<f64> = None;
+    let mut top_min_factor: Option<f64> = None;
 
     for (position, observation) in sorted.iter().enumerate() {
         let bucket = quantile_of(position, count, quantiles);
         bucket_returns[bucket].push(observation.forward_return);
         if bucket == 0 {
             bottom_members.insert(observation.security.clone());
+            bottom_max_factor = Some(observation.factor_value);
         }
         if bucket == quantiles - 1 {
             top_members.insert(observation.security.clone());
+            if top_min_factor.is_none() {
+                top_min_factor = Some(observation.factor_value);
+            }
         }
     }
+
+    // The factor separates the extremes iff the bottom bucket's max factor is strictly below
+    // the top bucket's min factor. Both are `Some` because each bucket is non-empty (validated).
+    let separates_extremes = matches!(
+        (bottom_max_factor, top_min_factor),
+        (Some(bottom_max), Some(top_min)) if bottom_max < top_min
+    );
 
     // Every bucket is non-empty (validated), so each mean is defined.
     let quantile_means = bucket_returns.iter().map(|returns| mean(returns)).collect();
 
     PeriodBuckets {
         quantile_means,
+        separates_extremes,
         bottom_members,
         top_members,
     }
@@ -477,6 +525,19 @@ fn bucket_period(period: &FactorPeriod, quantiles: usize) -> PeriodBuckets {
 fn membership_turnover(current: &HashSet<SecurityKey>, previous: &HashSet<SecurityKey>) -> f64 {
     let retained = current.iter().filter(|key| previous.contains(*key)).count();
     1.0 - (retained as f64) / (current.len() as f64)
+}
+
+/// Mean of the DEFINED (`Some`) values of a `(ts, Option<f64>)` series, verified finite.
+/// `None` when no value in the series was defined.
+fn defined_mean(
+    metric: &'static str,
+    series: &[(u64, Option<f64>)],
+) -> Result<Option<f64>, FactorAnalysisError> {
+    let defined: Vec<f64> = series.iter().filter_map(|&(_, value)| value).collect();
+    match defined.as_slice() {
+        [] => Ok(None),
+        values => Ok(Some(finite(metric, mean(values))?)),
+    }
 }
 
 /// Compute the SRS-BT-006 factor-analysis tear-sheet for one completed run.
@@ -493,12 +554,13 @@ pub fn compute_tear_sheet(panel: &FactorPanel) -> Result<FactorTearSheet, Factor
     let mut ic_per_period: Vec<(u64, Option<f64>)> = Vec::with_capacity(panel.periods.len());
     let mut defined_ic: Vec<f64> = Vec::new();
     let mut per_quantile_mean: Vec<Vec<f64>> = Vec::with_capacity(panel.periods.len());
-    let mut spread_per_period: Vec<(u64, f64)> = Vec::with_capacity(panel.periods.len());
-    let mut top_turnover: Vec<(u64, f64)> = Vec::new();
-    let mut bottom_turnover: Vec<(u64, f64)> = Vec::new();
+    let mut spread_per_period: Vec<(u64, Option<f64>)> = Vec::with_capacity(panel.periods.len());
+    let mut top_turnover: Vec<(u64, Option<f64>)> = Vec::new();
+    let mut bottom_turnover: Vec<(u64, Option<f64>)> = Vec::new();
 
     let mut previous_top: Option<HashSet<SecurityKey>> = None;
     let mut previous_bottom: Option<HashSet<SecurityKey>> = None;
+    let mut previous_separates: Option<bool> = None;
 
     for period in &panel.periods {
         // Information coefficient: Spearman rank correlation of factor vs forward return.
@@ -524,33 +586,54 @@ pub fn compute_tear_sheet(panel: &FactorPanel) -> Result<FactorTearSheet, Factor
 
         // Quantile factor returns + turnover membership (one cross-section sort).
         let buckets = bucket_period(period, quantiles);
-        let spread = finite(
-            "factor_return_spread",
-            buckets.quantile_means[quantiles - 1] - buckets.quantile_means[0],
-        )?;
+        // Every quantile mean must be finite before it leaves this function -- a bucket mean
+        // can overflow to +/-inf even on finite inputs (e.g. two near-f64::MAX returns), and a
+        // middle bucket never passes through the spread, so guard each one directly.
+        for &quantile_mean in &buckets.quantile_means {
+            finite("quantile_mean", quantile_mean)?;
+        }
+        let separates = buckets.separates_extremes;
+        // The spread is factor-attributable only when the factor separates the extremes;
+        // otherwise the top/bottom split is a SecurityKey tiebreak, so the spread is withheld.
+        let spread = if separates {
+            Some(finite(
+                "factor_return_spread",
+                buckets.quantile_means[quantiles - 1] - buckets.quantile_means[0],
+            )?)
+        } else {
+            None
+        };
         spread_per_period.push((period.ts, spread));
         per_quantile_mean.push(buckets.quantile_means);
 
+        // Turnover is factor-driven only when BOTH endpoints separate their extremes.
         if let Some(prior_top) = &previous_top {
-            top_turnover.push((
-                period.ts,
-                finite(
+            let both_separate = separates && previous_separates.unwrap_or(false);
+            let value = if both_separate {
+                Some(finite(
                     "top_turnover",
                     membership_turnover(&buckets.top_members, prior_top),
-                )?,
-            ));
+                )?)
+            } else {
+                None
+            };
+            top_turnover.push((period.ts, value));
         }
         if let Some(prior_bottom) = &previous_bottom {
-            bottom_turnover.push((
-                period.ts,
-                finite(
+            let both_separate = separates && previous_separates.unwrap_or(false);
+            let value = if both_separate {
+                Some(finite(
                     "bottom_turnover",
                     membership_turnover(&buckets.bottom_members, prior_bottom),
-                )?,
-            ));
+                )?)
+            } else {
+                None
+            };
+            bottom_turnover.push((period.ts, value));
         }
         previous_top = Some(buckets.top_members);
         previous_bottom = Some(buckets.bottom_members);
+        previous_separates = Some(separates);
     }
 
     // IC aggregates over the DEFINED per-period ICs.
@@ -569,8 +652,11 @@ pub fn compute_tear_sheet(panel: &FactorPanel) -> Result<FactorTearSheet, Factor
         _ => None,
     };
 
-    // Spread aggregates.
-    let spreads: Vec<f64> = spread_per_period.iter().map(|&(_, value)| value).collect();
+    // Spread aggregates over the DEFINED per-period spreads.
+    let spreads: Vec<f64> = spread_per_period
+        .iter()
+        .filter_map(|&(_, value)| value)
+        .collect();
     let mean_spread = match spreads.as_slice() {
         [] => None,
         values => Some(finite("mean_spread", mean(values))?),
@@ -585,21 +671,9 @@ pub fn compute_tear_sheet(panel: &FactorPanel) -> Result<FactorTearSheet, Factor
         Some(finite("cumulative_spread", compounded - 1.0)?)
     };
 
-    // Turnover aggregates.
-    let mean_top = match top_turnover.as_slice() {
-        [] => None,
-        values => {
-            let series: Vec<f64> = values.iter().map(|&(_, v)| v).collect();
-            Some(finite("mean_top_turnover", mean(&series))?)
-        }
-    };
-    let mean_bottom = match bottom_turnover.as_slice() {
-        [] => None,
-        values => {
-            let series: Vec<f64> = values.iter().map(|&(_, v)| v).collect();
-            Some(finite("mean_bottom_turnover", mean(&series))?)
-        }
-    };
+    // Turnover aggregates over the DEFINED per-period turnovers.
+    let mean_top = defined_mean("mean_top_turnover", &top_turnover)?;
+    let mean_bottom = defined_mean("mean_bottom_turnover", &bottom_turnover)?;
 
     Ok(FactorTearSheet {
         ic: InformationCoefficient {
@@ -716,6 +790,14 @@ mod tests {
         assert_eq!(sheet.ic.mean, None);
         assert_eq!(sheet.ic.std, None);
         assert_eq!(sheet.ic.risk_adjusted, None);
+        // A constant factor does not separate the extremes (the top/bottom split is a
+        // SecurityKey tiebreak), so the spread is withheld -- never a fabricated number
+        // driven by security identity rather than the factor.
+        assert_eq!(sheet.returns.spread_per_period[0].1, None);
+        assert_eq!(sheet.returns.mean_spread, None);
+        assert_eq!(sheet.returns.cumulative_spread, None);
+        // The quantile means are still reported (each is a real mean of whatever landed).
+        assert_eq!(sheet.returns.per_quantile_mean[0].len(), 2);
     }
 
     #[test]
@@ -726,9 +808,54 @@ mod tests {
         let means = &sheet.returns.per_quantile_mean[0];
         approx(means[0], 0.15);
         approx(means[1], 0.35);
-        approx(sheet.returns.spread_per_period[0].1, 0.20);
+        approx(sheet.returns.spread_per_period[0].1.expect("spread"), 0.20);
         approx(sheet.returns.mean_spread.expect("mean spread"), 0.20);
         approx(sheet.returns.cumulative_spread.expect("cumulative"), 0.20);
+    }
+
+    #[test]
+    fn tie_at_cutoff_withholds_spread_even_when_ic_is_defined() {
+        // Factor [1, 2, 2, 3]: the bottom bucket's max factor (2) is NOT strictly below the
+        // top bucket's min factor (2), so the top/bottom split spans a tie -> spread is None.
+        // The factor still has rank dispersion, so the IC is defined -- the two are decoupled.
+        let period = FactorPeriod::new(
+            1,
+            vec![
+                observation("AAA", 1.0, 0.1),
+                observation("BBB", 2.0, 0.2),
+                observation("CCC", 2.0, 0.3),
+                observation("DDD", 3.0, 0.4),
+            ],
+        );
+        let sheet = compute_tear_sheet(&FactorPanel::new(vec![period], 2)).expect("tear sheet");
+        assert!(sheet.ic.per_period[0].1.is_some(), "IC should be defined");
+        assert_eq!(sheet.returns.spread_per_period[0].1, None);
+        assert_eq!(sheet.returns.mean_spread, None);
+    }
+
+    #[test]
+    fn infinity_in_a_middle_quantile_fails_closed() {
+        // 6 securities / 3 quantiles: middle bucket = the two median-factor names. Give them
+        // near-f64::MAX returns so their bucket mean overflows to +inf. The spread uses only
+        // the top and bottom buckets (both finite), so without a per-bucket finiteness guard
+        // the infinity would slip into per_quantile_mean on a "successful" tear sheet.
+        let period = FactorPeriod::new(
+            1,
+            vec![
+                observation("AAA", 1.0, 0.01),
+                observation("BBB", 2.0, 0.02),
+                observation("CCC", 3.0, f64::MAX),
+                observation("DDD", 4.0, f64::MAX),
+                observation("EEE", 5.0, 0.05),
+                observation("FFF", 6.0, 0.06),
+            ],
+        );
+        assert_eq!(
+            compute_tear_sheet(&FactorPanel::new(vec![period], 3)).unwrap_err(),
+            FactorAnalysisError::NonFiniteComputation {
+                metric: "quantile_mean"
+            }
+        );
     }
 
     #[test]
@@ -765,8 +892,13 @@ mod tests {
         let sheet = compute_tear_sheet(&FactorPanel::new(vec![p1, p2], 2)).expect("tear sheet");
         // One turnover point (for the second period).
         assert_eq!(sheet.turnover.top_turnover.len(), 1);
-        approx(sheet.turnover.top_turnover[0].1, 1.0);
-        approx(sheet.turnover.bottom_turnover[0].1, 1.0);
+        approx(sheet.turnover.top_turnover[0].1.expect("top turnover"), 1.0);
+        approx(
+            sheet.turnover.bottom_turnover[0]
+                .1
+                .expect("bottom turnover"),
+            1.0,
+        );
         approx(sheet.turnover.mean_top.expect("mean top"), 1.0);
         approx(sheet.turnover.mean_bottom.expect("mean bottom"), 1.0);
     }
@@ -778,8 +910,13 @@ mod tests {
             2,
         ))
         .expect("tear sheet");
-        approx(sheet.turnover.top_turnover[0].1, 0.0);
-        approx(sheet.turnover.bottom_turnover[0].1, 0.0);
+        approx(sheet.turnover.top_turnover[0].1.expect("top turnover"), 0.0);
+        approx(
+            sheet.turnover.bottom_turnover[0]
+                .1
+                .expect("bottom turnover"),
+            0.0,
+        );
     }
 
     #[test]

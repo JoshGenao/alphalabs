@@ -106,6 +106,45 @@ Known issues / notes for next agent:
   critic_prompt.md + the codex_adversarial_review memory). If you want the real Codex pass, the USER
   must type `/codex:adversarial-review --wait $(cat prompts/critic_prompt.md)`.
 
+POST-REVIEW HARDENING (the value of the REAL adversarial layer — the user DID then run
+/codex:adversarial-review; the first run scoped the whole branch and tripped refusal-clause #4 on
+the SAFETY_PATH_RE prep, so it was re-run with --base 860df19 to scope just the feat; that pass
+returned needs-attention with TWO high findings, both VALID and both fixed before the feature is
+considered done — fix commit on top of the feat):
+  R1 [high] "Middle quantile means can leak infinity into a successful tear sheet": validate()
+     allows any finite f64, but a bucket mean is an unchecked sum, so two near-f64::MAX returns in a
+     MIDDLE bucket overflow its mean to +inf while finite top/bottom buckets give a finite spread —
+     compute_tear_sheet then returned Ok with inf in per_quantile_mean, contradicting the fail-closed
+     finiteness claim (I only guarded the spread + aggregates, not the per-bucket means). FIX: guard
+     every quantile mean through finite("quantile_mean") -> NonFiniteComputation. Regression:
+     infinity_in_a_middle_quantile_fails_closed (L1) + extreme_returns_in_a_quantile_fail_closed
+     (integration + L7 behavioral).
+  R2 [high] "Security-key tie breaking fabricates returns for constant factors": equal factor values
+     are split across quantiles by the SecurityKey tiebreak, so a constant (or cutoff-tied) factor
+     still got bottom/top portfolios and a non-zero spread driven purely by security identity — false
+     alpha — even though the IC correctly reported None. This was an INCONSISTENCY with my own
+     "undefined-not-fabricated" doctrine (careful for IC, not for the spread). FIX: a per-period
+     separates_extremes predicate (bottom bucket's max factor < top bucket's min factor); spread is
+     Some only when it holds, else None; turnover is Some only when BOTH endpoints separate. The
+     types changed: FactorReturns.spread_per_period and TurnoverAnalysis.top/bottom_turnover are now
+     Vec<(u64, Option<f64>)>; aggregates fold over DEFINED values. Regression:
+     tie_at_cutoff_withholds_spread_even_when_ic_is_defined (L1) +
+     constant_factor_withholds_spread_and_turnover (integration + L7 behavioral).
+  Contract locked the fixes: factor_analysis_contract gained nan_guard.quantile_mean_guard_token, a
+  separation block (predicate + spread gate), and spread/turnover Option tokens; factor_analysis_check
+  grew an 18th static collector (check_separation) + the per-quantile finiteness assertion, each with
+  L3 + L7 non-vacuity mutation tests. Module doc "Undefined vs fabricated" updated to match.
+  Re-verified: cargo test -p atp-factor-pipeline 22 L1 + 8 integration green; fmt/clippy clean;
+  factor_analysis_check --require-cargo PASS (18 static); architecture_check exit 0; pytest 1712
+  passed / 4 skips (L3 now 36 cases, L7 13); ruff clean. Deterministic critic APPROVE on the fix diff.
+  LESSON for the SDK-boundary checklist: my pre-commit fresh-context fallback APPROVED, but the REAL
+  Codex pass caught two genuine in-scope gaps the fallback (and the deterministic critic, and my own
+  pre-check) missed — both were places the code violated doctrines it CLAIMED in its own docs
+  (fail-closed finiteness; undefined-not-fabricated). When the contract asserts "every computed value
+  is finite" or "undefined is None", grep that the GUARD actually covers EVERY producer site (here:
+  the per-bucket means and the spread), not just the headline aggregates. Prefer the real Codex pass
+  over the fallback before declaring a numeric feature done.
+
 === SESSION 46 ===
 Date: 2026-06-11
 Feature completed: SRS-BT-009 SDK-SURFACE — "persist completed backtest results" (docs/SRS.md

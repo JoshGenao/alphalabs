@@ -49,6 +49,7 @@ from factor_analysis_check import (  # noqa: E402
     check_observation,
     check_panel,
     check_period,
+    check_separation,
     check_spearman,
     check_tear_sheet,
     check_trust_boundary,
@@ -83,9 +84,12 @@ class FactorAnalysisScriptTest(unittest.TestCase):
             "exposes `pub fn compute_tear_sheet",
             "declares FactorAnalysisError with 8 fail-closed variants",
             "computes the IC as Spearman = Pearson of average tie ranks",
+            "gates the spread and turnover on a strict extreme-separation predicate",
+            "long-short spread as Option<f64> (None when the factor does not separate",
+            "membership churn as Option<f64> (None when not factor-driven)",
             "FactorPanel::validate fails closed at the trust boundary",
             "factor analysis is deterministic",
-            "verifies every computed aggregate is finite",
+            "verifies every computed aggregate AND every quantile mean is finite",
             "keeps factor scores and forward returns as dimensionless f64",
             "lib.rs re-exports `pub mod factor_analysis;`",
             "Cargo.toml declares no dependency on the live/broker/simulation path",
@@ -166,10 +170,54 @@ class FactorReturnsTest(_Fixture):
             check_factor_returns(self.config, mutated)
         self.assertIn("spread_per_period", str(ctx.exception))
 
+    def test_spread_demoted_off_option_is_caught(self) -> None:
+        # Typing the spread as bare f64 would force a fabricated SecurityKey-driven value for a
+        # period whose factor does not separate the extremes (Codex finding #2).
+        mutated = self.src.replace(
+            "pub spread_per_period: Vec<(u64, Option<f64>)>,",
+            "pub spread_per_period: Vec<(u64, f64)>,",
+            1,
+        )
+        with self.assertRaises(FactorAnalysisCheckError) as ctx:
+            check_factor_returns(self.config, mutated)
+        self.assertIn("Option<f64>", str(ctx.exception))
+
 
 class TurnoverTest(_Fixture):
     def test_turnover_evidence(self) -> None:
         self.assertIn("membership churn", check_turnover(self.config, self.src))
+
+    def test_turnover_demoted_off_option_is_caught(self) -> None:
+        mutated = self.src.replace(
+            "pub top_turnover: Vec<(u64, Option<f64>)>,",
+            "pub top_turnover: Vec<(u64, f64)>,",
+            1,
+        )
+        with self.assertRaises(FactorAnalysisCheckError) as ctx:
+            check_turnover(self.config, mutated)
+        self.assertIn("Option<f64>", str(ctx.exception))
+
+
+class SeparationTest(_Fixture):
+    def test_separation_evidence(self) -> None:
+        self.assertIn(
+            "strict extreme-separation predicate", check_separation(self.config, self.src)
+        )
+
+    def test_dropped_predicate_is_caught(self) -> None:
+        # Renaming the predicate everywhere removes the factor-separation gate, so a constant
+        # or cutoff-tied factor could fabricate a spread again.
+        mutated = self.src.replace("separates_extremes", "always_true")
+        with self.assertRaises(FactorAnalysisCheckError) as ctx:
+            check_separation(self.config, mutated)
+        self.assertIn("separates_extremes", str(ctx.exception))
+
+    def test_dropped_spread_gate_is_caught(self) -> None:
+        # Always taking the spread (ignoring the predicate) reintroduces the false-alpha bug.
+        mutated = self.src.replace("let spread = if separates {", "let spread = if true {", 1)
+        with self.assertRaises(FactorAnalysisCheckError) as ctx:
+            check_separation(self.config, mutated)
+        self.assertIn("if separates", str(ctx.exception))
 
 
 class TearSheetTest(_Fixture):
@@ -262,6 +310,14 @@ class NanGuardTest(_Fixture):
             check_nan_guard(self.config, mutated)
         self.assertIn("finite", str(ctx.exception))
 
+    def test_removed_quantile_mean_guard_is_caught(self) -> None:
+        # Dropping the per-bucket finiteness guard lets a middle-quantile mean overflow to
+        # inf and slip into a successful tear sheet (Codex finding #1).
+        mutated = self.src.replace('finite("quantile_mean"', 'skip("quantile_mean"', 1)
+        with self.assertRaises(FactorAnalysisCheckError) as ctx:
+            check_nan_guard(self.config, mutated)
+        self.assertIn("quantile_mean", str(ctx.exception))
+
 
 class NumericBoundaryTest(_Fixture):
     def test_numeric_boundary_evidence(self) -> None:
@@ -325,12 +381,12 @@ class CargoSmokeTest(unittest.TestCase):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_eighteen_items(self) -> None:
-        # 17 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(run_checks()), 18)
+    def test_run_checks_emits_nineteen_items(self) -> None:
+        # 18 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(run_checks()), 19)
 
-    def test_static_evidence_is_seventeen_items(self) -> None:
-        self.assertEqual(len(assert_factor_analysis_static(load_config(), ROOT)), 17)
+    def test_static_evidence_is_eighteen_items(self) -> None:
+        self.assertEqual(len(assert_factor_analysis_static(load_config(), ROOT)), 18)
 
 
 if __name__ == "__main__":
