@@ -15,6 +15,7 @@ from backtest_check import BacktestCheckError, assert_backtest_static
 from backtest_cost_check import BacktestCostCheckError, assert_backtest_cost_static
 from backtest_store_check import BacktestStoreCheckError, assert_backtest_store_static
 from benchmark_check import BenchmarkCheckError, assert_sim_benchmark_static
+from factor_analysis_check import FactorAnalysisCheckError, assert_factor_analysis_static
 from config_check import ConfigCheckError, assert_configuration_static
 from connectivity_check import ConnectivityCheckError, assert_connectivity_static
 from data_provider_check import (
@@ -699,6 +700,28 @@ def assert_sim_backtest_store(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_factor_analysis(config: dict) -> list[str]:
+    block = config.get("factor_analysis_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_factor_analysis_static(config, ROOT)
+    summary = (
+        f"{block['factor_pipeline_crate']['crate']} factor pipeline computes factor analysis & "
+        f"tear-sheet outputs ({block['compute_fn']['fn']} turns a {block['panel']['struct']} of "
+        "per-period (security, factor, forward-return) observations into one "
+        f"{block['tear_sheet']['struct']} bundling the three SRS-BT-006 deliverables -- the "
+        f"{block['information_coefficient']['struct']} per-period Spearman rank IC with mean/std/"
+        f"risk-adjusted, the {block['factor_returns']['struct']} quantile mean returns plus the "
+        f"top-minus-bottom long-short spread, and the {block['turnover']['struct']} quantile "
+        "membership churn) -- factor scores and returns are dimensionless f64 (not a money leak), "
+        "the work is deterministic (fixed folds, total-order ties), an undefined statistic is None "
+        "(never a fabricated zero), and FactorPanel::validate fails closed at the trust boundary "
+        "(SRS-BT-006, SyRS SYS-18)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_orchestrator_lifecycle(config: dict) -> list[str]:
     block = config.get("orchestrator_lifecycle_contract")
     if block is None:
@@ -1010,6 +1033,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_sim_backtest_store(config))
     except BacktestStoreCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_factor_analysis(config))
+    except FactorAnalysisCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_orchestrator_lifecycle(config))

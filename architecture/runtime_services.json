@@ -5465,5 +5465,107 @@
       "range_guard": "result.range != request.range",
       "binds_artifacts_token": "result.trade_log.clone()"
     }
+  },
+  "factor_analysis_contract": {
+    "description": "SRS-BT-006 (produce factor analysis and tear-sheet outputs; SyRS SYS-18; StRS SN-1.05). The deterministic, dependency-free factor-analysis surface lives in crates/atp-factor-pipeline (module `factor_analysis`). compute_tear_sheet consumes a FactorPanel -- a per-rebalance-period panel of (SecurityKey, factor value, forward return) observations plus a quantile count -- and returns one FactorTearSheet bundling the three deliverables SYS-18 names: (1) InformationCoefficient, the per-period Spearman rank correlation between factor value and forward return (average tie ranks; Pearson of ranks; clamped to its [-1,1] domain) with mean / std / risk-adjusted IC; (2) FactorReturns, the per-period quantile-sorted mean returns plus the top-minus-bottom long-short spread with mean and compounded cumulative spread; (3) TurnoverAnalysis, the per-period top/bottom-quantile membership churn with means. Factor values and returns are dimensionless f64 (the factor domain, not a money leak); the work is deterministic (fixed left-to-right folds; cross-sections sorted by the total order (factor_value, SecurityKey)); an undefined statistic is None (never a fabricated zero); a non-finite aggregate fails closed; and FactorPanel::validate rejects an empty or degenerate panel at the trust boundary. Deferred (SRS-BT-006 stays passes:false): the scheduled full-universe factor job that produces the panel (SRS-FAC-001), wiring real factor values/returns from the unified historical data interface (SRS-DATA-007), rendering the tear-sheet to an operator (SRS-UI / SRS-API), and bundling the SRS-BT-004 PerformanceMetrics family into one cross-crate report.",
+    "requirement": "SRS-BT-006",
+    "srs_refs": ["SRS-BT-006"],
+    "syrs_refs": ["SYS-18"],
+    "strs_refs": ["SN-1.05"],
+    "factor_pipeline_crate": {
+      "crate": "atp-factor-pipeline",
+      "path": "crates/atp-factor-pipeline"
+    },
+    "module": "factor_analysis",
+    "observation": {
+      "struct": "FactorObservation",
+      "fields": ["security", "factor_value", "forward_return"]
+    },
+    "period": {
+      "struct": "FactorPeriod",
+      "fields": ["ts", "observations"]
+    },
+    "panel": {
+      "struct": "FactorPanel",
+      "fields": ["periods", "quantiles"],
+      "validate_fn": "validate"
+    },
+    "information_coefficient": {
+      "struct": "InformationCoefficient",
+      "fields": ["per_period", "mean", "std", "risk_adjusted"],
+      "option_ratio_fields": ["mean", "std", "risk_adjusted"],
+      "ratio_type": "Option<f64>",
+      "per_period_option_token": "per_period: Vec<(u64, Option<f64>)>"
+    },
+    "factor_returns": {
+      "struct": "FactorReturns",
+      "fields": ["per_quantile_mean", "spread_per_period", "mean_spread", "cumulative_spread"]
+    },
+    "turnover": {
+      "struct": "TurnoverAnalysis",
+      "fields": ["top_turnover", "bottom_turnover", "mean_top", "mean_bottom"]
+    },
+    "tear_sheet": {
+      "struct": "FactorTearSheet",
+      "fields": ["ic", "returns", "turnover", "n_periods", "n_quantiles"]
+    },
+    "compute_fn": {
+      "fn": "compute_tear_sheet",
+      "param_tokens": ["panel: &FactorPanel"],
+      "return_token": "Result<FactorTearSheet, FactorAnalysisError>"
+    },
+    "error_enum": {
+      "enum": "FactorAnalysisError",
+      "variants": [
+        "EmptyPanel",
+        "EmptyPeriod",
+        "NonMonotonicPeriods",
+        "DuplicateSecurity",
+        "InvalidQuantileCount",
+        "InsufficientSecurities",
+        "NonFiniteInput",
+        "NonFiniteComputation"
+      ]
+    },
+    "spearman": {
+      "rank_fn": "average_ranks",
+      "pearson_fn": "pearson",
+      "clamp_token": "clamp(-1.0, 1.0)"
+    },
+    "trust_boundary": {
+      "empty_guard": "Err(FactorAnalysisError::EmptyPanel",
+      "quantile_guard": "Err(FactorAnalysisError::InvalidQuantileCount",
+      "insufficient_guard": "Err(FactorAnalysisError::InsufficientSecurities",
+      "duplicate_guard": "Err(FactorAnalysisError::DuplicateSecurity",
+      "monotonic_guard": "Err(FactorAnalysisError::NonMonotonicPeriods",
+      "finite_input_guard": "Err(FactorAnalysisError::NonFiniteInput"
+    },
+    "determinism": {
+      "forbidden_tokens": ["par_iter", "rayon", "thread::spawn", "rand::", "SystemTime", "Instant::now"]
+    },
+    "nan_guard": {
+      "finite_fn_token": "fn finite",
+      "is_finite_token": "is_finite()",
+      "error_token": "FactorAnalysisError::NonFiniteComputation"
+    },
+    "numeric_boundary": {
+      "factor_input_token": "factor_value: f64",
+      "return_input_token": "forward_return: f64"
+    },
+    "module_reexport": {
+      "lib_reexport_token": "pub mod factor_analysis;"
+    },
+    "no_broker_dependency": {
+      "cargo_toml": "Cargo.toml",
+      "forbidden_dep_tokens": ["atp-adapters", "atp-execution", "atp-orchestrator", "atp-simulation"]
+    },
+    "vendor_forbidden_tokens": ["interactive_brokers", "ib_insync", "ibapi", "databento", "sharadar"],
+    "rust_integration_test": "srs_bt_006_factor_analysis",
+    "deferred": [
+      "the scheduled full-universe factor job that produces the panel (SRS-FAC-001)",
+      "wiring real factor values and forward returns from the unified historical data interface (SRS-DATA-007)",
+      "rendering the factor tear-sheet to an operator (SRS-UI / SRS-API)",
+      "bundling the SRS-BT-004 PerformanceMetrics family into one cross-crate tear-sheet report"
+    ]
   }
 }

@@ -1,0 +1,264 @@
+//! SRS-BT-006 end-to-end factor-analysis integration test (Rust crate-level).
+//!
+//! Drives [`atp_factor_pipeline::factor_analysis::compute_tear_sheet`] over a multi-period
+//! fixture panel the way a completed factor-analysis run would: build a
+//! [`FactorPanel`] of per-period `(SecurityKey, factor value, forward return)`
+//! observations and assert the three SRS-BT-006 deliverables come out coherent -- the
+//! per-period Spearman information coefficient, the quantile factor-return spread, and the
+//! quantile turnover -- plus the fail-closed trust boundary and determinism. Factor scores
+//! and returns are dimensionless f64; an undefined statistic is `None`, never a fabricated
+//! zero.
+
+use atp_factor_pipeline::factor_analysis::{
+    compute_tear_sheet, FactorAnalysisError, FactorObservation, FactorPanel, FactorPeriod,
+};
+use atp_types::{AssetClass, SecurityKey};
+
+fn key(symbol: &str) -> SecurityKey {
+    SecurityKey::new(symbol, AssetClass::Equity).expect("equity key")
+}
+
+fn observation(symbol: &str, factor: f64, forward_return: f64) -> FactorObservation {
+    FactorObservation::new(key(symbol), factor, forward_return)
+}
+
+/// A six-security cross-section whose factor perfectly ranks the forward returns.
+fn aligned_period(ts: u64) -> FactorPeriod {
+    FactorPeriod::new(
+        ts,
+        vec![
+            observation("AAA", 1.0, 0.01),
+            observation("BBB", 2.0, 0.02),
+            observation("CCC", 3.0, 0.03),
+            observation("DDD", 4.0, 0.04),
+            observation("EEE", 5.0, 0.05),
+            observation("FFF", 6.0, 0.06),
+        ],
+    )
+}
+
+#[test]
+fn end_to_end_tear_sheet_is_coherent() {
+    // Three periods, three quantiles. Each period's factor perfectly ranks returns, and the
+    // factor ordering is identical every period, so: IC == 1.0 every period, the top-minus-
+    // bottom spread is positive and stable, and turnover is zero (membership never changes).
+    let panel = FactorPanel::new(
+        vec![aligned_period(1), aligned_period(2), aligned_period(3)],
+        3,
+    );
+    let sheet = compute_tear_sheet(&panel).expect("tear sheet");
+
+    assert_eq!(sheet.n_periods, 3);
+    assert_eq!(sheet.n_quantiles, 3);
+
+    // (1) Information coefficient: defined and == 1.0 for every period; mean == 1.0.
+    assert_eq!(sheet.ic.per_period.len(), 3);
+    for (_, ic) in &sheet.ic.per_period {
+        let value = ic.expect("defined ic");
+        assert!((value - 1.0).abs() < 1e-9, "ic = {value}");
+    }
+    let mean_ic = sheet.ic.mean.expect("mean ic");
+    assert!((mean_ic - 1.0).abs() < 1e-9);
+    // Perfectly stable IC -> zero dispersion -> risk-adjusted IC is undefined (None), never
+    // a fabricated value.
+    assert_eq!(sheet.ic.risk_adjusted, None);
+
+    // (2) Factor returns: 6 securities / 3 quantiles -> buckets of 2; bottom {AAA,BBB} mean
+    // 0.015, top {EEE,FFF} mean 0.055 -> spread 0.04, stable across periods.
+    assert_eq!(sheet.returns.per_quantile_mean.len(), 3);
+    for quantile_means in &sheet.returns.per_quantile_mean {
+        assert_eq!(quantile_means.len(), 3);
+    }
+    for (_, spread) in &sheet.returns.spread_per_period {
+        assert!((spread - 0.04).abs() < 1e-9, "spread = {spread}");
+    }
+    let mean_spread = sheet.returns.mean_spread.expect("mean spread");
+    assert!((mean_spread - 0.04).abs() < 1e-9);
+    // Compounded: (1.04)^3 - 1.
+    let cumulative = sheet.returns.cumulative_spread.expect("cumulative");
+    assert!((cumulative - (1.04_f64.powi(3) - 1.0)).abs() < 1e-9);
+
+    // (3) Turnover: stable membership -> zero churn for the two later periods.
+    assert_eq!(sheet.turnover.top_turnover.len(), 2);
+    assert_eq!(sheet.turnover.bottom_turnover.len(), 2);
+    for (_, turnover) in &sheet.turnover.top_turnover {
+        assert!(turnover.abs() < 1e-9);
+    }
+    assert!(sheet.turnover.mean_top.expect("mean top").abs() < 1e-9);
+}
+
+#[test]
+fn turnover_tracks_membership_churn_across_periods() {
+    // Period 2 inverts the factor ordering, so the top and bottom quantiles fully swap.
+    let inverted = FactorPeriod::new(
+        2,
+        vec![
+            observation("AAA", 6.0, 0.01),
+            observation("BBB", 5.0, 0.02),
+            observation("CCC", 4.0, 0.03),
+            observation("DDD", 3.0, 0.04),
+            observation("EEE", 2.0, 0.05),
+            observation("FFF", 1.0, 0.06),
+        ],
+    );
+    let panel = FactorPanel::new(vec![aligned_period(1), inverted], 3);
+    let sheet = compute_tear_sheet(&panel).expect("tear sheet");
+
+    // Top was {EEE,FFF}, now {AAA,BBB}: complete churn.
+    assert!((sheet.turnover.top_turnover[0].1 - 1.0).abs() < 1e-9);
+    assert!((sheet.turnover.bottom_turnover[0].1 - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn computation_is_deterministic_across_runs() {
+    let panel = FactorPanel::new(vec![aligned_period(1), aligned_period(2)], 3);
+    let first = compute_tear_sheet(&panel).expect("first");
+    let second = compute_tear_sheet(&panel).expect("second");
+    // Bit-identical (PartialEq over the whole tear sheet) on identical inputs (SRS-BT-010).
+    assert_eq!(first, second);
+}
+
+#[test]
+fn degenerate_panel_fails_closed() {
+    // A period with fewer securities than quantiles cannot fill every bucket.
+    let panel = FactorPanel::new(
+        vec![FactorPeriod::new(
+            1,
+            vec![observation("AAA", 1.0, 0.1), observation("BBB", 2.0, 0.2)],
+        )],
+        3,
+    );
+    assert_eq!(
+        compute_tear_sheet(&panel).unwrap_err(),
+        FactorAnalysisError::InsufficientSecurities {
+            ts: 1,
+            securities: 2,
+            quantiles: 3,
+        }
+    );
+}
+
+#[test]
+fn non_finite_input_fails_closed() {
+    let panel = FactorPanel::new(
+        vec![FactorPeriod::new(
+            7,
+            vec![
+                observation("AAA", 1.0, f64::INFINITY),
+                observation("BBB", 2.0, 0.2),
+                observation("CCC", 3.0, 0.3),
+            ],
+        )],
+        2,
+    );
+    assert_eq!(
+        compute_tear_sheet(&panel).unwrap_err(),
+        FactorAnalysisError::NonFiniteInput { ts: 7 }
+    );
+}
+
+/// A tiny deterministic LCG so the property sweep below is reproducible without pulling in
+/// an external `rand` dependency (which would itself be a nondeterminism smell in this
+/// crate). Numerical Recipes constants.
+struct Lcg(u64);
+
+impl Lcg {
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        self.0
+    }
+
+    /// A value in `[0, 1)` from the top 53 bits (the f64 mantissa width).
+    fn next_unit(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+/// Generate a valid panel: `periods` strictly-increasing cross-sections, each holding
+/// `securities` distinct names (>= `quantiles`) with finite random factor scores and
+/// returns.
+fn generated_panel(seed: u64, periods: usize, securities: usize, quantiles: usize) -> FactorPanel {
+    let mut lcg = Lcg(seed);
+    let period_vec = (0..periods)
+        .map(|p| {
+            let observations = (0..securities)
+                .map(|s| {
+                    let factor = lcg.next_unit() * 10.0 - 5.0;
+                    let forward_return = lcg.next_unit() * 0.2 - 0.1;
+                    observation(&format!("S{s:03}"), factor, forward_return)
+                })
+                .collect();
+            FactorPeriod::new((p as u64) + 1, observations)
+        })
+        .collect();
+    FactorPanel::new(period_vec, quantiles)
+}
+
+#[test]
+fn invariants_hold_over_generated_panels() {
+    // Property sweep (L2-style, in-crate so it can exercise the Rust surface directly):
+    // over many generated valid panels, the per-period IC stays in its [-1, 1] domain, every
+    // quantile turnover stays in [0, 1], the spread is exactly the top-minus-bottom quantile
+    // difference, the result is deterministic, and it is invariant to observation order.
+    for seed in 0..64u64 {
+        let periods = 2 + (seed as usize % 4); // 2..=5
+        let securities = 6 + (seed as usize % 7); // 6..=12
+        let quantiles = 2 + (seed as usize % 3); // 2..=4
+        let panel = generated_panel(
+            seed.wrapping_mul(2_654_435_761),
+            periods,
+            securities,
+            quantiles,
+        );
+        let sheet = compute_tear_sheet(&panel).expect("valid panel");
+
+        for (_, ic) in &sheet.ic.per_period {
+            if let Some(value) = ic {
+                assert!(
+                    (-1.0..=1.0).contains(value),
+                    "ic {value} outside [-1, 1] (seed {seed})"
+                );
+            }
+        }
+        for (_, turnover) in sheet
+            .turnover
+            .top_turnover
+            .iter()
+            .chain(sheet.turnover.bottom_turnover.iter())
+        {
+            assert!(
+                (0.0..=1.0).contains(turnover),
+                "turnover {turnover} outside [0, 1] (seed {seed})"
+            );
+        }
+        for (i, (_, spread)) in sheet.returns.spread_per_period.iter().enumerate() {
+            let means = &sheet.returns.per_quantile_mean[i];
+            let expected = means[means.len() - 1] - means[0];
+            assert!(
+                (spread - expected).abs() < 1e-12,
+                "spread != top - bottom (seed {seed})"
+            );
+        }
+
+        // Determinism: a second compute is bit-identical.
+        assert_eq!(compute_tear_sheet(&panel).expect("again"), sheet);
+
+        // Observation-order invariance: reversing each period's cross-section changes nothing.
+        let reversed = FactorPanel::new(
+            panel
+                .periods
+                .iter()
+                .map(|period| {
+                    let mut observations = period.observations.clone();
+                    observations.reverse();
+                    FactorPeriod::new(period.ts, observations)
+                })
+                .collect(),
+            panel.quantiles,
+        );
+        assert_eq!(compute_tear_sheet(&reversed).expect("reversed"), sheet);
+    }
+}
