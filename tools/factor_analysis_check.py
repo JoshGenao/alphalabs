@@ -206,16 +206,17 @@ def check_turnover(config: dict, src: str) -> str:
             f"TurnoverAnalysis.top_turnover must carry the turnover as `Option<f64>` "
             f"(`{spec['turnover_option_token']}`) so churn that is not factor-driven is None"
         )
-    if _compact(spec["symmetric_token"]) not in _compact(src):
+    if _compact(spec["weight_turnover_token"]) not in _compact(src):
         fail(
-            f"membership turnover must be SYMMETRIC (`{spec['symmetric_token']}`: count names that "
-            "ENTERED or EXITED) so a shrinking universe (pure removals) is not understated as zero "
-            "churn by a one-sided fraction-of-new-names measure"
+            f"membership turnover must be WEIGHT-BASED (`{spec['weight_turnover_token']}`: half the "
+            "L1 distance between the equal-weight quantile portfolios) so a shrinking universe -- "
+            "which reweights the retained names -- is not understated by a set-membership ratio"
         )
     return (
-        "atp-factor-pipeline declares TurnoverAnalysis: per-period top/bottom-quantile membership "
-        "churn as Option<f64> (None when not factor-driven), computed symmetrically (entered + "
-        "exited names) so removals are counted, with means over the defined values"
+        "atp-factor-pipeline declares TurnoverAnalysis: per-period top/bottom-quantile turnover as "
+        "Option<f64> (None when not factor-driven), measured as half the L1 distance between the "
+        "equal-weight portfolios (counts entries, exits, AND retained-name reweighting), with means "
+        "over the defined values"
     )
 
 
@@ -233,11 +234,17 @@ def check_separation(config: dict, src: str) -> str:
             f"the spread must be gated on the separation predicate (`{spec['spread_gate_token']}`) "
             "so it is withheld (None) when the factor does not separate the extremes"
         )
+    if _compact(spec["inner_cutoff_token"]) not in compact_src:
+        fail(
+            f"the separation predicate must check BOTH bounding cutoffs (`{spec['inner_cutoff_token']}`), "
+            "not just extreme-to-extreme -- for 3+ quantiles a tie can straddle an inner cutoff and "
+            "decide the bottom/top composition by SecurityKey while the extremes look separated"
+        )
     return (
         "atp-factor-pipeline gates the spread and turnover on a strict extreme-separation predicate "
-        "(separates_extremes: the bottom bucket's max factor < the top bucket's min factor), so a "
-        "constant or cutoff-tied factor reports None rather than a fabricated SecurityKey-driven "
-        "spread/turnover"
+        "(separates_extremes: BOTH the q0|q1 and q(Q-2)|q(Q-1) bounding cutoffs untied), so a "
+        "constant or cutoff-tied factor (incl. an inner-cutoff tie at 3+ quantiles) reports None "
+        "rather than a fabricated SecurityKey-driven spread/turnover"
     )
 
 

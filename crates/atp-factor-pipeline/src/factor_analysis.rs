@@ -230,12 +230,13 @@ pub struct FactorReturns {
     pub cumulative_spread: Option<f64>,
 }
 
-/// The turnover analysis: per-period membership churn of the top and bottom quantiles
-/// between consecutive rebalances, with the mean of each. The churn fraction is the
-/// SYMMETRIC `|members_t △ members_{t−1}| / (|members_t| + |members_{t−1}|)` -- it counts
-/// names that ENTERED or EXITED the quantile, so a shrinking universe (pure removals) is not
-/// understated; it reduces to the one-sided "fraction of new names" when the two quantiles
-/// are the same size.
+/// The turnover analysis: per-period one-way transaction-cost turnover of the top and bottom
+/// quantiles between consecutive rebalances, with the mean of each. Turnover is half the L1
+/// distance between the prior and current EQUAL-WEIGHT quantile portfolios (the standard
+/// portfolio-turnover / total-variation distance, in `[0, 1]`), so it counts both names that
+/// ENTERED or EXITED the quantile AND the weight change of RETAINED names when the quantile's
+/// size changes. It reduces to the set-membership churn (and to the one-sided fraction of new
+/// names) when the two quantiles are the same size.
 ///
 /// A period's turnover is **undefined** (`None`) unless BOTH it and the prior period separate
 /// their extremes by factor value (see [`FactorReturns`]). When either endpoint's top/bottom
@@ -461,11 +462,12 @@ fn quantile_of(position: usize, count: usize, quantiles: usize) -> usize {
 struct PeriodBuckets {
     /// Mean forward return of each quantile bucket (length `quantiles`).
     quantile_means: Vec<f64>,
-    /// Whether the factor strictly separates the extremes: the largest factor value in the
-    /// bottom bucket is strictly less than the smallest in the top bucket. When `false`
-    /// (a constant factor, or a tie spanning the top/bottom cutoff), the top-vs-bottom split
-    /// was decided by the `SecurityKey` tiebreak rather than the factor, so the spread and
-    /// turnover are not factor-driven and are withheld (reported as `None`).
+    /// Whether the factor strictly separates the extremes: BOTH the cutoff bounding the bottom
+    /// bucket (q0 | q1) and the cutoff bounding the top bucket (q(Q-2) | q(Q-1)) are untied, so
+    /// the bottom and top bucket COMPOSITIONS are factor-determined. When `false` (a constant
+    /// factor, or a tie straddling either bounding cutoff), the split was decided by the
+    /// `SecurityKey` tiebreak rather than the factor, so the spread and turnover are not
+    /// factor-driven and are withheld (reported as `None`).
     separates_extremes: bool,
     /// The securities in the bottom (`0`) and top (`quantiles - 1`) buckets.
     bottom_members: HashSet<SecurityKey>,
@@ -486,9 +488,14 @@ fn bucket_period(period: &FactorPeriod, quantiles: usize) -> PeriodBuckets {
     let mut bucket_returns: Vec<Vec<f64>> = vec![Vec::new(); quantiles];
     let mut bottom_members: HashSet<SecurityKey> = HashSet::new();
     let mut top_members: HashSet<SecurityKey> = HashSet::new();
-    // Bottom bucket's largest factor and top bucket's smallest factor (sorted ascending, so
-    // the last write to the bottom bucket is its max and the first to the top is its min).
+    // The factor values straddling the two cutoffs that bound the bottom and top buckets
+    // (sorted ascending, so a bucket's first write is its min and its last write is its max):
+    //   * `bottom_max` / `above_bottom_min` straddle the q0 | q1 cutoff (bounds the BOTTOM bucket)
+    //   * `below_top_max` / `top_min` straddle the q(Q-2) | q(Q-1) cutoff (bounds the TOP bucket)
+    // For Q == 2 both cutoffs are the single q0 | q1 boundary (q1 == top, q0 == below-top).
     let mut bottom_max_factor: Option<f64> = None;
+    let mut above_bottom_min_factor: Option<f64> = None;
+    let mut below_top_max_factor: Option<f64> = None;
     let mut top_min_factor: Option<f64> = None;
 
     for (position, observation) in sorted.iter().enumerate() {
@@ -498,6 +505,12 @@ fn bucket_period(period: &FactorPeriod, quantiles: usize) -> PeriodBuckets {
             bottom_members.insert(observation.security.clone());
             bottom_max_factor = Some(observation.factor_value);
         }
+        if bucket == 1 && above_bottom_min_factor.is_none() {
+            above_bottom_min_factor = Some(observation.factor_value);
+        }
+        if bucket == quantiles - 2 {
+            below_top_max_factor = Some(observation.factor_value);
+        }
         if bucket == quantiles - 1 {
             top_members.insert(observation.security.clone());
             if top_min_factor.is_none() {
@@ -506,12 +519,21 @@ fn bucket_period(period: &FactorPeriod, quantiles: usize) -> PeriodBuckets {
         }
     }
 
-    // The factor separates the extremes iff the bottom bucket's max factor is strictly below
-    // the top bucket's min factor. Both are `Some` because each bucket is non-empty (validated).
-    let separates_extremes = matches!(
-        (bottom_max_factor, top_min_factor),
-        (Some(bottom_max), Some(top_min)) if bottom_max < top_min
+    // The factor separates the extremes iff BOTH cutoffs that bound the bottom and top buckets
+    // are untied: the bottom bucket's max factor strictly below its upper neighbour's min, AND
+    // the top bucket's lower neighbour's max strictly below the top's min. Checking only
+    // `bottom_max < top_min` is sufficient for Q == 2 (the lone cutoff) but NOT for Q >= 3, where
+    // a tie can straddle an inner cutoff (deciding the bottom/top COMPOSITION by SecurityKey)
+    // while the extremes stay apart. All four bounds are `Some` (every bucket is non-empty).
+    let bottom_cutoff_clean = matches!(
+        (bottom_max_factor, above_bottom_min_factor),
+        (Some(lo), Some(hi)) if lo < hi
     );
+    let top_cutoff_clean = matches!(
+        (below_top_max_factor, top_min_factor),
+        (Some(lo), Some(hi)) if lo < hi
+    );
+    let separates_extremes = bottom_cutoff_clean && top_cutoff_clean;
 
     // Every bucket is non-empty (validated), so each mean is defined.
     let quantile_means = bucket_returns.iter().map(|returns| mean(returns)).collect();
@@ -524,23 +546,35 @@ fn bucket_period(period: &FactorPeriod, quantiles: usize) -> PeriodBuckets {
     }
 }
 
-/// Symmetric membership churn between `current` and `previous`:
-/// `|current △ previous| / (|current| + |previous|)` -- the share of names that ENTERED or
-/// EXITED the quantile, normalized by the two memberships' total size. Both sets are
-/// non-empty (validated quantiles), so the denominator is >= 2.
+/// One-way transaction-cost turnover between the `previous` and `current` EQUAL-WEIGHT
+/// quantile portfolios: half the L1 distance between their normalized weight vectors (the
+/// standard portfolio-turnover / total-variation distance), in `[0, 1]`. Each portfolio
+/// equal-weights its names (`1 / |current|`, `1 / |previous|`), so the turnover captures both
+/// names that ENTERED or EXITED the quantile AND the weight change of RETAINED names when the
+/// quantile's size changes.
 ///
-/// A one-sided `|current \ previous| / |current|` (the fraction of NEW names) would report
-/// `0` for a pure-removal rebalance -- when `current` is a strict subset of `previous`
-/// because the universe shrank -- and so understate the transaction-cost churn. The
-/// symmetric measure counts removals too. It reduces EXACTLY to the one-sided value when the
-/// two quantiles are the same size (`2k / 2n == k / n`), so an equal-universe panel is
-/// unaffected; only a changing universe diverges.
+/// A set-membership ratio (`|current △ previous| / (|current| + |previous|)`) ignores the
+/// retained-name weight change, so shrinking an equal-weight bucket from four names to two
+/// (which trades 50% of the book) would report only 33%. This weight measure reports 50%, and
+/// reduces EXACTLY to the set ratio (and to the one-sided fraction-of-new-names) when the two
+/// quantiles are the same size, so an equal-universe panel is unaffected.
+///
+/// Computed in CLOSED FORM from integer membership COUNTS, NOT as a float sum over `HashSet`
+/// iteration: a `HashSet`'s iteration order depends on its per-process random hash seed, so
+/// folding floats over it would make the result vary run-to-run (the kind of platform-RNG
+/// nondeterminism SRS-BT-010 forbids -- and which an in-process determinism test, sharing one
+/// seed, would not catch). All retained names share `|1/c - 1/p|`, all entered share `1/c`,
+/// all exited share `1/p`, so the L1 sum is exact from the three counts in fixed order.
 fn membership_turnover(current: &HashSet<SecurityKey>, previous: &HashSet<SecurityKey>) -> f64 {
     let shared = current.iter().filter(|key| previous.contains(*key)).count();
     let entered = current.len() - shared; // |current \ previous|
     let exited = previous.len() - shared; // |previous \ current|
-    let total = current.len() + previous.len();
-    ((entered + exited) as f64) / (total as f64)
+    let current_weight = 1.0 / (current.len() as f64);
+    let previous_weight = 1.0 / (previous.len() as f64);
+    let l1 = (shared as f64) * (current_weight - previous_weight).abs()
+        + (entered as f64) * current_weight
+        + (exited as f64) * previous_weight;
+    0.5 * l1
 }
 
 /// Mean of the DEFINED (`Some`) values of a `(ts, Option<f64>)` series, verified finite.
@@ -952,11 +986,10 @@ mod tests {
     }
 
     #[test]
-    fn shrinking_universe_turnover_counts_removals() {
+    fn shrinking_universe_turnover_counts_removals_and_reweighting() {
         // P1 top bucket = {EEE,FFF,GGG,HHH} (8 names, 2 quantiles). P2 has only those four,
         // so its top bucket = {GGG,HHH} is a strict SUBSET of P1's top: every current name was
-        // already there (zero ENTERED). A one-sided "fraction of new names" would report 0
-        // churn and hide the two REMOVED names; the symmetric measure counts them.
+        // already there (zero ENTERED). A one-sided "fraction of new names" would report 0.
         let p1 = FactorPeriod::new(
             1,
             vec![
@@ -980,11 +1013,52 @@ mod tests {
             ],
         );
         let sheet = compute_tear_sheet(&FactorPanel::new(vec![p1, p2], 2)).expect("tear sheet");
-        // current top {GGG,HHH} (2), prior top {EEE,FFF,GGG,HHH} (4): entered 0, exited 2 ->
-        // 2 / (2 + 4) = 1/3. The key point: NOT zero -- removals are counted.
+        // Prior top {EEE,FFF,GGG,HHH} at 0.25 each; current top {GGG,HHH} at 0.50 each. The
+        // weight L1 = |0.25-0|*2 (EEE,FFF dropped) + |0.25-0.50|*2 (GGG,HHH reweighted) = 1.0,
+        // so one-way turnover = 0.5 -- a set ratio (1/3) would understate the 50% of book traded.
         let top = sheet.turnover.top_turnover[0].1.expect("top turnover");
-        approx(top, 1.0 / 3.0);
-        assert!(top > 0.0, "removals must not be hidden as zero churn");
+        approx(top, 0.5);
+    }
+
+    #[test]
+    fn inner_cutoff_tie_withholds_spread_with_three_quantiles() {
+        // 6 securities, 3 quantiles -> buckets {0,1},{2,3},{4,5}. The factor value 2.0 straddles
+        // the q0|q1 cutoff (positions 1 and 2), so the BOTTOM bucket's membership is decided by
+        // SecurityKey even though the extremes (bottom max 2 < top min 4) look separated. The
+        // spread must be withheld -- the round-1 extremes-only check missed this for Q >= 3.
+        let period = FactorPeriod::new(
+            1,
+            vec![
+                observation("AAA", 1.0, 0.1),
+                observation("BBB", 2.0, 0.2),
+                observation("CCC", 2.0, 0.3),
+                observation("DDD", 3.0, 0.4),
+                observation("EEE", 4.0, 0.5),
+                observation("FFF", 5.0, 0.6),
+            ],
+        );
+        let sheet = compute_tear_sheet(&FactorPanel::new(vec![period], 3)).expect("tear sheet");
+        assert_eq!(sheet.returns.spread_per_period[0].1, None);
+        assert_eq!(sheet.returns.mean_spread, None);
+    }
+
+    #[test]
+    fn clean_three_quantile_factor_reports_spread() {
+        // Strictly increasing factor: every cutoff is untied, so the spread is defined (guards
+        // against the inner-cutoff check being over-eager and withholding a clean factor).
+        let period = FactorPeriod::new(
+            1,
+            vec![
+                observation("AAA", 1.0, 0.1),
+                observation("BBB", 2.0, 0.2),
+                observation("CCC", 3.0, 0.3),
+                observation("DDD", 4.0, 0.4),
+                observation("EEE", 5.0, 0.5),
+                observation("FFF", 6.0, 0.6),
+            ],
+        );
+        let sheet = compute_tear_sheet(&FactorPanel::new(vec![period], 3)).expect("tear sheet");
+        assert!(sheet.returns.spread_per_period[0].1.is_some());
     }
 
     #[test]

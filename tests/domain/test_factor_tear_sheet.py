@@ -272,15 +272,33 @@ def test_spread_is_withheld_when_factor_does_not_separate_extremes() -> None:
     )
     with pytest.raises(FactorAnalysisCheckError):
         check_separation(config, mutated)
+    # ...nor is the inner-cutoff check vacuous: reverting to extremes-only is caught (a 3+-
+    # quantile inner-cutoff tie would otherwise fabricate a SecurityKey-driven spread).
+    mutated = module_source(config).replace("top_cutoff_clean", "always_clean")
+    with pytest.raises(FactorAnalysisCheckError):
+        check_separation(config, mutated)
 
 
-def test_turnover_is_symmetric_so_removals_count() -> None:
+def test_inner_cutoff_tie_withholds_spread_with_three_quantiles() -> None:
+    # Safety (Codex round-3): a tie straddling an inner quantile cutoff (3+ quantiles) decides
+    # the bottom/top composition by SecurityKey, so the spread must be withheld even though the
+    # extreme buckets look separated.
+    _assert_one_passed(
+        _run_cargo_test("inner_cutoff_tie_withholds_spread_with_three_quantiles"),
+        "SRS-BT-006 inner-cutoff tie",
+    )
+
+
+def test_turnover_is_weight_based_so_reweighting_counts() -> None:
     config = load_config()
-    # Safety (Codex round-2): the real module measures turnover symmetrically (entered +
-    # exited) so a shrinking universe is not understated as zero churn.
+    # Safety (Codex round-3): the real module measures turnover as half the L1 distance between
+    # the equal-weight portfolios, so a shrinking universe (which reweights the retained names)
+    # is not understated by a set-membership ratio.
     check_turnover(config, module_source(config))
-    # ...and the guard must not be vacuous: a one-sided "entered only" numerator is caught.
-    mutated = module_source(config).replace("(entered + exited) as f64", "(entered) as f64", 1)
+    # ...and the guard must not be vacuous: dropping the retained-name reweighting term is caught.
+    mutated = module_source(config).replace(
+        "(current_weight - previous_weight).abs()", "0.0_f64", 1
+    )
     with pytest.raises(FactorAnalysisCheckError):
         check_turnover(config, mutated)
 

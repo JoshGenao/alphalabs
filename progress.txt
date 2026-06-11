@@ -181,6 +181,44 @@ fix commit on top):
   introduced the Option — i.e. fixing one undefined-handling bug can surface the next; re-run the
   adversarial pass after each fix round on a numeric feature, don't assume one round converges.
 
+POST-REVIEW HARDENING — ROUND 3 (a THIRD /codex:adversarial-review --base 860df19 found TWO MORE
+high findings — both deepenings of earlier rounds' fixes to their canonical correct form; fixed in
+a third fix commit; 6 high findings total across 3 passes):
+  R3-A [high] "Tie gate misses actual quantile cutoffs": separates_extremes only checked
+     bottom_max < top_min (extreme-to-extreme). Correct for Q=2 (the lone cutoff) but for Q>=3 a tie
+     can straddle the q0|q1 or q(Q-2)|q(Q-1) BOUNDING cutoff — deciding the bottom/top COMPOSITION by
+     SecurityKey — while the extremes stay apart, so the spread was still fabricated. FIX: require
+     BOTH bounding cutoffs untied (bottom_max < q1_min && q(Q-2)_max < top_min); captured 4 boundary
+     factors in the bucket loop. Reduces to the old check at Q=2. Regression:
+     inner_cutoff_tie_withholds_spread_with_three_quantiles + clean_three_quantile_factor_reports_spread
+     (L1 + integration + L7). This is round-1 finding #2 completed for Q>=3.
+  R3-B [high] "Changing-universe turnover understates rebalancing": the round-2 SYMMETRIC set ratio
+     |cur △ prev|/(|cur|+|prev|) still ignored the WEIGHT change of RETAINED names — shrinking an
+     equal-weight bucket 4->2 trades 50% of the book but the set ratio reported 33%. FIX: turnover =
+     half the L1 distance between the equal-weight quantile portfolios (the standard portfolio-
+     turnover / total-variation distance), = 0.5*(shared*|1/c-1/p| + entered/c + exited/p). Reduces to
+     the set ratio (and the one-sided value) at equal size, so all equal-size tests stay green; the
+     4->2 case is now 0.5. DETERMINISM SUBTLETY I caught (Codex did not flag it): the naive impl sums
+     floats over HashSet iteration, whose order depends on the per-process random hash seed → would
+     vary run-to-run and break SRS-BT-010, yet an IN-PROCESS determinism test (one seed) would NOT
+     catch it. Implemented as the CLOSED FORM over integer COUNTS (filter().count() is exact, fixed
+     3-term sum) so it is deterministic. Regression:
+     shrinking_universe_turnover_counts_removals_and_reweighting (L1) +
+     turnover_counts_removals_when_the_universe_shrinks (integration + L7).
+  Contract locked the fixes: separation gained inner_cutoff_token (top_cutoff_clean); turnover's
+  symmetric_token became weight_turnover_token (current_weight - previous_weight); check_separation /
+  check_turnover assert them with L3 + L7 non-vacuity mutation tests. Struct/fn docs updated.
+  Re-verified: cargo test 26 L1 + 11 integration green; fmt/clippy clean; factor_analysis_check
+  --require-cargo PASS (18 static); architecture_check exit 0; pytest 1720 passed / 4 skips; ruff
+  clean. Deterministic critic APPROVE on the R3 diff.
+  LESSON (extends section-16): two cross-cutting traps on numeric features the in-process tests miss —
+  (1) ANY float reduction over a HashSet/HashMap iteration is NON-deterministic across runs (random
+  hash seed) even though it looks order-independent and passes a same-process determinism test; use a
+  count/closed-form or sort first. (2) A "separation/boundary" predicate that's correct at the binary
+  (2-bucket) case is often INSUFFICIENT at N buckets — re-derive it for the general N, don't assume the
+  2-case generalizes. And the meta-lesson stands: numeric features took THREE adversarial rounds to
+  converge; budget for iterate-and-reverify, and run the REAL Codex pass (not the fallback) each round.
+
 === SESSION 46 ===
 Date: 2026-06-11
 Feature completed: SRS-BT-009 SDK-SURFACE — "persist completed backtest results" (docs/SRS.md

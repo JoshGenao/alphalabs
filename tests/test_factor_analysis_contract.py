@@ -81,14 +81,15 @@ class FactorAnalysisScriptTest(unittest.TestCase):
             "declares FactorReturns",
             "the compounded cumulative spread is withheld (None) when any period is undefined",
             "declares TurnoverAnalysis",
-            "computed symmetrically (entered + exited names) so removals are counted",
+            "measured as half the L1 distance between the equal-weight portfolios",
+            "BOTH the q0|q1 and q(Q-2)|q(Q-1) bounding cutoffs untied",
             "declares FactorTearSheet bundling the IC, factor-return, and turnover",
             "exposes `pub fn compute_tear_sheet",
             "declares FactorAnalysisError with 8 fail-closed variants",
             "computes the IC as Spearman = Pearson of average tie ranks",
             "gates the spread and turnover on a strict extreme-separation predicate",
             "long-short spread as Option<f64> (None when the factor does not separate",
-            "membership churn as Option<f64> (None when not factor-driven)",
+            "turnover as Option<f64> (None when not factor-driven)",
             "FactorPanel::validate fails closed at the trust boundary",
             "factor analysis is deterministic",
             "verifies every computed aggregate AND every quantile mean is finite",
@@ -195,7 +196,10 @@ class FactorReturnsTest(_Fixture):
 
 class TurnoverTest(_Fixture):
     def test_turnover_evidence(self) -> None:
-        self.assertIn("membership churn", check_turnover(self.config, self.src))
+        self.assertIn(
+            "half the L1 distance between the equal-weight portfolios",
+            check_turnover(self.config, self.src),
+        )
 
     def test_turnover_demoted_off_option_is_caught(self) -> None:
         mutated = self.src.replace(
@@ -207,13 +211,13 @@ class TurnoverTest(_Fixture):
             check_turnover(self.config, mutated)
         self.assertIn("Option<f64>", str(ctx.exception))
 
-    def test_one_sided_turnover_is_caught(self) -> None:
-        # Reverting to a one-sided "entered only" numerator would hide pure removals as zero
-        # churn on a shrinking universe (Codex round-2 finding).
-        mutated = self.src.replace("(entered + exited) as f64", "(entered) as f64", 1)
+    def test_set_based_turnover_is_caught(self) -> None:
+        # Dropping the retained-name weight-change term reverts to a set-membership ratio, which
+        # understates turnover when the universe size changes (Codex round-3 finding).
+        mutated = self.src.replace("(current_weight - previous_weight).abs()", "0.0_f64", 1)
         with self.assertRaises(FactorAnalysisCheckError) as ctx:
             check_turnover(self.config, mutated)
-        self.assertIn("entered + exited", str(ctx.exception))
+        self.assertIn("current_weight - previous_weight", str(ctx.exception))
 
 
 class SeparationTest(_Fixture):
@@ -236,6 +240,14 @@ class SeparationTest(_Fixture):
         with self.assertRaises(FactorAnalysisCheckError) as ctx:
             check_separation(self.config, mutated)
         self.assertIn("if separates", str(ctx.exception))
+
+    def test_extreme_only_separation_is_caught(self) -> None:
+        # Removing the inner-cutoff check (reverting to extremes-only) would let a 3+-quantile
+        # inner-cutoff tie fabricate a SecurityKey-driven spread (Codex round-3 finding).
+        mutated = self.src.replace("top_cutoff_clean", "always_clean")
+        with self.assertRaises(FactorAnalysisCheckError) as ctx:
+            check_separation(self.config, mutated)
+        self.assertIn("top_cutoff_clean", str(ctx.exception))
 
 
 class TearSheetTest(_Fixture):

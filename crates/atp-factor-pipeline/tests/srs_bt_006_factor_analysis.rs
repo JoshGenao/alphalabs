@@ -249,7 +249,30 @@ fn turnover_counts_removals_when_the_universe_shrinks() {
         top > 0.0,
         "a pure-removal rebalance must not report zero churn"
     );
-    assert!((top - 1.0 / 3.0).abs() < 1e-9, "top turnover = {top}");
+    // Equal-weight book traded 50% (two of four names dropped, the rest doubled in weight) --
+    // a set-membership ratio would understate this as 1/3.
+    assert!((top - 0.5).abs() < 1e-9, "top turnover = {top}");
+}
+
+#[test]
+fn inner_cutoff_tie_withholds_spread_with_three_quantiles() {
+    // 6 securities, 3 quantiles: the factor value 2.0 straddles the q0|q1 cutoff, so the bottom
+    // bucket is composed by SecurityKey even though the extremes look separated. The spread must
+    // be withheld -- the extremes-only check missed this for 3+ quantiles.
+    let period = FactorPeriod::new(
+        1,
+        vec![
+            observation("AAA", 1.0, 0.1),
+            observation("BBB", 2.0, 0.2),
+            observation("CCC", 2.0, 0.3),
+            observation("DDD", 3.0, 0.4),
+            observation("EEE", 4.0, 0.5),
+            observation("FFF", 5.0, 0.6),
+        ],
+    );
+    let sheet = compute_tear_sheet(&FactorPanel::new(vec![period], 3)).expect("tear sheet");
+    assert_eq!(sheet.returns.spread_per_period[0].1, None);
+    assert_eq!(sheet.returns.mean_spread, None);
 }
 
 #[test]

@@ -5507,7 +5507,7 @@
       "struct": "TurnoverAnalysis",
       "fields": ["top_turnover", "bottom_turnover", "mean_top", "mean_bottom"],
       "turnover_option_token": "top_turnover: Vec<(u64, Option<f64>)>",
-      "symmetric_token": "entered + exited"
+      "weight_turnover_token": "current_weight - previous_weight"
     },
     "tear_sheet": {
       "struct": "FactorTearSheet",
@@ -5556,7 +5556,8 @@
     "separation": {
       "predicate_token": "separates_extremes",
       "spread_gate_token": "if separates",
-      "comment": "The spread/turnover are factor-attributable only when the factor strictly separates the top and bottom quantiles; otherwise the split is a SecurityKey tiebreak and the value is withheld (None), so a constant or cutoff-tied factor cannot fabricate alpha."
+      "inner_cutoff_token": "top_cutoff_clean",
+      "comment": "The spread/turnover are factor-attributable only when the factor strictly separates the top and bottom quantiles AT BOTH BOUNDING CUTOFFS (q0|q1 and q(Q-2)|q(Q-1)), not just extreme-to-extreme -- for 3+ quantiles a tie can straddle an inner cutoff and decide the bottom/top composition by SecurityKey. Otherwise the value is withheld (None), so a constant or cutoff-tied factor cannot fabricate alpha."
     },
     "numeric_boundary": {
       "factor_input_token": "factor_value: f64",
