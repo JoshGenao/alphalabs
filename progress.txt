@@ -1,3 +1,121 @@
+=== SESSION 48 ===
+Date: 2026-06-11
+Feature completed: SRS-BT-010 SDK-SURFACE — "produce deterministic backtest results for identical
+inputs" (docs/SRS.md SRS-5.6 SRS-BT-010; traces SyRS SYS-62; StRS SN-1.02). User-confirmed via
+AskUserQuestion (over SRS-FAC-001 and the strict-lowest-ID ERR-7). The documented natural next in
+the backtest numeric thread: SIM-001..004 -> BT-004 (metrics) -> BT-005 (benchmark) -> BT-009
+(record store) -> BT-006 (factor tear-sheet) -> BT-010 (determinism verification). Adds a NEW
+determinism-VERIFICATION module to atp-simulation: the engine was already deterministic by
+construction (backtest.rs names itself "the forward seam for SRS-BT-010"); this slice makes that
+guarantee FALSIFIABLE.
+Status: 92 remaining features (UNCHANGED — SRS-BT-010 stays passes:false; honest partial pass).
+feature_list.json was NOT modified.
+
+What I did (3 commits, the standard prep -> feat -> chore cadence):
+- prep 9594bb5 (chore(critic)): extended SAFETY_PATH_RE in tools/critic_check.py with collision-free
+  determinism tokens (/determinism\.rs, determinism[_-]?check, determinism[_-]?contract,
+  backtest[_-]?determinism, srs[_-]?bt[_-]?010). NO bare 'determinism' token. Verified each matches
+  the planned feat paths and ZERO existing tracked files (the S45 lesson). This made determinism.rs +
+  determinism_check.py safety paths so the critic requires the paired tests/domain/ diff — committed
+  SEPARATELY so the feat diff under judgment does not self-modify the gate (critic_prompt refusal
+  clause #4; the staged feat set excludes critic_check.py, verified).
+- feat fb83e15 (9 files): crates/atp-simulation/src/determinism.rs (RunDigest newtype over an FNV-1a
+  digest + digest_result/digest_run + runs_match/metrics_match + verify_reproducible + DeterminismError
+  (9 localized variants) + the local backtest_store-style text codec + 16 L1 tests); lib.rs
+  `pub mod determinism;`; backtest_determinism_contract in architecture/runtime_services.json;
+  tools/determinism_check.py (10 static collectors + --require-cargo smoke, imported TRANSITIVELY via
+  architecture_check.py + an init.sh gate after the backtest cost-model gate — the metrics/benchmark/
+  store/factor convention); L3 tests/test_determinism_contract.py (25 cases); L7
+  tests/domain/test_backtest_determinism.py (12 cases); Rust integration srs_bt_010_determinism.rs
+  (6 tests incl. a 64-seed property sweep).
+- chore (this entry).
+
+Design notes (the headline is FALSIFIABILITY + the three named artifacts):
+- The SRS-BT-010 criterion is literally a repeated-run equality test: "repeated runs produce identical
+  trade logs, equity curves, AND metrics; parallelism, floating-point ordering, and platform random
+  values do not introduce nondeterminism." The engine + every sibling module already CLAIM determinism;
+  what was missing was a comparable, falsifiable artifact. This module supplies it:
+  (1) RunDigest = an opaque u64 FNV-1a fingerprint, domain-tagged ATP-BACKTEST-RUN-DIGEST,
+      `run-digest:{hex}` Display. digest_result folds the BacktestResult (data_source, range,
+      bars_processed, each Fill field, each EquityPoint, final_equity) as EXACT i64 minor units —
+      encode_result_body carries NO f64 / to_bits, so the money path has no float-formatting
+      nondeterminism (and no money-correctness leak). digest_run additionally folds the eight
+      PerformanceMetrics ratios through their exact f64::to_bits payload (push_opt_f64) + the benchmark
+      symbol, with a has_metrics domain-separation flag, so the fingerprint spans all THREE named
+      artifacts and a run-with-metrics can never alias a run-without. digest_result == digest_run(r, None).
+  (2) runs_match / metrics_match return the FIRST divergence as a LOCALIZED DeterminismError
+      (TradeLog{index} / EquityCurve{index} / lengths / FinalEquity / BarsProcessed / Metrics{metric}),
+      metrics compared via to_bits so a +0.0/-0.0 or NaN-bit difference is caught — not smoothed over.
+  (3) verify_reproducible runs the engine TWICE over identical inputs (building a fresh strategy each
+      replay via an FnMut factory, since BacktestStrategy is &mut), asserts runs_match AND digest
+      equality (the DeterminismError::Digest cross-check is defense for any BacktestResult field
+      runs_match does not yet cover), and surfaces a replay that does not complete as Run(BacktestError).
+- DETERMINISM DISCIPLINE: the verifier is itself deterministic (fixed left-to-right byte fold, total-
+  order field encoding, no parallelism/RNG/clock) — it honors the property it checks. The 64-seed
+  property sweep proves bit-identical output on re-run AND under SOURCE-ITERATION-ORDER SHUFFLE (the
+  engine stable-sorts the replay window, so a shuffled catalog yields the same digest — the criterion's
+  "ordering does not introduce nondeterminism" analog). The falsifiability test injects a strategy that
+  reads a counter shared ACROSS runs and confirms verify_reproducible CATCHES it (TradeLog{index:0}).
+- NUMERIC/CODEC BOUNDARY: reuses the proven backtest_store.rs FNV-1a + length-prefixed + to_bits codec,
+  mirrored LOCALLY in determinism.rs (each sibling module carries its own small encoders) rather than
+  refactoring shared helpers out of backtest_store.rs — that would be unrelated-module churn. Reads the
+  existing backtest::{BacktestResult,Fill,EquityPoint} + metrics::PerformanceMetrics types only; the
+  digest is ADDITIVE (no logic touched in backtest.rs/metrics.rs/backtest_store.rs).
+- HOME = atp-simulation (SRS-BT-003 co-locates the backtest engine with the sim engine; the digest reads
+  the engine's own output). Deps stay atp-strategy-engine + atp-types only — NO broker/execution/
+  orchestrator dependency; dependency direction clean.
+
+What I tested: cargo test -p atp-simulation green (239 lib incl. 16 determinism L1; 6 srs_bt_010
+integration incl. the 64-seed property sweep; 0 failures); fmt --check clean on the new files only (NO
+whole-crate fmt per no_whole_crate_cargo_fmt — rustfmt applied to just the new files); clippy clean on
+the new module/tests (0 findings mentioning determinism.rs / srs_bt_010_determinism.rs).
+determinism_check.py --require-cargo -> SRS-BT-010 SDK-SURFACE PASS (10 static + cargo smoke).
+architecture_check.py exit 0 surfacing the determinism evidence with the prior backtest checks. L3
+(25 cases) + L7 (12 cases) pass; pytest -m "not integration and not e2e" 1760 passed / 4 pre-existing
+pending-impl skips / 118 subtests; ruff clean. ./init.sh -> Environment ready with the new "backtest
+determinism contract check" gate after the backtest cost-model gate.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings (pre-commit hook also APPROVE on
+    prep 9594bb5 + feat fb83e15). The SAFETY_PATH_RE prep made determinism.rs + determinism_check.py
+    safety paths, so the critic required the paired tests/domain/ diff (present) and did not block.
+  judgment (critic_prompt.md, FRESH-CONTEXT sub-agent fallback — /codex:adversarial-review is a user-only
+    plugin command Claude cannot invoke via the Skill tool, per the codex_adversarial_review memory; the
+    sub-agent ran the authoritative prompt against the staged diff with no implementation-context
+    contamination): APPROVE — 0 findings (after fix). FIRST pass returned WARN with ONE finding
+    [doc:cross-reference-drift] — determinism.rs:27 pointed readers to
+    runtime_services.json#backtest_contract.deferred (a real block, but the SRS-BT-001/004 ENGINE block)
+    instead of this module's own backtest_determinism_contract.deferred. VALID and FIXED before commit
+    (one-token doc correction, not overridden); a SECOND fresh-context unprimed pass over the corrected
+    staged diff returned APPROVE — 0 findings, independently confirming dependency direction clean
+    (atp-strategy-engine + atp-types only; no broker/orchestrator dep; single crate), additive-only edits
+    to shared files, integer-exact money digest + to_bits metric fold, no clock/RNG/async/unwrap in
+    production paths (all such tokens in #[cfg(test)] or negative-test mutations), refusal clauses
+    satisfied (no critic_check.py/critic_prompt.md staged), and L1+L2(property)+L3+L7+integration layers
+    present with non-vacuity guards. CI mirror satisfied TRANSITIVELY via architecture_check (no ci.yml/
+    run_ci_locally.sh drift — the ci_mirror_check_script memory applies to STANDALONE CI entries).
+
+Known issues / notes for next agent:
+- SRS-BT-010 stays passes:false BY DESIGN (honest partial-pass). DEFERRED (already recorded in
+  backtest_contract.deferred[] "SRS-BT-010 (determinism guarantee)" AND the new
+  backtest_determinism_contract.deferred[]): (1) the end-to-end determinism guarantee under the REAL
+  Python strategy host (the Rust<->Python boundary) — SRS-BT-001-runtime; (2) the operator repeated-run
+  workflow (POST /api/v1/backtests run twice -> identical) surfaced via SRS-API-001 / SRS-UI; (3)
+  stamping the RunDigest onto each persisted backtest record so a re-run is proven reproducible by digest
+  comparison — SRS-BT-009 store integration. This slice ships only the in-process Rust determinism
+  CONTRACT (digest + harness + localized fail-closed verifier).
+- The natural sibling next step is SRS-BT-009 store integration (stamp RunDigest onto BacktestRecord —
+  the digest's clearest consumer) or SRS-FAC-001 (the scheduled full-universe factor job feeding the
+  BT-006 tear-sheet). The convention for the next feature is unchanged: new module + lib re-export +
+  *_contract json + tools/*_check.py imported transitively by architecture_check.py + init.sh gate +
+  L1/L3/L7/integration + the SAFETY_PATH_RE prep commit.
+- Adversarial-layer note: /codex:adversarial-review (the PREFERRED judgment path) is user-only; this
+  session used the fresh-context sub-agent fallback (sanctioned by coding_prompt Step 6.5 +
+  critic_prompt.md + the codex_adversarial_review memory). SendMessage to continue a prior sub-agent was
+  NOT available in this harness, so the post-fix re-confirmation was a fresh unprimed sub-agent pass. If
+  you want the real Codex pass, the USER must type `/codex:adversarial-review --wait $(cat
+  prompts/critic_prompt.md)`.
+
 === SESSION 47 ===
 Date: 2026-06-11
 Feature completed: SRS-BT-006 SDK-SURFACE — "produce factor analysis and tear-sheet outputs"
