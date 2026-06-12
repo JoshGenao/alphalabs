@@ -1,3 +1,113 @@
+=== SESSION 49 ===
+Date: 2026-06-12
+Feature completed: SRS-FAC-001 SDK-SURFACE — "compute scheduled factors across the full US equity
+universe" (docs/SRS.md SRS-5.6 SRS-FAC-001; traces SyRS SYS-32/33/51, NFR-P7; StRS SN-2.06, BG-3).
+User-confirmed via AskUserQuestion (over SRS-DATA-001 and SRS-EXE-003). The natural next: the
+backtest/factor thread just finished BT-006 (factor_analysis), whose docs EXPLICITLY defer the
+"horizon-aware producer" to SRS-FAC-001 — so this slice is that producer.
+Status: 92 remaining features (UNCHANGED — SRS-FAC-001 stays passes:false; honest partial pass).
+feature_list.json was NOT modified.
+
+What I did (prep -> feat -> chore cadence):
+- prep fb45c08 (chore(critic)): extended SAFETY_PATH_RE with collision-free factor-job tokens
+  (/factor_job.rs, factor_job_check, factor_job_contract, srs_fac_001). Verified ZERO existing
+  tracked-path collisions; committed SEPARATELY so the feat diff under judgment doesn't self-modify
+  the gate (refusal-clause #4).
+- feat 3bc07c9 (9 files): crates/atp-factor-pipeline/src/factor_job.rs (the scheduled
+  full-universe factor job + assemble_regular_panel producer bridge; TradingCalendar + FactorModel
+  + Clock injected ports; session-aware Instant; 19 localized FactorJobError variants; 30 L1
+  tests); lib.rs `pub mod factor_job;`; factor_job_contract in architecture/runtime_services.json;
+  tools/factor_job_check.py (25 static collectors + cargo smoke, imported TRANSITIVELY via
+  architecture_check.py + an init.sh gate after the factor-analysis gate); L3
+  tests/test_factor_job_contract.py (59); L7 tests/domain/test_factor_job.py (33); Rust
+  integration srs_fac_001_factor_job.rs (22, incl. a 64-seed determinism sweep).
+- chore (this entry).
+
+Design headline — the four SRS-FAC-001 acceptance facets, each made falsifiable + the BT-006
+producer bridge:
+- Full universe (SYS-32/33): HARD FULL_UNIVERSE_MIN (8,000) floor — a CONSTANT, not config — plus
+  an equity-class gate and a HARD MIN_SCORED_COVERAGE_RATIO (0.5) scored-coverage floor (config can
+  RAISE but never weaken either), so a one-scored "success" cannot slip through (NoUsableCoverage).
+- Market + fundamental (SYS-32): both inputs Option; a security missing either, or for which the
+  factor abstains, is an auditable SkippedSecurity, never fabricated. The model is invoked in
+  CANONICAL SecurityKey order, so even a stateful model yields an order-independent output (scores
+  AND skipped sorted by key).
+- Schedule resolves through the calendar (SYS-51): session_open resolution into session-aware
+  instants; non-session / lead-before-day-start fail closed.
+- Deadline INSTANT (NFR-P7): gated against an injected Clock — early start, late start
+  (session-aware so a later-day run is caught), and late finalization fail closed (exclusive
+  deadline minute); a backward (non-monotonic) clock fails closed; an out-of-[0,1] coverage ratio
+  fails closed (InvalidCoverageRatio). The gate is OBSERVATIONAL (start + completion).
+- Producer bridge: assemble_regular_panel builds a REGULAR FactorPanel (constant calendar-resolved
+  interval + non-overlapping horizon) and checks each period's forward_window_end for LABEL
+  consistency — the exact regularity BT-006's mean aggregates require and defer to FAC-001.
+- HOME = atp-factor-pipeline (the AGENTS.md-named owner); deps atp-data + atp-types only; no
+  broker/exec/orchestrator/sim dependency; vendor-token-free.
+
+What I tested: cargo test --workspace green; crate = 59 lib (incl. 30 factor_job L1) + 12 + 22
+integration; clippy + rustfmt clean on the new files (no whole-crate fmt); factor_job_check
+--require-cargo PASS (25 static + cargo smoke); architecture_check exit 0; L3 (59) + L7 (33);
+pytest "not integration and not e2e" 1864 passed / 4 pre-existing skips. ./init.sh -> Environment
+ready with the new "scheduled factor-job contract check" gate.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings (pre-commit hook also
+    APPROVE on prep fb45c08 + feat 3bc07c9). The SAFETY_PATH_RE prep made factor_job.rs +
+    factor_job_check.py safety paths, so the critic required the paired tests/domain/ diff (present).
+  judgment (/codex:adversarial-review --wait --base fb45c08): did NOT reach APPROVE — committed on
+    HUMAN AUTHORIZATION after a 10-round loop that was non-converging on DEFERRED-RUNTIME scope.
+    Every IN-SCOPE correctness finding was fixed across the rounds (each a real improvement):
+    R1 hard universe floor (was config-bypassable) + session_open schedule resolution (was
+       is_session only) + deadline was a projected estimate;
+    R2 deadline still projected -> measured against an injected meter;
+    R3 deadline not measured / late-start / finalization not in the gate / empty-coverage success
+       -> injected Clock (start + completion) + NoUsableCoverage;
+    R4 minute-of-day clock lost session identity + early start unenforced + skipped not sorted
+       -> session-aware Instant + early-start gate + skipped sorted;
+    R5 min_scored=1 too permissive + no equity gate + horizon caller-asserted + minute precision
+       -> coverage ratio + equity gate + forward_window label check + exclusive deadline minute;
+    R6 negative ratio weakened the gate + unverified clock monotonicity
+       -> InvalidCoverageRatio range check + NonMonotonicClock fail-closed;
+    R7 stateful FactorModel could break order-independence + stale "integer cost" doc drift
+       -> canonical-key scoring order + scope the model purity contract + scrub the stale claims;
+    R8 ratio 0.0 collapsed the floor to 1 + forward-window "VERIFIED" over-claim
+       -> HARD MIN_SCORED_COVERAGE_RATIO platform floor + rescope to LABEL consistency;
+    R9 a hung synchronous model cannot be preempted in-process
+       -> scope the deadline gate as OBSERVATIONAL; defer supervised hard-deadline termination to
+       the runtime (orchestrator container SYS-57 + the NFR-P7 perf test);
+    R10 [med] config doc contradicted InvalidCoverageRatio behavior (fixed) + [high] calendar
+       degraded-dependency typing + [high] trusted universe/data manifest (a re-raise of R5) —
+       the latter two are the legitimately-DEFERRED runtime (the concrete calendar service health
+       via SRS-ARCH-005/ERR-2; the trusted session-versioned universe + market/Sharadar
+       source-provenance manifest via SRS-DATA-001/007). An offline deterministic producer cannot
+       provide these; scoped honestly in the contract deferred[] + the Rust docs (a successful
+       FactorScoreSet certifies a correct COMPUTATION over the inputs given, not their
+       trustworthiness). The judgment loop will keep surfacing the next deferred dependency on a
+       deliberately-partial slice, so it does not terminate at APPROVE — the user authorized commit.
+
+Known issues / notes for next agent:
+- SRS-FAC-001 stays passes:false BY DESIGN. Deferred owners (recorded in factor_job_contract
+  deferred[]): the live NFR-P7 wall-clock perf test; the concrete US-equity calendar SERVICE +
+  calendar/dependency health; the real market+Sharadar data wiring + a TRUSTED session-versioned
+  universe/source-provenance manifest (SRS-DATA-001/007); supervised termination of a hung
+  FactorModel (SYS-57 container); the SRS-UI/SRS-API operator surface.
+- LESSON (saved to memory): a deliberately-partial SDK-surface slice for a RUNTIME/DATA-heavy
+  feature (here: wall-clock perf, real data sources, trusted manifest, calendar health) will NOT
+  converge to a clean adversarial APPROVE — the reviewer keeps surfacing the next deferred
+  dependency as "do not ship." Fix every IN-SCOPE correctness finding (this loop fixed ~16 real
+  ones), scope the rest honestly with named deferred owners, and have a human authorize the commit
+  once the residue is purely deferred-runtime. The 3 narrow fail-OPEN bugs Codex found early (R1
+  config-bypassable floor, R6 negative-ratio, R6 backward-clock) were genuine and worth the loop.
+- PRE-EXISTING FLAKY TEST (not mine): tests/property/test_indicators_property.py::
+  test_bbands_property_matches_batch_talib fails at the prep commit fb45c08 WITHOUT any factor-job
+  changes (verified via git stash) — a Hypothesis counterexample in the BBands streaming-vs-TA-Lib
+  indicator code, now saved in .hypothesis so it reproduces. Out of scope for SRS-FAC-001; flag for
+  whoever owns the indicators. I deselected it in the full-suite run; everything else passes.
+- Adversarial-layer note: the USER ran the real /codex:adversarial-review (its command body injects
+  `node .../codex-companion.mjs adversarial-review --wait --base <prep>`, which Claude runs via Bash
+  — NOT the Skill-tool path that errors). --base fb45c08 scopes past the SAFETY_PATH_RE prep
+  (refusal-clause #4).
+
 === SESSION 48 ===
 Date: 2026-06-11
 Feature completed: SRS-BT-010 SDK-SURFACE — "produce deterministic backtest results for identical
