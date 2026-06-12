@@ -114,13 +114,15 @@ pub mod backtest_store;
 /// family) into a stable [`determinism::RunDigest`] — the trade log and equity curve as
 /// exact integer minor units, the dimensionless metric ratios via `f64::to_bits`, so there is
 /// no float-formatting nondeterminism. [`determinism::runs_match`] /
-/// [`determinism::metrics_match`] localize the first divergent artifact, and
-/// [`determinism::verify_reproducible`] runs the engine twice over identical inputs and fails
-/// closed with a localized [`determinism::DeterminismError`] if the replays disagree — the
-/// SRS-BT-010 acceptance test ("repeated runs produce identical trade logs, equity curves,
-/// and metrics") expressed in code. The end-to-end guarantee under the real Python strategy
-/// host and the operator repeated-run workflow are deferred, so SRS-BT-010 stays
-/// `passes:false`.
+/// [`determinism::metrics_match`] localize the first divergent artifact. Two harnesses run the
+/// engine twice over identical inputs and fail closed with a localized
+/// [`determinism::DeterminismError`] if the replays disagree: [`determinism::verify_reproducible`]
+/// checks the **trade log + equity curve** (two of the three artifacts), and
+/// [`determinism::verify_reproducible_with_metrics`] additionally computes the SRS-BT-004
+/// [`metrics::PerformanceMetrics`] family for each run and compares it — the full SRS-BT-010
+/// acceptance test ("repeated runs produce identical trade logs, equity curves, *and* metrics")
+/// expressed in code. The end-to-end guarantee under the real Python strategy host and the
+/// operator repeated-run workflow are deferred, so SRS-BT-010 stays `passes:false`.
 pub mod determinism;
 
 #[derive(Debug, Default)]

@@ -134,34 +134,13 @@ def test_digest_spans_the_metric_family() -> None:
 
 def test_metrics_harness_verifies_all_three_artifacts() -> None:
     # The full acceptance-test harness runs the engine twice AND computes + compares the metric
-    # family for both runs, returning a digest spanning trade log + equity curve + metrics.
+    # family (the crate's own deterministic metrics::compute, over immutable inputs) for both
+    # runs, returning a digest spanning trade log + equity curve + metrics. There is no caller
+    # reduction, so no mutable state is shared between the metric computation and the replays --
+    # which is what makes the metric clause safe to verify in any ordering.
     _assert_one_passed(
         _run_cargo_test("metrics_harness_verifies_all_three_artifacts"),
         "SRS-BT-010 three-artifact harness",
-    )
-
-
-def test_metrics_harness_catches_a_nondeterministic_metric_reduction() -> None:
-    # Critical safety case: even when the BacktestResult is identical across runs, a metric
-    # REDUCTION that consults cross-run state makes the metric family diverge. The harness must
-    # catch and localize it (DeterminismError::Metrics) -- an operator must never promote on a
-    # backtest whose metrics are not reproducible just because the trade log is.
-    _assert_one_passed(
-        _run_cargo_test("metrics_harness_catches_a_nondeterministic_metric_reduction"),
-        "SRS-BT-010 metric-nondeterminism caught",
-    )
-
-
-def test_metrics_harness_interleaving_catches_run_induced_state_change() -> None:
-    # The interleaving masking regression: a run mutates state the metric reduction reads, while
-    # the trade log stays identical. Computing metrics A before run B begins is what lets the
-    # harness catch it; a non-interleaved harness would observe the final state for both and
-    # falsely report the run reproducible -- a backtest an operator could not actually re-derive.
-    _assert_one_passed(
-        _run_cargo_test(
-            "metrics_harness_interleaving_catches_a_run_induced_metric_state_change"
-        ),
-        "SRS-BT-010 interleaving masking regression",
     )
 
 
@@ -242,15 +221,14 @@ def test_metrics_harness_actually_compares_metrics() -> None:
         check_harness(config, mutated)
 
 
-def test_metrics_harness_interleaves_the_replays() -> None:
+def test_metrics_harness_uses_the_deterministic_metric_family() -> None:
     config = load_config()
-    # Metrics A must be computed BEFORE the second run begins, so a run-induced metric state
-    # change cannot be masked by both metric sets observing the final state (the high finding from
-    # the second review). The guard must catch a non-interleaved harness.
+    # The metric family is the crate's own deterministic metrics::compute over immutable inputs --
+    # NOT a caller-supplied reduction that could share mutable state with the run (which is what
+    # let the previous reviews construct false pass/fail metric scenarios). The guard must catch a
+    # metric computation that abandons the deterministic family.
     check_harness(config, module_source(config))
-    mutated = module_source(config).replace(
-        "let metrics_a = compute_metrics(&result_a)?;", "", 1
-    )
+    mutated = module_source(config).replace("compute_metrics(", "fabricate(", 1)
     with pytest.raises(DeterminismCheckError):
         check_harness(config, mutated)
 

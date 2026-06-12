@@ -66,9 +66,9 @@ class DeterminismScriptTest(unittest.TestCase):
             "exposes `pub fn digest_result",
             "encode_result_body folds the trade log + equity curve as exact i64 minor units",
             "encode_metrics_body folds the eight dimensionless metric ratios via push_opt_f64",
-            "verify_reproducible_with_metrics (all three artifacts, INTERLEAVED)",
+            "verify_reproducible_with_metrics (all three artifacts) run the engine twice via run_pair",
             "runs_match (incl. data_source + range provenance)",
-            "a nondeterministic metric reduction is caught even on identical results",
+            "the crate's own deterministic metrics::compute over immutable inputs",
             "declares DeterminismError with 12 localized",
             "determinism module has no parallelism / RNG / clock token",
             "lib.rs re-exports `pub mod determinism;`",
@@ -202,13 +202,23 @@ class HarnessTest(_Fixture):
             check_harness(self.config, mutated)
         self.assertIn("metrics_match", str(ctx.exception))
 
-    def test_non_interleaved_metrics_is_caught(self) -> None:
-        # Computing metrics A only after the second run begins (here: removing the early metrics-A
-        # binding) masks a run-induced metric state change -- the high finding from the review.
-        mutated = self.src.replace("let metrics_a = compute_metrics(&result_a)?;", "", 1)
+    def test_dropped_metric_family_computation_is_caught(self) -> None:
+        # The metrics harness must compute the metric family for BOTH results; dropping the
+        # second computation would leave the metric clause half-verified.
+        mutated = self.src.replace(
+            "let metrics_b = metrics_for(request, &result_b,", "let metrics_b = metrics_a.clone(); //", 1
+        )
         with self.assertRaises(DeterminismCheckError) as ctx:
             check_harness(self.config, mutated)
-        self.assertIn("INTERLEAVE", str(ctx.exception))
+        self.assertIn("metrics_for", str(ctx.exception))
+
+    def test_non_family_metric_computation_is_caught(self) -> None:
+        # metrics_for must compute the crate's own deterministic family; replacing the family call
+        # with a caller-style stub reintroduces the shared-state hazard the design eliminates.
+        mutated = self.src.replace("compute_metrics(", "fabricate(", 1)
+        with self.assertRaises(DeterminismCheckError) as ctx:
+            check_harness(self.config, mutated)
+        self.assertIn("deterministic", str(ctx.exception))
 
     def test_runs_match_ignoring_provenance_is_caught(self) -> None:
         # runs_match must compare data_source; dropping the check would let two results from

@@ -43,7 +43,10 @@ use std::fmt;
 use crate::backtest::{
     BacktestEngine, BacktestError, BacktestRequest, BacktestResult, BacktestStrategy, BarSource,
 };
-use crate::metrics::{MetricsError, PerformanceMetrics};
+use crate::metrics::{
+    compute as compute_metrics, Benchmark, BenchmarkPoint, MetricsConfig, MetricsError,
+    PerformanceMetrics,
+};
 
 /// Domain tag mixed into every run digest so a [`RunDigest`] can never collide with another
 /// FNV-1a checksum in the crate (e.g. the `backtest_store` blob checksum, which uses a
@@ -351,52 +354,71 @@ where
 }
 
 /// Verify all **three** artifacts SRS-BT-010 names — trade log, equity curve, **and metrics** —
-/// reproduce: run `engine` twice over identical inputs, compute the [`PerformanceMetrics`] for
-/// each completed run via `compute_metrics`, and return the [`digest_run`] fingerprint spanning
-/// all three on success.
+/// reproduce: run `engine` twice over identical inputs, compute the [`PerformanceMetrics`] family
+/// for each completed run, and return the [`digest_run`] fingerprint spanning all three on success.
 ///
-/// This is the full SRS-BT-010 acceptance test in code. `compute_metrics` is the caller-supplied
-/// reduction from a run to its metric family (typically a closure over [`metrics::compute`](crate::metrics::compute)
-/// with a fixed benchmark + config); it is run for **both** replays and the results compared via
-/// [`metrics_match`], so a nondeterministic metric reduction is caught even when the underlying
-/// `BacktestResult` is identical. The harness fails closed: a divergent metric surfaces as
-/// [`DeterminismError::Metrics`], and a metric family that cannot be computed for a completed run
-/// surfaces as [`DeterminismError::MetricsComputation`] rather than silently dropping the metric
-/// clause. The returned digest cross-checks both runs ([`DeterminismError::Digest`]).
+/// This is the full SRS-BT-010 acceptance test in code. The metrics are computed by the crate's
+/// own [`metrics::compute`](crate::metrics::compute) — the SRS-BT-004 family — over the run's
+/// equity curve and trade log against the supplied `benchmark` / `benchmark_levels` / `config`.
+/// Those metric inputs are **immutable borrows**, and `compute` is a pure, deterministic function
+/// (fixed folds, no clock/RNG); there is no caller-supplied reduction and therefore **no mutable
+/// state shared between the metric computation and the backtest replays**. That is deliberate: a
+/// caller closure that shared state with the run could either contaminate the second replay
+/// (computed between runs) or mask a run-induced change (computed after both) — baking in the
+/// deterministic family removes that entire hazard, so the two replays receive byte-identical
+/// inputs and the metric family is a pure function of each result.
 ///
-/// The two replays are **interleaved** — run A, then compute metrics A, *then* run B, then
-/// compute metrics B — rather than running both backtests first. This matters when the metric
-/// reduction observes state the backtest run can mutate (a shared benchmark/config/provider): if
-/// both metric sets were computed only after both runs finished, they would both observe the
-/// second run's final state and falsely match. Interleaving makes each metric set observe the
-/// state as of *its own* run, so a run-induced metric state change is caught, not masked.
-pub fn verify_reproducible_with_metrics<S, B, F, M>(
+/// The harness fails closed: a divergent result surfaces through [`runs_match`], a divergent
+/// metric through [`DeterminismError::Metrics`], a metric family that cannot be computed for a
+/// completed run through [`DeterminismError::MetricsComputation`] (never a silently dropped metric
+/// clause), and a digest that differs despite matching fields through [`DeterminismError::Digest`].
+#[allow(clippy::too_many_arguments)]
+pub fn verify_reproducible_with_metrics<S, B, F>(
     engine: &BacktestEngine,
     request: &BacktestRequest,
-    mut build_strategy: F,
+    build_strategy: F,
     source: &B,
-    compute_metrics: M,
+    benchmark: &Benchmark,
+    benchmark_levels: Option<&[BenchmarkPoint]>,
+    config: &MetricsConfig,
 ) -> Result<RunDigest, DeterminismError>
 where
     S: BacktestStrategy,
     B: BarSource,
     F: FnMut() -> S,
-    M: Fn(&BacktestResult) -> Result<PerformanceMetrics, MetricsError>,
 {
-    let mut first = build_strategy();
-    let result_a = engine.run(request, &mut first, source)?;
-    let metrics_a = compute_metrics(&result_a)?;
-    let mut second = build_strategy();
-    let result_b = engine.run(request, &mut second, source)?;
-    let metrics_b = compute_metrics(&result_b)?;
+    let (result_a, result_b) = run_pair(engine, request, build_strategy, source)?;
+    // The metric family is a pure function of each result + the immutable inputs, so it is
+    // computed after both replays complete (it cannot affect either run) for each result.
+    let metrics_a = metrics_for(request, &result_a, benchmark, benchmark_levels, config)?;
+    let metrics_b = metrics_for(request, &result_b, benchmark, benchmark_levels, config)?;
 
-    runs_match(&result_a, &result_b)?;
     metrics_match(&metrics_a, &metrics_b)?;
     let digest = digest_run(&result_a, Some(&metrics_a));
     if digest != digest_run(&result_b, Some(&metrics_b)) {
         return Err(DeterminismError::Digest);
     }
     Ok(digest)
+}
+
+/// Compute the SRS-BT-004 metric family for one completed run, mapping a metric-computation
+/// failure to a fail-closed [`DeterminismError::MetricsComputation`].
+fn metrics_for(
+    request: &BacktestRequest,
+    result: &BacktestResult,
+    benchmark: &Benchmark,
+    benchmark_levels: Option<&[BenchmarkPoint]>,
+    config: &MetricsConfig,
+) -> Result<PerformanceMetrics, DeterminismError> {
+    compute_metrics(
+        request.starting_cash_minor,
+        &result.equity_curve,
+        &result.trade_log,
+        benchmark,
+        benchmark_levels,
+        config,
+    )
+    .map_err(DeterminismError::MetricsComputation)
 }
 
 // --------------------------------------------------------------------------- //
@@ -521,7 +543,6 @@ mod tests {
         BacktestBar, BacktestDataSource, BacktestResult, DateRange, EquityPoint, Fill,
     };
     use crate::cost::CostConfig;
-    use crate::metrics::{compute, Benchmark, MetricsConfig};
     use atp_types::StrategyId;
 
     // ---- result/metrics fixtures ---------------------------------------- //
@@ -881,6 +902,9 @@ mod tests {
 
     #[test]
     fn verify_reproducible_with_metrics_spans_all_three_artifacts() {
+        // The harness computes the REAL SRS-BT-004 metric family (metrics::compute) over each
+        // run's equity curve + trade log against the immutable benchmark/config inputs — there is
+        // no caller closure and no mutable state shared with the runs.
         let source = VecSource(vec![bar(1, 100), bar(2, 120), bar(3, 150)]);
         let req = metrics_request();
         let engine = BacktestEngine::new();
@@ -893,27 +917,20 @@ mod tests {
                 bought: false,
             },
             &source,
-            |result| {
-                compute(
-                    req.starting_cash_minor,
-                    &result.equity_curve,
-                    &result.trade_log,
-                    &Benchmark::spy(),
-                    None,
-                    &MetricsConfig::default(),
-                )
-            },
+            &Benchmark::spy(),
+            None,
+            &MetricsConfig::default(),
         )
-        .expect("deterministic run + metrics reproduce");
+        .expect("deterministic run + metric family reproduce");
 
         // The returned digest spans all three artifacts: it equals a one-off run's digest_run
-        // (with metrics) and differs from the result-only digest.
+        // (with the same metric family) and differs from the result-only digest.
         let mut once = BuyOnceAndHold {
             lot: 100,
             bought: false,
         };
         let result = engine.run(&req, &mut once, &source).expect("run");
-        let metrics = compute(
+        let metrics = compute_metrics(
             req.starting_cash_minor,
             &result.equity_curve,
             &result.trade_log,
@@ -927,46 +944,16 @@ mod tests {
     }
 
     #[test]
-    fn verify_reproducible_with_metrics_catches_a_nondeterministic_metric_reduction() {
-        // Identical BacktestResults, but the metric REDUCTION consults a counter shared across
-        // runs — so the metric family differs between the two computations. This is the case the
-        // result-only harness cannot see and is exactly why the metric clause needs its own check.
-        let source = VecSource(vec![bar(1, 100), bar(2, 120), bar(3, 150)]);
-        let req = metrics_request();
-        let engine = BacktestEngine::new();
-        let counter = Rc::new(Cell::new(0.0_f64));
-        let err = verify_reproducible_with_metrics(
-            &engine,
-            &req,
-            || BuyOnceAndHold {
-                lot: 100,
-                bought: false,
-            },
-            &source,
-            |_result| {
-                let n = counter.get();
-                counter.set(n + 1.0);
-                Ok(PerformanceMetrics {
-                    sharpe_ratio: Some(n),
-                    ..sample_metrics()
-                })
-            },
-        )
-        .expect_err("a nondeterministic metric reduction must be caught on identical results");
-        assert_eq!(
-            err,
-            DeterminismError::Metrics {
-                metric: "sharpe_ratio"
-            }
-        );
-    }
-
-    #[test]
     fn verify_reproducible_with_metrics_surfaces_a_metrics_compute_failure() {
         // A metric family that cannot be computed for a completed run fails closed (the metric
-        // clause is never silently dropped).
+        // clause is never silently dropped). An invalid annualization factor makes
+        // metrics::compute reject the run.
         let source = VecSource(vec![bar(1, 100), bar(2, 120)]);
         let engine = BacktestEngine::new();
+        let bad_config = MetricsConfig {
+            periods_per_year: 0,
+            risk_free_rate_per_period: 0.0,
+        };
         let err = verify_reproducible_with_metrics(
             &engine,
             &request(),
@@ -975,12 +962,14 @@ mod tests {
                 bought: false,
             },
             &source,
-            |_result| Err(MetricsError::EmptyEquityCurve),
+            &Benchmark::spy(),
+            None,
+            &bad_config,
         )
         .expect_err("a metrics-compute failure must fail closed");
         assert_eq!(
             err,
-            DeterminismError::MetricsComputation(MetricsError::EmptyEquityCurve)
+            DeterminismError::MetricsComputation(MetricsError::NonPositivePeriodsPerYear)
         );
     }
 
@@ -1000,56 +989,6 @@ mod tests {
         assert_eq!(
             runs_match(&base, &other_range),
             Err(DeterminismError::Range)
-        );
-    }
-
-    #[test]
-    fn metrics_harness_catches_a_run_induced_metric_state_change() {
-        // A strategy that bumps a counter shared across runs as a SIDE EFFECT (without changing
-        // its trades) leaves the BacktestResults identical but advances state the metric reduction
-        // reads. Interleaving (metrics A computed before run B starts) makes metrics A and B
-        // observe DIFFERENT counter values, so the divergence is caught — a non-interleaved harness
-        // computing both metric sets after both runs would observe the same final value and falsely
-        // match. This is the masking regression for the interleaving fix.
-        struct BumpingBuyOnce {
-            counter: Rc<Cell<i64>>,
-            bought: bool,
-        }
-        impl BacktestStrategy for BumpingBuyOnce {
-            fn on_bar(&mut self, _bar: &BacktestBar, _position: i64) -> Result<i64, BacktestError> {
-                if self.bought {
-                    return Ok(0);
-                }
-                self.bought = true;
-                self.counter.set(self.counter.get() + 1); // side effect; trades stay identical
-                Ok(10)
-            }
-        }
-
-        let source = VecSource(vec![bar(1, 100), bar(2, 110)]);
-        let counter = Rc::new(Cell::new(0_i64));
-        let read = Rc::clone(&counter);
-        let err = verify_reproducible_with_metrics(
-            &BacktestEngine::new(),
-            &request(),
-            || BumpingBuyOnce {
-                counter: Rc::clone(&counter),
-                bought: false,
-            },
-            &source,
-            |_result| {
-                Ok(PerformanceMetrics {
-                    sharpe_ratio: Some(read.get() as f64),
-                    ..sample_metrics()
-                })
-            },
-        )
-        .expect_err("interleaving must catch a run-induced metric state change");
-        assert_eq!(
-            err,
-            DeterminismError::Metrics {
-                metric: "sharpe_ratio"
-            }
         );
     }
 }

@@ -17,7 +17,7 @@ use atp_simulation::determinism::{
     digest_result, digest_run, metrics_match, runs_match, verify_reproducible,
     verify_reproducible_with_metrics, DeterminismError,
 };
-use atp_simulation::metrics::{compute, Benchmark, MetricsConfig, PerformanceMetrics};
+use atp_simulation::metrics::{compute, Benchmark, MetricsConfig};
 use atp_types::StrategyId;
 
 // --------------------------------------------------------------------------- //
@@ -312,16 +312,9 @@ fn metrics_harness_verifies_all_three_artifacts() {
             bought: false,
         },
         &source,
-        |result| {
-            compute(
-                req.starting_cash_minor,
-                &result.equity_curve,
-                &result.trade_log,
-                &Benchmark::spy(),
-                None,
-                &MetricsConfig::default(),
-            )
-        },
+        &Benchmark::spy(),
+        None,
+        &MetricsConfig::default(),
     )
     .expect("deterministic run + metric family reproduce");
 
@@ -340,119 +333,6 @@ fn metrics_harness_verifies_all_three_artifacts() {
     )
     .expect("metrics");
     assert_eq!(digest, digest_run(&result, Some(&metrics)));
-}
-
-#[test]
-fn metrics_harness_catches_a_nondeterministic_metric_reduction() {
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    // The case the result-only harness CANNOT see: the BacktestResult is identical across runs,
-    // but the metric REDUCTION reads state shared across runs, so the metric family diverges.
-    // verify_reproducible_with_metrics must catch and localize it (Codex round-1 follow-up).
-    let source = OrderedCatalog {
-        bars: vec![bar(1, 100), bar(2, 120), bar(3, 150)],
-    };
-    let req = request(DateRange::new(1, 3));
-    let counter = Rc::new(Cell::new(0.0_f64));
-    let template = PerformanceMetrics {
-        sharpe_ratio: Some(0.0),
-        sortino_ratio: None,
-        alpha: None,
-        beta: None,
-        max_drawdown: None,
-        annualized_return: None,
-        annualized_volatility: None,
-        win_rate: None,
-        benchmark_symbol: "SPY".to_string(),
-    };
-    let err = verify_reproducible_with_metrics(
-        &BacktestEngine::new(),
-        &req,
-        || BuyOnceAndHold {
-            lot: 100,
-            bought: false,
-        },
-        &source,
-        |_result| {
-            let n = counter.get();
-            counter.set(n + 1.0);
-            Ok(PerformanceMetrics {
-                sharpe_ratio: Some(n),
-                ..template.clone()
-            })
-        },
-    )
-    .expect_err("a nondeterministic metric reduction must be caught on identical results");
-    assert_eq!(
-        err,
-        DeterminismError::Metrics {
-            metric: "sharpe_ratio"
-        }
-    );
-}
-
-#[test]
-fn metrics_harness_interleaving_catches_a_run_induced_metric_state_change() {
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    // The masking regression for the interleaving fix: a strategy bumps a counter shared across
-    // runs as a SIDE EFFECT (its trades stay identical), and the metric reduction reads that
-    // counter. Because the harness interleaves (metrics A computed before run B begins), metrics A
-    // and B observe DIFFERENT counter values and the divergence is caught. A non-interleaved
-    // harness — computing both metric sets after both runs — would observe the same final value
-    // and falsely report the run reproducible.
-    struct BumpingBuyOnce {
-        counter: Rc<Cell<i64>>,
-        bought: bool,
-    }
-    impl BacktestStrategy for BumpingBuyOnce {
-        fn on_bar(&mut self, _bar: &BacktestBar, _position: i64) -> Result<i64, BacktestError> {
-            if self.bought {
-                return Ok(0);
-            }
-            self.bought = true;
-            self.counter.set(self.counter.get() + 1); // side effect; trades stay identical
-            Ok(10)
-        }
-    }
-
-    let source = OrderedCatalog {
-        bars: vec![bar(1, 100), bar(2, 110)],
-    };
-    let req = request(DateRange::new(1, 2));
-    let counter = Rc::new(Cell::new(0_i64));
-    let read = Rc::clone(&counter);
-    let err = verify_reproducible_with_metrics(
-        &BacktestEngine::new(),
-        &req,
-        || BumpingBuyOnce {
-            counter: Rc::clone(&counter),
-            bought: false,
-        },
-        &source,
-        |_result| {
-            Ok(PerformanceMetrics {
-                sharpe_ratio: Some(read.get() as f64),
-                sortino_ratio: None,
-                alpha: None,
-                beta: None,
-                max_drawdown: None,
-                annualized_return: None,
-                annualized_volatility: None,
-                win_rate: None,
-                benchmark_symbol: "SPY".to_string(),
-            })
-        },
-    )
-    .expect_err("interleaving must catch a run-induced metric state change");
-    assert_eq!(
-        err,
-        DeterminismError::Metrics {
-            metric: "sharpe_ratio"
-        }
-    );
 }
 
 #[test]
