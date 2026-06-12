@@ -132,6 +132,26 @@ def test_digest_spans_the_metric_family() -> None:
     )
 
 
+def test_metrics_harness_verifies_all_three_artifacts() -> None:
+    # The full acceptance-test harness runs the engine twice AND computes + compares the metric
+    # family for both runs, returning a digest spanning trade log + equity curve + metrics.
+    _assert_one_passed(
+        _run_cargo_test("metrics_harness_verifies_all_three_artifacts"),
+        "SRS-BT-010 three-artifact harness",
+    )
+
+
+def test_metrics_harness_catches_a_nondeterministic_metric_reduction() -> None:
+    # Critical safety case: even when the BacktestResult is identical across runs, a metric
+    # REDUCTION that consults cross-run state makes the metric family diverge. The harness must
+    # catch and localize it (DeterminismError::Metrics) -- an operator must never promote on a
+    # backtest whose metrics are not reproducible just because the trade log is.
+    _assert_one_passed(
+        _run_cargo_test("metrics_harness_catches_a_nondeterministic_metric_reduction"),
+        "SRS-BT-010 metric-nondeterminism caught",
+    )
+
+
 def test_property_sweep_reproducibility_and_order_invariance() -> None:
     # Over many fixed-seed-but-varied inputs: every run reproduces and is order-invariant.
     _assert_one_passed(
@@ -185,6 +205,17 @@ def test_harness_cross_checks_the_digests() -> None:
         "return Ok(digest);",
         1,
     )
+    with pytest.raises(DeterminismCheckError):
+        check_harness(config, mutated)
+
+
+def test_metrics_harness_actually_compares_metrics() -> None:
+    config = load_config()
+    # The metric clause must be VERIFIED, not assumed: the metrics harness computes the metric
+    # family for both runs and compares it. Dropping that comparison is the exact gap Codex
+    # flagged, so the guard must catch it.
+    check_harness(config, module_source(config))
+    mutated = module_source(config).replace("metrics_match(&metrics_a, &metrics_b)?;", "", 1)
     with pytest.raises(DeterminismCheckError):
         check_harness(config, mutated)
 

@@ -229,28 +229,54 @@ def check_metrics_digest(config: dict, src: str) -> str:
 
 def check_harness(config: dict, src: str) -> str:
     spec = contract_block(config)["harness"]
-    for fn_key in ("fn", "compare_fn", "metrics_compare_fn"):
+    # The two reproducibility harnesses are public; their shared run-twice helper is private.
+    for fn_key in ("fn", "metrics_fn", "compare_fn", "metrics_compare_fn"):
         if not re.search(rf"\bpub\s+fn\s+{re.escape(spec[fn_key])}\b", src):
             fail(f"determinism module must expose `pub fn {spec[fn_key]}`")
-    body = _private_fn_body(src, spec["fn"])
-    compact_body = _compact(body)
+
+    # run_pair runs the engine twice over identical inputs and localizes a result divergence.
+    pair_body = _compact(_private_fn_body(src, spec["run_pair_fn"]))
     for token in spec["runs_twice_tokens"]:
-        if _compact(token) not in compact_body:
+        if _compact(token) not in pair_body:
             fail(
-                f"`{spec['fn']}` must run the engine twice over identical inputs (missing "
-                f"`{token}`)"
+                f"`{spec['run_pair_fn']}` must run the engine twice over identical inputs "
+                f"(missing `{token}`)"
             )
-    if _compact(spec["compare_fn"]) not in compact_body:
-        fail(f"`{spec['fn']}` must localize divergence via `{spec['compare_fn']}`")
-    if _compact(spec["digest_crosscheck_token"]) not in compact_body:
+    if _compact(spec["compare_fn"]) not in pair_body:
+        fail(f"`{spec['run_pair_fn']}` must localize divergence via `{spec['compare_fn']}`")
+
+    # Both harnesses build on run_pair and cross-check the canonical digests.
+    for fn_key in ("fn", "metrics_fn"):
+        body = _compact(_private_fn_body(src, spec[fn_key]))
+        if _compact(spec["run_pair_fn"]) not in body:
+            fail(f"`{spec[fn_key]}` must run the pair via `{spec['run_pair_fn']}`")
+        if _compact(spec["digest_crosscheck_token"]) not in body:
+            fail(
+                f"`{spec[fn_key]}` must cross-check the canonical digests "
+                f"(`{spec['digest_crosscheck_token']}`) as defense for any field the structural "
+                "compare does not cover"
+            )
+
+    # The metrics harness additionally compares the metric family (so the metric clause is the
+    # full three-artifact acceptance test) and fingerprints it via digest_run.
+    metrics_body = _compact(_private_fn_body(src, spec["metrics_fn"]))
+    if _compact(spec["metrics_compare_fn"]) not in metrics_body:
         fail(
-            f"`{spec['fn']}` must cross-check the canonical digests (`{spec['digest_crosscheck_token']}`) "
-            "as defense for any field the structural compare does not cover"
+            f"`{spec['metrics_fn']}` must compare the metric family via "
+            f"`{spec['metrics_compare_fn']}` so the metric clause of SRS-BT-010 is verified, not "
+            "assumed"
+        )
+    if _compact(spec["metrics_digest_token"]) not in metrics_body:
+        fail(
+            f"`{spec['metrics_fn']}` must fingerprint the run WITH its metrics "
+            f"(`{spec['metrics_digest_token']}`) so the returned digest spans all three artifacts"
         )
     return (
-        "atp-simulation verify_reproducible runs the engine twice (fresh strategy per replay), "
-        "localizes divergence via runs_match, and cross-checks the digests (DeterminismError::Digest) "
-        "-- the SRS-BT-010 acceptance test in code"
+        "atp-simulation verify_reproducible (trade log + equity curve) and "
+        "verify_reproducible_with_metrics (all three artifacts) run the engine twice via run_pair "
+        "(fresh strategy per replay), localize divergence via runs_match / metrics_match, and "
+        "cross-check the digests (DeterminismError::Digest) -- the full SRS-BT-010 acceptance test "
+        "in code (a nondeterministic metric reduction is caught even on identical results)"
     )
 
 

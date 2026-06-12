@@ -734,12 +734,13 @@ def assert_backtest_determinism(config: dict) -> list[str]:
         f"guarantee falsifiable ({block['digest_fns']['result_fn']} / "
         f"{block['digest_fns']['run_fn']} fold a BacktestResult -- trade log + equity curve as "
         "exact i64 minor units, metric ratios via f64::to_bits -- into a stable "
-        f"{block['run_digest']['struct']}; {block['harness']['fn']} runs the engine twice over "
-        "identical inputs and fails closed with a localized "
-        f"{block['error_enum']['enum']} if the replays disagree), and the verifier is itself "
-        "deterministic (no parallelism / RNG / clock); the end-to-end guarantee under the real "
-        "Python strategy host + the operator repeated-run workflow are deferred (SRS-BT-010, "
-        "SyRS SYS-62)"
+        f"{block['run_digest']['struct']}; {block['harness']['fn']} and "
+        f"{block['harness']['metrics_fn']} run the engine twice over identical inputs and fail "
+        f"closed with a localized {block['error_enum']['enum']} if the trade log, equity curve, "
+        "or metrics disagree -- the metric clause caught even on an identical result), and the "
+        "verifier is itself deterministic (no parallelism / RNG / clock); the end-to-end "
+        "guarantee under the real Python strategy host + the operator repeated-run workflow are "
+        "deferred (SRS-BT-010, SyRS SYS-62)"
     )
     return static_evidence + [summary]
 

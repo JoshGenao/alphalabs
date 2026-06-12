@@ -66,8 +66,9 @@ class DeterminismScriptTest(unittest.TestCase):
             "exposes `pub fn digest_result",
             "encode_result_body folds the trade log + equity curve as exact i64 minor units",
             "encode_metrics_body folds the eight dimensionless metric ratios via push_opt_f64",
-            "verify_reproducible runs the engine twice",
-            "declares DeterminismError with 9 localized",
+            "verify_reproducible_with_metrics (all three artifacts) run the engine twice via run_pair",
+            "a nondeterministic metric reduction is caught even on identical results",
+            "declares DeterminismError with 10 localized",
             "determinism module has no parallelism / RNG / clock token",
             "lib.rs re-exports `pub mod determinism;`",
             "Cargo.toml declares no dependency on the broker/live/orchestrator path",
@@ -191,6 +192,14 @@ class HarnessTest(_Fixture):
         with self.assertRaises(DeterminismCheckError) as ctx:
             check_harness(self.config, mutated)
         self.assertIn("twice", str(ctx.exception))
+
+    def test_dropped_metric_comparison_is_caught(self) -> None:
+        # Dropping metrics_match from the metrics harness would let metric nondeterminism pass
+        # while the harness reports success -- the exact gap the metric clause closes.
+        mutated = self.src.replace("metrics_match(&metrics_a, &metrics_b)?;", "", 1)
+        with self.assertRaises(DeterminismCheckError) as ctx:
+            check_harness(self.config, mutated)
+        self.assertIn("metrics_match", str(ctx.exception))
 
 
 class ErrorEnumTest(_Fixture):
