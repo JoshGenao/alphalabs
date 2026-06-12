@@ -239,7 +239,9 @@ SAFETY_PATH_RE = re.compile(
     r"|/backtest_store\.rs|backtest[_-]?store[_-]?check|backtest[_-]?store[_-]?contract"
     r"|backtest[_-]?record|srs[_-]?bt[_-]?009"
     r"|/factor_analysis\.rs|factor[_-]?analysis[_-]?check|factor[_-]?analysis[_-]?contract"
-    r"|factor[_-]?tear[_-]?sheet|srs[_-]?bt[_-]?006)",
+    r"|factor[_-]?tear[_-]?sheet|srs[_-]?bt[_-]?006"
+    r"|/determinism\.rs|determinism[_-]?check|determinism[_-]?contract"
+    r"|backtest[_-]?determinism|srs[_-]?bt[_-]?010)",
     re.IGNORECASE,
 )
 
