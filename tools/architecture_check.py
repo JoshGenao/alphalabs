@@ -15,6 +15,7 @@ from backtest_check import BacktestCheckError, assert_backtest_static
 from backtest_cost_check import BacktestCostCheckError, assert_backtest_cost_static
 from backtest_store_check import BacktestStoreCheckError, assert_backtest_store_static
 from benchmark_check import BenchmarkCheckError, assert_sim_benchmark_static
+from determinism_check import DeterminismCheckError, assert_determinism_static
 from factor_analysis_check import FactorAnalysisCheckError, assert_factor_analysis_static
 from config_check import ConfigCheckError, assert_configuration_static
 from connectivity_check import ConnectivityCheckError, assert_connectivity_static
@@ -722,6 +723,27 @@ def assert_factor_analysis(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_backtest_determinism(config: dict) -> list[str]:
+    block = config.get("backtest_determinism_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_determinism_static(config, ROOT)
+    summary = (
+        f"{block['simulation_crate']['crate']} determinism module makes the SRS-BT-010 "
+        f"guarantee falsifiable ({block['digest_fns']['result_fn']} / "
+        f"{block['digest_fns']['run_fn']} fold a BacktestResult -- trade log + equity curve as "
+        "exact i64 minor units, metric ratios via f64::to_bits -- into a stable "
+        f"{block['run_digest']['struct']}; {block['harness']['fn']} runs the engine twice over "
+        "identical inputs and fails closed with a localized "
+        f"{block['error_enum']['enum']} if the replays disagree), and the verifier is itself "
+        "deterministic (no parallelism / RNG / clock); the end-to-end guarantee under the real "
+        "Python strategy host + the operator repeated-run workflow are deferred (SRS-BT-010, "
+        "SyRS SYS-62)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_orchestrator_lifecycle(config: dict) -> list[str]:
     block = config.get("orchestrator_lifecycle_contract")
     if block is None:
@@ -1037,6 +1059,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_factor_analysis(config))
     except FactorAnalysisCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_backtest_determinism(config))
+    except DeterminismCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_orchestrator_lifecycle(config))

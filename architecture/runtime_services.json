@@ -5585,5 +5585,104 @@
       "realized return-driven DRIFT turnover -- the turnover here is the factor-signal (target-portfolio) turnover; the held-position drift component needs holding-period returns and a rebalancing convention, i.e. the deferred backtest engine",
       "validating PANEL REGULARITY (a consistent forward-return horizon + rebalance interval) before emitting the aggregate means (mean_spread / mean turnover) -- a spread scales with horizon and turnover with interval, so a mixed-horizon/interval panel yields means that mix incomparable magnitudes; FactorPeriod carries a start timestamp only, so regularity is the producer's contract, not validatable here (owner: the SRS-DATA-007 / SRS-FAC-001 horizon-aware producer). The per-period series and the rank-based IC family are unaffected"
     ]
+  },
+  "backtest_determinism_contract": {
+    "description": "SRS-BT-010 (produce deterministic backtest results for identical inputs; SyRS SYS-62; StRS SN-1.02). The BacktestEngine in crates/atp-simulation (module `backtest`) is already deterministic by construction (stable sort_by_key replay + integer minor-unit money math); this slice adds the module `determinism`, which makes that guarantee FALSIFIABLE. digest_result / digest_run fold a BacktestResult (and, optionally, the SRS-BT-004 PerformanceMetrics family) into a stable RunDigest via the same dependency-free FNV-1a + length-prefixed text codec backtest_store uses: the trade log and equity curve are folded as exact i64 minor units (encode_result_body carries NO f64 / to_bits -- no float-formatting nondeterminism in the money path), and the dimensionless metric ratios are folded through their exact f64::to_bits payload (encode_metrics_body), a bit-identical comparison. runs_match / metrics_match localize the FIRST divergent artifact (a trade-log/equity index, final equity, bars processed, or a named metric -- metrics compared via to_bits so a +0.0/-0.0 or NaN-bit difference is caught), and verify_reproducible runs the engine twice over identical inputs (building a fresh strategy each replay, since BacktestStrategy is &mut) and fails closed with a localized DeterminismError if the two runs disagree -- the SRS-BT-010 acceptance test ('repeated runs produce identical trade logs, equity curves, and metrics') expressed in code, with a digest cross-check (DeterminismError::Digest) as defense for any BacktestResult field runs_match does not yet cover. The work is deterministic (fixed left-to-right byte fold; no parallelism / random values / wall-clock read), so the verifier honors the property it checks. Deferred (SRS-BT-010 stays passes:false): the end-to-end guarantee under the real Python strategy host (the Rust<->Python boundary), the operator repeated-run workflow (POST /api/v1/backtests run twice -> identical) surfaced through SRS-API-001 / SRS-UI, and stamping the RunDigest onto each persisted SRS-BT-009 record.",
+    "requirement": "SRS-BT-010",
+    "srs_refs": ["SRS-BT-010"],
+    "syrs_refs": ["SYS-62"],
+    "strs_refs": ["SN-1.02"],
+    "ac_traces": ["SRS-BT-010", "SYS-62"],
+    "simulation_crate": {
+      "crate": "atp-simulation",
+      "path": "crates/atp-simulation"
+    },
+    "module": "determinism",
+    "rust_integration_test": "srs_bt_010_determinism",
+    "run_digest": {
+      "struct": "RunDigest",
+      "newtype_token": "pub struct RunDigest(u64)",
+      "display_token": "run-digest:",
+      "magic_token": "ATP-BACKTEST-RUN-DIGEST",
+      "fnv_offset_basis_token": "0xcbf29ce484222325",
+      "fnv_prime_token": "0x0000_0100_0000_01b3"
+    },
+    "digest_fns": {
+      "result_fn": "digest_result",
+      "run_fn": "digest_run",
+      "result_param_token": "result: &BacktestResult",
+      "metrics_param_token": "metrics: Option<&PerformanceMetrics>",
+      "return_token": "-> RunDigest"
+    },
+    "result_digest": {
+      "encode_fn": "encode_result_body",
+      "integer_field_tokens": [
+        "i128::from(fill.ts)",
+        "i128::from(fill.quantity)",
+        "i128::from(fill.price_minor)",
+        "i128::from(fill.commission_minor)",
+        "i128::from(fill.slippage_minor)",
+        "i128::from(fill.spread_impact_minor)",
+        "i128::from(point.equity_minor)",
+        "i128::from(result.final_equity_minor)"
+      ],
+      "no_float_tokens": ["to_bits", "f64"]
+    },
+    "metrics_digest": {
+      "encode_fn": "encode_metrics_body",
+      "opt_encoder_fn": "push_opt_f64",
+      "to_bits_token": "to_bits",
+      "metric_tokens": [
+        "metrics.sharpe_ratio",
+        "metrics.sortino_ratio",
+        "metrics.alpha",
+        "metrics.beta",
+        "metrics.max_drawdown",
+        "metrics.annualized_return",
+        "metrics.annualized_volatility",
+        "metrics.win_rate",
+        "metrics.benchmark_symbol"
+      ]
+    },
+    "harness": {
+      "fn": "verify_reproducible",
+      "compare_fn": "runs_match",
+      "metrics_compare_fn": "metrics_match",
+      "runs_twice_tokens": [
+        "let mut first = build_strategy();",
+        "let mut second = build_strategy();"
+      ],
+      "digest_crosscheck_token": "DeterminismError::Digest"
+    },
+    "error_enum": {
+      "enum": "DeterminismError",
+      "variants": [
+        "Run",
+        "BarsProcessed",
+        "TradeLogLength",
+        "TradeLog",
+        "EquityCurveLength",
+        "EquityCurve",
+        "FinalEquity",
+        "Metrics",
+        "Digest"
+      ]
+    },
+    "determinism": {
+      "forbidden_tokens": ["par_iter", "rayon", "thread::spawn", "rand::", "SystemTime", "Instant::now"]
+    },
+    "module_reexport": {
+      "lib_reexport_token": "pub mod determinism;"
+    },
+    "no_broker_dependency": {
+      "cargo_toml": "Cargo.toml",
+      "forbidden_dep_tokens": ["atp-adapters", "atp-execution", "atp-orchestrator"]
+    },
+    "vendor_forbidden_tokens": ["interactive_brokers", "ib_insync", "ibapi", "databento", "sharadar"],
+    "deferred": [
+      "the end-to-end determinism guarantee under the real Python strategy host (the Rust<->Python boundary) -- two identical runs producing identical results when user strategy code runs under the orchestrator (SRS-BT-001-runtime)",
+      "the operator repeated-run workflow (POST /api/v1/backtests run twice -> identical) that surfaces the reproducibility check to an operator (SRS-API-001 / SRS-UI)",
+      "stamping the RunDigest onto each persisted backtest record so a later re-run is proven reproducible by digest comparison (SRS-BT-009 store integration)"
+    ]
   }
 }

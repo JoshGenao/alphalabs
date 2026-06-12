@@ -107,6 +107,22 @@ pub mod benchmark;
 /// (SRS-BT-001 / orchestrator) are deferred, so SRS-BT-009 stays `passes:false`.
 pub mod backtest_store;
 
+/// Deterministic-backtest verification surface (SRS-BT-010 / SyRS SYS-62; StRS SN-1.02). The
+/// [`backtest::BacktestEngine`] is already deterministic by construction; this module makes
+/// that guarantee *falsifiable*. [`determinism::digest_result`] / [`determinism::digest_run`]
+/// fold a [`backtest::BacktestResult`] (and, optionally, the [`metrics::PerformanceMetrics`]
+/// family) into a stable [`determinism::RunDigest`] — the trade log and equity curve as
+/// exact integer minor units, the dimensionless metric ratios via `f64::to_bits`, so there is
+/// no float-formatting nondeterminism. [`determinism::runs_match`] /
+/// [`determinism::metrics_match`] localize the first divergent artifact, and
+/// [`determinism::verify_reproducible`] runs the engine twice over identical inputs and fails
+/// closed with a localized [`determinism::DeterminismError`] if the replays disagree — the
+/// SRS-BT-010 acceptance test ("repeated runs produce identical trade logs, equity curves,
+/// and metrics") expressed in code. The end-to-end guarantee under the real Python strategy
+/// host and the operator repeated-run workflow are deferred, so SRS-BT-010 stays
+/// `passes:false`.
+pub mod determinism;
+
 #[derive(Debug, Default)]
 pub struct InternalSimulationEngine;
 

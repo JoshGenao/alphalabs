@@ -287,6 +287,13 @@ if ! python3 tools/backtest_cost_check.py --require-cargo >/dev/null; then
   exit 1
 fi
 
+echo "→ Running backtest determinism contract check..."
+if ! python3 tools/determinism_check.py --require-cargo >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Backtest determinism contract check failed; run python3 tools/determinism_check.py --require-cargo for detail."
+  exit 1
+fi
+
 echo "→ Running simulation shared-cost-model contract check..."
 if ! python3 tools/sim_cost_check.py --require-cargo >/dev/null; then
   echo "✗ Environment failed"
