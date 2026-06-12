@@ -5586,6 +5586,293 @@
       "validating PANEL REGULARITY (a consistent forward-return horizon + rebalance interval) before emitting the aggregate means (mean_spread / mean turnover) -- a spread scales with horizon and turnover with interval, so a mixed-horizon/interval panel yields means that mix incomparable magnitudes; FactorPeriod carries a start timestamp only, so regularity is the producer's contract, not validatable here (owner: the SRS-DATA-007 / SRS-FAC-001 horizon-aware producer). The per-period series and the rank-based IC family are unaffected"
     ]
   },
+  "factor_job_contract": {
+    "description": "SRS-FAC-001 (compute scheduled factors across the full US equity universe; SyRS SYS-32, SYS-33, SYS-51, NFR-P7; StRS SN-2.06, BG-3). The deterministic, dependency-free scheduled-factor-job surface lives in crates/atp-factor-pipeline (module `factor_job`) -- the upstream PRODUCER of the SRS-BT-006 factor panel the `factor_analysis` tear-sheet consumes (the panel-regularity owner that module explicitly defers to SRS-FAC-001). run_factor_job resolves its schedule against a TradingCalendar (the SyRS SYS-51 reuse boundary: the same calendar contract strategy scheduling resolves against -- is_session / session_open / session_close / is_early_close / next_session); it resolves the before-open start and deadline offsets against the session_open instant, so a session with no resolvable open fails closed (NotASession) and a lead that precedes the day start fails closed (ScheduleBeforeDayStart), enforces the HARD SYS-32/33 full-universe floor (the constant FULL_UNIVERSE_MIN = 8000, NOT a caller config, so coverage cannot be weakened from outside; a smaller universe fails closed with UniverseBelowMinimum), computes a user-defined FactorModel over each security's BOTH market AND fundamental inputs (a security missing either source, or for which the factor abstains, is an auditable SkippedSecurity with a FactorSkipReason, never a fabricated score), ranks the scored cross-section by the total order (factor_value desc, SecurityKey asc), and gates on the calendar-resolved deadline INSTANT (NFR-P7) read from an injected Clock: it reads the clock at the START (a run invoked BEFORE its scheduled start fails closed with StartedBeforeScheduledStart; one invoked AFTER the session-aware deadline -- even on a later session, which a bare minute-of-day would miss -- fails closed as a late start) and again AFTER scoring, ranking, and output construction (a run whose work crossed the deadline fails closed) -- FactorJobOutcome::DeadlineExceeded, no ranked set emitted -- so completion is gated against the ABSOLUTE session-aware deadline instant, and an early/late start or slow finalization is caught rather than assumed on-time. The gate is OBSERVATIONAL (start + completion): it catches every overrun it can observe -- including a slow-but-completing run, caught at the completion check -- but a deterministic dependency-free synchronous core cannot PREEMPT a hung FactorModel mid-call; supervised hard-deadline termination of a hung model is the deferred runtime (the orchestrator runs each job in its own resource-limited container, SYS-57; the NFR-P7 wall-clock performance test verifies it). Both the ranked scores AND the skipped list are sorted by SecurityKey, so the whole outcome is a pure function of the input set, independent of input order. The Clock is the injected timing authority for the run (production supplies a wall-clock-backed clock in the runtime -- the deferred owner of the live NFR-P7 wall-clock test; tests supply a deterministic clock so the run stays reproducible). Every security must be an equity (NonEquitySecurity; the factor universe is US equities -- binding to a trusted session-versioned manifest is the deferred SRS-DATA-001 catalog), the deadline minute is EXCLUSIVE (a run still executing during it is late), and a coverage ratio outside [0,1] (or non-finite) fails closed (InvalidCoverageRatio), and a run that SCORES fewer than the GREATER of FactorJobConfig.min_scored_ratio and the HARD platform MIN_SCORED_COVERAGE_RATIO (so a config of 0.0 cannot collapse the floor to one security) of the universe fails closed with NoUsableCoverage, so a near-empty result is never reported as a successful full-universe computation. The clock must be monotonic non-decreasing across the start and completion reads; a backward clock fails closed (NonMonotonicClock) rather than letting a late completion read as on-time. assemble_regular_panel additionally VERIFIES each period\u2019s forward_window_end against the declared horizon through the calendar (ForwardWindowMismatch), so the horizon is verified rather than caller-asserted. assemble_regular_panel is the producer bridge to SRS-BT-006: it builds a REGULAR FactorPanel -- a constant calendar-resolved rebalance interval (trading_session_gap) plus a non-overlapping forward horizon -- exactly the regularity the tear-sheet's mean_spread / mean turnover aggregates assume but cannot validate (a FactorPeriod carries a start timestamp only); the assembled panel is re-validated at the FactorPanel trust boundary. Factor scores are dimensionless f64 (the factor domain, not a money leak); the work is deterministic for a PURE model (the FactorModel is invoked in canonical SecurityKey order, the cross-section is ranked by the total order, the deadline is read from the injected clock -- no clock of its own -- and there is no parallelism / RNG), so identical inputs yield identical output regardless of input order; a model with interior state spanning runs is the caller's contract to keep pure. Deferred (SRS-FAC-001 stays passes:false): the live wall-clock performance verification over 8,000+ real securities (NFR-P7 performance test); wiring real market + fundamental data through the unified historical interface (SRS-DATA-007) and the concrete US-equity TradingCalendar (SRS-SDK-002 / SyRS SYS-50); the SYS-57 workload-priority admission of the job (priority 5, the 2 GB host-memory safety margin -- owned by the orchestrator workload-priority slice); and the operator schedule/factor-score surface (SRS-UI / SRS-API).",
+    "requirement": "SRS-FAC-001",
+    "srs_refs": [
+      "SRS-FAC-001"
+    ],
+    "syrs_refs": [
+      "SYS-32",
+      "SYS-33",
+      "SYS-51",
+      "NFR-P7"
+    ],
+    "strs_refs": [
+      "SN-2.06",
+      "BG-3"
+    ],
+    "factor_pipeline_crate": {
+      "crate": "atp-factor-pipeline",
+      "path": "crates/atp-factor-pipeline"
+    },
+    "module": "factor_job",
+    "full_universe_floor": {
+      "const": "FULL_UNIVERSE_MIN",
+      "value": 8000,
+      "token": "pub const FULL_UNIVERSE_MIN: usize = 8_000"
+    },
+    "trading_calendar_port": {
+      "trait": "TradingCalendar",
+      "methods": [
+        "is_session",
+        "session_open",
+        "session_close",
+        "is_early_close",
+        "next_session"
+      ]
+    },
+    "factor_model": {
+      "trait": "FactorModel",
+      "method": "compute"
+    },
+    "instant": {
+      "struct": "Instant",
+      "fields": [
+        "session",
+        "minute"
+      ]
+    },
+    "clock": {
+      "trait": "Clock",
+      "method": "now"
+    },
+    "market_input": {
+      "struct": "MarketFactorInput",
+      "fields": [
+        "trailing_return",
+        "realized_volatility"
+      ]
+    },
+    "fundamental_input": {
+      "struct": "FundamentalFactorInput",
+      "fields": [
+        "earnings_yield",
+        "book_to_price"
+      ]
+    },
+    "security_inputs": {
+      "struct": "SecurityFactorInputs",
+      "fields": [
+        "security",
+        "market",
+        "fundamental"
+      ],
+      "both_sources_tokens": [
+        "market: Option<MarketFactorInput>",
+        "fundamental: Option<FundamentalFactorInput>"
+      ]
+    },
+    "schedule": {
+      "struct": "FactorJobSchedule",
+      "fields": [
+        "session",
+        "start_minutes_before_open",
+        "deadline_minutes_before_open"
+      ]
+    },
+    "config": {
+      "struct": "FactorJobConfig",
+      "fields": [
+        "min_scored_ratio"
+      ]
+    },
+    "score": {
+      "struct": "FactorScore",
+      "fields": [
+        "security",
+        "factor_value",
+        "rank"
+      ]
+    },
+    "score_set": {
+      "struct": "FactorScoreSet",
+      "fields": [
+        "session",
+        "scores",
+        "universe_size",
+        "skipped"
+      ]
+    },
+    "skip": {
+      "enum": "FactorSkipReason",
+      "variants": [
+        "MissingMarketData",
+        "MissingFundamentalData",
+        "FactorAbstained"
+      ],
+      "struct": "SkippedSecurity",
+      "struct_fields": [
+        "security",
+        "reason"
+      ]
+    },
+    "realized_session": {
+      "struct": "RealizedFactorSession",
+      "fields": [
+        "session",
+        "forward_window_end",
+        "observations"
+      ]
+    },
+    "realized_observation": {
+      "struct": "RealizedObservation",
+      "fields": [
+        "security",
+        "factor_value",
+        "forward_return"
+      ]
+    },
+    "run_fn": {
+      "fn": "run_factor_job",
+      "param_tokens": [
+        "schedule: &FactorJobSchedule",
+        "calendar: &C",
+        "config: &FactorJobConfig",
+        "model: &M",
+        "clock: &K",
+        "universe: &[SecurityFactorInputs]"
+      ],
+      "return_token": "Result<FactorJobOutcome, FactorJobError>"
+    },
+    "assemble_fn": {
+      "fn": "assemble_regular_panel",
+      "param_tokens": [
+        "calendar: &C",
+        "sessions: &[RealizedFactorSession]",
+        "quantiles: usize",
+        "forward_horizon_sessions: u32"
+      ],
+      "return_token": "Result<FactorPanel, FactorJobError>"
+    },
+    "outcome_enum": {
+      "enum": "FactorJobOutcome",
+      "variants": [
+        "WithinDeadline",
+        "DeadlineExceeded"
+      ]
+    },
+    "error_enum": {
+      "enum": "FactorJobError",
+      "variants": [
+        "EmptyUniverse",
+        "UniverseBelowMinimum",
+        "NoUsableCoverage",
+        "InvalidCoverageRatio",
+        "NonEquitySecurity",
+        "NotASession",
+        "ScheduleBeforeDayStart",
+        "NonMonotonicClock",
+        "EmptyScheduleWindow",
+        "StartedBeforeScheduledStart",
+        "DuplicateSecurity",
+        "NonFiniteInput",
+        "NonFiniteFactor",
+        "EmptyPanelInput",
+        "InvalidHorizon",
+        "IrregularRebalanceInterval",
+        "OverlappingForwardWindows",
+        "ForwardWindowMismatch",
+        "Panel"
+      ]
+    },
+    "calendar_resolution": {
+      "session_open_token": "calendar.session_open(",
+      "is_session_guard": "Err(FactorJobError::NotASession",
+      "before_day_start_guard": ".ok_or(FactorJobError::ScheduleBeforeDayStart",
+      "window_guard": "FactorJobError::EmptyScheduleWindow"
+    },
+    "full_universe_gate": {
+      "empty_guard": "Err(FactorJobError::EmptyUniverse",
+      "floor_guard": "Err(FactorJobError::UniverseBelowMinimum",
+      "hard_floor_token": "universe.len() < FULL_UNIVERSE_MIN"
+    },
+    "deadline_gate": {
+      "exceeded_variant": "FactorJobOutcome::DeadlineExceeded",
+      "clock_read_token": "clock.now()",
+      "early_start_token": "started < start_instant",
+      "early_start_guard": "Err(FactorJobError::StartedBeforeScheduledStart",
+      "late_start_token": "started >= deadline_instant",
+      "completion_token": "completed >= deadline_instant",
+      "monotonic_token": "completed < started",
+      "monotonic_guard": "Err(FactorJobError::NonMonotonicClock"
+    },
+    "coverage_gate": {
+      "guard_token": "Err(FactorJobError::NoUsableCoverage",
+      "ratio_token": "config.min_scored_ratio",
+      "floor_token": ".ceil() as usize).max(1)",
+      "ratio_validation_guard": "Err(FactorJobError::InvalidCoverageRatio",
+      "ratio_range_token": "(0.0..=1.0).contains(&config.min_scored_ratio)",
+      "platform_floor_token": "config.min_scored_ratio.max(MIN_SCORED_COVERAGE_RATIO)"
+    },
+    "equity_gate": {
+      "guard_token": "Err(FactorJobError::NonEquitySecurity",
+      "class_token": "asset_class() != AssetClass::Equity"
+    },
+    "forward_window": {
+      "guard_token": "Err(FactorJobError::ForwardWindowMismatch",
+      "gap_token": "trading_session_gap(",
+      "match_token": "actual_gap != Some(forward_horizon_sessions)"
+    },
+    "skip_not_fabricate": {
+      "missing_market": "FactorSkipReason::MissingMarketData",
+      "missing_fundamental": "FactorSkipReason::MissingFundamentalData",
+      "abstain": "FactorSkipReason::FactorAbstained"
+    },
+    "deterministic_output": {
+      "skipped_sort_token": "skipped.sort_by(|a, b| a.security.cmp(&b.security))",
+      "canonical_scan_token": "scan.sort_by(|a, b| a.security.cmp(&b.security))"
+    },
+    "regularity": {
+      "interval_guard": "Err(FactorJobError::IrregularRebalanceInterval",
+      "overlap_guard": "Err(FactorJobError::OverlappingForwardWindows",
+      "gap_fn": "trading_session_gap",
+      "panel_validate_token": "panel.validate()?"
+    },
+    "determinism": {
+      "forbidden_tokens": [
+        "par_iter",
+        "rayon",
+        "thread::spawn",
+        "rand::",
+        "SystemTime",
+        "Instant::now"
+      ]
+    },
+    "numeric_boundary": {
+      "factor_input_token": "factor_value: f64",
+      "return_input_token": "forward_return: f64"
+    },
+    "module_reexport": {
+      "lib_reexport_token": "pub mod factor_job;"
+    },
+    "no_broker_dependency": {
+      "cargo_toml": "Cargo.toml",
+      "forbidden_dep_tokens": [
+        "atp-adapters",
+        "atp-execution",
+        "atp-orchestrator",
+        "atp-simulation"
+      ]
+    },
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "rust_integration_test": "srs_fac_001_factor_job",
+    "deferred": [
+      "the live wall-clock performance verification over 8,000+ real securities completing before the real scheduled deadline (NFR-P7 performance test) -- this slice gates the deadline against an injected session-aware Clock so the early/late-start and late-finalization decisions are falsifiable in-process; the real wall-clock Clock is the runtime owner",
+      "wiring real market and fundamental data through the unified historical data interface (SRS-DATA-007) and the concrete US-equity TradingCalendar implementation (SRS-SDK-002 / SyRS SYS-50) -- this slice ships the TradingCalendar port and the typed market/fundamental inputs the producer plugs them into",
+      "the SYS-57 workload-priority admission of the factor job (priority 5; refuse to start below the 2 GB host-memory safety margin) -- owned by the orchestrator workload-priority slice, not re-implemented here",
+      "supervised HARD-deadline termination/cancellation of a hung or pathologically-slow FactorModel -- the in-process deadline gate is OBSERVATIONAL (it fails closed on an overrun it can observe, including a slow-but-completing run at the completion check), but a synchronous dependency-free core cannot preempt a hung call; the supervised execution context (the orchestrator container per SYS-57) is the owner, validated by the NFR-P7 performance test",
+      "binding a successful run to a TRUSTED session-versioned US-equity universe manifest and a market/Sharadar SOURCE-PROVENANCE manifest -- the inputs are caller-supplied; this offline producer validates what it can structurally check (equity class, uniqueness, finite inputs, full-universe count, scored-coverage floor) but cannot attest the inputs are the real trusted universe/data, so a successful FactorScoreSet certifies a correct COMPUTATION over the inputs given, not their trustworthiness (owner: the SRS-DATA-001 universe catalog + SRS-DATA-007 unified historical interface)",
+      "distinguishing a DEGRADED or STALE calendar (an unavailable calendar service) from a legitimate non-session -- the TradingCalendar port mirrors the SRS-SDK-002 Python calendar value-returning surface (a None is \"not a session\", not a health signal); calendar/dependency health is surfaced by the readiness/connectivity gates (SRS-ARCH-005, ERR-2) and the concrete US-equity calendar service (NYSE/NASDAQ/CBOE, early closes, DST), the deferred owner",
+      "the operator schedule and factor-score surface (SRS-UI / SRS-API) -- viewing the ranked FactorScoreSet and configuring the schedule/deadline"
+    ]
+  },
   "backtest_determinism_contract": {
     "description": "SRS-BT-010 (produce deterministic backtest results for identical inputs; SyRS SYS-62; StRS SN-1.02). The BacktestEngine in crates/atp-simulation (module `backtest`) is already deterministic by construction (stable sort_by_key replay + integer minor-unit money math); this slice adds the module `determinism`, which makes that guarantee FALSIFIABLE. digest_result / digest_run fold a BacktestResult (and, optionally, the SRS-BT-004 PerformanceMetrics family) into a stable RunDigest via the same dependency-free FNV-1a + length-prefixed text codec backtest_store uses: the trade log and equity curve are folded as exact i64 minor units (encode_result_body carries NO f64 / to_bits -- no float-formatting nondeterminism in the money path), and the dimensionless metric ratios are folded through their exact f64::to_bits payload (encode_metrics_body), a bit-identical comparison. runs_match / metrics_match localize the FIRST divergent artifact (a trade-log/equity index, final equity, bars processed, or a named metric -- metrics compared via to_bits so a +0.0/-0.0 or NaN-bit difference is caught), Two harnesses run the engine twice over identical inputs (building a fresh strategy each replay via the shared run_pair helper, since BacktestStrategy is &mut): verify_reproducible checks the trade log + equity curve (two of the three artifacts), and verify_reproducible_with_metrics additionally computes the PerformanceMetrics for BOTH runs and compares them (metrics_match), covering the metric clause -- 'repeated runs produce identical trade logs, equity curves, AND metrics'. The metrics harness computes the metric family with the crate's own deterministic metrics::compute (the SRS-BT-004 family) over each run's equity curve + trade log against IMMUTABLE benchmark / benchmark_levels / config inputs -- there is no caller-supplied reduction, so no mutable state is shared between the metric computation and the backtest replays; a metric family that cannot be computed for a completed run fails closed (DeterminismError::MetricsComputation) rather than silently dropping the clause. That is deliberate: a caller closure sharing state with the run could either contaminate the second replay (computed between runs) or mask a run-induced change (computed after both); baking in the pure family removes that hazard entirely, so both replays receive byte-identical inputs and each metric set is a pure function of its result. A metric family that cannot be computed for a completed run fails closed via DeterminismError::MetricsComputation. runs_match also compares the result PROVENANCE (data_source and range, via DeterminismError::DataSource / DeterminismError::Range) so two results from different catalogs or date ranges cannot be reported identical merely because their trades and equity coincide. Both harnesses cross-check the canonical digests (DeterminismError::Digest) as defense for any field the structural compare does not yet cover. The work is deterministic (fixed left-to-right byte fold; no parallelism / random values / wall-clock read), so the verifier honors the property it checks. SCOPE: this is the IN-PROCESS determinism verification -- it runs the two replays sequentially in one process and holds the BacktestRequest (parameters, date range, cost model) fixed across them. It does NOT (and is not claimed to) catch process-seeded nondeterminism that is stable within a process but varies across a restart, nor does it fingerprint a full input-provenance manifest (strategy code version, RNG seed, input-data digest); those belong to the deferred cross-process operator repeated-run workflow and the Python strategy host. Deferred (SRS-BT-010 stays passes:false): the end-to-end guarantee under the real Python strategy host (the Rust<->Python boundary; binds strategy code version + seed); the operator repeated-run workflow (POST /api/v1/backtests run twice in FRESH processes -> identical) surfaced through SRS-API-001 / SRS-UI, which is what closes the platform-generated-randomness clause across restarts; an immutable input-provenance manifest (strategy/code version, parameters, seed, input-data digest, request, cost config) fingerprinted alongside the result; and stamping the RunDigest onto each persisted SRS-BT-009 record.",
     "requirement": "SRS-BT-010",

@@ -17,6 +17,7 @@ from backtest_store_check import BacktestStoreCheckError, assert_backtest_store_
 from benchmark_check import BenchmarkCheckError, assert_sim_benchmark_static
 from determinism_check import DeterminismCheckError, assert_determinism_static
 from factor_analysis_check import FactorAnalysisCheckError, assert_factor_analysis_static
+from factor_job_check import FactorJobCheckError, assert_factor_job_static
 from config_check import ConfigCheckError, assert_configuration_static
 from connectivity_check import ConnectivityCheckError, assert_connectivity_static
 from data_provider_check import (
@@ -723,6 +724,31 @@ def assert_factor_analysis(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_factor_job(config: dict) -> list[str]:
+    block = config.get("factor_job_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_factor_job_static(config, ROOT)
+    summary = (
+        f"{block['factor_pipeline_crate']['crate']} scheduled factor job produces the SRS-BT-006 "
+        f"panel ({block['run_fn']['fn']} resolves its schedule through the "
+        f"{block['trading_calendar_port']['trait']} port (SyRS SYS-51), enforces the "
+        f"{block['full_universe_floor']['const']} = {block['full_universe_floor']['value']} "
+        "full-universe floor, computes a user-defined FactorModel over both market and "
+        "fundamental inputs -- a security missing either is an auditable SkippedSecurity, never "
+        "fabricated -- ranks by the total order, and gates on the calendar-resolved deadline "
+        f"INSTANT read from the injected {block['clock']['trait']}, failing closed with "
+        f"{block['outcome_enum']['enum']}::DeadlineExceeded on a late start or late finalization "
+        "(and with NoUsableCoverage when too few securities are scored); "
+        f"{block['assemble_fn']['fn']} builds a REGULAR FactorPanel -- a constant "
+        "calendar-resolved rebalance interval + a non-overlapping forward horizon -- for the "
+        "tear-sheet's interval/horizon-dependent means; the work is deterministic and free of any "
+        "broker/vendor dependency (SRS-FAC-001, SyRS SYS-32/33/51, NFR-P7)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_backtest_determinism(config: dict) -> list[str]:
     block = config.get("backtest_determinism_contract")
     if block is None:
@@ -1061,6 +1087,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_factor_analysis(config))
     except FactorAnalysisCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_factor_job(config))
+    except FactorJobCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_backtest_determinism(config))

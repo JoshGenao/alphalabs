@@ -16,6 +16,25 @@ use atp_types::RuntimeService;
 /// tear-sheet rendering are deferred, so SRS-BT-006 stays `passes:false`.
 pub mod factor_analysis;
 
+/// The scheduled full-universe factor job that PRODUCES the panel the [`factor_analysis`]
+/// tear-sheet consumes (SRS-FAC-001 / SyRS SYS-32, SYS-33, SYS-51, NFR-P7; StRS SN-2.06).
+/// [`factor_job::run_factor_job`] resolves its schedule against a [`factor_job::TradingCalendar`]
+/// (the same calendar contract strategy scheduling resolves against), screens/ranks/computes a
+/// user-defined [`factor_job::FactorModel`] across the full US-equity universe (an 8,000-floor
+/// attestation) over both market and fundamental inputs (a security missing either is an
+/// auditable skip, never fabricated), and gates on the calendar-resolved, session-aware deadline
+/// INSTANT read from an injected [`factor_job::Clock`] (fail-closed on an early start, a late start
+/// -- even on a later session -- a late finalization, or a run that scores too few securities).
+/// [`factor_job::assemble_regular_panel`] is the producer bridge to SRS-BT-006: it builds a
+/// REGULAR [`factor_analysis::FactorPanel`] (a constant calendar-resolved rebalance interval +
+/// a non-overlapping forward horizon) -- exactly the regularity the tear-sheet's interval/
+/// horizon-dependent means assume but cannot validate. The work is deterministic for a pure model
+/// (canonical-key scoring order, total-order ranking, the deadline read from the injected clock --
+/// no clock of its own, no parallelism/RNG). The live wall-clock
+/// performance verification, the real SRS-DATA-007 data wiring, and the SYS-57 workload-priority
+/// admission are deferred, so SRS-FAC-001 stays `passes:false`.
+pub mod factor_job;
+
 #[derive(Debug)]
 pub struct FactorPipelineRuntime {
     data_layer: DataLayer,

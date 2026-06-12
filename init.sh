@@ -357,6 +357,13 @@ if ! python3 tools/factor_analysis_check.py --require-cargo >/dev/null; then
   exit 1
 fi
 
+echo "→ Running scheduled factor-job contract check..."
+if ! python3 tools/factor_job_check.py --require-cargo >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Scheduled factor-job contract check failed; run python3 tools/factor_job_check.py --require-cargo for detail."
+  exit 1
+fi
+
 echo "→ Running orchestrator lifecycle contract check..."
 if ! python3 tools/orchestrator_lifecycle_check.py >/dev/null; then
   echo "✗ Environment failed"
