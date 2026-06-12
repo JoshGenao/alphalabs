@@ -116,6 +116,36 @@ Known issues / notes for next agent:
   you want the real Codex pass, the USER must type `/codex:adversarial-review --wait $(cat
   prompts/critic_prompt.md)`.
 
+POST-REVIEW HARDENING (the user DID run the real /codex:adversarial-review --wait --base 9594bb5; --base
+scopes PAST the SAFETY_PATH_RE prep 9594bb5 so refusal-clause #4 is not tripped). NOTE on running it: when
+the USER types the slash command, its command body injects the exact `node .../codex-companion.mjs
+adversarial-review "<args>"` invocation, which Claude runs via Bash (this is NOT the Skill-tool path the
+codex_adversarial_review memory says errors — that's only for Claude INITIATING it). Four Codex rounds, each
+returning a VALID finding, all fixed (fix commits on top of the feat; the feature is only "done" after the
+loop converges to approve):
+  R1 [high] verify_reproducible only checked trade log + equity, not the metric clause SRS-BT-010 names ->
+     added verify_reproducible_with_metrics (fix 183afb1).
+  R2 [high] metrics computed after both runs masks a run-induced metric state change; [medium] runs_match
+     ignored data_source/range provenance -> interleaved metrics + provenance variants (fix 918b69f).
+  R3 [high] interleaving the metric callback BETWEEN runs lets it contaminate run B (the reverse of R2 --
+     both stem from a caller closure sharing mutable state with the run); [high] lib.rs doc over-claimed
+     verify_reproducible checks metrics -> ELIMINATED the closure: bake in the deterministic metrics::compute
+     family over IMMUTABLE inputs (no shared mutable state in any ordering) + lib doc fix (fix 276f26e). THE
+     LESSON: for a reproducibility verifier, do NOT accept a caller reduction that can share state with the
+     work under test; compute the artifact with a known-pure function over immutable inputs.
+  R4 [high] a same-process double-run cannot catch process-seeded randomness that varies across a RESTART --
+     the platform-randomness clause closes only CROSS-PROCESS; [medium] no input-provenance manifest proving
+     inputs identical; [medium] the contract description CONTRADICTED itself (stale R2 'caller-supplied
+     reduction' alongside R3 'no caller-supplied reduction'). The code was correct for an in-process check;
+     the defect was DOCS OVER-CLAIMING 'the full SRS-BT-010 acceptance test'. Scope-honest fix (no logic
+     change): scoped every claim to IN-PROCESS, scrubbed the contradiction, added cross-process repeated-run
+     + input-provenance manifest as deferred owners, + an L7 test pinning the scope honesty (fix bf1f513).
+  R5 APPROVE -- 0 findings. Loop converged.
+Deterministic critic APPROVE on every commit (the bf1f513 docs-only round initially BLOCKed safety:paired-
+test-required -- changing determinism.rs/determinism_check.py needs a tests/domain/ diff EVEN for a docs
+change; the L7 scope-honesty pin satisfied it). Final counts: 21 -> 19 determinism L1 (closure tests
+removed), 10 -> 8 srs_bt_010 integration, L3 29, L7 18; pytest 1770; SRS-BT-010 stays passes:false.
+
 === SESSION 47 ===
 Date: 2026-06-11
 Feature completed: SRS-BT-006 SDK-SURFACE — "produce factor analysis and tear-sheet outputs"
