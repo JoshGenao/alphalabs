@@ -152,6 +152,28 @@ def test_metrics_harness_catches_a_nondeterministic_metric_reduction() -> None:
     )
 
 
+def test_metrics_harness_interleaving_catches_run_induced_state_change() -> None:
+    # The interleaving masking regression: a run mutates state the metric reduction reads, while
+    # the trade log stays identical. Computing metrics A before run B begins is what lets the
+    # harness catch it; a non-interleaved harness would observe the final state for both and
+    # falsely report the run reproducible -- a backtest an operator could not actually re-derive.
+    _assert_one_passed(
+        _run_cargo_test(
+            "metrics_harness_interleaving_catches_a_run_induced_metric_state_change"
+        ),
+        "SRS-BT-010 interleaving masking regression",
+    )
+
+
+def test_runs_match_rejects_provenance_divergence() -> None:
+    # Two results from different catalogs or date ranges are not the same run, even when their
+    # trades + equity coincide -- runs_match must reject the provenance mismatch.
+    _assert_one_passed(
+        _run_cargo_test("runs_match_rejects_provenance_divergence"),
+        "SRS-BT-010 provenance comparison",
+    )
+
+
 def test_property_sweep_reproducibility_and_order_invariance() -> None:
     # Over many fixed-seed-but-varied inputs: every run reproduces and is order-invariant.
     _assert_one_passed(
@@ -212,10 +234,35 @@ def test_harness_cross_checks_the_digests() -> None:
 def test_metrics_harness_actually_compares_metrics() -> None:
     config = load_config()
     # The metric clause must be VERIFIED, not assumed: the metrics harness computes the metric
-    # family for both runs and compares it. Dropping that comparison is the exact gap Codex
-    # flagged, so the guard must catch it.
+    # family for both runs and compares it. Dropping that comparison is the exact gap the first
+    # review flagged, so the guard must catch it.
     check_harness(config, module_source(config))
     mutated = module_source(config).replace("metrics_match(&metrics_a, &metrics_b)?;", "", 1)
+    with pytest.raises(DeterminismCheckError):
+        check_harness(config, mutated)
+
+
+def test_metrics_harness_interleaves_the_replays() -> None:
+    config = load_config()
+    # Metrics A must be computed BEFORE the second run begins, so a run-induced metric state
+    # change cannot be masked by both metric sets observing the final state (the high finding from
+    # the second review). The guard must catch a non-interleaved harness.
+    check_harness(config, module_source(config))
+    mutated = module_source(config).replace(
+        "let metrics_a = compute_metrics(&result_a)?;", "", 1
+    )
+    with pytest.raises(DeterminismCheckError):
+        check_harness(config, mutated)
+
+
+def test_runs_match_compares_provenance() -> None:
+    config = load_config()
+    # runs_match must compare data_source + range, so two results from different catalogs or date
+    # ranges are never reported identical merely because their trades + equity coincide.
+    check_harness(config, module_source(config))
+    mutated = module_source(config).replace(
+        "left.data_source != right.data_source", "false", 1
+    )
     with pytest.raises(DeterminismCheckError):
         check_harness(config, mutated)
 

@@ -393,6 +393,94 @@ fn metrics_harness_catches_a_nondeterministic_metric_reduction() {
 }
 
 #[test]
+fn metrics_harness_interleaving_catches_a_run_induced_metric_state_change() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    // The masking regression for the interleaving fix: a strategy bumps a counter shared across
+    // runs as a SIDE EFFECT (its trades stay identical), and the metric reduction reads that
+    // counter. Because the harness interleaves (metrics A computed before run B begins), metrics A
+    // and B observe DIFFERENT counter values and the divergence is caught. A non-interleaved
+    // harness — computing both metric sets after both runs — would observe the same final value
+    // and falsely report the run reproducible.
+    struct BumpingBuyOnce {
+        counter: Rc<Cell<i64>>,
+        bought: bool,
+    }
+    impl BacktestStrategy for BumpingBuyOnce {
+        fn on_bar(&mut self, _bar: &BacktestBar, _position: i64) -> Result<i64, BacktestError> {
+            if self.bought {
+                return Ok(0);
+            }
+            self.bought = true;
+            self.counter.set(self.counter.get() + 1); // side effect; trades stay identical
+            Ok(10)
+        }
+    }
+
+    let source = OrderedCatalog {
+        bars: vec![bar(1, 100), bar(2, 110)],
+    };
+    let req = request(DateRange::new(1, 2));
+    let counter = Rc::new(Cell::new(0_i64));
+    let read = Rc::clone(&counter);
+    let err = verify_reproducible_with_metrics(
+        &BacktestEngine::new(),
+        &req,
+        || BumpingBuyOnce {
+            counter: Rc::clone(&counter),
+            bought: false,
+        },
+        &source,
+        |_result| {
+            Ok(PerformanceMetrics {
+                sharpe_ratio: Some(read.get() as f64),
+                sortino_ratio: None,
+                alpha: None,
+                beta: None,
+                max_drawdown: None,
+                annualized_return: None,
+                annualized_volatility: None,
+                win_rate: None,
+                benchmark_symbol: "SPY".to_string(),
+            })
+        },
+    )
+    .expect_err("interleaving must catch a run-induced metric state change");
+    assert_eq!(
+        err,
+        DeterminismError::Metrics {
+            metric: "sharpe_ratio"
+        }
+    );
+}
+
+#[test]
+fn runs_match_rejects_provenance_divergence() {
+    // runs_match compares the result PROVENANCE, not just trades + equity: two results from
+    // different catalogs or date ranges are not the same run even when their content coincides.
+    let source = OrderedCatalog {
+        bars: vec![bar(1, 100), bar(2, 110), bar(3, 120)],
+    };
+    let engine = BacktestEngine::new();
+    let mut strat = BuyOnceAndHold {
+        lot: 5,
+        bought: false,
+    };
+    let base = engine
+        .run(&request(DateRange::new(1, 3)), &mut strat, &source)
+        .expect("run");
+
+    let mut other = base.clone();
+    other.data_source = BacktestDataSource::UploadedData;
+    assert_eq!(runs_match(&base, &other), Err(DeterminismError::DataSource));
+
+    let mut ranged = base.clone();
+    ranged.range = DateRange::new(1, 99);
+    assert_eq!(runs_match(&base, &ranged), Err(DeterminismError::Range));
+}
+
+#[test]
 fn property_sweep_reproducibility_and_order_invariance() {
     let engine = BacktestEngine::new();
     for seed in 0..64u64 {

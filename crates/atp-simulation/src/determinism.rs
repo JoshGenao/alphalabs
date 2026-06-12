@@ -92,6 +92,11 @@ pub enum DeterminismError {
     /// The harness cannot fingerprint a run that did not finish, so it fails closed rather
     /// than reporting a partial run reproducible.
     Run(BacktestError),
+    /// The two results name different data sources (different catalogs). Part of a result's
+    /// provenance, so [`runs_match`] rejects it even when the trades and equity coincide.
+    DataSource,
+    /// The two results cover different date ranges. Provenance, like [`Self::DataSource`].
+    Range,
     /// The two runs marked a different number of bars processed.
     BarsProcessed { left: u64, right: u64 },
     /// The two trade logs had different lengths (a fill present in one run, absent in the other).
@@ -134,6 +139,8 @@ impl fmt::Display for DeterminismError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Run(error) => write!(f, "a backtest replay failed to complete: {error}"),
+            Self::DataSource => write!(f, "nondeterministic data source (different catalogs)"),
+            Self::Range => write!(f, "nondeterministic date range"),
             Self::BarsProcessed { left, right } => write!(
                 f,
                 "nondeterministic bars_processed: {left} vs {right}"
@@ -204,6 +211,14 @@ pub fn digest_run(result: &BacktestResult, metrics: Option<&PerformanceMetrics>)
 /// localized [`DeterminismError`]. `Ok(())` means the two runs are bit-identical across every
 /// observable output. Pure, order-stable, allocation-free.
 pub fn runs_match(left: &BacktestResult, right: &BacktestResult) -> Result<(), DeterminismError> {
+    // Provenance first: two results from different catalogs or date ranges are not the same run,
+    // even if their trades and equity happen to coincide.
+    if left.data_source != right.data_source {
+        return Err(DeterminismError::DataSource);
+    }
+    if left.range != right.range {
+        return Err(DeterminismError::Range);
+    }
     if left.bars_processed != right.bars_processed {
         return Err(DeterminismError::BarsProcessed {
             left: left.bars_processed,
@@ -348,10 +363,17 @@ where
 /// [`DeterminismError::Metrics`], and a metric family that cannot be computed for a completed run
 /// surfaces as [`DeterminismError::MetricsComputation`] rather than silently dropping the metric
 /// clause. The returned digest cross-checks both runs ([`DeterminismError::Digest`]).
+///
+/// The two replays are **interleaved** — run A, then compute metrics A, *then* run B, then
+/// compute metrics B — rather than running both backtests first. This matters when the metric
+/// reduction observes state the backtest run can mutate (a shared benchmark/config/provider): if
+/// both metric sets were computed only after both runs finished, they would both observe the
+/// second run's final state and falsely match. Interleaving makes each metric set observe the
+/// state as of *its own* run, so a run-induced metric state change is caught, not masked.
 pub fn verify_reproducible_with_metrics<S, B, F, M>(
     engine: &BacktestEngine,
     request: &BacktestRequest,
-    build_strategy: F,
+    mut build_strategy: F,
     source: &B,
     compute_metrics: M,
 ) -> Result<RunDigest, DeterminismError>
@@ -361,9 +383,14 @@ where
     F: FnMut() -> S,
     M: Fn(&BacktestResult) -> Result<PerformanceMetrics, MetricsError>,
 {
-    let (result_a, result_b) = run_pair(engine, request, build_strategy, source)?;
+    let mut first = build_strategy();
+    let result_a = engine.run(request, &mut first, source)?;
     let metrics_a = compute_metrics(&result_a)?;
+    let mut second = build_strategy();
+    let result_b = engine.run(request, &mut second, source)?;
     let metrics_b = compute_metrics(&result_b)?;
+
+    runs_match(&result_a, &result_b)?;
     metrics_match(&metrics_a, &metrics_b)?;
     let digest = digest_run(&result_a, Some(&metrics_a));
     if digest != digest_run(&result_b, Some(&metrics_b)) {
@@ -954,6 +981,75 @@ mod tests {
         assert_eq!(
             err,
             DeterminismError::MetricsComputation(MetricsError::EmptyEquityCurve)
+        );
+    }
+
+    #[test]
+    fn runs_match_localizes_provenance_divergence() {
+        // Provenance is part of a run's identity: two results from different catalogs or date
+        // ranges are not the same run even when their trades and equity coincide.
+        let base = sample_result();
+        let mut other_source = sample_result();
+        other_source.data_source = BacktestDataSource::UploadedData;
+        assert_eq!(
+            runs_match(&base, &other_source),
+            Err(DeterminismError::DataSource)
+        );
+        let mut other_range = sample_result();
+        other_range.range = DateRange::new(1, 99);
+        assert_eq!(
+            runs_match(&base, &other_range),
+            Err(DeterminismError::Range)
+        );
+    }
+
+    #[test]
+    fn metrics_harness_catches_a_run_induced_metric_state_change() {
+        // A strategy that bumps a counter shared across runs as a SIDE EFFECT (without changing
+        // its trades) leaves the BacktestResults identical but advances state the metric reduction
+        // reads. Interleaving (metrics A computed before run B starts) makes metrics A and B
+        // observe DIFFERENT counter values, so the divergence is caught — a non-interleaved harness
+        // computing both metric sets after both runs would observe the same final value and falsely
+        // match. This is the masking regression for the interleaving fix.
+        struct BumpingBuyOnce {
+            counter: Rc<Cell<i64>>,
+            bought: bool,
+        }
+        impl BacktestStrategy for BumpingBuyOnce {
+            fn on_bar(&mut self, _bar: &BacktestBar, _position: i64) -> Result<i64, BacktestError> {
+                if self.bought {
+                    return Ok(0);
+                }
+                self.bought = true;
+                self.counter.set(self.counter.get() + 1); // side effect; trades stay identical
+                Ok(10)
+            }
+        }
+
+        let source = VecSource(vec![bar(1, 100), bar(2, 110)]);
+        let counter = Rc::new(Cell::new(0_i64));
+        let read = Rc::clone(&counter);
+        let err = verify_reproducible_with_metrics(
+            &BacktestEngine::new(),
+            &request(),
+            || BumpingBuyOnce {
+                counter: Rc::clone(&counter),
+                bought: false,
+            },
+            &source,
+            |_result| {
+                Ok(PerformanceMetrics {
+                    sharpe_ratio: Some(read.get() as f64),
+                    ..sample_metrics()
+                })
+            },
+        )
+        .expect_err("interleaving must catch a run-induced metric state change");
+        assert_eq!(
+            err,
+            DeterminismError::Metrics {
+                metric: "sharpe_ratio"
+            }
         );
     }
 }

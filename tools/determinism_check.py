@@ -245,38 +245,65 @@ def check_harness(config: dict, src: str) -> str:
     if _compact(spec["compare_fn"]) not in pair_body:
         fail(f"`{spec['run_pair_fn']}` must localize divergence via `{spec['compare_fn']}`")
 
-    # Both harnesses build on run_pair and cross-check the canonical digests.
-    for fn_key in ("fn", "metrics_fn"):
-        body = _compact(_private_fn_body(src, spec[fn_key]))
-        if _compact(spec["run_pair_fn"]) not in body:
-            fail(f"`{spec[fn_key]}` must run the pair via `{spec['run_pair_fn']}`")
-        if _compact(spec["digest_crosscheck_token"]) not in body:
+    # verify_reproducible delegates the run-twice to run_pair and cross-checks the digests.
+    vr_body = _compact(_private_fn_body(src, spec["fn"]))
+    if _compact(spec["run_pair_fn"]) not in vr_body:
+        fail(f"`{spec['fn']}` must run the pair via `{spec['run_pair_fn']}`")
+    if _compact(spec["digest_crosscheck_token"]) not in vr_body:
+        fail(
+            f"`{spec['fn']}` must cross-check the canonical digests "
+            f"(`{spec['digest_crosscheck_token']}`)"
+        )
+
+    # runs_match compares the result PROVENANCE (data_source + range), not just the trade
+    # log / equity curve, so two results from different catalogs or ranges cannot match.
+    runs_match_body = _compact(_private_fn_body(src, spec["compare_fn"]))
+    for token in spec["provenance_tokens"]:
+        if _compact(token) not in runs_match_body:
             fail(
-                f"`{spec[fn_key]}` must cross-check the canonical digests "
-                f"(`{spec['digest_crosscheck_token']}`) as defense for any field the structural "
-                "compare does not cover"
+                f"`{spec['compare_fn']}` must compare result provenance (`{token}`) so different "
+                "catalogs / date ranges are never reported identical"
             )
 
-    # The metrics harness additionally compares the metric family (so the metric clause is the
-    # full three-artifact acceptance test) and fingerprints it via digest_run.
-    metrics_body = _compact(_private_fn_body(src, spec["metrics_fn"]))
-    if _compact(spec["metrics_compare_fn"]) not in metrics_body:
-        fail(
-            f"`{spec['metrics_fn']}` must compare the metric family via "
-            f"`{spec['metrics_compare_fn']}` so the metric clause of SRS-BT-010 is verified, not "
-            "assumed"
-        )
+    # The metrics harness runs the engine twice, INTERLEAVED (metrics A computed before run B
+    # begins), compares the metric family, fingerprints it, and cross-checks the digests.
+    metrics_raw = _private_fn_body(src, spec["metrics_fn"])
+    metrics_body = _compact(metrics_raw)
+    for token in spec["runs_twice_tokens"]:
+        if _compact(token) not in metrics_body:
+            fail(
+                f"`{spec['metrics_fn']}` must run the engine twice over identical inputs "
+                f"(missing `{token}`)"
+            )
+    for token_key in ("compare_fn", "metrics_compare_fn"):
+        if _compact(spec[token_key]) not in metrics_body:
+            fail(
+                f"`{spec['metrics_fn']}` must localize divergence via `{spec[token_key]}` so the "
+                "metric clause of SRS-BT-010 is verified, not assumed"
+            )
     if _compact(spec["metrics_digest_token"]) not in metrics_body:
         fail(
             f"`{spec['metrics_fn']}` must fingerprint the run WITH its metrics "
             f"(`{spec['metrics_digest_token']}`) so the returned digest spans all three artifacts"
         )
+    if _compact(spec["digest_crosscheck_token"]) not in metrics_body:
+        fail(f"`{spec['metrics_fn']}` must cross-check the canonical digests")
+    # Interleaving: metrics A must be computed BEFORE the second run is built, so a run-induced
+    # metric state change cannot be masked by both metric sets observing the final state.
+    first_idx = metrics_body.find(_compact(spec["interleave_order"][0]))
+    second_idx = metrics_body.find(_compact(spec["interleave_order"][1]))
+    if first_idx < 0 or second_idx < 0 or first_idx >= second_idx:
+        fail(
+            f"`{spec['metrics_fn']}` must INTERLEAVE the replays -- compute metrics A "
+            f"(`{spec['interleave_order'][0]}`) before building the second run "
+            f"(`{spec['interleave_order'][1]}`) -- so a run-induced metric state change is not masked"
+        )
     return (
-        "atp-simulation verify_reproducible (trade log + equity curve) and "
-        "verify_reproducible_with_metrics (all three artifacts) run the engine twice via run_pair "
-        "(fresh strategy per replay), localize divergence via runs_match / metrics_match, and "
-        "cross-check the digests (DeterminismError::Digest) -- the full SRS-BT-010 acceptance test "
-        "in code (a nondeterministic metric reduction is caught even on identical results)"
+        "atp-simulation verify_reproducible (trade log + equity curve, via run_pair) and "
+        "verify_reproducible_with_metrics (all three artifacts, INTERLEAVED) localize divergence "
+        "via runs_match (incl. data_source + range provenance) / metrics_match and cross-check the "
+        "digests (DeterminismError::Digest) -- the full SRS-BT-010 acceptance test in code (a "
+        "nondeterministic metric reduction is caught even on identical results)"
     )
 
 
