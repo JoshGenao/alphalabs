@@ -8,9 +8,9 @@
 //! minor units (`backtest.rs`). Every sibling numeric module (metrics, benchmark, cost,
 //! store, factor) likewise *claims* determinism. What was missing is a way to make that
 //! guarantee **falsifiable**: a canonical, comparable fingerprint of a completed run, and a
-//! harness that runs a backtest twice and *localizes* any divergence. That is exactly the
-//! SRS-BT-010 acceptance test — "repeated runs … produce identical trade logs, equity
-//! curves, and metrics" — turned into code.
+//! harness that runs a backtest twice and *localizes* any divergence. That operationalizes the
+//! SRS-BT-010 criterion — "repeated runs … produce identical trade logs, equity curves, and
+//! metrics" — for the **in-process** case (see the scope note below).
 //!
 //! # What is real here vs deferred
 //!
@@ -21,12 +21,19 @@
 //! [`verify_reproducible`] runs the engine twice over identical inputs and returns the run's
 //! digest, failing closed with a localized [`DeterminismError`] if the two runs disagree.
 //!
-//! The **full** SRS-BT-010 guarantee — two identical runs producing identical results *under
-//! the real Python strategy host* (the Rust↔Python boundary) and the operator repeated-run
-//! workflow (POST `/api/v1/backtests` run twice → identical) — is deferred (it is recorded in
-//! `architecture/runtime_services.json#backtest_determinism_contract.deferred`). So
-//! `feature_list.json`
-//! keeps SRS-BT-010 `passes:false`; this slice ships the in-process determinism *contract*.
+//! **Scope.** This is the *in-process* verification: it runs both replays sequentially in one
+//! process and holds the [`BacktestRequest`](crate::backtest::BacktestRequest) (parameters, date
+//! range, cost model) fixed across them. It is **not** the full SRS-BT-010 acceptance test, and
+//! is not claimed to be: it cannot catch process-seeded nondeterminism that is stable within a
+//! process but varies across a restart (the "platform-generated random values" clause closes
+//! only under a *cross-process* repeated run), and it does not fingerprint a full input-provenance
+//! manifest (strategy code version, RNG seed, input-data digest) — it assumes the caller's
+//! strategy factory and [`BarSource`] are themselves deterministic (a stateful one is surfaced as
+//! a divergence). Those pieces — the cross-process operator repeated-run workflow (POST
+//! `/api/v1/backtests` run twice in fresh processes → identical) and the input-provenance manifest
+//! under the real Python strategy host — are deferred (recorded in
+//! `architecture/runtime_services.json#backtest_determinism_contract.deferred`), so
+//! `feature_list.json` keeps SRS-BT-010 `passes:false`.
 //!
 //! # The encoding boundary (why this is not a money-correctness leak)
 //!
@@ -357,8 +364,9 @@ where
 /// reproduce: run `engine` twice over identical inputs, compute the [`PerformanceMetrics`] family
 /// for each completed run, and return the [`digest_run`] fingerprint spanning all three on success.
 ///
-/// This is the full SRS-BT-010 acceptance test in code. The metrics are computed by the crate's
-/// own [`metrics::compute`](crate::metrics::compute) — the SRS-BT-004 family — over the run's
+/// This is the in-process verification of all three artifacts (the cross-process repeated run is
+/// deferred — see the module scope note). The metrics are computed by the crate's own
+/// [`metrics::compute`](crate::metrics::compute) — the SRS-BT-004 family — over the run's
 /// equity curve and trade log against the supplied `benchmark` / `benchmark_levels` / `config`.
 /// Those metric inputs are **immutable borrows**, and `compute` is a pure, deterministic function
 /// (fixed folds, no clock/RNG); there is no caller-supplied reduction and therefore **no mutable

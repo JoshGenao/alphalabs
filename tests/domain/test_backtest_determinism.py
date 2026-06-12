@@ -245,6 +245,26 @@ def test_runs_match_compares_provenance() -> None:
         check_harness(config, mutated)
 
 
+def test_scope_claim_is_honest_about_in_process_only() -> None:
+    # Safety: an operator must NOT be led to believe the in-process double-run is the full
+    # SRS-BT-010 guarantee. A same-process replay cannot catch process-seeded randomness that is
+    # stable within a process but varies across a restart, so the contract must (1) NOT claim to be
+    # the full acceptance test, (2) state the in-process scope, and (3) name the cross-process
+    # repeated-run + input-provenance manifest as the deferred owners that actually close the
+    # platform-randomness and identical-inputs clauses. This pins the scope honesty so a later edit
+    # cannot silently re-inflate the claim.
+    config = load_config()
+    block = config["backtest_determinism_contract"]
+    description = block["description"]
+    assert "FULL SRS-BT-010 acceptance test" not in description
+    assert "via a caller-supplied reduction" not in description  # the stale, contradicted claim
+    assert "IN-PROCESS determinism verification" in description
+    deferred = " ".join(block["deferred"])
+    assert "CROSS-PROCESS operator repeated-run" in deferred
+    assert "process-seeded nondeterminism" in description
+    assert "input-provenance manifest" in deferred
+
+
 def test_error_enum_localizes_divergence() -> None:
     config = load_config()
     # The real DeterminismError localizes WHERE two runs diverged (a fill/equity index, length,

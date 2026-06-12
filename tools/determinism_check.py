@@ -298,7 +298,8 @@ def check_harness(config: dict, src: str) -> str:
         "localize divergence via runs_match (incl. data_source + range provenance) / metrics_match, "
         "and cross-check the digests (DeterminismError::Digest); the metric family is the crate's "
         "own deterministic metrics::compute over immutable inputs (no caller reduction, no shared "
-        "mutable state with the runs) -- the full SRS-BT-010 acceptance test in code"
+        "mutable state with the runs) -- the in-process SRS-BT-010 determinism verification (the "
+        "cross-process repeated run is deferred)"
     )
 
 
@@ -427,9 +428,13 @@ _STATIC_CHECKS = (
 
 _DEFERRED_OWNERS = (
     "the end-to-end determinism guarantee under the real Python strategy host (the Rust<->Python "
-    "boundary; SRS-BT-001-runtime)",
-    "the operator repeated-run workflow (POST /api/v1/backtests run twice -> identical) via "
-    "SRS-API-001 / SRS-UI",
+    "boundary; binds strategy code version + seed; SRS-BT-001-runtime)",
+    "the CROSS-PROCESS operator repeated-run workflow (POST /api/v1/backtests run twice in FRESH "
+    "processes -> identical) via SRS-API-001 / SRS-UI -- this, not the in-process double-run here, "
+    "closes the platform-generated-randomness clause across restarts",
+    "an immutable input-provenance manifest (strategy/code version, parameters, seed, input-data "
+    "digest, request, cost config) fingerprinted alongside the result, so verification PROVES the "
+    "inputs were identical rather than assuming the strategy factory + BarSource are deterministic",
     "stamping the RunDigest onto each persisted backtest record so a re-run is proven reproducible "
     "by digest comparison (SRS-BT-009 store integration)",
 )

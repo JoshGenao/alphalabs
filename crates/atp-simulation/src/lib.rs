@@ -119,10 +119,12 @@ pub mod backtest_store;
 /// [`determinism::DeterminismError`] if the replays disagree: [`determinism::verify_reproducible`]
 /// checks the **trade log + equity curve** (two of the three artifacts), and
 /// [`determinism::verify_reproducible_with_metrics`] additionally computes the SRS-BT-004
-/// [`metrics::PerformanceMetrics`] family for each run and compares it — the full SRS-BT-010
-/// acceptance test ("repeated runs produce identical trade logs, equity curves, *and* metrics")
-/// expressed in code. The end-to-end guarantee under the real Python strategy host and the
-/// operator repeated-run workflow are deferred, so SRS-BT-010 stays `passes:false`.
+/// [`metrics::PerformanceMetrics`] family for each run and compares it — the in-process check of
+/// all three artifacts ("repeated runs produce identical trade logs, equity curves, *and*
+/// metrics"). This is the in-process verification only: the cross-process operator repeated-run
+/// workflow (which closes the platform-randomness clause across restarts) and the full
+/// input-provenance manifest under the real Python strategy host are deferred, so SRS-BT-010 stays
+/// `passes:false`.
 pub mod determinism;
 
 #[derive(Debug, Default)]
