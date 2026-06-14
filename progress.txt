@@ -1,3 +1,119 @@
+=== SESSION 51 ===
+Date: 2026-06-14
+Feature completed: SRS-EXE-008 SDK-SURFACE — "implement an order lifecycle state machine with
+documented states and transitions, and use a strategy-supplied client correlation ID as the
+idempotency key for live and paper order submissions" (docs/SRS.md SRS-5.3 SRS-EXE-008; traces
+SyRS SYS-3/SYS-7/SYS-64/SYS-90, NFR-R3; StRS SN-1.08/SN-1.22; SRS-ERR-001). User-confirmed via
+AskUserQuestion (over SRS-EXE-002 the recommended mirror, and SRS-EXE-003) — picked as the cleanest
+pure-logic pick with the best convergence odds.
+Status: 92 remaining features (UNCHANGED — SRS-EXE-008 stays passes:false; honest partial pass).
+feature_list.json was NOT modified.
+
+The slice: the order lifecycle state machine + idempotency authority as a SOURCE-NEUTRAL domain type
+in atp-types (the leaf crate both the live atp-execution and paper atp-simulation SIBLING crates
+already depend on) — so the AC's "identical for live and paper submissions" holds by construction
+without either sibling depending on the other.
+
+What I did (prep -> feat -> fix x5 -> chore cadence):
+- prep aa75599 (chore(critic)): extended SAFETY_PATH_RE with collision-free tokens
+  (/order_lifecycle.rs, order[_-]?lifecycle, srs[_-]?exe[_-]?008). Verified ZERO tracked-path
+  collisions; committed SEPARATELY (refusal-clause #4).
+- feat 44625cf: crates/atp-types/src/order_lifecycle.rs (OrderState 9-state graph + allowed_next +
+  is_terminal; ClientCorrelationId fail-closed key; OrderLifecycle; OrderLedger submit/transition/
+  cancel_replace; OrderLifecycleError); lib.rs mod+re-export + new OrderErrorCategory
+  DuplicateClientCorrelationId / wire DUPLICATE_CLIENT_CORRELATION_ID; runtime_services.json
+  order_lifecycle_contract (documented graph mirrored machine-readably); tools/order_lifecycle_check.py
+  + architecture_check wiring + init.sh gate; L3 + L7 (safety-paired) + Rust integration.
+- fix R1 beac6b0: cancel-replace doubled-exposure GATE (replacement held out of PENDING_SUBMIT until
+  original CANCELLED; non-cancelled-terminal original auto-suppresses the held replacement to
+  REJECTED) + PARTIALLY_FILLED -> CANCELLED edge (partial-fill-during-cancel race) + scope-honest
+  restart-claim docstring.
+- fix R2 2250ee5: at-most-one replacement per original (OriginalAlreadyReplaced) — closes the
+  CANCEL_PENDING->PARTIALLY_FILLED bounce that let a 2nd replacement re-open doubled exposure.
+- fix R3 e981151: per-strategy idempotency NAMESPACE — OrderKey = (StrategyId, ClientCorrelationId);
+  the ledger no longer discards submission.strategy_id, so ~30 concurrent paper strategies can't
+  collide on the same local id. + check output scoped to "SRS-EXE-008 SDK-SURFACE PASS" (not a full
+  requirement pass) + prints deferred owners.
+- fix R4 eeb6a21: PENDING_SUBMIT pre-ack race edges ({PartiallyFilled, Filled, CancelPending, Expired})
+  + cancel_replace takes + strategy-validates a replacement OrderSubmission
+  (ReplacementStrategyMismatch) and OrderLifecycle now RETAINS the order intent for routing/audit.
+- fix R5 ab0e230: ACKED -> REJECTED post-ack rejection (the unambiguous part of R5); the debatable
+  PARTIALLY_FILLED->REJECTED and CANCEL_PENDING cancel-rejected-vs-order-rejected edges scoped
+  DEFERRED to the IB adapter (SRS-EXE-006/SDK-004) rather than guessed.
+- chore (this entry).
+
+Design headline — the SRS-EXE-008 facets made falsifiable (tools/order_lifecycle_check.py pins each
+against the code, no doc/code drift):
+- 9 states + stable SYS-64 wire strings; the documented transition graph (allowed_next) matches the
+  JSON mirror arm-for-arm (no missing, no undocumented edge); 4 terminal states have no outgoing edge.
+- (strategy, correlation id) is the idempotency key; submit rejects a duplicate IDEMPOTENTLY with the
+  SRS-ERR-001 StructuredOrderError envelope (existing order untouched, no second order).
+- cancel-replace = cancel-then-new: original -> CANCEL_PENDING + audit link (replaces) + the new order
+  INTENT retained; held until original CANCELLED; at most one replacement per original; foreign
+  strategy refused; auto-suppress on non-cancelled terminal — NO doubled exposure.
+
+What I tested: cargo test --workspace green (atp-types = 107 lib incl. ~30 L1 + 11 srs_exe_008
+integration; 48 ok binaries total); new code clippy + rustfmt clean (NO whole-crate fmt — only the new
+files formatted; pre-existing lib.rs toolchain-skew diffs untouched, count unchanged); L3
+tests/test_order_lifecycle_contract.py (script + per-collector positive + ~13 negative spot-checks) +
+L7 tests/domain/test_order_lifecycle.py (11, safety-paired, shell out to the Rust integration);
+order_lifecycle_check.py PASS (now "SDK-SURFACE PASS" + deferred owners); architecture_check exit 0;
+error_handling/connectivity/freshness/live_designation checks PASS (new OrderErrorCategory variant is
+additive); pytest "not integration and not e2e" green except the PRE-EXISTING BBands property flake
+(unrelated — indicators, not touched). ./init.sh -> Environment ready with the new "order-lifecycle
+contract check" gate.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings on prep + feat + R1..R5
+    (pre-commit hook also APPROVE each). order_lifecycle.rs + order_lifecycle_check.py are safety paths;
+    the paired tests/domain/test_order_lifecycle.py is in EVERY safety-touching commit.
+  judgment (/codex:adversarial-review --wait --base aa75599): did NOT reach APPROVE — committed on
+    HUMAN AUTHORIZATION after the loop converged to PURELY DEFERRED-RUNTIME scope. FIVE rounds, every
+    in-scope bug fixed:
+      R1 [critical+high x2]: cancel-replace doubled exposure (replacement went live while original
+        could still fill) — FIXED (gate + auto-suppress); partial-fill-during-cancel lost
+        cancellability — FIXED (PARTIALLY_FILLED->CANCELLED); restart-idempotency overclaim — scoped.
+      R2 [high]: repeated cancel-replace via the CANCEL_PENDING->PARTIALLY_FILLED bounce released
+        multiple live replacements — FIXED (at-most-one).
+      R3 [high x2 + critical-scoped]: cross-strategy correlation-id collision — FIXED ((strategy,corr)
+        key); verifier overclaimed full PASS — FIXED (SDK-SURFACE scoping); cancel-replace-vs-submit
+        admission — documented dual-admission model + named deferred wiring.
+      R4 [high x2]: pre-ack cancel/fill races rejected — FIXED (PENDING_SUBMIT pre-ack edges);
+        cancel-replace discarded replacement intent — FIXED (takes+validates+retains OrderSubmission).
+        [USER chose "one more in-scope fix round" here.]
+      R5 [high]: post-ack rejection unrepresentable — the UNAMBIGUOUS ACKED->REJECTED FIXED; the
+        debatable PARTIALLY_FILLED/CANCEL_PENDING rejection edges scoped DEFERRED to the IB adapter.
+        [USER chose "Finalize now" — stop the non-convergent loop.]
+
+Known issues / notes for next agent:
+- SRS-EXE-008 stays passes:false BY DESIGN. Deferred owners (order_lifecycle_contract.deferred[] +
+  module docs + the check's printed list): durable cross-restart ledger persistence (SRS-EXE-009
+  outbox / SRS-EXE-005 state recovery); wiring the two admission paths (submit / cancel_replace) into
+  the pinned live (submit_live_order) + paper (accept_order) submission gates (SRS-EXE-001 /
+  SRS-SIM-001 runtime + orchestrator); broker-event-driven transitions (SRS-EXE-006 IB adapter /
+  SRS-SIM-002); the finer broker-rejection edges (PARTIALLY_FILLED->REJECTED + CANCEL_PENDING
+  cancel-rejected-vs-order-rejected) whose opposite-meaning semantics the IB adapter must define.
+- LESSON (memory feedback_adversarial_loop_nonconvergence — CONFIRMED AGAIN, strongly): a pure-logic
+  state-machine slice converges FAR better than a runtime/data slice (5 rounds caught ~9 genuine
+  in-scope bugs, incl. THREE real doubled-exposure money-safety holes in cancel-replace), but it still
+  will NOT reach a clean adversarial APPROVE — once the cancel-replace/idempotency bugs were closed the
+  reviewer walked the transition graph edge-by-edge (R4 pre-ack, R5 post-ack) surfacing the next
+  broker-event the OFFLINE machine doesn't model, because the authoritative graph comes from the
+  DEFERRED IB adapter. The honest move at that boundary: add only the UNAMBIGUOUS edge, scope the
+  debatable ones to the adapter with named owners, get human authorization, record honestly.
+- ORPHANED STASH (NOT mine, still present): stash@{0} WIP on main d389b56 ... trading-calendar — a
+  previous session's abandoned WIP on a commit not in current history. Whoever owns trading-calendar
+  should reconcile or `git stash drop` it.
+- PRE-EXISTING FLAKY (still present, deselected): tests/property/test_indicators_property.py::
+  test_bbands_property_matches_batch_talib (pandas_ta vs talib precision; indicators.py — NOT touched
+  this session). Hypothesis has now cached a falsifying example so it fails deterministically.
+- PRE-EXISTING toolchain skew (rust 1.9.0-stable local): `cargo fmt --check` reports diffs on
+  pre-existing atp-types lib.rs lines (quarantined fn, ResourceProfileError, etc.) — NOT mine; my new
+  files are fmt-clean and add zero new diffs. Flag for a toolchain-bump cleanup.
+- Adversarial-layer note: the USER ran /codex:adversarial-review; Claude executed
+  node .../codex-companion.mjs adversarial-review --wait --base aa75599 "$(cat prompts/critic_prompt.md)"
+  each round. --base aa75599 scopes past the SAFETY_PATH_RE prep (refusal-clause #4).
+
 === SESSION 50 ===
 Date: 2026-06-14
 Feature completed: SRS-EXE-001 SDK-SURFACE — "route orders to IB only for the designated live
