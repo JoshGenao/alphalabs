@@ -68,6 +68,10 @@ from orchestrator_workload_priority_check import (
     WorkloadPriorityCheckError,
     assert_orchestrator_workload_priority_static,
 )
+from order_event_dispatch_check import (
+    OrderEventDispatchCheckError,
+    assert_order_event_dispatch_static,
+)
 from order_lifecycle_check import (
     OrderLifecycleCheckError,
     assert_order_lifecycle_static,
@@ -559,6 +563,25 @@ def assert_order_lifecycle(config: dict) -> list[str]:
         f"idempotency key: duplicate submissions are rejected with the SRS-ERR-001 "
         f"{block['idempotency']['rejection_category']} category and cancel-replace is "
         "cancel-then-new (SRS-EXE-008, SyRS SYS-3 / SYS-7 / SYS-64 / SYS-90)"
+    )
+    return static_evidence + [summary]
+
+
+def assert_order_event_dispatch(config: dict) -> list[str]:
+    block = config.get("order_event_dispatch_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_order_event_dispatch_static(config, ROOT)
+    callback_states = sum(1 for c in block["state_to_event_category"].values() if c is not None)
+    summary = (
+        f"{block['types_crate']['crate']} declares the source-neutral "
+        f"{block['event_category_enum']} authority for SRS-SDK-004 order-event callbacks: "
+        f"for_transition derives one of {len(block['all_categories'])} categories from the "
+        f"SRS-EXE-008 graph (fail-closed; {callback_states} callback-bearing states), so live "
+        f"(SRS-EXE-001) and paper (SRS-SIM-001) dispatchers stay identical by construction "
+        f"(SRS-SDK-001 / AC-14); NFR-P4 budgets and the AC-named set share one source of truth "
+        f"with strategy_api_order_events_contract"
     )
     return static_evidence + [summary]
 
@@ -1094,6 +1117,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_order_lifecycle(config))
     except OrderLifecycleCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_order_event_dispatch(config))
+    except OrderEventDispatchCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_backtest(config))

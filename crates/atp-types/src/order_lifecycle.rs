@@ -148,6 +148,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use crate::order_event::{OrderEvent, OrderEventCategory};
 use crate::{OrderErrorCategory, OrderSubmission, StrategyId, StructuredOrderError};
 
 /// The nine order lifecycle states (SRS-EXE-008 acceptance criterion). The wire
@@ -529,6 +530,73 @@ impl OrderLedger {
             }
         }
         Ok(new_state)
+    }
+
+    /// Apply a transition to the tracked order under `key` and return **every**
+    /// strategy-facing [`OrderEvent`] that transition produces (SRS-SDK-004),
+    /// each bound to an order's *real* state mutation.
+    ///
+    /// This is the public, order-bound entry point a live (SRS-EXE-001) or paper
+    /// (SRS-SIM-001) dispatcher uses to obtain callbacks: the `from` state fed to
+    /// the category authority is the ledger's own record, never a caller
+    /// argument, and an event is produced **only when the underlying
+    /// [`OrderLedger::transition`] actually succeeds**. A dispatcher therefore
+    /// cannot fabricate a callback for an order that is not in the expected
+    /// state, nor emit a duplicate/impossible fill — an unknown key or an illegal
+    /// edge fails closed with the same errors as [`Self::transition`].
+    ///
+    /// The returned `Vec` contains the event for the order under `key` first,
+    /// followed by any **cascaded** event: when this transition drives `key` to a
+    /// non-cancelled terminal and a held cancel-replace replacement is therefore
+    /// auto-suppressed to `REJECTED` (see [`Self::transition`]), that
+    /// replacement's `REJECTED` event is included too. Returning the cascade
+    /// atomically is essential — the replacement is now terminal, so its
+    /// rejection callback could never be re-derived through a later transition;
+    /// omitting it would silently lose a strategy callback. An event whose
+    /// [`OrderEvent::category`] is `None` is a legal transition into an internal
+    /// (no-callback) state.
+    pub fn transition_with_event(
+        &mut self,
+        key: &OrderKey,
+        next: OrderState,
+    ) -> Result<Vec<OrderEvent>, OrderLifecycleError> {
+        let from = match self.orders.get(key) {
+            Some(order) => order.state,
+            None => return Err(OrderLifecycleError::UnknownOrder(key.clone())),
+        };
+        // Capture the held (non-terminal) replacement of `key`, if any, BEFORE
+        // the transition, so we can detect an auto-suppression cascade after.
+        let held_replacement = self
+            .orders
+            .iter()
+            .find(|(_, order)| order.replaces.as_ref() == Some(key) && !order.state.is_terminal())
+            .map(|(id, order)| (id.clone(), order.state));
+
+        let new_state = self.transition(key, next)?;
+        // The transition succeeded, so `from -> new_state` is a legal modeled
+        // edge; derive the callback bound to the order's real from-state.
+        let mut events = vec![OrderEvent::new(
+            key.clone(),
+            new_state,
+            OrderEventCategory::for_transition(from, new_state)?,
+        )];
+
+        // Cascade: if the held replacement was auto-suppressed to REJECTED by the
+        // transition above, surface its REJECTED callback in the same result.
+        if let Some((replacement_key, replacement_from)) = held_replacement {
+            if let Some(replacement) = self.orders.get(&replacement_key) {
+                if replacement.state == OrderState::Rejected
+                    && replacement_from != OrderState::Rejected
+                {
+                    events.push(OrderEvent::new(
+                        replacement_key,
+                        OrderState::Rejected,
+                        OrderEventCategory::for_transition(replacement_from, OrderState::Rejected)?,
+                    ));
+                }
+            }
+        }
+        Ok(events)
     }
 
     /// Cancel-replace as **cancel-then-new** (SRS-EXE-008): request cancellation

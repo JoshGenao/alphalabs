@@ -245,6 +245,13 @@ if ! python3 tools/order_lifecycle_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running order-event dispatch contract check..."
+if ! python3 tools/order_event_dispatch_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Order-event dispatch contract check failed; run python3 tools/order_event_dispatch_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running subscription-limit contract check..."
 if ! python3 tools/subscription_limit_check.py >/dev/null; then
   echo "✗ Environment failed"

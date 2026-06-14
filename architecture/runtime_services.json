@@ -6207,5 +6207,51 @@
       "Driving transitions from real broker order events (ACK / fill / cancel / reject callbacks) -- owner SRS-EXE-006 IB adapter / SRS-SIM-002 fill model. SRS-EXE-008 stays passes:false until these land.",
       "The finer-grained broker-rejection edges: PARTIALLY_FILLED -> REJECTED (whether a partially-executed order's remainder can be rejected) and the CANCEL_PENDING cancel-rejected-vs-order-rejected disambiguation (a rejected cancel returns the order to its working state; a rejected order is terminal -- opposite meanings). These are authoritatively defined by the IB adapter's event mapping (SRS-EXE-006 / SRS-SDK-004); only the unambiguous ACKED -> REJECTED post-ack rejection is modelled here, the rest is deferred to the adapter rather than guessed."
     ]
+  },
+  "order_event_dispatch_contract": {
+    "requirement": "SRS-SDK-004",
+    "srs_refs": ["SRS-SDK-004", "SRS-SDK-001"],
+    "syrs_refs": ["SYS-7", "SYS-85", "SYS-64"],
+    "nfr_refs": ["NFR-P4"],
+    "strs_refs": ["SN-1.22", "SN-1.29"],
+    "description": "Source-neutral Rust order-event callback category authority for SRS-SDK-004. AGENTS.md forbids the Rust core runtime services from depending on the Python Strategy SDK, so the live (atp-execution, SRS-EXE-001) and paper (atp-simulation, SRS-SIM-001) dispatchers derive WHICH callback category to emit for WHICH OrderState transition from a single shared authority in atp-types (OrderEventCategory::for_transition); identical transitions therefore yield identical categories for live and paper by construction (SRS-SDK-001 / AC-14 parity), not by runtime coincidence. SCOPE: this contract covers the event CATEGORY derivation + the per-category field-presence REQUIREMENT only (the Rust analog of the Python SDK assert_order_event_payload rules). It models no money values (no f64 price/commission), performs no delivery, and measures no latency. The AC field VALUES, actual delivery to Python, and the NFR-P4 p95 latency PROOF require the real runtime dispatchers and are deferred (see deferred[]). SRS-SDK-004 stays passes:false in feature_list.json until those land; this Rust surface + tools/order_event_dispatch_check.py are the prerequisite the production dispatchers consume. Latency budgets are NOT duplicated here -- latency_source_block names strategy_api_order_events_contract as the single source of truth, and the check pins the Rust consts == that block's values == the Python SDK constants. SAFETY: a callback cannot be fabricated. OrderEventCategory is an OPAQUE newtype over a PRIVATE variant enum (private_variant_enum, Category) -- a dispatcher crate cannot construct one (unlike a bare #[non_exhaustive] enum, whose unit variants stay nameable) -- and the destination-state mapper (private_state_mapper, for_state) plus the deriver (crate_internal_deriver, for_transition) are non-public; the only public way to obtain a callback is the order-bound entry point (public_derivation_entry_point) OrderLedger::transition_with_event, which feeds the TRACKED order's real current state as `from` and returns a category only when the underlying mutation succeeds -- so 'no callback without an actual, serialized order-state mutation' holds by construction. transition_with_event returns ALL events a transition produces as a Vec<event_struct, OrderEvent>: the transitioned order PLUS any cascaded auto-rejection of a held cancel-replace replacement (which is terminal afterward, so its REJECTED callback could never be re-derived -- omitting it would silently lose a strategy callback). The check enforces the visibilities, the opacity, and the cascade aggregation.",
+    "types_crate": {"crate": "atp-types"},
+    "module": "crates/atp-types/src/order_event.rs",
+    "integration_test": "srs_sdk_004_order_event",
+    "event_category_enum": "OrderEventCategory",
+    "private_variant_enum": "Category",
+    "event_struct": "OrderEvent",
+    "private_state_mapper": "for_state",
+    "crate_internal_deriver": "for_transition",
+    "public_derivation_entry_point": "transition_with_event",
+    "entry_point_type": "OrderLedger",
+    "all_categories": ["ACK", "FILL", "PARTIAL_FILL", "CANCELLED", "REJECTED", "EXPIRED"],
+    "ac_named_categories": ["FILL", "PARTIAL_FILL", "CANCELLED", "REJECTED"],
+    "categories_requiring_fill_economics": ["FILL", "PARTIAL_FILL", "CANCELLED", "REJECTED"],
+    "categories_requiring_reason": ["CANCELLED", "REJECTED", "EXPIRED"],
+    "state_to_event_category": {
+      "NEW": null,
+      "PENDING_SUBMIT": null,
+      "ACKED": "ACK",
+      "PARTIALLY_FILLED": "PARTIAL_FILL",
+      "FILLED": "FILL",
+      "CANCEL_PENDING": null,
+      "CANCELLED": "CANCELLED",
+      "REJECTED": "REJECTED",
+      "EXPIRED": "EXPIRED"
+    },
+    "latency_source_block": "strategy_api_order_events_contract",
+    "latency_consts": {
+      "LIVE_CALLBACK_LATENCY_P95_MS": "required_live_callback_latency_p95_ms",
+      "PAPER_CALLBACK_LATENCY_P95_MS": "required_paper_callback_latency_p95_ms"
+    },
+    "ac_traces": ["SRS-SDK-004", "SYS-7", "SYS-85", "NFR-P4", "AC-14"],
+    "deferred": [
+      "Live IB broker order events (ACK / fill / partial-fill / cancel / reject) -> OrderEventCategory::for_transition -> populate fill price/quantity/commission -> Strategy.on_order_event, plus the live <1000 ms p95 proof -- owner SRS-EXE-001 / SRS-EXE-006 IB adapter (needs a running IB Gateway).",
+      "Internal simulation engine simulated fills -> OrderEventCategory::for_transition -> populate fill economics -> Strategy.on_order_event, plus the paper <100 ms p95 proof -- owner SRS-SIM-001 / SRS-SIM-002 fill model (needs a running simulation engine).",
+      "The AC field VALUES themselves (fill_price, fill_quantity, commission as exact money) are produced by the broker (live) or fill model (paper) at runtime; this slice fixes only the category and which fields must be present. The Python SDK OrderEvent payload + assert_order_event_payload (strategy_api_order_events_contract) own the Python-facing field-presence contract; this block is the Rust-core mirror of the same rules.",
+      "STATE-PRESERVING events are NOT representable by this transition-derived authority and are explicitly out of scope. for_transition derives the callback from the lifecycle DESTINATION STATE, so it can only represent events that CHANGE state. A cancel rejection (the broker refuses a pending cancel; the order stays working with no state change) produces no transition to classify, and -- because OrderEventCategory is opaque -- an adapter cannot mint one either. Representing such events needs a SEPARATE source-neutral broker/simulator EVENT-KIND API (it is NOT an OrderEventCategory), owned by SRS-EXE-006 (IB adapter) / SRS-SIM-002 (sim fill model). Duplicate / stale / out-of-order broker events that map to no legal modeled transition fail closed here; the adapter dedups/reconciles them against the acknowledged broker id. SRS-SDK-004 stays passes:false precisely because this event-kind half is unbuilt; it is named and deferred rather than guessed.",
+      "Enforcing that runtime dispatchers cannot bypass callback production: OrderLedger::transition (the raw SRS-EXE-008 state mutation) is still public, so a future dispatcher could mutate an order into a callback-bearing state without emitting the OrderEvent. The live (SRS-EXE-001) / paper (SRS-SIM-001) dispatchers MUST drive lifecycle exclusively through OrderLedger::transition_with_event (the event-producing path). Restricting transition's visibility to crate-private to enforce this by the type system is an SRS-EXE-008 API change (it is in order_lifecycle_contract.ledger.methods and is called by 31 sites in the EXE-008 integration test) and is deferred to the dispatcher-wiring work so EXE-008's tests + contract migrate atomically; bundling it here would be an unrelated cross-feature refactor."
+    ]
   }
 }

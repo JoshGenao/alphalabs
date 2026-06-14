@@ -5,6 +5,11 @@ pub use order_lifecycle::{
     ClientCorrelationId, OrderKey, OrderLedger, OrderLifecycle, OrderLifecycleError, OrderState,
 };
 
+pub mod order_event;
+pub use order_event::{
+    OrderEvent, OrderEventCategory, LIVE_CALLBACK_LATENCY_P95_MS, PAPER_CALLBACK_LATENCY_P95_MS,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StrategyId(String);
 
