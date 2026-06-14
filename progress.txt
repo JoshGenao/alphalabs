@@ -1,3 +1,104 @@
+=== SESSION 50 ===
+Date: 2026-06-14
+Feature completed: SRS-EXE-001 SDK-SURFACE — "route orders to IB only for the designated live
+strategy" (docs/SRS.md SRS-5.3 SRS-EXE-001; traces SyRS SYS-1/2a/2c/2d, AC-15, NFR-P1/NFR-S2; StRS
+SN-1.01/1.06/1.11). User-confirmed via AskUserQuestion (over SRS-RESV-002, SRS-DATA-001, SRS-ERR-9).
+Ruled out SRS-MD-002 — its line-limit gate already shipped under bdb4c29/feat(ERR-4).
+Status: 92 remaining features (UNCHANGED — SRS-EXE-001 stays passes:false; honest partial pass).
+feature_list.json was NOT modified.
+
+The gap closed: ExecutionEngine::submit_live_order TRUSTED its caller-passed StrategyMode arg — a
+non-live strategy passing StrategyMode::Live routed straight to broker.submit_order. Nothing
+established WHICH strategy is the single designated live strategy, required explicit confirmation
+(SYS-2d), or enforced exactly-one (SYS-2a). This slice adds that authority.
+
+What I did (prep -> feat -> fix -> chore cadence):
+- prep 3761b72 (chore(critic)): extended SAFETY_PATH_RE with collision-free tokens (/designation.rs,
+  live[_-]?designation, srs[_-]?exe[_-]?001) so designation.rs + live_designation_check.py are safety
+  paths requiring a paired tests/domain/ diff. Verified ZERO tracked-path collisions; committed
+  SEPARATELY (refusal-clause #4).
+- feat edea2c0: crates/atp-execution/src/designation.rs (LiveDesignation authority +
+  LiveDesignationConfirmation strategy-bound token + LiveRoutingDecision + LiveDesignationError; 8 L1
+  tests); lib.rs route_order entry deriving live-ness from the authority; tools/live_designation_check.py
+  + live_designation_contract block + architecture_check wiring + init.sh gate; L3 (18) + L7 (5,
+  safety-paired) + Rust integration srs_exe_001_live_designation (5).
+- fix a6f9fa5 (adversarial R1): ExecutionEngine now OWNS the authority (private `designation` field;
+  designate/demote/designated wrappers); route_order takes NO caller authority; LiveDesignation drops
+  Clone. ERR-1/2/3/8 + inline tests: ExecutionEngine -> ExecutionEngine::default() (mechanical,
+  behaviour-preserving). Contract+check gain owner{}, registry.forbidden_derives[Clone],
+  guard.no_caller_authority_type, check_engine_ownership.
+- chore (this entry).
+
+Design headline — the SRS-EXE-001 facets made falsifiable:
+- Single-live authority OWNED by the execution engine (AGENTS.md "live-only IB enforcement"): the
+  canonical LiveDesignation is a private field reached only via designate/demote/route_order — no caller
+  can supply a forged authority at the routing boundary.
+- route_order derives the Live decision from self.designation.authority_for(), NOT a caller-passed
+  StrategyMode; NotDesignated -> NON_LIVE_STRATEGY_SUBMISSION BEFORE any broker/connectivity/freshness
+  port (proven with Forbidden* panic-on-touch stubs); Authorized -> delegates to the unchanged
+  submit_live_order(Live).
+- Explicit confirmation (SYS-2d/NFR-S2): LiveDesignationConfirmation is an opaque, strategy-bound token
+  (private field, no Default, named from_operator ctor, non-empty acknowledgement) — a confirmation for
+  A cannot designate B (ConfirmationMismatch).
+- Exactly-one (SYS-2a): a second concurrent designation is refused (AlreadyDesignated); demote-before-
+  re-designate; no Clone (a stale clone could outlive a demote).
+- 1-live + 30-paper sweep: exactly one IB order side effect (the AC scenario).
+- submit_live_order kept byte-stable (pinned by error_handling/connectivity/freshness contracts +
+  the err_1/2/3 integration tests).
+
+What I tested: cargo test --workspace green (47 binaries; atp-execution = 15 lib incl. 8 L1 + 5
+srs_exe_001 integration; ERR-1/2/3/8 still green after ::default()); new code clippy + rustfmt clean
+(route_order 7 args, no allow needed; NO whole-crate fmt — lib.rs rustfmt diff count unchanged from
+prep); L3 (22) + L7 (5); error_handling/connectivity/freshness checks PASS (submit_live_order intact);
+architecture_check exit 0; pytest "not integration and not e2e" 1891 passed / 4 pre-existing skips /
+BBands flake deselected. ./init.sh -> Environment ready with the new "live-designation contract check"
+gate.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings on prep + feat + fix (pre-commit
+    hook also APPROVE each). designation.rs + live_designation_check.py are safety paths; the paired
+    tests/domain/test_live_designation_authority.py is in every safety-touching commit.
+  judgment (/codex:adversarial-review --wait --base 3761b72): did NOT reach APPROVE — committed on
+    HUMAN AUTHORIZATION (Option 1) after the loop converged to PURELY DEFERRED-RUNTIME scope.
+    R1 [critical x2]: (a) caller-supplied/cloneable/forgeable LiveDesignation at the route boundary —
+      a GENUINE in-scope bug, FIXED in a6f9fa5 (engine-owned authority, no caller param, no Clone);
+      (b) submit_live_order pub bypass — deferred.
+    R2 [critical x2 + high]: (1) submit_live_order is a public broker-reaching path; (2) two
+      ExecutionEngine::default() instances could each designate (no cross-process singleton); (3)
+      from_operator accepts any non-empty string (no trusted origin). ALL THREE map to named deferred
+      owners, none closable in an offline single-crate slice:
+        (1) -> sole-entry wiring SRS-EXE-006 / SRS-ORCH-* — ENTANGLED: submit_live_order is pinned `pub`
+            by tools/error_handling_check.py AND called directly by the err_1/2/3 EXTERNAL integration
+            tests; making it crate-private/capability-gated re-architects the ERR-1/2/3 contract.
+        (2) -> durable cross-process single-live state SRS-RESV-002..006 / SRS-ORCH-* (same subsystem as
+            the skipped tests/domain/test_single_live_invariant.py).
+        (3) -> trusted operator confirmation surface SRS-API-001 (SYS-2c).
+
+Known issues / notes for next agent:
+- SRS-EXE-001 stays passes:false BY DESIGN. Deferred owners (live_designation_contract.deferred[]):
+  SRS-API-001 (operator confirmation surface); SRS-EXE-006 / SRS-ORCH-* (sole-entry wiring + real IB
+  dispatch); SRS-RESV-002..006 / SRS-ORCH-* (durable cross-process single-live + promote/demote
+  lifecycle that drives designate/demote); SRS-PERF-001 (NFR-P1 <1000ms p95 latency proof).
+- LESSON (memory feedback_adversarial_loop_nonconvergence): a partial SDK slice of a runtime feature
+  won't converge to a clean adversarial APPROVE — the reviewer surfaces the next deferred dep as "do
+  not ship." The ONE in-scope bug (R1 caller-supplied authority) was real and worth the loop. NEW
+  nuance THIS session: finding 1's residue is IRREDUCIBLE here because submit_live_order is pinned by
+  ANOTHER feature's contract (ERR-1/2/3) — closing it is cross-feature, out of scope.
+- ORPHANED STASH (NOT mine): `stash@{0}: WIP on main: d389b56 ... trading-calendar` is a previous
+  session's abandoned WIP on a commit (d389b56) NOT in current history. I briefly popped it by accident
+  while baselining clippy and FULLY reverted (git reset --hard to prep 3761b72 + restored lib.rs from a
+  /tmp backup); my work was intact and the stash is INTACT in the list. Whoever owns the
+  trading-calendar work should reconcile or `git stash drop` it.
+- PRE-EXISTING under newer local toolchain (rust 1.95.0): atp-types has doc_lazy_continuation warnings
+  and submit_live_order trips too_many_arguments (8/7; clippy counts self) — both predate this slice, so
+  `cargo clippy --workspace -- -D warnings` is red on these regardless of my change. Out of scope; flag
+  for a toolchain-bump cleanup.
+- PRE-EXISTING FLAKY (still present): tests/property/test_indicators_property.py::
+  test_bbands_property_matches_batch_talib — deselected in the full run (SESSION 49 note).
+- Adversarial-layer note: the USER ran /codex:adversarial-review; Claude executed
+  node .../codex-companion.mjs adversarial-review --wait --base 3761b72 "$(cat prompts/critic_prompt.md)".
+  --base 3761b72 scopes past the SAFETY_PATH_RE prep (refusal-clause #4).
+
 === SESSION 49 ===
 Date: 2026-06-12
 Feature completed: SRS-FAC-001 SDK-SURFACE — "compute scheduled factors across the full US equity
