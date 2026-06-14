@@ -102,3 +102,7 @@ def test_partial_fill_racing_cancel_can_still_be_cancelled() -> None:
 
 def test_cancel_replace_blocks_doubled_exposure() -> None:
     _assert_single_pass(_run_cargo_test("srs_exe_008_cancel_replace_blocks_doubled_exposure"))
+
+
+def test_an_original_is_replaced_at_most_once() -> None:
+    _assert_single_pass(_run_cargo_test("srs_exe_008_an_original_is_replaced_at_most_once"))

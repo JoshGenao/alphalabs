@@ -452,6 +452,12 @@ impl OrderLedger {
     ///
     /// Refused (the ledger is left unchanged) when:
     /// * `original_id` is not tracked ([`OrderLifecycleError::UnknownOrder`]);
+    /// * the original already has a replacement
+    ///   ([`OrderLifecycleError::OriginalAlreadyReplaced`]) — an original may be
+    ///   cancel-replaced **at most once**, even if it bounces back to a
+    ///   cancellable state (e.g. `CANCEL_PENDING` → `PARTIALLY_FILLED`); a second
+    ///   replacement would let two replacements pass the gate once the original
+    ///   reaches `CANCELLED`, re-opening doubled exposure;
     /// * the original is not in a cancellable (working) state — only `ACKED`
     ///   and `PARTIALLY_FILLED` can transition to `CANCEL_PENDING`
     ///   ([`OrderLifecycleError::IllegalTransition`]); this subsumes terminal,
@@ -470,6 +476,18 @@ impl OrderLedger {
             Some(order) => order.state,
             None => return Err(OrderLifecycleError::UnknownOrder(original_id.clone())),
         };
+        // At most one replacement per original, ever — a second would let two
+        // held replacements both pass the cancel-replace gate once the original
+        // reaches CANCELLED (doubled exposure).
+        if self
+            .orders
+            .values()
+            .any(|order| order.replaces.as_ref() == Some(original_id))
+        {
+            return Err(OrderLifecycleError::OriginalAlreadyReplaced(
+                original_id.clone(),
+            ));
+        }
         if !original_state.can_transition_to(OrderState::CancelPending) {
             return Err(OrderLifecycleError::IllegalTransition {
                 from: original_state,
@@ -520,6 +538,9 @@ pub enum OrderLifecycleError {
     ReplacementReusesOriginalId(ClientCorrelationId),
     /// A cancel-replace replacement id is already tracked.
     DuplicateReplacementId(ClientCorrelationId),
+    /// A cancel-replace was attempted on an original that already has a
+    /// replacement (an original may be cancel-replaced at most once).
+    OriginalAlreadyReplaced(ClientCorrelationId),
     /// A cancel-replace replacement was moved toward submission before the
     /// original it replaces reached `CANCELLED` (the cancel-replace safety gate
     /// that prevents the original and the replacement both reaching the broker).
@@ -558,6 +579,12 @@ impl fmt::Display for OrderLifecycleError {
             Self::DuplicateReplacementId(id) => write!(
                 formatter,
                 "cancel-replace replacement id {:?} is already tracked",
+                id.as_str()
+            ),
+            Self::OriginalAlreadyReplaced(id) => write!(
+                formatter,
+                "order {:?} already has a replacement — an original may be \
+                 cancel-replaced at most once",
                 id.as_str()
             ),
             Self::ReplacementBlockedUntilOriginalCancelled {
@@ -930,5 +957,28 @@ mod tests {
                 .unwrap_err(),
             OrderLifecycleError::IllegalTransition { .. }
         ));
+    }
+
+    #[test]
+    fn an_original_can_be_cancel_replaced_at_most_once() {
+        let mut ledger = OrderLedger::new();
+        acked(&mut ledger, "orig");
+        ledger
+            .cancel_replace(&corr("orig"), corr("repl-1"))
+            .unwrap();
+        // a partial fill bounces the original back to a cancellable state
+        ledger
+            .transition(&corr("orig"), OrderState::PartiallyFilled)
+            .unwrap();
+        // a second cancel-replace is refused (would create a second held
+        // replacement that could doubled-expose once the original is CANCELLED)
+        assert_eq!(
+            ledger
+                .cancel_replace(&corr("orig"), corr("repl-2"))
+                .unwrap_err(),
+            OrderLifecycleError::OriginalAlreadyReplaced(corr("orig"))
+        );
+        assert!(ledger.get(&corr("repl-2")).is_none());
+        assert_eq!(ledger.len(), 2);
     }
 }

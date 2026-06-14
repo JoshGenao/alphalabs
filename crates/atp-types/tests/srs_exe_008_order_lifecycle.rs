@@ -169,15 +169,12 @@ fn srs_exe_008_cancel_replace_is_cancel_then_new_retaining_original_id() {
     );
     assert_eq!(ledger.len(), 2);
 
-    // The already-cancel-replaced original is no longer cancellable.
+    // The already-replaced original may not be cancel-replaced a second time.
     assert_eq!(
         ledger
             .cancel_replace(&corr("orig"), corr("again"))
             .unwrap_err(),
-        OrderLifecycleError::IllegalTransition {
-            from: OrderState::CancelPending,
-            to: OrderState::CancelPending
-        }
+        OrderLifecycleError::OriginalAlreadyReplaced(corr("orig"))
     );
 
     // On a fresh, working order: a replacement that reuses the original id, or
@@ -325,4 +322,42 @@ fn srs_exe_008_cancel_replace_blocks_doubled_exposure() {
     ledger.transition(&corr("o2"), OrderState::Filled).unwrap();
     // the held replacement is auto-suppressed so it can never doubled-expose
     assert_eq!(ledger.state(&corr("r2")).unwrap(), OrderState::Rejected);
+}
+
+/// An original may be cancel-replaced AT MOST ONCE — even after it bounces
+/// CANCEL_PENDING -> PARTIALLY_FILLED (cancellable again), a second cancel-replace
+/// is refused, so two held replacements can never both pass the gate once the
+/// original reaches CANCELLED (the repeated-replacement doubled-exposure hole).
+#[test]
+fn srs_exe_008_an_original_is_replaced_at_most_once() {
+    let mut ledger = OrderLedger::new();
+    ledger
+        .submit(corr("o3"), &submission("live-strat", "MSFT", 50))
+        .unwrap();
+    ledger
+        .transition(&corr("o3"), OrderState::PendingSubmit)
+        .unwrap();
+    ledger.transition(&corr("o3"), OrderState::Acked).unwrap();
+    ledger.cancel_replace(&corr("o3"), corr("r3a")).unwrap();
+    // a partial fill races the cancel, bouncing the original back to a
+    // cancellable state
+    ledger
+        .transition(&corr("o3"), OrderState::PartiallyFilled)
+        .unwrap();
+    assert_eq!(
+        ledger.cancel_replace(&corr("o3"), corr("r3b")).unwrap_err(),
+        OrderLifecycleError::OriginalAlreadyReplaced(corr("o3"))
+    );
+    // exactly one replacement was ever created for o3
+    assert_eq!(
+        ledger
+            .get(&corr("r3a"))
+            .unwrap()
+            .replaces()
+            .unwrap()
+            .as_str(),
+        "o3"
+    );
+    assert!(ledger.get(&corr("r3b")).is_none());
+    assert_eq!(ledger.len(), 2);
 }

@@ -65,9 +65,10 @@ class OrderLifecycleScriptTest(unittest.TestCase):
             "DuplicateClientCorrelationId (wire DUPLICATE_CLIENT_CORRELATION_ID)",
             "cancel-then-new",
             "replaces: Some(..)",
+            "a second cancel-replace is refused with OrderLifecycleError::OriginalAlreadyReplaced",
             "cannot reach PendingSubmit until the original is OrderState::Cancelled",
             "auto-suppresses the replacement to OrderState::Rejected",
-            "OrderLifecycleError with 6 variants",
+            "OrderLifecycleError with 7 variants",
         ):
             self.assertIn(needle, result.stdout)
 
@@ -175,6 +176,15 @@ class OrderLifecycleNegativeTest(unittest.TestCase):
         )
         with self.assertRaises(OrderLifecycleCheckError):
             check_replacement_gate(self.config, broken)
+
+    def test_missing_single_replacement_guard_is_caught(self) -> None:
+        # Drop the at-most-one-replacement guard from OrderLedger::cancel_replace.
+        broken = self.src.replace(
+            "OrderLifecycleError::OriginalAlreadyReplaced",
+            "OrderLifecycleError::UnknownOrder",
+        )
+        with self.assertRaises(OrderLifecycleCheckError):
+            check_cancel_replace_audit(self.config, broken)
 
     def test_public_lifecycle_field_is_caught(self) -> None:
         broken = self.src.replace(

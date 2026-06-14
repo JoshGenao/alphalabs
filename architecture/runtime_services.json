@@ -6166,6 +6166,7 @@
     "cancel_replace": {
       "cancel_state": "CancelPending",
       "retains_original_field": "replaces",
+      "single_replacement_error": "OriginalAlreadyReplaced",
       "replacement_gate": {
         "entry_method": "transition",
         "gate_state": "Cancelled",
@@ -6182,6 +6183,7 @@
         "UnknownOrder",
         "ReplacementReusesOriginalId",
         "DuplicateReplacementId",
+        "OriginalAlreadyReplaced",
         "ReplacementBlockedUntilOriginalCancelled"
       ]
     },

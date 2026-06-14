@@ -360,10 +360,18 @@ def check_cancel_replace_audit(config: dict, types_src: str) -> str:
             f"OrderLedger::cancel_replace must set `{audit_field}: Some(..)` on the "
             "replacement — the original correlation id is retained for audit"
         )
+    single_error = block["cancel_replace"]["single_replacement_error"]
+    if single_error not in body:
+        fail(
+            f"OrderLedger::cancel_replace must reject a second replacement with "
+            f"OrderLifecycleError::{single_error} — an original may be cancel-replaced "
+            "at most once (a second replacement re-opens doubled exposure)"
+        )
     return (
         "OrderLedger::cancel_replace is cancel-then-new: original -> "
-        f"OrderState::{cancel_state} and the replacement retains the original id via "
-        f"`{audit_field}: Some(..)` (SRS-EXE-008 audit)"
+        f"OrderState::{cancel_state}, the replacement retains the original id via "
+        f"`{audit_field}: Some(..)`, and a second cancel-replace is refused with "
+        f"OrderLifecycleError::{single_error} (at most one replacement per original)"
     )
 
 
