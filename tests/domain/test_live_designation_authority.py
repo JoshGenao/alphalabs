@@ -1,11 +1,14 @@
 """SRS-EXE-001 / SyRS SYS-2a / SYS-2d / AC-15 — orders route to IB ONLY for
 the single designated live strategy.
 
-L7 domain (safety) test. The Rust integration test at
+L7 domain (safety) test. The authority is owned by the ``ExecutionEngine``
+(a private field reached only through ``designate`` / ``demote`` /
+``route_order``), so a caller cannot supply a forged or cloned authority at
+the routing boundary. The Rust integration test at
 ``crates/atp-execution/tests/srs_exe_001_live_designation.rs`` builds a spy
 brokerage adapter that counts ``submit_order`` invocations and panic-on-touch
 connectivity/freshness stubs; this Python test shells out to ``cargo test``
-and asserts the live-designation authority holds end to end:
+and asserts the engine-owned live-designation authority holds end to end:
 
   * only the single designated strategy reaches the broker;
   * a non-designated strategy is rejected with NON_LIVE_STRATEGY_SUBMISSION

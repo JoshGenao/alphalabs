@@ -165,7 +165,15 @@ impl std::error::Error for LiveDesignationError {}
 /// consults. The empty registry (no designation) is the safe default: until an
 /// operator explicitly designates one, **no** strategy is authorized to route to
 /// IB.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+///
+/// **Single owned instance.** The canonical authority is the one owned by the
+/// [`ExecutionEngine`](crate::ExecutionEngine) (a private field reached only
+/// through `designate` / `demote` / `route_order`); `route_order` never accepts
+/// a caller-supplied `LiveDesignation`, so a strategy cannot forge an authority
+/// that designates itself. `Clone` is intentionally **not** derived: a cloned
+/// authority could be retained past a `demote` and keep authorizing a stale
+/// strategy, defeating SYS-2a.
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct LiveDesignation {
     designated: Option<StrategyId>,
 }

@@ -163,7 +163,7 @@ fn err_3_stale_state_blocks_live_submission_with_no_broker_call() {
     // called; no reconnect must be requested (staleness is data-side, not
     // transport); and exactly one StaleDataEvent must be recorded with
     // the observed staleness_seconds matching what the probe reported.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let broker = BrokerageSpy::default();
     let connectivity = ConnectivitySpy::in_state(ConnectivityState::Connected);
     let events = EventSinkSpy::default();
@@ -265,7 +265,7 @@ fn err_3_fresh_state_still_routes_through_broker() {
     // Connected + Fresh submission still reaches the broker — otherwise
     // the gate would silently disable the live path even when the feed
     // is healthy.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let broker = BrokerageSpy::default();
     let connectivity = ConnectivitySpy::in_state(ConnectivityState::Connected);
     let events = EventSinkSpy::default();
@@ -314,7 +314,7 @@ fn err_3_unreachable_state_does_not_consult_freshness_port() {
     // freshness check, `ForbiddenFreshness` would panic the test. The
     // submission still fails — but with CONNECTIVITY_BLOCKED, not
     // MARKET_DATA_STALE.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let broker = BrokerageSpy::default();
     let connectivity = ConnectivitySpy::in_state(ConnectivityState::Unreachable);
     let events = EventSinkSpy::default();
@@ -356,7 +356,7 @@ fn err_3_stale_state_holds_across_many_live_submissions() {
     // staleness age, a Stale state must never permit the broker to be
     // called, and every blocked submission must produce its own
     // StaleDataEvent carrying the observed age.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let broker = BrokerageSpy::default();
     let connectivity = ConnectivitySpy::in_state(ConnectivityState::Connected);
     let events = EventSinkSpy::default();

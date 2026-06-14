@@ -241,7 +241,7 @@ fn err_8_timeout_pages_email_sms_cancels_disconnects_and_refuses() {
     // SRS-SAFE-002 / SYS-44b: the liquidation stayed unfilled — page the
     // operator (email + SMS), cancel the unfilled order, disconnect from IB,
     // and refuse so positions await manual resolution.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let probe =
         KillSwitchLiquidationProbeSpy::timed_out(41, KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS);
     let alerts = KillSwitchOperatorAlertSinkSpy::default();
@@ -313,7 +313,7 @@ fn err_8_timeout_pages_email_sms_cancels_disconnects_and_refuses() {
 fn err_8_filled_before_timeout_completes_with_no_page_cancel_or_disconnect() {
     // SRS-SAFE-002: liquidation filled in time — the SYS-44b error path does
     // not engage. The forbidden stubs panic if any side effect is touched.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let probe = KillSwitchLiquidationProbeSpy::filled(7);
     let alerts = OperatorAlertForbiddenSink;
     let cleanup = IbLiquidationForbiddenCleanup;
@@ -367,7 +367,7 @@ fn err_8_failed_page_cancel_and_disconnect_are_observable_and_still_refuse() {
     // cancel must not suppress the page or the disconnect), record each as
     // Failed so the failure is not indistinguishable from success, and still
     // refuse (return Err).
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let probe =
         KillSwitchLiquidationProbeSpy::timed_out(50, KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS);
     let alerts = OperatorAlertFailingSink::default();
@@ -437,7 +437,7 @@ fn err_8_probe_unavailable_refuses_without_any_automated_action() {
     // with the DISTINCT probe-unavailable category and takes no automated
     // order/session action. The forbidden cleanup + alert sinks panic if
     // touched, proving no side effect runs.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let probe = KillSwitchLiquidationProbeFailing::default();
     let alerts = OperatorAlertForbiddenSink;
     let cleanup = IbLiquidationForbiddenCleanup;
@@ -495,7 +495,7 @@ fn err_8_filled_over_deadline_is_failed_closed_and_refuses() {
     // FilledBeforeTimeout (elapsed 45 > 30 s timeout) must NOT skip the SYS-44b
     // cleanup. The gate normalises it to a timeout: the page + cancel +
     // disconnect fire and the gate refuses.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let probe = KillSwitchLiquidationProbeSpy::filled(45);
     let alerts = KillSwitchOperatorAlertSinkSpy::default();
     let cleanup = IbLiquidationCleanupSpy::default();
@@ -535,7 +535,7 @@ fn err_8_audit_sink_failure_is_best_effort_and_safety_posture_holds() {
     // SRS-SAFE-002: if the timeout event sink fails (audit log unwritable),
     // the gate must NOT panic or abort — the page + cancel + disconnect still
     // fire and the gate still refuses. Event emission is best-effort.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let probe =
         KillSwitchLiquidationProbeSpy::timed_out(40, KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS);
     let alerts = KillSwitchOperatorAlertSinkSpy::default();
@@ -586,7 +586,7 @@ fn err_8_timeout_refuses_across_many_liquidations() {
     // Pseudo-property sweep: every timeout outcome refuses and emits exactly
     // one page (email + SMS) + one cancel + one disconnect, regardless of the
     // (elapsed, timeout) numerics.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let cases = [(31_u64, 30_u64), (45, 30), (90, 30), (60, 20)];
     for (elapsed, timeout) in cases {
         let probe = KillSwitchLiquidationProbeSpy::timed_out(elapsed, timeout);

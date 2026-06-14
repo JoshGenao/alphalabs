@@ -149,6 +149,18 @@ def check_registry(config: dict, exec_src: str) -> str:
     field = spec.get("field")
     if field and not re.search(rf"\b{re.escape(field)}\s*:", body):
         fail(f"{struct} is missing the `{field}` field")
+    derive_match = re.search(
+        rf"#\[derive\(([^)]*)\)\]\s*(?:#\[[^\]]*\]\s*)*pub struct {re.escape(struct)}\b",
+        exec_src,
+    )
+    derives = derive_match.group(1) if derive_match else ""
+    for forbidden in spec.get("forbidden_derives", []):
+        if re.search(rf"\b{re.escape(forbidden)}\b", derives):
+            fail(
+                f"{struct} derives `{forbidden}` — a cloned authority could be "
+                "retained past a demote and keep authorizing a stale strategy "
+                "(SyRS SYS-2a); the authority must not be Clone"
+            )
     missing = [
         method
         for method in spec["methods"]
@@ -165,10 +177,51 @@ def check_registry(config: dict, exec_src: str) -> str:
             f"{struct}::designate does not take a `{confirmation_type}` — "
             "designation must require the explicit-confirmation token (SYS-2d)"
         )
+    forbidden = spec.get("forbidden_derives", [])
     return (
         f"atp-execution declares {struct} with {len(spec['methods'])} methods "
         f"({', '.join(spec['methods'])}); designate requires a "
-        f"{confirmation_type} (SYS-2a single-live + SYS-2d confirmation)"
+        f"{confirmation_type} (SYS-2a single-live + SYS-2d confirmation); "
+        f"no {'/'.join(forbidden) or 'forbidden'} derive"
+    )
+
+
+def check_engine_ownership(config: dict, exec_src: str) -> str:
+    block = contract_block(config)
+    spec = block["owner"]
+    owner = spec["struct"]
+    try:
+        body = _struct_body(exec_src, owner)
+    except AssertionError as error:
+        fail(str(error))
+    field = spec["field"]
+    authority_type = spec["authority_type"]
+    if not re.search(rf"\b{re.escape(field)}\s*:\s*{re.escape(authority_type)}\b", body):
+        fail(
+            f"{owner} does not own the authority as a `{field}: {authority_type}` "
+            "field — the single live-designation authority must be engine-owned, "
+            "not caller-supplied (SRS-EXE-001)"
+        )
+    # The routing boundary must NOT accept a caller-supplied authority instance.
+    guard = block["guard"]
+    no_caller_type = guard.get("no_caller_authority_type")
+    entry_method = block["entry_point"]["method"]
+    sig_match = re.search(
+        rf"\bpub\s+fn\s+{re.escape(entry_method)}\s*(?:<[^>]*>)?\s*\(([^)]*)\)",
+        exec_src,
+    )
+    if sig_match is None:
+        fail(f"{entry_method} signature could not be parsed")
+    if no_caller_type and re.search(rf"\b{re.escape(no_caller_type)}\b", sig_match.group(1)):
+        fail(
+            f"{entry_method} accepts a `{no_caller_type}` parameter — the routing "
+            "boundary must consult the engine-owned authority, never a "
+            "caller-supplied one (a strategy could otherwise designate itself)"
+        )
+    return (
+        f"atp-execution::{owner} owns the authority as `{field}: {authority_type}` "
+        f"and {entry_method} accepts no caller-supplied {authority_type} "
+        "(SRS-EXE-001, SyRS SYS-2a)"
     )
 
 
@@ -326,6 +379,7 @@ def check_cargo_test_smoke(config: dict) -> str:
 _STATIC_CHECKS = (
     ("confirmation_token", check_confirmation_token),
     ("registry", check_registry),
+    ("engine_ownership", check_engine_ownership),
     ("routing_decision", check_routing_decision),
     ("designation_error", check_designation_error),
     ("route_order_guard", check_route_order_guard),

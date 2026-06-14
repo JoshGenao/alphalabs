@@ -126,7 +126,7 @@ fn submission(strategy: &str, symbol: &str, qty: i64) -> OrderSubmission {
 
 #[test]
 fn err_1_paper_strategy_is_rejected_with_no_broker_call() {
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let spy = BrokerageSpy::default();
     let connectivity = ForbiddenConnectivity;
     let events = EventSinkSpy::default();
@@ -182,7 +182,7 @@ fn err_1_paper_strategy_is_rejected_with_no_broker_call() {
 fn err_1_holds_for_many_paper_submissions() {
     // Pseudo-property: regardless of symbol / quantity / strategy id, a
     // Paper submission must never reach the brokerage port.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let spy = BrokerageSpy::default();
     let connectivity = ForbiddenConnectivity;
     let events = EventSinkSpy::default();
@@ -226,7 +226,7 @@ fn err_1_live_strategy_still_routes_through_the_broker() {
     // Negative control: the rejection MUST be selective. A Live submission
     // still reaches the broker — otherwise ERR-1 would degenerate into
     // "no orders ever go through" and silently break the live path.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let spy = BrokerageSpy::default();
     let connectivity = AlwaysConnected;
     let events = EventSinkSpy::default();

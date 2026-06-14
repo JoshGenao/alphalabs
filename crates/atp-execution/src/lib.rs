@@ -13,8 +13,16 @@ pub use designation::{
     LiveDesignation, LiveDesignationConfirmation, LiveDesignationError, LiveRoutingDecision,
 };
 
+/// The execution engine owns the single live-designation authority
+/// ([`LiveDesignation`]) — the source of truth for which strategy may route to
+/// IB (SRS-EXE-001, SyRS SYS-2a). It is a private field reached only through
+/// [`designate`](Self::designate) / [`demote`](Self::demote) /
+/// [`route_order`](Self::route_order), so a caller can never supply a forged
+/// authority at the routing boundary.
 #[derive(Debug, Default)]
-pub struct ExecutionEngine;
+pub struct ExecutionEngine {
+    designation: LiveDesignation,
+}
 
 /// Port trait the execution engine uses to push an order to a live brokerage
 /// after it has decided the submission is allowed (mode == Live, connected,
@@ -302,6 +310,37 @@ impl ExecutionEngine {
         format!("live-order-boundary:{}", boundary.strategy_id().as_str())
     }
 
+    /// SRS-EXE-001 / SyRS SYS-2a / SYS-2d / NFR-S2 — designate `strategy_id` as
+    /// the single live strategy on the engine-owned authority. Requires an
+    /// explicit, strategy-bound [`LiveDesignationConfirmation`] and rejects a
+    /// second concurrent designation (the current live strategy must be
+    /// [`demote`](Self::demote)d first). This is the only way to populate the
+    /// authority [`route_order`](Self::route_order) consults; the canonical
+    /// authority is owned by the engine, never supplied by a caller.
+    pub fn designate(
+        &mut self,
+        strategy_id: atp_types::StrategyId,
+        confirmation: LiveDesignationConfirmation,
+    ) -> Result<(), LiveDesignationError> {
+        self.designation.designate(strategy_id, confirmation)
+    }
+
+    /// SRS-EXE-001 / SyRS SYS-2a — demote `strategy_id` from live, clearing the
+    /// engine-owned designation. Rejects if `strategy_id` is not the currently
+    /// designated strategy.
+    pub fn demote(
+        &mut self,
+        strategy_id: &atp_types::StrategyId,
+    ) -> Result<(), LiveDesignationError> {
+        self.designation.demote(strategy_id)
+    }
+
+    /// The currently designated live strategy on the engine-owned authority, if
+    /// any.
+    pub fn designated(&self) -> Option<&atp_types::StrategyId> {
+        self.designation.designated()
+    }
+
     /// ERR-1 + ERR-2 + ERR-3 / SRS-EXE-001 / SRS-ERR-001 / SRS-SAFE-003 /
     /// SRS-MD-004 / SRS-MD-005: route an order to the live broker only if
     /// (a) the submitting strategy is in `Live` mode AND (b) the IB
@@ -316,6 +355,15 @@ impl ExecutionEngine {
     /// `StaleDataEvent` carrying the observed staleness in seconds — no
     /// reconnect is requested because staleness is a data-side condition,
     /// not a transport fault.
+    ///
+    /// **This is the inner ERR-1/2/3 mode/connectivity/freshness gate, not the
+    /// single-live authority.** It trusts the caller-supplied `mode` and does not
+    /// consult the live-designation authority; production callers reach the live
+    /// broker through [`route_order`](Self::route_order), which resolves the
+    /// engine-owned [`LiveDesignation`] first. Closing this method off entirely
+    /// (so the broker is reachable *only* via `route_order`) re-architects the
+    /// pinned ERR-1/2/3 contract and is the deferred SRS-EXE-006 / SRS-ORCH-*
+    /// wiring (`live_designation_contract.deferred[]`).
     pub fn submit_live_order<B, C, E, F, S>(
         &self,
         mode: StrategyMode,
@@ -402,11 +450,11 @@ impl ExecutionEngine {
     /// **authority** gate, and the designated entry point for routing a
     /// strategy's order to the live broker. Unlike [`submit_live_order`], which
     /// trusts a caller-passed [`StrategyMode`], `route_order` derives live-ness
-    /// from the injected [`LiveDesignation`] authority, so that **only the single
-    /// designated live strategy** can ever reach IB (AGENTS.md core invariant;
-    /// the live strategy is designated through `LiveDesignation::designate`,
-    /// which requires an explicit, strategy-bound confirmation — SYS-2d/NFR-S2 —
-    /// and enforces at-most-one — SYS-2a).
+    /// from the **engine-owned** [`LiveDesignation`] authority (`self.designation`,
+    /// populated only through [`designate`](Self::designate)), so that **only the
+    /// single designated live strategy** can ever reach IB (AGENTS.md core
+    /// invariant). It takes **no** caller-supplied authority — a strategy cannot
+    /// hand in a `LiveDesignation` that designates itself.
     ///
     /// A submission from any strategy that is **not** the designated live
     /// strategy ([`LiveRoutingDecision::NotDesignated`]) is rejected
@@ -423,18 +471,19 @@ impl ExecutionEngine {
     ///
     /// **Scope.** `route_order` is the authority gate; `submit_live_order`
     /// remains the lower-level connectivity/freshness/mode primitive it
-    /// delegates to. Making `submit_live_order` *unreachable* except through
-    /// `route_order` (crate-private + an admission token) is the deferred
+    /// delegates to, and is kept `pub` because the ERR-1/2/3 contract
+    /// (`error_handling_check` + the err_1/2/3 integration tests) pins it as the
+    /// synchronous-rejection entry point. Making `submit_live_order`
+    /// *unreachable* except through `route_order` (crate-private + an admission
+    /// token) re-architects that pinned ERR-1/2/3 contract and is the deferred
     /// orchestrator/adapter wiring — owner SRS-EXE-006 / SRS-ORCH-* — enumerated
     /// in `architecture/runtime_services.json`
     /// `live_designation_contract.deferred[]`. SRS-EXE-001 stays `passes:false`
     /// until that runtime and the NFR-P1 latency proof land.
     ///
     /// [`submit_live_order`]: ExecutionEngine::submit_live_order
-    #[allow(clippy::too_many_arguments)]
     pub fn route_order<B, C, E, F, S>(
         &self,
-        designation: &LiveDesignation,
         submission: OrderSubmission,
         broker: &B,
         connectivity: &C,
@@ -449,7 +498,7 @@ impl ExecutionEngine {
         F: MarketDataFreshnessProbe,
         S: StaleDataEventSink,
     {
-        match designation.authority_for(&submission.strategy_id) {
+        match self.designation.authority_for(&submission.strategy_id) {
             LiveRoutingDecision::NotDesignated => Err(StructuredOrderError {
                 category: OrderErrorCategory::NonLiveStrategySubmission,
                 error_type: "NotDesignatedLiveStrategy".to_string(),
@@ -810,7 +859,7 @@ mod tests {
     #[test]
     fn is_a_rust_execution_service_boundary() {
         let boundary = StrategyRuntimeBoundary::new(StrategyId::new("live-1"), DataLayer);
-        let engine = ExecutionEngine;
+        let engine = ExecutionEngine::default();
         assert_eq!(engine.service(), RuntimeService::ExecutionEngine);
         assert_eq!(
             engine.accepts_live_boundary(&boundary),
@@ -820,7 +869,7 @@ mod tests {
 
     #[test]
     fn live_strategy_submission_is_routed_to_the_broker() {
-        let engine = ExecutionEngine;
+        let engine = ExecutionEngine::default();
         let broker = CountingBroker::new();
         let connectivity = StubConnectivity::connected();
         let events = RecordingEvents::new();
@@ -858,7 +907,7 @@ mod tests {
         // error AND must produce no IB order side effect. The connectivity
         // port must NOT be consulted — Paper rejection is independent of
         // connectivity state.
-        let engine = ExecutionEngine;
+        let engine = ExecutionEngine::default();
         let broker = CountingBroker::new();
         let connectivity = ForbiddenConnectivity;
         let events = RecordingEvents::new();
@@ -901,7 +950,7 @@ mod tests {
 
     #[test]
     fn structured_error_display_includes_category_wire_string() {
-        let engine = ExecutionEngine;
+        let engine = ExecutionEngine::default();
         let broker = CountingBroker::new();
         let connectivity = ForbiddenConnectivity;
         let events = RecordingEvents::new();
@@ -934,7 +983,7 @@ mod tests {
         // reconnect, exactly one ConnectivityEvent must be recorded, and
         // the freshness port must NOT be consulted (Unreachable short-
         // circuits the inner freshness match).
-        let engine = ExecutionEngine;
+        let engine = ExecutionEngine::default();
         let broker = CountingBroker::new();
         let connectivity = StubConnectivity::in_state(ConnectivityState::Unreachable);
         let events = RecordingEvents::new();
@@ -986,7 +1035,7 @@ mod tests {
         // submissions are suspended; the published event carries
         // scheduled_restart=true so the notification dispatcher can apply
         // the suppression rule. The freshness port must NOT be consulted.
-        let engine = ExecutionEngine;
+        let engine = ExecutionEngine::default();
         let broker = CountingBroker::new();
         let connectivity = StubConnectivity::in_state(ConnectivityState::ScheduledRestartWindow);
         let events = RecordingEvents::new();
@@ -1064,7 +1113,7 @@ mod tests {
         // request must be issued (staleness is a data-side condition,
         // not a transport fault), and exactly one StaleDataEvent must
         // carry the observed staleness in seconds.
-        let engine = ExecutionEngine;
+        let engine = ExecutionEngine::default();
         let broker = CountingBroker::new();
         let connectivity = StubConnectivity::connected();
         let events = RecordingEvents::new();

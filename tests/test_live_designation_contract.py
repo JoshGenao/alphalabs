@@ -4,10 +4,12 @@ AC-15; NFR-P1 / NFR-S2; StRS SN-1.01 / SN-1.06 / SN-1.11).
 Mirrors ``tests/test_subscription_limit_contract.py``: shells out to
 ``tools/live_designation_check.py``, then exercises each per-check function
 in-process, including negative spot-checks that verify the contract actually
-catches regressions (a public field or ``Default`` derive on the
-confirmation token, a renamed registry method, a ``designate`` that drops the
-confirmation token, a missing decision/error variant, a forbidden port call
-sneaking into the NotDesignated leaf, and a dropped authority/delegate call).
+catches regressions (a public field / ``Default`` derive on the confirmation
+token, a ``Clone`` derive on the authority, the engine not owning the
+authority, ``route_order`` accepting a caller-supplied authority, a renamed
+registry method, a ``designate`` that drops the confirmation token, a missing
+decision/error variant, a forbidden port call in the NotDesignated leaf, and a
+dropped authority/delegate call).
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from live_designation_check import (  # noqa: E402
     assert_live_designation_static,
     check_confirmation_token,
     check_designation_error,
+    check_engine_ownership,
     check_registry,
     check_route_order_guard,
     check_routing_decision,
@@ -55,10 +58,13 @@ class LiveDesignationScriptTest(unittest.TestCase):
             "LiveDesignation with 5 methods",
             "new, designate, demote, designated, authority_for",
             "designate requires a LiveDesignationConfirmation",
+            "no Clone derive",
+            "owns the authority as `designation: LiveDesignation`",
+            "accepts no caller-supplied LiveDesignation",
             "LiveRoutingDecision with 2 decisions (Authorized, NotDesignated)",
             "LiveDesignationError with 4 variants",
             "MissingConfirmation, ConfirmationMismatch, AlreadyDesignated, NotDesignated",
-            "route_order resolves `designation.authority_for`",
+            "route_order resolves `self.designation.authority_for`",
             "self.submit_live_order",
             "StrategyMode::Live",
             "OrderErrorCategory::NonLiveStrategySubmission",
@@ -131,6 +137,44 @@ class RegistryTest(unittest.TestCase):
             check_registry(self.config, mutated)
         self.assertIn("LiveDesignationConfirmation", str(ctx.exception))
 
+    def test_clone_derive_on_authority_is_caught(self) -> None:
+        mutated = self.exec_src.replace(
+            "#[derive(Debug, Default, PartialEq, Eq)]\npub struct LiveDesignation",
+            "#[derive(Debug, Default, Clone, PartialEq, Eq)]\npub struct LiveDesignation",
+            1,
+        )
+        with self.assertRaises(LiveDesignationCheckError) as ctx:
+            check_registry(self.config, mutated)
+        self.assertIn("Clone", str(ctx.exception))
+
+
+class EngineOwnershipTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.exec_src = execution_source(self.config)
+
+    def test_engine_owns_authority_and_route_order_takes_none(self) -> None:
+        evidence = check_engine_ownership(self.config, self.exec_src)
+        self.assertIn("designation: LiveDesignation", evidence)
+        self.assertIn("accepts no caller-supplied LiveDesignation", evidence)
+
+    def test_missing_owned_field_is_caught(self) -> None:
+        mutated = self.exec_src.replace("    designation: LiveDesignation,\n", "", 1)
+        with self.assertRaises(LiveDesignationCheckError) as ctx:
+            check_engine_ownership(self.config, mutated)
+        self.assertIn("designation", str(ctx.exception))
+
+    def test_route_order_accepting_caller_authority_is_caught(self) -> None:
+        mutated = self.exec_src.replace(
+            "        &self,\n        submission: OrderSubmission,\n        broker: &B,",
+            "        &self,\n        designation: &LiveDesignation,\n"
+            "        submission: OrderSubmission,\n        broker: &B,",
+            1,
+        )
+        with self.assertRaises(LiveDesignationCheckError) as ctx:
+            check_engine_ownership(self.config, mutated)
+        self.assertIn("caller-supplied", str(ctx.exception))
+
 
 class RoutingDecisionTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -178,7 +222,7 @@ class RouteOrderGuardTest(unittest.TestCase):
 
     def test_guard_resolves_authority_and_delegates(self) -> None:
         evidence = check_route_order_guard(self.config, self.exec_src)
-        self.assertIn("designation.authority_for", evidence)
+        self.assertIn("self.designation.authority_for", evidence)
         self.assertIn("self.submit_live_order", evidence)
         self.assertIn("StrategyMode::Live", evidence)
         self.assertIn("OrderErrorCategory::NonLiveStrategySubmission", evidence)
@@ -197,13 +241,13 @@ class RouteOrderGuardTest(unittest.TestCase):
 
     def test_missing_authority_call_is_caught(self) -> None:
         mutated = self.exec_src.replace(
-            "designation.authority_for(",
-            "never_resolves_authority(",
+            "self.designation.authority_for(",
+            "self.never_resolves_authority(",
             1,
         )
         with self.assertRaises(LiveDesignationCheckError) as ctx:
             check_route_order_guard(self.config, mutated)
-        self.assertIn("designation.authority_for", str(ctx.exception))
+        self.assertIn("self.designation.authority_for", str(ctx.exception))
 
     def test_missing_delegate_call_is_caught(self) -> None:
         mutated = self.exec_src.replace(
@@ -217,15 +261,15 @@ class RouteOrderGuardTest(unittest.TestCase):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_six_evidence_items(self) -> None:
+    def test_run_checks_emits_seven_evidence_items(self) -> None:
         evidence = run_checks()
-        # 5 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(evidence), 6)
+        # 6 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(evidence), 7)
 
-    def test_assert_live_designation_static_emits_five_evidence_items(self) -> None:
+    def test_assert_live_designation_static_emits_six_evidence_items(self) -> None:
         config = load_config()
         evidence = assert_live_designation_static(config, ROOT)
-        self.assertEqual(len(evidence), 5)
+        self.assertEqual(len(evidence), 6)
 
 
 if __name__ == "__main__":

@@ -128,7 +128,7 @@ fn err_2_unreachable_state_blocks_live_submission_with_no_broker_call() {
     // SRS-SAFE-003: live submissions must fail with CONNECTIVITY_BLOCKED
     // while IB is unreachable; the engine must request a reconnect and
     // publish a structured event for logs/dashboard.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let broker = BrokerageSpy::default();
     let connectivity = ConnectivitySpy::in_state(ConnectivityState::Unreachable);
     let events = EventSinkSpy::default();
@@ -206,7 +206,7 @@ fn err_2_scheduled_restart_window_blocks_with_suppressed_marker() {
     // SRS-MD-005: during the configured daily-restart window, submissions
     // are suspended; the published event carries scheduled_restart=true so
     // the notification dispatcher can apply the suppression rule.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let broker = BrokerageSpy::default();
     let connectivity = ConnectivitySpy::in_state(ConnectivityState::ScheduledRestartWindow);
     let events = EventSinkSpy::default();
@@ -256,7 +256,7 @@ fn err_2_connected_state_still_routes_through_broker() {
     // Negative control: ERR-2's rejection must be selective. A Live + Connected
     // submission still reaches the broker — otherwise the gate would silently
     // disable the live path even when IB is healthy.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let broker = BrokerageSpy::default();
     let connectivity = ConnectivitySpy::in_state(ConnectivityState::Connected);
     let events = EventSinkSpy::default();
@@ -296,7 +296,7 @@ fn err_2_unreachable_holds_across_many_live_submissions() {
     // Unreachable state must never permit the broker to be called, and
     // every blocked submission must produce its own ConnectivityEvent +
     // reconnect attempt.
-    let engine = ExecutionEngine;
+    let engine = ExecutionEngine::default();
     let broker = BrokerageSpy::default();
     let connectivity = ConnectivitySpy::in_state(ConnectivityState::Unreachable);
     let events = EventSinkSpy::default();

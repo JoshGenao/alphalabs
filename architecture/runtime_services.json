@@ -949,6 +949,9 @@
     "registry": {
       "struct": "LiveDesignation",
       "field": "designated",
+      "forbidden_derives": [
+        "Clone"
+      ],
       "methods": [
         "new",
         "designate",
@@ -957,6 +960,11 @@
         "authority_for"
       ],
       "confirmation_param_type": "LiveDesignationConfirmation"
+    },
+    "owner": {
+      "struct": "ExecutionEngine",
+      "field": "designation",
+      "authority_type": "LiveDesignation"
     },
     "routing_decision": {
       "enum": "LiveRoutingDecision",
@@ -979,12 +987,13 @@
       "type": "ExecutionEngine"
     },
     "guard": {
-      "authority_call": "designation.authority_for",
+      "authority_call": "self.designation.authority_for",
       "decision_enum": "LiveRoutingDecision",
       "authorized_variant": "Authorized",
       "not_designated_variant": "NotDesignated",
       "delegate_call": "self.submit_live_order",
       "live_mode_token": "StrategyMode::Live",
+      "no_caller_authority_type": "LiveDesignation",
       "forbidden_ports": [
         "broker.submit_order",
         "connectivity.state",
@@ -998,7 +1007,7 @@
     "rejection_wire_string": "NON_LIVE_STRATEGY_SUBMISSION",
     "deferred": [
       "Operator confirmation surface (dashboard/CLI/REST 'confirm live designation' prompt that originates the LiveDesignationConfirmation token; SyRS SYS-2c) — owner SRS-API-001",
-      "Real IB order dispatch plus the sole-entry wiring that makes submit_live_order unreachable except through route_order (crate-private + admission token) — owner SRS-EXE-006 / SRS-ORCH-*",
+      "Sole-entry wiring that makes submit_live_order unreachable except through route_order (crate-private + an admission capability), plus the real IB order dispatch. submit_live_order is kept pub because the ERR-1/2/3 contract (tools/error_handling_check.py pins `pub fn submit_live_order`; the err_1/2/3 integration tests call it directly) depends on it; closing it re-architects that pinned contract — owner SRS-EXE-006 / SRS-ORCH-*",
       "Durable / cross-process single-live designation state and the operator promote/demote lifecycle that drives designate/demote (the same subsystem that owns the skipped tests/domain/test_single_live_invariant.py) — owner SRS-RESV-002..006 / SRS-ORCH-*",
       "NFR-P1 / AC-15 live-order acknowledgement latency proof (<1,000 ms p95 from strategy API invocation to acknowledgement callback under a running IB Gateway) — owner SRS-PERF-001 / SRS-EXE-001 performance test. SRS-EXE-001 stays passes:false until these land."
     ]
