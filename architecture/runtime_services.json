@@ -6145,10 +6145,15 @@
       "constructor": "new",
       "accessor": "as_str"
     },
+    "order_key": {
+      "struct": "OrderKey",
+      "fields": ["strategy_id", "correlation_id"],
+      "accessors": ["strategy_id", "correlation_id"]
+    },
     "lifecycle": {
       "struct": "OrderLifecycle",
-      "fields": ["correlation_id", "state", "replaces"],
-      "methods": ["new", "state", "correlation_id", "replaces", "transition_to"],
+      "fields": ["key", "state", "replaces"],
+      "methods": ["new", "key", "state", "correlation_id", "replaces", "transition_to"],
       "audit_field": "replaces"
     },
     "ledger": {
@@ -6156,7 +6161,11 @@
       "methods": ["submit", "transition", "cancel_replace", "get", "state"],
       "submit_method": "submit",
       "submit_result": "Result<&OrderLifecycle, StructuredOrderError>",
-      "cancel_replace_method": "cancel_replace"
+      "cancel_replace_method": "cancel_replace",
+      "keying": {
+        "key_type": "OrderKey",
+        "submit_strategy_source": "submission.strategy_id"
+      }
     },
     "idempotency": {
       "rejection_category": "DuplicateClientCorrelationId",

@@ -261,6 +261,28 @@ def check_correlation_id(config: dict, types_src: str) -> str:
     )
 
 
+def check_order_key(config: dict, types_src: str) -> str:
+    block = contract_block(config)
+    spec = block["order_key"]
+    struct = spec["struct"]
+    body = _struct_body(types_src, struct)
+    missing = [f for f in spec["fields"] if not re.search(rf"\b{re.escape(f)}\s*:", body)]
+    if missing:
+        fail(f"{struct} is missing field(s): {', '.join(missing)}")
+    if re.search(r"\bpub\s+\w+\s*:", body):
+        fail(f"{struct} exposes a public field — the composite key must stay opaque")
+    impl = _impl_block(types_src, struct)
+    missing_acc = [
+        a for a in spec["accessors"] if not re.search(rf"\bpub\s+fn\s+{re.escape(a)}\s*\(", impl)
+    ]
+    if missing_acc:
+        fail(f"{struct} is missing accessor(s): {', '.join(missing_acc)}")
+    return (
+        f"atp-types declares {struct} = ({', '.join(spec['fields'])}) with private fields "
+        "and accessors — idempotency is namespaced per strategy (no cross-strategy collision)"
+    )
+
+
 def check_lifecycle(config: dict, types_src: str) -> str:
     block = contract_block(config)
     spec = block["lifecycle"]
@@ -313,9 +335,19 @@ def check_ledger(config: dict, types_src: str) -> str:
             f"{struct}::{submit} returns `{actual}` but the contract requires "
             f"`{expected}` (the SRS-ERR-001 idempotency envelope)"
         )
+    keying = spec["keying"]
+    submit_body = _const_fn_body(impl, submit)
+    strategy_source = keying["submit_strategy_source"]
+    if f"{keying['key_type']}::new({strategy_source}" not in submit_body:
+        fail(
+            f"{struct}::{submit} must key by {keying['key_type']}::new({strategy_source}, "
+            "correlation_id) — keying by the correlation id alone collides across "
+            "concurrent strategies"
+        )
     return (
         f"atp-types declares {struct} with {len(spec['methods'])} methods "
-        f"({', '.join(spec['methods'])}); {submit} returns {expected}"
+        f"({', '.join(spec['methods'])}); {submit} returns {expected} and keys by "
+        f"({strategy_source}, correlation_id)"
     )
 
 
@@ -464,6 +496,7 @@ _STATIC_CHECKS = (
     ("terminal_states", check_terminal_states),
     ("transition_graph", check_transition_graph),
     ("correlation_id", check_correlation_id),
+    ("order_key", check_order_key),
     ("lifecycle", check_lifecycle),
     ("ledger", check_ledger),
     ("idempotency", check_idempotency),
@@ -488,18 +521,26 @@ def assert_order_lifecycle_static(config: dict, root: Path = ROOT) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="SRS-EXE-008 contract evidence")
+    parser = argparse.ArgumentParser(description="SRS-EXE-008 SDK-surface contract evidence")
     parser.parse_args(argv)
 
     try:
+        config = load_config()
         evidence = run_checks()
     except OrderLifecycleCheckError as error:
         print(f"SRS-EXE-008 FAIL: {error}", file=sys.stderr)
         return 1
 
-    print("SRS-EXE-008 PASS")
+    # Scope honestly: this is the SDK-surface / contract half (the pure state
+    # machine + idempotency authority). It does NOT verify cross-restart durability
+    # or that the live/paper submission paths consult the ledger end to end — both
+    # are deliberately deferred, so this is NOT a full SRS-EXE-008 requirement pass.
+    print("SRS-EXE-008 SDK-SURFACE PASS (contract evidence only; not a full requirement pass)")
     for item in evidence:
         print(f"- {item}")
+    print("Deferred end-to-end evidence (SRS-EXE-008 stays passes:false until these land):")
+    for owner in contract_block(config).get("deferred", []):
+        print(f"  * {owner}")
     return 0
 
 

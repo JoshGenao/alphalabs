@@ -2,7 +2,7 @@ use std::fmt;
 
 pub mod order_lifecycle;
 pub use order_lifecycle::{
-    ClientCorrelationId, OrderLedger, OrderLifecycle, OrderLifecycleError, OrderState,
+    ClientCorrelationId, OrderKey, OrderLedger, OrderLifecycle, OrderLifecycleError, OrderState,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

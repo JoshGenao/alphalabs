@@ -32,6 +32,7 @@ from order_lifecycle_check import (  # noqa: E402
     check_ledger,
     check_lifecycle,
     check_lifecycle_error,
+    check_order_key,
     check_replacement_gate,
     check_state_enum,
     check_terminal_states,
@@ -51,7 +52,10 @@ class OrderLifecycleScriptTest(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("SRS-EXE-008 PASS", result.stdout)
+        # scope-honest header: SDK-surface contract evidence, NOT a full pass
+        self.assertIn("SRS-EXE-008 SDK-SURFACE PASS", result.stdout)
+        self.assertNotIn("SRS-EXE-008 PASS\n", result.stdout)
+        self.assertIn("Deferred end-to-end evidence", result.stdout)
         for needle in (
             "OrderState with 9 states",
             "New, PendingSubmit, Acked, PartiallyFilled, Filled, CancelPending, "
@@ -60,8 +64,10 @@ class OrderLifecycleScriptTest(unittest.TestCase):
             "allowed_next matches order_lifecycle_contract.transitions arm-for-arm",
             "no missing, no undocumented",
             "ClientCorrelationId as a private-field idempotency key",
+            "OrderKey = (strategy_id, correlation_id)",
+            "idempotency is namespaced per strategy (no cross-strategy collision)",
             "graph-enforcing transition_to",
-            "submit returns Result<&OrderLifecycle, StructuredOrderError>",
+            "keys by (submission.strategy_id, correlation_id)",
             "DuplicateClientCorrelationId (wire DUPLICATE_CLIENT_CORRELATION_ID)",
             "cancel-then-new",
             "replaces: Some(..)",
@@ -84,6 +90,7 @@ class OrderLifecyclePositiveTest(unittest.TestCase):
             check_terminal_states,
             check_transition_graph,
             check_correlation_id,
+            check_order_key,
             check_lifecycle,
             check_ledger,
             check_idempotency,
@@ -162,11 +169,28 @@ class OrderLifecycleNegativeTest(unittest.TestCase):
 
     def test_cancel_replace_without_audit_link_is_caught(self) -> None:
         broken = self.src.replace(
-            "replaces: Some(original_id.clone()),",
+            "replaces: Some(original.clone()),",
             "replaces: None,",
         )
         with self.assertRaises(OrderLifecycleCheckError):
             check_cancel_replace_audit(self.config, broken)
+
+    def test_keying_by_correlation_id_alone_is_caught(self) -> None:
+        # Drop the per-strategy namespacing from OrderLedger::submit.
+        broken = self.src.replace(
+            "OrderKey::new(submission.strategy_id.clone(), correlation_id)",
+            'OrderKey::new(StrategyId::new("shared"), correlation_id)',
+        )
+        with self.assertRaises(OrderLifecycleCheckError):
+            check_ledger(self.config, broken)
+
+    def test_public_order_key_field_is_caught(self) -> None:
+        broken = self.src.replace(
+            "    strategy_id: StrategyId,",
+            "    pub strategy_id: StrategyId,",
+        )
+        with self.assertRaises(OrderLifecycleCheckError):
+            check_order_key(self.config, broken)
 
     def test_missing_replacement_gate_is_caught(self) -> None:
         # Drop the doubled-exposure block error from OrderLedger::transition.

@@ -76,6 +76,10 @@ def test_duplicate_submission_is_rejected_idempotently() -> None:
     )
 
 
+def test_correlation_ids_are_namespaced_per_strategy() -> None:
+    _assert_single_pass(_run_cargo_test("srs_exe_008_correlation_ids_are_namespaced_per_strategy"))
+
+
 def test_terminal_states_have_no_outgoing_transitions() -> None:
     _assert_single_pass(_run_cargo_test("srs_exe_008_terminal_states_have_no_outgoing_transitions"))
 
