@@ -6133,7 +6133,7 @@
       "New": ["PendingSubmit", "Rejected"],
       "PendingSubmit": ["Acked", "Rejected"],
       "Acked": ["PartiallyFilled", "Filled", "CancelPending", "Expired"],
-      "PartiallyFilled": ["PartiallyFilled", "Filled", "CancelPending", "Expired"],
+      "PartiallyFilled": ["PartiallyFilled", "Filled", "CancelPending", "Cancelled", "Expired"],
       "CancelPending": ["Cancelled", "Filled", "PartiallyFilled", "Expired"],
       "Filled": [],
       "Cancelled": [],
@@ -6165,7 +6165,14 @@
     },
     "cancel_replace": {
       "cancel_state": "CancelPending",
-      "retains_original_field": "replaces"
+      "retains_original_field": "replaces",
+      "replacement_gate": {
+        "entry_method": "transition",
+        "gate_state": "Cancelled",
+        "blocked_target": "PendingSubmit",
+        "block_error": "ReplacementBlockedUntilOriginalCancelled",
+        "suppress_state": "Rejected"
+      }
     },
     "lifecycle_error": {
       "enum": "OrderLifecycleError",
@@ -6174,7 +6181,8 @@
         "IllegalTransition",
         "UnknownOrder",
         "ReplacementReusesOriginalId",
-        "DuplicateReplacementId"
+        "DuplicateReplacementId",
+        "ReplacementBlockedUntilOriginalCancelled"
       ]
     },
     "deferred": [

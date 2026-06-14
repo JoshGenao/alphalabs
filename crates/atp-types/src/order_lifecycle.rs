@@ -50,32 +50,50 @@
 //! * `ACKED → {PARTIALLY_FILLED, FILLED, CANCEL_PENDING, EXPIRED}` — a working
 //!   order can fill (in part or full), have a cancel requested, or reach its
 //!   time-in-force (DAY close / GTD).
-//! * `PARTIALLY_FILLED → {PARTIALLY_FILLED, FILLED, CANCEL_PENDING, EXPIRED}` —
-//!   re-entrant: each additional partial execution re-enters the state; the
-//!   remainder can still complete, be cancelled, or expire.
+//! * `PARTIALLY_FILLED → {PARTIALLY_FILLED, FILLED, CANCEL_PENDING, CANCELLED,
+//!   EXPIRED}` — re-entrant: each additional partial execution re-enters the
+//!   state; the remainder can still complete, have a cancel requested, be
+//!   **cancelled directly** (a cancel-acknowledgement that lands after a partial
+//!   fill raced an in-flight cancel — the remainder is cancelled with the
+//!   partial fills retained), or expire.
 //! * `CANCEL_PENDING → {CANCELLED, FILLED, PARTIALLY_FILLED, EXPIRED}` — the
 //!   cancel is confirmed, **or a fill races the in-flight cancel** and the
 //!   order completes (in part or full) before the cancel takes, or it expires.
+//!   A partial fill here lands in `PARTIALLY_FILLED`, which can still reach
+//!   `CANCELLED` when the cancel of the remainder is acknowledged.
 //! * `FILLED`, `CANCELLED`, `REJECTED`, `EXPIRED` are terminal: no outgoing
 //!   transition. A terminal order can never be resurrected.
 //!
 //! # Idempotency key (the AC's spine)
 //!
-//! Each order is keyed by a strategy-supplied [`ClientCorrelationId`]. Because
-//! the id is **client-assigned** (not engine-generated), it is restart-stable
-//! *by construction*: a re-submission of the same id is recognised as the same
-//! order rather than creating a second one. [`OrderLedger::submit`] rejects a
-//! duplicate correlation id **idempotently** — the existing order is left
-//! untouched and the caller gets a [`StructuredOrderError`](crate::StructuredOrderError)
-//! in the SRS-ERR-001 envelope, category
+//! Each order is keyed by a strategy-supplied [`ClientCorrelationId`]. The id is
+//! **client-assigned** (not engine-generated), so the strategy can *reproduce*
+//! the same id deterministically across a restart — that is the property the
+//! AC's "stable across restarts" idempotency key relies on. Within a single
+//! process, [`OrderLedger::submit`] rejects a duplicate correlation id
+//! **idempotently** — the existing order is left untouched and the caller gets a
+//! [`StructuredOrderError`](crate::StructuredOrderError) in the SRS-ERR-001
+//! envelope, category
 //! [`DuplicateClientCorrelationId`](crate::OrderErrorCategory::DuplicateClientCorrelationId).
 //!
-//! Cancel-replace is **cancel-then-new**: [`OrderLedger::cancel_replace`]
-//! requests cancellation of the original (it moves to `CANCEL_PENDING`) and
-//! registers a *new* order under a *new* correlation id whose
-//! [`OrderLifecycle::replaces`] retains the original id for audit. It never
-//! mutates an order in place and never reuses the original id for the
-//! replacement.
+//! Note the scope honestly: **recognising** a re-submitted id as a duplicate
+//! *across a process restart* requires a durable lookup — the [`OrderLedger`]
+//! here is a fresh in-memory map after construction, so cross-restart
+//! recognition is the SRS-EXE-009 durable outbox's job (see *deferred* below).
+//! This slice provides the stable *key* and the *within-process* recognition,
+//! not the durable store.
+//!
+//! Cancel-replace is **cancel-then-new** (and fail-safe against doubled
+//! exposure): [`OrderLedger::cancel_replace`] requests cancellation of the
+//! original (it moves to `CANCEL_PENDING`) and registers a *new* order under a
+//! *new* correlation id whose [`OrderLifecycle::replaces`] retains the original
+//! id for audit. The replacement is **held**: [`OrderLedger::transition`]
+//! refuses to move it to `PENDING_SUBMIT` until the original reaches
+//! `CANCELLED`, and if the original instead reaches a non-cancelled terminal
+//! (it filled, expired, or was rejected) the held replacement is auto-suppressed
+//! to `REJECTED` — so a replacement can never reach the broker while its
+//! original is still live or already filled. Cancel-replace never mutates an
+//! order in place and never reuses the original id for the replacement.
 //!
 //! # What is real here vs deferred
 //!
@@ -165,6 +183,7 @@ impl OrderState {
                 Self::PartiallyFilled,
                 Self::Filled,
                 Self::CancelPending,
+                Self::Cancelled,
                 Self::Expired,
             ],
             Self::CancelPending => &[
@@ -191,10 +210,13 @@ impl fmt::Display for OrderState {
 }
 
 /// Strategy-supplied client correlation ID — the idempotency key for an order
-/// (SRS-EXE-008). Client-assigned (never engine-generated), so it is stable
-/// across restarts *by construction*: re-submitting the same id is recognised
-/// as the same order. The inner string is private so an id cannot be forged
-/// empty; [`ClientCorrelationId::new`] fails closed on a blank value.
+/// (SRS-EXE-008). Client-assigned (never engine-generated), so the strategy can
+/// reproduce the same id deterministically across a restart (the stable key).
+/// Recognising a re-submitted id as a duplicate *across a process restart*
+/// requires a durable lookup (SRS-EXE-009); the in-memory [`OrderLedger`]
+/// recognises duplicates within a single process only. The inner string is
+/// private so an id cannot be forged empty; [`ClientCorrelationId::new`] fails
+/// closed on a blank value.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ClientCorrelationId(String);
 
@@ -338,19 +360,88 @@ impl OrderLedger {
             .expect("order was just inserted"))
     }
 
-    /// Apply a transition to the order tracked under `correlation_id`. Returns
-    /// [`OrderLifecycleError::UnknownOrder`] if the id is not tracked, or
+    /// Apply a transition to the order tracked under `correlation_id`, enforcing
+    /// both the per-order graph and the cross-order cancel-replace safety gate.
+    ///
+    /// Returns [`OrderLifecycleError::UnknownOrder`] if the id is not tracked,
     /// [`OrderLifecycleError::IllegalTransition`] if the edge is not in the
-    /// documented graph.
+    /// documented graph, or
+    /// [`OrderLifecycleError::ReplacementBlockedUntilOriginalCancelled`] if this
+    /// is a cancel-replace replacement being moved to [`OrderState::PendingSubmit`]
+    /// before its original reached [`OrderState::Cancelled`].
+    ///
+    /// **Cancel-replace safety (no doubled exposure).** A replacement order
+    /// (one whose [`OrderLifecycle::replaces`] is set) may not go live until the
+    /// original it replaces is confirmed `CANCELLED` — otherwise the original
+    /// (still resting in `CANCEL_PENDING`, which can still fill) and the
+    /// replacement could *both* reach the broker. Conversely, when an order that
+    /// has a held replacement reaches a non-cancelled terminal (it `FILLED`,
+    /// `EXPIRED`, or was `REJECTED` instead of cancelling), the held replacement
+    /// is auto-suppressed to `REJECTED`, since acting on it could double the
+    /// original's exposure; the strategy must re-submit explicitly.
     pub fn transition(
         &mut self,
         correlation_id: &ClientCorrelationId,
         next: OrderState,
     ) -> Result<OrderState, OrderLifecycleError> {
-        match self.orders.get_mut(correlation_id) {
-            Some(order) => order.transition_to(next),
-            None => Err(OrderLifecycleError::UnknownOrder(correlation_id.clone())),
+        let (current_state, replaces) = match self.orders.get(correlation_id) {
+            Some(order) => (order.state, order.replaces.clone()),
+            None => return Err(OrderLifecycleError::UnknownOrder(correlation_id.clone())),
+        };
+        // Per-order graph legality is checked FIRST, so an illegal edge (e.g. an
+        // already-terminal replacement) reports IllegalTransition rather than the
+        // cross-order gate below.
+        if !current_state.can_transition_to(next) {
+            return Err(OrderLifecycleError::IllegalTransition {
+                from: current_state,
+                to: next,
+            });
         }
+        // Cancel-replace gate: a held replacement may only go live once the
+        // original it replaces is confirmed CANCELLED.
+        if next == OrderState::PendingSubmit {
+            if let Some(original_id) = &replaces {
+                match self.orders.get(original_id) {
+                    None => return Err(OrderLifecycleError::UnknownOrder(original_id.clone())),
+                    Some(original) if original.state != OrderState::Cancelled => {
+                        return Err(
+                            OrderLifecycleError::ReplacementBlockedUntilOriginalCancelled {
+                                replacement: correlation_id.clone(),
+                                original: original_id.clone(),
+                                original_state: original.state,
+                            },
+                        );
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        let new_state = self
+            .orders
+            .get_mut(correlation_id)
+            .expect("presence checked above")
+            .transition_to(next)
+            .expect("legality pre-checked above");
+        // Auto-suppress a held replacement if its original ended anywhere other
+        // than CANCELLED (it filled / expired / was rejected) — never let a
+        // replacement act on top of the original's outcome.
+        if new_state.is_terminal() && new_state != OrderState::Cancelled {
+            let held_replacement = self
+                .orders
+                .iter()
+                .find(|(_, order)| {
+                    order.replaces.as_ref() == Some(correlation_id) && !order.state.is_terminal()
+                })
+                .map(|(id, _)| id.clone());
+            if let Some(replacement_id) = held_replacement {
+                self.orders
+                    .get_mut(&replacement_id)
+                    .expect("just located")
+                    .transition_to(OrderState::Rejected)
+                    .expect("a held replacement is NEW, and NEW -> REJECTED is legal");
+            }
+        }
+        Ok(new_state)
     }
 
     /// Cancel-replace as **cancel-then-new** (SRS-EXE-008): request cancellation
@@ -429,6 +520,14 @@ pub enum OrderLifecycleError {
     ReplacementReusesOriginalId(ClientCorrelationId),
     /// A cancel-replace replacement id is already tracked.
     DuplicateReplacementId(ClientCorrelationId),
+    /// A cancel-replace replacement was moved toward submission before the
+    /// original it replaces reached `CANCELLED` (the cancel-replace safety gate
+    /// that prevents the original and the replacement both reaching the broker).
+    ReplacementBlockedUntilOriginalCancelled {
+        replacement: ClientCorrelationId,
+        original: ClientCorrelationId,
+        original_state: OrderState,
+    },
 }
 
 impl fmt::Display for OrderLifecycleError {
@@ -460,6 +559,18 @@ impl fmt::Display for OrderLifecycleError {
                 formatter,
                 "cancel-replace replacement id {:?} is already tracked",
                 id.as_str()
+            ),
+            Self::ReplacementBlockedUntilOriginalCancelled {
+                replacement,
+                original,
+                original_state,
+            } => write!(
+                formatter,
+                "replacement {:?} cannot go live: its original {:?} is {} (must be \
+                 CANCELLED before a cancel-replace replacement may be submitted)",
+                replacement.as_str(),
+                original.as_str(),
+                original_state.as_str()
             ),
         }
     }
@@ -741,5 +852,83 @@ mod tests {
                 .unwrap_err(),
             OrderLifecycleError::UnknownOrder(corr("ghost"))
         );
+    }
+
+    #[test]
+    fn partial_fill_racing_a_pending_cancel_can_still_be_cancelled() {
+        // CANCEL_PENDING -> PARTIALLY_FILLED (a fill races the cancel) -> CANCELLED
+        // (the cancel of the remainder is acknowledged). The pending cancel must
+        // not be lost by the racing partial fill.
+        let mut order = OrderLifecycle::new(corr("c"));
+        order.transition_to(OrderState::PendingSubmit).unwrap();
+        order.transition_to(OrderState::Acked).unwrap();
+        order.transition_to(OrderState::CancelPending).unwrap();
+        order.transition_to(OrderState::PartiallyFilled).unwrap();
+        assert_eq!(
+            order.transition_to(OrderState::Cancelled).unwrap(),
+            OrderState::Cancelled
+        );
+    }
+
+    fn acked(ledger: &mut OrderLedger, id: &str) {
+        ledger.submit(corr(id), &submission()).unwrap();
+        ledger
+            .transition(&corr(id), OrderState::PendingSubmit)
+            .unwrap();
+        ledger.transition(&corr(id), OrderState::Acked).unwrap();
+    }
+
+    #[test]
+    fn replacement_is_blocked_until_the_original_is_cancelled() {
+        let mut ledger = OrderLedger::new();
+        acked(&mut ledger, "orig");
+        ledger.cancel_replace(&corr("orig"), corr("repl")).unwrap();
+
+        // the replacement cannot go live while the original rests in CANCEL_PENDING
+        let err = ledger
+            .transition(&corr("repl"), OrderState::PendingSubmit)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            OrderLifecycleError::ReplacementBlockedUntilOriginalCancelled {
+                replacement: corr("repl"),
+                original: corr("orig"),
+                original_state: OrderState::CancelPending,
+            }
+        );
+        assert_eq!(ledger.state(&corr("repl")).unwrap(), OrderState::New);
+
+        // once the original is CANCELLED, the replacement may go live
+        ledger
+            .transition(&corr("orig"), OrderState::Cancelled)
+            .unwrap();
+        assert_eq!(
+            ledger
+                .transition(&corr("repl"), OrderState::PendingSubmit)
+                .unwrap(),
+            OrderState::PendingSubmit
+        );
+    }
+
+    #[test]
+    fn a_filled_original_auto_suppresses_its_held_replacement() {
+        let mut ledger = OrderLedger::new();
+        acked(&mut ledger, "orig");
+        ledger.cancel_replace(&corr("orig"), corr("repl")).unwrap();
+
+        // the cancel loses the race: the original fully fills instead of cancelling
+        ledger
+            .transition(&corr("orig"), OrderState::Filled)
+            .unwrap();
+
+        // the held replacement is auto-suppressed so it can never double exposure
+        assert_eq!(ledger.state(&corr("repl")).unwrap(), OrderState::Rejected);
+        // and it certainly cannot go live now
+        assert!(matches!(
+            ledger
+                .transition(&corr("repl"), OrderState::PendingSubmit)
+                .unwrap_err(),
+            OrderLifecycleError::IllegalTransition { .. }
+        ));
     }
 }

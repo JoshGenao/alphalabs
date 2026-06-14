@@ -92,3 +92,13 @@ def test_cancel_replace_is_cancel_then_new_retaining_original_id() -> None:
 
 def test_correlation_id_is_the_stable_idempotency_key() -> None:
     _assert_single_pass(_run_cargo_test("srs_exe_008_correlation_id_is_the_stable_idempotency_key"))
+
+
+def test_partial_fill_racing_cancel_can_still_be_cancelled() -> None:
+    _assert_single_pass(
+        _run_cargo_test("srs_exe_008_partial_fill_racing_cancel_can_still_be_cancelled")
+    )
+
+
+def test_cancel_replace_blocks_doubled_exposure() -> None:
+    _assert_single_pass(_run_cargo_test("srs_exe_008_cancel_replace_blocks_doubled_exposure"))

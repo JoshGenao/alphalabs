@@ -239,3 +239,90 @@ fn srs_exe_008_correlation_id_is_the_stable_idempotency_key() {
     // An empty correlation id is rejected at construction (fail closed).
     assert!(ClientCorrelationId::new("").is_err());
 }
+
+/// A partial fill that races an in-flight cancel must not lose the
+/// cancellation: CANCEL_PENDING -> PARTIALLY_FILLED -> CANCELLED is legal, so a
+/// cancel-acknowledgement that lands after the partial fill is honoured.
+#[test]
+fn srs_exe_008_partial_fill_racing_cancel_can_still_be_cancelled() {
+    let mut ledger = OrderLedger::new();
+    ledger
+        .submit(corr("o"), &submission("live-strat", "AMD", 40))
+        .unwrap();
+    ledger
+        .transition(&corr("o"), OrderState::PendingSubmit)
+        .unwrap();
+    ledger.transition(&corr("o"), OrderState::Acked).unwrap();
+    ledger
+        .transition(&corr("o"), OrderState::CancelPending)
+        .unwrap();
+    // a partial fill races the in-flight cancel
+    ledger
+        .transition(&corr("o"), OrderState::PartiallyFilled)
+        .unwrap();
+    // the cancel of the remainder is acknowledged
+    assert_eq!(
+        ledger
+            .transition(&corr("o"), OrderState::Cancelled)
+            .unwrap(),
+        OrderState::Cancelled
+    );
+}
+
+/// Cancel-replace must not create doubled exposure: the replacement is held out
+/// of the live path until the original is confirmed CANCELLED, and if the
+/// original instead fills (cancel too late) the held replacement is
+/// auto-suppressed to REJECTED.
+#[test]
+fn srs_exe_008_cancel_replace_blocks_doubled_exposure() {
+    // Case A: the replacement is blocked until the original is CANCELLED.
+    let mut ledger = OrderLedger::new();
+    ledger
+        .submit(corr("orig"), &submission("live-strat", "MSFT", 50))
+        .unwrap();
+    ledger
+        .transition(&corr("orig"), OrderState::PendingSubmit)
+        .unwrap();
+    ledger.transition(&corr("orig"), OrderState::Acked).unwrap();
+    ledger.cancel_replace(&corr("orig"), corr("repl")).unwrap();
+
+    // while the original rests in CANCEL_PENDING (and could still fill) the
+    // replacement cannot go live
+    assert_eq!(
+        ledger
+            .transition(&corr("repl"), OrderState::PendingSubmit)
+            .unwrap_err(),
+        OrderLifecycleError::ReplacementBlockedUntilOriginalCancelled {
+            replacement: corr("repl"),
+            original: corr("orig"),
+            original_state: OrderState::CancelPending,
+        }
+    );
+    assert_eq!(ledger.state(&corr("repl")).unwrap(), OrderState::New);
+
+    // once the original is CANCELLED, the replacement is free to go live
+    ledger
+        .transition(&corr("orig"), OrderState::Cancelled)
+        .unwrap();
+    assert_eq!(
+        ledger
+            .transition(&corr("repl"), OrderState::PendingSubmit)
+            .unwrap(),
+        OrderState::PendingSubmit
+    );
+
+    // Case B: a filled original auto-suppresses its held replacement.
+    let mut ledger = OrderLedger::new();
+    ledger
+        .submit(corr("o2"), &submission("live-strat", "MSFT", 50))
+        .unwrap();
+    ledger
+        .transition(&corr("o2"), OrderState::PendingSubmit)
+        .unwrap();
+    ledger.transition(&corr("o2"), OrderState::Acked).unwrap();
+    ledger.cancel_replace(&corr("o2"), corr("r2")).unwrap();
+    // the cancel loses the race: the original fully fills
+    ledger.transition(&corr("o2"), OrderState::Filled).unwrap();
+    // the held replacement is auto-suppressed so it can never doubled-expose
+    assert_eq!(ledger.state(&corr("r2")).unwrap(), OrderState::Rejected);
+}

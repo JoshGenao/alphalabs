@@ -367,6 +367,39 @@ def check_cancel_replace_audit(config: dict, types_src: str) -> str:
     )
 
 
+def check_replacement_gate(config: dict, types_src: str) -> str:
+    block = contract_block(config)
+    spec = block["cancel_replace"].get("replacement_gate")
+    if spec is None:
+        fail("order_lifecycle_contract.cancel_replace is missing the replacement_gate spec")
+    impl = _impl_block(types_src, block["ledger"]["struct"])
+    body = _const_fn_body(impl, spec["entry_method"])
+    block_error = spec["block_error"]
+    if block_error not in body:
+        fail(
+            f"OrderLedger::{spec['entry_method']} must build "
+            f"OrderLifecycleError::{block_error} — a cancel-replace replacement must "
+            f"not reach {spec['blocked_target']} until its original is "
+            f"OrderState::{spec['gate_state']} (no doubled exposure)"
+        )
+    if f"OrderState::{spec['gate_state']}" not in body:
+        fail(
+            f"OrderLedger::{spec['entry_method']} must gate on "
+            f"OrderState::{spec['gate_state']} (the cancel-replace safety gate)"
+        )
+    if f"OrderState::{spec['suppress_state']}" not in body:
+        fail(
+            f"OrderLedger::{spec['entry_method']} must auto-suppress a held replacement to "
+            f"OrderState::{spec['suppress_state']} when its original ends non-cancelled"
+        )
+    return (
+        f"OrderLedger::{spec['entry_method']} gates a held replacement: it cannot reach "
+        f"{spec['blocked_target']} until the original is OrderState::{spec['gate_state']}, "
+        f"and a non-cancelled terminal original auto-suppresses the replacement to "
+        f"OrderState::{spec['suppress_state']} (no doubled exposure)"
+    )
+
+
 def check_lifecycle_error(config: dict, types_src: str) -> str:
     block = contract_block(config)
     spec = block["lifecycle_error"]
@@ -427,6 +460,7 @@ _STATIC_CHECKS = (
     ("ledger", check_ledger),
     ("idempotency", check_idempotency),
     ("cancel_replace_audit", check_cancel_replace_audit),
+    ("replacement_gate", check_replacement_gate),
     ("lifecycle_error", check_lifecycle_error),
 )
 

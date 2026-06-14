@@ -32,6 +32,7 @@ from order_lifecycle_check import (  # noqa: E402
     check_ledger,
     check_lifecycle,
     check_lifecycle_error,
+    check_replacement_gate,
     check_state_enum,
     check_terminal_states,
     check_transition_graph,
@@ -64,7 +65,9 @@ class OrderLifecycleScriptTest(unittest.TestCase):
             "DuplicateClientCorrelationId (wire DUPLICATE_CLIENT_CORRELATION_ID)",
             "cancel-then-new",
             "replaces: Some(..)",
-            "OrderLifecycleError with 5 variants",
+            "cannot reach PendingSubmit until the original is OrderState::Cancelled",
+            "auto-suppresses the replacement to OrderState::Rejected",
+            "OrderLifecycleError with 6 variants",
         ):
             self.assertIn(needle, result.stdout)
 
@@ -84,6 +87,7 @@ class OrderLifecyclePositiveTest(unittest.TestCase):
             check_ledger,
             check_idempotency,
             check_cancel_replace_audit,
+            check_replacement_gate,
             check_lifecycle_error,
         ):
             with self.subTest(collector=collector.__name__):
@@ -162,6 +166,15 @@ class OrderLifecycleNegativeTest(unittest.TestCase):
         )
         with self.assertRaises(OrderLifecycleCheckError):
             check_cancel_replace_audit(self.config, broken)
+
+    def test_missing_replacement_gate_is_caught(self) -> None:
+        # Drop the doubled-exposure block error from OrderLedger::transition.
+        broken = self.src.replace(
+            "OrderLifecycleError::ReplacementBlockedUntilOriginalCancelled",
+            "OrderLifecycleError::UnknownOrder",
+        )
+        with self.assertRaises(OrderLifecycleCheckError):
+            check_replacement_gate(self.config, broken)
 
     def test_public_lifecycle_field_is_caught(self) -> None:
         broken = self.src.replace(
