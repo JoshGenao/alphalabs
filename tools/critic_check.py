@@ -244,7 +244,8 @@ SAFETY_PATH_RE = re.compile(
     r"|backtest[_-]?determinism|srs[_-]?bt[_-]?010"
     r"|/factor_job\.rs|factor[_-]?job[_-]?check|factor[_-]?job[_-]?contract"
     r"|srs[_-]?fac[_-]?001"
-    r"|/designation\.rs|live[_-]?designation|srs[_-]?exe[_-]?001)",
+    r"|/designation\.rs|live[_-]?designation|srs[_-]?exe[_-]?001"
+    r"|/order_lifecycle\.rs|order[_-]?lifecycle|srs[_-]?exe[_-]?008)",
     re.IGNORECASE,
 )
 
