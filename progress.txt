@@ -1,3 +1,109 @@
+=== SESSION 52 ===
+Date: 2026-06-14
+Feature completed: SRS-SDK-004 SDK-SURFACE — "deliver order event callbacks to Python strategy
+code" (docs/SRS.md SRS-5.2 SRS-SDK-004; traces SyRS SYS-7/SYS-85/NFR-P4; StRS SN-1.22/SN-1.29).
+The direct continuation of SESSION 51's SRS-EXE-008 OrderState machine (SYS-7 traces BOTH). Picked
+as the file-order #1 P1 failing feature AND the cleanest pure-logic continuation.
+Status: 92 remaining features (UNCHANGED — SRS-SDK-004 stays passes:false; honest partial pass).
+feature_list.json was NOT modified.
+
+The slice: the Python SDK surface for SRS-SDK-004 was ALREADY complete (OrderEvent / OrderEventType /
+assert_order_event_payload / latency consts / strategy_api_order_events_contract / the L7 reference
+dispatcher). The missing piece was the RUST CORE side — AGENTS.md forbids the Rust core from depending
+on the Python SDK, so the live (atp-execution / SRS-EXE-001) and paper (atp-simulation / SRS-SIM-001)
+dispatchers need a shared, source-neutral authority for WHICH callback category maps to WHICH OrderState
+transition. Built in atp-types (the leaf crate both siblings depend on, same home as the EXE-008 machine).
+
+What I did (prep -> feat -> chore cadence; feat hardened across 4 adversarial rounds inline):
+- prep c9c0cb5 (chore(critic)): extended SAFETY_PATH_RE with collision-free tokens (/order_event.rs,
+  order[_-]?event[_-]?dispatch, srs[_-]?sdk[_-]?004). Verified ZERO tracked-path collisions; committed
+  SEPARATELY (refusal-clause #4).
+- feat f16c726: crates/atp-types/src/order_event.rs (OrderEventCategory OPAQUE newtype over a private
+  Category enum + as_str/is_ac_named/requires_fill_economics/requires_reason + private for_state +
+  pub(crate) for_transition + LIVE/PAPER_CALLBACK_LATENCY_P95_MS; OrderEvent {key,state,category});
+  order_lifecycle.rs OrderLedger::transition_with_event (order-bound, returns Vec<OrderEvent> incl.
+  cascade) + import; lib.rs re-exports; order_event_dispatch_contract metadata block;
+  tools/order_event_dispatch_check.py + architecture_check wiring + init.sh gate; L3 + L7
+  (safety-paired) + Rust integration (srs_sdk_004_order_event).
+
+Design headline — SRS-SDK-004's facets made falsifiable (order_event_dispatch_check.py pins each, no
+doc/code drift):
+- 6 categories + stable wire strings == Python OrderEventType == architecture metadata; state->category
+  map mirrored arm-for-arm (totality over all 9 OrderState wire strings; 6 callback-bearing, 3 internal).
+- callbacks CANNOT be fabricated: OrderEventCategory is opaque (private field + private Category enum —
+  proven non-constructible in a foreign crate, E0603); for_state private; for_transition pub(crate); the
+  ONLY public derivation is OrderLedger::transition_with_event, which feeds the TRACKED order's real
+  state as `from` and returns a category only on a successful, fail-closed mutation.
+- no callback is silently LOST: transition_with_event returns Vec<OrderEvent> incl. the cascaded
+  auto-rejection of a held cancel-replace replacement (terminal afterward — could never be re-derived).
+- NFR-P4 budgets + the AC-named set are ONE source of truth across Rust / Python / JSON.
+
+What I tested: cargo test --workspace green (atp-types = 114 lib incl. 7 new order_event L1; 8
+srs_sdk_004 integration; 11 srs_exe_008 still green); new code clippy + rustfmt clean (NO whole-crate
+fmt — only new files formatted; pre-existing skew untouched); L3 tests/test_order_event_dispatch_contract.py
+(script + positive + 9 negative drift spot-checks incl. opacity bypass / public deriver / cascade) + L7
+tests/domain/test_order_event_category.py (8, safety-paired, shell out to the Rust integration);
+order_event_dispatch_check.py SDK-SURFACE PASS + deferred owners; architecture_check exit 0; pytest
+"not integration and not e2e" green except the PRE-EXISTING BBands property flake (indicators.py — NOT
+touched). ./init.sh -> Environment ready with the new "order-event dispatch contract check" gate.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings on prep + feat (pre-commit hook
+    also APPROVE). order_event.rs + order_event_dispatch_check.py are safety paths; the paired
+    tests/domain/test_order_event_category.py is in the feat commit.
+  judgment (/codex:adversarial-review --wait): did NOT reach APPROVE — committed on HUMAN AUTHORIZATION
+    after the loop converged to the deferred-adapter + cross-feature boundary. FOUR rounds, every
+    in-scope bug fixed:
+      R1 [high x2]: state alone can't uniquely classify (cancel-rejected/duplicate) — scoped the
+        broker-event-kind layer to SRS-EXE-006/SRS-SIM-002 + made for_transition fail-closed on
+        unclassifiable events (tested); public for_state bypass — FIXED (for_state private + checker
+        enforces, for_transition the sole public entry then).
+      R2 [high]: callbacks derived from caller-supplied state pairs + freely-constructible variants
+        (fabricate a FILL -> corrupt P&L) — FIXED (bound to OrderLedger::transition_with_event off the
+        TRACKED order's real state; #[non_exhaustive] attempt).
+      R3 [high x2]: #[non_exhaustive] does NOT block constructing public unit variants (empirically
+        confirmed, E0603 only with per-variant / newtype) — FIXED (opaque newtype over private Category);
+        cascaded replacement rejection callback silently lost — FIXED (transition_with_event returns
+        Vec<OrderEvent> incl. the cascade; Rust + L7 test).
+      R4 [high x2]: public OrderLedger::transition bypass — SCOPED (crate-private is an SRS-EXE-008 API
+        change: `transition` is in order_lifecycle_contract.ledger.methods + called by 31 EXE-008
+        integration-test sites; deferred to dispatcher wiring so EXE-008 migrates atomically — bundling
+        it here is an unrelated cross-feature refactor); cancel-rejection cannot be represented —
+        FIXED the doc CONTRADICTION I introduced (state-preserving events are NOT an OrderEventCategory
+        and are explicitly out of scope, owned by SRS-EXE-006's separate event-kind API; no more
+        "the adapter classifies it via this type" over-claim). [USER chose "Finalize under authorization".]
+
+Known issues / notes for next agent:
+- SRS-SDK-004 stays passes:false BY DESIGN. Deferred owners (order_event_dispatch_contract.deferred[] +
+  module docs + the check's printed list): live broker-event -> callback delivery + the NFR-P4 <1000ms
+  p95 proof (SRS-EXE-001 / SRS-EXE-006, needs IB Gateway); simulated fill -> callback delivery + the
+  <100ms p95 proof (SRS-SIM-001 / SRS-SIM-002, needs the sim engine); the AC field VALUES
+  (price/qty/commission) produced at runtime; the source-neutral broker EVENT-KIND API for
+  STATE-PRESERVING events (cancel-rejection — NOT an OrderEventCategory) owned by SRS-EXE-006/SRS-SIM-002;
+  and restricting OrderLedger::transition to crate-private (the dispatcher-bypass hardening) deferred to
+  the dispatcher-wiring work with EXE-008's 31 test sites + contract.
+- LESSON (memory feedback_adversarial_loop_nonconvergence — CONFIRMED AGAIN): a pure-logic slice
+  converges on REAL in-scope bugs for several rounds (R1-R3 caught 3 genuine fail-open holes: fabricated
+  callbacks, lost cascade callback, off-graph derivation) but will NOT reach a clean adversarial APPROVE
+  — once those close, the reviewer walks to the next facet of the DEFERRED IB-adapter contract
+  (SRS-EXE-006 event-kind API) and to CROSS-FEATURE hardening (EXE-008 API). The honest move at that
+  boundary: fix the in-scope contradiction, scope the rest to named owners, get human authorization,
+  record the judgment verdict honestly as not-APPROVE. NEVER guess the deferred adapter; NEVER bundle a
+  31-site cross-feature refactor into a focused slice.
+- WATCH for R5-style re-flags if the loop is re-run: (a) public OrderLedger::transition, (b) cancel-
+  rejection representability — both are the named deferred boundary above, not new bugs.
+- ORPHANED STASH (NOT mine, still present): stash@{0} WIP on main d389b56 ... trading-calendar — a
+  previous session's abandoned WIP. Whoever owns trading-calendar should reconcile or `git stash drop` it.
+- PRE-EXISTING FLAKY (still present, deselected): tests/property/test_indicators_property.py::
+  test_bbands_property_matches_batch_talib (pandas_ta vs talib precision; indicators.py — NOT touched).
+- PRE-EXISTING ruff debt (NOT mine): tools/architecture_check.py has pre-existing I001 (import sort) +
+  ~12 E/F/B findings (lines 632-745) at HEAD; my additions (imports + assert_order_event_dispatch) are
+  lint-clean and add none. Flag for a separate lint-cleanup pass.
+- Adversarial-layer note: the USER ran /codex:adversarial-review --wait; Claude executed
+  node .../codex-companion.mjs adversarial-review --wait "$(cat prompts/critic_prompt.md)" each round.
+  No --base needed this session (the SAFETY_PATH_RE prep c9c0cb5 is a separate commit, so the staged
+  feat diff never tripped refusal-clause #4).
+
 === SESSION 51 ===
 Date: 2026-06-14
 Feature completed: SRS-EXE-008 SDK-SURFACE — "implement an order lifecycle state machine with
