@@ -68,6 +68,10 @@ from orchestrator_workload_priority_check import (
     WorkloadPriorityCheckError,
     assert_orchestrator_workload_priority_static,
 )
+from order_lifecycle_check import (
+    OrderLifecycleCheckError,
+    assert_order_lifecycle_static,
+)
 from pacing_budget_check import (
     PacingBudgetCheckError,
     assert_pacing_budget_static,
@@ -537,6 +541,24 @@ def assert_live_designation(config: dict) -> list[str]:
         f"{block['guard']['authorized_variant']}) reaches IB; designation requires "
         f"the {block['confirmation_token']['struct']} token (SRS-EXE-001, SyRS "
         "SYS-2a / SYS-2d / AC-15)"
+    )
+    return static_evidence + [summary]
+
+
+def assert_order_lifecycle(config: dict) -> list[str]:
+    block = config.get("order_lifecycle_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_order_lifecycle_static(config, ROOT)
+    edge_count = sum(len(t) for t in block["transitions"].values())
+    summary = (
+        f"{block['types_crate']['crate']} declares the {block['state_enum']['enum']} "
+        f"lifecycle ({len(block['state_enum']['variants'])} states, {edge_count} "
+        f"documented edges) with {block['correlation_id']['struct']} as the "
+        f"idempotency key: duplicate submissions are rejected with the SRS-ERR-001 "
+        f"{block['idempotency']['rejection_category']} category and cancel-replace is "
+        "cancel-then-new (SRS-EXE-008, SyRS SYS-3 / SYS-7 / SYS-64 / SYS-90)"
     )
     return static_evidence + [summary]
 
@@ -1068,6 +1090,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_live_designation(config))
     except LiveDesignationCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_order_lifecycle(config))
+    except OrderLifecycleCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_backtest(config))

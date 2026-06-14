@@ -238,6 +238,13 @@ if ! python3 tools/live_designation_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running order-lifecycle contract check..."
+if ! python3 tools/order_lifecycle_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Order-lifecycle contract check failed; run python3 tools/order_lifecycle_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running subscription-limit contract check..."
 if ! python3 tools/subscription_limit_check.py >/dev/null; then
   echo "✗ Environment failed"

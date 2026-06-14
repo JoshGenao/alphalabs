@@ -1,5 +1,10 @@
 use std::fmt;
 
+pub mod order_lifecycle;
+pub use order_lifecycle::{
+    ClientCorrelationId, OrderLedger, OrderLifecycle, OrderLifecycleError, OrderState,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StrategyId(String);
 
@@ -108,6 +113,7 @@ pub enum OrderErrorCategory {
     HotSwapDemotionTimeout,
     KillSwitchLiquidationTimeout,
     KillSwitchLiquidationProbeUnavailable,
+    DuplicateClientCorrelationId,
 }
 
 impl OrderErrorCategory {
@@ -131,6 +137,7 @@ impl OrderErrorCategory {
             Self::KillSwitchLiquidationProbeUnavailable => {
                 "KILL_SWITCH_LIQUIDATION_PROBE_UNAVAILABLE"
             }
+            Self::DuplicateClientCorrelationId => "DUPLICATE_CLIENT_CORRELATION_ID",
         }
     }
 }

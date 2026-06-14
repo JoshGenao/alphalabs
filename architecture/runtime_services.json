@@ -6088,5 +6088,99 @@
       "an immutable input-provenance manifest (strategy/code version, parameters, RNG seed, input-data digest, request, cost config) fingerprinted alongside the result, so verification PROVES the inputs were identical rather than assuming the caller's strategy factory + BarSource are themselves deterministic (SRS-BT-009 record + SRS-BT-001-runtime)",
       "stamping the RunDigest onto each persisted backtest record so a later re-run is proven reproducible by digest comparison (SRS-BT-009 store integration)"
     ]
+  },
+  "order_lifecycle_contract": {
+    "requirement": "SRS-EXE-008",
+    "srs_refs": ["SRS-EXE-008", "SRS-ERR-001"],
+    "syrs_refs": ["SYS-3", "SYS-7", "SYS-64", "SYS-90"],
+    "nfr_refs": ["NFR-R3"],
+    "strs_refs": ["SN-1.08", "SN-1.22"],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "module": "src/order_lifecycle.rs",
+    "module_reexport": {
+      "lib_reexport_token": "pub mod order_lifecycle;"
+    },
+    "state_enum": {
+      "enum": "OrderState",
+      "variants": [
+        "New",
+        "PendingSubmit",
+        "Acked",
+        "PartiallyFilled",
+        "Filled",
+        "CancelPending",
+        "Cancelled",
+        "Rejected",
+        "Expired"
+      ],
+      "wire_strings": [
+        "NEW",
+        "PENDING_SUBMIT",
+        "ACKED",
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "CANCEL_PENDING",
+        "CANCELLED",
+        "REJECTED",
+        "EXPIRED"
+      ],
+      "terminal": ["Filled", "Cancelled", "Rejected", "Expired"]
+    },
+    "transitions": {
+      "New": ["PendingSubmit", "Rejected"],
+      "PendingSubmit": ["Acked", "Rejected"],
+      "Acked": ["PartiallyFilled", "Filled", "CancelPending", "Expired"],
+      "PartiallyFilled": ["PartiallyFilled", "Filled", "CancelPending", "Expired"],
+      "CancelPending": ["Cancelled", "Filled", "PartiallyFilled", "Expired"],
+      "Filled": [],
+      "Cancelled": [],
+      "Rejected": [],
+      "Expired": []
+    },
+    "correlation_id": {
+      "struct": "ClientCorrelationId",
+      "constructor": "new",
+      "accessor": "as_str"
+    },
+    "lifecycle": {
+      "struct": "OrderLifecycle",
+      "fields": ["correlation_id", "state", "replaces"],
+      "methods": ["new", "state", "correlation_id", "replaces", "transition_to"],
+      "audit_field": "replaces"
+    },
+    "ledger": {
+      "struct": "OrderLedger",
+      "methods": ["submit", "transition", "cancel_replace", "get", "state"],
+      "submit_method": "submit",
+      "submit_result": "Result<&OrderLifecycle, StructuredOrderError>",
+      "cancel_replace_method": "cancel_replace"
+    },
+    "idempotency": {
+      "rejection_category": "DuplicateClientCorrelationId",
+      "rejection_wire_string": "DUPLICATE_CLIENT_CORRELATION_ID",
+      "error_type": "DuplicateClientCorrelationId"
+    },
+    "cancel_replace": {
+      "cancel_state": "CancelPending",
+      "retains_original_field": "replaces"
+    },
+    "lifecycle_error": {
+      "enum": "OrderLifecycleError",
+      "variants": [
+        "EmptyCorrelationId",
+        "IllegalTransition",
+        "UnknownOrder",
+        "ReplacementReusesOriginalId",
+        "DuplicateReplacementId"
+      ]
+    },
+    "deferred": [
+      "Durable persistence of the ledger across a process restart (the NEW->...->terminal records surviving a crash) -- owner SRS-EXE-009 durable outbox / SRS-EXE-005 state recovery (SyRS SYS-90, NFR-R3). The ledger here is in-memory; 'stable across restarts' is guaranteed at the client-assigned key level, not yet at the store level.",
+      "Wiring the ledger into the real live (submit_live_order) and paper (accept_order) submission paths so every live/paper submission consults it -- owner SRS-EXE-001 / SRS-SIM-001 runtime + the Strategy Orchestrator. The pinned submission gates (error_handling / connectivity / freshness / live_designation contracts) are kept byte-stable; this slice ships the shared, source-neutral authority both paths will consult.",
+      "Driving transitions from real broker order events (ACK / fill / cancel / reject callbacks) -- owner SRS-EXE-006 IB adapter / SRS-SIM-002 fill model. SRS-EXE-008 stays passes:false until these land."
+    ]
   }
 }
