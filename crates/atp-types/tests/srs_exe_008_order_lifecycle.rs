@@ -186,6 +186,28 @@ fn srs_exe_008_pending_submit_handles_pre_ack_races() {
     }
 }
 
+/// A broker rejection after acknowledgement (a risk / compliance rejection) is
+/// representable: ACKED -> REJECTED is legal, so a post-ack rejection is not lost
+/// and the order is not left falsely active.
+#[test]
+fn srs_exe_008_acked_order_can_be_rejected_post_ack() {
+    let mut ledger = OrderLedger::new();
+    ledger.submit(corr("o"), &submission("AAPL", 10)).unwrap();
+    ledger
+        .transition(&key("o"), OrderState::PendingSubmit)
+        .unwrap();
+    ledger.transition(&key("o"), OrderState::Acked).unwrap();
+    assert_eq!(
+        ledger.transition(&key("o"), OrderState::Rejected).unwrap(),
+        OrderState::Rejected
+    );
+    // terminal: no resurrection
+    assert!(matches!(
+        ledger.transition(&key("o"), OrderState::Acked).unwrap_err(),
+        OrderLifecycleError::IllegalTransition { .. }
+    ));
+}
+
 /// Cancel-replace is cancel-then-new: the original moves to CANCEL_PENDING and
 /// is retained, the replacement is a fresh NEW order whose `replaces` keeps the
 /// original key for audit and carries the NEW order intent, and a second

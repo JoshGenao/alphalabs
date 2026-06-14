@@ -6132,7 +6132,7 @@
     "transitions": {
       "New": ["PendingSubmit", "Rejected"],
       "PendingSubmit": ["Acked", "Rejected", "PartiallyFilled", "Filled", "CancelPending", "Expired"],
-      "Acked": ["PartiallyFilled", "Filled", "CancelPending", "Expired"],
+      "Acked": ["PartiallyFilled", "Filled", "CancelPending", "Rejected", "Expired"],
       "PartiallyFilled": ["PartiallyFilled", "Filled", "CancelPending", "Cancelled", "Expired"],
       "CancelPending": ["Cancelled", "Filled", "PartiallyFilled", "Expired"],
       "Filled": [],
@@ -6204,7 +6204,8 @@
     "deferred": [
       "Durable persistence of the ledger across a process restart (the NEW->...->terminal records surviving a crash) -- owner SRS-EXE-009 durable outbox / SRS-EXE-005 state recovery (SyRS SYS-90, NFR-R3). The ledger here is in-memory; 'stable across restarts' is guaranteed at the client-assigned key level, not yet at the store level.",
       "Wiring the ledger into the real live (submit_live_order) and paper (accept_order) submission paths so every live/paper submission consults it -- owner SRS-EXE-001 / SRS-SIM-001 runtime + the Strategy Orchestrator. The pinned submission gates (error_handling / connectivity / freshness / live_designation contracts) are kept byte-stable; this slice ships the shared, source-neutral authority both paths will consult.",
-      "Driving transitions from real broker order events (ACK / fill / cancel / reject callbacks) -- owner SRS-EXE-006 IB adapter / SRS-SIM-002 fill model. SRS-EXE-008 stays passes:false until these land."
+      "Driving transitions from real broker order events (ACK / fill / cancel / reject callbacks) -- owner SRS-EXE-006 IB adapter / SRS-SIM-002 fill model. SRS-EXE-008 stays passes:false until these land.",
+      "The finer-grained broker-rejection edges: PARTIALLY_FILLED -> REJECTED (whether a partially-executed order's remainder can be rejected) and the CANCEL_PENDING cancel-rejected-vs-order-rejected disambiguation (a rejected cancel returns the order to its working state; a rejected order is terminal -- opposite meanings). These are authoritatively defined by the IB adapter's event mapping (SRS-EXE-006 / SRS-SDK-004); only the unambiguous ACKED -> REJECTED post-ack rejection is modelled here, the rest is deferred to the adapter rather than guessed."
     ]
   }
 }

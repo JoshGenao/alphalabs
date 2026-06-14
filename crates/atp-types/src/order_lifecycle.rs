@@ -36,9 +36,11 @@
 //!   acknowledgement is honoured rather than rejected (rejecting it would
 //!   otherwise lose a cancel the operator requested or a fill the broker
 //!   reported, diverging the lifecycle from broker reality).
-//! * `ACKED → {PARTIALLY_FILLED, FILLED, CANCEL_PENDING, EXPIRED}` — a working
-//!   order can fill (in part or full), have a cancel requested, or reach its
-//!   time-in-force (DAY close / GTD).
+//! * `ACKED → {PARTIALLY_FILLED, FILLED, CANCEL_PENDING, REJECTED, EXPIRED}` — a
+//!   working order can fill (in part or full), have a cancel requested, be
+//!   **rejected post-ack** by the broker (a risk / compliance rejection after
+//!   acknowledgement — otherwise the order would be left falsely active), or
+//!   reach its time-in-force (DAY close / GTD).
 //! * `PARTIALLY_FILLED → {PARTIALLY_FILLED, FILLED, CANCEL_PENDING, CANCELLED,
 //!   EXPIRED}` — re-entrant: each additional partial execution re-enters the
 //!   state; the remainder can still complete, have a cancel requested, be
@@ -130,6 +132,14 @@
 //! * **Driving transitions from real broker order events** (ACK / fill / cancel
 //!   / reject callbacks) — the IB adapter (SRS-EXE-006) and the sim fill model
 //!   (SRS-SIM-002).
+//! * **The finer-grained broker-rejection edges** — `PARTIALLY_FILLED → REJECTED`
+//!   (whether a partially-executed order can be rejected for its remainder) and
+//!   the `CANCEL_PENDING` *cancel-rejected vs order-rejected* disambiguation (a
+//!   rejected cancel returns the order to its working state; a rejected order is
+//!   terminal). These opposite-meaning semantics are authoritatively defined by
+//!   the IB adapter's event mapping (SRS-EXE-006 / SRS-SDK-004), so only the
+//!   unambiguous `ACKED → REJECTED` post-ack rejection is modelled here; the rest
+//!   is deferred to the adapter rather than guessed.
 //!
 //! So `feature_list.json` keeps SRS-EXE-008 at `passes: false`, and
 //! `tools/order_lifecycle_check.py` reports an `SRS-EXE-008 SDK-SURFACE PASS`
@@ -200,6 +210,7 @@ impl OrderState {
                 Self::PartiallyFilled,
                 Self::Filled,
                 Self::CancelPending,
+                Self::Rejected,
                 Self::Expired,
             ],
             Self::PartiallyFilled => &[
@@ -1109,6 +1120,20 @@ mod tests {
         );
         assert!(ledger.get(&key("repl-2")).is_none());
         assert_eq!(ledger.len(), 2);
+    }
+
+    #[test]
+    fn an_acked_order_can_be_rejected_post_ack() {
+        // A broker rejection after acknowledgement (risk / compliance) must be
+        // representable, else the order is left falsely active.
+        let mut order = OrderLifecycle::new(key("pa-rej"), submission());
+        order.transition_to(OrderState::PendingSubmit).unwrap();
+        order.transition_to(OrderState::Acked).unwrap();
+        assert_eq!(
+            order.transition_to(OrderState::Rejected).unwrap(),
+            OrderState::Rejected
+        );
+        assert!(order.state().is_terminal());
     }
 
     #[test]

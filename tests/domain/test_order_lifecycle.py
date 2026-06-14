@@ -108,6 +108,10 @@ def test_pending_submit_handles_pre_ack_races() -> None:
     _assert_single_pass(_run_cargo_test("srs_exe_008_pending_submit_handles_pre_ack_races"))
 
 
+def test_acked_order_can_be_rejected_post_ack() -> None:
+    _assert_single_pass(_run_cargo_test("srs_exe_008_acked_order_can_be_rejected_post_ack"))
+
+
 def test_cancel_replace_blocks_doubled_exposure() -> None:
     _assert_single_pass(_run_cargo_test("srs_exe_008_cancel_replace_blocks_doubled_exposure"))
 
