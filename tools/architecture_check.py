@@ -47,6 +47,10 @@ from kill_switch_timeout_check import (
     KillSwitchTimeoutCheckError,
     assert_kill_switch_timeout_static,
 )
+from live_designation_check import (
+    LiveDesignationCheckError,
+    assert_live_designation_static,
+)
 from metrics_check import MetricsCheckError, assert_sim_metrics_static
 from orchestrator_deployment_version_check import (
     DeploymentVersionCheckError,
@@ -516,6 +520,23 @@ def assert_kill_switch_timeout(config: dict) -> list[str]:
         f"unfilled order, disconnects from IB, records "
         f"{block['timeout_event']['struct']}, and refuses (ERR-8, SRS-SAFE-002, "
         "SyRS SYS-44b)"
+    )
+    return static_evidence + [summary]
+
+
+def assert_live_designation(config: dict) -> list[str]:
+    block = config.get("live_designation_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_live_designation_static(config, ROOT)
+    summary = (
+        f"{block['execution_crate']['crate']} gates live order routing on the "
+        f"{block['registry']['struct']} authority via {block['entry_point']['method']}: "
+        f"only the single designated strategy ({block['routing_decision']['enum']}::"
+        f"{block['guard']['authorized_variant']}) reaches IB; designation requires "
+        f"the {block['confirmation_token']['struct']} token (SRS-EXE-001, SyRS "
+        "SYS-2a / SYS-2d / AC-15)"
     )
     return static_evidence + [summary]
 
@@ -1043,6 +1064,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_kill_switch_timeout(config))
     except KillSwitchTimeoutCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_live_designation(config))
+    except LiveDesignationCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_backtest(config))

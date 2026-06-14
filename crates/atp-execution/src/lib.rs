@@ -8,6 +8,11 @@ use atp_types::{
 };
 use std::fmt;
 
+pub mod designation;
+pub use designation::{
+    LiveDesignation, LiveDesignationConfirmation, LiveDesignationError, LiveRoutingDecision,
+};
+
 #[derive(Debug, Default)]
 pub struct ExecutionEngine;
 
@@ -390,6 +395,81 @@ impl ExecutionEngine {
                 ),
                 original_order: submission,
             }),
+        }
+    }
+
+    /// SRS-EXE-001 / SyRS SYS-1 / SYS-2a / SYS-2d / AC-15 — the live-routing
+    /// **authority** gate, and the designated entry point for routing a
+    /// strategy's order to the live broker. Unlike [`submit_live_order`], which
+    /// trusts a caller-passed [`StrategyMode`], `route_order` derives live-ness
+    /// from the injected [`LiveDesignation`] authority, so that **only the single
+    /// designated live strategy** can ever reach IB (AGENTS.md core invariant;
+    /// the live strategy is designated through `LiveDesignation::designate`,
+    /// which requires an explicit, strategy-bound confirmation — SYS-2d/NFR-S2 —
+    /// and enforces at-most-one — SYS-2a).
+    ///
+    /// A submission from any strategy that is **not** the designated live
+    /// strategy ([`LiveRoutingDecision::NotDesignated`]) is rejected
+    /// synchronously with a `NON_LIVE_STRATEGY_SUBMISSION` structured error
+    /// (ERR-1 / SRS-ERR-001) **before any broker, connectivity, or freshness
+    /// port is consulted** — the rejection is independent of connectivity and
+    /// freshness state and produces zero IB order side effect.
+    ///
+    /// On [`LiveRoutingDecision::Authorized`], the order proceeds to the inner
+    /// ERR-1/2/3 live gate ([`submit_live_order`] with [`StrategyMode::Live`]
+    /// derived here, never trusted from the caller), which applies the
+    /// connectivity (SRS-SAFE-003 / SRS-MD-005) and market-data freshness
+    /// (SRS-MD-004 / NFR-P5) safeguards.
+    ///
+    /// **Scope.** `route_order` is the authority gate; `submit_live_order`
+    /// remains the lower-level connectivity/freshness/mode primitive it
+    /// delegates to. Making `submit_live_order` *unreachable* except through
+    /// `route_order` (crate-private + an admission token) is the deferred
+    /// orchestrator/adapter wiring — owner SRS-EXE-006 / SRS-ORCH-* — enumerated
+    /// in `architecture/runtime_services.json`
+    /// `live_designation_contract.deferred[]`. SRS-EXE-001 stays `passes:false`
+    /// until that runtime and the NFR-P1 latency proof land.
+    ///
+    /// [`submit_live_order`]: ExecutionEngine::submit_live_order
+    #[allow(clippy::too_many_arguments)]
+    pub fn route_order<B, C, E, F, S>(
+        &self,
+        designation: &LiveDesignation,
+        submission: OrderSubmission,
+        broker: &B,
+        connectivity: &C,
+        events: &E,
+        freshness: &F,
+        stale_events: &S,
+    ) -> Result<OrderReceipt, StructuredOrderError>
+    where
+        B: LiveBrokerageSubmit,
+        C: BrokerageConnectivity,
+        E: ConnectivityEventSink,
+        F: MarketDataFreshnessProbe,
+        S: StaleDataEventSink,
+    {
+        match designation.authority_for(&submission.strategy_id) {
+            LiveRoutingDecision::NotDesignated => Err(StructuredOrderError {
+                category: OrderErrorCategory::NonLiveStrategySubmission,
+                error_type: "NotDesignatedLiveStrategy".to_string(),
+                message: format!(
+                    "strategy `{}` is not the designated live strategy; orders \
+                     route to IB only for the single designated live strategy \
+                     (SRS-EXE-001, SyRS SYS-2a/SYS-2d)",
+                    submission.strategy_id.as_str()
+                ),
+                original_order: submission,
+            }),
+            LiveRoutingDecision::Authorized => self.submit_live_order(
+                StrategyMode::Live,
+                submission,
+                broker,
+                connectivity,
+                events,
+                freshness,
+                stale_events,
+            ),
         }
     }
 

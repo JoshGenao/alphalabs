@@ -912,6 +912,97 @@
       "Concrete SubscriptionLineCounter impl backed by ATP_MARKET_DATA_LINE_LIMIT and the live subscription set (owner: SRS-MD-001 / SRS-MD-007)"
     ]
   },
+  "live_designation_contract": {
+    "requirement": "SRS-EXE-001",
+    "srs_refs": [
+      "SRS-EXE-001"
+    ],
+    "syrs_refs": [
+      "SYS-1",
+      "SYS-2a",
+      "SYS-2c",
+      "SYS-2d",
+      "AC-15",
+      "NFR-P1",
+      "NFR-S2"
+    ],
+    "strs_refs": [
+      "SN-1.01",
+      "SN-1.06",
+      "SN-1.11"
+    ],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "execution_crate": {
+      "crate": "atp-execution",
+      "path": "crates/atp-execution"
+    },
+    "confirmation_token": {
+      "struct": "LiveDesignationConfirmation",
+      "constructor": "from_operator",
+      "forbidden_derives": [
+        "Default"
+      ]
+    },
+    "registry": {
+      "struct": "LiveDesignation",
+      "field": "designated",
+      "methods": [
+        "new",
+        "designate",
+        "demote",
+        "designated",
+        "authority_for"
+      ],
+      "confirmation_param_type": "LiveDesignationConfirmation"
+    },
+    "routing_decision": {
+      "enum": "LiveRoutingDecision",
+      "variants": [
+        "Authorized",
+        "NotDesignated"
+      ]
+    },
+    "designation_error": {
+      "enum": "LiveDesignationError",
+      "variants": [
+        "MissingConfirmation",
+        "ConfirmationMismatch",
+        "AlreadyDesignated",
+        "NotDesignated"
+      ]
+    },
+    "entry_point": {
+      "method": "route_order",
+      "type": "ExecutionEngine"
+    },
+    "guard": {
+      "authority_call": "designation.authority_for",
+      "decision_enum": "LiveRoutingDecision",
+      "authorized_variant": "Authorized",
+      "not_designated_variant": "NotDesignated",
+      "delegate_call": "self.submit_live_order",
+      "live_mode_token": "StrategyMode::Live",
+      "forbidden_ports": [
+        "broker.submit_order",
+        "connectivity.state",
+        "connectivity.request_reconnect",
+        "freshness.freshness",
+        "freshness.staleness_seconds",
+        "stale_events.record"
+      ]
+    },
+    "rejection_category": "NonLiveStrategySubmission",
+    "rejection_wire_string": "NON_LIVE_STRATEGY_SUBMISSION",
+    "deferred": [
+      "Operator confirmation surface (dashboard/CLI/REST 'confirm live designation' prompt that originates the LiveDesignationConfirmation token; SyRS SYS-2c) — owner SRS-API-001",
+      "Real IB order dispatch plus the sole-entry wiring that makes submit_live_order unreachable except through route_order (crate-private + admission token) — owner SRS-EXE-006 / SRS-ORCH-*",
+      "Durable / cross-process single-live designation state and the operator promote/demote lifecycle that drives designate/demote (the same subsystem that owns the skipped tests/domain/test_single_live_invariant.py) — owner SRS-RESV-002..006 / SRS-ORCH-*",
+      "NFR-P1 / AC-15 live-order acknowledgement latency proof (<1,000 ms p95 from strategy API invocation to acknowledgement callback under a running IB Gateway) — owner SRS-PERF-001 / SRS-EXE-001 performance test. SRS-EXE-001 stays passes:false until these land."
+    ]
+  },
   "ingestion_validation_contract": {
     "requirement": "ERR-5",
     "srs_refs": [
