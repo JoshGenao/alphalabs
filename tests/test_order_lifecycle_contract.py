@@ -72,9 +72,11 @@ class OrderLifecycleScriptTest(unittest.TestCase):
             "cancel-then-new",
             "replaces: Some(..)",
             "a second cancel-replace is refused with OrderLifecycleError::OriginalAlreadyReplaced",
+            "a foreign strategy with OrderLifecycleError::ReplacementStrategyMismatch",
+            "carries the new order intent",
             "cannot reach PendingSubmit until the original is OrderState::Cancelled",
             "auto-suppresses the replacement to OrderState::Rejected",
-            "OrderLifecycleError with 7 variants",
+            "OrderLifecycleError with 8 variants",
         ):
             self.assertIn(needle, result.stdout)
 
@@ -206,6 +208,24 @@ class OrderLifecycleNegativeTest(unittest.TestCase):
         broken = self.src.replace(
             "OrderLifecycleError::OriginalAlreadyReplaced",
             "OrderLifecycleError::UnknownOrder",
+        )
+        with self.assertRaises(OrderLifecycleCheckError):
+            check_cancel_replace_audit(self.config, broken)
+
+    def test_missing_strategy_validation_is_caught(self) -> None:
+        # Drop the foreign-strategy guard from OrderLedger::cancel_replace.
+        broken = self.src.replace(
+            "OrderLifecycleError::ReplacementStrategyMismatch",
+            "OrderLifecycleError::UnknownOrder",
+        )
+        with self.assertRaises(OrderLifecycleCheckError):
+            check_cancel_replace_audit(self.config, broken)
+
+    def test_replacement_without_retained_intent_is_caught(self) -> None:
+        # Drop the replacement order intent from the cancel-replace record.
+        broken = self.src.replace(
+            "submission: replacement.clone(),",
+            "submission: OrderSubmission::default(),",
         )
         with self.assertRaises(OrderLifecycleCheckError):
             check_cancel_replace_audit(self.config, broken)

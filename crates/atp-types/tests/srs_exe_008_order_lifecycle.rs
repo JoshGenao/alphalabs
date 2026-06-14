@@ -136,7 +136,7 @@ fn srs_exe_008_terminal_states_have_no_outgoing_transitions() {
 #[test]
 fn srs_exe_008_illegal_transitions_are_refused() {
     // NEW cannot leap to ACKED / FILLED / PARTIALLY_FILLED / CANCEL_PENDING.
-    let mut order = atp_types::OrderLifecycle::new(key("c"));
+    let mut order = atp_types::OrderLifecycle::new(key("c"), submission("AAPL", 1));
     for illegal in [
         OrderState::Acked,
         OrderState::Filled,
@@ -165,9 +165,31 @@ fn srs_exe_008_illegal_transitions_are_refused() {
     assert!(order.state().is_terminal());
 }
 
+/// IB callbacks are not strictly ordered: a fill / cancel / expiry can land
+/// before the acknowledgement. Each must be honoured from PENDING_SUBMIT rather
+/// than rejected (which would lose a cancel the operator requested or a fill the
+/// broker reported).
+#[test]
+fn srs_exe_008_pending_submit_handles_pre_ack_races() {
+    for race in [
+        OrderState::PartiallyFilled,
+        OrderState::Filled,
+        OrderState::CancelPending,
+        OrderState::Expired,
+    ] {
+        let mut ledger = OrderLedger::new();
+        ledger.submit(corr("o"), &submission("AAPL", 1)).unwrap();
+        ledger
+            .transition(&key("o"), OrderState::PendingSubmit)
+            .unwrap();
+        assert_eq!(ledger.transition(&key("o"), race).unwrap(), race);
+    }
+}
+
 /// Cancel-replace is cancel-then-new: the original moves to CANCEL_PENDING and
-/// is retained, and the replacement is a fresh NEW order whose `replaces` keeps
-/// the original key for audit. A second cancel-replace is refused.
+/// is retained, the replacement is a fresh NEW order whose `replaces` keeps the
+/// original key for audit and carries the NEW order intent, and a second
+/// cancel-replace (or a foreign strategy) is refused.
 #[test]
 fn srs_exe_008_cancel_replace_is_cancel_then_new_retaining_original_id() {
     let mut ledger = OrderLedger::new();
@@ -182,8 +204,12 @@ fn srs_exe_008_cancel_replace_is_cancel_then_new_retaining_original_id() {
         .transition(&key("orig"), OrderState::PartiallyFilled)
         .unwrap();
 
+    // the replacement carries a re-priced, smaller intent
+    let replacement_intent = submission("MSFT", 30);
     {
-        let replacement = ledger.cancel_replace(&key("orig"), corr("repl")).unwrap();
+        let replacement = ledger
+            .cancel_replace(&key("orig"), &replacement_intent, corr("repl"))
+            .unwrap();
         assert_eq!(replacement.state(), OrderState::New);
         assert_eq!(replacement.correlation_id().as_str(), "repl");
         assert_eq!(
@@ -191,6 +217,8 @@ fn srs_exe_008_cancel_replace_is_cancel_then_new_retaining_original_id() {
             Some(&key("orig")),
             "the replacement must retain the original key for audit"
         );
+        // the new intent is available for routing
+        assert_eq!(replacement.submission(), &replacement_intent);
     }
 
     // cancel: the original is retained in CANCEL_PENDING (cancel requested).
@@ -203,10 +231,23 @@ fn srs_exe_008_cancel_replace_is_cancel_then_new_retaining_original_id() {
     // The already-replaced original may not be cancel-replaced a second time.
     assert_eq!(
         ledger
-            .cancel_replace(&key("orig"), corr("again"))
+            .cancel_replace(&key("orig"), &submission("MSFT", 30), corr("again"))
             .unwrap_err(),
         OrderLifecycleError::OriginalAlreadyReplaced(key("orig"))
     );
+
+    // A foreign strategy cannot replace this strategy's order.
+    let foreign = OrderSubmission {
+        strategy_id: StrategyId::new("other-strat"),
+        symbol: "MSFT".to_string(),
+        quantity: 30,
+    };
+    assert!(matches!(
+        ledger
+            .cancel_replace(&key("orig"), &foreign, corr("x"))
+            .unwrap_err(),
+        OrderLifecycleError::ReplacementStrategyMismatch { .. }
+    ));
 
     // On a fresh, working order: a replacement that reuses the original id, or
     // collides with an existing id, is refused without mutating the original.
@@ -219,13 +260,13 @@ fn srs_exe_008_cancel_replace_is_cancel_then_new_retaining_original_id() {
     ledger.transition(&key("alpha"), OrderState::Acked).unwrap();
     assert_eq!(
         ledger
-            .cancel_replace(&key("alpha"), corr("alpha"))
+            .cancel_replace(&key("alpha"), &submission("NVDA", 5), corr("alpha"))
             .unwrap_err(),
         OrderLifecycleError::ReplacementReusesOriginalId(key("alpha"))
     );
     assert_eq!(
         ledger
-            .cancel_replace(&key("alpha"), corr("repl"))
+            .cancel_replace(&key("alpha"), &submission("NVDA", 5), corr("repl"))
             .unwrap_err(),
         OrderLifecycleError::DuplicateReplacementId(key("repl"))
     );
@@ -306,7 +347,9 @@ fn srs_exe_008_cancel_replace_blocks_doubled_exposure() {
         .transition(&key("orig"), OrderState::PendingSubmit)
         .unwrap();
     ledger.transition(&key("orig"), OrderState::Acked).unwrap();
-    ledger.cancel_replace(&key("orig"), corr("repl")).unwrap();
+    ledger
+        .cancel_replace(&key("orig"), &submission("MSFT", 50), corr("repl"))
+        .unwrap();
 
     // while the original rests in CANCEL_PENDING (and could still fill) the
     // replacement cannot go live
@@ -340,7 +383,9 @@ fn srs_exe_008_cancel_replace_blocks_doubled_exposure() {
         .transition(&key("o2"), OrderState::PendingSubmit)
         .unwrap();
     ledger.transition(&key("o2"), OrderState::Acked).unwrap();
-    ledger.cancel_replace(&key("o2"), corr("r2")).unwrap();
+    ledger
+        .cancel_replace(&key("o2"), &submission("MSFT", 50), corr("r2"))
+        .unwrap();
     // the cancel loses the race: the original fully fills
     ledger.transition(&key("o2"), OrderState::Filled).unwrap();
     // the held replacement is auto-suppressed so it can never doubled-expose
@@ -359,14 +404,18 @@ fn srs_exe_008_an_original_is_replaced_at_most_once() {
         .transition(&key("o3"), OrderState::PendingSubmit)
         .unwrap();
     ledger.transition(&key("o3"), OrderState::Acked).unwrap();
-    ledger.cancel_replace(&key("o3"), corr("r3a")).unwrap();
+    ledger
+        .cancel_replace(&key("o3"), &submission("MSFT", 50), corr("r3a"))
+        .unwrap();
     // a partial fill races the cancel, bouncing the original back to a
     // cancellable state
     ledger
         .transition(&key("o3"), OrderState::PartiallyFilled)
         .unwrap();
     assert_eq!(
-        ledger.cancel_replace(&key("o3"), corr("r3b")).unwrap_err(),
+        ledger
+            .cancel_replace(&key("o3"), &submission("MSFT", 50), corr("r3b"))
+            .unwrap_err(),
         OrderLifecycleError::OriginalAlreadyReplaced(key("o3"))
     );
     // exactly one replacement was ever created for o3

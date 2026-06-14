@@ -392,18 +392,34 @@ def check_cancel_replace_audit(config: dict, types_src: str) -> str:
             f"OrderLedger::cancel_replace must set `{audit_field}: Some(..)` on the "
             "replacement — the original correlation id is retained for audit"
         )
-    single_error = block["cancel_replace"]["single_replacement_error"]
+    single_error = spec["single_replacement_error"]
     if single_error not in body:
         fail(
             f"OrderLedger::cancel_replace must reject a second replacement with "
             f"OrderLifecycleError::{single_error} — an original may be cancel-replaced "
             "at most once (a second replacement re-opens doubled exposure)"
         )
+    strategy_error = spec["strategy_mismatch_error"]
+    if strategy_error not in body:
+        fail(
+            f"OrderLedger::cancel_replace must reject a foreign-strategy replacement with "
+            f"OrderLifecycleError::{strategy_error} — a strategy may only replace its own order"
+        )
+    intent_field = block["lifecycle"]["fields"]  # sanity: submission tracked
+    if "submission" not in intent_field:
+        fail("order_lifecycle_contract.lifecycle.fields must include the order intent (submission)")
+    if not re.search(r"submission\s*:\s*replacement\.clone\(\)", body):
+        fail(
+            "OrderLedger::cancel_replace must store the replacement OrderSubmission "
+            "(`submission: replacement.clone()`) so the new order intent is available "
+            "for routing and audit"
+        )
     return (
         "OrderLedger::cancel_replace is cancel-then-new: original -> "
         f"OrderState::{cancel_state}, the replacement retains the original id via "
-        f"`{audit_field}: Some(..)`, and a second cancel-replace is refused with "
-        f"OrderLifecycleError::{single_error} (at most one replacement per original)"
+        f"`{audit_field}: Some(..)` and carries the new order intent, a second "
+        f"cancel-replace is refused with OrderLifecycleError::{single_error}, and a "
+        f"foreign strategy with OrderLifecycleError::{strategy_error}"
     )
 
 

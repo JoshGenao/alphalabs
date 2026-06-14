@@ -6131,7 +6131,7 @@
     },
     "transitions": {
       "New": ["PendingSubmit", "Rejected"],
-      "PendingSubmit": ["Acked", "Rejected"],
+      "PendingSubmit": ["Acked", "Rejected", "PartiallyFilled", "Filled", "CancelPending", "Expired"],
       "Acked": ["PartiallyFilled", "Filled", "CancelPending", "Expired"],
       "PartiallyFilled": ["PartiallyFilled", "Filled", "CancelPending", "Cancelled", "Expired"],
       "CancelPending": ["Cancelled", "Filled", "PartiallyFilled", "Expired"],
@@ -6152,8 +6152,8 @@
     },
     "lifecycle": {
       "struct": "OrderLifecycle",
-      "fields": ["key", "state", "replaces"],
-      "methods": ["new", "key", "state", "correlation_id", "replaces", "transition_to"],
+      "fields": ["key", "submission", "state", "replaces"],
+      "methods": ["new", "key", "submission", "state", "correlation_id", "replaces", "transition_to"],
       "audit_field": "replaces"
     },
     "ledger": {
@@ -6165,7 +6165,9 @@
       "keying": {
         "key_type": "OrderKey",
         "submit_strategy_source": "submission.strategy_id"
-      }
+      },
+      "intent_field": "submission",
+      "intent_accessor": "submission"
     },
     "idempotency": {
       "rejection_category": "DuplicateClientCorrelationId",
@@ -6176,6 +6178,8 @@
       "cancel_state": "CancelPending",
       "retains_original_field": "replaces",
       "single_replacement_error": "OriginalAlreadyReplaced",
+      "strategy_mismatch_error": "ReplacementStrategyMismatch",
+      "replacement_carries_intent": true,
       "replacement_gate": {
         "entry_method": "transition",
         "gate_state": "Cancelled",
@@ -6193,6 +6197,7 @@
         "ReplacementReusesOriginalId",
         "DuplicateReplacementId",
         "OriginalAlreadyReplaced",
+        "ReplacementStrategyMismatch",
         "ReplacementBlockedUntilOriginalCancelled"
       ]
     },

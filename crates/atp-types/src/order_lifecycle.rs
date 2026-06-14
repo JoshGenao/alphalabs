@@ -29,8 +29,13 @@
 //! * `NEW → {PENDING_SUBMIT, REJECTED}` — the engine either durably commits the
 //!   intent and begins submission, or pre-submit validation fails before any
 //!   broker is contacted.
-//! * `PENDING_SUBMIT → {ACKED, REJECTED}` — the broker either acknowledges
-//!   receipt or rejects the order on submission.
+//! * `PENDING_SUBMIT → {ACKED, REJECTED, PARTIALLY_FILLED, FILLED, CANCEL_PENDING,
+//!   EXPIRED}` — the broker acknowledges or rejects the order; but IB callbacks
+//!   are not strictly ordered, so **pre-ack races** are modelled too: a fill
+//!   (partial or full), a cancel request, or a TIF expiry that lands before the
+//!   acknowledgement is honoured rather than rejected (rejecting it would
+//!   otherwise lose a cancel the operator requested or a fill the broker
+//!   reported, diverging the lifecycle from broker reality).
 //! * `ACKED → {PARTIALLY_FILLED, FILLED, CANCEL_PENDING, EXPIRED}` — a working
 //!   order can fill (in part or full), have a cancel requested, or reach its
 //!   time-in-force (DAY close / GTD).
@@ -183,7 +188,14 @@ impl OrderState {
     pub const fn allowed_next(self) -> &'static [OrderState] {
         match self {
             Self::New => &[Self::PendingSubmit, Self::Rejected],
-            Self::PendingSubmit => &[Self::Acked, Self::Rejected],
+            Self::PendingSubmit => &[
+                Self::Acked,
+                Self::Rejected,
+                Self::PartiallyFilled,
+                Self::Filled,
+                Self::CancelPending,
+                Self::Expired,
+            ],
             Self::Acked => &[
                 Self::PartiallyFilled,
                 Self::Filled,
@@ -290,21 +302,24 @@ impl fmt::Display for OrderKey {
     }
 }
 
-/// One order's lifecycle: its [`OrderKey`] (strategy + correlation id), its
-/// current [`OrderState`], and — for a cancel-replace replacement — the key of
-/// the order it replaced, retained for audit.
+/// One order's lifecycle: its [`OrderKey`] (strategy + correlation id), the
+/// order intent ([`OrderSubmission`] — symbol / quantity, available for routing
+/// and audit), its current [`OrderState`], and — for a cancel-replace
+/// replacement — the key of the order it replaced, retained for audit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderLifecycle {
     key: OrderKey,
+    submission: OrderSubmission,
     state: OrderState,
     replaces: Option<OrderKey>,
 }
 
 impl OrderLifecycle {
     /// A freshly admitted order: state [`OrderState::New`], replacing nothing.
-    pub fn new(key: OrderKey) -> Self {
+    pub fn new(key: OrderKey, submission: OrderSubmission) -> Self {
         Self {
             key,
+            submission,
             state: OrderState::New,
             replaces: None,
         }
@@ -312,6 +327,12 @@ impl OrderLifecycle {
 
     pub fn key(&self) -> &OrderKey {
         &self.key
+    }
+
+    /// The order intent (symbol / quantity) carried by this order — available
+    /// for later routing and audit.
+    pub fn submission(&self) -> &OrderSubmission {
+        &self.submission
     }
 
     pub fn strategy_id(&self) -> &StrategyId {
@@ -411,7 +432,7 @@ impl OrderLedger {
                 original_order: submission.clone(),
             });
         }
-        let lifecycle = OrderLifecycle::new(key.clone());
+        let lifecycle = OrderLifecycle::new(key.clone(), submission.clone());
         self.orders.insert(key.clone(), lifecycle);
         Ok(self.orders.get(&key).expect("order was just inserted"))
     }
@@ -511,22 +532,36 @@ impl OrderLedger {
     ///   ([`OrderLifecycleError::OriginalAlreadyReplaced`]) — an original may be
     ///   cancel-replaced **at most once**, even if it bounces back to a
     ///   cancellable state (`CANCEL_PENDING` → `PARTIALLY_FILLED`);
-    /// * the original is not in a cancellable (working) state — only `ACKED`
-    ///   and `PARTIALLY_FILLED` can transition to `CANCEL_PENDING`
+    /// * the replacement belongs to a different strategy than the original
+    ///   ([`OrderLifecycleError::ReplacementStrategyMismatch`]) — a strategy may
+    ///   only replace its own order;
+    /// * the original is not in a cancellable (working) state
     ///   ([`OrderLifecycleError::IllegalTransition`]);
     /// * the replacement reuses the original correlation id
     ///   ([`OrderLifecycleError::ReplacementReusesOriginalId`]);
     /// * the replacement key is already tracked
     ///   ([`OrderLifecycleError::DuplicateReplacementId`]).
+    ///
+    /// `replacement` carries the *new* order intent (symbol / quantity); it is
+    /// retained on the replacement [`OrderLifecycle`] so the new intent is
+    /// available for routing and audit after the original is cancelled.
     pub fn cancel_replace(
         &mut self,
         original: &OrderKey,
+        replacement: &OrderSubmission,
         replacement_correlation_id: ClientCorrelationId,
     ) -> Result<&OrderLifecycle, OrderLifecycleError> {
         let original_state = match self.orders.get(original) {
             Some(order) => order.state,
             None => return Err(OrderLifecycleError::UnknownOrder(original.clone())),
         };
+        // A strategy may only replace its OWN order.
+        if replacement.strategy_id != *original.strategy_id() {
+            return Err(OrderLifecycleError::ReplacementStrategyMismatch {
+                original: original.strategy_id().clone(),
+                replacement: replacement.strategy_id.clone(),
+            });
+        }
         // At most one replacement per original, ever — a second would let two
         // held replacements both pass the cancel-replace gate once the original
         // reaches CANCELLED (doubled exposure).
@@ -561,13 +596,16 @@ impl OrderLedger {
             .expect("original presence checked above")
             .transition_to(OrderState::CancelPending)
             .expect("transition to CancelPending validated above");
-        // new: a fresh held order that retains the original key for audit.
-        let replacement = OrderLifecycle {
+        // new: a fresh held order that retains the original key for audit and
+        // the new order intent for routing.
+        let replacement_order = OrderLifecycle {
             key: replacement_key.clone(),
+            submission: replacement.clone(),
             state: OrderState::New,
             replaces: Some(original.clone()),
         };
-        self.orders.insert(replacement_key.clone(), replacement);
+        self.orders
+            .insert(replacement_key.clone(), replacement_order);
         Ok(self
             .orders
             .get(&replacement_key)
@@ -594,6 +632,12 @@ pub enum OrderLifecycleError {
     /// A cancel-replace was attempted on an original that already has a
     /// replacement (an original may be cancel-replaced at most once).
     OriginalAlreadyReplaced(OrderKey),
+    /// A cancel-replace replacement belongs to a different strategy than the
+    /// original (a strategy may only replace its own order).
+    ReplacementStrategyMismatch {
+        original: StrategyId,
+        replacement: StrategyId,
+    },
     /// A cancel-replace replacement was moved toward submission before the
     /// original it replaces reached `CANCELLED` (the cancel-replace safety gate
     /// that prevents the original and the replacement both reaching the broker).
@@ -634,6 +678,16 @@ impl fmt::Display for OrderLifecycleError {
                 formatter,
                 "order {key} already has a replacement — an original may be \
                  cancel-replaced at most once",
+            ),
+            Self::ReplacementStrategyMismatch {
+                original,
+                replacement,
+            } => write!(
+                formatter,
+                "cancel-replace replacement strategy {:?} does not match the \
+                 original's strategy {:?} — a strategy may only replace its own order",
+                replacement.as_str(),
+                original.as_str()
             ),
             Self::ReplacementBlockedUntilOriginalCancelled {
                 replacement,
@@ -744,7 +798,7 @@ mod tests {
 
     #[test]
     fn happy_path_new_to_filled_is_legal() {
-        let mut order = OrderLifecycle::new(key("c-1"));
+        let mut order = OrderLifecycle::new(key("c-1"), submission());
         assert_eq!(order.state(), OrderState::New);
         assert_eq!(
             order.transition_to(OrderState::PendingSubmit).unwrap(),
@@ -772,7 +826,7 @@ mod tests {
 
     #[test]
     fn illegal_transition_is_refused_and_leaves_state_unchanged() {
-        let mut order = OrderLifecycle::new(key("c-2"));
+        let mut order = OrderLifecycle::new(key("c-2"), submission());
         // NEW cannot jump straight to FILLED.
         let err = order.transition_to(OrderState::Filled).unwrap_err();
         assert_eq!(
@@ -787,7 +841,7 @@ mod tests {
 
     #[test]
     fn cancel_pending_can_be_raced_by_a_fill() {
-        let mut order = OrderLifecycle::new(key("c-3"));
+        let mut order = OrderLifecycle::new(key("c-3"), submission());
         order.transition_to(OrderState::PendingSubmit).unwrap();
         order.transition_to(OrderState::Acked).unwrap();
         order.transition_to(OrderState::CancelPending).unwrap();
@@ -803,7 +857,7 @@ mod tests {
         // CANCEL_PENDING -> PARTIALLY_FILLED (a fill races the cancel) -> CANCELLED
         // (the cancel of the remainder is acknowledged). The pending cancel must
         // not be lost by the racing partial fill.
-        let mut order = OrderLifecycle::new(key("c-4"));
+        let mut order = OrderLifecycle::new(key("c-4"), submission());
         order.transition_to(OrderState::PendingSubmit).unwrap();
         order.transition_to(OrderState::Acked).unwrap();
         order.transition_to(OrderState::CancelPending).unwrap();
@@ -888,7 +942,9 @@ mod tests {
         let mut ledger = OrderLedger::new();
         acked(&mut ledger, "orig");
 
-        let replacement = ledger.cancel_replace(&key("orig"), corr("repl")).unwrap();
+        let replacement = ledger
+            .cancel_replace(&key("orig"), &submission(), corr("repl"))
+            .unwrap();
         assert_eq!(replacement.state(), OrderState::New);
         assert_eq!(replacement.correlation_id().as_str(), "repl");
         assert_eq!(replacement.replaces(), Some(&key("orig")));
@@ -907,7 +963,7 @@ mod tests {
         ledger.submit(corr("new-only"), &submission()).unwrap();
         // NEW cannot reach CANCEL_PENDING -> cancel-replace is illegal
         let err = ledger
-            .cancel_replace(&key("new-only"), corr("repl"))
+            .cancel_replace(&key("new-only"), &submission(), corr("repl"))
             .unwrap_err();
         assert_eq!(
             err,
@@ -930,7 +986,7 @@ mod tests {
             .transition(&key("done"), OrderState::Rejected)
             .unwrap();
         let err = ledger
-            .cancel_replace(&key("done"), corr("repl"))
+            .cancel_replace(&key("done"), &submission(), corr("repl"))
             .unwrap_err();
         assert_eq!(
             err,
@@ -949,12 +1005,16 @@ mod tests {
 
         // replacement reuses the original id
         assert_eq!(
-            ledger.cancel_replace(&key("a"), corr("a")).unwrap_err(),
+            ledger
+                .cancel_replace(&key("a"), &submission(), corr("a"))
+                .unwrap_err(),
             OrderLifecycleError::ReplacementReusesOriginalId(key("a"))
         );
         // replacement collides with an existing order
         assert_eq!(
-            ledger.cancel_replace(&key("a"), corr("b")).unwrap_err(),
+            ledger
+                .cancel_replace(&key("a"), &submission(), corr("b"))
+                .unwrap_err(),
             OrderLifecycleError::DuplicateReplacementId(key("b"))
         );
         // original untouched after refusals
@@ -976,7 +1036,9 @@ mod tests {
     fn replacement_is_blocked_until_the_original_is_cancelled() {
         let mut ledger = OrderLedger::new();
         acked(&mut ledger, "orig");
-        ledger.cancel_replace(&key("orig"), corr("repl")).unwrap();
+        ledger
+            .cancel_replace(&key("orig"), &submission(), corr("repl"))
+            .unwrap();
 
         // the replacement cannot go live while the original rests in CANCEL_PENDING
         let err = ledger
@@ -1008,7 +1070,9 @@ mod tests {
     fn a_filled_original_auto_suppresses_its_held_replacement() {
         let mut ledger = OrderLedger::new();
         acked(&mut ledger, "orig");
-        ledger.cancel_replace(&key("orig"), corr("repl")).unwrap();
+        ledger
+            .cancel_replace(&key("orig"), &submission(), corr("repl"))
+            .unwrap();
 
         // the cancel loses the race: the original fully fills instead of cancelling
         ledger.transition(&key("orig"), OrderState::Filled).unwrap();
@@ -1028,7 +1092,9 @@ mod tests {
     fn an_original_can_be_cancel_replaced_at_most_once() {
         let mut ledger = OrderLedger::new();
         acked(&mut ledger, "orig");
-        ledger.cancel_replace(&key("orig"), corr("repl-1")).unwrap();
+        ledger
+            .cancel_replace(&key("orig"), &submission(), corr("repl-1"))
+            .unwrap();
         // a partial fill bounces the original back to a cancellable state
         ledger
             .transition(&key("orig"), OrderState::PartiallyFilled)
@@ -1037,11 +1103,78 @@ mod tests {
         // replacement that could doubled-expose once the original is CANCELLED)
         assert_eq!(
             ledger
-                .cancel_replace(&key("orig"), corr("repl-2"))
+                .cancel_replace(&key("orig"), &submission(), corr("repl-2"))
                 .unwrap_err(),
             OrderLifecycleError::OriginalAlreadyReplaced(key("orig"))
         );
         assert!(ledger.get(&key("repl-2")).is_none());
         assert_eq!(ledger.len(), 2);
+    }
+
+    #[test]
+    fn pending_submit_handles_pre_ack_races() {
+        // IB callbacks are not strictly ordered: a fill / cancel / expiry can
+        // land before the acknowledgement. Each must be honoured from PENDING_SUBMIT.
+        for race in [
+            OrderState::PartiallyFilled,
+            OrderState::Filled,
+            OrderState::CancelPending,
+            OrderState::Expired,
+        ] {
+            let mut order = OrderLifecycle::new(key("pa"), submission());
+            order.transition_to(OrderState::PendingSubmit).unwrap();
+            assert_eq!(order.transition_to(race).unwrap(), race);
+        }
+    }
+
+    #[test]
+    fn cancel_replace_with_a_different_strategy_is_refused() {
+        let mut ledger = OrderLedger::new();
+        acked(&mut ledger, "orig");
+        let foreign = OrderSubmission {
+            strategy_id: StrategyId::new("other-strat"),
+            symbol: "AAPL".to_string(),
+            quantity: 10,
+        };
+        assert_eq!(
+            ledger
+                .cancel_replace(&key("orig"), &foreign, corr("repl"))
+                .unwrap_err(),
+            OrderLifecycleError::ReplacementStrategyMismatch {
+                original: StrategyId::new(STRAT),
+                replacement: StrategyId::new("other-strat"),
+            }
+        );
+        // original untouched
+        assert_eq!(ledger.state(&key("orig")).unwrap(), OrderState::Acked);
+        assert_eq!(ledger.len(), 1);
+    }
+
+    #[test]
+    fn orders_retain_their_intent_for_routing_and_audit() {
+        let mut ledger = OrderLedger::new();
+        let original = OrderSubmission {
+            strategy_id: StrategyId::new(STRAT),
+            symbol: "AAPL".to_string(),
+            quantity: 100,
+        };
+        ledger.submit(corr("o"), &original).unwrap();
+        ledger
+            .transition(&key("o"), OrderState::PendingSubmit)
+            .unwrap();
+        ledger.transition(&key("o"), OrderState::Acked).unwrap();
+        assert_eq!(ledger.get(&key("o")).unwrap().submission(), &original);
+
+        // the replacement carries the NEW intent (a re-priced, smaller order)
+        let replacement = OrderSubmission {
+            strategy_id: StrategyId::new(STRAT),
+            symbol: "AAPL".to_string(),
+            quantity: 60,
+        };
+        ledger
+            .cancel_replace(&key("o"), &replacement, corr("o-2"))
+            .unwrap();
+        assert_eq!(ledger.get(&key("o-2")).unwrap().submission(), &replacement);
+        assert_eq!(ledger.get(&key("o-2")).unwrap().submission().quantity, 60);
     }
 }
