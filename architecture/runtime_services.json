@@ -6253,5 +6253,58 @@
       "STATE-PRESERVING events are NOT representable by this transition-derived authority and are explicitly out of scope. for_transition derives the callback from the lifecycle DESTINATION STATE, so it can only represent events that CHANGE state. A cancel rejection (the broker refuses a pending cancel; the order stays working with no state change) produces no transition to classify, and -- because OrderEventCategory is opaque -- an adapter cannot mint one either. Representing such events needs a SEPARATE source-neutral broker/simulator EVENT-KIND API (it is NOT an OrderEventCategory), owned by SRS-EXE-006 (IB adapter) / SRS-SIM-002 (sim fill model). Duplicate / stale / out-of-order broker events that map to no legal modeled transition fail closed here; the adapter dedups/reconciles them against the acknowledged broker id. SRS-SDK-004 stays passes:false precisely because this event-kind half is unbuilt; it is named and deferred rather than guessed.",
       "Enforcing that runtime dispatchers cannot bypass callback production: OrderLedger::transition (the raw SRS-EXE-008 state mutation) is still public, so a future dispatcher could mutate an order into a callback-bearing state without emitting the OrderEvent. The live (SRS-EXE-001) / paper (SRS-SIM-001) dispatchers MUST drive lifecycle exclusively through OrderLedger::transition_with_event (the event-producing path). Restricting transition's visibility to crate-private to enforce this by the type system is an SRS-EXE-008 API change (it is in order_lifecycle_contract.ledger.methods and is called by 31 sites in the EXE-008 integration test) and is deferred to the dispatcher-wiring work so EXE-008's tests + contract migrate atomically; bundling it here would be an unrelated cross-feature refactor."
     ]
+  },
+  "order_type_contract": {
+    "requirement": "SRS-EXE-003",
+    "srs_refs": ["SRS-5.3 SRS-EXE-003"],
+    "syrs_refs": ["SYS-3", "SYS-82"],
+    "strs_refs": ["SN-1.08", "BG-1"],
+    "description": "SDK-surface contract for SRS-EXE-003 ('support market, limit, stop, and stop-limit orders for equities and options in live and paper modes'). SCOPE: the *source-neutral order-type vocabulary* + the shared *price-validation rule* only. The four order types, the buy/sell side vocabulary, the equity/option asset class, the price-requirement matrix (which types carry a limit and/or stop price), and the price-positivity rule live in crates/atp-types/src/order_type.rs (OrderType / OrderSide / OrderTypeError) plus the crate-root AssetClass. The point of putting them in the leaf crate is that BOTH execution paths can share ONE definition rather than two that drift -- a PREREQUISITE for the SRS-EXE-003 AC ('each order type ... accepted [and] validated ... in both live adapter test mode and internal simulation'). Stated honestly, that AC is NOT met by this slice: the paper path (atp-simulation, SRS-SIM-001) CONSUMES the definition today (paper_order RE-EXPORTS it -- pub use atp_types::AssetClass; pub use atp_types::order_type::OrderSide as Side; pub use atp_types::order_type::OrderType), but the live path does NOT -- at HEAD atp-execution has no order-type intake and OrderSubmission carries only symbol + quantity. So SRS-EXE-003 stays passes:false; this block is the seam the live intake (SRS-EXE-006) will consume so the two paths become identical once it lands. These types were HOISTED out of atp-simulation's paper_order module (where they originated under SRS-SIM-001) so there is now exactly one definition. OrderType encodes its trigger/limit prices in the variants (a Limit cannot lack a limit price; a Market cannot carry one), so the contradictory-price-set bug class is unrepresentable BY CONSTRUCTION. Price POSITIVITY is a separate rule (OrderType::validate_prices, mirroring paper_order::validate_leg and sim.rs NonPositivePrice): because the variants are public it is NOT construction-enforced -- it is an INTAKE-boundary check the paper intake applies today and the live intake will apply. Money is integer minor units (never f64). Identical to the SDK-004 / ERR-9 partial-pass pattern.",
+    "types_crate": {"crate": "atp-types"},
+    "module": "order_type",
+    "module_path": "crates/atp-types/src/order_type.rs",
+    "integration_test": "srs_exe_003_order_type",
+    "order_type_enum": "OrderType",
+    "order_side_enum": "OrderSide",
+    "asset_class_enum": "AssetClass",
+    "price_error_enum": "OrderTypeError",
+    "order_types": [
+      {"name": "Market", "wire": "MARKET", "requires_limit_price": false, "requires_stop_price": false},
+      {"name": "Limit", "wire": "LIMIT", "requires_limit_price": true, "requires_stop_price": false},
+      {"name": "Stop", "wire": "STOP", "requires_limit_price": false, "requires_stop_price": true},
+      {"name": "StopLimit", "wire": "STOP_LIMIT", "requires_limit_price": true, "requires_stop_price": true}
+    ],
+    "sides": ["BUY", "SELL"],
+    "asset_classes": ["EQUITY", "OPTION"],
+    "python_parity": {
+      "sdk_package": "atp_strategy",
+      "order_type_symbol": "OrderType",
+      "order_side_symbol": "OrderSide",
+      "asset_class_symbol": "AssetClass",
+      "note": "The Python authoring surface (atp_strategy.api.OrderRequest) carries ergonomic floats (limit_price / stop_price); the source-neutral core authority carries integer minor units (limit_price_minor / stop_price_minor). The pinned cross-language parity is the ENUM WIRE STRINGS ONLY -- OrderType / OrderSide / AssetClass member values, checked one-for-one against the Rust authority. The price-requirement MATRIX is pinned between the Rust authority and this JSON contract; it is NOT enforced on the Python OrderRequest, which today has no validation and permits a missing required price or a stray extra price. Enforcing the matrix on OrderRequest (an assert_order_request helper + tests) is DEFERRED (see deferred[]). The float-vs-int representation is deliberately a different layer; the SDK->core normalization is deferred with the runtime intake."
+    },
+    "paper_consumer": {
+      "path": "crates/atp-simulation/src/paper_order.rs",
+      "reexports": ["AssetClass", "OrderSide", "OrderType"],
+      "validate_fn": "validate_leg",
+      "note": "atp-simulation's paper order intake (SRS-SIM-001) RE-EXPORTS this authority and does NOT redefine the order-type vocabulary, so the OrderType / OrderSide / AssetClass definition is shared, not copied. validate_leg DELEGATES price positivity to OrderType::validate_prices (mapping OrderTypeError into OrderError), so the paper intake and the (future) live intake apply the SAME rule -- semantic parity, not a copy that can drift. tools/order_type_check.py pins both the re-export and the delegation."
+    },
+    "fill_model_consumer": {
+      "path": "crates/atp-simulation/src/fill_model.rs",
+      "validate_fn": "validate_order_type",
+      "error_enum": "FillModelError",
+      "note": "The SRS-SIM-002 fill model re-checks a raw OrderType's prices before any fill decision (evaluate_fill accepts a raw OrderType, not just a routed leg). validate_order_type DELEGATES price positivity to OrderType::validate_prices (mapping OrderTypeError into FillModelError) so the fill path applies the SAME single rule as the paper intake and the (future) live intake -- no independent copy that can drift. Pinned by tools/order_type_check.py."
+    },
+    "ac_traces": ["SRS-EXE-003", "SYS-3", "SYS-82", "SN-1.08", "BG-1"],
+    "deferred": [
+      "Live-path order intake + accept->ack round-trip through the IB adapter for each of the four order types, plus the NFR-P1 acknowledgement-latency proof -- owner SRS-EXE-006 (IB Gateway adapter; needs a running IB Gateway). atp-execution currently has no order-type intake; it will consume this same atp-types authority.",
+      "Internal-simulation accept->ack + the actual fill of a validated order (price-cross triggering, fill probability, volume cap) -- owner SRS-SIM-001 / SRS-SIM-002 (paper_order::accept_order exists for intake; the fill model is SIM-002).",
+      "Order STATE-TRACKING of an accepted order (NEW -> PENDING_SUBMIT -> ACKED -> ...) is the SRS-EXE-008 OrderLifecycle / OrderState machine; this slice fixes the order-TYPE vocabulary + price validation only, not the lifecycle wiring.",
+      "Routing of all non-live strategy orders into the simulation engine (so paper orders never reach IB) -- owner SRS-EXE-002.",
+      "Option CONTRACT IDENTITY (underlying + expiration + strike + call/put right) for option order legs, and LIVE multi-leg composite submission -- owner SRS-EXE-004 / SRS-DATA-004 (mirrors the existing SecurityKey option deferral). paper_order models MultiLeg intake; live multi-leg + option identity are deferred.",
+      "The authoring->core wiring: OrderRequest (Python floats) -> OrderType / OrderLeg (core minor units) -> the live submission envelope (OrderSubmission currently carries only symbol + quantity) -- deferred to the execution/sim intake (SRS-EXE-006 live, SRS-EXE-002 routing).",
+      "Enforcing the price-requirement MATRIX on the Python OrderRequest authoring surface (an assert_order_request helper rejecting a LIMIT with no limit_price, a MARKET with a stray price, etc., mirroring OrderType::validate_prices). OrderRequest is a plain dataclass with no validation today; the matrix is enforced in the Rust core and pinned to this JSON contract, but the Python surface pins only the enum wire strings. Owner: the SRS-SDK runtime / strategy host that submits OrderRequests.",
+      "Making price positivity unbypassable BY CONSTRUCTION (validated constructors + private price fields, or a validated order-type wrapper required by the submission APIs) rather than an intake-boundary check. OrderType's variants are public, so a caller can construct a non-positive price and skip validate_prices; today positivity is enforced where orders are accepted (paper_order::validate_leg, which delegates to validate_prices). Privatizing the fields is an SRS-SIM-001 API change (it touches every OrderType::Limit { .. } match/construction site across atp-simulation) and is deferred to the order-intake wiring so SIM-001's tests + contract migrate atomically -- bundling it here would be an unrelated cross-feature refactor."
+    ]
   }
 }

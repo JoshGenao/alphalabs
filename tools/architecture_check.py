@@ -76,6 +76,10 @@ from order_lifecycle_check import (
     OrderLifecycleCheckError,
     assert_order_lifecycle_static,
 )
+from order_type_check import (
+    OrderTypeCheckError,
+    assert_order_type_static,
+)
 from pacing_budget_check import (
     PacingBudgetCheckError,
     assert_pacing_budget_static,
@@ -563,6 +567,24 @@ def assert_order_lifecycle(config: dict) -> list[str]:
         f"idempotency key: duplicate submissions are rejected with the SRS-ERR-001 "
         f"{block['idempotency']['rejection_category']} category and cancel-replace is "
         "cancel-then-new (SRS-EXE-008, SyRS SYS-3 / SYS-7 / SYS-64 / SYS-90)"
+    )
+    return static_evidence + [summary]
+
+
+def assert_order_type(config: dict) -> list[str]:
+    block = config.get("order_type_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_order_type_static(config, ROOT)
+    summary = (
+        f"{block['types_crate']['crate']} declares the source-neutral "
+        f"{block['order_type_enum']} authority for SRS-EXE-003 order types: "
+        f"{len(block['order_types'])} types (market/limit/stop/stop-limit), prices encoded in "
+        f"the variants (contradictory sets unrepresentable) with an intake-applied positivity "
+        f"rule ({block['price_error_enum']}); the single shared definition is consumed by the "
+        f"paper path via {block['paper_consumer']['path']} re-export, with live-path consumption "
+        f"deferred (SRS-EXE-003 stays passes:false)"
     )
     return static_evidence + [summary]
 
@@ -1121,6 +1143,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_order_event_dispatch(config))
     except OrderEventDispatchCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_order_type(config))
+    except OrderTypeCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_backtest(config))

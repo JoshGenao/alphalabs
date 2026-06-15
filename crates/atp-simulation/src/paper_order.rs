@@ -47,47 +47,25 @@ use std::fmt;
 
 use crate::sim::PaperSimulationEngine;
 
-/// The asset class of a simulated order leg (SYS-82 / SYS-3 / SYS-4). The
-/// simulation engine processes both, with no IB API order call for either.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssetClass {
-    /// A US equity instrument.
-    Equity,
-    /// An options instrument (single leg here; multi-leg composites use
-    /// [`PaperOrderRequest::MultiLeg`]).
-    Option,
-}
-
-/// The side of a single order leg.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Side {
-    /// Buy / long.
-    Buy,
-    /// Sell / short.
-    Sell,
-}
-
-/// The supported order types (SYS-3). Trigger and limit prices are **integer
-/// minor units** carrying the `_minor` suffix; intake validates each is
-/// positive, but the actual fill *triggering* (price cross, fill probability,
-/// volume cap) is SRS-SIM-002 and is not modeled here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OrderType {
-    /// Filled at the prevailing market price (the SYS-83 default fill rule is
-    /// SRS-SIM-002).
-    Market,
-    /// Resting order that fills only once the market crosses `limit_price_minor`.
-    Limit { limit_price_minor: i64 },
-    /// Triggered (becomes a market order) once the market crosses
-    /// `stop_price_minor`.
-    Stop { stop_price_minor: i64 },
-    /// Triggered at `stop_price_minor`, then rests as a limit at
-    /// `limit_price_minor`.
-    StopLimit {
-        stop_price_minor: i64,
-        limit_price_minor: i64,
-    },
-}
+// The source-neutral order-type vocabulary (`AssetClass` / `Side` / `OrderType`)
+// is owned by `atp-types` (the `order_type` module, plus the crate-root
+// `AssetClass`). This paper simulation path CONSUMES that shared definition by
+// re-exporting it below; the SAME source-neutral type is intended for the future
+// live intake (SRS-EXE-006) to consume so the two paths become identical once it
+// lands — this slice does NOT yet make the live path consume it (SRS-EXE-003
+// stays passes:false). These types were hoisted out of this module (originally
+// defined here for SRS-SIM-001) and are re-exported unchanged, so every call site
+// keeps working against `paper_order::{AssetClass, Side, OrderType}`.
+// `tools/order_type_check.py` pins the re-export so a divergent copy cannot
+// reappear. `OrderType` encodes its trigger/limit prices (integer minor units) in
+// the variants; price positivity is validated by `OrderType::validate_prices`,
+// which `validate_leg` below delegates to.
+pub use atp_types::order_type::OrderSide as Side;
+pub use atp_types::order_type::OrderType;
+pub use atp_types::AssetClass;
+// Internal: the shared price-validation error, mapped into OrderError by
+// validate_leg so the paper intake delegates to OrderType::validate_prices.
+use atp_types::order_type::OrderTypeError;
 
 /// A single order leg: what instrument, which side, how many, and the order
 /// type. A leg is the unit of both single and multi-leg requests.
@@ -220,39 +198,19 @@ fn validate_leg(leg: &OrderLeg) -> Result<(), OrderError> {
             quantity: leg.quantity,
         });
     }
-    match leg.order_type {
-        OrderType::Market => {}
-        OrderType::Limit { limit_price_minor } => {
-            if limit_price_minor <= 0 {
-                return Err(OrderError::NonPositiveLimitPrice {
-                    price_minor: limit_price_minor,
-                });
-            }
+    // Delegate price positivity to the shared SRS-EXE-003 authority so the paper
+    // intake and the (future) live intake apply the SAME rule rather than a copy
+    // that can drift; map the shared OrderTypeError into this module's
+    // fail-closed OrderError. (validate_prices checks the stop price before the
+    // limit price, matching the prior behavior.)
+    leg.order_type.validate_prices().map_err(|err| match err {
+        OrderTypeError::NonPositiveLimitPrice { price_minor } => {
+            OrderError::NonPositiveLimitPrice { price_minor }
         }
-        OrderType::Stop { stop_price_minor } => {
-            if stop_price_minor <= 0 {
-                return Err(OrderError::NonPositiveStopPrice {
-                    price_minor: stop_price_minor,
-                });
-            }
+        OrderTypeError::NonPositiveStopPrice { price_minor } => {
+            OrderError::NonPositiveStopPrice { price_minor }
         }
-        OrderType::StopLimit {
-            stop_price_minor,
-            limit_price_minor,
-        } => {
-            if stop_price_minor <= 0 {
-                return Err(OrderError::NonPositiveStopPrice {
-                    price_minor: stop_price_minor,
-                });
-            }
-            if limit_price_minor <= 0 {
-                return Err(OrderError::NonPositiveLimitPrice {
-                    price_minor: limit_price_minor,
-                });
-            }
-        }
-    }
-    Ok(())
+    })
 }
 
 impl PaperSimulationEngine {

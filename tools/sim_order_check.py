@@ -113,17 +113,54 @@ def _compact(text: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def check_order_types(config: dict, order_src: str) -> str:
+# The order-type vocabulary (AssetClass / Side / OrderType) was HOISTED to the
+# shared leaf crate atp-types under SRS-EXE-003; this paper path CONSUMES that
+# single shared definition by re-export (the future live intake will consume the
+# same one -- deferred). paper_order now RE-EXPORTS it. atp-types names the side
+# enum `OrderSide`; paper_order re-exports it as `Side`, so the contract's
+# paper-facing name maps to the authority name here.
+_AUTHORITY_ENUM_NAME = {"Side": "OrderSide"}
+
+
+def _atp_types_order_source(root: Path = ROOT) -> str:
+    """Read the atp-types order-type authority: lib.rs declares the crate-root
+    AssetClass; order_type.rs declares OrderType / OrderSide (SRS-EXE-003)."""
+    base = root / "crates" / "atp-types" / "src"
+    sources = [base / "lib.rs", base / "order_type.rs"]
+    for source_path in sources:
+        if not source_path.exists():
+            fail(f"atp-types order-type source missing: {source_path.relative_to(root)}")
+    return "\n".join(source_path.read_text(encoding="utf-8") for source_path in sources)
+
+
+def check_order_types(config: dict, order_src: str, atp_src: str | None = None) -> str:
     block = contract_block(config)
+    if atp_src is None:
+        atp_src = _atp_types_order_source()
     summaries = []
     for key in ("asset_class_enum", "side_enum", "order_type_enum"):
         spec = block[key]
-        body = _enum_body(order_src, spec["enum"])
+        reexport_name = spec["enum"]
+        authority_name = _AUTHORITY_ENUM_NAME.get(reexport_name, reexport_name)
+        # (a) the vocabulary now lives in the shared atp-types authority...
+        body = _enum_body(atp_src, authority_name)
         missing = [v for v in spec["variants"] if not re.search(rf"\b{re.escape(v)}\b", body)]
         if missing:
-            fail(f"{spec['enum']} is missing variants: {', '.join(missing)}")
-        summaries.append(f"{spec['enum']} ({', '.join(spec['variants'])})")
-    return "atp-simulation paper_order models " + "; ".join(summaries)
+            fail(f"atp_types::{authority_name} is missing variants: {', '.join(missing)}")
+        # (b) ...and paper_order RE-EXPORTS it (does not redefine it), so the paper
+        #     path consumes the single shared definition (live consumption deferred).
+        if not re.search(
+            rf"\bpub\s+use\s+atp_types::[^;]*\b{re.escape(authority_name)}\b", order_src
+        ):
+            fail(
+                f"paper_order must `pub use` atp_types' {authority_name} (re-export the shared "
+                f"SRS-EXE-003 order-type authority as {reexport_name}), not define its own copy"
+            )
+        summaries.append(f"{reexport_name} ({', '.join(spec['variants'])})")
+    return (
+        "atp-simulation paper_order re-exports the shared atp-types order-type authority "
+        "(SRS-EXE-003): " + "; ".join(summaries)
+    )
 
 
 def check_order_leg_struct(config: dict, order_src: str) -> str:
@@ -220,22 +257,27 @@ def check_fail_closed(config: dict, order_src: str) -> str:
     )
 
 
-def check_money_invariant(config: dict, order_src: str) -> str:
+def check_money_invariant(config: dict, order_src: str, atp_src: str | None = None) -> str:
     spec = contract_block(config)["money_invariant"]
     if spec["forbidden_float_token"] in order_src:
         fail(
             f"paper_order module contains `{spec['forbidden_float_token']}` -- all order prices MUST "
             "be integer minor units (the money-correctness invariant shared with the fill path)"
         )
+    # The order-type price fields were HOISTED to the shared atp-types authority
+    # (SRS-EXE-003); verify the i64 minor-unit declaration where they now live.
+    if atp_src is None:
+        atp_src = _atp_types_order_source()
     for field in spec["minor_price_fields"]:
-        if not re.search(rf"\b{re.escape(field)}\s*:\s*i64\b", order_src):
+        if not re.search(rf"\b{re.escape(field)}\s*:\s*i64\b", atp_src):
             fail(
                 f"order price field `{field}` must be declared as an integer minor unit (i64) so "
                 "the downstream fill path is exact"
             )
     return (
-        f"atp-simulation paper_order prices are integer minor units: no "
-        f"{spec['forbidden_float_token']}, {', '.join(spec['minor_price_fields'])} typed i64"
+        f"atp-simulation paper_order contains no {spec['forbidden_float_token']}; the shared "
+        f"atp-types order-type authority types {', '.join(spec['minor_price_fields'])} as "
+        "integer minor units (i64)"
     )
 
 

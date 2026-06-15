@@ -10,6 +10,9 @@ pub use order_event::{
     OrderEvent, OrderEventCategory, LIVE_CALLBACK_LATENCY_P95_MS, PAPER_CALLBACK_LATENCY_P95_MS,
 };
 
+pub mod order_type;
+pub use order_type::{OrderSide, OrderType, OrderTypeError};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StrategyId(String);
 

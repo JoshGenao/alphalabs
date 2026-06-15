@@ -34,6 +34,7 @@ if str(TOOLS_ROOT) not in sys.path:
 
 from sim_order_check import (  # noqa: E402
     SimOrderCheckError,
+    _atp_types_order_source,
     assert_sim_order_static,
     cargo_source,
     check_cargo_test_smoke,
@@ -66,7 +67,8 @@ class SimOrderScriptTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("SRS-SIM-001 SDK-SURFACE PASS", result.stdout)
         for needle in (
-            "paper_order models AssetClass (Equity, Option); Side (Buy, Sell); "
+            "paper_order re-exports the shared atp-types order-type authority (SRS-EXE-003): "
+            "AssetClass (Equity, Option); Side (Buy, Sell); "
             "OrderType (Market, Limit, Stop, StopLimit)",
             "OrderLeg with 5 fields (symbol, asset_class, side, quantity, order_type)",
             "PaperOrderRequest (Single, MultiLeg)",
@@ -75,8 +77,8 @@ class SimOrderScriptTest(unittest.TestCase):
             "OrderError with 7 fail-closed variants "
             "(EmptySymbol, NonPositiveQuantity, NonPositiveLimitPrice, NonPositiveStopPrice, "
             "EmptyMultiLeg, SingleLegComposite, NonOptionCompositeLeg)",
-            "paper_order prices are integer minor units: no f64, "
-            "limit_price_minor, stop_price_minor typed i64",
+            "paper_order contains no f64; the shared atp-types order-type authority types "
+            "limit_price_minor, stop_price_minor as integer minor units (i64)",
             "lib.rs re-exports `pub mod paper_order;`",
             "Cargo.toml declares no dependency on the live/broker path "
             "(atp-adapters, atp-execution)",
@@ -92,6 +94,10 @@ class _Fixture(unittest.TestCase):
         self.order_src = order_source(self.config)
         self.lib_src = lib_source(self.config)
         self.cargo_src = cargo_source(self.config)
+        # The order-type vocabulary was hoisted to atp-types (SRS-EXE-003);
+        # paper_order re-exports it. Variant/field-existence negatives mutate the
+        # authority source where the types now live.
+        self.atp_src = _atp_types_order_source()
 
 
 class OrderTypesTest(_Fixture):
@@ -100,20 +106,29 @@ class OrderTypesTest(_Fixture):
         self.assertIn("OrderType (Market, Limit, Stop, StopLimit)", evidence)
 
     def test_dropped_asset_class_variant_is_caught(self) -> None:
-        mutated = self.order_src.replace("    Equity,", "    Spot,", 1)
+        mutated_atp = self.atp_src.replace("    Equity,", "    Spot,", 1)
         with self.assertRaises(SimOrderCheckError) as ctx:
-            check_order_types(self.config, mutated)
+            check_order_types(self.config, self.order_src, mutated_atp)
         self.assertIn("Equity", str(ctx.exception))
 
     def test_dropped_order_type_variant_is_caught(self) -> None:
-        mutated = self.order_src.replace(
+        mutated_atp = self.atp_src.replace(
             "    StopLimit {\n        stop_price_minor: i64,\n        limit_price_minor: i64,\n    },",
             "",
             1,
         )
         with self.assertRaises(SimOrderCheckError) as ctx:
-            check_order_types(self.config, mutated)
+            check_order_types(self.config, self.order_src, mutated_atp)
         self.assertIn("StopLimit", str(ctx.exception))
+
+    def test_dropped_reexport_is_caught(self) -> None:
+        # The hoist's single-authority guarantee: paper_order must RE-EXPORT the
+        # shared atp-types order type, not define its own — dropping the re-export
+        # is caught (this is the SIM-001-side complement of order_type_check).
+        mutated = self.order_src.replace("pub use atp_types::order_type::OrderType;", "", 1)
+        with self.assertRaises(SimOrderCheckError) as ctx:
+            check_order_types(self.config, mutated)
+        self.assertIn("OrderType", str(ctx.exception))
 
 
 class OrderLegStructTest(_Fixture):
@@ -238,15 +253,19 @@ class MoneyInvariantTest(_Fixture):
         self.assertIn("integer minor units", evidence)
 
     def test_injected_float_is_caught(self) -> None:
-        mutated = self.order_src.replace("limit_price_minor: i64", "limit_price_minor: f64", 1)
+        # A float reaching the paper order module breaks money correctness; the
+        # forbidden-float guard reads paper_order itself.
+        mutated = self.order_src.replace("    pub quantity: i64,", "    pub quantity: f64,", 1)
         with self.assertRaises(SimOrderCheckError) as ctx:
             check_money_invariant(self.config, mutated)
         self.assertIn("f64", str(ctx.exception))
 
     def test_renamed_minor_field_is_caught(self) -> None:
-        mutated = self.order_src.replace("stop_price_minor: i64", "stop_price: i64")
+        # The price fields live in the hoisted atp-types authority; renaming one
+        # off the `_minor` convention is caught there.
+        mutated_atp = self.atp_src.replace("stop_price_minor: i64", "stop_price: i64")
         with self.assertRaises(SimOrderCheckError) as ctx:
-            check_money_invariant(self.config, mutated)
+            check_money_invariant(self.config, self.order_src, mutated_atp)
         self.assertIn("stop_price_minor", str(ctx.exception))
 
 

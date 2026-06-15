@@ -103,6 +103,8 @@
 
 use std::fmt;
 
+use atp_types::order_type::OrderTypeError;
+
 use crate::paper_order::{OrderType, Side};
 use crate::sim::PaperSimulationEngine;
 
@@ -400,41 +402,19 @@ fn validate_snapshot(snapshot: &MarketSnapshot) -> Result<(), FillModelError> {
 /// SRS-SIM-001 intake path validates a routed leg, but [`evaluate_fill`] accepts a
 /// raw `OrderType`, so it re-checks here: a non-positive limit or stop price must
 /// never reach the fill path, or a crossed-but-negative limit would return a fill
-/// *at* that negative price. Mirrors `paper_order::validate_leg`'s price guards.
+/// *at* that negative price. DELEGATES to the shared SRS-EXE-003 authority
+/// [`OrderType::validate_prices`] (mapping `OrderTypeError` into `FillModelError`)
+/// so the fill path, the paper intake, and the live intake apply ONE rule that
+/// cannot drift.
 fn validate_order_type(order_type: &OrderType) -> Result<(), FillModelError> {
-    match *order_type {
-        OrderType::Market => {}
-        OrderType::Limit { limit_price_minor } => {
-            if limit_price_minor <= 0 {
-                return Err(FillModelError::NonPositiveLimitPrice {
-                    price_minor: limit_price_minor,
-                });
-            }
+    order_type.validate_prices().map_err(|err| match err {
+        OrderTypeError::NonPositiveLimitPrice { price_minor } => {
+            FillModelError::NonPositiveLimitPrice { price_minor }
         }
-        OrderType::Stop { stop_price_minor } => {
-            if stop_price_minor <= 0 {
-                return Err(FillModelError::NonPositiveStopPrice {
-                    price_minor: stop_price_minor,
-                });
-            }
+        OrderTypeError::NonPositiveStopPrice { price_minor } => {
+            FillModelError::NonPositiveStopPrice { price_minor }
         }
-        OrderType::StopLimit {
-            stop_price_minor,
-            limit_price_minor,
-        } => {
-            if stop_price_minor <= 0 {
-                return Err(FillModelError::NonPositiveStopPrice {
-                    price_minor: stop_price_minor,
-                });
-            }
-            if limit_price_minor <= 0 {
-                return Err(FillModelError::NonPositiveLimitPrice {
-                    price_minor: limit_price_minor,
-                });
-            }
-        }
-    }
-    Ok(())
+    })
 }
 
 /// The market reference price for a marketable order: the ask for a buy (you pay
