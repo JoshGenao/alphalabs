@@ -1,3 +1,113 @@
+=== SESSION 54 ===
+Date: 2026-06-15
+Feature completed: SRS-EXE-002 SDK-SURFACE — "route all non-live strategy orders to the internal
+simulation engine" (docs/SRS.md SRS-5.3 SRS-EXE-002; traces SyRS SYS-2b/SYS-2e, AC-10; StRS
+SN-1.06/SN-1.29/C-11). Picked via plan mode as the file-order #1 P1 UNSTARTED feature (idx 20) — the
+direct complement of the already-committed SRS-EXE-001 live-designation authority. User approved the
+plan, then chose "trigger Codex" for the judgment pass and "Authorize commit (not-APPROVE)" at the
+adversarial boundary.
+Status: 92 remaining features (UNCHANGED — SRS-EXE-002 stays passes:false; honest partial pass).
+feature_list.json was NOT modified.
+
+The slice (the EXE-00x execution-authority thread continues): EXE-001 owns "may this strategy route to
+IB?" and REJECTS non-designated submissions on the live path. EXE-002 adds the NORMAL order-entry
+DISPATCH: every order is routed to exactly one destination derived from the SAME engine-owned
+LiveRoutingDecision authority (authority_for) — Authorized -> LiveBrokerage (delegates to the existing
+route_order, untouched), NotDesignated -> InternalSimulation (a new InternalSimulationSubmit port the
+orchestrator wires to the real PaperSimulationEngine). Only Authorized maps to LiveBrokerage, so a
+non-live strategy reaching IB is unrepresentable in the routing DECISION by construction (AC-10).
+atp-execution keeps NO dependency on atp-simulation (SRS-ARCH-002) — sim is reached only via the port,
+exactly mirroring LiveBrokerageSubmit for IB. route_order / submit_live_order were NOT modified, so all
+pinned EXE-001 / ERR-1/2/3 contract tests stay green.
+
+What I did (prep -> feat -> chore cadence):
+- prep 941f325 (chore(critic)): extended SAFETY_PATH_RE with /order_routing.rs, order[_-]?routing,
+  srs[_-]?exe[_-]?002 (verified ZERO tracked-path collisions; routes.py unaffected). Separate commit
+  (refusal-clause #4 dodge — no --base needed).
+- feat 5f070e6: order_routing.rs (OrderRoute/OrderRoutingReceipt/SimulatedOrderReceipt/
+  InternalSimulationSubmit + route_destination/dispatch_order + L1 unit tests with panic-on-touch
+  ForbiddenBroker); lib.rs re-exports; srs_exe_002_order_routing.rs integration (incl. 1-live+30-paper
+  AC-10 acceptance); tools/order_routing_check.py (fail-closed cargo gate, EXACT-SET enum/arm
+  enforcement) + order_routing_contract block + architecture_check + init.sh wiring;
+  tests/test_order_routing_contract.py (L3) + tests/domain/test_order_routing_dispatch.py (L7,
+  safety-paired).
+- chore (this entry).
+
+What I tested: cargo test -p atp-execution green (new order_routing lib 4 + srs_exe_002 integration 4 +
+all untouched EXE-001/ERR tests); cargo build --workspace clean (no downstream breakage); new code
+clippy + rustfmt clean (NO whole-crate fmt — pre-existing workspace skew left untouched; the
+too_many_arguments warning is on the PRE-EXISTING submit_live_order, my dispatch_order has the #[allow]);
+order_routing_check.py "SRS-EXE-002 SDK-SURFACE PASS" (FAILS CLOSED without cargo); architecture_check
+exit 0 (run under .venv — system python3.14 lacks numpy); ruff clean on new/edited Python (pre-existing
+architecture_check.py I001 import-sort is NOT mine — my import is correctly placed); pytest "not
+integration and not e2e" 1981 passed (only the PRE-EXISTING BBands property flake fails; indicators.py
+NOT touched); ./init.sh -> Environment ready with the new "order-routing (sim-dispatch) contract check"
+gate.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings (no money math, so none of the
+    EXE-003 money:float false positives). Pre-commit hook APPROVE on the feat.
+  judgment (/codex:adversarial-review --wait): 4 fresh-context rounds, NEVER APPROVE (needs-attention)
+    — committed on HUMAN AUTHORIZATION; verdict recorded honestly as not-APPROVE. The loop found 2
+    GENUINE in-scope fail-open bugs (FIXED) then walked to the structural/cross-feature boundary:
+      R1 [high]: thin OrderSubmission envelope loses side/asset_class/order_type/correlation-id ->
+        DOCUMENTED + deferred (the envelope is the SAME thin type the LIVE path uses; enriching it is
+        the EXE-003-deferred authoring->core wiring + EXE-008 ClientCorrelationId, a shared cross-path
+        change — keeping live/paper symmetric forbids enriching only the paper port).
+      R2 [high]: order_routing_check accepted EXTRA routes (subset check) — a 3rd OrderRoute::DirectIbBypass
+        arm to the broker could escape -> FIXED (EXACT-SET enforcement on the enum AND the dispatch
+        match arms; 2 negative tests). A real fail-open hole in my own safety gate.
+      R3 [critical]: submit_live_order is still pub + trusts caller StrategyMode -> bypasses dispatch_order
+        -> DEFERRED (PRE-EXISTING from EXE-001; kept pub because error_handling_check.py +
+        err_1/2/3 tests PIN it; owner SRS-EXE-006/ORCH — already on live_designation_contract.deferred).
+      R4 [high]: port-trust (a broker-backed sim impl) + "unrepresentable by construction" over-claim ->
+        over-claim TIGHTENED (scoped to the routing DECISION at the dispatch boundary) + deferred
+        (real-wiring boundary test owner SRS-ORCH-*/SRS-SIM-001).
+      R5 [high]: contract FORBADE .freshness in the sim arm -> codified a stale-data bypass that
+        conflicts with SRS-MD-004 (block SIMULATED submission on stale data) -> FIXED (narrowed
+        forbidden_in_simulation_arm to ONLY IB-order-creating paths .route_order/.submit_order;
+        freshness/connectivity are reads, NOT forbidden; un-pinned ForbiddenFreshness in tests). The
+        stale-gate IMPL is SRS-MD-004's deliverable (separate unstarted feature), deferred.
+      R6 [critical]: caller-claimed submission.strategy_id can spoof the live id -> DEFERRED
+        (PRE-EXISTING + IDENTICAL in route_order lib.rs:506 which routes on authority_for(&submission.
+        strategy_id); EXE-002 does NOT worsen it; binding to an authenticated StrategyRuntimeBoundary is
+        a cross-cutting ORCH/EXE-001 re-architecture; owner SRS-ORCH-*/SRS-RESV).
+      R7 [high]: = R5 re-raised (stale paper orders) -> already deferred to SRS-MD-004.
+
+Known issues / notes for next agent:
+- SRS-EXE-002 stays passes:false BY DESIGN. Deferred owners (order_routing_contract.deferred[] + module
+  docs + the check's printed list): orchestrator wiring of the real PaperSimulationEngine::accept_order
+  to InternalSimulationSubmit incl. OrderSubmission->PaperOrderRequest/OrderLeg enrichment (SRS-ORCH-*/
+  SRS-SIM-001); end-to-end Python runtime submitting paper orders (SRS-SDK; main.py is a stub —
+  dispatch_order has NO production caller, so R3/R6/R7 are DORMANT, not live vulns); live multi-leg
+  (SRS-EXE-004); simulated fill/ledger/persistence (SRS-SIM-002/003/004); operator IB-paper-account
+  adapter-test surface (SRS-API-001/SRS-EXE-006); the shared envelope intent + correlation-id
+  (SRS-EXE-003/SRS-EXE-008); the simulated-order stale-data gate (SRS-MD-004 — it will add the freshness
+  check to the sim path; this slice deliberately does NOT forbid it); sole-entry wiring + authenticated
+  strategy identity (SRS-EXE-006/SRS-ORCH-*/SRS-RESV).
+- LESSON (memory feedback_adversarial_loop_nonconvergence — CONFIRMED AGAIN, 4 rounds): a routing-
+  authority SDK slice converges on REAL in-scope fail-open bugs for a round or two (R2 checker exact-set,
+  R5 contract freshness over-constraint — BOTH genuinely fixed), then the reviewer walks to the
+  deferred-runtime / pre-existing structural items (sole-entry bypass, port trust, identity auth, the
+  cross-feature MD-004 stale gate) that EXE-002 cannot fix without breaking one-feature atomicity + the
+  pinned EXE-001/ERR-3 contracts. Honest move at that boundary: fix every in-scope bug, scope the rest to
+  named owners with the pre-existing/cross-feature evidence (e.g. route_order lib.rs:506 has the SAME
+  identity-trust), get human authorization, record not-APPROVE. NEW LESSON: when the slice ADDS a new
+  pub order-entry, the reviewer will (correctly) escalate every pre-existing execution-layer trust gap
+  (identity, sole-entry, stale-data) onto the new surface — name each as pre-existing + cross-feature
+  with file:line evidence rather than absorbing the cross-feature refactor.
+- Adversarial-layer note: USER ran /codex:adversarial-review --wait; Claude executed
+  node ~/.claude/plugins/cache/openai-codex/codex/1.0.4/scripts/codex-companion.mjs adversarial-review
+  --wait "$(cat prompts/critic_prompt.md)" each round. No --base needed (prep 941f325 is a separate
+  commit). Pass 1 deterministic re-run APPROVE every round.
+- PRE-EXISTING repo health (NOT mine, still present): workspace cargo fmt --check + some clippy doc-list
+  warnings are pre-existing RED (no rust-toolchain pin); architecture_check.py has pre-existing ruff
+  I001; architecture_check.py MUST be run under .venv (system python3.14 lacks numpy). My new/edited
+  files are fmt+clippy+ruff clean; I did NOT whole-crate fmt (memory feedback_no_whole_crate_cargo_fmt).
+- PRE-EXISTING FLAKY (still present): tests/property/test_indicators_property.py::
+  test_bbands_property_matches_batch_talib (pandas_ta vs talib precision; indicators.py — NOT touched).
+- ORPHANED STASH (still present, not mine): stash@{0} WIP ... trading-calendar.
+
 === SESSION 53 ===
 Date: 2026-06-15
 Feature completed: SRS-EXE-003 SDK-SURFACE — "support market, limit, stop, and stop-limit orders
