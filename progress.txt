@@ -1,3 +1,116 @@
+=== SESSION 53 ===
+Date: 2026-06-15
+Feature completed: SRS-EXE-003 SDK-SURFACE — "support market, limit, stop, and stop-limit orders
+for equities and options in live and paper modes" (docs/SRS.md SRS-5.3 SRS-EXE-003; traces SyRS
+SYS-3/SYS-82; StRS SN-1.08/BG-1). Picked via AskUserQuestion after TWO corrected picks: ERR-9 (user's
+first choice) turned out ALREADY SDK-surface-sliced + committed (8b7c73d), as were ERR-7 (82ef06f) and
+ERR-8 (48abd31) — the three lowest-ID P1 candidates were all done. 59/81 failing P1 features still
+lacked any feat() slice; user chose SRS-EXE-003 from those for best convergence + foundational value.
+Status: 92 remaining features (UNCHANGED — SRS-EXE-003 stays passes:false; honest partial pass).
+feature_list.json was NOT modified.
+
+THE TWIST (scope honesty): SRS-EXE-003's order-type model ALREADY EXISTED, well-designed, in
+crates/atp-simulation/src/paper_order.rs (SRS-SIM-001) — OrderType{Market,Limit{limit_price_minor},
+Stop{stop_price_minor},StopLimit{..}}, Side, AssetClass, OrderLeg, multi-leg, fail-closed validation,
+i64 minor units, prices encoded in the variants (contradictory-set bug class unrepresentable). It was
+just SILOED in atp-simulation (paper path); the LIVE path (atp-execution) had NO order-type model, and
+atp-types already had a DUPLICATE AssetClass. So EXE-003's real work = architectural UNIFICATION (a
+shared source-neutral authority so live+paper are identical), which is inherently CROSS-FEATURE. I
+surfaced this to the user (I'd mis-said "clearly distinct" at pick time); user chose the HOIST approach.
+
+The slice (HOIST): moved OrderType + OrderSide(<-Side) into crates/atp-types/src/order_type.rs and
+unified the duplicate AssetClass; paper_order RE-EXPORTS them (pub use atp_types::...) so all 210
+SIM-001/002 call sites + tests compile unchanged and SIM-001 stays green by construction. Added stable
+wire strings, the price-requirement matrix, and a fail-closed validate_prices positivity rule + a
+cargo-required executable proof. paper_order::validate_leg AND fill_model::validate_order_type now
+DELEGATE to validate_prices (behavior-preserving) — so intake + fill share ONE rule. The LIVE
+consumption (atp-execution intake) is the deferred half that keeps EXE-003 at passes:false.
+
+What I did (prep -> feat -> chore cadence):
+- prep 353357d (chore(critic)): extended SAFETY_PATH_RE with /order_type.rs, order[_-]?type,
+  srs[_-]?exe[_-]?003 (verified ZERO tracked-path collisions). Separate commit (refusal-clause #4).
+- feat 8a8c855: order_type.rs (OrderType/OrderSide/OrderTypeError + as_str/ALL_WIRE/requires_*/
+  accessors/validate_prices + L1 tests); lib.rs re-exports; paper_order.rs + fill_model.rs delegate;
+  order_type_contract block; tools/order_type_check.py (architecture_check + init.sh wired);
+  tests/test_order_type_contract.py (L3) + srs_exe_003_order_type.rs (Rust integration) +
+  tests/domain/test_order_type.py (L7, safety-paired); sim_order_check.py + test_sim_order_contract.py
+  migrated to follow the hoist (check now reads atp-types for variants + verifies the re-export +
+  delegation; money invariant reads the hoisted i64 fields).
+- chore (this entry).
+
+What I tested: cargo test --workspace green (atp-simulation 242 incl. SIM-001/002 unchanged by the
+hoist; new atp-types order_type L1 + 8 srs_exe_003 integration); new code clippy + rustfmt clean (NO
+whole-crate fmt — pre-existing workspace rustfmt skew left untouched); ruff check+format clean on new/
+edited Python; order_type_check.py "SRS-EXE-003 SDK-SURFACE PASS" (FAILS CLOSED without cargo — the
+executable Rust test is the authoritative fail-closed proof, the static regex a supplement);
+architecture_check exit 0; pytest "not integration and not e2e" green except the PRE-EXISTING BBands
+property flake (indicators.py — NOT touched). ./init.sh -> Environment ready with the new "order-type
+contract check" gate.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): WARN — 19 money:float-arithmetic findings, ALL
+    FALSE POSITIVES (prices are integer i64 minor units; zero f64; flagged lines are docs/comparisons).
+    Override accepted. Pre-commit hook also WARN/exit-0 -> allowed.
+  judgment (/codex:adversarial-review --wait): 7 ROUNDS, never APPROVE (needs-attention throughout) —
+    committed on HUMAN AUTHORIZATION; verdict recorded honestly as not-APPROVE. The loop converged on
+    REAL in-scope issues R1-R6, then hit a structural boundary at R7:
+      R1 [high x2]: validate_prices is optional/bypassable (public variants) + contract falsely claims
+        live consumes OrderType -> FIXED the overclaims (paper consumes via re-export; live deferred;
+        positivity is an INTAKE-boundary rule; named construction-enforcement deferred).
+      R2 [high+med]: paper validate_leg re-implements validation (only textual parity) + Python
+        price-matrix parity claim false -> FIXED (validate_leg DELEGATES to validate_prices; check
+        enforces the call-through; corrected the note to claim only enum-wire parity cross-language,
+        Python matrix enforcement deferred).
+      R3 [med]: fill_model::validate_order_type still an independent copy -> FIXED (it DELEGATES too;
+        added fill_model_consumer contract block + check_fill_model_delegation + test).
+      R4 [high+med]: AC unimplemented (deferred runtime — the honest passes:false reason) + paper_order
+        comment still overclaimed parity -> FIXED the comment; swept ALL files for "by construction"/
+        "identical for live and paper" overclaims.
+      R5 [high]: fail-closed checker was token-only (a `if false && price_minor <= 0` would pass) ->
+        FIXED (structural guard regex + negative test).
+      R6 [high]: static gate still passes guards wrapped in `if false { .. }`, and reported PASS when
+        cargo absent -> FIXED (cargo now REQUIRED/fail-closed — executable test is authoritative; added
+        if-false unreachable detection + negative tests for both).
+      R7 [high]: commit mixes the cross-crate hoist + SIM-001/002 refactors with the EXE-003 contract
+        surface (atomicity). This conflicts with the repo's safety-test-pairing gate (safety code +
+        tests/domain must co-commit, per the SESSION 52 order_event precedent f16c726) and the mutual
+        file dependencies make a clean split infeasible; it is also inherent to the user-approved hoist.
+        [USER chose "Commit as one feat under authorization".]
+
+Known issues / notes for next agent:
+- SRS-EXE-003 stays passes:false BY DESIGN. Deferred owners (order_type_contract.deferred[] + module
+  docs + the check's printed list): live-path intake + accept->ack via the IB adapter + NFR-P1 proof
+  (SRS-EXE-006); internal-sim accept->ack/fill (SRS-SIM-001/002); order STATE-TRACKING (SRS-EXE-008
+  lifecycle wiring); non-live routing into the sim engine (SRS-EXE-002); option CONTRACT IDENTITY +
+  LIVE multi-leg composite (SRS-EXE-004/SRS-DATA-004, mirrors the existing SecurityKey option deferral);
+  making positivity unbypassable BY CONSTRUCTION (private fields/validated ctors — touches every
+  OrderType::Limit{..} match site, an SRS-SIM-001 API change); and enforcing the price MATRIX on the
+  Python OrderRequest authoring surface (a plain dataclass with no validation today).
+- LESSON (memory feedback_adversarial_loop_nonconvergence — CONFIRMED AGAIN, 7 rounds): a hoist/
+  contract slice converges on REAL in-scope issues for several rounds (overclaims, validation
+  delegation, checker robustness) but will NOT reach a clean APPROVE — the reviewer then walks to the
+  deferred-runtime AC and to commit-atomicity (which here FIGHTS the repo's own safety-pairing gate).
+  Honest move at that boundary: fix every in-scope issue, scope the rest to named owners, get human
+  authorization, record not-APPROVE. NEW LESSON: when the order-type model ALREADY exists in a sibling
+  crate, the feature IS cross-feature unification — surface that BEFORE picking, not after.
+- HOIST footprint: editing sim_order_check.py + test_sim_order_contract.py (SIM-001's check/test) was
+  unavoidable (the types moved); behavior preserved, SIM-001 242 tests green. fill_model.rs (SIM-002)
+  now delegates too. If a future SIM-001/002 session re-touches these, the order-type vocab is the
+  atp-types authority now, not paper_order.
+- PRE-EXISTING repo health (NOT mine, flag for a cleanup pass): `cargo fmt --check` FAILS workspace-wide
+  (no rust-toolchain pin; local rustfmt 1.9.0 rewraps older-formatted code across atp-data/atp-execution/
+  atp-orchestrator/atp-types) and `cargo clippy -- -D warnings` has pre-existing "doc list item" warnings
+  -> ci.yml fmt+clippy gates are pre-existing-RED. tools/architecture_check.py has pre-existing ruff
+  I001 (import sort). My new/edited files are fmt+clippy+ruff clean; I did NOT whole-crate fmt (memory
+  feedback_no_whole_crate_cargo_fmt). run_ci_locally.sh fails ONLY on this pre-existing skew.
+- PRE-EXISTING FLAKY (still present): tests/property/test_indicators_property.py::
+  test_bbands_property_matches_batch_talib (pandas_ta vs talib precision; indicators.py — NOT touched).
+- ORPHANED STASH (still present, not mine): stash@{0} WIP ... trading-calendar.
+- Adversarial-layer note: USER ran /codex:adversarial-review --wait; Claude executed
+  node ~/.claude/plugins/cache/openai-codex/codex/1.0.4/scripts/codex-companion.mjs adversarial-review
+  --wait "$(cat prompts/critic_prompt.md)" each round. No --base needed (prep 353357d is a separate
+  commit, so the staged feat diff never tripped refusal-clause #4).
+
 === SESSION 52 ===
 Date: 2026-06-14
 Feature completed: SRS-SDK-004 SDK-SURFACE — "deliver order event callbacks to Python strategy
