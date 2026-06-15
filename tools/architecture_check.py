@@ -76,6 +76,10 @@ from order_lifecycle_check import (
     OrderLifecycleCheckError,
     assert_order_lifecycle_static,
 )
+from order_routing_check import (
+    OrderRoutingCheckError,
+    assert_order_routing_static,
+)
 from order_type_check import (
     OrderTypeCheckError,
     assert_order_type_static,
@@ -585,6 +589,25 @@ def assert_order_type(config: dict) -> list[str]:
         f"rule ({block['price_error_enum']}); the single shared definition is consumed by the "
         f"paper path via {block['paper_consumer']['path']} re-export, with live-path consumption "
         f"deferred (SRS-EXE-003 stays passes:false)"
+    )
+    return static_evidence + [summary]
+
+
+def assert_order_routing(config: dict) -> list[str]:
+    block = config.get("order_routing_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_order_routing_static(config, ROOT)
+    summary = (
+        f"{block['execution_crate']['crate']} declares the source-neutral "
+        f"{block['route_enum']['enum']} dispatch authority for SRS-EXE-002: "
+        f"{block['destination_decision']['method']} maps the engine-owned "
+        f"{block['destination_decision']['authority_enum']} authority so the single "
+        f"designated live strategy routes to the broker and EVERY non-live strategy routes "
+        f"to the internal simulation engine through the {block['simulation_port']['trait']} "
+        f"port — a paper order never creates an IB order (AC-10); live runtime wiring deferred "
+        "(SRS-EXE-002 stays passes:false)"
     )
     return static_evidence + [summary]
 
@@ -1147,6 +1170,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_order_type(config))
     except OrderTypeCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_order_routing(config))
+    except OrderRoutingCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_backtest(config))

@@ -6306,5 +6306,107 @@
       "Enforcing the price-requirement MATRIX on the Python OrderRequest authoring surface (an assert_order_request helper rejecting a LIMIT with no limit_price, a MARKET with a stray price, etc., mirroring OrderType::validate_prices). OrderRequest is a plain dataclass with no validation today; the matrix is enforced in the Rust core and pinned to this JSON contract, but the Python surface pins only the enum wire strings. Owner: the SRS-SDK runtime / strategy host that submits OrderRequests.",
       "Making price positivity unbypassable BY CONSTRUCTION (validated constructors + private price fields, or a validated order-type wrapper required by the submission APIs) rather than an intake-boundary check. OrderType's variants are public, so a caller can construct a non-positive price and skip validate_prices; today positivity is enforced where orders are accepted (paper_order::validate_leg, which delegates to validate_prices). Privatizing the fields is an SRS-SIM-001 API change (it touches every OrderType::Limit { .. } match/construction site across atp-simulation) and is deferred to the order-intake wiring so SIM-001's tests + contract migrate atomically -- bundling it here would be an unrelated cross-feature refactor."
     ]
+  },
+  "order_routing_contract": {
+    "requirement": "SRS-EXE-002",
+    "srs_refs": [
+      "SRS-EXE-002"
+    ],
+    "syrs_refs": [
+      "SYS-2b",
+      "SYS-2e",
+      "AC-10"
+    ],
+    "strs_refs": [
+      "SN-1.06",
+      "SN-1.29",
+      "C-11"
+    ],
+    "execution_crate": {
+      "crate": "atp-execution",
+      "path": "crates/atp-execution"
+    },
+    "module": "crates/atp-execution/src/order_routing.rs",
+    "route_enum": {
+      "enum": "OrderRoute",
+      "variants": [
+        "LiveBrokerage",
+        "InternalSimulation"
+      ]
+    },
+    "simulated_receipt": {
+      "struct": "SimulatedOrderReceipt",
+      "field": "sim_order_id",
+      "forbidden_field": "broker_order_id"
+    },
+    "routing_receipt": {
+      "enum": "OrderRoutingReceipt",
+      "variants": [
+        "Live",
+        "Simulated"
+      ]
+    },
+    "simulation_port": {
+      "trait": "InternalSimulationSubmit",
+      "method": "submit_simulated",
+      "receipt_type": "SimulatedOrderReceipt"
+    },
+    "destination_decision": {
+      "method": "route_destination",
+      "authority_call": "self.designation.authority_for",
+      "authority_enum": "LiveRoutingDecision",
+      "live_authority_variant": "Authorized",
+      "simulation_authority_variant": "NotDesignated",
+      "route_enum": "OrderRoute",
+      "live_route_variant": "LiveBrokerage",
+      "simulation_route_variant": "InternalSimulation",
+      "note": "route_destination is NOT a new source of truth: it maps the engine-owned SRS-EXE-001 LiveRoutingDecision authority to a destination. Authorized -> LiveBrokerage; NotDesignated -> InternalSimulation. The NotDesignated (non-live) arm must yield InternalSimulation and must NEVER yield LiveBrokerage -- the AC-10 'paper orders never create IB orders' invariant, unrepresentable for a non-live strategy by construction."
+    },
+    "dispatch_guard": {
+      "method": "dispatch_order",
+      "destination_call": "self.route_destination",
+      "route_enum": "OrderRoute",
+      "live_variant": "LiveBrokerage",
+      "simulation_variant": "InternalSimulation",
+      "live_delegate_call": ".route_order",
+      "simulation_submit_call": ".submit_simulated",
+      "forbidden_in_simulation_arm": [
+        ".route_order",
+        ".submit_order"
+      ],
+      "forbidden_in_live_arm": [
+        ".submit_simulated"
+      ],
+      "note": "AC-10 forbids a paper order from CREATING AN IB ORDER, so the InternalSimulation arm must not reach an IB-order-creating path: no self.route_order (which leads to the broker) and no broker submit_order. It deliberately does NOT forbid read-only gates: connectivity (.state) is IB-order-submission reachability that paper never needs, and freshness (.freshness) is the SHARED market-data staleness gate that SRS-MD-004 requires for SIMULATED order submission too (block simulated orders on stale data, SYS-87) -- forbidding .freshness here would codify a stale-data bypass and block MD-004, so it is intentionally allowed (the simulated-order stale gate itself is MD-004, deferred). The LiveBrokerage arm delegates to route_order (the SRS-EXE-001 authority gate + ERR-1/2/3 connectivity/freshness safeguards) and must not touch the simulation port. Method-call tokens are matched (leading dot) so the check is robust to the receiver being on a previous line after rustfmt."
+    },
+    "dependency_direction": {
+      "crate_manifest": "crates/atp-execution/Cargo.toml",
+      "forbidden_dependency": "atp-simulation",
+      "note": "atp-execution must not depend on atp-simulation (SRS-ARCH-002 one-way dependency direction). The simulation destination is reached only through the InternalSimulationSubmit port, which the orchestrator wires to the real PaperSimulationEngine."
+    },
+    "integration_test": "srs_exe_002_order_routing",
+    "lib_test_filter": "order_routing",
+    "ac_traces": [
+      "SRS-EXE-002",
+      "SYS-2b",
+      "SYS-2e",
+      "AC-10",
+      "SN-1.06",
+      "SN-1.29",
+      "C-11"
+    ],
+    "deferred": [
+      "Orchestrator wiring of the real PaperSimulationEngine::accept_order to the InternalSimulationSubmit port, including the OrderSubmission -> PaperOrderRequest/OrderLeg enrichment (atp-execution's OrderSubmission carries only strategy_id + symbol + quantity; the sim engine's accept_order needs full OrderLeg detail) -- owner SRS-ORCH-* / SRS-SIM-001 seam.",
+      "End-to-end Python strategy runtime that submits paper orders through dispatch_order (no Rust orchestrator binary calls dispatch_order yet; main.py is a stub) -- owner SRS-SDK runtime.",
+      "Live multi-leg options composite routing -- this slice routes the single-envelope OrderSubmission; composite multi-leg is modeled in the paper intake but not in the live routing envelope -- owner SRS-EXE-004.",
+      "The simulated fill / virtual ledger / paper-state persistence triggered by an accepted paper order -- owner SRS-SIM-002 / SRS-SIM-003 / SRS-SIM-004. This slice routes to the InternalSimulationSubmit port; the fill/ledger behind it is the SIM-00x runtime.",
+      "Operator-initiated IB-paper-account adapter-integration-test surface: AC-10's 'the IB paper account is available only through operator-initiated adapter integration tests' is an operator workflow, not exercised here -- owner SRS-API-001 / SRS-EXE-006.",
+      "The InternalSimulationSubmit / LiveBrokerageSubmit envelope is the thin shared OrderSubmission (strategy_id + symbol + quantity); enriching it with full execution intent (side / asset class / order type + prices, the SRS-EXE-003-deferred authoring->core wiring) and the SRS-EXE-008 ClientCorrelationId idempotency key is a shared cross-path change that must land for the live AND paper paths together -- keeping them symmetric (source-neutral) -- not on the paper port alone. dispatch_order intentionally routes the same envelope the live path already routes. Owner SRS-EXE-003 (envelope intent) / SRS-EXE-008 (correlation-id idempotency).",
+      "SOLE-ENTRY BYPASS (adversarial R3, structural boundary): dispatch_order is the intended sole production order-entry, but ExecutionEngine::submit_live_order is still pub and trusts a caller-supplied StrategyMode::Live, so a caller can reach the broker without going through dispatch_order or the designation authority. This is the SAME bypass already deferred on live_designation_contract: submit_live_order is kept pub because the ERR-1/2/3 contract pins it (tools/error_handling_check.py check_submit_live_order_signature; err_1/2/3 integration tests call it directly). Making it crate-private + an admission token re-architects that pinned contract and is owner SRS-EXE-006 / SRS-ORCH-*. EXE-002 does NOT introduce this bypass (it pre-exists from EXE-001) and cannot close it without breaking the pinned ERR contracts.",
+      "STRATEGY-IDENTITY AUTHENTICATION (adversarial R6, structural boundary): dispatch_order derives the route from submission.strategy_id, but StrategyId is a caller-claimed public field of OrderSubmission, so identity is by-claim, not bound to the authenticated strategy runtime. This is PRE-EXISTING and identical in the EXE-001 path: ExecutionEngine::route_order at lib.rs:506 also routes on authority_for(&submission.strategy_id) -- EXE-002 inherits the trust model and does NOT worsen it. Binding identity to an authenticated StrategyRuntimeBoundary (each strategy runs in its own orchestrator-managed container; the boundary is the trust anchor) requires changing OrderSubmission + route_order + the orchestrator container->identity wiring -- a cross-cutting re-architecture of the pinned EXE-001 authority surface. Owner SRS-ORCH-* / SRS-RESV-002..006 (the same durable/cross-process designation + runtime-boundary subsystem already deferred on live_designation_contract). dispatch_order is dormant (no production caller) so there is no live spoofing path today.",
+      "PORT-TRUST / REAL-WIRING PROOF (adversarial R4, structural boundary): InternalSimulationSubmit is an abstraction; a misimplemented or broker-backed impl supplied to dispatch_order could create an IB side effect the panic-on-touch stubs cannot observe. The dispatcher's by-construction guarantee is only that a non-live order routes to the sim port and touches no IB port (proven). Binding a trusted simulation capability at orchestrator construction (restricting who may supply it) and a real-component boundary test that proves no brokerage adapter is reachable behind the wired PaperSimulationEngine is owner SRS-ORCH-* / SRS-SIM-001 -- the same seam as the orchestrator wiring above.",
+      "SIMULATED-ORDER STALE-DATA GATE (adversarial R5): SRS-MD-004 / SYS-87 requires blocking SIMULATED (not only live) order submission when required market data is stale (reject with MARKET_DATA_STALE before the order reaches simulation). dispatch_order routes a non-live order to the sim port WITHOUT a freshness check today; this slice does NOT forbid one (.freshness was removed from forbidden_in_simulation_arm so MD-004 can add the shared gate), but it also does not implement it -- that is SRS-MD-004's deliverable (a distinct, currently-unstarted P1 feature; implementing it here would conflate two features and touch the pinned ERR-3 freshness contract). dispatch_order is dormant (no production caller / main.py is a stub), so there is no live stale-data bypass today. Owner SRS-MD-004 (simulated-order half) -- it will add the freshness gate to the sim path and the MARKET_DATA_STALE L7 proof.",
+      "SRS-EXE-002 stays passes:false until the orchestrator wiring + the SRS-SDK runtime land and the AC is exercised end to end through real workflows."
+    ]
   }
 }

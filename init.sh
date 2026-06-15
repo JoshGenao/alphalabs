@@ -259,6 +259,13 @@ if ! python3 tools/order_type_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running order-routing (sim-dispatch) contract check..."
+if ! python3 tools/order_routing_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Order-routing contract check failed; run python3 tools/order_routing_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running subscription-limit contract check..."
 if ! python3 tools/subscription_limit_check.py >/dev/null; then
   echo "✗ Environment failed"
