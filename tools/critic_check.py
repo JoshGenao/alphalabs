@@ -247,7 +247,8 @@ SAFETY_PATH_RE = re.compile(
     r"|/designation\.rs|live[_-]?designation|srs[_-]?exe[_-]?001"
     r"|/order_lifecycle\.rs|order[_-]?lifecycle|srs[_-]?exe[_-]?008"
     r"|/order_event\.rs|order[_-]?event[_-]?dispatch|srs[_-]?sdk[_-]?004"
-    r"|/order_type\.rs|order[_-]?type|srs[_-]?exe[_-]?003)",
+    r"|/order_type\.rs|order[_-]?type|srs[_-]?exe[_-]?003"
+    r"|/order_routing\.rs|order[_-]?routing|srs[_-]?exe[_-]?002)",
     re.IGNORECASE,
 )
 
