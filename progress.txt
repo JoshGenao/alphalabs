@@ -1,16 +1,121 @@
 >>> NEXT TARGET (operator-directed, 2026-06-15): close out SRS-BT-009 to passes:true — the project's
 >>> first genuine end-to-end feature close. Do NOT pick by default file-order; work SRS-BT-009 instead.
 >>> Full multi-session plan: docs/plans/bt009-closeout.md (read it in full before coding).
->>>   - Phase 1 (next session): durable file persistence on BacktestResultStore (wrap the existing
->>>     serialize()/restore() codec with save_to_path/load_from_path + a configured STORAGE_PATHS dir +
->>>     an srs_bt_009_persist_query integration test). Stays passes:false.
->>>   - Phase 2 (session after): operator persist/query workflow (Rust example-binary CLI preferred —
+>>>   - Phase 1 (SESSION 55, DONE): durable file persistence on BacktestResultStore shipped
+>>>     (save_to_path/load_from_path wrapping the codec + ATP_BACKTEST_RESULTS_DIR config key +
+>>>     srs_bt_009_persist_query integration test). SRS-BT-009 STAYS passes:false. See SESSION 55.
+>>>   - Phase 2 (NEXT SESSION): operator persist/query workflow (Rust example-binary CLI preferred —
 >>>     there is NO Python<->Rust runtime bridge) + walk the 4 feature_list steps end to end + flip
 >>>     passes:true. Hold the scope line: SSD/NAS tiering=DATA-008, UI view=UI-004/API-001, real
->>>     Python-strategy result producer=BT-001-runtime are all DEFERRED — do not absorb them.
+>>>     Python-strategy result producer=BT-001-runtime, AND multi-writer merge/lock coordination
+>>>     (=orchestrator single-writer path / DATA-008) are all DEFERRED — do not absorb them.
+>>>   - Phase-1 durable-write primitive (now built): crash-durable (scratch fsync -> atomic rename ->
+>>>     parent-dir fsync), per-call-unique scratch (<pid>.<seq>, no clock/RNG -> content stays
+>>>     deterministic), missing-DIR fails closed vs missing-FILE-in-present-dir=empty, corrupt file
+>>>     fails closed via restore(). SINGLE-LOGICAL-WRITER snapshot-replace: concurrent saves never
+>>>     CORRUPT (proven), but last-publish-wins for DIFFERENT snapshots (no merge) — Codex R2 Finding 2.
 >>>   - Why closeable: backtest_store.rs already bundles all 7 artifacts + 3 query axes + the codec;
 >>>     backtest.rs::run() produces a real BacktestResult over Rust fixture ports (VecSource + a fixture
->>>     BacktestStrategy) with NO Python host. Gap = file I/O + a runnable operator workflow.
+>>>     BacktestStrategy) with NO Python host. Phase-1 gap (file I/O) is now closed; Phase 2 = workflow.
+
+=== SESSION 55 ===
+Date: 2026-06-15
+Feature: SRS-BT-009 (persist completed backtest results; docs/SRS.md SRS-5.6; traces SyRS SYS-21/79,
+StRS SN-1.02/SN-1.04) — PHASE 1 of the operator-directed closeout (docs/plans/bt009-closeout.md):
+durable FILE persistence on BacktestResultStore. Picked per the operator next-target pointer (NOT
+file-order). Approved via plan mode (plan: glistening-baking-mountain). Config-key-in-Phase-1 chosen by
+operator; commit-at-not-APPROVE authorized by operator at the adversarial boundary.
+Status: 92 remaining features (UNCHANGED — SRS-BT-009 STAYS passes:false; honest Phase-1 partial; the
+operator workflow + the 4-step end-to-end walk that flips passes:true is Phase 2). feature_list.json
+was NOT modified.
+
+The slice: the store/codec/query-axes + a real Rust result producer (Backtester::run over fixture
+ports) already existed; the only Phase-1 gap was that serialize() produced the blob but nothing wrote
+it to disk. Added BacktestResultStore::save_to_path / load_from_path WRAPPING the existing codec (no new
+format, no serde, std::fs only) + a forward-wired ATP_BACKTEST_RESULTS_DIR storage_paths config key.
+
+What I did (feat -> chore; NO prep commit — backtest_store.rs / srs_bt_009 ALREADY match
+critic_check.py SAFETY_PATH_RE 239-240, so no new safety path to register, but the feat MUST carry a
+tests/domain/ diff, which it does):
+- backtest_store.rs: save_to_path (CRASH-DURABLE: write scratch -> scratch.sync_all() fsync -> fs::rename
+  atomic publish -> fs::File::open(dir).sync_all() parent-dir fsync; per-call-UNIQUE scratch name
+  <STORE_TMP_FILENAME>.<pid>.<SCRATCH_SEQ> so concurrent writers can't clobber the scratch — pid+atomic
+  counter, NOT clock/RNG, so persisted CONTENT stays byte-deterministic) + load_from_path (missing DIR
+  -> StoreError::Io fail-closed; missing FILE in present dir -> empty; present file -> Self::restore
+  fail-closed) + new StoreError::Io { context: &'static str } (a &'static str, NOT io::Error, to keep
+  the Debug/Clone/PartialEq/Eq derives) + 6 lib unit tests.
+- srs_bt_009_persist_query.rs (new integration test): real fixture-backtest producer -> 2 records ->
+  save -> assert file on disk -> load -> equality + all 5 query axes with all 7 artifacts; +
+  missing-file-empty, missing-DIR-fail-closed, corrupt-file-fail-closed, resave-atomic-replace, and an
+  8-thread concurrent-saves-never-corrupt test.
+- config: ATP_BACKTEST_RESULTS_DIR (storage_paths/path) in runtime_services.json configuration.keys +
+  .env.example + python/atp_config/README.md.
+- contract: extended tools/backtest_store_check.py (new check_file_persistence pinning save/load fns,
+  fsync file+dir, atomic rename, unique scratch, missing-dir/missing-file taxonomy, restore-on-load,
+  StoreError::Io, the config key) + the sim_backtest_store_contract file_persistence spec block + "Io"
+  in error_enum.variants + revised deferred[0] (SSD/NAS TIERING stays DATA-008; the file write is
+  shipped) + description tail. Wired into assert_backtest_store_static (runs in CI via
+  architecture_check + init.sh --require-cargo).
+- tests: test_backtest_store_contract.py (positive + .replace() negatives for every new token) +
+  tests/domain/test_backtest_record_query.py (the SAFETY pairing — behavioral cargo-driven round-trip /
+  missing-file / missing-DIR / corrupt / resave / concurrent tests + structural fsync + load-delegation
+  guards) + test_architecture.py & it counts (16->17 keys; 16->17 static checks) updated.
+
+What I tested: cargo test -p atp-simulation --lib backtest_store (28) + --test srs_bt_009_persist_query
+(6) green; cargo test --workspace green (52 "test result: ok", 0 failed); backtest_store_check
+--require-cargo "SRS-BT-009 SDK-SURFACE PASS"; architecture_check exit 0 (under .venv); init.sh ->
+Environment ready; full non-gated pytest 1999 passed (only the PRE-EXISTING BBands property flake fails
+— python/indicators NOT touched); new Rust rustfmt+clippy clean (clippy -D noise is PRE-EXISTING
+atp-types doc-list warnings; NO whole-crate fmt — only my new lines reformatted); ruff clean.
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings (re-run clean after every fix;
+    safety-paired rule satisfied by the tests/domain/ diff).
+  judgment (/codex:adversarial-review --wait, USER-triggered, fresh context): 2 rounds, final verdict
+    needs-attention (NOT APPROVE) — committed on HUMAN AUTHORIZATION; recorded honestly as not-APPROVE.
+    The loop fixed every genuine in-scope bug, then walked to the deferred cross-feature boundary:
+      R1 [high]: save_to_path was not crash-durable (no fsync) or writer-safe (fixed scratch name) ->
+        FIXED (scratch fsync + atomic rename + parent-dir fsync; per-call-unique <pid>.<seq> scratch;
+        + resave + 8-thread concurrent-never-corrupt tests; claims tightened to single-logical-writer).
+      R2 Finding 1 [high]: load_from_path mapped ANY NotFound (incl. a missing/unmounted/deleted
+        configured DIRECTORY) to an empty store -> silently erased a persisted history -> FIXED (a
+        missing DIR fails closed StoreError::Io; only a missing FILE in a PRESENT dir = empty; +
+        missing-dir lib+integration+domain tests + the !dir.is_dir() contract pin).
+      R2 Finding 2 [high]: whole-store snapshot-replace loses runs under concurrent DIFFERENT-snapshot
+        saves (last-publish-wins) -> DEFERRED w/ operator authorization. It is closeable ONLY by
+        changing the persistence MODEL to lock + load-MERGE-validate-save (append/merge, disk-history-
+        dependent, breaks the snapshot/byte-determinism design + needs file locking) — a different
+        feature owned by the deferred orchestrator single-writer path (SRS-BT-001-runtime) / SRS-DATA-008
+        concurrent-store coordination. There is NO production caller of save_to_path yet (Phase 1 is the
+        primitive; Phase 2 = workflow), and the single-user/local baseline (AGENTS.md) has one
+        orchestrator. A lock alone does NOT satisfy "no run lost" (only merge does), so a partial fix
+        would be scope creep that still doesn't converge Codex. In-scope guarantees SHIPPED + pinned: no
+        corruption under concurrency, crash durability, missing-dir fail-closed. Claim is honest
+        (single-logical-writer, last-publish-wins) in the module doc + the file_persistence spec.
+
+Known issues / notes for next agent:
+- SRS-BT-009 stays passes:false BY DESIGN (Phase 1 of 2). PHASE 2 (next session) = the operator
+  persist/query workflow (Rust example-binary CLI preferred — NO Python<->Rust runtime bridge) + walk
+  the 4 feature_list steps end to end + flip passes:true (count 92 -> 91). See docs/plans/bt009-
+  closeout.md §6.
+- DEFERRED owners (do NOT absorb in Phase 2 either): SSD/NAS tiering/eviction/failover = SRS-DATA-008;
+  dashboard backtest-history view = SRS-UI-004/SRS-API-001; real orchestrated run producer / real
+  provenance = SRS-BT-001-runtime; AND (new, Codex R2 Finding 2) multi-writer MERGE/lock coordination
+  (no-run-lost under concurrent different snapshots) = orchestrator single-writer path / SRS-DATA-008.
+  The snapshot-replace primitive is correct for the single logical writer it documents.
+- LESSON (memory feedback_adversarial_loop_nonconvergence — CONFIRMED): even a genuinely-closeable
+  primitive's adversarial loop fixes real in-scope bugs for a round or two (R1 fsync/writer-safety, R2
+  missing-dir — BOTH genuinely fixed) then walks to the deferred design boundary (the merge model).
+  Honest move: fix every in-scope bug, document + name the deferred owner, pin the in-scope guarantees,
+  get human authorization, record not-APPROVE. Do NOT add a half-measure (e.g. a fail-closed lock) that
+  expands scope yet still fails the reviewer's bar.
+- Adversarial-layer note: USER ran /codex:adversarial-review --wait; Claude executed node
+  ~/.claude/plugins/cache/openai-codex/codex/1.0.4/scripts/codex-companion.mjs adversarial-review --wait
+  "$(cat prompts/critic_prompt.md)" each round (Codex reads the STAGED diff itself; no --base needed —
+  no prep commit). Deterministic re-run APPROVE every round.
+- DURABLE-WRITE pattern now available for reuse (SRS-SIM-004 / SRS-EXE-008 "stable across restart"):
+  temp+fsync -> atomic rename -> parent-dir fsync, per-call-unique scratch, fail-closed taxonomy
+  (missing-dir vs missing-file vs corrupt). std::fs only, zero deps.
 
 === SESSION 54 ===
 Date: 2026-06-15
