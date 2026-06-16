@@ -1,5 +1,13 @@
 # Closeout plan — SRS-BT-009 (persist completed backtest results) → `passes:true`
 
+> **STATUS: CLOSED ✅ (2026-06-16, SESSION 56).** SRS-BT-009 is `passes:true`. Phase 1 (SESSION 55)
+> shipped the durable file layer; Phase 2 (SESSION 56) shipped the `bt009_store_cli` operator
+> persist/query binary and walked the 4 steps end to end. Adversarial loop: deterministic APPROVE;
+> judgment not-APPROVE (committed on operator authorization) — every in-scope finding fixed; the
+> remaining round-2 finding (concurrent unlocked persists dropping runs) is the deferred multi-writer
+> coordination owned by the orchestrator single-writer path / SRS-DATA-008, outside this AC. Deferred
+> owners below remain open. **Do not reopen SRS-BT-009.**
+
 **Operator-directed target.** This is a multi-session plan to take **SRS-BT-009** all the way to
 `passes:true` — the project's first genuine end-to-end feature close. It is written for cold-start
 autonomous agents: read this in full before touching code. Split into **Phase 1** (one session) and
