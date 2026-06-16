@@ -9,6 +9,13 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+# SRS-BT-009 Phase 2 operator persist/query CLI (docs/plans/bt009-closeout.md §6). A thin binary
+# over the public BacktestResultStore API — there is no Python<->Rust runtime bridge, so the
+# operator "CLI/API workflow" the acceptance names is demonstrated here in the Rust core.
+[[bin]]
+name = "bt009_store_cli"
+path = "src/bin/bt009_store_cli.rs"
+
 [dependencies]
 atp-strategy-engine = { path = "../atp-strategy-engine" }
 atp-types = { path = "../atp-types" }
