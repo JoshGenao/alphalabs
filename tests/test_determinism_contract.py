@@ -2,11 +2,13 @@
 
 SRS-BT-010 / SyRS SYS-62 / StRS SN-1.02 -- repeated runs with identical inputs produce
 identical trade logs, equity curves, and metrics; parallelism, floating-point ordering, and
-platform random values do not introduce nondeterminism. This slice ships the deterministic-
-backtest VERIFICATION surface in ``crates/atp-simulation`` (module ``determinism``); the
-deferred halves (the end-to-end guarantee under the real Python strategy host, the operator
-repeated-run workflow via SRS-API-001 / SRS-UI, and stamping the RunDigest onto each persisted
-SRS-BT-009 record) keep ``feature_list.json`` at ``passes:false``.
+platform random values do not introduce nondeterminism. The deterministic-backtest VERIFICATION
+surface lives in ``crates/atp-simulation`` (module ``determinism``): the in-process verifier, the
+``RunManifest`` / ``digest_manifest`` input fingerprint, and the ``bt010_repro_cli`` operator
+binary whose two fresh-process runs close the platform-generated-randomness clause. The remaining
+deferred owners (the REST / dashboard surface via SRS-API-001 / SRS-UI, the end-to-end guarantee
+under the real Python strategy host, and stamping the RunDigest onto each persisted SRS-BT-009
+record) are named in the script's deferred line.
 
 Mirrors ``tests/test_factor_analysis_contract.py``: shells out to ``tools/determinism_check.py``,
 then exercises each per-check function in-process, including negative spot-checks that mutate
@@ -34,10 +36,12 @@ from determinism_check import (  # noqa: E402
     DeterminismCheckError,
     assert_determinism_static,
     cargo_source,
+    check_cross_process_cli,
     check_determinism,
     check_digest_fns,
     check_error_enum,
     check_harness,
+    check_manifest,
     check_metrics_digest,
     check_module_reexport,
     check_no_broker_dependency,
@@ -66,6 +70,8 @@ class DeterminismScriptTest(unittest.TestCase):
             "exposes `pub fn digest_result",
             "encode_result_body folds the trade log + equity curve as exact i64 minor units",
             "encode_metrics_body folds the eight dimensionless metric ratios via push_opt_f64",
+            "declares RunManifest + digest_manifest (ManifestDigest, magic ATP-BACKTEST-RUN-MANIFEST",
+            "registers the bt010_repro_cli operator binary (digest + verify)",
             "verify_reproducible_with_metrics (all three artifacts) run the engine twice via run_pair",
             "runs_match (incl. data_source + range provenance)",
             "the crate's own deterministic metrics::compute over immutable inputs",
@@ -74,7 +80,7 @@ class DeterminismScriptTest(unittest.TestCase):
             "lib.rs re-exports `pub mod determinism;`",
             "Cargo.toml declares no dependency on the broker/live/orchestrator path",
             "determinism module is free of all 5 forbidden vendor SDK tokens",
-            "feature_list.json keeps SRS-BT-010 passes:false",
+            "cross-process repeated-run + input-provenance manifest realized via bt010_repro_cli",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
 
@@ -90,7 +96,7 @@ class _Fixture(unittest.TestCase):
 class StaticCoverageTest(_Fixture):
     def test_all_static_checks_pass(self) -> None:
         evidence = assert_determinism_static(self.config)
-        self.assertEqual(len(evidence), 10)
+        self.assertEqual(len(evidence), 12)
         self.assertTrue(all(isinstance(line, str) and line for line in evidence))
 
 
@@ -170,6 +176,51 @@ class MetricsDigestTest(_Fixture):
         with self.assertRaises(DeterminismCheckError) as ctx:
             check_metrics_digest(self.config, mutated)
         self.assertIn("win_rate", str(ctx.exception))
+
+
+class ManifestTest(_Fixture):
+    def test_evidence(self) -> None:
+        self.assertIn("RunManifest", check_manifest(self.config, self.src))
+
+    def test_dropped_manifest_field_is_caught(self) -> None:
+        # Dropping a clause from RunManifest would let a verification miss an input difference (e.g.
+        # two runs with different cost models would be reported as "identical inputs").
+        mutated = self.src.replace("pub cost_config: CostConfig,", "", 1)
+        with self.assertRaises(DeterminismCheckError) as ctx:
+            check_manifest(self.config, mutated)
+        self.assertIn("cost_config", str(ctx.exception))
+
+    def test_float_leaked_into_manifest_digest_is_caught(self) -> None:
+        # The input-manifest digest must stay integer-exact, like the result digest.
+        mutated = self.src.replace(
+            "fn encode_manifest_body(out: &mut String, manifest: &RunManifest) {",
+            "fn encode_manifest_body(out: &mut String, manifest: &RunManifest) {\n    let _leak: f64 = 0.0;",
+            1,
+        )
+        with self.assertRaises(DeterminismCheckError) as ctx:
+            check_manifest(self.config, mutated)
+        self.assertIn("integer-EXACT", str(ctx.exception))
+
+    def test_dropped_cost_fold_is_caught(self) -> None:
+        # encode_manifest_body must fold the cost model so a commission/slippage override changes
+        # the input fingerprint; dropping it is caught.
+        mutated = self.src.replace("encode_cost_config(out, &manifest.cost_config);", "", 1)
+        with self.assertRaises(DeterminismCheckError) as ctx:
+            check_manifest(self.config, mutated)
+        self.assertIn("encode_cost_config", str(ctx.exception))
+
+
+class CrossProcessCliTest(_Fixture):
+    def test_evidence(self) -> None:
+        self.assertIn("bt010_repro_cli", check_cross_process_cli(self.config, self.cargo_src))
+
+    def test_unregistered_bin_is_caught(self) -> None:
+        # If the cross-process CLI bin is not registered, two fresh-process runs cannot be compared,
+        # so the platform-randomness clause is not closed — the guard must catch a missing [[bin]].
+        mutated = self.cargo_src.replace('name = "bt010_repro_cli"', 'name = "other_bin"', 1)
+        with self.assertRaises(DeterminismCheckError) as ctx:
+            check_cross_process_cli(self.config, mutated)
+        self.assertIn("bt010_repro_cli", str(ctx.exception))
 
 
 class HarnessTest(_Fixture):

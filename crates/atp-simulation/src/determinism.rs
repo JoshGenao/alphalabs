@@ -21,19 +21,25 @@
 //! [`verify_reproducible`] runs the engine twice over identical inputs and returns the run's
 //! digest, failing closed with a localized [`DeterminismError`] if the two runs disagree.
 //!
-//! **Scope.** This is the *in-process* verification: it runs both replays sequentially in one
-//! process and holds the [`BacktestRequest`](crate::backtest::BacktestRequest) (parameters, date
-//! range, cost model) fixed across them. It is **not** the full SRS-BT-010 acceptance test, and
-//! is not claimed to be: it cannot catch process-seeded nondeterminism that is stable within a
-//! process but varies across a restart (the "platform-generated random values" clause closes
-//! only under a *cross-process* repeated run), and it does not fingerprint a full input-provenance
-//! manifest (strategy code version, RNG seed, input-data digest) — it assumes the caller's
-//! strategy factory and [`BarSource`] are themselves deterministic (a stateful one is surfaced as
-//! a divergence). Those pieces — the cross-process operator repeated-run workflow (POST
-//! `/api/v1/backtests` run twice in fresh processes → identical) and the input-provenance manifest
-//! under the real Python strategy host — are deferred (recorded in
-//! `architecture/runtime_services.json#backtest_determinism_contract.deferred`), so
-//! `feature_list.json` keeps SRS-BT-010 `passes:false`.
+//! [`RunManifest`] / [`digest_manifest`] fingerprint the *immutable inputs* SRS-BT-010 enumerates
+//! ("identical strategy code, parameters, data, date range, seed, and cost model") into a
+//! [`ManifestDigest`], so a verification can **prove** the two runs received identical inputs
+//! rather than *assume* the caller's strategy factory and [`BarSource`] were deterministic.
+//!
+//! **Scope.** The in-process [`verify_reproducible`] harness runs both replays sequentially in
+//! one process; that alone cannot catch process-seeded nondeterminism that is stable within a
+//! process but varies across a restart (the "platform-generated random values" clause). The
+//! *cross-process* closure is the `bt010_repro_cli` operator binary (`src/bin/bt010_repro_cli.rs`):
+//! it runs the fixture backtest in a **fresh process** and emits the [`ManifestDigest`] + the
+//! [`RunDigest`], so two fresh processes can be compared for byte-identical output — the
+//! `srs_bt_010_cross_process` integration test does exactly that, closing the
+//! platform-generated-randomness clause a same-process double-run cannot. The local CLI binary is
+//! the operator surface (the same precedent as the SRS-BT-009 store CLI). Still deferred (recorded
+//! in `architecture/runtime_services.json#backtest_determinism_contract.deferred`): the REST
+//! `POST /api/v1/backtests` + dashboard rendering of that repeated-run workflow (SRS-API-001 /
+//! SRS-UI), the end-to-end guarantee under the real Python strategy host binding strategy code
+//! version + seed across the Rust↔Python boundary (SRS-BT-001-runtime), and stamping the
+//! [`RunDigest`] onto each persisted SRS-BT-009 record (SRS-BT-009 store integration).
 //!
 //! # The encoding boundary (why this is not a money-correctness leak)
 //!
@@ -48,8 +54,10 @@
 use std::fmt;
 
 use crate::backtest::{
-    BacktestEngine, BacktestError, BacktestRequest, BacktestResult, BacktestStrategy, BarSource,
+    BacktestDataSource, BacktestEngine, BacktestError, BacktestRequest, BacktestResult,
+    BacktestStrategy, BarSource, DateRange,
 };
+use crate::cost::{CommissionModel, CostConfig, SlippageModel, SpreadImpactModel};
 use crate::metrics::{
     compute as compute_metrics, Benchmark, BenchmarkPoint, MetricsConfig, MetricsError,
     PerformanceMetrics,
@@ -86,6 +94,35 @@ impl RunDigest {
 impl fmt::Display for RunDigest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "run-digest:{:016x}", self.0)
+    }
+}
+
+/// Domain tag mixed into every *input-manifest* digest. Distinct from [`DIGEST_MAGIC`] so a
+/// [`ManifestDigest`] (the run's inputs) can never alias a [`RunDigest`] (the run's outputs) even
+/// if their bytes coincided — inputs and outputs are different claims and must never be confused.
+const MANIFEST_MAGIC: &str = "ATP-BACKTEST-RUN-MANIFEST";
+
+/// An opaque, stable fingerprint of the *immutable inputs* that define a backtest run's identity
+/// (SRS-BT-010: "identical strategy code, parameters, data, date range, seed, and cost model").
+///
+/// Two runs with an identical [`ManifestDigest`] received byte-identical inputs, so a cross-process
+/// reproducibility check can **prove** the inputs were identical rather than assume the caller's
+/// strategy factory + [`BarSource`] were deterministic. Like [`RunDigest`] it is a non-cryptographic
+/// 64-bit FNV-1a checksum (reproducibility, not authentication), domain-tagged with
+/// [`MANIFEST_MAGIC`] so it can never collide with a [`RunDigest`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ManifestDigest(u64);
+
+impl ManifestDigest {
+    /// The raw 64-bit digest value.
+    pub fn value(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for ManifestDigest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "run-manifest:{:016x}", self.0)
     }
 }
 
@@ -215,6 +252,82 @@ pub fn digest_run(result: &BacktestResult, metrics: Option<&PerformanceMetrics>)
         encode_metrics_body(&mut body, metrics);
     }
     RunDigest(checksum(body.as_bytes()))
+}
+
+/// The immutable inputs that define a backtest run's identity — the left-hand side of SRS-BT-010's
+/// "repeated runs with identical strategy code, parameters, data, date range, seed, and cost model".
+///
+/// A [`digest_manifest`] of two runs' manifests is equal **iff** they were launched with identical
+/// inputs, so a reproducibility check can *prove* the inputs matched instead of assuming the
+/// caller's strategy factory + [`BarSource`] were deterministic. It carries no broker/vendor
+/// identifier — provenance, not a live order.
+///
+/// The fields cover each clause the criterion names: `code_version` (strategy code), `parameters`
+/// (the run's parameter set), `data_source` + `symbol` + `input_data_digest` (the data), `range`
+/// (the date range), `seed` (the platform-RNG seed — recorded for provenance even though the
+/// engine consumes no platform randomness), and `cost_config` (the cost model). `starting_cash_minor`
+/// is the run's pre-trade baseline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunManifest {
+    /// The strategy code version (e.g. a content hash) the run executed.
+    pub code_version: String,
+    /// The platform-RNG seed bound to the run. The deterministic engine consumes no platform
+    /// randomness, so an identical seed is recorded as provenance; it is part of the input identity
+    /// the criterion enumerates.
+    pub seed: u64,
+    /// The run's parameter set as `(key, value)` pairs. Folded order-insensitively (sorted) so a
+    /// reordered-but-equal parameter set is the same inputs.
+    pub parameters: Vec<(String, String)>,
+    /// Which catalog the bars came from (system data vs uploaded Parquet).
+    pub data_source: BacktestDataSource,
+    /// The traded symbol.
+    pub symbol: String,
+    /// The backtest date range.
+    pub range: DateRange,
+    /// The pre-trade baseline equity (minor units).
+    pub starting_cash_minor: i64,
+    /// The transaction-cost model family for the run (SRS-BT-002).
+    pub cost_config: CostConfig,
+    /// A digest of the actual input bars, so two runs over *different data* with the same request
+    /// labels still produce different manifests (the "data" clause is bound by content, not name).
+    pub input_data_digest: u64,
+}
+
+impl RunManifest {
+    /// Build a manifest from the launch [`BacktestRequest`] plus the provenance the request does
+    /// not itself carry (the strategy code version, the RNG seed, the run's parameter set, and a
+    /// content digest of the input bars). Binds the manifest to the exact request the engine ran.
+    pub fn from_request(
+        request: &BacktestRequest,
+        code_version: impl Into<String>,
+        seed: u64,
+        parameters: Vec<(String, String)>,
+        input_data_digest: u64,
+    ) -> Self {
+        Self {
+            code_version: code_version.into(),
+            seed,
+            parameters,
+            data_source: request.data_source,
+            symbol: request.symbol.clone(),
+            range: request.range,
+            starting_cash_minor: request.starting_cash_minor,
+            cost_config: request.cost_config,
+            input_data_digest,
+        }
+    }
+}
+
+/// Fingerprint the immutable inputs of a run into a stable [`ManifestDigest`]. Pure, order-stable,
+/// integer-exact (no `f64`): every field is folded as an exact integer or a length-prefixed string,
+/// and the parameter set is sorted so insertion order does not change the digest. Two manifests
+/// fold to the same digest **iff** every input clause matches.
+pub fn digest_manifest(manifest: &RunManifest) -> ManifestDigest {
+    let mut body = String::new();
+    push_line(&mut body, MANIFEST_MAGIC);
+    push_i128(&mut body, i128::from(DIGEST_SCHEMA_VERSION));
+    encode_manifest_body(&mut body, manifest);
+    ManifestDigest(checksum(body.as_bytes()))
 }
 
 /// Compare two backtest results field-by-field, returning the *first* divergence as a
@@ -473,6 +586,70 @@ fn encode_metrics_body(out: &mut String, metrics: &PerformanceMetrics) {
     push_str(out, &metrics.benchmark_symbol);
 }
 
+/// Encode the immutable input manifest: the provenance labels, the (sorted) parameter set, the
+/// data identity, the date range, the baseline, the cost model, and the input-data content digest.
+/// Integer-exact and prefix-free — **no `f64`** — so the input fingerprint carries no
+/// float-formatting nondeterminism either. The parameter pairs are sorted before folding, so a
+/// reordered-but-equal parameter set yields the same digest (a parameter *set*, not a list).
+fn encode_manifest_body(out: &mut String, manifest: &RunManifest) {
+    push_str(out, &manifest.code_version);
+    push_i128(out, i128::from(manifest.seed));
+    let mut parameters = manifest.parameters.clone();
+    parameters.sort();
+    push_count(out, parameters.len());
+    for (key, value) in &parameters {
+        push_str(out, key);
+        push_str(out, value);
+    }
+    push_str(out, manifest.data_source.as_str());
+    push_str(out, &manifest.symbol);
+    push_i128(out, i128::from(manifest.range.start));
+    push_i128(out, i128::from(manifest.range.end));
+    push_i128(out, i128::from(manifest.starting_cash_minor));
+    encode_cost_config(out, &manifest.cost_config);
+    push_i128(out, i128::from(manifest.input_data_digest));
+}
+
+/// Encode the transaction-cost model family as a discriminant tag plus each variant's exact
+/// integer parameters, so any override (a different commission rate, slippage bps, or spread model)
+/// changes the manifest digest. Every numeric parameter is an exact integer — no `f64`.
+fn encode_cost_config(out: &mut String, cost: &CostConfig) {
+    match cost.commission {
+        CommissionModel::IbTiered => push_line(out, "commission:ib_tiered"),
+        CommissionModel::PerShare {
+            rate_centiminor_per_share,
+            min_per_order_minor,
+        } => {
+            push_line(out, "commission:per_share");
+            push_i128(out, i128::from(rate_centiminor_per_share));
+            push_i128(out, i128::from(min_per_order_minor));
+        }
+        CommissionModel::PerTrade { fee_minor } => {
+            push_line(out, "commission:per_trade");
+            push_i128(out, i128::from(fee_minor));
+        }
+        CommissionModel::None => push_line(out, "commission:none"),
+    }
+    match cost.slippage {
+        SlippageModel::NotionalBps { bps } => {
+            push_line(out, "slippage:notional_bps");
+            push_i128(out, i128::from(bps));
+        }
+        SlippageModel::None => push_line(out, "slippage:none"),
+    }
+    match cost.spread_impact {
+        SpreadImpactModel::ObservedOrFallbackBps { fallback_bps } => {
+            push_line(out, "spread_impact:observed_or_fallback_bps");
+            push_i128(out, i128::from(fallback_bps));
+        }
+        SpreadImpactModel::FixedBps { bps } => {
+            push_line(out, "spread_impact:fixed_bps");
+            push_i128(out, i128::from(bps));
+        }
+        SpreadImpactModel::None => push_line(out, "spread_impact:none"),
+    }
+}
+
 // --------------------------------------------------------------------------- //
 // Deterministic, dependency-free text codec (mirrors backtest_store.rs)
 // --------------------------------------------------------------------------- //
@@ -729,6 +906,115 @@ mod tests {
             metrics_match(&a, &b),
             Err(DeterminismError::Metrics { metric: "alpha" })
         );
+    }
+
+    // ---- input-provenance manifest -------------------------------------- //
+
+    fn sample_manifest() -> RunManifest {
+        RunManifest {
+            code_version: "sha:deadbeef".to_string(),
+            seed: 7,
+            parameters: vec![
+                ("lookback".to_string(), "20".to_string()),
+                ("threshold".to_string(), "0.5".to_string()),
+            ],
+            data_source: BacktestDataSource::SystemData,
+            symbol: "AAPL".to_string(),
+            range: DateRange::new(1, 100),
+            starting_cash_minor: 1_000_000,
+            cost_config: CostConfig::default(),
+            input_data_digest: 0xABCD_1234,
+        }
+    }
+
+    #[test]
+    fn manifest_digest_is_stable() {
+        let manifest = sample_manifest();
+        assert_eq!(digest_manifest(&manifest), digest_manifest(&manifest));
+    }
+
+    #[test]
+    fn manifest_digest_is_parameter_order_insensitive() {
+        // A parameter SET, not a list: reordering the pairs is the same inputs.
+        let base = sample_manifest();
+        let mut reordered = sample_manifest();
+        reordered.parameters.reverse();
+        assert_eq!(digest_manifest(&base), digest_manifest(&reordered));
+    }
+
+    #[test]
+    fn manifest_digest_changes_when_any_input_clause_changes() {
+        let base = digest_manifest(&sample_manifest());
+
+        let mut code = sample_manifest();
+        code.code_version = "sha:00000000".to_string();
+        assert_ne!(base, digest_manifest(&code), "code version");
+
+        let mut seed = sample_manifest();
+        seed.seed += 1;
+        assert_ne!(base, digest_manifest(&seed), "seed");
+
+        let mut param = sample_manifest();
+        param.parameters[0].1 = "21".to_string();
+        assert_ne!(base, digest_manifest(&param), "parameter value");
+
+        let mut source = sample_manifest();
+        source.data_source = BacktestDataSource::UploadedData;
+        assert_ne!(base, digest_manifest(&source), "data source");
+
+        let mut symbol = sample_manifest();
+        symbol.symbol = "MSFT".to_string();
+        assert_ne!(base, digest_manifest(&symbol), "symbol");
+
+        let mut range = sample_manifest();
+        range.range = DateRange::new(1, 101);
+        assert_ne!(base, digest_manifest(&range), "date range");
+
+        let mut cash = sample_manifest();
+        cash.starting_cash_minor += 1;
+        assert_ne!(base, digest_manifest(&cash), "starting cash");
+
+        let mut cost = sample_manifest();
+        cost.cost_config = CostConfig::zero();
+        assert_ne!(base, digest_manifest(&cost), "cost model");
+
+        let mut data = sample_manifest();
+        data.input_data_digest += 1;
+        assert_ne!(base, digest_manifest(&data), "input-data digest");
+    }
+
+    #[test]
+    fn manifest_digest_distinguishes_cost_override_parameters() {
+        // Two overrides of the same commission family with different rates are different inputs.
+        let mut a = sample_manifest();
+        a.cost_config.commission = CommissionModel::PerShare {
+            rate_centiminor_per_share: 5,
+            min_per_order_minor: 100,
+        };
+        let mut b = sample_manifest();
+        b.cost_config.commission = CommissionModel::PerShare {
+            rate_centiminor_per_share: 6,
+            min_per_order_minor: 100,
+        };
+        assert_ne!(digest_manifest(&a), digest_manifest(&b));
+    }
+
+    #[test]
+    fn manifest_from_request_binds_the_request_fields() {
+        let manifest = RunManifest::from_request(
+            &request(),
+            "sha:cafef00d",
+            42,
+            vec![("lot".to_string(), "5".to_string())],
+            0x9999,
+        );
+        assert_eq!(manifest.code_version, "sha:cafef00d");
+        assert_eq!(manifest.seed, 42);
+        assert_eq!(manifest.symbol, "AAPL");
+        assert_eq!(manifest.range, DateRange::new(1, 3));
+        assert_eq!(manifest.starting_cash_minor, 1_000);
+        assert_eq!(manifest.data_source, BacktestDataSource::SystemData);
+        assert_eq!(manifest.input_data_digest, 0x9999);
     }
 
     // ---- harness fixtures ----------------------------------------------- //

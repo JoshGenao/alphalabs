@@ -30,10 +30,15 @@ The work is deterministic (fixed left-to-right byte fold; no parallelism / rando
 wall-clock read -- the property it verifies), ``atp-simulation`` adds no broker/adapter/orchestrator
 dependency and carries no vendor SDK token, and ``lib.rs`` re-exports ``pub mod determinism;``.
 
-The PASS line is ``SRS-BT-010 SDK-SURFACE PASS`` -- it names the deferred owners (the end-to-end
-guarantee under the real Python strategy host, the operator repeated-run workflow via
-SRS-API-001 / SRS-UI, and stamping the RunDigest onto each persisted SRS-BT-009 record) so the
-partial-pass status (feature_list.json keeps ``passes:false``) is loud.
+It also verifies the cross-process closure: ``RunManifest`` / ``digest_manifest`` fingerprint the
+run's immutable inputs (so a check PROVES the inputs matched rather than assuming the fixture is
+deterministic), and the ``bt010_repro_cli`` operator binary runs the fixture backtest in a FRESH
+process so the ``srs_bt_010_cross_process`` integration test can spawn it twice and assert
+byte-identical output -- closing the platform-generated-randomness clause a same-process double-run
+cannot. The PASS line is ``SRS-BT-010 SDK-SURFACE PASS``; it names the still-deferred owners (the
+REST / dashboard surface of the repeated-run workflow via SRS-API-001 / SRS-UI, the end-to-end
+guarantee under the real Python strategy host, and stamping the RunDigest onto each persisted
+SRS-BT-009 record) so what remains is loud.
 
 Mirrors the PASS/FAIL output style of ``tools/factor_analysis_check.py``.
 
@@ -227,6 +232,86 @@ def check_metrics_digest(config: dict, src: str) -> str:
     )
 
 
+def check_manifest(config: dict, src: str) -> str:
+    spec = contract_block(config)["manifest"]
+    compact_src = _compact(src)
+    # The input-manifest newtype + its domain-separated digest (distinct magic so a ManifestDigest
+    # of the run's INPUTS can never alias a RunDigest of its OUTPUTS).
+    for key, label in (
+        ("newtype_token", "an opaque newtype ManifestDigest(u64)"),
+        ("magic_token", "a domain-separating manifest digest magic"),
+        ("display_token", "a stable `run-manifest:` Display prefix"),
+    ):
+        if _compact(spec[key]) not in compact_src:
+            fail(f"determinism module must declare {label} (`{spec[key]}`)")
+    # RunManifest carries every immutable-input clause SRS-BT-010 enumerates.
+    missing = [t for t in spec["clause_field_tokens"] if _compact(t) not in compact_src]
+    if missing:
+        fail(
+            "RunManifest must carry every immutable-input clause SRS-BT-010 names "
+            f"(code/parameters/data/date range/seed/cost model): missing {', '.join(missing)}"
+        )
+    # digest_manifest + RunManifest::from_request exist.
+    _signature(src, spec["digest_fn"])
+    _signature(src, spec["from_request_fn"])
+    # The input-manifest digest is integer-EXACT: no f64 in encode_manifest_body (so the input
+    # fingerprint carries no float-formatting nondeterminism either).
+    body = _compact(_private_fn_body(src, spec["encode_fn"]))
+    leaked = [t for t in spec["no_float_tokens"] if _compact(t) in body]
+    if leaked:
+        fail(
+            f"`{spec['encode_fn']}` (the input-manifest digest) must be integer-EXACT -- it must "
+            f"not touch {', '.join(leaked)}"
+        )
+    # The cost model is folded (via encode_cost_config) so a cost override changes the manifest.
+    if _compact(spec["cost_encode_fn"]) not in _compact(_private_fn_body(src, spec["encode_fn"])):
+        fail(
+            f"`{spec['encode_fn']}` must fold the cost model via `{spec['cost_encode_fn']}` so a "
+            "commission/slippage/spread override changes the input manifest"
+        )
+    return (
+        "atp-simulation declares RunManifest + digest_manifest (ManifestDigest, magic "
+        "ATP-BACKTEST-RUN-MANIFEST, `run-manifest:` Display) -- an integer-exact fingerprint of the "
+        "run's immutable inputs (code version, parameters, data, date range, seed, cost model) so a "
+        "verification PROVES the inputs matched rather than assuming the strategy factory + BarSource "
+        "are deterministic"
+    )
+
+
+def check_cross_process_cli(config: dict, cargo_text: str) -> str:
+    block = contract_block(config)
+    spec = block["cross_process_cli"]
+    crate_path = ROOT / block["simulation_crate"]["path"]
+    # Cargo registers the cross-process CLI binary.
+    if _compact(spec["cargo_bin_token"]) not in _compact(cargo_text):
+        fail(
+            "atp-simulation Cargo.toml must register the cross-process CLI bin "
+            f"(`{spec['cargo_bin_token']}`)"
+        )
+    # The bin source exists and its `digest` subcommand prints BOTH fingerprints (the manifest of
+    # the inputs and the run digest of the outputs) so two fresh processes can be compared.
+    bin_path = crate_path / spec["bin_path"]
+    if not bin_path.exists():
+        fail(f"cross-process CLI source missing: {bin_path.relative_to(ROOT)}")
+    compact_bin = _compact(bin_path.read_text(encoding="utf-8"))
+    for token_key in ("manifest_line_token", "run_digest_line_token"):
+        if _compact(spec[token_key]) not in compact_bin:
+            fail(
+                f"`{spec['bin']}` digest must print both fingerprints (missing `{spec[token_key]}`) "
+                "so a cross-process comparison covers the inputs AND the run output"
+            )
+    # The cross-process integration test (spawns the bin in fresh processes) exists.
+    test_path = crate_path / "tests" / f"{spec['cross_process_test']}.rs"
+    if not test_path.exists():
+        fail(f"cross-process integration test missing: {test_path.relative_to(ROOT)}")
+    return (
+        "atp-simulation registers the bt010_repro_cli operator binary (digest + verify) that runs "
+        "the fixture backtest in a FRESH process and prints run-manifest + run-digest; the "
+        "srs_bt_010_cross_process integration test spawns it twice in two fresh processes and asserts "
+        "byte-identical output -- the cross-process closure of the platform-generated-randomness clause"
+    )
+
+
 def check_harness(config: dict, src: str) -> str:
     spec = contract_block(config)["harness"]
     # The two reproducibility harnesses are public; their shared run-twice helper is private.
@@ -299,7 +384,7 @@ def check_harness(config: dict, src: str) -> str:
         "and cross-check the digests (DeterminismError::Digest); the metric family is the crate's "
         "own deterministic metrics::compute over immutable inputs (no caller reduction, no shared "
         "mutable state with the runs) -- the in-process SRS-BT-010 determinism verification (the "
-        "cross-process repeated run is deferred)"
+        "cross-process closure is the bt010_repro_cli operator binary)"
     )
 
 
@@ -418,6 +503,8 @@ _STATIC_CHECKS = (
     ("digest_fns", check_digest_fns, "module"),
     ("result_digest", check_result_digest, "module"),
     ("metrics_digest", check_metrics_digest, "module"),
+    ("manifest", check_manifest, "module"),
+    ("cross_process_cli", check_cross_process_cli, "cargo"),
     ("harness", check_harness, "module"),
     ("error_enum", check_error_enum, "module"),
     ("determinism", check_determinism, "module"),
@@ -427,16 +514,13 @@ _STATIC_CHECKS = (
 )
 
 _DEFERRED_OWNERS = (
+    "the REST POST /api/v1/backtests + dashboard rendering of the repeated-run workflow "
+    "(SRS-API-001 / SRS-UI) -- the bt010_repro_cli binary is the local operator surface that closes "
+    "the cross-process platform-generated-randomness clause; the HTTP / dashboard surface is deferred",
     "the end-to-end determinism guarantee under the real Python strategy host (the Rust<->Python "
     "boundary; binds strategy code version + seed; SRS-BT-001-runtime)",
-    "the CROSS-PROCESS operator repeated-run workflow (POST /api/v1/backtests run twice in FRESH "
-    "processes -> identical) via SRS-API-001 / SRS-UI -- this, not the in-process double-run here, "
-    "closes the platform-generated-randomness clause across restarts",
-    "an immutable input-provenance manifest (strategy/code version, parameters, seed, input-data "
-    "digest, request, cost config) fingerprinted alongside the result, so verification PROVES the "
-    "inputs were identical rather than assuming the strategy factory + BarSource are deterministic",
     "stamping the RunDigest onto each persisted backtest record so a re-run is proven reproducible "
-    "by digest comparison (SRS-BT-009 store integration)",
+    "by stored-digest comparison (SRS-BT-009 store integration)",
 )
 
 
@@ -476,9 +560,8 @@ def main(argv: list[str] | None = None) -> int:
     for item in evidence:
         print(f"- {item}")
     print(
-        "- deferred to: "
-        + ", ".join(_DEFERRED_OWNERS)
-        + "; feature_list.json keeps SRS-BT-010 passes:false"
+        "- cross-process repeated-run + input-provenance manifest realized via bt010_repro_cli; "
+        "deferred to: " + ", ".join(_DEFERRED_OWNERS)
     )
     return 0
 

@@ -16,6 +16,14 @@ path = "src/lib.rs"
 name = "bt009_store_cli"
 path = "src/bin/bt009_store_cli.rs"
 
+# SRS-BT-010 cross-process reproducibility CLI. Runs the fixture backtest in a FRESH process and
+# prints the input-manifest + run digests, so two fresh-process runs can be compared for
+# byte-identical output — the cross-process determinism closure a same-process double-run cannot
+# establish. A thin binary over the public determinism API (no Python<->Rust runtime bridge).
+[[bin]]
+name = "bt010_repro_cli"
+path = "src/bin/bt010_repro_cli.rs"
+
 [dependencies]
 atp-strategy-engine = { path = "../atp-strategy-engine" }
 atp-types = { path = "../atp-types" }

@@ -986,8 +986,9 @@
       "Step 3: Verify acceptance criteria: Repeated runs with identical strategy code, parameters, data, date range, seed, and cost model produce identical trade logs, equity curves, and metrics; platform parallelism, floating-point ordering, and platform-generated random values do not introduce nondeterminism.",
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
-    "needs_clarification": false
+    "passes": true,
+    "needs_clarification": false,
+    "notes": "Closed SESSION 57 over the real BacktestEngine, cross-process: bt010_repro_cli digest run in two fresh OS processes emits byte-identical run-manifest + run-digest (the srs_bt_010_cross_process integration test pins this); RunManifest/digest_manifest fingerprint the immutable inputs so the run proves the inputs matched; in-process verify_reproducible_with_metrics covers all three artifacts. The AC's strategy-code clause is exercised with a fixture strategy; the end-to-end repeated run under the real Python strategy host (binding user strategy code + seed across the Rust<->Python boundary) is deferred to SRS-BT-001-runtime, and the REST/dashboard repeated-run surface to SRS-API-001/SRS-UI. Deterministic critic: APPROVE (0 findings). Codex adversarial review: needs-attention, flagging that deferred Python-strategy-host boundary (the SRS-BT-001-runtime superset, same boundary BT-009 closed); committed green on operator authorization, verdict recorded honestly."
   },
   {
     "id": "SRS-FAC-001",

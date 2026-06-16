@@ -48,9 +48,11 @@ if str(TOOLS_ROOT) not in sys.path:
 from determinism_check import (  # noqa: E402
     DeterminismCheckError,
     cargo_source,
+    check_cross_process_cli,
     check_determinism,
     check_error_enum,
     check_harness,
+    check_manifest,
     check_metrics_digest,
     check_no_broker_dependency,
     check_result_digest,
@@ -60,7 +62,9 @@ from determinism_check import (  # noqa: E402
 )
 
 
-def _run_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
+def _run_cargo_test(
+    test_name: str, test_file: str = "srs_bt_010_determinism"
+) -> subprocess.CompletedProcess[str]:
     cargo = shutil.which("cargo")
     if cargo is None:
         pytest.skip(reason="cargo not on PATH; cannot run Rust integration test")
@@ -71,7 +75,7 @@ def _run_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
             "-p",
             "atp-simulation",
             "--test",
-            "srs_bt_010_determinism",
+            test_file,
             test_name,
             "--",
             "--exact",
@@ -162,6 +166,51 @@ def test_property_sweep_reproducibility_and_order_invariance() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Behavioral (cross-process) -- the platform-generated-randomness closure
+# --------------------------------------------------------------------------- #
+
+
+def test_two_fresh_processes_produce_an_identical_digest() -> None:
+    # The safety core of the platform-randomness clause: the in-process double-run cannot see
+    # nondeterminism that is stable within a process but varies across a restart. This spawns the
+    # bt010_repro_cli binary in TWO separate OS processes and asserts byte-identical fingerprints --
+    # the only way an operator can trust that a backtest reproduces across restarts, not just within
+    # one run of the binary.
+    _assert_one_passed(
+        _run_cargo_test(
+            "cross_process_identical_inputs_produce_identical_digests",
+            "srs_bt_010_cross_process",
+        ),
+        "SRS-BT-010 cross-process identity",
+    )
+
+
+def test_cross_process_run_digest_is_independent_of_the_rng_seed() -> None:
+    # "platform-generated random values do not introduce nondeterminism", made observable: two fresh
+    # processes with DIFFERENT seeds produce the same run-digest (the engine consumes no platform
+    # randomness) -- the seed only changes the provenance manifest.
+    _assert_one_passed(
+        _run_cargo_test(
+            "cross_process_seed_changes_manifest_but_not_run_digest",
+            "srs_bt_010_cross_process",
+        ),
+        "SRS-BT-010 cross-process seed independence",
+    )
+
+
+def test_cross_process_digest_is_sensitive_to_inputs() -> None:
+    # The identity check is non-vacuous: a different input (lot) changes the run-digest across
+    # processes, so the fingerprint is a function of the run, not a constant.
+    _assert_one_passed(
+        _run_cargo_test(
+            "cross_process_different_input_changes_the_run_digest",
+            "srs_bt_010_cross_process",
+        ),
+        "SRS-BT-010 cross-process input sensitivity",
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Structural -- each guard is real (non-vacuous)
 # --------------------------------------------------------------------------- #
 
@@ -245,24 +294,53 @@ def test_runs_match_compares_provenance() -> None:
         check_harness(config, mutated)
 
 
-def test_scope_claim_is_honest_about_in_process_only() -> None:
-    # Safety: an operator must NOT be led to believe the in-process double-run is the full
-    # SRS-BT-010 guarantee. A same-process replay cannot catch process-seeded randomness that is
-    # stable within a process but varies across a restart, so the contract must (1) NOT claim to be
-    # the full acceptance test, (2) state the in-process scope, and (3) name the cross-process
-    # repeated-run + input-provenance manifest as the deferred owners that actually close the
-    # platform-randomness and identical-inputs clauses. This pins the scope honesty so a later edit
-    # cannot silently re-inflate the claim.
+def test_scope_names_the_cross_process_closure_and_remaining_deferred_owners() -> None:
+    # Safety: an operator must read an HONEST scope. The cross-process closure (the bt010_repro_cli
+    # binary + the input-provenance manifest) is what closes the platform-generated-randomness
+    # clause a same-process double-run cannot, so the contract must (1) name that binary + the
+    # manifest as realized, (2) still describe the in-process verifier, and (3) name the genuinely
+    # remaining deferred owners (the REST/dashboard surface, the real Python strategy host, and
+    # stamping the digest onto the persisted record) without over-claiming the Python-host end to
+    # end. This pins the scope honesty so a later edit cannot silently re-inflate or deflate it.
     config = load_config()
     block = config["backtest_determinism_contract"]
     description = block["description"]
-    assert "FULL SRS-BT-010 acceptance test" not in description
-    assert "via a caller-supplied reduction" not in description  # the stale, contradicted claim
-    assert "IN-PROCESS determinism verification" in description
-    deferred = " ".join(block["deferred"])
-    assert "CROSS-PROCESS operator repeated-run" in deferred
+    # The in-process verifier is still described, and the cross-process closure is now named.
+    assert "IN-PROCESS" in description
+    assert "bt010_repro_cli" in description
+    assert "RunManifest" in description
+    # The platform-generated-randomness clause and its closure are stated.
     assert "process-seeded nondeterminism" in description
-    assert "input-provenance manifest" in deferred
+    # The genuinely remaining deferred owners are named honestly (REST/UI, Python host, store stamp).
+    deferred = " ".join(block["deferred"])
+    assert "SRS-API-001" in deferred
+    assert "Python strategy host" in deferred
+    assert "SRS-BT-009 store integration" in deferred
+    # The cross-process workflow + the manifest are NO LONGER in the deferred list (they are realized).
+    assert "input-provenance manifest" not in deferred
+
+
+def test_manifest_proves_inputs_were_identical() -> None:
+    config = load_config()
+    # The input-provenance manifest fingerprints every immutable-input clause SRS-BT-010 names, so a
+    # verification PROVES the inputs matched rather than assuming the fixture is deterministic.
+    check_manifest(config, module_source(config))
+    # ...and the guard must not be vacuous: dropping the cost model from the manifest is caught (two
+    # runs with different cost models would otherwise be reported as "identical inputs").
+    mutated = module_source(config).replace("pub cost_config: CostConfig,", "", 1)
+    with pytest.raises(DeterminismCheckError):
+        check_manifest(config, mutated)
+
+
+def test_cross_process_cli_is_registered() -> None:
+    config = load_config()
+    # The bt010_repro_cli binary is what makes the cross-process comparison possible; without a
+    # registered bin the platform-randomness clause cannot be closed.
+    check_cross_process_cli(config, cargo_source(config))
+    # ...and the guard must not be vacuous: an unregistered bin is caught.
+    mutated = cargo_source(config).replace('name = "bt010_repro_cli"', 'name = "x"', 1)
+    with pytest.raises(DeterminismCheckError):
+        check_cross_process_cli(config, mutated)
 
 
 def test_error_enum_localizes_divergence() -> None:
