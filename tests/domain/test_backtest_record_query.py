@@ -18,12 +18,14 @@ these is a trading-decision safety bug: a mislabeled, mis-rounded, or partially-
 backtest record would mis-rank a strategy or misstate historical performance. This test
 proves the invariant from two angles:
 
-  1. Behavioral -- it shells out to the Rust integration test
-     ``crates/atp-simulation/tests/srs_bt_009_backtest_store.rs`` and asserts that a real
-     completed backtest is persisted and queryable by strategy / date range / parameter
-     set, that the store serialize/restore round-trips deterministically (preserving the
-     metrics + benchmark comparison), that a corrupt or foreign blob fails closed, and that
-     a duplicate run id is rejected.
+  1. Behavioral -- it shells out to the Rust integration tests
+     ``crates/atp-simulation/tests/srs_bt_009_backtest_store.rs`` and
+     ``srs_bt_009_persist_query.rs`` and asserts that a real completed backtest is persisted
+     and queryable by strategy / date range / parameter set, that the store serialize/restore
+     round-trips deterministically (preserving the metrics + benchmark comparison), that a
+     corrupt or foreign blob fails closed, that a duplicate run id is rejected, and that the
+     durable FILE layer (save_to_path / load_from_path) survives a disk round trip -- a missing
+     file loads empty while a corrupt on-disk file fails closed (a persisted run is never lost).
 
   2. Structural -- it asserts, via ``tools/backtest_store_check.py``, that the
      ``atp-simulation`` crate declares no dependency on the live/broker path
@@ -58,6 +60,7 @@ from backtest_store_check import (  # noqa: E402
     cargo_source,
     check_codec,
     check_determinism,
+    check_file_persistence,
     check_from_result,
     check_insert,
     check_no_broker_dependency,
@@ -69,7 +72,9 @@ from backtest_store_check import (  # noqa: E402
 )
 
 
-def _run_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
+def _run_cargo_test(
+    test_name: str, test_file: str = "srs_bt_009_backtest_store"
+) -> subprocess.CompletedProcess[str]:
     cargo = shutil.which("cargo")
     if cargo is None:
         pytest.skip(reason="cargo not on PATH; cannot run Rust integration test")
@@ -80,7 +85,7 @@ def _run_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
             "-p",
             "atp-simulation",
             "--test",
-            "srs_bt_009_backtest_store",
+            test_file,
             test_name,
             "--",
             "--exact",
@@ -135,6 +140,105 @@ def test_rejects_duplicate_run_id() -> None:
         _run_cargo_test("srs_bt_009_rejects_duplicate_run_id"),
         "SRS-BT-009 duplicate-run-id rejection",
     )
+
+
+def test_persists_to_disk_and_queries_round_trip() -> None:
+    # Safety core of the durable file layer: a completed backtest's seven artifacts are written
+    # to disk, read back, and remain queryable by strategy / date range / parameter set with the
+    # loaded store equal to the original -- the persisted history survives a process restart.
+    _assert_one_passed(
+        _run_cargo_test(
+            "srs_bt_009_persist_to_disk_and_query_round_trip",
+            test_file="srs_bt_009_persist_query",
+        ),
+        "SRS-BT-009 disk persist + query round trip",
+    )
+
+
+def test_load_missing_file_in_present_dir_is_empty() -> None:
+    # A provisioned directory that never persisted a result loads an empty store, not an error --
+    # so a genuine fresh install is never mistaken for a failure that would block the operator.
+    _assert_one_passed(
+        _run_cargo_test(
+            "srs_bt_009_load_missing_file_in_present_dir_is_empty",
+            test_file="srs_bt_009_persist_query",
+        ),
+        "SRS-BT-009 missing-file empty load",
+    )
+
+
+def test_load_missing_directory_fails_closed() -> None:
+    # Safety: a MISSING configured directory (unmounted / deleted / misconfigured storage path)
+    # fails closed rather than masquerading as an empty history that silently drops persisted runs.
+    _assert_one_passed(
+        _run_cargo_test(
+            "srs_bt_009_load_missing_directory_fails_closed",
+            test_file="srs_bt_009_persist_query",
+        ),
+        "SRS-BT-009 missing-directory fail-closed",
+    )
+
+
+def test_load_corrupt_file_fails_closed() -> None:
+    # Safety: a corrupt on-disk store file fails closed rather than silently dropping persisted
+    # runs -- a persisted result is never lost without a loud failure.
+    _assert_one_passed(
+        _run_cargo_test(
+            "srs_bt_009_load_corrupt_file_fails_closed",
+            test_file="srs_bt_009_persist_query",
+        ),
+        "SRS-BT-009 corrupt-file fail-closed",
+    )
+
+
+def test_resave_atomically_replaces_prior_store() -> None:
+    # Safety: re-publishing a store atomically replaces the prior file -- never a merge, a
+    # partial overwrite, or a leftover scratch file -- so the durable history is always exactly
+    # one fully-written store.
+    _assert_one_passed(
+        _run_cargo_test(
+            "srs_bt_009_resave_atomically_replaces_prior_store",
+            test_file="srs_bt_009_persist_query",
+        ),
+        "SRS-BT-009 atomic resave replace",
+    )
+
+
+def test_concurrent_saves_never_corrupt() -> None:
+    # Safety: many threads persisting the same store to one directory never produce a half-written
+    # or corrupt file (per-call unique scratch + atomic rename); the published store always
+    # restores cleanly. A lost-run-under-crash bug here would silently corrupt backtest history.
+    _assert_one_passed(
+        _run_cargo_test(
+            "srs_bt_009_concurrent_saves_never_corrupt",
+            test_file="srs_bt_009_persist_query",
+        ),
+        "SRS-BT-009 concurrent-save corruption safety",
+    )
+
+
+def test_durable_load_delegates_to_failclosed_restore() -> None:
+    config = load_config()
+    # The real load path delegates a present file to the fail-closed restore() codec, so a
+    # corrupt file can never silently become an empty/partial store (a lost-run safety bug).
+    check_file_persistence(config, store_source(config))
+    # ...and the guard must not be vacuous: replacing the restore() delegation with an empty
+    # store (which would silently drop every persisted run) is caught.
+    mutated = store_source(config).replace("Self::restore(&contents)", "Ok(Self::new())")
+    with pytest.raises(BacktestStoreCheckError):
+        check_file_persistence(config, mutated)
+
+
+def test_durable_save_fsyncs_before_publish() -> None:
+    config = load_config()
+    # The real save path fsyncs the scratch file BEFORE the atomic rename, so a crash cannot
+    # publish unwritten bytes -- a persisted run is durable, not just visible.
+    check_file_persistence(config, store_source(config))
+    # ...and the guard must not be vacuous: dropping the scratch fsync (which would risk losing a
+    # just-persisted store on a power loss) is caught.
+    mutated = store_source(config).replace("scratch.sync_all()", "Ok(())")
+    with pytest.raises(BacktestStoreCheckError):
+        check_file_persistence(config, mutated)
 
 
 def test_store_crate_has_no_broker_dependency() -> None:

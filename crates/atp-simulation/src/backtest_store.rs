@@ -74,6 +74,10 @@
 
 use std::collections::HashSet;
 use std::fmt;
+use std::fs;
+use std::io::{self, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use atp_types::StrategyId;
 
@@ -92,6 +96,22 @@ pub const SCHEMA_VERSION: i64 = 1;
 /// The magic header line that prefixes every serialized store, so a foreign or truncated
 /// blob is rejected before any field is parsed.
 pub const MAGIC: &str = "ATP-BACKTEST-RECORD";
+
+/// File name of the durable store within its configured directory
+/// ([`BacktestResultStore::save_to_path`] / [`BacktestResultStore::load_from_path`]).
+pub const STORE_FILENAME: &str = "backtest_results.store";
+
+/// Base name of the scratch file an atomic save writes (and fsyncs) before renaming it onto
+/// [`STORE_FILENAME`]. The actual scratch file appends a per-process, per-call suffix
+/// (`<base>.<pid>.<seq>`) so two writers persisting to the same directory cannot rename over
+/// each other's scratch file. The suffix is a pid + a process-local counter, NOT a clock / RNG
+/// read, so the persisted *content* stays byte-deterministic.
+pub const STORE_TMP_FILENAME: &str = "backtest_results.store.tmp";
+
+/// Process-local monotonic counter that disambiguates concurrent scratch files within one
+/// process (combined with the pid for cross-process uniqueness). Affects only the scratch file
+/// name, never the persisted bytes.
+static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Absolute tolerance for the `excess_return == strategy_total_return - benchmark_total_return`
 /// internal-consistency check. The producer computes the identity in the same `f64` domain, so
@@ -794,6 +814,100 @@ impl BacktestResultStore {
         records.sort_by(|a, b| order_key(a).cmp(&order_key(b)));
         Ok(Self { records })
     }
+
+    /// Durably persist the whole store to `STORE_FILENAME` under `dir`, creating `dir` if
+    /// absent. This is the SRS-BT-009 "persist" verb at the filesystem level — it wraps the
+    /// existing [`serialize`](Self::serialize) codec (no new format, no `serde`).
+    ///
+    /// The write is **crash-durable and atomically published**: it writes the blob to a
+    /// per-call-unique scratch file, `fsync`s the scratch file so its bytes reach disk, then
+    /// `rename`s it onto the live store (an atomic replace — a reader never sees a half-written
+    /// blob), and finally `fsync`s the parent directory so the rename itself survives a crash.
+    /// The scratch name carries a `<pid>.<seq>` suffix so two writers persisting to the same
+    /// directory cannot rename over each other's scratch file. Every `std::io` failure surfaces
+    /// as a fail-closed [`StoreError::Io`].
+    ///
+    /// Guarantee scope: this is a **single-logical-writer** durable store. Two writers racing to
+    /// publish *different* stores to the same directory never corrupt the file (each scratch is
+    /// unique and the rename is atomic), but the last publish wins — coordinating genuinely
+    /// concurrent writers (a lock / single-writer guard) is out of scope for the single-user,
+    /// local-only baseline, the same boundary as the deferred SRS-DATA-008 tiered store. The
+    /// SSD-primary / NAS-archival *tiering*, eviction, and failover of this directory likewise
+    /// remain the deferred SRS-DATA-008 owner; BT-009 owns only the durable file write to a
+    /// caller-supplied directory.
+    pub fn save_to_path(&self, dir: &Path) -> Result<(), StoreError> {
+        fs::create_dir_all(dir).map_err(|err| io_error("create store directory", &err))?;
+        let seq = SCRATCH_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = dir.join(format!("{STORE_TMP_FILENAME}.{}.{seq}", std::process::id()));
+        let final_path = dir.join(STORE_FILENAME);
+
+        // Write the blob to the scratch file and fsync it, so its bytes are durably on disk
+        // BEFORE we publish it — otherwise a crash could leave the renamed file referencing
+        // unwritten (zero/garbage) data.
+        let mut scratch = fs::File::create(&tmp_path)
+            .map_err(|err| io_error("create store scratch file", &err))?;
+        if let Err(err) = scratch
+            .write_all(self.serialize().as_bytes())
+            .and_then(|()| scratch.sync_all())
+        {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(io_error("write store scratch file", &err));
+        }
+        drop(scratch);
+
+        // Atomic publish: rename replaces the live store in one step, so a reader never sees a
+        // partially written blob.
+        fs::rename(&tmp_path, &final_path).map_err(|err| {
+            // Best-effort cleanup so a failed publish does not leave the scratch file lying around.
+            let _ = fs::remove_file(&tmp_path);
+            io_error("publish store file", &err)
+        })?;
+
+        // fsync the directory so the rename (a directory-entry change) is itself durable — a
+        // crash right after the rename must not roll back to the pre-rename directory state.
+        let dir_handle =
+            fs::File::open(dir).map_err(|err| io_error("open store directory", &err))?;
+        dir_handle
+            .sync_all()
+            .map_err(|err| io_error("sync store directory", &err))?;
+        Ok(())
+    }
+
+    /// Load a store previously written by [`save_to_path`](Self::save_to_path) from `dir`.
+    ///
+    /// Fail-closed taxonomy (a persisted history must never be silently lost):
+    /// - The configured `dir` is **absent or not a directory** → [`StoreError::Io`]. An
+    ///   unmounted / deleted / misconfigured results path is a configuration failure, NOT an
+    ///   empty history — restoring empty here would silently erase a previously persisted store.
+    /// - `dir` exists but holds **no store file** → an empty store. This is the one legitimate
+    ///   "fresh install has never persisted a result" case (the provisioned directory is there).
+    /// - A **present** file is decoded through the fail-closed [`restore`](Self::restore) codec,
+    ///   so a corrupt / truncated / checksum-mismatching blob returns an [`Err`] (never a partial
+    ///   store). Any other I/O failure (a permission error, an unreadable path) surfaces as
+    ///   [`StoreError::Io`].
+    pub fn load_from_path(dir: &Path) -> Result<Self, StoreError> {
+        // The configured directory must be provisioned. A missing directory is a misconfigured /
+        // unmounted / deleted storage path, which must fail closed rather than masquerade as an
+        // empty history — only a missing FILE inside a present directory is a fresh install.
+        if !dir.is_dir() {
+            return Err(StoreError::Io {
+                context: "store directory is missing or not a directory",
+            });
+        }
+        let final_path = dir.join(STORE_FILENAME);
+        match fs::read_to_string(&final_path) {
+            Ok(contents) => Self::restore(&contents),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Self::new()),
+            Err(err) => Err(io_error("read store file", &err)),
+        }
+    }
+}
+
+/// Map a `std::io::Error` to the fail-closed [`StoreError::Io`]. `StoreError` derives
+/// `Clone`/`PartialEq`/`Eq` (which `io::Error` does not), so the variant carries a `'static`
+/// context label naming the operation rather than the source error.
+fn io_error(context: &'static str, _err: &io::Error) -> StoreError {
+    StoreError::Io { context }
 }
 
 // --------------------------------------------------------------------------- //
@@ -1304,6 +1418,13 @@ pub enum StoreError {
     /// The blob's integrity checksum did not match the body, so the bytes were corrupted or
     /// tampered after serialization. Rejected before any state is built.
     ChecksumMismatch,
+    /// A filesystem operation behind [`BacktestResultStore::save_to_path`] /
+    /// [`load_from_path`](BacktestResultStore::load_from_path) failed (a directory could not be
+    /// created, the store file could not be written/published, or a present file could not be
+    /// read). `context` names the operation. A *missing* store file is NOT this error — it
+    /// restores an empty store; this variant is a real I/O failure that must fail closed rather
+    /// than be mistaken for "fresh install".
+    Io { context: &'static str },
 }
 
 impl fmt::Display for StoreError {
@@ -1326,6 +1447,9 @@ impl fmt::Display for StoreError {
             }
             Self::ChecksumMismatch => {
                 write!(f, "backtest-record checksum mismatch")
+            }
+            Self::Io { context } => {
+                write!(f, "backtest-store I/O failure: {context}")
             }
         }
     }
@@ -1435,6 +1559,93 @@ mod tests {
         assert!(CodeVersion::new("").is_err());
         assert!(RunId::new("run-1").is_ok());
         assert!(CodeVersion::new("v1").is_ok());
+    }
+
+    /// A unique scratch directory under the OS temp dir. The suffix is a fixed per-test label,
+    /// not a clock/RNG read, so the persistence layer itself stays deterministic; each test owns
+    /// a distinct label so parallel test runs do not collide.
+    fn temp_store_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("atp_bt009_store_{label}"));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn save_then_load_round_trips_through_disk() {
+        let dir = temp_store_dir("round_trip");
+        let mut store = BacktestResultStore::new();
+        store.insert(record("run-a", "alpha", 10)).unwrap();
+        store
+            .insert(record_with_params(
+                "run-b",
+                "beta",
+                20,
+                params(&[("lookback", "30")]),
+            ))
+            .unwrap();
+
+        store.save_to_path(&dir).unwrap();
+        // The durable file exists on disk, and the atomic publish left no scratch file behind:
+        // the directory holds exactly the final store file.
+        let names: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec![STORE_FILENAME.to_string()]);
+
+        let loaded = BacktestResultStore::load_from_path(&dir).unwrap();
+        assert_eq!(loaded, store);
+        assert_eq!(loaded.len(), 2);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_missing_file_in_present_dir_is_empty_not_error() {
+        let dir = temp_store_dir("missing_file");
+        // The directory is provisioned but no result has ever been persisted: a fresh install.
+        fs::create_dir_all(&dir).unwrap();
+        let loaded = BacktestResultStore::load_from_path(&dir).unwrap();
+        assert!(loaded.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_missing_directory_fails_closed() {
+        let dir = temp_store_dir("missing_dir");
+        // The configured directory does not exist (unmounted / deleted / misconfigured). This
+        // must fail closed, NOT masquerade as an empty history that silently drops persisted runs.
+        assert!(matches!(
+            BacktestResultStore::load_from_path(&dir),
+            Err(StoreError::Io { .. })
+        ));
+    }
+
+    #[test]
+    fn load_corrupt_file_fails_closed() {
+        let dir = temp_store_dir("corrupt");
+        let mut store = BacktestResultStore::new();
+        store.insert(record("run-a", "alpha", 10)).unwrap();
+        store.save_to_path(&dir).unwrap();
+
+        // Flip a byte in the persisted body so the checksum no longer matches: load must fail
+        // closed rather than silently drop the run or return a partial store.
+        let path = dir.join(STORE_FILENAME);
+        let mut bytes = fs::read(&path).unwrap();
+        *bytes.last_mut().unwrap() ^= 0xFF;
+        fs::write(&path, &bytes).unwrap();
+
+        assert!(BacktestResultStore::load_from_path(&dir).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_garbage_file_fails_closed() {
+        let dir = temp_store_dir("garbage");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(STORE_FILENAME), "not a store blob").unwrap();
+        assert!(BacktestResultStore::load_from_path(&dir).is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

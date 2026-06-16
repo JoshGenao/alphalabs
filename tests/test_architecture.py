@@ -326,7 +326,7 @@ class ArchitectureBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("SRS-ARCH-005 PASS", result.stdout)
-        self.assertIn("16 keys catalogued across 6 categories", result.stdout)
+        self.assertIn("17 keys catalogued across 6 categories", result.stdout)
         for category in (
             "credentials",
             "storage_paths",

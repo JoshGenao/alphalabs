@@ -383,6 +383,67 @@ def check_error_enum(config: dict, src: str) -> str:
     )
 
 
+def check_file_persistence(config: dict, src: str) -> str:
+    spec = contract_block(config)["file_persistence"]
+    compact_src = _compact(src)
+    for key, label in (
+        ("save_fn", "a save_to_path() entry point"),
+        ("load_fn", "a load_from_path() entry point"),
+        ("store_filename_const", "a STORE_FILENAME constant"),
+        ("tmp_filename_const", "a STORE_TMP_FILENAME scratch-file constant"),
+        (
+            "unique_scratch_token",
+            "a per-call unique scratch name (so concurrent writers cannot clobber the scratch)",
+        ),
+        (
+            "file_sync_token",
+            "an fsync of the scratch file BEFORE the rename (crash durability of the bytes)",
+        ),
+        ("atomic_rename_token", "an atomic temp+rename publish (write scratch, then rename)"),
+        (
+            "dir_sync_token",
+            "an fsync of the parent directory AFTER the rename (crash durability of the publish)",
+        ),
+        (
+            "restore_on_load_token",
+            "load delegating a present file to the fail-closed restore() codec",
+        ),
+        (
+            "missing_dir_failclosed_token",
+            "a missing configured directory failing closed (not masquerading as empty history)",
+        ),
+        ("missing_file_empty_token", "a missing file restoring an empty store (not an error)"),
+        ("io_error_variant", "a fail-closed StoreError::Io for a real I/O failure"),
+    ):
+        if _compact(spec[key]) not in compact_src:
+            fail(f"backtest_store durable persistence must provide {label} (`{spec[key]}`)")
+    # The persisted directory must be a catalogued, validated storage_paths PATH key so the
+    # operator workflow persists to an absolute, readiness-checked location -- not a hard-coded
+    # path. (The SSD/NAS TIERING of that directory remains the deferred SRS-DATA-008 owner.)
+    config_key = spec["config_key"]
+    keys = config.get("configuration", {}).get("keys", [])
+    match = next((entry for entry in keys if entry.get("name") == config_key), None)
+    if match is None:
+        fail(
+            f"durable backtest store needs the {config_key} configuration key catalogued "
+            "(architecture/runtime_services.json configuration.keys)"
+        )
+    if match.get("category") != "storage_paths" or match.get("type") != "path":
+        fail(
+            f"{config_key} must be a storage_paths path key (got "
+            f"category={match.get('category')!r}, type={match.get('type')!r})"
+        )
+    return (
+        "atp-simulation save_to_path / load_from_path durably persist the store to the "
+        f"{config_key} directory via a crash-durable write (unique scratch file, fsync, atomic "
+        "rename, parent-directory fsync) that wraps the codec, fail closed through restore() on a "
+        "corrupt file and through StoreError::Io on a missing/unmounted directory, and restore an "
+        "empty store only when the provisioned directory holds no file (a persisted run is never "
+        "silently dropped or left half-written; only multi-writer merge coordination + SSD/NAS "
+        "tiering are deferred to SRS-DATA-008)"
+    )
+
+
 def check_numeric_boundary(config: dict, src: str) -> str:
     spec = contract_block(config)["numeric_boundary"]
     compact_src = _compact(src)
@@ -535,6 +596,7 @@ _STATIC_CHECKS = (
     ("record_coherence", check_record_coherence, "store"),
     ("codec", check_codec, "store"),
     ("error_enum", check_error_enum, "store"),
+    ("file_persistence", check_file_persistence, "store"),
     ("numeric_boundary", check_numeric_boundary, "store"),
     ("determinism", check_determinism, "store"),
     ("metrics_reuse", check_metrics_reuse, "store"),
@@ -544,8 +606,10 @@ _STATIC_CHECKS = (
 )
 
 _DEFERRED_OWNERS = (
-    "durable SSD/NAS persisted-record storage (SRS-DATA-008)",
+    "SSD/NAS tiering, eviction, and failover of the persisted store directory (SRS-DATA-008) -- "
+    "the durable file write itself is shipped (save_to_path / load_from_path)",
     "dashboard / backtest report history rendering (SRS-UI-004 / SRS-API; SYS-21)",
+    "operator persist/query workflow + the end-to-end step walk that flips passes:true (Phase 2)",
     "orchestrated run producer / real provenance (SRS-BT-001 / orchestrator)",
     "full value-level metric verification + atomic run-snapshot identity (needs the unpersisted "
     "MetricsConfig + benchmark level series; metric correctness owned by SRS-BT-004, the run "

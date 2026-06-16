@@ -21,6 +21,7 @@ leaked vendor token).
 
 from __future__ import annotations
 
+import copy
 import subprocess
 import sys
 import unittest
@@ -41,6 +42,7 @@ from backtest_store_check import (  # noqa: E402
     check_codec,
     check_determinism,
     check_error_enum,
+    check_file_persistence,
     check_from_result,
     check_identity_newtypes,
     check_insert,
@@ -85,7 +87,12 @@ class BacktestStoreScriptTest(unittest.TestCase):
             "per-metric DOMAIN bounds (win rate / max drawdown in [0, 1]",
             "rejects a duplicate run id (DuplicateRunId) and inserts in canonical",
             "serialize/restore is a deterministic, dependency-free text codec",
-            "declares StoreError with 6 fail-closed variants",
+            "declares StoreError with 7 fail-closed variants",
+            "save_to_path / load_from_path durably persist the store to the "
+            "ATP_BACKTEST_RESULTS_DIR directory via a crash-durable write (unique scratch file, "
+            "fsync, atomic rename, parent-directory fsync)",
+            "fail closed through restore() on a corrupt file and through StoreError::Io on a "
+            "missing/unmounted directory",
             "keeps trade-log/equity money in integer minor units",
             "backtest_store is deterministic",
             "persists the SRS-BT-004 PerformanceMetrics family and the SRS-BT-005 "
@@ -329,6 +336,78 @@ class ErrorEnumTest(_Fixture):
             check_error_enum(self.config, mutated)
         self.assertIn("ChecksumMismatch", str(ctx.exception))
 
+    def test_io_variant_present(self) -> None:
+        evidence = check_error_enum(self.config, self.src)
+        self.assertIn("Io", evidence)
+
+
+class FilePersistenceTest(_Fixture):
+    def test_file_persistence_evidence(self) -> None:
+        evidence = check_file_persistence(self.config, self.src)
+        self.assertIn("save_to_path / load_from_path durably persist", evidence)
+
+    def test_renamed_save_is_caught(self) -> None:
+        mutated = self.src.replace("pub fn save_to_path", "pub fn persist_to_path")
+        with self.assertRaises(BacktestStoreCheckError) as ctx:
+            check_file_persistence(self.config, mutated)
+        self.assertIn("save_to_path", str(ctx.exception))
+
+    def test_load_not_delegating_to_restore_is_caught(self) -> None:
+        # Neutering the fail-closed restore() delegation (e.g. returning an empty store for a
+        # present file) would silently drop persisted runs -- the check must catch it.
+        mutated = self.src.replace("Self::restore(&contents)", "Ok(Self::new())")
+        with self.assertRaises(BacktestStoreCheckError) as ctx:
+            check_file_persistence(self.config, mutated)
+        self.assertIn("restore()", str(ctx.exception))
+
+    def test_dropped_missing_file_empty_arm_is_caught(self) -> None:
+        mutated = self.src.replace("io::ErrorKind::NotFound => Ok(Self::new())", "")
+        with self.assertRaises(BacktestStoreCheckError) as ctx:
+            check_file_persistence(self.config, mutated)
+        self.assertIn("missing file", str(ctx.exception))
+
+    def test_dropped_missing_dir_failclosed_is_caught(self) -> None:
+        # Dropping the missing-directory guard would let an unmounted/deleted storage path load
+        # as an empty history (silently erasing persisted runs) -- the check must catch it.
+        mutated = self.src.replace("!dir.is_dir()", "false")
+        with self.assertRaises(BacktestStoreCheckError) as ctx:
+            check_file_persistence(self.config, mutated)
+        self.assertIn("missing configured directory", str(ctx.exception))
+
+    def test_dropped_file_fsync_is_caught(self) -> None:
+        # Dropping the scratch fsync before the rename would publish bytes that a crash could
+        # lose -- the durability contract must catch it.
+        mutated = self.src.replace("scratch.sync_all()", "Ok(())")
+        with self.assertRaises(BacktestStoreCheckError) as ctx:
+            check_file_persistence(self.config, mutated)
+        self.assertIn("fsync", str(ctx.exception))
+
+    def test_dropped_dir_fsync_is_caught(self) -> None:
+        # Dropping the parent-directory fsync would let a crash roll back the rename -- caught.
+        mutated = self.src.replace("fs::File::open(dir)", "Ok::<(), ()>(()).map(|()| ())")
+        with self.assertRaises(BacktestStoreCheckError) as ctx:
+            check_file_persistence(self.config, mutated)
+        self.assertIn("parent directory", str(ctx.exception))
+
+    def test_dropped_unique_scratch_is_caught(self) -> None:
+        # Reverting to a fixed scratch name would let concurrent writers clobber each other -- the
+        # check must catch the loss of the per-call unique scratch.
+        mutated = self.src.replace("SCRATCH_SEQ.fetch_add", "ignore_seq")
+        with self.assertRaises(BacktestStoreCheckError) as ctx:
+            check_file_persistence(self.config, mutated)
+        self.assertIn("concurrent writers", str(ctx.exception))
+
+    def test_missing_config_key_is_caught(self) -> None:
+        mutated = copy.deepcopy(self.config)
+        mutated["configuration"]["keys"] = [
+            entry
+            for entry in mutated["configuration"]["keys"]
+            if entry.get("name") != "ATP_BACKTEST_RESULTS_DIR"
+        ]
+        with self.assertRaises(BacktestStoreCheckError) as ctx:
+            check_file_persistence(mutated, self.src)
+        self.assertIn("ATP_BACKTEST_RESULTS_DIR", str(ctx.exception))
+
 
 class NumericBoundaryTest(_Fixture):
     def test_numeric_evidence(self) -> None:
@@ -420,12 +499,12 @@ class CargoSmokeTest(unittest.TestCase):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_seventeen_items(self) -> None:
-        # 16 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(run_checks()), 17)
+    def test_run_checks_emits_eighteen_items(self) -> None:
+        # 17 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(run_checks()), 18)
 
-    def test_static_evidence_is_sixteen_items(self) -> None:
-        self.assertEqual(len(assert_backtest_store_static(load_config(), ROOT)), 16)
+    def test_static_evidence_is_seventeen_items(self) -> None:
+        self.assertEqual(len(assert_backtest_store_static(load_config(), ROOT)), 17)
 
 
 if __name__ == "__main__":

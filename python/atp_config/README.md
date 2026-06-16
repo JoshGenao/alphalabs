@@ -41,6 +41,7 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 | `ATP_MARKET_DATA_LINE_LIMIT` | market_data_limits | int | `100` | no | SRS-MD-002, SyRS:SYS-70 |
 | `ATP_SSD_DATA_DIR` | storage_paths | path | `/var/lib/atp/ssd` | no | SRS-DATA-008 |
 | `ATP_NAS_DATA_DIR` | storage_paths | path | `/var/lib/atp/nas` | no | SRS-DATA-008/009 |
+| `ATP_BACKTEST_RESULTS_DIR` | storage_paths | path | `/var/lib/atp/ssd/backtest_results` | no | SRS-BT-009, SyRS:SYS-79 |
 | `ATP_SMTP_API_KEY` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, NFR-S4 |
 | `ATP_SMS_API_KEY` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, NFR-S4 |
 | `DATABENTO_API_KEY` | credentials | secret | placeholder | yes | SRS-DATA-001, NFR-S1 |
