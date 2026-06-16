@@ -1,3 +1,17 @@
+>>> NEXT TARGET (operator-directed, 2026-06-15): close out SRS-BT-009 to passes:true — the project's
+>>> first genuine end-to-end feature close. Do NOT pick by default file-order; work SRS-BT-009 instead.
+>>> Full multi-session plan: docs/plans/bt009-closeout.md (read it in full before coding).
+>>>   - Phase 1 (next session): durable file persistence on BacktestResultStore (wrap the existing
+>>>     serialize()/restore() codec with save_to_path/load_from_path + a configured STORAGE_PATHS dir +
+>>>     an srs_bt_009_persist_query integration test). Stays passes:false.
+>>>   - Phase 2 (session after): operator persist/query workflow (Rust example-binary CLI preferred —
+>>>     there is NO Python<->Rust runtime bridge) + walk the 4 feature_list steps end to end + flip
+>>>     passes:true. Hold the scope line: SSD/NAS tiering=DATA-008, UI view=UI-004/API-001, real
+>>>     Python-strategy result producer=BT-001-runtime are all DEFERRED — do not absorb them.
+>>>   - Why closeable: backtest_store.rs already bundles all 7 artifacts + 3 query axes + the codec;
+>>>     backtest.rs::run() produces a real BacktestResult over Rust fixture ports (VecSource + a fixture
+>>>     BacktestStrategy) with NO Python host. Gap = file I/O + a runnable operator workflow.
+
 === SESSION 54 ===
 Date: 2026-06-15
 Feature completed: SRS-EXE-002 SDK-SURFACE — "route all non-live strategy orders to the internal
