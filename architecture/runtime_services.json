@@ -4004,7 +4004,7 @@
     ]
   },
   "backtest_cost_contract": {
-    "description": "SRS-BT-002 (apply configurable commission, slippage, and spread-impact models to backtests). The configurable transaction-cost model FAMILY lives in crates/atp-simulation (module `cost`) and is APPLIED by the runnable backtest engine (module `backtest`). CostConfig bundles three configurable models: CommissionModel (default IbTiered = the published Interactive Brokers tiered schedule \u2014 IB_TIERED_RATE_CENTIMINOR_PER_SHARE per share, floored at IB_TIERED_MIN_PER_ORDER_MINOR per order, capped at IB_TIERED_MAX_PCT_BPS of trade value, SYS-15a), SlippageModel (default NotionalBps at DEFAULT_SLIPPAGE_BPS = 0.05% of trade notional, SYS-15b), and SpreadImpactModel (default ObservedOrFallbackBps = half the observed bid-ask spread per share when the bar carries one, else DEFAULT_SPREAD_FALLBACK_BPS = 0.10% of notional, SYS-15c). CostConfig::default() is the SyRS baseline encoded as named constants, so the default is PROVABLY the published value; an operator overrides any model for an individual run (SYS-15d) by building a different CostConfig on BacktestRequest.cost_config \u2014 no strategy code changes. All cost math is integer minor units (i128 intermediates, deterministic round-half-up division via div_round_half_up, i64::try_from narrowing -> CostError::Overflow; never f64); every cost is non-negative and the engine always SUBTRACTS it from cash via checked_sub, so a cost can never fabricate cash. The engine fails closed before any fill on a negative configured parameter (CostConfig::validate -> CostError::NegativeParameter) and on a corrupt negative observed bid-ask spread on ANY bar (BacktestError::NegativeSpread, mirroring the BT-001 non-positive-price guard). cost.rs is the SAME transaction-cost model family the internal simulation engine shares for paper fills (SRS-BT-003 deferred half \u2014 see deferred[]). The PASS line is 'SRS-BT-002 SDK-SURFACE PASS'; feature_list.json keeps SRS-BT-002 passes:false because the operator override SURFACE (the REST/CLI/dashboard controls that let an operator pick a cost model per run, SRS-API-001/SRS-UI) and the real data + Python strategy runtime (SRS-BT-001-runtime) are still deferred.",
+    "description": "SRS-BT-002 (apply configurable commission, slippage, and spread-impact models to backtests). The configurable transaction-cost model FAMILY lives in crates/atp-simulation (module `cost`) and is APPLIED by the runnable backtest engine (module `backtest`). CostConfig bundles three configurable models: CommissionModel (default IbTiered = the published Interactive Brokers tiered schedule \u2014 IB_TIERED_RATE_CENTIMINOR_PER_SHARE per share, floored at IB_TIERED_MIN_PER_ORDER_MINOR per order, capped at IB_TIERED_MAX_PCT_BPS of trade value, SYS-15a), SlippageModel (default NotionalBps at DEFAULT_SLIPPAGE_BPS = 0.05% of trade notional, SYS-15b), and SpreadImpactModel (default ObservedOrFallbackBps = half the observed bid-ask spread per share when the bar carries one, else DEFAULT_SPREAD_FALLBACK_BPS = 0.10% of notional, SYS-15c). CostConfig::default() is the SyRS baseline encoded as named constants, so the default is PROVABLY the published value; an operator overrides any model for an individual run (SYS-15d) by building a different CostConfig on BacktestRequest.cost_config \u2014 no strategy code changes. All cost math is integer minor units (i128 intermediates, deterministic round-half-up division via div_round_half_up, i64::try_from narrowing -> CostError::Overflow; never f64); every cost is non-negative and the engine always SUBTRACTS it from cash via checked_sub, so a cost can never fabricate cash. The engine fails closed before any fill on a negative configured parameter (CostConfig::validate -> CostError::NegativeParameter) and on a corrupt negative observed bid-ask spread on ANY bar (BacktestError::NegativeSpread, mirroring the BT-001 non-positive-price guard). cost.rs is the SAME transaction-cost model family the internal simulation engine shares for paper fills (SRS-BT-003 deferred half \u2014 see deferred[]). The PASS line is 'SRS-BT-002 SDK-SURFACE PASS'. The operator override SURFACE the acceptance names is now REALIZED for the CLI: the bt002_cost_cli operator binary (`defaults` + `run`, see cost_cli) builds a per-run CostConfig from --commission/--slippage/--spread flags, sets it on BacktestRequest.cost_config, and runs the SAME fixture strategy, demonstrating BOTH halves of the AC end to end in a fresh process (defaults match SyRS values; per-run override without changing strategy code, SYS-15d); the srs_bt_002_cost_cli integration test pins it. feature_list.json is now passes:true. The REST + dashboard half of that surface (SRS-API-001 / SRS-UI) and the real data + Python strategy runtime (SRS-BT-001-runtime) remain deferred (see deferred[]).",
     "requirement": "SRS-BT-002",
     "srs_refs": [
       "SRS-BT-002"
@@ -4141,7 +4141,25 @@
       "lib_reexport_token": "pub mod cost;",
       "note": "SRS-BT-003 shares the cost::CostConfig family for internal simulation paper fills."
     },
+    "cost_cli": {
+      "bin": "bt002_cost_cli",
+      "bin_path": "src/bin/bt002_cost_cli.rs",
+      "cargo_toml": "Cargo.toml",
+      "cargo_bin_token": "name = \"bt002_cost_cli\"",
+      "defaults_command_token": "\"defaults\" => cmd_defaults",
+      "run_command_token": "\"run\" => cmd_run",
+      "override_flag_tokens": [
+        "--commission",
+        "--slippage",
+        "--spread"
+      ],
+      "defaults_match_token": "default-config-matches-syrs",
+      "override_seam_token": "cost_config: self.cost_config",
+      "cli_integration_test": "srs_bt_002_cost_cli",
+      "note": "The CLI half of the SYS-15d operator override surface: `defaults` prints the SyRS constants and proves CostConfig::default() == CostConfig::syrs_defaults() (defaults match SyRS values); `run` builds a per-run CostConfig from the --commission/--slippage/--spread flags, sets it on BacktestRequest.cost_config, and runs the SAME fixture strategy, so the realized per-fill costs change while the strategy does not (override without changing strategy code). A negative override parameter is rejected by CostConfig::validate inside the engine before any fill (no cash fabricated). The srs_bt_002_cost_cli integration test drives the binary in fresh processes. The REST + dashboard half (SRS-API-001 / SRS-UI) and the real data + Python strategy host (SRS-BT-001-runtime) remain deferred."
+    },
     "rust_integration_test": "srs_bt_002_cost_models",
+    "rust_cli_integration_test": "srs_bt_002_cost_cli",
     "vendor_forbidden_tokens": [
       "interactive_brokers",
       "ib_insync",
@@ -4151,8 +4169,8 @@
     ],
     "deferred": [
       {
-        "feature": "SRS-API-001 / SRS-UI (operator override surface)",
-        "what": "The REST/CLI/dashboard controls that let an operator select or override the commission, slippage, and spread-impact models for an individual backtest run (SYS-15d). The engine already accepts a per-run CostConfig on BacktestRequest and applies it to fills; the operator-facing surface that constructs that override from a form / CLI flag / API payload is the deferred half, so feature_list.json keeps SRS-BT-002 passes:false."
+        "feature": "SRS-API-001 / SRS-UI (REST + dashboard override surface)",
+        "what": "The CLI half of the SYS-15d operator override surface is now REALIZED (the bt002_cost_cli binary builds a per-run CostConfig from flags and applies it without strategy changes; see cost_cli). The remaining deferred half is the REST endpoint + dashboard form that construct the override from an API payload / web control for an individual backtest run; that surface (SRS-API-001 / SRS-UI) is owned by those features, not SRS-BT-002."
       },
       {
         "feature": "SRS-BT-003 (shared simulation/backtest cost family)",

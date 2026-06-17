@@ -31,10 +31,15 @@ backtest engine (module ``backtest``) APPLIES it, per the structural contract in
   (f) the cost module carries no vendor-SDK token and is the SAME family the
       internal simulation engine shares for paper fills (SRS-BT-003 deferred).
 
-The PASS line is ``SRS-BT-002 SDK-SURFACE PASS`` — it names the deferred owners
-(the operator override surface, the SRS-BT-003 sim-engine sharing, the IB
-monthly-volume tier ladder, the real data + Python strategy runtime) so the
-partial-pass status (feature_list.json keeps ``passes:false``) is loud.
+The operator override surface the AC names is now realized for the CLI: the
+``bt002_cost_cli`` operator binary (``defaults`` + ``run``) prints the SyRS
+constants, proves ``CostConfig::default() == syrs_defaults()``, and applies a
+per-run CostConfig built from ``--commission`` / ``--slippage`` / ``--spread``
+flags to the SAME fixture strategy (override without strategy changes, SYS-15d),
+pinned by the ``srs_bt_002_cost_cli`` integration test (feature_list.json is now
+``passes:true``). The PASS line still names the genuinely deferred owners (the
+REST + dashboard half of the override surface, the SRS-BT-003 sim-engine sharing,
+the IB monthly-volume tier ladder, the real data + Python strategy runtime).
 
 Mirrors the PASS/FAIL output style of ``tools/backtest_check.py``.
 
@@ -90,6 +95,14 @@ def cost_source(config: dict, root: Path = ROOT) -> str:
 
 def backtest_source(config: dict, root: Path = ROOT) -> str:
     return _module_source(config, "backtest_module", root)
+
+
+def cargo_source(config: dict, root: Path = ROOT) -> str:
+    block = contract_block(config)
+    source_path = root / block["simulation_crate"]["path"] / block["cost_cli"]["cargo_toml"]
+    if not source_path.exists():
+        fail(f"source missing: {source_path.relative_to(root)}")
+    return source_path.read_text(encoding="utf-8")
 
 
 def _compact(text: str) -> str:
@@ -340,6 +353,53 @@ def check_shared_family(config: dict, lib_src: str) -> str:
     )
 
 
+def check_cost_cli(config: dict, cargo_text: str) -> str:
+    block = contract_block(config)
+    spec = block["cost_cli"]
+    crate_path = ROOT / block["simulation_crate"]["path"]
+    # (1) Cargo.toml registers the operator binary.
+    if _compact(spec["cargo_bin_token"]) not in _compact(cargo_text):
+        fail(
+            "atp-simulation Cargo.toml must register the cost-override CLI bin "
+            f"(`{spec['cargo_bin_token']}`)"
+        )
+    # (2) the bin source exists and wires both subcommands, the three per-model override flags, the
+    #     defaults-match proof, and the per-run override seam (the config built from flags lands on
+    #     the request, not in the strategy).
+    bin_path = crate_path / spec["bin_path"]
+    if not bin_path.exists():
+        fail(f"cost-override CLI source missing: {bin_path.relative_to(ROOT)}")
+    compact_bin = _compact(bin_path.read_text(encoding="utf-8"))
+    for token_key in (
+        "run_command_token",
+        "defaults_command_token",
+        "defaults_match_token",
+        "override_seam_token",
+    ):
+        if _compact(spec[token_key]) not in compact_bin:
+            fail(
+                f"`{spec['bin']}` must wire `{spec[token_key]}` ({token_key}) so the operator CLI "
+                "demonstrates the SyRS defaults AND a per-run override that lands on the request"
+            )
+    missing = [f for f in spec["override_flag_tokens"] if _compact(f) not in compact_bin]
+    if missing:
+        fail(
+            f"`{spec['bin']}` must expose the per-model override flags ({', '.join(missing)} "
+            "missing) so an operator can override commission/slippage/spread per run (SYS-15d)"
+        )
+    # (3) the integration test that drives the binary in fresh processes exists.
+    test_path = crate_path / "tests" / f"{spec['cli_integration_test']}.rs"
+    if not test_path.exists():
+        fail(f"cost-override CLI integration test missing: {test_path.relative_to(ROOT)}")
+    return (
+        f"atp-simulation registers the {spec['bin']} operator binary (defaults + run): it prints the "
+        "SyRS default constants and proves CostConfig::default()==syrs_defaults(), and builds a "
+        "per-run CostConfig from --commission/--slippage/--spread applied to the SAME fixture "
+        f"strategy (override seam `{spec['override_seam_token']}`); the {spec['cli_integration_test']} "
+        "integration test drives it in fresh processes -- the CLI half of the SYS-15d override surface"
+    )
+
+
 def check_vendor_isolation(config: dict, cost_src: str) -> str:
     tokens = contract_block(config)["vendor_forbidden_tokens"]
     leaked = [t for t in tokens if t in cost_src]
@@ -384,10 +444,25 @@ def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
     )
     if integ.returncode != 0:
         fail(f"cargo test -p {crate} --test {integration} failed:\n{integ.stdout}\n{integ.stderr}")
+    cli_integration = block.get("rust_cli_integration_test")
+    if cli_integration:
+        cli = subprocess.run(
+            [cargo, "test", "-p", crate, "--test", cli_integration, "--quiet"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if cli.returncode != 0:
+            fail(
+                f"cargo test -p {crate} --test {cli_integration} failed:\n{cli.stdout}\n{cli.stderr}"
+            )
+    suite = f"{integration} + {cli_integration}" if cli_integration else integration
     return (
-        f"cargo test -p {crate} --lib + {integration}: PASS "
+        f"cargo test -p {crate} --lib + {suite}: PASS "
         "(default cost family matches SyRS values, observed-vs-fallback spread, per-run overrides "
-        "without strategy changes, costs strictly reduce cash, fail-closed branches verified)"
+        "without strategy changes, costs strictly reduce cash, fail-closed branches verified, and "
+        "the bt002_cost_cli operator surface drives defaults + per-run override in fresh processes)"
     )
 
 
@@ -409,12 +484,14 @@ _STATIC_CHECKS = (
     ("money_invariant", check_money_invariant, "cost"),
     ("engine_application", check_engine_application, "backtest"),
     ("wiring", check_wiring, "backtest"),
+    ("cost_cli", check_cost_cli, "cargo"),
     ("shared_family", check_shared_family, "lib"),
     ("vendor_isolation", check_vendor_isolation, "cost"),
 )
 
 _DEFERRED_OWNERS = (
-    "SRS-API-001 / SRS-UI (operator cost-override surface)",
+    "SRS-API-001 / SRS-UI (REST + dashboard cost-override surface; the CLI half is realized via "
+    "bt002_cost_cli)",
     "SRS-BT-003 (internal simulation sharing the same cost family)",
     "SRS-BT-002 (IB tiered monthly-volume tier ladder)",
     "SRS-BT-001-runtime (real data + Python strategy host)",
@@ -435,6 +512,7 @@ def assert_backtest_cost_static(config: dict, root: Path = ROOT) -> list[str]:
         "cost": cost_source(config, root),
         "backtest": backtest_source(config, root),
         "lib": _lib_source(config, root),
+        "cargo": cargo_source(config, root),
     }
     return [check(config, sources[source_key]) for _, check, source_key in _STATIC_CHECKS]
 
@@ -465,9 +543,8 @@ def main(argv: list[str] | None = None) -> int:
     for item in evidence:
         print(f"- {item}")
     print(
-        "- deferred to: "
-        + ", ".join(_DEFERRED_OWNERS)
-        + "; feature_list.json keeps SRS-BT-002 passes:false"
+        "- CLI override surface realized via bt002_cost_cli; feature_list.json SRS-BT-002 "
+        "passes:true. deferred to: " + ", ".join(_DEFERRED_OWNERS)
     )
     return 0
 

@@ -866,8 +866,9 @@
       "Step 3: Verify acceptance criteria: Defaults match SyRS values; a backtest run can override commission, slippage, and spread-impact models without changing strategy code.",
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
-    "needs_clarification": false
+    "passes": true,
+    "needs_clarification": false,
+    "notes": "SRS-BT-002 closed in SESSION 58 via the bt002_cost_cli operator binary (crates/atp-simulation/src/bin/bt002_cost_cli.rs): `defaults` prints the SyRS constants and proves CostConfig::default()==syrs_defaults() (defaults match SyRS values), and `run` builds a per-run CostConfig from --commission/--slippage/--spread flags applied to the SAME fixture strategy through the real BacktestEngine (per-run override without changing strategy code, SYS-15d); a negative override parameter fails closed before any fill (no cash fabricated). Verified end to end in fresh processes by the srs_bt_002_cost_cli integration test (L5), the test_backtest_cost L7 domain test, and the backtest_cost_check.py contract gate. Deferred owners (do not absorb): the REST + dashboard half of the override surface (SRS-API-001/SRS-UI), the real data + Python strategy host (SRS-BT-001-runtime), the SRS-BT-003 sim paper-fill consumer, and the IB monthly-volume tier ladder."
   },
   {
     "id": "SRS-BT-003",

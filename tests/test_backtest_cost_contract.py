@@ -36,9 +36,11 @@ from backtest_cost_check import (  # noqa: E402
     _lib_source,
     assert_backtest_cost_static,
     backtest_source,
+    cargo_source,
     check_cargo_test_smoke,
     check_commission_model,
     check_cost_breakdown_struct,
+    check_cost_cli,
     check_cost_config_struct,
     check_cost_error_enum,
     check_engine_application,
@@ -81,9 +83,11 @@ class BacktestCostScriptTest(unittest.TestCase):
             "subtracts the total from cash (`checked_sub(total_cost_minor)`)",
             "fails closed on a negative observed spread (`BacktestError::NegativeSpread`)",
             "wires the per-run override onto BacktestRequest.cost_config",
+            "registers the bt002_cost_cli operator binary (defaults + run)",
+            "the CLI half of the SYS-15d override surface",
             "re-exports `pub mod cost`",
             "free of all 5 forbidden vendor SDK tokens",
-            "feature_list.json keeps SRS-BT-002 passes:false",
+            "feature_list.json SRS-BT-002 passes:true",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
 
@@ -300,6 +304,31 @@ class SharedFamilyTest(_Fixture):
         self.assertIn("cost", str(ctx.exception))
 
 
+class CostCliTest(_Fixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.cargo_src = cargo_source(self.config)
+
+    def test_cli_evidence(self) -> None:
+        evidence = check_cost_cli(self.config, self.cargo_src)
+        self.assertIn("bt002_cost_cli operator binary", evidence)
+
+    def test_unregistered_bin_is_caught(self) -> None:
+        # If Cargo stops registering the operator binary, the CLI override surface is gone.
+        mutated = self.cargo_src.replace('name = "bt002_cost_cli"', 'name = "x"', 1)
+        with self.assertRaises(BacktestCostCheckError) as ctx:
+            check_cost_cli(self.config, mutated)
+        self.assertIn("bt002_cost_cli", str(ctx.exception))
+
+    def test_missing_bin_source_is_caught(self) -> None:
+        # The contract points the collector at the bin path; a stale path is caught.
+        config = load_config()
+        config["backtest_cost_contract"]["cost_cli"]["bin_path"] = "src/bin/does_not_exist.rs"
+        with self.assertRaises(BacktestCostCheckError) as ctx:
+            check_cost_cli(config, self.cargo_src)
+        self.assertIn("source missing", str(ctx.exception))
+
+
 class VendorIsolationTest(_Fixture):
     def test_no_vendor_tokens(self) -> None:
         evidence = check_vendor_isolation(self.config, self.cost_src)
@@ -328,12 +357,12 @@ class CargoSmokeTest(unittest.TestCase):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_fourteen_items(self) -> None:
-        # 13 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(run_checks()), 14)
+    def test_run_checks_emits_fifteen_items(self) -> None:
+        # 14 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(run_checks()), 15)
 
-    def test_static_evidence_is_thirteen_items(self) -> None:
-        self.assertEqual(len(assert_backtest_cost_static(load_config(), ROOT)), 13)
+    def test_static_evidence_is_fourteen_items(self) -> None:
+        self.assertEqual(len(assert_backtest_cost_static(load_config(), ROOT)), 14)
 
 
 if __name__ == "__main__":
