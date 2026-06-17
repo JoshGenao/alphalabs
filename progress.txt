@@ -1,27 +1,128 @@
->>> NEXT TARGET (2026-06-16): SRS-BT-010 is CLOSED (passes:true, SESSION 57) — the project's SECOND
->>> genuine green, again from the backtest thread. Selection this session was OPERATOR-DIRECTED:
->>> "choose the id closest to passes:true" (NOT the file-order/lowest-ID default), which is why
->>> SRS-BT-010 was picked over the file-order-first unstarted SRS-EXE-004. 90 features remain failing
->>> (was 91). Next session: ASK the operator whether to keep optimizing for "closest to green" or
->>> resume the strict default (P1 first, file-order/lowest-ID, file-order-first UNSTARTED) — do not
->>> assume; the two diverge sharply (the remaining close-to-green pure-logic candidates are BT-002
->>> cost-override CLI and BT-006 factor tear-sheet; the default would land on SRS-SDK-004/EXE-004).
->>>   - DO NOT reopen SRS-BT-010. Deferred owners remain (do not absorb into other features):
->>>     end-to-end repeated run under the REAL Python strategy host (binds user strategy code + seed
->>>     across the Rust<->Python boundary)=SRS-BT-001-runtime; REST POST /api/v1/backtests + dashboard
->>>     rendering of the repeated-run workflow=SRS-API-001/SRS-UI; stamping the RunDigest onto each
->>>     persisted SRS-BT-009 record (the OPTIONAL Phase-2 store integration, deliberately NOT done this
->>>     session to keep the commit atomic)=SRS-BT-009 store integration.
->>>   - BT-010 surface now shipped: RunManifest/ManifestDigest/digest_manifest (input-provenance
->>>     fingerprint) in determinism.rs + the bt010_repro_cli operator binary (digest/verify) + the
->>>     srs_bt_010_cross_process integration test (two FRESH processes -> byte-identical). The
->>>     in-process ver_reproducible[_with_metrics] from the earlier BT-010 SDK slice is unchanged.
->>>   - LESSON (memory feedback_adversarial_loop_nonconvergence — CONFIRMED A 3rd TIME): the Codex pass
->>>     found ZERO in-scope bugs and walked straight to the deferred Python-host boundary
->>>     (needs-attention). Honest move (BT-009 precedent): pin the in-scope guarantees with tests,
->>>     narrow the contract's deferred list to the genuine remaining owners, add a feature_list `notes`
->>>     field scoping the close, get operator authorization to commit green, record the judgment verdict
->>>     honestly as needs-attention. Never fake APPROVE.
+>>> NEXT TARGET (2026-06-17): SRS-BT-002 is CLOSED (passes:true, SESSION 58) — the project's THIRD
+>>> genuine green, again from the backtest thread via the operator-CLI-over-fixture-engine pattern
+>>> (bt009_store_cli, bt010_repro_cli, now bt002_cost_cli). 89 features remain failing (was 90).
+>>> SELECTION POLICY IS NOW DURABLE: the operator set "optimize closest-to-green" via AskUserQuestion
+>>> (SESSION 58) — pick the failing feature with the smallest remaining slice to a genuine end-to-end
+>>> green. STOP re-asking the policy each session (recorded in memory project_selection_policy); just
+>>> CONFIRM the closest-to-green candidate at session start. The strict file-order default is retired
+>>> unless the operator changes it.
+>>>   - NEXT closest-to-green candidate (pure-logic, runnable, CLI-surface-shaped): SRS-BT-006 factor
+>>>     tear-sheet — compute_tear_sheet already exists in atp-factor-pipeline + factor_analysis_contract;
+>>>     the gap is the operator CLI surface + an L7 pin, the SAME slice shape as BT-002/009/010. Confirm
+>>>     closest-to-green at start; do not blindly assume BT-006.
+>>>   - DO NOT reopen SRS-BT-002. Deferred owners remain (do not absorb into other features):
+>>>     REST/dashboard cost-override surface=SRS-API-001/SRS-UI; real data + Python strategy host=
+>>>     SRS-BT-001-runtime; the SRS-BT-003 sim paper-fill consumer; the IB monthly-volume tier ladder.
+>>>   - BT-002 surface now shipped: bt002_cost_cli (defaults/run) + srs_bt_002_cost_cli (L5, fresh
+>>>     processes) + tests/domain/test_backtest_cost.py (L7) + check_cost_cli in backtest_cost_check.py
+>>>     + the backtest_cost_contract cost_cli sub-block. cost.rs is now a REGISTERED safety path (prep
+>>>     commit d8a5a2d). The cost-model FAMILY + engine application predate this slice (SESSION 38/39).
+>>>   - LESSON (memory feedback_adversarial_loop_nonconvergence — CONFIRMED A 4th TIME): the Codex pass
+>>>     found ZERO in-scope defects and walked straight to the deferred Python-host/real-data boundary
+>>>     (needs-attention). Honest close (BT-009/010 precedent): pinned in-scope guarantees with tests,
+>>>     narrowed the contract's deferred list, feature_list `notes` scoping the close, operator authorized
+>>>     committing green, judgment verdict recorded VERBATIM as needs-attention. Never fake APPROVE.
+
+=== SESSION 58 ===
+Date: 2026-06-17
+Feature COMPLETED: SRS-BT-002 (apply configurable commission, slippage, and spread-impact models to
+backtests; docs/SRS.md SRS-5.6 SRS-BT-002; traces SyRS SYS-15a-d; StRS SN-1.03) — the project's THIRD
+genuine end-to-end green. SELECTION + POLICY: operator chose SRS-BT-002 AND set a DURABLE
+"optimize closest-to-green" policy via AskUserQuestion (planned in plan mode, plan
+coding-agent-prompt-luminous-toucan). The strict file-order default would have landed on
+SRS-SDK-004/EXE-004 (far from green, deferred-runtime zone). BT-002 was closest-to-green: the cost-model
+FAMILY (cost.rs), the engine application (backtest.rs), the integration test, the contract, and the
+wired check script all already existed (SESSION 38/39) — the contract itself said the ONLY reason
+passes:false remained was the deferred "operator override SURFACE (REST/CLI/dashboard)". This slice
+ships the CLI half of that surface.
+Status: 89 remaining features (was 90 — SRS-BT-002 now passes:true). feature_list.json edits: the
+SRS-BT-002 passes false->true flip AND a (permitted) notes field scoping the close.
+
+3-commit cadence (prep + feat + chore):
+- PREP (d8a5a2d) chore(critic): extend SAFETY_PATH_RE for backtest cost paths. cost.rs money math
+  (commission/slippage/spread SUBTRACT from cash) was NOT a registered safety path (predates the
+  practice). Added collision-free tokens /cost\.rs, bt002[_-]?cost[_-]?cli, backtest[_-]?cost[_-]?check,
+  backtest[_-]?cost[_-]?contract, srs[_-]?bt[_-]?002. Verified: matches the planned feat paths (the new
+  bin is the one non-test safety file -> forces the paired tests/domain/ diff), the only non-test
+  collision is cost.rs itself, and critic_check.py itself does not match (prep needs no domain test).
+  Standalone commit so the feat diff does not self-modify the gate.
+- FEAT (74b8db4) the CLI surface + pin (single commit; the new bin + the cost_check script are the
+  registered safety non-test files, paired by tests/domain/test_backtest_cost.py):
+  * crates/atp-simulation/src/bin/bt002_cost_cli.rs (NEW, std-only, zero deps). `defaults` prints the
+    SyRS constants + each family default + proves CostConfig::default()==syrs_defaults(). `run
+    [--commission M][--slippage M][--spread M][--lot N][--sell-ts T][--full]` builds a per-run
+    CostConfig from flags (no flags => SyRS default), sets it on BacktestRequest.cost_config, runs the
+    SAME RoundTrip fixture through the REAL BacktestEngine, prints the resolved config + per-fill
+    CostBreakdown (integer minor units) + aggregate total + final equity. Override grammar:
+    --commission ib-tiered|per-share:R,M|per-trade:F|none; --slippage bps:N|none; --spread
+    observed:F|fixed:N|none. Fail closed: unknown subcommand/flag/malformed spec -> exit 1; a negative
+    override param flows to CostConfig::validate INSIDE the engine and is rejected BEFORE any fill (no
+    fill/equity printed -> no cash fabricated).
+  * Cargo.toml: [[bin]] bt002_cost_cli.
+  * crates/atp-simulation/tests/srs_bt_002_cost_cli.rs (NEW, L5, 11 tests): drives the bin via
+    CARGO_BIN_EXE_bt002_cost_cli in fresh processes. defaults match SyRS; default run applies the family
+    (observed-spread 2000 vs fallback 1000, exact minor units); override changes costs while the SAME
+    strategy yields the SAME fills (the SYS-15d "without changing strategy code" proof); frictionless
+    recovers starting cash; byte-identical across two fresh processes; negative param / bad flag / bad
+    subcommand / malformed spec fail closed.
+  * tests/domain/test_backtest_cost.py (NEW, L7, the paired safety diff, 11 tests): behavioral shell-out
+    to the L5 money-safety cases + structural non-vacuity guards (integer-only money, engine SUBTRACTS
+    cost, validate rejects a negative param, cost_cli registered) + scope-honesty (the contract names
+    the CLI surface REALIZED + passes:true + the genuine deferred owners).
+  * tests/test_backtest_cost_contract.py (L3): +CostCliTest + CLI evidence needles; closing-message
+    needle flipped (passes:true); static-check count 13->14, total 14->15.
+  * tools/backtest_cost_check.py: +check_cost_cli static collector (+cargo_source reader; reads the
+    cost_cli contract block), wired into _STATIC_CHECKS + the sources map; the cargo smoke now also runs
+    the srs_bt_002_cost_cli integration test; _DEFERRED_OWNERS + closing message + module docstring
+    updated (CLI surface realized; no longer asserts passes:false). Already wired via init.sh +
+    architecture_check (NOT in the ci.yml/run_ci_locally.sh loop) -> no CI-mirror edit needed (verified).
+  * architecture/runtime_services.json#backtest_cost_contract: +cost_cli sub-block +
+    rust_cli_integration_test; description marks the CLI override surface REALIZED + passes:true;
+    deferred[0] narrowed to the REST+dashboard half (SRS-API-001/SRS-UI).
+  * feature_list.json: SRS-BT-002 passes false->true + notes (the only permitted edits).
+
+What I verified end to end (the 4 feature_list steps, as an operator):
+- Step 1: ./init.sh -> "Environment ready" (BT-002 cost gate green) — before AND after the slice.
+- Step 2/3 (the AC): bt002_cost_cli defaults -> SyRS constants + default-config-matches-syrs:true; run
+  (no flags) -> commission 35 / slippage 500 / spread 2000(buy,observed)+1000(sell,fallback) / total 4070
+  / final equity 9_995_930; --commission none --slippage none --spread none -> all 0, final equity
+  10_000_000; --commission per-trade:99 --slippage none --spread fixed:25 -> total 5198, SAME fills;
+  --commission per-share:-1,35 -> exit 1, no fill/equity; bad flag/subcommand -> exit 1.
+- Step 4 (objective evidence): cargo test -p atp-simulation (lib 13 + srs_bt_002_cost_cli 11 + all other
+  integration) green; cargo test --workspace 58 "test result: ok", 0 failed; backtest_cost_check.py
+  --require-cargo PASS; L7 test_backtest_cost (11) + L3 test_backtest_cost_contract (41) green;
+  architecture_check exit 0; rustfmt + clippy clean on the 2 NEW files (hand-applied rustfmt to ONLY
+  those 2 files; the only clippy warnings are the PRE-EXISTING atp-types doc-list ones, not mine).
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings (re-confirmed by the pre-commit
+    hook on the feat commit; safety-pairing satisfied by tests/domain/test_backtest_cost.py for the new
+    bin + the cost_check safety paths).
+  judgment (/codex:adversarial-review --wait, USER-triggered, fresh Codex context, --base d8a5a2d):
+    needs-attention (NOT APPROVE) — committed on OPERATOR AUTHORIZATION (AskUserQuestion: "Commit green,
+    record honestly"); recorded honestly as not-APPROVE. ONE finding, [high]: "SRS-BT-002 is closed on
+    fixture-only evidence" — the CLI runs the REAL BacktestEngine but over an in-memory fixture
+    catalog/RoundTrip strategy rather than the real Python-authored-strategy + operator-selected-data
+    launch path. ZERO in-scope defects (no money-math/race/fail-open/CLI-parse-hole). OVERRIDE RATIONALE:
+    the finding walks to NAMED deferred owners (SRS-BT-001-runtime real Python host; SRS-API-001/SRS-UI
+    operator-data/REST surface), not an in-scope gap; the cost override DOES reach BacktestRequest.cost_config
+    and IS applied to real fills by the real engine; and BT-002's OWN feature_list Step 2 explicitly
+    permits "fixture market data, provider mocks ... or operator controls" — so the stated AC (defaults
+    match SyRS; override without strategy change) is met by the CLI. Same deferred-superset boundary
+    BT-009 (S56) and BT-010 (S57) hit and closed; 4th confirmation of memory
+    feedback_adversarial_loop_nonconvergence.
+
+Known issues / notes for next agent:
+- SRS-BT-002 is DONE (passes:true). Do NOT reopen it. Deferred owners (do not absorb elsewhere):
+  SRS-API-001/SRS-UI (REST+dashboard cost-override surface), SRS-BT-001-runtime (real data + Python
+  strategy host), SRS-BT-003 sim paper-fill consumer (already shares the family; the remaining SYS-83
+  fill models etc. live in sim_cost_contract.deferred), the IB monthly-volume tier ladder.
+- SELECTION POLICY is now DURABLE = "optimize closest-to-green" (operator-set SESSION 58, memory
+  project_selection_policy). Do NOT re-ask each session; just CONFIRM the closest-to-green candidate at
+  start. The strict file-order default is retired unless the operator changes it.
+- NEXT closest-to-green candidate: SRS-BT-006 factor tear-sheet (compute_tear_sheet +
+  factor_analysis_contract already exist; gap = the operator CLI surface + an L7 pin, same shape). The
+  CLI-over-fixture-engine + L7 + contract-close pattern is the proven closer for the backtest/sim thread.
 
 === SESSION 57 ===
 Date: 2026-06-16
