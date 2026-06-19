@@ -1,37 +1,141 @@
->>> NEXT TARGET (2026-06-18): SRS-BT-006 is CLOSED (passes:true, SESSION 59) — the project's FOURTH
->>> genuine green, again from the backtest thread via the operator-CLI-over-fixture-engine pattern
->>> (bt009_store_cli, bt010_repro_cli, bt002_cost_cli, now factor_tear_sheet_cli). 88 features remain
->>> failing (was 89).
+>>> NEXT TARGET (2026-06-18): SRS-BT-005 benchmark-comparison operator CLI SHIPPED but SRS-BT-005
+>>> STAYS passes:false (SESSION 60, Phase 1). 88 features remain failing (unchanged). This is the
+>>> SESSION-55 BT-009 Phase-1 precedent (ship the surface, flag stays false), NOT a green close.
+>>> WHY passes:false: SRS-BT-005's AC reads "dashboard AND backtest reports identify the benchmark".
+>>> The benchmark_comparison_cli realizes only the BACKTEST-report identification leg; the WEB
+>>> DASHBOARD / REST identification leg (SRS-UI / SRS-API; SYS-36 <=5s, SYS-37) is genuinely not built.
+>>> Codex adversarial review flagged the premature passes:true flip [high]; the operator chose to
+>>> REVERT the flip and keep the surface (no in-scope code defect was found). LESSON (durable): a
+>>> multi-context AC that NAMES an unbuilt context (here "dashboard") cannot be closed green on the
+>>> operator-CLI leg alone — unlike BT-002/006/009/010 whose ACs were single-context or fully
+>>> CLI-demonstrable. The closest-to-green policy must check the AC wording for a NAMED deferred
+>>> context BEFORE assuming the CLI-surface slice flips the flag.
 >>> SELECTION POLICY IS DURABLE: "optimize closest-to-green" (operator-set SESSION 58, memory
->>> project_selection_policy) — pick the failing feature with the smallest remaining slice to a genuine
->>> end-to-end green. STOP re-asking the policy each session; just CONFIRM the closest-to-green
->>> candidate at session start. The strict file-order default is retired unless the operator changes it.
->>>   - NEXT closest-to-green candidate: look for the next failing feature whose CORE logic already
->>>     exists + is runnable and whose only gap is the operator CLI surface + an L7 pin (the BT slice
->>>     shape). Survey candidates before assuming one; confirm closest-to-green at start. The backtest
->>>     thread's remaining P1s (SRS-BT-004 PerformanceMetrics, SRS-BT-005 benchmark comparison) already
->>>     have contracts + check scripts (benchmark_check, performance-metric contract) — likely the same
->>>     CLI-surface-shaped slice; verify their engines exist before committing to one.
->>>   - DO NOT reopen SRS-BT-006. Deferred owners remain (do NOT absorb into other features):
->>>     SRS-FAC-001 scheduled full-universe panel producer; SRS-DATA-007 real factor/return data wiring;
->>>     SRS-UI/SRS-API REST+dashboard rendering half; the cross-crate SRS-BT-004 PerformanceMetrics bundle.
->>>   - BT-006 surface now shipped: factor_tear_sheet_cli (defaults/run) + srs_bt_006_tear_sheet_cli
->>>     (L5, 15 tests, fresh processes) + the tear_sheet_cli additions to tests/domain/test_factor_tear_sheet.py
->>>     (L7) + check_tear_sheet_cli in tools/factor_analysis_check.py + the factor_analysis_contract
->>>     tear_sheet_cli sub-block. NO prep commit needed: factor paths (/factor_analysis.rs,
->>>     factor[_-]?tear[_-]?sheet, srs[_-]?bt[_-]?006, factor[_-]?analysis[_-]?check) were ALREADY in
->>>     SAFETY_PATH_RE (BT-009/010 cadence, not BT-002's). The tear-sheet ENGINE (compute_tear_sheet)
->>>     predates this slice. factor_analysis_check is wired via init.sh + architecture_check, NOT the
->>>     ci.yml loop -> no CI-mirror edit needed (verified).
->>>   - LESSON (memory feedback_adversarial_loop_nonconvergence — CONFIRMED A 5th TIME): the FIRST Codex
->>>     pass found a real IN-SCOPE doc drift (the module docs in factor_analysis.rs + lib.rs still said
->>>     "SRS-BT-006 stays passes:false") — FIXED it (do not commit around an in-scope finding). The
->>>     SECOND pass then found ZERO in-scope defects and walked to the deferred SRS-FAC-001/SRS-DATA-007
->>>     fixture-data boundary (needs-attention). Honest close (BT-002/009/010 precedent): the CLI runs the
->>>     REAL engine over a fixture (Step 2 EXPLICITLY permits fixtures/operator controls), in-scope
->>>     guarantees pinned with tests, deferred owners NAMED, feature_list `notes` scoping the close,
->>>     operator authorized committing green, judgment verdict recorded VERBATIM as needs-attention.
->>>     Never fake APPROVE.
+>>> project_selection_policy) — just CONFIRM the closest-to-green candidate at session start.
+>>>   - WHAT'S SHIPPED (reusable next session): crates/atp-simulation/src/bin/benchmark_comparison_cli.rs
+>>>     over the real benchmark::compare() engine (defaults proves the SPY default; run renders the
+>>>     identified comparison + alpha/beta + the 8 metrics; undefined->`undefined`; --inject faults fail
+>>>     closed) + L5 srs_bt_005_benchmark_cli (19 tests) + L7 test_benchmark_comparison CLI cases +
+>>>     L3 BenchmarkCliTest + tools/benchmark_check.py check_benchmark_cli + the benchmark_cli contract
+>>>     sub-block. NO prep commit was needed: benchmark paths (/benchmark\.rs, benchmark[_-]?comparison,
+>>>     srs[_-]?bt[_-]?005) were ALREADY in SAFETY_PATH_RE; naming the bin `benchmark_comparison_cli`
+>>>     matched benchmark[_-]?comparison -> registered safety path WITHOUT touching the gate (BT-006
+>>>     trick). benchmark_check is wired via init.sh + architecture_check, NOT the ci.yml loop -> no
+>>>     CI-mirror edit. The Phase-2 flag flip lands when the SRS-UI/SRS-API dashboard identification
+>>>     path is implemented + tested.
+>>>   - NEXT closest-to-green candidate: SRS-BT-004 (PerformanceMetrics) is the obvious next pick (engine
+>>>     crates/atp-simulation/src/metrics.rs::compute + L3/L5/L7 + tools/metrics_check.py ALL exist; only
+>>>     the operator CLI surface is missing — the same slice shape). BUT its AC ALSO names three contexts
+>>>     ("completed backtests, paper strategies, AND live dashboard reporting"): per the SESSION-60 lesson
+>>>     the CLI realizes only the backtest leg, so BT-004 is ALSO a Phase-1-surface (stays passes:false)
+>>>     unless the operator narrows scope. Confirm the AC's named-deferred-context check with the operator
+>>>     before assuming any backtest-thread feature flips its flag. Other deferred owners stand
+>>>     (SRS-DATA-007, SRS-UI/SRS-API, SRS-BT-009).
+
+=== SESSION 60 ===
+Date: 2026-06-18
+Feature WORKED: SRS-BT-005 (compare strategy performance against a user-selected benchmark defaulting
+to SPY; docs/SRS.md SRS-5.6 SRS-BT-005; traces SyRS SYS-17/36/37; StRS SN-1.04). Acceptance criterion:
+"If no benchmark is selected, SPY is used; alpha and beta are computed against the selected benchmark;
+dashboard and backtest reports identify the benchmark."
+Status: SRS-BT-005 STAYS passes:false (88 remaining, UNCHANGED). Phase 1 (operator CLI rendering
+surface) shipped; Phase 2 (the flag flip) deferred to the SRS-UI/SRS-API dashboard identification leg.
+SELECTION: operator chose SRS-BT-005 over SRS-BT-004 in planning (the cleaner two-context story:
+compare() IS the report producer). Both BT-004 and BT-005 were CLI-surface-gap slices (engine + L3/L5/L7
++ check script all predate this session); the only gap keeping passes:false was the operator RENDERING
+surface.
+
+THE OUTCOME (honest, do not re-close as green without the dashboard leg):
+- The operator-CLI-over-fixture-engine surface was SHIPPED and fully tested, the same as BT-002/006/009/010.
+- BUT the Codex adversarial-review judgment pass returned needs-attention with a [high] finding: the AC
+  names "dashboard AND backtest reports identify the benchmark", and flipping passes:true while the
+  WEB DASHBOARD / REST identification leg (SRS-UI / SRS-API) is unbuilt makes the feature status
+  contradict the requirement. No in-scope CODE defect was found (engine, fail-closed paths, determinism,
+  trust boundary all sound).
+- Operator DECISION (recorded): REVERT the passes:true flip, KEEP the shipped surface (the SESSION-55
+  BT-009 Phase-1 pattern). So SRS-BT-005 stays passes:false; the CLI surface is real progress for the
+  eventual close. The [high] finding is REMEDIATED by the revert (not overridden) — the feature is no
+  longer marked passing while a named AC context is deferred.
+
+2-commit cadence (feat + chore — NO prep, the bin name matched an already-registered safety token):
+- NO prep commit. benchmark paths (/benchmark\.rs, benchmark[_-]?comparison, benchmark[_-]?selection,
+  benchmark[_-]?source, srs[_-]?bt[_-]?005) were ALREADY in tools/critic_check.py SAFETY_PATH_RE
+  (lines 236-238). Naming the bin `benchmark_comparison_cli` matched benchmark[_-]?comparison ->
+  registered safety path WITHOUT touching the gate. The feat commit does not modify critic_check.py ->
+  no self-modification -> no prep needed. The feat commit IS the registered safety non-test bin paired
+  by tests/domain/test_benchmark_comparison.py (the L7 diff).
+- FEAT (585c66c) the CLI surface + pins (passes STAYS false):
+  * crates/atp-simulation/src/bin/benchmark_comparison_cli.rs (NEW, std-only). `defaults` prints
+    DEFAULT_BENCHMARK_SYMBOL/DEFAULT_PERIODS_PER_YEAR and proves BenchmarkSelection::unselected()
+    resolves to + identifies SPY. `run [--benchmark SYM][--periods-per-year N][--risk-free R][--lot N]
+    [--sell-ts T][--inject <fault>]` runs the SAME fixture strategy through the real BacktestEngine,
+    resolves the benchmark through an in-binary fixture BenchmarkSource (stand-in for the deferred
+    SRS-DATA-007 resolver), runs the real benchmark::compare(), and renders the identified comparison
+    (SPY default or a --benchmark user selection; is_default echoed) + alpha/beta + total/excess returns
+    + the 8 SYS-16 metrics. Safety core: every undefined statistic renders as the literal `undefined`
+    (never a fabricated 0/NaN; --sell-ts 99 -> win-rate undefined while others stay defined); every
+    --inject fault (symbol-mismatch/length-mismatch/nonpositive-level/unavailable/not-found/timeout/
+    stale/foreign-window) flows into compare() and fails closed BEFORE any report line (non-zero exit,
+    no partial report). Cargo [[bin]] registered.
+  * crates/atp-simulation/tests/srs_bt_005_benchmark_cli.rs (NEW, L5, 19 tests): drives the bin via
+    CARGO_BIN_EXE in fresh processes — defaults surface SPY; default run identifies SPY+is_default true;
+    --benchmark QQQ echoes QQQ+is_default false; comparison/metric alpha-beta agree; excess==strategy-
+    benchmark; undefined renders as `undefined`; byte-identical across two fresh processes; every fault
+    + bad flag/subcommand/missing-subcommand fails closed with no partial report.
+  * tests/domain/test_benchmark_comparison.py (L7, the paired safety diff): +CLI behavioral shell-outs
+    (SPY default / user selection / undefined render / determinism / substitution fail-closed) + a
+    check_benchmark_cli mutation guard (rename the bin -> raises) + a scope-honesty assert (the contract
+    names the CLI surface realized AND the deferred owners SRS-DATA-007 + SRS-UI/SRS-API; passes:false).
+  * tests/test_benchmark_contract.py (L3): +BenchmarkCliTest + CLI evidence needles; static-check count
+    18->19, run_checks 19->20; the needle stays "feature_list.json keeps SRS-BT-005 passes:false".
+  * tools/benchmark_check.py: +check_benchmark_cli static collector (reads the benchmark_cli contract
+    block + the bin source; verifies Cargo registration, both subcommands, the SPY-default proof, the
+    --benchmark selection seam, the identity render line, the undefined-render token, the operator flags,
+    and the L5 file), wired into _STATIC_CHECKS; the cargo smoke now also runs srs_bt_005_benchmark_cli;
+    _DEFERRED_OWNERS UI/API item narrowed to the dashboard/REST half (CLI half realized); closing message
+    + module docstring updated (CLI surface shipped, passes STAYS false). Wired via init.sh +
+    architecture_check, NOT the ci.yml loop -> no CI-mirror edit (verified).
+  * architecture/runtime_services.json#sim_benchmark_contract: +benchmark_cli sub-block +
+    rust_cli_integration_test; description + the dashboard deferred entry updated (CLI rendering realized;
+    the dashboard/REST half stays deferred; passes:false).
+  * crates/atp-simulation/src/benchmark.rs + src/lib.rs: module-doc updated (CLI surface realized; stays
+    passes:false because the dashboard leg is unbuilt).
+  * feature_list.json: SRS-BT-005 passes STAYS false + a notes field scoping the Phase-1 surface (the
+    only permitted edit; the flip to true was reverted per the operator + Codex).
+- CHORE (this commit) record SESSION 60 + the NEXT-TARGET pointer.
+
+Critic verdicts:
+  deterministic: APPROVE — 0 findings (re-run on the reverted diff; pre-commit hook re-approved at 585c66c)
+  judgment (/codex:adversarial-review): needs-attention — [high] "SRS-BT-005 is marked passing while
+    dashboard/report identification remains deferred (feature_list.json:915-917)". REMEDIATED: the
+    passes:true flip was reverted per operator decision, so SRS-BT-005 stays passes:false and the feature
+    status no longer contradicts the AC. No in-scope code defect was found. Recorded verbatim; never faked
+    an APPROVE.
+
+What I verified end to end (operator, as the 4 feature_list steps):
+- Step 1: ./init.sh -> "Environment ready" (benchmark + metrics contract checks green) — before AND after.
+- Step 2/3 (the AC): benchmark_comparison_cli defaults -> DEFAULT_BENCHMARK_SYMBOL=SPY, default-selection-
+  resolves-to:SPY, is_default true; run (no flags) -> comparison benchmark_symbol=SPY is_default true,
+  alpha/beta defined against SPY, 8 metrics rendered; run --benchmark QQQ -> benchmark_symbol=QQQ
+  is_default false (user-selected, report identifies it); run --sell-ts 99 -> metric-win-rate:undefined
+  while others defined; run --inject symbol-mismatch|length-mismatch|nonpositive-level|unavailable|
+  not-found|timeout|stale|foreign-window + bad flag/subcommand -> exit 1, no partial report.
+- Step 4 (objective evidence): cargo test -p atp-simulation (252 lib + srs_bt_005_benchmark + 19
+  srs_bt_005_benchmark_cli) all green, 0 failed; cargo build --workspace OK; benchmark_check.py
+  --require-cargo PASS; L3 test_benchmark_contract (50) + L7 test_benchmark_comparison (23) green;
+  architecture_check exit 0; rustfmt + clippy clean on the 2 NEW Rust files (hand-applied rustfmt to ONLY
+  the new files; the only clippy warnings are the PRE-EXISTING atp-types doc-list ones, not mine).
+
+Known issues / notes for next agent:
+- SRS-BT-005 stays passes:false. The CLI surface is shipped + tested; the flag flips when the SRS-UI/
+  SRS-API web-dashboard benchmark-identification leg is built (Phase 2). DO NOT re-flip passes:true on
+  the CLI surface alone — Codex already flagged that [high] and the operator reverted it.
+- LESSON for the closest-to-green policy: check the AC wording for a NAMED deferred context (here
+  "dashboard") before assuming a CLI-surface slice flips the flag. BT-004's AC also names a deferred
+  context ("paper strategies, and live dashboard reporting"), so BT-004 is likely ALSO a Phase-1 surface.
+- The benchmark_comparison_cli + scaffolding are reusable for the eventual close; nothing here needs
+  reverting.
+
 
 === SESSION 59 ===
 Date: 2026-06-18
