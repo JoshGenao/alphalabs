@@ -1,3 +1,133 @@
+>>> NEXT TARGET (2026-06-19): SRS-SIM-003 CLOSED GREEN (SESSION 62). 86 features remain failing
+>>> (87 -> 86). SRS-SIM-003 is the SIXTH green (after BT-009/BT-010/BT-002/BT-006/BT-003), the FIRST
+>>> SIM-thread green, and the SECOND close of a prior-deferred "SDK-surface passes:false" slice
+>>> (after BT-003).
+>>> WHY IT FLIPPED (same refined test as BT-003): SRS-SIM-003's AC is "quantity, average cost,
+>>> unrealized P&L, realized P&L, and commission paid are isolated per paper strategy and independent
+>>> of IB account positions" -- SINGLE-CONTEXT. Every named context is ALREADY BUILT: the five
+>>> quantities live in virtual_ledger.rs (VirtualPosition), "isolated per paper strategy" is
+>>> VirtualLedgerBook keyed by StrategyId, and "independent of IB positions" is the crate having no
+>>> atp-execution/atp-adapters dep (structural). The prior deferral named SYS-70 live feed / SYS-88
+>>> corp-actions / SRS-SIM-004 / SYS-85 metrics / SRS-EXE-002 / Python host -- ADJACENT features, NOT
+>>> contexts inside this AC. Engine + L5 srs_sim_003_virtual_ledger + L3 + tools/sim_ledger_check.py
+>>> ALL predated this session; the only gaps keeping passes:false were (a) the operator CLI surface
+>>> and (b) the over-conservative deferral. Exact mirror of the BT-003 flip.
+>>> SELECTION: operator confirmed SRS-SIM-003 (one AskUserQuestion) over SRS-SIM-002 (engine built but
+>>> deferred set incl. genuinely-unbuilt SYS-87a market-hours / SYS-87c stale-data -> contestable
+>>> scope) and SRS-BT-004 (AC names "live dashboard reporting" -> Phase-1). Selection policy durable:
+>>> "optimize closest-to-green" + read the AC's OWN named contexts.
+>>>   - WHAT'S SHIPPED (reusable next session): crates/atp-simulation/src/bin/sim003_ledger_cli.rs
+>>>     (std-only) over the REAL engine. `defaults` prints a fresh book (0 strategies, no IB account)
+>>>     + a flat position; `isolate [--lot-a N][--lot-b N][--symbol S][--mark M][--inject F][--full]`
+>>>     opens the SAME symbol under two strategies (alpha long+partial-sell, beta short) via
+>>>     simulate_fill -> apply_fill, prints all five quantities per strategy, and proves
+>>>     account-independent:true (same symbol -> different positions, impossible from one shared IB
+>>>     account) + ledger-isolation:true (mutating alpha leaves beta byte-identical while alpha DID
+>>>     change). --full closes ALPHA's OWN ledger to flat and reconciles it (realized - full cost ==
+>>>     sum of every alpha fill's cash delta). Every --inject fault fails closed BEFORE any mutation
+>>>     (uniform strategy-count=0); --lot<=0 and --mark outside [2, i64::MAX-1] rejected at parse (no
+>>>     vacuous proof / no invalid-quote proof). Driven by L5 srs_sim_003_ledger_cli (23) + L7
+>>>     tests/domain/test_sim003_ledger_cli.py + the pre-existing test_virtual_ledger_isolation.py +
+>>>     L3 LedgerCliTest + tools/sim_ledger_check.py check_ledger_cli. PREP COMMIT 81cdb16 extended
+>>>     SAFETY_PATH_RE (/virtual_ledger\.rs, sim003_ledger_cli, sim_ledger_check, srs_sim_003).
+>>>     sim_ledger_check is wired via init.sh, NOT the ci.yml loop -> no CI-mirror edit.
+>>>   - DOC-DRIFT LESSON REFINEMENT (cost 1 adversarial round, R4): the BT-003 "grep <id> near
+>>>     defer|passes:false BEFORE the first review" sweep MUST be FILE-LEVEL or proximity-windowed,
+>>>     NOT line-granular. lib.rs's virtual_ledger module doc split "SRS-SIM-003" (one line) and
+>>>     "passes:false" (a later line), so a line-based grep MISSED it and the judgment pass flagged it.
+>>>     NEXT TIME: scan a multi-line window (e.g. python: for each "<id>" occurrence, check +/-4 lines
+>>>     for passes:false|deferred), not `grep <id> | grep passes:false`.
+>>>   - ADVERSARIAL FINDINGS (5 rounds, 4 distinct [high], ALL legit, all fixed honestly -- no reverts,
+>>>     no fake approves): R1 [high] nonpositive-mark inject applied a real fill (strategy_count=1)
+>>>     before claiming "before any mutation/book unchanged" -> exercise the mark guard on a FRESH FLAT
+>>>     VirtualPosition (the mark<=0 check precedes the flat short-circuit), so all faults are uniformly
+>>>     strategy-count=0; R2 [high] snapshot() built bid=mark-1/ask=mark+1 from an unbounded --mark, so
+>>>     --mark 1 -> bid=0 (an invalid quote per fill_model's own rules) and extreme marks overflowed ->
+>>>     validate --mark in [2, i64::MAX-1] at parse + boundary tests; R3 [high] --full reconciled a
+>>>     FRESH "recon" strategy, not alpha (overclaimed evidence) -> reconcile ALPHA's ACTUAL ledger
+>>>     (accumulate every alpha cash delta, flatten alpha, check the invariant), print recon-strategy:
+>>>     alpha; R4 [high] stale lib.rs doc (above); R5 APPROVE. Final verdict APPROVE.
+>>>   - NEXT closest-to-green candidate: SRS-SIM-002 (fill models) -- fill_model.rs (market/limit/stop/
+>>>     stop-limit + the SYS-87b volume cap) + L5 srs_sim_002_fill_models + tools/sim_fill_check.py ALL
+>>>     exist; only the operator CLI surface is missing. Its AC ("market/limit/stop/stop-limit fills
+>>>     follow SYS-83 defaults and per-strategy config; fill volume constraints are enforced") names
+>>>     only BUILT contexts -- the deferred SYS-87a market-hours / SYS-87c stale-data are ADJACENT SYS
+>>>     items, NOT in this AC -- so by the refined test it likely FLIPS with a CLI. CONFIRM scope with
+>>>     the operator (the deferred set is more contestable than SIM-003's was). SIM-004 (AC names the
+>>>     60s/30s container-restart timer = SRS-EXE-002 runtime) and BT-004 (AC names "live dashboard
+>>>     reporting") stay Phase-1. P2 SRS-BT-007/008 have NO engine yet (farther). Deferred owners
+>>>     stand: SYS-70/SYS-88/SRS-DATA-007/008/SRS-EXE-001/002/SRS-API-001/SRS-UI/SRS-FAC-001.
+
+=== SESSION 62 ===
+Date: 2026-06-19
+Feature completed: SRS-SIM-003 — maintain an independent virtual position ledger for each paper
+strategy (docs/SRS.md SRS-5.7 SRS-SIM-003; SyRS SYS-84; StRS SN-1.29 / SN-1.07). AC: "Quantity,
+average cost, unrealized P&L, realized P&L, and commission paid are isolated per paper strategy and
+independent of IB account positions." NOW passes:true.
+Status: 86 features remaining (87 -> 86).
+
+SELECTION: operator confirmed SRS-SIM-003 (one AskUserQuestion) — closest-to-green AND flippable: the
+virtual_ledger engine, L5 srs_sim_003_virtual_ledger, L3 test_virtual_ledger_contract, and
+tools/sim_ledger_check.py ALL predated this session; the only gap was the operator-demonstrable CLI
+surface + a prior over-conservative deferral. SIM-002 (contestable SYS-87a/c) and BT-004 (AC names
+live dashboard reporting) were declined as more/Phase-1.
+
+3-commit cadence (prep + feat + chore):
+- PREP (81cdb16) chore(critic): extended tools/critic_check.py SAFETY_PATH_RE with /virtual_ledger\.rs,
+  sim003_ledger_cli, sim_ledger_check, srs_sim_003 (the new money-math bin name matched no existing
+  safety token — the 003_ infix defeats the existing sim[_-]?ledger token). Separated so the feat
+  commit does not self-modify its gate.
+- FEAT (0fa7f5f) the CLI surface + the flip:
+  * crates/atp-simulation/src/bin/sim003_ledger_cli.rs (NEW, std-only) over the real engine. `defaults`
+    + `isolate` (above). Cargo [[bin]] registered.
+  * crates/atp-simulation/tests/srs_sim_003_ledger_cli.rs (NEW, L5, 23 tests, CARGO_BIN_EXE fresh
+    processes — incl. --mark boundary [0/1/overflow/2], uniform book-unchanged strategy-count=0 on
+    every inject, recon-strategy:alpha).
+  * tests/domain/test_sim003_ledger_cli.py (NEW, L7 paired safety diff): behavioral shell-outs to the
+    L5 + structural non-vacuity (drives REAL engine+ledger, prints all five quantities, fail-closed) +
+    scope honesty (contract names the CLI realized + passes:true + adjacent features NOT in the AC).
+  * tests/test_virtual_ledger_contract.py (L3): +LedgerCliTest + CLI evidence needle; static 15->16,
+    run 16->17; passes:false needle -> passes:true; docstring updated.
+  * tools/sim_ledger_check.py: +cli_source +check_ledger_cli wired into _STATIC_CHECKS; cargo smoke
+    now runs BOTH srs_sim_003_virtual_ledger AND srs_sim_003_ledger_cli; _DEFERRED_OWNERS ->
+    _ADJACENT_FEATURES; closing message + module docstring -> passes:true.
+  * architecture/runtime_services.json#virtual_ledger_contract: +ledger_cli sub-block; description +
+    deferred reframed (CLI realized; adjacent features separate, NOT AC contexts).
+  * crates/atp-simulation/src/{virtual_ledger.rs,lib.rs,sim.rs,fill_model.rs}: module docs ->
+    passes:true / CLI exists; fill_model + the SIM-002 contract "bar-replay loop is the deferred
+    SRS-SIM-003 owner" reworded (bar-replay is a separate engine-runtime concern; the SIM-003 ledger
+    is built).
+  * feature_list.json: SRS-SIM-003 passes:true + notes.
+- CHORE (this commit) record SESSION 62 + the NEXT-TARGET pointer.
+
+Critic verdicts:
+  deterministic: APPROVE — 0 findings (pre-commit hook re-approved at 0fa7f5f)
+  judgment (/codex:adversarial-review --base 81cdb16, critic_prompt.md focus): APPROVE — converged
+    over 5 rounds, each finding fixed honestly (never faked an APPROVE, never reverted correct work):
+    R1 [high] nonpositive-mark inject mutated the book before claiming before-mutation -> mark guard on
+    a fresh flat VirtualPosition (uniform strategy-count=0); R2 [high] unbounded --mark built invalid
+    quotes (bid=0 / overflow) -> parse-validate --mark in [2, i64::MAX-1] + boundary tests; R3 [high]
+    --full reconciled a fresh "recon" strategy not alpha -> reconcile alpha's ACTUAL ledger; R4 [high]
+    stale lib.rs virtual_ledger module doc (SIM-003 still "deferred/passes:false", split across lines
+    so the line-based doc-drift grep missed it) -> fixed + file-level/proximity sweep. Final: APPROVE.
+
+What I verified end to end (operator, the 4 feature_list steps):
+- Step 1: ./init.sh -> "Environment ready" (simulation virtual-ledger contract check green).
+- Step 2/3: ran `defaults` (book-strategy-count:0, ib-account-positions:none, flat position) and
+  `isolate --full` (alpha/beta five quantities, account-independent:true, ledger-isolation:true,
+  recon-strategy:alpha reconciles); ran every --inject fault (all fail closed, exit 1, no isolation
+  line, strategy-count=0); confirmed --lot-a 0 / --mark 0/1/i64::MAX rejected at parse. cargo test -p
+  atp-simulation (lib 252 + L5 23 + L5 10); pytest L3 (52) + L7 (12 new) + pre-existing isolation;
+  tools/sim_ledger_check.py --require-cargo PASS.
+- Step 4: flipped feature_list.json SRS-SIM-003 passes:true only after the above proved it end to end.
+
+Known issues / notes for next agent:
+- Next closest-to-green = SRS-SIM-002 (CLI-over-built-fill_model, same pattern); CONFIRM scope (its
+  deferred SYS-87a/87c are adjacent, not AC contexts, but more contestable than SIM-003's were).
+- Pre-existing (NOT mine): atp-types/src/lib.rs has ~7 clippy doc_lazy_continuation warnings under the
+  newer LOCAL clippy; my crate's targets are clippy-clean. Did not touch atp-types (out of scope).
+- DOC-DRIFT SWEEP must be file-level/proximity-windowed, not `grep <id> | grep passes:false` (R4).
+
 >>> NEXT TARGET (2026-06-19): SRS-BT-003 CLOSED GREEN (SESSION 61). 87 features remain failing
 >>> (88 -> 87). SRS-BT-003 is the FIFTH backtest-thread green (after BT-009/BT-010/BT-002/BT-006) and
 >>> the FIRST close of a feature a prior session had deliberately deferred as an "SDK-surface
