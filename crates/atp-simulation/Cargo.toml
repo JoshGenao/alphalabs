@@ -51,6 +51,12 @@ path = "src/bin/benchmark_comparison_cli.rs"
 name = "bt003_shared_cost_cli"
 path = "src/bin/bt003_shared_cost_cli.rs"
 
+# SRS-SIM-003 virtual-ledger operator CLI: "maintain an independent virtual position ledger for each
+# paper strategy". A thin binary over the public sim + virtual_ledger API (no Python<->Rust bridge).
+[[bin]]
+name = "sim003_ledger_cli"
+path = "src/bin/sim003_ledger_cli.rs"
+
 [dependencies]
 atp-strategy-engine = { path = "../atp-strategy-engine" }
 atp-types = { path = "../atp-types" }

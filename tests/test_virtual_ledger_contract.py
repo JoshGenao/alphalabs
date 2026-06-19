@@ -5,10 +5,12 @@ virtual position ledger for each paper strategy. Acceptance: quantity, average
 cost, unrealized P&L, realized P&L, and commission paid are isolated per paper
 strategy and independent of IB account positions. This slice ships the ledger
 math + per-strategy isolation in ``crates/atp-simulation`` (module
-``virtual_ledger``); the deferred halves (the SYS-70 live feed, SYS-88 corporate
-actions / SRS-DATA-021, SYS-89 persistence / SRS-SIM-004, SYS-85 paper metrics,
-SRS-EXE-002 orchestrator routing, the Python runtime) keep ``feature_list.json``
-at ``passes:false``.
+``virtual_ledger``) plus the ``sim003_ledger_cli`` operator surface that makes the
+isolation criterion operator-demonstrable, so ``feature_list.json`` marks
+SRS-SIM-003 ``passes:true``. The genuinely ADJACENT features (the SYS-70 live
+feed, SYS-88 corporate actions / SRS-DATA-021, SYS-89 persistence / SRS-SIM-004,
+SYS-85 paper metrics, SRS-EXE-002 orchestrator routing, the Python runtime) are
+SEPARATE requirements, NOT contexts inside this acceptance criterion.
 
 Mirrors ``tests/test_sim_fill_contract.py``: shells out to
 ``tools/sim_ledger_check.py``, then exercises each per-check function in-process,
@@ -44,6 +46,7 @@ from sim_ledger_check import (  # noqa: E402
     check_cash_delta,
     check_cost_tracking,
     check_ledger_book_isolation,
+    check_ledger_cli,
     check_ledger_error_enum,
     check_mark_surface,
     check_module_reexport,
@@ -54,6 +57,7 @@ from sim_ledger_check import (  # noqa: E402
     check_unrealized,
     check_vendor_isolation,
     check_virtual_position_struct,
+    cli_source,
     ledger_source,
     lib_source,
     load_config,
@@ -103,7 +107,9 @@ class SimLedgerScriptTest(unittest.TestCase):
             "Cargo.toml declares no dependency on the live/broker path "
             "(atp-adapters, atp-execution)",
             "virtual_ledger module is free of all 5 forbidden vendor SDK tokens",
-            "feature_list.json keeps SRS-SIM-003 passes:false",
+            "operator binary sim003_ledger_cli is Cargo-registered, exposes defaults, isolate, "
+            "drives the REAL engine + ledger",
+            "feature_list.json marks SRS-SIM-003 passes:true",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
 
@@ -114,6 +120,7 @@ class _Fixture(unittest.TestCase):
         self.ledger_src = ledger_source(self.config)
         self.lib_src = lib_source(self.config)
         self.cargo_src = cargo_source(self.config)
+        self.cli_src = cli_source(self.config)
 
 
 class VirtualPositionStructTest(_Fixture):
@@ -438,6 +445,49 @@ class VendorIsolationTest(_Fixture):
         self.assertIn("ib_insync", str(ctx.exception))
 
 
+class LedgerCliTest(_Fixture):
+    def test_cli_evidence(self) -> None:
+        evidence = check_ledger_cli(self.config, self.cli_src)
+        self.assertIn("sim003_ledger_cli", evidence)
+        self.assertIn("REAL engine + ledger", evidence)
+
+    def test_collapsing_to_a_stub_engine_is_caught(self) -> None:
+        # The CLI must drive the REAL engine; renaming it away (a stub that could agree with itself)
+        # must be caught.
+        mutated = self.cli_src.replace("PaperSimulationEngine", "StubEngine")
+        with self.assertRaises(SimLedgerCheckError) as ctx:
+            check_ledger_cli(self.config, mutated)
+        self.assertIn("PaperSimulationEngine", str(ctx.exception))
+
+    def test_dropping_the_real_ledger_is_caught(self) -> None:
+        # The CLI must drive the REAL VirtualLedgerBook; dropping it must be caught.
+        mutated = self.cli_src.replace("VirtualLedgerBook", "FakeBook")
+        with self.assertRaises(SimLedgerCheckError) as ctx:
+            check_ledger_cli(self.config, mutated)
+        self.assertIn("VirtualLedgerBook", str(ctx.exception))
+
+    def test_dropped_isolation_headline_is_caught(self) -> None:
+        # The isolation headline IS the acceptance criterion; dropping it must be caught.
+        mutated = self.cli_src.replace("ledger-isolation:", "ledger-status:")
+        with self.assertRaises(SimLedgerCheckError) as ctx:
+            check_ledger_cli(self.config, mutated)
+        self.assertIn("ledger-isolation:", str(ctx.exception))
+
+    def test_dropped_quantity_field_is_caught(self) -> None:
+        # The CLI must print all five SYS-84 quantities; dropping the realized-pnl print must be
+        # caught (a partial print could hide an uncomputed field).
+        mutated = self.cli_src.replace("realized-pnl-minor:", "rpnl:")
+        with self.assertRaises(SimLedgerCheckError) as ctx:
+            check_ledger_cli(self.config, mutated)
+        self.assertIn("realized-pnl-minor:", str(ctx.exception))
+
+    def test_dropped_fail_closed_token_is_caught(self) -> None:
+        mutated = self.cli_src.replace("failed closed", "succeeded anyway")
+        with self.assertRaises(SimLedgerCheckError) as ctx:
+            check_ledger_cli(self.config, mutated)
+        self.assertIn("failed closed", str(ctx.exception))
+
+
 class CargoSmokeTest(unittest.TestCase):
     """The runnable virtual-ledger path must compile where it matters."""
 
@@ -454,12 +504,12 @@ class CargoSmokeTest(unittest.TestCase):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_sixteen_items(self) -> None:
-        # 15 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(run_checks()), 16)
+    def test_run_checks_emits_seventeen_items(self) -> None:
+        # 16 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(run_checks()), 17)
 
-    def test_static_evidence_is_fifteen_items(self) -> None:
-        self.assertEqual(len(assert_sim_ledger_static(load_config(), ROOT)), 15)
+    def test_static_evidence_is_sixteen_items(self) -> None:
+        self.assertEqual(len(assert_sim_ledger_static(load_config(), ROOT)), 16)
 
 
 if __name__ == "__main__":

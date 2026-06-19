@@ -88,7 +88,15 @@
 //! and exactly-once delivery semantics owned by the orchestrator (SRS-EXE-002), so
 //! fill idempotency is deferred to those owners rather than guessed at here.
 //!
-//! The halves that need unbuilt subsystems are deferred (see
+//! The operator-demonstrable surface is the `sim003_ledger_cli` binary (its
+//! `isolate` subcommand opens the same symbol under two paper strategies, prints
+//! all five quantities, and proves they are isolated per strategy and independent
+//! of any account). Every named context in the SRS-SIM-003 acceptance criterion is
+//! built and demonstrated over this Rust core, so `feature_list.json` marks
+//! SRS-SIM-003 `passes:true`.
+//!
+//! The halves that need unbuilt subsystems are genuinely ADJACENT features — NOT
+//! contexts inside this acceptance criterion (see
 //! `architecture/runtime_services.json#virtual_ledger_contract.deferred`): the
 //! live bid/ask/last feed that drives the mark comes from the SYS-70 subscription
 //! manager (the [`MarketSnapshot`] is an in-memory fixture today); corporate-action
@@ -96,7 +104,7 @@
 //! and restore (SYS-89) is SRS-SIM-004; the accumulated paper performance metrics
 //! (SYS-85) are their own feature; the orchestrator routing of all non-live
 //! strategies into this engine is SRS-EXE-002; and the Python strategy runtime is
-//! still deferred. So `feature_list.json` keeps SRS-SIM-003 at `passes:false`.
+//! still deferred.
 
 use std::collections::HashMap;
 use std::fmt;

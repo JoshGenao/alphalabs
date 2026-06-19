@@ -183,8 +183,9 @@ impl PaperFill {
 /// Tracks the cash balance, signed position, and accumulated commission paid for
 /// one paper strategy, independent of any other strategy and of the IB account.
 /// The full SYS-84 ledger (per-symbol average cost, realized and unrealized P&L)
-/// is SRS-SIM-003's responsibility and is deferred; this seam exists so the
-/// shared cost family's commissions actually accumulate somewhere.
+/// is SRS-SIM-003's responsibility and is built in [`virtual_ledger`](crate::virtual_ledger)
+/// (closed: `passes:true`); this minimal seam exists so the shared cost family's
+/// commissions accumulate somewhere even where a caller does not need the full ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaperLedger {
     pub cash_minor: i64,

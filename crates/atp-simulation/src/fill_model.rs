@@ -182,7 +182,9 @@ impl FillModelConfig {
 /// [`evaluate_fill_against_budget`](PaperSimulationEngine::evaluate_fill_against_budget)
 /// for every order, so the **aggregate** of fills against that bar cannot exceed
 /// the observed volume even across orders. The loop that owns the per-bar budget
-/// and orders the fills is the deferred SRS-SIM-003 bar-replay/ledger.
+/// and orders the fills is a deferred bar-replay loop in the simulation engine
+/// runtime (the SRS-SIM-003 [`virtual_ledger`](crate::virtual_ledger) that records
+/// the resulting fills is built).
 ///
 /// A budget is **bound to its bar**: `evaluate_fill_against_budget` fails closed
 /// if the budget's `observed_bar_volume` does not match the snapshot's
