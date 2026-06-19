@@ -244,6 +244,8 @@ SAFETY_PATH_RE = re.compile(
     r"|backtest[_-]?determinism|srs[_-]?bt[_-]?010"
     r"|/cost\.rs|backtest[_-]?cost[_-]?check|backtest[_-]?cost[_-]?contract"
     r"|bt002[_-]?cost[_-]?cli|srs[_-]?bt[_-]?002"
+    r"|/sim\.rs|sim[_-]?cost[_-]?check|sim[_-]?cost[_-]?contract"
+    r"|bt003[_-]?shared[_-]?cost[_-]?cli|shared[_-]?cost[_-]?family|srs[_-]?bt[_-]?003"
     r"|/factor_job\.rs|factor[_-]?job[_-]?check|factor[_-]?job[_-]?contract"
     r"|srs[_-]?fac[_-]?001"
     r"|/designation\.rs|live[_-]?designation|srs[_-]?exe[_-]?001"
