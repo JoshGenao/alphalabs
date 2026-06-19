@@ -927,8 +927,9 @@
       "Step 3: Verify acceptance criteria: Factor returns, information coefficient, and turnover analysis are available for completed factor-analysis runs.",
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
-    "needs_clarification": false
+    "passes": true,
+    "needs_clarification": false,
+    "notes": "SESSION 59: closed by the operator-CLI-over-fixture-engine pattern (precedent: SRS-BT-009/010/002). The tear-sheet engine (compute_tear_sheet: information coefficient, factor returns, turnover) predates this slice; the gap was the operator RENDERING surface. Shipped crates/atp-factor-pipeline/src/bin/factor_tear_sheet_cli.rs: `defaults` proves a default run surfaces all three SYS-18 deliverables (deliverable-availability, as there is no SyRS numeric quantile default), `run` renders the IC/returns/turnover of a deterministic fixture FactorPanel through the REAL engine, --quantiles re-buckets the SAME fixture, and every undefined statistic renders as the literal `undefined` (never a fabricated 0). Pinned by srs_bt_006_tear_sheet_cli (L5, fresh processes), tests/domain/test_factor_tear_sheet.py (L7), and tools/factor_analysis_check.py check_tear_sheet_cli. Deferred owners (NOT absorbed here): the SRS-UI/SRS-API REST+dashboard rendering half, the SRS-FAC-001 scheduled full-universe panel producer, the SRS-DATA-007 real factor/return data wiring, and the cross-crate SRS-BT-004 metrics bundle."
   },
   {
     "id": "SRS-BT-007",

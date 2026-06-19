@@ -11,9 +11,13 @@ use atp_types::RuntimeService;
 /// [`factor_analysis::FactorTearSheet`]. Factor scores and returns are dimensionless f64
 /// (the factor domain, not a money leak); the work is deterministic (fixed left-to-right
 /// folds, total-order ties), an undefined statistic is None (never a fabricated zero), and
-/// a non-finite result fails closed. The scheduled full-universe factor job that produces
-/// the panel (SRS-FAC-001), the SRS-DATA-007 data wiring, and the SRS-UI / SRS-API
-/// tear-sheet rendering are deferred, so SRS-BT-006 stays `passes:false`.
+/// a non-finite result fails closed. The operator tear-sheet RENDERING surface is realized by
+/// the `factor_tear_sheet_cli` binary (this crate's `src/bin/`), which renders the three
+/// deliverables of a fixture panel through [`factor_analysis::compute_tear_sheet`] -- the CLI
+/// half of the SRS-UI / SRS-API surface -- so SRS-BT-006 is `passes:true`. Still deferred (each
+/// its own feature): the scheduled full-universe factor job that produces the panel
+/// (SRS-FAC-001), the SRS-DATA-007 data wiring, and the REST/dashboard rendering half
+/// (SRS-UI / SRS-API).
 pub mod factor_analysis;
 
 /// The scheduled full-universe factor job that PRODUCES the panel the [`factor_analysis`]

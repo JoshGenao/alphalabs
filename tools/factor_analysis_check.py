@@ -39,11 +39,15 @@ verified finite (``FactorAnalysisError::NonFiniteComputation``). ``atp-factor-pi
 no broker/adapter/simulation dependency and carries no vendor SDK token; ``lib.rs``
 re-exports ``pub mod factor_analysis;``.
 
-The PASS line is ``SRS-BT-006 SDK-SURFACE PASS`` -- it names the deferred owners (the
-scheduled full-universe factor job via SRS-FAC-001, the real factor/return data wiring via
-SRS-DATA-007, the operator tear-sheet rendering via SRS-UI / SRS-API, and the cross-crate
-SRS-BT-004 metrics bundle) so the partial-pass status (feature_list.json keeps
-``passes:false``) is loud.
+The operator tear-sheet RENDERING surface is realized by the ``factor_tear_sheet_cli`` binary
+(``check_tear_sheet_cli``): ``defaults`` proves a default run surfaces all three deliverables and
+``run`` renders the IC / factor returns / turnover of a fixture panel through the real engine, with
+``--quantiles`` re-bucketing the SAME fixture and every undefined statistic rendered as the literal
+``undefined`` (never a fabricated 0). The PASS line is ``SRS-BT-006 SDK-SURFACE PASS`` -- it names
+the still-deferred owners (the scheduled full-universe factor job via SRS-FAC-001, the real
+factor/return data wiring via SRS-DATA-007, the REST/dashboard rendering half via SRS-UI / SRS-API,
+and the cross-crate SRS-BT-004 metrics bundle), with feature_list.json now SRS-BT-006
+``passes:true``.
 
 Mirrors the PASS/FAIL output style of ``tools/benchmark_check.py``.
 
@@ -432,6 +436,63 @@ def check_vendor_isolation(config: dict, src: str) -> str:
     )
 
 
+def check_tear_sheet_cli(config: dict, cargo_text: str) -> str:
+    """The operator tear-sheet rendering surface: the factor_tear_sheet_cli binary that runs a
+    fixture FactorPanel through the real engine and renders the three SYS-18 deliverables, the CLI
+    half of the deferred SRS-UI / SRS-API surface (the precedent of the SRS-BT-002 cost CLI)."""
+    block = contract_block(config)
+    spec = block["tear_sheet_cli"]
+    crate_path = ROOT / block["factor_pipeline_crate"]["path"]
+    # (1) Cargo.toml registers the operator binary.
+    if _compact(spec["cargo_bin_token"]) not in _compact(cargo_text):
+        fail(
+            "atp-factor-pipeline Cargo.toml must register the factor tear-sheet CLI bin "
+            f"(`{spec['cargo_bin_token']}`)"
+        )
+    # (2) the bin source exists and wires both subcommands, the deliverable-availability proof, the
+    #     per-quantile override seam (the flag count lands on FactorPanel::new, not the fixture), and
+    #     the undefined-not-fabricated rendering (None -> the literal `undefined`).
+    bin_path = crate_path / spec["bin_path"]
+    if not bin_path.exists():
+        fail(f"factor tear-sheet CLI source missing: {bin_path.relative_to(ROOT)}")
+    compact_bin = _compact(bin_path.read_text(encoding="utf-8"))
+    for token_key in (
+        "run_command_token",
+        "defaults_command_token",
+        "deliverables_token",
+        "override_seam_token",
+        "undefined_render_token",
+    ):
+        if _compact(spec[token_key]) not in compact_bin:
+            fail(
+                f"`{spec['bin']}` must wire `{spec[token_key]}` ({token_key}) so the operator CLI "
+                "proves the three deliverables are available, re-buckets the SAME fixture per the "
+                "--quantiles override seam, and renders an undefined statistic as `undefined` "
+                "(never a fabricated 0)"
+            )
+    missing = [f for f in spec["override_flag_tokens"] if _compact(f) not in compact_bin]
+    if missing:
+        fail(
+            f"`{spec['bin']}` must expose the analysis override flags ({', '.join(missing)} "
+            "missing) so an operator can re-analyze a completed run (quantile bucketing, periods, "
+            "factor pattern) without changing the data"
+        )
+    # (3) the integration test that drives the binary in fresh processes exists.
+    test_path = crate_path / "tests" / f"{spec['cli_integration_test']}.rs"
+    if not test_path.exists():
+        fail(f"factor tear-sheet CLI integration test missing: {test_path.relative_to(ROOT)}")
+    return (
+        f"atp-factor-pipeline registers the {spec['bin']} operator binary (defaults + run): "
+        "`defaults` proves a default run surfaces all three SRS-BT-006 deliverables "
+        "(deliverable-availability, since there is no SyRS numeric quantile constant), and `run` "
+        "renders the IC / factor returns / turnover of a fixture panel through the real engine "
+        f"with the --quantiles override seam (`{spec['override_seam_token']}`) re-bucketing the SAME "
+        "fixture and every undefined statistic rendered as `undefined` (never a fabricated 0); the "
+        f"{spec['cli_integration_test']} integration test drives it in fresh processes -- the CLI "
+        "half of the SYS-18 operator rendering surface"
+    )
+
+
 def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
     block = contract_block(config)
     crate = block["factor_pipeline_crate"]["crate"]
@@ -463,10 +524,24 @@ def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
     )
     if integ.returncode != 0:
         fail(f"cargo test -p {crate} --test {integration} failed:\n{integ.stdout}\n{integ.stderr}")
+    cli_integration = block["rust_cli_integration_test"]
+    cli = subprocess.run(
+        [cargo, "test", "-p", crate, "--test", cli_integration, "--quiet"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if cli.returncode != 0:
+        fail(
+            f"cargo test -p {crate} --test {cli_integration} failed:\n{cli.stdout}\n{cli.stderr}"
+        )
     return (
-        f"cargo test -p {crate} --lib {module} + {integration}: PASS "
+        f"cargo test -p {crate} --lib {module} + {integration} + {cli_integration}: PASS "
         "(computes the per-period Spearman IC, quantile factor-return spread, and quantile turnover; "
-        "is deterministic; and fails closed on an empty / degenerate / non-finite panel)"
+        "is deterministic; fails closed on an empty / degenerate / non-finite panel; and the "
+        "factor_tear_sheet_cli operator surface renders the three deliverables + fails closed in "
+        "fresh processes)"
     )
 
 
@@ -495,12 +570,14 @@ _STATIC_CHECKS = (
     ("module_reexport", check_module_reexport, "lib"),
     ("no_broker_dependency", check_no_broker_dependency, "cargo"),
     ("vendor_isolation", check_vendor_isolation, "module"),
+    ("tear_sheet_cli", check_tear_sheet_cli, "cargo"),
 )
 
 _DEFERRED_OWNERS = (
     "scheduled full-universe factor job producing the panel (SRS-FAC-001)",
     "real factor-value / forward-return data wiring (SRS-DATA-007 unified historical interface)",
-    "operator factor tear-sheet rendering (SRS-UI / SRS-API)",
+    "operator factor tear-sheet REST/dashboard rendering (SRS-UI / SRS-API) -- the CLI half is "
+    "realized via the factor_tear_sheet_cli binary",
     "cross-crate bundle with the SRS-BT-004 PerformanceMetrics family into one report",
     "a validated compounded cumulative spread (needs each period's forward-return horizon to "
     "compound only non-overlapping windows; the panel has a start timestamp only)",
@@ -550,7 +627,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "- deferred to: "
         + ", ".join(_DEFERRED_OWNERS)
-        + "; feature_list.json keeps SRS-BT-006 passes:false"
+        + "; the operator rendering surface is realized via the factor_tear_sheet_cli binary, so "
+        "feature_list.json has SRS-BT-006 passes:true"
     )
     return 0
 

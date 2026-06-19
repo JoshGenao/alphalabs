@@ -61,6 +61,7 @@ from factor_analysis_check import (  # noqa: E402
     check_no_broker_dependency,
     check_separation,
     check_spearman,
+    check_tear_sheet_cli,
     check_trust_boundary,
     check_turnover,
     check_vendor_isolation,
@@ -69,7 +70,9 @@ from factor_analysis_check import (  # noqa: E402
 )
 
 
-def _run_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
+def _run_cargo_test(
+    test_name: str, test_file: str = "srs_bt_006_factor_analysis"
+) -> subprocess.CompletedProcess[str]:
     cargo = shutil.which("cargo")
     if cargo is None:
         pytest.skip(reason="cargo not on PATH; cannot run Rust integration test")
@@ -80,7 +83,7 @@ def _run_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
             "-p",
             "atp-factor-pipeline",
             "--test",
-            "srs_bt_006_factor_analysis",
+            test_file,
             test_name,
             "--",
             "--exact",
@@ -90,6 +93,10 @@ def _run_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
     )
+
+
+def _run_cli_test(test_name: str) -> subprocess.CompletedProcess[str]:
+    return _run_cargo_test(test_name, test_file="srs_bt_006_tear_sheet_cli")
 
 
 def _assert_one_passed(result: subprocess.CompletedProcess[str], label: str) -> None:
@@ -364,3 +371,123 @@ def test_mean_spread_is_not_overclaimed_as_horizon_agnostic() -> None:
             assert "InformationCoefficient" in line or "rank" in line.lower(), (
                 f"only the IC family may be called horizon-agnostic: {line.strip()!r}"
             )
+
+
+# --------------------------------------------------------------------------- #
+# SRS-BT-006 operator rendering surface (the factor_tear_sheet_cli binary).
+#
+# The acceptance criterion names the deliverables "available for COMPLETED factor-analysis runs":
+# the operator-facing rendering surface is where an analyst actually reads the IC / factor returns /
+# turnover and ranks a factor on them. So the trustworthiness invariants the engine guarantees
+# (undefined is None not a fabricated zero; a no-signal factor exposes no ladder; a degenerate
+# panel fails closed) must survive at THAT surface, not only inside the library. These cases drive
+# the factor_tear_sheet_cli binary in fresh OS processes and pin the structural registration.
+# --------------------------------------------------------------------------- #
+
+
+def test_cli_defaults_surface_all_three_deliverables() -> None:
+    # The AC made inspectable: a default run makes the IC, the factor returns, and the turnover
+    # analysis all available (there is no SyRS numeric quantile constant, so availability is the
+    # proof).
+    _assert_one_passed(
+        _run_cli_test("defaults_surface_all_three_deliverables"),
+        "SRS-BT-006 CLI deliverables available",
+    )
+
+
+def test_cli_default_run_renders_the_three_defined_deliverables() -> None:
+    # A completed run renders a defined IC (1.0), factor-return spread (0.08), and turnover (0.5) --
+    # the three SYS-18 deliverables, end to end through the real engine.
+    _assert_one_passed(
+        _run_cli_test("default_run_yields_the_three_defined_deliverables"),
+        "SRS-BT-006 CLI renders the three deliverables",
+    )
+
+
+def test_cli_undefined_statistic_renders_as_undefined_not_zero() -> None:
+    # Safety: a mathematically undefined statistic (a zero-dispersion risk-adjusted IC) must render
+    # as the literal `undefined`, never a fabricated 0 or NaN an operator could rank a factor on.
+    _assert_one_passed(
+        _run_cli_test("undefined_statistic_renders_as_undefined_not_zero"),
+        "SRS-BT-006 CLI undefined-not-fabricated",
+    )
+
+
+def test_cli_flat_factor_withholds_every_statistic() -> None:
+    # Safety: a constant factor carries no ranking signal, so the CLI withholds EVERY statistic as
+    # `undefined` rather than fabricating a SecurityKey-ordering ladder that looks like alpha. The
+    # panel is valid, so the run still exits 0 -- withheld, not rejected.
+    _assert_one_passed(
+        _run_cli_test("flat_factor_withholds_every_statistic_as_undefined"),
+        "SRS-BT-006 CLI no-signal withheld",
+    )
+
+
+def test_cli_override_changes_the_analysis_on_the_same_fixture() -> None:
+    # Operator re-analysis: --quantiles re-buckets the SAME fixture (same securities / factors /
+    # returns), changing the spread and turnover while every deliverable stays available -- the
+    # analysis changes without the data changing.
+    _assert_one_passed(
+        _run_cli_test("override_quantiles_changes_the_analysis_on_the_same_fixture"),
+        "SRS-BT-006 CLI override on the same fixture",
+    )
+
+
+def test_cli_is_deterministic_across_processes() -> None:
+    # Two fresh processes over identical flags must be byte-identical, or a factor's apparent
+    # quality would depend on run order (SRS-BT-010).
+    _assert_one_passed(
+        _run_cli_test("identical_inputs_are_byte_identical_across_processes"),
+        "SRS-BT-006 CLI cross-process determinism",
+    )
+
+
+def test_cli_invalid_quantile_count_fails_closed() -> None:
+    # Safety: an invalid quantile count is rejected before any statistic is printed (no partial
+    # sheet).
+    _assert_one_passed(
+        _run_cli_test("invalid_quantile_count_fails_closed"),
+        "SRS-BT-006 CLI invalid-quantile fail-closed",
+    )
+
+
+def test_cli_nonfinite_input_fails_closed() -> None:
+    # Safety: a non-finite input is rejected at the engine's trust boundary, with no partial sheet.
+    _assert_one_passed(
+        _run_cli_test("nonfinite_input_fails_closed"),
+        "SRS-BT-006 CLI non-finite fail-closed",
+    )
+
+
+def test_cli_is_registered_as_the_operator_surface() -> None:
+    config = load_config()
+    # The real Cargo.toml + bin source register the factor_tear_sheet_cli operator binary with both
+    # subcommands, the deliverable-availability proof, the --quantiles override seam, and the
+    # undefined-not-fabricated rendering.
+    check_tear_sheet_cli(config, cargo_source(config))
+    # ...and the guard must not be vacuous: renaming the registered bin is caught.
+    mutated = cargo_source(config).replace('name = "factor_tear_sheet_cli"', 'name = "x"', 1)
+    with pytest.raises(FactorAnalysisCheckError):
+        check_tear_sheet_cli(config, mutated)
+
+
+def test_scope_names_the_cli_surface_realized_and_remaining_deferred_owners() -> None:
+    # Scope honesty: the contract names the CLI rendering surface REALIZED + passes:true and the
+    # genuinely remaining deferred owners, so a later edit cannot silently re-inflate or deflate the
+    # scope of the close.
+    config = load_config()
+    block = config["factor_analysis_contract"]
+    assert "factor_tear_sheet_cli" in block["description"]
+    assert "passes:true" in block["description"]
+    # The CLI sub-block names the realized surface and the genuinely deferred owners.
+    cli = block["tear_sheet_cli"]
+    assert cli["bin"] == "factor_tear_sheet_cli"
+    assert cli["cli_integration_test"] == "srs_bt_006_tear_sheet_cli"
+    note = cli["note"]
+    for owner in ("SRS-UI", "SRS-API", "SRS-FAC-001", "SRS-DATA-007"):
+        assert owner in note, f"deferred owner {owner} must remain named in the CLI scope note"
+    # The deferred[] list now scopes the rendering deferral to the REST/dashboard HALF, naming the
+    # CLI half realized (so the close is not over-claimed).
+    rendering = next(entry for entry in block["deferred"] if "rendering" in entry)
+    assert "REALIZED" in rendering
+    assert "REST" in rendering

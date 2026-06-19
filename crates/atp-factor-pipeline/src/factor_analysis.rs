@@ -68,14 +68,17 @@
 //! any of these is rejected rather than silently producing a degenerate or
 //! order-dependent tear-sheet.
 //!
-//! ## Deferred (why SRS-BT-006 stays `passes:false`)
+//! ## Operator rendering surface (realized) and remaining deferred owners
 //!
-//! This slice ships only the deterministic computation surface. The scheduled
-//! full-universe factor job that produces the panel (SRS-FAC-001), wiring the real factor
-//! values and forward returns from the unified historical data interface (SRS-DATA-007),
-//! rendering the tear-sheet to an operator (SRS-UI / SRS-API), and bundling the
-//! SRS-BT-004 `PerformanceMetrics` family into one cross-crate report are each their own
-//! feature and remain `passes:false`.
+//! This module is the deterministic computation surface; the operator tear-sheet RENDERING
+//! surface is realized by the `factor_tear_sheet_cli` binary (this crate's `src/bin/`), which
+//! runs a fixture panel through [`compute_tear_sheet`] and renders the three deliverables for an
+//! operator -- the CLI half of the SRS-UI / SRS-API surface (see the `tear_sheet_cli` contract
+//! block) -- so SRS-BT-006 is now `passes:true`. Still deferred, each its own feature (not
+//! SRS-BT-006): the scheduled full-universe factor job that produces the panel (SRS-FAC-001),
+//! wiring the real factor values and forward returns from the unified historical data interface
+//! (SRS-DATA-007), the REST/dashboard rendering half (SRS-UI / SRS-API), and bundling the
+//! SRS-BT-004 `PerformanceMetrics` family into one cross-crate report.
 //!
 //! Two outputs are deliberately SCOPED OUT of this surface because they need modeling the
 //! minimal panel cannot carry, and that modeling belongs to the deferred producer / backtest

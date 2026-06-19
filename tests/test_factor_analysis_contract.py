@@ -2,11 +2,13 @@
 
 SRS-BT-006 / SyRS SYS-18 / StRS SN-1.05 -- factor returns, information coefficient, and
 turnover analysis for completed factor-analysis runs. This slice ships the deterministic
-factor-analysis surface in ``crates/atp-factor-pipeline`` (module ``factor_analysis``); the
-deferred halves (the scheduled full-universe factor job via SRS-FAC-001, the real
-factor/return data wiring via SRS-DATA-007, the operator tear-sheet rendering via
-SRS-UI / SRS-API, and the cross-crate SRS-BT-004 metrics bundle) keep
-``feature_list.json`` at ``passes:false``.
+factor-analysis surface in ``crates/atp-factor-pipeline`` (module ``factor_analysis``) and the
+operator RENDERING surface that reads a completed run (the ``factor_tear_sheet_cli`` binary,
+pinned by the ``srs_bt_006_tear_sheet_cli`` integration test), so ``feature_list.json`` is now
+``passes:true``. The still-deferred halves (the scheduled full-universe factor job via
+SRS-FAC-001, the real factor/return data wiring via SRS-DATA-007, the REST/dashboard rendering
+half via SRS-UI / SRS-API, and the cross-crate SRS-BT-004 metrics bundle) are owned by those
+features, not SRS-BT-006.
 
 Mirrors ``tests/test_benchmark_contract.py``: shells out to
 ``tools/factor_analysis_check.py``, then exercises each per-check function in-process,
@@ -52,6 +54,7 @@ from factor_analysis_check import (  # noqa: E402
     check_separation,
     check_spearman,
     check_tear_sheet,
+    check_tear_sheet_cli,
     check_trust_boundary,
     check_turnover,
     check_vendor_isolation,
@@ -97,7 +100,9 @@ class FactorAnalysisScriptTest(unittest.TestCase):
             "lib.rs re-exports `pub mod factor_analysis;`",
             "Cargo.toml declares no dependency on the live/broker/simulation path",
             "factor_analysis module is free of all 5 forbidden vendor SDK tokens",
-            "feature_list.json keeps SRS-BT-006 passes:false",
+            "registers the factor_tear_sheet_cli operator binary (defaults + run)",
+            "the CLI half of the SYS-18 operator rendering surface",
+            "feature_list.json has SRS-BT-006 passes:true",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
 
@@ -402,6 +407,19 @@ class VendorIsolationTest(_Fixture):
         self.assertIn("ib_insync", str(ctx.exception))
 
 
+class TearSheetCliTest(_Fixture):
+    def test_cli_surface_evidence(self) -> None:
+        evidence = check_tear_sheet_cli(self.config, self.cargo_src)
+        self.assertIn("factor_tear_sheet_cli operator binary", evidence)
+        self.assertIn("CLI half of the SYS-18 operator rendering surface", evidence)
+
+    def test_unregistered_cli_bin_is_caught(self) -> None:
+        mutated = self.cargo_src.replace('name = "factor_tear_sheet_cli"', 'name = "x"', 1)
+        with self.assertRaises(FactorAnalysisCheckError) as ctx:
+            check_tear_sheet_cli(self.config, mutated)
+        self.assertIn("factor_tear_sheet_cli", str(ctx.exception))
+
+
 class CargoSmokeTest(unittest.TestCase):
     """The runnable factor-analysis path must compile where it matters."""
 
@@ -418,12 +436,13 @@ class CargoSmokeTest(unittest.TestCase):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_nineteen_items(self) -> None:
-        # 18 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(run_checks()), 19)
+    def test_run_checks_emits_twenty_items(self) -> None:
+        # 19 static (incl. the tear_sheet_cli operator surface) + 1 cargo smoke (or skipped marker
+        # if cargo absent).
+        self.assertEqual(len(run_checks()), 20)
 
-    def test_static_evidence_is_eighteen_items(self) -> None:
-        self.assertEqual(len(assert_factor_analysis_static(load_config(), ROOT)), 18)
+    def test_static_evidence_is_nineteen_items(self) -> None:
+        self.assertEqual(len(assert_factor_analysis_static(load_config(), ROOT)), 19)
 
 
 if __name__ == "__main__":

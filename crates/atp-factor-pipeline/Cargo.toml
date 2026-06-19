@@ -9,6 +9,17 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+# SRS-BT-006 factor tear-sheet operator CLI. Builds a deterministic fixture FactorPanel and runs it
+# through the real compute_tear_sheet engine, surfacing the three SYS-18 deliverables (information
+# coefficient, factor returns, turnover). `--quantiles` re-buckets the SAME fixture (the override
+# seam); an undefined statistic renders as `undefined` (never a fabricated 0). A thin binary over
+# the public factor_analysis API — the CLI half of the deferred operator rendering surface (no
+# Python<->Rust runtime bridge); the REST/dashboard half (SRS-UI / SRS-API), the SRS-FAC-001 panel
+# producer, and the SRS-DATA-007 data wiring remain deferred.
+[[bin]]
+name = "factor_tear_sheet_cli"
+path = "src/bin/factor_tear_sheet_cli.rs"
+
 [dependencies]
 atp-data = { path = "../atp-data" }
 atp-types = { path = "../atp-types" }
