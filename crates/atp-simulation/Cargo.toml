@@ -41,6 +41,16 @@ path = "src/bin/bt002_cost_cli.rs"
 name = "benchmark_comparison_cli"
 path = "src/bin/benchmark_comparison_cli.rs"
 
+# SRS-BT-003 shared transaction-cost-family operator CLI. Runs the SAME fixture strategy over the
+# SAME bars through BOTH the BacktestEngine and the PaperSimulationEngine under one CostConfig and
+# proves the per-fill cost decomposition is identical (cost-family-match:true) — the operator-
+# demonstrable form of "a paper strategy and backtest using identical cost configuration compute
+# fills and commissions from the same model family". A thin binary over the public cost + backtest
+# + sim API (no Python<->Rust runtime bridge).
+[[bin]]
+name = "bt003_shared_cost_cli"
+path = "src/bin/bt003_shared_cost_cli.rs"
+
 [dependencies]
 atp-strategy-engine = { path = "../atp-strategy-engine" }
 atp-types = { path = "../atp-types" }

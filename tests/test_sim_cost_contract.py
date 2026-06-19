@@ -3,12 +3,16 @@
 SRS-BT-003 / SyRS SYS-15e / SYS-83d / StRS SN-1.03 / SN-1.29 — use the same
 transaction-cost model family for internal simulation and backtesting unless
 configured otherwise. Acceptance: a paper strategy and a backtest using identical
-cost configuration compute fills and commissions from the same model family. This
-slice ships the internal simulation engine's paper-fill path in
-``crates/atp-simulation`` (module ``sim``), consuming the same ``cost`` family the
-backtest engine applies; the deferred halves (SYS-83 fill models, the full SYS-84
-ledger, persistence, the operator override surface, the Python runtime) keep
-``feature_list.json`` at ``passes:false``.
+cost configuration compute fills and commissions from the same model family. The
+internal simulation engine's paper-fill path in ``crates/atp-simulation`` (module
+``sim``) consumes the same ``cost`` family the backtest engine applies, and the
+``bt003_shared_cost_cli`` operator binary (``compare`` → ``cost-family-match:true``)
+makes the equality operator-demonstrable, so ``feature_list.json`` marks SRS-BT-003
+``passes:true``. The items still in ``sim_cost_contract.deferred[]`` (SYS-83 fill
+models, the full SYS-84 ledger, persistence, the REST/dashboard override surface,
+the Python runtime) are ADJACENT requirements (SRS-SIM-002/003/004,
+SRS-API-001/SRS-UI, SRS-BT-001-runtime), NOT part of SRS-BT-003's acceptance
+criterion.
 
 Mirrors ``tests/test_backtest_cost_contract.py``: shells out to
 ``tools/sim_cost_check.py``, then exercises each per-check function in-process,
@@ -36,16 +40,19 @@ if str(TOOLS_ROOT) not in sys.path:
 from sim_cost_check import (  # noqa: E402
     SimCostCheckError,
     assert_sim_cost_static,
+    cargo_source,
     check_cargo_test_smoke,
     check_engine_struct,
     check_fail_closed,
     check_money_invariant,
     check_paper_fill_struct,
     check_paper_ledger_struct,
+    check_shared_cost_cli,
     check_shared_entry_point,
     check_shared_family,
     check_sim_error_enum,
     check_vendor_isolation,
+    cli_source,
     lib_source,
     load_config,
     run_checks,
@@ -81,7 +88,10 @@ class SimCostScriptTest(unittest.TestCase):
             "narrowing + checked_sub -> SimError::Overflow",
             "lib.rs re-exports both `pub mod cost;` and `pub mod sim;`",
             "sim module is free of all 5 forbidden vendor SDK tokens",
-            "feature_list.json keeps SRS-BT-003 passes:false",
+            "operator binary bt003_shared_cost_cli is Cargo-registered, exposes defaults, compare, "
+            "drives BOTH engines (BacktestEngine, PaperSimulationEngine, simulate_fill), prints "
+            "cost-family-match",
+            "feature_list.json marks SRS-BT-003 passes:true",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
 
@@ -261,13 +271,47 @@ class CargoSmokeTest(unittest.TestCase):
         self.assertIn("--require-cargo", str(ctx.exception))
 
 
-class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_ten_items(self) -> None:
-        # 9 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(run_checks()), 10)
+class SharedCostCliTest(_Fixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.cli_src = cli_source(self.config)
 
-    def test_static_evidence_is_nine_items(self) -> None:
-        self.assertEqual(len(assert_sim_cost_static(load_config(), ROOT)), 9)
+    def test_cli_evidence(self) -> None:
+        evidence = check_shared_cost_cli(self.config, self.cli_src)
+        self.assertIn("bt003_shared_cost_cli", evidence)
+        self.assertIn("cost-family-match", evidence)
+
+    def test_unregistered_bin_is_caught(self) -> None:
+        # The Cargo registration is read from disk; rename it in memory and the check must catch it.
+        original = cargo_source(self.config)
+        mutated = original.replace('name = "bt003_shared_cost_cli"', 'name = "x"', 1)
+        with mock.patch("sim_cost_check.cargo_source", return_value=mutated):
+            with self.assertRaises(SimCostCheckError) as ctx:
+                check_shared_cost_cli(self.config, self.cli_src)
+        self.assertIn("bt003_shared_cost_cli", str(ctx.exception))
+
+    def test_single_engine_cli_is_caught(self) -> None:
+        # If the CLI stops driving the paper engine, the comparison is a single-engine echo, not the
+        # backtest-vs-paper proof the AC requires.
+        mutated = self.cli_src.replace("PaperSimulationEngine", "BacktestEngine")
+        with self.assertRaises(SimCostCheckError) as ctx:
+            check_shared_cost_cli(self.config, mutated)
+        self.assertIn("PaperSimulationEngine", str(ctx.exception))
+
+    def test_missing_match_headline_is_caught(self) -> None:
+        mutated = self.cli_src.replace("cost-family-match", "cost-family-status")
+        with self.assertRaises(SimCostCheckError) as ctx:
+            check_shared_cost_cli(self.config, mutated)
+        self.assertIn("cost-family-match", str(ctx.exception))
+
+
+class AggregateEvidenceTest(unittest.TestCase):
+    def test_run_checks_emits_eleven_items(self) -> None:
+        # 10 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(run_checks()), 11)
+
+    def test_static_evidence_is_ten_items(self) -> None:
+        self.assertEqual(len(assert_sim_cost_static(load_config(), ROOT)), 10)
 
 
 if __name__ == "__main__":

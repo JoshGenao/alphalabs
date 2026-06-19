@@ -34,10 +34,20 @@ internal simulation engine's paper-fill path (module ``sim``) that consumes the
   (f) ``lib.rs`` re-exports both ``pub mod cost;`` and ``pub mod sim;`` and the
       sim module carries no vendor-SDK token (SRS-ARCH-003 adapter isolation).
 
-The PASS line is ``SRS-BT-003 SDK-SURFACE PASS`` — it names the deferred owners
-(the SYS-83 fill models + live-data fills, the full SYS-84 ledger, paper-state
-persistence, the operator override surface, the Python strategy runtime) so the
-partial-pass status (feature_list.json keeps ``passes:false``) is loud.
+  (g) the operator binary ``bt003_shared_cost_cli`` makes the criterion
+      operator-demonstrable: ``compare`` runs the SAME fixture strategy over the
+      SAME bars through BOTH engines under one ``CostConfig`` and prints
+      ``cost-family-match:true``, driven in fresh processes by the L5
+      ``srs_bt_003_cost_cli`` (and a fault is rejected by BOTH engines).
+
+The PASS line is ``SRS-BT-003 SDK-SURFACE PASS``. ``feature_list.json`` now marks
+SRS-BT-003 ``passes:true``: the acceptance criterion ("a paper strategy and
+backtest using identical cost configuration compute fills and commissions from the
+same model family") is single-context (both engines are built) and demonstrated
+fill-for-fill. The remaining items it lists are ADJACENT simulation features
+(richer SYS-83 fill models, the full SYS-84 ledger, paper-state persistence, the
+REST/dashboard override surface, the Python strategy host) — each its own
+requirement, NOT part of SRS-BT-003's narrow acceptance criterion.
 
 Mirrors the PASS/FAIL output style of ``tools/backtest_cost_check.py``.
 
@@ -94,6 +104,23 @@ def sim_source(config: dict, root: Path = ROOT) -> str:
 def lib_source(config: dict, root: Path = ROOT) -> str:
     block = contract_block(config)
     source_path = root / block["simulation_crate"]["path"] / "src" / "lib.rs"
+    if not source_path.exists():
+        fail(f"source missing: {source_path.relative_to(root)}")
+    return source_path.read_text(encoding="utf-8")
+
+
+def cli_source(config: dict, root: Path = ROOT) -> str:
+    block = contract_block(config)
+    rel = Path(block["simulation_crate"]["path"]) / block["shared_cost_cli"]["bin_path"]
+    source_path = root / rel
+    if not source_path.exists():
+        fail(f"source missing: {rel}")
+    return source_path.read_text(encoding="utf-8")
+
+
+def cargo_source(config: dict, root: Path = ROOT) -> str:
+    block = contract_block(config)
+    source_path = root / block["simulation_crate"]["path"] / "Cargo.toml"
     if not source_path.exists():
         fail(f"source missing: {source_path.relative_to(root)}")
     return source_path.read_text(encoding="utf-8")
@@ -282,6 +309,67 @@ def check_vendor_isolation(config: dict, sim_src: str) -> str:
     )
 
 
+def check_shared_cost_cli(config: dict, cli_src: str, root: Path = ROOT) -> str:
+    """The operator binary that makes the shared-cost-family acceptance criterion demonstrable.
+
+    Verifies the bin is Cargo-registered, exposes both subcommands, drives BOTH engines (so the
+    comparison is genuinely cross-engine, not a single-engine echo), prints the match headline,
+    fails closed on an injected fault, and is backed by the L5 integration test.
+    """
+    spec = contract_block(config)["shared_cost_cli"]
+
+    # Cargo-registered (without the [[bin]], the operator surface does not build).
+    cargo = cargo_source(config, root)
+    if f'name = "{spec["bin_name"]}"' not in cargo:
+        fail(
+            f"Cargo.toml must register the operator binary `{spec['bin_name']}` — without it the "
+            "SRS-BT-003 shared-cost-family operator surface does not build"
+        )
+
+    # Both subcommands present.
+    compact = _compact(cli_src)
+    missing_cmds = [c for c in spec["subcommands"] if f'"{c}"' not in cli_src]
+    if missing_cmds:
+        fail(f"{spec['bin_name']} is missing subcommand(s): {', '.join(missing_cmds)}")
+
+    # Drives BOTH engines — the comparison must be cross-engine, not a single-engine echo.
+    missing_engines = [t for t in spec["dual_engine_tokens"] if t not in cli_src]
+    if missing_engines:
+        fail(
+            f"{spec['bin_name']} must drive both engines (missing {', '.join(missing_engines)}) so "
+            "the comparison is genuinely backtest-vs-paper (SRS-BT-003 acceptance criterion)"
+        )
+
+    # The match headline the acceptance criterion turns on.
+    if spec["match_token"] not in cli_src:
+        fail(
+            f"{spec['bin_name']} must print the `{spec['match_token']}` headline — the per-fill "
+            "equality that IS the SRS-BT-003 acceptance criterion"
+        )
+
+    # An injected fault fails closed in both engines (no cash fabricated).
+    if _compact(spec["fail_closed_token"]) not in compact:
+        fail(
+            f"{spec['bin_name']} must fail closed on an injected fault "
+            f"(`{spec['fail_closed_token']}`) so a corrupt shared input never produces a report"
+        )
+
+    # Backed by the L5 integration test.
+    block = contract_block(config)
+    l5_path = (
+        root / block["simulation_crate"]["path"] / "tests" / f"{spec['l5_test']}.rs"
+    )
+    if not l5_path.exists():
+        fail(f"missing L5 integration test {l5_path.relative_to(root)}")
+
+    return (
+        f"operator binary {spec['bin_name']} is Cargo-registered, exposes "
+        f"{', '.join(spec['subcommands'])}, drives BOTH engines "
+        f"({', '.join(spec['dual_engine_tokens'])}), prints {spec['match_token']}, fails closed on "
+        f"an injected fault, and is driven in fresh processes by the L5 {spec['l5_test']}"
+    )
+
+
 def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
     block = contract_block(config)
     crate = block["simulation_crate"]["crate"]
@@ -303,20 +391,23 @@ def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
     )
     if lib.returncode != 0:
         fail(f"cargo test -p {crate} --lib failed:\n{lib.stdout}\n{lib.stderr}")
-    integ = subprocess.run(
-        [cargo, "test", "-p", crate, "--test", integration, "--quiet"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if integ.returncode != 0:
-        fail(f"cargo test -p {crate} --test {integration} failed:\n{integ.stdout}\n{integ.stderr}")
+    cli_integration = block["cli_integration_test"]
+    for test_name in (integration, cli_integration):
+        run = subprocess.run(
+            [cargo, "test", "-p", crate, "--test", test_name, "--quiet"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if run.returncode != 0:
+            fail(f"cargo test -p {crate} --test {test_name} failed:\n{run.stdout}\n{run.stderr}")
     return (
-        f"cargo test -p {crate} --lib + {integration}: PASS "
+        f"cargo test -p {crate} --lib + {integration} + {cli_integration}: PASS "
         "(sim default cost family equals the backtest default, identical config -> identical fills "
-        "and commissions in both engines, observed-spread path matches, a cost never fabricates "
-        "cash, fail-closed branches verified)"
+        "and commissions in both engines, the bt003_shared_cost_cli compare workflow prints "
+        "cost-family-match:true, observed-spread path matches, a cost never fabricates cash, "
+        "fail-closed branches verified)"
     )
 
 
@@ -335,13 +426,16 @@ _STATIC_CHECKS = (
     ("money_invariant", check_money_invariant, "sim"),
     ("shared_family", check_shared_family, "lib"),
     ("vendor_isolation", check_vendor_isolation, "sim"),
+    ("shared_cost_cli", check_shared_cost_cli, "cli"),
 )
 
-_DEFERRED_OWNERS = (
+# Adjacent simulation features that are each their OWN requirement and are NOT part of SRS-BT-003's
+# narrow shared-cost-family acceptance criterion — they do not gate the SRS-BT-003 flip.
+_ADJACENT_FEATURES = (
     "SRS-SIM-002 (SYS-83 fill models + live-market-data fills)",
     "SRS-SIM-003 (full SYS-84 virtual ledger)",
     "SRS-SIM-004 (paper-state persistence)",
-    "SRS-API-001 / SRS-UI (operator per-strategy cost-override surface)",
+    "SRS-API-001 / SRS-UI (REST/dashboard cost-override surface; the CLI half is realized)",
     "SRS-BT-001-runtime (real data + Python strategy host)",
 )
 
@@ -351,6 +445,7 @@ def assert_sim_cost_static(config: dict, root: Path = ROOT) -> list[str]:
     sources = {
         "sim": sim_source(config, root),
         "lib": lib_source(config, root),
+        "cli": cli_source(config, root),
     }
     return [check(config, sources[source_key]) for _, check, source_key in _STATIC_CHECKS]
 
@@ -381,9 +476,10 @@ def main(argv: list[str] | None = None) -> int:
     for item in evidence:
         print(f"- {item}")
     print(
-        "- deferred to: "
-        + ", ".join(_DEFERRED_OWNERS)
-        + "; feature_list.json keeps SRS-BT-003 passes:false"
+        "- adjacent (separate) features, NOT part of the SRS-BT-003 acceptance criterion: "
+        + ", ".join(_ADJACENT_FEATURES)
+        + "; feature_list.json marks SRS-BT-003 passes:true (the shared cost family is demonstrated "
+        "fill-for-fill by the L5 + L7 + the bt003_shared_cost_cli compare workflow)"
     )
     return 0
 

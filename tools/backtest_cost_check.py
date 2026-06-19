@@ -29,7 +29,7 @@ backtest engine (module ``backtest``) APPLIES it, per the structural contract in
       non-negative, and a negative configured parameter fails closed
       (``CostError::NegativeParameter``).
   (f) the cost module carries no vendor-SDK token and is the SAME family the
-      internal simulation engine shares for paper fills (SRS-BT-003 deferred).
+      internal simulation engine shares for paper fills (SRS-BT-003, now closed).
 
 The operator override surface the AC names is now realized for the CLI: the
 ``bt002_cost_cli`` operator binary (``defaults`` + ``run``) prints the SyRS
@@ -38,8 +38,9 @@ per-run CostConfig built from ``--commission`` / ``--slippage`` / ``--spread``
 flags to the SAME fixture strategy (override without strategy changes, SYS-15d),
 pinned by the ``srs_bt_002_cost_cli`` integration test (feature_list.json is now
 ``passes:true``). The PASS line still names the genuinely deferred owners (the
-REST + dashboard half of the override surface, the SRS-BT-003 sim-engine sharing,
-the IB monthly-volume tier ladder, the real data + Python strategy runtime).
+REST + dashboard half of the override surface, the IB monthly-volume tier ladder,
+the real data + Python strategy runtime). The SRS-BT-003 sim-engine sharing is no
+longer deferred — it is closed (passes:true; see sim_cost_contract).
 
 Mirrors the PASS/FAIL output style of ``tools/backtest_check.py``.
 
@@ -348,8 +349,8 @@ def check_shared_family(config: dict, lib_src: str) -> str:
         )
     return (
         "atp-simulation re-exports `pub mod cost` — the single shared transaction-cost model "
-        "family the backtest engine applies (SRS-BT-002) and the internal simulation engine will "
-        "share for paper fills (SRS-BT-003)"
+        "family the backtest engine applies (SRS-BT-002) and the internal simulation engine "
+        "shares for paper fills (SRS-BT-003, closed)"
     )
 
 
@@ -492,7 +493,6 @@ _STATIC_CHECKS = (
 _DEFERRED_OWNERS = (
     "SRS-API-001 / SRS-UI (REST + dashboard cost-override surface; the CLI half is realized via "
     "bt002_cost_cli)",
-    "SRS-BT-003 (internal simulation sharing the same cost family)",
     "SRS-BT-002 (IB tiered monthly-volume tier ladder)",
     "SRS-BT-001-runtime (real data + Python strategy host)",
 )

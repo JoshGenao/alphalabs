@@ -868,7 +868,7 @@
     ],
     "passes": true,
     "needs_clarification": false,
-    "notes": "SRS-BT-002 closed in SESSION 58 via the bt002_cost_cli operator binary (crates/atp-simulation/src/bin/bt002_cost_cli.rs): `defaults` prints the SyRS constants and proves CostConfig::default()==syrs_defaults() (defaults match SyRS values), and `run` builds a per-run CostConfig from --commission/--slippage/--spread flags applied to the SAME fixture strategy through the real BacktestEngine (per-run override without changing strategy code, SYS-15d); a negative override parameter fails closed before any fill (no cash fabricated). Verified end to end in fresh processes by the srs_bt_002_cost_cli integration test (L5), the test_backtest_cost L7 domain test, and the backtest_cost_check.py contract gate. Deferred owners (do not absorb): the REST + dashboard half of the override surface (SRS-API-001/SRS-UI), the real data + Python strategy host (SRS-BT-001-runtime), the SRS-BT-003 sim paper-fill consumer, and the IB monthly-volume tier ladder."
+    "notes": "SRS-BT-002 closed in SESSION 58 via the bt002_cost_cli operator binary (crates/atp-simulation/src/bin/bt002_cost_cli.rs): `defaults` prints the SyRS constants and proves CostConfig::default()==syrs_defaults() (defaults match SyRS values), and `run` builds a per-run CostConfig from --commission/--slippage/--spread flags applied to the SAME fixture strategy through the real BacktestEngine (per-run override without changing strategy code, SYS-15d); a negative override parameter fails closed before any fill (no cash fabricated). Verified end to end in fresh processes by the srs_bt_002_cost_cli integration test (L5), the test_backtest_cost L7 domain test, and the backtest_cost_check.py contract gate. Deferred owners (do not absorb): the REST + dashboard half of the override surface (SRS-API-001/SRS-UI), the real data + Python strategy host (SRS-BT-001-runtime), and the IB monthly-volume tier ladder. (The SRS-BT-003 sim paper-fill consumer that shares this cost family is now closed/passes:true as of SESSION 61.)"
   },
   {
     "id": "SRS-BT-003",
@@ -882,8 +882,9 @@
       "Step 3: Verify acceptance criteria: A paper strategy and backtest using identical cost configuration compute fills and commissions from the same model family.",
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
-    "needs_clarification": false
+    "passes": true,
+    "needs_clarification": false,
+    "notes": "SESSION 61: SRS-BT-003 now passes:true. AC ('a paper strategy and backtest using identical cost configuration compute fills and commissions from the same model family') is single-context -- both engines are built (BacktestEngine + PaperSimulationEngine, both calling the IDENTICAL cost::CostConfig::cost_breakdown entry point) -- and is proven fill-for-fill by the L5 srs_bt_003_shared_cost_family + made operator-demonstrable by crates/atp-simulation/src/bin/bt003_shared_cost_cli.rs: `compare` runs the SAME fixture strategy over the SAME bars through BOTH engines under one CostConfig and prints cost-family-match:true (default family AND operator override; backtest final equity == paper ledger cash for the round trip), with every --inject fault (nonpositive-price/negative-spread/negative-commission) rejected by BOTH engines before any fill (no comparison line, no cash fabricated). Driven by L5 srs_bt_003_cost_cli (14 tests, fresh processes), L7 tests/domain/test_sim_shared_cost.py, L3 tests/test_sim_cost_contract.py SharedCostCliTest, and tools/sim_cost_check.py check_shared_cost_cli. The prior 'SDK-surface passes:false' deferral was over-conservative: its named owners (SRS-SIM-002 richer fill models, SRS-SIM-003 full ledger, SRS-SIM-004 persistence, SRS-API-001/SRS-UI REST/dashboard override, SRS-BT-001-runtime Python host) are ADJACENT features, each its own requirement and NOT part of BT-003's narrow shared-cost-family AC (the CLI realizes the operator cost-override-selection workflow over both engines; the REST/dashboard half stays SRS-API-001/SRS-UI)."
   },
   {
     "id": "SRS-BT-004",

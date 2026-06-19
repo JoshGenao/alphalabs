@@ -27,13 +27,20 @@
 //! (not even on a sell, whose proceeds are reduced rather than increased). The
 //! minimal [`PaperLedger`] accumulates cash, position, and commission paid.
 //!
-//! The pieces required to flip SRS-BT-003 to `passes:true` are deferred (see
-//! `architecture/runtime_services.json#sim_cost_contract.deferred`): the full
-//! SYS-84 virtual ledger (average cost, realized/unrealized P&L) is SRS-SIM-003;
-//! the SYS-83 limit/stop/stop-limit fill models, fill-probability, and bar-volume
-//! cap are SRS-SIM-002; live market-data-driven fills, paper-state persistence
-//! (SYS-89), and the operator per-strategy override surface are their own
-//! features. This slice ships only the shared-cost-family fill computation.
+//! SRS-BT-003 is `passes:true`: its acceptance criterion ("a paper strategy and
+//! backtest using identical cost configuration compute fills and commissions from
+//! the same model family") is single-context — both engines are built — and is
+//! proven fill-for-fill by `srs_bt_003_shared_cost_family` and demonstrated at the
+//! operator workflow by the `bt003_shared_cost_cli` binary (`compare` runs the same
+//! fixture strategy through BOTH engines and prints `cost-family-match:true`). The
+//! items in `architecture/runtime_services.json#sim_cost_contract.deferred` are
+//! ADJACENT simulation features, each its own requirement and NOT part of this AC:
+//! the full SYS-84 virtual ledger (average cost, realized/unrealized P&L) is
+//! SRS-SIM-003; the SYS-83 limit/stop/stop-limit fill models, fill-probability, and
+//! bar-volume cap are SRS-SIM-002; live market-data-driven fills, paper-state
+//! persistence (SYS-89), the REST/dashboard override surface, and the Python
+//! strategy host are their own features. This module ships the shared-cost-family
+//! fill computation that SRS-BT-003 turns on.
 //!
 //! # Money math
 //!

@@ -8,9 +8,11 @@
 //! [`backtest`](crate::backtest) engine applies it to backtest fills here
 //! (SRS-BT-002); **SRS-BT-003** mandates that the internal simulation engine use
 //! *the same family* for paper fills "unless explicitly configured otherwise", so
-//! the same [`CostConfig`] type is the seam both engines share (the sim-fill
-//! consumer is the SRS-BT-003 deferred half — see
-//! `architecture/runtime_services.json#backtest_cost_contract`).
+//! the same [`CostConfig`] type is the seam both engines share. The sim-fill
+//! consumer now exists ([`sim::PaperSimulationEngine::simulate_fill`](crate::sim)
+//! calls the identical [`CostConfig::cost_breakdown`] entry point), and SRS-BT-003
+//! is `passes:true` — see
+//! `architecture/runtime_services.json#sim_cost_contract`.
 //!
 //! # Defaults match the SyRS values
 //!

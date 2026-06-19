@@ -16,7 +16,10 @@ pub mod cost;
 /// consumes the SAME [`cost::CostConfig`] family the [`backtest`] engine applies
 /// — defaulting to the identical SyRS baseline (SYS-15e) — so a paper strategy
 /// and a backtest with identical cost configuration compute fills and
-/// commissions from the same model family.
+/// commissions from the same model family. The acceptance criterion is proven
+/// fill-for-fill by `srs_bt_003_shared_cost_family` and made operator-demonstrable
+/// by the `bt003_shared_cost_cli` binary (`compare` → `cost-family-match:true`),
+/// so SRS-BT-003 is `passes:true`.
 pub mod sim;
 
 /// The internal simulation engine's paper order-intake path (SRS-SIM-001). It
