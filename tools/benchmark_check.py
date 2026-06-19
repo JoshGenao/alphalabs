@@ -46,10 +46,17 @@ benchmark series) with the three pieces SRS-BT-005 names:
   (f) ``benchmark`` adds no broker/adapter dependency and carries no vendor SDK token;
       ``lib.rs`` re-exports ``pub mod benchmark;``.
 
-The PASS line is ``SRS-BT-005 SDK-SURFACE PASS`` -- it names the deferred owners (the
-real benchmark level-series resolution via SRS-DATA-007, the dashboard/backtest report
-rendering via SRS-UI / SRS-API, and the SRS-BT-009 persisted-comparison record) so the
-partial-pass status (feature_list.json keeps ``passes:false``) is loud.
+The PASS line is ``SRS-BT-005 SDK-SURFACE PASS``. The operator benchmark-comparison
+*rendering* surface is shipped as the ``benchmark_comparison_cli`` binary (the
+``benchmark_cli`` contract sub-block: ``defaults`` proves an unselected benchmark resolves
+to and identifies SPY, ``run`` renders the real ``compare`` report of a fixture backtest,
+undefined statistics render as ``undefined`` and every trust-boundary fault fails closed),
+but ``feature_list.json`` keeps SRS-BT-005 at ``passes:false``: the AC requires the web
+dashboard AND backtest reports to identify the benchmark, and only the backtest-report leg
+(the CLI) is realized. The line names the genuinely deferred owners (the web dashboard /
+REST report rendering via SRS-UI / SRS-API -- the blocker keeping ``passes:false`` -- the
+real benchmark level-series resolution via SRS-DATA-007 behind ``BenchmarkSource``, and the
+SRS-BT-009 persisted-comparison record) so the deferral is loud.
 
 Mirrors the PASS/FAIL output style of ``tools/metrics_check.py``.
 
@@ -475,10 +482,71 @@ def check_vendor_isolation(config: dict, src: str) -> str:
     )
 
 
+def check_benchmark_cli(config: dict, cargo_text: str) -> str:
+    """The operator benchmark-comparison rendering surface: the benchmark_comparison_cli binary that
+    runs a fixture backtest through the real compare() engine and renders the identified comparison +
+    metrics, the CLI half of the deferred SRS-UI / SRS-API surface (the precedent of the SRS-BT-002
+    cost CLI and the SRS-BT-006 tear-sheet CLI)."""
+    block = contract_block(config)
+    spec = block["benchmark_cli"]
+    crate_path = ROOT / block["simulation_crate"]["path"]
+    # (1) Cargo.toml registers the operator binary.
+    if _compact(spec["cargo_bin_token"]) not in _compact(cargo_text):
+        fail(
+            "atp-simulation Cargo.toml must register the benchmark-comparison CLI bin "
+            f"(`{spec['cargo_bin_token']}`)"
+        )
+    # (2) the bin source exists and wires both subcommands, the SPY-default proof, the user-selection
+    #     seam, the report identity line, and the undefined-not-fabricated rendering (None -> the
+    #     literal `undefined`).
+    bin_path = crate_path / spec["bin_path"]
+    if not bin_path.exists():
+        fail(f"benchmark-comparison CLI source missing: {bin_path.relative_to(ROOT)}")
+    compact_bin = _compact(bin_path.read_text(encoding="utf-8"))
+    for token_key in (
+        "run_command_token",
+        "defaults_command_token",
+        "spy_default_token",
+        "selection_seam_token",
+        "identity_render_token",
+        "undefined_render_token",
+    ):
+        if _compact(spec[token_key]) not in compact_bin:
+            fail(
+                f"`{spec['bin']}` must wire `{spec[token_key]}` ({token_key}) so the operator CLI "
+                "proves an unselected benchmark resolves to SPY, lets an operator select one, "
+                "identifies the benchmark on the rendered report, and renders an undefined statistic "
+                "as `undefined` (never a fabricated 0)"
+            )
+    missing = [f for f in spec["override_flag_tokens"] if _compact(f) not in compact_bin]
+    if missing:
+        fail(
+            f"`{spec['bin']}` must expose the operator flags ({', '.join(missing)} missing) so an "
+            "operator can select a benchmark, drive each trust-boundary fault, and tune the run "
+            "without changing the strategy"
+        )
+    # (3) the integration test that drives the binary in fresh processes exists.
+    test_path = crate_path / "tests" / f"{spec['cli_integration_test']}.rs"
+    if not test_path.exists():
+        fail(f"benchmark-comparison CLI integration test missing: {test_path.relative_to(ROOT)}")
+    return (
+        f"atp-simulation registers the {spec['bin']} operator binary (defaults + run): `defaults` "
+        "proves BenchmarkSelection::unselected() resolves to and identifies SPY (the 'if no benchmark "
+        "is selected, SPY is used' half of the AC, made inspectable), and `run` renders the real "
+        "compare() report of a fixture backtest -- the identified comparison (SPY default or a "
+        "--benchmark user selection) + alpha/beta + total/excess returns + the eight SYS-16 metrics -- "
+        "with every undefined statistic rendered as `undefined` (never a fabricated 0) and every "
+        f"--inject trust-boundary fault failing closed before any report line; the "
+        f"{spec['cli_integration_test']} integration test drives it in fresh processes -- the CLI half "
+        "of the SYS-37 operator benchmark-identification surface"
+    )
+
+
 def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
     block = contract_block(config)
     crate = block["simulation_crate"]["crate"]
     integration = block["rust_integration_test"]
+    cli_integration = block["rust_cli_integration_test"]
     module = block["benchmark_module"]
     cargo = shutil.which("cargo")
     if cargo is None:
@@ -487,7 +555,7 @@ def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
                 f"cargo not on PATH but --require-cargo set: cannot verify the runnable {crate} "
                 "benchmark path compiles + passes (install the Rust toolchain)"
             )
-        return f"cargo test -p {crate} --test {integration}: skipped (cargo not on PATH)"
+        return f"cargo test -p {crate} --test {integration} + {cli_integration}: skipped (cargo not on PATH)"
     lib = subprocess.run(
         [cargo, "test", "-p", crate, "--lib", module, "--quiet"],
         cwd=ROOT,
@@ -497,19 +565,21 @@ def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
     )
     if lib.returncode != 0:
         fail(f"cargo test -p {crate} --lib {module} failed:\n{lib.stdout}\n{lib.stderr}")
-    integ = subprocess.run(
-        [cargo, "test", "-p", crate, "--test", integration, "--quiet"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if integ.returncode != 0:
-        fail(f"cargo test -p {crate} --test {integration} failed:\n{integ.stdout}\n{integ.stderr}")
+    for test in (integration, cli_integration):
+        integ = subprocess.run(
+            [cargo, "test", "-p", crate, "--test", test, "--quiet"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if integ.returncode != 0:
+            fail(f"cargo test -p {crate} --test {test} failed:\n{integ.stdout}\n{integ.stderr}")
     return (
-        f"cargo test -p {crate} --lib {module} + {integration}: PASS "
+        f"cargo test -p {crate} --lib {module} + {integration} + {cli_integration}: PASS "
         "(resolves an unselected benchmark to SPY, computes alpha/beta against the resolved series, "
-        "is deterministic, and fails closed on a misaligned / wrong-symbol / non-positive source)"
+        "is deterministic, fails closed on a misaligned / wrong-symbol / non-positive source, and the "
+        "operator CLI renders the identified comparison + metrics in fresh processes)"
     )
 
 
@@ -538,13 +608,14 @@ _STATIC_CHECKS = (
     ("module_reexport", check_module_reexport, "lib"),
     ("no_broker_dependency", check_no_broker_dependency, "cargo"),
     ("vendor_isolation", check_vendor_isolation, "benchmark"),
+    ("benchmark_cli", check_benchmark_cli, "cargo"),
 )
 
 _DEFERRED_OWNERS = (
-    "benchmark level-series resolution from stored data (SRS-DATA-007 behind BenchmarkSource)",
+    "benchmark level-series resolution from stored data (SRS-DATA-007 behind BenchmarkSource; the CLI uses a fixture source)",
     "immediate-prior-close baseline verification (needs the SRS-DATA-007 bar grid)",
     "benchmark-read timeout/cancellation enforcement (SRS-DATA-007 adapter + SYS-36 dashboard)",
-    "dashboard / backtest report benchmark identification (SRS-UI / SRS-API; SYS-36 <= 5s, SYS-37)",
+    "web dashboard / REST report benchmark identification (SRS-UI / SRS-API; SYS-36 <= 5s, SYS-37) -- the CLI half is now realized by benchmark_comparison_cli",
     "persisting the benchmark comparison into the queryable backtest record (SRS-BT-009)",
 )
 
@@ -587,7 +658,9 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "- deferred to: "
         + ", ".join(_DEFERRED_OWNERS)
-        + "; feature_list.json keeps SRS-BT-005 passes:false"
+        + "; feature_list.json keeps SRS-BT-005 passes:false (the operator benchmark_comparison_cli "
+        "rendering leg over the fixture engine is shipped, but the dashboard/REST benchmark "
+        "identification leg of the AC -- SRS-UI / SRS-API -- is not built)"
     )
     return 0
 

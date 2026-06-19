@@ -58,6 +58,7 @@ from benchmark_check import (  # noqa: E402
     BenchmarkCheckError,
     benchmark_source,
     cargo_source,
+    check_benchmark_cli,
     check_determinism,
     check_nan_guard,
     check_no_broker_dependency,
@@ -99,6 +100,31 @@ def _assert_one_passed(result: subprocess.CompletedProcess[str], label: str) -> 
         f"{label} failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert "1 passed" in combined, f"unexpected cargo test output for {label}:\n{combined}"
+
+
+def _run_cli_test(test_name: str) -> subprocess.CompletedProcess[str]:
+    """Drive one case of the operator-CLI integration test, which spawns the
+    benchmark_comparison_cli binary in fresh processes."""
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip(reason="cargo not on PATH; cannot run the operator-CLI integration test")
+    return subprocess.run(
+        [
+            cargo,
+            "test",
+            "-p",
+            "atp-simulation",
+            "--test",
+            "srs_bt_005_benchmark_cli",
+            test_name,
+            "--",
+            "--exact",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_compare_defaults_to_spy() -> None:
@@ -269,3 +295,86 @@ def test_benchmark_identity_is_bound_to_returned_data() -> None:
     mutated = benchmark_source(config).replace("resolved.symbol != benchmark.symbol()", "false")
     with pytest.raises(BenchmarkCheckError):
         check_resolved_identity(config, mutated)
+
+
+# --------------------------------------------------------------------------- #
+# The operator rendering surface (benchmark_comparison_cli) -- the safety core an
+# operator actually reads: a run that selects nothing must RENDER and identify SPY, a
+# substituted/misaligned benchmark must fail closed before any report line, and an
+# undefined statistic must render as `undefined`, never a fabricated 0 that would
+# misstate relative performance on the dashboard.
+# --------------------------------------------------------------------------- #
+
+
+def test_cli_run_identifies_spy_by_default() -> None:
+    # The operator default: a run that names no benchmark renders and identifies SPY.
+    _assert_one_passed(
+        _run_cli_test("default_run_identifies_spy_and_computes_alpha_beta"),
+        "benchmark CLI SPY default",
+    )
+
+
+def test_cli_identifies_the_user_selected_benchmark() -> None:
+    # A user-selected benchmark is identified on the rendered report, not the default.
+    _assert_one_passed(
+        _run_cli_test("user_selected_benchmark_is_identified_not_the_default"),
+        "benchmark CLI user selection",
+    )
+
+
+def test_cli_renders_undefined_statistic_as_undefined() -> None:
+    # An undefined statistic must render as the literal `undefined` -- never a fabricated 0
+    # that an operator would read as real (zero-alpha / zero-win-rate is a ranking hazard).
+    _assert_one_passed(
+        _run_cli_test("undefined_statistic_renders_as_the_literal_undefined"),
+        "benchmark CLI undefined render",
+    )
+
+
+def test_cli_fails_closed_on_a_substituted_benchmark() -> None:
+    # The operator-facing analog of the trust boundary: a substituted benchmark series fails
+    # closed with no partial report, so the CLI can never report the wrong benchmark.
+    _assert_one_passed(
+        _run_cli_test("substituted_benchmark_series_fails_closed"),
+        "benchmark CLI substitution fail-closed",
+    )
+
+
+def test_cli_render_is_deterministic_across_processes() -> None:
+    # Two fresh CLI processes over identical inputs render byte-identical output (SRS-BT-010).
+    _assert_one_passed(
+        _run_cli_test("identical_inputs_are_byte_identical_across_processes"),
+        "benchmark CLI determinism",
+    )
+
+
+def test_cli_operator_surface_is_registered() -> None:
+    config = load_config()
+    # The real Cargo.toml + bin source must wire the operator rendering surface the close
+    # rests on (SPY-default proof, user-selection seam, identity render, undefined render).
+    check_benchmark_cli(config, cargo_source(config))
+    # ...and the guard must not be vacuous: dropping the [[bin]] registration is caught, so
+    # SRS-BT-005 cannot be marked passes:true without the operator surface actually present.
+    mutated = cargo_source(config).replace(
+        'name = "benchmark_comparison_cli"', 'name = "renamed_cli"'
+    )
+    with pytest.raises(BenchmarkCheckError):
+        check_benchmark_cli(config, mutated)
+
+
+def test_close_scope_is_honest_about_deferred_owners() -> None:
+    # Scope honesty: the contract must name the CLI rendering surface as realized AND name the
+    # genuinely deferred owners. The CLI ships the backtest-report identification leg, but the
+    # dashboard/REST identification leg (SRS-UI / SRS-API) and the real stored-data resolver
+    # (SRS-DATA-007) stay deferred -- which is why SRS-BT-005 stays passes:false (the AC requires
+    # the web dashboard AND backtest reports to identify the benchmark).
+    config = load_config()
+    block = config["sim_benchmark_contract"]
+    assert "benchmark_cli" in block, "the contract must declare the realized CLI surface"
+    deferred_features = " ".join(entry["feature"] for entry in block["deferred"])
+    deferred_what = " ".join(entry["what"] for entry in block["deferred"])
+    assert "SRS-DATA-007" in deferred_what, "the real stored-data resolver must stay deferred"
+    assert "SRS-UI" in deferred_what and "SRS-API" in deferred_what, (
+        "the dashboard/REST rendering half must stay deferred"
+    )
+    assert "dashboard" in deferred_features.lower() or "dashboard" in deferred_what.lower()

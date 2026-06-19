@@ -44,16 +44,26 @@
 //! re-validates as defense-in-depth (its [`MetricsError`] is wrapped as
 //! [`BenchmarkError::Metrics`]).
 //!
-//! # What stays deferred (SRS-BT-005 keeps `passes:false`)
+//! # Operator rendering surface (realized) and what stays deferred
 //!
-//! This slice ships the deterministic, dependency-free selection + resolution-seam +
-//! comparison surface. Two acceptance pieces are genuinely blocked on unbuilt features
-//! and are deferred (so `feature_list.json` keeps SRS-BT-005 at `passes:false`):
-//! resolving SPY's (or a user-selected benchmark's) *actual* historical level series
-//! from stored data is the **SRS-DATA-007** owner behind [`BenchmarkSource`]; and the
-//! dashboard/backtest *report rendering* that identifies the benchmark to an operator
-//! at the SYS-36 (<=5s) refresh is the **SRS-UI / SRS-API** owner consuming
-//! [`BenchmarkComparison`].
+//! This module ships the deterministic, dependency-free selection + resolution-seam +
+//! comparison surface, and the operator RENDERING half is realized by the
+//! `benchmark_comparison_cli` binary (`src/bin/benchmark_comparison_cli.rs`): it runs the
+//! same fixture strategy through the real [`BacktestEngine`](crate::backtest::BacktestEngine),
+//! resolves the benchmark through an in-binary fixture [`BenchmarkSource`], runs [`compare`],
+//! and renders the identified comparison (SPY by default, a user-selected symbol via
+//! `--benchmark`) plus the eight metrics — every undefined statistic as the literal
+//! `undefined`, every trust-boundary fault failing closed before any report line.
+//!
+//! `feature_list.json` nevertheless keeps SRS-BT-005 at `passes:false`: the acceptance
+//! criterion requires *dashboard AND backtest reports* to identify the benchmark, and only
+//! the backtest-report identification leg is realized here (the CLI). Two acceptance pieces
+//! stay genuinely blocked on unbuilt features: the *web dashboard / REST report rendering*
+//! that identifies the benchmark to an operator at the SYS-36 (<=5s) refresh / SYS-37 is the
+//! **SRS-UI / SRS-API** owner consuming [`BenchmarkComparison`] (the blocker keeping
+//! `passes:false`); and resolving SPY's (or a user-selected benchmark's) *actual* historical
+//! level series from stored data is the **SRS-DATA-007** owner behind [`BenchmarkSource`]
+//! (the CLI uses a fixture source).
 
 use crate::backtest::{DateRange, EquityPoint, Fill};
 use crate::metrics::{

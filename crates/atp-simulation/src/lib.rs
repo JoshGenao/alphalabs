@@ -85,9 +85,13 @@ pub mod metrics;
 /// owner); and [`benchmark::compare`] computes alpha/beta against the resolved benchmark
 /// and packages a [`benchmark::BenchmarkComparison`] that identifies it. The resolved
 /// series is re-validated fail-closed at the source trust boundary before any metric is
-/// reported. Resolving the benchmark's actual historical levels from stored data
-/// (SRS-DATA-007) and rendering the dashboard/report identification (SRS-UI / SRS-API,
-/// SYS-36 <=5s) are deferred, so SRS-BT-005 stays `passes:false`.
+/// reported. The CLI rendering surface is realized by the `benchmark_comparison_cli` binary
+/// (a default run identifies SPY; `--benchmark` selects another; undefined statistics render
+/// as `undefined` and every trust-boundary fault fails closed), but SRS-BT-005 stays
+/// `passes:false`: the AC requires the web dashboard AND backtest reports to identify the
+/// benchmark, and the dashboard / REST identification (SRS-UI / SRS-API, SYS-36 <=5s) is not
+/// built. Resolving the benchmark's actual historical levels from stored data (SRS-DATA-007,
+/// behind the fixture source the CLI uses) also remains deferred.
 pub mod benchmark;
 
 /// Completed-backtest result persistence + query (SRS-BT-009 / SyRS SYS-21, SYS-79). It

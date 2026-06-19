@@ -5,9 +5,13 @@ SRS-BT-005 / SyRS SYS-17, SYS-36, SYS-37 / StRS SN-1.04 -- select a benchmark (S
 default), compute alpha/beta against it, and identify it in reports. This slice ships
 the deterministic selection + resolution-seam + comparison-report surface in
 ``crates/atp-simulation`` (module ``benchmark``), wrapping the SRS-BT-004 metric family;
-the deferred halves (real benchmark level-series resolution via SRS-DATA-007, the
-dashboard/report rendering via SRS-UI / SRS-API, and the SRS-BT-009 persisted-comparison
-record) keep ``feature_list.json`` at ``passes:false``.
+the operator *rendering* surface is shipped as the ``benchmark_comparison_cli`` binary
+(``defaults`` proves the SPY default; ``run`` renders the real ``compare`` report of a
+fixture backtest), but ``feature_list.json`` keeps SRS-BT-005 at ``passes:false``: the AC
+requires the web dashboard AND backtest reports to identify the benchmark, and only the
+backtest-report leg (the CLI) is realized. The genuinely deferred halves remain named: the
+web dashboard / REST report rendering via SRS-UI / SRS-API (the blocker), real benchmark
+level-series resolution via SRS-DATA-007, and the SRS-BT-009 persisted-comparison record.
 
 Mirrors ``tests/test_sim_metrics_contract.py``: shells out to
 ``tools/benchmark_check.py``, then exercises each per-check function in-process,
@@ -39,6 +43,7 @@ from benchmark_check import (  # noqa: E402
     assert_sim_benchmark_static,
     benchmark_source,
     cargo_source,
+    check_benchmark_cli,
     check_cargo_test_smoke,
     check_compare_fn,
     check_comparison_struct,
@@ -95,6 +100,8 @@ class BenchmarkScriptTest(unittest.TestCase):
             "Cargo.toml declares no dependency on the live/broker path "
             "(atp-adapters, atp-execution)",
             "benchmark module is free of all 5 forbidden vendor SDK tokens",
+            "registers the benchmark_comparison_cli operator binary (defaults + run)",
+            "the CLI half of the SYS-37 operator benchmark-identification surface",
             "feature_list.json keeps SRS-BT-005 passes:false",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
@@ -404,6 +411,33 @@ class VendorIsolationTest(_Fixture):
         self.assertIn("ib_insync", str(ctx.exception))
 
 
+class BenchmarkCliTest(_Fixture):
+    """The operator benchmark-comparison rendering surface (the CLI half of SRS-UI / SRS-API)."""
+
+    def test_benchmark_cli_evidence(self) -> None:
+        evidence = check_benchmark_cli(self.config, self.cargo_src)
+        self.assertIn("benchmark_comparison_cli operator binary", evidence)
+        self.assertIn("resolves to and identifies SPY", evidence)
+
+    def test_unregistered_cli_bin_is_caught(self) -> None:
+        # Dropping the [[bin]] registration would leave the operator surface unbuilt.
+        mutated = self.cargo_src.replace('name = "benchmark_comparison_cli"', 'name = "renamed_cli"')
+        with self.assertRaises(BenchmarkCheckError) as ctx:
+            check_benchmark_cli(self.config, mutated)
+        self.assertIn("register", str(ctx.exception).lower())
+
+    def test_renamed_cli_bin_source_is_caught(self) -> None:
+        # If the bin source goes missing, the rendering surface the close rests on is gone.
+        spec = self.config["sim_benchmark_contract"]["benchmark_cli"]
+        bogus = dict(spec)
+        bogus["bin_path"] = "src/bin/does_not_exist.rs"
+        config = {**self.config}
+        config["sim_benchmark_contract"] = {**self.config["sim_benchmark_contract"], "benchmark_cli": bogus}
+        with self.assertRaises(BenchmarkCheckError) as ctx:
+            check_benchmark_cli(config, self.cargo_src)
+        self.assertIn("missing", str(ctx.exception).lower())
+
+
 class CargoSmokeTest(unittest.TestCase):
     """The runnable benchmark path must compile where it matters."""
 
@@ -420,12 +454,12 @@ class CargoSmokeTest(unittest.TestCase):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_nineteen_items(self) -> None:
-        # 18 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(run_checks()), 19)
+    def test_run_checks_emits_twenty_items(self) -> None:
+        # 19 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(run_checks()), 20)
 
-    def test_static_evidence_is_eighteen_items(self) -> None:
-        self.assertEqual(len(assert_sim_benchmark_static(load_config(), ROOT)), 18)
+    def test_static_evidence_is_nineteen_items(self) -> None:
+        self.assertEqual(len(assert_sim_benchmark_static(load_config(), ROOT)), 19)
 
 
 if __name__ == "__main__":

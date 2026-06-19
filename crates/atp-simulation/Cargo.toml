@@ -32,6 +32,15 @@ path = "src/bin/bt010_repro_cli.rs"
 name = "bt002_cost_cli"
 path = "src/bin/bt002_cost_cli.rs"
 
+# SRS-BT-005 benchmark-comparison operator CLI. Builds a BenchmarkSelection from flags (no
+# --benchmark ⇒ the SPY default), runs the SAME fixture strategy through the real engine, resolves
+# the benchmark through a fixture source, and renders the real compare() report — the CLI half of the
+# deferred operator rendering surface (the real stored-data source is SRS-DATA-007, the dashboard is
+# SRS-UI/SRS-API; no Python<->Rust runtime bridge).
+[[bin]]
+name = "benchmark_comparison_cli"
+path = "src/bin/benchmark_comparison_cli.rs"
+
 [dependencies]
 atp-strategy-engine = { path = "../atp-strategy-engine" }
 atp-types = { path = "../atp-types" }
