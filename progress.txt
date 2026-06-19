@@ -1,36 +1,140 @@
->>> NEXT TARGET (2026-06-18): SRS-BT-005 benchmark-comparison operator CLI SHIPPED but SRS-BT-005
->>> STAYS passes:false (SESSION 60, Phase 1). 88 features remain failing (unchanged). This is the
->>> SESSION-55 BT-009 Phase-1 precedent (ship the surface, flag stays false), NOT a green close.
->>> WHY passes:false: SRS-BT-005's AC reads "dashboard AND backtest reports identify the benchmark".
->>> The benchmark_comparison_cli realizes only the BACKTEST-report identification leg; the WEB
->>> DASHBOARD / REST identification leg (SRS-UI / SRS-API; SYS-36 <=5s, SYS-37) is genuinely not built.
->>> Codex adversarial review flagged the premature passes:true flip [high]; the operator chose to
->>> REVERT the flip and keep the surface (no in-scope code defect was found). LESSON (durable): a
->>> multi-context AC that NAMES an unbuilt context (here "dashboard") cannot be closed green on the
->>> operator-CLI leg alone — unlike BT-002/006/009/010 whose ACs were single-context or fully
->>> CLI-demonstrable. The closest-to-green policy must check the AC wording for a NAMED deferred
->>> context BEFORE assuming the CLI-surface slice flips the flag.
->>> SELECTION POLICY IS DURABLE: "optimize closest-to-green" (operator-set SESSION 58, memory
->>> project_selection_policy) — just CONFIRM the closest-to-green candidate at session start.
->>>   - WHAT'S SHIPPED (reusable next session): crates/atp-simulation/src/bin/benchmark_comparison_cli.rs
->>>     over the real benchmark::compare() engine (defaults proves the SPY default; run renders the
->>>     identified comparison + alpha/beta + the 8 metrics; undefined->`undefined`; --inject faults fail
->>>     closed) + L5 srs_bt_005_benchmark_cli (19 tests) + L7 test_benchmark_comparison CLI cases +
->>>     L3 BenchmarkCliTest + tools/benchmark_check.py check_benchmark_cli + the benchmark_cli contract
->>>     sub-block. NO prep commit was needed: benchmark paths (/benchmark\.rs, benchmark[_-]?comparison,
->>>     srs[_-]?bt[_-]?005) were ALREADY in SAFETY_PATH_RE; naming the bin `benchmark_comparison_cli`
->>>     matched benchmark[_-]?comparison -> registered safety path WITHOUT touching the gate (BT-006
->>>     trick). benchmark_check is wired via init.sh + architecture_check, NOT the ci.yml loop -> no
->>>     CI-mirror edit. The Phase-2 flag flip lands when the SRS-UI/SRS-API dashboard identification
->>>     path is implemented + tested.
->>>   - NEXT closest-to-green candidate: SRS-BT-004 (PerformanceMetrics) is the obvious next pick (engine
->>>     crates/atp-simulation/src/metrics.rs::compute + L3/L5/L7 + tools/metrics_check.py ALL exist; only
->>>     the operator CLI surface is missing — the same slice shape). BUT its AC ALSO names three contexts
->>>     ("completed backtests, paper strategies, AND live dashboard reporting"): per the SESSION-60 lesson
->>>     the CLI realizes only the backtest leg, so BT-004 is ALSO a Phase-1-surface (stays passes:false)
->>>     unless the operator narrows scope. Confirm the AC's named-deferred-context check with the operator
->>>     before assuming any backtest-thread feature flips its flag. Other deferred owners stand
->>>     (SRS-DATA-007, SRS-UI/SRS-API, SRS-BT-009).
+>>> NEXT TARGET (2026-06-19): SRS-BT-003 CLOSED GREEN (SESSION 61). 87 features remain failing
+>>> (88 -> 87). SRS-BT-003 is the FIFTH backtest-thread green (after BT-009/BT-010/BT-002/BT-006) and
+>>> the FIRST close of a feature a prior session had deliberately deferred as an "SDK-surface
+>>> passes:false" slice.
+>>> WHY IT FLIPPED (refines the SESSION-60 named-deferred-context lesson): BT-003's AC is "a paper
+>>> strategy and backtest using identical cost configuration compute fills and commissions from the
+>>> same model family" — SINGLE-CONTEXT: BOTH named contexts ("paper strategy" = PaperSimulationEngine,
+>>> "backtest" = BacktestEngine) are ALREADY BUILT and both call the IDENTICAL cost::CostConfig::
+>>> cost_breakdown entry point. The prior deferral named owners SRS-SIM-002/003/004 + SRS-API-001/
+>>> SRS-UI + SRS-BT-001-runtime, but those are ADJACENT features, NOT contexts inside BT-003's AC —
+>>> the deferral was over-conservative. CONTRAST BT-005/BT-004: their ACs literally NAME the WEB
+>>> DASHBOARD (SRS-UI/SRS-API, genuinely unbuilt) so they stay Phase-1. THE REFINED TEST: read the
+>>> AC text; if every named context is built or demonstrable over the Rust core (BT-003), it FLIPS;
+>>> if the AC names a genuinely-unbuilt surface like "dashboard"/"live ... reporting" (BT-004/005),
+>>> it's Phase-1. Don't conflate a prior session's conservative deferred-OWNERS list with the AC's
+>>> actual named contexts.
+>>> SELECTION POLICY IS DURABLE: "optimize closest-to-green" (operator-set SESSION 58) — just CONFIRM
+>>> the closest-to-green candidate at session start (the operator confirmed BT-003 over BT-004 this
+>>> session via one AskUserQuestion).
+>>>   - WHAT'S SHIPPED (reusable next session): crates/atp-simulation/src/bin/bt003_shared_cost_cli.rs
+>>>     over the real cost+backtest+sim engines. `defaults` proves the paper default == backtest
+>>>     default == SyRS baseline; `compare` runs the SAME fixture strategy through BOTH engines under
+>>>     one CostConfig and prints cost-family-match:true fill-for-fill (+ backtest-final-equity ==
+>>>     paper-ledger-cash for the round trip); every --inject fault fails closed in BOTH engines;
+>>>     --lot<=0 and any zero-fill run fail closed (no vacuous match). Driven by L5 srs_bt_003_cost_cli
+>>>     (17 tests) + L5 srs_bt_003_shared_cost_family (9, pre-existing) + L7 tests/domain/
+>>>     test_sim_shared_cost.py (11) + L3 SharedCostCliTest + tools/sim_cost_check.py
+>>>     check_shared_cost_cli. PREP COMMIT b644bed extended SAFETY_PATH_RE (/sim\.rs, sim_cost_check,
+>>>     sim_cost_contract, bt003_shared_cost_cli, shared_cost_family, srs_bt_003) — needed because the
+>>>     new bin name matched no existing safety token (unlike the BT-005/006 name-matching trick).
+>>>     sim_cost_check is wired via init.sh, NOT the ci.yml loop -> no CI-mirror edit.
+>>>   - DOC-DRIFT LESSON (cost 4 adversarial rounds): flipping a feature that OTHER features' contracts
+>>>     reference as "deferred" leaves stale "BT-003 passes:false/deferred" claims that the judgment
+>>>     pass flags one-at-a-time. Stale spots this time: runtime_services.json (sim_cost_contract desc,
+>>>     the SESSION-39 implemented-note, backtest_cost_contract desc), cost.rs/sim.rs/lib.rs module
+>>>     docs, tools/backtest_cost_check.py (docstring + _DEFERRED_OWNERS + a future-tense "will share"),
+>>>     the L3 docstring, AND BT-002's feature_list notes. NEXT TIME: BEFORE the first review, grep ALL
+>>>     rs/py/json for "<feature-id>" near "defer|passes:false|will " and fix every hit in one pass.
+>>>   - ADVERSARIAL FINDINGS (all legit, all fixed — no reverts, no fake approves): [medium] subcommand
+>>>     --help failed as unknown flag (added wants_help per-subcommand + help_paths test); 3 rounds of
+>>>     [high]/[medium]/[low] doc-drift (above); [high] VACUOUS PROOF — --lot 0 printed
+>>>     cost-family-match:true over ZERO fills (added parse-time --lot>0 reject + empty-comparison
+>>>     guard + zero/negative-lot L5/L7 tests). Final verdict APPROVE.
+>>>   - NEXT closest-to-green candidate: SRS-BT-004 (PerformanceMetrics) — engine metrics.rs::compute +
+>>>     L3/L5/L7 + tools/metrics_check.py ALL exist; only the operator CLI surface is missing. BUT its
+>>>     AC names "completed backtests, paper strategies, AND live dashboard reporting": "live dashboard
+>>>     reporting" is a GENUINELY-UNBUILT surface (SRS-UI/SRS-API + the SRS-EXE-001 live path), so by
+>>>     the refined test BT-004 is a Phase-1-surface (stays passes:false) UNLESS the operator narrows
+>>>     scope — same bucket as BT-005, NOT BT-003. The backtest+paper compute legs ARE demonstrable
+>>>     over the core; the live-dashboard leg is the blocker. Confirm scope with the operator. P2
+>>>     SRS-BT-007 (grid search) / SRS-BT-008 (walk-forward) are single-context/CLI-demonstrable but
+>>>     have NO engine yet (not closest-to-green). Deferred owners stand (SRS-DATA-007, SRS-UI/SRS-API,
+>>>     SRS-EXE-001).
+
+=== SESSION 61 ===
+Date: 2026-06-19
+Feature completed: SRS-BT-003 — use the same transaction-cost model family for internal simulation and
+backtesting unless configured otherwise (docs/SRS.md SRS-5.6 SRS-BT-003; SyRS SYS-15e/SYS-83d; StRS
+SN-1.03/SN-1.29). AC: "A paper strategy and backtest using identical cost configuration compute fills
+and commissions from the same model family." NOW passes:true.
+Status: 87 features remaining (88 -> 87).
+
+SELECTION: operator confirmed SRS-BT-003 over the prior pointer's BT-004 (one AskUserQuestion). BT-003
+was closest-to-green AND flippable: engine (cost.rs shared by backtest.rs + sim.rs), L5
+srs_bt_003_shared_cost_family (9 tests, already proving the AC verbatim), L3, and tools/sim_cost_check.py
+ALL predated this session; the only gap keeping passes:false was (a) the operator-demonstrable CLI
+surface and (b) a prior over-conservative deferral. BT-004 (the prior pointer) was declined because its
+AC names "live dashboard reporting" (genuinely unbuilt) -> another non-flipping Phase-1 surface.
+
+3-commit cadence (prep + feat + chore):
+- PREP (b644bed) chore(critic): extended tools/critic_check.py SAFETY_PATH_RE with /sim\.rs,
+  sim_cost_check, sim_cost_contract, bt003_shared_cost_cli, shared_cost_family, srs_bt_003 (the new bin
+  name matched no existing safety token; also registers the sim money-math path + sim cost check/contract
+  as safety paths, a pre-existing gap). Separated so the feat commit does not self-modify the gate.
+- FEAT (c76802b) the CLI surface + the flip:
+  * crates/atp-simulation/src/bin/bt003_shared_cost_cli.rs (NEW, std-only). `defaults` proves the paper
+    engine's default cost family == CostConfig::default() == syrs_defaults(). `compare [--commission
+    M][--slippage M][--spread M][--lot N][--sell-ts T][--inject F][--full]` runs the SAME fixture
+    RoundTrip strategy over the SAME bars through BOTH the real BacktestEngine AND a PaperSimulationEngine
+    replay (driving the identical on_bar decisions through simulate_fill into a PaperLedger), and asserts
+    the per-fill commission/slippage/spread-impact are EQUAL fill-for-fill (cost-family-match:true). With
+    --full, backtest-final-equity-minor == paper-ledger-cash-minor for the round trip. Safety: every
+    --inject fault (nonpositive-price/negative-spread/negative-commission) corrupts a SHARED input and is
+    rejected by BOTH engines before any fill (reconcile() requires BOTH to fail; a one-sided rejection is
+    a louder shared-family-divergence error); --lot<=0 rejected at parse and a zero-fill run refuses to
+    print a vacuous match. Cargo [[bin]] registered.
+  * crates/atp-simulation/tests/srs_bt_003_cost_cli.rs (NEW, L5, 17 tests, CARGO_BIN_EXE fresh processes).
+  * tests/domain/test_sim_shared_cost.py (NEW, L7, 11 tests — the paired safety diff): behavioral
+    shell-outs to the L5 (match fill-for-fill, override shared, economics agree, fault fails closed, no
+    vacuous match) + structural non-vacuity (integer-only, cost subtracted, CLI drives BOTH engines) +
+    scope-honesty (contract names CLI realized + passes:true + adjacent features NOT part of BT-003 AC).
+  * tests/test_sim_cost_contract.py (L3): +SharedCostCliTest, +CLI evidence needle, counts 9->10 static /
+    10->11 run_checks, docstring updated to passes:true.
+  * tools/sim_cost_check.py: +check_shared_cost_cli (Cargo registration, both subcommands, BOTH engines,
+    match headline, fail-closed token, L5 file) wired into _STATIC_CHECKS; cargo smoke now runs BOTH
+    srs_bt_003_shared_cost_family AND srs_bt_003_cost_cli; _DEFERRED_OWNERS -> _ADJACENT_FEATURES; closing
+    message + module docstring -> passes:true.
+  * architecture/runtime_services.json#sim_cost_contract: +shared_cost_cli sub-block +cli_integration_test;
+    description + deferred[] reframed (CLI realized; adjacent features are separate, NOT BT-003 deferrals);
+    also fixed the SESSION-39 implemented-note (4176) + backtest_cost_contract desc (4007) + the
+    BT-002/BT-003 cost-models entry (3990).
+  * crates/atp-simulation/src/{cost.rs,sim.rs,lib.rs}: module docs -> sim consumer exists, BT-003 closed.
+  * tools/backtest_cost_check.py: removed the now-false "SRS-BT-003 sim sharing" deferred owner + fixed
+    docstring/return wording (BT-002's check no longer claims BT-003 is deferred).
+  * feature_list.json: SRS-BT-003 passes:true + notes; BT-002 notes corrected (drop stale BT-003 owner).
+- CHORE (this commit) record SESSION 61 + the NEXT-TARGET pointer.
+
+Critic verdicts:
+  deterministic: APPROVE — 0 findings (pre-commit hook re-approved at c76802b)
+  judgment (/codex:adversarial-review --base b644bed, critic_prompt.md focus): APPROVE — no material
+    findings. Converged over 4 rounds, each finding fixed honestly (never faked an APPROVE, never reverted
+    correct work): R1 [medium] subcommand --help failed as unknown flag -> per-subcommand wants_help +
+    help_paths_exit_zero_with_usage test; R2 [high]+[medium] stale "BT-003 deferred" in runtime_services
+    implemented-note + cost.rs docs -> fixed + swept backtest_cost_check.py; R3 [high] backtest_cost_contract
+    desc still "SRS-BT-003 deferred half" + BT-002 feature notes -> fixed; R4 [low] L3 docstring still
+    "passes:false" -> fixed; final round [high] VACUOUS PROOF (--lot 0 -> cost-family-match:true over zero
+    fills) -> parse-time --lot>0 reject + empty-comparison guard + zero/negative-lot L5/L7 tests. Final: APPROVE.
+
+What I verified end to end (operator, the 4 feature_list steps):
+- Step 1: ./init.sh -> "Environment ready" (backtest cost-model + simulation shared-cost-model checks green).
+- Step 2 (CLI/API workflow): bt003_shared_cost_cli defaults -> same-cost-family:true; compare -> 2 fills,
+  each match=true, cost-family-match:true; compare --commission per-trade:100 ... -> override shared by both
+  engines, still match; compare --full -> backtest-final-equity == paper-ledger-cash.
+- Step 3 (AC): the paper strategy and backtest under identical CostConfig compute fills and commissions from
+  the same model family -- proven fill-for-fill (default family AND operator override).
+- Step 4 (objective evidence): L5 (17) + L5 shared-cost-family (9) + L7 (11) + L3 (32) + both cost check
+  scripts PASS; full atp-simulation crate green (24 test binaries).
+
+Known issues / notes for next agent:
+- BT-004 is the closest-to-green candidate but its AC names "live dashboard reporting" (genuinely unbuilt
+  SRS-UI/SRS-API + SRS-EXE-001 live path) -> Phase-1 surface, won't flip unless the operator narrows scope.
+  Apply the refined named-deferred-context test (read the AC text; built/core-demonstrable contexts flip,
+  genuinely-unbuilt named surfaces don't).
+- DOC-DRIFT: grep ALL rs/py/json for the feature id near defer/passes:false/will BEFORE the first review.
+- The codex adversarial review runs via `node <plugin>/codex-companion.mjs adversarial-review --base
+  <prep-commit> "$(cat prompts/critic_prompt.md)"` (background ok); it reviews the STAGED diff against the
+  base. It converged in 4 rounds here — budget for that.
 
 === SESSION 60 ===
 Date: 2026-06-18
