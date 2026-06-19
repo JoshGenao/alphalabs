@@ -1,27 +1,155 @@
->>> NEXT TARGET (2026-06-17): SRS-BT-002 is CLOSED (passes:true, SESSION 58) — the project's THIRD
+>>> NEXT TARGET (2026-06-18): SRS-BT-006 is CLOSED (passes:true, SESSION 59) — the project's FOURTH
 >>> genuine green, again from the backtest thread via the operator-CLI-over-fixture-engine pattern
->>> (bt009_store_cli, bt010_repro_cli, now bt002_cost_cli). 89 features remain failing (was 90).
->>> SELECTION POLICY IS NOW DURABLE: the operator set "optimize closest-to-green" via AskUserQuestion
->>> (SESSION 58) — pick the failing feature with the smallest remaining slice to a genuine end-to-end
->>> green. STOP re-asking the policy each session (recorded in memory project_selection_policy); just
->>> CONFIRM the closest-to-green candidate at session start. The strict file-order default is retired
->>> unless the operator changes it.
->>>   - NEXT closest-to-green candidate (pure-logic, runnable, CLI-surface-shaped): SRS-BT-006 factor
->>>     tear-sheet — compute_tear_sheet already exists in atp-factor-pipeline + factor_analysis_contract;
->>>     the gap is the operator CLI surface + an L7 pin, the SAME slice shape as BT-002/009/010. Confirm
->>>     closest-to-green at start; do not blindly assume BT-006.
->>>   - DO NOT reopen SRS-BT-002. Deferred owners remain (do not absorb into other features):
->>>     REST/dashboard cost-override surface=SRS-API-001/SRS-UI; real data + Python strategy host=
->>>     SRS-BT-001-runtime; the SRS-BT-003 sim paper-fill consumer; the IB monthly-volume tier ladder.
->>>   - BT-002 surface now shipped: bt002_cost_cli (defaults/run) + srs_bt_002_cost_cli (L5, fresh
->>>     processes) + tests/domain/test_backtest_cost.py (L7) + check_cost_cli in backtest_cost_check.py
->>>     + the backtest_cost_contract cost_cli sub-block. cost.rs is now a REGISTERED safety path (prep
->>>     commit d8a5a2d). The cost-model FAMILY + engine application predate this slice (SESSION 38/39).
->>>   - LESSON (memory feedback_adversarial_loop_nonconvergence — CONFIRMED A 4th TIME): the Codex pass
->>>     found ZERO in-scope defects and walked straight to the deferred Python-host/real-data boundary
->>>     (needs-attention). Honest close (BT-009/010 precedent): pinned in-scope guarantees with tests,
->>>     narrowed the contract's deferred list, feature_list `notes` scoping the close, operator authorized
->>>     committing green, judgment verdict recorded VERBATIM as needs-attention. Never fake APPROVE.
+>>> (bt009_store_cli, bt010_repro_cli, bt002_cost_cli, now factor_tear_sheet_cli). 88 features remain
+>>> failing (was 89).
+>>> SELECTION POLICY IS DURABLE: "optimize closest-to-green" (operator-set SESSION 58, memory
+>>> project_selection_policy) — pick the failing feature with the smallest remaining slice to a genuine
+>>> end-to-end green. STOP re-asking the policy each session; just CONFIRM the closest-to-green
+>>> candidate at session start. The strict file-order default is retired unless the operator changes it.
+>>>   - NEXT closest-to-green candidate: look for the next failing feature whose CORE logic already
+>>>     exists + is runnable and whose only gap is the operator CLI surface + an L7 pin (the BT slice
+>>>     shape). Survey candidates before assuming one; confirm closest-to-green at start. The backtest
+>>>     thread's remaining P1s (SRS-BT-004 PerformanceMetrics, SRS-BT-005 benchmark comparison) already
+>>>     have contracts + check scripts (benchmark_check, performance-metric contract) — likely the same
+>>>     CLI-surface-shaped slice; verify their engines exist before committing to one.
+>>>   - DO NOT reopen SRS-BT-006. Deferred owners remain (do NOT absorb into other features):
+>>>     SRS-FAC-001 scheduled full-universe panel producer; SRS-DATA-007 real factor/return data wiring;
+>>>     SRS-UI/SRS-API REST+dashboard rendering half; the cross-crate SRS-BT-004 PerformanceMetrics bundle.
+>>>   - BT-006 surface now shipped: factor_tear_sheet_cli (defaults/run) + srs_bt_006_tear_sheet_cli
+>>>     (L5, 15 tests, fresh processes) + the tear_sheet_cli additions to tests/domain/test_factor_tear_sheet.py
+>>>     (L7) + check_tear_sheet_cli in tools/factor_analysis_check.py + the factor_analysis_contract
+>>>     tear_sheet_cli sub-block. NO prep commit needed: factor paths (/factor_analysis.rs,
+>>>     factor[_-]?tear[_-]?sheet, srs[_-]?bt[_-]?006, factor[_-]?analysis[_-]?check) were ALREADY in
+>>>     SAFETY_PATH_RE (BT-009/010 cadence, not BT-002's). The tear-sheet ENGINE (compute_tear_sheet)
+>>>     predates this slice. factor_analysis_check is wired via init.sh + architecture_check, NOT the
+>>>     ci.yml loop -> no CI-mirror edit needed (verified).
+>>>   - LESSON (memory feedback_adversarial_loop_nonconvergence — CONFIRMED A 5th TIME): the FIRST Codex
+>>>     pass found a real IN-SCOPE doc drift (the module docs in factor_analysis.rs + lib.rs still said
+>>>     "SRS-BT-006 stays passes:false") — FIXED it (do not commit around an in-scope finding). The
+>>>     SECOND pass then found ZERO in-scope defects and walked to the deferred SRS-FAC-001/SRS-DATA-007
+>>>     fixture-data boundary (needs-attention). Honest close (BT-002/009/010 precedent): the CLI runs the
+>>>     REAL engine over a fixture (Step 2 EXPLICITLY permits fixtures/operator controls), in-scope
+>>>     guarantees pinned with tests, deferred owners NAMED, feature_list `notes` scoping the close,
+>>>     operator authorized committing green, judgment verdict recorded VERBATIM as needs-attention.
+>>>     Never fake APPROVE.
+
+=== SESSION 59 ===
+Date: 2026-06-18
+Feature COMPLETED: SRS-BT-006 (produce factor analysis and tear-sheet outputs; docs/SRS.md SRS-5.6
+SRS-BT-006; traces SyRS SYS-18; StRS SN-1.05) — the project's FOURTH genuine end-to-end green. The
+acceptance criterion: "Factor returns, information coefficient, and turnover analysis are available
+for completed factor-analysis runs."
+SELECTION: confirmed SRS-BT-006 as the closest-to-green candidate (durable policy, no re-ask). The
+tear-sheet ENGINE (compute_tear_sheet over a FactorPanel, returning the IC / FactorReturns /
+TurnoverAnalysis) + the factor_analysis_contract + tools/factor_analysis_check.py (18 static checks)
++ tests/domain/test_factor_tear_sheet.py (L7) + crates/atp-factor-pipeline/tests/srs_bt_006_factor_analysis.rs
+(L5) ALL predate this slice; the only gap keeping passes:false was the operator RENDERING surface +
+an L7 pin on it — the SAME slice shape as BT-002/009/010.
+Status: 88 remaining features (was 89 — SRS-BT-006 now passes:true). feature_list.json edits: the
+SRS-BT-006 passes false->true flip AND a (permitted) notes field scoping the close.
+
+2-commit cadence (feat + chore — NO prep, the BT-009/010 case):
+- NO prep commit. BT-002 needed one only because cost.rs was an UNREGISTERED safety path. Here the
+  factor paths (/factor_analysis\.rs, factor[_-]?analysis[_-]?check, factor[_-]?tear[_-]?sheet,
+  srs[_-]?bt[_-]?006) were ALREADY in tools/critic_check.py SAFETY_PATH_RE (line 241-242). Naming the
+  new bin `factor_tear_sheet_cli` matches the existing factor[_-]?tear[_-]?sheet token -> registered
+  safety path WITHOUT touching the gate. The feat commit does not modify critic_check.py -> no
+  self-modification -> no prep needed.
+- FEAT (801a88a) the CLI surface + pin (single commit; the new bin + factor_analysis_check.py are the
+  registered safety non-test files, paired by tests/domain/test_factor_tear_sheet.py):
+  * crates/atp-factor-pipeline/src/bin/factor_tear_sheet_cli.rs (NEW, std-only, zero deps). `defaults`
+    prints the CLI's published analysis params (DEFAULT_QUANTILES=5 quintiles, FIXTURE_UNIVERSE=10,
+    DEFAULT_PERIODS=3, REBALANCE_STEP=1) and PROVES a default run surfaces all three SYS-18 deliverables
+    (srs-bt-006-deliverables: ic=true returns=true turnover=true) — a deliverable-AVAILABILITY proof,
+    since there is NO SyRS numeric quantile constant (unlike BT-002's defaults-match-syrs). `run
+    [--quantiles N][--periods P][--pattern monotone|flat][--inject <fault>]` builds a deterministic
+    fixture FactorPanel (factor ordering rotates one slot/period -> IC=1 each period + 0.5 target
+    turnover) and runs it through the REAL compute_tear_sheet, printing the per-period + aggregate IC,
+    the per-quantile factor returns + long-short spread (0.08 at quintiles), and the per-quantile
+    turnover. --quantiles is the override seam (FactorPanel::new(factor_periods, quantiles) re-buckets
+    the SAME fixture: q=2 -> spread 0.05, turnover 0.2). Safety core: every undefined statistic (None)
+    renders as the literal `undefined` (never a fabricated 0/NaN — the BT-006 analog of BT-002's "no
+    cash fabricated"); --pattern flat (constant factor) withholds EVERY statistic as undefined (no
+    SecurityKey-ordering ladder); a degenerate/non-finite/duplicate/too-small panel (--inject) or
+    --quantiles 1 fails closed via FactorPanel::validate INSIDE the engine before any statistic prints.
+  * Cargo.toml: [[bin]] factor_tear_sheet_cli.
+  * crates/atp-factor-pipeline/tests/srs_bt_006_tear_sheet_cli.rs (NEW, L5, 15 tests): drives the bin
+    via CARGO_BIN_EXE_factor_tear_sheet_cli in fresh processes. defaults surface all three; default run
+    renders IC 1.0 / spread 0.08 / turnover 0.5; undefined renders as `undefined` not 0/NaN; --quantiles
+    re-buckets the SAME fixture; flat withholds all + exits 0; byte-identical across two fresh processes;
+    --quantiles 1 / --inject nonfinite|duplicate|too-few|empty-period / bad flag|pattern|subcommand /
+    missing subcommand all fail closed with no partial sheet.
+  * tests/domain/test_factor_tear_sheet.py (L7, the paired safety diff): +12 cases — behavioral
+    shell-out to the L5 deliverable/undefined/flat/override/determinism/fail-closed cases + a structural
+    check_tear_sheet_cli mutation guard (rename the bin -> raises) + scope-honesty (the contract names
+    the CLI surface REALIZED + passes:true + the genuine deferred owners SRS-FAC-001/SRS-DATA-007/
+    SRS-UI/SRS-API). Existing 20 cases unchanged.
+  * tests/test_factor_analysis_contract.py (L3): +TearSheetCliTest + CLI evidence needles (registers the
+    factor_tear_sheet_cli operator binary; the CLI half of the SYS-18 operator rendering surface);
+    passes:false needle flipped to passes:true; static-check count 18->19, run_checks 19->20.
+  * tools/factor_analysis_check.py: +check_tear_sheet_cli static collector (reads the tear_sheet_cli
+    contract block + the bin source; verifies the Cargo registration, both subcommands, the
+    deliverable-availability token, the --quantiles override seam, the undefined-render token, the
+    override flags, and the L5 test file), wired into _STATIC_CHECKS; the cargo smoke now also runs the
+    srs_bt_006_tear_sheet_cli integration test; _DEFERRED_OWNERS item 3 narrowed to the REST/dashboard
+    half; closing message + module docstring updated (CLI realized; no longer asserts passes:false).
+    Already wired via init.sh + architecture_check (NOT the ci.yml/run_ci_locally.sh loop) -> no
+    CI-mirror edit needed (verified).
+  * architecture/runtime_services.json#factor_analysis_contract: +tear_sheet_cli sub-block +
+    rust_cli_integration_test; description marks the CLI override surface REALIZED + passes:true;
+    deferred[2] narrowed to the REST/dashboard half.
+  * crates/atp-factor-pipeline/src/factor_analysis.rs + src/lib.rs: module-doc DEFERRED sections updated
+    (CLI rendering realized -> passes:true; remaining owners deferred). This was the FIRST Codex pass's
+    in-scope finding (doc drift) — fixed before the close.
+  * feature_list.json: SRS-BT-006 passes false->true + notes (the only permitted edits).
+- CHORE (this commit) record SESSION 59 + the NEXT-TARGET pointer.
+
+What I verified end to end (the 4 feature_list steps, as an operator):
+- Step 1: ./init.sh -> "Environment ready" (factor-analysis contract check green) — before AND after.
+- Step 2/3 (the AC): factor_tear_sheet_cli defaults -> published params + srs-bt-006-deliverables:
+  ic=true returns=true turnover=true; run (no flags) -> ic-mean 1.0 / ic-risk-adjusted undefined /
+  mean-spread 0.08 / mean-top+bottom-turnover 0.5 / deliverables all true; run --quantiles 2 ->
+  n-quantiles 2, mean-spread 0.05, turnover 0.2 (SAME fixture re-bucketed); run --pattern flat -> every
+  statistic `undefined`, deliverables ic=false returns=false turnover=false, exit 0; run --quantiles 1
+  / --inject nonfinite|duplicate|too-few|empty-period / bad flag|subcommand -> exit 1, no partial sheet.
+- Step 4 (objective evidence): cargo test -p atp-factor-pipeline (59 lib + 12 srs_bt_006_factor_analysis
+  + 15 srs_bt_006_tear_sheet_cli + 22 srs_fac_001) all green, 0 failed; cargo build --workspace OK;
+  factor_analysis_check.py --require-cargo PASS; L7 test_factor_tear_sheet (32) + L3
+  test_factor_analysis_contract (49) green; architecture_check exit 0; rustfmt + clippy clean on the 2
+  NEW Rust files (hand-applied rustfmt to ONLY the new files; the only clippy warnings are the
+  PRE-EXISTING atp-types doc-list ones, not mine).
+
+Critic verdicts:
+  deterministic (tools/critic_check.py --staged): APPROVE — 0 findings (re-confirmed by the pre-commit
+    hook on the feat commit; safety-pairing satisfied by tests/domain/test_factor_tear_sheet.py for the
+    new bin + the factor_analysis_check + factor_analysis.rs safety paths).
+  judgment (/codex:adversarial-review --wait, USER-triggered, fresh Codex context, --base 9a405bd): two
+    passes. PASS 1 -> needs-attention, ONE [high] IN-SCOPE finding: "Public SRS-BT-006 docs contradict
+    the pass:true close (factor_analysis.rs:71-78)" — the module docs still said "stays passes:false" +
+    listed rendering as deferred. FIXED it in factor_analysis.rs AND lib.rs (a 2nd instance of the same
+    drift), re-ran the deterministic critic (still APPROVE). PASS 2 (after the fix) -> needs-attention
+    (NOT APPROVE), ZERO in-scope defects: "Fixture-only CLI cannot satisfy completed-run availability"
+    — the CLI builds a synthetic FactorPanel rather than consuming a real producer/persisted artifact
+    (SRS-FAC-001 / SRS-DATA-007 deferred). COMMITTED on OPERATOR AUTHORIZATION (AskUserQuestion: "Commit
+    green on authorization"); recorded honestly as not-APPROVE. OVERRIDE RATIONALE: the finding walks to
+    NAMED deferred owners (SRS-FAC-001 producer, SRS-DATA-007 data), not an in-scope gap; the CLI runs
+    the REAL compute_tear_sheet engine (same as BT-002's real BacktestEngine over a fixture); and
+    BT-006's OWN feature_list Step 2 EXPLICITLY permits "fixture market data, provider mocks, file reads
+    ... or operator controls" — so the stated AC (all three deliverables available for a completed run)
+    is met by the CLI. Same deferred-superset boundary BT-009 (S56) / BT-010 (S57) / BT-002 (S58) hit and
+    closed; 5th confirmation of memory feedback_adversarial_loop_nonconvergence (this time the FIRST pass
+    also caught a real in-scope doc drift, which was fixed — never commit around an in-scope finding).
+
+Known issues / notes for next agent:
+- SRS-BT-006 is DONE (passes:true). Do NOT reopen it. Deferred owners (do not absorb elsewhere):
+  SRS-FAC-001 (scheduled full-universe panel producer), SRS-DATA-007 (real factor/return data wiring),
+  SRS-UI/SRS-API (REST+dashboard rendering half), the cross-crate SRS-BT-004 PerformanceMetrics bundle.
+- SELECTION POLICY is durable = "optimize closest-to-green". Next session: survey the remaining failing
+  P1s for the next CLI-surface-shaped slice (the backtest thread's SRS-BT-004 / SRS-BT-005 already have
+  contracts + check scripts; verify their engines exist before committing to one). Confirm, don't re-ask.
+- LESSON: when the contract/scope changes (passes:false -> passes:true), grep ALL source module docs
+  (lib.rs + the *.rs module headers), not just the contract JSON / check script / tests — the FIRST
+  Codex pass caught two stale "stays passes:false" doc comments that the deterministic critic missed.
 
 === SESSION 58 ===
 Date: 2026-06-17
