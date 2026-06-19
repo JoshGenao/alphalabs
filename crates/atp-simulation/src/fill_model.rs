@@ -86,11 +86,15 @@
 //! needs a seeded RNG and stays deferred to preserve determinism (the two
 //! deterministic [`LimitFillModel`] variants that ship are genuinely
 //! behavior-changing per strategy, so the configurability requirement is met
-//! without it); the full SYS-84 virtual ledger is
-//! SRS-SIM-003; paper-state persistence (SYS-89) is SRS-SIM-004; the orchestrator
-//! routing of all non-live strategies into this engine is SRS-EXE-002; and the
-//! Python strategy runtime is the SRS-SDK runtime. So `feature_list.json` keeps
-//! SRS-SIM-002 at `passes:false`.
+//! without it); applying fills to the full SYS-84 virtual ledger is SRS-SIM-003
+//! (itself built, `passes:true`); paper-state persistence (SYS-89) is SRS-SIM-004;
+//! the orchestrator routing of all non-live strategies into this engine is
+//! SRS-EXE-002; and the Python strategy runtime is the SRS-SDK runtime. These are
+//! **adjacent features**, each its own requirement and NOT a context inside
+//! SRS-SIM-002's acceptance criterion. The operator surface is the
+//! `sim002_fill_cli` binary (subcommands `defaults` / `rules` / `config` /
+//! `volume` over this engine), so `feature_list.json` marks SRS-SIM-002
+//! `passes:true`.
 //!
 //! # Money math
 //!

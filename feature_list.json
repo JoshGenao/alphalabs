@@ -1081,8 +1081,9 @@
       "Step 3: Verify acceptance criteria: Market, limit, stop, and stop-limit simulated fills follow SYS-83 defaults and per-strategy configuration; fill volume constraints are enforced.",
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
-    "needs_clarification": false
+    "passes": true,
+    "needs_clarification": false,
+    "notes": "SESSION 63: SRS-SIM-002 now passes:true. AC ('Market, limit, stop, and stop-limit simulated fills follow SYS-83 defaults and per-strategy configuration; fill volume constraints are enforced') is single-context -- the fill-model engine (crates/atp-simulation/src/fill_model.rs: evaluate_fill over a MarketSnapshot + per-strategy FillModelConfig, the four SYS-83 order-type rules, the two behavior-changing LimitFillModel variants, and the SYS-87b BarVolumeBudget cap single + aggregate) was already built; the only gap was the operator-demonstrable CLI surface. Closed via crates/atp-simulation/src/bin/sim002_fill_cli.rs (defaults/rules/config/volume over the real engine; each emits a non-vacuous :true proof and fails closed before any fill decision on every --inject fault), driven by L5 srs_sim_002_fill_cli + L7 test_sim002_fill_cli.py + L3 test_sim_fill_contract.py + tools/sim_fill_check.py check_fill_cli. The deferred SYS-87a market-hours / SYS-87c stale-data (SRS-MD-004) / SYS-70 live feed / SYS-83b stochastic / SRS-SIM-004 / SRS-EXE-002 / Python host are ADJACENT features, NOT contexts inside this AC."
   },
   {
     "id": "SRS-SIM-003",

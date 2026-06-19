@@ -57,6 +57,14 @@ path = "src/bin/bt003_shared_cost_cli.rs"
 name = "sim003_ledger_cli"
 path = "src/bin/sim003_ledger_cli.rs"
 
+# SRS-SIM-002 configurable fill-model operator CLI: "simulate fills using live market data and
+# configurable fill models". A thin binary over the public fill_model API (PaperSimulationEngine::
+# evaluate_fill over a MarketSnapshot + per-strategy FillModelConfig) — demonstrates the SYS-83 fill
+# rules, the per-strategy limit-model divergence, and the SYS-87b volume cap (no Python<->Rust bridge).
+[[bin]]
+name = "sim002_fill_cli"
+path = "src/bin/sim002_fill_cli.rs"
+
 [dependencies]
 atp-strategy-engine = { path = "../atp-strategy-engine" }
 atp-types = { path = "../atp-types" }

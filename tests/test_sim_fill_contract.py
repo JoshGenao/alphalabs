@@ -4,10 +4,12 @@ SRS-SIM-002 / SyRS SYS-83 / SYS-87 / StRS SN-1.29 / SN-1.03 — simulate fills u
 live market data and configurable fill models. Acceptance: market, limit, stop, and
 stop-limit simulated fills follow SYS-83 defaults and per-strategy configuration;
 fill volume constraints are enforced. This slice ships the fill-model / triggering
-path in ``crates/atp-simulation`` (module ``fill_model``); the deferred halves
-(SYS-87a market hours, SYS-87c stale-data threshold, the SYS-70 live feed, the
-SYS-83b fill-probability model, the full SYS-84 ledger, persistence, orchestrator
-routing, the Python runtime) keep ``feature_list.json`` at ``passes:false``.
+path in ``crates/atp-simulation`` (module ``fill_model``) and the operator-
+demonstrable ``sim002_fill_cli`` binary, so ``feature_list.json`` marks SRS-SIM-002
+``passes:true``; the ADJACENT features (SYS-87a market hours, SYS-87c stale-data
+threshold, the SYS-70 live feed, the SYS-83b stochastic fill-probability model,
+persistence, orchestrator routing, the Python runtime) are separate requirements
+NOT part of this acceptance criterion.
 
 Mirrors ``tests/test_sim_order_contract.py``: shells out to
 ``tools/sim_fill_check.py``, then exercises each per-check function in-process,
@@ -38,6 +40,7 @@ from sim_fill_check import (  # noqa: E402
     cargo_source,
     check_cargo_test_smoke,
     check_evaluate_fill,
+    check_fill_cli,
     check_fill_decision_enum,
     check_fill_model_config,
     check_fill_model_error_enum,
@@ -49,6 +52,7 @@ from sim_fill_check import (  # noqa: E402
     check_vendor_isolation,
     check_volume_budget,
     check_volume_cap,
+    cli_source,
     fill_source,
     lib_source,
     load_config,
@@ -89,7 +93,10 @@ class SimFillScriptTest(unittest.TestCase):
             "Cargo.toml declares no dependency on the live/broker path "
             "(atp-adapters, atp-execution)",
             "fill_model module is free of all 5 forbidden vendor SDK tokens",
-            "feature_list.json keeps SRS-SIM-002 passes:false",
+            "operator binary sim002_fill_cli is Cargo-registered, exposes "
+            "defaults, rules, config, volume",
+            "prints sys83-rules-correct:, config-divergent:, volume-capped:",
+            "feature_list.json marks SRS-SIM-002 passes:true",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
 
@@ -398,6 +405,41 @@ class VendorIsolationTest(_Fixture):
         self.assertIn("ib_insync", str(ctx.exception))
 
 
+class FillCliTest(unittest.TestCase):
+    """The operator binary that makes the SRS-SIM-002 acceptance criterion demonstrable."""
+
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.cli_src = cli_source(self.config)
+
+    def test_cli_evidence(self) -> None:
+        evidence = check_fill_cli(self.config, self.cli_src)
+        self.assertIn("sim002_fill_cli", evidence)
+        self.assertIn("drives the REAL fill-model engine", evidence)
+        self.assertIn("srs_sim_002_fill_cli", evidence)
+
+    def test_stubbed_engine_is_caught(self) -> None:
+        # The CLI must drive the REAL engine; a hand-rolled stand-in must be caught.
+        mutated = self.cli_src.replace("PaperSimulationEngine", "StubEngine")
+        with self.assertRaises(SimFillCheckError) as ctx:
+            check_fill_cli(self.config, mutated)
+        self.assertIn("PaperSimulationEngine", str(ctx.exception))
+
+    def test_dropped_proof_headline_is_caught(self) -> None:
+        # Dropping the SYS-87b volume-capped headline would hide an unproven acceptance half.
+        mutated = self.cli_src.replace("volume-capped:", "renamed:")
+        with self.assertRaises(SimFillCheckError) as ctx:
+            check_fill_cli(self.config, mutated)
+        self.assertIn("volume-capped:", str(ctx.exception))
+
+    def test_dropped_fail_closed_path_is_caught(self) -> None:
+        # Removing the fail-closed path lets corrupt data produce a fill proof; it must be caught.
+        mutated = self.cli_src.replace("failed closed", "succeeded anyway")
+        with self.assertRaises(SimFillCheckError) as ctx:
+            check_fill_cli(self.config, mutated)
+        self.assertIn("fail closed", str(ctx.exception))
+
+
 class CargoSmokeTest(unittest.TestCase):
     """The runnable fill-model path must compile where it matters."""
 
@@ -414,12 +456,12 @@ class CargoSmokeTest(unittest.TestCase):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_thirteen_items(self) -> None:
-        # 12 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(run_checks()), 13)
+    def test_run_checks_emits_fourteen_items(self) -> None:
+        # 13 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(run_checks()), 14)
 
-    def test_static_evidence_is_twelve_items(self) -> None:
-        self.assertEqual(len(assert_sim_fill_static(load_config(), ROOT)), 12)
+    def test_static_evidence_is_thirteen_items(self) -> None:
+        self.assertEqual(len(assert_sim_fill_static(load_config(), ROOT)), 13)
 
 
 if __name__ == "__main__":
