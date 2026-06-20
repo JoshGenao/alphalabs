@@ -1,44 +1,108 @@
->>> NEXT TARGET (2026-06-20, after SESSION 65): SRS-ERR-001 PHASE-1 CLI SURFACE SHIPPED, STAYS
->>> passes:false. 84 features remain failing (UNCHANGED, 84 -> 84). This session did NOT close a
->>> feature -- it shipped the operator-demonstrable err001_error_envelope_cli over the REAL engine and,
->>> per operator pre-authorization, DEFERRED the flip when Codex surfaced a genuine scope gap that
->>> needs unbuilt work. Mirror of SESSION 60 (BT-005 benchmark CLI shipped, stayed passes:false).
->>> WHY DEFERRED (the honest scope finding): SRS-ERR-001 ("structured errors for failed order
->>> submissions"; AC type+message+original-order+SyRS-category WHEN APPLICABLE; verification = Contract
->>> test; traces SyRS SYS-64) -- the CLI now drives EVERY currently-implemented production
->>> StructuredOrderError construction site (route_order NotDesignated authority gate; submit_live_order
->>> paper-non-live / IB-unreachable / scheduled-restart / stale; OrderLedger duplicate-correlation
->>> SRS-EXE-008 'per SRS-ERR-001') and proves each carries the full envelope + reaches no broker. BUT
->>> SyRS SYS-64 (docs/SyRS_v0.7.md:349) ALSO names broker-side order-validation error types
->>> INVALID_SYMBOL / INSUFFICIENT_BUYING_POWER / RATE_LIMITED that are VOCABULARY-ONLY today (zero
->>> production construction sites -- verified by grep) and require the DEFERRED IB adapter (SRS-EXE-006)
->>> to be produced + contract-tested. SUBSCRIPTION_LIMIT_REACHED is SRS-MD-002's. SRS-ERR-001 flips to
->>> passes:true once SRS-EXE-006 broker-validation envelopes land.
->>> CADENCE: prep (7f927a9 SAFETY_PATH_RE +err001/error-envelope/structured-error/srs-err-001 -- the
->>> new bin/test paths matched NO existing token) + feat (a73249f the CLI surface, passes:false).
->>>   - WHAT'S SHIPPED (reusable): crates/atp-execution/src/bin/err001_error_envelope_cli.rs (std-only,
->>>     first [[bin]] in atp-execution) over the REAL ExecutionEngine::{submit_live_order, route_order}
->>>     + atp_types::OrderLedger::submit. Subcommands: categories (SYS-64 vocab total+stable,
->>>     all-categories-mapped:true), envelope (6 reject paths -> envelope-complete:true), no-broker
->>>     (6 paths, 0 broker calls -> no-ib-side-effect:true), authority (route_order designated/
->>>     non-designated registry -> authority-enforced:true). --inject authorized makes each reject-proof
->>>     subcommand fail closed (non-vacuity). L5 srs_err_001_error_envelope_cli (13) + L7
->>>     test_err001_error_cli (behavioral shell-outs + mutation non-vacuity + scope honesty) + L3
->>>     test_error_handling_contract (+ErrorCliTest) + tools/error_handling_check.py check_error_cli
->>>     (wired into _STATIC_CHECKS + cargo smoke). error_handling_check is init.sh-gated, NOT ci.yml.
->>>   - CODEX (4 ROUNDS, working-tree review via codex-companion.mjs adversarial-review; clause-4 dodge:
->>>     the prep critic_check.py edit was COMMITTED so the staged FEAT diff never includes it). Each
->>>     round I ADDRESSED the addressable finding: R1 route_order authority gate (added); R2 OrderLedger
->>>     duplicate-correlation (added, completing all StructuredOrderError sites); R3 scheduled-restart
->>>     connectivity state (added) + the SYS-64 broker-validation deferral (GENUINE, needs SRS-EXE-006);
->>>     R4 the SYS-64 finding DISAPPEARED once passes:false + honest defer wording landed, leaving only a
->>>     [medium] that check_error_cli is token-presence not AST -- the established repo-wide pattern (all
->>>     8 sibling check_*_cli), backed by the L5 behavioral integration test. OVERRIDE the [medium]; the
->>>     [high] genuine gap (SRS-EXE-006) is the recorded defer reason. NEVER faked APPROVE.
->>>   - NEXT closest-to-green: re-survey by each AC's OWN named contexts. SRS-ERR-001 reopens only when
->>>     SRS-EXE-006 (IB adapter) lands the broker-validation envelopes. Deferred owners stand:
->>>     SRS-EXE-006/EXE-001/EXE-002/EXE-009, SRS-API-001, SRS-UI, SRS-DATA-007/008, SRS-FAC-001,
->>>     SRS-SIM-004. The err001 CLI + check_error_cli are reusable when EXE-006 adds the categories.
+>>> NEXT TARGET (2026-06-20, after SESSION 66): FOUNDATIONAL kill-switch slice shipped -- the
+>>> paper-engine HALTED gate (SRS-SAFE-001 sub-component). 84 features remain failing (UNCHANGED,
+>>> 84 -> 84). This session did NOT close a feature: per the operator's "build a foundational
+>>> blocker" decision (AskUserQuestion), it built REAL safety-critical domain logic, NOT another
+>>> Phase-1 CLI surface.
+>>> WHY NO CLOSE: three independent surveys confirmed the single-context CLI-over-engine fruit is
+>>> EXHAUSTED -- every remaining failing feature names a genuinely-unbuilt surface (real provider
+>>> ingestion, IB adapter SRS-EXE-006, dashboard/REST SRS-API/SRS-UI, at-scale orchestration
+>>> SRS-EXE-002, Python strategy host, kill-switch execution, notifications). BT-004/BT-005/SIM-004/
+>>> ERR-001 are all Phase-1-only (would stay passes:false). So the operator chose foundational work.
+>>> WHAT SHIPPED: crates/atp-simulation/src/halt.rs -- HaltablePaperEngine, a SEALED halt gate over a
+>>> PRIVATE PaperSimulationEngine realizing SRS-SAFE-001's clause "paper simulation engines transition
+>>> to the HALTED state with no further on_fill callbacks emitted" (SyRS SYS-44a; NFR-P3/NFR-SC1; StRS
+>>> SN-1.11). Domain realization: a halted gate REFUSES to produce a PaperFill (HaltError::Halted), so
+>>> no fill exists to drive a callback (there is no callback runtime yet). halt is idempotent;
+>>> HaltTransition = SRS-LOG-001 groundwork (no wall-clock). SEALED = private field + no accessor /
+>>> Deref / into_inner + NOT Clone. SRS-SAFE-001 STAYS passes:false (foundational sub-component, not a
+>>> flip); the L7 actively pins it unflipped.
+>>> CADENCE: prep (d337b4c SAFETY_PATH_RE +/halt.rs/paper-halt/srs-safe-001) + feat (2c8e0c7 the gate +
+>>> L5/L7/L3 + tools/sim_halt_check.py wired into init.sh + paper_halt_contract). NO feature_list flip.
+>>>   - CODEX (2 rounds, working-tree via codex-companion.mjs): R1 needs-attention [critical] Clone-
+>>>     bypass (a cloned pre-halt gate stays Running and keeps filling) + [high] over-broad "un-
+>>>     bypassable" claim (bare PaperSimulationEngine stays pub). ADDRESSED BOTH: removed Clone +
+>>>     check_gate_not_clonable guard + L3/L7 tests; scoped the claim to a HELD gate and named
+>>>     SRS-EXE-002 system-routing as deferred. R2 APPROVE. Deterministic APPROVE both rounds.
+>>>   - DEFERRED owners of the rest of SRS-SAFE-001 (named in paper_halt_contract.deferred[]):
+>>>     SRS-EXE-006 (IB cancel/disconnect); SRS-EXE-002/SAFE-001 runtime (activation fan-out +
+>>>     liquidation + 5s NFR-P3 + system routing onto halt-aware engines); SRS-LOG-001 (1s HALTED
+>>>     observability); SRS-NOTIF-001 (email/SMS); SRS-API-001/SRS-UI (dashboard/CLI/REST trigger).
+>>>   - NEXT: still no clean green close exists. Either continue foundational blockers (the halt gate is
+>>>     a building block SRS-EXE-002 composes; SAFE-002/ERR-8 decision gate is already built in
+>>>     atp-execution but its AC needs real email/SMS + IB cancel = premature to flip) OR ship a Phase-1
+>>>     CLI surface (BT-004 metrics is cleanest). Confirm direction with the operator.
+
+=== SESSION 66 ===
+Date: 2026-06-20
+Feature: SRS-SAFE-001 -- kill switch (docs/SRS.md:244; SyRS SYS-44a; NFR-P3 / NFR-SC1; StRS SN-1.11).
+Built the paper-engine HALTED gate sub-component. STAYS passes:false. Status: 84 features remaining
+(84 -> 84, unchanged).
+
+SELECTION: operator chose "build a foundational blocker" (AskUserQuestion) AFTER I surfaced that the
+single-context CLI-over-engine fruit is exhausted -- no failing feature can be closed green this
+session (all 84 name an unbuilt surface). Picked the kill switch as most tractable (pure-domain
+enforcement core, deterministic, no live infra) and, within it, the one genuinely-unbuilt pure-domain
+piece: the paper-simulation engine HALTED state. (sim.rs simulate_fill is a pure stateless cost fn;
+lib.rs InternalSimulationEngine is a stub; there was no run-state / halt gate.)
+
+2-commit cadence (prep + feat; NO chore-flip -- feature stays passes:false):
+- PREP (d337b4c) chore(critic): SAFETY_PATH_RE +/halt.rs / paper-halt / halt-gate / haltable-paper /
+  paper-engine-state / sim-halt-check / srs-safe-001 (new files matched no existing token; needed so
+  the safety-paired tests/domain/ rule binds on the halt module + check script).
+- FEAT (2c8e0c7) the gate, passes:false:
+  * crates/atp-simulation/src/halt.rs (NEW, std-only): PaperEngineState{Running,Halted}, HaltReason
+    {KillSwitch}, HaltError{Halted,Sim}+From<SimError>, HaltTransition{reason,sequence}, HaltOutcome
+    {Transitioned,AlreadyHalted}, HaltablePaperEngine (PRIVATE engine field; NOT Clone). simulate_fill
+    gates on Halted BEFORE delegating; halt idempotent. + 9 in-module unit tests. lib.rs pub mod halt;.
+  * crates/atp-simulation/tests/srs_safe_001_paper_halt.rs (NEW, L5, 7 tests, the srs_safe_001_*
+    targets the L7 shells to).
+  * tests/domain/test_paper_halt_lifecycle.py (NEW, L7 safety, 14 tests): behavioral cargo shell-outs
+    + FULL-TOKEN mutation non-vacuity (public-field, into_inner, Clone-derive, gate halted-token,
+    idempotency arm, From<SimError>, no-broker, vendor) + scope pins (SAFE-001 stays passes:false;
+    deferred owners named).
+  * tests/test_paper_halt_contract.py (NEW, L3, 12 tests).
+  * tools/sim_halt_check.py (NEW) -> 'SRS-SAFE-001 HALT-GATE PASS' (sub-component wording, NOT a full
+    pass); wired into init.sh alongside the sibling sim checks.
+  * architecture/runtime_services.json#paper_halt_contract (NEW block + deferred[]).
+  * NO feature_list.json change (SRS-SAFE-001 stays passes:false).
+
+What I verified end to end:
+- ./init.sh -> "Environment ready" (new paper-engine halt-gate check gate green).
+- cargo test -p atp-simulation green (lib incl. 9 halt unit tests + L5 srs_safe_001_paper_halt 7 + all
+  siblings, no failures); pytest L3 (12) + L7 (14) green; python tools/sim_halt_check.py
+  --require-cargo PASS; architecture_check PASS (run under .venv -- the bare system python3 3.14 lacks
+  numpy, a PRE-EXISTING env quirk; init.sh uses .venv); clippy/rustfmt clean on new files (only the
+  PRE-EXISTING atp-types doc-list warnings remain).
+
+Critic verdicts:
+  deterministic: APPROVE -- 0 findings (pre-commit hook re-approved at 2c8e0c7).
+  judgment (/codex:adversarial-review, working-tree, 2 rounds): APPROVE.
+    R1 NEEDS-ATTENTION: [critical] Clone bypass -- HaltablePaperEngine derived Clone, so a cloned
+       pre-halt handle stays Running and keeps filling after the original is halted -> ADDRESSED
+       (removed the Clone derive; added check_gate_not_clonable + L3/L7 mutation tests proving a
+       re-added Clone is caught). [high] over-broad "un-bypassable" claim -- the bare
+       PaperSimulationEngine stays pub (backtests + SIM CLIs need it), so a caller can fill OUTSIDE the
+       gate -> ADDRESSED (scoped the claim to a HELD gate; named SRS-EXE-002 system-routing onto
+       halt-aware engines as a deferred owner in docs / contract / deferred[]).
+    R2 APPROVE -- no material findings. Recorded honestly; never faked APPROVE.
+
+Known issues / notes for next agent:
+- SRS-SAFE-001 STAYS passes:false. The halt gate is ONE sub-component; it reopens toward green when
+  SRS-EXE-002 composes it with the IB liquidation sequence (cancel resting orders, submit market
+  liquidations, disconnect) under the 5s NFR-P3 budget, plus SRS-LOG-001 1s observability,
+  SRS-NOTIF-001 email/SMS, and the SRS-API-001 / SRS-UI trigger. All named in
+  paper_halt_contract.deferred[].
+- The gate seals a HELD value, NOT the whole system: the bare PaperSimulationEngine stays a public
+  fill primitive (backtests + SIM-001/002/003 CLIs). Routing every non-live strategy onto a halt-aware
+  engine is SRS-EXE-002's job. Do NOT claim system-wide halt coverage from this slice.
+- SAFE-002 / ERR-8 (the 30s liquidation-timeout DECISION gate) is ALREADY built in
+  crates/atp-execution/src/lib.rs (resolve_kill_switch_timeout, with stub ports + contract +
+  kill_switch_timeout_check.py), but its AC names real email+SMS (SRS-NOTIF-001) + real IB
+  cancel/disconnect (SRS-EXE-006), so flipping it green now would be premature (the same trap as
+  ERR-001 / BT-005). It reopens when those runtimes land.
+- The closest-to-green well is DRY: every remaining failing feature names at least one unbuilt
+  surface. Next session either continues foundational blockers or ships a Phase-1 CLI surface (BT-004
+  metrics is cleanest); confirm the direction with the operator.
 
 === SESSION 65 ===
 Date: 2026-06-20
