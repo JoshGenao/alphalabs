@@ -1,61 +1,133 @@
->>> NEXT TARGET (2026-06-19): SRS-SIM-002 CLOSED GREEN (SESSION 63). 85 features remain failing
->>> (86 -> 85). SRS-SIM-002 is the SEVENTH green (after BT-009/BT-010/BT-002/BT-006/BT-003/SIM-003),
->>> the SECOND SIM-thread green, and the THIRD close of a prior-deferred "SDK-surface passes:false"
->>> slice (after BT-003, SIM-003).
->>> WHY IT FLIPPED (same refined test): SRS-SIM-002's AC is "Market, limit, stop, and stop-limit
->>> simulated fills follow SYS-83 defaults and per-strategy configuration; fill volume constraints are
->>> enforced" -- every named context is ALREADY BUILT in crates/atp-simulation/src/fill_model.rs:
->>> evaluate_fill over a MarketSnapshot + per-strategy FillModelConfig, the four SYS-83 order-type
->>> rules (market@ask/bid, limit-on-cross, stop-trigger-then-market, stop-limit-trigger-then-limit),
->>> the two behavior-changing LimitFillModel variants, and the SYS-87b BarVolumeBudget cap (single +
->>> aggregate). The "live market data" in the requirement STATEMENT is the MarketSnapshot input shape;
->>> the live FEED is SYS-70 (adjacent, unbuilt). The only gaps keeping passes:false were the operator
->>> CLI surface + an over-conservative deferral. Exact mirror of BT-003 / SIM-003.
->>> SELECTION: operator confirmed flip-to-green (AskUserQuestion #1) over Phase-1 / different-feature.
->>>   - WHAT'S SHIPPED (reusable next session): crates/atp-simulation/src/bin/sim002_fill_cli.rs
->>>     (std-only) over the REAL fill_model engine. `defaults` prints the SYS-83 default config
->>>     (immediate-on-cross) + resolves all four order types. `rules [--inject F]` proves each SYS-83
->>>     reference price (sys83-rules-correct:true, non-vacuous: each must fill at the predicted minor
->>>     price). `config [--inject F]` proves the two LimitFillModels diverge on a touch
->>>     (config-divergent:true, non-vacuous: decisions must differ). `volume [--qty N][--volume V]
->>>     [--inject F]` proves the SYS-87b cap single (min(requested,volume)) + aggregate (one
->>>     BarVolumeBudget across orders, capped second + zero-volume third) => volume-capped:true. Every
->>>     --inject (nonpositive-quote|crossed-book|negative-volume|zero-quantity|nonpositive-limit|
->>>     nonpositive-stop|budget-mismatch) returns its specific FillModelError BEFORE any fill decision,
->>>     exits non-zero, prints NO proof line; budget-mismatch additionally asserts the budget is
->>>     unconsumed. Parse non-vacuity: --qty must EXCEED --volume (single cap always a real partial),
->>>     --volume >= 2 (aggregate split + zero-volume tail). Driven by L5 srs_sim_002_fill_cli (16) + L7
->>>     tests/domain/test_sim002_fill_cli.py (11) + L3 test_sim_fill_contract.py (48) + tools/
->>>     sim_fill_check.py check_fill_cli. PREP COMMIT 6a082fc extended SAFETY_PATH_RE (sim002_fill_cli,
->>>     sim_fill_check, srs_sim_002); fill_model.rs / sim_fill_check.py were already covered by
->>>     fill[_-]?model / sim[_-]?fill. sim_fill_check is wired via init.sh, NOT ci.yml -> no CI-mirror.
->>>   - MONEY-MATH CRITIC GOTCHA (cost a re-stage): the deterministic critic's PRICE_FIELD_RE
->>>     (\bprice\b\s*[+\-*/]) FALSE-POSITIVES on hyphenated OUTPUT KEYS like `fill-price-minor` (reads
->>>     "price-" as subtraction) -- 8 WARNs on string literals, zero real arithmetic. FIX: renamed the
->>>     three price keys to underscore form (fill_price_minor / expected_fill_price_minor /
->>>     limit_price_minor) so \bprice\b has no word boundary (mirrors the Rust struct fields) -> clean
->>>     APPROVE. SIM-003 dodged this by having no hyphenated "price" key (it used average-cost-minor /
->>>     mark-minor). NEXT TIME: keep money-output keys underscore-joined around "price".
+>>> NEXT TARGET (2026-06-19): SRS-SIM-001 CLOSED GREEN (SESSION 64). 84 features remain failing
+>>> (85 -> 84). SRS-SIM-001 is the EIGHTH green (after BT-009/BT-010/BT-002/BT-006/BT-003/SIM-003/
+>>> SIM-002), the THIRD SIM-thread green, and the FOURTH close of a prior-deferred "SDK-surface
+>>> passes:false" slice (after BT-003, SIM-003, SIM-002).
+>>> WHY IT FLIPPED (same refined test): SRS-SIM-001's AC is "Market, limit, stop, stop-limit, equity,
+>>> option, and multi-leg orders are processed by the simulation engine and create no IB API order
+>>> calls" -- every named context is ALREADY BUILT in crates/atp-simulation/src/paper_order.rs:
+>>> accept_order over a PaperOrderRequest routes every OrderType (market/limit/stop/stop-limit) and
+>>> AssetClass (equity/option) to OrderRouting::InternalSimulation, a MultiLeg routes as one composite
+>>> (composite:true, SYS-4), and "no IB API order calls" is a COMPILE-TIME guarantee (OrderRouting has
+>>> a single InternalSimulation variant; atp-simulation depends on neither atp-execution nor
+>>> atp-adapters). The multi-leg gap an earlier Codex pass once flagged is now built + tested. The only
+>>> gap keeping passes:false was the operator CLI surface + two now-stale deferrals (SIM-002 fills,
+>>> SIM-003 ledger, both since closed green). Exact mirror of BT-003 / SIM-003 / SIM-002.
+>>> NO PREP COMMIT THIS SESSION (intentional, a no-op avoided): all 5 new SIM-001 paths
+>>> (sim001_paper_order_cli / srs_sim_001_paper_order_cli / sim_order_check / test_sim001_paper_order_cli
+>>> / paper_order.rs) ALREADY match the existing SAFETY_PATH_RE tokens paper[_-]?order / sim[_-]?order.
+>>> Unlike SIM-002 (whose 002_ infix defeated sim[_-]?fill and NEEDED a new token), SIM-001's bin name
+>>> contains the literal substring "paper_order" -> already covered. Cadence was clean feat + chore.
+>>> SELECTION: operator confirmed flip-to-green (AskUserQuestion #1) over different-feature; and
+>>> pre-authorized "Stand by the flip, record honestly" (AskUserQuestion #2) for the expected Codex
+>>> scope dispute.
+>>>   - WHAT'S SHIPPED (reusable next session): crates/atp-simulation/src/bin/sim001_paper_order_cli.rs
+>>>     (std-only) over the REAL accept_order engine. `types` routes every SYS-3 type internally
+>>>     (all-order-types-routed:true). `assets` routes equity+option internally
+>>>     (both-asset-classes-routed:true). `multileg` routes a 2-leg option spread as one composite
+>>>     (composite-routed:true, non-vacuous: composite + 2 legs + both options). `no-broker` sweeps
+>>>     24 order shapes and asserts EVERY routing is internal-simulation, broker:0 (no-ib-order-calls:
+>>>     true). Every --inject (empty-symbol|nonpositive-quantity|nonpositive-limit|nonpositive-stop|
+>>>     empty-multileg|single-leg-composite|non-option-composite-leg) returns its specific OrderError
+>>>     BEFORE routing, exits non-zero, prints NO proof line. Driven by L5 srs_sim_001_paper_order_cli
+>>>     (11) + L7 tests/domain/test_sim001_paper_order_cli.py (10) + L3 test_sim_order_contract.py
+>>>     PaperOrderCliTest (39 total) + tools/sim_order_check.py check_paper_order_cli. sim_order_check
+>>>     is wired via init.sh, NOT ci.yml -> no CI-mirror.
+>>>   - MUTATION-TEST GOTCHA (cost one re-run): check_*_cli verifies token PRESENCE (substring), so a
+>>>     mutation must FULLY remove the token -- replace PaperSimulationEngine->StubEngine /
+>>>     accept_order->fake_route (NOT prefix it: "Stubbed"+token still CONTAINS token as a substring, so
+>>>     the presence check still passes and the negative test does not fire). No money-output price KEYS
+>>>     in this CLI (routing proof, not money math), so the PRICE_FIELD_RE hyphen false-positive never bit.
 >>>   - CRITIC VERDICTS (honest): deterministic APPROVE (0 findings). Judgment
->>>     (/codex:adversarial-review --base 6a082fc) returned NEEDS-ATTENTION, one [high]: "SIM-002
->>>     marked passing without proving live market-data fill input (fixture quotes, not a mocked SYS-70
->>>     subscription)." This is a SCOPE-READING dispute (requirement statement "live market data" vs
->>>     the AC, which names no feed), NOT a code defect -- Codex found no bug in the fill logic, the
->>>     fail-closed paths, the money math, or the proofs. OVERRIDE (operator-authorized via
->>>     AskUserQuestion #2 "Stand by the flip"): the AC's four named contexts are all built + CLI-proven;
->>>     SYS-70 live feed is adjacent per the durable selection policy + the SIM-003/BT-003 precedent;
->>>     the feature's own Step 2 permits "fixtures, mocks, or operator controls"; Codex's recommended
->>>     fix (drive from a mocked subscription) presupposes the unbuilt SYS-70 boundary. Recorded as
->>>     needs-attention, NOT faked to APPROVE. This is the documented adversarial-loop-nonconvergence
->>>     pattern for runtime/data-heavy features -- expect it again on SIM-001/EXE; get authorization.
->>>   - NEXT closest-to-green candidate: SRS-SIM-001 (simulate paper orders locally without routing to
->>>     any brokerage) -- paper_order.rs intake + L5 srs_sim_001_paper_order_intake + the no-broker-
->>>     route crate-boundary guarantee ALL exist, and with SIM-002 (fills) + SIM-003 (ledger) now both
->>>     BUILT its deferred set has shrunk to SIM-004 / EXE-002 / Python host. RE-READ its AC's own
->>>     named contexts + confirm scope (same live-feed/Python-host contest will recur; get operator
->>>     authorization up front). SIM-004 stays Phase-1 (AC names the 60s/30s container-restart timer =
->>>     SRS-EXE-002 runtime). Deferred owners stand: SYS-70/SYS-87a/SYS-87c/SYS-83b-stochastic/
->>>     SRS-EXE-001/002/SRS-API-001/SRS-UI/SRS-DATA-007/008/SRS-FAC-001.
+>>>     (/codex:adversarial-review --base 63a96d5) returned NEEDS-ATTENTION, one [high]: "SIM-001 marked
+>>>     passing without proving paper-strategy order routing through the orchestrator/Python-host
+>>>     dispatch path." This is a SCOPE-READING dispute (the AC names order types/asset classes/multi-leg/
+>>>     no-IB-route, NOT the orchestrator or host), NOT a code defect -- Codex found no bug in the intake
+>>>     logic, the fail-closed paths, the compile-time no-broker guarantee, or the proofs. OVERRIDE
+>>>     (operator-authorized, AskUserQuestion #2 "Stand by the flip"): the orchestrator routing of all
+>>>     non-live strategies is SRS-EXE-002's AC; the Python host is the shared SRS-SDK deferral; Codex's
+>>>     fix (route through a stubbed orchestrator) presupposes the unbuilt SRS-EXE-002 boundary. Recorded
+>>>     as needs-attention, NOT faked to APPROVE. The documented adversarial-loop-nonconvergence pattern
+>>>     -- expect it again on SIM-004/EXE; get authorization up front.
+>>>   - NEXT closest-to-green candidate: re-survey. The SIM-thread intake/fill/ledger are now all green;
+>>>     SIM-004 (persistence) stays Phase-1 (AC names the 60s/30s container-restart timer = SRS-EXE-002
+>>>     runtime, genuinely unbuilt). Deferred owners stand: SYS-70/SYS-87a/SYS-87c/SYS-83b-stochastic/
+>>>     SRS-EXE-001/002/SRS-API-001/SRS-UI/SRS-DATA-007/008/SRS-FAC-001. Read each candidate's AC's OWN
+>>>     named contexts (the durable selection policy) before picking.
+
+=== SESSION 64 ===
+Date: 2026-06-19
+Feature completed: SRS-SIM-001 — simulate paper strategy orders locally without routing to any
+brokerage (docs/SRS.md SRS-5.7 SRS-SIM-001; SyRS SYS-82 / SYS-3 / SYS-4; StRS SN-1.29 / SN-1.08 /
+SN-1.24). AC: "Market, limit, stop, stop-limit, equity, option, and multi-leg orders are processed by
+the simulation engine and create no IB API order calls." NOW passes:true.
+Status: 84 features remaining (85 -> 84).
+
+SELECTION: operator confirmed flip-to-green (AskUserQuestion #1) — closest-to-green AND flippable: the
+paper_order.rs intake engine, the L5 srs_sim_001_paper_order_intake, the L3 contract + tools/
+sim_order_check.py, the L7 test_paper_order_no_broker_route.py, and the architecture sim_order_contract
+block ALL predated this session; the only gap was the operator-demonstrable CLI surface + two now-stale
+deferrals (SIM-002 fills, SIM-003 ledger, both since closed green). After Codex returned needs-attention
+on the orchestrator/Python-host scope, operator's pre-authorization (AskUserQuestion #2 "Stand by the
+flip, record honestly") stood.
+
+2-commit cadence (feat + chore; NO prep — see NEXT TARGET):
+- FEAT (f1bc8e8) the CLI surface + the flip:
+  * crates/atp-simulation/src/bin/sim001_paper_order_cli.rs (NEW, std-only) over the real engine; Cargo
+    [[bin]] registered. types / assets / multileg / no-broker (above).
+  * crates/atp-simulation/tests/srs_sim_001_paper_order_cli.rs (NEW, L5, 11 tests, CARGO_BIN_EXE fresh
+    processes — happy paths, every --inject fails closed, parse rejections, byte-identical determinism).
+  * tests/domain/test_sim001_paper_order_cli.py (NEW, L7 paired safety diff): behavioral shell-outs to
+    the L5 + structural non-vacuity (check_paper_order_cli mutation tests) + scope honesty.
+  * tests/test_sim_order_contract.py (L3): +PaperOrderCliTest + CLI/passes:true needles; static 10->11,
+    run 11->12; passes:false needle -> passes:true + assertNotIn passes:false; docstring updated.
+  * tools/sim_order_check.py: +cli_source +check_paper_order_cli wired into _STATIC_CHECKS; cargo smoke
+    now runs BOTH srs_sim_001_paper_order_intake AND srs_sim_001_paper_order_cli; _DEFERRED_OWNERS ->
+    _ADJACENT_FEATURES (SIM-002/SIM-003 flagged built/passes:true); footer + module docstring ->
+    passes:true.
+  * architecture/runtime_services.json#sim_order_contract: +order_cli sub-block; description tail flipped
+    to passes:true + "NOT contexts inside SRS-SIM-001's acceptance criterion"; deferred entries reframed
+    (SIM-002/SIM-003 built/passes:true, the rest adjacent).
+  * crates/atp-simulation/src/paper_order.rs: "What is real here vs deferred" docstring tail flipped
+    passes:false -> passes:true / CLI realized / adjacent-not-AC (proximity-windowed sweep: only this
+    status line was stale; the SDK-004/SIM-004/EXE-003 references to SIM-001 are feature-OWNERSHIP near
+    OTHER features' passes:false, left untouched).
+  * feature_list.json: SRS-SIM-001 passes:true + notes.
+- CHORE (this commit) record SESSION 64 + the NEXT-TARGET pointer.
+
+Critic verdicts:
+  deterministic: APPROVE — 0 findings (pre-commit hook re-approved at f1bc8e8).
+  judgment (/codex:adversarial-review --base 63a96d5, critic_prompt.md focus): NEEDS-ATTENTION, one
+    [high] — "SRS-SIM-001 marked passing without proving paper-strategy order routing through the
+    orchestrator/Python-host dispatch path." OVERRIDE (operator-authorized, AskUserQuestion #2 "Stand by
+    the flip"): this is a SCOPE-READING dispute (the AC names order types / asset classes / multi-leg /
+    no-IB-route, NOT the orchestrator or Python host), NOT a code defect — Codex found no bug in the
+    intake logic, the fail-closed paths, the COMPILE-TIME no-broker guarantee (single OrderRouting
+    variant + no broker crate dep), or the proofs. The orchestrator routing of all non-live strategies
+    is SRS-EXE-002's AC; the Python host is the shared SRS-SDK deferral; Codex's suggested fix (route
+    through a stubbed orchestrator) presupposes the unbuilt SRS-EXE-002 boundary. Recorded honestly as
+    needs-attention; never faked to APPROVE.
+
+What I verified end to end (operator, the 4 feature_list steps):
+- Step 1: ./init.sh -> "Environment ready" (the sim_order_check.py --require-cargo gate green).
+- Step 2/3: ran `types` (all-order-types-routed:true), `assets` (both-asset-classes-routed:true),
+  `multileg` (composite-routed:true, legs:2), `no-broker` (swept:24 internal-simulation:24 broker:0 ->
+  no-ib-order-calls:true); ran every --inject fault on each subcommand (all fail closed, exit 1, no
+  proof line); confirmed unknown subcommand|flag|fault + missing subcommand rejected; confirmed
+  byte-identical determinism across fresh processes.
+- Step 4: cargo test -p atp-simulation (lib 252 + srs_sim_001_paper_order_intake 6 + srs_sim_001_paper_
+  order_cli 11, all green) + full crate suite green; pytest tests/test_sim_order_contract.py (39) +
+  tests/domain/test_sim001_paper_order_cli.py (10) green; tools/sim_order_check.py --require-cargo PASS;
+  architecture_check PASS; clippy/rustfmt clean on new files.
+
+Known issues / notes for next agent:
+- SRS-SIM-001 passes:true is an operator-authorized flip over a Codex needs-attention SCOPE dispute (NOT
+  a defect). The orchestrator-dispatch + Python-host evidence Codex wanted belongs to SRS-EXE-002 /
+  SRS-SDK, not SIM-001's AC. Do not reopen.
+- The SIM-thread intake (001) / fills (002) / ledger (003) are all green now. SIM-004 (persistence)
+  stays Phase-1 — its AC names the 60s-persist / 30s-restore container timer = SRS-EXE-002 runtime.
+- Selection: re-survey closest-to-green by reading each candidate's AC's OWN named contexts (durable
+  policy). Expect the same orchestrator/host/feed Codex contest on the next runtime-heavy slice; get
+  operator authorization up front.
 
 === SESSION 63 ===
 Date: 2026-06-19
