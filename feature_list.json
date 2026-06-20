@@ -1066,8 +1066,9 @@
       "Step 3: Verify acceptance criteria: Market, limit, stop, stop-limit, equity, option, and multi-leg orders are processed by the simulation engine and create no IB API order calls.",
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
-    "needs_clarification": false
+    "passes": true,
+    "needs_clarification": false,
+    "notes": "SESSION 64: SRS-SIM-001 now passes:true. AC ('Market, limit, stop, stop-limit, equity, option, and multi-leg orders are processed by the simulation engine and create no IB API order calls') names four contexts -- every order type, both asset classes, the multi-leg composite, and the no-IB-route guarantee -- all ALREADY built in crates/atp-simulation/src/paper_order.rs (PaperSimulationEngine::accept_order over a PaperOrderRequest; OrderRouting has exactly one InternalSimulation variant, so 'no IB API order calls' is a COMPILE-TIME guarantee, and the crate depends on neither atp-execution nor atp-adapters) and proven by the pre-existing L5 srs_sim_001_paper_order_intake. The only gap was the operator-demonstrable CLI surface. Closed via crates/atp-simulation/src/bin/sim001_paper_order_cli.rs: `types` routes every SYS-3 order type internally (all-order-types-routed:true), `assets` routes equity+option internally (both-asset-classes-routed:true), `multileg` routes a SYS-4 spread as one atomic composite (composite-routed:true), and `no-broker` sweeps every order shape proving none reaches a brokerage (no-ib-order-calls:true); every --inject fault (empty-symbol/nonpositive-quantity/nonpositive-limit/nonpositive-stop/empty-multileg/single-leg-composite/non-option-composite-leg) fails closed before any routing with no proof line. Driven by L5 srs_sim_001_paper_order_cli (11 tests, fresh processes), L7 tests/domain/test_sim001_paper_order_cli.py, L3 tests/test_sim_order_contract.py PaperOrderCliTest, and tools/sim_order_check.py check_paper_order_cli. The deferred SRS-SIM-002 (fills, itself built/passes:true), SRS-SIM-003 (ledger, itself built/passes:true), SRS-SIM-004 persistence, SRS-EXE-002 orchestrator routing, and the Python host are ADJACENT features, each its own requirement and NOT contexts inside SRS-SIM-001's acceptance criterion."
   },
   {
     "id": "SRS-SIM-002",

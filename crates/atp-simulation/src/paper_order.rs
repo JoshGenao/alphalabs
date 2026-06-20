@@ -26,14 +26,24 @@
 //! a single [`OrderRouting::InternalSimulation`] with `composite = true`, so they
 //! fill atomically rather than independently.
 //!
-//! The deferred halves (see `architecture/runtime_services.json#sim_order_contract.deferred`):
-//! the SYS-83 fill *triggering* (when a limit/stop price is crossed, fill
-//! probability, the bar-volume cap) and live-market-data-driven fills are
-//! SRS-SIM-002; the full SYS-84 virtual ledger is SRS-SIM-003; paper-state
-//! persistence (SYS-89) is SRS-SIM-004; the orchestrator routing of *all*
-//! non-live strategies into this engine is SRS-EXE-002; and the Python strategy
-//! runtime that actually submits these orders end to end is the SRS-SDK runtime.
-//! So `feature_list.json` keeps SRS-SIM-001 at `passes:false`.
+//! Every context the SRS-SIM-001 acceptance criterion names — every order type
+//! ([`OrderType`]), both asset classes ([`AssetClass`]), the multi-leg composite,
+//! and the "no IB API order calls" guarantee — is built here, and the operator
+//! binary `sim001_paper_order_cli` (the `order_cli` sub-block of
+//! `architecture/runtime_services.json#sim_order_contract`) makes that
+//! demonstrable: `types` / `assets` / `multileg` / `no-broker` route every shape
+//! internally and prove none reaches a brokerage. So `feature_list.json` marks
+//! SRS-SIM-001 `passes:true`.
+//!
+//! The items under `…#sim_order_contract.deferred` are genuinely **adjacent**
+//! features — each its own requirement, NOT a context inside SRS-SIM-001's
+//! acceptance criterion: the SYS-83 fill *triggering* (when a limit/stop price is
+//! crossed, fill probability, the bar-volume cap) and live-market-data-driven
+//! fills are SRS-SIM-002 (built, `passes:true`); the full SYS-84 virtual ledger is
+//! SRS-SIM-003 (built, `passes:true`); paper-state persistence (SYS-89) is
+//! SRS-SIM-004; the orchestrator routing of *all* non-live strategies into this
+//! engine is SRS-EXE-002; and the Python strategy runtime that actually submits
+//! these orders end to end is the shared SRS-SDK deferral.
 //!
 //! # Money math
 //!

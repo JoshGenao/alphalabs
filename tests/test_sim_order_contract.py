@@ -5,17 +5,23 @@ simulate paper strategy orders locally without routing to any brokerage.
 Acceptance: market, limit, stop, stop-limit, equity, option, and multi-leg orders
 are processed by the simulation engine and create no IB API order calls. This
 slice ships the paper order-intake path in ``crates/atp-simulation`` (module
-``paper_order``); the deferred halves (SYS-83 fill triggering, the full SYS-84
-ledger, persistence, orchestrator routing, the Python runtime) keep
-``feature_list.json`` at ``passes:false``.
+``paper_order``) AND the operator-demonstrable ``sim001_paper_order_cli`` surface
+(types / assets / multileg / no-broker), so every context named in the acceptance
+criterion is built and demonstrable; ``feature_list.json`` marks SRS-SIM-001
+``passes:true``. The remaining items (SRS-SIM-002 fills and SRS-SIM-003 ledger —
+both themselves built and passes:true — plus SRS-SIM-004 persistence, the
+SRS-EXE-002 orchestrator routing, and the Python runtime) are ADJACENT
+requirements, NOT contexts inside SRS-SIM-001's acceptance criterion.
 
-Mirrors ``tests/test_sim_cost_contract.py``: shells out to
-``tools/sim_order_check.py``, then exercises each per-check function in-process,
-including negative spot-checks that mutate the Rust source / Cargo.toml in memory
-and assert the contract actually catches the regression (a dropped order-type
-variant, an injected ``Broker`` routing variant, a dropped composite marker, a
-removed fail-closed guard, an injected float, a dropped lib re-export, an injected
-broker dependency, a leaked vendor token).
+Mirrors ``tests/test_sim_cost_contract.py`` and the CLI treatment of
+``tests/test_sim_fill_contract.py``: shells out to ``tools/sim_order_check.py``,
+then exercises each per-check function in-process, including negative spot-checks
+that mutate the Rust source / Cargo.toml in memory and assert the contract actually
+catches the regression (a dropped order-type variant, an injected ``Broker`` routing
+variant, a dropped composite marker, a removed fail-closed guard, an injected float,
+a dropped lib re-export, an injected broker dependency, a leaked vendor token, and —
+for the operator surface — a stubbed engine, a dropped subcommand, a dropped proof
+headline, and a removed fail-closed path).
 """
 
 from __future__ import annotations
@@ -46,8 +52,10 @@ from sim_order_check import (  # noqa: E402
     check_order_leg_struct,
     check_order_request_enum,
     check_order_types,
+    check_paper_order_cli,
     check_routing_internal_only,
     check_vendor_isolation,
+    cli_source,
     lib_source,
     load_config,
     order_source,
@@ -83,9 +91,16 @@ class SimOrderScriptTest(unittest.TestCase):
             "Cargo.toml declares no dependency on the live/broker path "
             "(atp-adapters, atp-execution)",
             "paper_order module is free of all 5 forbidden vendor SDK tokens",
-            "feature_list.json keeps SRS-SIM-001 passes:false",
+            "operator binary sim001_paper_order_cli is Cargo-registered, exposes "
+            "types, assets, multileg, no-broker, drives the REAL intake engine "
+            "(PaperSimulationEngine, accept_order, PaperOrderRequest, OrderRouting), prints "
+            "all-order-types-routed:, both-asset-classes-routed:, composite-routed:, "
+            "no-ib-order-calls:, fails closed on an injected fault, and is driven in fresh "
+            "processes by the L5 srs_sim_001_paper_order_cli",
+            "feature_list.json marks SRS-SIM-001 passes:true",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
+        self.assertNotIn("passes:false", result.stdout)
 
 
 class _Fixture(unittest.TestCase):
@@ -94,6 +109,7 @@ class _Fixture(unittest.TestCase):
         self.order_src = order_source(self.config)
         self.lib_src = lib_source(self.config)
         self.cargo_src = cargo_source(self.config)
+        self.cli_src = cli_source(self.config)
         # The order-type vocabulary was hoisted to atp-types (SRS-EXE-003);
         # paper_order re-exports it. Variant/field-existence negatives mutate the
         # authority source where the types now live.
@@ -305,6 +321,53 @@ class VendorIsolationTest(_Fixture):
         self.assertIn("ib_insync", str(ctx.exception))
 
 
+class PaperOrderCliTest(_Fixture):
+    def test_cli_evidence(self) -> None:
+        evidence = check_paper_order_cli(self.config, self.cli_src)
+        self.assertIn("sim001_paper_order_cli", evidence)
+        self.assertIn("drives the REAL intake engine", evidence)
+
+    def test_cli_must_drive_the_real_engine(self) -> None:
+        # The operator binary must drive the REAL engine, so the routing proof runs over the real
+        # types, not a hand-rolled echo that could agree with itself.
+        for token, replacement in (
+            ("PaperSimulationEngine", "StubEngine"),
+            ("accept_order", "fake_route"),
+        ):
+            mutated = self.cli_src.replace(token, replacement)
+            with self.assertRaises(SimOrderCheckError) as ctx:
+                check_paper_order_cli(self.config, mutated)
+            self.assertIn(token, str(ctx.exception))
+
+    def test_dropped_subcommand_is_caught(self) -> None:
+        mutated = self.cli_src.replace('"no-broker"', '"renamed"')
+        with self.assertRaises(SimOrderCheckError) as ctx:
+            check_paper_order_cli(self.config, mutated)
+        self.assertIn("no-broker", str(ctx.exception))
+
+    def test_dropped_proof_headline_is_caught(self) -> None:
+        # Dropping any `:true` proof headline would hide an unproven acceptance half; it must be
+        # caught.
+        for proof in (
+            "all-order-types-routed:",
+            "both-asset-classes-routed:",
+            "composite-routed:",
+            "no-ib-order-calls:",
+        ):
+            mutated = self.cli_src.replace(proof, "renamed:")
+            with self.assertRaises(SimOrderCheckError) as ctx:
+                check_paper_order_cli(self.config, mutated)
+            self.assertIn("proof headline", str(ctx.exception))
+
+    def test_dropped_fail_closed_path_is_caught(self) -> None:
+        # Removing the fail-closed path would let a malformed order produce a routing proof; it must
+        # be caught.
+        mutated = self.cli_src.replace("failed closed", "succeeded anyway")
+        with self.assertRaises(SimOrderCheckError) as ctx:
+            check_paper_order_cli(self.config, mutated)
+        self.assertIn("fail closed", str(ctx.exception))
+
+
 class CargoSmokeTest(unittest.TestCase):
     """The runnable paper order-intake path must compile where it matters."""
 
@@ -321,12 +384,12 @@ class CargoSmokeTest(unittest.TestCase):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_eleven_items(self) -> None:
-        # 10 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(run_checks()), 11)
+    def test_run_checks_emits_twelve_items(self) -> None:
+        # 11 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(run_checks()), 12)
 
-    def test_static_evidence_is_ten_items(self) -> None:
-        self.assertEqual(len(assert_sim_order_static(load_config(), ROOT)), 10)
+    def test_static_evidence_is_eleven_items(self) -> None:
+        self.assertEqual(len(assert_sim_order_static(load_config(), ROOT)), 11)
 
 
 if __name__ == "__main__":

@@ -65,6 +65,15 @@ path = "src/bin/sim003_ledger_cli.rs"
 name = "sim002_fill_cli"
 path = "src/bin/sim002_fill_cli.rs"
 
+# SRS-SIM-001 paper order-intake operator CLI: "simulate paper strategy orders locally without routing
+# to any brokerage". A thin binary over the public paper_order API (PaperSimulationEngine::accept_order
+# over a PaperOrderRequest) — proves every SYS-3 order type and asset class routes to the internal
+# simulation engine, a SYS-4 multi-leg order routes as one composite, and no order reaches a brokerage
+# (no Python<->Rust bridge).
+[[bin]]
+name = "sim001_paper_order_cli"
+path = "src/bin/sim001_paper_order_cli.rs"
+
 [dependencies]
 atp-strategy-engine = { path = "../atp-strategy-engine" }
 atp-types = { path = "../atp-types" }

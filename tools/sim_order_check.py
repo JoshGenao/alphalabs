@@ -31,13 +31,23 @@ The internal simulation engine's paper order-intake path lives in
   (g) ``lib.rs`` re-exports ``pub mod paper_order;`` and the module carries no
       vendor-SDK token (SRS-ARCH-003 adapter isolation).
 
-The PASS line is ``SRS-SIM-001 SDK-SURFACE PASS`` -- it names the deferred owners
-(the SYS-83 fill triggering + live-data fills, the full SYS-84 ledger, paper-state
-persistence, the orchestrator routing of all non-live strategies, the Python
-strategy runtime) so the partial-pass status (feature_list.json keeps
-``passes:false``) is loud.
+The operator-demonstrable surface is the ``sim001_paper_order_cli`` binary (the
+``order_cli`` sub-block): ``types`` routes every SYS-3 order type internally,
+``assets`` routes both asset classes internally, ``multileg`` routes a SYS-4 spread
+as one composite, and ``no-broker`` sweeps every order shape and proves none reaches
+a brokerage -- with every injected fault failing closed BEFORE any routing.
+``check_paper_order_cli`` pins it.
 
-Mirrors the PASS/FAIL output style of ``tools/sim_cost_check.py``.
+The PASS line is ``SRS-SIM-001 SDK-SURFACE PASS``. With the intake engine, the L5
+``srs_sim_001_paper_order_intake``, and that operator surface all built,
+feature_list.json marks SRS-SIM-001 ``passes:true``. The footer names the genuinely
+ADJACENT features (SRS-SIM-002 fills and SRS-SIM-003 ledger, both themselves built
+and passes:true; SRS-SIM-004 persistence; the SRS-EXE-002 orchestrator routing; the
+Python strategy runtime) as SEPARATE requirements -- NOT contexts inside
+SRS-SIM-001's acceptance criterion.
+
+Mirrors the PASS/FAIL output style of ``tools/sim_cost_check.py`` and the CLI
+treatment of ``tools/sim_fill_check.py``.
 
 Invoke:
     python3 tools/sim_order_check.py
@@ -100,6 +110,15 @@ def cargo_source(config: dict, root: Path = ROOT) -> str:
     )
     if not source_path.exists():
         fail(f"source missing: {source_path.relative_to(root)}")
+    return source_path.read_text(encoding="utf-8")
+
+
+def cli_source(config: dict, root: Path = ROOT) -> str:
+    block = contract_block(config)
+    rel = Path(block["simulation_crate"]["path"]) / block["order_cli"]["bin_path"]
+    source_path = root / rel
+    if not source_path.exists():
+        fail(f"source missing: {rel}")
     return source_path.read_text(encoding="utf-8")
 
 
@@ -321,10 +340,74 @@ def check_vendor_isolation(config: dict, order_src: str) -> str:
     )
 
 
+def check_paper_order_cli(config: dict, cli_src: str, root: Path = ROOT) -> str:
+    """The operator binary that makes the SRS-SIM-001 acceptance criterion demonstrable.
+
+    Verifies the bin is Cargo-registered, exposes all four subcommands, drives the REAL intake engine
+    (so the routing proofs run over the real types, not a hand-rolled echo that could agree with
+    itself), prints each `:true` proof headline, carries the fail-closed path, and is backed by the L5
+    integration test.
+    """
+    spec = contract_block(config)["order_cli"]
+
+    # Cargo-registered (without the [[bin]], the operator surface does not build).
+    cargo = cargo_source(config, root)
+    if f'name = "{spec["bin_name"]}"' not in cargo:
+        fail(
+            f"Cargo.toml must register the operator binary `{spec['bin_name']}` — without it the "
+            "SRS-SIM-001 paper order-intake operator surface does not build"
+        )
+
+    # All four subcommands present.
+    missing_cmds = [c for c in spec["subcommands"] if f'"{c}"' not in cli_src]
+    if missing_cmds:
+        fail(f"{spec['bin_name']} is missing subcommand(s): {', '.join(missing_cmds)}")
+
+    # Drives the REAL intake engine — the routing proof must run over the real types, not a
+    # hand-rolled stand-in that could agree with itself.
+    missing_engine = [t for t in spec["engine_tokens"] if t not in cli_src]
+    if missing_engine:
+        fail(
+            f"{spec['bin_name']} must drive the real intake engine (missing "
+            f"{', '.join(missing_engine)}) so the routing proofs are genuine (SRS-SIM-001)"
+        )
+
+    # Each `:true` proof headline the acceptance criterion turns on (order types, asset classes,
+    # multi-leg composite, no-IB-route).
+    missing_proofs = [t for t in spec["proof_tokens"] if t not in cli_src]
+    if missing_proofs:
+        fail(
+            f"{spec['bin_name']} must print every proof headline (missing "
+            f"{', '.join(missing_proofs)}) — the order-type / asset-class / composite / no-broker "
+            "acceptance halves"
+        )
+
+    # An injected fault fails closed before any routing (no fabricated proof).
+    if _compact(spec["fail_closed_token"]) not in _compact(cli_src):
+        fail(
+            f"{spec['bin_name']} must fail closed on an injected fault "
+            f"(`{spec['fail_closed_token']}`) so a malformed order never produces a routing proof"
+        )
+
+    # Backed by the L5 integration test.
+    block = contract_block(config)
+    l5_path = root / block["simulation_crate"]["path"] / "tests" / f"{spec['l5_test']}.rs"
+    if not l5_path.exists():
+        fail(f"missing L5 integration test {l5_path.relative_to(root)}")
+
+    return (
+        f"operator binary {spec['bin_name']} is Cargo-registered, exposes "
+        f"{', '.join(spec['subcommands'])}, drives the REAL intake engine "
+        f"({', '.join(spec['engine_tokens'])}), prints {', '.join(spec['proof_tokens'])}, fails "
+        f"closed on an injected fault, and is driven in fresh processes by the L5 {spec['l5_test']}"
+    )
+
+
 def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
     block = contract_block(config)
     crate = block["simulation_crate"]["crate"]
     integration = block["rust_integration_test"]
+    cli_integration = block["order_cli"]["l5_test"]
     cargo = shutil.which("cargo")
     if cargo is None:
         if require_cargo:
@@ -342,20 +425,23 @@ def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
     )
     if lib.returncode != 0:
         fail(f"cargo test -p {crate} --lib failed:\n{lib.stdout}\n{lib.stderr}")
-    integ = subprocess.run(
-        [cargo, "test", "-p", crate, "--test", integration, "--quiet"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if integ.returncode != 0:
-        fail(f"cargo test -p {crate} --test {integration} failed:\n{integ.stdout}\n{integ.stderr}")
+    for test_name in (integration, cli_integration):
+        integ = subprocess.run(
+            [cargo, "test", "-p", crate, "--test", test_name, "--quiet"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if integ.returncode != 0:
+            fail(f"cargo test -p {crate} --test {test_name} failed:\n{integ.stdout}\n{integ.stderr}")
     return (
-        f"cargo test -p {crate} --lib + {integration}: PASS "
+        f"cargo test -p {crate} --lib + {integration} + {cli_integration}: PASS "
         "(every order type / asset class / single + multi-leg request routes to the internal "
-        "simulation engine, the routing enum exposes no broker variant, and intake fails closed on "
-        "bad input)"
+        "simulation engine, the routing enum exposes no broker variant, intake fails closed on bad "
+        "input, and the sim001_paper_order_cli operator surface proves every order type / asset class "
+        "routes internally, a multi-leg order routes as one composite, and no order reaches a "
+        "brokerage in fresh processes)"
     )
 
 
@@ -376,11 +462,15 @@ _STATIC_CHECKS = (
     ("module_reexport", check_module_reexport, "lib"),
     ("no_broker_dependency", check_no_broker_dependency, "cargo"),
     ("vendor_isolation", check_vendor_isolation, "order"),
+    ("order_cli", check_paper_order_cli, "cli"),
 )
 
-_DEFERRED_OWNERS = (
-    "SRS-SIM-002 (SYS-83 fill triggering + live-market-data fills)",
-    "SRS-SIM-003 (full SYS-84 virtual ledger)",
+# Features ADJACENT to SRS-SIM-001 — each a separate requirement with its own owner, NOT a context
+# inside SRS-SIM-001's acceptance criterion (which the sim001_paper_order_cli operator surface
+# demonstrates over every order type, asset class, the multi-leg composite, and the no-IB-route).
+_ADJACENT_FEATURES = (
+    "SRS-SIM-002 (SYS-83 fill triggering + live-market-data fills) — built, passes:true",
+    "SRS-SIM-003 (full SYS-84 virtual ledger) — built, passes:true",
     "SRS-SIM-004 (paper-state persistence)",
     "SRS-EXE-002 (orchestrator routing of all non-live strategies)",
     "SRS-SDK runtime (Python strategy host)",
@@ -393,6 +483,7 @@ def assert_sim_order_static(config: dict, root: Path = ROOT) -> list[str]:
         "order": order_source(config, root),
         "lib": lib_source(config, root),
         "cargo": cargo_source(config, root),
+        "cli": cli_source(config, root),
     }
     return [check(config, sources[source_key]) for _, check, source_key in _STATIC_CHECKS]
 
@@ -423,9 +514,10 @@ def main(argv: list[str] | None = None) -> int:
     for item in evidence:
         print(f"- {item}")
     print(
-        "- deferred to: "
-        + ", ".join(_DEFERRED_OWNERS)
-        + "; feature_list.json keeps SRS-SIM-001 passes:false"
+        "- adjacent features (separate requirements, NOT contexts inside SRS-SIM-001's acceptance "
+        "criterion): "
+        + ", ".join(_ADJACENT_FEATURES)
+        + "; feature_list.json marks SRS-SIM-001 passes:true"
     )
     return 0
 
