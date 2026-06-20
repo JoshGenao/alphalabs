@@ -256,7 +256,9 @@ SAFETY_PATH_RE = re.compile(
     r"|/order_type\.rs|order[_-]?type|srs[_-]?exe[_-]?003"
     r"|/order_routing\.rs|order[_-]?routing|srs[_-]?exe[_-]?002"
     r"|err001|error[_-]?envelope|error[_-]?handling[_-]?cli|structured[_-]?error"
-    r"|srs[_-]?err[_-]?001)",
+    r"|srs[_-]?err[_-]?001"
+    r"|/halt\.rs|paper[_-]?halt|halt[_-]?gate|haltable[_-]?paper"
+    r"|paper[_-]?engine[_-]?state|sim[_-]?halt[_-]?check|srs[_-]?safe[_-]?001)",
     re.IGNORECASE,
 )
 
