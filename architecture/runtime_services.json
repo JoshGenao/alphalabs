@@ -4999,6 +4999,138 @@
       }
     ]
   },
+  "paper_halt_contract": {
+    "description": "SRS-SAFE-001 paper-engine HALTED gate sub-component (SyRS SYS-44a; NFR-P3; NFR-SC1; StRS SN-1.11). The kill switch's acceptance criterion includes: 'paper simulation engines transition to the HALTED state with no further on_fill callbacks emitted'. This slice ships ONE named sub-component of that clause: the per-engine Running -> Halted transition and the refuse-to-fill gate, in crates/atp-simulation (module `halt`), std-only and in-crate (no new dependency). DOMAIN-LEVEL REALIZATION (honest scope): there is no callback-emitting runtime loop and no Python strategy host yet, so 'no further on_fill callbacks emitted' is realized at the domain level -- a HALTED HaltablePaperEngine refuses to PRODUCE a sim::PaperFill (HaltablePaperEngine::simulate_fill returns HaltError::Halted with no fill value), so no fill exists to drive an on_fill callback. The inner sim::PaperSimulationEngine::simulate_fill stays a pure, stateless, deterministic cost path and is NOT modified. SEALED GATE (and its honest limit): HaltablePaperEngine owns a PRIVATE PaperSimulationEngine (the `engine` field is not pub, there is no accessor returning &PaperSimulationEngine, no Deref, no into_inner) AND the gate is not Clone (a clone would be an independent value whose own state could stay Running after the original is halted, so a pre-halt copy could keep filling -- the exact bypass the gate prevents). So for a given gate VALUE the only path to a paper fill is the gate's own simulate_fill, which matches on the run state first: PaperEngineState::Halted returns HaltError::Halted BEFORE touching the inner engine, while PaperEngineState::Running delegates to self.engine.simulate_fill and maps a fill-native SimError to HaltError::Sim UNCHANGED (the gate never masks a fill error while Running). This seals a HELD gate, NOT the whole system: the bare PaperSimulationEngine stays a public fill primitive (backtests, the SRS-SIM-001/002/003 operator CLIs, and the SRS-SIM-003 virtual-ledger path construct and drive it directly), so a caller can still build a bare engine and fill OUTSIDE the gate; guaranteeing every non-live strategy is HOSTED on a halt-aware engine (so a kill switch reaches all of them) is the Strategy Orchestrator's routing job (SRS-EXE-002), deferred -- this slice provides the per-engine sealed-halt primitive that orchestrator will compose. simulate_fill is &self (it only READS state to decide), so a fill never mutates the engine and the path stays deterministic. IDEMPOTENT HALT: halt(reason) is &mut self; the first call flips the state to Halted, records a HaltTransition with a monotonic sequence (starts at 1; no wall-clock time), and returns HaltOutcome::Transitioned; any later call is a no-op returning HaltOutcome::AlreadyHalted that leaves the state Halted and the recorded transition (sequence + reason) untouched. HaltReason is intentionally a closed set (KillSwitch only -- no speculative variants). HaltTransition (reason + sequence) is the in-memory groundwork for SRS-LOG-001 observability and carries NO wall-clock time, so it makes no latency claim. HaltError composes the fill-native SimError via `impl From<SimError> for HaltError`, exactly as SimError composes CostError. The Rust integration test srs_safe_001_paper_halt drives the gate end to end (running fills identically to the bare engine; a halted engine produces no fill for buy/sell/spread orders; halt is idempotent; the transition is observable; the gate does not mask fill-native errors; the same order fills then is refused across the transition; determinism across identical sequences). The PASS line is 'SRS-SAFE-001 HALT-GATE PASS' -- a SUB-COMPONENT pass, NOT a full/SDK-SURFACE pass. feature_list.json keeps SRS-SAFE-001 passes:false: this is one named sub-component and the full QuantConnect-Liquidate sequence is genuinely unbuilt and owned elsewhere (see deferred[]).",
+    "requirement": "SRS-SAFE-001",
+    "srs_refs": [
+      "SRS-SAFE-001"
+    ],
+    "syrs_refs": [
+      "SYS-44a"
+    ],
+    "strs_refs": [
+      "SN-1.11"
+    ],
+    "ac_traces": [
+      "SRS-SAFE-001",
+      "SYS-44a"
+    ],
+    "simulation_crate": {
+      "crate": "atp-simulation",
+      "path": "crates/atp-simulation"
+    },
+    "halt_module": "halt",
+    "state_enum": {
+      "enum": "PaperEngineState",
+      "variants": [
+        "Running",
+        "Halted"
+      ]
+    },
+    "reason_enum": {
+      "enum": "HaltReason",
+      "variants": [
+        "KillSwitch"
+      ]
+    },
+    "halt_error_enum": {
+      "enum": "HaltError",
+      "variants": [
+        "Halted",
+        "Sim"
+      ],
+      "from_simerror_token": "impl From<SimError> for HaltError"
+    },
+    "outcome_enum": {
+      "enum": "HaltOutcome",
+      "variants": [
+        "Transitioned",
+        "AlreadyHalted"
+      ]
+    },
+    "transition_struct": {
+      "struct": "HaltTransition",
+      "fields": [
+        "reason",
+        "sequence"
+      ]
+    },
+    "gate_struct": {
+      "struct": "HaltablePaperEngine",
+      "engine_field_token": "engine: PaperSimulationEngine",
+      "forbidden_pub_tokens": [
+        "pub engine",
+        "pub(crate) engine"
+      ],
+      "forbidden_accessor_tokens": [
+        "fn engine(&self) -> &PaperSimulationEngine",
+        "fn into_inner",
+        "impl Deref"
+      ],
+      "forbidden_derive_token": "Clone",
+      "state_field": "state"
+    },
+    "simulate_fill_gate": {
+      "fn": "simulate_fill",
+      "halted_guard_token": "HaltError::Halted",
+      "delegate_token": "self.engine.simulate_fill",
+      "return_type_token": "Result<PaperFill, HaltError>"
+    },
+    "halt_fn": {
+      "fn": "halt",
+      "transition_token": "HaltOutcome::Transitioned",
+      "idempotent_token": "HaltOutcome::AlreadyHalted",
+      "record_token": "HaltTransition"
+    },
+    "module_reexport": {
+      "lib_reexport_token": "pub mod halt;"
+    },
+    "no_broker_dependency": {
+      "cargo_toml": "Cargo.toml",
+      "forbidden_dep_tokens": [
+        "atp-adapters",
+        "atp-execution"
+      ]
+    },
+    "rust_integration_test": "srs_safe_001_paper_halt",
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "deferred": [
+      {
+        "feature": "IB resting-order cancel + Gateway disconnect (SRS-EXE-006)",
+        "what": "Cancelling all resting IB orders for the live strategy and disconnecting from IB Gateway after liquidation is the SRS-EXE-006 brokerage adapter. This slice is the paper-engine half only and imports no broker/adapter/live type."
+      },
+      {
+        "feature": "Kill-switch activation orchestration + 5s NFR-P3 budget (SRS-EXE-002 / SAFE-001 runtime)",
+        "what": "The operator-triggered activation that fans the halt out to every paper engine, submits market liquidation orders for every open live position, and meets the 5-second NFR-P3 cancellation/submission budget is the SRS-EXE-002 orchestrator + the SRS-SAFE-001 runtime. This gate is one engine's state transition with no wall-clock budget."
+      },
+      {
+        "feature": "System-wide routing of all paper strategies onto halt-aware engines (SRS-EXE-002)",
+        "what": "This slice seals a HELD gate -- once you hold a halted HaltablePaperEngine you cannot get a fill from it (private inner engine, no accessor/Deref/into_inner, not Clone). It does NOT make every paper fill in the system flow through the gate: the bare PaperSimulationEngine stays a public fill primitive used by backtests and the SRS-SIM-001/002/003 CLIs, so a caller can fill outside the gate. Guaranteeing every non-live strategy is HOSTED on a halt-aware engine (so a kill switch reaches all of them) is the Strategy Orchestrator's routing responsibility (SRS-EXE-002), deferred."
+      },
+      {
+        "feature": "SRS-LOG-001 1-second HALTED observability",
+        "what": "HaltTransition is the in-memory groundwork (reason + monotonic sequence); emitting it to the persistent, queryable log store within 1 second of activation (SYS-61 / SRS-LOG-001) needs the deferred runtime + log sink. No latency SLA is claimed here."
+      },
+      {
+        "feature": "Operator notification email/SMS (SRS-NOTIF-001 / SRS-SAFE-002)",
+        "what": "Email and SMS on kill-switch / liquidation-timeout events (SYS-44b, SYS-46) is SRS-NOTIF-001 and the SRS-SAFE-002 timeout path. The gate dispatches nothing."
+      },
+      {
+        "feature": "Dashboard / CLI / REST kill-switch trigger (SRS-API-001 / SRS-UI)",
+        "what": "The operator trigger surface accessible from dashboard, CLI, and REST API (SYS-44a; UI-4; API-4) is SRS-API-001 / SRS-UI. This slice exposes halt() as a Rust-core method only."
+      },
+      {
+        "feature": "on_fill callback runtime + Python strategy host (SRS-SDK / SRS-EXE-002)",
+        "what": "There is no callback-emitting loop or Python strategy host yet, so 'no further on_fill callbacks' is realized by refusing to PRODUCE a fill. The simulated-callback dispatcher (SYS-84/SYS-85 paper callbacks) and the Python runtime are separate deferred requirements; this gate guarantees the upstream condition (no fill) that makes a downstream callback impossible."
+      }
+    ]
+  },
   "sim_persistence_contract": {
     "description": "SRS-SIM-004 (persist paper strategy simulation state; SyRS SYS-89; StRS SN-1.29 / SN-2.05). The internal simulation engine's paper-state persistence path lives in crates/atp-simulation (module `paper_state`) and consumes the SRS-SIM-003 VirtualLedgerBook without any new dependency (no serde): money stays integer minor units (i64 quantity, i128 money) with no f64. A PaperStateSnapshot is a versioned envelope holding schema_version (i64), the PersistenceConfig in force, and a clone of the VirtualLedgerBook. SYS-89 names four sub-states (virtual position ledger, pending simulated orders, accumulated metrics, and the user-state dictionary), but only the virtual ledger has a runtime type today, so the snapshot captures the FULL ledger (every strategy, every symbol, all six VirtualPosition fields) and reserves three forward-compatible, always-empty slots for the other three sub-states; deserialize fails closed (PersistenceError::UnsupportedSection) on a non-zero reserved-slot count rather than silently dropping data a v1 reader has no type to restore. PersistenceConfig carries the SYS-89 cadence: interval_secs (u64, default DEFAULT_INTERVAL_SECS = 60), restore_deadline_secs (u64, default DEFAULT_RESTORE_DEADLINE_SECS = 30), and persist_on_shutdown (bool). PersistenceConfig::new takes only the interval and the restore deadline (NOT a shutdown flag) and fails closed on a cadence that cannot meet SYS-89: a zero-second interval or restore deadline (PersistenceError::NonPositiveConfig), and a restore deadline ABOVE the 30s ceiling (PersistenceError::RestoreDeadlineTooLong), so the config CANNOT encode an SLA slower than the 30 seconds the requirement mandates (an operator may only tighten it). The persist interval has no upper ceiling because SYS-89 makes 60s the default, not a maximum, so a longer cadence is a permitted operator trade-off. Shutdown persistence is MANDATORY: SYS-89 requires state to be persisted at the interval AND on container shutdown, so persist_on_shutdown is always true and the caller cannot disable it; a snapshot that encodes shutdown persistence as disabled is out of contract and rejected on restore (PersistenceError::ShutdownPersistenceRequired). The serializer is DETERMINISTIC: HashMap iteration order is unspecified, so serialize sorts strategies by id (StrategyId is not Ord, so by as_str()) and positions by canonical symbol before emitting, so the same state always serializes to byte-identical output (an unchanged 60s checkpoint never churns). The codec is hand-rolled and dependency-free: integers are decimal lines and variable-length strings are length-prefixed (value.len().to_string()), so a canonical symbol containing spaces (an OCC option contract such as 'AAPL  240119C00190000') round-trips losslessly. The serialized frame is the MAGIC line, a 64-bit FNV-1a integrity checksum over the body, then the body; deserialize verifies the checksum BEFORE building any state, so a structurally-valid byte change (a tampered-but-sign-consistent quantity/basis pair, a flipped digit, truncation, or appended bytes) fails closed with PersistenceError::ChecksumMismatch under fault injection rather than restoring fabricated positions or P&L. The checksum is a non-cryptographic integrity guard for ACCIDENTAL corruption (the SYS-89 fault-injection criterion), not a security MAC -- defending against a deliberate tamperer who can recompute the checksum needs a keyed MAC and key management, which is out of scope for the single-user, local-only release baseline (no multi-user auth per the system constraints). capture() builds a snapshot at SCHEMA_VERSION; serialize() emits the text; deserialize() parses it back; restore() is the convenience round-trip restore(serialized) = PaperStateSnapshot::deserialize(serialized).map(PaperStateSnapshot::into_book), so restore(serialize(capture(book))) == book exactly (quantity, signed cost basis, realized P&L, and every cost component survive, including a FLAT fully-closed position that still carries realized P&L and commission). deserialize is fail-closed and atomic: it validates the magic header (MAGIC = 'ATP-PAPER-STATE') and the schema version (a foreign blob or unknown version is rejected, not mis-read: PersistenceError::CorruptSnapshot / UnknownSchemaVersion), validates the config, validates every position field invariant BEFORE the position is built (cost components non-negative; the quantity/basis biconditional (quantity == 0) iff (cost_basis_minor == 0); sign agreement between a non-flat quantity and its basis; a canonical, non-empty symbol; a non-empty strategy id; no duplicate strategy id or duplicate symbol within a strategy: PersistenceError::InconsistentField / DuplicateRecord), and requires the cursor to be exhausted at the end (trailing bytes are corrupt). It builds the whole VirtualLedgerBook in a local and returns it only on full success, so a corrupt, truncated, or tampered snapshot returns an Err and yields NO partially-restored book (never a phantom strategy or symbol). paper_state adds no broker/adapter/live-position dependency and carries no vendor SDK token, so persisted paper state is structurally independent of the IB account (the SYS-84 isolation property holds through persistence too). The Rust integration test srs_sim_004_paper_state drives capture/serialize/restore end to end from real simulate_fill output. The PASS line is 'SRS-SIM-004 SDK-SURFACE PASS'; feature_list.json keeps SRS-SIM-004 passes:false because the live 60s persistence timer firing inside a running container and a real restart restoring within 30s need the SRS-EXE-002 orchestrator wiring and the SYS-89 container lifecycle, the pending_orders slot needs a paper-order pending store (SRS-SIM-001 / SRS-SIM-002 own no such store yet), the metrics slot needs the SYS-85 / SRS-BT-004 paper metric family, and the user_state slot needs the Python strategy runtime.",
     "requirement": "SRS-SIM-004",

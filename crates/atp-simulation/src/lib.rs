@@ -22,6 +22,24 @@ pub mod cost;
 /// so SRS-BT-003 is `passes:true`.
 pub mod sim;
 
+/// The paper-engine HALTED lifecycle gate (SRS-SAFE-001 / SyRS SYS-44a; StRS SN-1.11). The kill
+/// switch's acceptance criterion requires that "paper simulation engines transition to the HALTED
+/// state with no further `on_fill` callbacks emitted". [`halt::HaltablePaperEngine`] owns a PRIVATE
+/// [`sim::PaperSimulationEngine`] behind a sealed gate (private field, no accessor / Deref /
+/// into_inner, not Clone): while Running it delegates fills
+/// unchanged; once [`halt::HaltablePaperEngine::halt`] flips it to [`halt::PaperEngineState::Halted`]
+/// (idempotently), [`halt::HaltablePaperEngine::simulate_fill`] refuses to PRODUCE a
+/// [`sim::PaperFill`] and returns [`halt::HaltError::Halted`] — so no fill exists to drive an
+/// `on_fill` callback (the domain-level realization, there is no callback runtime yet). The bare
+/// [`sim::PaperSimulationEngine`] stays a public fill primitive, so this seals a HELD gate, not the
+/// whole system; routing every non-live strategy onto a halt-aware engine is the deferred
+/// SRS-EXE-002 orchestrator's job. This is ONE
+/// named sub-component: the full kill-switch sequence (IB cancel/disconnect = SRS-EXE-006;
+/// orchestrated activation + 5s NFR-P3 = SRS-EXE-002 / SAFE-001 runtime; SRS-LOG-001 1s HALTED
+/// observability; email/SMS = SRS-NOTIF-001; dashboard/CLI/REST trigger = SRS-API-001 / SRS-UI) is
+/// deferred, so SRS-SAFE-001 stays `passes:false`.
+pub mod halt;
+
 /// The internal simulation engine's paper order-intake path (SRS-SIM-001). It
 /// accepts market/limit/stop/stop-limit, equity/option, and multi-leg composite
 /// orders and routes every one to the internal simulation engine — there is no

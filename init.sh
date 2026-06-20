@@ -364,6 +364,13 @@ if ! python3 tools/sim_persistence_check.py --require-cargo >/dev/null; then
   exit 1
 fi
 
+echo "→ Running paper-engine halt-gate contract check (SRS-SAFE-001 sub-component)..."
+if ! python3 tools/sim_halt_check.py --require-cargo >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Paper-engine halt-gate contract check failed; run python3 tools/sim_halt_check.py --require-cargo for detail."
+  exit 1
+fi
+
 echo "→ Running performance-metric contract check..."
 if ! python3 tools/metrics_check.py --require-cargo >/dev/null; then
   echo "✗ Environment failed"
