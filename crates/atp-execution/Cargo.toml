@@ -9,6 +9,14 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+# SRS-ERR-001 structured order-error envelope operator CLI. Drives the real
+# ExecutionEngine::submit_live_order reject paths and proves every order-submission error is a
+# complete structured envelope (category + type + message + unchanged original order) that reaches no
+# brokerage. std-only; depends only on the already-declared atp-execution / atp-types crates.
+[[bin]]
+name = "err001_error_envelope_cli"
+path = "src/bin/err001_error_envelope_cli.rs"
+
 [dependencies]
 atp-strategy-engine = { path = "../atp-strategy-engine" }
 atp-types = { path = "../atp-types" }

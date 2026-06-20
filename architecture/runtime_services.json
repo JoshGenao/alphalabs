@@ -664,6 +664,49 @@
     },
     "rejection_categories": [
       "NonLiveStrategySubmission"
+    ],
+    "cli": {
+      "bin_name": "err001_error_envelope_cli",
+      "bin_path": "src/bin/err001_error_envelope_cli.rs",
+      "subcommands": [
+        "categories",
+        "envelope",
+        "no-broker",
+        "authority"
+      ],
+      "engine_tokens": [
+        "ExecutionEngine",
+        "submit_live_order",
+        "route_order",
+        "OrderLedger"
+      ],
+      "proof_tokens": [
+        "all-categories-mapped:true",
+        "envelope-complete:true",
+        "no-ib-side-effect:true",
+        "authority-enforced:true"
+      ],
+      "fail_closed_token": "inject=authorized",
+      "l5_test": "srs_err_001_error_envelope_cli"
+    },
+    "description": "The structured order-error envelope (StructuredOrderError: category + error_type + message + original_order) and the SyRS SYS-64 OrderErrorCategory vocabulary are built in atp-types. The err001_error_envelope_cli operator binary (the cli sub-block) is a Phase-1 surface that drives EVERY currently-implemented production StructuredOrderError construction site for failed order submissions: the single-live authority gate (ExecutionEngine::route_order, NotDesignated), the inner mode/connectivity/freshness gate (ExecutionEngine::submit_live_order — paper non-live, IB unreachable, scheduled-restart, stale market data), and the idempotency ledger (OrderLedger::submit — duplicate client correlation id, the SRS-EXE-008 rejection specified 'per SRS-ERR-001'). categories proves the SyRS SYS-64 vocabulary is total + stable; envelope proves every implemented reject path returns a complete category + type + message + unchanged-original-order envelope; no-broker proves a rejected order reaches no brokerage; authority drives route_order through the engine-owned live-designation registry to prove a non-designated strategy is rejected (no broker) while the single designated live strategy is authorized (SRS-EXE-001 single-live invariant). SRS-ERR-001 stays passes:false: SYS-64 (docs/SyRS_v0.7.md) names broker-side order-validation error types — INVALID_SYMBOL, INSUFFICIENT_BUYING_POWER, RATE_LIMITED — that are vocabulary-only today (no production construction site) and require the deferred IB adapter (SRS-EXE-006) to be produced and contract-tested before SRS-ERR-001 can flip to passes:true.",
+    "deferred": [
+      {
+        "feature": "SRS-EXE-006",
+        "what": "INVALID_SYMBOL / INSUFFICIENT_BUYING_POWER / RATE_LIMITED broker-side order-validation envelopes (deferred IB adapter) — the blocking deferral keeping SRS-ERR-001 passes:false"
+      },
+      {
+        "feature": "SRS-MD-002",
+        "what": "SUBSCRIPTION_LIMIT_REACHED rejections carry the same envelope but are raised by the market-data subscription manager"
+      },
+      {
+        "feature": "SRS-DATA-013",
+        "what": "INGESTION_RECORD_VALIDATION_FAILED / INGESTION_PACING_BUDGET_EXCEEDED categories are raised by the data layer, not as order submissions, and do not construct StructuredOrderError"
+      },
+      {
+        "feature": "orchestrator",
+        "what": "HOT_SWAP_DEMOTION_TIMEOUT / KILL_SWITCH_LIQUIDATION_TIMEOUT and the deployment/resource categories are owned by the orchestrator and kill-switch gates"
+      }
     ]
   },
   "connectivity_contract": {

@@ -72,6 +72,24 @@ def execution_source(config: dict, root: Path = ROOT) -> str:
     return source_path.read_text(encoding="utf-8")
 
 
+def execution_cargo_source(config: dict, root: Path = ROOT) -> str:
+    block = err_block(config)
+    cargo_path = root / block["execution_crate"]["path"] / "Cargo.toml"
+    if not cargo_path.exists():
+        fail(f"execution crate Cargo.toml missing: {cargo_path.relative_to(root)}")
+    return cargo_path.read_text(encoding="utf-8")
+
+
+def cli_source(config: dict, root: Path = ROOT) -> str:
+    block = err_block(config)
+    if "cli" not in block:
+        fail("error_handling_contract is missing the cli sub-block")
+    source_path = root / block["execution_crate"]["path"] / block["cli"]["bin_path"]
+    if not source_path.exists():
+        fail(f"error-envelope CLI source missing: {source_path.relative_to(root)}")
+    return source_path.read_text(encoding="utf-8")
+
+
 # --------------------------------------------------------------------------- #
 # Per-check evidence collectors
 # --------------------------------------------------------------------------- #
@@ -247,9 +265,83 @@ def check_cargo_test_smoke(config: dict) -> str:
             f"cargo test -p {crate} --test err_1_no_ib_side_effect failed:\n"
             f"{integ.stdout}\n{integ.stderr}"
         )
+    # Also smoke the L5 operator-CLI integration test (the err001_error_envelope_cli surface).
+    cli_l5 = block["cli"]["l5_test"]
+    cli = subprocess.run(
+        [cargo, "test", "-p", crate, "--test", cli_l5, "--quiet"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if cli.returncode != 0:
+        fail(f"cargo test -p {crate} --test {cli_l5} failed:\n{cli.stdout}\n{cli.stderr}")
     return (
-        f"cargo test -p {crate} --lib + err_1_no_ib_side_effect: PASS "
-        "(synchronous rejection + zero broker side effect verified)"
+        f"cargo test -p {crate} --lib + err_1_no_ib_side_effect + {cli_l5}: PASS "
+        "(synchronous rejection + zero broker side effect + operator-CLI envelope proofs verified)"
+    )
+
+
+def check_error_cli(config: dict, cli_src: str, root: Path = ROOT) -> str:
+    """The operator binary that makes the SRS-ERR-001 acceptance criterion demonstrable.
+
+    Verifies the bin is Cargo-registered, exposes its subcommands, drives the REAL execution engine
+    (so the envelope proofs run over the real ``submit_live_order``, not a hand-rolled echo that could
+    agree with itself), prints each ``:true`` proof headline, carries the fail-closed ``--inject``
+    non-vacuity path, and is backed by the L5 integration test.
+    """
+    block = err_block(config)
+    if "cli" not in block:
+        fail("error_handling_contract is missing the cli sub-block")
+    spec = block["cli"]
+
+    # Cargo-registered (without the [[bin]], the operator surface does not build).
+    cargo = execution_cargo_source(config, root)
+    if f'name = "{spec["bin_name"]}"' not in cargo:
+        fail(
+            f"Cargo.toml must register the operator binary `{spec['bin_name']}` — without it the "
+            "SRS-ERR-001 error-envelope operator surface does not build"
+        )
+
+    missing_cmds = [c for c in spec["subcommands"] if f'"{c}"' not in cli_src]
+    if missing_cmds:
+        fail(f"{spec['bin_name']} is missing subcommand(s): {', '.join(missing_cmds)}")
+
+    # Drives the REAL execution engine — the envelope proof must run over the real
+    # ExecutionEngine::submit_live_order, not a hand-rolled stand-in that could agree with itself.
+    missing_engine = [t for t in spec["engine_tokens"] if t not in cli_src]
+    if missing_engine:
+        fail(
+            f"{spec['bin_name']} must drive the real execution engine (missing "
+            f"{', '.join(missing_engine)}) so the envelope proofs are genuine (SRS-ERR-001)"
+        )
+
+    # Each `:true` proof headline the acceptance criterion turns on (category vocabulary, envelope
+    # completeness, no-broker side effect).
+    missing_proofs = [t for t in spec["proof_tokens"] if t not in cli_src]
+    if missing_proofs:
+        fail(
+            f"{spec['bin_name']} must print every proof headline (missing "
+            f"{', '.join(missing_proofs)}) — the category / envelope / no-broker acceptance halves"
+        )
+
+    # An injected fault fails closed before any proof (no fabricated proof on a success path).
+    if spec["fail_closed_token"] not in cli_src:
+        fail(
+            f"{spec['bin_name']} must fail closed on an injected fault "
+            f"(`{spec['fail_closed_token']}`) so a success path never produces a reject proof"
+        )
+
+    # Backed by the L5 integration test.
+    l5_path = root / block["execution_crate"]["path"] / "tests" / f"{spec['l5_test']}.rs"
+    if not l5_path.exists():
+        fail(f"missing L5 integration test {l5_path.relative_to(root)}")
+
+    return (
+        f"operator binary {spec['bin_name']} is Cargo-registered, exposes "
+        f"{', '.join(spec['subcommands'])}, drives the REAL execution engine "
+        f"({', '.join(spec['engine_tokens'])}), prints {', '.join(spec['proof_tokens'])}, fails "
+        f"closed on an injected fault, and is driven in fresh processes by the L5 {spec['l5_test']}"
     )
 
 
@@ -264,29 +356,34 @@ _STATIC_CHECKS = (
     ("structured_error", check_structured_error_struct, "types"),
     ("entry_point", check_submit_live_order_signature, "execution"),
     ("synchronous_rejection", check_synchronous_rejection_has_no_broker_side_effect, "execution"),
+    ("error_cli", check_error_cli, "cli"),
 )
 
 
 def run_checks() -> list[str]:
     config = load_config()
-    types_src = types_source(config)
-    exec_src = execution_source(config)
+    sources = {
+        "types": types_source(config),
+        "execution": execution_source(config),
+        "cli": cli_source(config),
+    }
     evidence: list[str] = []
     for _, check, scope in _STATIC_CHECKS:
-        source = types_src if scope == "types" else exec_src
-        evidence.append(check(config, source))
+        evidence.append(check(config, sources[scope]))
     evidence.append(check_cargo_test_smoke(config))
     return evidence
 
 
 def assert_error_handling_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable from ``tools/architecture_check.py`` (no cargo)."""
-    types_src = types_source(config, root)
-    exec_src = execution_source(config, root)
+    sources = {
+        "types": types_source(config, root),
+        "execution": execution_source(config, root),
+        "cli": cli_source(config, root),
+    }
     evidence: list[str] = []
     for _, check, scope in _STATIC_CHECKS:
-        source = types_src if scope == "types" else exec_src
-        evidence.append(check(config, source))
+        evidence.append(check(config, sources[scope]))
     return evidence
 
 

@@ -24,10 +24,12 @@ from error_handling_check import (  # noqa: E402
     ErrorHandlingCheckError,
     assert_error_handling_static,
     check_error_category_enum,
+    check_error_cli,
     check_strategy_mode_enum,
     check_structured_error_struct,
     check_submit_live_order_signature,
     check_synchronous_rejection_has_no_broker_side_effect,
+    cli_source,
     execution_source,
     load_config,
     run_checks,
@@ -59,6 +61,11 @@ class ErrorHandlingCheckScriptTest(unittest.TestCase):
             "ONLY inside the StrategyMode::Live arm",
             "zero broker side effect (ERR-1)",
             "err_1_no_ib_side_effect",
+            "operator binary err001_error_envelope_cli is Cargo-registered",
+            "drives the REAL execution engine",
+            "all-categories-mapped:true, envelope-complete:true, no-ib-side-effect:true, "
+            "authority-enforced:true",
+            "srs_err_001_error_envelope_cli",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
 
@@ -196,16 +203,47 @@ class SynchronousRejectionTest(unittest.TestCase):
         self.assertIn("StrategyMode::Paper", str(ctx.exception))
 
 
-class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_six_evidence_items(self) -> None:
-        evidence = run_checks()
-        # 5 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(evidence), 6)
+class ErrorCliTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.cli_src = cli_source(self.config)
 
-    def test_assert_error_handling_static_emits_five_evidence_items(self) -> None:
+    def test_cli_drives_the_real_engine_and_prints_proofs(self) -> None:
+        evidence = check_error_cli(self.config, self.cli_src)
+        self.assertIn("err001_error_envelope_cli", evidence)
+        self.assertIn("REAL execution engine", evidence)
+        self.assertIn("srs_err_001_error_envelope_cli", evidence)
+
+    def test_missing_engine_token_is_caught(self) -> None:
+        # The CLI must drive the real ExecutionEngine; fully removing the token must be caught.
+        mutated = self.cli_src.replace("ExecutionEngine", "StubEngine")
+        with self.assertRaises(ErrorHandlingCheckError) as ctx:
+            check_error_cli(self.config, mutated)
+        self.assertIn("execution engine", str(ctx.exception))
+
+    def test_missing_proof_headline_is_caught(self) -> None:
+        mutated = self.cli_src.replace("envelope-complete:true", "renamed:true")
+        with self.assertRaises(ErrorHandlingCheckError) as ctx:
+            check_error_cli(self.config, mutated)
+        self.assertIn("proof headline", str(ctx.exception))
+
+    def test_missing_fail_closed_path_is_caught(self) -> None:
+        mutated = self.cli_src.replace("inject=authorized", "inject=allowed")
+        with self.assertRaises(ErrorHandlingCheckError) as ctx:
+            check_error_cli(self.config, mutated)
+        self.assertIn("fail closed", str(ctx.exception))
+
+
+class AggregateEvidenceTest(unittest.TestCase):
+    def test_run_checks_emits_seven_evidence_items(self) -> None:
+        evidence = run_checks()
+        # 6 static (incl. the operator CLI) + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(evidence), 7)
+
+    def test_assert_error_handling_static_emits_six_evidence_items(self) -> None:
         config = load_config()
         evidence = assert_error_handling_static(config, ROOT)
-        self.assertEqual(len(evidence), 5)
+        self.assertEqual(len(evidence), 6)
 
 
 if __name__ == "__main__":

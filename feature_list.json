@@ -1310,7 +1310,8 @@
       "Step 4: Record objective evidence from contract test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "notes": "SESSION 65 (Phase 1, stays passes:false): shipped the operator-demonstrable err001_error_envelope_cli (crates/atp-execution/src/bin) + L5 srs_err_001_error_envelope_cli + L7 test_err001_error_cli + tools/error_handling_check.py check_error_cli. The CLI drives EVERY currently-implemented production StructuredOrderError construction site for failed order submissions and proves each carries the SRS-ERR-001 envelope (category + type + message + unchanged original order) and reaches no brokerage: route_order NotDesignated (authority gate), submit_live_order paper-non-live / IB-unreachable / scheduled-restart / stale-data (inner gate), and OrderLedger duplicate-correlation (idempotency, SRS-EXE-008 'per SRS-ERR-001'). STAYS passes:false per operator decision: SYS-64 (docs/SyRS_v0.7.md) names broker-side order-validation error types INVALID_SYMBOL / INSUFFICIENT_BUYING_POWER / RATE_LIMITED that are vocabulary-only today and require the deferred IB adapter (SRS-EXE-006) to be produced + contract-tested; SUBSCRIPTION_LIMIT_REACHED is SRS-MD-002's. Flips to passes:true once those deferred broker-validation envelopes land. Codex adversarial-review returned needs-attention across 3 rounds (route_order, duplicate-correlation, scheduled-restart all ADDRESSED; the SYS-64 broker-validation categories are the genuine deferred gap)."
   },
   {
     "id": "SRS-NOTIF-001",
