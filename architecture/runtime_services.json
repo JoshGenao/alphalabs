@@ -6085,6 +6085,122 @@
       "The concrete RecordValidator SYS-77 rule logic + the quarantine dashboard/notification alert surface (owner: SRS-DATA-013 / SRS-DATA-014 / SRS-NOTIF-001; ingest_market_record composes the UNCHANGED ERR-5 gate)"
     ]
   },
+  "unified_query_runtime_contract": {
+    "description": "SRS-DATA-007 (provide a unified historical data access interface; SyRS SYS-27 / SYS-53; StRS SN-1.28 / SN-3.03 / BG-5). The acceptance: 'Strategy code, backtests, factor jobs, and notebooks query by symbol, date range, and resolution WITHOUT specifying the original source provider.' This is the runnable READ path over the SRS-DATA-016 storage substrate (the canonical MarketDataStore of vendor-neutral records the data layer already persists) -- distinct from the unified_historical_data (API-7) block, which pins the provider-facing adapter TRAIT shape (HistoricalDataAdapter in atp-adapters); this block pins the runtime query that actually serves records from the store. It lives in crates/atp-data (module `query`). UnifiedHistoricalQuery carries ONLY the three acceptance dimensions -- symbol, resolution, and an inclusive [start_ts, end_ts] event-timestamp range -- plus an optional DatasetKind disambiguator; there is deliberately NO provider/vendor/source/feed parameter (a consumer literally cannot pass one), and DatasetKind is the VENDOR-NEUTRAL taxonomy (daily bar / minute bar / option-chain / fundamental), never a provider name. UnifiedHistoricalResult echoes the queried symbol + resolution and the matched records, with NO provider/vendor/source field -- the envelope cannot name a record's origin, so a strategy / backtest / factor job / notebook is structurally unable to branch on it. MarketDataStore::query_unified filters self.records() (the canonical natural-key order the store already maintains) on exactly those vendor-neutral NaturalKey dimensions -- symbol equality, resolution equality, the inclusive event_ts range, and the optional kind -- and returns the survivors sorted explicitly into deterministic event_ts-ascending order with the full natural key as a total-order tiebreaker (the store's canonical order sorts by kind BEFORE event_ts, so a kind-agnostic match spanning two kinds that share symbol+resolution needs the explicit event_ts sort to honor the date-range contract), no clock, no RNG; an empty match is a RETURNED value, never an error. The SAME one method serves every provider kind the acceptance names -- DailyEquityBar (<= Databento), MinuteEquityBar (<= IB), OptionChainSnapshot (<= IB option-chain), Fundamental (<= Sharadar) -- so a multi-provider catalog has exactly one read path and no provider-specific branch. The operator surface is the data007_query_cli binary (query --dir --symbol --resolution --start --end [--kind]): it loads the atomically-published on-disk snapshot read-only (NO single-writer StoreLock -- a read does not need it; concurrent-read-DURING-write coordination is the deferred SRS-DATA-017) and prints a source-neutral key:value report (symbol / resolution / start / end / kind / match_count, then each record's event_ts + option_contract + integer-minor value fields) with no provider/source/vendor line. The Rust integration test srs_data_007_unified_query drives ingest (fixtures, all four kinds) -> persist -> reload -> query and asserts symbol/resolution/range filtering, cross-provider-kind uniformity, the optional-kind narrowing, determinism across a persisted reload, and empty-is-not-an-error. SRS-DATA-007 STAYS passes:false (foundational substrate, NOT a feature close): the source-neutral query ENGINE + operator CLI + contract test are demonstrated end to end over fixture data + persisted-output inspection, but the acceptance NAMES strategy code / backtests / factor jobs / notebooks as the consumers, and those in-process bindings are not yet wired to this engine (there is no Python<->atp-data bridge, and this engine is separate from the existing HistoricalData / HistoricalDataAdapter API-7 surface) -- so flipping passes:true would over-claim end-to-end completion. The adversarial judgment pass (Codex) flagged the premature flip plus a kind-agnostic event_ts-ordering bug; the ordering bug was fixed (explicit event_ts sort + cross-kind regression tests), and the feature is held passes:false by operator decision. This block is the read groundwork the named-consumer features compose. DEFERRED (named owners; the consumer bindings are LOAD-BEARING for the feature close, not just niceties): the REAL Databento/IB/Sharadar/option-chain network adapters that materialize records (SRS-DATA-001/003/005/006; fixture sources stand in); concurrent READS during an active ingestion WRITE -- read-while-write coordination (SRS-DATA-017; the atomic whole-file publish is the groundwork); the normalization-mode application of SRS-DATA-012 (the unified_historical_data adapter block already pins the NormalizationMode surface; DATA-007 is symbol/range/resolution only); SSD-primary / NAS-archival tiering + cold-read failover of the queried directory (SRS-DATA-008/009/010); the in-process Python / backtest / factor / notebook bindings over this engine -- the Rust CLI is the operator-demonstrable surface (SRS-UI / SRS-API / the SRS-SDK strategy host).",
+    "requirement": "SRS-DATA-007",
+    "srs_refs": [
+      "SRS-DATA-007"
+    ],
+    "syrs_refs": [
+      "SYS-27",
+      "SYS-53"
+    ],
+    "strs_refs": [
+      "SN-1.28",
+      "SN-3.03",
+      "BG-5"
+    ],
+    "data_crate": {
+      "crate": "atp-data",
+      "path": "crates/atp-data"
+    },
+    "query_module": "query",
+    "rust_integration_test": "srs_data_007_unified_query",
+    "cli_bin": "data007_query_cli",
+    "query_struct": {
+      "struct": "UnifiedHistoricalQuery",
+      "fields": [
+        "symbol: String",
+        "resolution: String",
+        "start_ts: i64",
+        "end_ts: i64",
+        "kind: Option<DatasetKind>"
+      ],
+      "forbidden_provider_tokens": [
+        "provider",
+        "vendor",
+        "source",
+        "feed",
+        "adapter"
+      ]
+    },
+    "result_struct": {
+      "struct": "UnifiedHistoricalResult",
+      "fields": [
+        "symbol",
+        "resolution",
+        "records"
+      ],
+      "forbidden_provider_tokens": [
+        "provider",
+        "vendor",
+        "source",
+        "feed"
+      ]
+    },
+    "query_method": {
+      "fn": "pub fn query_unified",
+      "returns_token": "->UnifiedHistoricalResult",
+      "no_result_token": "->Result<",
+      "canonical_source_token": "self.records().iter().filter(",
+      "event_ts_sort_token": "records.sort_by(",
+      "event_ts_order_token": "ka.event_ts.cmp(&kb.event_ts)",
+      "symbol_filter_token": "key.symbol==self.symbol",
+      "resolution_filter_token": "key.resolution==self.resolution",
+      "range_lower_token": "key.event_ts>=self.start_ts",
+      "range_upper_token": "key.event_ts<=self.end_ts",
+      "kind_filter_token": "self.kind.map_or("
+    },
+    "module_reexport": {
+      "lib_reexport_token": "pub mod query;"
+    },
+    "cli": {
+      "cmd_fn": "fn cmd_query",
+      "dir_env_token": "ATP_DATA_STORE_DIR",
+      "flag_tokens": [
+        "--symbol",
+        "--resolution",
+        "--start",
+        "--end",
+        "--dir",
+        "--kind"
+      ],
+      "header_tokens": [
+        "symbol:",
+        "resolution:",
+        "match_count:"
+      ],
+      "forbidden_output_tokens": [
+        "provider:",
+        "source:",
+        "vendor:",
+        "feed:"
+      ],
+      "no_writer_lock_token": "StoreLock::acquire"
+    },
+    "no_broker_dependency": {
+      "cargo_toml": "Cargo.toml",
+      "forbidden_dep_tokens": [
+        "atp-adapters",
+        "atp-execution"
+      ]
+    },
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "config_key": "ATP_DATA_STORE_DIR",
+    "deferred": [
+      "Real Databento / IB / Sharadar / option-chain NETWORK adapters that materialize records from the live providers (owner: SRS-DATA-001 / SRS-DATA-003 / SRS-DATA-005 / SRS-DATA-006; fixture sources stand in, as the verification step permits)",
+      "Concurrent READS during an active ingestion WRITE -- read-while-write coordination (owner: SRS-DATA-017; query_unified reads the atomically-published whole-file snapshot, which is the groundwork)",
+      "Normalization-mode application -- raw / split-adjusted / fully-adjusted / total-return (owner: SRS-DATA-012; the unified_historical_data adapter block pins the NormalizationMode surface; DATA-007 queries by symbol / date range / resolution only)",
+      "SSD-primary / NAS-archival TIERING, eviction, and cold-read failover of the queried directory (owner: SRS-DATA-008 / SRS-DATA-009 / SRS-DATA-010)",
+      "In-process Python / backtest / factor / notebook query bindings over this engine -- the Rust data007_query_cli is the operator-demonstrable read surface (owner: SRS-UI / SRS-API / the SRS-SDK strategy host)"
+    ]
+  },
   "factor_analysis_contract": {
     "description": "SRS-BT-006 (produce factor analysis and tear-sheet outputs; SyRS SYS-18; StRS SN-1.05). The deterministic, dependency-free factor-analysis surface lives in crates/atp-factor-pipeline (module `factor_analysis`). compute_tear_sheet consumes a FactorPanel -- a per-rebalance-period panel of (SecurityKey, factor value, forward return) observations plus a quantile count -- and returns one FactorTearSheet bundling the three deliverables SYS-18 names: (1) InformationCoefficient, the per-period Spearman rank correlation between factor value and forward return (average tie ranks; Pearson of ranks; clamped to its [-1,1] domain) with mean / std / risk-adjusted IC; (2) FactorReturns, the per-period quantile-sorted mean returns (each bucket mean None when its bounding cutoffs are tied, so a constant/tied factor cannot expose an identity-driven ladder) plus the top-minus-bottom long-short spread with its mean (which assumes a REGULAR panel -- a spread scales with the forward-return horizon, so the average is the producer's contract; a compounded cumulative spread is deferred -- the panel cannot validate non-overlapping forward windows); (3) TurnoverAnalysis, the per-period top/bottom-quantile TARGET turnover (factor-signal; realized drift turnover deferred to the backtest engine) with means. Factor values and returns are dimensionless f64 (the factor domain, not a money leak); the work is deterministic (fixed left-to-right folds; cross-sections sorted by the total order (factor_value, SecurityKey)); an undefined statistic is None (never a fabricated zero); a non-finite aggregate fails closed; and FactorPanel::validate rejects an empty or degenerate panel at the trust boundary. The OPERATOR rendering surface is realized via the factor_tear_sheet_cli binary (see tear_sheet_cli): `defaults` proves a default run surfaces all three deliverables, and `run` renders the IC / factor returns / turnover of a fixture panel through the real engine, with `--quantiles` re-bucketing the SAME fixture and every undefined statistic rendered as the literal `undefined` (never a fabricated 0) -- so SRS-BT-006 is passes:true. Still deferred (owned by other features, not SRS-BT-006): the scheduled full-universe factor job that produces the panel (SRS-FAC-001), wiring real factor values/returns from the unified historical data interface (SRS-DATA-007), the REST/dashboard rendering half (SRS-UI / SRS-API), and bundling the SRS-BT-004 PerformanceMetrics family into one cross-crate report.",
     "requirement": "SRS-BT-006",
