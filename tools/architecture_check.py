@@ -14,6 +14,10 @@ from adapter_isolation_check import AdapterIsolationError, assert_adapter_isolat
 from backtest_check import BacktestCheckError, assert_backtest_static
 from backtest_cost_check import BacktestCostCheckError, assert_backtest_cost_static
 from backtest_store_check import BacktestStoreCheckError, assert_backtest_store_static
+from ingestion_idempotency_check import (
+    IngestionIdempotencyCheckError,
+    assert_ingestion_idempotency_static,
+)
 from benchmark_check import BenchmarkCheckError, assert_sim_benchmark_static
 from determinism_check import DeterminismCheckError, assert_determinism_static
 from factor_analysis_check import FactorAnalysisCheckError, assert_factor_analysis_static
@@ -813,6 +817,25 @@ def assert_sim_backtest_store(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_ingestion_idempotency(config: dict) -> list[str]:
+    block = config.get("ingestion_idempotency_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_ingestion_idempotency_static(config, ROOT)
+    summary = (
+        f"{block['data_crate']['crate']} data layer makes ingestion idempotent "
+        f"({block['record_struct']['struct']} keyed by a vendor-neutral {block['dataset_kind']['enum']} "
+        "natural key; MarketDataStore::upsert inserts a fresh key, no-ops an identical re-ingest "
+        "(UnchangedDuplicate -- no duplicate row), and fails closed on a conflicting re-ingest "
+        "(ConflictingContent -- existing data intact); ingest_market_record composes the unchanged "
+        "ERR-5 validation gate then the idempotent upsert; a deterministic checksummed codec + a "
+        "crash-durable atomic file write keep the persisted store byte-identical on re-ingest) -- "
+        "the storage substrate the SRS-DATA family composes (SRS-DATA-016, SyRS NFR-R4)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_factor_analysis(config: dict) -> list[str]:
     block = config.get("factor_analysis_contract")
     if block is None:
@@ -1214,6 +1237,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_sim_backtest_store(config))
     except BacktestStoreCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_ingestion_idempotency(config))
+    except IngestionIdempotencyCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_factor_analysis(config))

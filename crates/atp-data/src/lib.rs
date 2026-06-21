@@ -1,8 +1,14 @@
+use std::fmt;
+
 use atp_types::{
     IngestionJobRequest, IngestionRecordSubmission, IngestionValidationEvent,
     OrderErrorCategory, PacingBudgetEvent, PacingBudgetState, RecordValidationOutcome,
     RuntimeService, StrategyId, StructuredIngestionError, StructuredPacingError,
 };
+
+pub mod store;
+
+use crate::store::{MarketDataRecord, MarketDataStore, StoreError, UpsertOutcome};
 
 #[derive(Debug, Default)]
 pub struct DataLayer;
@@ -130,6 +136,106 @@ impl DataLayer {
 #[doc(hidden)]
 pub const _INGESTION_VALIDATION_CATEGORY: OrderErrorCategory =
     OrderErrorCategory::IngestionRecordValidationFailed;
+
+// --------------------------------------------------------------------------- //
+// Idempotent market-record ingestion (SRS-DATA-016 / SyRS NFR-R4)
+// --------------------------------------------------------------------------- //
+//
+// The idempotent write path that COMPOSES the unchanged ERR-5 validation gate
+// (`ingest_record`) with the storage substrate (`store::MarketDataStore`). The
+// store-mutating `upsert` lives in `store.rs` / this new entry point, NEVER in
+// `ingest_record` — whose quarantine arm stays statically read-only
+// (`tools/ingestion_validation_check.py` forbidden_mutations). See `store.rs`
+// for the natural-key idempotency core and the durable codec.
+
+/// The combined outcome of [`DataLayer::ingest_market_record`]: the ERR-5 admission envelope plus
+/// the store's idempotency signal ([`UpsertOutcome::Inserted`] on a fresh key,
+/// [`UpsertOutcome::UnchangedDuplicate`] on an idempotent re-ingest).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngestionOutcome {
+    /// The ERR-5 admission envelope returned by the unchanged validation gate.
+    pub accepted: IngestionAccepted,
+    /// Whether the record was newly inserted or was an idempotent no-op.
+    pub applied: UpsertOutcome,
+}
+
+/// A failure of the idempotent market-record ingestion path: either the ERR-5 validation gate
+/// **quarantined** the record (read-only, no write), or the **store** rejected the write — a
+/// conflicting re-ingest ([`StoreError::ConflictingContent`], the "corrupts existing data" guard) or
+/// an I/O failure. The two are kept distinct so the operator surface can tell a validation reject
+/// apart from a write conflict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MarketIngestError {
+    /// The ERR-5 gate quarantined the record before any write.
+    Rejected(StructuredIngestionError),
+    /// The store rejected the write (conflicting re-ingest, malformed record, or I/O failure).
+    Store(StoreError),
+}
+
+impl From<StructuredIngestionError> for MarketIngestError {
+    fn from(error: StructuredIngestionError) -> Self {
+        Self::Rejected(error)
+    }
+}
+
+impl From<StoreError> for MarketIngestError {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
+impl fmt::Display for MarketIngestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Rejected(error) => write!(f, "ingestion record quarantined: {error}"),
+            Self::Store(error) => write!(f, "market-data store write failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for MarketIngestError {}
+
+impl DataLayer {
+    /// SRS-DATA-016 / SyRS NFR-R4 — the **idempotent** market-record ingestion entry point.
+    ///
+    /// Composes the unchanged ERR-5 validation gate ([`ingest_record`](Self::ingest_record)) — so an
+    /// invalid record is still quarantined read-only before any write — and only on a `Valid`
+    /// classification applies the canonical record to `store` via the idempotent
+    /// [`MarketDataStore::upsert`]: re-running an ingestion for an already-ingested datum is a no-op
+    /// ([`UpsertOutcome::UnchangedDuplicate`], no duplicate record), and a re-ingest carrying
+    /// *different* content fails closed ([`StoreError::ConflictingContent`]) without mutating the
+    /// store (no corruption). The caller durably persists the mutated store with
+    /// [`MarketDataStore::save_to_path`].
+    ///
+    /// **Validation is bound to the persisted record.** The ERR-5 envelope is *derived from the
+    /// record* ([`MarketDataRecord::ingestion_submission`]) rather than supplied independently, so
+    /// the gate is always applied to exactly the record that will be written — a caller cannot
+    /// validate one payload and store another (there is no separate submission to forge).
+    ///
+    /// The store mutator lives here, never inside `ingest_record` — whose quarantine arm stays a
+    /// statically-verified read-only operation.
+    pub fn ingest_market_record<V, S>(
+        &self,
+        store: &mut MarketDataStore,
+        record: MarketDataRecord,
+        validator: &V,
+        events: &S,
+        observed_at_seconds: u64,
+    ) -> Result<IngestionOutcome, MarketIngestError>
+    where
+        V: RecordValidator,
+        S: IngestionValidationEventSink,
+    {
+        // The ERR-5 envelope is DERIVED from the record, binding validation to exactly the record
+        // that will be persisted (no independent payload to forge).
+        let submission = record.ingestion_submission();
+        // 1. ERR-5 validation gate (UNCHANGED) — quarantines an invalid record read-only.
+        let accepted = self.ingest_record(submission, validator, events, observed_at_seconds)?;
+        // 2. Only reachable on a Valid classification → idempotent store write.
+        let applied = store.upsert(record)?;
+        Ok(IngestionOutcome { accepted, applied })
+    }
+}
 
 // --------------------------------------------------------------------------- //
 // Pacing-budget ports (SRS-DATA-002 / SRS-DATA-004 / SyRS SYS-55)
