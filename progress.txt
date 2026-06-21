@@ -1,4 +1,121 @@
->>> NEXT TARGET (2026-06-20, after SESSION 66): FOUNDATIONAL kill-switch slice shipped -- the
+>>> NEXT TARGET (2026-06-20, after SESSION 67): GREEN CLOSE -- SRS-DATA-016 (make ingestion jobs
+>>> idempotent) is passes:true. 84 -> 83 failing. The "not-completing" loop is BROKEN. Per the
+>>> operator's directive (build foundational/high-impact, stop the surface-churn loop, complete all
+>>> features fastest), S67 built the DATA-LAYER STORAGE SUBSTRATE -- the missing spine of the 21-feature
+>>> SRS-DATA cluster (the single largest failing cluster + critical path of backtests/benchmark/metrics/
+>>> factor) -- and closed the one DATA feature whose AC is a SELF-CONTAINED runtime property (no
+>>> dashboard/notification/Python-host/notebook), so it both forces the substrate the other 20 reuse AND
+>>> is a genuine flip.
+>>> DURABLE SELECTION RULE (see feedback_build_foundational_high_impact memory): when the close-green
+>>> well is dry, rank by SUBSYSTEM-cluster size + downstream unblock, build the substrate the cluster
+>>> sits on, and CLOSE the one feature whose AC names NO unbuilt external surface.
+>>> WHAT SHIPPED: crates/atp-data/src/store.rs -- canonical MarketDataRecord (vendor-neutral NaturalKey:
+>>> DatasetKind{DailyEquityBar/MinuteEquityBar/OptionChainSnapshot/Fundamental} + symbol + resolution +
+>>> event_ts + option_contract; integer-minor MarketField values); MarketDataStore with the idempotent
+>>> upsert (Inserted / UnchangedDuplicate no-op / fail-closed ConflictingContent); deterministic
+>>> MAGIC+FNV-1a codec; crash-durable atomic save_to_path + fail-closed load_from_path; StoreLock O_EXCL
+>>> single-writer guard; dependency-free FIPS-pinned SHA-256 for the ERR-5 record_hash. lib.rs
+>>> ingest_market_record COMPOSES the unchanged ERR-5 gate on a record-DERIVED envelope, then upsert. CLI
+>>> data016_ingest_cli (ingest / reingest[non-mutating proof] / inspect). 17-check
+>>> tools/ingestion_idempotency_check.py wired via tools/architecture_check.py + init.sh.
+>>> CADENCE: prep (ingestion_idempotency_contract + ATP_DATA_STORE_DIR key + .env.example + config README)
+>>> + feat (store/lib/CLI + L5/L7/L3 + check + architecture_check registration) + chore (init.sh wiring +
+>>> flip + this log). Did NOT extend SAFETY_PATH_RE -- Codex blocks ANY critic-gate self-modification in a
+>>> feature commit (R1); the new paths don't match the existing regex anyway (L7 ships as good practice,
+>>> not regex-enforced); a separate human-reviewed regex update is DEFERRED.
+>>>   - CODEX (7 working-tree rounds; deterministic APPROVE every round): R1 BLOCK critic self-modification
+>>>     (SAFETY_PATH_RE edit) -> reverted. R2 [high] ingest_market_record validated an independent
+>>>     submission while persisting a different record -> DERIVE the ERR-5 envelope from the record. R3
+>>>     [high] CLI load-modify-save last-writer-wins under concurrent jobs -> StoreLock O_EXCL guard +
+>>>     no-loss test. R4 [high] reingest saved BEFORE checking the no-op -> pure non-mutating proof. R5
+>>>     [high] record_hash FNV-1a value-only (collides across keys) vs the atp-types SHA-256-of-normalized
+>>>     contract -> FIPS-pinned SHA-256 over the WHOLE record. R6 [high] config README stale (16 vs 18
+>>>     keys) -> synced. R7 APPROVE. Every finding was genuine + fully fixed (convergent).
+>>>   - NEXT: the substrate makes the rest of SRS-DATA cheap. SRS-DATA-007 (unified query over
+>>>     MarketDataStore::records()/get()) is the natural next close; then DATA-013 (validator rules ->
+>>>     quarantine; gate exists), DATA-017 (concurrent reads; atomic publish is groundwork), DATA-008/009/
+>>>     010 (SSD/NAS tiering), corporate actions (011/012/019/020/021), provider-specific ingestion
+>>>     (001/003/005/006). Also unblocks BT-001 (backtest over stored data), BT-005 (real benchmark source
+>>>     = DATA-007), FAC-001 (fundamentals).
+
+=== SESSION 67 ===
+Date: 2026-06-20
+Feature completed: SRS-DATA-016 -- make ingestion jobs idempotent (docs/SRS.md SRS-5.5 SRS-DATA-016;
+SyRS NFR-R4; StRS SN-1.26/SN-1.27). passes:false -> passes:true. Status: 83 features remaining (84 -> 83).
+
+SELECTION: operator directive (AskUserQuestion + /remote-control) -- "build foundational/high-impact,
+stop the not-completing loop, complete all features fastest." Impact analysis: SRS-DATA = 21 failing
+(largest cluster; critical path of backtests/benchmark/metrics/factor). The data layer was ALL
+SDK-surface stubs (ERR-5 validation + ERR-6 pacing gates, but NO store; atp-adapters provider traits
+return record COUNTS, not records). DATA-016's AC is the one self-contained runtime property, so
+building it forces the substrate the other 20 DATA features reuse AND is a real green flip.
+
+What I did:
+- crates/atp-data/src/store.rs (NEW): canonical MarketDataRecord + vendor-neutral NaturalKey +
+  MarketDataStore. upsert = idempotency core (Inserted / UnchangedDuplicate no-op / fail-closed
+  ConflictingContent leaving existing data intact). Deterministic MAGIC+FNV-1a-checksum text codec
+  (checksum-first restore, untrusted counts grown incrementally, single bulk sort). Crash-durable
+  save_to_path (unique scratch -> fsync -> atomic rename -> parent-dir fsync) + fail-closed
+  load_from_path. StoreLock single-writer guard (O_EXCL create_new, Drop release, StoreError::Locked).
+  Dependency-free FIPS-pinned SHA-256 for the ERR-5 record_hash. fixture_batch (4-source stand-in).
+- crates/atp-data/src/lib.rs: pub mod store; + DataLayer::ingest_market_record composing the UNCHANGED
+  ERR-5 ingest_record gate on a record-DERIVED IngestionRecordSubmission (record_hash = SHA-256 of the
+  normalized WHOLE record), then store.upsert. The store mutator never contaminates ingest_record.
+- crates/atp-data/src/bin/data016_ingest_cli.rs (NEW): ingest / reingest (non-mutating proof) / inspect
+  over ATP_DATA_STORE_DIR, holding StoreLock across load-modify-save.
+- L5 crates/atp-data/tests/srs_data_016_idempotent_ingest.rs (7 tests). L3
+  tests/test_ingestion_idempotency_contract.py + L7 tests/domain/test_ingestion_idempotency.py
+  (behavioral cargo + CLI subprocess + structural non-vacuity per guard).
+- tools/ingestion_idempotency_check.py (NEW, 17 static checks) -> 'SRS-DATA-016 IDEMPOTENT-INGEST PASS';
+  registered in tools/architecture_check.py (the CI aggregator path) + init.sh --require-cargo block.
+- architecture/runtime_services.json: ingestion_idempotency_contract + ATP_DATA_STORE_DIR storage_paths
+  key. .env.example + python/atp_config/README.md (18 keys) synced. feature_list.json: DATA-016 -> true.
+
+What I tested (end to end, mapped to the 4 steps):
+- Step 1: ./init.sh -> "Environment ready" (new idempotency check gates init).
+- Step 2: data016_ingest_cli ingest/reingest/inspect across all 4 kinds over a fixture dir; reingest
+  proves inserted:0 + bytes_identical:true; a concurrent writer is refused; reingest-before-ingest fails
+  closed writing NO file.
+- Step 3: L5+L7 assert no-dup + byte-identical + conflicting-fail-closed + quarantined-not-written +
+  validation-bound + lock-no-loss across Databento-daily / IB-minute / option-chain / Sharadar.
+- Step 4: cargo test --workspace green (75 binaries, 0 fail); L1(25)+L5(7)+L3/L7(64 pytest); clippy clean
+  on atp-data; ingestion_idempotency_check --require-cargo PASS; architecture_check PASS (under .venv --
+  the bare system python3 lacks numpy, a PRE-EXISTING env quirk; init.sh uses .venv).
+
+Critic verdicts:
+  deterministic: APPROVE -- 0 findings (every round).
+  judgment (/codex:adversarial-review, working-tree, 7 rounds): APPROVE (R7).
+    R1 BLOCK meta:critic-self-modification (a SAFETY_PATH_RE edit) -> REVERTED critic_check.py; the new
+       paths don't match the existing regex so no pairing is lost; a separate human-reviewed regex update
+       is deferred.
+    R2 [high] validated submission not bound to the persisted record -> derive the ERR-5 envelope from the
+       record (ingestion_submission; no forgeable param) + binding regression test.
+    R3 [high] concurrent load-modify-save last-writer-wins data loss -> StoreLock O_EXCL single-writer
+       guard + serialization test (neither job's records lost).
+    R4 [high] reingest persisted before validating the no-op -> non-mutating proof (never saves; fails
+       closed without writing) + reingest-before-ingest test.
+    R5 [high] record_hash FNV-1a value-only vs the atp-types SHA-256-of-normalized-record contract ->
+       dependency-free FIPS-pinned SHA-256 over the WHOLE record (key+value) + collision test.
+    R6 [high] config README stale (16 vs 18 keys) -> synced README + ATP_DATA_STORE_DIR row.
+    R7 APPROVE -- no material findings. Recorded honestly; never faked APPROVE.
+
+Known issues / notes for next agent:
+- The substrate is the spine of the 21-feature SRS-DATA cluster. NEXT closes are cheap: DATA-007 (unified
+  query over MarketDataStore::records()/get()), DATA-013 (validator rules -> quarantine), DATA-017
+  (concurrent reads -- the atomic publish is groundwork), DATA-008/009/010 (SSD/NAS tiering), corporate
+  actions, then provider-specific ingestion. Also unblocks BT-001/BT-005/FAC-001.
+- DatasetKind is VENDOR-NEUTRAL (SRS-ARCH-003 + the critic's check_vendor_leakage blocks lowercase
+  databento/sharadar in core paths). The 4 AC sources map: DailyEquityBar<=Databento, MinuteEquityBar<=IB,
+  OptionChainSnapshot<=IB option-chain, Fundamental<=Sharadar (documented in store.rs + the contract).
+- StoreLock serializes writers on ONE host (single-user/local baseline; the orchestrator serializes
+  scheduled jobs). A crashed holder leaves a stale lock the operator clears; pid-liveness/lease + cross-
+  host coordination are out of scope.
+- record_hash is the contract's SHA-256-of-normalized-record (hand-rolled, FIPS-vector-pinned, zero-dep).
+  Fixture sources stand in for the real provider adapters (DATA-001/003/005/006 deferred).
+- Did NOT extend SAFETY_PATH_RE (Codex blocks critic self-mod in a feature commit). A separate
+  human-reviewed regex update for /store.rs|data016|ingestion_idempotency is deferred.
+
+[SUPERSEDED by SESSION 67 -- historical] >>> NEXT TARGET (2026-06-20, after SESSION 66): FOUNDATIONAL kill-switch slice shipped -- the
 >>> paper-engine HALTED gate (SRS-SAFE-001 sub-component). 84 features remain failing (UNCHANGED,
 >>> 84 -> 84). This session did NOT close a feature: per the operator's "build a foundational
 >>> blocker" decision (AskUserQuestion), it built REAL safety-critical domain logic, NOT another
