@@ -1,4 +1,111 @@
->>> NEXT TARGET (2026-06-20, after SESSION 67): GREEN CLOSE -- SRS-DATA-016 (make ingestion jobs
+>>> NEXT TARGET (2026-06-21, after SESSION 68): FOUNDATIONAL READ SUBSTRATE shipped -- the SRS-DATA-007
+>>> unified historical query ENGINE over the S67 MarketDataStore (crates/atp-data/src/query.rs:
+>>> UnifiedHistoricalQuery{symbol,resolution,start_ts,end_ts,kind:Option<DatasetKind>} -> source-neutral
+>>> UnifiedHistoricalResult; MarketDataStore::query_unified filters records() by exact symbol+resolution
+>>> + inclusive event_ts range + optional kind, then SORTS explicitly by event_ts asc with a natural-key
+>>> tiebreaker) + operator CLI data007_query_cli (read-only snapshot load, NO StoreLock; source-neutral
+>>> key:value output) + L5/L3 tests + 12-check tools/unified_query_check.py (wired via architecture_check
+>>> + init.sh). SRS-DATA-007 STAYS passes:false (83 -> 83 UNCHANGED). The adversarial pass (Codex) flagged
+>>> a [critical] PREMATURE FLIP -- the AC names strategy/backtest/factor/notebook consumers and NONE query
+>>> this engine yet (no Python<->atp-data bridge; the engine is separate from the existing
+>>> HistoricalData/HistoricalDataAdapter API-7 surface) -- so flipping would over-claim. Operator chose
+>>> KEEP passes:false (foundational, like S66's SAFE-001 gate). The consumer bindings are now the
+>>> LOAD-BEARING deferral for the close.
+>>> SELECTION RULE NOTE (refines feedback_build_foundational_high_impact + project_selection_policy):
+>>> S67 named DATA-007 "the natural next close (unified query over records()/get())", but the AC NAMES
+>>> external consumers (strategy/backtest/factor/notebook) -- so it is NOT the self-contained-runtime-
+>>> property close S67's directive targeted; the query ENGINE is closeable substrate, the FEATURE close
+>>> needs the consumer wiring. Build+ship the substrate, keep passes:false, defer the flip to the
+>>> consumer-binding feature. Don't re-flip DATA-007 green until a named consumer actually queries it.
+>>> NEXT (the engine makes these cheap): DATA-007 consumer wiring would need a Python<->atp-data bridge
+>>> (SRS-SDK host) or the backtest engine (atp-simulation) to call query_unified; DATA-017 (concurrent
+>>> reads during writes -- the read-only snapshot load is groundwork); DATA-013 (validator rules ->
+>>> quarantine; gate exists); DATA-008/009/010 (SSD/NAS tiering); corporate actions (011/012/019/020/021);
+>>> provider adapters (001/003/005/006). The "close-green well is dry" inflection from S66 still holds:
+>>> remaining DATA features each name an unbuilt consumer/provider/tiering surface.
+>>>   - CODEX (2 working-tree rounds; deterministic APPROVE every round): R1 needs-attention: [critical]
+>>>     premature passes:true while named consumers deferred + [high] kind-agnostic query returned store
+>>>     (kind-first) order, not event_ts-ascending, for two kinds sharing symbol+resolution. R2 APPROVE
+>>>     after: fixed the ordering bug (explicit event_ts sort + cross-kind regression tests, unit + L5),
+>>>     and held passes:false (operator decision = Codex recommendation #1). Convergent, honest.
+
+=== SESSION 68 ===
+Date: 2026-06-21
+Feature: SRS-DATA-007 -- provide a unified historical data access interface (docs/SRS.md SRS-DATA-007;
+SyRS SYS-27/SYS-53; StRS SN-1.28/SN-3.03/BG-5). STAYS passes:false (foundational substrate shipped, NOT
+a feature close). Status: 83 features remaining (UNCHANGED, 83 -> 83).
+
+SELECTION: S67's handoff named DATA-007 "the natural next close (unified query over MarketDataStore::
+records()/get())". Built the runnable read engine over the S67 substrate. Codex's adversarial pass
+correctly caught that the AC NAMES strategy/backtest/factor/notebook consumers that don't yet query the
+engine -- so the FEATURE is not end-to-end complete even though the query interface is demonstrated.
+Operator (AskUserQuestion) chose KEEP passes:false: ship the foundational read substrate, defer the
+flip to the consumer-binding feature. This is honest closing-vs-foundational discipline (like S66).
+
+What I did:
+- crates/atp-data/src/query.rs (NEW): UnifiedHistoricalQuery (symbol, resolution, inclusive
+  [start_ts,end_ts], optional vendor-neutral DatasetKind -- NO provider/vendor/source param) +
+  source-neutral UnifiedHistoricalResult (NO provider/vendor/source field) + MarketDataStore::
+  query_unified. The query filters records() on exact symbol + exact resolution + inclusive event_ts
+  range + optional kind, then SORTS explicitly by event_ts asc with the full natural key as a total-order
+  tiebreaker. Source-neutral by construction: no provider to pass, none to return; DatasetKind is the
+  vendor-NEUTRAL taxonomy; one path serves all four provider kinds.
+- crates/atp-data/src/lib.rs: pub mod query; + pub use UnifiedHistoricalQuery/UnifiedHistoricalResult
+  (additive; preserves pub mod store;). store.rs UNCHANGED (query lives in query.rs via a 2nd impl block,
+  insulating every DATA-016 token-grep).
+- crates/atp-data/src/bin/data007_query_cli.rs (NEW): query subcommand over ATP_DATA_STORE_DIR; READ-ONLY
+  snapshot load (NO StoreLock -- read-while-write is the deferred SRS-DATA-017); source-neutral key:value
+  output (symbol/resolution/start/end/kind/match_count + per-record event_ts + option_contract + integer-
+  minor fields; no provider/source/vendor line).
+- L5 crates/atp-data/tests/srs_data_007_unified_query.rs (7 tests: filter/range-edges/exact-symbol-res/
+  cross-provider-kind uniformity/kind-narrowing/cross-kind-event_ts-ordering/persisted-reload-determinism/
+  source-neutral). L3 tests/test_unified_query_contract.py (28: script + per-check non-vacuity mutations +
+  behavioral ingest(data016)->query(data007) subprocess asserting source-neutral output + cargo-gate +
+  aggregate counts). No L7 (NOT safety_critical; paths don't match SAFETY_PATH_RE).
+- tools/unified_query_check.py (NEW, 12 static checks + cargo smoke) -> 'SRS-DATA-007 UNIFIED-QUERY PASS';
+  registered in tools/architecture_check.py (assert_unified_query) + init.sh --require-cargo block.
+- architecture/runtime_services.json: unified_query_runtime_contract block (DISTINCT from the existing
+  unified_historical_data API-7 adapter-surface block; reuses ATP_DATA_STORE_DIR -- no new config key).
+- PRECURSOR FIX (separate commit): tests/test_architecture.py stale assertion 17->18 keys -- S67 added
+  ATP_DATA_STORE_DIR (the 18th catalogued config key) but left this one test asserting 17; pre-existing
+  red on HEAD, unrelated to DATA-007, fixed for a green suite.
+
+What I tested:
+- cargo test --workspace green (0 failures); query unit (7) + L5 (7); clippy clean on atp-data (the new
+  files; pre-existing atp-types doc warnings are not mine and not -D-denied in the normal build).
+- data016_ingest_cli ingest (all 4 kinds) -> data007_query_cli query by symbol+resolution+range: correct
+  source-neutral output, match_count>0, NO provider line; empty result (unknown symbol) exits 0.
+- unified_query_check --require-cargo PASS; ingestion_idempotency_check --require-cargo PASS (regression);
+  architecture_check PASS (now includes DATA-007 evidence); ./init.sh -> Environment ready.
+- L3 (28) + L5 + the DATA-016 contract test all green; broad pytest -m "not integration and not e2e":
+  2241 passed, 4 skipped, 1 pre-existing unrelated failure (see Known issues).
+
+Critic verdicts:
+  deterministic: APPROVE -- 0 findings (every run).
+  judgment (/codex:adversarial-review, working-tree, 2 rounds): APPROVE (R2).
+    R1 needs-attention: [critical] feature_list.json flipped passes:true while the AC's named consumers
+       (strategy/backtest/factor/notebook) are still deferred and don't query the engine -> over-claim;
+       [high] query_unified relied on store order (kind-BEFORE-event_ts) so a kind-agnostic match across
+       two kinds sharing symbol+resolution was not event_ts-ascending.
+    R2 APPROVE: fixed the [high] ordering bug (explicit event_ts sort + a natural-key tiebreaker +
+       cross-kind regression tests, unit + L5); resolved the [critical] by HOLDING passes:false (operator
+       decision via AskUserQuestion = Codex recommendation #1). Recorded honestly; never faked APPROVE.
+
+Known issues / notes for next agent:
+- SRS-DATA-007 close needs a NAMED CONSUMER to actually query the engine. Cheapest paths: have the
+  backtest engine (atp-simulation) call MarketDataStore::query_unified, or build the Python<->atp-data
+  bridge (SRS-SDK host) so atp_strategy.HistoricalData.get_bars is backed by query_unified. The existing
+  unified_historical_data (API-7) block only pins the consumer-facing TRAIT/protocol SHAPE -- it is NOT
+  backed by this engine. Don't re-flip DATA-007 until a consumer genuinely queries.
+- query_unified sorts by event_ts because the store's canonical order is kind-FIRST; do not "optimize" it
+  back to store order (the cross-kind ordering regression tests pin this).
+- PRE-EXISTING unrelated failure (NOT mine, fails on HEAD e6ec68c): tests/property/test_indicators_
+  property.py::test_bbands_property_matches_batch_talib -- a Bollinger Bands / talib numerics property
+  test, orthogonal to the data layer. Left for a dedicated indicators session; flagged here for honesty.
+- query.rs lives separately from store.rs (2nd impl block) specifically so the DATA-016 token-grep checks
+  stay byte-stable; keep it that way.
+
+[SUPERSEDED by SESSION 68 -- historical] >>> NEXT TARGET (2026-06-20, after SESSION 67): GREEN CLOSE -- SRS-DATA-016 (make ingestion jobs
 >>> idempotent) is passes:true. 84 -> 83 failing. The "not-completing" loop is BROKEN. Per the
 >>> operator's directive (build foundational/high-impact, stop the surface-churn loop, complete all
 >>> features fastest), S67 built the DATA-LAYER STORAGE SUBSTRATE -- the missing spine of the 21-feature
