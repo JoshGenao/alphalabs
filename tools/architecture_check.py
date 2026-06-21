@@ -18,6 +18,10 @@ from ingestion_idempotency_check import (
     IngestionIdempotencyCheckError,
     assert_ingestion_idempotency_static,
 )
+from unified_query_check import (
+    UnifiedQueryCheckError,
+    assert_unified_query_static,
+)
 from benchmark_check import BenchmarkCheckError, assert_sim_benchmark_static
 from determinism_check import DeterminismCheckError, assert_determinism_static
 from factor_analysis_check import FactorAnalysisCheckError, assert_factor_analysis_static
@@ -836,6 +840,25 @@ def assert_ingestion_idempotency(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_unified_query(config: dict) -> list[str]:
+    block = config.get("unified_query_runtime_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_unified_query_static(config, ROOT)
+    summary = (
+        f"{block['data_crate']['crate']} data layer provides the unified historical data access "
+        f"interface ({block['query_struct']['struct']} carries only symbol + resolution + an inclusive "
+        "event_ts range + an optional vendor-neutral DatasetKind, never a provider; "
+        "MarketDataStore::query_unified filters the store's canonical order on those vendor-neutral "
+        "NaturalKey dimensions and returns the source-neutral UnifiedHistoricalResult in deterministic "
+        "event_ts-ascending order; one path serves every provider kind, and the data007_query_cli "
+        "operator surface queries by symbol/date-range/resolution with no provider line) -- the runnable "
+        "read path over the SRS-DATA-016 substrate (SRS-DATA-007, SyRS SYS-27 / SYS-53)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_factor_analysis(config: dict) -> list[str]:
     block = config.get("factor_analysis_contract")
     if block is None:
@@ -1241,6 +1264,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_ingestion_idempotency(config))
     except IngestionIdempotencyCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_unified_query(config))
+    except UnifiedQueryCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_factor_analysis(config))

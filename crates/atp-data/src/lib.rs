@@ -7,6 +7,9 @@ use atp_types::{
 };
 
 pub mod store;
+pub mod query;
+
+pub use crate::query::{UnifiedHistoricalQuery, UnifiedHistoricalResult};
 
 use crate::store::{MarketDataRecord, MarketDataStore, StoreError, UpsertOutcome};
 
