@@ -30,7 +30,7 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 | `resource_limits` | Live and paper strategy memory/CPU caps and the host memory safety margin. |
 | `notification_channels` | Email and SMS dispatch credentials. |
 
-## Required keys (16)
+## Required keys (18)
 
 | Key | Category | Type | Default | Secret | SRS trace |
 |---|---|---|---|---|---|
@@ -42,6 +42,7 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 | `ATP_SSD_DATA_DIR` | storage_paths | path | `/var/lib/atp/ssd` | no | SRS-DATA-008 |
 | `ATP_NAS_DATA_DIR` | storage_paths | path | `/var/lib/atp/nas` | no | SRS-DATA-008/009 |
 | `ATP_BACKTEST_RESULTS_DIR` | storage_paths | path | `/var/lib/atp/ssd/backtest_results` | no | SRS-BT-009, SyRS:SYS-79 |
+| `ATP_DATA_STORE_DIR` | storage_paths | path | `/var/lib/atp/ssd/market_data` | no | SRS-DATA-016, SyRS:NFR-R4 |
 | `ATP_SMTP_API_KEY` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, NFR-S4 |
 | `ATP_SMS_API_KEY` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, NFR-S4 |
 | `DATABENTO_API_KEY` | credentials | secret | placeholder | yes | SRS-DATA-001, NFR-S1 |
@@ -81,7 +82,7 @@ ReadinessReport(
     ],
     evidence=[
         "SRS-ARCH-005 configuration system evidence:",
-        "16 keys catalogued across 6 categories (ATP_ENV='development')",
+        "18 keys catalogued across 6 categories (ATP_ENV='development')",
         "credentials: 2 keys — OK (DATABENTO_API_KEY, SHARADAR_API_KEY)",
         "...",
     ],

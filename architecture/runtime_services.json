@@ -2241,6 +2241,21 @@
         ]
       },
       {
+        "name": "ATP_DATA_STORE_DIR",
+        "category": "storage_paths",
+        "type": "path",
+        "validator": {
+          "non_empty": true,
+          "absolute": true
+        },
+        "default": "/var/lib/atp/ssd/market_data",
+        "secret": false,
+        "srs_trace": [
+          "SRS-DATA-016",
+          "SyRS:NFR-R4"
+        ]
+      },
+      {
         "name": "ATP_SMTP_API_KEY",
         "category": "notification_channels",
         "type": "secret",
@@ -5902,6 +5917,173 @@
       "io_error_variant": "StoreError::Io",
       "config_key": "ATP_BACKTEST_RESULTS_DIR"
     }
+  },
+  "ingestion_idempotency_contract": {
+    "description": "SRS-DATA-016 (make ingestion jobs idempotent; SyRS NFR-R4; StRS SN-1.26 / SN-1.27). The acceptance: 'Re-running Databento, IB, option-chain, or Sharadar ingestion for an already ingested date creates no duplicate records and does not corrupt existing data.' This is the data-layer STORAGE SUBSTRATE -- the canonical market-data record, a local keyed store, and an idempotent validating write path -- the missing spine the rest of the SRS-DATA family composes (no canonical record / store / catalog existed before: atp-data shipped only the read-only ERR-5 validation + ERR-6 pacing gates, and the atp-adapters provider traits return record COUNTS, not records). It lives in crates/atp-data (module `store`). Every record carries a vendor-neutral NaturalKey = (DatasetKind, symbol, resolution, event_ts, option_contract) -- the dedup identity; the record's canonically-ordered MarketField value set (integer minor units) is its content. DatasetKind is the VENDOR-NEUTRAL taxonomy the four sources the acceptance names map onto (the core never names a vendor; the adapter layer maps provider -> kind, SRS-ARCH-003): DailyEquityBar <= Databento daily (SRS-DATA-001), MinuteEquityBar <= IB minute (SRS-DATA-002), OptionChainSnapshot <= IB option-chain (SRS-DATA-004), Fundamental <= Sharadar (SRS-DATA-005). MarketDataStore::upsert is the idempotency core: a fresh key INSERTS; an already-present key with IDENTICAL content is a silent no-op (UpsertOutcome::UnchangedDuplicate -- no duplicate row, the store stays byte-identical); an already-present key with DIFFERENT content fails closed (StoreError::ConflictingContent) leaving the existing record exactly as found (the 'corrupts existing data' guard). Records are held in one canonical natural-key order (binary_search_by), so the serialized form is byte-identical for the same record set regardless of ingest order -- which makes 'no duplicate / no corruption' inspectable on disk. DataLayer::ingest_market_record is the idempotent entry point: it COMPOSES the UNCHANGED ERR-5 validation gate (self.ingest_record -- so an invalid record is still quarantined read-only before any write) and only on a Valid classification applies the record via the idempotent store.upsert; the store mutator lives here / in store.rs, NEVER inside ingest_record (whose quarantine arm stays statically read-only per ingestion_validation_check.py forbidden_mutations). VALIDATION IS BOUND TO THE PERSISTED RECORD: the ERR-5 envelope is DERIVED from the record (record.ingestion_submission(): source = the dataset-kind tag, record_hash = the content fingerprint) rather than supplied independently, so the gate is always applied to exactly the record that will be written -- a caller cannot validate one payload and store another (there is no separate submission to forge). serialize/restore is a deterministic, dependency-free text codec (MAGIC header + FNV-1a integrity checksum over the body verified BEFORE building any state, length-prefixed strings, canonical-order records, untrusted counts grown incrementally not pre-allocated, single bulk sort on restore) that fails closed on a corrupt / truncated / checksum-mismatching / duplicate-key blob (StoreError::CorruptRecord / ChecksumMismatch / UnknownSchemaVersion / DuplicateKey) yielding no partial store. The durable FILE layer (save_to_path / load_from_path) mirrors the SRS-BT-009 backtest_store pattern: a per-call-unique scratch file, fsync, atomic fs::rename publish, parent-directory fsync; load fails closed on a missing/unmounted directory (!dir.is_dir() -> StoreError::Io, never a silent empty catalog) and restores an empty store only for a missing FILE in a provisioned directory. All value fields stay integer minor units (i64, i128 codec intermediates) -- no f64 in the core; the work is deterministic (no parallelism / RNG / wall-clock read); store carries no broker/adapter dependency and no lowercase vendor SDK token. The operator surface is the data016_ingest_cli binary (ingest / reingest / inspect over a fixture dir): reingest proves inserted:0 + bytes_identical:true across all four kinds. The Rust integration test srs_data_016_idempotent_ingest drives ingest -> persist -> reload -> re-ingest -> assert no duplicate + byte-identical file + conflicting-content fail-closed + quarantined-record-not-written, per kind. SRS-DATA-016 flips passes:true: the idempotency property is a self-contained runtime property (verification: Test) demonstrated end to end with fixture sources + persisted-file inspection, exactly as the step permits. DEFERRED (named owners, none load-bearing for idempotency): the REAL Databento/IB/Sharadar/option-chain network adapters (SRS-DATA-001/003/005/006, the atp-adapters provider traits stay stubs); unified query read consumers -- strategy code, notebooks (SRS-DATA-007); SSD-primary / NAS-archival TIERING, eviction, cold-read failover of the store directory (SRS-DATA-008/009/010); the validator rule logic + quarantine dashboard/notification alert surface (SRS-DATA-013 / SRS-NOTIF-001).",
+    "requirement": "SRS-DATA-016",
+    "srs_refs": [
+      "SRS-DATA-016"
+    ],
+    "syrs_refs": [
+      "NFR-R4"
+    ],
+    "strs_refs": [
+      "SN-1.26",
+      "SN-1.27"
+    ],
+    "data_crate": {
+      "crate": "atp-data",
+      "path": "crates/atp-data"
+    },
+    "store_module": "store",
+    "rust_integration_test": "srs_data_016_idempotent_ingest",
+    "cli_bin": "data016_ingest_cli",
+    "dataset_kind": {
+      "enum": "DatasetKind",
+      "variants": [
+        "DailyEquityBar",
+        "MinuteEquityBar",
+        "OptionChainSnapshot",
+        "Fundamental"
+      ]
+    },
+    "record_struct": {
+      "struct": "MarketDataRecord",
+      "natural_key_struct": "NaturalKey",
+      "natural_key_fields": [
+        "kind: DatasetKind",
+        "symbol: String",
+        "resolution: String",
+        "event_ts: i64",
+        "option_contract: Option<String>"
+      ],
+      "field_struct": "MarketField"
+    },
+    "store_struct": {
+      "struct": "MarketDataStore",
+      "records_field": "records: Vec<MarketDataRecord>"
+    },
+    "upsert": {
+      "fn": "pub fn upsert",
+      "outcome_enum": "UpsertOutcome",
+      "outcome_variants": [
+        "Inserted",
+        "UnchangedDuplicate"
+      ],
+      "noop_token": "UpsertOutcome::UnchangedDuplicate",
+      "conflict_guard_token": "StoreError::ConflictingContent",
+      "canonical_order_token": "binary_search_by"
+    },
+    "ingest_market_record": {
+      "fn": "pub fn ingest_market_record",
+      "composes_gate_token": "self.ingest_record(",
+      "store_write_token": "store.upsert(",
+      "binds_validation_token": "record.ingestion_submission()",
+      "outcome_struct": "IngestionOutcome",
+      "error_enum": "MarketIngestError"
+    },
+    "record_hash": {
+      "description": "The IngestionRecordSubmission type contract (atp-types) specifies record_hash as the canonical SHA-256 of the normalized record bytes. MarketDataRecord::ingestion_submission derives record_hash as sha256::hex over normalized_bytes() -- the canonical full-record encoding (encode_record: kind + symbol + resolution + event_ts + option_contract + the value fields), so the hash covers the WHOLE record (key INCLUDED) and two distinct records can never share a record_hash (no value-only collision across keys). SHA-256 is a dependency-free safe-u32 impl (the same zero-dependency discipline as the FNV-1a checksum) pinned by the FIPS 180-4 known-answer vectors.",
+      "submission_fn": "pub fn ingestion_submission",
+      "normalized_bytes_fn": "pub fn normalized_bytes",
+      "sha256_derivation_token": "sha256::hex(&self.normalized_bytes())",
+      "full_record_encoding_token": "encode_record(&mut encoded, self)",
+      "sha256_module_token": "mod sha256",
+      "fips_vectors_token": "fips_known_answer_vectors"
+    },
+    "codec": {
+      "magic_token": "pub const MAGIC",
+      "schema_version_token": "pub const SCHEMA_VERSION",
+      "serialize_fn": "pub fn serialize",
+      "restore_fn": "pub fn restore",
+      "checksum_fn": "fn checksum",
+      "checksum_first_token": "if checksum(body) != stored_checksum",
+      "forbidden_alloc_token": "Vec::with_capacity",
+      "bulk_restore_sort_token": "records.sort_by"
+    },
+    "error_enum": {
+      "enum": "StoreError",
+      "variants": [
+        "CorruptRecord",
+        "UnknownSchemaVersion",
+        "InconsistentField",
+        "DuplicateKey",
+        "ConflictingContent",
+        "Locked",
+        "ChecksumMismatch",
+        "Io"
+      ]
+    },
+    "store_lock": {
+      "description": "SRS-DATA-016 no-corruption under CONCURRENT ingestion jobs. A single save_to_path is atomic, but a load-modify-save done by two writers concurrently would be last-publish-wins -- the later save could erase the earlier writer's newly ingested records. StoreLock is the single-writer guard held across the WHOLE load-modify-save (the operator CLI's ingest/reingest acquire it): acquisition is an atomic exclusive file create (OpenOptions::create_new, i.e. O_EXCL) of LOCK_FILENAME, so a second concurrent writer is REFUSED (StoreError::Locked) rather than proceeding to a silent overwrite; the lock requires an existing directory (a missing dir fails closed as StoreError::Io, symmetric with load_from_path) and is released on Drop (the file is removed). Scope: serializes writers on one host/filesystem (the single-user/local baseline; the orchestrator serializes scheduled ingestion jobs). A crashed holder leaves a stale lock the operator removes before retrying; pid-liveness/lease expiry and cross-host coordination are out of scope.",
+      "lock_struct": "StoreLock",
+      "lock_filename_const": "pub const LOCK_FILENAME",
+      "acquire_fn": "pub fn acquire",
+      "exclusive_token": "create_new(true)",
+      "release_drop_token": "impl Drop for StoreLock",
+      "locked_variant": "StoreError::Locked",
+      "missing_dir_failclosed_token": "!dir.is_dir()",
+      "cli_guard_token": "StoreLock::acquire"
+    },
+    "reingest_proof": {
+      "description": "The operator `reingest` command is a PURE, NON-MUTATING idempotency proof: it re-ingests into an in-memory copy of the loaded store and verifies every outcome was a no-op (inserted == 0, length unchanged) and that the post-reingest store re-serializes to exactly the on-disk bytes, but it NEVER calls save_to_path. So running reingest on the wrong kind/date or a fresh directory fails closed WITHOUT persisting the newly-inserted records -- a failed proof can never become a state-changing ingest.",
+      "reingest_fn": "fn cmd_reingest",
+      "no_save_token": "save_to_path"
+    },
+    "file_persistence": {
+      "save_fn": "pub fn save_to_path",
+      "load_fn": "pub fn load_from_path",
+      "store_filename_const": "pub const STORE_FILENAME",
+      "tmp_filename_const": "pub const STORE_TMP_FILENAME",
+      "unique_scratch_token": "SCRATCH_SEQ.fetch_add",
+      "file_sync_token": "scratch.sync_all()",
+      "atomic_rename_token": "fs::rename(&tmp_path, &final_path)",
+      "dir_sync_token": "fs::File::open(dir)",
+      "restore_on_load_token": "Self::restore(&contents)",
+      "missing_dir_failclosed_token": "!dir.is_dir()",
+      "missing_file_empty_token": "io::ErrorKind::NotFound => Ok(Self::new())",
+      "io_error_variant": "StoreError::Io",
+      "config_key": "ATP_DATA_STORE_DIR"
+    },
+    "numeric_boundary": {
+      "integer_minor_tokens": [
+        "value_minor: i64",
+        "i128::from(field.value_minor)"
+      ]
+    },
+    "determinism": {
+      "forbidden_tokens": [
+        "par_iter",
+        "rayon",
+        "thread::spawn",
+        "rand::",
+        "SystemTime",
+        "Instant::now"
+      ]
+    },
+    "module_reexport": {
+      "lib_reexport_token": "pub mod store;"
+    },
+    "no_broker_dependency": {
+      "cargo_toml": "Cargo.toml",
+      "forbidden_dep_tokens": [
+        "atp-adapters",
+        "atp-execution"
+      ]
+    },
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "deferred": [
+      "Real Databento / IB / Sharadar / option-chain NETWORK adapters that materialize records from the live providers (owner: SRS-DATA-001 / SRS-DATA-003 / SRS-DATA-005 / SRS-DATA-006; the atp-adapters provider traits stay not_configured stubs -- fixture sources stand in, as the SRS-DATA-016 step permits)",
+      "Unified historical query READ consumers -- strategy code, backtests, factor jobs, notebooks (owner: SRS-DATA-007; the store exposes records()/get() groundwork)",
+      "SSD-primary / NAS-archival TIERING, eviction, and cold-read failover of the store directory (owner: SRS-DATA-008 / SRS-DATA-009 / SRS-DATA-010)",
+      "The concrete RecordValidator SYS-77 rule logic + the quarantine dashboard/notification alert surface (owner: SRS-DATA-013 / SRS-DATA-014 / SRS-NOTIF-001; ingest_market_record composes the UNCHANGED ERR-5 gate)"
+    ]
   },
   "factor_analysis_contract": {
     "description": "SRS-BT-006 (produce factor analysis and tear-sheet outputs; SyRS SYS-18; StRS SN-1.05). The deterministic, dependency-free factor-analysis surface lives in crates/atp-factor-pipeline (module `factor_analysis`). compute_tear_sheet consumes a FactorPanel -- a per-rebalance-period panel of (SecurityKey, factor value, forward return) observations plus a quantile count -- and returns one FactorTearSheet bundling the three deliverables SYS-18 names: (1) InformationCoefficient, the per-period Spearman rank correlation between factor value and forward return (average tie ranks; Pearson of ranks; clamped to its [-1,1] domain) with mean / std / risk-adjusted IC; (2) FactorReturns, the per-period quantile-sorted mean returns (each bucket mean None when its bounding cutoffs are tied, so a constant/tied factor cannot expose an identity-driven ladder) plus the top-minus-bottom long-short spread with its mean (which assumes a REGULAR panel -- a spread scales with the forward-return horizon, so the average is the producer's contract; a compounded cumulative spread is deferred -- the panel cannot validate non-overlapping forward windows); (3) TurnoverAnalysis, the per-period top/bottom-quantile TARGET turnover (factor-signal; realized drift turnover deferred to the backtest engine) with means. Factor values and returns are dimensionless f64 (the factor domain, not a money leak); the work is deterministic (fixed left-to-right folds; cross-sections sorted by the total order (factor_value, SecurityKey)); an undefined statistic is None (never a fabricated zero); a non-finite aggregate fails closed; and FactorPanel::validate rejects an empty or degenerate panel at the trust boundary. The OPERATOR rendering surface is realized via the factor_tear_sheet_cli binary (see tear_sheet_cli): `defaults` proves a default run surfaces all three deliverables, and `run` renders the IC / factor returns / turnover of a fixture panel through the real engine, with `--quantiles` re-bucketing the SAME fixture and every undefined statistic rendered as the literal `undefined` (never a fabricated 0) -- so SRS-BT-006 is passes:true. Still deferred (owned by other features, not SRS-BT-006): the scheduled full-universe factor job that produces the panel (SRS-FAC-001), wiring real factor values/returns from the unified historical data interface (SRS-DATA-007), the REST/dashboard rendering half (SRS-UI / SRS-API), and bundling the SRS-BT-004 PerformanceMetrics family into one cross-crate report.",
