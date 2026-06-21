@@ -761,7 +761,7 @@
       "Step 3: Verify acceptance criteria: Re-running Databento, IB, option-chain, or Sharadar ingestion for an already ingested date creates no duplicate records and does not corrupt existing data.",
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {
