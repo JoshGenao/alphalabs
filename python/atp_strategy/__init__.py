@@ -51,6 +51,12 @@ from .calendar import UsEquityTradingCalendar
 from .scheduler import InMemoryScheduler
 from .warmup import WarmupController, WarmupState, assert_warmup_complete
 
+# NOTE: ``StoreBackedHistoricalData`` (the host/runtime binding that PROVIDES a HistoricalData over the
+# durable store, SRS-DATA-007) is intentionally NOT re-exported here. It is not a strategy-AUTHORING
+# primitive — a strategy consumes the ``HistoricalData`` Protocol via ``ctx.history`` and never
+# constructs the concrete binding; the host/notebook imports it explicitly from
+# ``atp_strategy.store_history`` so the documented author surface (__all__) stays focused.
+
 __all__ = [
     "ATR",
     "AssetClass",

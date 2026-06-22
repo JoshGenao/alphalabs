@@ -26,6 +26,10 @@ from concurrent_read_check import (
     ConcurrentReadCheckError,
     assert_concurrent_read_static,
 )
+from store_history_check import (
+    StoreHistoryCheckError,
+    assert_store_history_static,
+)
 from benchmark_check import BenchmarkCheckError, assert_sim_benchmark_static
 from determinism_check import DeterminismCheckError, assert_determinism_static
 from factor_analysis_check import FactorAnalysisCheckError, assert_factor_analysis_static
@@ -878,10 +882,39 @@ def assert_concurrent_read(config: dict) -> list[str]:
         "never sees a torn store; load_from_path fails closed via the checksum-first restore -- "
         "demonstrated by the srs_data_017_concurrent_reads Load test driving lock-free reader "
         "threads/processes against a lock-held writer, which exercise the SAME load_from_path path a "
-        "named in-process consumer would use). SRS-DATA-017 STAYS passes:false: this is substrate + "
-        "operator-CLI coverage; the AC's named in-process consumers (strategy containers / backtests / "
-        "factor jobs / notebooks) are NOT yet wired to this path -- that binding is deferred (SRS-UI / "
-        "SRS-API / the SRS-SDK strategy host) and is the load-bearing close (SRS-DATA-017, SyRS SYS-63)"
+        "named in-process consumer would use). SRS-DATA-017 STAYS passes:false: the FIRST in-process "
+        "Python consumer binding now EXISTS (StoreBackedHistoricalData; store_history_binding_contract) "
+        "and reads via this exact lock-free path, but the concurrent-read-DURING-write Load test for "
+        "THAT named Python consumer -- a Python-consumer-vs-held-writer load test, not the Rust-CLI "
+        "analog -- is not yet in place, so flipping would over-claim the AC's named-consumer concurrency "
+        "(the dashboard / REST consumer surfaces remain SRS-UI / SRS-API); that Load test is the "
+        "remaining load-bearing close (SRS-DATA-017, SyRS SYS-63)"
+    )
+    return static_evidence + [summary]
+
+
+def assert_store_history(config: dict) -> list[str]:
+    block = config.get("store_history_binding_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_store_history_static(config, ROOT)
+    summary = (
+        f"{block['module']['class']} ({block['module']['path']}) is the FIRST in-process consumer "
+        f"binding over the unified historical query engine -- a concrete {block['protocol']} "
+        "implementation that drives the lock-free, source-neutral data007_query_cli so a real named "
+        "consumer (strategy code / backtests / factor jobs / notebooks) reads ingested data by "
+        "symbol/date-range/resolution with NO provider named (no provider/vendor/source/feed parameter, "
+        "no origin field read), keeping the Protocol's SPLIT_ADJUSTED default and raising for the "
+        "deferred SRS-DATA-012 adjusted modes (only an explicit RAW returns verbatim values), scaling "
+        "OHLC by the named _PRICE_MINOR_SCALE while leaving volume a raw count, and invoking the CLI "
+        "with a list argv (shell=False) under a bounded timeout so a wedged read fails closed rather "
+        "than hanging. This is the load-bearing FOUNDATIONAL groundwork toward SRS-DATA-007; "
+        "SRS-DATA-007 STAYS passes:false (a RAW-only PARTIAL binding -- its default keeps the Protocol's "
+        "SPLIT_ADJUSTED and fails closed pending the deferred DATA-012 normalization, so the "
+        "bare-default symbol/date/resolution query does not yet return data; flipping would over-claim, "
+        "operator HOLD per S68/S69), and the concurrent-read-DURING-write Load test for this named "
+        "Python consumer remains the deferred SRS-DATA-017 close (SRS-DATA-007, SyRS SYS-27 / SYS-53)"
     )
     return static_evidence + [summary]
 
@@ -1299,6 +1332,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_concurrent_read(config))
     except ConcurrentReadCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_store_history(config))
+    except StoreHistoryCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_factor_analysis(config))
