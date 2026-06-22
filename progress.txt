@@ -1,4 +1,162 @@
->>> NEXT TARGET (2026-06-21, after SESSION 69): FOUNDATIONAL CONCURRENCY EVIDENCE shipped -- SRS-DATA-017
+>>> NEXT TARGET (2026-06-22, after SESSION 70): FIRST PYTHON<->atp-data CONSUMER BINDING shipped --
+>>> StoreBackedHistoricalData (python/atp_strategy/store_history.py), a concrete atp_strategy.api.
+>>> HistoricalData implementation that drives the lock-free, source-neutral data007_query_cli so a
+>>> real strategy/backtest/factor/notebook reads ingested data by symbol/date-range/resolution with
+>>> NO provider named. STAYS passes:false (83 -> 83 UNCHANGED) -- a RAW-only PARTIAL binding, the
+>>> load-bearing groundwork toward the SRS-DATA-007 close, held by operator decision (the SAME S69
+>>> pattern: build the consumer binding, Codex catches the premature flip, operator chooses HOLD).
+>>> WHY HELD (the whole story): the operator first chose flip:true ("the binding IS the named-consumer
+>>> read the substrate was waiting for"), but the Codex adversarial loop (10 rounds, CONVERGENT on the
+>>> in-scope bugs) surfaced that flipping over-claims: after fixing the normalization-honesty bug, the
+>>> binding keeps the HistoricalData Protocol's SPLIT_ADJUSTED default and FAILS CLOSED unless the
+>>> caller passes NormalizationMode.RAW (because DATA-012 normalization is deferred) -- so the
+>>> bare-default symbol/date/resolution query does not yet return data, and the binding cannot drive
+>>> the existing WarmupController/author-docs default call. R1 (don't default RAW = silent
+>>> raw-as-adjusted) and R10 (default SPLIT_ADJUSTED+raise = can't serve the default HistoricalData
+>>> path) are in DIRECT tension -- ONLY implementing DATA-012 resolves both, which is out of scope.
+>>> Operator (AskUserQuestion) chose HOLD passes:false, then authorized committing the foundational
+>>> binding with honest verdicts. The close needs SRS-DATA-012 normalization (so the default query
+>>> returns adjusted data) OR an operator scoping decision that DATA-007 = provider-neutral RAW access
+>>> + a public explicit-[start,end] range method on the shared HistoricalData Protocol (an SRS-SDK-001
+>>> surface change; get_bars_range is binding-specific only because adding it to the runtime_checkable
+>>> Protocol would break the warm-up/parity/harness stubs' isinstance checks).
+>>> WHAT SHIPPED (all NEW files + additive wiring; the Rust crate, the CLIs, feature_list.json all
+>>> UNCHANGED -- pure additive Python binding + evidence):
+>>>   - python/atp_strategy/store_history.py (NEW): StoreBackedHistoricalData(HistoricalData) +
+>>>     StoreQueryError(StrategyAPIError). get_bars(symbol, lookback, frequency, end, asset_class,
+>>>     normalization) + get_bars_range(symbol, frequency, start, end, ...) (binding-specific). Drives
+>>>     data007_query_cli via subprocess (the repo's only cross-language pattern; no PyO3/maturin),
+>>>     parses the source-neutral key:value stdout into Bars. HEAVILY hardened by the Codex loop:
+>>>     (1) source-neutral -- no provider/vendor/source/feed param, no origin field read; (2)
+>>>     normalization honesty -- default SPLIT_ADJUSTED matches the Protocol and RAISES unless RAW
+>>>     (never silent raw-as-adjusted); (3) money -- _PRICE_MINOR_SCALE=100 on OHLC only, volume a raw
+>>>     int count (cents assumption flagged, pending the deferred SDK<->core money boundary); (4) no
+>>>     hang -- per-query timeout (default 30s) -> TimeoutExpired mapped to StoreQueryError; (5) launch
+>>>     failure (missing/un-executable binary, FileNotFoundError/OSError) wrapped in StoreQueryError
+>>>     (one structured boundary); (6) parser fails closed on: negative match_count, match_count:0 with
+>>>     records, indexes not covering [0,match_count), malformed ints, echoed symbol/resolution/start/
+>>>     end != request, event_ts outside [start,end] (no future/stale), non-ascending event_ts; (7)
+>>>     list argv (shell=False, no injection); (8) kind narrowing -- equity query passes the
+>>>     vendor-neutral --kind (daily/minute equity bar) so a fundamental/option record sharing
+>>>     symbol+resolution cannot poison the OHLCV read; unsupported resolutions raise (SRS-SDK-007);
+>>>     (9) exclusive end via ceil(ts)-1 (keeps the boundary second on a fractional end). NOT in __all__
+>>>     (it's a host/runtime binding, not a strategy-AUTHORING primitive; imported from
+>>>     atp_strategy.store_history; keeps the SRS-SDK-009 documented author surface focused).
+>>>   - tools/store_history_check.py (NEW, 12 static checks + a cargo round-trip): 'SRS-DATA-007
+>>>     STORE-HISTORY BINDING PASS'. Registered in tools/architecture_check.py (assert_store_history)
+>>>     -> auto-mirrored in CI (ci.yml + run_ci_locally.sh run architecture_check). Wired into the
+>>>     init.sh --require-cargo block.
+>>>   - L4 tests/boundary/test_store_history_binding.py (fake-runner, no cargo) + L3 tests/
+>>>     test_store_history_contract.py (drive the check + per-guard non-vacuity mutations + Protocol
+>>>     conformance) + L5 tests/integration/test_data007_python_binding.py (gated ATP_RUN_INTEGRATION=1:
+>>>     ingest via data016_ingest_cli -> read back through the Python binding) + L7 tests/domain/
+>>>     test_store_history_consumer.py (a real Strategy reads store-sourced bars via get_bars+RAW; the
+>>>     bare-default raises; binding registered in metadata).
+>>>   - architecture/runtime_services.json: NEW store_history_binding_contract block (passes:false
+>>>     framing; reuses ATP_DATA_STORE_DIR -- NO new config key); unified_query + concurrent_read blocks
+>>>     reframed to note the binding now exists (RAW-only partial; DATA-007 stays false, DATA-017's
+>>>     Python-consumer-vs-held-writer Load test is its remaining close). tools/unified_query_check.py
+>>>     docstring/deferred reframed to match. NO feature flipped (feature_list.json byte-identical).
+>>>   - CODEX ADVERSARIAL LOOP: 10 rounds. R1 [high]x2 (no timeout; RAW default = silent raw-as-adjusted)
+>>>     -> timeout + SPLIT_ADJUSTED default + raise. R2 [high]x2 (PREMATURE flip; parser count) -> HOLD
+>>>     passes:false (operator) + count validation. R3 [high] (no echo symbol/resolution validation) ->
+>>>     echo validation. R4 [high]+[med] (negative/zero count; arch summary drift) -> reject + summary
+>>>     fix. R5 [high] (no range/order validation) -> event_ts range + ascending guards + echoed
+>>>     start/end. R6 [high]x2 (FileNotFoundError escapes boundary; WarmupController over-claim) ->
+>>>     wrap OSError in StoreQueryError + reframe L7/metadata. R7 [high]+[med] (Protocol lacks
+>>>     get_bars_range; fractional end drops a record) -> reframe (Protocol change is out of scope) +
+>>>     ceil(ts)-1. R8 [high] (no kind narrowing) -> --kind daily/minute equity bar. R9/R10 = genuine
+>>>     NON-CONVERGENCE on the deferred DATA-012 (the binding can't be a complete default-HistoricalData
+>>>     drop-in until normalization exists; R1<->R10 unresolvable without DATA-012). All in-scope bugs
+>>>     fixed; deterministic critic APPROVE; operator authorized the foundational commit with honest
+>>>     verdicts (memory: "scope honestly + get human authorization, never fake APPROVE").
+>>>   - NEXT (the close-blocker is now ONE of two operator choices): either (A) implement SRS-DATA-012
+>>>     normalization so get_bars' SPLIT_ADJUSTED default returns adjusted data (then the binding drives
+>>>     WarmupController and DATA-007 flips); or (B) operator scopes DATA-007 = provider-neutral RAW
+>>>     access + add a public explicit-[start,end] range method to the HistoricalData Protocol (SDK
+>>>     change; update the warm-up/parity/harness stubs). DATA-017's remaining close is a
+>>>     Python-consumer(StoreBackedHistoricalData)-vs-held-writer Load test over the lock-free path.
+
+=== SESSION 70 ===
+Date: 2026-06-22
+Feature: SRS-DATA-007 -- provide a unified historical data access interface (docs/SRS.md SRS-DATA-007;
+SyRS SYS-27/SYS-53; StRS SN-1.28/SN-3.03/BG-5). STAYS passes:false (foundational consumer binding, NOT
+a feature close). Status: 83 features remaining (UNCHANGED, 83 -> 83; feature_list.json byte-identical).
+
+SELECTION: operator directive (build the load-bearing consumer binding the DATA read cluster needs; the
+close-green well is dry). S68/S69 named the binding as the load-bearing close for BOTH DATA-007 and
+DATA-017: "a real strategy-container/notebook process reads via this path (needs the Python<->atp-data
+bridge / SRS-SDK host)." This session built that bridge as a concrete HistoricalData implementation.
+
+DISPOSITION (the whole story): I built StoreBackedHistoricalData and initially framed DATA-007 as a
+green flip (a real Python consumer now queries by symbol/date/resolution with no provider); operator
+chose flip:true. The Codex judgment loop (10 rounds) fixed every in-scope bug but converged on a
+genuine non-convergence: after fixing the normalization-honesty bug (Codex R1: a RAW default silently
+serves raw bars where the Protocol promises split-adjusted), the binding defaults to SPLIT_ADJUSTED and
+RAISES unless the caller passes RAW -- so the bare-default symbol/date/resolution query (used by
+WarmupController and the author docs) does not yet return data (Codex R10). R1 and R10 are in direct
+tension; only implementing SRS-DATA-012 normalization resolves both, and that is out of scope. Per my
+durable selection/honesty policy (and the exact S69 precedent), this is a premature flip: I reverted it
+and the operator (AskUserQuestion) chose HOLD passes:false, then authorized committing the foundational
+binding with honestly-recorded verdicts. feature_list.json is byte-identical to HEAD (no flip).
+
+What I did (all NEW files + additive wiring; the Rust crate / the CLIs / feature_list.json UNCHANGED):
+- NEW python/atp_strategy/store_history.py: StoreBackedHistoricalData(HistoricalData) + StoreQueryError.
+  Subprocess -> data007_query_cli (lock-free, source-neutral) -> parse -> Bars. Hardened over 10 Codex
+  rounds: source-neutral (no provider param/field); normalization honesty (SPLIT_ADJUSTED default
+  matches Protocol, raises unless RAW); money (_PRICE_MINOR_SCALE=100 OHLC-only, volume raw int);
+  bounded timeout -> StoreQueryError; launch failure (OSError) wrapped; parser fails closed on negative/
+  zero-with-records/non-covering match_count, malformed ints, echoed symbol/resolution/start/end
+  mismatch, event_ts out-of-range, non-ascending event_ts; list argv (no shell); --kind equity-bar
+  narrowing (no cross-kind poisoning); exclusive end via ceil(ts)-1. Kept OUT of atp_strategy.__all__
+  (host/runtime binding, not an authoring primitive; SRS-SDK-009 author surface stays focused).
+- NEW tools/store_history_check.py (12 static checks + cargo round-trip) -> registered in
+  architecture_check.py (assert_store_history; auto-mirrored in CI) + wired into init.sh --require-cargo.
+- NEW L4/L3/L5/L7 tests (boundary fake-runner; contract check-driver + per-guard non-vacuity mutations;
+  gated integration ingest->python-read; domain real-strategy-reads-store + bare-default-raises).
+- architecture/runtime_services.json: NEW store_history_binding_contract (passes:false); unified_query +
+  concurrent_read reframed (binding exists, RAW-only partial); unified_query_check.py docstring/deferred
+  reframed. NO new config key (reuses ATP_DATA_STORE_DIR).
+
+What I tested:
+- store_history_check PASS (12 static + cargo round-trip); architecture_check PASS (includes the binding
+  evidence); unified_query_check + concurrent_read_check still PASS (regression). ./init.sh -> Environment
+  ready (now runs the store-history --require-cargo block).
+- L3+L4+L7 = 77 passed; gated L5 (ATP_RUN_INTEGRATION=1) = 2 passed; broad pytest -m "not integration
+  and not e2e": 2348 passed, 4 skipped, 1 PRE-EXISTING unrelated failure (test_bbands_property_matches_
+  batch_talib -- SRS-SDK-006 talib/pandas-ta version drift, NOT mine). ruff clean on all my files
+  (pre-existing I001 in tools/architecture_check.py import block is unchanged from HEAD -- not my
+  regression; the autonomous loop has never run ruff so that debt predates me).
+
+Critic verdicts:
+  deterministic: APPROVE -- 0 findings
+  judgment (/codex:adversarial-review, 10 rounds): NEEDS-ATTENTION -- CONVERGED. Rounds 1-9 each found a
+    genuine in-scope trust-boundary bug; ALL fixed. The residual R9/R10 findings are the deferred
+    SRS-DATA-012 dependency (the binding cannot be a complete default-HistoricalData drop-in until
+    normalization exists; R1<->R10 unresolvable in-scope), not a defect in the shipped code. OVERRIDE
+    (operator-authorized): DATA-007 STAYS passes:false (so nothing is over-claimed), every in-scope bug
+    is fixed, the deterministic critic APPROVEs, and the DATA-012 / public-range limitations are
+    documented as named deferred owners. Per the durable memory ("adversarial loop won't converge on a
+    deferred-runtime slice -- fix in-scope bugs, scope the rest honestly with named owners + an L7 pin,
+    then get human authorization to commit; record verdicts honestly, never fake APPROVE"), the operator
+    authorized the foundational commit (AskUserQuestion: "Commit foundational (honest verdicts)").
+
+Known issues / notes for next agent:
+- DATA-007 stays passes:false. The close is ONE of two operator choices: (A) implement SRS-DATA-012
+  normalization (then get_bars' SPLIT_ADJUSTED default returns adjusted data, the binding drives
+  WarmupController, DATA-007 flips); or (B) operator scopes DATA-007 = provider-neutral RAW access AND
+  add a public explicit-[start,end] range method to the HistoricalData Protocol (an SRS-SDK-001 surface
+  change -- get_bars_range is currently binding-specific because adding it to the runtime_checkable
+  Protocol would break the warm-up/parity/harness stubs' isinstance checks; those stubs would need the
+  method too).
+- DATA-017's remaining close: a Python-consumer (StoreBackedHistoricalData) -vs- held-writer Load test
+  over the lock-free read path (the substrate + the binding both exist now).
+- Do NOT re-run the Codex loop expecting APPROVE without DATA-012 -- it converged on that deferred
+  dependency. Pre-existing repo lint debt: tools/*.py + several tests/ files carry I001 import-sort
+  errors that predate this session (the autonomous loop never runs `ruff check .`); I did NOT expand
+  scope to fix repo-wide lint. The bbands property test is a pre-existing unrelated failure.
+
+
 >>> (support concurrent reads during ingestion writes) demonstrated + pinned + wired over the S67/S68
 >>> MarketDataStore substrate, but STAYS passes:false (83 -> 83 UNCHANGED). NO production Rust changed:
 >>> the substrate ALREADY provides snapshot isolation (lock-free load_from_path reads + O_EXCL StoreLock
