@@ -406,6 +406,13 @@ if ! python3 tools/unified_query_check.py --require-cargo >/dev/null; then
   exit 1
 fi
 
+echo "→ Running concurrent-read-during-write contract check (SRS-DATA-017)..."
+if ! python3 tools/concurrent_read_check.py --require-cargo >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Concurrent-read contract check failed; run python3 tools/concurrent_read_check.py --require-cargo for detail."
+  exit 1
+fi
+
 echo "→ Running factor-analysis contract check..."
 if ! python3 tools/factor_analysis_check.py --require-cargo >/dev/null; then
   echo "✗ Environment failed"

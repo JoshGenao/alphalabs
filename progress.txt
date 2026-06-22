@@ -1,4 +1,162 @@
->>> NEXT TARGET (2026-06-21, after SESSION 68): FOUNDATIONAL READ SUBSTRATE shipped -- the SRS-DATA-007
+>>> NEXT TARGET (2026-06-21, after SESSION 69): FOUNDATIONAL CONCURRENCY EVIDENCE shipped -- SRS-DATA-017
+>>> (support concurrent reads during ingestion writes) demonstrated + pinned + wired over the S67/S68
+>>> MarketDataStore substrate, but STAYS passes:false (83 -> 83 UNCHANGED). NO production Rust changed:
+>>> the substrate ALREADY provides snapshot isolation (lock-free load_from_path reads + O_EXCL StoreLock
+>>> single-writer + atomic scratch->fsync->rename->dir-fsync publish + checksum-first fail-closed
+>>> restore). S69 added the LOAD TEST that proves the property end to end + a regression check + the
+>>> runtime contract + init.sh wiring. The flip-vs-foundational fork was the whole story this session:
+>>> operator first chose flip:true (Load-test verification mode + lock-free read path = the consumer
+>>> path), but Codex R1 [high] correctly caught it as a PREMATURE close (the AC NAMES strategy
+>>> containers/backtests/factor jobs/notebooks as readers; the runtime contract ITSELF defers those
+>>> in-process bindings -- closing on an operator-CLI ANALOGY is over-claim, exactly like S68 DATA-007).
+>>> Operator (AskUserQuestion) then chose HOLD passes:false. SAME named-consumer-binding deferral as
+>>> DATA-007 is the LOAD-BEARING close for BOTH. Don't re-flip DATA-017 until a real strategy-container/
+>>> notebook process reads via this path (needs the Python<->atp-data bridge / SRS-SDK host).
+>>> WHAT SHIPPED (all NEW files + additive wiring; store.rs/query.rs/the CLIs/feature_list.json UNCHANGED):
+>>>   - crates/atp-data/tests/srs_data_017_concurrent_reads.rs (L5, always-run): (1) deterministic
+>>>     read-during-active-write OVERLAP proof -- a lock-held writer thread holds its first window open
+>>>     (BOUNDED 30s deadline) until a lock-free reader records overlap (write_in_progress flag), asserts
+>>>     overlapping_reads>=1, no torn read (StoreError::ChecksumMismatch is the ruled-out failure), seed
+>>>     always present, monotonic snapshots; a DoneOnDrop finally-guard sets `done` on ANY writer exit
+>>>     (incl. panic) + a 60s reader deadline so a regression FAILS, never HANGS; (2) read-never-blocks-
+>>>     on-a-held-lock (deterministic); (3) two-writer NO-LOSS (both jobs' disjoint records survive ->
+>>>     proves the lock is held ACROSS the whole load-modify-save, un-gameable by token presence).
+>>>   - crates/atp-data/examples/data017_lock_holder.rs (NEW test-only fixture, NOT a product bin): opens
+>>>     a KNOWN file-coordinated lock-held window (acquire -> in-memory modify -> ready-file -> wait for
+>>>     release-file -> commit+release) so the gated cross-PROCESS test can prove reader PROCESSES
+>>>     complete within a timeout (non-blocking) + read the uncorrupted seed + do NOT see the uncommitted
+>>>     write (snapshot isolation) while the lock is GENUINELY held.
+>>>   - tests/integration/test_data017_concurrent_reads.py (L5, gated ATP_RUN_INTEGRATION=1): the
+>>>     lock-holder cross-process non-blocking+overlap proof (TimeoutExpired fails a blocked reader, never
+>>>     miscounts) + a many-reader static-store baseline.
+>>>   - tests/test_concurrent_read_contract.py (L3) + tests/domain/test_data017_concurrent_reads.py (L7):
+>>>     check structure + per-guard NON-VACUITY mutations (injected reader lock, dropped writer lock,
+>>>     PREMATURE drop(_lock) before save, non-atomic publish, dropped checksum guard, non-O_EXCL create,
+>>>     gutted load test, broker dep, vendor token) + behavioral cargo-driven invariants.
+>>>   - tools/concurrent_read_check.py (NEW, 9 static checks + cargo smoke) -> 'SRS-DATA-017
+>>>     CONCURRENT-READ PASS'; check_writer_serialized enforces lock LIFETIME (acquire BEFORE load BEFORE
+>>>     save + NO drop(_lock) before save), not just token presence. Registered in architecture_check.py
+>>>     (assert_concurrent_read) -> auto-mirrored in CI (ci.yml + run_ci_locally.sh run architecture_check).
+>>>     Wired into init.sh --require-cargo block. architecture_check summary claims ONLY substrate+CLI
+>>>     coverage + explicitly defers the named in-process consumers (no over-claim).
+>>>   - architecture/runtime_services.json: concurrent_read_runtime_contract block (passes:false framing;
+>>>     reuses ATP_DATA_STORE_DIR -- NO new config key; DATA-007 block UNCHANGED).
+>>>   - CODEX ADVERSARIAL LOOP: 6 rounds, CONVERGENT (each finding genuine + fully fixed; never faked an
+>>>     APPROVE). R1 [high]x2: premature flip + vacuous overlap (writer raced ahead) -> reverted flip to
+>>>     passes:false + deterministic overlap proof. R2 [high]x2: unbounded spin HANG + architecture_check
+>>>     over-claim -> bounded 30s deadline + reworded summary. R3 [high]: writer panic leaves readers
+>>>     spinning -> DoneOnDrop finally-guard + reader deadline. R4 [high]: writer-serialization check was
+>>>     token-presence-only (a drop(_lock) before save would pass) -> enforce order+lifetime + premature-
+>>>     drop non-vacuity test + behavioral two-writer no-loss test. R5 [high]: cross-process overlap flag
+>>>     bracketed process lifetime not the lock-held window -> data017_lock_holder fixture + true window
+>>>     proof + subprocess timeouts. R6 APPROVE.
+>>>   - NEXT (the substrate well stays the close-blocker): the DATA cluster's remaining green closes need
+>>>     a NAMED CONSUMER to actually read/query via the store -- the Python<->atp-data bridge (SRS-SDK
+>>>     strategy host) or the backtest engine (atp-simulation) calling MarketDataStore::load_from_path /
+>>>     query_unified. That single binding is the load-bearing close for BOTH DATA-007 and DATA-017.
+>>>     Other foundational DATA work: DATA-013 (validator rules -> quarantine; gate exists, dashboard/
+>>>     notif alert surface deferred), DATA-008/009/010 (SSD/NAS tiering), corporate actions (011/012/
+>>>     019/020/021), provider adapters (001/003/005/006). Closest-to-green well remains DRY (S66
+>>>     inflection holds): every remaining feature names an unbuilt consumer/provider/tiering/dashboard
+>>>     surface.
+
+=== SESSION 69 ===
+Date: 2026-06-21
+Feature: SRS-DATA-017 -- support concurrent reads during ingestion writes (docs/SRS.md SRS-DATA-017;
+SyRS SYS-63; StRS SN-1.26/SN-1.28). STAYS passes:false (foundational substrate, NOT a feature close).
+Status: 83 features remaining (UNCHANGED, 83 -> 83).
+
+SELECTION: operator directive (build foundational/high-impact in the largest cluster; the close-green
+well is dry). SRS-DATA = the largest failing cluster; DATA-017 is the concurrency property of the
+S67/S68 storage substrate and S68's handoff named it the natural next step ("the read-only snapshot
+load is groundwork"). The substrate ALREADY provides the property (lock-free reads + atomic publish +
+single-writer lock + checksum-fail-closed); the missing piece was the Load test (the AC's named
+verification mode) + a regression check + the contract + wiring.
+
+DISPOSITION (the whole story): I initially framed DATA-017 as a genuine green flip (verification mode =
+"Load test"; the lock-free read path the CLIs use IS the path the named consumers would use) and the
+operator chose flip:true. Codex R1 correctly flagged this as a PREMATURE close: the AC NAMES strategy
+containers / backtests / factor jobs / notebooks as the readers, and the runtime contract ITSELF defers
+those in-process bindings -- so closing on the operator-CLI ANALOGY over-claims end-to-end completion,
+exactly as SRS-DATA-007 was held passes:false in S68. Operator (AskUserQuestion) then chose HOLD
+passes:false. This is the honest, convergent call and matches my durable selection policy (an AC naming
+a genuinely-unbuilt surface is foundational/Phase-1, not a green close). I reverted the flip AND the
+DATA-007 "deferred SRS-DATA-017" doc-sweep (DATA-017 is NOT closed, so "deferred" stays accurate), so
+the final diff touches NO DATA-007 files and NO feature_list.json -- pure additive substrate evidence.
+
+What I did (NO production Rust changed -- store.rs/query.rs/the CLIs are byte-stable):
+- L5 always-run Rust Load test crates/atp-data/tests/srs_data_017_concurrent_reads.rs (3 tests):
+  deterministic read-during-active-write overlap (write_in_progress flag + bounded 30s writer spin +
+  overlapping_reads>=1 assertion; DoneOnDrop finally-guard so a writer panic FAILS not HANGS + 60s
+  reader deadline); read-never-blocks-on-a-held-lock; two-writer NO-LOSS (proves the lock is held
+  across the whole load-modify-save, un-gameable by token presence).
+- crates/atp-data/examples/data017_lock_holder.rs (NEW test-only fixture): a file-coordinated lock-held
+  window for the cross-process proof (acquire -> modify -> ready-file -> await release-file ->
+  commit+release; bounded 60s auto-release so it can't hang CI).
+- L5 gated tests/integration/test_data017_concurrent_reads.py: the lock-holder cross-PROCESS proof --
+  reader processes complete within a timeout (non-blocking; TimeoutExpired FAILS a blocked reader),
+  read the uncorrupted seed, and do NOT see the uncommitted write (snapshot isolation) while the lock
+  is genuinely held; + a many-reader static-store baseline.
+- L3 tests/test_concurrent_read_contract.py + L7 tests/domain/test_data017_concurrent_reads.py: check
+  structure + per-guard NON-VACUITY mutations (incl. the premature drop(_lock)-before-save) + behavioral
+  cargo-driven invariants.
+- tools/concurrent_read_check.py (NEW, 9 static checks + cargo smoke) -> 'SRS-DATA-017 CONCURRENT-READ
+  PASS'; check_writer_serialized enforces lock LIFETIME (acquire->load->save order + no premature drop),
+  not just token presence. Registered in tools/architecture_check.py (assert_concurrent_read) -- so it
+  auto-mirrors in CI (ci.yml + run_ci_locally.sh both run architecture_check). Wired into the init.sh
+  --require-cargo block. The architecture_check summary claims ONLY substrate + operator-CLI coverage
+  and explicitly defers the named in-process consumers (passes:false), per Codex R2.
+- architecture/runtime_services.json: concurrent_read_runtime_contract block (passes:false framing;
+  reuses ATP_DATA_STORE_DIR, NO new config key).
+
+What I tested:
+- cargo test -p atp-data green (32 lib + the 3 new concurrency tests + existing integration); the Load
+  test ran 8x stable (no flake, no hang); clippy clean on atp-data (pre-existing atp-types doc warnings
+  are not mine). The lock-holder example builds + the gated cross-process test passes 3x.
+- DATA-017 check --require-cargo PASS; architecture_check PASS (includes DATA-017 evidence); DATA-007 +
+  DATA-016 checks PASS (regression -- no DATA-007 files touched). ./init.sh -> Environment ready (now
+  runs the DATA-017 --require-cargo block).
+- L3 (incl. premature-drop non-vacuity) + L7 = 30 passed; gated L5 (ATP_RUN_INTEGRATION=1) = 2 passed;
+  broad pytest -m "not integration and not e2e": 2271 passed, 4 skipped, 1 PRE-EXISTING unrelated failure
+  (see Known issues).
+
+Critic verdicts:
+  deterministic: APPROVE -- 0 findings (every run).
+  judgment (/codex:adversarial-review, working-tree, 6 rounds): APPROVE (R6). CONVERGENT, never faked.
+    R1 needs-attention [high]x2: premature passes:true flip while the AC's named in-process consumers
+       are deferred (-> reverted to passes:false foundational, operator decision via AskUserQuestion);
+       and the Rust load test inferred overlap from thread counts so the writer could race ahead
+       (-> deterministic overlap proof: writer holds first window until a reader records overlap).
+    R2 needs-attention [high]x2: the bounded-overlap spin was UNBOUNDED so a blocked/panicking reader
+       could HANG init.sh (-> 30s deadline so it FAILS); the architecture_check summary over-claimed
+       named-consumer reads (-> reworded to substrate+CLI coverage only, explicit deferral).
+    R3 needs-attention [high]: a writer panic before done.store left readers spinning -> scope hang
+       (-> DoneOnDrop finally-guard sets done on any writer exit + 60s reader deadline).
+    R4 needs-attention [high]: check_writer_serialized was token-presence-only -- a drop(_lock) before
+       save would pass (-> enforce acquire->load->save order + no premature drop; + premature-drop
+       non-vacuity L3 test; + behavioral two-writer no-loss Rust test).
+    R5 needs-attention [high]: the cross-process overlap flag bracketed the subprocess LIFETIME, not the
+       lock-held window (-> data017_lock_holder fixture opens a KNOWN lock-held window + subprocess
+       timeouts so a blocked reader FAILS).
+    R6 APPROVE: scoped to substrate evidence, keeps passes:false, no critic-gate modification, checks/
+       tests align with the deferred SRS scope.
+
+Known issues / notes for next agent:
+- SRS-DATA-017 close (like SRS-DATA-007) needs a NAMED in-process CONSUMER to actually read via the
+  store: the Python<->atp-data bridge (SRS-SDK strategy host) or the backtest engine (atp-simulation)
+  calling MarketDataStore::load_from_path / query_unified. That single binding is the load-bearing close
+  for BOTH features. Don't re-flip DATA-017 until a real strategy-container/notebook process reads here.
+- PRE-EXISTING unrelated failure (NOT mine; fails on HEAD): tests/property/test_indicators_property.py::
+  test_bbands_property_matches_batch_talib -- a Bollinger Bands / talib numerics property test,
+  orthogonal to the data layer (none of S69's files touch indicators). Flagged for honesty; left for a
+  dedicated indicators session.
+- The Rust Load test asserts CORRECTNESS invariants only (no timing asserts) + uses bounded deadlines +
+  a finally-guard, so it can never hang and is not flaky (8x stable). Keep it that way: the overlap proof
+  must FAIL (assertion / propagated panic), never HANG, when the property is broken.
+- crates/atp-data/examples/data017_lock_holder.rs is a TEST-ONLY fixture (idiomatic examples/ dir, not a
+  product binary); it exists only for the gated cross-process load test's known lock-held window.
+
+
 >>> unified historical query ENGINE over the S67 MarketDataStore (crates/atp-data/src/query.rs:
 >>> UnifiedHistoricalQuery{symbol,resolution,start_ts,end_ts,kind:Option<DatasetKind>} -> source-neutral
 >>> UnifiedHistoricalResult; MarketDataStore::query_unified filters records() by exact symbol+resolution
