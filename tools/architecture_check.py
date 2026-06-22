@@ -22,6 +22,10 @@ from unified_query_check import (
     UnifiedQueryCheckError,
     assert_unified_query_static,
 )
+from concurrent_read_check import (
+    ConcurrentReadCheckError,
+    assert_concurrent_read_static,
+)
 from benchmark_check import BenchmarkCheckError, assert_sim_benchmark_static
 from determinism_check import DeterminismCheckError, assert_determinism_static
 from factor_analysis_check import FactorAnalysisCheckError, assert_factor_analysis_static
@@ -859,6 +863,29 @@ def assert_unified_query(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_concurrent_read(config: dict) -> list[str]:
+    block = config.get("concurrent_read_runtime_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_concurrent_read_static(config, ROOT)
+    summary = (
+        f"{block['data_crate']['crate']} storage SUBSTRATE supports concurrent reads during ingestion "
+        "writes (snapshot isolation over the SRS-DATA-016 store: the data007_query_cli query + "
+        "data016_ingest_cli inspect OPERATOR readers take no lock and load the atomically-published "
+        "snapshot; data016_ingest_cli ingest holds the single-writer StoreLock across the whole "
+        "load-modify-save; save_to_path publishes via scratch->fsync->fs::rename->dir-fsync so a reader "
+        "never sees a torn store; load_from_path fails closed via the checksum-first restore -- "
+        "demonstrated by the srs_data_017_concurrent_reads Load test driving lock-free reader "
+        "threads/processes against a lock-held writer, which exercise the SAME load_from_path path a "
+        "named in-process consumer would use). SRS-DATA-017 STAYS passes:false: this is substrate + "
+        "operator-CLI coverage; the AC's named in-process consumers (strategy containers / backtests / "
+        "factor jobs / notebooks) are NOT yet wired to this path -- that binding is deferred (SRS-UI / "
+        "SRS-API / the SRS-SDK strategy host) and is the load-bearing close (SRS-DATA-017, SyRS SYS-63)"
+    )
+    return static_evidence + [summary]
+
+
 def assert_factor_analysis(config: dict) -> list[str]:
     block = config.get("factor_analysis_contract")
     if block is None:
@@ -1268,6 +1295,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_unified_query(config))
     except UnifiedQueryCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_concurrent_read(config))
+    except ConcurrentReadCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_factor_analysis(config))
