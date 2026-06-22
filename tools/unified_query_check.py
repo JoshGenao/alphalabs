@@ -28,13 +28,16 @@ the ``unified_historical_data`` (API-7) block, which pins the provider-facing ad
   (e) ``query`` carries no broker/adapter dependency and no lowercase vendor SDK token; ``lib.rs``
       re-exports ``pub mod query;``.
 
-The PASS line is ``SRS-DATA-007 UNIFIED-QUERY PASS`` -- it names the deferred owners (the real provider
-network adapters via SRS-DATA-001/003/005/006, read-while-write via SRS-DATA-017, normalization via
-SRS-DATA-012, SSD/NAS tiering via SRS-DATA-008/009/010, the in-process Python/backtest/factor/notebook
-bindings via SRS-UI / SRS-API / the SRS-SDK host). This check is contract EVIDENCE that the query
-substrate is correctly built and stays a regression gate; SRS-DATA-007 itself STAYS passes:false
-(foundational substrate) -- the acceptance names strategy/backtest/factor/notebook consumers that are
-not yet wired to this engine, so flipping it would over-claim end-to-end completion.
+The PASS line is ``SRS-DATA-007 UNIFIED-QUERY PASS`` -- it names the still-deferred owners (the real
+provider network adapters via SRS-DATA-001/003/005/006, read-while-write via SRS-DATA-017, normalization
+via SRS-DATA-012, SSD/NAS tiering via SRS-DATA-008/009/010, the dashboard/REST surfaces via
+SRS-UI / SRS-API). This check is contract EVIDENCE that the query substrate is correctly built and stays
+a regression gate; SRS-DATA-007 STAYS passes:false (foundational substrate) -- the first in-process
+consumer binding (the Python ``StoreBackedHistoricalData``; see ``tools/store_history_check.py`` +
+``store_history_binding_contract``) reads this engine by symbol/date-range/resolution with no provider
+via the explicit RAW path, but it is a RAW-only PARTIAL (its default fails closed pending the deferred
+DATA-012 normalization, so the bare-default query does not yet return data), so flipping would
+over-claim end-to-end completion.
 
 Mirrors the PASS/FAIL output style of ``tools/ingestion_idempotency_check.py``.
 
@@ -394,8 +397,9 @@ _DEFERRED_OWNERS = (
     "(SRS-DATA-012; DATA-007 queries by symbol / date range / resolution only)",
     "SSD-primary / NAS-archival tiering, eviction, cold-read failover of the queried directory "
     "(SRS-DATA-008/009/010)",
-    "in-process Python / backtest / factor / notebook query bindings (SRS-UI / SRS-API / the "
-    "SRS-SDK strategy host); the Rust data007_query_cli is the operator-demonstrable read surface",
+    "the dashboard / REST consumer surfaces (SRS-UI / SRS-API); the first in-process Python consumer "
+    "binding is now wired but is a RAW-only PARTIAL pending DATA-012 -- StoreBackedHistoricalData "
+    "(tools/store_history_check.py); DATA-007 stays passes:false until the bare-default query returns data",
 )
 
 

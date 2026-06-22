@@ -413,6 +413,13 @@ if ! python3 tools/concurrent_read_check.py --require-cargo >/dev/null; then
   exit 1
 fi
 
+echo "→ Running store-history Python binding contract check (SRS-DATA-007 close)..."
+if ! python3 tools/store_history_check.py --require-cargo >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Store-history binding contract check failed; run python3 tools/store_history_check.py --require-cargo for detail."
+  exit 1
+fi
+
 echo "→ Running factor-analysis contract check..."
 if ! python3 tools/factor_analysis_check.py --require-cargo >/dev/null; then
   echo "✗ Environment failed"
