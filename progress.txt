@@ -1,81 +1,108 @@
->>> NEXT TARGET (2026-06-22, after SESSION 70): FIRST PYTHON<->atp-data CONSUMER BINDING shipped --
->>> StoreBackedHistoricalData (python/atp_strategy/store_history.py), a concrete atp_strategy.api.
->>> HistoricalData implementation that drives the lock-free, source-neutral data007_query_cli so a
->>> real strategy/backtest/factor/notebook reads ingested data by symbol/date-range/resolution with
->>> NO provider named. STAYS passes:false (83 -> 83 UNCHANGED) -- a RAW-only PARTIAL binding, the
->>> load-bearing groundwork toward the SRS-DATA-007 close, held by operator decision (the SAME S69
->>> pattern: build the consumer binding, Codex catches the premature flip, operator chooses HOLD).
->>> WHY HELD (the whole story): the operator first chose flip:true ("the binding IS the named-consumer
->>> read the substrate was waiting for"), but the Codex adversarial loop (10 rounds, CONVERGENT on the
->>> in-scope bugs) surfaced that flipping over-claims: after fixing the normalization-honesty bug, the
->>> binding keeps the HistoricalData Protocol's SPLIT_ADJUSTED default and FAILS CLOSED unless the
->>> caller passes NormalizationMode.RAW (because DATA-012 normalization is deferred) -- so the
->>> bare-default symbol/date/resolution query does not yet return data, and the binding cannot drive
->>> the existing WarmupController/author-docs default call. R1 (don't default RAW = silent
->>> raw-as-adjusted) and R10 (default SPLIT_ADJUSTED+raise = can't serve the default HistoricalData
->>> path) are in DIRECT tension -- ONLY implementing DATA-012 resolves both, which is out of scope.
->>> Operator (AskUserQuestion) chose HOLD passes:false, then authorized committing the foundational
->>> binding with honest verdicts. The close needs SRS-DATA-012 normalization (so the default query
->>> returns adjusted data) OR an operator scoping decision that DATA-007 = provider-neutral RAW access
->>> + a public explicit-[start,end] range method on the shared HistoricalData Protocol (an SRS-SDK-001
->>> surface change; get_bars_range is binding-specific only because adding it to the runtime_checkable
->>> Protocol would break the warm-up/parity/harness stubs' isinstance checks).
->>> WHAT SHIPPED (all NEW files + additive wiring; the Rust crate, the CLIs, feature_list.json all
->>> UNCHANGED -- pure additive Python binding + evidence):
->>>   - python/atp_strategy/store_history.py (NEW): StoreBackedHistoricalData(HistoricalData) +
->>>     StoreQueryError(StrategyAPIError). get_bars(symbol, lookback, frequency, end, asset_class,
->>>     normalization) + get_bars_range(symbol, frequency, start, end, ...) (binding-specific). Drives
->>>     data007_query_cli via subprocess (the repo's only cross-language pattern; no PyO3/maturin),
->>>     parses the source-neutral key:value stdout into Bars. HEAVILY hardened by the Codex loop:
->>>     (1) source-neutral -- no provider/vendor/source/feed param, no origin field read; (2)
->>>     normalization honesty -- default SPLIT_ADJUSTED matches the Protocol and RAISES unless RAW
->>>     (never silent raw-as-adjusted); (3) money -- _PRICE_MINOR_SCALE=100 on OHLC only, volume a raw
->>>     int count (cents assumption flagged, pending the deferred SDK<->core money boundary); (4) no
->>>     hang -- per-query timeout (default 30s) -> TimeoutExpired mapped to StoreQueryError; (5) launch
->>>     failure (missing/un-executable binary, FileNotFoundError/OSError) wrapped in StoreQueryError
->>>     (one structured boundary); (6) parser fails closed on: negative match_count, match_count:0 with
->>>     records, indexes not covering [0,match_count), malformed ints, echoed symbol/resolution/start/
->>>     end != request, event_ts outside [start,end] (no future/stale), non-ascending event_ts; (7)
->>>     list argv (shell=False, no injection); (8) kind narrowing -- equity query passes the
->>>     vendor-neutral --kind (daily/minute equity bar) so a fundamental/option record sharing
->>>     symbol+resolution cannot poison the OHLCV read; unsupported resolutions raise (SRS-SDK-007);
->>>     (9) exclusive end via ceil(ts)-1 (keeps the boundary second on a fractional end). NOT in __all__
->>>     (it's a host/runtime binding, not a strategy-AUTHORING primitive; imported from
->>>     atp_strategy.store_history; keeps the SRS-SDK-009 documented author surface focused).
->>>   - tools/store_history_check.py (NEW, 12 static checks + a cargo round-trip): 'SRS-DATA-007
->>>     STORE-HISTORY BINDING PASS'. Registered in tools/architecture_check.py (assert_store_history)
->>>     -> auto-mirrored in CI (ci.yml + run_ci_locally.sh run architecture_check). Wired into the
->>>     init.sh --require-cargo block.
->>>   - L4 tests/boundary/test_store_history_binding.py (fake-runner, no cargo) + L3 tests/
->>>     test_store_history_contract.py (drive the check + per-guard non-vacuity mutations + Protocol
->>>     conformance) + L5 tests/integration/test_data007_python_binding.py (gated ATP_RUN_INTEGRATION=1:
->>>     ingest via data016_ingest_cli -> read back through the Python binding) + L7 tests/domain/
->>>     test_store_history_consumer.py (a real Strategy reads store-sourced bars via get_bars+RAW; the
->>>     bare-default raises; binding registered in metadata).
->>>   - architecture/runtime_services.json: NEW store_history_binding_contract block (passes:false
->>>     framing; reuses ATP_DATA_STORE_DIR -- NO new config key); unified_query + concurrent_read blocks
->>>     reframed to note the binding now exists (RAW-only partial; DATA-007 stays false, DATA-017's
->>>     Python-consumer-vs-held-writer Load test is its remaining close). tools/unified_query_check.py
->>>     docstring/deferred reframed to match. NO feature flipped (feature_list.json byte-identical).
->>>   - CODEX ADVERSARIAL LOOP: 10 rounds. R1 [high]x2 (no timeout; RAW default = silent raw-as-adjusted)
->>>     -> timeout + SPLIT_ADJUSTED default + raise. R2 [high]x2 (PREMATURE flip; parser count) -> HOLD
->>>     passes:false (operator) + count validation. R3 [high] (no echo symbol/resolution validation) ->
->>>     echo validation. R4 [high]+[med] (negative/zero count; arch summary drift) -> reject + summary
->>>     fix. R5 [high] (no range/order validation) -> event_ts range + ascending guards + echoed
->>>     start/end. R6 [high]x2 (FileNotFoundError escapes boundary; WarmupController over-claim) ->
->>>     wrap OSError in StoreQueryError + reframe L7/metadata. R7 [high]+[med] (Protocol lacks
->>>     get_bars_range; fractional end drops a record) -> reframe (Protocol change is out of scope) +
->>>     ceil(ts)-1. R8 [high] (no kind narrowing) -> --kind daily/minute equity bar. R9/R10 = genuine
->>>     NON-CONVERGENCE on the deferred DATA-012 (the binding can't be a complete default-HistoricalData
->>>     drop-in until normalization exists; R1<->R10 unresolvable without DATA-012). All in-scope bugs
->>>     fixed; deterministic critic APPROVE; operator authorized the foundational commit with honest
->>>     verdicts (memory: "scope honestly + get human authorization, never fake APPROVE").
->>>   - NEXT (the close-blocker is now ONE of two operator choices): either (A) implement SRS-DATA-012
->>>     normalization so get_bars' SPLIT_ADJUSTED default returns adjusted data (then the binding drives
->>>     WarmupController and DATA-007 flips); or (B) operator scopes DATA-007 = provider-neutral RAW
->>>     access + add a public explicit-[start,end] range method to the HistoricalData Protocol (SDK
->>>     change; update the warm-up/parity/harness stubs). DATA-017's remaining close is a
->>>     Python-consumer(StoreBackedHistoricalData)-vs-held-writer Load test over the lock-free path.
+>>> NEXT TARGET (2026-06-23, after SESSION 71): SRS-DATA-012 SPLIT-ADJUSTED HISTORICAL NORMALIZATION
+>>> -- FOUNDATIONAL split-adjustment MATH shipped as a CRATE-INTERNAL module (crates/atp-data/src/
+>>> normalization.rs), exposed on NO public surface. DATA-012 AND DATA-007 BOTH STAY passes:false
+>>> (83 -> 83 UNCHANGED; feature_list.json byte-identical). This session ATTEMPTED the SRS-DATA-007
+>>> close via DATA-012 normalization (operator chose "Build split-adj -> close DATA-007"), built the
+>>> whole slice, FLIPPED DATA-007 passes:true, then the Codex adversarial loop (14 ROUNDS) surfaced --
+>>> through genuinely convergent findings -- that the close is premature on multiple fundamental,
+>>> out-of-scope blockers; operator chose "Revert flip, ship foundational." Final outcome = the
+>>> split-adjustment algorithm as tested substrate behind ZERO public surfaces (CLI, Python binding,
+>>> AND Rust crate API all RAW-only / not-exported), pending corporate-action COVERAGE (SRS-DATA-011).
+>>>
+>>> WHY THE CLOSE WAS REVERTED (the convergent non-convergence -- a textbook case for memory
+>>> feedback_adversarial_loop_nonconvergence): each Codex round peeled the next deferred dependency.
+>>>   R1: metadata contradiction + split-adjusted corrupting non-equity records (option-chain volume).
+>>>   R2: DATA-007 "date range" not a PUBLIC-Protocol contract (only the lookback idiom); promoted
+>>>       get_bars_range to the shared HistoricalData Protocol (+5 stubs) to close the date-range leg.
+>>>   R3: residual stale "DATA-007 stays false" text in unified_query_check.py + a json deferred entry.
+>>>   R4: SplitEvent publicly constructible -> a non-positive factor could divide-by-zero panic; added
+>>>       point-of-use validation + regression.
+>>>   R5 (FUNDAMENTAL): split-adjusted DEFAULT can silently serve RAW-as-ADJUSTED without corporate-
+>>>       action COVERAGE (real ingestion = SRS-DATA-011, deferred); AND the named consumers (backtest/
+>>>       factor/notebook) are NOT wired to the store (deferred TO DATA-007). Neither fixable this
+>>>       session. OPERATOR (AskUserQuestion) chose REVERT FLIP, SHIP FOUNDATIONAL.
+>>>   Post-revert R7..R14 hardened the foundational substrate to "no public surface emits split-adjusted
+>>>       without coverage": binding RAW-only (R5/R7), removed the orphaned get_bars_range Protocol
+>>>       promotion as a separate-feature scope violation (R7), CLI RAW-only / rejects split-adjusted
+>>>       (R8), store SCHEMA_VERSION 1->2 boundary for the new CorporateActionSplit kind + version-aware
+>>>       serialize so a daily-only store stays v1-readable (R9/R12), public_request_modes vs
+>>>       core_library_modes metadata split (R9), SplitEvent.symbol so a split adjusts ONLY its own
+>>>       symbol -- no cross-contamination (R10), made the normalization module CRATE-INTERNAL (not a
+>>>       public crate API: a Rust consumer could otherwise get raw-as-adjusted identity over an empty
+>>>       split set) (R13), and a generative property test over 5000 seeded bar+split sequences (R14).
+>>>   R15: APPROVE (no material findings).
+>>>
+>>> WHAT SHIPPED (foundational substrate; feature_list.json UNCHANGED -- NO flip):
+>>>   - crates/atp-data/src/normalization.rs (NEW, CRATE-INTERNAL `mod normalization`, NOT re-exported):
+>>>     SplitEvent{symbol,effective_ts,numerator,denominator} + NormalizationError + split_adjust_record(s)
+>>>     + split_events_for + div_round_half_even. Money math: compose-then-divide (ONE division per
+>>>     field), i128 intermediates + fail-closed i64::try_from, round-half-to-even, strict effective_ts>t
+>>>     boundary, OHLC x DEN/NUM & volume x inverse, symbol-only application, kind-guard (equity bars
+>>>     only), non-positive + overflow fail-closed. 15 unit tests INCL. a generative property test.
+>>>   - store.rs: DatasetKind::CorporateActionSplit (tag 4) + min_schema_version(); SCHEMA_VERSION 1->2
+>>>     with MIN_SUPPORTED=1; serialize writes the MINIMUM version for the contained kinds (daily-only
+>>>     stays v1); restore accepts {1,2} + rejects a v1 blob carrying the v2-only kind + unknown versions.
+>>>     fixture_batch split arm + split_record builder. 4 new schema-version tests.
+>>>   - data007_query_cli: --normalization raw ONLY (split-adjusted/fully/total FAIL CLOSED naming
+>>>     SRS-DATA-011 coverage; echoes normalization:raw). data016_ingest_cli: corporate-action-split kind.
+>>>   - python/atp_strategy/store_history.py: binding serves RAW ONLY (_NORMALIZATION_LABEL={RAW}); the
+>>>     Protocol default SPLIT_ADJUSTED and every adjusted mode fail closed, naming SRS-DATA-011.
+>>>   - tools/normalization_modes_check.py (NEW, 6 static guards: split_kind / rust_math+property /
+>>>     factors / cli_flag-rejects / binding-defers / not-publicly-exported + a cargo round-trip running
+>>>     the unit math suite and asserting the CLI fails closed) -> registered in architecture_check.py,
+>>>     wired into init.sh, mirrored in CI via architecture_check + pytest. NEW normalization_modes_contract
+>>>     block (passes:false; public_request_modes:[RAW], core_library_modes:[RAW,SPLIT_ADJUSTED],
+>>>     deferred_public_modes:[SPLIT_ADJUSTED,FULLY,TOTAL]).
+>>>   - L3 tests/test_normalization_modes_contract.py + L5 tests/integration/test_data012_split_adjusted.py
+>>>     (asserts BOTH public surfaces fail closed) + extended L7 tests/domain/test_store_history_consumer.py
+>>>     (default fails closed). Updated store_history_check / unified_query_check / boundary / contract /
+>>>     warmup-replay / parity / strategy_api tests + the runtime_services.json prose to the RAW-only,
+>>>     crate-internal, passes:false reality. The get_bars_range Protocol promotion (api.py + 5 stubs) was
+>>>     ADDED for the DATA-007 close then fully REVERTED with the flip (binding keeps its pre-existing
+>>>     binding-specific get_bars_range).
+>>>
+>>> NEXT (the DATA-012/007 close needs work genuinely out of THIS session's data-layer scope; pick by the
+>>> foundational-impact policy): (A) SRS-DATA-011 scheduled corporate-action ingestion + a COVERAGE
+>>> manifest (completeness-through-date per symbol) -- the keystone that makes a split-adjusted LABEL
+>>> honest and unblocks exposing the split math on a public surface; THEN DATA-012 split-adjusted can be
+>>> served (CLI/binding) with a coverage gate, and DATA-007's default-adjusted-read leg closes. (B) wire
+>>> the named DATA-007 consumers (backtest/factor/notebook engines) to read via MarketDataStore. (C) the
+>>> get_bars_range public-Protocol promotion is a clean standalone SRS-SDK-001 change if DATA-007's
+>>> date-range leg is pursued. The split-adjustment MATH is done and tested -- it is waiting on coverage,
+>>> not on the algorithm. KNOWN: tests/property/test_indicators_property.py::test_bbands_property_matches_
+>>> batch_talib FAILS on a CLEAN tree (pre-existing talib precision flake, unrelated). cargo fmt/clippy
+>>> -D warnings is a LOCAL-only failure (newer local rustfmt/clippy 1.9.0 vs the repo's pinned toolchain;
+>>> 190 fmt diffs + 8 clippy doc_lazy_continuation warnings ALL on untouched code -- my new code is clean).
+
+=== SESSION 71 ===
+Date: 2026-06-23
+Feature: SRS-DATA-012 -- support raw, split-adjusted, fully adjusted, and total-return normalization
+modes per security subscription (docs/SRS.md SRS-DATA-012; SyRS SYS-29; StRS SN-1.15). STAYS passes:false
+(FOUNDATIONAL split-adjustment MATH only -- crate-internal, no public surface). SRS-DATA-007 was
+flipped passes:true mid-session then REVERTED. Status: 83 features remaining (UNCHANGED, 83 -> 83;
+feature_list.json byte-identical to HEAD).
+
+SELECTION: operator directive (foundational-impact policy + the S70 handoff). S70 named the DATA read
+cluster close-blocker as SRS-DATA-012 normalization (so the binding's default SPLIT_ADJUSTED returns
+data). Operator (AskUserQuestion) chose "Build split-adjusted normalization -> close DATA-007."
+
+DISPOSITION (the whole story): I built the split-adjusted slice (Rust core math + CorporateActionSplit
+kind + --normalization CLI flag + binding serving SPLIT_ADJUSTED + get_bars_range Protocol promotion)
+and flipped SRS-DATA-007 passes:true (83->82). The Codex adversarial loop ran 14 ROUNDS and CONVERGED
+on a fundamental conclusion: the close is premature on out-of-scope blockers -- (1) split-adjusted is
+raw-as-adjusted without corporate-action COVERAGE (real ingestion = SRS-DATA-011, deferred), and (2)
+the named consumers (backtest/factor/notebook) are not wired to the store (deferred TO DATA-007).
+Per my honesty/non-convergence policy, the operator (AskUserQuestion) chose REVERT FLIP, SHIP
+FOUNDATIONAL. Post-revert rounds hardened the substrate so NO public surface (operator CLI, Python
+binding, OR Rust crate API) can emit split-adjusted output without coverage; the math is genuine,
+fully tested (incl. a generative property test) substrate waiting on SRS-DATA-011 coverage.
+
+Critic verdicts:
+  deterministic: APPROVE -- 0 findings
+  judgment (/codex:adversarial-review): APPROVE (round 15) -- no material findings (rounds 1-14
+    needs-attention, all findings fixed or scoped honestly; the DATA-007 flip reverted per operator;
+    runtime ./init.sh verification was not possible in Codex's read-only sandbox but produced no
+    code finding)
 
 === SESSION 70 ===
 Date: 2026-06-22
