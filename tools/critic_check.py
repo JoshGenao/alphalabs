@@ -258,7 +258,10 @@ SAFETY_PATH_RE = re.compile(
     r"|err001|error[_-]?envelope|error[_-]?handling[_-]?cli|structured[_-]?error"
     r"|srs[_-]?err[_-]?001"
     r"|/halt\.rs|paper[_-]?halt|halt[_-]?gate|haltable[_-]?paper"
-    r"|paper[_-]?engine[_-]?state|sim[_-]?halt[_-]?check|srs[_-]?safe[_-]?001)",
+    r"|paper[_-]?engine[_-]?state|sim[_-]?halt[_-]?check|srs[_-]?safe[_-]?001"
+    r"|/coverage\.rs|coverage[_-]?manifest|coverage[_-]?gate|coverage[_-]?frontier"
+    r"|corporate[_-]?action[_-]?coverage|query[_-]?split[_-]?adjusted"
+    r"|data011|split[_-]?adjusted[_-]?serving|srs[_-]?data[_-]?011)",
     re.IGNORECASE,
 )
 
