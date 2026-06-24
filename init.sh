@@ -420,6 +420,13 @@ if ! python3 tools/store_history_check.py --require-cargo >/dev/null; then
   exit 1
 fi
 
+echo "→ Running split-adjusted normalization contract check (SRS-DATA-012)..."
+if ! python3 tools/normalization_modes_check.py --require-cargo >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Split-adjusted normalization contract check failed; run python3 tools/normalization_modes_check.py --require-cargo for detail."
+  exit 1
+fi
+
 echo "→ Running factor-analysis contract check..."
 if ! python3 tools/factor_analysis_check.py --require-cargo >/dev/null; then
   echo "✗ Environment failed"

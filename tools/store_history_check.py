@@ -10,13 +10,14 @@ resolution WITHOUT specifying the original source provider."
 the Python ``StoreBackedHistoricalData`` (``python/atp_strategy/store_history.py``), a concrete
 ``atp_strategy.api.HistoricalData`` implementation that drives the lock-free, source-neutral
 ``data007_query_cli`` so a real named consumer (strategy code / backtest / factor job / notebook) reads
-ingested data by symbol/date-range/resolution with no provider named via the explicit RAW path. That
-binding is the load-bearing FOUNDATIONAL groundwork toward the close, but SRS-DATA-007 STAYS
-passes:false: it is a RAW-only PARTIAL -- its default keeps the HistoricalData Protocol's SPLIT_ADJUSTED,
-which fails closed because DATA-012 normalization is deferred, so the bare-default symbol/date/resolution
-query does not yet return data (the Codex judgment pass flagged a flip as premature; operator HOLD, as
-in S68/S69). The close needs DATA-012 normalization (or an operator scoping decision that DATA-007 =
-provider-neutral RAW access).
+ingested data by symbol/date-range/resolution with no provider named via the explicit RAW path. This is
+load-bearing FOUNDATIONAL groundwork; SRS-DATA-007 STAYS passes:false. The binding serves RAW only: it
+keeps the HistoricalData Protocol's SPLIT_ADJUSTED default and FAILS CLOSED on it, because split-adjusted
+normalization (implemented in the Rust core LIBRARY only -- no public surface exposes it; see
+``tools/normalization_modes_check.py``) is not a trustworthy strategy-facing default until
+corporate-action COVERAGE is guaranteed (SRS-DATA-011 ingestion is deferred -- absent coverage a
+"split-adjusted" read over a store with no split facts would be raw-as-adjusted). The close additionally
+needs the named backtest / factor / notebook consumers wired to the store path (deferred to DATA-007).
 
 It is a SEPARATE script from ``unified_query_check.py`` so that script's hard-coded check-count
 assertions (``tests/test_unified_query_contract.py``) stay valid -- mirroring how
@@ -28,8 +29,10 @@ Static checks (no cargo; used by the L3 contract test):
   (b) the public query methods carry NO provider/vendor/source/feed/adapter parameter (source-neutral
       INPUT -- a consumer cannot specify an origin);
   (c) no origin field is read off the result (no ``["provider"]`` / ``["source"]`` style key read);
-  (d) normalization honesty -- non-RAW modes raise NotImplementedError (the store applies no adjustment;
-      that is the deferred SRS-DATA-012), so the binding never returns raw bars while claiming adjusted;
+  (d) normalization honesty -- the binding serves RAW only and keeps the Protocol's SPLIT_ADJUSTED
+      default so the bare-default call FAILS CLOSED (NotImplementedError); split-adjusted is deferred as
+      a strategy-facing default pending corporate-action coverage (SRS-DATA-011), so the binding never
+      returns raw bars while claiming an adjustment whose completeness it cannot guarantee;
   (e) money math -- ``_PRICE_MINOR_SCALE`` is named and applied to the OHLC fields, and ``volume`` is a
       raw count that is NEVER divided by the scale;
   (f) the subprocess is invoked with a LIST argv under a bounded timeout and never ``shell=True``
@@ -171,26 +174,42 @@ def check_normalization_honesty(config: dict, src: str) -> str:
     compact = _compact(src)
     if "raiseNotImplementedError" not in compact:
         fail(
-            "the binding must raise NotImplementedError for unsupported normalization (the store "
-            "applies no adjustment; SRS-DATA-012 is deferred) -- never return raw bars as adjusted"
+            "the binding must raise NotImplementedError for every normalization mode it does not serve "
+            "(it serves RAW only; adjusted modes are deferred) -- never return raw bars as adjusted"
         )
-    if "!=NormalizationMode.RAW" not in compact:
+    # The binding serves RAW only and fails closed for any other mode (the Protocol default
+    # SPLIT_ADJUSTED included): split-adjusted normalization exists in the Rust core LIBRARY only, but is
+    # not a trustworthy strategy-facing default until corporate-action coverage (SRS-DATA-011) exists.
+    if "normalizationnotin_NORMALIZATION_LABEL" not in compact:
         fail(
-            "the binding must guard `normalization != NormalizationMode.RAW` and refuse adjusted "
-            "modes -- it returns stored values verbatim (RAW) only"
+            "the binding must fail closed for any normalization mode it does not serve "
+            "(`normalization not in _NORMALIZATION_LABEL`) -- it serves RAW only"
         )
-    # The query methods must keep the HistoricalData Protocol default (SPLIT_ADJUSTED) so a caller
-    # that omits normalization fails closed rather than silently receiving raw bars as adjusted.
+    # The query methods must keep the HistoricalData Protocol default (SPLIT_ADJUSTED) so a caller that
+    # omits normalization FAILS CLOSED rather than silently receiving raw bars dressed up as adjusted.
     if "normalization:NormalizationMode=NormalizationMode.SPLIT_ADJUSTED" not in compact:
         fail(
             "the binding's query methods must default normalization to SPLIT_ADJUSTED (matching the "
             "HistoricalData Protocol) so an omitted normalization fails closed -- a RAW default would "
             "silently serve raw bars where the Protocol promises adjusted"
         )
+    # The binding must NOT serve split-adjusted itself (it would be raw-as-adjusted without coverage):
+    # the served label map is RAW-only, and the deferral names the corporate-action coverage owner.
+    if 'NormalizationMode.SPLIT_ADJUSTED:"' in compact or "NormalizationMode.SPLIT_ADJUSTED:'" in compact:
+        fail(
+            "the binding must NOT map SPLIT_ADJUSTED to a CLI label (it must not serve split-adjusted "
+            "as a strategy-facing default -- raw-as-adjusted risk until SRS-DATA-011 coverage exists)"
+        )
+    if "SRS-DATA-011" not in src:
+        fail(
+            "the binding must name the corporate-action COVERAGE owner (SRS-DATA-011) as the reason "
+            "split-adjusted is deferred -- so the deferral is an explicit, honest scope boundary"
+        )
     return (
-        "normalization honesty: the binding keeps the Protocol's SPLIT_ADJUSTED default and raises "
-        f"NotImplementedError for {', '.join(spec['forbidden_normalization_modes'])} (deferred "
-        "SRS-DATA-012); only an explicit NormalizationMode.RAW returns the stored values verbatim"
+        "normalization honesty: the binding serves NormalizationMode.RAW only and keeps the Protocol's "
+        "SPLIT_ADJUSTED default so an omitted normalization FAILS CLOSED (never raw-as-adjusted). "
+        "Split-adjusted exists in the Rust core LIBRARY only (no public surface) but is deferred as a default "
+        "pending corporate-action coverage (SRS-DATA-011); see tools/normalization_modes_check.py"
     )
 
 
@@ -397,11 +416,12 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
             fail(f"could not import the Python binding StoreBackedHistoricalData: {error}")
 
         binding = StoreBackedHistoricalData(store_dir=tmp, query_binary=query_bin)
-        # Fail-closed default: omitting normalization (Protocol default SPLIT_ADJUSTED) must raise
-        # rather than silently serve raw bars (the store has no adjusted data yet; SRS-DATA-012).
+        # Fail-closed default: omitting normalization uses the Protocol default (SPLIT_ADJUSTED), which
+        # this binding refuses (split-adjusted is not a trustworthy strategy-facing default until
+        # SRS-DATA-011 corporate-action coverage exists -- absent coverage it would be raw-as-adjusted).
         try:
             binding.get_bars(rt["symbol"], lookback=1, frequency=rt["resolution"])
-            fail("get_bars with the default (SPLIT_ADJUSTED) normalization must raise, not serve raw")
+            fail("get_bars with the default (SPLIT_ADJUSTED) normalization must fail closed, not serve raw")
         except NotImplementedError:
             pass
         bars = binding.get_bars(
@@ -460,8 +480,12 @@ _STATIC_CHECKS = (
 )
 
 _DEFERRED_OWNERS = (
-    "normalization-mode application -- raw / split-adjusted / fully-adjusted / total-return "
-    "(SRS-DATA-012; the binding serves RAW verbatim and raises for adjusted modes)",
+    "a TRUSTWORTHY split-adjusted strategy-facing default -- the split-adjustment math + CLI exist "
+    "(tools/normalization_modes_check.py) but corporate-action COVERAGE is needed so split-adjusted "
+    "is not raw-as-adjusted (SRS-DATA-011 ingestion); fully-adjusted / total-return additionally need "
+    "dividend data (SRS-DATA-012)",
+    "the named backtest / factor-job / notebook consumers actually wired to read via this store path "
+    "(the DATA-007 acceptance names them; their store wiring is deferred to SRS-DATA-007)",
     "the concurrent-read-DURING-write Load test for THIS named Python consumer "
     "(SRS-DATA-017; the binding drives the lock-free read path, the substrate guarantee is proven, "
     "but the Python-consumer-vs-held-writer Load test is the deferred 017 close)",

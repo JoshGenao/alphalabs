@@ -6,6 +6,14 @@ use atp_types::{
     RuntimeService, StrategyId, StructuredIngestionError, StructuredPacingError,
 };
 
+// The SRS-DATA-012 split-adjustment math is a CRATE-INTERNAL module, deliberately NOT a public crate
+// API and NOT re-exported from the crate root. It is foundational substrate exercised by the crate's
+// own unit tests. Exposing `split_adjust_records` / `SplitEvent` publicly would let a Rust consumer
+// obtain split-adjusted IDENTITY values over an empty / incomplete split set -- raw-as-adjusted, the
+// exact hazard the operator CLI and the Python binding fail closed on. A split-adjusted result is only
+// honest with proven corporate-action coverage (SRS-DATA-011, deferred), so NO public surface (CLI,
+// Python binding, or Rust crate API) exposes split-adjusted until that coverage exists.
+mod normalization;
 pub mod store;
 pub mod query;
 

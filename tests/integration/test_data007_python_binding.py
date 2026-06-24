@@ -73,8 +73,9 @@ def test_python_binding_reads_ingested_data_with_no_provider() -> None:
 
         binding = StoreBackedHistoricalData(store_dir=tmp, query_binary=query_bin)
 
-        # Fail-closed default: omitting normalization (Protocol default SPLIT_ADJUSTED) must raise
-        # rather than silently serve raw bars (the store has no adjusted data yet; SRS-DATA-012).
+        # Fail-closed default: omitting normalization (Protocol default SPLIT_ADJUSTED) must raise —
+        # the binding serves RAW only (split-adjusted is deferred as a strategy-facing default pending
+        # SRS-DATA-011 corporate-action coverage, so it cannot be raw-as-adjusted).
         with pytest.raises(NotImplementedError):
             binding.get_bars("AAPL", lookback=10, frequency="1d")
 

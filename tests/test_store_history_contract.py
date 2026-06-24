@@ -304,8 +304,10 @@ class ProtocolConformanceTest(unittest.TestCase):
             res = argv[argv.index("--resolution") + 1]
             start = argv[argv.index("--start") + 1]
             end = argv[argv.index("--end") + 1]
+            mode = argv[argv.index("--normalization") + 1]
             stdout = (
-                f"symbol:{sym}\nresolution:{res}\nstart:{start}\nend:{end}\nkind:any\nmatch_count:1\n"
+                f"symbol:{sym}\nresolution:{res}\nstart:{start}\nend:{end}\nkind:any\n"
+                f"normalization:{mode}\nmatch_count:1\n"
                 "record.0.event_ts:1700000000\nrecord.0.option_contract:-\n"
                 "record.0.field.open:9950\nrecord.0.field.high:10075\nrecord.0.field.low:9910\n"
                 "record.0.field.close:10000\nrecord.0.field.volume:100000\n"

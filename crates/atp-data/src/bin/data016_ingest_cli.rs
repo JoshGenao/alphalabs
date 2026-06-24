@@ -52,7 +52,7 @@ missing/unmounted directory fails closed (for every command) rather than masquer
 catalog; pass --init to ingest into a brand-new directory.
 
 KINDS:
-    daily-equity-bar | minute-equity-bar | option-chain | fundamental
+    daily-equity-bar | minute-equity-bar | option-chain | fundamental | corporate-action-split
 
 COMMANDS:
     ingest     Ingest a fixture batch for one kind on a date (load-modify-save; accumulates).
@@ -298,7 +298,7 @@ impl ParsedArgs {
                     let raw = take_value(&mut iter, flag)?;
                     let kind = DatasetKind::from_label(&raw).ok_or_else(|| {
                         format!(
-                            "unknown --kind '{raw}' (expected daily-equity-bar | minute-equity-bar | option-chain | fundamental)"
+                            "unknown --kind '{raw}' (expected daily-equity-bar | minute-equity-bar | option-chain | fundamental | corporate-action-split)"
                         )
                     })?;
                     parsed.kind = Some(kind);

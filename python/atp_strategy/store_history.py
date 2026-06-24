@@ -23,12 +23,17 @@ Scope / honesty
 ---------------
 * **Source-neutral.** There is NO provider/vendor/source/feed parameter, and no origin field
   is read off the result — the core ``SRS-DATA-007`` invariant.
-* **Normalization.** The store applies NO corporate-action adjustment yet (the deferred
-  ``SRS-DATA-012``). The query methods keep the :class:`HistoricalData` Protocol default
-  (``SPLIT_ADJUSTED``) and raise :class:`NotImplementedError` for ``SPLIT_ADJUSTED`` /
-  ``FULLY_ADJUSTED`` / ``TOTAL_RETURN``, so a caller that omits ``normalization`` fails closed
-  rather than silently receiving raw bars dressed up as adjusted. A caller passes
-  ``NormalizationMode.RAW`` to read the stored values **verbatim**.
+* **Normalization.** This consumer binding serves ``NormalizationMode.RAW`` only (the stored values
+  **verbatim**); any adjusted mode — including the :class:`HistoricalData` Protocol default
+  ``SPLIT_ADJUSTED`` — fails closed with :class:`NotImplementedError`. The split-adjustment math IS
+  implemented in the Rust core (``atp_data::split_adjust_records``), but it is exposed on **no public
+  surface**: the ``data007_query_cli`` operator binary also serves ``--normalization raw`` only and
+  rejects ``split-adjusted``. The reason is the same on both surfaces: a "split-adjusted" label is only
+  honest with proven corporate-action **coverage**, and real corporate-action ingestion is deferred
+  (``SRS-DATA-011``) — over a store with no split facts a split-adjusted read would silently return raw
+  bars dressed up as adjusted. So neither surface will mislead a strategy/backtest; a caller passes an
+  explicit ``NormalizationMode.RAW``. Fully-adjusted / total-return additionally need dividend data
+  (``SRS-DATA-012``).
 * **No hang.** Every CLI invocation is bounded by a per-query ``timeout`` (default
   :data:`_DEFAULT_QUERY_TIMEOUT_S`); a wedged CLI surfaces a :class:`StoreQueryError`, never an
   indefinite block of a strategy container.
@@ -81,6 +86,16 @@ _VOLUME_FIELD = "volume"
 # --kind disambiguator). Narrowing an equity query to its bar kind stops a fundamental / option-chain
 # record that happens to share the same symbol + resolution from poisoning an OHLCV-bar read.
 _EQUITY_BAR_KIND_BY_RESOLUTION = {"1d": "daily-equity-bar", "1m": "minute-equity-bar"}
+
+# The normalization modes this CONSUMER binding serves -> the data007_query_cli --normalization value.
+# Only RAW is served: split-adjusted normalization exists in the Rust core LIBRARY only (no public surface), but
+# cannot be a TRUSTWORTHY strategy-facing default until corporate-action COVERAGE is guaranteed
+# (SRS-DATA-011 ingestion is deferred) -- absent coverage, "split-adjusted" over a store with no split
+# facts would silently return raw bars dressed up as adjusted. So the binding fails closed for any
+# adjusted mode (the Protocol default SPLIT_ADJUSTED included) rather than mislead a strategy/backtest.
+_NORMALIZATION_LABEL = {
+    NormalizationMode.RAW: "raw",
+}
 
 # Default per-query subprocess budget (seconds). A local store read is sub-second; this bound exists
 # so a wedged CLI surfaces a TimeoutExpired -> StoreQueryError rather than hanging a strategy container.
@@ -196,11 +211,10 @@ class StoreBackedHistoricalData:
         records are returned — exact regardless of bar spacing/gaps, and deterministic given
         the store contents and ``end``.
 
-        ``normalization`` defaults to ``SPLIT_ADJUSTED`` to MATCH the :class:`HistoricalData`
-        Protocol default: because the store applies no corporate-action adjustment yet (deferred
-        SRS-DATA-012), a caller that omits ``normalization`` gets a fail-closed
-        :class:`NotImplementedError` rather than silently receiving raw bars dressed up as
-        adjusted. Pass ``normalization=NormalizationMode.RAW`` to read the stored values verbatim.
+        ``normalization`` defaults to ``SPLIT_ADJUSTED`` (the :class:`HistoricalData` Protocol
+        default), which this binding FAILS CLOSED on: pass ``normalization=NormalizationMode.RAW``
+        for the stored values verbatim. Trustworthy split-adjusted reads await corporate-action
+        coverage (SRS-DATA-011); see the module docstring.
         """
         if not isinstance(lookback, int) or isinstance(lookback, bool):
             raise ValueError(f"lookback must be a non-negative int (got {lookback!r})")
@@ -212,7 +226,9 @@ class StoreBackedHistoricalData:
         end_ts = self._exclusive_end_ts(end)
         if end_ts < 0:
             return []
-        bars = self._query(symbol=symbol, resolution=frequency, start_ts=0, end_ts=end_ts)
+        bars = self._query(
+            symbol=symbol, resolution=frequency, start_ts=0, end_ts=end_ts, normalization=normalization
+        )
         return bars[-lookback:]
 
     def get_bars_range(
@@ -229,8 +245,9 @@ class StoreBackedHistoricalData:
 
         The fully deterministic range primitive (no clock read) that backtests and factor
         jobs call for reproducibility; :meth:`get_bars` is the lookback-shaped wrapper. Like
-        :meth:`get_bars`, ``normalization`` defaults to ``SPLIT_ADJUSTED`` and a non-RAW request
-        fails closed (deferred SRS-DATA-012); pass ``NormalizationMode.RAW`` for verbatim values.
+        :meth:`get_bars`, ``normalization`` defaults to ``SPLIT_ADJUSTED`` and this binding fails
+        closed on it; pass ``NormalizationMode.RAW`` for verbatim values (trustworthy split-adjusted
+        reads await corporate-action coverage, SRS-DATA-011).
         """
         self._reject_unsupported(asset_class, normalization)
         start_ts = self._epoch_seconds(start)
@@ -239,7 +256,13 @@ class StoreBackedHistoricalData:
             raise ValueError(f"start must not predate the epoch (got {start_ts})")
         if end_ts < start_ts:
             raise ValueError(f"end ({end_ts}) must not precede start ({start_ts})")
-        return self._query(symbol=symbol, resolution=frequency, start_ts=start_ts, end_ts=end_ts)
+        return self._query(
+            symbol=symbol,
+            resolution=frequency,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            normalization=normalization,
+        )
 
     # ------------------------------------------------------------------ #
     # Internals
@@ -248,11 +271,13 @@ class StoreBackedHistoricalData:
     @staticmethod
     def _reject_unsupported(asset_class: AssetClass, normalization: NormalizationMode) -> None:
         """Fail closed for out-of-scope asset class / normalization rather than mis-answering."""
-        if normalization != NormalizationMode.RAW:
+        if normalization not in _NORMALIZATION_LABEL:
             raise NotImplementedError(
-                f"StoreBackedHistoricalData returns stored values verbatim "
-                f"(NormalizationMode.RAW); {normalization} (split / fully-adjusted / "
-                "total-return) normalization is deferred to SRS-DATA-012"
+                f"StoreBackedHistoricalData serves NormalizationMode.RAW (verbatim stored values); "
+                f"{normalization} is deferred. Split-adjusted normalization exists in the Rust core "
+                "+ the data007_query_cli operator surface, but is not a trustworthy strategy-facing "
+                "default until corporate-action coverage is guaranteed (SRS-DATA-011); fully-adjusted "
+                "/ total-return additionally need dividend data (SRS-DATA-012)."
             )
         if asset_class != AssetClass.EQUITY:
             raise NotImplementedError(
@@ -296,12 +321,23 @@ class StoreBackedHistoricalData:
             )
         return kind
 
-    def _query(self, *, symbol: str, resolution: str, start_ts: int, end_ts: int) -> list[Bar]:
+    def _query(
+        self,
+        *,
+        symbol: str,
+        resolution: str,
+        start_ts: int,
+        end_ts: int,
+        normalization: NormalizationMode,
+    ) -> list[Bar]:
         """Run the source-neutral query CLI and parse its stdout into ascending bars."""
         # Narrow to the vendor-neutral equity-bar DatasetKind so a fundamental / option-chain record
         # sharing this symbol + resolution cannot poison the OHLCV-bar read (DatasetKind is a dataset
         # type, NOT a provider — the query stays source-neutral).
         kind = self._equity_bar_kind(resolution)
+        # normalization is RAW or SPLIT_ADJUSTED here (the others are rejected upstream by
+        # _reject_unsupported). The Rust core applies SPLIT_ADJUSTED; the binding never scales itself.
+        normalization_label = _NORMALIZATION_LABEL[normalization]
         # argv is a LIST (shell=False) — never a shell string — so a symbol can never inject.
         argv = [
             str(self._query_binary),
@@ -318,6 +354,8 @@ class StoreBackedHistoricalData:
             str(end_ts),
             "--kind",
             kind,
+            "--normalization",
+            normalization_label,
         ]
         try:
             completed = self._runner(argv, timeout=self._timeout)
@@ -340,27 +378,43 @@ class StoreBackedHistoricalData:
                 f"symbol={symbol!r} resolution={resolution!r}: {completed.stderr.strip()}"
             )
         return self._parse(
-            completed.stdout, symbol=symbol, resolution=resolution, start_ts=start_ts, end_ts=end_ts
+            completed.stdout,
+            symbol=symbol,
+            resolution=resolution,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            normalization_label=normalization_label,
         )
 
     def _parse(
-        self, stdout: str, *, symbol: str, resolution: str, start_ts: int, end_ts: int
+        self,
+        stdout: str,
+        *,
+        symbol: str,
+        resolution: str,
+        start_ts: int,
+        end_ts: int,
+        normalization_label: str,
     ) -> list[Bar]:
         """Parse the source-neutral ``key:value`` lines into :class:`Bar` objects.
 
         Validates the full echoed envelope before building any :class:`Bar` — the echoed ``symbol`` /
-        ``resolution`` / ``start`` / ``end`` MUST match the request, every record's ``event_ts`` MUST
-        fall inside the inclusive ``[start_ts, end_ts]`` range, and the records MUST be ``event_ts``
-        ascending. A wrong/stale ``data007_query_cli`` (CLI/schema drift) therefore fails closed
-        rather than leaking out-of-range (future/stale) or misordered bars into a strategy / backtest /
-        factor consumer at the SRS-DATA-007 trust boundary. ``match_count:0`` (with no records) is a
-        valid empty result. No provider/source/vendor line exists to read.
+        ``resolution`` / ``start`` / ``end`` / ``normalization`` MUST match the request, every
+        record's ``event_ts`` MUST fall inside the inclusive ``[start_ts, end_ts]`` range, and the
+        records MUST be ``event_ts`` ascending. A wrong/stale ``data007_query_cli`` (CLI/schema
+        drift) therefore fails closed rather than leaking out-of-range (future/stale) or misordered
+        bars into a strategy / backtest / factor consumer at the SRS-DATA-007 trust boundary. The
+        ``normalization`` echo specifically guards against a stale binary that ignores the
+        ``--normalization`` flag and returns raw values where the caller asked for split-adjusted.
+        ``match_count:0`` (with no records) is a valid empty result. No provider/source/vendor line
+        exists to read.
         """
         match_count: int | None = None
         echoed_symbol: str | None = None
         echoed_resolution: str | None = None
         echoed_start: int | None = None
         echoed_end: int | None = None
+        echoed_normalization: str | None = None
         records: dict[int, dict[str, object]] = {}
         try:
             for line in stdout.splitlines():
@@ -375,6 +429,8 @@ class StoreBackedHistoricalData:
                     echoed_start = int(value)
                 elif key == "end":
                     echoed_end = int(value)
+                elif key == "normalization":
+                    echoed_normalization = value
                 elif key == "match_count":
                     match_count = int(value)
                 elif key.startswith("record."):
@@ -407,6 +463,15 @@ class StoreBackedHistoricalData:
             raise StoreQueryError(
                 f"data007_query_cli echoed start={echoed_start!r} end={echoed_end!r} but the request "
                 f"was start={start_ts} end={end_ts} for symbol={symbol!r}; refusing a mismatched range "
+                "(CLI/schema drift or a wrong/stale query binary)"
+            )
+        # The normalization echo MUST match what we asked for: a stale binary that does not understand
+        # --normalization (and silently returns raw values) is caught here rather than handing a
+        # strategy raw bars dressed up as split-adjusted at the SRS-DATA-012 trust boundary.
+        if echoed_normalization != normalization_label:
+            raise StoreQueryError(
+                f"data007_query_cli echoed normalization={echoed_normalization!r} but the request was "
+                f"{normalization_label!r} for symbol={symbol!r}; refusing to relabel the adjustment "
                 "(CLI/schema drift or a wrong/stale query binary)"
             )
         if match_count is None:
