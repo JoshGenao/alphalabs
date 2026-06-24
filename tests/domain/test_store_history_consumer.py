@@ -7,10 +7,12 @@ and asserts it reads bars by symbol / resolution / range with NO provider named 
 queries the unified historical interface without specifying the original source provider", proven end
 to end through an in-process consumer rather than an operator-CLI analogy.
 
-It also pins the two safety properties the adversarial review demanded: the consumer must explicitly
-opt into ``NormalizationMode.RAW`` (the default ``SPLIT_ADJUSTED`` fails closed because the store has
-no adjusted data yet — SRS-DATA-012 deferred), so a strategy can never silently trade on raw bars it
-believes are split-adjusted.
+It also pins the safety property the adversarial review demanded: the consumer must explicitly opt into
+``NormalizationMode.RAW``. The default ``SPLIT_ADJUSTED`` (and every other adjusted mode) fails closed,
+because split-adjusted is not a trustworthy strategy-facing default until corporate-action COVERAGE is
+guaranteed (real corporate-action ingestion is deferred to ``SRS-DATA-011``) — absent coverage, a
+"split-adjusted" read over a store with no split facts would be raw-as-adjusted. So a strategy can never
+silently trade on bars it believes are adjusted. SRS-DATA-007 STAYS passes:false.
 
 Builds the data CLIs on demand (skips if cargo is unavailable, like the other cargo-driven domain
 tests). A second structural assertion confirms the binding is registered in the architecture metadata.
@@ -113,7 +115,9 @@ def test_strategy_reads_store_sourced_bars_without_a_provider() -> None:
 
 def test_default_normalization_fails_closed_for_the_consumer() -> None:
     # The safety property: a strategy that omits normalization (Protocol default SPLIT_ADJUSTED) gets a
-    # loud failure, never silent raw bars dressed up as adjusted (a splits hazard for live trading).
+    # loud failure, never silent raw bars dressed up as adjusted. Split-adjusted is not a trustworthy
+    # strategy-facing default until SRS-DATA-011 corporate-action COVERAGE exists (absent coverage, a
+    # split-adjusted read over a store with no split facts would be raw-as-adjusted -- a live hazard).
     cargo = _cargo()
     if cargo is None:
         pytest.skip("cargo not on PATH")
@@ -123,6 +127,15 @@ def test_default_normalization_fails_closed_for_the_consumer() -> None:
             str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar", "--init"
         ).returncode == 0
         history = StoreBackedHistoricalData(store_dir=tmp, query_binary=query_bin)
+        # Every adjusted mode (the default SPLIT_ADJUSTED included) fails closed for the consumer.
+        for mode in (
+            NormalizationMode.SPLIT_ADJUSTED,
+            NormalizationMode.FULLY_ADJUSTED,
+            NormalizationMode.TOTAL_RETURN,
+        ):
+            with pytest.raises(NotImplementedError):
+                history.get_bars("AAPL", lookback=1, frequency="1d", normalization=mode)
+        # And the bare default (no normalization arg, the path WarmupController uses) also fails closed.
         with pytest.raises(NotImplementedError):
             history.get_bars("AAPL", lookback=1, frequency="1d")
 

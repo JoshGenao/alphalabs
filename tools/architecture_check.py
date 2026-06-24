@@ -30,6 +30,10 @@ from store_history_check import (
     StoreHistoryCheckError,
     assert_store_history_static,
 )
+from normalization_modes_check import (
+    NormalizationModesCheckError,
+    assert_normalization_modes_static,
+)
 from benchmark_check import BenchmarkCheckError, assert_sim_benchmark_static
 from determinism_check import DeterminismCheckError, assert_determinism_static
 from factor_analysis_check import FactorAnalysisCheckError, assert_factor_analysis_static
@@ -900,21 +904,47 @@ def assert_store_history(config: dict) -> list[str]:
 
     static_evidence = assert_store_history_static(config, ROOT)
     summary = (
-        f"{block['module']['class']} ({block['module']['path']}) is the FIRST in-process consumer "
-        f"binding over the unified historical query engine -- a concrete {block['protocol']} "
-        "implementation that drives the lock-free, source-neutral data007_query_cli so a real named "
-        "consumer (strategy code / backtests / factor jobs / notebooks) reads ingested data by "
+        f"{block['module']['class']} ({block['module']['path']}) is the in-process consumer binding "
+        f"over the unified historical query engine -- a concrete {block['protocol']} implementation "
+        "that drives the lock-free, source-neutral data007_query_cli so a real named consumer "
+        "(strategy code / backtests / factor jobs / notebooks) reads ingested data by "
         "symbol/date-range/resolution with NO provider named (no provider/vendor/source/feed parameter, "
-        "no origin field read), keeping the Protocol's SPLIT_ADJUSTED default and raising for the "
-        "deferred SRS-DATA-012 adjusted modes (only an explicit RAW returns verbatim values), scaling "
-        "OHLC by the named _PRICE_MINOR_SCALE while leaving volume a raw count, and invoking the CLI "
-        "with a list argv (shell=False) under a bounded timeout so a wedged read fails closed rather "
-        "than hanging. This is the load-bearing FOUNDATIONAL groundwork toward SRS-DATA-007; "
-        "SRS-DATA-007 STAYS passes:false (a RAW-only PARTIAL binding -- its default keeps the Protocol's "
-        "SPLIT_ADJUSTED and fails closed pending the deferred DATA-012 normalization, so the "
-        "bare-default symbol/date/resolution query does not yet return data; flipping would over-claim, "
-        "operator HOLD per S68/S69), and the concurrent-read-DURING-write Load test for this named "
-        "Python consumer remains the deferred SRS-DATA-017 close (SRS-DATA-007, SyRS SYS-27 / SYS-53)"
+        "no origin field read) via the explicit RAW path, keeping the Protocol's SPLIT_ADJUSTED default "
+        "and FAILING CLOSED on it (and on every adjusted mode), scaling OHLC by the named "
+        "_PRICE_MINOR_SCALE while leaving volume a raw count, and invoking the CLI with a list argv "
+        "(shell=False) under a bounded timeout so a wedged read fails closed rather than hanging. "
+        "SRS-DATA-007 STAYS passes:false (foundational): the binding serves RAW only because "
+        "split-adjusted is not a trustworthy strategy-facing default until corporate-action COVERAGE "
+        "exists (SRS-DATA-011; absent it a split-adjusted read would be raw-as-adjusted), and the named "
+        "backtest / factor / notebook consumers are not yet wired to this store path (deferred to "
+        "SRS-DATA-007). The split-adjustment math (Rust core LIBRARY; no public surface exposes it) is pinned by "
+        "normalization_modes_check (SRS-DATA-012); the concurrent-read-DURING-write Load test is the "
+        "deferred SRS-DATA-017 close (SRS-DATA-007, SyRS SYS-27 / SYS-53)"
+    )
+    return static_evidence + [summary]
+
+
+def assert_normalization_modes(config: dict) -> list[str]:
+    block = config.get("normalization_modes_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_normalization_modes_static(config, ROOT)
+    summary = (
+        "SRS-DATA-012 split-adjusted historical normalization: split corporate actions persist as a "
+        f"vendor-neutral DatasetKind ({block['split_kind_label']}) in the same idempotent/durable "
+        f"MarketDataStore as bars, and the Rust core ({block['normalization_module']}) re-quotes bars "
+        "onto a split-comparable basis -- compose-then-divide (one division per field), i128 "
+        "intermediates with fail-closed try_from narrowing, round-half-to-even, and the strict "
+        "effective_ts > event_ts boundary (OHLC scaled by DEN/NUM, volume by the inverse). "
+        "The split-adjustment math is exposed on NO public surface: data007_query_cli serves "
+        "--normalization raw ONLY (split-adjusted FAILS closed naming SRS-DATA-011 coverage), and the "
+        "StoreBackedHistoricalData CONSUMER binding serves RAW only and FAILS CLOSED on split-adjusted. "
+        "It is FOUNDATIONAL substrate (the math, proven at the Rust library level), NOT a usable mode, "
+        "until corporate-action COVERAGE exists (SRS-DATA-011; absent it a split-adjusted label would be "
+        "raw-as-adjusted). SRS-DATA-012 STAYS passes:false: this is the HISTORICAL split-adjustment math "
+        "-- the LIVE subscription path and the FULLY_ADJUSTED / TOTAL_RETURN (dividend) modes are also "
+        "deferred (SyRS SYS-29 / StRS SN-1.15)"
     )
     return static_evidence + [summary]
 
@@ -1336,6 +1366,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_store_history(config))
     except StoreHistoryCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_normalization_modes(config))
+    except NormalizationModesCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_factor_analysis(config))

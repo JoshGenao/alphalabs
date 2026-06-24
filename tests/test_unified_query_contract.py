@@ -208,8 +208,8 @@ class CliSourceNeutralTest(_Fixture):
     def test_injected_provider_line_is_caught(self) -> None:
         # Printing a provider line would leak the origin into the operator output.
         mutated = self.cli_src.replace(
-            'println!("match_count:{}", result.len());',
-            'println!("match_count:{}", result.len());\n    println!("provider:ib");',
+            'println!("match_count:{}", records.len());',
+            'println!("match_count:{}", records.len());\n    println!("provider:ib");',
             1,
         )
         with self.assertRaises(UnifiedQueryCheckError) as ctx:

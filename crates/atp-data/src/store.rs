@@ -80,10 +80,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use atp_types::IngestionRecordSubmission;
 
-/// The record schema version. Bumped only on a backward-incompatible layout change;
-/// [`MarketDataStore::restore`] rejects any other version loudly
-/// ([`StoreError::UnknownSchemaVersion`]) rather than silently mis-reading.
-pub const SCHEMA_VERSION: i64 = 1;
+/// The current record schema version. Bumped on a layout change that an older reader cannot safely
+/// parse. **Version history:** v1 = the original four dataset kinds (daily / minute equity bar,
+/// option-chain, fundamental); v2 added [`DatasetKind::CorporateActionSplit`] (codec tag 4). A store
+/// that contains a split record is serialized as v2, so an OLDER v1-only reader rejects it cleanly at
+/// the version gate ([`StoreError::UnknownSchemaVersion`]) instead of hitting the unknown tag mid-
+/// restore. [`MarketDataStore::restore`] reads BOTH versions (a legacy v1 store still loads), but a v1
+/// store may NOT carry a kind introduced in a later version — that is rejected as inconsistent.
+pub const SCHEMA_VERSION: i64 = 2;
+
+/// The oldest serialized schema version [`MarketDataStore::restore`] still accepts (read backward
+/// compatibility). A blob at any version outside `[MIN_SUPPORTED_SCHEMA_VERSION, SCHEMA_VERSION]` is
+/// rejected loudly with [`StoreError::UnknownSchemaVersion`].
+pub const MIN_SUPPORTED_SCHEMA_VERSION: i64 = 1;
 
 /// The magic header line that prefixes every serialized store, so a foreign or truncated blob is
 /// rejected before any field is parsed.
@@ -121,6 +130,10 @@ static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
 ///   * [`MinuteEquityBar`](Self::MinuteEquityBar) ⇐ IB minute OHLCV (SRS-DATA-002);
 ///   * [`OptionChainSnapshot`](Self::OptionChainSnapshot) ⇐ IB option-chain capture (SRS-DATA-004);
 ///   * [`Fundamental`](Self::Fundamental) ⇐ Sharadar fundamentals (SRS-DATA-005).
+///
+/// [`CorporateActionSplit`](Self::CorporateActionSplit) is a corporate-action FACT (a split ratio
+/// effective on a date), not a price bar — the input the SRS-DATA-012 split-adjusted normalization
+/// reads to adjust historical equity bars. It is vendor-neutral like every other kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DatasetKind {
     /// Daily OHLCV equity bars (the Databento daily source — SRS-DATA-001).
@@ -131,6 +144,9 @@ pub enum DatasetKind {
     OptionChainSnapshot,
     /// Fundamental records (the Sharadar source — SRS-DATA-005).
     Fundamental,
+    /// A stock-split corporate action keyed by `(symbol, effective_ts)` with `numerator`/
+    /// `denominator` ratio fields — the input the SRS-DATA-012 split-adjusted read applies.
+    CorporateActionSplit,
 }
 
 impl DatasetKind {
@@ -141,6 +157,20 @@ impl DatasetKind {
             Self::MinuteEquityBar => "minute-equity-bar",
             Self::OptionChainSnapshot => "option-chain",
             Self::Fundamental => "fundamental",
+            Self::CorporateActionSplit => "corporate-action-split",
+        }
+    }
+
+    /// The earliest store [`SCHEMA_VERSION`] in which this kind's codec tag is defined. A serialized
+    /// store must declare a schema version at least this high to legitimately carry the kind, so a
+    /// legacy v1 store cannot smuggle a kind introduced in a later version (it is rejected on restore).
+    fn min_schema_version(&self) -> i64 {
+        match self {
+            Self::DailyEquityBar
+            | Self::MinuteEquityBar
+            | Self::OptionChainSnapshot
+            | Self::Fundamental => 1,
+            Self::CorporateActionSplit => 2,
         }
     }
 
@@ -152,6 +182,7 @@ impl DatasetKind {
             Self::MinuteEquityBar => 1,
             Self::OptionChainSnapshot => 2,
             Self::Fundamental => 3,
+            Self::CorporateActionSplit => 4,
         }
     }
 
@@ -161,6 +192,7 @@ impl DatasetKind {
             1 => Ok(Self::MinuteEquityBar),
             2 => Ok(Self::OptionChainSnapshot),
             3 => Ok(Self::Fundamental),
+            4 => Ok(Self::CorporateActionSplit),
             _ => Err(StoreError::CorruptRecord {
                 context: "unknown dataset kind tag",
             }),
@@ -174,17 +206,19 @@ impl DatasetKind {
             "minute-equity-bar" => Some(Self::MinuteEquityBar),
             "option-chain" => Some(Self::OptionChainSnapshot),
             "fundamental" => Some(Self::Fundamental),
+            "corporate-action-split" => Some(Self::CorporateActionSplit),
             _ => None,
         }
     }
 
-    /// All four kinds, in canonical order — the coverage set the CLI and tests iterate.
-    pub fn all() -> [DatasetKind; 4] {
+    /// All kinds, in canonical order — the coverage set the CLI and tests iterate.
+    pub fn all() -> [DatasetKind; 5] {
         [
             Self::DailyEquityBar,
             Self::MinuteEquityBar,
             Self::OptionChainSnapshot,
             Self::Fundamental,
+            Self::CorporateActionSplit,
         ]
     }
 }
@@ -459,8 +493,21 @@ impl MarketDataStore {
     /// round-trips losslessly. A [`MAGIC`] header and an integrity checksum over the body let
     /// [`restore`](Self::restore) detect any later byte change.
     pub fn serialize(&self) -> String {
+        // Write the MINIMUM schema version that can represent the contained kinds, not the current
+        // maximum: a store holding only the original v1 kinds (daily / minute bar, option-chain,
+        // fundamental) stays v1 and remains readable by an older v1-only tool; only a store that
+        // actually contains a kind introduced later (CorporateActionSplit -> v2) is written at the
+        // higher version, where an older reader rejects it cleanly at the version gate. An empty store
+        // is the lowest supported version. So adding the split kind does NOT make every ordinary store
+        // unreadable by v1 tools -- the format bump is scoped to stores that use the new kind.
+        let version = self
+            .records
+            .iter()
+            .map(|record| record.key.kind.min_schema_version())
+            .max()
+            .unwrap_or(MIN_SUPPORTED_SCHEMA_VERSION);
         let mut body = String::new();
-        push_i128(&mut body, i128::from(SCHEMA_VERSION));
+        push_i128(&mut body, i128::from(version));
         push_count(&mut body, self.records.len());
         for record in &self.records {
             encode_record(&mut body, record);
@@ -496,7 +543,7 @@ impl MarketDataStore {
         }
 
         let schema_version = cursor.read_i64("schema version")?;
-        if schema_version != SCHEMA_VERSION {
+        if !(MIN_SUPPORTED_SCHEMA_VERSION..=SCHEMA_VERSION).contains(&schema_version) {
             return Err(StoreError::UnknownSchemaVersion {
                 found: schema_version,
             });
@@ -513,6 +560,14 @@ impl MarketDataStore {
         for _ in 0..record_count {
             let record = decode_record(&mut cursor)?;
             validate_record(&record)?;
+            // Forward-compat guard: a kind may only appear in a store whose declared schema version is
+            // at least the version that introduced it. So a legacy v1 blob carrying the v2-introduced
+            // CorporateActionSplit kind is rejected as inconsistent rather than silently accepted.
+            if record.key.kind.min_schema_version() > schema_version {
+                return Err(StoreError::CorruptRecord {
+                    context: "dataset kind newer than the store's declared schema version",
+                });
+            }
             if !seen.insert(key_identity(&record.key)) {
                 return Err(StoreError::DuplicateKey {
                     key: key_identity(&record.key),
@@ -1094,6 +1149,9 @@ pub fn fixture_batch(kind: DatasetKind, event_ts: i64) -> Vec<MarketDataRecord> 
             .iter()
             .map(|symbol| fundamental_record(event_ts, symbol))
             .collect(),
+        // A deterministic 4-for-1 AAPL split effective on `event_ts` — the SRS-DATA-012 input the
+        // split-adjusted read applies to AAPL daily/minute bars dated strictly BEFORE `event_ts`.
+        DatasetKind::CorporateActionSplit => vec![split_record(event_ts, "AAPL", 4, 1)],
     }
 }
 
@@ -1161,6 +1219,25 @@ fn fundamental_record(event_ts: i64, symbol: &str) -> MarketDataRecord {
         ],
     )
     .expect("fixture fundamental record is well-formed")
+}
+
+/// A stock-split corporate-action record: keyed by `(symbol, effective_ts)` with the split ratio as
+/// two integer fields. `numerator`/`denominator` express an `N`-for-`M` split — a 4-for-1 forward
+/// split is `(4, 1)`, a 1-for-10 reverse split is `(1, 10)`. `event_ts` is the EFFECTIVE instant: a
+/// bar dated strictly before it is on the pre-split basis and gets adjusted; a bar on/after it is
+/// already on the new basis. The resolution label is the vendor-neutral `split`.
+fn split_record(event_ts: i64, symbol: &str, numerator: i64, denominator: i64) -> MarketDataRecord {
+    MarketDataRecord::new(
+        NaturalKey {
+            kind: DatasetKind::CorporateActionSplit,
+            symbol: symbol.to_string(),
+            resolution: "split".to_string(),
+            event_ts,
+            option_contract: None,
+        },
+        [field("denominator", denominator), field("numerator", numerator)],
+    )
+    .expect("fixture split record is well-formed")
 }
 
 fn field(name: &str, value_minor: i64) -> MarketField {
@@ -1296,6 +1373,89 @@ mod tests {
 
         assert_eq!(forward, reverse);
         assert_eq!(forward.serialize(), reverse.serialize());
+    }
+
+    /// Build a serialized blob at an arbitrary declared schema `version` (mirrors `serialize`, which
+    /// always writes the CURRENT `SCHEMA_VERSION`) so the version-gate tests can forge legacy / future
+    /// / inconsistent blobs with a correct checksum.
+    fn versioned_blob(version: i64, records: &[MarketDataRecord]) -> String {
+        let mut body = String::new();
+        push_i128(&mut body, i128::from(version));
+        push_count(&mut body, records.len());
+        for record in records {
+            encode_record(&mut body, record);
+        }
+        let mut out = String::new();
+        push_line(&mut out, MAGIC);
+        push_i128(&mut out, i128::from(checksum(body.as_bytes())));
+        out.push_str(&body);
+        out
+    }
+
+    /// The schema version a serialized blob declares (line 3: MAGIC, checksum, version, count, ...).
+    fn declared_version(blob: &str) -> i64 {
+        blob.lines().nth(2).expect("version line").parse().expect("version is an integer")
+    }
+
+    #[test]
+    fn current_schema_version_is_two_after_adding_the_split_kind() {
+        assert_eq!(SCHEMA_VERSION, 2);
+        assert_eq!(MIN_SUPPORTED_SCHEMA_VERSION, 1);
+        // A store carrying a split record serializes at the current (v2) version, so an older v1-only
+        // reader rejects it at the version gate rather than mid-restore on the unknown tag.
+        let mut store = MarketDataStore::new();
+        store.upsert(split_record(200, "AAPL", 4, 1)).unwrap();
+        let restored = MarketDataStore::restore(&store.serialize()).unwrap();
+        assert_eq!(restored, store);
+    }
+
+    #[test]
+    fn serialize_writes_the_minimum_schema_version_for_the_contained_kinds() {
+        // A store holding only the original v1 kinds stays v1 -- adding the split kind does NOT make
+        // an ordinary daily-bar store unreadable by an older v1-only tool.
+        let mut v1_only = MarketDataStore::new();
+        v1_only.upsert(record("AAPL", 1, 100)).unwrap();
+        v1_only.upsert(record("MSFT", 1, 100)).unwrap();
+        assert_eq!(declared_version(&v1_only.serialize()), 1);
+
+        // A store that actually contains a split record is written at v2 (so an older reader rejects
+        // it cleanly at the version gate).
+        let mut with_split = MarketDataStore::new();
+        with_split.upsert(record("AAPL", 1, 100)).unwrap();
+        with_split.upsert(split_record(200, "AAPL", 4, 1)).unwrap();
+        assert_eq!(declared_version(&with_split.serialize()), 2);
+
+        // An empty store is the lowest supported version.
+        assert_eq!(declared_version(&MarketDataStore::new().serialize()), MIN_SUPPORTED_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn restore_accepts_a_legacy_v1_store_without_split_records() {
+        // Backward compatibility: a v1 store (only the original four kinds) still loads under the v2
+        // reader.
+        let blob = versioned_blob(1, &[record("AAPL", 1, 100), record("MSFT", 1, 100)]);
+        let restored = MarketDataStore::restore(&blob).unwrap();
+        assert_eq!(restored.len(), 2);
+    }
+
+    #[test]
+    fn restore_rejects_a_v1_store_carrying_a_v2_only_kind() {
+        // A legacy v1 store may NOT carry the CorporateActionSplit kind (introduced in v2): an
+        // inconsistent blob is rejected rather than silently accepted.
+        let blob = versioned_blob(1, &[split_record(200, "AAPL", 4, 1)]);
+        assert!(matches!(
+            MarketDataStore::restore(&blob),
+            Err(StoreError::CorruptRecord { .. })
+        ));
+    }
+
+    #[test]
+    fn restore_rejects_an_unknown_future_schema_version() {
+        let blob = versioned_blob(99, &[record("AAPL", 1, 100)]);
+        assert!(matches!(
+            MarketDataStore::restore(&blob),
+            Err(StoreError::UnknownSchemaVersion { found: 99 })
+        ));
     }
 
     #[test]

@@ -13,8 +13,12 @@ pinned at the boundary:
 * ``end`` is treated as EXCLUSIVE (``--end == int(end) - 1``); ``end=None`` uses the injected clock;
 * OHLC minor units are scaled by 100 (cents); ``volume`` is a raw, UNSCALED int count;
 * ``event_ts`` becomes a UTC ISO-8601 timestamp;
-* the normalization default (SPLIT_ADJUSTED) fails closed; an explicit non-RAW / an OPTION asset
-  class raises ``NotImplementedError``; only an explicit ``RAW`` returns bars;
+* the binding serves ``RAW`` only (``--normalization raw``); the normalization default
+  (SPLIT_ADJUSTED) and every other adjusted mode (and an ``OPTION`` asset class) raise
+  ``NotImplementedError`` -- split-adjusted is deferred as a strategy-facing default pending
+  corporate-action coverage (SRS-DATA-011);
+* the CLI-echoed ``normalization`` mode must match the request, else fail closed (a stale binary that
+  ignores the flag cannot return raw values labelled as adjusted);
 * a truncated / drifted output (``match_count`` mismatch, missing index, malformed integer) fails closed;
 * the CLI-echoed ``symbol`` / ``resolution`` must match the request, else fail closed (no relabelling);
 * a missing cargo binary fails closed with ``FileNotFoundError`` through the default runner.
@@ -47,16 +51,22 @@ _OHLCV = {"open": 9950, "high": 10075, "low": 9910, "close": 10000, "volume": 10
 
 
 def _render(
-    symbol: str, resolution: str, start: str, end: str, records: list[tuple[int, dict[str, int]]]
+    symbol: str,
+    resolution: str,
+    start: str,
+    end: str,
+    records: list[tuple[int, dict[str, int]]],
+    normalization: str = "raw",
 ) -> str:
-    """Render data007_query_cli output, echoing the queried symbol/resolution/start/end (as the real
-    CLI does)."""
+    """Render data007_query_cli output, echoing the queried symbol/resolution/start/end/normalization
+    (as the real CLI does)."""
     lines = [
         f"symbol:{symbol}",
         f"resolution:{resolution}",
         f"start:{start}",
         f"end:{end}",
         "kind:any",
+        f"normalization:{normalization}",
         f"match_count:{len(records)}",
     ]
     for i, (event_ts, fields) in enumerate(records):
@@ -98,7 +108,8 @@ class _FakeRunner:
             resolution = argv[argv.index("--resolution") + 1]
             start = argv[argv.index("--start") + 1]
             end = argv[argv.index("--end") + 1]
-            out = _render(symbol, resolution, start, end, self._records or [])
+            normalization = argv[argv.index("--normalization") + 1]
+            out = _render(symbol, resolution, start, end, self._records or [], normalization)
         return subprocess.CompletedProcess(argv, self.returncode, out, self.stderr)
 
 
@@ -266,8 +277,9 @@ def test_missing_required_field_raises_store_query_error() -> None:
 
 
 def test_default_normalization_fails_closed() -> None:
-    # Omitting normalization uses the Protocol default (SPLIT_ADJUSTED); the binding must raise rather
-    # than silently serve raw bars (the store has no adjusted data yet; SRS-DATA-012 deferred).
+    # Omitting normalization uses the Protocol default (SPLIT_ADJUSTED); the binding must FAIL CLOSED
+    # rather than silently serve raw bars dressed up as adjusted. Split-adjusted is not a trustworthy
+    # strategy-facing default until SRS-DATA-011 corporate-action coverage exists.
     runner = _FakeRunner(records=[(1_700_000_000, _OHLCV)])
     with pytest.raises(NotImplementedError):
         _binding(runner).get_bars("AAPL", lookback=1, frequency="1d")
@@ -278,7 +290,9 @@ def test_default_normalization_fails_closed() -> None:
     "mode",
     [NormalizationMode.SPLIT_ADJUSTED, NormalizationMode.FULLY_ADJUSTED, NormalizationMode.TOTAL_RETURN],
 )
-def test_adjusted_normalization_raises_not_implemented(mode: NormalizationMode) -> None:
+def test_adjusted_normalization_modes_raise_not_implemented(mode: NormalizationMode) -> None:
+    # The binding serves RAW only. Every adjusted mode fails closed before any query: SPLIT_ADJUSTED
+    # pending corporate-action coverage (SRS-DATA-011); FULLY_ADJUSTED / TOTAL_RETURN pending dividends.
     runner = _FakeRunner(records=[(1_700_000_000, _OHLCV)])
     with pytest.raises(NotImplementedError):
         _binding(runner).get_bars("AAPL", lookback=1, frequency="1d", normalization=mode)
@@ -289,6 +303,7 @@ def test_raw_normalization_passes() -> None:
     runner = _FakeRunner(records=[(1_700_000_000, _OHLCV)])
     bars = _binding(runner).get_bars("AAPL", lookback=1, frequency="1d", normalization=RAW)
     assert len(bars) == 1
+    assert _arg(runner.calls[0], "--normalization") == "raw"
 
 
 def test_option_asset_class_raises_not_implemented() -> None:
@@ -341,11 +356,11 @@ def _rec(index: int, event_ts: int) -> str:
 
 def _envelope(
     match_count: int, body: str = "", *, symbol: str = "AAPL", resolution: str = "1d",
-    start: int = 0, end: int = _NEG_END,
+    start: int = 0, end: int = _NEG_END, normalization: str = "raw",
 ) -> str:
     return (
         f"symbol:{symbol}\nresolution:{resolution}\nstart:{start}\nend:{end}\nkind:any\n"
-        f"match_count:{match_count}\n" + body
+        f"normalization:{normalization}\nmatch_count:{match_count}\n" + body
     )
 
 

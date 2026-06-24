@@ -526,7 +526,7 @@ def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
         fail(f"cargo test -p {crate} --test {integration} failed:\n{integ.stdout}\n{integ.stderr}")
     return (
         f"cargo test -p {crate} --lib + {integration}: PASS "
-        "(ingest -> persist -> reload -> re-ingest is a no-op across all four kinds, the persisted "
+        "(ingest -> persist -> reload -> re-ingest is a no-op across every dataset kind, the persisted "
         "file is byte-identical, a conflicting re-ingest fails closed, and a quarantined record "
         "never reaches the store)"
     )

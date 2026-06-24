@@ -28,16 +28,20 @@ the ``unified_historical_data`` (API-7) block, which pins the provider-facing ad
   (e) ``query`` carries no broker/adapter dependency and no lowercase vendor SDK token; ``lib.rs``
       re-exports ``pub mod query;``.
 
-The PASS line is ``SRS-DATA-007 UNIFIED-QUERY PASS`` -- it names the still-deferred owners (the real
-provider network adapters via SRS-DATA-001/003/005/006, read-while-write via SRS-DATA-017, normalization
-via SRS-DATA-012, SSD/NAS tiering via SRS-DATA-008/009/010, the dashboard/REST surfaces via
-SRS-UI / SRS-API). This check is contract EVIDENCE that the query substrate is correctly built and stays
-a regression gate; SRS-DATA-007 STAYS passes:false (foundational substrate) -- the first in-process
-consumer binding (the Python ``StoreBackedHistoricalData``; see ``tools/store_history_check.py`` +
-``store_history_binding_contract``) reads this engine by symbol/date-range/resolution with no provider
-via the explicit RAW path, but it is a RAW-only PARTIAL (its default fails closed pending the deferred
-DATA-012 normalization, so the bare-default query does not yet return data), so flipping would
-over-claim end-to-end completion.
+The PASS line is ``SRS-DATA-007 UNIFIED-QUERY PASS``. This check is contract EVIDENCE that the query
+substrate is correctly built and stays a regression gate. SRS-DATA-007 STAYS passes:false (foundational
+substrate). The in-process consumer binding (the Python ``StoreBackedHistoricalData``; see
+``tools/store_history_check.py`` + ``store_history_binding_contract``) reads this engine by
+symbol/date-range/resolution with no provider named via the explicit RAW path -- but the close is NOT
+complete: the binding serves RAW only (a trustworthy split-adjusted default awaits corporate-action
+COVERAGE, SRS-DATA-011 -- see ``tools/normalization_modes_check.py``); the shared HistoricalData
+Protocol is ``get_bars`` (lookback idiom) only, so an explicit ``[start, end]`` range query for all
+named consumers is a deferred SRS-SDK-001 surface change; and the named backtest / factor / notebook
+consumers are not yet wired to read via this store path (deferred to SRS-DATA-007). Other owners that compose this read
+path also remain deferred (the real provider network adapters via SRS-DATA-001/003/005/006,
+read-while-write via SRS-DATA-017, the FULLY_ADJUSTED / TOTAL_RETURN + live-subscription normalization
+of SRS-DATA-012, SSD/NAS tiering via SRS-DATA-008/009/010, the dashboard/REST surfaces via
+SRS-UI / SRS-API).
 
 Mirrors the PASS/FAIL output style of ``tools/ingestion_idempotency_check.py``.
 
@@ -393,13 +397,15 @@ _DEFERRED_OWNERS = (
     "(SRS-DATA-001/003/005/006); fixture sources stand in, as the verification step permits",
     "concurrent READS during an active ingestion WRITE -- read-while-write coordination "
     "(SRS-DATA-017; the atomic whole-file publish is the groundwork)",
-    "normalization-mode application -- raw / split-adjusted / fully-adjusted / total-return "
-    "(SRS-DATA-012; DATA-007 queries by symbol / date range / resolution only)",
+    "a TRUSTWORTHY split-adjusted strategy-facing default -- the split-adjustment math + operator CLI "
+    "exist (tools/normalization_modes_check.py) but the consumer binding serves RAW only until "
+    "corporate-action COVERAGE (SRS-DATA-011) guarantees it is not raw-as-adjusted; FULLY_ADJUSTED / "
+    "TOTAL_RETURN + live-subscription normalization additionally deferred (SRS-DATA-012)",
+    "the named backtest / factor / notebook consumers actually wired to read via this store path "
+    "(the DATA-007 acceptance names them; their store wiring is deferred to SRS-DATA-007)",
     "SSD-primary / NAS-archival tiering, eviction, cold-read failover of the queried directory "
     "(SRS-DATA-008/009/010)",
-    "the dashboard / REST consumer surfaces (SRS-UI / SRS-API); the first in-process Python consumer "
-    "binding is now wired but is a RAW-only PARTIAL pending DATA-012 -- StoreBackedHistoricalData "
-    "(tools/store_history_check.py); DATA-007 stays passes:false until the bare-default query returns data",
+    "the dashboard / REST consumer surfaces (SRS-UI / SRS-API)",
 )
 
 

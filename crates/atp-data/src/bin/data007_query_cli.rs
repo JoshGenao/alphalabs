@@ -31,14 +31,14 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use atp_data::store::{DatasetKind, MarketDataStore};
+use atp_data::store::{DatasetKind, MarketDataRecord, MarketDataStore};
 use atp_data::UnifiedHistoricalQuery;
 
 const USAGE: &str = "\
 data007_query_cli — SRS-DATA-007 unified historical data access operator workflow
 
 USAGE:
-    data007_query_cli query --dir <path> --symbol <sym> --resolution <res> --start <ts> --end <ts> [--kind <kind>]
+    data007_query_cli query --dir <path> --symbol <sym> --resolution <res> --start <ts> --end <ts> [--kind <kind>] [--normalization <mode>]
 
 The store directory is taken from --dir, else the ATP_DATA_STORE_DIR environment variable. A
 missing/unmounted directory fails closed rather than masquerading as an empty catalog. The query is a
@@ -48,7 +48,13 @@ The query names NO source provider — it matches purely on symbol, resolution, 
 [start, end] event-timestamp range. --kind narrows to one vendor-neutral dataset kind (not a provider).
 
 KINDS (optional --kind disambiguator):
-    daily-equity-bar | minute-equity-bar | option-chain | fundamental
+    daily-equity-bar | minute-equity-bar | option-chain | fundamental | corporate-action-split
+
+NORMALIZATION (optional --normalization, default raw):
+    raw             stored values verbatim — the ONLY mode this operator surface serves
+    (split-adjusted is deferred: the SRS-DATA-012 split-adjustment math exists in the Rust core, but a
+     split-adjusted label needs corporate-action coverage, SRS-DATA-011, so this surface fails closed
+     on it rather than emit raw-as-adjusted; fully-adjusted | total-return also need dividend data)
 
 COMMANDS:
     query    Print every record matching symbol + resolution + [start, end] (event_ts-ascending).
@@ -104,15 +110,25 @@ fn cmd_query(rest: &[String]) -> Result<(), String> {
     if let Some(kind) = parsed.kind {
         query = query.with_kind(kind);
     }
-    let result = store.query_unified(&query);
+    let matched = store.query_unified(&query);
+
+    // RAW only: print the stored values verbatim. The SRS-DATA-012 split-adjusted normalization is
+    // implemented in the Rust core (atp_data::split_adjust_records) but is deliberately NOT exposed on
+    // this operator surface: a "split-adjusted" label can only be honest when corporate-action COVERAGE
+    // is proven, and real corporate-action ingestion is deferred (SRS-DATA-011). Absent coverage, an
+    // empty split set is indistinguishable from missing data, so emitting split-adjusted output would
+    // be raw-as-adjusted. --normalization split-adjusted therefore fails closed at parse time.
+    let records: Vec<MarketDataRecord> =
+        matched.records().iter().map(|record| (*record).clone()).collect();
 
     println!("symbol:{symbol}");
     println!("resolution:{resolution}");
     println!("start:{start}");
     println!("end:{end}");
     println!("kind:{}", parsed.kind.map_or("any", |kind| kind.as_str()));
-    println!("match_count:{}", result.len());
-    for (index, record) in result.records().iter().enumerate() {
+    println!("normalization:raw");
+    println!("match_count:{}", records.len());
+    for (index, record) in records.iter().enumerate() {
         let key = record.key();
         println!("record.{index}.event_ts:{}", key.event_ts);
         println!(
@@ -170,10 +186,14 @@ impl ParsedArgs {
                     let raw = take_value(&mut iter, flag)?;
                     let kind = DatasetKind::from_label(&raw).ok_or_else(|| {
                         format!(
-                            "unknown --kind '{raw}' (expected daily-equity-bar | minute-equity-bar | option-chain | fundamental)"
+                            "unknown --kind '{raw}' (expected daily-equity-bar | minute-equity-bar | option-chain | fundamental | corporate-action-split)"
                         )
                     })?;
                     parsed.kind = Some(kind);
+                }
+                "--normalization" => {
+                    // RAW-only surface: validate the value but store nothing (the read is always raw).
+                    validate_normalization(&take_value(&mut iter, flag)?)?;
                 }
                 other => return Err(format!("unknown flag '{other}'\n\n{USAGE}")),
             }
@@ -197,6 +217,32 @@ impl ParsedArgs {
 
     fn require_end(&self) -> Result<i64, String> {
         self.end.ok_or_else(|| "missing required --end".to_string())
+    }
+}
+
+/// Validate the `--normalization` value. This operator surface serves `raw` ONLY. `split-adjusted` is
+/// recognized but rejected as DEFERRED: the SRS-DATA-012 split-adjustment math is implemented in the
+/// Rust core, but a "split-adjusted" label is only honest with proven corporate-action COVERAGE, and
+/// real corporate-action ingestion is deferred (SRS-DATA-011) — absent coverage an empty split set is
+/// indistinguishable from missing data, so emitting split-adjusted output would be raw-as-adjusted.
+/// `fully-adjusted` / `total-return` are rejected as deferred too (they additionally need dividends).
+/// A caller asking for any adjustment fails closed rather than receiving raw values dressed as adjusted.
+fn validate_normalization(raw: &str) -> Result<(), String> {
+    match raw {
+        "raw" => Ok(()),
+        "split-adjusted" => Err(
+            "--normalization 'split-adjusted' is deferred: the split-adjustment math exists in the Rust \
+             core, but a split-adjusted label requires corporate-action coverage (SRS-DATA-011, not yet \
+             ingested) -- this operator surface serves 'raw' only to avoid emitting raw-as-adjusted output"
+                .to_string(),
+        ),
+        "fully-adjusted" | "total-return" => Err(format!(
+            "--normalization '{raw}' is deferred to SRS-DATA-012 (fully-adjusted needs dividend data, \
+             total-return needs dividend reinvestment); this surface serves 'raw' only"
+        )),
+        other => Err(format!(
+            "unknown --normalization '{other}' (this operator surface serves 'raw' only)"
+        )),
     }
 }
 
