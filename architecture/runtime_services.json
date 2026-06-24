@@ -6398,6 +6398,75 @@
       "An authoritative SDK<->core money-unit scale -- the binding assumes the cents (x100) fixture convention for equity OHLC (owner: deferred runtime money boundary, atp-types)"
     ]
   },
+  "coverage_manifest_contract": {
+    "description": "SRS-DATA-011 CORPORATE-ACTION COVERAGE keystone (SyRS SYS-28a / StRS SN-1.14; BG-2 / BG-7). Acceptance: \"Splits, reverse splits, dividends, delistings, mergers, and symbol changes are reflected in historical records so that backtests spanning corporate-action dates produce correct P&L calculations under the selected normalization mode.\" This ships the COVERAGE-MANIFEST half as FOUNDATIONAL substrate: a per-symbol completeness-through-date frontier, plus the SINGLE coverage-enforcing gate that finally lets the existing (S71) crate-internal split-adjustment math be served on the public operator surface -- but ONLY when coverage proves every relevant split is known. SRS-DATA-011 STAYS passes:false: only SPLITS / reverse-splits have adjustment math + coverage here; dividends, delistings, mergers, and symbol changes have NO math and NO coverage this session, and real provider corporate-action ingestion (Databento/IB) is deferred (the operator-set / fixture coverage frontier stands in, exactly as the SRS-DATA-011 verification step permits 'fixture market data, provider mocks'). The GATE (the crux an adversarial reviewer scrutinizes): the split math re-quotes a bar at event_ts t by every split with effective_ts > t (STRICT); every in-window bar has t <= end_ts, so the deepest requirement is that ALL splits with effective_ts <= end_ts are known. Define the coverage frontier D = max(complete_through) over the symbol's CorporateActionCoverage records (None if absent). query_split_adjusted PASSES iff a coverage record exists AND D >= query.end_ts; otherwise it FAILS CLOSED with CoverageError::NotCovered { symbol, have_through: Option<i64> (= D or None), need_through: end_ts }. D >= end_ts (not ==) is correct: a known split in (end_ts, D] applies uniformly to every in-window bar (consistent), and a split exactly at end_ts leaves the end_ts bar unadjusted (strict boundary) while adjusting all earlier in-window bars -- coherent with the >= gate. The result is an honest 'as-of-D split-adjusted' series with no phantom split-drops inside the window (the SRS-DATA-011 'correct P&L for backtests spanning corporate-action dates' property); splits with effective_ts > D are unknown but strictly after every bar the backtest sees, so they cannot affect in-window P&L. Over-claiming 'current-adjusted' would be the fail-open. COVERAGE REPRESENTATION: a new vendor-neutral DatasetKind::CorporateActionCoverage (codec tag 5, min_schema_version 3) in the SAME idempotent/durable/deterministic MarketDataStore, keyed (symbol, event_ts = D) with a complete_through = D field. event_ts = D makes the monotonic, append-only frontier fall out of the existing natural-key idempotency for free: advancing the frontier is a NEW key (Inserted), re-asserting the same D is a byte-identical record (UnchangedDuplicate, no-op), and a ConflictingContent fail is structurally impossible (a different D is a different key). SCHEMA_VERSION bumps 2->3 (MIN_SUPPORTED stays 1); serialize() writes the MINIMUM version for the contained kinds (a daily-only store stays v1, a split store v2, only a coverage-bearing store is v3), restore() accepts [1,3], and the forward-compat guard rejects a v1/v2 blob smuggling the v3-only coverage kind. SINGLE GATED PUBLIC ENTRY POINT (no uncovered capability on ANY surface): the split-adjustment module STAYS crate-internal (lib.rs keeps `mod normalization`, private; split_adjust_records / SplitEvent are NOT re-exported). A sibling `coverage` module (crate-internal call into normalization) exposes ONE public method MarketDataStore::query_split_adjusted -> Result<SplitAdjustedResult, CoverageError>, which (1) requires the query kind be DailyEquityBar|MinuteEquityBar (else UnsupportedQueryKind -- so split_adjust_record's UnsupportedKind path is unreachable at runtime and a split-adjusted SERIES is equity-only by construction), (2) checks D >= end_ts, (3) only then pulls the symbol's split records (store-wide scan, since a split in (end_ts, D] legitimately adjusts in-window bars) + the kind-narrowed equity bars and applies the crate-internal math, returning the adjusted records PLUS coverage_through = D. So the ONLY public path to split-adjusted output is the coverage-enforcing method: there is no public path to raw-as-adjusted. SURFACES: data007_query_cli now ROUTES --normalization split-adjusted through query_split_adjusted (split-adjusted requires --kind daily-equity-bar|minute-equity-bar; on NotCovered/UnsupportedQueryKind it exits non-zero naming have/need + SRS-DATA-011; on success it echoes normalization:split-adjusted + a coverage_through:<D> line); fully-adjusted / total-return STILL fail closed (dividends deferred). A dedicated data011_coverage_cli ingests coverage (assert-coverage --symbol --through under StoreLock; show-coverage read-only). The Python StoreBackedHistoricalData binding STAYS RAW-only this session (the SPLIT_ADJUSTED binding flip is deferred to the SRS-DATA-007 consumer-wiring close). Verification: the crate's own coverage.rs unit suite proves the gate (pass at D == end_ts and D > end_ts; fail at D == end_ts-1 and at no record; split exactly at end_ts; split in (end,D] applied; frontier = max over multiple records; advance = Inserted / re-assert = UnchangedDuplicate / never ConflictingContent; non-equity query kind -> UnsupportedQueryKind) plus store.rs v3 schema tests; tools/coverage_manifest_check.py pins the coverage kind / gate condition / kind-narrowed gate / single-public-entry (not-publicly-exported) / CLI routing / coverage CLI invariants with per-guard non-vacuity mutations and a cargo round-trip that ingests a bar + split + coverage and asserts split-adjusted returns the ADJUSTED bar (close 2500 / volume 400000 / coverage_through:200) when covered and FAILS CLOSED naming SRS-DATA-011 when the query end exceeds the frontier. DEFERRED (named owners): dividend / delisting / merger / symbol-change adjustment math + their coverage (SRS-DATA-011 remainder); fully-adjusted + total-return + live-subscription normalization (SRS-DATA-012 remainder); real provider corporate-action ingestion (SRS-DATA-001/003/006; the operator-set / fixture frontier stands in); the StoreBackedHistoricalData SPLIT_ADJUSTED binding flip + wiring the named backtest/factor/notebook consumers (SRS-DATA-007).",
+    "requirement": "SRS-DATA-011",
+    "srs_refs": [
+      "SRS-DATA-011"
+    ],
+    "syrs_refs": [
+      "SYS-28a"
+    ],
+    "strs_refs": [
+      "SN-1.14"
+    ],
+    "passes": false,
+    "data_crate": {
+      "crate": "atp-data",
+      "path": "crates/atp-data"
+    },
+    "coverage_module": "crates/atp-data/src/coverage.rs",
+    "normalization_module": "crates/atp-data/src/normalization.rs",
+    "store_source": "crates/atp-data/src/store.rs",
+    "cli_source": "crates/atp-data/src/bin/data007_query_cli.rs",
+    "coverage_cli_source": "crates/atp-data/src/bin/data011_coverage_cli.rs",
+    "lib_source": "crates/atp-data/src/lib.rs",
+    "cli_bin": "data007_query_cli",
+    "ingest_cli_bin": "data016_ingest_cli",
+    "coverage_cli_bin": "data011_coverage_cli",
+    "coverage_kind_label": "corporate-action-coverage",
+    "split_kind_label": "corporate-action-split",
+    "schema_version": 3,
+    "gate_condition": "coverage_frontier(symbol) is Some(D) and D >= query.end_ts, else NotCovered{have_through,need_through:end_ts}",
+    "rust_entry_points": [
+      "query_split_adjusted",
+      "coverage_frontier",
+      "SplitAdjustedResult",
+      "CoverageError"
+    ],
+    "supported_action_types": [
+      "split",
+      "reverse-split"
+    ],
+    "deferred_action_types": [
+      "dividend",
+      "delisting",
+      "merger",
+      "symbol-change"
+    ],
+    "round_trip": {
+      "kind": "daily-equity-bar",
+      "split_kind": "corporate-action-split",
+      "coverage_kind": "corporate-action-coverage",
+      "symbol": "AAPL",
+      "resolution": "1d",
+      "bar_event_ts": 100,
+      "split_event_ts": 200,
+      "covered_through": 200,
+      "covered_query_end": 100,
+      "uncovered_query_end": 250,
+      "raw_close_minor": 10000,
+      "raw_volume": 100000,
+      "adjusted_close_minor": 2500,
+      "adjusted_volume": 400000
+    },
+    "deferred": [
+      "Dividend / delisting / merger / symbol-change corporate-action adjustment math and their coverage -- only splits / reverse-splits are handled this session (owner: SRS-DATA-011 remainder)",
+      "Fully-adjusted (splits + dividends) and total-return normalization modes, plus the LIVE subscription normalization path (owner: SRS-DATA-012 remainder)",
+      "Real provider corporate-action ingestion from Databento / IB -- the operator-set / fixture coverage frontier stands in (owner: SRS-DATA-001/003/006)",
+      "The StoreBackedHistoricalData SPLIT_ADJUSTED binding flip and wiring the named backtest / factor / notebook consumers to the gated split-adjusted path (owner: SRS-DATA-007)"
+    ]
+  },
   "factor_analysis_contract": {
     "description": "SRS-BT-006 (produce factor analysis and tear-sheet outputs; SyRS SYS-18; StRS SN-1.05). The deterministic, dependency-free factor-analysis surface lives in crates/atp-factor-pipeline (module `factor_analysis`). compute_tear_sheet consumes a FactorPanel -- a per-rebalance-period panel of (SecurityKey, factor value, forward return) observations plus a quantile count -- and returns one FactorTearSheet bundling the three deliverables SYS-18 names: (1) InformationCoefficient, the per-period Spearman rank correlation between factor value and forward return (average tie ranks; Pearson of ranks; clamped to its [-1,1] domain) with mean / std / risk-adjusted IC; (2) FactorReturns, the per-period quantile-sorted mean returns (each bucket mean None when its bounding cutoffs are tied, so a constant/tied factor cannot expose an identity-driven ladder) plus the top-minus-bottom long-short spread with its mean (which assumes a REGULAR panel -- a spread scales with the forward-return horizon, so the average is the producer's contract; a compounded cumulative spread is deferred -- the panel cannot validate non-overlapping forward windows); (3) TurnoverAnalysis, the per-period top/bottom-quantile TARGET turnover (factor-signal; realized drift turnover deferred to the backtest engine) with means. Factor values and returns are dimensionless f64 (the factor domain, not a money leak); the work is deterministic (fixed left-to-right folds; cross-sections sorted by the total order (factor_value, SecurityKey)); an undefined statistic is None (never a fabricated zero); a non-finite aggregate fails closed; and FactorPanel::validate rejects an empty or degenerate panel at the trust boundary. The OPERATOR rendering surface is realized via the factor_tear_sheet_cli binary (see tear_sheet_cli): `defaults` proves a default run surfaces all three deliverables, and `run` renders the IC / factor returns / turnover of a fixture panel through the real engine, with `--quantiles` re-bucketing the SAME fixture and every undefined statistic rendered as the literal `undefined` (never a fabricated 0) -- so SRS-BT-006 is passes:true. Still deferred (owned by other features, not SRS-BT-006): the scheduled full-universe factor job that produces the panel (SRS-FAC-001), wiring real factor values/returns from the unified historical data interface (SRS-DATA-007), the REST/dashboard rendering half (SRS-UI / SRS-API), and bundling the SRS-BT-004 PerformanceMetrics family into one cross-crate report.",
     "requirement": "SRS-BT-006",
