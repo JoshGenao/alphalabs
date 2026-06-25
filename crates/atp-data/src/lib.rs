@@ -7,19 +7,24 @@ use atp_types::{
 };
 
 // The SRS-DATA-012 split-adjustment math is a CRATE-INTERNAL module, deliberately NOT a public crate
-// API and NOT re-exported from the crate root. It is foundational substrate exercised by the crate's
-// own unit tests. Exposing `split_adjust_records` / `SplitEvent` publicly would let a Rust consumer
-// obtain split-adjusted IDENTITY values over an empty / incomplete split set -- raw-as-adjusted, the
-// exact hazard the operator CLI and the Python binding fail closed on. A split-adjusted result is only
-// honest with proven corporate-action coverage (SRS-DATA-011, deferred), so NO public surface (CLI,
-// Python binding, or Rust crate API) exposes split-adjusted until that coverage exists.
+// API and NOT re-exported from the crate root. Exposing `split_adjust_records` / `SplitEvent` publicly
+// would let a Rust consumer obtain split-adjusted IDENTITY values over an empty / incomplete split set
+// -- raw-as-adjusted, the exact hazard the operator surfaces fail closed on. A split-adjusted result is
+// only honest with proven corporate-action coverage (SRS-DATA-011). The SINGLE public path to
+// split-adjusted output is `coverage::MarketDataStore::query_split_adjusted`, which ENFORCES that
+// coverage (a per-symbol completeness-through-date frontier `>= query.end_ts`) before it reaches this
+// crate-internal math -- so there is no public path to raw-as-adjusted. The `coverage` module is a
+// sibling in the same crate, so it can call the crate-internal `normalization` functions while no
+// external caller can.
 mod normalization;
 pub mod store;
 pub mod query;
+pub mod coverage;
 
 pub use crate::query::{UnifiedHistoricalQuery, UnifiedHistoricalResult};
+pub use crate::coverage::{CoverageError, SplitAdjustedResult};
 
-use crate::store::{MarketDataRecord, MarketDataStore, StoreError, UpsertOutcome};
+use crate::store::{DatasetKind, MarketDataRecord, MarketDataStore, StoreError, UpsertOutcome};
 
 #[derive(Debug, Default)]
 pub struct DataLayer;
@@ -181,6 +186,18 @@ pub enum MarketIngestError {
     Rejected(StructuredIngestionError),
     /// The store rejected the write (conflicting re-ingest, malformed record, or I/O failure).
     Store(StoreError),
+    /// The generic market-data ingestion path refused a kind it does not own. Corporate-action
+    /// COVERAGE ([`DatasetKind::CorporateActionCoverage`]) is an OPERATOR trust assertion (the
+    /// SRS-DATA-011 completeness-through-date frontier the split-adjusted gate reads), NOT provider
+    /// market data — it is asserted ONLY through its dedicated surface (`data011_coverage_cli` /
+    /// [`store::coverage_record`](crate::store::coverage_record)), never this provider-ingestion entry
+    /// point. Refusing it here means no generic ingest loop (e.g. one iterating dataset kinds over the
+    /// provider fixtures) can mint a trusted frontier that would let the split-adjusted gate ship
+    /// raw-as-adjusted output.
+    UnsupportedKind {
+        /// The (vendor-neutral) kind label this entry point does not ingest.
+        kind: &'static str,
+    },
 }
 
 impl From<StructuredIngestionError> for MarketIngestError {
@@ -200,6 +217,11 @@ impl fmt::Display for MarketIngestError {
         match self {
             Self::Rejected(error) => write!(f, "ingestion record quarantined: {error}"),
             Self::Store(error) => write!(f, "market-data store write failed: {error}"),
+            Self::UnsupportedKind { kind } => write!(
+                f,
+                "the market-data ingestion path does not ingest '{kind}' records (corporate-action \
+                 coverage is asserted only via data011_coverage_cli)"
+            ),
         }
     }
 }
@@ -237,6 +259,16 @@ impl DataLayer {
         V: RecordValidator,
         S: IngestionValidationEventSink,
     {
+        // The generic market-data ingestion path does NOT create corporate-action COVERAGE records: a
+        // coverage frontier is an OPERATOR trust assertion (asserted only via data011_coverage_cli /
+        // store::coverage_record), not provider market data. Refusing it here is the decisive trust
+        // boundary — no generic ingest loop iterating dataset kinds over the provider fixtures can mint
+        // a trusted frontier that would let the split-adjusted gate ship raw-as-adjusted output.
+        if record.key().kind == DatasetKind::CorporateActionCoverage {
+            return Err(MarketIngestError::UnsupportedKind {
+                kind: record.key().kind.as_str(),
+            });
+        }
         // The ERR-5 envelope is DERIVED from the record, binding validation to exactly the record
         // that will be persisted (no independent payload to forge).
         let submission = record.ingestion_submission();

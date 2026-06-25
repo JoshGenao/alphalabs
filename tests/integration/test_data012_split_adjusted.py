@@ -1,15 +1,17 @@
-"""SRS-DATA-012 split-adjusted normalization — L5 integration test (public-surface fail-closed).
+"""SRS-DATA-012 split-adjusted normalization — L5 integration test (uncovered-store fail-closed).
 
-Gated by ``ATP_RUN_INTEGRATION=1`` (see tests/conftest.py). The split-adjustment MATH is implemented as
-a CRATE-INTERNAL module (``crates/atp-data/src/normalization.rs``), proven by that crate's own unit
-suite and NOT re-exported as a public crate API. It is FOUNDATIONAL substrate, exposed on NO public
-surface (operator CLI, Python binding, or Rust crate API), because a "split-adjusted" label is only
-honest with proven corporate-action COVERAGE and real corporate-action ingestion is deferred
-(SRS-DATA-011) -- absent coverage, an empty split set is indistinguishable from missing data, so
-emitting split-adjusted output would be raw-as-adjusted.
+Gated by ``ATP_RUN_INTEGRATION=1`` (see tests/conftest.py). The raw split-adjustment MATH is a
+CRATE-INTERNAL module (``crates/atp-data/src/normalization.rs``), proven by that crate's own unit suite
+and NOT re-exported as a public crate API. Split-adjusted output is served on the operator CLI ONLY
+through the SRS-DATA-011 coverage-enforcing gate (``MarketDataStore::query_split_adjusted``): over a
+store with no coverage record, an empty/incomplete split set is indistinguishable from missing data, so
+the gate FAILS CLOSED rather than emitting raw-as-adjusted output.
 
-This test asserts the public surfaces fail closed: the operator CLI ``data007_query_cli`` and the Python
-consumer binding ``StoreBackedHistoricalData`` both serve RAW only and refuse split-adjusted.
+This test ingests a daily bar with NO coverage record and asserts the uncovered-store fail-closed
+behaviour: the operator CLI ``data007_query_cli`` fails closed on split-adjusted (naming SRS-DATA-011),
+and the Python consumer binding ``StoreBackedHistoricalData`` serves RAW only (the binding flip is
+deferred to the SRS-DATA-007 consumer-wiring close). The COVERED (served) path is proven by the
+SRS-DATA-011 coverage tests (tools/coverage_manifest_check.py + tests/domain/test_coverage_gate_domain).
 """
 
 from __future__ import annotations
@@ -60,7 +62,7 @@ def _ingest_daily(ingest_bin: Path, tmp: str) -> None:
     ).returncode == 0
 
 
-def test_cli_serves_raw_and_rejects_split_adjusted() -> None:
+def test_cli_serves_raw_and_fails_closed_split_adjusted_without_coverage() -> None:
     cargo = _cargo()
     if cargo is None:
         pytest.skip("cargo not on PATH")
@@ -81,7 +83,8 @@ def test_cli_serves_raw_and_rejects_split_adjusted() -> None:
         assert "normalization:raw" in raw.stdout
         assert "record.0.field.close:10000" in raw.stdout
 
-        # split-adjusted FAILS closed (no raw-as-adjusted), naming the corporate-action coverage owner.
+        # Over this UNCOVERED store (no coverage record ingested), split-adjusted FAILS closed at the
+        # coverage gate (no raw-as-adjusted), naming the corporate-action coverage owner.
         adj = query("split-adjusted")
         assert adj.returncode != 0
         assert "SRS-DATA-011" in adj.stderr

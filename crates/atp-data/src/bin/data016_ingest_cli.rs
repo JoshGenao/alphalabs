@@ -53,6 +53,8 @@ catalog; pass --init to ingest into a brand-new directory.
 
 KINDS:
     daily-equity-bar | minute-equity-bar | option-chain | fundamental | corporate-action-split
+    (corporate-action-coverage is NOT ingested here -- the SRS-DATA-011 coverage frontier is a trust
+     assertion, asserted only via `data011_coverage_cli assert-coverage --symbol <sym> --through <ts>`)
 
 COMMANDS:
     ingest     Ingest a fixture batch for one kind on a date (load-modify-save; accumulates).
@@ -301,6 +303,19 @@ impl ParsedArgs {
                             "unknown --kind '{raw}' (expected daily-equity-bar | minute-equity-bar | option-chain | fundamental | corporate-action-split)"
                         )
                     })?;
+                    // Corporate-action COVERAGE is a trust assertion (the SRS-DATA-011 frontier the
+                    // split-adjusted gate reads), NOT a market-data fixture. It must be asserted ONLY
+                    // through its dedicated operator surface (data011_coverage_cli assert-coverage, with
+                    // an explicit --symbol / --through), so this generic market-data ingest CLI refuses
+                    // it rather than offering a second, fixture-shaped path to grant coverage.
+                    if kind == DatasetKind::CorporateActionCoverage {
+                        return Err(
+                            "data016_ingest_cli does not ingest 'corporate-action-coverage': the \
+                             SRS-DATA-011 coverage frontier is a trust assertion, asserted only via \
+                             `data011_coverage_cli assert-coverage --symbol <sym> --through <ts>`"
+                                .to_string(),
+                        );
+                    }
                     parsed.kind = Some(kind);
                 }
                 "--event-ts" => {

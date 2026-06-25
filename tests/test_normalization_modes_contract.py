@@ -50,7 +50,7 @@ class ScriptRunTest(unittest.TestCase):
             "compose-then-divide",
             "round-half-to-even",
             "CLI surface",
-            "serves --normalization raw ONLY",
+            "coverage-enforcing gate",
             "serves RAW only",
             "crate-internal API",
             "generative property test",
@@ -106,12 +106,22 @@ class FactorsTest(_Fixture):
 
 
 class CliFlagTest(_Fixture):
-    def test_serving_split_adjusted_is_caught(self) -> None:
-        # If the CLI accepted split-adjusted (Ok) instead of rejecting it (Err), the guard must fire --
-        # the operator surface must never emit a split-adjusted label without proven coverage.
+    def test_reverting_split_adjusted_to_parse_reject_is_caught(self) -> None:
+        # split-adjusted must be ROUTED through the coverage gate, not rejected at parse. If the CLI
+        # reverted to rejecting split-adjusted at parse (the pre-coverage behavior), the guard must fire
+        # (the `"split-adjusted" => Ok` routing token disappears).
         mutated = self._src("cli_source").replace(
-            '"split-adjusted" => Err(', '"split-adjusted" => Ok(('
+            '"split-adjusted" => Ok(Normalization::SplitAdjusted),',
+            '"split-adjusted" => Err("deferred".to_string()),',
         )
+        self.assertNotEqual(mutated, self._src("cli_source"))
+        with self.assertRaises(NormalizationModesCheckError):
+            check_cli_flag(self.config, mutated)
+
+    def test_dropping_the_gate_call_is_caught(self) -> None:
+        # If the CLI stopped routing split-adjusted through MarketDataStore::query_split_adjusted (the
+        # single gated path), the guard must fire -- there must be no CLI-side split math.
+        mutated = self._src("cli_source").replace("query_split_adjusted", "query_unscaled")
         self.assertNotEqual(mutated, self._src("cli_source"))
         with self.assertRaises(NormalizationModesCheckError):
             check_cli_flag(self.config, mutated)
@@ -165,13 +175,15 @@ class AggregateEvidenceTest(_Fixture):
 
     def test_public_vs_library_modes_are_separated(self) -> None:
         block = contract_block(self.config)
-        # Public surfaces (CLI + binding) serve RAW only; the Rust core math additionally implements
-        # SPLIT_ADJUSTED; SPLIT_ADJUSTED is explicitly deferred from public exposure (no advertised mode
-        # a consumer cannot actually select).
-        self.assertEqual(block["public_request_modes"], ["RAW"])
+        # split-adjusted is now served on the operator CLI behind the SRS-DATA-011 coverage gate, so it
+        # is a public_request_mode; the strategy binding still serves RAW only (binding_request_modes);
+        # FULLY_ADJUSTED / TOTAL_RETURN stay deferred from public exposure (dividend data).
+        self.assertEqual(block["public_request_modes"], ["RAW", "SPLIT_ADJUSTED"])
+        self.assertEqual(block["binding_request_modes"], ["RAW"])
         self.assertEqual(block["core_library_modes"], ["RAW", "SPLIT_ADJUSTED"])
-        self.assertIn("SPLIT_ADJUSTED", block["deferred_public_modes"])
-        self.assertNotIn("SPLIT_ADJUSTED", block["public_request_modes"])
+        self.assertIn("FULLY_ADJUSTED", block["deferred_public_modes"])
+        self.assertIn("TOTAL_RETURN", block["deferred_public_modes"])
+        self.assertNotIn("SPLIT_ADJUSTED", block["deferred_public_modes"])
 
 
 if __name__ == "__main__":

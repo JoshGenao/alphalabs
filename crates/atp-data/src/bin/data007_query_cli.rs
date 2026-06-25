@@ -34,6 +34,15 @@ use std::process::ExitCode;
 use atp_data::store::{DatasetKind, MarketDataRecord, MarketDataStore};
 use atp_data::UnifiedHistoricalQuery;
 
+/// The normalization mode the operator surface serves. `raw` returns stored values verbatim;
+/// `split-adjusted` routes through the coverage-enforcing gate. `fully-adjusted` / `total-return`
+/// fail closed at parse time (dividend data deferred to SRS-DATA-012).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Normalization {
+    Raw,
+    SplitAdjusted,
+}
+
 const USAGE: &str = "\
 data007_query_cli — SRS-DATA-007 unified historical data access operator workflow
 
@@ -51,10 +60,16 @@ KINDS (optional --kind disambiguator):
     daily-equity-bar | minute-equity-bar | option-chain | fundamental | corporate-action-split
 
 NORMALIZATION (optional --normalization, default raw):
-    raw             stored values verbatim — the ONLY mode this operator surface serves
-    (split-adjusted is deferred: the SRS-DATA-012 split-adjustment math exists in the Rust core, but a
-     split-adjusted label needs corporate-action coverage, SRS-DATA-011, so this surface fails closed
-     on it rather than emit raw-as-adjusted; fully-adjusted | total-return also need dividend data)
+    raw             stored values verbatim
+    split-adjusted  bars re-quoted onto a split-comparable basis (SRS-DATA-012 math), served ONLY when
+                    corporate-action COVERAGE for the symbol reaches the query end (SRS-DATA-011); it
+                    REQUIRES an equity-bar --kind (daily-equity-bar | minute-equity-bar) and fails
+                    closed (naming have/need coverage) when the symbol is not covered through --end, so
+                    it never emits raw-as-adjusted output. Ingest coverage with data011_coverage_cli.
+    (fully-adjusted | total-return are deferred: they additionally need dividend data, SRS-DATA-012)
+
+A split-adjusted result adds a `coverage_through:<D>` line (the as-of frontier the adjustment was
+computed against, always >= --end).
 
 COMMANDS:
     query    Print every record matching symbol + resolution + [start, end] (event_ts-ascending).
@@ -110,23 +125,36 @@ fn cmd_query(rest: &[String]) -> Result<(), String> {
     if let Some(kind) = parsed.kind {
         query = query.with_kind(kind);
     }
-    let matched = store.query_unified(&query);
 
-    // RAW only: print the stored values verbatim. The SRS-DATA-012 split-adjusted normalization is
-    // implemented in the Rust core (atp_data::split_adjust_records) but is deliberately NOT exposed on
-    // this operator surface: a "split-adjusted" label can only be honest when corporate-action COVERAGE
-    // is proven, and real corporate-action ingestion is deferred (SRS-DATA-011). Absent coverage, an
-    // empty split set is indistinguishable from missing data, so emitting split-adjusted output would
-    // be raw-as-adjusted. --normalization split-adjusted therefore fails closed at parse time.
-    let records: Vec<MarketDataRecord> =
-        matched.records().iter().map(|record| (*record).clone()).collect();
+    // Resolve the records + printed normalization label + optional coverage frontier per mode.
+    let (records, normalization_label, coverage_through): (Vec<MarketDataRecord>, &str, Option<i64>) =
+        match parsed.normalization {
+            // RAW: stored values verbatim over the atomically-published snapshot.
+            Normalization::Raw => {
+                let matched = store.query_unified(&query);
+                let records = matched.records().iter().map(|record| (*record).clone()).collect();
+                (records, "raw", None)
+            }
+            // SPLIT-ADJUSTED: route through the SINGLE coverage-enforcing gate
+            // (MarketDataStore::query_split_adjusted). It fails closed (exit non-zero) on NotCovered
+            // (coverage for the symbol does not reach --end), on a missing/non-equity --kind, and on a
+            // malformed split -- so this surface never emits raw-as-adjusted output. There is no
+            // CLI-side split math; the gate is the only path to split-adjusted output.
+            Normalization::SplitAdjusted => {
+                let adjusted = store.query_split_adjusted(&query).map_err(|err| err.to_string())?;
+                (adjusted.records, "split-adjusted", Some(adjusted.coverage_through))
+            }
+        };
 
     println!("symbol:{symbol}");
     println!("resolution:{resolution}");
     println!("start:{start}");
     println!("end:{end}");
     println!("kind:{}", parsed.kind.map_or("any", |kind| kind.as_str()));
-    println!("normalization:raw");
+    println!("normalization:{normalization_label}");
+    if let Some(through) = coverage_through {
+        println!("coverage_through:{through}");
+    }
     println!("match_count:{}", records.len());
     for (index, record) in records.iter().enumerate() {
         let key = record.key();
@@ -161,7 +189,6 @@ fn resolve_dir(explicit: Option<&str>) -> Result<PathBuf, String> {
 // Argument parsing
 // --------------------------------------------------------------------------- //
 
-#[derive(Default)]
 struct ParsedArgs {
     dir: Option<String>,
     symbol: Option<String>,
@@ -169,6 +196,21 @@ struct ParsedArgs {
     start: Option<i64>,
     end: Option<i64>,
     kind: Option<DatasetKind>,
+    normalization: Normalization,
+}
+
+impl Default for ParsedArgs {
+    fn default() -> Self {
+        Self {
+            dir: None,
+            symbol: None,
+            resolution: None,
+            start: None,
+            end: None,
+            kind: None,
+            normalization: Normalization::Raw,
+        }
+    }
 }
 
 impl ParsedArgs {
@@ -192,8 +234,7 @@ impl ParsedArgs {
                     parsed.kind = Some(kind);
                 }
                 "--normalization" => {
-                    // RAW-only surface: validate the value but store nothing (the read is always raw).
-                    validate_normalization(&take_value(&mut iter, flag)?)?;
+                    parsed.normalization = parse_normalization(&take_value(&mut iter, flag)?)?;
                 }
                 other => return Err(format!("unknown flag '{other}'\n\n{USAGE}")),
             }
@@ -220,28 +261,22 @@ impl ParsedArgs {
     }
 }
 
-/// Validate the `--normalization` value. This operator surface serves `raw` ONLY. `split-adjusted` is
-/// recognized but rejected as DEFERRED: the SRS-DATA-012 split-adjustment math is implemented in the
-/// Rust core, but a "split-adjusted" label is only honest with proven corporate-action COVERAGE, and
-/// real corporate-action ingestion is deferred (SRS-DATA-011) — absent coverage an empty split set is
-/// indistinguishable from missing data, so emitting split-adjusted output would be raw-as-adjusted.
-/// `fully-adjusted` / `total-return` are rejected as deferred too (they additionally need dividends).
-/// A caller asking for any adjustment fails closed rather than receiving raw values dressed as adjusted.
-fn validate_normalization(raw: &str) -> Result<(), String> {
+/// Parse the `--normalization` value. `raw` returns stored values verbatim; `split-adjusted` routes
+/// through the coverage-enforcing gate ([`MarketDataStore::query_split_adjusted`]) — the value is
+/// ACCEPTED here, and the gate itself fails closed when the symbol is not covered through `--end`
+/// (so split-adjusted is served only when coverage makes the label honest, never raw-as-adjusted).
+/// `fully-adjusted` / `total-return` are rejected as DEFERRED (they additionally need dividend data,
+/// SRS-DATA-012). An unknown value fails closed.
+fn parse_normalization(raw: &str) -> Result<Normalization, String> {
     match raw {
-        "raw" => Ok(()),
-        "split-adjusted" => Err(
-            "--normalization 'split-adjusted' is deferred: the split-adjustment math exists in the Rust \
-             core, but a split-adjusted label requires corporate-action coverage (SRS-DATA-011, not yet \
-             ingested) -- this operator surface serves 'raw' only to avoid emitting raw-as-adjusted output"
-                .to_string(),
-        ),
+        "raw" => Ok(Normalization::Raw),
+        "split-adjusted" => Ok(Normalization::SplitAdjusted),
         "fully-adjusted" | "total-return" => Err(format!(
             "--normalization '{raw}' is deferred to SRS-DATA-012 (fully-adjusted needs dividend data, \
-             total-return needs dividend reinvestment); this surface serves 'raw' only"
+             total-return needs dividend reinvestment); this surface serves 'raw' and 'split-adjusted'"
         )),
         other => Err(format!(
-            "unknown --normalization '{other}' (this operator surface serves 'raw' only)"
+            "unknown --normalization '{other}' (this operator surface serves 'raw' | 'split-adjusted')"
         )),
     }
 }

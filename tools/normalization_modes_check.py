@@ -22,22 +22,26 @@ What this pins:
       (the single source of truth): compose-then-divide (one division per field), i128 intermediates
       with fail-closed narrowing, round-half-to-even, the strict effective_ts > t boundary, OHLC scaled
       by DEN/NUM and volume by the inverse;
-  (c) the CLI surface — data007_query_cli serves --normalization raw ONLY; split-adjusted FAILS closed
-      (naming SRS-DATA-011 coverage), as do fully-adjusted / total-return, so the operator surface never
-      emits a split-adjusted label without proven coverage (no raw-as-adjusted);
+  (c) the CLI surface — data007_query_cli serves --normalization raw, and split-adjusted ONLY through
+      the SRS-DATA-011 coverage-enforcing gate (MarketDataStore::query_split_adjusted), which fails
+      closed (naming SRS-DATA-011 coverage) when the symbol is not covered through --end; fully-adjusted
+      / total-return remain rejected. So the operator surface never emits a split-adjusted label without
+      proven coverage (no raw-as-adjusted), and the raw split math is never exposed CLI-side;
   (d) the binding — python/atp_strategy/store_history.py serves RAW only and FAILS CLOSED on the
       Protocol default (SPLIT_ADJUSTED) and every other adjusted mode, naming SRS-DATA-011 coverage as
       the reason split-adjusted is deferred as a strategy-facing default (so a strategy can never get a
-      raw-as-adjusted series); split-adjusted remains a Rust-core LIBRARY capability only (no public surface exposes it).
+      raw-as-adjusted series); the strategy-facing binding flip is deferred to the SRS-DATA-007
+      consumer-wiring close even though the operator CLI now serves split-adjusted behind the gate.
 
 Plus a cargo round-trip (--require-cargo): (1) prove the split-adjustment MATH with the crate's OWN unit
 tests -- ``cargo test -p atp-data --lib normalization`` (forward/reverse/multi-split, the effective-date
 boundary, round-half-to-even, the symbol-only invariant, non-equity + non-positive + overflow
-fail-closed); the module is CRATE-INTERNAL (not a public crate API), so it is exercised in-crate, never
-via an external test; (2) prove the operator surface serves raw ONLY -- ingest daily bars via
-data016_ingest_cli, then assert ``data007_query_cli --normalization split-adjusted`` FAILS closed
-(naming SRS-DATA-011 coverage) while ``--normalization raw`` returns the stored values. No public surface
-ever emits a split-adjusted label, so the CLI is never driven for split-adjusted output.
+fail-closed); the raw split math stays CRATE-INTERNAL (not a public crate API), so it is exercised
+in-crate, never via an external test; (2) prove the operator surface never emits raw-as-adjusted --
+ingest daily bars via data016_ingest_cli (NO coverage record), then assert ``data007_query_cli
+--normalization split-adjusted`` FAILS closed at the coverage gate (naming SRS-DATA-011) while
+``--normalization raw`` returns the stored values. The covered (served) split-adjusted path is the
+SRS-DATA-011 keystone, proven end-to-end by tools/coverage_manifest_check.py.
 
 PASS line: ``SRS-DATA-012 SPLIT-ADJUSTED NORMALIZATION PASS``.
 
@@ -194,13 +198,22 @@ def check_cli_flag(config: dict, cli_src: str) -> str:
     compact = _compact(cli_src)
     if '"--normalization"' not in compact and "'--normalization'" not in compact:
         fail("data007_query_cli must declare a --normalization flag")
-    # The operator surface serves RAW ONLY. split-adjusted MUST be rejected (a split-adjusted label
-    # without proven corporate-action coverage would be raw-as-adjusted, SRS-DATA-011 deferred), and so
-    # must fully-adjusted / total-return -- never a silent fall-through to raw.
-    if '"split-adjusted"=>Err' not in compact and '"split-adjusted"=>Err(' not in compact:
+    # split-adjusted is now SERVED -- but ONLY through the coverage-enforcing gate
+    # (MarketDataStore::query_split_adjusted, the SRS-DATA-011 surface), which fails closed when the
+    # symbol is not covered through --end. So the CLI must ACCEPT split-adjusted at parse and route it
+    # to query_split_adjusted (the single path to split-adjusted output, never CLI-side split math),
+    # not fail closed at parse and not a silent fall-through to raw. fully-adjusted / total-return remain
+    # rejected (dividends deferred, SRS-DATA-012).
+    if '"split-adjusted"=>Ok' not in compact:
         fail(
-            "data007_query_cli must REJECT --normalization split-adjusted (a split-adjusted label needs "
-            "corporate-action coverage, SRS-DATA-011; this surface serves raw only to avoid raw-as-adjusted)"
+            "data007_query_cli's --normalization parser must ACCEPT split-adjusted (`=> Ok`), routing it "
+            "through the coverage gate -- not reject it at parse"
+        )
+    if "query_split_adjusted" not in compact:
+        fail(
+            "data007_query_cli must route --normalization split-adjusted through the coverage gate "
+            "MarketDataStore::query_split_adjusted (the single path to split-adjusted output, which "
+            "fails closed without SRS-DATA-011 coverage) -- never CLI-side split math"
         )
     if '"fully-adjusted"' not in compact or '"total-return"' not in compact:
         fail(
@@ -209,27 +222,27 @@ def check_cli_flag(config: dict, cli_src: str) -> str:
         )
     if "SRS-DATA-011" not in cli_src:
         fail(
-            "data007_query_cli must name the corporate-action COVERAGE owner (SRS-DATA-011) as why "
-            "split-adjusted is deferred on the operator surface"
+            "data007_query_cli must name the corporate-action COVERAGE owner (SRS-DATA-011) -- the "
+            "split-adjusted gate fails closed without it"
         )
-    # The only mode served must echo normalization:raw.
-    if "normalization:raw" not in cli_src:
-        fail("data007_query_cli must echo normalization:raw (the only served mode)")
+    # The served mode is echoed (`normalization:<mode>`) so a consumer can validate the adjustment.
+    if "normalization:" not in cli_src:
+        fail("data007_query_cli must echo the served normalization mode (normalization:<mode>)")
     return (
-        "CLI surface: data007_query_cli serves --normalization raw ONLY; split-adjusted (and "
-        "fully-adjusted / total-return) fail closed as deferred -- the split-adjustment math exists in "
-        "the Rust core but is not exposed on a public surface without corporate-action coverage "
-        "(SRS-DATA-011), so the CLI never emits raw-as-adjusted output"
+        "CLI surface: data007_query_cli serves --normalization raw, and split-adjusted ONLY through the "
+        "coverage-enforcing gate (query_split_adjusted) which fails closed (naming SRS-DATA-011) when the "
+        "symbol is not covered through --end; fully-adjusted / total-return remain deferred. The raw "
+        "split-adjustment math is never exposed CLI-side -- the gate is the only path to it"
     )
 
 
 def check_binding_defers_split_adjusted(config: dict, binding_src: str) -> str:
     compact = _compact(binding_src)
-    # The consumer binding serves RAW ONLY. Split-adjusted is a Rust-core LIBRARY capability (no public
-    # surface exposes it), NOT a trustworthy strategy-facing default until corporate-action COVERAGE
-    # exists (SRS-DATA-011) -- absent coverage it would be raw-as-adjusted. So the binding must NOT map
-    # SPLIT_ADJUSTED to a CLI
-    # label, and must fail closed for it (the Protocol default SPLIT_ADJUSTED included).
+    # The consumer binding serves RAW ONLY. Split-adjusted is now served on the operator CLI behind the
+    # SRS-DATA-011 coverage gate, but is NOT yet a trustworthy strategy-facing DEFAULT (the binding flip
+    # is deferred to the SRS-DATA-007 consumer-wiring close) -- so the binding must NOT map
+    # SPLIT_ADJUSTED to a CLI label, and must fail closed for it (the Protocol default SPLIT_ADJUSTED
+    # included) rather than silently serving raw bars dressed as adjusted.
     if "_NORMALIZATION_LABEL" not in compact:
         fail("the binding must map served modes to a CLI --normalization label (_NORMALIZATION_LABEL)")
     if 'NormalizationMode.SPLIT_ADJUSTED:"' in compact or "NormalizationMode.SPLIT_ADJUSTED:'" in compact:
@@ -260,14 +273,15 @@ def check_binding_defers_split_adjusted(config: dict, binding_src: str) -> str:
     return (
         "binding: StoreBackedHistoricalData serves RAW only and keeps the SPLIT_ADJUSTED Protocol "
         "default so the bare-default consumer call FAILS CLOSED (never raw-as-adjusted). Split-adjusted "
-        "is a Rust-core library capability, exposed on NO public surface (binding and operator CLI both "
-        "RAW-only) until corporate-action coverage (SRS-DATA-011) makes a split-adjusted label honest"
+        "is now served on the operator CLI behind the SRS-DATA-011 coverage gate, but the strategy-facing "
+        "binding flip is deferred to the SRS-DATA-007 consumer-wiring close"
     )
 
 
 def check_round_trip(config: dict, require_cargo: bool = False) -> str:
-    """Prove the split-adjustment MATH at the Rust library level, and that the operator CLI serves raw
-    only (rejecting split-adjusted) so no public surface emits raw-as-adjusted."""
+    """Prove the split-adjustment MATH at the Rust library level, and that the operator CLI fails closed
+    on split-adjusted over an UNCOVERED store (no coverage record) so no public surface emits
+    raw-as-adjusted. The covered/served path is proven by tools/coverage_manifest_check.py."""
     block = contract_block(config)
     rt = block["round_trip"]
     crate = block["data_crate"]["crate"]
@@ -291,8 +305,9 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
     if lib.returncode != 0:
         fail(f"cargo test -p {crate} --lib normalization failed:\n{lib.stdout}\n{lib.stderr}")
 
-    # 2) Build the CLIs and prove the operator surface serves raw ONLY: --normalization split-adjusted
-    #    fails closed (no raw-as-adjusted), and raw returns the stored values verbatim.
+    # 2) Build the CLIs and prove that over an UNCOVERED store (the data016 fixture ingests NO coverage
+    #    record), --normalization split-adjusted fails closed at the coverage gate (no raw-as-adjusted),
+    #    while raw returns the stored values verbatim.
     for binary in (block["ingest_cli_bin"], block["cli_bin"]):
         built = subprocess.run(
             [cargo, "build", "-q", "-p", crate, "--bin", binary],
@@ -320,14 +335,16 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
                 cwd=ROOT, check=False, capture_output=True, text=True,
             )
 
+        # Over this UNCOVERED store (no coverage record was ingested), split-adjusted fails closed at
+        # the coverage gate (NotCovered) -- never raw-as-adjusted -- naming SRS-DATA-011.
         rejected = query("split-adjusted")
         if rejected.returncode == 0:
             fail(
-                "data007_query_cli --normalization split-adjusted must FAIL closed (a split-adjusted "
-                f"label needs SRS-DATA-011 coverage); CLI returned 0 with:\n{rejected.stdout}"
+                "data007_query_cli --normalization split-adjusted over an UNCOVERED store must FAIL "
+                f"closed at the coverage gate (SRS-DATA-011); CLI returned 0 with:\n{rejected.stdout}"
             )
         if "SRS-DATA-011" not in rejected.stderr:
-            fail(f"expected the split-adjusted rejection to name SRS-DATA-011 coverage, got:\n{rejected.stderr}")
+            fail(f"expected the split-adjusted gate failure to name SRS-DATA-011 coverage, got:\n{rejected.stderr}")
 
         raw = query("raw")
         if raw.returncode != 0:
@@ -344,10 +361,10 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
     return (
         "round-trip: the split-adjustment MATH is proven by the crate's OWN unit tests (cargo test --lib "
         "normalization: forward/reverse/multi-split, the effective-date boundary, round-half-to-even, the "
-        "symbol-only invariant, non-equity + non-positive + overflow fail-closed); the module is "
-        "crate-internal (not a public crate API); and the data007_query_cli operator surface serves raw "
-        "ONLY (split-adjusted FAILS closed naming SRS-DATA-011 coverage), so no public surface (CLI, "
-        "Python binding, or Rust crate API) can emit raw-as-adjusted output"
+        "symbol-only invariant, non-equity + non-positive + overflow fail-closed); the raw split math is "
+        "crate-internal (not a public crate API); and over an UNCOVERED store the data007_query_cli "
+        "operator surface fails closed on split-adjusted at the coverage gate (naming SRS-DATA-011), so no "
+        "public surface emits raw-as-adjusted output without proven coverage"
     )
 
 

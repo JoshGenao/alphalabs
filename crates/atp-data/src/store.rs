@@ -82,12 +82,16 @@ use atp_types::IngestionRecordSubmission;
 
 /// The current record schema version. Bumped on a layout change that an older reader cannot safely
 /// parse. **Version history:** v1 = the original four dataset kinds (daily / minute equity bar,
-/// option-chain, fundamental); v2 added [`DatasetKind::CorporateActionSplit`] (codec tag 4). A store
-/// that contains a split record is serialized as v2, so an OLDER v1-only reader rejects it cleanly at
-/// the version gate ([`StoreError::UnknownSchemaVersion`]) instead of hitting the unknown tag mid-
-/// restore. [`MarketDataStore::restore`] reads BOTH versions (a legacy v1 store still loads), but a v1
-/// store may NOT carry a kind introduced in a later version — that is rejected as inconsistent.
-pub const SCHEMA_VERSION: i64 = 2;
+/// option-chain, fundamental); v2 added [`DatasetKind::CorporateActionSplit`] (codec tag 4); v3 added
+/// [`DatasetKind::CorporateActionCoverage`] (codec tag 5, the SRS-DATA-011 completeness-through-date
+/// frontier). A store is serialized at the MINIMUM version that can represent its contained kinds (see
+/// [`serialize`](MarketDataStore::serialize)), so a store that contains a coverage record is written as
+/// v3 and an OLDER v1/v2 reader rejects it cleanly at the version gate
+/// ([`StoreError::UnknownSchemaVersion`]) instead of hitting the unknown tag mid-restore.
+/// [`MarketDataStore::restore`] reads ALL versions in `[MIN_SUPPORTED_SCHEMA_VERSION, SCHEMA_VERSION]`
+/// (a legacy v1/v2 store still loads), but a store may NOT carry a kind introduced in a later version
+/// than the one it declares — that is rejected as inconsistent.
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// The oldest serialized schema version [`MarketDataStore::restore`] still accepts (read backward
 /// compatibility). A blob at any version outside `[MIN_SUPPORTED_SCHEMA_VERSION, SCHEMA_VERSION]` is
@@ -147,6 +151,14 @@ pub enum DatasetKind {
     /// A stock-split corporate action keyed by `(symbol, effective_ts)` with `numerator`/
     /// `denominator` ratio fields — the input the SRS-DATA-012 split-adjusted read applies.
     CorporateActionSplit,
+    /// A corporate-action **coverage** assertion (SRS-DATA-011): "all corporate actions for `symbol`
+    /// effective on or before this record's `event_ts` are known." Keyed by `(symbol, event_ts = D)`
+    /// — the `event_ts` IS the completeness-through instant `D`, so advancing the frontier is a NEW
+    /// record (a higher `D`) and re-asserting the same `D` is an idempotent no-op. The
+    /// `complete_through = D` value field carries `D` for self-description. The coverage-enforcing gate
+    /// ([`MarketDataStore::query_split_adjusted`](crate::coverage)) serves split-adjusted output only
+    /// when a symbol's frontier `D >= query.end_ts`.
+    CorporateActionCoverage,
 }
 
 impl DatasetKind {
@@ -158,6 +170,7 @@ impl DatasetKind {
             Self::OptionChainSnapshot => "option-chain",
             Self::Fundamental => "fundamental",
             Self::CorporateActionSplit => "corporate-action-split",
+            Self::CorporateActionCoverage => "corporate-action-coverage",
         }
     }
 
@@ -171,6 +184,7 @@ impl DatasetKind {
             | Self::OptionChainSnapshot
             | Self::Fundamental => 1,
             Self::CorporateActionSplit => 2,
+            Self::CorporateActionCoverage => 3,
         }
     }
 
@@ -183,6 +197,7 @@ impl DatasetKind {
             Self::OptionChainSnapshot => 2,
             Self::Fundamental => 3,
             Self::CorporateActionSplit => 4,
+            Self::CorporateActionCoverage => 5,
         }
     }
 
@@ -193,6 +208,7 @@ impl DatasetKind {
             2 => Ok(Self::OptionChainSnapshot),
             3 => Ok(Self::Fundamental),
             4 => Ok(Self::CorporateActionSplit),
+            5 => Ok(Self::CorporateActionCoverage),
             _ => Err(StoreError::CorruptRecord {
                 context: "unknown dataset kind tag",
             }),
@@ -207,12 +223,31 @@ impl DatasetKind {
             "option-chain" => Some(Self::OptionChainSnapshot),
             "fundamental" => Some(Self::Fundamental),
             "corporate-action-split" => Some(Self::CorporateActionSplit),
+            "corporate-action-coverage" => Some(Self::CorporateActionCoverage),
             _ => None,
         }
     }
 
-    /// All kinds, in canonical order — the coverage set the CLI and tests iterate.
-    pub fn all() -> [DatasetKind; 5] {
+    /// All kinds, in canonical order — the full set the CLI inspect counts iterate.
+    pub fn all() -> [DatasetKind; 6] {
+        [
+            Self::DailyEquityBar,
+            Self::MinuteEquityBar,
+            Self::OptionChainSnapshot,
+            Self::Fundamental,
+            Self::CorporateActionSplit,
+            Self::CorporateActionCoverage,
+        ]
+    }
+
+    /// The kinds the **provider** fixture/ingestion path handles — the four market-data sources plus
+    /// the split corporate-action FACT, all of which originate from a provider adapter (Databento / IB
+    /// / Sharadar). This DELIBERATELY excludes [`CorporateActionCoverage`](Self::CorporateActionCoverage):
+    /// a coverage frontier is an OPERATOR trust assertion (asserted only via `data011_coverage_cli` /
+    /// [`coverage_record`]), never provider market data, so [`fixture_batch`] emits none for it and
+    /// [`DataLayer::ingest_market_record`](crate::DataLayer::ingest_market_record) refuses it. A generic
+    /// ingestion flow iterates THIS set, not [`all`](Self::all), so it can never mint a trusted frontier.
+    pub fn provider_ingestion_kinds() -> [DatasetKind; 5] {
         [
             Self::DailyEquityBar,
             Self::MinuteEquityBar,
@@ -398,6 +433,24 @@ fn validate_record(record: &MarketDataRecord) -> Result<(), StoreError> {
             }
         }
         prev = Some(field.name.as_str());
+    }
+    // A corporate-action COVERAGE record asserts a trust decision (the SRS-DATA-011 frontier the
+    // split-adjusted gate checks), and `MarketDataRecord::new` is public, so its self-consistency
+    // CANNOT be left to the `coverage_record` constructor. Require EXACTLY one value field named
+    // `complete_through` whose value equals the key `event_ts` (the frontier identity). This is checked
+    // by BOTH the in-memory write path (`upsert`) and the on-disk restore path, so a forged or buggy
+    // coverage record — a mismatched `complete_through`, a wrong/missing field name, or extra fields —
+    // fails closed and can never grant the split-adjusted gate a frontier its key does not carry.
+    if record.key.kind == DatasetKind::CorporateActionCoverage {
+        let consistent = matches!(
+            record.fields.as_slice(),
+            [field] if field.name == "complete_through" && field.value_minor == record.key.event_ts
+        );
+        if !consistent {
+            return Err(StoreError::InconsistentField {
+                context: "coverage record must carry exactly one 'complete_through' field equal to its event_ts",
+            });
+        }
     }
     Ok(())
 }
@@ -1152,6 +1205,12 @@ pub fn fixture_batch(kind: DatasetKind, event_ts: i64) -> Vec<MarketDataRecord> 
         // A deterministic 4-for-1 AAPL split effective on `event_ts` — the SRS-DATA-012 input the
         // split-adjusted read applies to AAPL daily/minute bars dated strictly BEFORE `event_ts`.
         DatasetKind::CorporateActionSplit => vec![split_record(event_ts, "AAPL", 4, 1)],
+        // Corporate-action COVERAGE is NOT provider fixture data: it is an OPERATOR trust assertion (the
+        // SRS-DATA-011 frontier the split-adjusted gate reads), asserted ONLY via data011_coverage_cli
+        // (store::coverage_record). The provider-fixture generator deliberately emits NONE, so a generic
+        // ingestion flow iterating dataset kinds over fixture_batch can never mint a trusted frontier
+        // (and DataLayer::ingest_market_record refuses the kind besides). See provider_ingestion_kinds.
+        DatasetKind::CorporateActionCoverage => Vec::new(),
     }
 }
 
@@ -1238,6 +1297,30 @@ fn split_record(event_ts: i64, symbol: &str, numerator: i64, denominator: i64) -
         [field("denominator", denominator), field("numerator", numerator)],
     )
     .expect("fixture split record is well-formed")
+}
+
+/// A corporate-action **coverage** record (SRS-DATA-011): the assertion "all corporate actions for
+/// `symbol` effective on or before `through` are known." The single constructor for the coverage
+/// record shape (the `data011_coverage_cli` operator surface and the fixture batch both build through
+/// here). `event_ts` IS `through` — the completeness-through instant `D` — so the natural key encodes
+/// the frontier and advancing it is a NEW record while re-asserting the same `through` is an idempotent
+/// no-op; the `complete_through = through` value field carries `D` so a serialized record is
+/// self-describing and the frontier is readable without re-deriving it from the key. The vendor-neutral
+/// resolution label is `coverage`. `through` must be non-negative (it is an event timestamp): the
+/// `data011_coverage_cli` operator surface rejects a negative `--through` at parse time and the fixture
+/// passes a non-negative `event_ts`, so this constructor is only ever handed a valid record.
+pub fn coverage_record(through: i64, symbol: &str) -> MarketDataRecord {
+    MarketDataRecord::new(
+        NaturalKey {
+            kind: DatasetKind::CorporateActionCoverage,
+            symbol: symbol.to_string(),
+            resolution: "coverage".to_string(),
+            event_ts: through,
+            option_contract: None,
+        },
+        [field("complete_through", through)],
+    )
+    .expect("fixture coverage record is well-formed")
 }
 
 fn field(name: &str, value_minor: i64) -> MarketField {
@@ -1398,42 +1481,65 @@ mod tests {
     }
 
     #[test]
-    fn current_schema_version_is_two_after_adding_the_split_kind() {
-        assert_eq!(SCHEMA_VERSION, 2);
+    fn current_schema_version_is_three_after_adding_the_coverage_kind() {
+        assert_eq!(SCHEMA_VERSION, 3);
         assert_eq!(MIN_SUPPORTED_SCHEMA_VERSION, 1);
-        // A store carrying a split record serializes at the current (v2) version, so an older v1-only
-        // reader rejects it at the version gate rather than mid-restore on the unknown tag.
-        let mut store = MarketDataStore::new();
-        store.upsert(split_record(200, "AAPL", 4, 1)).unwrap();
-        let restored = MarketDataStore::restore(&store.serialize()).unwrap();
-        assert_eq!(restored, store);
+        // A store carrying a split record still serializes at v2 (the split kind's version)...
+        let mut with_split = MarketDataStore::new();
+        with_split.upsert(split_record(200, "AAPL", 4, 1)).unwrap();
+        assert_eq!(declared_version(&with_split.serialize()), 2);
+        assert_eq!(MarketDataStore::restore(&with_split.serialize()).unwrap(), with_split);
+        // ...and a store carrying a coverage record serializes at the current (v3) version, so an
+        // older v1/v2 reader rejects it at the version gate rather than mid-restore on the unknown tag.
+        let mut with_coverage = MarketDataStore::new();
+        with_coverage.upsert(coverage_record(200, "AAPL")).unwrap();
+        assert_eq!(declared_version(&with_coverage.serialize()), 3);
+        let restored = MarketDataStore::restore(&with_coverage.serialize()).unwrap();
+        assert_eq!(restored, with_coverage);
     }
 
     #[test]
     fn serialize_writes_the_minimum_schema_version_for_the_contained_kinds() {
-        // A store holding only the original v1 kinds stays v1 -- adding the split kind does NOT make
-        // an ordinary daily-bar store unreadable by an older v1-only tool.
+        // A store holding only the original v1 kinds stays v1 -- adding later kinds does NOT make an
+        // ordinary daily-bar store unreadable by an older v1-only tool.
         let mut v1_only = MarketDataStore::new();
         v1_only.upsert(record("AAPL", 1, 100)).unwrap();
         v1_only.upsert(record("MSFT", 1, 100)).unwrap();
         assert_eq!(declared_version(&v1_only.serialize()), 1);
 
-        // A store that actually contains a split record is written at v2 (so an older reader rejects
-        // it cleanly at the version gate).
+        // A store whose newest kind is a split record is written at v2 (a coverage record is absent).
         let mut with_split = MarketDataStore::new();
         with_split.upsert(record("AAPL", 1, 100)).unwrap();
         with_split.upsert(split_record(200, "AAPL", 4, 1)).unwrap();
         assert_eq!(declared_version(&with_split.serialize()), 2);
+
+        // A store that actually contains a coverage record is written at v3 (so an older v1/v2 reader
+        // rejects it cleanly at the version gate). The declared version is the MAX over contained kinds,
+        // so a v1 bar + a v2 split + a v3 coverage record together still declare v3.
+        let mut with_coverage = MarketDataStore::new();
+        with_coverage.upsert(record("AAPL", 1, 100)).unwrap();
+        with_coverage.upsert(split_record(200, "AAPL", 4, 1)).unwrap();
+        with_coverage.upsert(coverage_record(200, "AAPL")).unwrap();
+        assert_eq!(declared_version(&with_coverage.serialize()), 3);
 
         // An empty store is the lowest supported version.
         assert_eq!(declared_version(&MarketDataStore::new().serialize()), MIN_SUPPORTED_SCHEMA_VERSION);
     }
 
     #[test]
-    fn restore_accepts_a_legacy_v1_store_without_split_records() {
-        // Backward compatibility: a v1 store (only the original four kinds) still loads under the v2
+    fn restore_accepts_a_legacy_v1_store_without_later_kinds() {
+        // Backward compatibility: a v1 store (only the original four kinds) still loads under the v3
         // reader.
         let blob = versioned_blob(1, &[record("AAPL", 1, 100), record("MSFT", 1, 100)]);
+        let restored = MarketDataStore::restore(&blob).unwrap();
+        assert_eq!(restored.len(), 2);
+    }
+
+    #[test]
+    fn restore_accepts_a_legacy_v2_store_with_split_but_no_coverage() {
+        // Backward compatibility: a v2 store (original kinds + split, no coverage) still loads under
+        // the v3 reader.
+        let blob = versioned_blob(2, &[record("AAPL", 1, 100), split_record(200, "AAPL", 4, 1)]);
         let restored = MarketDataStore::restore(&blob).unwrap();
         assert_eq!(restored.len(), 2);
     }
@@ -1450,6 +1556,70 @@ mod tests {
     }
 
     #[test]
+    fn coverage_record_field_must_be_consistent_with_its_event_ts() {
+        // A coverage record asserts the SRS-DATA-011 frontier the split-adjusted gate trusts, and
+        // MarketDataRecord::new is public — so store validation must reject any coverage record whose
+        // complete_through field does not exactly match its key event_ts (a forged frontier), or that
+        // carries the wrong / missing field or extra fields. The honest constructor is accepted.
+        let coverage_key = |event_ts: i64| NaturalKey {
+            kind: DatasetKind::CorporateActionCoverage,
+            symbol: "AAPL".to_string(),
+            resolution: "coverage".to_string(),
+            event_ts,
+            option_contract: None,
+        };
+        let f = |name: &str, value: i64| MarketField { name: name.to_string(), value_minor: value };
+
+        // Accepted: complete_through == event_ts (what coverage_record builds).
+        assert!(MarketDataRecord::new(coverage_key(200), [f("complete_through", 200)]).is_ok());
+
+        // Rejected: the field disagrees with the key (a forged frontier of 999 dressed as 200).
+        assert!(matches!(
+            MarketDataRecord::new(coverage_key(200), [f("complete_through", 999)]),
+            Err(StoreError::InconsistentField { .. })
+        ));
+        // Rejected: wrong field name.
+        assert!(matches!(
+            MarketDataRecord::new(coverage_key(200), [f("through", 200)]),
+            Err(StoreError::InconsistentField { .. })
+        ));
+        // Rejected: extra fields (a coverage record is exactly one complete_through).
+        assert!(matches!(
+            MarketDataRecord::new(coverage_key(200), [f("complete_through", 200), f("extra", 1)]),
+            Err(StoreError::InconsistentField { .. })
+        ));
+
+        // The same guard runs on RESTORE: an honest coverage blob restores, but a forged on-disk blob
+        // carrying a mismatched coverage record (built bypassing new()) is rejected — validate_record is
+        // shared by new() and restore(), so the gate's frontier is trustworthy from disk too.
+        assert!(MarketDataStore::restore(&versioned_blob(3, &[coverage_record(200, "AAPL")])).is_ok());
+        let forged_record = MarketDataRecord {
+            key: coverage_key(200),
+            fields: vec![f("complete_through", 999)],
+        };
+        assert!(matches!(
+            MarketDataStore::restore(&versioned_blob(3, &[forged_record])),
+            Err(StoreError::InconsistentField { .. })
+        ));
+    }
+
+    #[test]
+    fn restore_rejects_a_v1_or_v2_store_carrying_a_v3_only_kind() {
+        // Neither a legacy v1 nor a v2 store may carry the CorporateActionCoverage kind (introduced in
+        // v3): a forged lower-version blob smuggling the coverage kind is rejected as inconsistent.
+        for version in [1, 2] {
+            let blob = versioned_blob(version, &[coverage_record(200, "AAPL")]);
+            assert!(
+                matches!(
+                    MarketDataStore::restore(&blob),
+                    Err(StoreError::CorruptRecord { .. })
+                ),
+                "v{version} blob carrying the v3-only coverage kind must be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn restore_rejects_an_unknown_future_schema_version() {
         let blob = versioned_blob(99, &[record("AAPL", 1, 100)]);
         assert!(matches!(
@@ -1461,11 +1631,15 @@ mod tests {
     #[test]
     fn serialize_restore_round_trips() {
         let mut store = MarketDataStore::new();
-        for kind in DatasetKind::all() {
+        for kind in DatasetKind::provider_ingestion_kinds() {
             for record in fixture_batch(kind, 1_700_000_000) {
                 store.upsert(record).unwrap();
             }
         }
+        // Coverage is not provider fixture data; add one explicitly (the only legitimate path) so the
+        // round-trip still exercises a v3 store carrying every kind.
+        store.upsert(coverage_record(1_700_000_000, "AAPL")).unwrap();
+        assert_eq!(declared_version(&store.serialize()), 3);
         let restored = MarketDataStore::restore(&store.serialize()).unwrap();
         assert_eq!(restored, store);
         assert_eq!(restored.serialize(), store.serialize());
@@ -1582,18 +1756,22 @@ mod tests {
 
     #[test]
     fn fixture_batches_are_deterministic_and_distinct_per_kind() {
-        for kind in DatasetKind::all() {
+        for kind in DatasetKind::provider_ingestion_kinds() {
             assert_eq!(fixture_batch(kind, 7), fixture_batch(kind, 7));
             assert!(!fixture_batch(kind, 7).is_empty());
         }
+        // Coverage is NOT a provider fixture kind: the generator emits NONE for it (so a generic
+        // ingestion flow cannot mint a trusted coverage frontier).
+        assert!(fixture_batch(DatasetKind::CorporateActionCoverage, 7).is_empty());
+
         // The same symbol+date under two kinds is NOT a duplicate (kind is part of the key).
         let mut store = MarketDataStore::new();
-        for kind in DatasetKind::all() {
+        for kind in DatasetKind::provider_ingestion_kinds() {
             for record in fixture_batch(kind, 7) {
                 assert_eq!(store.upsert(record).unwrap(), UpsertOutcome::Inserted);
             }
         }
-        for kind in DatasetKind::all() {
+        for kind in DatasetKind::provider_ingestion_kinds() {
             assert!(store.count_for_kind(kind) > 0);
         }
     }
