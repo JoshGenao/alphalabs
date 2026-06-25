@@ -1,78 +1,117 @@
->>> NEXT TARGET (2026-06-23, after SESSION 71): SRS-DATA-012 SPLIT-ADJUSTED HISTORICAL NORMALIZATION
->>> -- FOUNDATIONAL split-adjustment MATH shipped as a CRATE-INTERNAL module (crates/atp-data/src/
->>> normalization.rs), exposed on NO public surface. DATA-012 AND DATA-007 BOTH STAY passes:false
->>> (83 -> 83 UNCHANGED; feature_list.json byte-identical). This session ATTEMPTED the SRS-DATA-007
->>> close via DATA-012 normalization (operator chose "Build split-adj -> close DATA-007"), built the
->>> whole slice, FLIPPED DATA-007 passes:true, then the Codex adversarial loop (14 ROUNDS) surfaced --
->>> through genuinely convergent findings -- that the close is premature on multiple fundamental,
->>> out-of-scope blockers; operator chose "Revert flip, ship foundational." Final outcome = the
->>> split-adjustment algorithm as tested substrate behind ZERO public surfaces (CLI, Python binding,
->>> AND Rust crate API all RAW-only / not-exported), pending corporate-action COVERAGE (SRS-DATA-011).
+>>> NEXT TARGET (2026-06-24, after SESSION 72): pick by the foundational-impact policy. The coverage
+>>> keystone (SRS-DATA-011) is now SHIPPED, so split-adjusted is served on the data007 CLI behind a
+>>> proven coverage frontier. The DATA read cluster's next load-bearing CLOSE is now UNBLOCKED: the
+>>> SRS-DATA-007 consumer-wiring close -- flip the StoreBackedHistoricalData binding to serve its
+>>> SPLIT_ADJUSTED Protocol default THROUGH the gate (parse the coverage_through echo; map a NotCovered
+>>> CLI exit to a structured StoreQueryError, never silent raw) AND wire a named consumer (backtest /
+>>> factor / notebook) to read via it. Alternatives (operator's pick): SRS-DATA-011 remainder (dividend /
+>>> delisting / merger / symbol-change adjustment math + their coverage) toward closing DATA-011; or
+>>> fully-adjusted / total-return (dividend) modes toward DATA-012. SRS-DATA-011/012/007 ALL still
+>>> passes:false; 83 features remaining (UNCHANGED).
 >>>
->>> WHY THE CLOSE WAS REVERTED (the convergent non-convergence -- a textbook case for memory
->>> feedback_adversarial_loop_nonconvergence): each Codex round peeled the next deferred dependency.
->>>   R1: metadata contradiction + split-adjusted corrupting non-equity records (option-chain volume).
->>>   R2: DATA-007 "date range" not a PUBLIC-Protocol contract (only the lookback idiom); promoted
->>>       get_bars_range to the shared HistoricalData Protocol (+5 stubs) to close the date-range leg.
->>>   R3: residual stale "DATA-007 stays false" text in unified_query_check.py + a json deferred entry.
->>>   R4: SplitEvent publicly constructible -> a non-positive factor could divide-by-zero panic; added
->>>       point-of-use validation + regression.
->>>   R5 (FUNDAMENTAL): split-adjusted DEFAULT can silently serve RAW-as-ADJUSTED without corporate-
->>>       action COVERAGE (real ingestion = SRS-DATA-011, deferred); AND the named consumers (backtest/
->>>       factor/notebook) are NOT wired to the store (deferred TO DATA-007). Neither fixable this
->>>       session. OPERATOR (AskUserQuestion) chose REVERT FLIP, SHIP FOUNDATIONAL.
->>>   Post-revert R7..R14 hardened the foundational substrate to "no public surface emits split-adjusted
->>>       without coverage": binding RAW-only (R5/R7), removed the orphaned get_bars_range Protocol
->>>       promotion as a separate-feature scope violation (R7), CLI RAW-only / rejects split-adjusted
->>>       (R8), store SCHEMA_VERSION 1->2 boundary for the new CorporateActionSplit kind + version-aware
->>>       serialize so a daily-only store stays v1-readable (R9/R12), public_request_modes vs
->>>       core_library_modes metadata split (R9), SplitEvent.symbol so a split adjusts ONLY its own
->>>       symbol -- no cross-contamination (R10), made the normalization module CRATE-INTERNAL (not a
->>>       public crate API: a Rust consumer could otherwise get raw-as-adjusted identity over an empty
->>>       split set) (R13), and a generative property test over 5000 seeded bar+split sequences (R14).
->>>   R15: APPROVE (no material findings).
+>>> WHAT SHIPPED (SESSION 72, foundational substrate; feature_list.json byte-identical -- NO flip):
+>>> The SRS-DATA-011 corporate-action COVERAGE keystone -- a per-symbol completeness-through-date
+>>> frontier + the SINGLE coverage-enforcing gate that finally serves the (S71 crate-internal)
+>>> split-adjustment math on the public surface, but ONLY behind proven coverage.
+>>>   - store.rs: DatasetKind::CorporateActionCoverage (tag 5, schema v2->v3 with MIN_SUPPORTED=1).
+>>>     coverage_record(through, symbol) builder; validate_record ENFORCES a single complete_through
+>>>     field == key event_ts at BOTH upsert and restore (a forged frontier via the public
+>>>     MarketDataRecord::new fails closed). provider_ingestion_kinds() excludes coverage; fixture_batch
+>>>     emits NONE for it.
+>>>   - coverage.rs (NEW, pub mod): MarketDataStore::query_split_adjusted -- the SINGLE public path to
+>>>     split-adjusted output. Gate: serve iff coverage frontier D = max(complete_through) >= query.end_ts,
+>>>     applying ONLY splits with effective_ts <= D (an honest as-of-D series -- no phantom split-drop in
+>>>     the window, no adjustment past the advertised coverage_through), kind-narrowed to equity bars
+>>>     (UnsupportedQueryKind so the math's UnsupportedKind is unreachable); else NotCovered{have,need}.
+>>>     The split math stays crate-internal (mod normalization, not re-exported) -- the gate is the only
+>>>     public path to it.
+>>>   - lib.rs: DataLayer::ingest_market_record REFUSES CorporateActionCoverage
+>>>     (MarketIngestError::UnsupportedKind) -- the DECISIVE trust boundary so no generic ingest path
+>>>     mints a frontier. SplitAdjustedResult / CoverageError re-exported.
+>>>   - data007_query_cli: --normalization split-adjusted ROUTES through the gate (echoes
+>>>     coverage_through:<D>; fails closed naming SRS-DATA-011 when uncovered); fully/total still rejected.
+>>>     data011_coverage_cli (NEW): assert-coverage --symbol --through under StoreLock; show-coverage
+>>>     (read-only). data016_ingest_cli REJECTS --kind corporate-action-coverage (single write surface).
+>>>   - tools/coverage_manifest_check.py (NEW, 8 static guards + cargo round-trip proving covered->adjusted
+>>>     AND uncovered->fail-closed) registered in architecture_check + wired into init.sh; CI mirrored via
+>>>     architecture_check (the data-layer checks are aggregated, not separate CI lines -- precedent).
+>>>   - SWEPT the SRS-DATA-012 normalization_modes contract/check/L3+L5 tests + store_history docstring +
+>>>     normalization.rs/architecture_check prose to the served-behind-coverage reality (removed every
+>>>     stale "split-adjusted on no public surface"). public_request_modes now [RAW, SPLIT_ADJUSTED];
+>>>     binding_request_modes [RAW].
+>>>   - L3 tests/test_coverage_manifest_contract.py (mutation non-vacuity, 8-guard count pinned) + L4
+>>>     tests/boundary/test_coverage_gate.py + L5 tests/integration/test_data011_coverage_gate.py + L7
+>>>     tests/domain/test_coverage_gate_domain.py + in-crate coverage.rs gate/validation suites.
 >>>
->>> WHAT SHIPPED (foundational substrate; feature_list.json UNCHANGED -- NO flip):
->>>   - crates/atp-data/src/normalization.rs (NEW, CRATE-INTERNAL `mod normalization`, NOT re-exported):
->>>     SplitEvent{symbol,effective_ts,numerator,denominator} + NormalizationError + split_adjust_record(s)
->>>     + split_events_for + div_round_half_even. Money math: compose-then-divide (ONE division per
->>>     field), i128 intermediates + fail-closed i64::try_from, round-half-to-even, strict effective_ts>t
->>>     boundary, OHLC x DEN/NUM & volume x inverse, symbol-only application, kind-guard (equity bars
->>>     only), non-positive + overflow fail-closed. 15 unit tests INCL. a generative property test.
->>>   - store.rs: DatasetKind::CorporateActionSplit (tag 4) + min_schema_version(); SCHEMA_VERSION 1->2
->>>     with MIN_SUPPORTED=1; serialize writes the MINIMUM version for the contained kinds (daily-only
->>>     stays v1); restore accepts {1,2} + rejects a v1 blob carrying the v2-only kind + unknown versions.
->>>     fixture_batch split arm + split_record builder. 4 new schema-version tests.
->>>   - data007_query_cli: --normalization raw ONLY (split-adjusted/fully/total FAIL CLOSED naming
->>>     SRS-DATA-011 coverage; echoes normalization:raw). data016_ingest_cli: corporate-action-split kind.
->>>   - python/atp_strategy/store_history.py: binding serves RAW ONLY (_NORMALIZATION_LABEL={RAW}); the
->>>     Protocol default SPLIT_ADJUSTED and every adjusted mode fail closed, naming SRS-DATA-011.
->>>   - tools/normalization_modes_check.py (NEW, 6 static guards: split_kind / rust_math+property /
->>>     factors / cli_flag-rejects / binding-defers / not-publicly-exported + a cargo round-trip running
->>>     the unit math suite and asserting the CLI fails closed) -> registered in architecture_check.py,
->>>     wired into init.sh, mirrored in CI via architecture_check + pytest. NEW normalization_modes_contract
->>>     block (passes:false; public_request_modes:[RAW], core_library_modes:[RAW,SPLIT_ADJUSTED],
->>>     deferred_public_modes:[SPLIT_ADJUSTED,FULLY,TOTAL]).
->>>   - L3 tests/test_normalization_modes_contract.py + L5 tests/integration/test_data012_split_adjusted.py
->>>     (asserts BOTH public surfaces fail closed) + extended L7 tests/domain/test_store_history_consumer.py
->>>     (default fails closed). Updated store_history_check / unified_query_check / boundary / contract /
->>>     warmup-replay / parity / strategy_api tests + the runtime_services.json prose to the RAW-only,
->>>     crate-internal, passes:false reality. The get_bars_range Protocol promotion (api.py + 5 stubs) was
->>>     ADDED for the DATA-007 close then fully REVERTED with the flip (binding keeps its pre-existing
->>>     binding-specific get_bars_range).
+>>> CODEX ADVERSARIAL LOOP (5 rounds; CONVERGED to APPROVE -- 3 genuine high-severity defects fixed):
+>>>   R1 [high]: the gate applied splits store-wide, so a split with effective_ts > coverage_through still
+>>>     adjusted in-window bars -- adjusting PAST the advertised as-of-D frontier. FIX: bound applied
+>>>     splits to effective_ts <= D + the as-of-D regressions.
+>>>   R2 [high]: coverage_frontier trusted key event_ts but validate_record never checked the
+>>>     complete_through field -- a forged coverage record via the public MarketDataRecord::new could
+>>>     assert a bogus frontier. FIX: validate_record enforces complete_through == event_ts (upsert+restore).
+>>>   R3/R4 [high]: the coverage frontier had a second write path (data016 fixture ingest / fixture_batch /
+>>>     ingest_market_record accepting any record). FIX: single write surface -- data016 CLI rejects,
+>>>     ingest_market_record rejects (decisive), fixture_batch emits none, provider_ingestion_kinds excludes.
+>>>   R5: APPROVE (no material findings).
 >>>
->>> NEXT (the DATA-012/007 close needs work genuinely out of THIS session's data-layer scope; pick by the
->>> foundational-impact policy): (A) SRS-DATA-011 scheduled corporate-action ingestion + a COVERAGE
->>> manifest (completeness-through-date per symbol) -- the keystone that makes a split-adjusted LABEL
->>> honest and unblocks exposing the split math on a public surface; THEN DATA-012 split-adjusted can be
->>> served (CLI/binding) with a coverage gate, and DATA-007's default-adjusted-read leg closes. (B) wire
->>> the named DATA-007 consumers (backtest/factor/notebook engines) to read via MarketDataStore. (C) the
->>> get_bars_range public-Protocol promotion is a clean standalone SRS-SDK-001 change if DATA-007's
->>> date-range leg is pursued. The split-adjustment MATH is done and tested -- it is waiting on coverage,
->>> not on the algorithm. KNOWN: tests/property/test_indicators_property.py::test_bbands_property_matches_
->>> batch_talib FAILS on a CLEAN tree (pre-existing talib precision flake, unrelated). cargo fmt/clippy
->>> -D warnings is a LOCAL-only failure (newer local rustfmt/clippy 1.9.0 vs the repo's pinned toolchain;
->>> 190 fmt diffs + 8 clippy doc_lazy_continuation warnings ALL on untouched code -- my new code is clean).
+>>> KNOWN (pre-existing, NOT mine): tests/property/test_indicators_property.py::test_bbands_property_matches_
+>>> batch_talib FAILS on a CLEAN tree (talib/pandas-ta precision flake, unrelated). cargo fmt/clippy -D is a
+>>> LOCAL-only failure (newer local rustfmt/clippy vs the repo's pinned toolchain, all on untouched code).
+
+=== SESSION 72 ===
+Date: 2026-06-24
+Feature: SRS-DATA-011 -- adjust historical price data for corporate actions (docs/SRS.md SRS-DATA-011;
+SyRS SYS-28a; StRS SN-1.14; BG-2/BG-7). STAYS passes:false (FOUNDATIONAL: the corporate-action COVERAGE
+keystone -- a per-symbol completeness-through-date frontier + the coverage-enforcing gate that serves the
+crate-internal split-adjustment math on the public surface ONLY behind proven coverage). Status: 83
+features remaining (UNCHANGED, 83 -> 83; feature_list.json byte-identical to HEAD).
+
+SELECTION: operator directive (foundational-impact policy + the S71 handoff, which named SRS-DATA-011
+coverage as THE keystone next step -- "the keystone that makes a split-adjusted LABEL honest and unblocks
+exposing the split math on a public surface"). Operator confirmed (AskUserQuestion): target = DATA-011
+coverage keystone; Python binding stays RAW-only this session (the SPLIT_ADJUSTED flip is deferred).
+
+What I did:
+- Built the coverage manifest (DatasetKind::CorporateActionCoverage, store schema v2->v3) + the single
+  gated entry point MarketDataStore::query_split_adjusted (as-of-D gate: D >= query.end_ts, apply only
+  splits effective <= D, equity-kind-narrowed). The split math stays crate-internal; the gate is the only
+  public path. data007 CLI routes split-adjusted through it; a NEW data011_coverage_cli asserts the
+  frontier under the StoreLock; data016 + DataLayer::ingest_market_record refuse coverage (single write
+  surface). Swept the SRS-DATA-012 normalization contract/check/tests to the served-behind-coverage reality.
+- Stayed passes:false honestly: SRS-DATA-011 (dividends/delistings/mergers/symbol-changes deferred),
+  SRS-DATA-012 (fully-adjusted/total-return + live subscription deferred), SRS-DATA-007 (binding flip +
+  consumer wiring deferred) -- all enumerated as named deferred owners in the contract block.
+
+What I tested:
+- cargo test -p atp-data: 72 lib (incl. 18 coverage gate / schema / validation tests) + 8 data016
+  integration + the data007/017 integration suites, all green. coverage_manifest_check + normalization_
+  modes_check + store_history_check + architecture_check PASS (--require-cargo). L3/L4/L5/L7 coverage
+  tests pass. Broad pytest -m "not integration and not e2e": 2380 passed (only the pre-existing bbands
+  talib flake fails). ./init.sh -> Environment ready (now runs the coverage-gate check). Manual e2e demo:
+  covered -> adjusted (close 2500 / vol 400000 / coverage_through:200); uncovered (end past frontier) ->
+  fail closed naming SRS-DATA-011 (have/need); split beyond frontier -> excluded (as-of-D).
+
+Critic verdicts:
+  deterministic: APPROVE -- 0 findings
+  judgment (/codex:adversarial-review): APPROVE (round 5) -- no material findings. Rounds 1-4 surfaced 3
+    genuine high-severity defects, ALL fixed before APPROVE: (R1) the gate adjusted past the advertised
+    as-of-D frontier (bound applied splits to effective_ts <= D); (R2) a forged coverage record via the
+    public MarketDataRecord::new could assert a bogus frontier (validate_record now enforces
+    complete_through == event_ts at upsert+restore); (R3/R4) the coverage frontier had a second write path
+    (closed: data016 + ingest_market_record reject coverage, fixture_batch emits none).
+
+Known issues / notes for next agent:
+- The DATA-007 consumer-wiring close is now UNBLOCKED (split-adjusted is servable behind coverage). To
+  flip the binding: add SPLIT_ADJUSTED -> "split-adjusted" to _NORMALIZATION_LABEL, parse the new
+  coverage_through echo, and map a NotCovered CLI exit (SRS-DATA-011 needle in stderr) to a dedicated
+  StoreQueryError -- NEVER fall back to raw. The normalization_modes_check binding guard + its L3 mutation
+  currently assert the binding does NOT serve split-adjusted, so that flip must update them.
+- data011_coverage_cli is THE coverage write surface; data016 + DataLayer::ingest_market_record refuse it
+  (UnsupportedKind). A generic ingestion flow iterates DatasetKind::provider_ingestion_kinds() (5 kinds,
+  excludes coverage), NOT all() (6 kinds, used only for the inspect counts).
+- Pre-existing: the bbands property test fails on a clean tree (talib drift). cargo fmt/clippy -D is a
+  local-toolchain-version failure on untouched code (the autonomous loop has never run them).
 
 === SESSION 71 ===
 Date: 2026-06-23
