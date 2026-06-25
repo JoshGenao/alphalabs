@@ -34,6 +34,10 @@ from normalization_modes_check import (
     NormalizationModesCheckError,
     assert_normalization_modes_static,
 )
+from coverage_manifest_check import (
+    CoverageManifestCheckError,
+    assert_coverage_manifest_static,
+)
 from benchmark_check import BenchmarkCheckError, assert_sim_benchmark_static
 from determinism_check import DeterminismCheckError, assert_determinism_static
 from factor_analysis_check import FactorAnalysisCheckError, assert_factor_analysis_static
@@ -913,12 +917,12 @@ def assert_store_history(config: dict) -> list[str]:
         "and FAILING CLOSED on it (and on every adjusted mode), scaling OHLC by the named "
         "_PRICE_MINOR_SCALE while leaving volume a raw count, and invoking the CLI with a list argv "
         "(shell=False) under a bounded timeout so a wedged read fails closed rather than hanging. "
-        "SRS-DATA-007 STAYS passes:false (foundational): the binding serves RAW only because "
-        "split-adjusted is not a trustworthy strategy-facing default until corporate-action COVERAGE "
-        "exists (SRS-DATA-011; absent it a split-adjusted read would be raw-as-adjusted), and the named "
+        "SRS-DATA-007 STAYS passes:false (foundational): the binding serves RAW only because the "
+        "SPLIT_ADJUSTED binding flip is deferred to this consumer-wiring close, and the named "
         "backtest / factor / notebook consumers are not yet wired to this store path (deferred to "
-        "SRS-DATA-007). The split-adjustment math (Rust core LIBRARY; no public surface exposes it) is pinned by "
-        "normalization_modes_check (SRS-DATA-012); the concurrent-read-DURING-write Load test is the "
+        "SRS-DATA-007). The split-adjustment math (now served on the operator CLI behind the "
+        "SRS-DATA-011 coverage gate) is pinned by normalization_modes_check (SRS-DATA-012) and "
+        "coverage_manifest_check (SRS-DATA-011); the concurrent-read-DURING-write Load test is the "
         "deferred SRS-DATA-017 close (SRS-DATA-007, SyRS SYS-27 / SYS-53)"
     )
     return static_evidence + [summary]
@@ -937,14 +941,37 @@ def assert_normalization_modes(config: dict) -> list[str]:
         "onto a split-comparable basis -- compose-then-divide (one division per field), i128 "
         "intermediates with fail-closed try_from narrowing, round-half-to-even, and the strict "
         "effective_ts > event_ts boundary (OHLC scaled by DEN/NUM, volume by the inverse). "
-        "The split-adjustment math is exposed on NO public surface: data007_query_cli serves "
-        "--normalization raw ONLY (split-adjusted FAILS closed naming SRS-DATA-011 coverage), and the "
-        "StoreBackedHistoricalData CONSUMER binding serves RAW only and FAILS CLOSED on split-adjusted. "
-        "It is FOUNDATIONAL substrate (the math, proven at the Rust library level), NOT a usable mode, "
-        "until corporate-action COVERAGE exists (SRS-DATA-011; absent it a split-adjusted label would be "
-        "raw-as-adjusted). SRS-DATA-012 STAYS passes:false: this is the HISTORICAL split-adjustment math "
-        "-- the LIVE subscription path and the FULLY_ADJUSTED / TOTAL_RETURN (dividend) modes are also "
-        "deferred (SyRS SYS-29 / StRS SN-1.15)"
+        "The raw split-adjustment math is exposed on NO public surface DIRECTLY: data007_query_cli serves "
+        "--normalization split-adjusted ONLY through the SRS-DATA-011 coverage-enforcing gate "
+        "(query_split_adjusted, which fails closed when the symbol is not covered through --end), and the "
+        "StoreBackedHistoricalData CONSUMER binding serves RAW only (the SPLIT_ADJUSTED binding flip is "
+        "deferred to SRS-DATA-007). SRS-DATA-012 STAYS passes:false: this is the HISTORICAL split-adjusted "
+        "slice -- the LIVE subscription path and the FULLY_ADJUSTED / TOTAL_RETURN (dividend) modes are "
+        "also deferred (SyRS SYS-29 / StRS SN-1.15)"
+    )
+    return static_evidence + [summary]
+
+
+def assert_coverage_manifest(config: dict) -> list[str]:
+    block = config.get("coverage_manifest_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_coverage_manifest_static(config, ROOT)
+    summary = (
+        "SRS-DATA-011 corporate-action COVERAGE keystone: store.rs persists a vendor-neutral "
+        f"DatasetKind ({block['coverage_kind_label']}, tag 5, schema v{block['schema_version']}) "
+        "carrying a per-symbol completeness-through-date frontier, and coverage.rs::query_split_adjusted "
+        "serves the (crate-internal) split-adjustment math ONLY when that frontier D >= query.end_ts "
+        "(else fails closed with NotCovered) -- an honest 'as-of-D split-adjusted' series with no "
+        "phantom split-drops in the window. The coverage-enforcing gate is the SINGLE public path to "
+        "split-adjusted output (the split math stays crate-internal, not re-exported), and it requires "
+        "an equity-bar query kind so the math's UnsupportedKind path is unreachable. data007_query_cli "
+        "routes --normalization split-adjusted through the gate (echoing coverage_through), and "
+        "data011_coverage_cli records the frontier under the StoreLock. SRS-DATA-011 STAYS passes:false "
+        "(foundational): only splits / reverse-splits have math + coverage; dividends / delistings / "
+        "mergers / symbol-changes and real provider corporate-action ingestion are deferred "
+        "(SyRS SYS-28a / StRS SN-1.14)"
     )
     return static_evidence + [summary]
 
@@ -1370,6 +1397,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_normalization_modes(config))
     except NormalizationModesCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_coverage_manifest(config))
+    except CoverageManifestCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_factor_analysis(config))

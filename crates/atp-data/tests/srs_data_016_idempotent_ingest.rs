@@ -79,7 +79,7 @@ const EVENT_TS: i64 = 1_700_000_000;
 
 #[test]
 fn srs_data_016_reingest_each_kind_creates_no_duplicate_and_no_corruption() {
-    for kind in DatasetKind::all() {
+    for kind in DatasetKind::provider_ingestion_kinds() {
         let dir = temp_dir(&format!("reingest_{}", kind.as_str()));
 
         // First ingest: every record is new.
@@ -113,10 +113,10 @@ fn srs_data_016_reingest_each_kind_creates_no_duplicate_and_no_corruption() {
 
 #[test]
 fn srs_data_016_reingest_all_kinds_together_is_stable() {
-    // Ingest all four kinds, then re-ingest all four: the combined catalog is unchanged.
+    // Ingest every provider kind, then re-ingest them: the combined catalog is unchanged.
     let dir = temp_dir("all_kinds");
     let mut store = MarketDataStore::new();
-    for kind in DatasetKind::all() {
+    for kind in DatasetKind::provider_ingestion_kinds() {
         ingest_batch(&mut store, kind, EVENT_TS).unwrap();
     }
     store.save_to_path(&dir).unwrap();
@@ -125,7 +125,7 @@ fn srs_data_016_reingest_all_kinds_together_is_stable() {
 
     let mut reloaded = MarketDataStore::load_from_path(&dir).unwrap();
     let mut total_reinserted = 0;
-    for kind in DatasetKind::all() {
+    for kind in DatasetKind::provider_ingestion_kinds() {
         let (reinserted, _) = ingest_batch(&mut reloaded, kind, EVENT_TS).unwrap();
         total_reinserted += reinserted;
     }
@@ -135,6 +135,26 @@ fn srs_data_016_reingest_all_kinds_together_is_stable() {
     assert_eq!(reloaded.len(), len, "combined catalog has no duplicates");
     assert_eq!(store_bytes(&dir), bytes, "combined persisted file is byte-identical");
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn srs_data_016_generic_ingestion_refuses_corporate_action_coverage() {
+    // The generic market-data ingestion API does NOT mint corporate-action COVERAGE: a coverage
+    // frontier is an operator trust assertion (data011_coverage_cli), not provider market data. So a
+    // generic ingest of a coverage record fails closed (UnsupportedKind) and the store stays empty —
+    // no generic flow can grant the split-adjusted gate a trusted frontier. (coverage_record is built
+    // directly here to prove the data-layer boundary, not the CLI parser.)
+    let layer = DataLayer;
+    let mut store = MarketDataStore::new();
+    let coverage = atp_data::store::coverage_record(200, "AAPL");
+    let result = layer.ingest_market_record(&mut store, coverage, &AcceptAll, &NullSink, EVENT_TS as u64);
+    assert!(
+        matches!(result, Err(MarketIngestError::UnsupportedKind { .. })),
+        "generic ingestion must refuse a coverage record, got {result:?}"
+    );
+    assert!(store.is_empty(), "the refused coverage record must not enter the store");
+    // The provider fixture generator also emits none for coverage (defence in depth).
+    assert!(fixture_batch(DatasetKind::CorporateActionCoverage, EVENT_TS).is_empty());
 }
 
 // --------------------------------------------------------------------------- //

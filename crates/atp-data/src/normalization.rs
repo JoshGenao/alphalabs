@@ -44,10 +44,14 @@
 //! is never split-scaled). The natural key — including `event_ts` — is unchanged: a split adjustment
 //! re-quotes the value fields, it does not move the bar in time.
 //!
-//! This module is CRATE-INTERNAL and deliberately not wired to any non-test caller: the split-adjusted
-//! read is exposed on NO public surface (the operator CLI and the Python binding both serve `raw` only)
-//! until corporate-action coverage exists (SRS-DATA-011). It is foundational substrate proven by the
-//! unit tests below, so `dead_code` is allowed module-wide rather than per item.
+//! This module is CRATE-INTERNAL: the raw `split_adjust_records` / `SplitEvent` are not re-exported, so
+//! the ONLY caller is the sibling coverage-enforcing gate ([`crate::coverage::MarketDataStore::
+//! query_split_adjusted`]), which checks that the symbol's corporate-action coverage frontier reaches
+//! the query end (SRS-DATA-011) BEFORE it reaches this math. So a split-adjusted result is served on a
+//! public surface only behind proven coverage — there is no public path to raw-as-adjusted (a Rust
+//! consumer cannot call this math directly and get IDENTITY values over an empty/incomplete split set).
+//! It is foundational substrate proven by the unit tests below, so `dead_code` is allowed module-wide
+//! rather than per item.
 #![allow(dead_code)]
 
 use crate::store::{DatasetKind, MarketDataRecord, MarketField};

@@ -13,11 +13,12 @@ the Python ``StoreBackedHistoricalData`` (``python/atp_strategy/store_history.py
 ingested data by symbol/date-range/resolution with no provider named via the explicit RAW path. This is
 load-bearing FOUNDATIONAL groundwork; SRS-DATA-007 STAYS passes:false. The binding serves RAW only: it
 keeps the HistoricalData Protocol's SPLIT_ADJUSTED default and FAILS CLOSED on it, because split-adjusted
-normalization (implemented in the Rust core LIBRARY only -- no public surface exposes it; see
-``tools/normalization_modes_check.py``) is not a trustworthy strategy-facing default until
-corporate-action COVERAGE is guaranteed (SRS-DATA-011 ingestion is deferred -- absent coverage a
-"split-adjusted" read over a store with no split facts would be raw-as-adjusted). The close additionally
-needs the named backtest / factor / notebook consumers wired to the store path (deferred to DATA-007).
+normalization (now served on the operator CLI ONLY through the SRS-DATA-011 coverage-enforcing gate; see
+``tools/coverage_manifest_check.py`` and ``tools/normalization_modes_check.py``) is not yet a trustworthy
+strategy-facing default: the SPLIT_ADJUSTED binding flip is deferred to this DATA-007 consumer-wiring
+close (absent that wiring + coverage a "split-adjusted" read over a store with no split facts would be
+raw-as-adjusted). The close additionally needs the named backtest / factor / notebook consumers wired to
+the store path (deferred to DATA-007).
 
 It is a SEPARATE script from ``unified_query_check.py`` so that script's hard-coded check-count
 assertions (``tests/test_unified_query_contract.py``) stay valid -- mirroring how
