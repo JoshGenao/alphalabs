@@ -440,8 +440,9 @@ _DEFERRED_OWNERS = (
     "remainder)",
     "real provider corporate-action ingestion from Databento / IB — the operator-set / fixture frontier "
     "stands in (SRS-DATA-001/003/006)",
-    "the StoreBackedHistoricalData SPLIT_ADJUSTED binding flip and wiring the named backtest / factor / "
-    "notebook consumers to the gated split-adjusted path (SRS-DATA-007)",
+    "wiring the named backtest / factor / notebook consumers to read split-adjusted via the gated binding "
+    "(SRS-DATA-007 close; the StoreBackedHistoricalData binding now serves gated split-adjusted, but only "
+    "a strategy stand-in is demonstrated)",
 )
 
 

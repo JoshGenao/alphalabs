@@ -32,16 +32,17 @@ The PASS line is ``SRS-DATA-007 UNIFIED-QUERY PASS``. This check is contract EVI
 substrate is correctly built and stays a regression gate. SRS-DATA-007 STAYS passes:false (foundational
 substrate). The in-process consumer binding (the Python ``StoreBackedHistoricalData``; see
 ``tools/store_history_check.py`` + ``store_history_binding_contract``) reads this engine by
-symbol/date-range/resolution with no provider named via the explicit RAW path -- but the close is NOT
-complete: the binding serves RAW only (a trustworthy split-adjusted default awaits corporate-action
-COVERAGE, SRS-DATA-011 -- see ``tools/normalization_modes_check.py``); the shared HistoricalData
-Protocol is ``get_bars`` (lookback idiom) only, so an explicit ``[start, end]`` range query for all
-named consumers is a deferred SRS-SDK-001 surface change; and the named backtest / factor / notebook
-consumers are not yet wired to read via this store path (deferred to SRS-DATA-007). Other owners that compose this read
-path also remain deferred (the real provider network adapters via SRS-DATA-001/003/005/006,
-read-while-write via SRS-DATA-017, the FULLY_ADJUSTED / TOTAL_RETURN + live-subscription normalization
-of SRS-DATA-012, SSD/NAS tiering via SRS-DATA-008/009/010, the dashboard/REST surfaces via
-SRS-UI / SRS-API).
+symbol/date-range/resolution with no provider named, serving RAW verbatim AND the gated SPLIT_ADJUSTED
+(the HistoricalData Protocol default) through the SRS-DATA-011 coverage gate (an uncovered query fails
+closed with CoverageNotProvenError naming SRS-DATA-011, never raw-as-adjusted); ``get_bars_range`` is the
+explicit ``[start, end]`` range query for backtests/factor jobs. But the close is NOT complete: the
+acceptance NAMES backtests / factor jobs / notebooks as consumers, and those engines (atp-simulation,
+atp-factor-pipeline, SRS-RES-002 notebooks) are not yet WIRED to read via this store path -- only a
+strategy stand-in is demonstrated (tests/domain/test_store_history_consumer.py), so the flip was reverted
+to passes:false. Other owners that compose this read path also remain deferred (the real provider network
+adapters via SRS-DATA-001/003/005/006, read-while-write via SRS-DATA-017, the FULLY_ADJUSTED /
+TOTAL_RETURN + live-subscription normalization of SRS-DATA-012, SSD/NAS tiering via SRS-DATA-008/009/010,
+the dashboard/REST surfaces via SRS-UI / SRS-API).
 
 Mirrors the PASS/FAIL output style of ``tools/ingestion_idempotency_check.py``.
 
@@ -397,12 +398,12 @@ _DEFERRED_OWNERS = (
     "(SRS-DATA-001/003/005/006); fixture sources stand in, as the verification step permits",
     "concurrent READS during an active ingestion WRITE -- read-while-write coordination "
     "(SRS-DATA-017; the atomic whole-file publish is the groundwork)",
-    "a TRUSTWORTHY split-adjusted strategy-facing default -- the split-adjustment math + operator CLI "
-    "exist (tools/normalization_modes_check.py) but the consumer binding serves RAW only until "
-    "corporate-action COVERAGE (SRS-DATA-011) guarantees it is not raw-as-adjusted; FULLY_ADJUSTED / "
-    "TOTAL_RETURN + live-subscription normalization additionally deferred (SRS-DATA-012)",
-    "the named backtest / factor / notebook consumers actually wired to read via this store path "
-    "(the DATA-007 acceptance names them; their store wiring is deferred to SRS-DATA-007)",
+    "FULLY_ADJUSTED / TOTAL_RETURN + live-subscription normalization (dividend data, SRS-DATA-012); "
+    "split-adjusted is now served through the SRS-DATA-011 coverage gate by both the operator CLI and "
+    "the StoreBackedHistoricalData consumer binding",
+    "the named backtest / factor / notebook consumers actually WIRED to read via this store path -- the "
+    "acceptance names them; only a strategy stand-in is demonstrated, so SRS-DATA-007 STAYS passes:false "
+    "(their store wiring is deferred to SRS-DATA-007)",
     "SSD-primary / NAS-archival tiering, eviction, cold-read failover of the queried directory "
     "(SRS-DATA-008/009/010)",
     "the dashboard / REST consumer surfaces (SRS-UI / SRS-API)",

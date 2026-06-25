@@ -6,13 +6,12 @@ security subscription; SyRS SYS-29 / StRS SN-1.15). The acceptance: "Historical 
 requests can select a normalization mode; options strategies can request raw prices; indicators can
 request adjusted series."
 
-This pins the HISTORICAL **split-adjusted** slice as FOUNDATIONAL substrate (the Rust core + the
-operator CLI), NOT a feature close. Both SRS-DATA-012 and SRS-DATA-007 STAY passes:false. Split-adjusted
-is deliberately NOT a trustworthy strategy-facing default: the consumer binding serves RAW only,
-because real corporate-action ingestion / COVERAGE is deferred (SRS-DATA-011) — absent a coverage
-guarantee, a "split-adjusted" read over a store with no split facts would silently return raw bars
-dressed up as adjusted (the Codex adversarial pass flagged exactly this). SRS-DATA-012 additionally
-defers the LIVE subscription path and the FULLY_ADJUSTED / TOTAL_RETURN dividend modes.
+This pins the HISTORICAL **split-adjusted** slice (the Rust core + the operator CLI + the Python consumer
+binding). SRS-DATA-012 STAYS passes:false (the LIVE subscription path and the FULLY_ADJUSTED /
+TOTAL_RETURN dividend modes remain deferred), but split-adjusted is now SERVED end-to-end: the consumer
+binding serves it through the SRS-DATA-011 coverage-enforcing gate (the SRS-DATA-007 close), so a
+"split-adjusted" read is only ever returned with proven corporate-action coverage — an uncovered query
+fails closed (CoverageNotProvenError, naming SRS-DATA-011), never raw bars dressed up as adjusted.
 
 What this pins:
   (a) split kind — crates/atp-data/src/store.rs declares the vendor-neutral DatasetKind
@@ -27,11 +26,11 @@ What this pins:
       closed (naming SRS-DATA-011 coverage) when the symbol is not covered through --end; fully-adjusted
       / total-return remain rejected. So the operator surface never emits a split-adjusted label without
       proven coverage (no raw-as-adjusted), and the raw split math is never exposed CLI-side;
-  (d) the binding — python/atp_strategy/store_history.py serves RAW only and FAILS CLOSED on the
-      Protocol default (SPLIT_ADJUSTED) and every other adjusted mode, naming SRS-DATA-011 coverage as
-      the reason split-adjusted is deferred as a strategy-facing default (so a strategy can never get a
-      raw-as-adjusted series); the strategy-facing binding flip is deferred to the SRS-DATA-007
-      consumer-wiring close even though the operator CLI now serves split-adjusted behind the gate.
+  (d) the binding — python/atp_strategy/store_history.py serves RAW and the gated SPLIT_ADJUSTED (the
+      HistoricalData Protocol default), routing split-adjusted through the operator CLI's SRS-DATA-011
+      coverage gate and validating the echoed coverage_through frontier (gate-integrity); an uncovered
+      query fails closed (CoverageNotProvenError, naming SRS-DATA-011), never raw-as-adjusted.
+      FULLY_ADJUSTED / TOTAL_RETURN still fail closed (NotImplementedError; dividend data, SRS-DATA-012).
 
 Plus a cargo round-trip (--require-cargo): (1) prove the split-adjustment MATH with the crate's OWN unit
 tests -- ``cargo test -p atp-data --lib normalization`` (forward/reverse/multi-split, the effective-date
@@ -236,45 +235,56 @@ def check_cli_flag(config: dict, cli_src: str) -> str:
     )
 
 
-def check_binding_defers_split_adjusted(config: dict, binding_src: str) -> str:
+def check_binding_serves_split_adjusted(config: dict, binding_src: str) -> str:
     compact = _compact(binding_src)
-    # The consumer binding serves RAW ONLY. Split-adjusted is now served on the operator CLI behind the
-    # SRS-DATA-011 coverage gate, but is NOT yet a trustworthy strategy-facing DEFAULT (the binding flip
-    # is deferred to the SRS-DATA-007 consumer-wiring close) -- so the binding must NOT map
-    # SPLIT_ADJUSTED to a CLI label, and must fail closed for it (the Protocol default SPLIT_ADJUSTED
-    # included) rather than silently serving raw bars dressed as adjusted.
+    # The consumer binding serves RAW and the gated SPLIT_ADJUSTED (DATA-007 STAYS passes:false: the named
+    # consumers are not yet wired). Split-adjusted
+    # is routed through the operator CLI's SRS-DATA-011 coverage gate (query_split_adjusted), which fails
+    # closed when the symbol is not covered through --end -- so the binding MUST map SPLIT_ADJUSTED to the
+    # 'split-adjusted' CLI label, keep the Protocol default, and validate the echoed coverage_through
+    # frontier (gate-integrity). FULLY_ADJUSTED / TOTAL_RETURN remain deferred (dividend data,
+    # SRS-DATA-012) and fail closed.
     if "_NORMALIZATION_LABEL" not in compact:
         fail("the binding must map served modes to a CLI --normalization label (_NORMALIZATION_LABEL)")
-    if 'NormalizationMode.SPLIT_ADJUSTED:"' in compact or "NormalizationMode.SPLIT_ADJUSTED:'" in compact:
+    if 'NormalizationMode.SPLIT_ADJUSTED:"split-adjusted"' not in compact:
         fail(
-            "the binding must NOT serve split-adjusted (it must not map SPLIT_ADJUSTED to a CLI label) "
-            "-- it would be raw-as-adjusted without SRS-DATA-011 corporate-action coverage"
+            "the binding must serve split-adjusted: map SPLIT_ADJUSTED to the 'split-adjusted' CLI label "
+            "so it routes through the SRS-DATA-011 coverage gate (data007_query_cli)"
         )
     if "raiseNotImplementedError" not in compact:
         fail("the binding must raise NotImplementedError for every adjusted mode it does not serve")
     if "normalizationnotin_NORMALIZATION_LABEL" not in compact:
         fail(
             "the binding must fail closed for any mode it does not serve "
-            "(`normalization not in _NORMALIZATION_LABEL`)"
+            "(`normalization not in _NORMALIZATION_LABEL`) -- fully-adjusted / total-return are deferred"
         )
-    # It must keep the Protocol default (SPLIT_ADJUSTED) so the bare-default consumer call FAILS CLOSED
-    # rather than silently serving raw bars dressed up as adjusted.
+    # It must keep the Protocol default (SPLIT_ADJUSTED) so the bare-default consumer call serves the
+    # gated adjusted series (CoverageNotProvenError when uncovered), not a silent RAW default.
     if "normalization:NormalizationMode=NormalizationMode.SPLIT_ADJUSTED" not in compact:
         fail(
             "the binding's query methods must keep the SPLIT_ADJUSTED default (the HistoricalData "
-            "Protocol default) so the bare-default consumer call fails closed"
+            "Protocol default) so the bare-default consumer call serves the gated adjusted series"
         )
-    # It must name the corporate-action coverage owner (SRS-DATA-011) as the deferral reason.
+    # Gate-integrity: a split-adjusted response must carry the coverage_through frontier (proving it
+    # passed the gate); the binding validates it and fails closed otherwise.
+    if "coverage_through" not in compact:
+        fail(
+            "the binding must validate the echoed coverage_through frontier on a split-adjusted response "
+            "(gate-integrity) -- an un-gated 'adjusted' response must fail closed"
+        )
+    # It must name the corporate-action coverage owner (SRS-DATA-011) -- the gate that makes
+    # split-adjusted honest (an uncovered query fails closed naming it).
     if "SRS-DATA-011" not in binding_src:
         fail(
-            "the binding must name the corporate-action COVERAGE owner (SRS-DATA-011) as why "
-            "split-adjusted is deferred as a strategy-facing default"
+            "the binding must name the corporate-action COVERAGE owner (SRS-DATA-011) -- the gate that "
+            "makes a split-adjusted read honest (an uncovered query fails closed naming it)"
         )
     return (
-        "binding: StoreBackedHistoricalData serves RAW only and keeps the SPLIT_ADJUSTED Protocol "
-        "default so the bare-default consumer call FAILS CLOSED (never raw-as-adjusted). Split-adjusted "
-        "is now served on the operator CLI behind the SRS-DATA-011 coverage gate, but the strategy-facing "
-        "binding flip is deferred to the SRS-DATA-007 consumer-wiring close"
+        "binding: StoreBackedHistoricalData serves RAW and the gated SPLIT_ADJUSTED (the Protocol "
+        "default), mapping SPLIT_ADJUSTED to the 'split-adjusted' CLI label so it routes through the "
+        "SRS-DATA-011 coverage gate (CoverageNotProvenError when uncovered, never raw-as-adjusted), "
+        "validates the echoed coverage_through frontier (gate-integrity), and fails closed on "
+        "fully-adjusted / total-return (SRS-DATA-012)"
     )
 
 
@@ -379,7 +389,7 @@ _STATIC_CHECKS = (
     ("rust_math", "normalization_module", check_rust_math),
     ("ohlc_and_volume_factors", "normalization_module", check_ohlc_and_volume_factors),
     ("cli_flag", "cli_source", check_cli_flag),
-    ("binding_defers_split_adjusted", "binding_source", check_binding_defers_split_adjusted),
+    ("binding_serves_split_adjusted", "binding_source", check_binding_serves_split_adjusted),
     ("not_publicly_exported", "lib_source", check_not_publicly_exported),
 )
 

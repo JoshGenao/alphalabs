@@ -9,9 +9,12 @@ the gate FAILS CLOSED rather than emitting raw-as-adjusted output.
 
 This test ingests a daily bar with NO coverage record and asserts the uncovered-store fail-closed
 behaviour: the operator CLI ``data007_query_cli`` fails closed on split-adjusted (naming SRS-DATA-011),
-and the Python consumer binding ``StoreBackedHistoricalData`` serves RAW only (the binding flip is
-deferred to the SRS-DATA-007 consumer-wiring close). The COVERED (served) path is proven by the
-SRS-DATA-011 coverage tests (tools/coverage_manifest_check.py + tests/domain/test_coverage_gate_domain).
+and the Python consumer binding ``StoreBackedHistoricalData`` — which now serves gated split-adjusted as
+its Protocol default — also fails closed over this uncovered store, raising ``CoverageNotProvenError``
+(naming SRS-DATA-011), never raw-as-adjusted. The COVERED (served) path is
+proven by the SRS-DATA-011 coverage tests (tools/coverage_manifest_check.py +
+tests/domain/test_coverage_gate_domain) and the SRS-DATA-007 consumer close
+(tests/domain/test_store_history_consumer).
 """
 
 from __future__ import annotations
@@ -30,7 +33,10 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from atp_strategy import NormalizationMode  # noqa: E402
-from atp_strategy.store_history import StoreBackedHistoricalData  # noqa: E402
+from atp_strategy.store_history import (  # noqa: E402
+    CoverageNotProvenError,
+    StoreBackedHistoricalData,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -90,7 +96,7 @@ def test_cli_serves_raw_and_fails_closed_split_adjusted_without_coverage() -> No
         assert "SRS-DATA-011" in adj.stderr
 
 
-def test_consumer_binding_refuses_split_adjusted() -> None:
+def test_consumer_binding_fails_closed_split_adjusted_without_coverage() -> None:
     cargo = _cargo()
     if cargo is None:
         pytest.skip("cargo not on PATH")
@@ -98,11 +104,17 @@ def test_consumer_binding_refuses_split_adjusted() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         _ingest_daily(ingest_bin, tmp)
         binding = StoreBackedHistoricalData(store_dir=tmp, query_binary=query_bin)
-        # The binding serves RAW only: split-adjusted (and the bare default) fail closed.
-        with pytest.raises(NotImplementedError):
+        # Over this UNCOVERED store the binding routes split-adjusted (and the bare default) through the
+        # coverage gate and fails closed with CoverageNotProvenError (naming SRS-DATA-011), never raw.
+        with pytest.raises(CoverageNotProvenError) as exc:
             binding.get_bars("AAPL", lookback=5, frequency="1d", normalization=NormalizationMode.SPLIT_ADJUSTED)
-        with pytest.raises(NotImplementedError):
+        assert "SRS-DATA-011" in str(exc.value)
+        with pytest.raises(CoverageNotProvenError):
             binding.get_bars("AAPL", lookback=5, frequency="1d")
+        # Dividend modes still fail closed before any query (no dividend data, SRS-DATA-012).
+        for mode in (NormalizationMode.FULLY_ADJUSTED, NormalizationMode.TOTAL_RETURN):
+            with pytest.raises(NotImplementedError):
+                binding.get_bars("AAPL", lookback=5, frequency="1d", normalization=mode)
         # RAW still works through the binding.
         (raw_bar,) = binding.get_bars("AAPL", lookback=5, frequency="1d", normalization=NormalizationMode.RAW)
         assert raw_bar.close == 100.0

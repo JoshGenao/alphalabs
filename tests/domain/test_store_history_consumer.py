@@ -3,19 +3,27 @@
 The acceptance names "strategy code, backtests, factor jobs, and notebooks" as the consumers. This
 domain test wires a real ``Strategy`` subclass (standing in for strategy / backtest / factor-job /
 notebook code) to the concrete store-backed ``StoreBackedHistoricalData`` over a REAL ingested store,
-and asserts it reads bars by symbol / resolution / range with NO provider named — "strategy code
+and asserts it reads bars by symbol / resolution / date range with NO provider named — "strategy code
 queries the unified historical interface without specifying the original source provider", proven end
-to end through an in-process consumer rather than an operator-CLI analogy.
+to end through an in-process consumer rather than an operator-CLI analogy. SRS-DATA-007 STAYS passes:false
+(foundational): this demonstrates a real strategy stand-in, but the acceptance also NAMES backtests /
+factor jobs / notebooks, and those engines (atp-simulation, atp-factor-pipeline, SRS-RES-002 notebooks)
+are not yet WIRED to read via this binding (deferred to SRS-DATA-007).
 
-It also pins the safety property the adversarial review demanded: the consumer must explicitly opt into
-``NormalizationMode.RAW``. The default ``SPLIT_ADJUSTED`` (and every other adjusted mode) fails closed,
-because split-adjusted is not a trustworthy strategy-facing default until corporate-action COVERAGE is
-guaranteed (real corporate-action ingestion is deferred to ``SRS-DATA-011``) — absent coverage, a
-"split-adjusted" read over a store with no split facts would be raw-as-adjusted. So a strategy can never
-silently trade on bars it believes are adjusted. SRS-DATA-007 STAYS passes:false.
+It also pins the safety property the adversarial review demanded. The binding's default
+``NormalizationMode.SPLIT_ADJUSTED`` (the HistoricalData Protocol default) is served ONLY through the
+SRS-DATA-011 coverage-enforcing gate:
+
+  * COVERED — over a store with a pre-split bar, a split, AND an asserted coverage frontier reaching the
+    query end, the consumer's default (SPLIT_ADJUSTED) query returns the re-quoted (split-adjusted)
+    series — a 10000 close under a 4-for-1 split reads 2500 ($25.00), volume 100000 reads 400000;
+  * UNCOVERED — over a store with no coverage record, the consumer's default query FAILS CLOSED with
+    ``CoverageNotProvenError`` (naming SRS-DATA-011), never silent raw bars dressed up as adjusted, so a
+    strategy can never trade on bars it believes are adjusted. ``FULLY_ADJUSTED`` / ``TOTAL_RETURN`` need
+    dividend data (SRS-DATA-012) and fail closed before any query. ``RAW`` is always available verbatim.
 
 Builds the data CLIs on demand (skips if cargo is unavailable, like the other cargo-driven domain
-tests). A second structural assertion confirms the binding is registered in the architecture metadata.
+tests). A structural assertion confirms the binding is registered in the architecture metadata.
 """
 
 from __future__ import annotations
@@ -25,6 +33,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -37,7 +46,10 @@ for path in (PYTHON_ROOT, TOOLS_ROOT):
         sys.path.insert(0, str(path))
 
 from atp_strategy import Bar, NormalizationMode, Strategy  # noqa: E402
-from atp_strategy.store_history import StoreBackedHistoricalData  # noqa: E402
+from atp_strategy.store_history import (  # noqa: E402
+    CoverageNotProvenError,
+    StoreBackedHistoricalData,
+)
 
 pytestmark = pytest.mark.domain
 
@@ -64,6 +76,20 @@ def _build_ingest_and_query(cargo: str) -> tuple[Path, Path]:
     return debug / "data016_ingest_cli", debug / "data007_query_cli"
 
 
+def _build_with_coverage(cargo: str) -> tuple[Path, Path, Path]:
+    build = _run(
+        cargo, "build", "-q", "-p", "atp-data",
+        "--bin", "data016_ingest_cli", "--bin", "data011_coverage_cli", "--bin", "data007_query_cli",
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+    debug = ROOT / "target" / "debug"
+    return (
+        debug / "data016_ingest_cli",
+        debug / "data011_coverage_cli",
+        debug / "data007_query_cli",
+    )
+
+
 class _ResearchStrategy(Strategy):
     """A strategy that pulls its own warm-up history from the unified interface.
 
@@ -80,6 +106,12 @@ class _ResearchStrategy(Strategy):
         self.history_bars = history.get_bars(
             "AAPL", lookback=self.warmup_bars, frequency="1d", normalization=RAW
         )
+
+    def load_split_adjusted(self, history, *, start: datetime, end: datetime) -> None:
+        # Queries the unified interface by symbol / date range / resolution with NO provider and the
+        # Protocol DEFAULT (SPLIT_ADJUSTED) normalization — the path a strategy / backtest / factor job /
+        # notebook uses by default; the binding routes it through the SRS-DATA-011 coverage gate.
+        self.history_bars = history.get_bars_range("AAPL", frequency="1d", start=start, end=end)
 
 
 def test_strategy_reads_store_sourced_bars_without_a_provider() -> None:
@@ -113,11 +145,68 @@ def test_strategy_reads_store_sourced_bars_without_a_provider() -> None:
         assert not (bar_fields & {"provider", "source", "vendor", "feed"})
 
 
-def test_default_normalization_fails_closed_for_the_consumer() -> None:
-    # The safety property: a strategy that omits normalization (Protocol default SPLIT_ADJUSTED) gets a
-    # loud failure, never silent raw bars dressed up as adjusted. Split-adjusted is not a trustworthy
-    # strategy-facing default until SRS-DATA-011 corporate-action COVERAGE exists (absent coverage, a
-    # split-adjusted read over a store with no split facts would be raw-as-adjusted -- a live hazard).
+def test_consumer_reads_split_adjusted_over_covered_store() -> None:
+    # The close: over a store with a pre-split bar, a 4-for-1 split, AND an asserted coverage frontier
+    # reaching the query end, the consumer's DEFAULT (SPLIT_ADJUSTED) query returns the re-quoted series
+    # by symbol / date range / resolution with NO provider named -- a strategy / backtest / factor job /
+    # notebook reads an honest adjusted series through the unified interface.
+    cargo = _cargo()
+    if cargo is None:
+        pytest.skip("cargo not on PATH")
+    ingest_bin, coverage_bin, query_bin = _build_with_coverage(cargo)
+    with tempfile.TemporaryDirectory() as tmp:
+        assert _run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar",
+                    "--event-ts", "100", "--init").returncode == 0
+        assert _run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "corporate-action-split",
+                    "--event-ts", "200").returncode == 0
+        assert _run(str(coverage_bin), "assert-coverage", "--dir", tmp,
+                    "--symbol", "AAPL", "--through", "200").returncode == 0
+
+        history = StoreBackedHistoricalData(store_dir=tmp, query_binary=query_bin)
+        strategy = _ResearchStrategy()
+        strategy.load_split_adjusted(
+            history,
+            start=datetime(1970, 1, 1, tzinfo=timezone.utc),
+            end=datetime.fromtimestamp(100, tz=timezone.utc),
+        )
+        # The pre-split bar is re-quoted onto the split-comparable basis: close 10000 / 4 = 2500 -> $25.00,
+        # volume 100000 * 4 = 400000. The consumer received a real, honest adjusted series.
+        assert len(strategy.history_bars) == 1
+        bar = strategy.history_bars[0]
+        assert bar.symbol == "AAPL"
+        assert bar.close == 25.0
+        assert bar.volume == 400000
+        # Source-neutral: the Bar carries no origin field a consumer could branch on.
+        bar_fields = {f.name for f in dataclasses.fields(bar)}
+        assert not (bar_fields & {"provider", "source", "vendor", "feed"})
+
+
+def test_consumer_split_adjusted_uncovered_fails_closed() -> None:
+    # The safety property: over a store with bars but NO coverage record, the consumer's DEFAULT
+    # (SPLIT_ADJUSTED) query fails closed with CoverageNotProvenError (naming SRS-DATA-011), never silent
+    # raw bars dressed up as adjusted -- a strategy can never trade on bars it believes are adjusted.
+    cargo = _cargo()
+    if cargo is None:
+        pytest.skip("cargo not on PATH")
+    ingest_bin, query_bin = _build_ingest_and_query(cargo)
+    with tempfile.TemporaryDirectory() as tmp:
+        assert _run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar",
+                    "--event-ts", "100", "--init").returncode == 0
+        history = StoreBackedHistoricalData(store_dir=tmp, query_binary=query_bin)
+        strategy = _ResearchStrategy()
+        with pytest.raises(CoverageNotProvenError) as exc:
+            strategy.load_split_adjusted(
+                history,
+                start=datetime(1970, 1, 1, tzinfo=timezone.utc),
+                end=datetime.fromtimestamp(100, tz=timezone.utc),
+            )
+        assert "SRS-DATA-011" in str(exc.value)
+
+
+def test_consumer_normalization_safety_over_uncovered_store() -> None:
+    # The bare default (no normalization arg, the path WarmupController uses) and an explicit
+    # SPLIT_ADJUSTED both fail closed at the coverage gate over an uncovered store; the dividend modes
+    # additionally need dividend data (SRS-DATA-012) and fail closed before any query.
     cargo = _cargo()
     if cargo is None:
         pytest.skip("cargo not on PATH")
@@ -127,17 +216,20 @@ def test_default_normalization_fails_closed_for_the_consumer() -> None:
             str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar", "--init"
         ).returncode == 0
         history = StoreBackedHistoricalData(store_dir=tmp, query_binary=query_bin)
-        # Every adjusted mode (the default SPLIT_ADJUSTED included) fails closed for the consumer.
-        for mode in (
-            NormalizationMode.SPLIT_ADJUSTED,
-            NormalizationMode.FULLY_ADJUSTED,
-            NormalizationMode.TOTAL_RETURN,
+        # Coverage-gated modes: both the bare default and explicit SPLIT_ADJUSTED fail closed naming 011.
+        for call in (
+            lambda: history.get_bars("AAPL", lookback=1, frequency="1d"),
+            lambda: history.get_bars(
+                "AAPL", lookback=1, frequency="1d", normalization=NormalizationMode.SPLIT_ADJUSTED
+            ),
         ):
+            with pytest.raises(CoverageNotProvenError) as exc:
+                call()
+            assert "SRS-DATA-011" in str(exc.value)
+        # Dividend modes fail closed before any query (no dividend data, SRS-DATA-012).
+        for mode in (NormalizationMode.FULLY_ADJUSTED, NormalizationMode.TOTAL_RETURN):
             with pytest.raises(NotImplementedError):
                 history.get_bars("AAPL", lookback=1, frequency="1d", normalization=mode)
-        # And the bare default (no normalization arg, the path WarmupController uses) also fails closed.
-        with pytest.raises(NotImplementedError):
-            history.get_bars("AAPL", lookback=1, frequency="1d")
 
 
 def test_store_history_binding_is_registered_in_architecture_metadata() -> None:
