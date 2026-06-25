@@ -22,7 +22,7 @@ from normalization_modes_check import (  # noqa: E402
     NormalizationModesCheckError,
     _read,
     assert_normalization_modes_static,
-    check_binding_defers_split_adjusted,
+    check_binding_serves_split_adjusted,
     check_cli_flag,
     check_not_publicly_exported,
     check_ohlc_and_volume_factors,
@@ -51,7 +51,8 @@ class ScriptRunTest(unittest.TestCase):
             "round-half-to-even",
             "CLI surface",
             "coverage-enforcing gate",
-            "serves RAW only",
+            "serves RAW and the gated SPLIT_ADJUSTED",
+            "gate-integrity",
             "crate-internal API",
             "generative property test",
         ):
@@ -128,26 +129,35 @@ class CliFlagTest(_Fixture):
 
 
 class BindingTest(_Fixture):
-    def test_serving_split_adjusted_is_caught(self) -> None:
-        # If the binding mapped SPLIT_ADJUSTED to a CLI label (i.e. SERVED it), the guard must fire --
-        # serving split-adjusted as a strategy-facing default is raw-as-adjusted without coverage.
+    def test_dropping_split_adjusted_serving_is_caught(self) -> None:
+        # If the binding stopped mapping SPLIT_ADJUSTED to the 'split-adjusted' CLI label (i.e. no longer
+        # SERVED it), the guard must fire -- the binding serves the gated split-adjusted series.
         mutated = self._src("binding_source").replace(
-            "NormalizationMode.RAW: \"raw\",",
-            "NormalizationMode.RAW: \"raw\",\n    NormalizationMode.SPLIT_ADJUSTED: \"split-adjusted\",",
+            "    NormalizationMode.SPLIT_ADJUSTED: \"split-adjusted\",\n",
+            "",
         )
         self.assertNotEqual(mutated, self._src("binding_source"))
         with self.assertRaises(NormalizationModesCheckError):
-            check_binding_defers_split_adjusted(self.config, mutated)
+            check_binding_serves_split_adjusted(self.config, mutated)
 
     def test_reverting_default_to_raw_is_caught(self) -> None:
-        # A RAW default would not fail closed on the bare-default consumer call.
+        # A RAW default would serve raw bars on the bare-default consumer call where the Protocol
+        # promises adjusted -- the guard must fire.
         mutated = self._src("binding_source").replace(
             "normalization: NormalizationMode = NormalizationMode.SPLIT_ADJUSTED",
             "normalization: NormalizationMode = NormalizationMode.RAW",
         )
         self.assertNotEqual(mutated, self._src("binding_source"))
         with self.assertRaises(NormalizationModesCheckError):
-            check_binding_defers_split_adjusted(self.config, mutated)
+            check_binding_serves_split_adjusted(self.config, mutated)
+
+    def test_dropping_gate_integrity_is_caught(self) -> None:
+        # Gate-integrity: if the binding stopped validating the echoed coverage_through frontier on a
+        # split-adjusted response, an un-gated 'adjusted' response could slip through -- the guard fires.
+        mutated = self._src("binding_source").replace("coverage_through", "ignored_frontier")
+        self.assertNotEqual(mutated, self._src("binding_source"))
+        with self.assertRaises(NormalizationModesCheckError):
+            check_binding_serves_split_adjusted(self.config, mutated)
 
 
 class NotPubliclyExportedTest(_Fixture):
@@ -175,11 +185,11 @@ class AggregateEvidenceTest(_Fixture):
 
     def test_public_vs_library_modes_are_separated(self) -> None:
         block = contract_block(self.config)
-        # split-adjusted is now served on the operator CLI behind the SRS-DATA-011 coverage gate, so it
-        # is a public_request_mode; the strategy binding still serves RAW only (binding_request_modes);
-        # FULLY_ADJUSTED / TOTAL_RETURN stay deferred from public exposure (dividend data).
+        # split-adjusted is served on the operator CLI AND the strategy binding behind the SRS-DATA-011
+        # coverage gate, so it is both a public_request_mode and a binding_request_mode; FULLY_ADJUSTED /
+        # TOTAL_RETURN stay deferred from public exposure (dividend data).
         self.assertEqual(block["public_request_modes"], ["RAW", "SPLIT_ADJUSTED"])
-        self.assertEqual(block["binding_request_modes"], ["RAW"])
+        self.assertEqual(block["binding_request_modes"], ["RAW", "SPLIT_ADJUSTED"])
         self.assertEqual(block["core_library_modes"], ["RAW", "SPLIT_ADJUSTED"])
         self.assertIn("FULLY_ADJUSTED", block["deferred_public_modes"])
         self.assertIn("TOTAL_RETURN", block["deferred_public_modes"])

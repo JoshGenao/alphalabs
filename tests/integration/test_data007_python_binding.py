@@ -33,7 +33,10 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from atp_strategy import NormalizationMode  # noqa: E402
-from atp_strategy.store_history import StoreBackedHistoricalData  # noqa: E402
+from atp_strategy.store_history import (  # noqa: E402
+    CoverageNotProvenError,
+    StoreBackedHistoricalData,
+)
 
 RAW = NormalizationMode.RAW
 
@@ -73,11 +76,12 @@ def test_python_binding_reads_ingested_data_with_no_provider() -> None:
 
         binding = StoreBackedHistoricalData(store_dir=tmp, query_binary=query_bin)
 
-        # Fail-closed default: omitting normalization (Protocol default SPLIT_ADJUSTED) must raise —
-        # the binding serves RAW only (split-adjusted is deferred as a strategy-facing default pending
-        # SRS-DATA-011 corporate-action coverage, so it cannot be raw-as-adjusted).
-        with pytest.raises(NotImplementedError):
+        # Fail-closed default over an UNCOVERED store: omitting normalization (Protocol default
+        # SPLIT_ADJUSTED) routes through the coverage gate, which fails closed with CoverageNotProvenError
+        # (naming SRS-DATA-011) because this fixture ingests no coverage record — never silent raw.
+        with pytest.raises(CoverageNotProvenError) as exc:
             binding.get_bars("AAPL", lookback=10, frequency="1d")
+        assert "SRS-DATA-011" in str(exc.value)
 
         # AAPL daily (seed 100): close = 100*100 minor = 10000 -> 100.0; volume = 100*1000 = 100000.
         aapl_daily = binding.get_bars("AAPL", lookback=10, frequency="1d", normalization=RAW)

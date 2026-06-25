@@ -146,6 +146,23 @@ class NormalizationHonestyTest(_Fixture):
         with self.assertRaises(StoreHistoryCheckError):
             check_normalization_honesty(self.config, mutated)
 
+    def test_dropping_split_adjusted_serving_is_caught(self) -> None:
+        # The SRS-DATA-007 close SERVES the gated split-adjusted series; dropping its label must fire.
+        mutated = self.src.replace(
+            '    NormalizationMode.SPLIT_ADJUSTED: "split-adjusted",\n', ""
+        )
+        self.assertNotEqual(mutated, self.src, "mutation did not apply")
+        with self.assertRaises(StoreHistoryCheckError):
+            check_normalization_honesty(self.config, mutated)
+
+    def test_dropping_gate_integrity_is_caught(self) -> None:
+        # Gate-integrity: dropping the coverage_through validation on a split-adjusted response would let
+        # an un-gated 'adjusted' response through — the guard must fire.
+        mutated = self.src.replace("coverage_through", "ignored_frontier")
+        self.assertNotEqual(mutated, self.src, "mutation did not apply")
+        with self.assertRaises(StoreHistoryCheckError):
+            check_normalization_honesty(self.config, mutated)
+
 
 class SubprocessTimeoutTest(_Fixture):
     def test_evidence(self) -> None:
