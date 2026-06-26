@@ -74,12 +74,14 @@ path = "src/bin/sim002_fill_cli.rs"
 name = "sim001_paper_order_cli"
 path = "src/bin/sim001_paper_order_cli.rs"
 
+# atp-data is a real (non-dev) dependency so the backtest engine's SRS-DATA-007 system-catalog
+# reader (`store_bar_source::StoreBarSource`) can read the unified historical store as SHIPPED
+# product code, not a test stand-in. The dependency direction is allowed (Data Layer -> Simulation
+# Engine; see architecture/runtime_services.json dependency_direction.enforced_crates).
 [dependencies]
+atp-data = { path = "../atp-data" }
 atp-strategy-engine = { path = "../atp-strategy-engine" }
 atp-types = { path = "../atp-types" }
-
-[dev-dependencies]
-atp-data = { path = "../atp-data" }
 
 [lints]
 workspace = true

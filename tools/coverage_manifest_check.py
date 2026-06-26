@@ -440,9 +440,10 @@ _DEFERRED_OWNERS = (
     "remainder)",
     "real provider corporate-action ingestion from Databento / IB — the operator-set / fixture frontier "
     "stands in (SRS-DATA-001/003/006)",
-    "wiring the named backtest / factor / notebook consumers to read split-adjusted via the gated binding "
-    "(SRS-DATA-007 close; the StoreBackedHistoricalData binding now serves gated split-adjusted, but only "
-    "a strategy stand-in is demonstrated)",
+    "wiring the named factor-job consumer to read split-adjusted via the gated path (SRS-DATA-007 close): the "
+    "atp-simulation StoreBarSource (backtest) and the StoreBackedHistoricalData binding (strategy / notebook) "
+    "read gated split-adjusted, but the atp-factor-pipeline store_inputs loader is not yet in the run_factor_job "
+    "execution path (needs SRS-DATA-005), and the Jupyter notebook HOST is SRS-RES-002, so DATA-007 STAYS passes:false",
 )
 
 

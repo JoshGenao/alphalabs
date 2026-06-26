@@ -17,10 +17,12 @@ ingested data by symbol/date-range/resolution with no provider named. The bindin
 and ``tools/normalization_modes_check.py``). An uncovered split-adjusted query fails closed with
 ``CoverageNotProvenError`` (naming SRS-DATA-011), never raw-as-adjusted, and the binding validates the
 ``coverage_through`` frontier the gate echoes (gate-integrity). ``FULLY_ADJUSTED`` / ``TOTAL_RETURN`` stay
-deferred (dividend data, SRS-DATA-012). SRS-DATA-007 STAYS passes:false (foundational): a real strategy
-stand-in reads end-to-end through this binding in ``tests/domain/test_store_history_consumer.py``, but the
-acceptance NAMES backtests / factor jobs / notebooks and those engines are not yet WIRED to this store
-path (deferred to SRS-DATA-007).
+deferred (dividend data, SRS-DATA-012). SRS-DATA-007 STAYS passes:false (foundational): the BACKTEST consumer
+is now genuinely wired (atp-simulation ``StoreBarSource`` consumes the unified store in ``BacktestEngine::run``)
+and strategy + notebook/research code read via this binding (``tests/domain/test_store_history_consumer.py``);
+deferred -- the factor-job EXECUTION path (``run_factor_job`` still takes caller-supplied inputs; the
+atp-factor-pipeline ``store_inputs`` loader is shipped substrate, and a complete run needs Sharadar
+fundamentals, SRS-DATA-005) and the Jupyter notebook HOST runtime (SRS-RES-002).
 
 It is a SEPARATE script from ``unified_query_check.py`` so that script's hard-coded check-count
 assertions (``tests/test_unified_query_contract.py``) stay valid -- mirroring how
@@ -500,9 +502,10 @@ _STATIC_CHECKS = (
 )
 
 _DEFERRED_OWNERS = (
-    "the named backtest / factor-job / notebook consumers actually WIRED to read via this store path -- "
-    "the acceptance names them; only a strategy stand-in is demonstrated, so SRS-DATA-007 STAYS "
-    "passes:false (their store wiring is deferred to SRS-DATA-007)",
+    "the factor-job EXECUTION path (run_factor_job still takes caller-supplied inputs; the atp-factor-pipeline "
+    "store_inputs loader is shipped substrate, and a complete run needs SRS-DATA-005 fundamentals) and the "
+    "Jupyter notebook HOST (SRS-RES-002) -- the BACKTEST consumer (atp-simulation StoreBarSource) is genuinely "
+    "wired and strategy/notebook read via this binding, but those two gaps keep SRS-DATA-007 passes:false",
     "fully-adjusted / total-return normalization modes (they additionally need dividend data, "
     "SRS-DATA-012); split-adjusted is now served through the SRS-DATA-011 coverage gate",
     "the concurrent-read-DURING-write Load test for THIS named Python consumer "

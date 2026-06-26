@@ -48,7 +48,9 @@ use crate::cost::{CostConfig, CostError};
 /// `parquet`-backed uploaded-file reader) are deferred behind the port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BacktestDataSource {
-    /// The platform's stored historical catalog (deferred owner: SRS-DATA-007).
+    /// The platform's stored historical catalog, read via
+    /// [`crate::store_bar_source::StoreBarSource`] over the unified `MarketDataStore`
+    /// (SRS-DATA-007) — the source-neutral system-catalog reader.
     SystemData,
     /// A user-uploaded Parquet dataset (deferred owner: the `parquet` reader).
     UploadedData,
@@ -247,6 +249,15 @@ pub enum BacktestError {
         requested: BacktestDataSource,
         actual: BacktestDataSource,
     },
+    /// The bar source could not produce bars for the requested window. The stored
+    /// system-catalog reader ([`crate::store_bar_source::StoreBarSource`], SRS-DATA-007)
+    /// surfaces three fail-closed conditions through this one variant: a split-adjusted
+    /// read refused because corporate-action coverage is not proven through the query end
+    /// (SRS-DATA-011), a stored bar missing its `close` field, or a window bound that is
+    /// not a representable timestamp. Fail-closed: the engine never trades on a source it
+    /// could not read, and never silently substitutes raw bars for a refused adjusted read.
+    /// `reason` is a source-neutral diagnostic carrying no broker/vendor identifier.
+    SourceUnavailable { reason: String },
     /// A replayed bar carried a negative observed bid-ask spread (corrupt quote
     /// data). Rejected before any fill so a negative spread can never produce a
     /// cash-fabricating spread-impact cost (mirrors the `NonPositivePrice` guard).
@@ -296,6 +307,9 @@ impl fmt::Display for BacktestError {
                 actual.as_str(),
                 requested.as_str()
             ),
+            Self::SourceUnavailable { reason } => {
+                write!(f, "backtest bar source unavailable: {reason}")
+            }
             Self::NegativeSpread { ts, spread_minor } => write!(
                 f,
                 "backtest bar at ts {ts} has a negative observed spread {spread_minor} minor units"

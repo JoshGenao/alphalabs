@@ -65,10 +65,12 @@
 //! order `(factor_value desc, SecurityKey asc)`, the deadline checked against the injected clock
 //! (no wall clock of its own), and no parallelism / RNG -- so for a pure model, identical inputs
 //! yield identical output regardless of input order. Factor scores are dimensionless `f64` (the
-//! factor domain, not a money leak). The live wall-clock
-//! performance verification over 8,000+ real securities, the real market/fundamental data
-//! wiring (SRS-DATA-007), and the SYS-57 workload-priority admission of the job are deferred,
-//! so SRS-FAC-001 stays `passes:false`.
+//! factor domain, not a money leak). A store-backed MARKET-input loader is AVAILABLE
+//! ([`crate::store_inputs::load_daily_market_input`], SRS-DATA-007) that sources a security's market
+//! features from the unified historical store by symbol / date range / resolution; wiring it into THIS
+//! job's execution path ([`run_factor_job`] still takes caller-supplied inputs), the Sharadar FUNDAMENTAL
+//! data wiring (SRS-DATA-005), the live wall-clock performance verification over 8,000+ real securities,
+//! and the SYS-57 workload-priority admission of the job are deferred, so SRS-FAC-001 stays `passes:false`.
 
 use std::collections::HashSet;
 
