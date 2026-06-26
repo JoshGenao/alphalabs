@@ -37,10 +37,12 @@ symbol/date-range/resolution with no provider named, serving RAW verbatim AND th
 closed with CoverageNotProvenError naming SRS-DATA-011, never raw-as-adjusted); ``get_bars_range`` is the
 explicit ``[start, end]`` range query backtests / factor jobs / notebooks use. The close is NOT complete: the
 BACKTEST consumer is now genuinely wired (atp_simulation::store_bar_source::StoreBarSource consumes this
-store path in BacktestEngine::run) and strategy + notebook/research code read via the binding -- but
-run_factor_job still takes caller-supplied inputs (the atp_factor_pipeline::store_inputs loader is shipped
-substrate, not yet in the factor-job execution path; a complete run needs Sharadar fundamentals,
-SRS-DATA-005) and the Jupyter notebook HOST is SRS-RES-002, so SRS-DATA-007 STAYS passes:false. Other owners
+store path in BacktestEngine::run); the FACTOR-JOB consumer now READS the store
+(atp_factor_pipeline::store_inputs loaders + assemble_factor_inputs, a point-in-time read primitive;
+run_scheduled_factor_job_over_store DERIVES its data as-of from the calendar's session_as_of_ts for the
+scheduled session, so a caller cannot pair a session with a future as-of -- only the concrete real-calendar
+mapping is deferred, see SRS-FAC-001); and strategy + notebook/research code read via the binding -- but the Jupyter
+notebook HOST is SRS-RES-002 (the remaining unwired consumer), so SRS-DATA-007 STAYS passes:false. Other owners
 that compose this read path also remain deferred (the real provider network
 adapters via SRS-DATA-001/003/005/006, read-while-write via SRS-DATA-017, the FULLY_ADJUSTED /
 TOTAL_RETURN + live-subscription normalization of SRS-DATA-012, SSD/NAS tiering via SRS-DATA-008/009/010,
@@ -403,10 +405,11 @@ _DEFERRED_OWNERS = (
     "FULLY_ADJUSTED / TOTAL_RETURN + live-subscription normalization (dividend data, SRS-DATA-012); "
     "split-adjusted is now served through the SRS-DATA-011 coverage gate by both the operator CLI and "
     "the StoreBackedHistoricalData consumer binding",
-    "the factor-job EXECUTION path (run_factor_job still takes caller-supplied inputs; the atp-factor-pipeline "
-    "store_inputs loader is shipped substrate, and a complete run needs SRS-DATA-005 fundamentals) and the "
-    "Jupyter notebook HOST (SRS-RES-002) -- the BACKTEST consumer (atp-simulation StoreBarSource) is genuinely "
-    "wired and strategy + notebook read via the binding, but those two gaps keep SRS-DATA-007 passes:false",
+    "the Jupyter notebook HOST (SRS-RES-002) -- the BACKTEST consumer (atp-simulation StoreBarSource) is "
+    "genuinely wired and the FACTOR-JOB consumer now READS the store (atp-factor-pipeline store_inputs loaders "
+    "+ assemble_factor_inputs, a point-in-time read primitive; the as-of -> scheduled-session binding is the "
+    "deferred calendar boundary, see SRS-FAC-001), and strategy + notebook read via the binding, so the "
+    "notebook HOST is the remaining gap that keeps SRS-DATA-007 passes:false",
     "SSD-primary / NAS-archival tiering, eviction, cold-read failover of the queried directory "
     "(SRS-DATA-008/009/010)",
     "the dashboard / REST consumer surfaces (SRS-UI / SRS-API)",

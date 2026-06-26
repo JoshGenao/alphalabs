@@ -16,12 +16,16 @@ stale ranking as current; an irregular produced panel would let the tear-sheet's
 aggregates mix incomparable magnitudes; and a leaked broker dependency would let the offline factor
 job be reconciled against the live IB account. This test proves the invariant from two angles:
 
-  1. Behavioral -- it shells out to the Rust integration test
-     ``crates/atp-factor-pipeline/tests/srs_fac_001_factor_job.rs`` and asserts the end-to-end job
-     ranks the full universe through the calendar within the deadline, skips a security missing
-     either source (never fabricating), fails closed below the full-universe floor and on a
-     non-session day, reports a deadline overrun fail-closed, and produces a regular panel that
-     feeds ``compute_tear_sheet``.
+  1. Behavioral -- it shells out to the Rust integration tests
+     ``crates/atp-factor-pipeline/tests/srs_fac_001_factor_job.rs`` and
+     ``srs_fac_001_store_backed_job.rs`` and asserts the end-to-end job ranks the full universe
+     through the calendar within the deadline, skips a security missing either source (never
+     fabricating), fails closed below the full-universe floor and on a non-session day, reports a
+     deadline overrun fail-closed, and produces a regular panel that feeds ``compute_tear_sheet`` --
+     and that the SRS-DATA-007 store-backed execution path
+     (``run_scheduled_factor_job_over_store``) runs the full universe over store-resident market +
+     fundamental data, skips a security with no store data without fabricating, and fails closed on
+     a malformed store record.
 
   2. Structural -- it asserts, via ``tools/factor_job_check.py``, that the ``factor_job`` module
      resolves its schedule through the calendar, enforces the full-universe floor, gates on the
@@ -68,7 +72,9 @@ from factor_job_check import (  # noqa: E402
 )
 
 
-def _run_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
+def _run_cargo_test(
+    test_name: str, test_file: str = "srs_fac_001_factor_job"
+) -> subprocess.CompletedProcess[str]:
     cargo = shutil.which("cargo")
     if cargo is None:
         pytest.skip(reason="cargo not on PATH; cannot run Rust integration test")
@@ -79,7 +85,7 @@ def _run_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
             "-p",
             "atp-factor-pipeline",
             "--test",
-            "srs_fac_001_factor_job",
+            test_file,
             test_name,
             "--",
             "--exact",
@@ -295,6 +301,48 @@ def test_rejects_irregular_panel() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Behavioral (store-backed execution path -- SRS-DATA-007 factor-job consumer)
+# --------------------------------------------------------------------------- #
+
+
+def test_store_backed_job_runs_full_universe_over_store_within_deadline() -> None:
+    # The SRS-DATA-007 factor-job consumer: run_scheduled_factor_job_over_store sources BOTH market
+    # and fundamental inputs from the unified store (by symbol / date range / resolution, no provider
+    # named), assembles the cross-section, and runs the full 8,000+ universe within the deadline.
+    _assert_one_passed(
+        _run_cargo_test(
+            "runs_full_universe_factor_job_over_the_store_within_deadline",
+            test_file="srs_fac_001_store_backed_job",
+        ),
+        "SRS-FAC-001 store-backed full-universe run",
+    )
+
+
+def test_store_backed_job_skips_missing_store_data_without_fabricating() -> None:
+    # Safety: a security with no store data is an auditable skip (MissingMarketData) -- the
+    # store-backed path never fabricates a factor input for a security the store cannot supply.
+    _assert_one_passed(
+        _run_cargo_test(
+            "securities_missing_a_store_source_are_skipped_not_fabricated",
+            test_file="srs_fac_001_store_backed_job",
+        ),
+        "SRS-FAC-001 store-backed skip-not-fabricate",
+    )
+
+
+def test_store_backed_assembly_fails_closed_on_malformed_record() -> None:
+    # Safety: a fundamental record present but missing a required field makes assembly fail closed
+    # (StoreFactorJobError::Input), so the job runs on no fabricated data rather than a guessed ratio.
+    _assert_one_passed(
+        _run_cargo_test(
+            "store_assembly_failure_propagates_as_a_fail_closed_job_error",
+            test_file="srs_fac_001_store_backed_job",
+        ),
+        "SRS-FAC-001 store-backed assembly fail-closed",
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Structural (contract guards, each shown non-vacuous)
 # --------------------------------------------------------------------------- #
 
@@ -482,3 +530,20 @@ def test_module_leaks_no_vendor_token() -> None:
     mutated = module_source(config) + "\n// scores mirrored to ib_insync under the hood\n"
     with pytest.raises(FactorJobCheckError):
         check_vendor_isolation(config, mutated)
+
+
+def test_gated_core_and_preflight_are_crate_private_not_a_public_bypass() -> None:
+    # Safety: run_factor_job_gated accepts caller-forged session/started/deadline, bypassing
+    # preflight_schedule's calendar resolution + start/deadline checks + InvalidCoverageRatio guard. It
+    # (and the preflight + StartGate it threads) must be crate-PRIVATE, so only the in-crate store
+    # wrapper -- which preflights first -- can reach it; external callers use the always-preflighting
+    # run_factor_job / run_scheduled_factor_job_over_store. A regression to `pub` would re-open the
+    # schedule/coverage-gate bypass.
+    src = module_source(load_config())
+    for name in ("run_factor_job_gated", "preflight_schedule"):
+        assert f"pub(crate) fn {name}" in src, f"{name} must be crate-private (pub(crate) fn)"
+        assert f"pub fn {name}" not in src, f"{name} must NOT be a public bypass (pub fn)"
+    assert "pub(crate) enum StartGate" in src
+    assert "pub enum StartGate" not in src
+    # The always-preflighting public entry point stays public.
+    assert "pub fn run_factor_job" in src

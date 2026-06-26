@@ -44,30 +44,43 @@
 //! the fail-open; `D >= end_ts` (applying splits up to `D`) is the strongest honest claim available
 //! without future corporate-action data.
 //!
-//! # The single gated public entry point (no uncovered capability on ANY surface)
+//! # The gated public entry point (no uncovered capability on ANY surface)
 //!
 //! The split-adjustment math (`crate::normalization`) stays **crate-internal** — `split_adjust_records`
 //! / `SplitEvent` are not re-exported. This module is a sibling in the same crate, so it can call those
-//! crate-internal functions while no external caller can. [`MarketDataStore::query_split_adjusted`] is
-//! the **only** public path to split-adjusted output, and it cannot return adjusted records without the
-//! coverage check passing — so there is no public path to raw-as-adjusted. The query kind is also
-//! required to be an equity bar (`DailyEquityBar` / `MinuteEquityBar`) so the math's `UnsupportedKind`
-//! path is unreachable at runtime and a split-adjusted *series* is equity-only by construction.
+//! crate-internal functions while no external caller can. This coverage GATE is the **only** public path
+//! to split-adjusted output: it exposes TWO coverage-enforcing reads — [`MarketDataStore::query_split_adjusted`]
+//! (the current-frontier basis, adjusted through `D`) and [`MarketDataStore::query_split_adjusted_as_of`]
+//! (the point-in-time basis, adjusted only through `query.end_ts`) — and NEITHER can return adjusted
+//! records without the coverage check passing, so there is no public path to raw-as-adjusted. The query
+//! kind is also required to be an equity bar (`DailyEquityBar` / `MinuteEquityBar`) so the math's
+//! `UnsupportedKind` path is unreachable at runtime and a split-adjusted *series* is equity-only by
+//! construction.
 
 use crate::normalization::{self, NormalizationError};
 use crate::query::UnifiedHistoricalQuery;
 use crate::store::{DatasetKind, MarketDataRecord, MarketDataStore};
 
 /// The result of a covered [`MarketDataStore::query_split_adjusted`]: the split-adjusted records (owned,
-/// in `event_ts`-ascending order) plus the coverage frontier `D` the adjustment was computed against
-/// (the "as-of" instant), so a consumer knows the basis the series is quoted on.
+/// in `event_ts`-ascending order) plus the proven coverage frontier `D` AND the instant the series is
+/// actually adjusted through — kept SEPARATE so a consumer is never misled about the basis the bars are
+/// quoted on (the two coincide for [`MarketDataStore::query_split_adjusted`] but DIFFER for the
+/// point-in-time [`MarketDataStore::query_split_adjusted_as_of`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SplitAdjustedResult {
     /// The split-adjusted records, owned, in `event_ts`-ascending order (the query result re-quoted).
     pub records: Vec<MarketDataRecord>,
-    /// The coverage frontier `D` (the completeness-through instant) the adjustment was computed
-    /// against — the "as-of" date the series is quoted on. Always `>= query.end_ts`.
+    /// The proven coverage frontier `D` (the completeness-through instant): every split effective on or
+    /// before `D` is known. Always `>= query.end_ts`. This is the COVERAGE proof, NOT necessarily the
+    /// adjustment basis — see `adjusted_through`.
     pub coverage_through: i64,
+    /// The instant the series is actually ADJUSTED THROUGH — the split cutoff, i.e. the "as-of basis"
+    /// the records are quoted on: splits effective on or before this are applied, later ones are NOT.
+    /// `query_split_adjusted` adjusts through the frontier `D` (so `adjusted_through == coverage_through`,
+    /// the current basis); `query_split_adjusted_as_of` adjusts through `query.end_ts` (the point-in-time
+    /// basis, so `adjusted_through <= coverage_through`). A consumer that needs the basis the bars are
+    /// quoted on reads THIS field, never `coverage_through`.
+    pub adjusted_through: i64,
 }
 
 /// A fail-closed split-adjusted-serving error. Split-adjusted output is served only behind proven
@@ -159,16 +172,20 @@ impl MarketDataStore {
     /// query's equity bars re-quoted onto a split-comparable basis — but ONLY when the symbol's
     /// corporate-action coverage frontier extends through the query end.
     ///
-    /// This is the SINGLE public path to split-adjusted output. It fails closed:
+    /// This is one of the two coverage-gated public reads (the other is
+    /// [`query_split_adjusted_as_of`](Self::query_split_adjusted_as_of)); together they are the only
+    /// public path to split-adjusted output (the raw split math stays crate-internal). It fails closed:
     /// * [`CoverageError::UnsupportedQueryKind`] unless `query.kind` is an explicit equity-bar kind, so
     ///   the split-adjustment math's `UnsupportedKind` path is unreachable at runtime;
     /// * [`CoverageError::NotCovered`] unless a coverage record exists and `frontier >= query.end_ts`
     ///   (see the module docs for why `>=` is the precise, honest condition);
     /// * [`CoverageError::Normalization`] if a split record is malformed (passed through verbatim).
     ///
-    /// On success the result carries the adjusted records and the `coverage_through` frontier the
-    /// adjustment was computed against (the "as-of" instant). An empty in-range result is a valid
-    /// covered result (`records` empty), never an error.
+    /// On success the result carries the adjusted records, the `coverage_through` frontier `D`, and
+    /// `adjusted_through` (here `== coverage_through`, since this method adjusts through the frontier —
+    /// the CURRENT basis). For a POINT-IN-TIME basis (no future-split leak), use
+    /// [`query_split_adjusted_as_of`](Self::query_split_adjusted_as_of), where `adjusted_through` caps at
+    /// `query.end_ts`. An empty in-range result is a valid covered result (`records` empty), never an error.
     pub fn query_split_adjusted(
         &self,
         query: &UnifiedHistoricalQuery,
@@ -229,6 +246,75 @@ impl MarketDataStore {
         Ok(SplitAdjustedResult {
             records: adjusted,
             coverage_through,
+            // Adjusted through the frontier D (every split <= D applied) -- the current basis.
+            adjusted_through: coverage_through,
+        })
+    }
+
+    /// Like [`query_split_adjusted`](Self::query_split_adjusted) but POINT-IN-TIME as of the query's
+    /// `end_ts` (the run's as-of date): it still requires coverage proven through `end_ts`, but it
+    /// applies ONLY splits effective AT OR BEFORE `end_ts`.
+    ///
+    /// A split effective AFTER `end_ts` — even one within the proven coverage frontier `D` — is NOT
+    /// applied: at the run's as-of date that split has not happened yet, so re-basing the historical
+    /// window onto a FUTURE corporate action would bias a factor / point-in-time backtest (lookahead).
+    /// So the served series is adjusted for every split on/before the as-of date and no further; coverage
+    /// through `D >= end_ts` still guarantees that on/before-`end_ts` split set is COMPLETE (the uncovered
+    /// tail could otherwise hide an in-window-affecting split, so an uncovered query still fails closed).
+    /// [`query_split_adjusted`] by contrast adjusts to the as-of-`D` (coverage-frontier) basis — the
+    /// "current" basis a LIVE strategy wants, not a point-in-time historical one.
+    pub fn query_split_adjusted_as_of(
+        &self,
+        query: &UnifiedHistoricalQuery,
+    ) -> Result<SplitAdjustedResult, CoverageError> {
+        // (1) Equity-bar kind guard (identical to query_split_adjusted).
+        match query.kind {
+            Some(DatasetKind::DailyEquityBar) | Some(DatasetKind::MinuteEquityBar) => {}
+            Some(other) => {
+                return Err(CoverageError::UnsupportedQueryKind { kind: other.as_str() })
+            }
+            None => return Err(CoverageError::UnsupportedQueryKind { kind: "unspecified" }),
+        }
+
+        // (2) Coverage gate: the frontier must still reach at least the as-of date (query end), so the
+        // on/before-end_ts split set is provably complete; an uncovered tail could hide an in-window
+        // split -> fail closed.
+        let frontier = self.coverage_frontier(&query.symbol);
+        let coverage_through = match frontier {
+            Some(d) if d >= query.end_ts => d,
+            have => {
+                return Err(CoverageError::NotCovered {
+                    symbol: query.symbol.clone(),
+                    have_through: have,
+                    need_through: query.end_ts,
+                })
+            }
+        };
+
+        // (3) Collect splits effective AT OR BEFORE the AS-OF date (query.end_ts), NOT the coverage
+        // frontier D: a split in (end_ts, D] is in the future relative to the run's as-of date and must
+        // NOT be applied (the point-in-time difference from query_split_adjusted, which caps at D).
+        let split_refs: Vec<&MarketDataRecord> = self
+            .records()
+            .iter()
+            .filter(|record| {
+                let key = record.key();
+                key.kind == DatasetKind::CorporateActionSplit
+                    && key.symbol == query.symbol
+                    && key.event_ts <= query.end_ts
+            })
+            .collect();
+        let splits = normalization::split_events_for(&query.symbol, &split_refs)?;
+
+        // (4)/(5) The equity bars in range, then the crate-internal split math.
+        let matched = self.query_unified(query);
+        let adjusted = normalization::split_adjust_records(matched.records(), &splits)?;
+        Ok(SplitAdjustedResult {
+            records: adjusted,
+            coverage_through,
+            // POINT-IN-TIME basis: adjusted only through the as-of date (query.end_ts), NOT the frontier
+            // D -- so the advertised basis never overstates the actual adjustment (no future-split leak).
+            adjusted_through: query.end_ts,
         })
     }
 }
@@ -308,6 +394,58 @@ mod tests {
         assert_eq!(result.records.len(), 1);
         assert_eq!(close_of(&result.records[0], "close"), 2_500); // 10000 / 4
         assert_eq!(close_of(&result.records[0], "volume"), 400_000); // 100000 * 4
+    }
+
+    #[test]
+    fn as_of_caps_splits_at_window_end_not_coverage_frontier() {
+        // Split @200 is AFTER the window end (100) but within coverage (300). query_split_adjusted
+        // applies it (as-of-D basis); query_split_adjusted_as_of does NOT (point-in-time as of the
+        // window end) -- so a future split cannot bias a historical read.
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            split("AAPL", 200, 4, 1),
+            coverage_record(300, "AAPL"),
+        ]);
+        let q = daily_query("AAPL", 0, 100);
+        // as-of-D applies the future split (10000 / 4 = 2500)...
+        assert_eq!(
+            close_of(&store.query_split_adjusted(&q).unwrap().records[0], "close"),
+            2_500
+        );
+        // ...but the point-in-time as-of read leaves the bar on its then-current basis (no lookahead).
+        let as_of = store.query_split_adjusted_as_of(&q).unwrap();
+        assert_eq!(close_of(&as_of.records[0], "close"), 10_000, "future split must not be applied");
+        assert_eq!(close_of(&as_of.records[0], "volume"), 100_000);
+        // The result keeps the proven frontier (300) SEPARATE from the actual adjustment basis (the
+        // as-of date, 100) -- so a consumer is never misled that the bars are adjusted through 300.
+        assert_eq!(as_of.coverage_through, 300, "coverage proven through the frontier D");
+        assert_eq!(as_of.adjusted_through, 100, "but adjusted only through the as-of date (query.end_ts)");
+        // The frontier method, by contrast, adjusts through D, so the two coincide.
+        let d_basis = store.query_split_adjusted(&q).unwrap();
+        assert_eq!(d_basis.coverage_through, 300);
+        assert_eq!(d_basis.adjusted_through, 300);
+    }
+
+    #[test]
+    fn as_of_applies_in_window_splits_and_fails_closed_when_uncovered() {
+        // A split @50 (<= the window end 100) IS applied to the pre-split bar @40 (within the as-of
+        // window); the post-split bar @100 is already on the new basis.
+        let store = store_of([
+            daily_bar("AAPL", 40, 10_000, 100_000),
+            daily_bar("AAPL", 100, 3_000, 100_000),
+            split("AAPL", 50, 4, 1),
+            coverage_record(300, "AAPL"),
+        ]);
+        let result = store.query_split_adjusted_as_of(&daily_query("AAPL", 0, 100)).unwrap();
+        assert_eq!(close_of(&result.records[0], "close"), 2_500); // pre-split @40 re-quoted 10000/4
+        assert_eq!(close_of(&result.records[1], "close"), 3_000); // post-split @100 unchanged
+
+        // The coverage gate is unchanged: an uncovered query fails closed, same as query_split_adjusted.
+        let bare = store_of([daily_bar("AAPL", 40, 10_000, 100_000), split("AAPL", 50, 4, 1)]);
+        assert!(matches!(
+            bare.query_split_adjusted_as_of(&daily_query("AAPL", 0, 100)).unwrap_err(),
+            CoverageError::NotCovered { .. }
+        ));
     }
 
     #[test]

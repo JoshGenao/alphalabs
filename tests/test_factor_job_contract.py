@@ -6,9 +6,18 @@ job processes 8,000+ securities using market and fundamental data, resolves its 
 through the trading calendar strategy scheduling uses, and completes before the configured
 deadline. This slice ships the deterministic scheduled-factor-job surface in
 ``crates/atp-factor-pipeline`` (module ``factor_job``) -- the upstream PRODUCER of the
-SRS-BT-006 factor panel. The deferred halves (the live wall-clock performance test, the
-SRS-DATA-007 / SRS-SDK-002 data + calendar wiring, the SYS-57 workload-priority admission, and
-the SRS-UI / SRS-API operator surface) keep ``feature_list.json`` at ``passes:false``.
+SRS-BT-006 factor panel -- AND the store-backed READ path
+(``store_inputs::run_scheduled_factor_job_over_store``) that sources both market and fundamental
+inputs from the unified historical store (SRS-DATA-007) and feeds the scored core, demonstrated over an
+8,000+ fixture universe within the calendar-resolved deadline read from a DETERMINISTIC clock.
+SRS-FAC-001's acceptance is a PERFORMANCE TEST (NFR-P7): the live wall-clock harness over real securities
+is a deferred close blocker. The store-backed run DERIVES its data as-of from the calendar's
+``session_as_of_ts(schedule.session)`` (not a caller timestamp), so a caller cannot pair a session with a
+future as-of -- only the concrete real-calendar ``SessionOrdinal`` -> epoch mapping (test calendars stand
+in) is deferred, so ``feature_list.json`` keeps ``passes:false`` (the store-backed read is a foundational
+primitive). The other deferred owners (the real Databento/Sharadar network adapters, the SYS-57
+workload-priority admission, and the SRS-UI / SRS-API operator surface) are
+other features.
 
 Mirrors ``tests/test_factor_analysis_contract.py``: shells out to
 ``tools/factor_job_check.py``, then exercises each per-check function in-process, including
@@ -114,6 +123,7 @@ class FactorJobScriptTest(unittest.TestCase):
             "lib.rs re-exports `pub mod factor_job;`",
             "Cargo.toml declares no dependency on the live/broker/simulation path",
             "factor_job module is free of all 5 forbidden vendor SDK tokens",
+            "SRS-DATA-007 store READ itself is DONE",
             "feature_list.json keeps SRS-FAC-001 passes:false",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")

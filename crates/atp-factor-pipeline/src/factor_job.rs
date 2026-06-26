@@ -65,12 +65,19 @@
 //! order `(factor_value desc, SecurityKey asc)`, the deadline checked against the injected clock
 //! (no wall clock of its own), and no parallelism / RNG -- so for a pure model, identical inputs
 //! yield identical output regardless of input order. Factor scores are dimensionless `f64` (the
-//! factor domain, not a money leak). A store-backed MARKET-input loader is AVAILABLE
-//! ([`crate::store_inputs::load_daily_market_input`], SRS-DATA-007) that sources a security's market
-//! features from the unified historical store by symbol / date range / resolution; wiring it into THIS
-//! job's execution path ([`run_factor_job`] still takes caller-supplied inputs), the Sharadar FUNDAMENTAL
-//! data wiring (SRS-DATA-005), the live wall-clock performance verification over 8,000+ real securities,
-//! and the SYS-57 workload-priority admission of the job are deferred, so SRS-FAC-001 stays `passes:false`.
+//! factor domain, not a money leak). [`run_factor_job`] takes a caller-supplied
+//! [`SecurityFactorInputs`] slice; the store-backed READ path
+//! ([`crate::store_inputs::run_scheduled_factor_job_over_store`], SRS-DATA-007) sources BOTH the market
+//! ([`crate::store_inputs::load_daily_market_input`]) and the fundamental
+//! ([`crate::store_inputs::load_fundamental_input`]) inputs from the unified historical store by symbol /
+//! date range / resolution, assembles the cross-section, and feeds it here -- so the named SRS-DATA-007
+//! factor-job consumer READS the store with no provider named, DERIVING its data as-of from the calendar
+//! ([`TradingCalendar::session_as_of_ts`]) for the scheduled session — NOT a caller-supplied timestamp —
+//! so a caller cannot pair a session with a future as-of. The CONCRETE US-equity calendar that provides
+//! the real [`SessionOrdinal`] ↔ epoch mapping (test calendars stand in), the REAL provider network
+//! adapters (Databento / Sharadar, SRS-DATA-001/005), the live wall-clock NFR-P7 performance
+//! verification over real securities, and the SYS-57 workload-priority admission remain their own
+//! deferred owners, so SRS-FAC-001 stays `passes:false`.
 
 use std::collections::HashSet;
 
@@ -133,6 +140,22 @@ pub trait TradingCalendar {
     /// within the calendar's modeled horizon. Used to resolve the rebalance interval (so a
     /// daily run steps over weekends/holidays to the next session).
     fn next_session(&self, session: SessionOrdinal) -> Option<SessionOrdinal>;
+
+    /// The POINT-IN-TIME as-of instant (epoch seconds) for `session`'s scheduled run — the
+    /// `SessionOrdinal` ↔ epoch-second binding. `None` when `session` is not a trading session OR when
+    /// this calendar does not provide the mapping (the default).
+    ///
+    /// This is the seam that lets a store-backed scheduled run DERIVE its data as-of from the calendar +
+    /// session (so a caller cannot pair a session with an arbitrary future as-of):
+    /// [`crate::store_inputs::run_scheduled_factor_job_over_store`] reads the data window's upper bound
+    /// from here, NOT from a caller-supplied timestamp. The concrete US-equity calendar SERVICE owns the
+    /// real session→civil-date/epoch mapping (the deferred owner, the same boundary as the rest of this
+    /// port); the default returns `None`, so a calendar that does not implement it makes the store-backed
+    /// run fail closed rather than run on an unbound as-of.
+    fn session_as_of_ts(&self, session: SessionOrdinal) -> Option<i64> {
+        let _ = session;
+        None
+    }
 }
 
 /// One security's market-data summary feeding the factor (SyRS SYS-32 "using market data").
@@ -652,30 +675,49 @@ impl std::fmt::Display for FactorJobError {
 
 impl std::error::Error for FactorJobError {}
 
-/// Run a scheduled full-universe factor job for one session: resolve the schedule against the
-/// trading calendar (SYS-51), enforce the hard full-universe floor (SYS-32/33), compute the
-/// user-defined factor over each security's market + fundamental inputs, rank the scored
-/// cross-section, and gate on the calendar-resolved deadline INSTANT read from the injected
-/// [`Clock`] (NFR-P7).
+/// The outcome of gating a run's START window against the injected clock, BEFORE any per-security work.
+/// Returned by [`preflight_schedule`] so a caller that reads large inputs can fail fast.
 ///
-/// Returns [`FactorJobOutcome::WithinDeadline`] with the ranked set when the run both started and
-/// completed at or before the resolved deadline instant, or [`FactorJobOutcome::DeadlineExceeded`]
-/// (fail-closed) when it was invoked after the deadline (a late start) or its scoring + ranking +
-/// finalization crossed it -- so a late run is caught against the ABSOLUTE deadline, not assumed
-/// on-time. A run that scores fewer than [`FactorJobConfig::min_scored`] securities fails closed
-/// ([`FactorJobError::NoUsableCoverage`]). Every precondition violation fails closed with a
-/// localized [`FactorJobError`].
-pub fn run_factor_job<C, M, K>(
+/// CRATE-INTERNAL: this and [`preflight_schedule`] / [`run_factor_job_gated`] are the coordination
+/// primitives that let the in-crate store wrapper preflight, assemble, then score with the SAME gate.
+/// They are deliberately `pub(crate)`, NOT `pub` — exposing the scored core publicly would let an
+/// external caller forge a `session` / `started` / `deadline` and BYPASS the schedule, deadline, and
+/// coverage-ratio validation. External callers use [`run_factor_job`] or
+/// [`crate::store_inputs::run_scheduled_factor_job_over_store`], which always preflight.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum StartGate {
+    /// The run may proceed: the observed start instant and the calendar-resolved deadline instant it
+    /// must complete before.
+    Proceed {
+        /// The start instant observed from the clock.
+        started: Instant,
+        /// The calendar-resolved deadline instant the run must complete before.
+        deadline: Instant,
+    },
+    /// The run was invoked at/after its deadline (a late start, even on a later session): NO work
+    /// should be done. The caller returns this [`FactorJobOutcome::DeadlineExceeded`].
+    LateStart(FactorJobOutcome),
+}
+
+/// Validate the coverage policy, resolve the schedule against the trading calendar, and gate the START
+/// window against the injected [`Clock`] — the preconditions that must hold BEFORE a run does any
+/// per-security work (NFR-P7 / SYS-51). A caller that reads large inputs (the store-backed path) calls
+/// this FIRST so a pre-start, non-session, or past-deadline run fails fast WITHOUT spending that work;
+/// [`run_factor_job`] calls it too, so the start gate is identical whether the universe is
+/// caller-supplied or store-assembled (no separate, drift-prone copy of the gate).
+///
+/// Returns [`StartGate::Proceed`] when the run may proceed, [`StartGate::LateStart`] (carrying the
+/// fail-closed [`FactorJobOutcome::DeadlineExceeded`]) when invoked at/after the deadline, or a
+/// fail-closed [`FactorJobError`] for an invalid coverage ratio, a non-session day, a lead before the
+/// day start, an empty schedule window, or a run invoked before its scheduled start.
+pub(crate) fn preflight_schedule<C, K>(
     schedule: &FactorJobSchedule,
     calendar: &C,
     config: &FactorJobConfig,
-    model: &M,
     clock: &K,
-    universe: &[SecurityFactorInputs],
-) -> Result<FactorJobOutcome, FactorJobError>
+) -> Result<StartGate, FactorJobError>
 where
     C: TradingCalendar,
-    M: FactorModel,
     K: Clock,
 {
     // The coverage policy must be a valid fraction. A non-finite or out-of-[0,1] ratio fails
@@ -738,14 +780,86 @@ where
         });
     }
     if started >= deadline_instant {
-        return Ok(FactorJobOutcome::DeadlineExceeded {
+        return Ok(StartGate::LateStart(FactorJobOutcome::DeadlineExceeded {
             session: schedule.session,
             deadline: deadline_instant,
             observed: started,
             late_start: true,
-        });
+        }));
     }
+    Ok(StartGate::Proceed {
+        started,
+        deadline: deadline_instant,
+    })
+}
 
+/// Run a scheduled full-universe factor job for one session: resolve the schedule against the
+/// trading calendar (SYS-51), enforce the hard full-universe floor (SYS-32/33), compute the
+/// user-defined factor over each security's market + fundamental inputs, rank the scored
+/// cross-section, and gate on the calendar-resolved deadline INSTANT read from the injected
+/// [`Clock`] (NFR-P7).
+///
+/// Returns [`FactorJobOutcome::WithinDeadline`] with the ranked set when the run both started and
+/// completed at or before the resolved deadline instant, or [`FactorJobOutcome::DeadlineExceeded`]
+/// (fail-closed) when it was invoked after the deadline (a late start) or its scoring + ranking +
+/// finalization crossed it -- so a late run is caught against the ABSOLUTE deadline, not assumed
+/// on-time. A run that scores fewer than [`FactorJobConfig::min_scored`] securities fails closed
+/// ([`FactorJobError::NoUsableCoverage`]). Every precondition violation fails closed with a
+/// localized [`FactorJobError`].
+pub fn run_factor_job<C, M, K>(
+    schedule: &FactorJobSchedule,
+    calendar: &C,
+    config: &FactorJobConfig,
+    model: &M,
+    clock: &K,
+    universe: &[SecurityFactorInputs],
+) -> Result<FactorJobOutcome, FactorJobError>
+where
+    C: TradingCalendar,
+    M: FactorModel,
+    K: Clock,
+{
+    // Validate the coverage policy, resolve the schedule, and gate the START window against the
+    // injected clock BEFORE any per-security work (NFR-P7 / SYS-51) -- the same gate the store-backed
+    // wrapper runs before reading the store, so a pre-start / non-session / past-deadline run never
+    // does work. A late start returns DeadlineExceeded (fail-closed, no ranked set).
+    let (started, deadline_instant) = match preflight_schedule(schedule, calendar, config, clock)? {
+        StartGate::Proceed { started, deadline } => (started, deadline),
+        StartGate::LateStart(outcome) => return Ok(outcome),
+    };
+    // The first observed `started` (and resolved deadline) is AUTHORITATIVE through scoring (and, for
+    // the store-backed wrapper, through input assembly): run_factor_job_gated gates completion against
+    // it, so a clock regression after the start read is caught, not lost by a fresh second start read.
+    run_factor_job_gated(schedule.session, started, deadline_instant, config, model, clock, universe)
+}
+
+/// The SCORED CORE of a factor run, run AFTER the start gate has already passed: it takes the
+/// AUTHORITATIVE `started` and `deadline_instant` from a single [`preflight_schedule`] (NOT a fresh
+/// clock read), enforces the full-universe floor (SYS-32/33), scores + ranks the cross-section, and
+/// gates COMPLETION against that SAME `started` / `deadline_instant` (NFR-P7).
+///
+/// Threading the first observation through is what lets a caller do WORK between the start gate and the
+/// scored core without losing timing integrity: the store-backed wrapper
+/// ([`crate::store_inputs::run_scheduled_factor_job_over_store`]) preflights, ASSEMBLES the universe from
+/// the store, then calls this core with the FIRST `started` — so a clock regression DURING assembly is
+/// caught by the monotonic-clock guard (`completed < started`), which a second independent start read (a
+/// fresh `clock.now()` after assembly) would silently lose. The coverage ratio is assumed already
+/// validated by the preflight; an out-of-range / non-finite ratio still fails closed here (it can only
+/// RAISE the required-coverage floor, never collapse it), so this core never fabricates a success.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_factor_job_gated<M, K>(
+    session: SessionOrdinal,
+    started: Instant,
+    deadline_instant: Instant,
+    config: &FactorJobConfig,
+    model: &M,
+    clock: &K,
+    universe: &[SecurityFactorInputs],
+) -> Result<FactorJobOutcome, FactorJobError>
+where
+    M: FactorModel,
+    K: Clock,
+{
     // Hard full-universe floor (SYS-32/33) -- the constant FULL_UNIVERSE_MIN, NOT a caller
     // config, so coverage cannot be weakened from outside.
     if universe.is_empty() {
@@ -867,7 +981,7 @@ where
     skipped.sort_by(|a, b| a.security.cmp(&b.security));
 
     let result = FactorScoreSet {
-        session: schedule.session,
+        session,
         scores,
         universe_size: universe.len(),
         skipped,
@@ -888,7 +1002,7 @@ where
     }
     if completed >= deadline_instant {
         return Ok(FactorJobOutcome::DeadlineExceeded {
-            session: schedule.session,
+            session,
             deadline: deadline_instant,
             observed: completed,
             late_start: false,

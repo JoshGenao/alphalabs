@@ -22,9 +22,11 @@ What this pins:
   (c) the kind-narrowed gate — the gate requires an equity-bar query kind (DailyEquityBar /
       MinuteEquityBar), so the split math's UnsupportedKind path is unreachable at runtime and a
       split-adjusted series is equity-only by construction;
-  (d) the single public entry point — lib.rs exposes `pub mod coverage` (query_split_adjusted) while the
-      split math stays crate-internal (`mod normalization`, not re-exported), so the ONLY public path to
-      split-adjusted output is the coverage-enforcing gate (no public path to raw-as-adjusted);
+  (d) the single public entry point — lib.rs exposes `pub mod coverage` (the coverage-enforcing gate,
+      whose query_split_adjusted current-frontier and query_split_adjusted_as_of point-in-time reads are
+      BOTH coverage-gated) while the split math stays crate-internal (`mod normalization`, not
+      re-exported), so the ONLY public path to split-adjusted output is the coverage gate (no public path
+      to raw-as-adjusted);
   (e) the CLI routing — data007_query_cli routes --normalization split-adjusted through
       query_split_adjusted, echoes coverage_through, and fails closed (naming SRS-DATA-011) when
       uncovered;
@@ -211,7 +213,10 @@ def check_kind_narrowed_gate(config: dict, coverage_src: str) -> str:
 
 def check_single_public_entry(config: dict, lib_src: str) -> str:
     compact = _compact(lib_src)
-    # The coverage gate is the SINGLE public path to split-adjusted output.
+    # The coverage GATE MODULE is the single public path to split-adjusted output. The gate exposes TWO
+    # coverage-enforcing reads -- query_split_adjusted (current-frontier basis) and
+    # query_split_adjusted_as_of (point-in-time basis) -- but both are inside the gate and both enforce
+    # coverage; what matters is that NO path outside the gate can serve split-adjusted output.
     if "pubmodcoverage" not in compact:
         fail("lib.rs must expose the coverage gate (`pub mod coverage;`)")
     # The split math stays crate-internal: `mod normalization` (private), not re-exported. This is what
@@ -229,9 +234,11 @@ def check_single_public_entry(config: dict, lib_src: str) -> str:
             "(split_adjust_records / SplitEvent must not be a public crate API)"
         )
     return (
-        "single public entry: lib.rs exposes `pub mod coverage` (query_split_adjusted) while the split "
-        "math stays crate-internal (`mod normalization`, not re-exported) — so the coverage-enforcing "
-        "gate is the ONLY public path to split-adjusted output, with no public path to raw-as-adjusted"
+        "single public entry: lib.rs exposes `pub mod coverage` (the coverage-enforcing gate — "
+        "query_split_adjusted for the current-frontier basis AND query_split_adjusted_as_of for the "
+        "point-in-time basis, BOTH coverage-gated) while the split math stays crate-internal "
+        "(`mod normalization`, not re-exported) — so the coverage gate is the ONLY public path to "
+        "split-adjusted output, with no public path to raw-as-adjusted"
     )
 
 

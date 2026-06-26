@@ -20,7 +20,14 @@ four acceptance facets, each made falsifiable over immutable inputs:
   (b) Market + fundamental data (SYS-32) -- each ``SecurityFactorInputs`` carries BOTH a
       ``MarketFactorInput`` and a ``FundamentalFactorInput``; a security missing either, or for
       which the ``FactorModel`` abstains, is an auditable ``SkippedSecurity`` with a
-      ``FactorSkipReason``, never a fabricated score.
+      ``FactorSkipReason``, never a fabricated score. The store-backed READ path
+      ``store_inputs`` (``load_daily_market_input`` / ``load_fundamental_input`` /
+      ``assemble_factor_inputs``) sources BOTH halves from the unified historical store by symbol /
+      date range / resolution with no provider named (the SRS-DATA-007 factor-job READ consumer,
+      point-in-time SAFE loaders); ``run_scheduled_factor_job_over_store`` composes that read with the
+      schedule gate, DERIVING the data as-of from the calendar (``TradingCalendar::session_as_of_ts``)
+      for the scheduled session -- so a caller cannot pair a session with a future as-of. Only the
+      concrete real-calendar ``SessionOrdinal`` -> epoch mapping is deferred.
   (c) Schedule resolves through the trading calendar (SYS-51) -- the run resolves against a
       ``TradingCalendar`` port (the same calendar contract strategy scheduling resolves against);
       a non-session target day fails closed with ``NotASession``.
@@ -45,10 +52,18 @@ factor domain,
 not a money leak), ``atp-factor-pipeline`` adds no broker/adapter/simulation dependency and
 carries no vendor SDK token, and ``lib.rs`` re-exports ``pub mod factor_job;``.
 
-The PASS line is ``SRS-FAC-001 SDK-SURFACE PASS`` -- it names the deferred owners (the live
-wall-clock performance test, the SRS-DATA-007 / SRS-SDK-002 data + calendar wiring, the SYS-57
-workload-priority admission, and the SRS-UI / SRS-API operator surface) so the partial-pass
-status (feature_list.json keeps ``passes:false``) is loud.
+The PASS line is ``SRS-FAC-001 SDK-SURFACE PASS``. The store-backed READ path is now present
+(``run_scheduled_factor_job_over_store`` over the unified store), and the cargo smoke runs the
+full-universe 8,000+ job over store-resident market + fundamental data within the calendar-resolved
+deadline read from a DETERMINISTIC clock -- which proves the deadline-gating LOGIC, not completion
+before a real wall-clock deadline. SRS-FAC-001's acceptance is a PERFORMANCE TEST (NFR-P7): the live
+wall-clock harness over real securities is a deferred close blocker. The store-backed run DERIVES its
+data as-of from the calendar's ``session_as_of_ts(schedule.session)`` (NOT a caller timestamp), so a
+caller cannot pair a session with a future as-of -- only the CONCRETE real-calendar
+``SessionOrdinal`` -> epoch mapping (test calendars stand in) is deferred -- so feature_list.json keeps
+SRS-FAC-001 ``passes:false`` (the store-backed read is a foundational primitive). The other DEFERRED
+owners (the REAL Databento/Sharadar network adapters, the SYS-57 workload-priority admission, and the
+SRS-UI / SRS-API operator surface) are other features.
 
 Mirrors the PASS/FAIL output style of ``tools/factor_analysis_check.py``.
 
@@ -157,9 +172,10 @@ def check_trading_calendar_port(config: dict, src: str) -> str:
         )
     return (
         "atp-factor-pipeline declares the TradingCalendar port (is_session / session_open / "
-        "session_close / is_early_close / next_session) the factor job resolves its schedule "
-        "against -- the SyRS SYS-51 reuse boundary, mirroring the calendar contract strategy "
-        "scheduling resolves against"
+        "session_close / is_early_close / next_session / session_as_of_ts) the factor job resolves its "
+        "schedule against -- the SyRS SYS-51 reuse boundary, mirroring the calendar contract strategy "
+        "scheduling resolves against; session_as_of_ts is the SessionOrdinal <-> epoch binding the "
+        "store-backed run DERIVES its data as-of from (not a caller timestamp)"
     )
 
 
@@ -655,6 +671,7 @@ def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
     block = contract_block(config)
     crate = block["factor_pipeline_crate"]["crate"]
     integration = block["rust_integration_test"]
+    store_integration = block["store_backed_integration_test"]
     module = block["module"]
     cargo = shutil.which("cargo")
     if cargo is None:
@@ -663,7 +680,7 @@ def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
                 f"cargo not on PATH but --require-cargo set: cannot verify the runnable {crate} "
                 "factor-job path compiles + passes (install the Rust toolchain)"
             )
-        return f"cargo test -p {crate} --test {integration}: skipped (cargo not on PATH)"
+        return f"cargo test -p {crate} --test {integration} + {store_integration}: skipped (cargo not on PATH)"
     lib = subprocess.run(
         [cargo, "test", "-p", crate, "--lib", module, "--quiet"],
         cwd=ROOT,
@@ -673,20 +690,24 @@ def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
     )
     if lib.returncode != 0:
         fail(f"cargo test -p {crate} --lib {module} failed:\n{lib.stdout}\n{lib.stderr}")
-    integ = subprocess.run(
-        [cargo, "test", "-p", crate, "--test", integration, "--quiet"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if integ.returncode != 0:
-        fail(f"cargo test -p {crate} --test {integration} failed:\n{integ.stdout}\n{integ.stderr}")
+    for test in (integration, store_integration):
+        integ = subprocess.run(
+            [cargo, "test", "-p", crate, "--test", test, "--quiet"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if integ.returncode != 0:
+            fail(f"cargo test -p {crate} --test {test} failed:\n{integ.stdout}\n{integ.stderr}")
     return (
-        f"cargo test -p {crate} --lib {module} + {integration}: PASS "
+        f"cargo test -p {crate} --lib {module} + {integration} + {store_integration}: PASS "
         "(ranks the full universe within the calendar-resolved deadline; skips a security missing "
         "either source; fails closed below the universe floor / over the deadline / on an irregular "
-        "panel; and produces a regular panel that feeds compute_tear_sheet)"
+        "panel; produces a regular panel that feeds compute_tear_sheet; AND runs the full-universe "
+        "8,000+ job over store-resident market + fundamental data via "
+        "run_scheduled_factor_job_over_store -- the SRS-DATA-007 factor-job READ consumer, a "
+        "point-in-time read primitive)"
     )
 
 
@@ -734,8 +755,15 @@ _DEFERRED_OWNERS = (
     "slow-but-completing run at the completion check); a synchronous dependency-free core cannot "
     "preempt a hung call, so the supervised execution context (the orchestrator container, SYS-57) "
     "is the owner, validated by the NFR-P7 performance test",
-    "wiring real market + fundamental data through the unified historical interface (SRS-DATA-007) "
-    "and the concrete US-equity TradingCalendar (SRS-SDK-002 / SyRS SYS-50)",
+    "the concrete US-equity TradingCalendar implementation (SRS-SDK-002 / SyRS SYS-50) that provides the "
+    "REAL SessionOrdinal <-> epoch session_as_of_ts mapping -- run_scheduled_factor_job_over_store DERIVES "
+    "the point-in-time as_of_ts from the calendar's session_as_of_ts(schedule.session) (NOT a caller "
+    "timestamp), so a caller CANNOT pair a session with a future as_of; the binding is structural via the "
+    "TradingCalendar port, only the concrete mapping is deferred (test calendars stand in). The "
+    "SRS-DATA-007 store READ itself is DONE (store_inputs loaders + assemble_factor_inputs source BOTH "
+    "market and fundamental inputs from the unified store as point-in-time read primitives); and the REAL "
+    "Databento/Sharadar network adapters that materialize the store records (SRS-DATA-001/005; fixture "
+    "sources stand in)",
     "binding a successful run to a TRUSTED session-versioned US-equity universe manifest and "
     "market/Sharadar source-provenance manifest -- the inputs are caller-supplied, so a successful "
     "FactorScoreSet certifies a correct COMPUTATION over the inputs given, not their trustworthiness "
@@ -787,7 +815,9 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "- deferred to: "
         + ", ".join(_DEFERRED_OWNERS)
-        + "; feature_list.json keeps SRS-FAC-001 passes:false"
+        + "; feature_list.json keeps SRS-FAC-001 passes:false (store-backed wiring is foundational "
+        "substrate; the live wall-clock NFR-P7 performance test over real securities is the deferred "
+        "close blocker -- the fixture run uses a deterministic clock, proving the gating logic)"
     )
     return 0
 
