@@ -20,9 +20,12 @@ and ``tools/normalization_modes_check.py``). An uncovered split-adjusted query f
 deferred (dividend data, SRS-DATA-012). SRS-DATA-007 STAYS passes:false (foundational): the BACKTEST consumer
 is now genuinely wired (atp-simulation ``StoreBarSource`` consumes the unified store in ``BacktestEngine::run``)
 and strategy + notebook/research code read via this binding (``tests/domain/test_store_history_consumer.py``);
-deferred -- the factor-job EXECUTION path (``run_factor_job`` still takes caller-supplied inputs; the
-atp-factor-pipeline ``store_inputs`` loader is shipped substrate, and a complete run needs Sharadar
-fundamentals, SRS-DATA-005) and the Jupyter notebook HOST runtime (SRS-RES-002).
+the FACTOR-JOB consumer now READS the store (atp-factor-pipeline ``store_inputs`` loaders +
+``assemble_factor_inputs``, a point-in-time read primitive; ``run_scheduled_factor_job_over_store``
+DERIVES its data as-of from the calendar's ``session_as_of_ts`` for the scheduled session, so a caller
+cannot pair a session with a future as-of -- only the concrete real-calendar mapping is deferred, see
+SRS-FAC-001); deferred -- the Jupyter notebook HOST runtime (SRS-RES-002), the remaining unwired DATA-007
+consumer.
 
 It is a SEPARATE script from ``unified_query_check.py`` so that script's hard-coded check-count
 assertions (``tests/test_unified_query_contract.py``) stay valid -- mirroring how
@@ -502,10 +505,11 @@ _STATIC_CHECKS = (
 )
 
 _DEFERRED_OWNERS = (
-    "the factor-job EXECUTION path (run_factor_job still takes caller-supplied inputs; the atp-factor-pipeline "
-    "store_inputs loader is shipped substrate, and a complete run needs SRS-DATA-005 fundamentals) and the "
-    "Jupyter notebook HOST (SRS-RES-002) -- the BACKTEST consumer (atp-simulation StoreBarSource) is genuinely "
-    "wired and strategy/notebook read via this binding, but those two gaps keep SRS-DATA-007 passes:false",
+    "the Jupyter notebook HOST (SRS-RES-002) -- the BACKTEST consumer (atp-simulation StoreBarSource) is "
+    "genuinely wired and the FACTOR-JOB consumer now READS the store (atp-factor-pipeline store_inputs loaders "
+    "+ assemble_factor_inputs, a point-in-time read primitive; the as-of -> scheduled-session binding is the "
+    "deferred calendar boundary, see SRS-FAC-001), and strategy/notebook read via this binding, so the notebook "
+    "HOST is the remaining gap keeping SRS-DATA-007 passes:false",
     "fully-adjusted / total-return normalization modes (they additionally need dividend data, "
     "SRS-DATA-012); split-adjusted is now served through the SRS-DATA-011 coverage gate",
     "the concurrent-read-DURING-write Load test for THIS named Python consumer "

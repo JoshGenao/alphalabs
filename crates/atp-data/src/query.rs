@@ -163,20 +163,43 @@ impl MarketDataStore {
         &'a self,
         query: &UnifiedHistoricalQuery,
     ) -> UnifiedHistoricalResult<'a> {
-        let mut records: Vec<&'a MarketDataRecord> = self
-            .records()
-            .iter()
-            .filter(|&record| query.matches(record))
-            .collect();
-        // The store's canonical order is the WHOLE natural key, which sorts by `kind` BEFORE
-        // `event_ts`. So a kind-AGNOSTIC match that spans two kinds sharing this symbol + resolution
-        // is NOT event_ts-ascending by construction (it would group by kind first). Sort explicitly by
-        // `event_ts` (the date-range query contract), with the full natural key as a deterministic
-        // total-order tiebreaker so the result is reproducible for any matching set.
-        records.sort_by(|a, b| {
-            let (ka, kb) = (a.key(), b.key());
-            ka.event_ts.cmp(&kb.event_ts).then_with(|| ka.cmp(kb))
-        });
+        let records: Vec<&'a MarketDataRecord> = match query.kind {
+            // INDEXED path (the common case — every per-series consumer names a kind). The
+            // `(kind, symbol, resolution)` block is contiguous in the canonical natural-key order and
+            // already `event_ts`-ascending (with the full key as the tiebreak, i.e. option_contract),
+            // so a binary-searched series slice plus the inclusive `event_ts` sub-range yields EXACTLY
+            // the same records in the same order as the filter+sort below, in O(log n + matches) rather
+            // than O(n) — so a full-universe assembly (one read per security) is not quadratic.
+            // An inverted range (start_ts > end_ts) matches nothing in BOTH paths -- the full scan's
+            // predicate is false for every record, and the indexed slice bounds would invert (lo > hi,
+            // which would panic). Return the documented empty result, never an error or a crash.
+            Some(_) | None if query.start_ts > query.end_ts => Vec::new(),
+            Some(kind) => {
+                let block = self.records_for(kind, &query.symbol, &query.resolution);
+                // Valid range (start_ts <= end_ts): lo (first event_ts >= start) <= hi (first event_ts
+                // > end), so the sub-slice is well-formed.
+                let lo = block.partition_point(|r| r.key().event_ts < query.start_ts);
+                let hi = block.partition_point(|r| r.key().event_ts <= query.end_ts);
+                block[lo..hi].iter().collect()
+            }
+            // KIND-AGNOSTIC path: the store's canonical order is the WHOLE natural key, which sorts by
+            // `kind` BEFORE `event_ts`. So a kind-agnostic match that spans two kinds sharing this
+            // symbol + resolution is NOT event_ts-ascending by construction (it would group by kind
+            // first). Scan and sort explicitly by `event_ts` (the date-range query contract), with the
+            // full natural key as a deterministic total-order tiebreaker so the result is reproducible.
+            None => {
+                let mut records: Vec<&'a MarketDataRecord> = self
+                    .records()
+                    .iter()
+                    .filter(|&record| query.matches(record))
+                    .collect();
+                records.sort_by(|a, b| {
+                    let (ka, kb) = (a.key(), b.key());
+                    ka.event_ts.cmp(&kb.event_ts).then_with(|| ka.cmp(kb))
+                });
+                records
+            }
+        };
         UnifiedHistoricalResult {
             symbol: query.symbol.clone(),
             resolution: query.resolution.clone(),

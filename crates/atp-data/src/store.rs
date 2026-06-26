@@ -510,6 +510,29 @@ impl MarketDataStore {
         self.records.iter().filter(|r| r.key.kind == kind).count()
     }
 
+    /// The contiguous slice of records for one `(kind, symbol, resolution)` series, found by binary
+    /// search over the canonical natural-key order (which sorts by `kind`, then `symbol`, then
+    /// `resolution`, then `event_ts`). So a single series read is `O(log n + matches)` rather than a
+    /// full `O(n)` scan — the indexed read path that keeps a full-universe assembly (one read per
+    /// security) from being `O(universe * store_size)`. The returned slice is `event_ts`-ascending (the
+    /// next key field), exactly the order [`query_unified`](Self::query_unified) returns for a
+    /// kind-narrowed query.
+    pub fn records_for(
+        &self,
+        kind: DatasetKind,
+        symbol: &str,
+        resolution: &str,
+    ) -> &[MarketDataRecord] {
+        let target = (kind, symbol, resolution);
+        let lower = self.records.partition_point(|r| {
+            (r.key.kind, r.key.symbol.as_str(), r.key.resolution.as_str()) < target
+        });
+        let upper = self.records.partition_point(|r| {
+            (r.key.kind, r.key.symbol.as_str(), r.key.resolution.as_str()) <= target
+        });
+        &self.records[lower..upper]
+    }
+
     /// **The idempotency core (SRS-DATA-016).** Insert `record` if its key is absent; if the key is
     /// already present, a no-op when the content is identical ([`UpsertOutcome::UnchangedDuplicate`])
     /// or a fail-closed [`StoreError::ConflictingContent`] when the content differs — leaving the
@@ -1456,6 +1479,50 @@ mod tests {
 
         assert_eq!(forward, reverse);
         assert_eq!(forward.serialize(), reverse.serialize());
+    }
+
+    #[test]
+    fn records_for_returns_only_the_target_series_in_event_ts_order() {
+        // The indexed read must isolate ONE (kind, symbol, resolution) series -- no foreign symbol,
+        // kind, or resolution leaks in -- and return it event_ts-ascending, even with interleaved
+        // neighbors in the canonical order.
+        let mut store = MarketDataStore::new();
+        store.upsert(record("AAA", 2, 100)).unwrap();
+        store.upsert(record("AAA", 1, 100)).unwrap();
+        store.upsert(record("AAA", 3, 100)).unwrap();
+        store.upsert(record("AAB", 1, 100)).unwrap(); // adjacent symbol must not leak
+        store.upsert(record("AA", 1, 100)).unwrap(); // prefix symbol must not leak
+        store.upsert(split_record(2, "AAA", 4, 1)).unwrap(); // different kind, same symbol
+
+        let series = store.records_for(DatasetKind::DailyEquityBar, "AAA", "1d");
+        let got: Vec<(&str, i64)> = series
+            .iter()
+            .map(|r| (r.key.symbol.as_str(), r.key.event_ts))
+            .collect();
+        assert_eq!(got, vec![("AAA", 1), ("AAA", 2), ("AAA", 3)]);
+
+        // A non-existent series is an empty slice, never a foreign match.
+        assert!(store
+            .records_for(DatasetKind::DailyEquityBar, "ZZZ", "1d")
+            .is_empty());
+        assert!(store
+            .records_for(DatasetKind::MinuteEquityBar, "AAA", "1m")
+            .is_empty());
+
+        // The indexed read agrees with the full-scan unified query (same records, same order).
+        let via_query =
+            store.query_unified(&crate::query::UnifiedHistoricalQuery::new("AAA", "1d", 0, 100)
+                .with_kind(DatasetKind::DailyEquityBar));
+        let query_ts: Vec<i64> = via_query.records().iter().map(|r| r.key().event_ts).collect();
+        assert_eq!(query_ts, vec![1, 2, 3]);
+
+        // A kind-narrowed INVERTED range (start > end) over an EXISTING series returns the empty
+        // result, never a panic from inverted slice bounds (the indexed path's regression guard).
+        let inverted = store.query_unified(
+            &crate::query::UnifiedHistoricalQuery::new("AAA", "1d", 3, 1)
+                .with_kind(DatasetKind::DailyEquityBar),
+        );
+        assert!(inverted.records().is_empty(), "inverted kind-narrowed range is empty, not a crash");
     }
 
     /// Build a serialized blob at an arbitrary declared schema `version` (mirrors `serialize`, which

@@ -5,10 +5,10 @@ turnover analysis for completed factor-analysis runs. This slice ships the deter
 factor-analysis surface in ``crates/atp-factor-pipeline`` (module ``factor_analysis``) and the
 operator RENDERING surface that reads a completed run (the ``factor_tear_sheet_cli`` binary,
 pinned by the ``srs_bt_006_tear_sheet_cli`` integration test), so ``feature_list.json`` is now
-``passes:true``. The still-deferred halves (the scheduled full-universe factor job via
-SRS-FAC-001, the real factor/return data wiring via SRS-DATA-007, the REST/dashboard rendering
-half via SRS-UI / SRS-API, and the cross-crate SRS-BT-004 metrics bundle) are owned by those
-features, not SRS-BT-006.
+``passes:true``. The halves this CLI does not include (wiring the tear-sheet to consume the
+scheduled full-universe factor job's real output -- the SRS-FAC-001 producer is its own feature --
+over real factor/return data via SRS-DATA-007, the REST/dashboard rendering half via SRS-UI /
+SRS-API, and the cross-crate SRS-BT-004 metrics bundle) are owned by those features, not SRS-BT-006.
 
 Mirrors ``tests/test_benchmark_contract.py``: shells out to
 ``tools/factor_analysis_check.py``, then exercises each per-check function in-process,

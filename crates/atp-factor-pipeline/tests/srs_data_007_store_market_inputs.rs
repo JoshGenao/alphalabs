@@ -125,6 +125,33 @@ fn split_adjusted_basis_differs_from_raw_across_a_split() {
 }
 
 #[test]
+fn split_effective_after_the_as_of_date_is_not_applied_no_lookahead() {
+    // Point-in-time correctness: a split effective AFTER the query window end (the as-of date) -- even
+    // one within proven coverage -- must NOT be applied, or a future corporate action would re-base the
+    // historical window (lookahead bias). Bars @100 close 10000, @300 close 3000; a 4-for-1 split
+    // effective @400 (AFTER the as-of date 300); coverage through 500. As of 300 the split is in the
+    // future, so the split-adjusted factor input must equal the raw one.
+    let store = store_of([
+        close_bar("AAPL", 100, 10_000, 100_000),
+        close_bar("AAPL", 300, 3_000, 100_000),
+        split("AAPL", 400, 4, 1),
+        coverage_record(500, "AAPL"),
+    ]);
+    let security = equity("AAPL");
+
+    let raw = load_daily_market_input(&store, &security, 0, 300, MarketInputBasis::Raw)
+        .expect("raw read")
+        .expect("two closes");
+    let adjusted = load_daily_market_input(&store, &security, 0, 300, MarketInputBasis::SplitAdjusted)
+        .expect("covered split-adjusted read")
+        .expect("two closes");
+    assert!(
+        (adjusted.trailing_return - raw.trailing_return).abs() < 1e-12,
+        "a split effective after the as-of date must not change the factor input (no lookahead)"
+    );
+}
+
+#[test]
 fn split_adjusted_over_uncovered_store_fails_closed_naming_011() {
     // Bars but NO coverage record: the gated read refuses rather than deriving a factor from a raw
     // series mislabeled as adjusted.

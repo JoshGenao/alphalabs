@@ -14,10 +14,10 @@ use atp_types::RuntimeService;
 /// a non-finite result fails closed. The operator tear-sheet RENDERING surface is realized by
 /// the `factor_tear_sheet_cli` binary (this crate's `src/bin/`), which renders the three
 /// deliverables of a fixture panel through [`factor_analysis::compute_tear_sheet`] -- the CLI
-/// half of the SRS-UI / SRS-API surface -- so SRS-BT-006 is `passes:true`. Still deferred (each
-/// its own feature): the scheduled full-universe factor job that produces the panel
-/// (SRS-FAC-001), the SRS-DATA-007 data wiring, and the REST/dashboard rendering half
-/// (SRS-UI / SRS-API).
+/// half of the SRS-UI / SRS-API surface -- so SRS-BT-006 is `passes:true`. Not included in THIS
+/// CLI (each its own feature): wiring the tear-sheet to consume the scheduled full-universe factor
+/// job's real output (the SRS-FAC-001 producer is its own feature) over real SRS-DATA-007 data, and
+/// the REST/dashboard rendering half (SRS-UI / SRS-API).
 pub mod factor_analysis;
 
 /// The scheduled full-universe factor job that PRODUCES the panel the [`factor_analysis`]
@@ -34,23 +34,32 @@ pub mod factor_analysis;
 /// a non-overlapping forward horizon) -- exactly the regularity the tear-sheet's interval/
 /// horizon-dependent means assume but cannot validate. The work is deterministic for a pure model
 /// (canonical-key scoring order, total-order ranking, the deadline read from the injected clock --
-/// no clock of its own, no parallelism/RNG). A store-backed MARKET-input loader is AVAILABLE
-/// ([`store_inputs::load_daily_market_input`], SRS-DATA-007); wiring it into
-/// [`factor_job::run_factor_job`]'s execution path (which still takes caller-supplied inputs), the
-/// Sharadar FUNDAMENTAL data wiring (SRS-DATA-005), the live wall-clock performance verification, and the
-/// SYS-57 workload-priority admission are deferred, so SRS-FAC-001 stays `passes:false`.
+/// no clock of its own, no parallelism/RNG). The store-backed READ path
+/// ([`store_inputs::run_scheduled_factor_job_over_store`], SRS-DATA-007) sources BOTH the market and the
+/// fundamental inputs from the unified store and feeds them to the scored core; its data as-of is
+/// DERIVED from the calendar ([`factor_job::TradingCalendar::session_as_of_ts`]) for the scheduled
+/// session — NOT a caller-supplied timestamp — so a caller cannot pair a session with a future as-of.
+/// What stays deferred is the CONCRETE US-equity calendar that provides the real `SessionOrdinal` ↔ epoch
+/// mapping (test calendars stand in), the REAL provider network adapters (Databento / Sharadar,
+/// SRS-DATA-001/005), the live wall-clock NFR-P7 performance harness over real securities, and the
+/// SYS-57 workload-priority admission, so SRS-FAC-001 stays `passes:false`.
 pub mod factor_job;
 
-/// The factor job's SRS-DATA-007 market-input LOADER
-/// ([`store_inputs::load_daily_market_input`]). It sources a security's dimensionless
-/// [`factor_job::MarketFactorInput`] from the durable [`atp_data::store::MarketDataStore`] through the
-/// source-neutral unified query path ([`atp_data::store::MarketDataStore::query_unified`] raw /
-/// `query_split_adjusted` gated) — so factor code queries its market inputs by symbol / date range /
-/// resolution with NO provider named. This is the market-input PRIMITIVE the factor job will use; it is
-/// NOT yet invoked by [`factor_job::run_factor_job`] (which still takes caller-supplied inputs). Wiring it
-/// into the factor-job execution path, the Sharadar **fundamental** half (SRS-DATA-005), and the SYS-57
-/// workload-priority admission stay deferred — so SRS-FAC-001 (and the SRS-DATA-007 factor-job consumer)
-/// stay `passes:false`.
+/// The factor job's SRS-DATA-007 store reader: [`store_inputs::load_daily_market_input`] (market) and
+/// [`store_inputs::load_fundamental_input`] (fundamental) source a security's dimensionless
+/// [`factor_job::MarketFactorInput`] / [`factor_job::FundamentalFactorInput`] from the durable
+/// [`atp_data::store::MarketDataStore`] through the source-neutral unified query path
+/// ([`atp_data::store::MarketDataStore::query_unified`] raw / `query_split_adjusted` gated) — so factor
+/// code queries its inputs by symbol / date range / resolution with NO provider named (the SRS-DATA-007
+/// read surface for factor jobs). [`store_inputs::assemble_factor_inputs`] combines both halves into the
+/// [`factor_job::SecurityFactorInputs`] cross-section and
+/// [`store_inputs::run_scheduled_factor_job_over_store`] runs the full-universe job over it, DERIVING the
+/// data as-of from the calendar ([`factor_job::TradingCalendar::session_as_of_ts`]) for the scheduled
+/// session — so a caller cannot pair a session with a future as-of. The concrete US-equity calendar that
+/// provides the real `SessionOrdinal` ↔ epoch mapping (test calendars stand in), the real
+/// Databento/Sharadar network adapters (SRS-DATA-001/005), and the live wall-clock NFR-P7 harness stay
+/// deferred, so SRS-FAC-001 stays `passes:false`. Fixture-sourced store data stands in, as the
+/// verification step permits.
 pub mod store_inputs;
 
 #[derive(Debug)]
