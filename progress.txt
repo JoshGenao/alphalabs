@@ -1,48 +1,96 @@
->>> NEXT TARGET (2026-06-25, after SESSION 73): pick by the foundational-impact policy. The DATA read
->>> cluster's load-bearing CLOSE remains SRS-DATA-007, and the ONE thing still blocking it is wiring a
->>> REAL named consumer (backtest / factor job / notebook) to READ split-adjusted via the
->>> StoreBackedHistoricalData binding -- a single synthetic strategy stand-in is NOT enough (Codex +
->>> the repo's own metadata + the S71 precedent all agree). Lowest-risk path: wire the Rust backtest
->>> BarSource (atp-simulation; its seam is already marked "deferred owner: SRS-DATA-007") OR a real
->>> Python factor/notebook helper to call the gated binding, then flip DATA-007. Alternatives: SRS-DATA-011
->>> remainder (dividend/delisting/merger/symbol-change math + coverage); fully/total-return modes (DATA-012).
->>> SRS-DATA-007/011/012 ALL still passes:false; 83 features remaining (UNCHANGED).
+>>> NEXT TARGET (2026-06-26, after SESSION 74): foundational-impact policy. SRS-DATA-007's close is now
+>>> blocked ONLY on the factor-job EXECUTION path + the Jupyter notebook host. S74 genuinely wired the
+>>> BACKTEST consumer (atp_simulation::store_bar_source::StoreBarSource -- a real BarSource the BacktestEngine
+>>> consumes over the unified store) and demonstrated the strategy + notebook consumers via the binding; the
+>>> factor MARKET-input loader (atp_factor_pipeline::store_inputs::load_daily_market_input) shipped as
+>>> SUBSTRATE but is NOT yet invoked by run_factor_job (Codex blocked the flip on exactly this). To CLOSE
+>>> DATA-007: (1) wire load_daily_market_input into a run_factor_job execution path (a store-backed universe
+>>> assembler), (2) the named factor run also needs Sharadar fundamentals (SRS-DATA-005) for a complete
+>>> scored ranking, (3) the Jupyter notebook HOST is SRS-RES-002. SRS-DATA-007/011/012 + SRS-FAC-001 ALL
+>>> still passes:false; 83 features remaining (UNCHANGED -- S74 shipped substrate, NO flip).
 >>>
->>> WHAT SHIPPED (SESSION 73, foundational substrate; feature_list.json byte-identical -- NO flip):
->>> The StoreBackedHistoricalData Python binding now SERVES the gated SPLIT_ADJUSTED Protocol default
->>> (removing S71's raw-as-adjusted blocker). split-adjusted routes through the data007_query_cli
->>> SRS-DATA-011 coverage gate; the binding validates the echoed coverage_through frontier (gate-integrity:
->>> present iff split-adjusted AND >= end; absent for raw) and maps a NotCovered CLI exit (stderr names
->>> SRS-DATA-011) to a NEW CoverageNotProvenError(StoreQueryError) -- NEVER a silent raw fallback.
->>>   - python/atp_strategy/store_history.py: _NORMALIZATION_LABEL += SPLIT_ADJUSTED:"split-adjusted";
->>>     _parse captures + validates coverage_through; CoverageNotProvenError added + exported.
->>>     FULLY_ADJUSTED/TOTAL_RETURN still NotImplementedError (dividend data, SRS-DATA-012).
->>>   - Inverted the guards that pinned the binding RAW-only: tools/normalization_modes_check.py
->>>     (check_binding_serves_split_adjusted), tools/store_history_check.py (check_normalization_honesty,
->>>     still 12 static guards), architecture/runtime_services.json (binding_request_modes [RAW,SPLIT_ADJUSTED]).
->>>   - Tests: L3 normalization_modes + store_history contracts (mutations inverted + 2 new: drop-serving,
->>>     drop-gate-integrity); L4 boundary (default serves split-adjusted; coverage_through missing/short/
->>>     raw-with-frontier fail closed; NotCovered->CoverageNotProvenError); L5 data007/data012; L7
->>>     test_store_history_consumer adds covered->adjusted (close 25.0/vol 400000) + uncovered->fail-closed.
->>>   - SWEPT every "binding serves RAW only / flip deferred / passes:true / CLOSED" claim across the 4
->>>     runtime_services.json blocks + tools + test docstrings to "serves RAW + gated SPLIT_ADJUSTED;
->>>     DATA-007 STAYS passes:false (named consumers unwired)".
->>>
->>> WHY STILL passes:false (the disposition): operator first chose flip + minimal-consumer-scope, but the
->>> Codex adversarial loop (3 rounds) + the repo's own metadata + the S71 precedent converged that the
->>> close needs the named backtest/factor/notebook consumers ACTUALLY wired, not one synthetic strategy
->>> stand-in. Operator (AskUserQuestion) then chose HOLD passes:false, ship the binding as foundational.
+>>> WHAT SHIPPED (SESSION 74, foundational substrate; feature_list.json byte-identical -- NO flip):
+>>>   - crates/atp-simulation/src/store_bar_source.rs (NEW): StoreBarSource<'a>, a real BarSource over the
+>>>     unified MarketDataStore -- query_unified (raw) / gated query_split_adjusted (split-adjusted); daily()
+>>>     + minute() constructors; allocation-free max_bars PRE-count before materializing any result;
+>>>     fail-closed u64<->i64, missing-close, and CoverageError->BacktestError::SourceUnavailable (NEW
+>>>     variant). BacktestDataSource::SystemData is now served by shipped product code (no longer deferred).
+>>>     atp-data promoted dev-dep -> real dep (allowed by dependency_direction.enforced_crates).
+>>>   - crates/atp-factor-pipeline/src/store_inputs.rs (NEW): load_daily_market_input sources a dimensionless
+>>>     MarketFactorInput (trailing_return, realized_volatility) from the unified store; fail-closed on
+>>>     inverted window (InvalidWindow), <2 closes (Ok(None)), non-positive close, missing close, uncovered
+>>>     split-adjusted (CoverageNotProven naming 011). SUBSTRATE -- NOT yet in run_factor_job's path.
+>>>   - tests/domain/test_store_history_consumer.py: + notebook-idiom direct binding read (the notebook
+>>>     consumer). Rust: srs_data_007_store_bar_source (7: raw/covered-split-adj/uncovered/bounded-read/
+>>>     overflow/minute) + srs_data_007_store_market_inputs (6 + 3 unit: inverted-window, covered-vs-raw).
+>>>   - SWEPT all 3 runtime_services.json blocks + 6 check tools + test docstrings: backtest consumer
+>>>     genuinely wired; factor loader = substrate (not in run_factor_job); deferred = factor exec-path +
+>>>     SRS-DATA-005 + Jupyter host SRS-RES-002. Benchmark BenchmarkSource SRS-DATA-007 seam UNTOUCHED.
 >>>
 >>> CODEX ADVERSARIAL LOOP (3 rounds; CONVERGED to APPROVE):
->>>   R1 [high x2]: (a) contract drift -- runtime_services.json still listed SPLIT_ADJUSTED forbidden /
->>>     binding RAW-only; (b) passes:true flip premature (single stand-in for 4 named consumer classes).
->>>   R2 [high]: the NEXT stale contract block (coverage_manifest_contract SRS-DATA-011 still said RAW-only).
->>>   R3: APPROVE (no material findings). FIX across R1->R3: reverted the flip (passes:false), fixed
->>>     forbidden_normalization_modes, file-level swept ALL stale "RAW-only/flip-deferred" prose.
+>>>   R1 [high x2]: (a) StoreBarSource checked max_bars AFTER materializing the result (esp. the OWNED
+>>>     split-adjusted clone); (b) flip premature -- run_factor_job still takes caller-supplied inputs, the
+>>>     loader isn't in its execution path. Plus [medium] contract drift (a block still said passes:false).
+>>>   R2 [high]+[low]: (a) load_daily_market_input didn't reject inverted windows (start>end -> Ok(None),
+>>>     masking a bad window as missing data); (b) StoreBarSource::minute public but untested.
+>>>   R3: APPROVE (no material findings). FIXES: allocation-free pre-count; REVERTED the flip to passes:false
+>>>     + reframed store_inputs as substrate; InvalidWindow guard+test; minute-bar test. Deterministic critic
+>>>     APPROVE throughout.
 >>>
 >>> KNOWN (pre-existing, NOT mine): tests/property/test_indicators_property.py::test_bbands_property_matches_
 >>> batch_talib FAILS on a CLEAN tree (talib/pandas-ta precision flake, unrelated). cargo fmt/clippy -D is a
 >>> LOCAL-only failure (newer local rustfmt/clippy vs the repo's pinned toolchain, all on untouched code).
+
+=== SESSION 74 ===
+Date: 2026-06-26
+Feature: SRS-DATA-007 -- provide a unified historical data access interface (docs/SRS.md SRS-DATA-007;
+SyRS SYS-27/SYS-53; StRS SN-1.28/SN-3.03/BG-5). STAYS passes:false (FOUNDATIONAL: the BACKTEST consumer is
+now genuinely wired -- a real StoreBarSource the BacktestEngine consumes over the unified store -- and the
+strategy + notebook consumers read via the binding; the factor MARKET-input loader shipped as substrate but
+is NOT yet in the run_factor_job execution path, the close blocker Codex held the flip on). Status: 83
+features remaining (UNCHANGED, 83 -> 83; feature_list.json byte-identical to HEAD).
+
+SELECTION: operator directive (foundational-impact policy + the S73 handoff naming the SRS-DATA-007
+consumer-wiring close). Operator (AskUserQuestion) chose "Push to close + flip": wire backtest BarSource +
+atp-factor-pipeline, demo notebook via the binding, attempt passes:true, fall back to hold if Codex blocks.
+
+What I did:
+- Part A (backtest consumer): StoreBarSource over the unified MarketDataStore (raw via query_unified, gated
+  split-adjusted via query_split_adjusted); daily()/minute(); allocation-free max_bars pre-count; fail-closed
+  u64<->i64 / missing-close / coverage. New BacktestError::SourceUnavailable. atp-data promoted to a real dep.
+- Part B (factor consumer): load_daily_market_input sources a dimensionless MarketFactorInput from the
+  unified store, fail-closed (InvalidWindow / non-positive / missing-close / uncovered). SUBSTRATE only --
+  not yet invoked by run_factor_job.
+- Part C (notebook consumer): notebook-idiom direct binding read in the domain test.
+- Part D: swept all 3 contract blocks + 6 check tools + test docstrings; flipped feature_list passes:true.
+- AFTER Codex R1 blocked the flip (factor exec-path unwired; over-claim), REVERTED to passes:false per the
+  pre-agreed fallback, reframed store_inputs as substrate, and re-swept all prose to a consistent
+  passes:false story. Benchmark BenchmarkSource SRS-DATA-007 seam left untouched.
+
+What I tested:
+- cargo test atp-simulation (srs_data_007_store_bar_source: 7) + atp-factor-pipeline (store_market_inputs: 6
+  + 3 unit) + atp-data: all green. Broad pytest -m "not integration and not e2e": 2394 passed (only the
+  pre-existing bbands talib flake; updated test_backtest_contract for +SourceUnavailable + StoreBarSource
+  seam). ./init.sh -> ready; all contract-check scripts PASS.
+- Manual e2e via the new Rust tests: a backtest runs over the store (raw + covered split-adjusted 10000/4 ->
+  2500); uncovered split-adjusted fails closed naming SRS-DATA-011; minute source excludes daily bars; the
+  factor loader derives trailing_return/realized_volatility and fails closed on inverted/missing/uncovered.
+
+Critic verdicts:
+  deterministic: APPROVE -- 0 findings (re-run after every fix).
+  judgment (/codex:adversarial-review): APPROVE (round 3) -- no material findings. R1 [high x2]: bounded-read
+    bug + premature flip (factor exec-path unwired) + [medium] contract drift; R2 [high]+[low]: inverted-window
+    Ok(None) + untested StoreBarSource::minute. FIXES: allocation-free pre-count; reverted flip to passes:false
+    + store_inputs reframed as substrate; InvalidWindow guard+test; minute-bar test.
+
+Known issues / notes for next agent:
+- SRS-DATA-007 close is blocked ONLY on (1) wiring load_daily_market_input into a run_factor_job execution
+  path (a store-backed universe assembler), (2) Sharadar fundamentals SRS-DATA-005 for a complete scored run,
+  (3) the Jupyter notebook HOST SRS-RES-002. The BACKTEST consumer is DONE (StoreBarSource genuinely wired).
+- Do NOT re-add "binding serves RAW only" or claim the factor job is wired -- the loader is substrate until
+  it is in run_factor_job's path. Keep the benchmark BenchmarkSource SRS-DATA-007 deferral (SRS-BT-005) intact.
+- Pre-existing: bbands property test flake on a clean tree; cargo fmt/clippy -D local-toolchain skew on
+  untouched code (the autonomous loop has never run them).
 
 === SESSION 73 ===
 Date: 2026-06-25
