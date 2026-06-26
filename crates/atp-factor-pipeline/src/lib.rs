@@ -34,10 +34,24 @@ pub mod factor_analysis;
 /// a non-overlapping forward horizon) -- exactly the regularity the tear-sheet's interval/
 /// horizon-dependent means assume but cannot validate. The work is deterministic for a pure model
 /// (canonical-key scoring order, total-order ranking, the deadline read from the injected clock --
-/// no clock of its own, no parallelism/RNG). The live wall-clock
-/// performance verification, the real SRS-DATA-007 data wiring, and the SYS-57 workload-priority
-/// admission are deferred, so SRS-FAC-001 stays `passes:false`.
+/// no clock of its own, no parallelism/RNG). A store-backed MARKET-input loader is AVAILABLE
+/// ([`store_inputs::load_daily_market_input`], SRS-DATA-007); wiring it into
+/// [`factor_job::run_factor_job`]'s execution path (which still takes caller-supplied inputs), the
+/// Sharadar FUNDAMENTAL data wiring (SRS-DATA-005), the live wall-clock performance verification, and the
+/// SYS-57 workload-priority admission are deferred, so SRS-FAC-001 stays `passes:false`.
 pub mod factor_job;
+
+/// The factor job's SRS-DATA-007 market-input LOADER
+/// ([`store_inputs::load_daily_market_input`]). It sources a security's dimensionless
+/// [`factor_job::MarketFactorInput`] from the durable [`atp_data::store::MarketDataStore`] through the
+/// source-neutral unified query path ([`atp_data::store::MarketDataStore::query_unified`] raw /
+/// `query_split_adjusted` gated) — so factor code queries its market inputs by symbol / date range /
+/// resolution with NO provider named. This is the market-input PRIMITIVE the factor job will use; it is
+/// NOT yet invoked by [`factor_job::run_factor_job`] (which still takes caller-supplied inputs). Wiring it
+/// into the factor-job execution path, the Sharadar **fundamental** half (SRS-DATA-005), and the SYS-57
+/// workload-priority admission stay deferred — so SRS-FAC-001 (and the SRS-DATA-007 factor-job consumer)
+/// stay `passes:false`.
+pub mod store_inputs;
 
 #[derive(Debug)]
 pub struct FactorPipelineRuntime {

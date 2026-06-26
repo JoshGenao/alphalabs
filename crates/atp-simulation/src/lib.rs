@@ -6,6 +6,17 @@ use atp_types::RuntimeService;
 /// family for paper simulation and backtesting.
 pub mod backtest;
 
+/// The backtest engine's SRS-DATA-007 system-catalog reader
+/// ([`store_bar_source::StoreBarSource`]). It implements [`backtest::BarSource`] over the durable
+/// [`atp_data::store::MarketDataStore`], reading the unified, source-neutral historical query path
+/// ([`atp_data::store::MarketDataStore::query_unified`] raw / `query_split_adjusted` gated) — so the
+/// backtest engine queries by symbol / date range / resolution with NO provider named. This is the
+/// real backtest consumer the SRS-DATA-007 acceptance names; the `BacktestDataSource::SystemData`
+/// seam is now served by shipped product code, not a test stand-in. (The user-uploaded Parquet
+/// reader for `BacktestDataSource::UploadedData` and the Python strategy host remain deferred — see
+/// `backtest_contract`.)
+pub mod store_bar_source;
+
 /// The configurable transaction-cost model family (SRS-BT-002): commission,
 /// slippage, and spread-impact models with SyRS-matching defaults. The backtest
 /// engine applies it to fills; the internal simulation engine shares the same

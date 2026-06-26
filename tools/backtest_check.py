@@ -17,9 +17,10 @@ contract declared in ``architecture/runtime_services.json`` (block
       configurable window and ``validate`` fails closed on an inverted range.
   (b) ``BacktestBar`` / ``BacktestRequest`` / ``Fill`` / ``EquityPoint`` /
       ``BacktestResult`` carry their required fields and no broker/vendor leakage.
-  (c) the engine seam is two ports — ``BarSource`` (the deferred Parquet /
-      system-catalog reader) and ``BacktestStrategy`` (the deferred Python
-      strategy host) — and ``BacktestEngine::run`` validates the range, restricts
+  (c) the engine seam is two ports — ``BarSource`` (the deferred user-uploaded
+      Parquet reader; the system-catalog reader is landed by
+      ``store_bar_source::StoreBarSource``, SRS-DATA-007) and ``BacktestStrategy``
+      (the deferred Python strategy host) — and ``BacktestEngine::run`` validates the range, restricts
       replay to the configurable window, replays deterministically, drives the
       strategy, and fails closed (EmptySymbol / InvalidDateRange / EmptyData).
   (d) ALL money math is integer minor units: the source contains no ``f64``, the
@@ -216,7 +217,8 @@ def check_bar_source_port(config: dict, src: str) -> str:
     return (
         f"atp-simulation declares port trait {spec['trait']} with {len(spec['methods'])} "
         f"method ({', '.join(spec['methods'])}); bars takes a {spec['bounded_read_param']} read "
-        "bound — the deferred Parquet / system-catalog reader seam"
+        "bound — the deferred user-uploaded Parquet reader seam (the system-catalog reader is "
+        "landed by store_bar_source::StoreBarSource, SRS-DATA-007)"
     )
 
 

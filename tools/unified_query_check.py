@@ -35,11 +35,13 @@ substrate). The in-process consumer binding (the Python ``StoreBackedHistoricalD
 symbol/date-range/resolution with no provider named, serving RAW verbatim AND the gated SPLIT_ADJUSTED
 (the HistoricalData Protocol default) through the SRS-DATA-011 coverage gate (an uncovered query fails
 closed with CoverageNotProvenError naming SRS-DATA-011, never raw-as-adjusted); ``get_bars_range`` is the
-explicit ``[start, end]`` range query for backtests/factor jobs. But the close is NOT complete: the
-acceptance NAMES backtests / factor jobs / notebooks as consumers, and those engines (atp-simulation,
-atp-factor-pipeline, SRS-RES-002 notebooks) are not yet WIRED to read via this store path -- only a
-strategy stand-in is demonstrated (tests/domain/test_store_history_consumer.py), so the flip was reverted
-to passes:false. Other owners that compose this read path also remain deferred (the real provider network
+explicit ``[start, end]`` range query backtests / factor jobs / notebooks use. The close is NOT complete: the
+BACKTEST consumer is now genuinely wired (atp_simulation::store_bar_source::StoreBarSource consumes this
+store path in BacktestEngine::run) and strategy + notebook/research code read via the binding -- but
+run_factor_job still takes caller-supplied inputs (the atp_factor_pipeline::store_inputs loader is shipped
+substrate, not yet in the factor-job execution path; a complete run needs Sharadar fundamentals,
+SRS-DATA-005) and the Jupyter notebook HOST is SRS-RES-002, so SRS-DATA-007 STAYS passes:false. Other owners
+that compose this read path also remain deferred (the real provider network
 adapters via SRS-DATA-001/003/005/006, read-while-write via SRS-DATA-017, the FULLY_ADJUSTED /
 TOTAL_RETURN + live-subscription normalization of SRS-DATA-012, SSD/NAS tiering via SRS-DATA-008/009/010,
 the dashboard/REST surfaces via SRS-UI / SRS-API).
@@ -401,9 +403,10 @@ _DEFERRED_OWNERS = (
     "FULLY_ADJUSTED / TOTAL_RETURN + live-subscription normalization (dividend data, SRS-DATA-012); "
     "split-adjusted is now served through the SRS-DATA-011 coverage gate by both the operator CLI and "
     "the StoreBackedHistoricalData consumer binding",
-    "the named backtest / factor / notebook consumers actually WIRED to read via this store path -- the "
-    "acceptance names them; only a strategy stand-in is demonstrated, so SRS-DATA-007 STAYS passes:false "
-    "(their store wiring is deferred to SRS-DATA-007)",
+    "the factor-job EXECUTION path (run_factor_job still takes caller-supplied inputs; the atp-factor-pipeline "
+    "store_inputs loader is shipped substrate, and a complete run needs SRS-DATA-005 fundamentals) and the "
+    "Jupyter notebook HOST (SRS-RES-002) -- the BACKTEST consumer (atp-simulation StoreBarSource) is genuinely "
+    "wired and strategy + notebook read via the binding, but those two gaps keep SRS-DATA-007 passes:false",
     "SSD-primary / NAS-archival tiering, eviction, cold-read failover of the queried directory "
     "(SRS-DATA-008/009/010)",
     "the dashboard / REST consumer surfaces (SRS-UI / SRS-API)",

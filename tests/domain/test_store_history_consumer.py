@@ -1,14 +1,17 @@
-"""SRS-DATA-007 close — L7 domain test: a real strategy consumer reads the real store.
+"""SRS-DATA-007 close — L7 domain test: real strategy & notebook consumers read the real store.
 
 The acceptance names "strategy code, backtests, factor jobs, and notebooks" as the consumers. This
-domain test wires a real ``Strategy`` subclass (standing in for strategy / backtest / factor-job /
-notebook code) to the concrete store-backed ``StoreBackedHistoricalData`` over a REAL ingested store,
-and asserts it reads bars by symbol / resolution / date range with NO provider named — "strategy code
-queries the unified historical interface without specifying the original source provider", proven end
-to end through an in-process consumer rather than an operator-CLI analogy. SRS-DATA-007 STAYS passes:false
-(foundational): this demonstrates a real strategy stand-in, but the acceptance also NAMES backtests /
-factor jobs / notebooks, and those engines (atp-simulation, atp-factor-pipeline, SRS-RES-002 notebooks)
-are not yet WIRED to read via this binding (deferred to SRS-DATA-007).
+domain test wires a real ``Strategy`` subclass (the strategy-code consumer) AND a notebook-style direct
+binding call (the notebook / research consumer) to the concrete store-backed ``StoreBackedHistoricalData``
+over a REAL ingested store, and asserts each reads bars by symbol / resolution / date range with NO
+provider named — "code queries the unified historical interface without specifying the original source
+provider", proven end to end through in-process consumers rather than an operator-CLI analogy. SRS-DATA-007
+STAYS passes:false (foundational): the BACKTEST consumer is now genuinely wired as a real Rust engine
+(``atp_simulation::store_bar_source::StoreBarSource`` consumes the store in ``BacktestEngine::run``; see that
+crate's ``srs_data_007_store_bar_source`` test) and strategy + notebook read via this binding; deferred --
+the factor-job EXECUTION path (``atp_factor_pipeline::store_inputs`` is a shipped market-input loader, not yet
+invoked by ``run_factor_job``, and a complete run needs Sharadar fundamentals, SRS-DATA-005) and the Jupyter
+notebook HOST runtime (SRS-RES-002).
 
 It also pins the safety property the adversarial review demanded. The binding's default
 ``NormalizationMode.SPLIT_ADJUSTED`` (the HistoricalData Protocol default) is served ONLY through the
@@ -142,6 +145,45 @@ def test_strategy_reads_store_sourced_bars_without_a_provider() -> None:
         timestamps = [b.timestamp for b in strategy.history_bars]
         assert timestamps == sorted(timestamps)
         bar_fields = {f.name for f in dataclasses.fields(strategy.history_bars[0])}
+        assert not (bar_fields & {"provider", "source", "vendor", "feed"})
+
+
+def test_notebook_reads_store_via_binding_without_a_provider() -> None:
+    # The "notebooks" consumer the acceptance names: the literal Jupyter / research idiom -- import the
+    # binding and ask for bars by symbol / date range / resolution with NO provider named. There is no
+    # Strategy wrapper and no orchestrator here, exactly as a notebook cell or a factor-research script
+    # runs. (The Jupyter HOST itself -- the kernel, plotting, and no-live-order isolation -- is the
+    # separate deferred SRS-RES-002 feature; this proves the notebook DATA ACCESS goes through the
+    # unified, source-neutral interface.)
+    cargo = _cargo()
+    if cargo is None:
+        pytest.skip("cargo not on PATH")
+    ingest_bin, query_bin = _build_ingest_and_query(cargo)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for i in range(3):
+            init = ["--init"] if i == 0 else []
+            res = _run(
+                str(ingest_bin), "ingest", "--dir", tmp,
+                "--kind", "daily-equity-bar", "--event-ts", str(SEED_TS + i * DAY), *init,
+            )
+            assert res.returncode == 0, res.stdout + res.stderr
+
+        history = StoreBackedHistoricalData(store_dir=tmp, query_binary=query_bin)
+        bars = history.get_bars_range(
+            "AAPL",
+            frequency="1d",
+            start=datetime.fromtimestamp(SEED_TS, tz=timezone.utc),
+            end=datetime.fromtimestamp(SEED_TS + 2 * DAY, tz=timezone.utc),
+            normalization=RAW,
+        )
+        assert len(bars) == 3
+        assert {b.symbol for b in bars} == {"AAPL"}
+        assert [b.close for b in bars] == [100.0, 100.0, 100.0]
+        timestamps = [b.timestamp for b in bars]
+        assert timestamps == sorted(timestamps)
+        # Source-neutral: the Bar carries no origin field a notebook could branch on.
+        bar_fields = {f.name for f in dataclasses.fields(bars[0])}
         assert not (bar_fields & {"provider", "source", "vendor", "feed"})
 
 
