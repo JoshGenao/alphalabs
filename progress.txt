@@ -1,4 +1,131 @@
->>> NEXT TARGET (2026-06-26, after SESSION 74): foundational-impact policy. SRS-DATA-007's close is now
+>>> NEXT TARGET (2026-06-26, after SESSION 75): foundational-impact policy. The store-backed factor-job
+>>> READ consumer (SRS-DATA-007 / SRS-FAC-001) is now WIRED + point-in-time-safe, but SRS-FAC-001 STAYS
+>>> passes:false. The flip was ATTEMPTED then REVERTED (Codex: FAC-001's AC is a PERFORMANCE TEST / NFR-P7
+>>> over real securities, and the fixture run uses a DETERMINISTIC clock -> proves gating logic, not
+>>> wall-clock completion). The CLOSE blockers are now down to: (1) the live wall-clock NFR-P7 performance
+>>> harness over real securities; (2) the CONCRETE real US-equity calendar's session_as_of_ts mapping
+>>> (the SessionOrdinal<->epoch binding -- the structural seam EXISTS as a TradingCalendar port method,
+>>> only the real impl is deferred, test calendars stand in); (3) the real Databento/Sharadar provider
+>>> adapters (SRS-DATA-005); (4) the Jupyter notebook HOST (SRS-RES-002, the last unwired DATA-007
+>>> consumer). The 3 SAFE public read primitives (load_daily_market_input / load_fundamental_input /
+>>> assemble_factor_inputs) + the public run_scheduled_factor_job_over_store are SHIPPED + tested. Next
+>>> session: either DATA-005 Sharadar ingestion or RES-002 notebook host (both unblock the DATA-007 close),
+>>> or a different foundational subsystem -- surface the choice to the operator. 83 remaining (UNCHANGED).
+>>>
+>>> WHAT SHIPPED (SESSION 75, foundational substrate; feature_list.json byte-identical -- flip reverted):
+>>>   - crates/atp-factor-pipeline/src/store_inputs.rs: load_fundamental_input (POINT-IN-TIME: selects the
+>>>     latest fiscal statement whose available_ts <= as_of, NEVER its period-end event_ts -> no lookahead;
+>>>     fail-closed on missing field / non-positive market_value / available_ts < event_ts); derive ratios
+>>>     (earnings_yield = net_income/market_value, book_to_price = book_equity/market_value, integer
+>>>     quotient -> f64, no f64 in storage); assemble_factor_inputs (combines market+fundamental from the
+>>>     store, fundamental as-of = end_ts unbounded-below so a stale-but-valid statement isn't skipped);
+>>>     run_scheduled_factor_job_over_store (the public store-backed scheduled run -- DERIVES as_of from
+>>>     calendar.session_as_of_ts(schedule.session), NOT a caller timestamp, so a caller cannot pair a
+>>>     session with a future as-of; preflights the schedule gate BEFORE assembly; threads the FIRST
+>>>     observed started/deadline into the gated core so a clock regression DURING assembly is caught).
+>>>   - crates/atp-factor-pipeline/src/factor_job.rs: extracted preflight_schedule + StartGate + the scored
+>>>     core run_factor_job_gated (all pub(crate), NOT pub -- the gated core accepts forgeable
+>>>     session/started/deadline, so it must not be a public bypass of the schedule/coverage validation);
+>>>     added TradingCalendar::session_as_of_ts (default None) -- the SessionOrdinal<->epoch port seam.
+>>>   - crates/atp-data/src/store.rs: records_for (binary-search the contiguous (kind,symbol,resolution)
+>>>     block -> O(log n + matches)); query_unified uses it for a kind-narrowed query (semantics-preserving,
+>>>     + an inverted-range guard so the indexed slice never panics). Fixes O(universe*store_size) assembly.
+>>>   - crates/atp-data/src/coverage.rs: query_split_adjusted_as_of (POINT-IN-TIME split read -- caps
+>>>     applied splits at query.end_ts, NOT the coverage frontier D, so a split effective AFTER the as-of
+>>>     date cannot re-base the historical window); SplitAdjustedResult gains adjusted_through (the actual
+>>>     adjustment basis) SEPARATE from coverage_through (the proven frontier) so a consumer is never
+>>>     misled. Both reads stay inside the public coverage gate; the math stays crate-internal.
+>>>   - Tests: +Rust unit/integration (fundamental derivation/availability/lookahead; records_for
+>>>     isolation+inverted-range; query_split_adjusted_as_of cap; assemble+run over store; pre-start fails
+>>>     before assembly; clock-regression-during-assembly fails closed; GATED 8k-record wall-clock perf
+>>>     test #[ignore]); +tests/domain/test_factor_job.py (store-backed behavioral + the crate-private
+>>>     bypass-regression guard). Swept ALL contract blocks + 5 check tools + docstrings for the
+>>>     wired-but-passes:false / calendar-derived-as-of / two-gated-split-reads story.
+>>>
+>>> CODEX ADVERSARIAL LOOP (17 rounds to APPROVE -- a runtime/data-heavy slice; each fix surfaced the
+>>> next-deeper concern, per the non-convergence pattern):
+>>>   R1 [high] fundamental as-of bounded by the MARKET window start (a valid older statement wrongly
+>>>     skipped) -> unbounded-below as-of. R2 [high] flip overclaim (NFR-P7 perf test deferred) -> REVERTED
+>>>     to passes:false (operator pre-authorized fallback). R3 [high] LOOKAHEAD: fundamental event_ts is the
+>>>     period end, not filing date -> added an available_ts gate. R4 [high] assembler O(universe*store)
+>>>     full-store scans -> records_for indexed read (operator chose "fix the store read path"). R5 [high]
+>>>     indexed inverted-range PANIC -> guard. R6 [high] wrapper did work before the schedule gate ->
+>>>     preflight before assembly. R7/R8 [high] as-of not bound to the scheduled session. R9 [med] flaky
+>>>     wall-clock assertion in the normal suite -> #[ignore] gated. R10 [high] preflight discarded the
+>>>     first clock read -> run_factor_job_gated threads the authoritative start. R11 [high] split-adjusted
+>>>     LOOKAHEAD (adjusts through frontier D > as-of) -> query_split_adjusted_as_of. R12 [high] the gated
+>>>     core was pub (schedule/coverage bypass) -> pub(crate). R13 [high] the public wrapper paired a session
+>>>     with a forgeable as_of -> DERIVE as_of from calendar.session_as_of_ts (operator chose "scope honestly
+>>>     + commit"; this is the calendar-derived resolution). R14 [high] SplitAdjustedResult overstated its
+>>>     basis -> adjusted_through field. R15 [med] "single public split read" prose stale -> two-gated-reads.
+>>>     R16 [high] coverage_manifest_contract metadata still listed one method -> rust_entry_points +
+>>>     public_split_adjusted_reads. R17: APPROVE (no material findings). Deterministic critic APPROVE
+>>>     throughout.
+>>>
+>>> KNOWN (pre-existing, NOT mine): tests/property/test_indicators_property.py::test_bbands_property_matches_
+>>> batch_talib FAILS on a CLEAN tree (talib/pandas-ta precision flake). cargo fmt/clippy -D is a LOCAL-only
+>>> toolchain-skew failure on untouched code (the autonomous loop has never run them).
+
+=== SESSION 75 ===
+Date: 2026-06-26
+Feature: SRS-FAC-001 -- compute scheduled factors across the full US equity universe (docs/SRS.md SRS-FAC-001;
+SyRS SYS-32/33/51, NFR-P7; StRS SN-2.06/BG-3); also advances SRS-DATA-007 (the factor-job READ consumer, the
+3rd of its 4 named consumers). STAYS passes:false (FOUNDATIONAL: the store-backed factor-job READ is wired +
+point-in-time-safe, but FAC-001's AC is a PERFORMANCE TEST over real securities against a real clock -- the
+fixture run uses a deterministic clock, proving gating LOGIC not wall-clock completion -- so the live NFR-P7
+harness + the concrete real-calendar session_as_of_ts mapping + real providers stay deferred). Status: 83
+features remaining (UNCHANGED, 83 -> 83; flip attempted then reverted, feature_list.json byte-identical to HEAD).
+
+SELECTION: operator directive (foundational-impact policy + the S74 handoff naming the factor-job consumer
+wiring as the DATA-007 close blocker). Operator (AskUserQuestion) chose: scope = store-backed factor assembler
+(incl. fundamental loader); posture = push-to-close FAC-001, fall back to hold if Codex blocks. Mid-loop the
+operator additionally chose "fix the store read path now" (R4 perf) and "scope honestly + commit" (R13 as-of).
+
+What I did:
+- Built the store-backed factor-job READ over the unified store: a point-in-time fundamental loader (gated on
+  a separate availability/filing timestamp, NOT the fiscal period end -> no lookahead), the market loader's
+  split-adjusted basis routed through a NEW as-of-capped split read (no future-split leak), an assembler that
+  combines both, and a public run_scheduled_factor_job_over_store that DERIVES its data as-of from the calendar
+  (a new TradingCalendar::session_as_of_ts port method) so a caller cannot pair a session with a future as-of.
+- Hardened the data layer: an indexed records_for binary-search read (so full-universe assembly is not
+  quadratic), the schedule preflight extracted + run BEFORE store assembly with the first clock read threaded
+  into a crate-private scored core (clock regression during assembly is caught; the core is not a public
+  bypass). Added SplitAdjustedResult.adjusted_through to separate the proven frontier from the adjustment basis.
+- Attempted the FAC-001 flip (passes:true), then REVERTED to passes:false per the operator's pre-agreed
+  fallback after Codex held it (deterministic-clock fixture != real wall-clock performance proof). Swept ALL
+  contract blocks + check tools + docstrings to a consistent wired-but-passes:false / calendar-derived story.
+
+What I tested:
+- cargo test --workspace green (82 result lines). atp-data + atp-factor-pipeline unit/integration: fundamental
+  derivation + availability + lookahead-exclusion; records_for isolation + inverted-range; query_split_adjusted
+  _as_of cap; assemble+run over store; pre-start fails BEFORE assembly; clock-regression-during-assembly fails
+  closed; a GATED 8k-record (328k records) wall-clock scaling test (runs in ~0.5s with the indexed read).
+  tests/domain/test_factor_job.py: store-backed behavioral + the crate-private bypass regression. Broad pytest
+  -m "not integration and not e2e": 2399 passed (only the pre-existing bbands talib flake). ./init.sh -> ready;
+  all contract-check scripts PASS.
+
+Critic verdicts:
+  deterministic: APPROVE -- 0 findings (re-run after every fix).
+  judgment (/codex:adversarial-review): APPROVE (round 17) -- no material findings. The 17-round loop fixed, in
+    order: as-of-window bug, flip overclaim (reverted), fundamental LOOKAHEAD, O(universe*store) assembly,
+    indexed-range panic, work-before-gate, as-of/session binding, flaky perf assertion (gated), lost first clock
+    read, split-adjusted LOOKAHEAD, pub gated-core bypass, forgeable as_of (-> calendar-derived), result-basis
+    overstatement, stale single-path prose, stale contract metadata. Each round = one real correctness/safety/
+    contract concern; none faked.
+
+Known issues / notes for next agent:
+- SRS-FAC-001 close is now blocked ONLY on: (1) the live wall-clock NFR-P7 performance harness over real
+  securities; (2) the CONCRETE real US-equity calendar session_as_of_ts impl (the port seam EXISTS; test
+  calendars stand in); (3) real Databento/Sharadar adapters (SRS-DATA-005). SRS-DATA-007 close additionally
+  needs the notebook HOST (SRS-RES-002). All three of DATA-007/011/012 + FAC-001 stay passes:false.
+- Do NOT re-expose run_factor_job_gated / preflight_schedule / StartGate as pub (they bypass the schedule +
+  coverage validation -- a domain test guards this). Do NOT route the factor split-adjusted basis back through
+  query_split_adjusted (use query_split_adjusted_as_of -- the as-of-capped, no-future-split-leak read). Do NOT
+  re-add "caller-supplied as_of" -- the wrapper DERIVES it from calendar.session_as_of_ts.
+- Pre-existing: bbands property test flake on a clean tree; cargo fmt/clippy -D local-toolchain skew on
+  untouched code (the autonomous loop has never run them).
+
+
 >>> blocked ONLY on the factor-job EXECUTION path + the Jupyter notebook host. S74 genuinely wired the
 >>> BACKTEST consumer (atp_simulation::store_bar_source::StoreBarSource -- a real BarSource the BacktestEngine
 >>> consumes over the unified store) and demonstrated the strategy + notebook consumers via the binding; the
