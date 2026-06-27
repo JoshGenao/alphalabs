@@ -274,7 +274,9 @@ def test_order_event_payload_shape_is_identical() -> None:
     _drive(live)
     _drive(paper)
     assert len(live.emitted_events) == len(paper.emitted_events) > 0
-    for live_evt, paper_evt in zip(live.emitted_events, paper.emitted_events):
+    # strict=True matches the equal-length invariant asserted just above (and catches a regression
+    # where the two event streams diverge in length instead of silently truncating).
+    for live_evt, paper_evt in zip(live.emitted_events, paper.emitted_events, strict=True):
         live_populated = {f: getattr(live_evt, f) is not None for f in live_evt.__dataclass_fields__}
         paper_populated = {f: getattr(paper_evt, f) is not None for f in paper_evt.__dataclass_fields__}
         assert live_populated == paper_populated, (
