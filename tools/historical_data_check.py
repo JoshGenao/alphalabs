@@ -23,8 +23,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from adapter_check import _trait_block
 from _rust_parser import _enum_body, _struct_body
+from adapter_check import _trait_block
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"
