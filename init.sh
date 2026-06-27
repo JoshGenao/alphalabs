@@ -434,6 +434,13 @@ if ! python3 tools/coverage_manifest_check.py --require-cargo >/dev/null; then
   exit 1
 fi
 
+echo "→ Running Sharadar fundamental-ingestion contract check (SRS-DATA-005)..."
+if ! python3 tools/fundamental_ingestion_check.py --require-cargo >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Fundamental-ingestion contract check failed; run python3 tools/fundamental_ingestion_check.py --require-cargo for detail."
+  exit 1
+fi
+
 echo "→ Running factor-analysis contract check..."
 if ! python3 tools/factor_analysis_check.py --require-cargo >/dev/null; then
   echo "✗ Environment failed"
