@@ -14,47 +14,35 @@ from adapter_isolation_check import AdapterIsolationError, assert_adapter_isolat
 from backtest_check import BacktestCheckError, assert_backtest_static
 from backtest_cost_check import BacktestCostCheckError, assert_backtest_cost_static
 from backtest_store_check import BacktestStoreCheckError, assert_backtest_store_static
-from ingestion_idempotency_check import (
-    IngestionIdempotencyCheckError,
-    assert_ingestion_idempotency_static,
-)
-from unified_query_check import (
-    UnifiedQueryCheckError,
-    assert_unified_query_static,
-)
+from benchmark_check import BenchmarkCheckError, assert_sim_benchmark_static
 from concurrent_read_check import (
     ConcurrentReadCheckError,
     assert_concurrent_read_static,
 )
-from store_history_check import (
-    StoreHistoryCheckError,
-    assert_store_history_static,
-)
-from normalization_modes_check import (
-    NormalizationModesCheckError,
-    assert_normalization_modes_static,
-)
+from config_check import ConfigCheckError, assert_configuration_static
+from connectivity_check import ConnectivityCheckError, assert_connectivity_static
 from coverage_manifest_check import (
     CoverageManifestCheckError,
     assert_coverage_manifest_static,
 )
-from benchmark_check import BenchmarkCheckError, assert_sim_benchmark_static
-from determinism_check import DeterminismCheckError, assert_determinism_static
-from factor_analysis_check import FactorAnalysisCheckError, assert_factor_analysis_static
-from factor_job_check import FactorJobCheckError, assert_factor_job_static
-from config_check import ConfigCheckError, assert_configuration_static
-from connectivity_check import ConnectivityCheckError, assert_connectivity_static
 from data_provider_check import (
     DataProviderContractError,
     assert_data_provider_contract_static,
 )
 from dependency_boundary_check import DependencyBoundaryError, assert_dependency_direction
 from deployment_check import DeploymentCheckError, assert_deployment_static
+from determinism_check import DeterminismCheckError, assert_determinism_static
 from error_handling_check import (
     ErrorHandlingCheckError,
     assert_error_handling_static,
 )
+from factor_analysis_check import FactorAnalysisCheckError, assert_factor_analysis_static
+from factor_job_check import FactorJobCheckError, assert_factor_job_static
 from freshness_check import FreshnessCheckError, assert_freshness_static
+from fundamental_ingestion_check import (
+    FundamentalIngestionCheckError,
+    assert_fundamental_ingestion_static,
+)
 from historical_data_check import (
     HistoricalDataCheckError,
     assert_unified_historical_data_static,
@@ -62,6 +50,10 @@ from historical_data_check import (
 from hot_swap_demotion_check import (
     HotSwapDemotionCheckError,
     assert_hot_swap_demotion_static,
+)
+from ingestion_idempotency_check import (
+    IngestionIdempotencyCheckError,
+    assert_ingestion_idempotency_static,
 )
 from ingestion_validation_check import (
     IngestionValidationCheckError,
@@ -76,6 +68,10 @@ from live_designation_check import (
     assert_live_designation_static,
 )
 from metrics_check import MetricsCheckError, assert_sim_metrics_static
+from normalization_modes_check import (
+    NormalizationModesCheckError,
+    assert_normalization_modes_static,
+)
 from orchestrator_deployment_version_check import (
     DeploymentVersionCheckError,
     assert_orchestrator_deployment_version_static,
@@ -120,6 +116,10 @@ from sim_persistence_check import (
     SimPersistenceCheckError,
     assert_sim_persistence_static,
 )
+from store_history_check import (
+    StoreHistoryCheckError,
+    assert_store_history_static,
+)
 from strategy_api_order_events_check import (
     StrategyApiOrderEventsCheckError,
     assert_strategy_api_order_events_static,
@@ -143,6 +143,10 @@ from strategy_api_warmup_check import (
 from subscription_limit_check import (
     SubscriptionLimitCheckError,
     assert_subscription_limit_static,
+)
+from unified_query_check import (
+    UnifiedQueryCheckError,
+    assert_unified_query_static,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -983,6 +987,31 @@ def assert_coverage_manifest(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_fundamental_ingestion(config: dict) -> list[str]:
+    block = config.get("fundamental_ingestion_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_fundamental_ingestion_static(config, ROOT)
+    summary = (
+        "SRS-DATA-005 Sharadar fundamental-ingestion SUBSTRATE over the SRS-DATA-016 spine: the "
+        "SRS-ARCH-002 dependency direction forces a three-crate decomposition meeting at the "
+        "vendor-neutral atp-types FundamentalStatements DTO (period_end_ts SEPARATE from available_ts; "
+        "fail-closed on impossible provenance + non-positive market value). atp-data "
+        "fundamentals::build_fundamental_records emits the four canonical statement records "
+        "(income/balance/cashflow/ratios), the ratios record matching the atp-factor-pipeline "
+        "load_fundamental_input contract exactly, and atp-adapters SharadarAdapter::map_fundamentals "
+        "is the provider -> vendor-neutral mapping (the Sharadar token lives ONLY in the adapter "
+        "layer, SRS-ARCH-003). Records flow through the UNCHANGED DataLayer::ingest_market_record "
+        "(ERR-5 gate + idempotent upsert); the data005_fundamental_cli + srs_data_005_fundamental_ingest "
+        "integration test demonstrate build -> ingest -> persist -> reload -> re-ingest -> READ via the "
+        "real loader, point-in-time correct. SRS-DATA-005 STAYS passes:false: the REAL Sharadar network "
+        "adapter, the NFR-P8d overnight wall-clock proof, the orchestrated fetch->ingest host, and the "
+        "SYS-77 validator rules + alert surface are deferred"
+    )
+    return static_evidence + [summary]
+
+
 def assert_factor_analysis(config: dict) -> list[str]:
     block = config.get("factor_analysis_contract")
     if block is None:
@@ -1408,6 +1437,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_coverage_manifest(config))
     except CoverageManifestCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_fundamental_ingestion(config))
+    except FundamentalIngestionCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_factor_analysis(config))

@@ -20,6 +20,7 @@ mod normalization;
 pub mod store;
 pub mod query;
 pub mod coverage;
+pub mod fundamentals;
 
 pub use crate::query::{UnifiedHistoricalQuery, UnifiedHistoricalResult};
 pub use crate::coverage::{CoverageError, SplitAdjustedResult};

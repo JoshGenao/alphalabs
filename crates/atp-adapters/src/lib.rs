@@ -1,4 +1,4 @@
-use atp_types::RuntimeService;
+use atp_types::{FundamentalStatements, FundamentalStatementsError, RuntimeService};
 use std::fmt;
 
 pub use atp_types::{OrderReceipt, OrderSubmission};
@@ -21,6 +21,14 @@ pub enum AdapterError {
         adapter: &'static str,
         capability: &'static str,
     },
+    /// A provider payload row could not be mapped onto the vendor-neutral domain model -- a
+    /// malformed / out-of-contract vendor record (e.g. a fundamental statement filed before its
+    /// period ended, or a non-positive market cap). Surfaced through the common adapter error
+    /// taxonomy so a caller handles a mapping failure the same way as any other adapter fault.
+    InvalidProviderData {
+        adapter: &'static str,
+        detail: String,
+    },
 }
 
 impl fmt::Display for AdapterError {
@@ -32,6 +40,10 @@ impl fmt::Display for AdapterError {
             } => write!(
                 formatter,
                 "{adapter} adapter capability {capability} is not configured"
+            ),
+            Self::InvalidProviderData { adapter, detail } => write!(
+                formatter,
+                "{adapter} adapter received invalid provider data: {detail}"
             ),
         }
     }
@@ -168,6 +180,52 @@ pub struct FundamentalsRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FundamentalDataSet {
     pub records: usize,
+}
+
+/// One row of a Sharadar SF1 fundamentals payload, named with the real vendor columns — the input
+/// the Sharadar adapter maps onto the vendor-neutral [`FundamentalStatements`] boundary DTO
+/// (SRS-DATA-005 / SRS-ARCH-003: the adapter layer maps provider → kind so the core stays
+/// vendor-neutral). Monetary columns are pre-scaled to integer minor units (cents) — parsing the
+/// vendor wire format (CSV/JSON, dollar floats) into minor units is part of the deferred live fetch;
+/// this struct is the post-parse, pre-normalization shape so the *column → field* mapping is unit
+/// testable without a network call.
+///
+/// `reportperiod` is the fiscal PERIOD END; `datekey` is the FILING (availability) instant — Sharadar
+/// publishes both precisely so a point-in-time consumer never reads a statement before it was filed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharadarFundamentalRow {
+    /// `ticker` — the security symbol.
+    pub ticker: String,
+    /// `dimension` — the SF1 statement dimension (e.g. `ARQ` as-reported quarterly, `MRQ`
+    /// most-recent-reported quarterly, `ARY`/`MRY` annual, `ART`/`MRT` trailing-twelve-month).
+    /// Sharadar emits MULTIPLE rows per `(ticker, reportperiod)` distinguished by this dimension, so
+    /// the adapter MUST disambiguate on it or two rows would collapse onto the same vendor-neutral
+    /// identity. This substrate supports exactly one dimension ([`SUPPORTED_SHARADAR_DIMENSION`]) and
+    /// rejects the rest fail-closed; multi-dimension keying is deferred with the restatement /
+    /// filing-version storage-schema change (see `fundamental_ingestion_contract`).
+    pub dimension: String,
+    /// `reportperiod` — the fiscal period end, epoch seconds → `period_end_ts`.
+    pub reportperiod: i64,
+    /// `datekey` — the filing / availability instant, epoch seconds → `available_ts`.
+    pub datekey: i64,
+    /// `revenue` (minor units) → income statement.
+    pub revenue_minor: i64,
+    /// `netinc` (minor units) → income statement (may be negative).
+    pub netinc_minor: i64,
+    /// `assets` (minor units) → balance sheet.
+    pub assets_minor: i64,
+    /// `liabilities` (minor units) → balance sheet.
+    pub liabilities_minor: i64,
+    /// `equity` (minor units) → balance sheet book value (may be negative).
+    pub equity_minor: i64,
+    /// `ncfo` — net cash flow from operations (minor units).
+    pub ncfo_minor: i64,
+    /// `ncfi` — net cash flow from investing (minor units).
+    pub ncfi_minor: i64,
+    /// `ncff` — net cash flow from financing (minor units).
+    pub ncff_minor: i64,
+    /// `marketcap` (minor units) → the key-ratio denominator (must be positive).
+    pub marketcap_minor: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -377,6 +435,83 @@ impl AdapterBoundary for SharadarAdapter {
 impl DataProviderAdapter for SharadarAdapter {}
 impl FundamentalDataProvider for SharadarAdapter {}
 
+/// The single SF1 statement dimension this substrate ingests: `ARQ` — As-Reported Quarterly.
+///
+/// Sharadar SF1 emits multiple rows per `(ticker, reportperiod)` distinguished by `dimension`. The
+/// AS-REPORTED (`AR*`) family carries the numbers AS THEY WERE ORIGINALLY FILED (point-in-time
+/// honest); the MOST-RECENT-REPORTED (`MR*`) family back-fills later restatements onto historical
+/// periods, which would inject LOOKAHEAD bias into a factor run. This substrate therefore ingests
+/// exactly `ARQ` and rejects every other dimension fail-closed, so two rows for the same ticker +
+/// period that differ only by dimension cannot silently collapse onto one vendor-neutral identity.
+/// Supporting additional dimensions needs the same filing-version store key as restatements (a
+/// storage-schema change, deferred — see `fundamental_ingestion_contract`).
+pub const SUPPORTED_SHARADAR_DIMENSION: &str = "ARQ";
+
+impl SharadarAdapter {
+    /// Map Sharadar SF1 rows onto the vendor-neutral [`FundamentalStatements`] boundary DTO
+    /// (SRS-DATA-005). This is the load-bearing *provider → vendor-neutral* mapping (SRS-ARCH-003):
+    /// the vendor columns `ticker` / `reportperiod` (period end) / `datekey` (filing instant) and the
+    /// minor-unit line items become the DTO's fields, which the data layer then turns into the
+    /// canonical `Fundamental` store records (`atp_data::fundamentals::build_fundamental_records`).
+    ///
+    /// **Dimension policy (explicit, fail-closed):** only the [`SUPPORTED_SHARADAR_DIMENSION`]
+    /// (`ARQ`, as-reported quarterly) is accepted; any other SF1 dimension (`MRQ`, `ARY`, `MRY`,
+    /// `ART`, `MRT`, …) is REJECTED, so two rows for the same `(ticker, reportperiod)` that differ
+    /// only by dimension can never collapse onto the same vendor-neutral identity (and the
+    /// lookahead-prone most-recent-reported family is never ingested).
+    ///
+    /// Fail-closed: a row carrying an unsupported dimension, or whose `datekey < reportperiod`
+    /// (impossible provenance — filed before the period ended), whose market cap is non-positive,
+    /// whose nonnegative-domain line items (revenue / assets / liabilities) are negative, or whose
+    /// ticker is empty, is surfaced through the common adapter taxonomy as
+    /// [`AdapterError::InvalidProviderData`] (so a caller handles a mapping failure the same way as
+    /// any other adapter fault — the real adapter routes it to quarantine / SRS-DATA-013).
+    ///
+    /// The LIVE network fetch ([`FundamentalDataProvider::ingest_fundamentals`]) stays a
+    /// `not_configured` stub until SRS-DATA-005's real Sharadar client lands; this deterministic
+    /// mapping is the half that does not need the network, and is exercised by the SRS-DATA-005 tests.
+    pub fn map_fundamentals(
+        &self,
+        rows: &[SharadarFundamentalRow],
+    ) -> AdapterResult<Vec<FundamentalStatements>> {
+        rows.iter()
+            .map(|row| {
+                // Disambiguate on the SF1 dimension BEFORE collapsing to the vendor-neutral identity:
+                // reject any dimension this substrate does not ingest (the multi-dimension key is
+                // deferred with the restatement filing-version schema change).
+                if row.dimension != SUPPORTED_SHARADAR_DIMENSION {
+                    return Err(AdapterError::InvalidProviderData {
+                        adapter: self.provider_name(),
+                        detail: format!(
+                            "unsupported SF1 dimension '{}' for {} (only '{}' as-reported quarterly \
+                             is ingested; other dimensions are deferred with multi-filing keying)",
+                            row.dimension, row.ticker, SUPPORTED_SHARADAR_DIMENSION
+                        ),
+                    });
+                }
+                FundamentalStatements::new(
+                    &row.ticker,
+                    row.reportperiod,
+                    row.datekey,
+                    row.revenue_minor,
+                    row.netinc_minor,
+                    row.assets_minor,
+                    row.liabilities_minor,
+                    row.equity_minor,
+                    row.ncfo_minor,
+                    row.ncfi_minor,
+                    row.ncff_minor,
+                    row.marketcap_minor,
+                )
+                .map_err(|err: FundamentalStatementsError| AdapterError::InvalidProviderData {
+                    adapter: self.provider_name(),
+                    detail: err.to_string(),
+                })
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UserParquetAdapter;
 
@@ -559,6 +694,126 @@ mod tests {
         let version = adapter.version();
         assert_eq!(version, ADAPTER_VERSION_NOT_APPLICABLE);
         assert_eq!(version.protocol_label, "not-applicable");
+    }
+
+    fn sample_sharadar_row() -> SharadarFundamentalRow {
+        SharadarFundamentalRow {
+            ticker: "aapl".to_string(), // lower-case -> normalized to AAPL by the DTO
+            dimension: SUPPORTED_SHARADAR_DIMENSION.to_string(),
+            reportperiod: 1_700_000_000, // fiscal period end
+            datekey: 1_702_000_000,      // filed later
+            revenue_minor: 5_000_000,
+            netinc_minor: -250_000, // a loss is allowed
+            assets_minor: 8_000_000,
+            liabilities_minor: 3_000_000,
+            equity_minor: 5_000_000,
+            ncfo_minor: 900_000,
+            ncfi_minor: -400_000,
+            ncff_minor: -100_000,
+            marketcap_minor: 20_000_000,
+        }
+    }
+
+    #[test]
+    fn sharadar_rows_map_to_vendor_neutral_statements() {
+        let adapter = SharadarAdapter;
+        let mapped = adapter
+            .map_fundamentals(&[sample_sharadar_row()])
+            .expect("a well-formed Sharadar row maps cleanly");
+        assert_eq!(mapped.len(), 1);
+        let s = &mapped[0];
+        // Column semantics: reportperiod -> period_end_ts, datekey -> available_ts; ticker normalized.
+        assert_eq!(s.symbol(), "AAPL");
+        assert_eq!(s.period_end_ts(), 1_700_000_000);
+        assert_eq!(s.available_ts(), 1_702_000_000);
+        assert_eq!(s.net_income_minor(), -250_000);
+        assert_eq!(s.book_equity_minor(), 5_000_000);
+        assert_eq!(s.operating_cash_flow_minor(), 900_000);
+        assert_eq!(s.market_value_minor(), 20_000_000);
+    }
+
+    #[test]
+    fn sharadar_mapping_fails_closed_on_impossible_provenance() {
+        // datekey (filing) strictly before reportperiod (period end) is impossible -> fail closed
+        // through the common adapter taxonomy, so a malformed vendor row never yields a record.
+        let adapter = SharadarAdapter;
+        let mut row = sample_sharadar_row();
+        row.datekey = row.reportperiod - 1;
+        let err = adapter
+            .map_fundamentals(&[row])
+            .expect_err("a filed-before-period-end row must fail closed");
+        match err {
+            AdapterError::InvalidProviderData { adapter, detail } => {
+                assert_eq!(adapter, "sharadar");
+                assert!(detail.contains("available_ts"), "detail names the cause: {detail}");
+            }
+            other => panic!("expected InvalidProviderData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sharadar_mapping_fails_closed_on_non_positive_market_cap() {
+        let adapter = SharadarAdapter;
+        let mut row = sample_sharadar_row();
+        row.marketcap_minor = 0;
+        let err = adapter
+            .map_fundamentals(&[row])
+            .expect_err("a non-positive market cap must fail closed");
+        match err {
+            AdapterError::InvalidProviderData { adapter, detail } => {
+                assert_eq!(adapter, "sharadar");
+                assert!(detail.contains("market_value_minor"), "detail names the cause: {detail}");
+            }
+            other => panic!("expected InvalidProviderData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sharadar_mapping_fails_closed_on_negative_revenue() {
+        // A nonnegative-domain line item (revenue) that is negative is a corrupt row -> fail closed.
+        let adapter = SharadarAdapter;
+        let mut row = sample_sharadar_row();
+        row.revenue_minor = -1;
+        let err = adapter
+            .map_fundamentals(&[row])
+            .expect_err("negative revenue must fail closed");
+        assert!(matches!(err, AdapterError::InvalidProviderData { .. }));
+    }
+
+    #[test]
+    fn sharadar_mapping_rejects_unsupported_dimension() {
+        // The most-recent-reported quarterly dimension back-fills restatements (lookahead-prone) and
+        // is not the ingested dimension -> rejected fail-closed.
+        let adapter = SharadarAdapter;
+        let mut row = sample_sharadar_row();
+        row.dimension = "MRQ".to_string();
+        let err = adapter
+            .map_fundamentals(&[row])
+            .expect_err("an unsupported SF1 dimension must fail closed");
+        match err {
+            AdapterError::InvalidProviderData { adapter, detail } => {
+                assert_eq!(adapter, "sharadar");
+                assert!(detail.contains("MRQ"), "detail names the rejected dimension: {detail}");
+            }
+            other => panic!("expected InvalidProviderData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sharadar_mapping_does_not_collapse_same_period_different_dimension() {
+        // Two rows for the SAME ticker + reportperiod that differ ONLY by dimension must NOT silently
+        // collapse onto one identity: the unsupported one is rejected, so the whole batch fails closed
+        // rather than ingesting an ambiguous basis.
+        let adapter = SharadarAdapter;
+        let arq = sample_sharadar_row(); // ARQ (supported)
+        let mut mrq = sample_sharadar_row();
+        mrq.dimension = "MRQ".to_string();
+        mrq.netinc_minor = 999_999; // a different (restated) basis for the same period
+        let result = adapter.map_fundamentals(&[arq, mrq]);
+        assert!(
+            matches!(result, Err(AdapterError::InvalidProviderData { .. })),
+            "a same-period different-dimension batch must fail closed, not collapse: {result:?}"
+        );
     }
 
     #[test]

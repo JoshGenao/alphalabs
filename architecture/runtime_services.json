@@ -6086,6 +6086,140 @@
       "The concrete RecordValidator SYS-77 rule logic + the quarantine dashboard/notification alert surface (owner: SRS-DATA-013 / SRS-DATA-014 / SRS-NOTIF-001; ingest_market_record composes the UNCHANGED ERR-5 gate)"
     ]
   },
+  "fundamental_ingestion_contract": {
+    "description": "SRS-DATA-005 (ingest Sharadar fundamental data on a scheduled basis; SyRS SYS-26, NFR-P8d; StRS SN-3.03 / BG-3). The acceptance: 'Income statement, balance sheet, cash flow statement, and key ratio records for US equities are ingested, validated, cataloged, available to the factor pipeline, and completed within the overnight window of 16:00 ET to 09:30 ET next trading day.' This block pins the fundamental-ingestion SUBSTRATE over the SRS-DATA-016 storage spine. The dependency direction (SRS-ARCH-002) forces a three-crate decomposition meeting at ONE shared boundary type, because atp-adapters may depend ONLY on atp-types and atp-data may depend ONLY on atp-types (neither may depend on the other): (a) atp-types defines FundamentalStatements -- a vendor-neutral bundle of one fiscal period's statements for one US equity, all integer minor units, with period_end_ts (the fiscal PERIOD END, the natural-key event_ts) SEPARATE from available_ts (the FILING / availability instant). Its constructor fails closed on an empty symbol, a negative period end, available_ts < period_end_ts (impossible provenance -- a statement cannot be filed before its period ends), or a non-positive market_value_minor (the key-ratio denominator the factor pipeline divides by). net_income_minor / book_equity_minor MAY be negative (a loss-making or negative-book-value security). (b) atp-data (module `fundamentals`) build_fundamental_records turns a validated FundamentalStatements into the FOUR canonical Fundamental store records -- one per statement type, all sharing the natural key (DatasetKind::Fundamental, symbol, event_ts = period_end_ts) and differing only by resolution: fundamental:income, fundamental:balance, fundamental:cashflow, fundamental:ratios. Each carries available_ts so a point-in-time consumer of ANY statement gates on availability. The ratios record carries EXACTLY the four fields the factor loader reads -- available_ts, net_income_minor, book_equity_minor, market_value_minor -- so a built bundle is always readable by atp_factor_pipeline::store_inputs::load_fundamental_input (resolution fundamental:ratios; the resolution literal is duplicated in atp-data because the core data layer must NOT depend on the factor-pipeline crate, and the SRS-DATA-005 integration test reads a built record back THROUGH the real loader so any drift fails closed). (c) atp-adapters SharadarAdapter::map_fundamentals maps Sharadar SF1 rows (the real vendor columns ticker / reportperiod = period end / datekey = filing instant, plus the minor-unit line items netinc / equity / marketcap / revenue / assets / liabilities / ncfo / ncfi / ncff) onto FundamentalStatements -- the load-bearing provider -> vendor-neutral mapping (SRS-ARCH-003: the adapter layer maps provider -> kind so the core never names a vendor). A malformed vendor row (filed-before-period-end, non-positive market cap, empty ticker) fails closed via the DTO constructor. The records flow through the UNCHANGED DataLayer::ingest_market_record path (the ERR-5 validation gate + the idempotent store.upsert) -- so 'ingested, validated, cataloged' reuses the SRS-DATA-016 substrate and re-running an already-ingested period is a no-op (no duplicate, byte-identical). The operator surface is the data005_fundamental_cli binary (ingest / reingest / inspect / factor-input over a fixture dir): reingest proves inserted:0 + bytes_identical:true; factor-input reads the point-in-time fundamental:ratios record back by symbol / resolution with NO provider named (the SRS-DATA-007 read surface) and prints the derived earnings_yield / book_to_price. The Rust integration test srs_data_005_fundamental_ingest (in atp-factor-pipeline, the one crate allowed to depend on BOTH atp-data and the loader) drives build -> ingest -> persist -> reload -> re-ingest (idempotent) -> READ via the real load_fundamental_input, plus the point-in-time skip (a not-yet-filed statement is an auditable absence) and the negatives-allowed path. SRS-DATA-005 STAYS passes:false (foundational substrate): the vendor-neutral mapping + the four-statement record build + the validation / idempotent-catalog write + the loader-availability read are demonstrated end to end over fixture sources, but the close needs the deferred owners below. All value fields stay integer minor units (no f64 in the core); the work is deterministic; atp-data fundamentals and atp-types carry NO lowercase vendor SDK token (the Sharadar token lives ONLY in atp-adapters, SRS-ARCH-003). DEFERRED (named owners, none load-bearing for the substrate): the REAL Sharadar network adapter (live API auth + fetch -- the atp-adapters FundamentalDataProvider::ingest_fundamentals stays a not_configured stub, fixture rows stand in); the NFR-P8d overnight-window (16:00->09:30 ET) wall-clock completion proof over the full 8,000+ US-equity universe against a real clock (a wall-clock performance harness, deferred exactly like SRS-FAC-001's NFR-P7 -- the fixture run uses a deterministic window, proving the mapping/validation/catalog/availability LOGIC, not wall-clock completion); the in-process orchestrated fetch->ingest HOST that wires the adapter to the data layer (the orchestrator -- no crate depends on both adapter and data); the concrete RecordValidator SYS-77 fundamental field-range rules + quarantine alert surface (SRS-DATA-013 / SRS-NOTIF-001).",
+    "requirement": "SRS-DATA-005",
+    "srs_refs": [
+      "SRS-DATA-005"
+    ],
+    "syrs_refs": [
+      "SYS-26",
+      "NFR-P8d"
+    ],
+    "strs_refs": [
+      "SN-3.03",
+      "BG-3"
+    ],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types",
+      "module": "lib"
+    },
+    "data_crate": {
+      "crate": "atp-data",
+      "path": "crates/atp-data",
+      "module": "fundamentals"
+    },
+    "adapters_crate": {
+      "crate": "atp-adapters",
+      "path": "crates/atp-adapters",
+      "module": "lib"
+    },
+    "factor_crate": {
+      "crate": "atp-factor-pipeline",
+      "path": "crates/atp-factor-pipeline"
+    },
+    "cli_bin": "data005_fundamental_cli",
+    "rust_integration_test": "srs_data_005_fundamental_ingest",
+    "dto": {
+      "struct": "FundamentalStatements",
+      "ctor_fn": "pub fn new",
+      "error_enum": "FundamentalStatementsError",
+      "error_variants": [
+        "EmptySymbol",
+        "NegativePeriodEnd",
+        "AvailabilityBeforePeriodEnd",
+        "NonPositiveMarketValue",
+        "NegativeStatementField"
+      ],
+      "fields": [
+        "period_end_ts: i64",
+        "available_ts: i64",
+        "net_income_minor: i64",
+        "book_equity_minor: i64",
+        "market_value_minor: i64"
+      ],
+      "provenance_guard_token": "if available_ts < period_end_ts",
+      "denominator_guard_token": "if market_value_minor <= 0"
+    },
+    "builder": {
+      "fn": "pub fn build_fundamental_records",
+      "income_resolution_token": "fundamental:income",
+      "balance_resolution_token": "fundamental:balance",
+      "cashflow_resolution_token": "fundamental:cashflow",
+      "ratios_resolution_token": "fundamental:ratios",
+      "ratios_fields": [
+        "available_ts",
+        "net_income_minor",
+        "book_equity_minor",
+        "market_value_minor"
+      ],
+      "fundamental_kind_token": "DatasetKind::Fundamental"
+    },
+    "loader_contract": {
+      "description": "The factor pipeline's load_fundamental_input reads the fundamental:ratios record; the builder's ratios record must carry exactly these fields and resolution or the integration test fails closed.",
+      "module_path": "crates/atp-factor-pipeline/src/store_inputs.rs",
+      "resolution_const_token": "FUNDAMENTAL_RATIOS_RESOLUTION: &str = \"fundamental:ratios\"",
+      "loader_fn_token": "pub fn load_fundamental_input",
+      "required_fields": [
+        "available_ts",
+        "net_income_minor",
+        "book_equity_minor",
+        "market_value_minor"
+      ]
+    },
+    "adapter_mapping": {
+      "fn": "pub fn map_fundamentals",
+      "row_struct": "SharadarFundamentalRow",
+      "vendor_column_tokens": [
+        "dimension",
+        "reportperiod",
+        "datekey",
+        "marketcap_minor"
+      ],
+      "returns_dto_token": "FundamentalStatements::new",
+      "dimension_policy": {
+        "description": "Sharadar SF1 emits multiple rows per (ticker, reportperiod) distinguished by a dimension column (ARQ/MRQ/ARY/MRY/ART/MRT). The substrate ingests EXACTLY the as-reported quarterly dimension (ARQ -- point-in-time honest, no restatement back-fill / lookahead) and REJECTS every other dimension fail-closed, so two rows for the same ticker+period that differ only by dimension can never collapse onto one vendor-neutral identity. Multi-dimension support needs the same filing-version store key as restatements (a deferred storage-schema change).",
+        "supported_dimension_const": "SUPPORTED_SHARADAR_DIMENSION",
+        "supported_dimension_value": "ARQ",
+        "dimension_filter_token": "row.dimension != SUPPORTED_SHARADAR_DIMENSION"
+      }
+    },
+    "cli": {
+      "ingest_token": "fn cmd_ingest",
+      "reingest_token": "fn cmd_reingest",
+      "factor_input_token": "fn cmd_factor_input",
+      "no_save_in_reingest_token": "save_to_path",
+      "uses_builder_token": "build_fundamental_records"
+    },
+    "ingest_path": {
+      "entry_fn_token": "ingest_market_record",
+      "idempotent_outcome_token": "UpsertOutcome::UnchangedDuplicate"
+    },
+    "numeric_boundary": {
+      "integer_minor_tokens": [
+        "market_value_minor: i64",
+        "net_income_minor: i64"
+      ]
+    },
+    "vendor_isolation": {
+      "core_forbidden_tokens": [
+        "interactive_brokers",
+        "ib_insync",
+        "ibapi",
+        "databento",
+        "sharadar"
+      ],
+      "adapter_vendor_token": "sharadar"
+    },
+    "deferred": [
+      "The REAL Sharadar network adapter -- live API auth + fetch (owner: SRS-DATA-005; the atp-adapters FundamentalDataProvider::ingest_fundamentals stays a not_configured stub, fixture rows stand in)",
+      "The NFR-P8d overnight-window (16:00->09:30 ET) wall-clock completion proof over the full 8,000+ US-equity universe against a real clock (a wall-clock performance harness, deferred like SRS-FAC-001's NFR-P7; the fixture run proves the mapping/validation/catalog/availability LOGIC, not wall-clock completion)",
+      "The in-process orchestrated fetch->ingest HOST wiring the adapter to the data layer (owner: the orchestrator -- no crate depends on both adapter and data; the two halves meet at the FundamentalStatements boundary DTO)",
+      "RESTATEMENT / amended-filing point-in-time history: the fundamental natural key is (Fundamental, symbol, resolution, period_end_ts) with available_ts as a value field, so it models ONE authoritative filing per fiscal period. A later restatement (same period, different filing date + revised numbers) is a same-key / different-content write that the SRS-DATA-016 idempotency core fails CLOSED on (StoreError::ConflictingContent) -- rejected, not silently corrupted and not a lookahead leak, but not yet cataloged as point-in-time history (pinned by srs_data_005_restatement_currently_fails_closed_pending_filing_version_keying). Representing multiple filings per period needs a filing-version dimension in the fundamental store identity + a loader that picks the latest filing available as-of the run date -- a STORAGE-SCHEMA change (NaturalKey / codec / SCHEMA_VERSION) deferred with the real Sharadar restatement feed (owner: SRS-DATA-005 + the SRS-DATA-016 storage substrate)",
+      "The concrete RecordValidator SYS-77 fundamental field-range rules + the quarantine dashboard/notification alert surface (owner: SRS-DATA-013 / SRS-NOTIF-001; ingest_market_record composes the UNCHANGED ERR-5 gate)"
+    ]
+  },
   "unified_query_runtime_contract": {
     "description": "SRS-DATA-007 (provide a unified historical data access interface; SyRS SYS-27 / SYS-53; StRS SN-1.28 / SN-3.03 / BG-5). The acceptance: 'Strategy code, backtests, factor jobs, and notebooks query by symbol, date range, and resolution WITHOUT specifying the original source provider.' This is the runnable READ path over the SRS-DATA-016 storage substrate (the canonical MarketDataStore of vendor-neutral records the data layer already persists) -- distinct from the unified_historical_data (API-7) block, which pins the provider-facing adapter TRAIT shape (HistoricalDataAdapter in atp-adapters); this block pins the runtime query that actually serves records from the store. It lives in crates/atp-data (module `query`). UnifiedHistoricalQuery carries ONLY the three acceptance dimensions -- symbol, resolution, and an inclusive [start_ts, end_ts] event-timestamp range -- plus an optional DatasetKind disambiguator; there is deliberately NO provider/vendor/source/feed parameter (a consumer literally cannot pass one), and DatasetKind is the VENDOR-NEUTRAL taxonomy (daily bar / minute bar / option-chain / fundamental), never a provider name. UnifiedHistoricalResult echoes the queried symbol + resolution and the matched records, with NO provider/vendor/source field -- the envelope cannot name a record's origin, so a strategy / backtest / factor job / notebook is structurally unable to branch on it. MarketDataStore::query_unified filters self.records() (the canonical natural-key order the store already maintains) on exactly those vendor-neutral NaturalKey dimensions -- symbol equality, resolution equality, the inclusive event_ts range, and the optional kind -- and returns the survivors sorted explicitly into deterministic event_ts-ascending order with the full natural key as a total-order tiebreaker (the store's canonical order sorts by kind BEFORE event_ts, so a kind-agnostic match spanning two kinds that share symbol+resolution needs the explicit event_ts sort to honor the date-range contract), no clock, no RNG; an empty match is a RETURNED value, never an error. For a kind-NARROWED query (the common case -- every per-series consumer names a kind) the records are read by BINARY SEARCH over the canonical order (MarketDataStore::records_for finds the contiguous (kind, symbol, resolution) block, then the inclusive event_ts sub-range), O(log n + matches) and the SAME records in the SAME order as the full scan -- so a full-universe assembly that reads once per security is NOT O(universe * store_size). The SAME one method serves every provider kind the acceptance names -- DailyEquityBar (<= Databento), MinuteEquityBar (<= IB), OptionChainSnapshot (<= IB option-chain), Fundamental (<= Sharadar) -- so a multi-provider catalog has exactly one read path and no provider-specific branch. The operator surface is the data007_query_cli binary (query --dir --symbol --resolution --start --end [--kind]): it loads the atomically-published on-disk snapshot read-only (NO single-writer StoreLock -- a read does not need it; concurrent-read-DURING-write coordination is the deferred SRS-DATA-017) and prints a source-neutral key:value report (symbol / resolution / start / end / kind / match_count, then each record's event_ts + option_contract + integer-minor value fields) with no provider/source/vendor line. The Rust integration test srs_data_007_unified_query drives ingest (fixtures, all four kinds) -> persist -> reload -> query and asserts symbol/resolution/range filtering, cross-provider-kind uniformity, the optional-kind narrowing, determinism across a persisted reload, and empty-is-not-an-error. SRS-DATA-007 STAYS passes:false (foundational substrate): the source-neutral query ENGINE + operator CLI + contract test are demonstrated end to end over fixture data + persisted-output inspection, AND the in-process Python consumer binding (StoreBackedHistoricalData; store_history_binding_contract) reads this engine by symbol / date range / resolution with no provider named via the explicit RAW path. The shared HistoricalData Protocol is get_bars (the lookback idiom); the binding offers a binding-specific get_bars_range for an explicit [start, end] window, but promoting an explicit-range method to the public runtime_checkable Protocol is a deferred SRS-SDK-001 surface change. The close is NOT complete: (1) the binding serves RAW verbatim AND the gated SPLIT_ADJUSTED Protocol default through the SRS-DATA-011 coverage gate (an uncovered query fails closed with CoverageNotProvenError, never raw-as-adjusted), so the prior raw-as-adjusted hazard is resolved; (2) the BACKTEST consumer is now genuinely wired (atp_simulation::store_bar_source::StoreBarSource consumes this store path in BacktestEngine::run) and strategy + notebook / research code read via the binding (StoreBackedHistoricalData.get_bars_range); (3) the FACTOR-JOB consumer now READS the store -- atp_factor_pipeline::store_inputs (load_daily_market_input + load_fundamental_input + assemble_factor_inputs) sources BOTH the market and fundamental inputs by symbol / date range / resolution with no provider named (point-in-time SAFE loaders), and run_scheduled_factor_job_over_store composes that read with the schedule gate, DERIVING the data as-of from the calendar (TradingCalendar::session_as_of_ts) for the scheduled session -- so a caller cannot pair a session with a future as-of; the concrete real-calendar SessionOrdinal<->epoch mapping is the deferred owner (see SRS-FAC-001), not part of the DATA-007 read surface. The remaining unwired DATA-007 consumer is the Jupyter notebook HOST runtime (SRS-RES-002 -- kernel / plotting / no-live-order isolation; the notebook DATA ACCESS already goes through the binding), so SRS-DATA-007 STAYS passes:false. Earlier passes also fixed a kind-agnostic event_ts-ordering bug and made split adjustment fail closed for non-equity kinds. SRS-DATA-012 ALSO stays passes:false (live-subscription + FULLY_ADJUSTED / TOTAL_RETURN dividend modes deferred). DEFERRED (named owners of OTHER features that compose this read path, NOT blockers of the DATA-007 close): the REAL Databento/IB/Sharadar/option-chain network adapters that materialize records (SRS-DATA-001/003/005/006; fixture sources stand in); concurrent READS during an active ingestion WRITE -- read-while-write coordination (SRS-DATA-017; the atomic whole-file publish is the groundwork); the FULLY_ADJUSTED / TOTAL_RETURN + live-subscription normalization modes of SRS-DATA-012 (the split-adjusted HISTORICAL slice is implemented -- see normalization_modes_contract; DATA-007 itself is symbol/range/resolution only); SSD-primary / NAS-archival tiering + cold-read failover of the queried directory (SRS-DATA-008/009/010); the dashboard / REST consumer surfaces over this engine (SRS-UI / SRS-API); the Jupyter notebook HOST runtime (SRS-RES-002 -- kernel / plotting / no-live-order isolation; the notebook DATA ACCESS goes through the binding). The BACKTEST consumer is now genuinely wired (atp-simulation StoreBarSource in BacktestEngine::run); the FACTOR-JOB consumer now READS the store (atp-factor-pipeline store_inputs loaders + assemble_factor_inputs, a point-in-time read primitive; binding its data as-of to the scheduled session is the deferred calendar boundary, see SRS-FAC-001); and strategy + notebook read via the binding, with split-adjusted served by the binding through the SRS-DATA-011 coverage gate -- RAW + gated SPLIT_ADJUSTED; the notebook HOST runtime (SRS-RES-002) is the remaining unwired DATA-007 consumer.",
     "requirement": "SRS-DATA-007",

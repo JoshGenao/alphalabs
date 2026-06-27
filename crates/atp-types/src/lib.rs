@@ -536,6 +536,211 @@ impl SecurityKey {
     }
 }
 
+/// A vendor-neutral bundle of one fiscal period's fundamental statements for one US-equity
+/// security (SRS-DATA-005 / SyRS SYS-26). This is the **boundary DTO** a provider adapter
+/// (e.g. the Sharadar adapter in `atp-adapters`, which maps `datekey`→`available_ts`,
+/// `reportperiod`→`period_end_ts`, and the vendor line-item columns→these integer minor-unit
+/// fields) hands to the data layer, which turns it into the canonical `Fundamental` store
+/// records. It lives in `atp-types` because it is the only crate both `atp-adapters` (producer)
+/// and `atp-data` (consumer) may depend on — neither may depend on the other (SRS-ARCH-002
+/// one-way dependency direction). The core never names a vendor; the adapter maps provider →
+/// kind (SRS-ARCH-003).
+///
+/// ## Bitemporal honesty (point-in-time correctness)
+///
+/// `period_end_ts` is the fiscal PERIOD END (valid time); `available_ts` is the FILING /
+/// availability instant (the date the statement became knowable — Sharadar SF1 `datekey`). A
+/// statement is often filed weeks after its period ends, so the two differ and a factor run
+/// must select by `available_ts` to avoid lookahead bias (the factor loader enforces that gate;
+/// see `atp-factor-pipeline`'s `load_fundamental_input`). [`FundamentalStatements::new`] fails
+/// closed on `available_ts < period_end_ts` (a statement cannot be filed before its period ends
+/// — impossible provenance) so a malformed bundle can never reach the store.
+///
+/// ## Minor units, no `f64`
+///
+/// Every monetary line item is an integer minor-unit `i64` (cents), like the rest of the data
+/// layer. `net_income_minor` and `book_equity_minor` MAY be negative (a loss-making or
+/// negative-book-value security); `market_value_minor` MUST be positive (it is the ratio
+/// denominator the factor pipeline divides by — `new` rejects a non-positive market value so a
+/// built ratios record is always loader-readable).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FundamentalStatements {
+    symbol: String,
+    period_end_ts: i64,
+    available_ts: i64,
+    // Income statement.
+    revenue_minor: i64,
+    net_income_minor: i64,
+    // Balance sheet.
+    total_assets_minor: i64,
+    total_liabilities_minor: i64,
+    book_equity_minor: i64,
+    // Cash-flow statement.
+    operating_cash_flow_minor: i64,
+    investing_cash_flow_minor: i64,
+    financing_cash_flow_minor: i64,
+    // Key-ratio input (the positive denominator).
+    market_value_minor: i64,
+}
+
+/// Fail-closed construction error for [`FundamentalStatements`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FundamentalStatementsError {
+    /// The symbol was empty after trimming.
+    EmptySymbol,
+    /// The fiscal period-end timestamp was negative (not a valid event instant).
+    NegativePeriodEnd { period_end_ts: i64 },
+    /// The availability (filing) instant preceded the fiscal period end — impossible
+    /// provenance (a statement cannot be filed before its period closes).
+    AvailabilityBeforePeriodEnd {
+        period_end_ts: i64,
+        available_ts: i64,
+    },
+    /// The market value (the ratio denominator) was non-positive, so the derived key ratios
+    /// would be undefined.
+    NonPositiveMarketValue { market_value_minor: i64 },
+    /// A statement field whose domain cannot be negative (revenue / total assets / total
+    /// liabilities) carried a negative value — a corrupt statement, rejected before any record is
+    /// cataloged. (Genuinely signed fields — net income, book equity, the cash flows — are NOT
+    /// validated here; a loss / negative book value / net cash outflow is legitimate.)
+    NegativeStatementField {
+        field: &'static str,
+        value_minor: i64,
+    },
+}
+
+impl fmt::Display for FundamentalStatementsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptySymbol => write!(f, "fundamental statements symbol is empty"),
+            Self::NegativePeriodEnd { period_end_ts } => {
+                write!(f, "fundamental period_end_ts is negative ({period_end_ts})")
+            }
+            Self::AvailabilityBeforePeriodEnd {
+                period_end_ts,
+                available_ts,
+            } => write!(
+                f,
+                "fundamental available_ts {available_ts} precedes period_end_ts {period_end_ts} \
+                 (a statement cannot be filed before its period ends)"
+            ),
+            Self::NonPositiveMarketValue { market_value_minor } => write!(
+                f,
+                "fundamental market_value_minor must be positive, got {market_value_minor}"
+            ),
+            Self::NegativeStatementField { field, value_minor } => write!(
+                f,
+                "fundamental {field} cannot be negative, got {value_minor}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FundamentalStatementsError {}
+
+impl FundamentalStatements {
+    /// Build a validated bundle, normalizing the symbol (trim + upper-case) and failing closed
+    /// on an empty symbol, a negative period end, impossible provenance
+    /// (`available_ts < period_end_ts`), or a non-positive market value.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        symbol: &str,
+        period_end_ts: i64,
+        available_ts: i64,
+        revenue_minor: i64,
+        net_income_minor: i64,
+        total_assets_minor: i64,
+        total_liabilities_minor: i64,
+        book_equity_minor: i64,
+        operating_cash_flow_minor: i64,
+        investing_cash_flow_minor: i64,
+        financing_cash_flow_minor: i64,
+        market_value_minor: i64,
+    ) -> Result<Self, FundamentalStatementsError> {
+        let normalized = symbol.trim().to_uppercase();
+        if normalized.is_empty() {
+            return Err(FundamentalStatementsError::EmptySymbol);
+        }
+        if period_end_ts < 0 {
+            return Err(FundamentalStatementsError::NegativePeriodEnd { period_end_ts });
+        }
+        if available_ts < period_end_ts {
+            return Err(FundamentalStatementsError::AvailabilityBeforePeriodEnd {
+                period_end_ts,
+                available_ts,
+            });
+        }
+        if market_value_minor <= 0 {
+            return Err(FundamentalStatementsError::NonPositiveMarketValue { market_value_minor });
+        }
+        // Fields whose domain cannot be negative for a real statement fail closed so a corrupt
+        // bundle is never cataloged (the deferred SYS-77 validator, SRS-DATA-013, will add the full
+        // range rules; this is the point-of-use floor). Genuinely signed fields (net_income_minor,
+        // book_equity_minor, the cash flows) are intentionally NOT checked — a loss, negative book
+        // value, or net cash outflow is legitimate.
+        for (field, value_minor) in [
+            ("revenue_minor", revenue_minor),
+            ("total_assets_minor", total_assets_minor),
+            ("total_liabilities_minor", total_liabilities_minor),
+        ] {
+            if value_minor < 0 {
+                return Err(FundamentalStatementsError::NegativeStatementField { field, value_minor });
+            }
+        }
+        Ok(Self {
+            symbol: normalized,
+            period_end_ts,
+            available_ts,
+            revenue_minor,
+            net_income_minor,
+            total_assets_minor,
+            total_liabilities_minor,
+            book_equity_minor,
+            operating_cash_flow_minor,
+            investing_cash_flow_minor,
+            financing_cash_flow_minor,
+            market_value_minor,
+        })
+    }
+
+    pub fn symbol(&self) -> &str {
+        &self.symbol
+    }
+    pub fn period_end_ts(&self) -> i64 {
+        self.period_end_ts
+    }
+    pub fn available_ts(&self) -> i64 {
+        self.available_ts
+    }
+    pub fn revenue_minor(&self) -> i64 {
+        self.revenue_minor
+    }
+    pub fn net_income_minor(&self) -> i64 {
+        self.net_income_minor
+    }
+    pub fn total_assets_minor(&self) -> i64 {
+        self.total_assets_minor
+    }
+    pub fn total_liabilities_minor(&self) -> i64 {
+        self.total_liabilities_minor
+    }
+    pub fn book_equity_minor(&self) -> i64 {
+        self.book_equity_minor
+    }
+    pub fn operating_cash_flow_minor(&self) -> i64 {
+        self.operating_cash_flow_minor
+    }
+    pub fn investing_cash_flow_minor(&self) -> i64 {
+        self.investing_cash_flow_minor
+    }
+    pub fn financing_cash_flow_minor(&self) -> i64 {
+        self.financing_cash_flow_minor
+    }
+    pub fn market_value_minor(&self) -> i64 {
+        self.market_value_minor
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarketDataTick {
     pub symbol: String,
@@ -2477,6 +2682,122 @@ mod tests {
     /// fixtures that need a distinct value from `SAMPLE_SOURCE_HASH_ALPHA`.
     const SAMPLE_SOURCE_HASH_BETA: &str =
         "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    /// A well-formed fundamental bundle the factor pipeline can read (available_ts after the
+    /// period end, positive market value, negative net income allowed).
+    fn sample_statements() -> FundamentalStatements {
+        FundamentalStatements::new(
+            "aapl", // lower-case -> normalized to AAPL
+            1_700_000_000, // period end
+            1_702_000_000, // filed later
+            5_000_000,     // revenue
+            -250_000,      // net income (a loss is allowed)
+            8_000_000,     // total assets
+            3_000_000,     // total liabilities
+            5_000_000,     // book equity
+            900_000,       // operating cash flow
+            -400_000,      // investing cash flow
+            -100_000,      // financing cash flow
+            20_000_000,    // market value (positive)
+        )
+        .expect("sample statements are well-formed")
+    }
+
+    #[test]
+    fn fundamental_statements_normalize_and_accessors() {
+        let s = sample_statements();
+        assert_eq!(s.symbol(), "AAPL");
+        assert_eq!(s.period_end_ts(), 1_700_000_000);
+        assert_eq!(s.available_ts(), 1_702_000_000);
+        assert_eq!(s.net_income_minor(), -250_000);
+        assert_eq!(s.book_equity_minor(), 5_000_000);
+        assert_eq!(s.market_value_minor(), 20_000_000);
+    }
+
+    #[test]
+    fn fundamental_statements_reject_empty_symbol() {
+        let err = FundamentalStatements::new("  ", 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1).unwrap_err();
+        assert_eq!(err, FundamentalStatementsError::EmptySymbol);
+    }
+
+    #[test]
+    fn fundamental_statements_reject_negative_period_end() {
+        let err = FundamentalStatements::new("AAPL", -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1).unwrap_err();
+        assert_eq!(
+            err,
+            FundamentalStatementsError::NegativePeriodEnd { period_end_ts: -1 }
+        );
+    }
+
+    #[test]
+    fn fundamental_statements_reject_availability_before_period_end() {
+        // available_ts strictly before period_end_ts is impossible provenance -> fail closed.
+        let err =
+            FundamentalStatements::new("AAPL", 1_000, 999, 0, 0, 0, 0, 0, 0, 0, 0, 1).unwrap_err();
+        assert_eq!(
+            err,
+            FundamentalStatementsError::AvailabilityBeforePeriodEnd {
+                period_end_ts: 1_000,
+                available_ts: 999,
+            }
+        );
+    }
+
+    #[test]
+    fn fundamental_statements_reject_non_positive_market_value() {
+        let err =
+            FundamentalStatements::new("AAPL", 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0).unwrap_err();
+        assert_eq!(
+            err,
+            FundamentalStatementsError::NonPositiveMarketValue {
+                market_value_minor: 0
+            }
+        );
+    }
+
+    #[test]
+    fn fundamental_statements_reject_negative_nonnegative_domain_fields() {
+        // The positional args to `new` after the symbol are: [0]=period_end_ts, [1]=available_ts,
+        // [2]=revenue, [3]=net_income, [4]=total_assets, [5]=total_liabilities, [6]=book_equity,
+        // [7]=operating_cf, [8]=investing_cf, [9]=financing_cf, [10]=market_value. revenue / total
+        // assets / total liabilities cannot be negative for a real statement.
+        for (idx, field) in [
+            (2usize, "revenue_minor"),
+            (4usize, "total_assets_minor"),
+            (5usize, "total_liabilities_minor"),
+        ] {
+            let mut args = [0i64; 11];
+            args[0] = 1; // period_end_ts
+            args[1] = 1; // available_ts
+            args[10] = 1; // market_value_minor (positive)
+            args[idx] = -1; // the field under test, negative
+            let err = FundamentalStatements::new(
+                "AAPL", args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
+                args[8], args[9], args[10],
+            )
+            .unwrap_err();
+            assert_eq!(
+                err,
+                FundamentalStatementsError::NegativeStatementField {
+                    field,
+                    value_minor: -1
+                },
+                "field {field} must be rejected when negative"
+            );
+        }
+    }
+
+    #[test]
+    fn fundamental_statements_allow_signed_fields() {
+        // A loss (negative net income), negative book equity, and net cash OUTFLOWS are legitimate.
+        let s = FundamentalStatements::new(
+            "AAPL", 1, 1, 0, -5_000_000, 0, 0, -1_000_000, -100, -200, -300, 1,
+        )
+        .expect("signed fields are allowed");
+        assert_eq!(s.net_income_minor(), -5_000_000);
+        assert_eq!(s.book_equity_minor(), -1_000_000);
+        assert_eq!(s.financing_cash_flow_minor(), -300);
+    }
 
     #[test]
     fn names_strategy_ids() {
