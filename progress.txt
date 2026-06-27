@@ -1,4 +1,151 @@
->>> NEXT TARGET (2026-06-26, after SESSION 75): foundational-impact policy. The store-backed factor-job
+>>> NEXT TARGET (2026-06-27, after SESSION 76): foundational-impact policy. SRS-DATA-005 (Sharadar
+>>> fundamental ingestion) SUBSTRATE shipped + passes:false. It closes a real latent gap: the factor
+>>> pipeline's load_fundamental_input reads fundamental:ratios records with {available_ts, net_income_minor,
+>>> book_equity_minor, market_value_minor}, but NO ingestion path produced them (the old fixture emitted
+>>> fundamental:income with revenue/net_income/total_assets -- loader-incompatible). Now there IS one:
+>>> atp-data fundamentals::build_fundamental_records turns a vendor-neutral atp-types FundamentalStatements
+>>> DTO into the 4 canonical statement records (income/balance/cashflow/ratios), the ratios record matching
+>>> the loader EXACTLY (proven by an integration test that reads a built record back through the real
+>>> loader). atp-adapters SharadarAdapter::map_fundamentals is the provider->vendor-neutral mapping (Sharadar
+>>> token ONLY in the adapter layer; SRS-ARCH-002 forced the 3-crate split meeting at the atp-types DTO --
+>>> adapters/data each depend ONLY on atp-types). STAYS passes:false: deferred owners NAMED = real Sharadar
+>>> NETWORK adapter (live fetch stub), NFR-P8d overnight-window wall-clock proof over 8,000+ securities
+>>> (like FAC-001's NFR-P7), orchestrated fetch->ingest HOST (no crate depends on both adapter+data), and
+>>> SYS-77 validator rules (SRS-DATA-013). NEXT: survey the closest foundational unblock -- candidates are
+>>> RES-002 (Jupyter notebook host, last unwired DATA-007 consumer), DATA-001/003 (Databento daily/backfill
+>>> over the same ingest path), or the RESTATEMENT/multi-filing storage-schema slice (see below). Surface
+>>> the choice to the operator. 83 features remaining (UNCHANGED -- substrate, no flip).
+>>>
+>>> RESTATEMENT BLOCKER (deferred this session by operator decision; the NEXT-deeper concern for fundamentals):
+>>> the fundamental natural key is (Fundamental, symbol, resolution, period_end_ts) with available_ts as a
+>>> VALUE field, so it models ONE authoritative filing per fiscal period. A restatement / amended filing
+>>> (same period, later datekey, revised numbers) is a same-key/different-content write that the DATA-016
+>>> idempotency core fails CLOSED on (StoreError::ConflictingContent) -- rejected, NO corruption / NO
+>>> lookahead, but not yet cataloged as point-in-time history. SF1's `dimension` column (ARQ/MRQ/ARY/...) is
+>>> the SAME class of multi-row-per-period issue; this session HANDLES it explicitly by ingesting ONLY the
+>>> as-reported-quarterly dimension (SUPPORTED_SHARADAR_DIMENSION="ARQ") and rejecting the rest fail-closed
+>>> (so MR* restatement-adjusted rows -- lookahead-prone -- are never ingested, and two same-period rows
+>>> differing only by dimension can't collapse). Representing MULTIPLE filings/dimensions per period needs a
+>>> filing-version dimension in NaturalKey + a loader that picks the latest filing available as-of the run
+>>> date = a STORAGE-SCHEMA change (NaturalKey/codec/SCHEMA_VERSION bump, interacts with DATA-016) -- its own
+>>> slice, deferred with the real Sharadar restatement feed. PINNED by the test
+>>> srs_data_005_restatement_currently_fails_closed_pending_filing_version_keying.
+>>>
+>>> WHAT SHIPPED (SESSION 76, foundational substrate; feature_list.json byte-identical -- NO flip):
+>>>   - crates/atp-types/src/lib.rs: FundamentalStatements vendor-neutral DTO (period_end_ts SEPARATE from
+>>>     available_ts; integer minor units) + FundamentalStatementsError. new() fails closed: empty symbol,
+>>>     negative period end, available_ts < period_end_ts (impossible provenance), non-positive market value,
+>>>     and NEGATIVE revenue/total_assets/total_liabilities (NegativeStatementField) -- net_income/book_equity/
+>>>     cash-flows stay legitimately signed. +7 unit tests.
+>>>   - crates/atp-data/src/fundamentals.rs (NEW, vendor-neutral): build_fundamental_records -> 4 records
+>>>     (fundamental:income/balance/cashflow/ratios), all keyed (Fundamental, symbol, period_end_ts), each
+>>>     carrying available_ts; the ratios record carries EXACTLY the loader's 4 fields. Additive -- did NOT
+>>>     touch the shared fundamental_record fixture (DATA-007 query test + DATA-016 depend on it). +3 tests.
+>>>   - crates/atp-adapters/src/lib.rs: SharadarAdapter::map_fundamentals(rows)->AdapterResult<Vec<
+>>>     FundamentalStatements>> (Sharadar SF1 columns ticker/dimension/reportperiod=period-end/datekey=filing
+>>>     /netinc/equity/marketcap/...). New AdapterError::InvalidProviderData (failures route through the common
+>>>     adapter taxonomy, NOT the raw DTO error). EXPLICIT dimension policy: SUPPORTED_SHARADAR_DIMENSION="ARQ"
+>>>     accepted, all others rejected fail-closed. +6 sharadar tests (vendor token allowed in adapter layer).
+>>>   - crates/atp-data/src/bin/data005_fundamental_cli.rs (NEW): ingest/reingest(idempotent proof)/inspect/
+>>>     factor-input. factor-input canonicalizes --symbol via SecurityKey (lowercase/padded resolve; empty
+>>>     fails closed) and prints derived earnings_yield/book_to_price. +2 bin unit tests.
+>>>   - crates/atp-factor-pipeline/tests/srs_data_005_fundamental_ingest.rs (NEW, the crate allowed to depend
+>>>     on BOTH atp-data + the loader): build->ingest->persist->reload->re-ingest(no-op)->READ via the REAL
+>>>     load_fundamental_input; point-in-time skip; negatives-allowed; + the restatement fail-closed PIN. 4 tests.
+>>>   - architecture/runtime_services.json: fundamental_ingestion_contract block (3-crate decomposition,
+>>>     loader contract, dimension_policy, deferred owners incl. restatement). tools/fundamental_ingestion_
+>>>     check.py (NEW) wired into init.sh AND architecture_check.py (CI mirror). tests/domain/test_fundamental_
+>>>     ingestion.py (L7 safety: behavioral cargo + structural guards + non-vacuous vendor-isolation).
+>>>   - Also fixed a pre-existing-but-touched ruff I001 import-sort in tools/architecture_check.py (operator-
+>>>     requested; pure import ordering, no logic). NOTE: 7 OTHER pre-existing ruff I001 files remain repo-wide
+>>>     (tests/domain/test_ingestion_idempotency.py, test_paper_halt_lifecycle.py, test_strategy_api_parity.py,
+>>>     tests/test_coverage_manifest_contract.py, test_orchestrator_deployment_version_contract.py,
+>>>     tools/historical_data_check.py, tools/strategy_api_parity_check.py) -- NOT touched by this change; the
+>>>     autonomous loop has never gated on ruff so main is broadly ruff-check-dirty.
+>>>
+>>> CODEX ADVERSARIAL LOOP (6 rounds to APPROVE -- a data-heavy slice; each round surfaced the next-deeper
+>>> concern, per the non-convergence pattern; every finding was a REAL bug fixed, except R2 which the human
+>>> operator explicitly DEFERRED):
+>>>   R1 [high] DTO accepted negative revenue/assets/liabilities -> NegativeStatementField (signed fields kept);
+>>>     [med] adapter mapping returned the raw DTO error -> AdapterResult/InvalidProviderData. R2 [high]
+>>>     restatement keying (same-period multi-filing collapses to ConflictingContent) -> operator chose
+>>>     DEFER+PIN+COMMIT (storage-schema change is its own slice); named deferred owner + regression pin added.
+>>>     R3 [med] Ruff F841 unused var in the domain test -> removed. R4 [high] SF1 statement-dimension collapse
+>>>     -> explicit SUPPORTED_SHARADAR_DIMENSION="ARQ" filter + reject-others fail-closed + tests + metadata
+>>>     (Codex's own cheaper recommendation, in-scope). R5 [med] CLI factor-input queried the RAW --symbol while
+>>>     records are canonical -> canonicalize via SecurityKey + bin tests. R6: APPROVE (no material findings).
+>>>     Deterministic critic APPROVE throughout.
+>>>
+>>> KNOWN (pre-existing, NOT mine): tests/property/test_indicators_property.py::test_bbands_property_matches_
+>>> batch_talib FAILS on a CLEAN tree (talib/pandas-ta precision flake). cargo fmt/clippy -D + ruff check .
+>>> are LOCAL/CI gates the autonomous loop has never enforced (toolchain skew / pre-existing I001s on untouched
+>>> files).
+
+=== SESSION 76 ===
+Date: 2026-06-27
+Feature: SRS-DATA-005 -- ingest Sharadar fundamental data on a scheduled basis (docs/SRS.md SRS-DATA-005;
+SyRS SYS-26, NFR-P8d; StRS SN-3.03 / BG-3). STAYS passes:false (FOUNDATIONAL substrate: the vendor-neutral
+fundamental-statement mapping + the four-statement canonical record build + the validation / idempotent-
+catalog write + the loader-availability read are demonstrated end to end over fixture sources, but the
+close needs the deferred owners -- the real Sharadar NETWORK adapter, the NFR-P8d overnight wall-clock
+proof over 8,000+ securities, the orchestrated fetch->ingest host, and the SYS-77 validator rules).
+Status: 83 features remaining (UNCHANGED, 83 -> 83; feature_list.json byte-identical to HEAD).
+
+SELECTION: operator directive (foundational-impact policy + the S75 handoff naming DATA-005 as a DATA-007/
+FAC-001 close unblocker). Operator (AskUserQuestion) chose DATA-005 over RES-002 / DATA-013. Mid-review the
+operator additionally chose DEFER+PIN+COMMIT for the restatement/multi-filing keying concern (a storage-
+schema change that is its own future slice).
+
+What I did:
+- Closed a real latent gap: the factor pipeline's load_fundamental_input reads fundamental:ratios records
+  with {available_ts, net_income_minor, book_equity_minor, market_value_minor}, but NO ingestion path
+  produced them (the old fixture emitted fundamental:income with revenue/net_income/total_assets). Built the
+  vendor-neutral path: atp-types FundamentalStatements DTO (point-of-use fail-closed) -> atp-data
+  fundamentals::build_fundamental_records (4 canonical statement records, the ratios record matching the
+  loader EXACTLY) -> the UNCHANGED DataLayer::ingest_market_record (ERR-5 gate + idempotent upsert).
+- The SRS-ARCH-002 dependency direction (adapters/data each depend ONLY on atp-types) FORCED a 3-crate
+  decomposition meeting at the atp-types DTO: atp-adapters SharadarAdapter::map_fundamentals maps Sharadar
+  SF1 columns -> the DTO (Sharadar token ONLY in the adapter layer; SRS-ARCH-003). The adapter/data in-process
+  handoff is the deferred live host (no crate depends on both). Added the data005_fundamental_cli operator
+  surface and an integration test (in atp-factor-pipeline, the one crate allowed to depend on both) that reads
+  a built ratios record back through the REAL loader -- so any resolution/field drift fails closed.
+
+What I tested:
+- cargo test --workspace green (84 result lines, 0 failures). atp-types DTO (7), atp-data fundamentals (3),
+  atp-adapters sharadar mapping (6), data005_fundamental_cli bin (2), atp-factor-pipeline integration (4:
+  build->ingest->persist->reload->re-ingest no-op->READ via load_fundamental_input; point-in-time skip;
+  negatives-allowed; restatement fail-closed pin). tests/domain/test_fundamental_ingestion.py (5, L7 safety).
+  python3 tools/fundamental_ingestion_check.py --require-cargo PASS; ./init.sh -> ready (new check wired).
+  CLI smoke: ingest -> reingest inserted:0/bytes_identical:true -> factor-input --symbol aapl resolves to
+  AAPL available:true earnings_yield:0.1 book_to_price:0.2. ruff clean on all touched files.
+
+Critic verdicts:
+  deterministic: APPROVE -- 0 findings (re-run after every fix).
+  judgment (/codex:adversarial-review): APPROVE (round 6) -- no material findings. The 6-round loop fixed, in
+    order: R1 DTO negative-field validation (NegativeStatementField) + adapter AdapterResult/InvalidProviderData;
+    R2 restatement multi-filing keying = OPERATOR-AUTHORIZED DEFERRAL (storage-schema change; named deferred
+    owner + regression pin); R3 Ruff F841 unused var; R4 SF1 statement-dimension collapse (explicit
+    SUPPORTED_SHARADAR_DIMENSION="ARQ" filter, reject others fail-closed); R5 CLI factor-input raw-symbol query
+    (canonicalize via SecurityKey). Every round = a real correctness/safety concern; none faked. The R2 deferral
+    is recorded honestly (NOT a faked APPROVE for the deferred item -- it is named + pinned + operator-authorized).
+
+Known issues / notes for next agent:
+- DEFERRED (named owners, all in fundamental_ingestion_contract): real Sharadar NETWORK adapter; NFR-P8d
+  overnight wall-clock proof; orchestrated fetch->ingest HOST; SYS-77 validator rules (SRS-DATA-013); and the
+  RESTATEMENT/multi-filing/multi-dimension storage-schema change (a filing-version dimension in NaturalKey +
+  a latest-filing-as-of loader -- pinned by srs_data_005_restatement_currently_fails_closed_pending_filing_
+  version_keying). This session HANDLES the SF1 dimension axis by ingesting ONLY ARQ (as-reported quarterly)
+  and rejecting the rest fail-closed (MR* restatement-adjusted = lookahead, never ingested).
+- Do NOT mutate the shared store::fundamental_record fixture (DATA-007 query test + DATA-016 depend on its
+  fundamental:income shape) -- the DATA-005 path is ADDITIVE. Do NOT route map_fundamentals failures through
+  the raw FundamentalStatementsError (use AdapterError::InvalidProviderData). Do NOT query a raw operator
+  symbol in factor-input (canonicalize via SecurityKey).
+- Operator-requested ruff fix: sorted tools/architecture_check.py imports (I001). 7 OTHER pre-existing ruff
+  I001 files remain repo-wide (untouched by this change) -- main is broadly ruff-check-dirty (the autonomous
+  loop has never gated on ruff). Pre-existing bbands property test flake on a clean tree persists.
+
+
+[SUPERSEDED by SESSION 76 -- historical] >>> NEXT TARGET (2026-06-26, after SESSION 75): foundational-impact policy. The store-backed factor-job
 >>> READ consumer (SRS-DATA-007 / SRS-FAC-001) is now WIRED + point-in-time-safe, but SRS-FAC-001 STAYS
 >>> passes:false. The flip was ATTEMPTED then REVERTED (Codex: FAC-001's AC is a PERFORMANCE TEST / NFR-P7
 >>> over real securities, and the fixture run uses a DETERMINISTIC clock -> proves gating logic, not
