@@ -18,7 +18,6 @@ behavioral subprocess test then ingests fixtures via ``data016_ingest_cli`` and 
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys

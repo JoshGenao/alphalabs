@@ -178,7 +178,6 @@ def check_no_origin_field_read(config: dict, src: str) -> str:
 
 
 def check_normalization_honesty(config: dict, src: str) -> str:
-    spec = contract_block(config)
     compact = _compact(src)
     if "raiseNotImplementedError" not in compact:
         fail(
