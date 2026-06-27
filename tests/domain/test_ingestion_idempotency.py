@@ -51,6 +51,7 @@ if str(TOOLS_ROOT) not in sys.path:
 
 from ingestion_idempotency_check import (  # noqa: E402
     IngestionIdempotencyCheckError,
+    cargo_source,
     check_determinism,
     check_file_persistence,
     check_ingest_market_record,
@@ -61,7 +62,6 @@ from ingestion_idempotency_check import (  # noqa: E402
     check_store_lock,
     check_upsert,
     check_vendor_isolation,
-    cargo_source,
     cli_source,
     lib_source,
     load_config,
