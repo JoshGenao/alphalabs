@@ -78,9 +78,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def contract_block(config: dict) -> dict:
@@ -170,7 +168,9 @@ def check_result_struct(config: dict, src: str) -> str:
     if not re.search(rf"\bpub\s+struct\s+{re.escape(spec['struct'])}\b", src):
         fail(f"query module must declare `pub struct {spec['struct']}`")
     body = _compact(_struct_body(src, spec["struct"]))
-    missing = [f for f in spec["fields"] if _compact(f"{f}:") not in body and _compact(f) not in body]
+    missing = [
+        f for f in spec["fields"] if _compact(f"{f}:") not in body and _compact(f) not in body
+    ]
     if missing:
         fail(f"{spec['struct']} must expose {', '.join(missing)}")
     return (
@@ -200,9 +200,7 @@ def check_query_method(config: dict, src: str) -> str:
     if _compact(spec["fn"]) not in compact:
         fail(f"MarketDataStore must expose the unified query `{spec['fn']}`")
     if _compact(spec["returns_token"]) not in compact:
-        fail(
-            f"query_unified must return the source-neutral envelope (`{spec['returns_token']}`)"
-        )
+        fail(f"query_unified must return the source-neutral envelope (`{spec['returns_token']}`)")
     # Empty match is a RETURNED value, never a Result error.
     if _compact(spec["no_result_token"]) in compact:
         fail(
@@ -435,7 +433,9 @@ def run_checks(require_cargo: bool = False) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="SRS-DATA-007 unified historical query contract evidence")
+    parser = argparse.ArgumentParser(
+        description="SRS-DATA-007 unified historical query contract evidence"
+    )
     parser.add_argument(
         "--require-cargo",
         action="store_true",

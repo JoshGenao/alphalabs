@@ -74,9 +74,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def contract_block(config: dict) -> dict:
@@ -143,10 +141,7 @@ def check_spec_constants(config: dict, types_src: str) -> str:
         # by looking for the numeric literal anywhere in the right-hand side.
         rhs = num_match.group(1).strip()
         if not _eval_const_rhs(rhs, types_src, entry["value"]):
-            fail(
-                f"{entry['name']} right-hand side {rhs!r} does not evaluate to "
-                f"{entry['value']}"
-            )
+            fail(f"{entry['name']} right-hand side {rhs!r} does not evaluate to {entry['value']}")
     return (
         "atp-types declares the SyRS SYS-79 spec-literal constants — "
         f"{prefix['name']}={prefix['value']!r}, "
@@ -246,16 +241,10 @@ def check_deployed_version_struct(config: dict, types_src: str) -> str:
     )
 
 
-def check_strategy_launch_request_deployment_hash_type(
-    config: dict, types_src: str
-) -> str:
-    expected_type = contract_block(config)[
-        "strategy_launch_request_deployment_hash_type"
-    ]
+def check_strategy_launch_request_deployment_hash_type(config: dict, types_src: str) -> str:
+    expected_type = contract_block(config)["strategy_launch_request_deployment_hash_type"]
     body = _struct_body(types_src, "StrategyLaunchRequest")
-    pattern = re.compile(
-        rf"\bpub\s+deployment_hash\s*:\s*{re.escape(expected_type)}\b"
-    )
+    pattern = re.compile(rf"\bpub\s+deployment_hash\s*:\s*{re.escape(expected_type)}\b")
     if pattern.search(body) is None:
         fail(
             "StrategyLaunchRequest.deployment_hash must be typed as "
@@ -269,14 +258,10 @@ def check_strategy_launch_request_deployment_hash_type(
     )
 
 
-def check_strategy_launch_outcome_deployed_version_field(
-    config: dict, types_src: str
-) -> str:
+def check_strategy_launch_outcome_deployed_version_field(config: dict, types_src: str) -> str:
     field_name = contract_block(config)["strategy_launch_outcome_deployed_version_field"]
     body = _struct_body(types_src, "StrategyLaunchOutcome")
-    if not re.search(
-        rf"\bpub\s+{re.escape(field_name)}\s*:\s*DeployedVersion\b", body
-    ):
+    if not re.search(rf"\bpub\s+{re.escape(field_name)}\s*:\s*DeployedVersion\b", body):
         fail(
             f"StrategyLaunchOutcome is missing `pub {field_name}: DeployedVersion` — "
             "SRS-ORCH-004 requires the deployed version to surface on the "
@@ -289,9 +274,7 @@ def check_strategy_launch_outcome_deployed_version_field(
     ).format(field=field_name)
 
 
-def check_order_error_category_variant_and_wire_string(
-    config: dict, types_src: str
-) -> str:
+def check_order_error_category_variant_and_wire_string(config: dict, types_src: str) -> str:
     block = contract_block(config)
     variant = block["rejection_category"]
     wire = block["rejection_wire_string"]
@@ -305,9 +288,7 @@ def check_order_error_category_variant_and_wire_string(
     # The as_str() arm must map the variant to the wire string. There are
     # several as_str methods in atp-types; isolate the OrderErrorCategory
     # impl block before checking.
-    impl_match = re.search(
-        r"impl\s+OrderErrorCategory\s*\{", types_src
-    )
+    impl_match = re.search(r"impl\s+OrderErrorCategory\s*\{", types_src)
     if impl_match is None:
         fail("OrderErrorCategory impl block is missing — cannot check wire string")
     start = impl_match.end()
@@ -321,24 +302,17 @@ def check_order_error_category_variant_and_wire_string(
             depth -= 1
         index += 1
     impl_body = types_src[start : index - 1]
-    if not re.search(
-        rf"Self::{re.escape(variant)}\s*=>\s*\"{re.escape(wire)}\"", impl_body
-    ):
+    if not re.search(rf"Self::{re.escape(variant)}\s*=>\s*\"{re.escape(wire)}\"", impl_body):
         fail(
             f"OrderErrorCategory::{variant} does not map to wire string "
             f"`{wire}` in `as_str` — SyRS SYS-64 wire form must be stable"
         )
-    return (
-        f"atp-types declares OrderErrorCategory::{variant} and maps it to "
-        f"wire string `{wire}`"
-    )
+    return f"atp-types declares OrderErrorCategory::{variant} and maps it to wire string `{wire}`"
 
 
 def check_deployed_version_invalid_factory(config: dict, types_src: str) -> str:
     factory = contract_block(config)["deployed_version_invalid_factory"]
-    if not re.search(
-        rf"\bpub\s+fn\s+{re.escape(factory)}\s*\(", types_src
-    ):
+    if not re.search(rf"\bpub\s+fn\s+{re.escape(factory)}\s*\(", types_src):
         fail(
             f"StructuredOrchestratorError is missing factory method "
             f"`{factory}` — SRS-ORCH-004 rejections must flow through the "
@@ -368,10 +342,7 @@ def check_registry_port(config: dict, orch_src: str) -> str:
     body = _trait_body(orch_src, spec["trait"])
     for method in spec["methods"]:
         if not re.search(rf"\bfn\s+{re.escape(method)}\b", body):
-            fail(
-                f"trait {spec['trait']} is missing method `{method}` "
-                "(SRS-ORCH-004 port contract)"
-            )
+            fail(f"trait {spec['trait']} is missing method `{method}` (SRS-ORCH-004 port contract)")
     # Pin the typed Result signatures so a future drift to bare unit
     # returns (which would silently swallow registry-IO failures) is
     # caught.
@@ -477,9 +448,7 @@ def check_launch_deployment_version_guard(config: dict, orch_src: str) -> str:
     # so a rust-fmt'd multi-line call still matches.
     record_token = guard["required_record_call"]
     receiver, method = record_token.split(".", 1)
-    record_pattern = re.compile(
-        rf"\b{re.escape(receiver)}\s*\.\s*\n?\s*{re.escape(method)}\s*\("
-    )
+    record_pattern = re.compile(rf"\b{re.escape(receiver)}\s*\.\s*\n?\s*{re.escape(method)}\s*\(")
     if record_pattern.search(body_no_comments) is None:
         fail(
             f"{guard['entry_method']} does not call `{record_token}(` — "
@@ -512,9 +481,7 @@ def check_launch_deployment_version_guard(config: dict, orch_src: str) -> str:
 
     # DeadlineExceeded arm must NOT call version_registry.record.
     forbidden_record = guard["forbidden_record_call_on_deadline_exceeded_arm"]
-    deadline_match = re.search(
-        r"LaunchReadiness::DeadlineExceeded\s*\{[^}]*\}\s*=>\s*\{", body
-    )
+    deadline_match = re.search(r"LaunchReadiness::DeadlineExceeded\s*\{[^}]*\}\s*=>\s*\{", body)
     if deadline_match is None:
         fail("launch body is missing the DeadlineExceeded arm")
     arm_start = deadline_match.end()
@@ -619,9 +586,7 @@ def collect_evidence(root: Path = ROOT) -> list[str]:
     return evidence
 
 
-def assert_orchestrator_deployment_version_static(
-    config: dict, root: Path = ROOT
-) -> list[str]:
+def assert_orchestrator_deployment_version_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable from ``tools/architecture_check.py`` (no cargo)."""
     types_src = types_source(config, root)
     orch_src = orchestrator_source(config, root)

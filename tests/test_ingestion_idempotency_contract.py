@@ -103,7 +103,9 @@ class _Fixture(unittest.TestCase):
 
 class DatasetKindTest(_Fixture):
     def test_dataset_kind_evidence(self) -> None:
-        self.assertIn("vendor-neutral DatasetKind taxonomy", check_dataset_kind(self.config, self.src))
+        self.assertIn(
+            "vendor-neutral DatasetKind taxonomy", check_dataset_kind(self.config, self.src)
+        )
 
     def test_dropped_kind_variant_is_caught(self) -> None:
         mutated = self.src.replace("    OptionChainSnapshot,\n", "", 1)
@@ -144,7 +146,10 @@ class UpsertTest(_Fixture):
 
 class IngestMarketRecordTest(_Fixture):
     def test_composition_evidence(self) -> None:
-        self.assertIn("composes the unchanged ERR-5 gate", check_ingest_market_record(self.config, self.lib_src))
+        self.assertIn(
+            "composes the unchanged ERR-5 gate",
+            check_ingest_market_record(self.config, self.lib_src),
+        )
 
     def test_dropped_gate_composition_is_caught(self) -> None:
         # Bypassing the ERR-5 validation gate would let an invalid record reach the store.
@@ -177,7 +182,8 @@ class RecordHashTest(_Fixture):
         # Reverting record_hash to a non-SHA-256 (e.g. the FNV-1a checksum) violates the
         # IngestionRecordSubmission type contract -- caught.
         mutated = self.src.replace(
-            "sha256::hex(&self.normalized_bytes())", "format!(\"{:016x}\", checksum(&self.normalized_bytes()))"
+            "sha256::hex(&self.normalized_bytes())",
+            'format!("{:016x}", checksum(&self.normalized_bytes()))',
         )
         with self.assertRaises(IngestionIdempotencyCheckError) as ctx:
             check_record_hash(self.config, mutated)
@@ -186,7 +192,9 @@ class RecordHashTest(_Fixture):
     def test_value_only_hash_is_caught(self) -> None:
         # Hashing only the value fields (not the full record) would collide across distinct keys.
         # Dropping the full-record encoding from normalized_bytes must be caught.
-        mutated = self.src.replace("encode_record(&mut encoded, self)", "encode_fields_only(&mut encoded, self)")
+        mutated = self.src.replace(
+            "encode_record(&mut encoded, self)", "encode_fields_only(&mut encoded, self)"
+        )
         with self.assertRaises(IngestionIdempotencyCheckError) as ctx:
             check_record_hash(self.config, mutated)
         self.assertIn("WHOLE record", str(ctx.exception))
@@ -211,7 +219,9 @@ class IngestRecordUnchangedTest(_Fixture):
 
 class CodecTest(_Fixture):
     def test_codec_evidence(self) -> None:
-        self.assertIn("deterministic, dependency-free text codec", check_codec(self.config, self.src))
+        self.assertIn(
+            "deterministic, dependency-free text codec", check_codec(self.config, self.src)
+        )
 
     def test_dropped_checksum_first_is_caught(self) -> None:
         mutated = self.src.replace("if checksum(body) != stored_checksum", "if false")

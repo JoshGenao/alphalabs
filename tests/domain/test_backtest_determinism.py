@@ -287,9 +287,7 @@ def test_runs_match_compares_provenance() -> None:
     # runs_match must compare data_source + range, so two results from different catalogs or date
     # ranges are never reported identical merely because their trades + equity coincide.
     check_harness(config, module_source(config))
-    mutated = module_source(config).replace(
-        "left.data_source != right.data_source", "false", 1
-    )
+    mutated = module_source(config).replace("left.data_source != right.data_source", "false", 1)
     with pytest.raises(DeterminismCheckError):
         check_harness(config, mutated)
 

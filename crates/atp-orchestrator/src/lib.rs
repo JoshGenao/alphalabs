@@ -25,10 +25,16 @@ pub struct StrategyOrchestrator;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceProfileEnvError {
     /// `var` was set to `raw_value`, which does not parse as a u32.
-    UnparseableMem { var: &'static str, raw_value: String },
+    UnparseableMem {
+        var: &'static str,
+        raw_value: String,
+    },
     /// `var` was set to `raw_value`, which does not parse as an f64
     /// (CPU cores).
-    UnparseableCpu { var: &'static str, raw_value: String },
+    UnparseableCpu {
+        var: &'static str,
+        raw_value: String,
+    },
     /// The parsed-and-converted profile failed `ResourceProfile::validate`.
     Validation(ResourceProfileError),
 }
@@ -65,7 +71,10 @@ impl std::error::Error for ResourceProfileEnvError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostMemorySafetyMarginEnvError {
     /// `var` was set to `raw_value`, which does not parse as a u32.
-    Unparseable { var: &'static str, raw_value: String },
+    Unparseable {
+        var: &'static str,
+        raw_value: String,
+    },
     /// The parsed value failed `HostMemorySafetyMargin::validate`.
     Validation(HostMemorySafetyMarginError),
 }
@@ -702,6 +711,9 @@ impl StrategyOrchestrator {
     ///   `version_registry.record` — a version that was never
     ///   deployed must not appear in the active-strategy inventory
     ///   (SYS-41) or the REST API listing (IF-9).
+    // StructuredOrchestratorError is an intentionally rich typed error; boxing
+    // the Err variant would change the public signature (out of scope here).
+    #[allow(clippy::result_large_err)]
     pub fn launch<R, S, V>(
         &self,
         request: StrategyLaunchRequest,
@@ -756,12 +768,9 @@ impl StrategyOrchestrator {
                 // registries surface them via the typed
                 // DeployedVersionRegistryError so wrapping callers
                 // can observe without aborting the launch.
-                let deployed_version = DeployedVersion::new(
-                    request.deployment_hash.clone(),
-                    observed_at_seconds,
-                );
-                let _ = version_registry
-                    .record(&request.strategy_id, deployed_version.clone());
+                let deployed_version =
+                    DeployedVersion::new(request.deployment_hash.clone(), observed_at_seconds);
+                let _ = version_registry.record(&request.strategy_id, deployed_version.clone());
                 Ok(StrategyLaunchOutcome {
                     strategy_id: request.strategy_id,
                     ready_within_deadline: true,
@@ -1096,12 +1105,13 @@ impl StrategyOrchestrator {
             StrategyMode::Paper => ("ATP_PAPER_STRATEGY_MEM_MB", "ATP_PAPER_STRATEGY_CPU"),
         };
         let mem_mb = match lookup(mem_var) {
-            Some(raw) => raw.parse::<u32>().map_err(|_| {
-                ResourceProfileEnvError::UnparseableMem {
-                    var: mem_var,
-                    raw_value: raw,
-                }
-            })?,
+            Some(raw) => {
+                raw.parse::<u32>()
+                    .map_err(|_| ResourceProfileEnvError::UnparseableMem {
+                        var: mem_var,
+                        raw_value: raw,
+                    })?
+            }
             None => default.mem_mb,
         };
         // CPU is stored in the catalogue as a float (cores) and on the
@@ -1111,12 +1121,12 @@ impl StrategyOrchestrator {
         // future tuning change touches both sides consistently.
         let cpu_hundredths = match lookup(cpu_var) {
             Some(raw) => {
-                let cores = raw.parse::<f64>().map_err(|_| {
-                    ResourceProfileEnvError::UnparseableCpu {
-                        var: cpu_var,
-                        raw_value: raw.clone(),
-                    }
-                })?;
+                let cores =
+                    raw.parse::<f64>()
+                        .map_err(|_| ResourceProfileEnvError::UnparseableCpu {
+                            var: cpu_var,
+                            raw_value: raw.clone(),
+                        })?;
                 // Compare cores against the f64 catalogue bounds
                 // BEFORE rounding to integer hundredths. A naive
                 // `(cores * 100.0).round() as u32` would let 0.046
@@ -1149,7 +1159,10 @@ impl StrategyOrchestrator {
             }
             None => default.cpu_hundredths,
         };
-        let profile = ResourceProfile { mem_mb, cpu_hundredths };
+        let profile = ResourceProfile {
+            mem_mb,
+            cpu_hundredths,
+        };
         profile.validate()?;
         Ok(profile)
     }
@@ -1244,12 +1257,13 @@ impl StrategyOrchestrator {
     {
         let var = "ATP_HOST_MEMORY_SAFETY_MARGIN_MB";
         let mb = match lookup(var) {
-            Some(raw) => raw.parse::<u32>().map_err(|_| {
-                HostMemorySafetyMarginEnvError::Unparseable {
-                    var,
-                    raw_value: raw,
-                }
-            })?,
+            Some(raw) => {
+                raw.parse::<u32>()
+                    .map_err(|_| HostMemorySafetyMarginEnvError::Unparseable {
+                        var,
+                        raw_value: raw,
+                    })?
+            }
             None => HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT,
         };
         let margin = HostMemorySafetyMargin { mb };
@@ -1279,13 +1293,7 @@ impl StrategyOrchestrator {
                 });
             }
         };
-        self.safety_margin_from_lookup(|name| {
-            if name == var {
-                value.clone()
-            } else {
-                None
-            }
-        })
+        self.safety_margin_from_lookup(|name| if name == var { value.clone() } else { None })
     }
 
     /// SRS-ORCH-003 production env-var wrapper. Plugs `std::env::var`
@@ -1360,6 +1368,9 @@ impl StrategyOrchestrator {
     ///   evicted workload's priority is not `LiveStrategy`.
     /// * The happy path (sufficient headroom) MUST NOT call
     ///   `registry.terminate(` and MUST NOT emit any event.
+    // Many host/registry/sink generic params by design; rich typed Err variant
+    // (boxing it changes the public signature). Both refactors are out of scope here.
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)]
     pub fn admit_workload<H, R, S>(
         &self,
         request: &StrategyLaunchRequest,
@@ -1444,11 +1455,13 @@ impl StrategyOrchestrator {
                     failure_reason: probe_error.to_string(),
                     observed_at_seconds,
                 });
-                return Err(StructuredOrchestratorError::host_memory_safety_margin_breach(
-                    request.clone(),
-                    0,
-                    safety_margin.mb,
-                ));
+                return Err(
+                    StructuredOrchestratorError::host_memory_safety_margin_breach(
+                        request.clone(),
+                        0,
+                        safety_margin.mb,
+                    ),
+                );
             }
         };
         let needed_mb = u64::from(request.profile.mem_mb);
@@ -1478,11 +1491,13 @@ impl StrategyOrchestrator {
                     failure_reason: registry_error.to_string(),
                     observed_at_seconds,
                 });
-                return Err(StructuredOrchestratorError::host_memory_safety_margin_breach(
-                    request.clone(),
-                    available_mb,
-                    safety_margin.mb,
-                ));
+                return Err(
+                    StructuredOrchestratorError::host_memory_safety_margin_breach(
+                        request.clone(),
+                        available_mb,
+                        safety_margin.mb,
+                    ),
+                );
             }
         };
         let mut eligible_candidates: Vec<RegisteredWorkload> = active
@@ -1490,7 +1505,7 @@ impl StrategyOrchestrator {
             .filter(|workload| workload.kind == WorkloadKind::Batch)
             .filter(|workload| workload.priority.rank() > new_workload_priority.rank())
             .collect();
-        eligible_candidates.sort_by(|a, b| b.priority.rank().cmp(&a.priority.rank()));
+        eligible_candidates.sort_by_key(|workload| std::cmp::Reverse(workload.priority.rank()));
 
         // (4) Pre-eviction feasibility: if even the SUM of all
         // eligible candidates' memory cannot bring the host above the
@@ -1515,11 +1530,13 @@ impl StrategyOrchestrator {
                 },
                 observed_at_seconds,
             });
-            return Err(StructuredOrchestratorError::host_memory_safety_margin_breach(
-                request.clone(),
-                available_mb,
-                safety_margin.mb,
-            ));
+            return Err(
+                StructuredOrchestratorError::host_memory_safety_margin_breach(
+                    request.clone(),
+                    available_mb,
+                    safety_margin.mb,
+                ),
+            );
         }
 
         // (5) Eviction loop. Each `terminate` returns Result so the
@@ -1584,11 +1601,13 @@ impl StrategyOrchestrator {
             },
             observed_at_seconds,
         });
-        Err(StructuredOrchestratorError::host_memory_safety_margin_breach(
-            request.clone(),
-            available_mb,
-            safety_margin.mb,
-        ))
+        Err(
+            StructuredOrchestratorError::host_memory_safety_margin_breach(
+                request.clone(),
+                available_mb,
+                safety_margin.mb,
+            ),
+        )
     }
 }
 
@@ -1757,7 +1776,9 @@ mod tests {
     fn ready_within_deadline_returns_outcome_and_emits_no_event() {
         let orchestrator = StrategyOrchestrator;
         let runtime = RuntimeStub::new(
-            LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 4_200 },
+            LaunchReadiness::ReadyWithinDeadline {
+                elapsed_millis: 4_200,
+            },
             ContainerHealthState::Healthy,
         );
         let sink = ForbiddenSink;
@@ -1804,7 +1825,10 @@ mod tests {
             error.category,
             atp_types::OrderErrorCategory::StrategyStartupDeadlineExceeded
         );
-        assert_eq!(error.category.as_str(), "STRATEGY_STARTUP_DEADLINE_EXCEEDED");
+        assert_eq!(
+            error.category.as_str(),
+            "STRATEGY_STARTUP_DEADLINE_EXCEEDED"
+        );
         assert_eq!(error.original_request.strategy_id.as_str(), "alpha-1");
         // SRS-ORCH-002 / SyRS SYS-57: the over-deadline container must
         // be destroyed so the host memory budget is not consumed by an
@@ -1831,12 +1855,8 @@ mod tests {
             ContainerHealthState::Healthy,
         );
         let sink = ForbiddenSink;
-        let state = orchestrator.observe_health(
-            StrategyId::new("alpha-1"),
-            &runtime,
-            &sink,
-            1_715_000_000,
-        );
+        let state =
+            orchestrator.observe_health(StrategyId::new("alpha-1"), &runtime, &sink, 1_715_000_000);
         assert_eq!(state, ContainerHealthState::Healthy);
         assert_eq!(runtime.health_calls.get(), 1);
         assert_eq!(
@@ -1856,12 +1876,8 @@ mod tests {
             ContainerHealthState::Unresponsive,
         );
         let sink = SinkSpy::default();
-        let state = orchestrator.observe_health(
-            StrategyId::new("alpha-1"),
-            &runtime,
-            &sink,
-            1_715_000_000,
-        );
+        let state =
+            orchestrator.observe_health(StrategyId::new("alpha-1"), &runtime, &sink, 1_715_000_000);
         assert_eq!(state, ContainerHealthState::Unresponsive);
         assert_eq!(runtime.health_calls.get(), 1);
         assert_eq!(
@@ -1888,12 +1904,8 @@ mod tests {
             ContainerHealthState::Unresponsive,
         );
         let sink = SinkSpy::default();
-        let _ = orchestrator.observe_health(
-            StrategyId::new("alpha-1"),
-            &runtime,
-            &sink,
-            1_715_000_000,
-        );
+        let _ =
+            orchestrator.observe_health(StrategyId::new("alpha-1"), &runtime, &sink, 1_715_000_000);
         assert_eq!(runtime.health_calls.get(), 1);
         assert_eq!(runtime.restart_calls.get(), 1);
     }
@@ -1910,7 +1922,9 @@ mod tests {
         // statically; this test anchors it behaviourally.
         let orchestrator = StrategyOrchestrator;
         let runtime = RuntimeStub::new(
-            LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 4_200 },
+            LaunchReadiness::ReadyWithinDeadline {
+                elapsed_millis: 4_200,
+            },
             ContainerHealthState::Healthy,
         );
         let sink = ForbiddenSink;
@@ -1962,7 +1976,11 @@ mod tests {
         );
         assert_eq!(error.error_type, "ResourceProfileInvalid::MemBelowFloor");
         assert_eq!(error.original_request.profile, bad);
-        assert_eq!(runtime.create_calls.get(), 0, "validation gate must short-circuit");
+        assert_eq!(
+            runtime.create_calls.get(),
+            0,
+            "validation gate must short-circuit"
+        );
         assert_eq!(runtime.start_calls.get(), 0);
         assert_eq!(runtime.destroy_calls.get(), 0);
     }
@@ -2210,10 +2228,9 @@ mod tests {
         // VarError::NotPresent means the operator did not set the
         // override; the env wrapper falls back to the SyRS default.
         let orchestrator = StrategyOrchestrator;
-        let env_lookup =
-            |_name: &str| -> Result<String, std::env::VarError> {
-                Err(std::env::VarError::NotPresent)
-            };
+        let env_lookup = |_name: &str| -> Result<String, std::env::VarError> {
+            Err(std::env::VarError::NotPresent)
+        };
         let profile = orchestrator
             .profile_for_mode_via_env_lookup(StrategyMode::Live, env_lookup)
             .expect("NotPresent for both vars must default-to-live");
@@ -2242,14 +2259,13 @@ mod tests {
         }
         let orchestrator = StrategyOrchestrator;
         let bad = invalid_unicode_osstring();
-        let env_lookup =
-            |name: &str| -> Result<String, std::env::VarError> {
-                if name == "ATP_LIVE_STRATEGY_MEM_MB" {
-                    Err(std::env::VarError::NotUnicode(bad.clone()))
-                } else {
-                    Err(std::env::VarError::NotPresent)
-                }
-            };
+        let env_lookup = |name: &str| -> Result<String, std::env::VarError> {
+            if name == "ATP_LIVE_STRATEGY_MEM_MB" {
+                Err(std::env::VarError::NotUnicode(bad.clone()))
+            } else {
+                Err(std::env::VarError::NotPresent)
+            }
+        };
         let err = orchestrator
             .profile_for_mode_via_env_lookup(StrategyMode::Live, env_lookup)
             .expect_err("non-Unicode mem override must be rejected");
@@ -2275,14 +2291,13 @@ mod tests {
         }
         let orchestrator = StrategyOrchestrator;
         let bad = invalid_unicode_osstring();
-        let env_lookup =
-            |name: &str| -> Result<String, std::env::VarError> {
-                if name == "ATP_PAPER_STRATEGY_CPU" {
-                    Err(std::env::VarError::NotUnicode(bad.clone()))
-                } else {
-                    Err(std::env::VarError::NotPresent)
-                }
-            };
+        let env_lookup = |name: &str| -> Result<String, std::env::VarError> {
+            if name == "ATP_PAPER_STRATEGY_CPU" {
+                Err(std::env::VarError::NotUnicode(bad.clone()))
+            } else {
+                Err(std::env::VarError::NotPresent)
+            }
+        };
         let err = orchestrator
             .profile_for_mode_via_env_lookup(StrategyMode::Paper, env_lookup)
             .expect_err("non-Unicode cpu override must be rejected");
@@ -2372,10 +2387,7 @@ mod tests {
     }
 
     impl WorkloadEventSink for WorkloadEventSpy {
-        fn record(
-            &self,
-            event: WorkloadAdmissionEvent,
-        ) -> Result<(), WorkloadEventSinkError> {
+        fn record(&self, event: WorkloadAdmissionEvent) -> Result<(), WorkloadEventSinkError> {
             self.events.borrow_mut().push(event);
             Ok(())
         }
@@ -2384,10 +2396,7 @@ mod tests {
     struct ForbiddenWorkloadEventSink;
 
     impl WorkloadEventSink for ForbiddenWorkloadEventSink {
-        fn record(
-            &self,
-            _event: WorkloadAdmissionEvent,
-        ) -> Result<(), WorkloadEventSinkError> {
+        fn record(&self, _event: WorkloadAdmissionEvent) -> Result<(), WorkloadEventSinkError> {
             panic!("happy path must not emit a WorkloadAdmissionEvent");
         }
     }
@@ -2468,10 +2477,7 @@ mod tests {
             error.category,
             atp_types::OrderErrorCategory::HostMemorySafetyMarginBreach
         );
-        assert_eq!(
-            error.category.as_str(),
-            "HOST_MEMORY_SAFETY_MARGIN_BREACH"
-        );
+        assert_eq!(error.category.as_str(), "HOST_MEMORY_SAFETY_MARGIN_BREACH");
         let events = sink.events.borrow();
         assert_eq!(events.len(), 1, "exactly one Refused event must be emitted");
         match &events[0] {
@@ -2711,10 +2717,7 @@ mod tests {
         );
         let events = sink.events.borrow();
         assert_eq!(events.len(), 1, "exactly one Refused event");
-        assert!(matches!(
-            events[0],
-            WorkloadAdmissionEvent::Refused { .. }
-        ));
+        assert!(matches!(events[0], WorkloadAdmissionEvent::Refused { .. }));
     }
 
     #[test]
@@ -2751,10 +2754,7 @@ mod tests {
         assert!(registry.terminate_calls.borrow().is_empty());
         let events = sink.events.borrow();
         assert_eq!(events.len(), 1);
-        assert!(matches!(
-            events[0],
-            WorkloadAdmissionEvent::Refused { .. }
-        ));
+        assert!(matches!(events[0], WorkloadAdmissionEvent::Refused { .. }));
     }
 
     #[test]
@@ -2770,15 +2770,10 @@ mod tests {
             fail_id: WorkloadId,
         }
         impl WorkloadRegistry for FlakyRegistry {
-            fn active(
-                &self,
-            ) -> Result<Vec<RegisteredWorkload>, WorkloadRegistryError> {
+            fn active(&self) -> Result<Vec<RegisteredWorkload>, WorkloadRegistryError> {
                 Ok(self.workloads.borrow().clone())
             }
-            fn terminate(
-                &self,
-                id: &WorkloadId,
-            ) -> Result<(), WorkloadTerminationError> {
+            fn terminate(&self, id: &WorkloadId) -> Result<(), WorkloadTerminationError> {
                 self.terminate_calls.borrow_mut().push(id.clone());
                 if *id == self.fail_id {
                     return Err(WorkloadTerminationError::new(
@@ -2893,9 +2888,9 @@ mod tests {
         let events = sink.events.borrow();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            WorkloadAdmissionEvent::HostProbeFailed {
-                failure_reason, ..
-            } => assert!(failure_reason.contains("procfs unreadable")),
+            WorkloadAdmissionEvent::HostProbeFailed { failure_reason, .. } => {
+                assert!(failure_reason.contains("procfs unreadable"))
+            }
             other => panic!(
                 "expected HostProbeFailed (probe error must not be silently \
                  unwrap_or(0)'d), got {other:?}"
@@ -2938,9 +2933,7 @@ mod tests {
         let events = sink.events.borrow();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            WorkloadAdmissionEvent::HostProbeFailed {
-                failure_reason, ..
-            } => {
+            WorkloadAdmissionEvent::HostProbeFailed { failure_reason, .. } => {
                 assert!(failure_reason.contains("sysinfo refresh failed"));
             }
             other => panic!("expected HostProbeFailed, got {other:?}"),
@@ -2953,15 +2946,10 @@ mod tests {
         // failure must not silently be treated as "no candidates".
         struct FailingRegistry;
         impl WorkloadRegistry for FailingRegistry {
-            fn active(
-                &self,
-            ) -> Result<Vec<RegisteredWorkload>, WorkloadRegistryError> {
+            fn active(&self) -> Result<Vec<RegisteredWorkload>, WorkloadRegistryError> {
                 Err(WorkloadRegistryError::new("docker engine timeout"))
             }
-            fn terminate(
-                &self,
-                _id: &WorkloadId,
-            ) -> Result<(), WorkloadTerminationError> {
+            fn terminate(&self, _id: &WorkloadId) -> Result<(), WorkloadTerminationError> {
                 panic!("must not call terminate when active() failed");
             }
         }
@@ -2990,9 +2978,7 @@ mod tests {
         let events = sink.events.borrow();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            WorkloadAdmissionEvent::RegistryListingFailed {
-                failure_reason, ..
-            } => {
+            WorkloadAdmissionEvent::RegistryListingFailed { failure_reason, .. } => {
                 assert!(failure_reason.contains("docker engine timeout"));
             }
             other => panic!("expected RegistryListingFailed, got {other:?}"),
@@ -3119,7 +3105,9 @@ mod tests {
     fn launch_records_deployed_version_on_ready_within_deadline() {
         let orchestrator = StrategyOrchestrator;
         let runtime = RuntimeStub::new(
-            LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 4_200 },
+            LaunchReadiness::ReadyWithinDeadline {
+                elapsed_millis: 4_200,
+            },
             ContainerHealthState::Healthy,
         );
         let sink = ForbiddenSink;
@@ -3196,14 +3184,24 @@ mod tests {
             profile: ResourceProfile::live_default(),
         };
         let error = orchestrator
-            .launch(bad_request, &runtime, &sink, &version_registry, 1_715_700_000)
+            .launch(
+                bad_request,
+                &runtime,
+                &sink,
+                &version_registry,
+                1_715_700_000,
+            )
             .expect_err("malformed hash must be refused");
         assert_eq!(
             error.category,
             atp_types::OrderErrorCategory::DeployedVersionInvalid
         );
         assert!(error.error_type.starts_with("DeployedVersionInvalid::"));
-        assert_eq!(runtime.create_calls.get(), 0, "validation gate must short-circuit");
+        assert_eq!(
+            runtime.create_calls.get(),
+            0,
+            "validation gate must short-circuit"
+        );
         assert_eq!(runtime.start_calls.get(), 0);
     }
 
@@ -3233,7 +3231,9 @@ mod tests {
         }
         let orchestrator = StrategyOrchestrator;
         let runtime = RuntimeStub::new(
-            LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 4_200 },
+            LaunchReadiness::ReadyWithinDeadline {
+                elapsed_millis: 4_200,
+            },
             ContainerHealthState::Healthy,
         );
         let sink = ForbiddenSink;

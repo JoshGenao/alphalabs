@@ -78,7 +78,9 @@ _PRICE_MINOR_SCALE = 100
 # Default location of the cargo-built operator binary, relative to the repo root
 # (python/atp_strategy/store_history.py -> parents[2] == repo root). Build it with
 # ``cargo build -p atp-data --bin data007_query_cli``.
-_DEFAULT_QUERY_BINARY = Path(__file__).resolve().parents[2] / "target" / "debug" / "data007_query_cli"
+_DEFAULT_QUERY_BINARY = (
+    Path(__file__).resolve().parents[2] / "target" / "debug" / "data007_query_cli"
+)
 
 # OHLC price field names (scaled) vs the volume count field (unscaled). Sourced from the
 # vendor-neutral fixture records in crates/atp-data/src/store.rs (ohlcv_record).
@@ -201,7 +203,9 @@ class StoreBackedHistoricalData:
         if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
             raise ValueError(f"timeout must be a positive number of seconds (got {timeout!r})")
         self._store_dir = str(resolved_dir)
-        self._query_binary = Path(query_binary) if query_binary is not None else _DEFAULT_QUERY_BINARY
+        self._query_binary = (
+            Path(query_binary) if query_binary is not None else _DEFAULT_QUERY_BINARY
+        )
         self._clock = clock if clock is not None else (lambda: datetime.now(timezone.utc))
         self._runner = runner if runner is not None else _default_runner
         self._timeout = float(timeout)
@@ -246,7 +250,11 @@ class StoreBackedHistoricalData:
         if end_ts < 0:
             return []
         bars = self._query(
-            symbol=symbol, resolution=frequency, start_ts=0, end_ts=end_ts, normalization=normalization
+            symbol=symbol,
+            resolution=frequency,
+            start_ts=0,
+            end_ts=end_ts,
+            normalization=normalization,
         )
         return bars[-lookback:]
 

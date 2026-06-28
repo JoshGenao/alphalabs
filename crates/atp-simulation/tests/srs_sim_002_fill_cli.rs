@@ -112,7 +112,11 @@ fn rules_prove_every_sys83_reference_price() {
         "stop-limit-buy",
     ] {
         let line = rule_line(&out, name);
-        assert_eq!(field(&line, "correct"), "true", "rule {name} wrong:\n{line}");
+        assert_eq!(
+            field(&line, "correct"),
+            "true",
+            "rule {name} wrong:\n{line}"
+        );
         // The actual fill price must equal the expected SYS-83 reference price on the same line.
         assert_eq!(
             field(&line, "expected_fill_price_minor"),
@@ -264,7 +268,10 @@ fn faults_fail_closed_on_config_and_volume() {
 #[test]
 fn unknown_fault_fails_closed() {
     let output = run(&["rules", "--inject", "make-money"]);
-    assert!(!output.status.success(), "an unknown fault must fail closed");
+    assert!(
+        !output.status.success(),
+        "an unknown fault must fail closed"
+    );
     assert!(!stdout(&output).contains("sys83-rules-correct:true"));
 }
 
@@ -294,7 +301,10 @@ fn volume_zero_qty_is_rejected() {
 fn volume_degenerate_bar_is_rejected() {
     // A bar of one share cannot exercise a genuine aggregate cap with a zero-volume tail.
     let output = run(&["volume", "--volume", "1"]);
-    assert!(!output.status.success(), "a degenerate bar must be rejected");
+    assert!(
+        !output.status.success(),
+        "a degenerate bar must be rejected"
+    );
     assert!(!stdout(&output).contains("volume-capped:true"));
 }
 

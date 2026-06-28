@@ -209,10 +209,7 @@ def check_connectivity_guard_in_submit_live_order(config: dict, exec_src: str) -
     blocked_only = live_arm.replace(connected_arm, "")
     rejection = block["rejection_category"]
     if f"OrderErrorCategory::{rejection}" not in blocked_only:
-        fail(
-            f"{entry['method']} blocked-state branch must produce "
-            f"OrderErrorCategory::{rejection}"
-        )
+        fail(f"{entry['method']} blocked-state branch must produce OrderErrorCategory::{rejection}")
     for token in (
         guard["event_call"] + "(",
         guard["reconnect_call"] + "(",

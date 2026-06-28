@@ -172,7 +172,9 @@ fn orch_4_ready_within_deadline_records_deployed_version_exactly_once() {
     // half of the acceptance criterion).
     let orchestrator = StrategyOrchestrator;
     let runtime = RuntimeSpy::new(
-        LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 4_200 },
+        LaunchReadiness::ReadyWithinDeadline {
+            elapsed_millis: 4_200,
+        },
         ContainerHealthState::Healthy,
     );
     let sink = ForbiddenSink;
@@ -213,7 +215,9 @@ fn orch_4_version_identifier_is_queryable_via_registry_lookup() {
     // appears on both the outcome and the lookup.
     let orchestrator = StrategyOrchestrator;
     let runtime = RuntimeSpy::new(
-        LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 4_200 },
+        LaunchReadiness::ReadyWithinDeadline {
+            elapsed_millis: 4_200,
+        },
         ContainerHealthState::Healthy,
     );
     let sink = ForbiddenSink;
@@ -294,8 +298,7 @@ fn orch_4_unknown_algorithm_prefix_is_rejected() {
     );
     let sink = ForbiddenSink;
     let version_registry = ForbiddenVersionRegistry;
-    let bad_hash =
-        "md5:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let bad_hash = "md5:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let error = orchestrator
         .launch(
             request_with_hash("alpha-1", StrategyMode::Live, bad_hash),
@@ -370,7 +373,9 @@ fn orch_4_record_failure_does_not_abort_the_launch() {
     }
     let orchestrator = StrategyOrchestrator;
     let runtime = RuntimeSpy::new(
-        LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 4_200 },
+        LaunchReadiness::ReadyWithinDeadline {
+            elapsed_millis: 4_200,
+        },
         ContainerHealthState::Healthy,
     );
     let sink = ForbiddenSink;
@@ -401,7 +406,9 @@ fn orch_4_distinct_strategies_carry_distinct_version_records() {
     // here.
     let orchestrator = StrategyOrchestrator;
     let runtime = RuntimeSpy::new(
-        LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 4_200 },
+        LaunchReadiness::ReadyWithinDeadline {
+            elapsed_millis: 4_200,
+        },
         ContainerHealthState::Healthy,
     );
     let sink = ForbiddenSink;

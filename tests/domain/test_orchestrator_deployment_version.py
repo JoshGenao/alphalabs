@@ -55,17 +55,15 @@ def _run_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _assert_cargo_passed(
-    result: subprocess.CompletedProcess[str], requirement_label: str
-) -> None:
+def _assert_cargo_passed(result: subprocess.CompletedProcess[str], requirement_label: str) -> None:
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
         f"{requirement_label} integration test failed:\n"
         f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
-    assert (
-        "1 passed" in combined or "test result: ok. 1 passed" in combined
-    ), f"unexpected cargo test output:\n{combined}"
+    assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
+        f"unexpected cargo test output:\n{combined}"
+    )
 
 
 def test_ready_within_deadline_records_deployed_version_exactly_once() -> None:
@@ -73,9 +71,7 @@ def test_ready_within_deadline_records_deployed_version_exactly_once() -> None:
     # version (hash + observed_at_seconds) through the registry port
     # exactly once per successful launch, and the same record appears
     # on the launch outcome.
-    result = _run_cargo_test(
-        "orch_4_ready_within_deadline_records_deployed_version_exactly_once"
-    )
+    result = _run_cargo_test("orch_4_ready_within_deadline_records_deployed_version_exactly_once")
     _assert_cargo_passed(result, "SRS-ORCH-004 ReadyWithinDeadline recording")
 
 
@@ -85,12 +81,8 @@ def test_version_identifier_is_queryable_via_registry_lookup() -> None:
     # registry lookup returns the same record the orchestrator wrote
     # and the same `version_identifier()` string is produced by both
     # the outcome and the lookup.
-    result = _run_cargo_test(
-        "orch_4_version_identifier_is_queryable_via_registry_lookup"
-    )
-    _assert_cargo_passed(
-        result, "SRS-ORCH-004 version_identifier queryable"
-    )
+    result = _run_cargo_test("orch_4_version_identifier_is_queryable_via_registry_lookup")
+    _assert_cargo_passed(result, "SRS-ORCH-004 version_identifier queryable")
 
 
 def test_malformed_source_hash_is_refused_without_invoking_runtime() -> None:
@@ -98,12 +90,8 @@ def test_malformed_source_hash_is_refused_without_invoking_runtime() -> None:
     # digest length) must never reach `runtime.create`. The gate
     # short-circuits with DeployedVersionInvalid, emits no sink event,
     # and never records a version.
-    result = _run_cargo_test(
-        "orch_4_malformed_source_hash_is_refused_without_invoking_runtime"
-    )
-    _assert_cargo_passed(
-        result, "SRS-ORCH-004 validate-before-create refusal"
-    )
+    result = _run_cargo_test("orch_4_malformed_source_hash_is_refused_without_invoking_runtime")
+    _assert_cargo_passed(result, "SRS-ORCH-004 validate-before-create refusal")
 
 
 def test_unknown_algorithm_prefix_is_rejected() -> None:
@@ -120,9 +108,7 @@ def test_deadline_exceeded_records_no_version() -> None:
     # listing. The DeadlineExceeded path destroys the container and
     # skips the version record.
     result = _run_cargo_test("orch_4_deadline_exceeded_records_no_version")
-    _assert_cargo_passed(
-        result, "SRS-ORCH-004 DeadlineExceeded skips version record"
-    )
+    _assert_cargo_passed(result, "SRS-ORCH-004 DeadlineExceeded skips version record")
 
 
 def test_record_failure_does_not_abort_the_launch() -> None:
@@ -131,18 +117,12 @@ def test_record_failure_does_not_abort_the_launch() -> None:
     # retroactively abort the launch — that would lie to operators
     # and force a destroy.
     result = _run_cargo_test("orch_4_record_failure_does_not_abort_the_launch")
-    _assert_cargo_passed(
-        result, "SRS-ORCH-004 best-effort recording semantics"
-    )
+    _assert_cargo_passed(result, "SRS-ORCH-004 best-effort recording semantics")
 
 
 def test_distinct_strategies_carry_distinct_version_records() -> None:
     # The registry's read path must discriminate by strategy_id — two
     # distinct strategies deployed in the same session must surface
     # distinct version_identifier strings.
-    result = _run_cargo_test(
-        "orch_4_distinct_strategies_carry_distinct_version_records"
-    )
-    _assert_cargo_passed(
-        result, "SRS-ORCH-004 per-strategy version isolation"
-    )
+    result = _run_cargo_test("orch_4_distinct_strategies_carry_distinct_version_records")
+    _assert_cargo_passed(result, "SRS-ORCH-004 per-strategy version isolation")

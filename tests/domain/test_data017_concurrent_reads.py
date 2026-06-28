@@ -75,8 +75,15 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
 
 def _run_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
     return _run(
-        _cargo(), "test", "-p", "atp-data", "--test", "srs_data_017_concurrent_reads",
-        test_name, "--", "--exact",
+        _cargo(),
+        "test",
+        "-p",
+        "atp-data",
+        "--test",
+        "srs_data_017_concurrent_reads",
+        test_name,
+        "--",
+        "--exact",
     )
 
 
@@ -97,8 +104,15 @@ def test_a_read_never_blocks_on_a_held_writer_lock() -> None:
 def test_completed_data_survives_a_concurrent_ingestion_across_processes() -> None:
     cargo = _cargo()
     build = _run(
-        cargo, "build", "-q", "-p", "atp-data",
-        "--bin", "data016_ingest_cli", "--bin", "data007_query_cli",
+        cargo,
+        "build",
+        "-q",
+        "-p",
+        "atp-data",
+        "--bin",
+        "data016_ingest_cli",
+        "--bin",
+        "data007_query_cli",
     )
     assert build.returncode == 0, build.stdout + build.stderr
     ingest_bin = str(REPO_ROOT / "target" / "debug" / "data016_ingest_cli")
@@ -115,8 +129,14 @@ def test_completed_data_survives_a_concurrent_ingestion_across_processes() -> No
             try:
                 for i in range(1, 11):
                     res = _run(
-                        ingest_bin, "ingest", "--dir", tmp,
-                        "--kind", "daily-equity-bar", "--event-ts", str(SEED_TS + i),
+                        ingest_bin,
+                        "ingest",
+                        "--dir",
+                        tmp,
+                        "--kind",
+                        "daily-equity-bar",
+                        "--event-ts",
+                        str(SEED_TS + i),
                     )
                     if res.returncode != 0:
                         errors.append(f"writer ingest {i}: {res.stdout}{res.stderr}")
@@ -126,8 +146,18 @@ def test_completed_data_survives_a_concurrent_ingestion_across_processes() -> No
         def reader() -> None:
             while True:
                 q = _run(
-                    query_bin, "query", "--dir", tmp,
-                    "--symbol", "AAPL", "--resolution", "1d", "--start", "0", "--end", "9999999999",
+                    query_bin,
+                    "query",
+                    "--dir",
+                    tmp,
+                    "--symbol",
+                    "AAPL",
+                    "--resolution",
+                    "1d",
+                    "--start",
+                    "0",
+                    "--end",
+                    "9999999999",
                 )
                 if q.returncode != 0:
                     errors.append(f"reader query failed (torn/blocked read): {q.stdout}{q.stderr}")
@@ -170,7 +200,9 @@ def test_write_is_atomically_published_and_guard_is_non_vacuous() -> None:
     config = load_config()
     src = store_source(config)
     assert "publishes atomically" in check_atomic_publish(config, src)
-    mutated = src.replace("fs::rename(&tmp_path, &final_path)", "fs::copy(&tmp_path, &final_path)", 1)
+    mutated = src.replace(
+        "fs::rename(&tmp_path, &final_path)", "fs::copy(&tmp_path, &final_path)", 1
+    )
     with pytest.raises(ConcurrentReadCheckError):
         check_atomic_publish(config, mutated)
 

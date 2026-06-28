@@ -37,9 +37,7 @@ use std::process::ExitCode;
 
 use atp_data::fundamentals::{build_fundamental_records, FUNDAMENTAL_RATIOS_RESOLUTION};
 use atp_data::query::UnifiedHistoricalQuery;
-use atp_data::store::{
-    DatasetKind, MarketDataRecord, MarketDataStore, StoreLock, UpsertOutcome,
-};
+use atp_data::store::{DatasetKind, MarketDataRecord, MarketDataStore, StoreLock, UpsertOutcome};
 use atp_data::{DataLayer, MarketIngestError};
 use atp_types::{
     AssetClass, FundamentalStatements, IngestionRecordSubmission, RecordValidationOutcome,
@@ -123,7 +121,8 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
     let (event_ts, available_ts) = parsed.timestamps()?;
 
     if parsed.init {
-        std::fs::create_dir_all(&dir).map_err(|err| format!("creating {}: {err}", dir.display()))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|err| format!("creating {}: {err}", dir.display()))?;
     }
     // Hold the single-writer lock across the WHOLE load-modify-save so a concurrent ingestion job
     // cannot load the old catalog and erase this job's records with a last-publish-wins save.
@@ -313,18 +312,44 @@ fn fixture_statements(
     let rows = [
         // symbol, revenue, net_income, assets, liabilities, book_equity, ncfo, ncfi, ncff, market_value
         (
-            "AAPL", 100_000_000, 25_000_000, 80_000_000, 30_000_000, 50_000_000, 30_000_000,
-            -10_000_000, -5_000_000, 250_000_000,
+            "AAPL",
+            100_000_000,
+            25_000_000,
+            80_000_000,
+            30_000_000,
+            50_000_000,
+            30_000_000,
+            -10_000_000,
+            -5_000_000,
+            250_000_000,
         ),
         (
-            "MSFT", 60_000_000, 18_000_000, 70_000_000, 28_000_000, 42_000_000, 22_000_000,
-            -8_000_000, -4_000_000, 180_000_000,
+            "MSFT",
+            60_000_000,
+            18_000_000,
+            70_000_000,
+            28_000_000,
+            42_000_000,
+            22_000_000,
+            -8_000_000,
+            -4_000_000,
+            180_000_000,
         ),
     ];
     rows.iter()
         .map(|(sym, rev, ni, assets, liab, eq, ncfo, ncfi, ncff, mv)| {
             FundamentalStatements::new(
-                sym, event_ts, available_ts, *rev, *ni, *assets, *liab, *eq, *ncfo, *ncfi, *ncff,
+                sym,
+                event_ts,
+                available_ts,
+                *rev,
+                *ni,
+                *assets,
+                *liab,
+                *eq,
+                *ncfo,
+                *ncfi,
+                *ncff,
                 *mv,
             )
             .map_err(|err| err.to_string())

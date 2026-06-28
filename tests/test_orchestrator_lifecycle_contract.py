@@ -143,8 +143,8 @@ class LaunchReadinessEnumTest(unittest.TestCase):
 
     def test_missing_deadline_exceeded_variant_is_caught(self) -> None:
         mutated = self.types_src.replace(
-            "    DeadlineExceeded { elapsed_millis: u64, deadline_millis: u64 },",
-            "    DeadlineExceededX { elapsed_millis: u64, deadline_millis: u64 },",
+            "    DeadlineExceeded {",
+            "    DeadlineExceededX {",
             1,
         )
         with self.assertRaises(OrchestratorLifecycleCheckError) as ctx:

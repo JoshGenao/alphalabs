@@ -182,9 +182,7 @@ class FreshnessGuardTest(unittest.TestCase):
         self.exec_src = execution_source(self.config)
 
     def test_broker_call_is_gated_on_fresh_leaf(self) -> None:
-        evidence = check_freshness_guard_in_submit_live_order(
-            self.config, self.exec_src
-        )
+        evidence = check_freshness_guard_in_submit_live_order(self.config, self.exec_src)
         self.assertIn("MarketDataFreshness::Fresh", evidence)
         self.assertIn("ConnectivityState::Connected", evidence)
         self.assertIn("OrderErrorCategory::MarketDataStale", evidence)

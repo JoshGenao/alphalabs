@@ -257,13 +257,12 @@ pub fn load_daily_market_input(
             // POINT-IN-TIME split adjustment: query_split_adjusted_as_of applies only splits effective
             // at/before the window end (the as-of date), NOT through the coverage frontier -- so a split
             // effective AFTER the run date cannot re-base the historical window (no lookahead bias).
-            let result =
-                store
-                    .query_split_adjusted_as_of(&query)
-                    .map_err(|err| FactorInputError::CoverageNotProven {
-                        symbol: symbol.to_string(),
-                        reason: err.to_string(),
-                    })?;
+            let result = store.query_split_adjusted_as_of(&query).map_err(|err| {
+                FactorInputError::CoverageNotProven {
+                    symbol: symbol.to_string(),
+                    reason: err.to_string(),
+                }
+            })?;
             collect_closes(symbol, result.records.iter())?
         }
     };
@@ -579,19 +578,20 @@ where
     // Gate the schedule / START window against the clock BEFORE reading the store, so a pre-start,
     // non-session, or past-deadline run fails fast WITHOUT spending the (potentially large) assembly
     // work -- the scheduled-execution boundary is enforced for the whole path, not just after assembly.
-    let (started, deadline_instant) =
-        match preflight_schedule(schedule, calendar, config, clock).map_err(StoreFactorJobError::Job)? {
-            StartGate::Proceed { started, deadline } => (started, deadline),
-            StartGate::LateStart(outcome) => return Ok(outcome),
-        };
+    let (started, deadline_instant) = match preflight_schedule(schedule, calendar, config, clock)
+        .map_err(StoreFactorJobError::Job)?
+    {
+        StartGate::Proceed { started, deadline } => (started, deadline),
+        StartGate::LateStart(outcome) => return Ok(outcome),
+    };
     // DERIVE the point-in-time as-of instant from the calendar + scheduled session (NOT a caller
     // timestamp), so the data window is bound to the schedule and a future as-of cannot be forged. A
     // calendar without the session->epoch mapping fails closed rather than running on an unbound as-of.
-    let as_of_ts = calendar.session_as_of_ts(schedule.session).ok_or(
-        StoreFactorJobError::Job(FactorJobError::NotASession {
+    let as_of_ts = calendar
+        .session_as_of_ts(schedule.session)
+        .ok_or(StoreFactorJobError::Job(FactorJobError::NotASession {
             session: schedule.session,
-        }),
-    )?;
+        }))?;
     // The data window ends at `as_of_ts`: the market lookback is [as_of_ts - lookback, as_of_ts] and the
     // fundamental is the statement available as of `as_of_ts` -- so no record dated/filed after the run's
     // as-of instant is consumed (no lookahead). The lookback is clamped >= 0 (a negative lookback would

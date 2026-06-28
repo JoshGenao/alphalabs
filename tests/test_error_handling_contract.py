@@ -117,9 +117,7 @@ class OrderErrorCategoryEnumTest(unittest.TestCase):
         # vocabulary is broken; the check must catch it. Replace every
         # occurrence so the test assertion that echoes the wire string is
         # rewritten alongside the as_str() arm.
-        mutated = self.types_src.replace(
-            "NON_LIVE_STRATEGY_SUBMISSION", "NON_LIVE_STRATEGY_X"
-        )
+        mutated = self.types_src.replace("NON_LIVE_STRATEGY_SUBMISSION", "NON_LIVE_STRATEGY_X")
         with self.assertRaises(ErrorHandlingCheckError) as ctx:
             check_error_category_enum(self.config, mutated)
         self.assertIn("NON_LIVE_STRATEGY_SUBMISSION", str(ctx.exception))
@@ -179,9 +177,7 @@ class SynchronousRejectionTest(unittest.TestCase):
         self.exec_src = execution_source(self.config)
 
     def test_broker_call_is_gated_on_live_arm(self) -> None:
-        evidence = check_synchronous_rejection_has_no_broker_side_effect(
-            self.config, self.exec_src
-        )
+        evidence = check_synchronous_rejection_has_no_broker_side_effect(self.config, self.exec_src)
         self.assertIn("ONLY inside the StrategyMode::Live arm", evidence)
         self.assertIn("OrderErrorCategory::NonLiveStrategySubmission", evidence)
 
@@ -197,9 +193,7 @@ class SynchronousRejectionTest(unittest.TestCase):
         # Re-close the extra brace we introduced so Rust syntax mirrors a
         # realistic regression. The check only cares about the call site.
         with self.assertRaises(ErrorHandlingCheckError) as ctx:
-            check_synchronous_rejection_has_no_broker_side_effect(
-                self.config, mutated
-            )
+            check_synchronous_rejection_has_no_broker_side_effect(self.config, mutated)
         self.assertIn("StrategyMode::Paper", str(ctx.exception))
 
 

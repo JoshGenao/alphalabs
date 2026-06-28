@@ -18,7 +18,8 @@
 use atp_data::store::{DatasetKind, MarketDataRecord, MarketDataStore, MarketField, NaturalKey};
 use atp_factor_pipeline::factor_job::{
     Clock, FactorJobConfig, FactorJobError, FactorJobOutcome, FactorJobSchedule, FactorModel,
-    FundamentalFactorInput, Instant, MarketFactorInput, MinutesOfDay, SessionOrdinal, TradingCalendar,
+    FundamentalFactorInput, Instant, MarketFactorInput, MinutesOfDay, SessionOrdinal,
+    TradingCalendar,
 };
 use atp_factor_pipeline::store_inputs::{
     assemble_factor_inputs, load_fundamental_input, run_scheduled_factor_job_over_store,
@@ -480,7 +481,11 @@ fn runs_full_universe_factor_job_over_the_store_within_deadline() {
         panic!("expected completion within the deadline");
     };
     assert_eq!(set.universe_size, 8_000);
-    assert_eq!(set.scores.len(), 8_000, "every security scored on both sources");
+    assert_eq!(
+        set.scores.len(),
+        8_000,
+        "every security scored on both sources"
+    );
     assert!(set.skipped.is_empty());
     // Ranks are a dense, non-increasing-by-factor 1..=n.
     for (i, score) in set.scores.iter().enumerate() {
@@ -527,7 +532,11 @@ fn full_universe_store_read_scales_under_a_wall_clock_budget() {
     let FactorJobOutcome::WithinDeadline(set) = outcome else {
         panic!("expected completion within the deadline");
     };
-    assert_eq!(set.scores.len(), 8_000, "every security scored over the large store");
+    assert_eq!(
+        set.scores.len(),
+        8_000,
+        "every security scored over the large store"
+    );
     // Generous budget: the indexed read is sub-second even in a debug build; a quadratic per-read scan
     // over a 328k-record store would be tens of seconds to minutes and blow this bound.
     assert!(
@@ -564,7 +573,11 @@ fn securities_missing_a_store_source_are_skipped_not_fabricated() {
     };
     assert_eq!(set.universe_size, 8_003);
     assert_eq!(set.scores.len(), 8_000);
-    assert_eq!(set.skipped.len(), 3, "the three ghost securities are skipped");
+    assert_eq!(
+        set.skipped.len(),
+        3,
+        "the three ghost securities are skipped"
+    );
 }
 
 #[test]
@@ -666,7 +679,9 @@ fn store_backed_run_fails_closed_on_a_clock_regression_during_assembly() {
     .expect_err("a clock regression during assembly must fail closed");
     match err {
         StoreFactorJobError::Job(FactorJobError::NonMonotonicClock { .. }) => {}
-        other => panic!("expected NonMonotonicClock from the authoritative-start gate, got {other:?}"),
+        other => {
+            panic!("expected NonMonotonicClock from the authoritative-start gate, got {other:?}")
+        }
     }
 }
 

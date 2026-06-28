@@ -98,8 +98,8 @@ class SourceNeutralSignatureTest(_Fixture):
         # A provider parameter would let a consumer specify the source — the exact thing DATA-007
         # forbids ("query ... without specifying the original source provider").
         mutated = self.src.replace(
-            "        normalization: NormalizationMode = NormalizationMode.SPLIT_ADJUSTED,\n    ) -> list[Bar]:\n        \"\"\"Return the last",
-            "        normalization: NormalizationMode = NormalizationMode.SPLIT_ADJUSTED,\n        provider: str = \"ib\",\n    ) -> list[Bar]:\n        \"\"\"Return the last",
+            '        normalization: NormalizationMode = NormalizationMode.SPLIT_ADJUSTED,\n    ) -> list[Bar]:\n        """Return the last',
+            '        normalization: NormalizationMode = NormalizationMode.SPLIT_ADJUSTED,\n        provider: str = "ib",\n    ) -> list[Bar]:\n        """Return the last',
             1,
         )
         self.assertNotEqual(mutated, self.src, "mutation did not apply")
@@ -114,8 +114,8 @@ class NoOriginFieldReadTest(_Fixture):
 
     def test_parsed_origin_key_is_caught(self) -> None:
         mutated = self.src.replace(
-            "        event_ts = record.get(\"event_ts\")\n",
-            "        event_ts = record.get(\"event_ts\")\n        _origin = record[\"provider\"]\n",
+            '        event_ts = record.get("event_ts")\n',
+            '        event_ts = record.get("event_ts")\n        _origin = record["provider"]\n',
             1,
         )
         self.assertNotEqual(mutated, self.src, "mutation did not apply")
@@ -148,9 +148,7 @@ class NormalizationHonestyTest(_Fixture):
 
     def test_dropping_split_adjusted_serving_is_caught(self) -> None:
         # The SRS-DATA-007 close SERVES the gated split-adjusted series; dropping its label must fire.
-        mutated = self.src.replace(
-            '    NormalizationMode.SPLIT_ADJUSTED: "split-adjusted",\n', ""
-        )
+        mutated = self.src.replace('    NormalizationMode.SPLIT_ADJUSTED: "split-adjusted",\n', "")
         self.assertNotEqual(mutated, self.src, "mutation did not apply")
         with self.assertRaises(StoreHistoryCheckError):
             check_normalization_honesty(self.config, mutated)
@@ -241,7 +239,9 @@ class EchoValidatedTest(_Fixture):
         self.assertIn("envelope integrity", check_echo_validated(self.config, self.src))
 
     def test_removed_echo_validation_is_caught(self) -> None:
-        mutated = self.src.replace("echoed_symbol != symbol or echoed_resolution != resolution", "False", 1)
+        mutated = self.src.replace(
+            "echoed_symbol != symbol or echoed_resolution != resolution", "False", 1
+        )
         self.assertNotEqual(mutated, self.src, "mutation did not apply")
         with self.assertRaises(StoreHistoryCheckError):
             check_echo_validated(self.config, mutated)
@@ -333,7 +333,9 @@ class ProtocolConformanceTest(unittest.TestCase):
 
         # A fixed clock so end_ts (and the echo) are deterministic and the event_ts is in range.
         binding = StoreBackedHistoricalData(
-            store_dir="/tmp/x", runner=runner, clock=lambda: _dt.datetime(2024, 1, 1, tzinfo=_dt.timezone.utc)
+            store_dir="/tmp/x",
+            runner=runner,
+            clock=lambda: _dt.datetime(2024, 1, 1, tzinfo=_dt.timezone.utc),
         )
         (bar,) = binding.get_bars(
             "AAPL", lookback=1, frequency="1d", normalization=NormalizationMode.RAW

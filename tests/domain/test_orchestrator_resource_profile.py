@@ -54,17 +54,15 @@ def _run_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _assert_cargo_passed(
-    result: subprocess.CompletedProcess[str], requirement_label: str
-) -> None:
+def _assert_cargo_passed(result: subprocess.CompletedProcess[str], requirement_label: str) -> None:
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
         f"{requirement_label} integration test failed:\n"
         f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
-    assert (
-        "1 passed" in combined or "test result: ok. 1 passed" in combined
-    ), f"unexpected cargo test output:\n{combined}"
+    assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
+        f"unexpected cargo test output:\n{combined}"
+    )
 
 
 def test_live_default_profile_is_propagated_through_create_to_outcome() -> None:
@@ -73,17 +71,13 @@ def test_live_default_profile_is_propagated_through_create_to_outcome() -> None:
     # re-default at the gate. The runtime spy records what was passed
     # to `create`; the assertion proves the gate did not strip,
     # re-default, or rewrite the profile.
-    result = _run_cargo_test(
-        "orch_2_live_default_profile_is_propagated_through_create_to_outcome"
-    )
+    result = _run_cargo_test("orch_2_live_default_profile_is_propagated_through_create_to_outcome")
     _assert_cargo_passed(result, "SRS-ORCH-002 live-default propagation")
 
 
 def test_paper_default_profile_is_propagated_through_create_to_outcome() -> None:
     # SyRS SYS-11 default: paper containers get 300 MB / 0.10 CPU.
-    result = _run_cargo_test(
-        "orch_2_paper_default_profile_is_propagated_through_create_to_outcome"
-    )
+    result = _run_cargo_test("orch_2_paper_default_profile_is_propagated_through_create_to_outcome")
     _assert_cargo_passed(result, "SRS-ORCH-002 paper-default propagation")
 
 
@@ -103,17 +97,13 @@ def test_below_floor_memory_is_refused_without_invoking_runtime() -> None:
     # release. The spy counters prove the gate short-circuited at
     # validation. The error envelope carries the original request and
     # the specific violation discriminator.
-    result = _run_cargo_test(
-        "orch_2_below_floor_memory_is_refused_without_invoking_runtime"
-    )
+    result = _run_cargo_test("orch_2_below_floor_memory_is_refused_without_invoking_runtime")
     _assert_cargo_passed(result, "SRS-ORCH-002 below-floor mem refusal")
 
 
 def test_above_ceiling_cpu_is_refused_without_invoking_runtime() -> None:
     # Symmetric to the floor case but on the CPU upper bound.
-    result = _run_cargo_test(
-        "orch_2_above_ceiling_cpu_is_refused_without_invoking_runtime"
-    )
+    result = _run_cargo_test("orch_2_above_ceiling_cpu_is_refused_without_invoking_runtime")
     _assert_cargo_passed(result, "SRS-ORCH-002 above-ceiling cpu refusal")
 
 

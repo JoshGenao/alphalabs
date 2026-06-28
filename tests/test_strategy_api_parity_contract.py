@@ -52,9 +52,7 @@ class _MutationRig:
         target = self.root / "python" / "atp_strategy" / relpath
         text = target.read_text(encoding="utf-8")
         if find not in text:
-            raise AssertionError(
-                f"mutation rig: substring not found in {relpath}: {find!r}"
-            )
+            raise AssertionError(f"mutation rig: substring not found in {relpath}: {find!r}")
         target.write_text(text.replace(find, replace, 1), encoding="utf-8")
 
     def write_extra(self, relpath: str, content: str) -> None:
@@ -206,8 +204,8 @@ class ProtocolSurfaceTest(unittest.TestCase):
     def test_dropping_indicator_method_is_caught(self) -> None:
         self.rig.mutate(
             "api.py",
-            find='    def indicator(self, name: str, **params: object) -> Indicator:',
-            replace='    def _removed_indicator(self, name: str, **params: object) -> Indicator:',
+            find="    def indicator(self, name: str, **params: object) -> Indicator:",
+            replace="    def _removed_indicator(self, name: str, **params: object) -> Indicator:",
         )
         with self.assertRaises(StrategyApiParityCheckError) as cm:
             self.rig.run(self.config)
@@ -236,7 +234,7 @@ class SignatureLeakageTest(unittest.TestCase):
         self.rig.mutate(
             "api.py",
             find="    def order(self, request: OrderRequest) -> OrderHandle:",
-            replace="    def order(self, request: OrderRequest, execution_mode: str = \"live\") -> OrderHandle:",
+            replace='    def order(self, request: OrderRequest, execution_mode: str = "live") -> OrderHandle:',
         )
         with self.assertRaises(StrategyApiParityCheckError) as cm:
             self.rig.run(self.config)
@@ -264,8 +262,8 @@ class StrategyConfigFieldLeakageTest(unittest.TestCase):
     def test_execution_mode_field_is_caught(self) -> None:
         self.rig.mutate(
             "api.py",
-            find="    timezone: str = \"America/New_York\"",
-            replace="    timezone: str = \"America/New_York\"\n    execution_mode: str = \"live\"",
+            find='    timezone: str = "America/New_York"',
+            replace='    timezone: str = "America/New_York"\n    execution_mode: str = "live"',
         )
         with self.assertRaises(StrategyApiParityCheckError) as cm:
             self.rig.run(self.config)
@@ -274,8 +272,8 @@ class StrategyConfigFieldLeakageTest(unittest.TestCase):
     def test_is_paper_field_is_caught(self) -> None:
         self.rig.mutate(
             "api.py",
-            find="    timezone: str = \"America/New_York\"",
-            replace="    timezone: str = \"America/New_York\"\n    is_paper: bool = False",
+            find='    timezone: str = "America/New_York"',
+            replace='    timezone: str = "America/New_York"\n    is_paper: bool = False',
         )
         with self.assertRaises(StrategyApiParityCheckError) as cm:
             self.rig.run(self.config)

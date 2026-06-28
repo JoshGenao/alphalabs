@@ -19,9 +19,7 @@ use atp_data::{
     DataLayer, IngestionValidationEventSink, MarketIngestError, RecordValidator,
     UnifiedHistoricalQuery,
 };
-use atp_types::{
-    IngestionRecordSubmission, IngestionValidationEvent, RecordValidationOutcome,
-};
+use atp_types::{IngestionRecordSubmission, IngestionValidationEvent, RecordValidationOutcome};
 
 // --------------------------------------------------------------------------- //
 // Test doubles + helpers (mirror the SRS-DATA-016 integration harness).
@@ -48,7 +46,8 @@ fn ingest_batch(
     let layer = DataLayer;
     let (validator, sink) = (AcceptAll, NullSink);
     for record in fixture_batch(kind, event_ts) {
-        let outcome = layer.ingest_market_record(store, record, &validator, &sink, 1_700_000_000)?;
+        let outcome =
+            layer.ingest_market_record(store, record, &validator, &sink, 1_700_000_000)?;
         // A fresh fixture batch inserts; a repeated one is the idempotent no-op (SRS-DATA-016).
         let _ = matches!(
             outcome.applied,
@@ -68,8 +67,14 @@ fn daily(symbol: &str, event_ts: i64, close: i64) -> MarketDataRecord {
             option_contract: None,
         },
         [
-            MarketField { name: "close".to_string(), value_minor: close },
-            MarketField { name: "open".to_string(), value_minor: close - 10 },
+            MarketField {
+                name: "close".to_string(),
+                value_minor: close,
+            },
+            MarketField {
+                name: "open".to_string(),
+                value_minor: close - 10,
+            },
         ],
     )
     .expect("well-formed daily record")
@@ -120,7 +125,11 @@ fn srs_data_007_symbol_and_resolution_are_exact() {
     ingest_batch(&mut store, DatasetKind::MinuteEquityBar, T1).unwrap();
 
     let daily_aapl = store.query_unified(&UnifiedHistoricalQuery::new("AAPL", "1d", 0, i64::MAX));
-    assert_eq!(daily_aapl.len(), 1, "only the AAPL daily bar — not MSFT, not the AAPL minute bar");
+    assert_eq!(
+        daily_aapl.len(),
+        1,
+        "only the AAPL daily bar — not MSFT, not the AAPL minute bar"
+    );
     assert_eq!(daily_aapl.records()[0].key().symbol, "AAPL");
     assert_eq!(daily_aapl.records()[0].key().resolution, "1d");
 
@@ -144,23 +153,34 @@ fn srs_data_007_one_path_serves_every_provider_kind() {
     }
     // DailyEquityBar ⇐ Databento.
     assert_eq!(
-        store.query_unified(&UnifiedHistoricalQuery::new("AAPL", "1d", 0, i64::MAX)).len(),
+        store
+            .query_unified(&UnifiedHistoricalQuery::new("AAPL", "1d", 0, i64::MAX))
+            .len(),
         1
     );
     // MinuteEquityBar ⇐ IB.
     assert_eq!(
-        store.query_unified(&UnifiedHistoricalQuery::new("AAPL", "1m", 0, i64::MAX)).len(),
+        store
+            .query_unified(&UnifiedHistoricalQuery::new("AAPL", "1m", 0, i64::MAX))
+            .len(),
         1
     );
     // OptionChainSnapshot ⇐ IB option-chain (two contracts at the same event_ts under symbol AAPL).
     assert_eq!(
-        store.query_unified(&UnifiedHistoricalQuery::new("AAPL", "chain", 0, i64::MAX)).len(),
+        store
+            .query_unified(&UnifiedHistoricalQuery::new("AAPL", "chain", 0, i64::MAX))
+            .len(),
         2
     );
     // Fundamental ⇐ Sharadar.
     assert_eq!(
         store
-            .query_unified(&UnifiedHistoricalQuery::new("AAPL", "fundamental:income", 0, i64::MAX))
+            .query_unified(&UnifiedHistoricalQuery::new(
+                "AAPL",
+                "fundamental:income",
+                0,
+                i64::MAX
+            ))
             .len(),
         1
     );
@@ -201,12 +221,19 @@ fn srs_data_007_query_is_deterministic_across_persisted_reload() {
     }
     let q = UnifiedHistoricalQuery::new("AAPL", "1d", 0, i64::MAX);
     let in_memory = event_ts_of(&store.query_unified(&q));
-    assert_eq!(in_memory, vec![T1, T2, T3], "ascending regardless of insert order");
+    assert_eq!(
+        in_memory,
+        vec![T1, T2, T3],
+        "ascending regardless of insert order"
+    );
 
     store.save_to_path(&dir).unwrap();
     let reloaded = MarketDataStore::load_from_path(&dir).unwrap();
     let after_reload = event_ts_of(&reloaded.query_unified(&q));
-    assert_eq!(after_reload, in_memory, "the persisted-then-reloaded query is identical");
+    assert_eq!(
+        after_reload, in_memory,
+        "the persisted-then-reloaded query is identical"
+    );
 
     // Two successive in-process queries are identical (no clock/RNG ordering drift).
     assert_eq!(event_ts_of(&reloaded.query_unified(&q)), after_reload);
@@ -227,13 +254,20 @@ fn srs_data_007_cross_kind_results_are_event_ts_ascending() {
                 event_ts,
                 option_contract: None,
             },
-            [MarketField { name: "close".to_string(), value_minor: 1 }],
+            [MarketField {
+                name: "close".to_string(),
+                value_minor: 1,
+            }],
         )
         .expect("well-formed shared record")
     };
     let mut store = MarketDataStore::new();
-    store.upsert(shared(DatasetKind::DailyEquityBar, T3)).unwrap(); // kind tag 0, latest ts
-    store.upsert(shared(DatasetKind::MinuteEquityBar, T1)).unwrap(); // kind tag 1, earliest ts
+    store
+        .upsert(shared(DatasetKind::DailyEquityBar, T3))
+        .unwrap(); // kind tag 0, latest ts
+    store
+        .upsert(shared(DatasetKind::MinuteEquityBar, T1))
+        .unwrap(); // kind tag 1, earliest ts
     let result = store.query_unified(&UnifiedHistoricalQuery::new("AAPL", "blend", 0, i64::MAX));
     assert_eq!(
         event_ts_of(&result),

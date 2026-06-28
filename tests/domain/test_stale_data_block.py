@@ -60,8 +60,7 @@ def test_stale_state_blocks_live_submission_with_no_broker_call() -> None:
     result = _run_cargo_test("err_3_stale_state_blocks_live_submission_with_no_broker_call")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
-        f"ERR-3 Rust domain test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-3 Rust domain test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
         f"unexpected cargo test output:\n{combined}"
@@ -75,8 +74,7 @@ def test_fresh_state_still_routes_through_broker() -> None:
     # healthy.
     result = _run_cargo_test("err_3_fresh_state_still_routes_through_broker")
     assert result.returncode == 0, (
-        f"ERR-3 fresh-control test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-3 fresh-control test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
 
 
@@ -106,8 +104,7 @@ def test_stale_state_holds_across_many_live_submissions() -> None:
     result = _run_cargo_test("err_3_stale_state_holds_across_many_live_submissions")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
-        f"ERR-3 pseudo-property test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-3 pseudo-property test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
         f"unexpected cargo test output:\n{combined}"

@@ -145,8 +145,8 @@ class KillSwitchLiquidationOutcomeEnumTest(unittest.TestCase):
 
     def test_missing_filled_variant_is_caught(self) -> None:
         mutated = self.types_src.replace(
-            "    FilledBeforeTimeout { elapsed_seconds: u64 },",
-            "    FilledBeforeTimeoutX { elapsed_seconds: u64 },",
+            "    FilledBeforeTimeout {",
+            "    FilledBeforeTimeoutX {",
             1,
         )
         with self.assertRaises(KillSwitchTimeoutCheckError) as ctx:
@@ -155,8 +155,8 @@ class KillSwitchLiquidationOutcomeEnumTest(unittest.TestCase):
 
     def test_missing_timeout_variant_is_caught(self) -> None:
         mutated = self.types_src.replace(
-            "    TimedOutUnfilled { elapsed_seconds: u64, timeout_seconds: u64 },",
-            "    TimedOutUnfilledX { elapsed_seconds: u64, timeout_seconds: u64 },",
+            "    TimedOutUnfilled {",
+            "    TimedOutUnfilledX {",
             1,
         )
         with self.assertRaises(KillSwitchTimeoutCheckError) as ctx:

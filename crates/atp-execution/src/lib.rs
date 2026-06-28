@@ -369,6 +369,9 @@ impl ExecutionEngine {
     /// (so the broker is reachable *only* via `route_order`) re-architects the
     /// pinned ERR-1/2/3 contract and is the deferred SRS-EXE-006 / SRS-ORCH-*
     /// wiring (`live_designation_contract.deferred[]`).
+    // Broker/clock/designation generic params are the pinned ERR-1/2/3 contract;
+    // collapsing them is the deferred SRS-EXE-006 rework, not this CI-health pass.
+    #[allow(clippy::too_many_arguments)]
     pub fn submit_live_order<B, C, E, F, S>(
         &self,
         mode: StrategyMode,
@@ -1069,10 +1072,7 @@ mod tests {
         assert_eq!(connectivity.reconnect_calls.get(), 1);
         let recorded = events.events.borrow();
         assert_eq!(recorded.len(), 1);
-        assert_eq!(
-            recorded[0].state,
-            ConnectivityState::ScheduledRestartWindow
-        );
+        assert_eq!(recorded[0].state, ConnectivityState::ScheduledRestartWindow);
         assert!(
             recorded[0].scheduled_restart,
             "SRS-MD-005 suppression flag must be set"

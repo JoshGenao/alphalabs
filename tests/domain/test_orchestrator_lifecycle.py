@@ -78,9 +78,7 @@ def test_deadline_exceeded_state_blocks_launch_with_structured_error() -> None:
     # carry the original StrategyLaunchRequest, and exactly one
     # ContainerHealthEvent must be recorded carrying the observed
     # state, the strategy id, the action taken, and the timestamp.
-    result = _run_cargo_test(
-        "orch_1_deadline_exceeded_state_blocks_launch_with_structured_error"
-    )
+    result = _run_cargo_test("orch_1_deadline_exceeded_state_blocks_launch_with_structured_error")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
         f"SRS-ORCH-001 DeadlineExceeded test failed:\nSTDOUT:\n{result.stdout}\n"

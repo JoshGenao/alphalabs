@@ -67,9 +67,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def contract_block(config: dict) -> dict:
@@ -118,10 +116,14 @@ def check_coverage_kind(config: dict, store_src: str) -> str:
             "cannot smuggle the coverage kind"
         )
     if f"SCHEMA_VERSION:i64={block['schema_version']}" not in compact:
-        fail(f"store.rs SCHEMA_VERSION must be {block['schema_version']} (the coverage kind's version)")
+        fail(
+            f"store.rs SCHEMA_VERSION must be {block['schema_version']} (the coverage kind's version)"
+        )
     # The single coverage-record constructor binds event_ts to the through-date (the frontier identity).
     if "fncoverage_record" not in compact:
-        fail("store.rs must provide the coverage_record(through, symbol) constructor (single shape)")
+        fail(
+            "store.rs must provide the coverage_record(through, symbol) constructor (single shape)"
+        )
     # A coverage record asserts the trust decision the split-adjusted gate reads (the frontier), and
     # MarketDataRecord::new is public — so store validation MUST enforce its self-consistency (a single
     # complete_through field equal to the key event_ts) at upsert AND restore, or a forged frontier could
@@ -152,7 +154,12 @@ def check_coverage_kind(config: dict, store_src: str) -> str:
 
 def check_gate_condition(config: dict, coverage_src: str) -> str:
     compact = _compact(coverage_src)
-    for token in ("query_split_adjusted", "coverage_frontier", "SplitAdjustedResult", "CoverageError"):
+    for token in (
+        "query_split_adjusted",
+        "coverage_frontier",
+        "SplitAdjustedResult",
+        "CoverageError",
+    ):
         if token not in coverage_src:
             fail(f"coverage.rs must define `{token}` (the coverage-gate surface)")
     # The gate condition: frontier D >= query.end_ts, else NotCovered carrying have/need.
@@ -161,14 +168,20 @@ def check_gate_condition(config: dict, coverage_src: str) -> str:
             "coverage.rs::query_split_adjusted must serve split-adjusted only when the frontier "
             "D >= query.end_ts (the precise, honest coverage condition)"
         )
-    if "NotCovered" not in coverage_src or "have_through" not in coverage_src or "need_through" not in coverage_src:
+    if (
+        "NotCovered" not in coverage_src
+        or "have_through" not in coverage_src
+        or "need_through" not in coverage_src
+    ):
         fail(
             "coverage.rs must fail closed with CoverageError::NotCovered { have_through, need_through } "
             "when the symbol is not covered through the query end"
         )
     # The frontier is the MAX completeness-through over the symbol's coverage records (monotonic).
     if ".max()" not in compact:
-        fail("coverage_frontier must be the MAX completeness-through over the symbol's coverage records")
+        fail(
+            "coverage_frontier must be the MAX completeness-through over the symbol's coverage records"
+        )
     # The split set is collected up to the coverage frontier D (the as-of date), not the query window:
     # a split in (end, D] still adjusts in-window bars, but a split with effective_ts > D is EXCLUDED so
     # the result is never adjusted past the advertised coverage_through (the as-of-D contract).
@@ -202,7 +215,7 @@ def check_kind_narrowed_gate(config: dict, coverage_src: str) -> str:
             "the gate must require an explicit DailyEquityBar / MinuteEquityBar query kind "
             "(a split-adjusted series is equity-only by construction)"
         )
-    if "\"unspecified\"" not in compact and "'unspecified'" not in compact:
+    if '"unspecified"' not in compact and "'unspecified'" not in compact:
         fail("a kind-agnostic (None) split-adjusted query must be rejected as 'unspecified'")
     return (
         "kind-narrowed gate: query_split_adjusted requires an explicit DailyEquityBar / MinuteEquityBar "
@@ -250,14 +263,20 @@ def check_cli_routes_gated(config: dict, cli_src: str) -> str:
             "MarketDataStore::query_split_adjusted (never CLI-side split math)"
         )
     if '"split-adjusted"=>Ok' not in compact:
-        fail("data007_query_cli must ACCEPT --normalization split-adjusted (route it through the gate)")
+        fail(
+            "data007_query_cli must ACCEPT --normalization split-adjusted (route it through the gate)"
+        )
     if "coverage_through" not in cli_src:
-        fail("data007_query_cli must echo a coverage_through:<D> line for a served split-adjusted result")
+        fail(
+            "data007_query_cli must echo a coverage_through:<D> line for a served split-adjusted result"
+        )
     # fully-adjusted / total-return remain rejected (dividends deferred); SRS-DATA-011 named.
     if '"fully-adjusted"' not in compact or '"total-return"' not in compact:
         fail("data007_query_cli must still reject --normalization fully-adjusted / total-return")
     if "SRS-DATA-011" not in cli_src:
-        fail("data007_query_cli must name SRS-DATA-011 (the coverage owner the split-adjusted gate needs)")
+        fail(
+            "data007_query_cli must name SRS-DATA-011 (the coverage owner the split-adjusted gate needs)"
+        )
     return (
         "CLI routing: data007_query_cli routes --normalization split-adjusted through the coverage gate "
         "(query_split_adjusted), echoes coverage_through, and fails closed (naming SRS-DATA-011) when "
@@ -274,7 +293,9 @@ def check_coverage_cli(config: dict, coverage_cli_src: str) -> str:
         fail("data011_coverage_cli must build the coverage record via store::coverage_record")
     # assert-coverage must hold the single-writer lock across the load-modify-save (no last-publish-wins).
     if "StoreLock::acquire" not in compact:
-        fail("data011_coverage_cli assert-coverage must hold the StoreLock across the load-modify-save")
+        fail(
+            "data011_coverage_cli assert-coverage must hold the StoreLock across the load-modify-save"
+        )
     if "save_to_path" not in compact:
         fail("data011_coverage_cli assert-coverage must durably persist the coverage record")
     return (
@@ -294,7 +315,10 @@ def check_ingest_excludes_coverage(config: dict, ingest_cli_src: str) -> str:
             "data016_ingest_cli must explicitly reference DatasetKind::CorporateActionCoverage to "
             "reject it (the coverage frontier is asserted only via data011_coverage_cli)"
         )
-    if "kind==DatasetKind::CorporateActionCoverage" not in compact and "data011_coverage_cli" not in ingest_cli_src:
+    if (
+        "kind==DatasetKind::CorporateActionCoverage" not in compact
+        and "data011_coverage_cli" not in ingest_cli_src
+    ):
         fail(
             "data016_ingest_cli must REFUSE --kind corporate-action-coverage and point to "
             "data011_coverage_cli (the single coverage-assertion surface)"
@@ -317,7 +341,9 @@ def check_data_layer_rejects_coverage(config: dict, lib_src: str) -> str:
             "market-data ingestion path must not create the coverage trust assertion)"
         )
     if "UnsupportedKind" not in lib_src:
-        fail("ingest_market_record must fail closed with MarketIngestError::UnsupportedKind for coverage")
+        fail(
+            "ingest_market_record must fail closed with MarketIngestError::UnsupportedKind for coverage"
+        )
     return (
         "data-layer boundary: DataLayer::ingest_market_record REFUSES CorporateActionCoverage "
         "(MarketIngestError::UnsupportedKind) -- the decisive trust boundary so no generic ingestion "
@@ -344,7 +370,10 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
     #    kind guard).
     unit = subprocess.run(
         [cargo, "test", "-p", crate, "--lib", "coverage", "--quiet"],
-        cwd=ROOT, check=False, capture_output=True, text=True,
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
     )
     if unit.returncode != 0:
         fail(f"cargo test -p {crate} --lib coverage failed:\n{unit.stdout}\n{unit.stderr}")
@@ -353,7 +382,10 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
     for binary in (block["ingest_cli_bin"], block["coverage_cli_bin"], block["cli_bin"]):
         built = subprocess.run(
             [cargo, "build", "-q", "-p", crate, "--bin", binary],
-            cwd=ROOT, check=False, capture_output=True, text=True,
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
         )
         if built.returncode != 0:
             fail(f"building {binary} failed:\n{built.stdout}\n{built.stderr}")
@@ -366,37 +398,87 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
 
     with tempfile.TemporaryDirectory() as tmp:
         # Ingest the daily bar + the split, then assert coverage through the split's effective date.
-        if run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", rt["kind"],
-               "--event-ts", str(rt["bar_event_ts"]), "--init").returncode != 0:
+        if (
+            run(
+                str(ingest_bin),
+                "ingest",
+                "--dir",
+                tmp,
+                "--kind",
+                rt["kind"],
+                "--event-ts",
+                str(rt["bar_event_ts"]),
+                "--init",
+            ).returncode
+            != 0
+        ):
             fail("ingest daily bar failed")
-        if run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", rt["split_kind"],
-               "--event-ts", str(rt["split_event_ts"])).returncode != 0:
+        if (
+            run(
+                str(ingest_bin),
+                "ingest",
+                "--dir",
+                tmp,
+                "--kind",
+                rt["split_kind"],
+                "--event-ts",
+                str(rt["split_event_ts"]),
+            ).returncode
+            != 0
+        ):
             fail("ingest split failed")
-        asserted = run(str(coverage_bin), "assert-coverage", "--dir", tmp,
-                       "--symbol", rt["symbol"], "--through", str(rt["covered_through"]))
+        asserted = run(
+            str(coverage_bin),
+            "assert-coverage",
+            "--dir",
+            tmp,
+            "--symbol",
+            rt["symbol"],
+            "--through",
+            str(rt["covered_through"]),
+        )
         if asserted.returncode != 0:
             fail(f"assert-coverage failed:\n{asserted.stdout}\n{asserted.stderr}")
         if f"frontier:{rt['covered_through']}" not in asserted.stdout:
-            fail(f"assert-coverage must report frontier:{rt['covered_through']}, got:\n{asserted.stdout}")
+            fail(
+                f"assert-coverage must report frontier:{rt['covered_through']}, got:\n{asserted.stdout}"
+            )
 
         def query(end: int) -> subprocess.CompletedProcess[str]:
             return run(
-                str(query_bin), "query", "--dir", tmp, "--symbol", rt["symbol"],
-                "--resolution", rt["resolution"], "--start", "0", "--end", str(end),
-                "--kind", rt["kind"], "--normalization", "split-adjusted",
+                str(query_bin),
+                "query",
+                "--dir",
+                tmp,
+                "--symbol",
+                rt["symbol"],
+                "--resolution",
+                rt["resolution"],
+                "--start",
+                "0",
+                "--end",
+                str(end),
+                "--kind",
+                rt["kind"],
+                "--normalization",
+                "split-adjusted",
             )
 
         # COVERED -> the ADJUSTED bar (close 2500 / volume 400000) + coverage_through echo.
         covered = query(rt["covered_query_end"])
         if covered.returncode != 0:
-            fail(f"covered split-adjusted query must succeed, got:\n{covered.stdout}\n{covered.stderr}")
+            fail(
+                f"covered split-adjusted query must succeed, got:\n{covered.stdout}\n{covered.stderr}"
+            )
         fields = {}
         for line in covered.stdout.splitlines():
             if line.startswith("record.0.field."):
-                name, value = line[len("record.0.field."):].split(":", 1)
+                name, value = line[len("record.0.field.") :].split(":", 1)
                 fields[name] = int(value)
         if fields.get("close") != rt["adjusted_close_minor"]:
-            fail(f"covered split-adjusted close {fields.get('close')} != {rt['adjusted_close_minor']}")
+            fail(
+                f"covered split-adjusted close {fields.get('close')} != {rt['adjusted_close_minor']}"
+            )
         if fields.get("volume") != rt["adjusted_volume"]:
             fail(f"covered split-adjusted volume {fields.get('volume')} != {rt['adjusted_volume']}")
         if f"coverage_through:{rt['covered_through']}" not in covered.stdout:
@@ -457,8 +539,7 @@ _DEFERRED_OWNERS = (
 def assert_coverage_manifest_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable without cargo (used by the L3 contract test)."""
     sources = {
-        key: _read(config, key, root)
-        for key in {src_key for _, src_key, _ in _STATIC_CHECKS}
+        key: _read(config, key, root) for key in {src_key for _, src_key, _ in _STATIC_CHECKS}
     }
     return [check(config, sources[src_key]) for _, src_key, check in _STATIC_CHECKS]
 

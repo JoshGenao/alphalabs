@@ -224,7 +224,9 @@ def check_inputs(config: dict, src: str) -> str:
     _check_struct_fields(src, block["fundamental_input"], "fundamental input")
     _check_struct_fields(src, block["security_inputs"], "security inputs")
     body = _compact(_struct_body(src, block["security_inputs"]["struct"]))
-    missing = [t for t in block["security_inputs"]["both_sources_tokens"] if _compact(t) not in body]
+    missing = [
+        t for t in block["security_inputs"]["both_sources_tokens"] if _compact(t) not in body
+    ]
     if missing:
         fail(
             "SecurityFactorInputs must carry BOTH an Option market and an Option fundamental "
@@ -319,12 +321,16 @@ def check_outcome_and_error_enums(config: dict, src: str) -> str:
     block = contract_block(config)
     outcome = block["outcome_enum"]
     outcome_body = _enum_body(src, outcome["enum"])
-    missing = [v for v in outcome["variants"] if not re.search(rf"\b{re.escape(v)}\b", outcome_body)]
+    missing = [
+        v for v in outcome["variants"] if not re.search(rf"\b{re.escape(v)}\b", outcome_body)
+    ]
     if missing:
         fail(f"{outcome['enum']} is missing variants: {', '.join(missing)}")
     error = block["error_enum"]
     error_body = _enum_body(src, error["enum"])
-    error_missing = [v for v in error["variants"] if not re.search(rf"\b{re.escape(v)}\b", error_body)]
+    error_missing = [
+        v for v in error["variants"] if not re.search(rf"\b{re.escape(v)}\b", error_body)
+    ]
     if error_missing:
         fail(f"{error['enum']} is missing fail-closed variants: {', '.join(error_missing)}")
     return (

@@ -64,9 +64,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def contract_block(config: dict) -> dict:

@@ -172,10 +172,7 @@ fn cmd_defaults(rest: &[String]) -> Result<(), String> {
 
     // The SYS-83b default limit-fill model is immediate-on-cross, and the named default equals the
     // type's `Default` (the SyRS baseline), so a strategy that configures nothing gets SYS-83.
-    println!(
-        "default-limit-fill-model:{}",
-        model_str(config.limit_fill)
-    );
+    println!("default-limit-fill-model:{}", model_str(config.limit_fill));
     println!(
         "default-config-is-syrs-baseline:{}",
         config == FillModelConfig::default()
@@ -375,7 +372,13 @@ fn cmd_volume(rest: &[String]) -> Result<(), String> {
     // Single-order cap: a market order requesting MORE than the bar volume fills only the bar volume.
     // `--qty > --volume` is enforced at parse, so this is always a genuine partial fill.
     let single = engine
-        .evaluate_fill(&OrderType::Market, Side::Buy, parsed.qty, &snapshot, &config)
+        .evaluate_fill(
+            &OrderType::Market,
+            Side::Buy,
+            parsed.qty,
+            &snapshot,
+            &config,
+        )
         .map_err(|err| err.to_string())?;
     let single_fill = filled_quantity(&single)?;
     let single_capped = single_fill == parsed.volume && single_fill < parsed.qty;
@@ -475,7 +478,8 @@ fn inject_and_assert_fail_closed(
                 last_minor: LAST_MINOR,
                 bar_volume: FIXTURE_VOLUME,
             };
-            match engine.evaluate_fill(&OrderType::Market, Side::Buy, RULE_QTY, &snapshot, &config) {
+            match engine.evaluate_fill(&OrderType::Market, Side::Buy, RULE_QTY, &snapshot, &config)
+            {
                 Err(FillModelError::NonPositiveQuote { .. }) => {
                     "fill model rejected a non-positive quote".to_string()
                 }
@@ -490,7 +494,8 @@ fn inject_and_assert_fail_closed(
                 last_minor: LAST_MINOR,
                 bar_volume: FIXTURE_VOLUME,
             };
-            match engine.evaluate_fill(&OrderType::Market, Side::Buy, RULE_QTY, &snapshot, &config) {
+            match engine.evaluate_fill(&OrderType::Market, Side::Buy, RULE_QTY, &snapshot, &config)
+            {
                 Err(FillModelError::CrossedBook { .. }) => {
                     "fill model rejected a crossed book".to_string()
                 }
@@ -505,7 +510,8 @@ fn inject_and_assert_fail_closed(
                 last_minor: LAST_MINOR,
                 bar_volume: -1,
             };
-            match engine.evaluate_fill(&OrderType::Market, Side::Buy, RULE_QTY, &snapshot, &config) {
+            match engine.evaluate_fill(&OrderType::Market, Side::Buy, RULE_QTY, &snapshot, &config)
+            {
                 Err(FillModelError::NegativeVolume { .. }) => {
                     "fill model rejected a negative bar volume".to_string()
                 }
@@ -616,8 +622,12 @@ fn render_decision(decision: &FillDecision) -> String {
         FillDecision::Filled {
             fill_price_minor,
             fill_quantity,
-        } => format!("decision:filled fill_price_minor:{fill_price_minor} fill-quantity:{fill_quantity}"),
-        FillDecision::NoFill { reason } => format!("decision:no-fill reason:{}", reason_str(reason)),
+        } => format!(
+            "decision:filled fill_price_minor:{fill_price_minor} fill-quantity:{fill_quantity}"
+        ),
+        FillDecision::NoFill { reason } => {
+            format!("decision:no-fill reason:{}", reason_str(reason))
+        }
     }
 }
 

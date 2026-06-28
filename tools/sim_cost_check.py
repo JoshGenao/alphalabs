@@ -356,9 +356,7 @@ def check_shared_cost_cli(config: dict, cli_src: str, root: Path = ROOT) -> str:
 
     # Backed by the L5 integration test.
     block = contract_block(config)
-    l5_path = (
-        root / block["simulation_crate"]["path"] / "tests" / f"{spec['l5_test']}.rs"
-    )
+    l5_path = root / block["simulation_crate"]["path"] / "tests" / f"{spec['l5_test']}.rs"
     if not l5_path.exists():
         fail(f"missing L5 integration test {l5_path.relative_to(root)}")
 

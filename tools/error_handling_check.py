@@ -117,9 +117,7 @@ def check_error_category_enum(config: dict, types_src: str) -> str:
     if missing:
         fail(f"{spec['enum']} enum is missing variants: {', '.join(missing)}")
     # Wire strings must appear (the as_str() match arms encode them).
-    missing_wire = [
-        wire for wire in spec["wire_strings"] if f'"{wire}"' not in types_src
-    ]
+    missing_wire = [wire for wire in spec["wire_strings"] if f'"{wire}"' not in types_src]
     if missing_wire:
         fail(
             f"{spec['enum']}::as_str() is missing SyRS SYS-64 wire string(s): "
@@ -182,9 +180,7 @@ def check_submit_live_order_signature(config: dict, exec_src: str) -> str:
     )
 
 
-def check_synchronous_rejection_has_no_broker_side_effect(
-    config: dict, exec_src: str
-) -> str:
+def check_synchronous_rejection_has_no_broker_side_effect(config: dict, exec_src: str) -> str:
     block = err_block(config)
     entry = block["entry_point"]
     body = _fn_block(exec_src, entry["method"])

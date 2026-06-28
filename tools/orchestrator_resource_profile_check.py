@@ -73,9 +73,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def contract_block(config: dict) -> dict:
@@ -103,9 +101,7 @@ def orchestrator_source(config: dict, root: Path = ROOT) -> str:
 
 
 def _assert_pub_const_u32(source: str, name: str, expected: int) -> None:
-    pattern = re.compile(
-        rf"\bpub\s+const\s+{re.escape(name)}\s*:\s*u32\s*=\s*([0-9_]+)\s*;"
-    )
+    pattern = re.compile(rf"\bpub\s+const\s+{re.escape(name)}\s*:\s*u32\s*=\s*([0-9_]+)\s*;")
     match = pattern.search(source)
     if match is None:
         fail(
@@ -114,10 +110,7 @@ def _assert_pub_const_u32(source: str, name: str, expected: int) -> None:
         )
     literal = int(match.group(1).replace("_", ""))
     if literal != expected:
-        fail(
-            f"{name} has value {literal} but SRS-ORCH-002 / SyRS SYS-11 "
-            f"requires {expected}"
-        )
+        fail(f"{name} has value {literal} but SRS-ORCH-002 / SyRS SYS-11 requires {expected}")
 
 
 # --------------------------------------------------------------------------- #
@@ -227,10 +220,7 @@ def check_orchestrator_helper_methods(config: dict, orch_src: str) -> str:
         if not re.search(rf"\bpub\s+(?:const\s+)?fn\s+{re.escape(method)}\b", orch_src):
             missing.append(method)
     if missing:
-        fail(
-            f"StrategyOrchestrator is missing required helper methods: "
-            f"{', '.join(missing)}"
-        )
+        fail(f"StrategyOrchestrator is missing required helper methods: {', '.join(missing)}")
     return (
         f"atp-orchestrator exposes Orchestrator helpers "
         f"({', '.join(helpers)}) so callers populate launch requests "
@@ -471,9 +461,7 @@ def run_checks() -> list[str]:
     return evidence
 
 
-def assert_orchestrator_resource_profile_static(
-    config: dict, root: Path = ROOT
-) -> list[str]:
+def assert_orchestrator_resource_profile_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable from ``tools/architecture_check.py`` (no cargo)."""
     types_src = types_source(config, root)
     orch_src = orchestrator_source(config, root)

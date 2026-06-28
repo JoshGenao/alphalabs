@@ -170,7 +170,9 @@ fn request(id: &str, mode: StrategyMode) -> StrategyLaunchRequest {
 fn orch_1_ready_within_deadline_state_returns_outcome_and_emits_no_event() {
     let orchestrator = StrategyOrchestrator;
     let runtime = RuntimeSpy::new(
-        LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 4_200 },
+        LaunchReadiness::ReadyWithinDeadline {
+            elapsed_millis: 4_200,
+        },
         ContainerHealthState::Healthy,
     );
     let sink = ForbiddenSink;
@@ -188,8 +190,16 @@ fn orch_1_ready_within_deadline_state_returns_outcome_and_emits_no_event() {
     assert!(outcome.ready_within_deadline);
     assert_eq!(outcome.elapsed_millis, 4_200);
     assert_eq!(outcome.deadline_millis, STRATEGY_STARTUP_DEADLINE_MS);
-    assert_eq!(runtime.create_calls.get(), 1, "create must be called exactly once");
-    assert_eq!(runtime.start_calls.get(), 1, "start must be called exactly once");
+    assert_eq!(
+        runtime.create_calls.get(),
+        1,
+        "create must be called exactly once"
+    );
+    assert_eq!(
+        runtime.start_calls.get(),
+        1,
+        "start must be called exactly once"
+    );
 }
 
 #[test]
@@ -217,7 +227,10 @@ fn orch_1_deadline_exceeded_state_blocks_launch_with_structured_error() {
         error.category,
         OrderErrorCategory::StrategyStartupDeadlineExceeded
     );
-    assert_eq!(error.category.as_str(), "STRATEGY_STARTUP_DEADLINE_EXCEEDED");
+    assert_eq!(
+        error.category.as_str(),
+        "STRATEGY_STARTUP_DEADLINE_EXCEEDED"
+    );
     assert_eq!(error.error_type, "StrategyStartupDeadlineExceeded");
     assert_eq!(error.original_request.strategy_id.as_str(), "alpha-1");
     assert_eq!(error.original_request.mode, StrategyMode::Live);
@@ -262,12 +275,8 @@ fn orch_1_healthy_observation_is_read_only() {
         ContainerHealthState::Healthy,
     );
     let sink = ForbiddenSink;
-    let state = orchestrator.observe_health(
-        StrategyId::new("alpha-1"),
-        &runtime,
-        &sink,
-        1_715_000_000,
-    );
+    let state =
+        orchestrator.observe_health(StrategyId::new("alpha-1"), &runtime, &sink, 1_715_000_000);
     assert_eq!(state, ContainerHealthState::Healthy);
     assert_eq!(runtime.health_calls.get(), 1);
     assert_eq!(
@@ -287,12 +296,8 @@ fn orch_1_unresponsive_observation_restarts_and_records_event_exactly_once() {
         ContainerHealthState::Unresponsive,
     );
     let sink = EventSinkSpy::default();
-    let state = orchestrator.observe_health(
-        StrategyId::new("alpha-1"),
-        &runtime,
-        &sink,
-        1_715_000_000,
-    );
+    let state =
+        orchestrator.observe_health(StrategyId::new("alpha-1"), &runtime, &sink, 1_715_000_000);
     assert_eq!(state, ContainerHealthState::Unresponsive);
     assert_eq!(runtime.health_calls.get(), 1);
     assert_eq!(
@@ -300,7 +305,11 @@ fn orch_1_unresponsive_observation_restarts_and_records_event_exactly_once() {
         1,
         "Unresponsive observation must trigger exactly one restart"
     );
-    assert_eq!(runtime.destroy_calls.get(), 0, "auto-restart must NOT destroy");
+    assert_eq!(
+        runtime.destroy_calls.get(),
+        0,
+        "auto-restart must NOT destroy"
+    );
     assert_eq!(runtime.stop_calls.get(), 0, "auto-restart must NOT stop");
     let events = sink.events.borrow();
     assert_eq!(events.len(), 1, "exactly one dashboard event per restart");
@@ -318,11 +327,15 @@ fn orch_1_launch_is_mode_uniform_across_live_and_paper() {
     // structural shape (only the mode field differs).
     let orchestrator = StrategyOrchestrator;
     let runtime_live = RuntimeSpy::new(
-        LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 4_200 },
+        LaunchReadiness::ReadyWithinDeadline {
+            elapsed_millis: 4_200,
+        },
         ContainerHealthState::Healthy,
     );
     let runtime_paper = RuntimeSpy::new(
-        LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 3_100 },
+        LaunchReadiness::ReadyWithinDeadline {
+            elapsed_millis: 3_100,
+        },
         ContainerHealthState::Healthy,
     );
     let version_registry = VersionRegistrySpy::default();

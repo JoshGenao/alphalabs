@@ -79,9 +79,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def contract_block(config: dict) -> dict:
@@ -281,9 +279,7 @@ def check_startup_deadline_constant(config: dict, types_src: str) -> str:
         )
     literal = match.group(1).replace("_", "")
     if int(literal) != expected_value:
-        fail(
-            f"{name} has value {literal} but NFR-P9 requires {expected_value}"
-        )
+        fail(f"{name} has value {literal} but NFR-P9 requires {expected_value}")
     return (
         f"atp-types declares {name} = {expected_value} (ms) — the NFR-P9 "
         "single source of truth for strategy container startup time"
@@ -604,9 +600,7 @@ def run_checks() -> list[str]:
     return evidence
 
 
-def assert_orchestrator_lifecycle_static(
-    config: dict, root: Path = ROOT
-) -> list[str]:
+def assert_orchestrator_lifecycle_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable from ``tools/architecture_check.py`` (no cargo)."""
     types_src = types_source(config, root)
     orch_src = orchestrator_source(config, root)

@@ -48,9 +48,17 @@ def _run(*args: str, timeout: float | None = None) -> subprocess.CompletedProces
 
 def _build(cargo: str) -> tuple[str, str, str]:
     build = _run(
-        cargo, "build", "-q", "-p", "atp-data",
-        "--bin", "data016_ingest_cli", "--bin", "data007_query_cli",
-        "--example", "data017_lock_holder",
+        cargo,
+        "build",
+        "-q",
+        "-p",
+        "atp-data",
+        "--bin",
+        "data016_ingest_cli",
+        "--bin",
+        "data007_query_cli",
+        "--example",
+        "data017_lock_holder",
     )
     assert build.returncode == 0, build.stdout + build.stderr
     debug = ROOT / "target" / "debug"
@@ -77,8 +85,19 @@ def test_reader_processes_are_non_blocking_and_uncorrupted_during_a_held_write_l
 
         # Start the writer process that genuinely HOLDS the lock mid load-modify-save.
         holder = subprocess.Popen(
-            [holder_bin, "--dir", tmp, "--ready-file", str(ready_file), "--release-file", str(release_file)],
-            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            [
+                holder_bin,
+                "--dir",
+                tmp,
+                "--ready-file",
+                str(ready_file),
+                "--release-file",
+                str(release_file),
+            ],
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
         try:
             # Wait until the holder has acquired the lock and is mid-write (bounded).
@@ -94,13 +113,25 @@ def test_reader_processes_are_non_blocking_and_uncorrupted_during_a_held_write_l
             for _ in range(6):
                 assert not release_file.exists(), "released too early — window invariant broken"
                 q = _run(
-                    query_bin, "query", "--dir", tmp,
-                    "--symbol", "AAPL", "--resolution", "1d", "--start", "0", "--end", "9999999999",
+                    query_bin,
+                    "query",
+                    "--dir",
+                    tmp,
+                    "--symbol",
+                    "AAPL",
+                    "--resolution",
+                    "1d",
+                    "--start",
+                    "0",
+                    "--end",
+                    "9999999999",
                     timeout=READ_TIMEOUT,
                 )
                 assert q.returncode == 0, q.stdout + q.stderr
                 mc = [ln for ln in q.stdout.splitlines() if ln.startswith("match_count:")]
-                assert mc and int(mc[0].split(":", 1)[1]) >= 1, f"seed unreadable during a held write: {q.stdout!r}"
+                assert mc and int(mc[0].split(":", 1)[1]) >= 1, (
+                    f"seed unreadable during a held write: {q.stdout!r}"
+                )
 
                 insp = _run(ingest_bin, "inspect", "--dir", tmp, timeout=READ_TIMEOUT)
                 assert insp.returncode == 0, insp.stdout + insp.stderr
@@ -124,7 +155,9 @@ def test_reader_processes_are_non_blocking_and_uncorrupted_during_a_held_write_l
         final = _run(ingest_bin, "inspect", "--dir", tmp, timeout=READ_TIMEOUT)
         assert final.returncode == 0, final.stdout + final.stderr
         store_len = next(
-            int(ln.split(":", 1)[1]) for ln in final.stdout.splitlines() if ln.startswith("store_len:")
+            int(ln.split(":", 1)[1])
+            for ln in final.stdout.splitlines()
+            if ln.startswith("store_len:")
         )
         assert store_len == 4, f"expected seed (2) + committed holder batch (2); got {store_len}"
 
@@ -146,8 +179,18 @@ def test_many_reader_processes_read_a_static_store_without_a_lock() -> None:
         def reader() -> None:
             try:
                 q = _run(
-                    query_bin, "query", "--dir", tmp,
-                    "--symbol", "AAPL", "--resolution", "1d", "--start", "0", "--end", "9999999999",
+                    query_bin,
+                    "query",
+                    "--dir",
+                    tmp,
+                    "--symbol",
+                    "AAPL",
+                    "--resolution",
+                    "1d",
+                    "--start",
+                    "0",
+                    "--end",
+                    "9999999999",
                     timeout=READ_TIMEOUT,
                 )
                 if q.returncode != 0:

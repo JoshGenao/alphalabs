@@ -237,10 +237,7 @@ fn err_2_scheduled_restart_window_blocks_with_suppressed_marker() {
 
     let recorded = events.events.borrow();
     assert_eq!(recorded.len(), 1);
-    assert_eq!(
-        recorded[0].state,
-        ConnectivityState::ScheduledRestartWindow
-    );
+    assert_eq!(recorded[0].state, ConnectivityState::ScheduledRestartWindow);
     assert!(
         recorded[0].scheduled_restart,
         "SRS-MD-005 suppression flag must be set on scheduled-restart events"
