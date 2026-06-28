@@ -75,9 +75,7 @@ def _const_or_pub_fn_block(source: str, fn_name: str) -> str:
     ``const fn`` so they can be evaluated in const contexts and so a
     future caller can pin them in ``const`` items without runtime cost.
     """
-    match = re.search(
-        rf"\bpub\s+(?:const\s+)?fn\s+{re.escape(fn_name)}\b[^\{{]*\{{", source
-    )
+    match = re.search(rf"\bpub\s+(?:const\s+)?fn\s+{re.escape(fn_name)}\b[^\{{]*\{{", source)
     if not match:
         fail(f"Rust source is missing function `{fn_name}`")
     start = match.end()
@@ -94,6 +92,7 @@ def _const_or_pub_fn_block(source: str, fn_name: str) -> str:
         fail(f"could not parse function body for `{fn_name}`")
     return source[start : index - 1]
 
+
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"
 
@@ -107,9 +106,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def contract_block(config: dict) -> dict:
@@ -137,9 +134,7 @@ def orchestrator_source(config: dict, root: Path = ROOT) -> str:
 
 
 def _assert_pub_const_u32(source: str, name: str, expected: int) -> None:
-    pattern = re.compile(
-        rf"\bpub\s+const\s+{re.escape(name)}\s*:\s*u32\s*=\s*([0-9_]+)\s*;"
-    )
+    pattern = re.compile(rf"\bpub\s+const\s+{re.escape(name)}\s*:\s*u32\s*=\s*([0-9_]+)\s*;")
     match = pattern.search(source)
     if match is None:
         fail(
@@ -148,10 +143,7 @@ def _assert_pub_const_u32(source: str, name: str, expected: int) -> None:
         )
     literal = int(match.group(1).replace("_", ""))
     if literal != expected:
-        fail(
-            f"{name} has value {literal} but SRS-ORCH-003 / SyRS SYS-57 "
-            f"requires {expected}"
-        )
+        fail(f"{name} has value {literal} but SRS-ORCH-003 / SyRS SYS-57 requires {expected}")
 
 
 # --------------------------------------------------------------------------- #
@@ -237,10 +229,7 @@ def check_workload_priority_enum(config: dict, types_src: str) -> str:
     body = _enum_body(types_src, spec["enum"])
     missing = [v for v in spec["variants"] if not re.search(rf"\b{re.escape(v)}\b", body)]
     if missing:
-        fail(
-            f"{spec['enum']} enum is missing SYS-57 hierarchy variants: "
-            f"{', '.join(missing)}"
-        )
+        fail(f"{spec['enum']} enum is missing SYS-57 hierarchy variants: {', '.join(missing)}")
     # The hierarchy must appear in the exact spec order — a future
     # refactor that re-orders the variants would silently re-rank them.
     positions = [body.find(v) for v in spec["variants"]]
@@ -255,9 +244,7 @@ def check_workload_priority_enum(config: dict, types_src: str) -> str:
     rank_fn_body = _const_or_pub_fn_block(types_src, spec["rank_method"])
     ranks = spec["ranks"]
     for variant, expected in ranks.items():
-        arm = re.search(
-            rf"Self::{re.escape(variant)}\s*=>\s*([0-9]+)", rank_fn_body
-        )
+        arm = re.search(rf"Self::{re.escape(variant)}\s*=>\s*([0-9]+)", rank_fn_body)
         if arm is None:
             fail(
                 f"WorkloadPriority::{variant} is missing a rank-method arm — "
@@ -300,12 +287,8 @@ def check_workload_kind_enum(config: dict, types_src: str) -> str:
     default_fn_body = _const_or_pub_fn_block(types_src, "default_kind")
     mapping = spec["kind_for_priority"]
     for priority, kind in mapping.items():
-        if not re.search(
-            rf"Self::{re.escape(priority)}\b", default_fn_body
-        ):
-            fail(
-                f"default_kind is missing arm for WorkloadPriority::{priority}"
-            )
+        if not re.search(rf"Self::{re.escape(priority)}\b", default_fn_body):
+            fail(f"default_kind is missing arm for WorkloadPriority::{priority}")
         # Each priority must route to its spec'd kind. The match arm
         # may group several priorities under one arm via `|` so we
         # check the kind appears within a reasonable window after the
@@ -317,9 +300,7 @@ def check_workload_kind_enum(config: dict, types_src: str) -> str:
         # token within the arm body (until the next comma at depth 0).
         arrow = default_fn_body.find("=>", arm_start)
         if arrow == -1:
-            fail(
-                f"default_kind arm for WorkloadPriority::{priority} is malformed"
-            )
+            fail(f"default_kind arm for WorkloadPriority::{priority} is malformed")
         # Read until the next top-level `,`.
         depth = 0
         index = arrow + 2
@@ -434,10 +415,7 @@ def check_workload_admission_event_enum(config: dict, types_src: str) -> str:
         variant_block = body[start : index - 1]
         for field in required:
             if not re.search(rf"\b{re.escape(field)}\s*:", variant_block):
-                fail(
-                    f"{spec['enum']}::{variant} is missing required field "
-                    f"`{field}`"
-                )
+                fail(f"{spec['enum']}::{variant} is missing required field `{field}`")
         for forbidden in spec["forbidden_fields"]:
             if re.search(rf"\b{re.escape(forbidden)}\s*:", variant_block):
                 fail(
@@ -493,9 +471,7 @@ def check_ports(config: dict, orch_src: str) -> str:
     # contract pins each method's signature and the matching error
     # struct.
     probe_spec = block["host_memory_probe_port"]
-    for sig_key, struct_key in (
-        ("available_mb_signature", "probe_error_struct"),
-    ):
+    for sig_key, struct_key in (("available_mb_signature", "probe_error_struct"),):
         sig = probe_spec.get(sig_key)
         if sig and sig not in orch_src:
             fail(
@@ -504,9 +480,7 @@ def check_ports(config: dict, orch_src: str) -> str:
                 "requires the gate to fail closed on probe error"
             )
         struct = probe_spec.get(struct_key)
-        if struct and not re.search(
-            rf"\bpub\s+struct\s+{re.escape(struct)}\b", orch_src
-        ):
+        if struct and not re.search(rf"\bpub\s+struct\s+{re.escape(struct)}\b", orch_src):
             fail(
                 f"struct {struct} is missing — codex critic "
                 "adapter:error-surface requires a typed probe-failure "
@@ -524,9 +498,7 @@ def check_ports(config: dict, orch_src: str) -> str:
             )
     for struct_key in ("registry_error_struct", "termination_error_struct"):
         struct = registry_spec.get(struct_key)
-        if struct and not re.search(
-            rf"\bpub\s+struct\s+{re.escape(struct)}\b", orch_src
-        ):
+        if struct and not re.search(rf"\bpub\s+struct\s+{re.escape(struct)}\b", orch_src):
             fail(
                 f"struct {struct} is missing — codex critic "
                 "adapter:error-surface requires a typed failure surface"
@@ -586,9 +558,7 @@ def check_orchestrator_helper_methods(config: dict, orch_src: str) -> str:
     helpers = block["orchestrator_helper_methods"]
     missing = []
     for method in helpers:
-        if not re.search(
-            rf"\bpub\s+(?:const\s+)?fn\s+{re.escape(method)}\b", orch_src
-        ):
+        if not re.search(rf"\bpub\s+(?:const\s+)?fn\s+{re.escape(method)}\b", orch_src):
             missing.append(method)
     if missing:
         fail(
@@ -621,9 +591,7 @@ def check_admit_workload_guard(config: dict, orch_src: str) -> str:
                 "call (must be of the form `receiver.method`)"
             )
         receiver, method = token.split(".", 1)
-        pattern = re.compile(
-            rf"\b{re.escape(receiver)}\s*\.\s*{re.escape(method)}\s*\("
-        )
+        pattern = re.compile(rf"\b{re.escape(receiver)}\s*\.\s*{re.escape(method)}\s*\(")
         match = pattern.search(body)
         if match is None:
             fail(
@@ -645,14 +613,9 @@ def check_admit_workload_guard(config: dict, orch_src: str) -> str:
     # margin-validation early-exit and the main refusal arm).
     for token in guard.get("required_calls_without_order", []):
         if "." not in token:
-            fail(
-                f"required_calls_without_order token `{token}` is not a "
-                "method call"
-            )
+            fail(f"required_calls_without_order token `{token}` is not a method call")
         receiver, method = token.split(".", 1)
-        pattern = re.compile(
-            rf"\b{re.escape(receiver)}\s*\.\s*{re.escape(method)}\s*\("
-        )
+        pattern = re.compile(rf"\b{re.escape(receiver)}\s*\.\s*{re.escape(method)}\s*\(")
         if pattern.search(body) is None:
             fail(
                 f"{guard['entry_method']} does not call `{token}(` — "
@@ -748,9 +711,9 @@ def check_config_catalogue_binding(config: dict, _types_src: str) -> str:
     by_name = {entry["name"]: entry for entry in catalogue}
 
     constant_to_value = {
-        "HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT": block["spec_constants"][
-            "safety_margin_default_mb"
-        ]["value"],
+        "HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT": block["spec_constants"]["safety_margin_default_mb"][
+            "value"
+        ],
         "HOST_MEMORY_SAFETY_MARGIN_MB_FLOOR": block["validation_constants"][
             "safety_margin_floor_mb"
         ]["value"],
@@ -881,9 +844,7 @@ def run_checks() -> list[str]:
     return evidence
 
 
-def assert_orchestrator_workload_priority_static(
-    config: dict, root: Path = ROOT
-) -> list[str]:
+def assert_orchestrator_workload_priority_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable from ``tools/architecture_check.py`` (no cargo)."""
     types_src = types_source(config, root)
     orch_src = orchestrator_source(config, root)

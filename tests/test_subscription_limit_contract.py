@@ -238,9 +238,7 @@ class SubscriptionLimitGuardTest(unittest.TestCase):
             index += 1
         end = self.market_data_src.find(";", index) + 1
         mutated = (
-            self.market_data_src[:start]
-            + "/* event record removed */"
-            + self.market_data_src[end:]
+            self.market_data_src[:start] + "/* event record removed */" + self.market_data_src[end:]
         )
         with self.assertRaises(SubscriptionLimitCheckError) as ctx:
             check_subscription_limit_guard(self.config, mutated)

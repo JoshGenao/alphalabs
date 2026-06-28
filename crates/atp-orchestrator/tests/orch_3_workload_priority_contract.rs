@@ -92,10 +92,7 @@ struct EventSpy {
 }
 
 impl WorkloadEventSink for EventSpy {
-    fn record(
-        &self,
-        event: WorkloadAdmissionEvent,
-    ) -> Result<(), WorkloadEventSinkError> {
+    fn record(&self, event: WorkloadAdmissionEvent) -> Result<(), WorkloadEventSinkError> {
         self.events.borrow_mut().push(event);
         Ok(())
     }
@@ -104,13 +101,8 @@ impl WorkloadEventSink for EventSpy {
 struct ForbiddenEventSink;
 
 impl WorkloadEventSink for ForbiddenEventSink {
-    fn record(
-        &self,
-        _event: WorkloadAdmissionEvent,
-    ) -> Result<(), WorkloadEventSinkError> {
-        panic!(
-            "happy-path admit_workload must not emit a WorkloadAdmissionEvent"
-        );
+    fn record(&self, _event: WorkloadAdmissionEvent) -> Result<(), WorkloadEventSinkError> {
+        panic!("happy-path admit_workload must not emit a WorkloadAdmissionEvent");
     }
 }
 
@@ -193,10 +185,7 @@ fn refusal_emits_event_and_returns_breach_category() {
         error.category,
         OrderErrorCategory::HostMemorySafetyMarginBreach
     );
-    assert_eq!(
-        error.category.as_str(),
-        "HOST_MEMORY_SAFETY_MARGIN_BREACH"
-    );
+    assert_eq!(error.category.as_str(), "HOST_MEMORY_SAFETY_MARGIN_BREACH");
     let events = sink.events.borrow();
     assert_eq!(events.len(), 1);
     match &events[0] {
@@ -304,14 +293,12 @@ fn live_strategy_is_never_terminated_even_if_registry_lists_it() {
     // Continuous (the correct kind) and confirm the gate ignores it.
     let orchestrator = StrategyOrchestrator;
     let host = HostMemorySpy::new(2_200);
-    let registry = RegistrySpy::with(vec![
-        RegisteredWorkload {
-            id: WorkloadId::new("live-strategy-flagship"),
-            priority: WorkloadPriority::LiveStrategy,
-            kind: WorkloadKind::Continuous,
-            profile: ResourceProfile::live_default(),
-        },
-    ]);
+    let registry = RegistrySpy::with(vec![RegisteredWorkload {
+        id: WorkloadId::new("live-strategy-flagship"),
+        priority: WorkloadPriority::LiveStrategy,
+        kind: WorkloadKind::Continuous,
+        profile: ResourceProfile::live_default(),
+    }]);
     let sink = EventSpy::default();
     let error = orchestrator
         .admit_workload(

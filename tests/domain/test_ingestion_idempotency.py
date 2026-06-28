@@ -276,13 +276,17 @@ def sources() -> dict[str, str]:
 
 
 def test_idempotency_no_op_guard_is_non_vacuous(sources) -> None:
-    mutated = sources["store"].replace("UpsertOutcome::UnchangedDuplicate", "UpsertOutcome::Inserted")
+    mutated = sources["store"].replace(
+        "UpsertOutcome::UnchangedDuplicate", "UpsertOutcome::Inserted"
+    )
     with pytest.raises(IngestionIdempotencyCheckError):
         check_upsert(sources["config"], mutated)
 
 
 def test_conflict_guard_is_non_vacuous(sources) -> None:
-    mutated = sources["store"].replace("StoreError::ConflictingContent", "StoreError::CorruptRecord")
+    mutated = sources["store"].replace(
+        "StoreError::ConflictingContent", "StoreError::CorruptRecord"
+    )
     with pytest.raises(IngestionIdempotencyCheckError):
         check_upsert(sources["config"], mutated)
 

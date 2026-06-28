@@ -163,14 +163,20 @@ fn orch_2_live_default_profile_is_propagated_through_create_to_outcome() {
     // re-default, or rewrite the profile.
     let orchestrator = StrategyOrchestrator;
     let runtime = RuntimeSpy::new(
-        LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 4_200 },
+        LaunchReadiness::ReadyWithinDeadline {
+            elapsed_millis: 4_200,
+        },
         ContainerHealthState::Healthy,
     );
     let sink = ForbiddenSink;
     let version_registry = VersionRegistryNoop;
     let outcome = orchestrator
         .launch(
-            request("alpha-1", StrategyMode::Live, ResourceProfile::live_default()),
+            request(
+                "alpha-1",
+                StrategyMode::Live,
+                ResourceProfile::live_default(),
+            ),
             &runtime,
             &sink,
             &version_registry,
@@ -192,14 +198,20 @@ fn orch_2_paper_default_profile_is_propagated_through_create_to_outcome() {
     // SyRS SYS-11 default: paper containers get 300 MB / 0.10 CPU.
     let orchestrator = StrategyOrchestrator;
     let runtime = RuntimeSpy::new(
-        LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 3_100 },
+        LaunchReadiness::ReadyWithinDeadline {
+            elapsed_millis: 3_100,
+        },
         ContainerHealthState::Healthy,
     );
     let sink = ForbiddenSink;
     let version_registry = VersionRegistryNoop;
     let outcome = orchestrator
         .launch(
-            request("paper-1", StrategyMode::Paper, ResourceProfile::paper_default()),
+            request(
+                "paper-1",
+                StrategyMode::Paper,
+                ResourceProfile::paper_default(),
+            ),
             &runtime,
             &sink,
             &version_registry,
@@ -221,7 +233,9 @@ fn orch_2_in_range_custom_override_is_propagated_unchanged() {
     // into the outcome. No re-defaulting; no clamping; no rounding.
     let orchestrator = StrategyOrchestrator;
     let runtime = RuntimeSpy::new(
-        LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 1_000 },
+        LaunchReadiness::ReadyWithinDeadline {
+            elapsed_millis: 1_000,
+        },
         ContainerHealthState::Healthy,
     );
     let sink = ForbiddenSink;
@@ -325,17 +339,25 @@ fn orch_2_launch_envelope_is_mode_uniform_with_distinct_default_profiles() {
     // profile differs. No mode-branch in the gate logic.
     let orchestrator = StrategyOrchestrator;
     let runtime_live = RuntimeSpy::new(
-        LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 4_200 },
+        LaunchReadiness::ReadyWithinDeadline {
+            elapsed_millis: 4_200,
+        },
         ContainerHealthState::Healthy,
     );
     let runtime_paper = RuntimeSpy::new(
-        LaunchReadiness::ReadyWithinDeadline { elapsed_millis: 3_100 },
+        LaunchReadiness::ReadyWithinDeadline {
+            elapsed_millis: 3_100,
+        },
         ContainerHealthState::Healthy,
     );
     let version_registry = VersionRegistryNoop;
     let live_outcome = orchestrator
         .launch(
-            request("live-1", StrategyMode::Live, ResourceProfile::live_default()),
+            request(
+                "live-1",
+                StrategyMode::Live,
+                ResourceProfile::live_default(),
+            ),
             &runtime_live,
             &ForbiddenSink,
             &version_registry,
@@ -344,7 +366,11 @@ fn orch_2_launch_envelope_is_mode_uniform_with_distinct_default_profiles() {
         .expect("Live launch must accept");
     let paper_outcome = orchestrator
         .launch(
-            request("paper-1", StrategyMode::Paper, ResourceProfile::paper_default()),
+            request(
+                "paper-1",
+                StrategyMode::Paper,
+                ResourceProfile::paper_default(),
+            ),
             &runtime_paper,
             &ForbiddenSink,
             &version_registry,

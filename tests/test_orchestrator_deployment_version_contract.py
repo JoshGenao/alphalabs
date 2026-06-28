@@ -241,9 +241,7 @@ class StrategyLaunchRequestTypeTest(unittest.TestCase):
         self.types_src = types_source(self.config)
 
     def test_deployment_hash_is_typed_source_hash(self) -> None:
-        evidence = check_strategy_launch_request_deployment_hash_type(
-            self.config, self.types_src
-        )
+        evidence = check_strategy_launch_request_deployment_hash_type(self.config, self.types_src)
         self.assertIn("SourceHash", evidence)
 
     def test_string_type_drift_is_caught(self) -> None:
@@ -253,9 +251,7 @@ class StrategyLaunchRequestTypeTest(unittest.TestCase):
             1,
         )
         with self.assertRaises(DeploymentVersionCheckError) as ctx:
-            check_strategy_launch_request_deployment_hash_type(
-                self.config, mutated
-            )
+            check_strategy_launch_request_deployment_hash_type(self.config, mutated)
         self.assertIn("SourceHash", str(ctx.exception))
 
 
@@ -265,9 +261,7 @@ class StrategyLaunchOutcomeFieldTest(unittest.TestCase):
         self.types_src = types_source(self.config)
 
     def test_outcome_carries_deployed_version(self) -> None:
-        evidence = check_strategy_launch_outcome_deployed_version_field(
-            self.config, self.types_src
-        )
+        evidence = check_strategy_launch_outcome_deployed_version_field(self.config, self.types_src)
         self.assertIn("deployed_version", evidence)
 
     def test_missing_deployed_version_field_is_caught(self) -> None:
@@ -277,9 +271,7 @@ class StrategyLaunchOutcomeFieldTest(unittest.TestCase):
             1,
         )
         with self.assertRaises(DeploymentVersionCheckError) as ctx:
-            check_strategy_launch_outcome_deployed_version_field(
-                self.config, mutated
-            )
+            check_strategy_launch_outcome_deployed_version_field(self.config, mutated)
         self.assertIn("deployed_version", str(ctx.exception))
 
 
@@ -289,9 +281,7 @@ class OrderErrorCategoryVariantTest(unittest.TestCase):
         self.types_src = types_source(self.config)
 
     def test_variant_maps_to_wire_string(self) -> None:
-        evidence = check_order_error_category_variant_and_wire_string(
-            self.config, self.types_src
-        )
+        evidence = check_order_error_category_variant_and_wire_string(self.config, self.types_src)
         self.assertIn("DEPLOYED_VERSION_INVALID", evidence)
 
     def test_drifted_wire_string_is_caught(self) -> None:
@@ -301,9 +291,7 @@ class OrderErrorCategoryVariantTest(unittest.TestCase):
             1,
         )
         with self.assertRaises(DeploymentVersionCheckError) as ctx:
-            check_order_error_category_variant_and_wire_string(
-                self.config, mutated
-            )
+            check_order_error_category_variant_and_wire_string(self.config, mutated)
         self.assertIn("DEPLOYED_VERSION_INVALID", str(ctx.exception))
 
 
@@ -313,15 +301,13 @@ class DeployedVersionInvalidFactoryTest(unittest.TestCase):
         self.types_src = types_source(self.config)
 
     def test_factory_pins_category_invariant(self) -> None:
-        evidence = check_deployed_version_invalid_factory(
-            self.config, self.types_src
-        )
+        evidence = check_deployed_version_invalid_factory(self.config, self.types_src)
         self.assertIn("debug_assert", evidence)
 
     def test_missing_debug_assert_is_caught(self) -> None:
         # Replace the debug_assert inside `deployed_version_invalid` only.
         mutated = self.types_src.replace(
-            "matches!(category, OrderErrorCategory::DeployedVersionInvalid),\n            \"StructuredOrchestratorError must carry DeployedVersionInvalid\"",
+            'matches!(category, OrderErrorCategory::DeployedVersionInvalid),\n            "StructuredOrchestratorError must carry DeployedVersionInvalid"',
             "// removed",
             1,
         )
@@ -414,9 +400,7 @@ class LaunchDeploymentVersionGuardTest(unittest.TestCase):
     def test_guard_pins_validate_before_create_and_record_on_happy_path(
         self,
     ) -> None:
-        evidence = check_launch_deployment_version_guard(
-            self.config, self.orch_src
-        )
+        evidence = check_launch_deployment_version_guard(self.config, self.orch_src)
         self.assertIn("validate-deployment_hash-before-runtime.create", evidence)
         self.assertIn("DeadlineExceeded arm skips it", evidence)
 

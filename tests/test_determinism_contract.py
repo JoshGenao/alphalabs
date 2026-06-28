@@ -257,7 +257,9 @@ class HarnessTest(_Fixture):
         # The metrics harness must compute the metric family for BOTH results; dropping the
         # second computation would leave the metric clause half-verified.
         mutated = self.src.replace(
-            "let metrics_b = metrics_for(request, &result_b,", "let metrics_b = metrics_a.clone(); //", 1
+            "let metrics_b = metrics_for(request, &result_b,",
+            "let metrics_b = metrics_a.clone(); //",
+            1,
         )
         with self.assertRaises(DeterminismCheckError) as ctx:
             check_harness(self.config, mutated)

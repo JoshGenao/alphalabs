@@ -135,9 +135,7 @@ class PacingBudgetStateEnumTest(unittest.TestCase):
         self.assertIn("WithinBudget", str(ctx.exception))
 
     def test_missing_budget_exceeded_variant_is_caught(self) -> None:
-        mutated = self.types_src.replace(
-            "    BudgetExceeded,", "    BudgetExceededX,", 1
-        )
+        mutated = self.types_src.replace("    BudgetExceeded,", "    BudgetExceededX,", 1)
         with self.assertRaises(PacingBudgetCheckError) as ctx:
             check_pacing_budget_state_enum(self.config, mutated)
         self.assertIn("BudgetExceeded", str(ctx.exception))
@@ -293,11 +291,7 @@ class PacingBudgetGuardTest(unittest.TestCase):
                     break
             index += 1
         end = self.data_src.find(";", index) + 1
-        mutated = (
-            self.data_src[:start]
-            + "/* event record removed */"
-            + self.data_src[end:]
-        )
+        mutated = self.data_src[:start] + "/* event record removed */" + self.data_src[end:]
         with self.assertRaises(PacingBudgetCheckError) as ctx:
             check_pacing_budget_guard(self.config, mutated)
         self.assertIn("events.record", str(ctx.exception))

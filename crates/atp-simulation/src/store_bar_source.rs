@@ -146,12 +146,13 @@ impl BarSource for StoreBarSource<'_> {
         // The unified query takes signed epoch seconds; the backtest window is u64. Convert fail-closed
         // — a bound above i64::MAX is unrepresentable, and wrapping to a negative ts would silently empty
         // the query and look like EmptyData.
-        let start_ts = i64::try_from(range.start).map_err(|_| BacktestError::SourceUnavailable {
-            reason: format!(
-                "backtest window start {} exceeds the queryable timestamp range",
-                range.start
-            ),
-        })?;
+        let start_ts =
+            i64::try_from(range.start).map_err(|_| BacktestError::SourceUnavailable {
+                reason: format!(
+                    "backtest window start {} exceeds the queryable timestamp range",
+                    range.start
+                ),
+            })?;
         let end_ts = i64::try_from(range.end).map_err(|_| BacktestError::SourceUnavailable {
             reason: format!(
                 "backtest window end {} exceeds the queryable timestamp range",

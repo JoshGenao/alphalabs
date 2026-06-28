@@ -197,9 +197,15 @@ impl MarketDataStore {
         match query.kind {
             Some(DatasetKind::DailyEquityBar) | Some(DatasetKind::MinuteEquityBar) => {}
             Some(other) => {
-                return Err(CoverageError::UnsupportedQueryKind { kind: other.as_str() })
+                return Err(CoverageError::UnsupportedQueryKind {
+                    kind: other.as_str(),
+                })
             }
-            None => return Err(CoverageError::UnsupportedQueryKind { kind: "unspecified" }),
+            None => {
+                return Err(CoverageError::UnsupportedQueryKind {
+                    kind: "unspecified",
+                })
+            }
         }
 
         // (2) Coverage gate. The frontier must exist AND reach at least the query end, else the
@@ -271,9 +277,15 @@ impl MarketDataStore {
         match query.kind {
             Some(DatasetKind::DailyEquityBar) | Some(DatasetKind::MinuteEquityBar) => {}
             Some(other) => {
-                return Err(CoverageError::UnsupportedQueryKind { kind: other.as_str() })
+                return Err(CoverageError::UnsupportedQueryKind {
+                    kind: other.as_str(),
+                })
             }
-            None => return Err(CoverageError::UnsupportedQueryKind { kind: "unspecified" }),
+            None => {
+                return Err(CoverageError::UnsupportedQueryKind {
+                    kind: "unspecified",
+                })
+            }
         }
 
         // (2) Coverage gate: the frontier must still reach at least the as-of date (query end), so the
@@ -345,7 +357,12 @@ mod tests {
         .expect("well-formed daily bar")
     }
 
-    fn split(symbol: &str, effective_ts: i64, numerator: i64, denominator: i64) -> MarketDataRecord {
+    fn split(
+        symbol: &str,
+        effective_ts: i64,
+        numerator: i64,
+        denominator: i64,
+    ) -> MarketDataRecord {
         MarketDataRecord::new(
             NaturalKey {
                 kind: DatasetKind::CorporateActionSplit,
@@ -354,7 +371,10 @@ mod tests {
                 event_ts: effective_ts,
                 option_contract: None,
             },
-            [field("denominator", denominator), field("numerator", numerator)],
+            [
+                field("denominator", denominator),
+                field("numerator", numerator),
+            ],
         )
         .expect("well-formed split record")
     }
@@ -389,7 +409,9 @@ mod tests {
             coverage_record(200, "AAPL"),
         ]);
         // Query [0,100]: frontier 200 >= 100 -> served; bar@100 is pre-split (200 > 100) -> adjusted.
-        let result = store.query_split_adjusted(&daily_query("AAPL", 0, 100)).unwrap();
+        let result = store
+            .query_split_adjusted(&daily_query("AAPL", 0, 100))
+            .unwrap();
         assert_eq!(result.coverage_through, 200);
         assert_eq!(result.records.len(), 1);
         assert_eq!(close_of(&result.records[0], "close"), 2_500); // 10000 / 4
@@ -414,12 +436,22 @@ mod tests {
         );
         // ...but the point-in-time as-of read leaves the bar on its then-current basis (no lookahead).
         let as_of = store.query_split_adjusted_as_of(&q).unwrap();
-        assert_eq!(close_of(&as_of.records[0], "close"), 10_000, "future split must not be applied");
+        assert_eq!(
+            close_of(&as_of.records[0], "close"),
+            10_000,
+            "future split must not be applied"
+        );
         assert_eq!(close_of(&as_of.records[0], "volume"), 100_000);
         // The result keeps the proven frontier (300) SEPARATE from the actual adjustment basis (the
         // as-of date, 100) -- so a consumer is never misled that the bars are adjusted through 300.
-        assert_eq!(as_of.coverage_through, 300, "coverage proven through the frontier D");
-        assert_eq!(as_of.adjusted_through, 100, "but adjusted only through the as-of date (query.end_ts)");
+        assert_eq!(
+            as_of.coverage_through, 300,
+            "coverage proven through the frontier D"
+        );
+        assert_eq!(
+            as_of.adjusted_through, 100,
+            "but adjusted only through the as-of date (query.end_ts)"
+        );
         // The frontier method, by contrast, adjusts through D, so the two coincide.
         let d_basis = store.query_split_adjusted(&q).unwrap();
         assert_eq!(d_basis.coverage_through, 300);
@@ -436,14 +468,20 @@ mod tests {
             split("AAPL", 50, 4, 1),
             coverage_record(300, "AAPL"),
         ]);
-        let result = store.query_split_adjusted_as_of(&daily_query("AAPL", 0, 100)).unwrap();
+        let result = store
+            .query_split_adjusted_as_of(&daily_query("AAPL", 0, 100))
+            .unwrap();
         assert_eq!(close_of(&result.records[0], "close"), 2_500); // pre-split @40 re-quoted 10000/4
         assert_eq!(close_of(&result.records[1], "close"), 3_000); // post-split @100 unchanged
 
         // The coverage gate is unchanged: an uncovered query fails closed, same as query_split_adjusted.
-        let bare = store_of([daily_bar("AAPL", 40, 10_000, 100_000), split("AAPL", 50, 4, 1)]);
+        let bare = store_of([
+            daily_bar("AAPL", 40, 10_000, 100_000),
+            split("AAPL", 50, 4, 1),
+        ]);
         assert!(matches!(
-            bare.query_split_adjusted_as_of(&daily_query("AAPL", 0, 100)).unwrap_err(),
+            bare.query_split_adjusted_as_of(&daily_query("AAPL", 0, 100))
+                .unwrap_err(),
             CoverageError::NotCovered { .. }
         ));
     }
@@ -455,9 +493,13 @@ mod tests {
             coverage_record(150, "AAPL"),
         ]);
         // D == end_ts (150 == 150) passes (boundary).
-        assert!(store.query_split_adjusted(&daily_query("AAPL", 0, 150)).is_ok());
+        assert!(store
+            .query_split_adjusted(&daily_query("AAPL", 0, 150))
+            .is_ok());
         // D > end_ts (150 > 100) passes.
-        assert!(store.query_split_adjusted(&daily_query("AAPL", 0, 100)).is_ok());
+        assert!(store
+            .query_split_adjusted(&daily_query("AAPL", 0, 100))
+            .is_ok());
     }
 
     #[test]
@@ -467,7 +509,9 @@ mod tests {
             coverage_record(149, "AAPL"),
         ]);
         // D == end_ts - 1 (149 < 150) fails closed.
-        let err = store.query_split_adjusted(&daily_query("AAPL", 0, 150)).unwrap_err();
+        let err = store
+            .query_split_adjusted(&daily_query("AAPL", 0, 150))
+            .unwrap_err();
         assert_eq!(
             err,
             CoverageError::NotCovered {
@@ -480,8 +524,13 @@ mod tests {
 
     #[test]
     fn no_coverage_record_fails_closed() {
-        let store = store_of([daily_bar("AAPL", 100, 10_000, 100_000), split("AAPL", 200, 4, 1)]);
-        let err = store.query_split_adjusted(&daily_query("AAPL", 0, 100)).unwrap_err();
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            split("AAPL", 200, 4, 1),
+        ]);
+        let err = store
+            .query_split_adjusted(&daily_query("AAPL", 0, 100))
+            .unwrap_err();
         assert_eq!(
             err,
             CoverageError::NotCovered {
@@ -502,7 +551,9 @@ mod tests {
             split("AAPL", 200, 2, 1),
             coverage_record(300, "AAPL"),
         ]);
-        let result = store.query_split_adjusted(&daily_query("AAPL", 0, 100)).unwrap();
+        let result = store
+            .query_split_adjusted(&daily_query("AAPL", 0, 100))
+            .unwrap();
         assert_eq!(close_of(&result.records[0], "close"), 4_000); // 8000 / 2
         assert_eq!(close_of(&result.records[0], "volume"), 100_000); // 50000 * 2
     }
@@ -518,7 +569,9 @@ mod tests {
             split("AAPL", 200, 4, 1),
             coverage_record(200, "AAPL"),
         ]);
-        let result = store.query_split_adjusted(&daily_query("AAPL", 0, 200)).unwrap();
+        let result = store
+            .query_split_adjusted(&daily_query("AAPL", 0, 200))
+            .unwrap();
         assert_eq!(result.records.len(), 2);
         // bar@100 adjusted (10000/4 = 2500), bar@200 unadjusted (4000).
         assert_eq!(close_of(&result.records[0], "close"), 2_500);
@@ -536,9 +589,15 @@ mod tests {
             split("AAPL", 200, 4, 1),
             coverage_record(150, "AAPL"),
         ]);
-        let result = store.query_split_adjusted(&daily_query("AAPL", 0, 100)).unwrap();
+        let result = store
+            .query_split_adjusted(&daily_query("AAPL", 0, 100))
+            .unwrap();
         assert_eq!(result.coverage_through, 150);
-        assert_eq!(close_of(&result.records[0], "close"), 10_000, "split@200 > D=150 must not apply");
+        assert_eq!(
+            close_of(&result.records[0], "close"),
+            10_000,
+            "split@200 > D=150 must not apply"
+        );
         assert_eq!(close_of(&result.records[0], "volume"), 100_000);
     }
 
@@ -551,9 +610,15 @@ mod tests {
             split("AAPL", 150, 4, 1),
             coverage_record(150, "AAPL"),
         ]);
-        let result = store.query_split_adjusted(&daily_query("AAPL", 0, 100)).unwrap();
+        let result = store
+            .query_split_adjusted(&daily_query("AAPL", 0, 100))
+            .unwrap();
         assert_eq!(result.coverage_through, 150);
-        assert_eq!(close_of(&result.records[0], "close"), 2_500, "split@150 == D=150 applies");
+        assert_eq!(
+            close_of(&result.records[0], "close"),
+            2_500,
+            "split@150 == D=150 applies"
+        );
     }
 
     #[test]
@@ -565,7 +630,9 @@ mod tests {
             split("AAPL", 300, 0, 1), // malformed, but effective_ts 300 > D=200 -> excluded
             coverage_record(200, "AAPL"),
         ]);
-        let result = store.query_split_adjusted(&daily_query("AAPL", 0, 100)).unwrap();
+        let result = store
+            .query_split_adjusted(&daily_query("AAPL", 0, 100))
+            .unwrap();
         assert_eq!(close_of(&result.records[0], "close"), 10_000);
     }
 
@@ -579,7 +646,9 @@ mod tests {
         ]);
         assert_eq!(store.coverage_frontier("AAPL"), Some(300));
         // A query needing through 250 passes (max frontier 300 >= 250).
-        assert!(store.query_split_adjusted(&daily_query("AAPL", 0, 250)).is_ok());
+        assert!(store
+            .query_split_adjusted(&daily_query("AAPL", 0, 250))
+            .is_ok());
     }
 
     #[test]
@@ -588,8 +657,14 @@ mod tests {
         // ConflictingContent is structurally impossible (event_ts = D, so a different D is a new key).
         use crate::store::UpsertOutcome;
         let mut store = MarketDataStore::new();
-        assert_eq!(store.upsert(coverage_record(100, "AAPL")).unwrap(), UpsertOutcome::Inserted);
-        assert_eq!(store.upsert(coverage_record(200, "AAPL")).unwrap(), UpsertOutcome::Inserted);
+        assert_eq!(
+            store.upsert(coverage_record(100, "AAPL")).unwrap(),
+            UpsertOutcome::Inserted
+        );
+        assert_eq!(
+            store.upsert(coverage_record(200, "AAPL")).unwrap(),
+            UpsertOutcome::Inserted
+        );
         assert_eq!(
             store.upsert(coverage_record(200, "AAPL")).unwrap(),
             UpsertOutcome::UnchangedDuplicate
@@ -605,8 +680,16 @@ mod tests {
             coverage_record(500, "MSFT"),
         ]);
         assert_eq!(store.coverage_frontier("AAPL"), None);
-        let err = store.query_split_adjusted(&daily_query("AAPL", 0, 100)).unwrap_err();
-        assert!(matches!(err, CoverageError::NotCovered { have_through: None, .. }));
+        let err = store
+            .query_split_adjusted(&daily_query("AAPL", 0, 100))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            CoverageError::NotCovered {
+                have_through: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -619,14 +702,18 @@ mod tests {
         let agnostic = UnifiedHistoricalQuery::new("AAPL", "1d", 0, 100);
         assert_eq!(
             store.query_split_adjusted(&agnostic).unwrap_err(),
-            CoverageError::UnsupportedQueryKind { kind: "unspecified" }
+            CoverageError::UnsupportedQueryKind {
+                kind: "unspecified"
+            }
         );
         // A non-equity kind (fundamental) is rejected.
-        let fundamental = UnifiedHistoricalQuery::new("AAPL", "1d", 0, 100)
-            .with_kind(DatasetKind::Fundamental);
+        let fundamental =
+            UnifiedHistoricalQuery::new("AAPL", "1d", 0, 100).with_kind(DatasetKind::Fundamental);
         assert_eq!(
             store.query_split_adjusted(&fundamental).unwrap_err(),
-            CoverageError::UnsupportedQueryKind { kind: "fundamental" }
+            CoverageError::UnsupportedQueryKind {
+                kind: "fundamental"
+            }
         );
     }
 
@@ -637,7 +724,9 @@ mod tests {
             daily_bar("AAPL", 500, 10_000, 100_000),
             coverage_record(100, "AAPL"),
         ]);
-        let result = store.query_split_adjusted(&daily_query("AAPL", 0, 100)).unwrap();
+        let result = store
+            .query_split_adjusted(&daily_query("AAPL", 0, 100))
+            .unwrap();
         assert!(result.records.is_empty());
         assert_eq!(result.coverage_through, 100);
     }
@@ -658,7 +747,10 @@ mod tests {
             },
             [field("complete_through", 200)],
         );
-        assert!(forged.is_err(), "a coverage record with a forged frontier must fail validation");
+        assert!(
+            forged.is_err(),
+            "a coverage record with a forged frontier must fail validation"
+        );
 
         // A store built only from the honest constructor has a trustworthy frontier; a bare-bones store
         // with no coverage record fails the gate closed.
@@ -666,7 +758,10 @@ mod tests {
         assert_eq!(store.coverage_frontier("AAPL"), None);
         assert!(matches!(
             store.query_split_adjusted(&daily_query("AAPL", 0, 100)),
-            Err(CoverageError::NotCovered { have_through: None, .. })
+            Err(CoverageError::NotCovered {
+                have_through: None,
+                ..
+            })
         ));
     }
 
@@ -678,7 +773,9 @@ mod tests {
             split("AAPL", 200, 0, 1), // zero numerator
             coverage_record(200, "AAPL"),
         ]);
-        let err = store.query_split_adjusted(&daily_query("AAPL", 0, 100)).unwrap_err();
+        let err = store
+            .query_split_adjusted(&daily_query("AAPL", 0, 100))
+            .unwrap_err();
         assert!(matches!(err, CoverageError::Normalization(_)));
     }
 
@@ -690,7 +787,9 @@ mod tests {
             daily_bar("AAPL", 100, 10_003, 100_001),
             coverage_record(200, "AAPL"),
         ]);
-        let result = store.query_split_adjusted(&daily_query("AAPL", 0, 100)).unwrap();
+        let result = store
+            .query_split_adjusted(&daily_query("AAPL", 0, 100))
+            .unwrap();
         assert_eq!(close_of(&result.records[0], "close"), 10_003);
         assert_eq!(close_of(&result.records[0], "volume"), 100_001);
     }

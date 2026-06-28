@@ -54,9 +54,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def contract_block(config: dict) -> dict:
@@ -98,9 +96,7 @@ def _quarantined_arm(body: str, variant_token: str) -> str:
     extracts the arm body using the same brace/paren-balanced scan as
     ``_match_arm``.
     """
-    arm_match = re.search(
-        rf"{re.escape(variant_token)}\s*\([^)]*\)\s*=>\s*", body
-    )
+    arm_match = re.search(rf"{re.escape(variant_token)}\s*\([^)]*\)\s*=>\s*", body)
     if not arm_match:
         fail(f"ingest_record is missing match arm for `{variant_token}(...)`")
     start = arm_match.end()

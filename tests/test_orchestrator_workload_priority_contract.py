@@ -187,9 +187,7 @@ class HostMemorySafetyMarginErrorEnumTest(unittest.TestCase):
         self.types_src = types_source(self.config)
 
     def test_enum_lists_both_variants(self) -> None:
-        evidence = check_host_memory_safety_margin_error_enum(
-            self.config, self.types_src
-        )
+        evidence = check_host_memory_safety_margin_error_enum(self.config, self.types_src)
         self.assertIn("BelowFloor", evidence)
         self.assertIn("AboveCeiling", evidence)
 
@@ -446,8 +444,8 @@ class AdmitWorkloadGuardTest(unittest.TestCase):
         # Inject a runtime.destroy call into admit_workload to simulate
         # a drift where the gate starts mutating runtime state.
         mutated = self.orch_src.replace(
-            "Err(StructuredOrchestratorError::host_memory_safety_margin_breach(",
-            "runtime.destroy(&request.strategy_id);\n        Err(StructuredOrchestratorError::host_memory_safety_margin_breach(",
+            "StructuredOrchestratorError::host_memory_safety_margin_breach(",
+            "runtime.destroy(&request.strategy_id);\n                        StructuredOrchestratorError::host_memory_safety_margin_breach(",
             1,
         )
         with self.assertRaises(WorkloadPriorityCheckError) as ctx:

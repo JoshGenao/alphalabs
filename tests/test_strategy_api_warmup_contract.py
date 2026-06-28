@@ -207,10 +207,7 @@ class WarmupBehaviouralMutationTest(unittest.TestCase):
                 "        for symbol, asset_class in self._subscriptions:\n"
                 "            bars = list(\n"
             ),
-            replace=(
-                "        for symbol, asset_class in []:\n"
-                "            bars = list(\n"
-            ),
+            replace=("        for symbol, asset_class in []:\n            bars = list(\n"),
         )
         with self.assertRaises(StrategyApiWarmupCheckError):
             self.rig.run(self.config)

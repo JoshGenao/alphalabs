@@ -47,8 +47,17 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
 
 def _build(cargo: str) -> tuple[Path, Path, Path]:
     build = _run(
-        cargo, "build", "-q", "-p", "atp-data",
-        "--bin", "data016_ingest_cli", "--bin", "data011_coverage_cli", "--bin", "data007_query_cli",
+        cargo,
+        "build",
+        "-q",
+        "-p",
+        "atp-data",
+        "--bin",
+        "data016_ingest_cli",
+        "--bin",
+        "data011_coverage_cli",
+        "--bin",
+        "data007_query_cli",
     )
     assert build.returncode == 0, build.stdout + build.stderr
     debug = ROOT / "target" / "debug"
@@ -69,16 +78,52 @@ def test_backtest_gets_adjusted_only_when_covered_else_fails_closed() -> None:
     ingest_bin, coverage_bin, query_bin = _build(cargo)
     with tempfile.TemporaryDirectory() as tmp:
         # A pre-split daily bar (AAPL@100, close 10000) and a 4-for-1 split @200.
-        assert _run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar",
-                    "--event-ts", "100", "--init").returncode == 0
-        assert _run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "corporate-action-split",
-                    "--event-ts", "200").returncode == 0
+        assert (
+            _run(
+                str(ingest_bin),
+                "ingest",
+                "--dir",
+                tmp,
+                "--kind",
+                "daily-equity-bar",
+                "--event-ts",
+                "100",
+                "--init",
+            ).returncode
+            == 0
+        )
+        assert (
+            _run(
+                str(ingest_bin),
+                "ingest",
+                "--dir",
+                tmp,
+                "--kind",
+                "corporate-action-split",
+                "--event-ts",
+                "200",
+            ).returncode
+            == 0
+        )
 
         def split_adjusted(end: int) -> subprocess.CompletedProcess[str]:
             return _run(
-                str(query_bin), "query", "--dir", tmp, "--symbol", "AAPL", "--resolution", "1d",
-                "--start", "0", "--end", str(end), "--kind", "daily-equity-bar",
-                "--normalization", "split-adjusted",
+                str(query_bin),
+                "query",
+                "--dir",
+                tmp,
+                "--symbol",
+                "AAPL",
+                "--resolution",
+                "1d",
+                "--start",
+                "0",
+                "--end",
+                str(end),
+                "--kind",
+                "daily-equity-bar",
+                "--normalization",
+                "split-adjusted",
             )
 
         # (1) NO coverage yet -> a backtest reading split-adjusted history FAILS CLOSED (never raw bars
@@ -89,8 +134,19 @@ def test_backtest_gets_adjusted_only_when_covered_else_fails_closed() -> None:
 
         # (2) Assert coverage through 200, then the COVERED read re-quotes the pre-split bar onto the
         # split-comparable basis: 10000 / 4 = 2500. A backtest sees the adjusted series -> correct P&L.
-        assert _run(str(coverage_bin), "assert-coverage", "--dir", tmp,
-                    "--symbol", "AAPL", "--through", "200").returncode == 0
+        assert (
+            _run(
+                str(coverage_bin),
+                "assert-coverage",
+                "--dir",
+                tmp,
+                "--symbol",
+                "AAPL",
+                "--through",
+                "200",
+            ).returncode
+            == 0
+        )
         covered = split_adjusted(100)
         assert covered.returncode == 0, covered.stderr
         assert _close(covered.stdout) == 2500
@@ -105,8 +161,22 @@ def test_backtest_gets_adjusted_only_when_covered_else_fails_closed() -> None:
         # (4) The RAW path is always available without coverage (the gate is split-adjusted-only): a
         # backtest can still read unadjusted bars explicitly.
         raw = _run(
-            str(query_bin), "query", "--dir", tmp, "--symbol", "AAPL", "--resolution", "1d",
-            "--start", "0", "--end", "100", "--kind", "daily-equity-bar", "--normalization", "raw",
+            str(query_bin),
+            "query",
+            "--dir",
+            tmp,
+            "--symbol",
+            "AAPL",
+            "--resolution",
+            "1d",
+            "--start",
+            "0",
+            "--end",
+            "100",
+            "--kind",
+            "daily-equity-bar",
+            "--normalization",
+            "raw",
         )
         assert raw.returncode == 0
         assert _close(raw.stdout) == 10000

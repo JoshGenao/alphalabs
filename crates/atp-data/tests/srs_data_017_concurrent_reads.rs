@@ -44,11 +44,16 @@ fn ingest_batch_locked(dir: &std::path::Path, event_ts: i64) -> usize {
     let mut store = MarketDataStore::load_from_path(dir).expect("load the existing catalog");
     let mut inserted = 0;
     for record in fixture_batch(DatasetKind::DailyEquityBar, event_ts) {
-        if matches!(store.upsert(record).expect("upsert a fixture record"), UpsertOutcome::Inserted) {
+        if matches!(
+            store.upsert(record).expect("upsert a fixture record"),
+            UpsertOutcome::Inserted
+        ) {
             inserted += 1;
         }
     }
-    store.save_to_path(dir).expect("atomically publish the modified catalog");
+    store
+        .save_to_path(dir)
+        .expect("atomically publish the modified catalog");
     inserted
 }
 
@@ -66,7 +71,10 @@ fn srs_data_017_concurrent_readers_never_see_a_torn_or_lost_store() {
     let dir = temp_store_dir("load_test");
     // Seed the "previously ingested" / completed data.
     let seeded = ingest_batch_locked(&dir, SEED_TS);
-    assert_eq!(seeded, RECORDS_PER_BATCH, "the seed batch inserts its records");
+    assert_eq!(
+        seeded, RECORDS_PER_BATCH,
+        "the seed batch inserts its records"
+    );
     let seed_keys = seed_keys();
 
     const WRITES: usize = 40;
@@ -97,7 +105,8 @@ fn srs_data_017_concurrent_readers_never_see_a_torn_or_lost_store() {
         scope.spawn(|| {
             let _signal_done = DoneOnDrop(&done);
             for i in 1..=WRITES {
-                let _lock = StoreLock::acquire(&dir).expect("a writer acquires the single-writer lock");
+                let _lock =
+                    StoreLock::acquire(&dir).expect("a writer acquires the single-writer lock");
                 write_in_progress.store(true, Ordering::Release);
                 // On the FIRST iteration, hold the in-progress window open (lock HELD) until a reader
                 // has demonstrably read during it — a deterministic overlap proof, not a timing race.
@@ -116,15 +125,24 @@ fn srs_data_017_concurrent_readers_never_see_a_torn_or_lost_store() {
                         std::hint::spin_loop();
                     }
                 }
-                let mut store = MarketDataStore::load_from_path(&dir).expect("load the existing catalog");
+                let mut store =
+                    MarketDataStore::load_from_path(&dir).expect("load the existing catalog");
                 let mut inserted = 0;
                 for record in fixture_batch(DatasetKind::DailyEquityBar, SEED_TS + i as i64) {
-                    if matches!(store.upsert(record).expect("upsert"), UpsertOutcome::Inserted) {
+                    if matches!(
+                        store.upsert(record).expect("upsert"),
+                        UpsertOutcome::Inserted
+                    ) {
                         inserted += 1;
                     }
                 }
-                assert_eq!(inserted, RECORDS_PER_BATCH, "each new date inserts fresh records");
-                store.save_to_path(&dir).expect("atomically publish the modified catalog");
+                assert_eq!(
+                    inserted, RECORDS_PER_BATCH,
+                    "each new date inserts fresh records"
+                );
+                store
+                    .save_to_path(&dir)
+                    .expect("atomically publish the modified catalog");
                 write_in_progress.store(false, Ordering::Release);
             }
             // `_signal_done` drops here on normal completion (and on any panic above), setting `done`.
@@ -138,7 +156,8 @@ fn srs_data_017_concurrent_readers_never_see_a_torn_or_lost_store() {
             scope.spawn(|| {
                 let mut local_reads = 0usize;
                 let mut last_len = 0usize;
-                let reader_deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                let reader_deadline =
+                    std::time::Instant::now() + std::time::Duration::from_secs(60);
                 loop {
                     // A READ takes NO lock (it cannot be refused with StoreError::Locked) and must
                     // never observe a half-written store. Bracket the read with the write-in-progress
@@ -170,11 +189,18 @@ fn srs_data_017_concurrent_readers_never_see_a_torn_or_lost_store() {
                     // Each snapshot is consistent: the catalog only grows (writer inserts only), so a
                     // reader never observes a regression in size, and never fewer than the seed.
                     let len = store.len();
-                    assert!(len >= seed_keys.len(), "a snapshot dropped below the seed set");
-                    assert!(len >= last_len, "a reader observed the catalog shrink between snapshots");
+                    assert!(
+                        len >= seed_keys.len(),
+                        "a snapshot dropped below the seed set"
+                    );
+                    assert!(
+                        len >= last_len,
+                        "a reader observed the catalog shrink between snapshots"
+                    );
                     last_len = len;
                     local_reads += 1;
-                    if done.load(Ordering::Acquire) || std::time::Instant::now() >= reader_deadline {
+                    if done.load(Ordering::Acquire) || std::time::Instant::now() >= reader_deadline
+                    {
                         break;
                     }
                 }
@@ -206,7 +232,10 @@ fn srs_data_017_concurrent_readers_never_see_a_torn_or_lost_store() {
         "the serialized catalog holds the seed plus every ingested date"
     );
     for key in &seed_keys {
-        assert!(final_store.get(key).is_some(), "the seed survived all the writes");
+        assert!(
+            final_store.get(key).is_some(),
+            "the seed survived all the writes"
+        );
     }
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -230,7 +259,10 @@ fn srs_data_017_a_read_never_blocks_on_a_held_writer_lock() {
     let store = MarketDataStore::load_from_path(&dir)
         .expect("a lock-free read completes while a writer holds the lock");
     for key in &seed_keys {
-        assert!(store.get(key).is_some(), "completed data is readable during an active write");
+        assert!(
+            store.get(key).is_some(),
+            "completed data is readable during an active write"
+        );
     }
     assert_eq!(store.len(), RECORDS_PER_BATCH);
 
@@ -266,12 +298,14 @@ fn srs_data_017_serialized_writers_never_lose_each_others_records() {
                     loop {
                         match StoreLock::acquire(dir_ref) {
                             Ok(_lock) => {
-                                let mut store =
-                                    MarketDataStore::load_from_path(dir_ref).expect("load latest catalog");
+                                let mut store = MarketDataStore::load_from_path(dir_ref)
+                                    .expect("load latest catalog");
                                 for record in fixture_batch(DatasetKind::DailyEquityBar, event_ts) {
                                     store.upsert(record).expect("upsert");
                                 }
-                                store.save_to_path(dir_ref).expect("save under the held lock");
+                                store
+                                    .save_to_path(dir_ref)
+                                    .expect("save under the held lock");
                                 break; // `_lock` drops here — AFTER the save, never before.
                             }
                             // A held lock refuses the other writer; retry (writers serialize, no loss).

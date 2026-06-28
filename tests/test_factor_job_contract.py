@@ -265,7 +265,9 @@ class CalendarResolutionTest(_Fixture):
     def test_dropped_session_open_resolution_is_caught(self) -> None:
         # Resolving only is_session (not session_open) would accept a calendar with no resolvable
         # open and never resolve the before-open offsets (Codex finding #3).
-        mutated = self.src.replace(".session_open(schedule.session)", ".is_session(schedule.session)")
+        mutated = self.src.replace(
+            ".session_open(schedule.session)", ".is_session(schedule.session)"
+        )
         with self.assertRaises(FactorJobCheckError) as ctx:
             check_calendar_resolution(self.config, mutated)
         self.assertIn("session_open", str(ctx.exception))
@@ -441,7 +443,9 @@ class SkipNotFabricateTest(_Fixture):
 
 class RegularityTest(_Fixture):
     def test_evidence(self) -> None:
-        self.assertIn("rebalance interval through the calendar", check_regularity(self.config, self.src))
+        self.assertIn(
+            "rebalance interval through the calendar", check_regularity(self.config, self.src)
+        )
 
     def test_removed_interval_guard_is_caught(self) -> None:
         mutated = self.src.replace("Err(FactorJobError::IrregularRebalanceInterval", "Ok(stuff", 1)
@@ -467,9 +471,7 @@ class DeterminismTest(_Fixture):
         self.assertIn("deterministic", check_determinism(self.config, self.src))
 
     def test_injected_nondeterminism_is_caught(self) -> None:
-        mutated = self.src.replace(
-            "let mut scored", "let _ = Instant::now(); let mut scored", 1
-        )
+        mutated = self.src.replace("let mut scored", "let _ = Instant::now(); let mut scored", 1)
         with self.assertRaises(FactorJobCheckError) as ctx:
             check_determinism(self.config, mutated)
         self.assertIn("Instant::now", str(ctx.exception))

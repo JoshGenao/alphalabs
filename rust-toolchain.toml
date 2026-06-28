@@ -1,0 +1,6 @@
+# Pin the Rust toolchain so `cargo fmt` and `cargo clippy` are deterministic
+# across local dev and CI. Unpinned `stable` drifts: new releases add format
+# tweaks and clippy lints that turn CI red on unchanged code. Bump deliberately.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]

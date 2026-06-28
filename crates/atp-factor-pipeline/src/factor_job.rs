@@ -830,7 +830,15 @@ where
     // The first observed `started` (and resolved deadline) is AUTHORITATIVE through scoring (and, for
     // the store-backed wrapper, through input assembly): run_factor_job_gated gates completion against
     // it, so a clock regression after the start read is caught, not lost by a fresh second start read.
-    run_factor_job_gated(schedule.session, started, deadline_instant, config, model, clock, universe)
+    run_factor_job_gated(
+        schedule.session,
+        started,
+        deadline_instant,
+        config,
+        model,
+        clock,
+        universe,
+    )
 }
 
 /// The SCORED CORE of a factor run, run AFTER the start gate has already passed: it takes the

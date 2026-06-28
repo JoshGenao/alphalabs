@@ -53,8 +53,15 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
 
 def _build(cargo: str) -> tuple[Path, Path]:
     build = _run(
-        cargo, "build", "-q", "-p", "atp-data",
-        "--bin", "data016_ingest_cli", "--bin", "data007_query_cli",
+        cargo,
+        "build",
+        "-q",
+        "-p",
+        "atp-data",
+        "--bin",
+        "data016_ingest_cli",
+        "--bin",
+        "data007_query_cli",
     )
     assert build.returncode == 0, build.stdout + build.stderr
     debug = ROOT / "target" / "debug"
@@ -69,7 +76,9 @@ def test_python_binding_reads_ingested_data_with_no_provider() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         # Ingest two providers' worth of records: daily (≤ Databento) + minute (≤ IB).
-        first = _run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar", "--init")
+        first = _run(
+            str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar", "--init"
+        )
         assert first.returncode == 0, first.stdout + first.stderr
         second = _run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "minute-equity-bar")
         assert second.returncode == 0, second.stdout + second.stderr
@@ -108,6 +117,7 @@ def test_python_binding_reads_ingested_data_with_no_provider() -> None:
         params = set(inspect.signature(binding.get_bars).parameters)
         assert not (params & {"provider", "source", "vendor", "feed"})
         import dataclasses
+
         bar_fields = {f.name for f in dataclasses.fields(bar)}
         assert not (bar_fields & {"provider", "source", "vendor", "feed"})
 
@@ -120,11 +130,20 @@ def test_get_bars_range_is_deterministic_across_repeated_reads() -> None:
 
     ingest_bin, query_bin = _build(cargo)
     with tempfile.TemporaryDirectory() as tmp:
-        assert _run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar", "--init").returncode == 0
+        assert (
+            _run(
+                str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar", "--init"
+            ).returncode
+            == 0
+        )
         binding = StoreBackedHistoricalData(store_dir=tmp, query_binary=query_bin)
         start = dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc)
         end = dt.datetime(2030, 1, 1, tzinfo=dt.timezone.utc)
-        first = binding.get_bars_range("AAPL", frequency="1d", start=start, end=end, normalization=RAW)
-        second = binding.get_bars_range("AAPL", frequency="1d", start=start, end=end, normalization=RAW)
+        first = binding.get_bars_range(
+            "AAPL", frequency="1d", start=start, end=end, normalization=RAW
+        )
+        second = binding.get_bars_range(
+            "AAPL", frequency="1d", start=start, end=end, normalization=RAW
+        )
         assert first == second
         assert [b.close for b in first] == [100.0]

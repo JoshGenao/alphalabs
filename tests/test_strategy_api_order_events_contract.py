@@ -233,8 +233,7 @@ class AssertOrderEventPayloadMutationTest(unittest.TestCase):
         self.rig.mutate(
             "api.py",
             find=(
-                "    if event.event_type in ac_named_four:\n"
-                "        if event.fill_price is None:\n"
+                "    if event.event_type in ac_named_four:\n        if event.fill_price is None:\n"
             ),
             replace=(
                 "    if False and event.event_type in ac_named_four:\n"
@@ -327,7 +326,7 @@ class AssertOrderEventPayloadMutationTest(unittest.TestCase):
         # downstream code. The behavioural exercise catches this.
         self.rig.mutate(
             "api.py",
-            find="    _require_str(\"order_id\", event.order_id)\n",
+            find='    _require_str("order_id", event.order_id)\n',
             replace="    pass  # _require_str disabled\n",
         )
         with self.assertRaises(StrategyApiOrderEventsCheckError):
@@ -397,10 +396,7 @@ class AssertOrderEventPayloadMutationTest(unittest.TestCase):
         self.rig.mutate(
             "api.py",
             find="    if event.fill_price is not None and event.fill_price < 0:\n",
-            replace=(
-                "    if False and event.fill_price is not None and "
-                "event.fill_price < 0:\n"
-            ),
+            replace=("    if False and event.fill_price is not None and event.fill_price < 0:\n"),
         )
         with self.assertRaises(StrategyApiOrderEventsCheckError):
             self.rig.run(self.config)
@@ -412,10 +408,7 @@ class AssertOrderEventPayloadMutationTest(unittest.TestCase):
         # check's None case must catch it.
         self.rig.mutate(
             "api.py",
-            find=(
-                '    _require_non_negative_int("cumulative_filled", '
-                "event.cumulative_filled)\n"
-            ),
+            find=('    _require_non_negative_int("cumulative_filled", event.cumulative_filled)\n'),
             replace=(
                 '    _require_non_negative_int("cumulative_filled", '
                 "event.cumulative_filled, allow_none=True)\n"

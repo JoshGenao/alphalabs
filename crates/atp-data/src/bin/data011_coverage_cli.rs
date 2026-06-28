@@ -94,7 +94,8 @@ fn cmd_assert_coverage(rest: &[String]) -> Result<(), String> {
     let through = parsed.require_through()?;
 
     if parsed.init {
-        std::fs::create_dir_all(&dir).map_err(|err| format!("creating {}: {err}", dir.display()))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|err| format!("creating {}: {err}", dir.display()))?;
     }
     // Hold the single-writer lock across the WHOLE load-modify-save (symmetric with data016_ingest_cli).
     let _lock = StoreLock::acquire(&dir).map_err(|err| err.to_string())?;
@@ -212,11 +213,14 @@ impl ParsedArgs {
     }
 
     fn require_symbol(&self) -> Result<String, String> {
-        self.symbol.clone().ok_or_else(|| "missing required --symbol".to_string())
+        self.symbol
+            .clone()
+            .ok_or_else(|| "missing required --symbol".to_string())
     }
 
     fn require_through(&self) -> Result<i64, String> {
-        self.through.ok_or_else(|| "missing required --through".to_string())
+        self.through
+            .ok_or_else(|| "missing required --through".to_string())
     }
 }
 

@@ -38,6 +38,9 @@ jobs:
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # ratchet:gitleaks/gitleaks-action@v2
         env:
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
+          # Required since gitleaks-action v2.3.7+: a token is needed to enumerate
+          # PR commits. The default read-only GITHUB_TOKEN is sufficient.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   python-sast:
     name: Python SAST (bandit + pip-audit)

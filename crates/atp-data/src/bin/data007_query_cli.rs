@@ -127,24 +127,37 @@ fn cmd_query(rest: &[String]) -> Result<(), String> {
     }
 
     // Resolve the records + printed normalization label + optional coverage frontier per mode.
-    let (records, normalization_label, coverage_through): (Vec<MarketDataRecord>, &str, Option<i64>) =
-        match parsed.normalization {
-            // RAW: stored values verbatim over the atomically-published snapshot.
-            Normalization::Raw => {
-                let matched = store.query_unified(&query);
-                let records = matched.records().iter().map(|record| (*record).clone()).collect();
-                (records, "raw", None)
-            }
-            // SPLIT-ADJUSTED: route through the SINGLE coverage-enforcing gate
-            // (MarketDataStore::query_split_adjusted). It fails closed (exit non-zero) on NotCovered
-            // (coverage for the symbol does not reach --end), on a missing/non-equity --kind, and on a
-            // malformed split -- so this surface never emits raw-as-adjusted output. There is no
-            // CLI-side split math; the gate is the only path to split-adjusted output.
-            Normalization::SplitAdjusted => {
-                let adjusted = store.query_split_adjusted(&query).map_err(|err| err.to_string())?;
-                (adjusted.records, "split-adjusted", Some(adjusted.coverage_through))
-            }
-        };
+    let (records, normalization_label, coverage_through): (
+        Vec<MarketDataRecord>,
+        &str,
+        Option<i64>,
+    ) = match parsed.normalization {
+        // RAW: stored values verbatim over the atomically-published snapshot.
+        Normalization::Raw => {
+            let matched = store.query_unified(&query);
+            let records = matched
+                .records()
+                .iter()
+                .map(|record| (*record).clone())
+                .collect();
+            (records, "raw", None)
+        }
+        // SPLIT-ADJUSTED: route through the SINGLE coverage-enforcing gate
+        // (MarketDataStore::query_split_adjusted). It fails closed (exit non-zero) on NotCovered
+        // (coverage for the symbol does not reach --end), on a missing/non-equity --kind, and on a
+        // malformed split -- so this surface never emits raw-as-adjusted output. There is no
+        // CLI-side split math; the gate is the only path to split-adjusted output.
+        Normalization::SplitAdjusted => {
+            let adjusted = store
+                .query_split_adjusted(&query)
+                .map_err(|err| err.to_string())?;
+            (
+                adjusted.records,
+                "split-adjusted",
+                Some(adjusted.coverage_through),
+            )
+        }
+    };
 
     println!("symbol:{symbol}");
     println!("resolution:{resolution}");
@@ -243,7 +256,9 @@ impl ParsedArgs {
     }
 
     fn require_symbol(&self) -> Result<String, String> {
-        self.symbol.clone().ok_or_else(|| "missing required --symbol".to_string())
+        self.symbol
+            .clone()
+            .ok_or_else(|| "missing required --symbol".to_string())
     }
 
     fn require_resolution(&self) -> Result<String, String> {
@@ -253,7 +268,8 @@ impl ParsedArgs {
     }
 
     fn require_start(&self) -> Result<i64, String> {
-        self.start.ok_or_else(|| "missing required --start".to_string())
+        self.start
+            .ok_or_else(|| "missing required --start".to_string())
     }
 
     fn require_end(&self) -> Result<i64, String> {

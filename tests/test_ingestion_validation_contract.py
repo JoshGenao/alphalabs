@@ -323,11 +323,7 @@ class IngestionValidationGuardTest(unittest.TestCase):
                     break
             index += 1
         end = self.data_src.find(";", index) + 1
-        mutated = (
-            self.data_src[:start]
-            + "/* event record removed */"
-            + self.data_src[end:]
-        )
+        mutated = self.data_src[:start] + "/* event record removed */" + self.data_src[end:]
         with self.assertRaises(IngestionValidationCheckError) as ctx:
             check_ingestion_validation_guard(self.config, mutated)
         self.assertIn("events.record", str(ctx.exception))

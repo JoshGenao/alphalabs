@@ -73,7 +73,10 @@ fn split(symbol: &str, effective_ts: i64, numerator: i64, denominator: i64) -> M
             event_ts: effective_ts,
             option_contract: None,
         },
-        [field("denominator", denominator), field("numerator", numerator)],
+        [
+            field("denominator", denominator),
+            field("numerator", numerator),
+        ],
     )
     .expect("well-formed split record")
 }
@@ -138,13 +141,20 @@ fn backtest_runs_end_to_end_over_raw_store_bars() {
         bought: false,
     };
     let result = BacktestEngine::new()
-        .run(&request("AAPL", DateRange::new(1, 5)), &mut strategy, &source)
+        .run(
+            &request("AAPL", DateRange::new(1, 5)),
+            &mut strategy,
+            &source,
+        )
         .expect("backtest runs over the unified store");
 
     assert_eq!(result.data_source, BacktestDataSource::SystemData);
     assert_eq!(result.bars_processed, 5, "only the 5 AAPL bars, never MSFT");
     assert_eq!(result.trade_log.len(), 1);
-    assert_eq!(result.trade_log[0].price_minor, 100, "bought at the raw close");
+    assert_eq!(
+        result.trade_log[0].price_minor, 100,
+        "bought at the raw close"
+    );
     // Cash 1_000_000 - 10*100 spent = 999_000; equity at close 140 = 999_000 + 10*140.
     assert_eq!(result.final_equity_minor, 999_000 + 10 * 140);
     assert_eq!(result.equity_curve.len(), 5);
@@ -170,10 +180,17 @@ fn backtest_runs_over_minute_store_bars_and_excludes_daily() {
         bought: false,
     };
     let result = BacktestEngine::new()
-        .run(&request("AAPL", DateRange::new(1, 3)), &mut strategy, &source)
+        .run(
+            &request("AAPL", DateRange::new(1, 3)),
+            &mut strategy,
+            &source,
+        )
         .expect("minute backtest runs over the unified store");
 
-    assert_eq!(result.bars_processed, 3, "only the 3 minute bars, never the daily bar");
+    assert_eq!(
+        result.bars_processed, 3,
+        "only the 3 minute bars, never the daily bar"
+    );
     assert_eq!(result.trade_log.len(), 1);
     assert_eq!(
         result.trade_log[0].price_minor, 100,
@@ -199,7 +216,11 @@ fn backtest_runs_end_to_end_over_covered_split_adjusted_bars() {
         bought: false,
     };
     let result = BacktestEngine::new()
-        .run(&request("AAPL", DateRange::new(0, 100)), &mut strategy, &source)
+        .run(
+            &request("AAPL", DateRange::new(0, 100)),
+            &mut strategy,
+            &source,
+        )
         .expect("covered split-adjusted backtest runs");
 
     assert_eq!(result.bars_processed, 1);
@@ -239,9 +260,15 @@ fn split_adjusted_over_uncovered_store_fails_closed_naming_011() {
         lot: 1,
         bought: false,
     };
-    let outcome =
-        BacktestEngine::new().run(&request("AAPL", DateRange::new(0, 100)), &mut strategy, &source);
-    assert!(matches!(outcome, Err(BacktestError::SourceUnavailable { .. })));
+    let outcome = BacktestEngine::new().run(
+        &request("AAPL", DateRange::new(0, 100)),
+        &mut strategy,
+        &source,
+    );
+    assert!(matches!(
+        outcome,
+        Err(BacktestError::SourceUnavailable { .. })
+    ));
 }
 
 #[test]
@@ -271,7 +298,10 @@ fn window_bound_above_i64_max_fails_closed() {
         .expect_err("an unrepresentable window bound must fail closed");
     match err {
         BacktestError::SourceUnavailable { reason } => {
-            assert!(reason.contains("queryable timestamp range"), "reason: {reason}");
+            assert!(
+                reason.contains("queryable timestamp range"),
+                "reason: {reason}"
+            );
         }
         other => panic!("expected SourceUnavailable, got {other:?}"),
     }
@@ -292,7 +322,10 @@ fn empty_window_yields_no_bars_and_the_engine_reports_empty_data() {
         lot: 1,
         bought: false,
     };
-    let outcome =
-        BacktestEngine::new().run(&request("AAPL", DateRange::new(0, 100)), &mut strategy, &source);
+    let outcome = BacktestEngine::new().run(
+        &request("AAPL", DateRange::new(0, 100)),
+        &mut strategy,
+        &source,
+    );
     assert_eq!(outcome, Err(BacktestError::EmptyData));
 }

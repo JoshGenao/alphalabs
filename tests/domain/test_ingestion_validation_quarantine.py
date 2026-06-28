@@ -61,13 +61,10 @@ def test_quarantined_state_blocks_record_with_structured_error() -> None:
     # record, and exactly one IngestionValidationEvent must be recorded
     # with reason, source, record_hash, and observed_at_seconds
     # populated.
-    result = _run_cargo_test(
-        "err_5_quarantined_state_blocks_record_with_structured_error"
-    )
+    result = _run_cargo_test("err_5_quarantined_state_blocks_record_with_structured_error")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
-        f"ERR-5 Rust domain test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-5 Rust domain test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
         f"unexpected cargo test output:\n{combined}"
@@ -78,12 +75,9 @@ def test_valid_outcome_returns_accepted_and_emits_no_event() -> None:
     # Negative control: ERR-5's rejection must be selective. A Valid
     # outcome must return IngestionAccepted and must NOT touch the event
     # sink — the Rust ForbiddenSink would panic if invoked.
-    result = _run_cargo_test(
-        "err_5_valid_outcome_returns_accepted_and_emits_no_event"
-    )
+    result = _run_cargo_test("err_5_valid_outcome_returns_accepted_and_emits_no_event")
     assert result.returncode == 0, (
-        f"ERR-5 Valid control test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-5 Valid control test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
 
 
@@ -92,13 +86,10 @@ def test_quarantined_state_holds_across_many_records() -> None:
     # variants across multiple (source, record_hash) combinations and
     # verifies the gate emits exactly one event per blocked record with
     # the per-case reason correctly recorded.
-    result = _run_cargo_test(
-        "err_5_quarantined_state_holds_across_many_records"
-    )
+    result = _run_cargo_test("err_5_quarantined_state_holds_across_many_records")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
-        f"ERR-5 pseudo-property test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-5 pseudo-property test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
         f"unexpected cargo test output:\n{combined}"
@@ -111,9 +102,7 @@ def test_identical_contract_for_live_feed_and_paper_feed_sources() -> None:
     # layer API takes no StrategyMode parameter and no per-vendor branch
     # precisely so that every ingestion source flows through the same
     # gate.
-    result = _run_cargo_test(
-        "err_5_identical_contract_for_live_feed_and_paper_feed_sources"
-    )
+    result = _run_cargo_test("err_5_identical_contract_for_live_feed_and_paper_feed_sources")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
         f"ERR-5 SYS-77 source-invariance test failed:\nSTDOUT:\n{result.stdout}\n"
@@ -132,9 +121,7 @@ def test_quarantined_state_anchors_zero_mutation_via_port_shape() -> None:
     # (tools/ingestion_validation_check.py) via the contract's
     # forbidden_mutations allowlist; this test anchors the port-shape
     # post-condition at the behavioral layer.
-    result = _run_cargo_test(
-        "err_5_quarantined_state_anchors_zero_mutation_via_port_shape"
-    )
+    result = _run_cargo_test("err_5_quarantined_state_anchors_zero_mutation_via_port_shape")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
         f"ERR-5 zero-mutation invariant test failed:\nSTDOUT:\n{result.stdout}\n"

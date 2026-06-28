@@ -441,10 +441,7 @@ class PayloadShapeGuardTest(unittest.TestCase):
         except OrderEventContractError:
             pass  # expected
         except AttributeError as exc:
-            self.fail(
-                f"AttributeError leaked past the structured-error "
-                f"contract: {exc!r}"
-            )
+            self.fail(f"AttributeError leaked past the structured-error contract: {exc!r}")
 
 
 class EventTypeDiscriminantTest(unittest.TestCase):

@@ -80,7 +80,11 @@ class CoverageKindTest(_Fixture):
     def test_unbumped_schema_version_is_caught(self) -> None:
         # If SCHEMA_VERSION were not bumped to 3, a v1/v2 reader could not reject a coverage-bearing
         # store at the version gate -> the guard must fire.
-        mutated = self._mutate("store_source", "pub const SCHEMA_VERSION: i64 = 3;", "pub const SCHEMA_VERSION: i64 = 2;")
+        mutated = self._mutate(
+            "store_source",
+            "pub const SCHEMA_VERSION: i64 = 3;",
+            "pub const SCHEMA_VERSION: i64 = 2;",
+        )
         with self.assertRaises(CoverageManifestCheckError):
             check_coverage_kind(self.config, mutated)
 

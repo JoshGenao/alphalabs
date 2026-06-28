@@ -53,8 +53,15 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
 
 def _build(cargo: str) -> tuple[Path, Path]:
     build = _run(
-        cargo, "build", "-q", "-p", "atp-data",
-        "--bin", "data016_ingest_cli", "--bin", "data007_query_cli",
+        cargo,
+        "build",
+        "-q",
+        "-p",
+        "atp-data",
+        "--bin",
+        "data016_ingest_cli",
+        "--bin",
+        "data007_query_cli",
     )
     assert build.returncode == 0, build.stdout + build.stderr
     debug = ROOT / "target" / "debug"
@@ -62,10 +69,20 @@ def _build(cargo: str) -> tuple[Path, Path]:
 
 
 def _ingest_daily(ingest_bin: Path, tmp: str) -> None:
-    assert _run(
-        str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar",
-        "--event-ts", str(BAR_TS), "--init",
-    ).returncode == 0
+    assert (
+        _run(
+            str(ingest_bin),
+            "ingest",
+            "--dir",
+            tmp,
+            "--kind",
+            "daily-equity-bar",
+            "--event-ts",
+            str(BAR_TS),
+            "--init",
+        ).returncode
+        == 0
+    )
 
 
 def test_cli_serves_raw_and_fails_closed_split_adjusted_without_coverage() -> None:
@@ -78,9 +95,22 @@ def test_cli_serves_raw_and_fails_closed_split_adjusted_without_coverage() -> No
 
         def query(mode: str) -> subprocess.CompletedProcess[str]:
             return _run(
-                str(query_bin), "query", "--dir", tmp, "--symbol", "AAPL", "--resolution", "1d",
-                "--start", "0", "--end", str(BAR_TS), "--kind", "daily-equity-bar",
-                "--normalization", mode,
+                str(query_bin),
+                "query",
+                "--dir",
+                tmp,
+                "--symbol",
+                "AAPL",
+                "--resolution",
+                "1d",
+                "--start",
+                "0",
+                "--end",
+                str(BAR_TS),
+                "--kind",
+                "daily-equity-bar",
+                "--normalization",
+                mode,
             )
 
         # RAW works and echoes normalization:raw.
@@ -107,7 +137,9 @@ def test_consumer_binding_fails_closed_split_adjusted_without_coverage() -> None
         # Over this UNCOVERED store the binding routes split-adjusted (and the bare default) through the
         # coverage gate and fails closed with CoverageNotProvenError (naming SRS-DATA-011), never raw.
         with pytest.raises(CoverageNotProvenError) as exc:
-            binding.get_bars("AAPL", lookback=5, frequency="1d", normalization=NormalizationMode.SPLIT_ADJUSTED)
+            binding.get_bars(
+                "AAPL", lookback=5, frequency="1d", normalization=NormalizationMode.SPLIT_ADJUSTED
+            )
         assert "SRS-DATA-011" in str(exc.value)
         with pytest.raises(CoverageNotProvenError):
             binding.get_bars("AAPL", lookback=5, frequency="1d")
@@ -116,5 +148,7 @@ def test_consumer_binding_fails_closed_split_adjusted_without_coverage() -> None
             with pytest.raises(NotImplementedError):
                 binding.get_bars("AAPL", lookback=5, frequency="1d", normalization=mode)
         # RAW still works through the binding.
-        (raw_bar,) = binding.get_bars("AAPL", lookback=5, frequency="1d", normalization=NormalizationMode.RAW)
+        (raw_bar,) = binding.get_bars(
+            "AAPL", lookback=5, frequency="1d", normalization=NormalizationMode.RAW
+        )
         assert raw_bar.close == 100.0

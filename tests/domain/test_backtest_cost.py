@@ -159,7 +159,9 @@ def test_cost_math_is_integer_only() -> None:
     # The real cost path is integer minor units -- no f64 that could round money nondeterministically.
     check_money_invariant(config, cost_source(config))
     # ...and the guard must not be vacuous: a float leaked into the cost decomposition is caught.
-    mutated = cost_source(config).replace("pub commission_minor: i64,", "pub commission_minor: f64,", 1)
+    mutated = cost_source(config).replace(
+        "pub commission_minor: i64,", "pub commission_minor: f64,", 1
+    )
     with pytest.raises(BacktestCostCheckError):
         check_money_invariant(config, mutated)
 
@@ -215,6 +217,8 @@ def test_scope_names_the_cli_surface_and_remaining_deferred_owners() -> None:
     assert "SRS-API-001" in deferred
     assert "SRS-BT-001-runtime" in deferred
     # The CLI half is described as REALIZED in the deferred REST/UI entry, not still-deferred.
-    rest_ui = next(entry for entry in block["deferred"] if entry["feature"].startswith("SRS-API-001"))
+    rest_ui = next(
+        entry for entry in block["deferred"] if entry["feature"].startswith("SRS-API-001")
+    )
     assert "REALIZED" in rest_ui["what"]
     assert "REST" in rest_ui["what"]

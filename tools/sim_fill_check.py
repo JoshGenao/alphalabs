@@ -497,7 +497,9 @@ def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
             text=True,
         )
         if integ.returncode != 0:
-            fail(f"cargo test -p {crate} --test {test_name} failed:\n{integ.stdout}\n{integ.stderr}")
+            fail(
+                f"cargo test -p {crate} --test {test_name} failed:\n{integ.stdout}\n{integ.stderr}"
+            )
     return (
         f"cargo test -p {crate} --lib + {integration} + {cli_integration}: PASS "
         "(every order type resolves a deterministic fill decision over a MarketSnapshot, the "

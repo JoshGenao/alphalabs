@@ -13,7 +13,7 @@ except ImportError:
 else:
     pytestmark = [pytest.mark.domain, pytest.mark.safety]
 
-    @pytest.mark.skip(reason="pending Hot-Swap implementation per SRS-RESV-001..006 (promote/demote/rollback operator commands)")
+    @pytest.mark.skip(reason="pending Hot-Swap per SRS-RESV-001..006 (promote/demote/rollback)")
     def test_at_most_one_live_strategy_under_random_operator_sequences() -> None:
         raise NotImplementedError(
             "Stub: Hypothesis-driven sequence of operator commands; after each "

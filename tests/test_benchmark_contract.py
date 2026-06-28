@@ -421,7 +421,9 @@ class BenchmarkCliTest(_Fixture):
 
     def test_unregistered_cli_bin_is_caught(self) -> None:
         # Dropping the [[bin]] registration would leave the operator surface unbuilt.
-        mutated = self.cargo_src.replace('name = "benchmark_comparison_cli"', 'name = "renamed_cli"')
+        mutated = self.cargo_src.replace(
+            'name = "benchmark_comparison_cli"', 'name = "renamed_cli"'
+        )
         with self.assertRaises(BenchmarkCheckError) as ctx:
             check_benchmark_cli(self.config, mutated)
         self.assertIn("register", str(ctx.exception).lower())
@@ -432,7 +434,10 @@ class BenchmarkCliTest(_Fixture):
         bogus = dict(spec)
         bogus["bin_path"] = "src/bin/does_not_exist.rs"
         config = {**self.config}
-        config["sim_benchmark_contract"] = {**self.config["sim_benchmark_contract"], "benchmark_cli": bogus}
+        config["sim_benchmark_contract"] = {
+            **self.config["sim_benchmark_contract"],
+            "benchmark_cli": bogus,
+        }
         with self.assertRaises(BenchmarkCheckError) as ctx:
             check_benchmark_cli(config, self.cargo_src)
         self.assertIn("missing", str(ctx.exception).lower())

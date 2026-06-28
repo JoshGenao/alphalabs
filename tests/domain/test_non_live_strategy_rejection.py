@@ -50,8 +50,7 @@ def test_paper_submission_is_rejected_with_no_broker_call() -> None:
     result = _run_cargo_test("err_1_paper_strategy_is_rejected_with_no_broker_call")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
-        f"ERR-1 Rust domain test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-1 Rust domain test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
         f"unexpected cargo test output:\n{combined}"
@@ -64,8 +63,7 @@ def test_paper_submissions_never_reach_broker_across_many_cases() -> None:
     result = _run_cargo_test("err_1_holds_for_many_paper_submissions")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
-        f"ERR-1 pseudo-property test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-1 pseudo-property test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
         f"unexpected cargo test output:\n{combined}"
@@ -77,6 +75,5 @@ def test_live_submission_still_routes_through_broker() -> None:
     # submission also got blocked, the live path would silently break.
     result = _run_cargo_test("err_1_live_strategy_still_routes_through_the_broker")
     assert result.returncode == 0, (
-        f"ERR-1 live-control test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-1 live-control test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )

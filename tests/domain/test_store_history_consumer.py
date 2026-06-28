@@ -71,8 +71,15 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
 
 def _build_ingest_and_query(cargo: str) -> tuple[Path, Path]:
     build = _run(
-        cargo, "build", "-q", "-p", "atp-data",
-        "--bin", "data016_ingest_cli", "--bin", "data007_query_cli",
+        cargo,
+        "build",
+        "-q",
+        "-p",
+        "atp-data",
+        "--bin",
+        "data016_ingest_cli",
+        "--bin",
+        "data007_query_cli",
     )
     assert build.returncode == 0, build.stdout + build.stderr
     debug = ROOT / "target" / "debug"
@@ -81,8 +88,17 @@ def _build_ingest_and_query(cargo: str) -> tuple[Path, Path]:
 
 def _build_with_coverage(cargo: str) -> tuple[Path, Path, Path]:
     build = _run(
-        cargo, "build", "-q", "-p", "atp-data",
-        "--bin", "data016_ingest_cli", "--bin", "data011_coverage_cli", "--bin", "data007_query_cli",
+        cargo,
+        "build",
+        "-q",
+        "-p",
+        "atp-data",
+        "--bin",
+        "data016_ingest_cli",
+        "--bin",
+        "data011_coverage_cli",
+        "--bin",
+        "data007_query_cli",
     )
     assert build.returncode == 0, build.stdout + build.stderr
     debug = ROOT / "target" / "debug"
@@ -128,8 +144,15 @@ def test_strategy_reads_store_sourced_bars_without_a_provider() -> None:
         for i in range(3):
             init = ["--init"] if i == 0 else []
             res = _run(
-                str(ingest_bin), "ingest", "--dir", tmp,
-                "--kind", "daily-equity-bar", "--event-ts", str(SEED_TS + i * DAY), *init,
+                str(ingest_bin),
+                "ingest",
+                "--dir",
+                tmp,
+                "--kind",
+                "daily-equity-bar",
+                "--event-ts",
+                str(SEED_TS + i * DAY),
+                *init,
             )
             assert res.returncode == 0, res.stdout + res.stderr
 
@@ -164,8 +187,15 @@ def test_notebook_reads_store_via_binding_without_a_provider() -> None:
         for i in range(3):
             init = ["--init"] if i == 0 else []
             res = _run(
-                str(ingest_bin), "ingest", "--dir", tmp,
-                "--kind", "daily-equity-bar", "--event-ts", str(SEED_TS + i * DAY), *init,
+                str(ingest_bin),
+                "ingest",
+                "--dir",
+                tmp,
+                "--kind",
+                "daily-equity-bar",
+                "--event-ts",
+                str(SEED_TS + i * DAY),
+                *init,
             )
             assert res.returncode == 0, res.stdout + res.stderr
 
@@ -197,12 +227,46 @@ def test_consumer_reads_split_adjusted_over_covered_store() -> None:
         pytest.skip("cargo not on PATH")
     ingest_bin, coverage_bin, query_bin = _build_with_coverage(cargo)
     with tempfile.TemporaryDirectory() as tmp:
-        assert _run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar",
-                    "--event-ts", "100", "--init").returncode == 0
-        assert _run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "corporate-action-split",
-                    "--event-ts", "200").returncode == 0
-        assert _run(str(coverage_bin), "assert-coverage", "--dir", tmp,
-                    "--symbol", "AAPL", "--through", "200").returncode == 0
+        assert (
+            _run(
+                str(ingest_bin),
+                "ingest",
+                "--dir",
+                tmp,
+                "--kind",
+                "daily-equity-bar",
+                "--event-ts",
+                "100",
+                "--init",
+            ).returncode
+            == 0
+        )
+        assert (
+            _run(
+                str(ingest_bin),
+                "ingest",
+                "--dir",
+                tmp,
+                "--kind",
+                "corporate-action-split",
+                "--event-ts",
+                "200",
+            ).returncode
+            == 0
+        )
+        assert (
+            _run(
+                str(coverage_bin),
+                "assert-coverage",
+                "--dir",
+                tmp,
+                "--symbol",
+                "AAPL",
+                "--through",
+                "200",
+            ).returncode
+            == 0
+        )
 
         history = StoreBackedHistoricalData(store_dir=tmp, query_binary=query_bin)
         strategy = _ResearchStrategy()
@@ -232,8 +296,20 @@ def test_consumer_split_adjusted_uncovered_fails_closed() -> None:
         pytest.skip("cargo not on PATH")
     ingest_bin, query_bin = _build_ingest_and_query(cargo)
     with tempfile.TemporaryDirectory() as tmp:
-        assert _run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar",
-                    "--event-ts", "100", "--init").returncode == 0
+        assert (
+            _run(
+                str(ingest_bin),
+                "ingest",
+                "--dir",
+                tmp,
+                "--kind",
+                "daily-equity-bar",
+                "--event-ts",
+                "100",
+                "--init",
+            ).returncode
+            == 0
+        )
         history = StoreBackedHistoricalData(store_dir=tmp, query_binary=query_bin)
         strategy = _ResearchStrategy()
         with pytest.raises(CoverageNotProvenError) as exc:
@@ -254,9 +330,12 @@ def test_consumer_normalization_safety_over_uncovered_store() -> None:
         pytest.skip("cargo not on PATH")
     ingest_bin, query_bin = _build_ingest_and_query(cargo)
     with tempfile.TemporaryDirectory() as tmp:
-        assert _run(
-            str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar", "--init"
-        ).returncode == 0
+        assert (
+            _run(
+                str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar", "--init"
+            ).returncode
+            == 0
+        )
         history = StoreBackedHistoricalData(store_dir=tmp, query_binary=query_bin)
         # Coverage-gated modes: both the bare default and explicit SPLIT_ADJUSTED fail closed naming 011.
         for call in (

@@ -61,8 +61,7 @@ def test_exceeded_state_blocks_request_with_structured_error() -> None:
     result = _run_cargo_test("err_4_exceeded_state_blocks_request_with_structured_error")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
-        f"ERR-4 Rust domain test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-4 Rust domain test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
         f"unexpected cargo test output:\n{combined}"
@@ -88,8 +87,7 @@ def test_exceeded_state_holds_across_many_requests() -> None:
     result = _run_cargo_test("err_4_exceeded_state_holds_across_many_requests")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
-        f"ERR-4 pseudo-property test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-4 pseudo-property test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
         f"unexpected cargo test output:\n{combined}"
@@ -104,8 +102,7 @@ def test_identical_contract_for_live_and_paper_subscribers() -> None:
     result = _run_cargo_test("err_4_identical_contract_for_live_and_paper_subscribers")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
-        f"ERR-4 SYS-64 invariant test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-4 SYS-64 invariant test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
         f"unexpected cargo test output:\n{combined}"

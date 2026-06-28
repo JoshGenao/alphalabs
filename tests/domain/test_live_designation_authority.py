@@ -58,8 +58,7 @@ def _run_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
 def _assert_single_pass(result: subprocess.CompletedProcess[str]) -> None:
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
-        f"SRS-EXE-001 Rust domain test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"SRS-EXE-001 Rust domain test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
         f"unexpected cargo test output:\n{combined}"
@@ -79,9 +78,7 @@ def test_non_designated_strategy_is_rejected_before_any_port() -> None:
 
 
 def test_no_designation_rejects_every_strategy() -> None:
-    _assert_single_pass(
-        _run_cargo_test("srs_exe_001_no_designation_rejects_every_strategy")
-    )
+    _assert_single_pass(_run_cargo_test("srs_exe_001_no_designation_rejects_every_strategy"))
 
 
 def test_one_live_among_thirty_paper_routes_only_the_live() -> None:

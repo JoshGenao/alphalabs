@@ -79,7 +79,8 @@ impl LineCounterSpy {
 
 impl SubscriptionLineCounter for LineCounterSpy {
     fn lines_in_use(&self) -> u32 {
-        self.lines_in_use_calls.set(self.lines_in_use_calls.get() + 1);
+        self.lines_in_use_calls
+            .set(self.lines_in_use_calls.get() + 1);
         self.current_lines.get()
     }
 

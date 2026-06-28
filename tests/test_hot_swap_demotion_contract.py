@@ -132,8 +132,8 @@ class HotSwapDemotionOutcomeEnumTest(unittest.TestCase):
 
     def test_missing_flat_variant_is_caught(self) -> None:
         mutated = self.types_src.replace(
-            "    FlatBeforeTimeout { elapsed_seconds: u64 },",
-            "    FlatBeforeTimeoutX { elapsed_seconds: u64 },",
+            "    FlatBeforeTimeout {",
+            "    FlatBeforeTimeoutX {",
             1,
         )
         with self.assertRaises(HotSwapDemotionCheckError) as ctx:
@@ -142,8 +142,8 @@ class HotSwapDemotionOutcomeEnumTest(unittest.TestCase):
 
     def test_missing_timeout_variant_is_caught(self) -> None:
         mutated = self.types_src.replace(
-            "    TimedOutDemotionPending { elapsed_seconds: u64, timeout_seconds: u64 },",
-            "    TimedOutDemotionPendingX { elapsed_seconds: u64, timeout_seconds: u64 },",
+            "    TimedOutDemotionPending {",
+            "    TimedOutDemotionPendingX {",
             1,
         )
         with self.assertRaises(HotSwapDemotionCheckError) as ctx:
@@ -206,9 +206,7 @@ class OperatorAlertEventStructTest(unittest.TestCase):
             self.assertIn(field, evidence)
 
     def test_missing_channels_field_is_caught(self) -> None:
-        mutated = self.types_src.replace(
-            "    pub channels: Vec<OperatorAlertChannel>,", "", 1
-        )
+        mutated = self.types_src.replace("    pub channels: Vec<OperatorAlertChannel>,", "", 1)
         with self.assertRaises(HotSwapDemotionCheckError) as ctx:
             check_operator_alert_event_struct(self.config, mutated)
         self.assertIn("channels", str(ctx.exception))
@@ -242,9 +240,7 @@ class HotSwapDemotionEventStructTest(unittest.TestCase):
             self.assertIn(field, evidence)
 
     def test_missing_liquidation_cancel_field_is_caught(self) -> None:
-        mutated = self.types_src.replace(
-            "    pub liquidation_cancel: SideEffectOutcome,", "", 1
-        )
+        mutated = self.types_src.replace("    pub liquidation_cancel: SideEffectOutcome,", "", 1)
         with self.assertRaises(HotSwapDemotionCheckError) as ctx:
             check_demotion_event_struct(self.config, mutated)
         self.assertIn("liquidation_cancel", str(ctx.exception))
@@ -277,9 +273,7 @@ class HotSwapDemotionPortsTest(unittest.TestCase):
         self.assertIn("await_flat_or_timeout", evidence)
 
     def test_missing_probe_method_is_caught(self) -> None:
-        mutated = self.orch_src.replace(
-            "fn await_flat_or_timeout(", "fn dropped_await(", 1
-        )
+        mutated = self.orch_src.replace("fn await_flat_or_timeout(", "fn dropped_await(", 1)
         with self.assertRaises(HotSwapDemotionCheckError) as ctx:
             check_liquidation_probe_port(self.config, mutated)
         self.assertIn("await_flat_or_timeout", str(ctx.exception))

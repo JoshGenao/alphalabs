@@ -152,10 +152,7 @@ def test_missing_construct_raises_parser_error() -> None:
 
 
 def test_match_arm_respects_nested_braces_and_strings() -> None:
-    body = (
-        'Pattern => { call(\"a => b\", { nested: 1 }, [1, 2]); next() }, '
-        "Other => skip,"
-    )
+    body = 'Pattern => { call("a => b", { nested: 1 }, [1, 2]); next() }, Other => skip,'
     arm = _match_arm(body, "Pattern")
     assert "nested: 1" in arm
     assert "Other" not in arm

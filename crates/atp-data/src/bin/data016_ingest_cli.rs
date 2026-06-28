@@ -107,7 +107,8 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
     // --init provisions a fresh directory before the lock requires one; otherwise a missing
     // directory fails closed (the lock acquire rejects it), symmetric with load.
     if parsed.init {
-        std::fs::create_dir_all(&dir).map_err(|err| format!("creating {}: {err}", dir.display()))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|err| format!("creating {}: {err}", dir.display()))?;
     }
     // Hold the single-writer lock across the WHOLE load-modify-save so a concurrent ingestion job
     // cannot load the old catalog and erase this job's records with a last-publish-wins save.
@@ -336,7 +337,8 @@ impl ParsedArgs {
     }
 
     fn require_kind(&self) -> Result<DatasetKind, String> {
-        self.kind.ok_or_else(|| "missing required --kind".to_string())
+        self.kind
+            .ok_or_else(|| "missing required --kind".to_string())
     }
 }
 

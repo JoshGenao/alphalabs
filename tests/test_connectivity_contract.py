@@ -168,9 +168,7 @@ class ConnectivityGuardTest(unittest.TestCase):
         self.exec_src = execution_source(self.config)
 
     def test_broker_call_is_gated_on_connected_state(self) -> None:
-        evidence = check_connectivity_guard_in_submit_live_order(
-            self.config, self.exec_src
-        )
+        evidence = check_connectivity_guard_in_submit_live_order(self.config, self.exec_src)
         self.assertIn("ConnectivityState::Connected", evidence)
         self.assertIn("OrderErrorCategory::ConnectivityBlocked", evidence)
         self.assertIn("connectivity.request_reconnect", evidence)

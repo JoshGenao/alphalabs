@@ -893,7 +893,10 @@ fn encode_opt_str(out: &mut String, value: Option<&str>) {
     }
 }
 
-fn decode_opt_str(cursor: &mut Cursor<'_>, context: &'static str) -> Result<Option<String>, StoreError> {
+fn decode_opt_str(
+    cursor: &mut Cursor<'_>,
+    context: &'static str,
+) -> Result<Option<String>, StoreError> {
     match cursor.read_line(context)? {
         "N" => Ok(None),
         "S" => Ok(Some(cursor.read_str(context)?)),
@@ -1317,7 +1320,10 @@ fn split_record(event_ts: i64, symbol: &str, numerator: i64, denominator: i64) -
             event_ts,
             option_contract: None,
         },
-        [field("denominator", denominator), field("numerator", numerator)],
+        [
+            field("denominator", denominator),
+            field("numerator", numerator),
+        ],
     )
     .expect("fixture split record is well-formed")
 }
@@ -1510,10 +1516,15 @@ mod tests {
             .is_empty());
 
         // The indexed read agrees with the full-scan unified query (same records, same order).
-        let via_query =
-            store.query_unified(&crate::query::UnifiedHistoricalQuery::new("AAA", "1d", 0, 100)
-                .with_kind(DatasetKind::DailyEquityBar));
-        let query_ts: Vec<i64> = via_query.records().iter().map(|r| r.key().event_ts).collect();
+        let via_query = store.query_unified(
+            &crate::query::UnifiedHistoricalQuery::new("AAA", "1d", 0, 100)
+                .with_kind(DatasetKind::DailyEquityBar),
+        );
+        let query_ts: Vec<i64> = via_query
+            .records()
+            .iter()
+            .map(|r| r.key().event_ts)
+            .collect();
         assert_eq!(query_ts, vec![1, 2, 3]);
 
         // A kind-narrowed INVERTED range (start > end) over an EXISTING series returns the empty
@@ -1522,7 +1533,10 @@ mod tests {
             &crate::query::UnifiedHistoricalQuery::new("AAA", "1d", 3, 1)
                 .with_kind(DatasetKind::DailyEquityBar),
         );
-        assert!(inverted.records().is_empty(), "inverted kind-narrowed range is empty, not a crash");
+        assert!(
+            inverted.records().is_empty(),
+            "inverted kind-narrowed range is empty, not a crash"
+        );
     }
 
     /// Build a serialized blob at an arbitrary declared schema `version` (mirrors `serialize`, which
@@ -1544,7 +1558,11 @@ mod tests {
 
     /// The schema version a serialized blob declares (line 3: MAGIC, checksum, version, count, ...).
     fn declared_version(blob: &str) -> i64 {
-        blob.lines().nth(2).expect("version line").parse().expect("version is an integer")
+        blob.lines()
+            .nth(2)
+            .expect("version line")
+            .parse()
+            .expect("version is an integer")
     }
 
     #[test]
@@ -1555,7 +1573,10 @@ mod tests {
         let mut with_split = MarketDataStore::new();
         with_split.upsert(split_record(200, "AAPL", 4, 1)).unwrap();
         assert_eq!(declared_version(&with_split.serialize()), 2);
-        assert_eq!(MarketDataStore::restore(&with_split.serialize()).unwrap(), with_split);
+        assert_eq!(
+            MarketDataStore::restore(&with_split.serialize()).unwrap(),
+            with_split
+        );
         // ...and a store carrying a coverage record serializes at the current (v3) version, so an
         // older v1/v2 reader rejects it at the version gate rather than mid-restore on the unknown tag.
         let mut with_coverage = MarketDataStore::new();
@@ -1585,12 +1606,17 @@ mod tests {
         // so a v1 bar + a v2 split + a v3 coverage record together still declare v3.
         let mut with_coverage = MarketDataStore::new();
         with_coverage.upsert(record("AAPL", 1, 100)).unwrap();
-        with_coverage.upsert(split_record(200, "AAPL", 4, 1)).unwrap();
+        with_coverage
+            .upsert(split_record(200, "AAPL", 4, 1))
+            .unwrap();
         with_coverage.upsert(coverage_record(200, "AAPL")).unwrap();
         assert_eq!(declared_version(&with_coverage.serialize()), 3);
 
         // An empty store is the lowest supported version.
-        assert_eq!(declared_version(&MarketDataStore::new().serialize()), MIN_SUPPORTED_SCHEMA_VERSION);
+        assert_eq!(
+            declared_version(&MarketDataStore::new().serialize()),
+            MIN_SUPPORTED_SCHEMA_VERSION
+        );
     }
 
     #[test]
@@ -1606,7 +1632,10 @@ mod tests {
     fn restore_accepts_a_legacy_v2_store_with_split_but_no_coverage() {
         // Backward compatibility: a v2 store (original kinds + split, no coverage) still loads under
         // the v3 reader.
-        let blob = versioned_blob(2, &[record("AAPL", 1, 100), split_record(200, "AAPL", 4, 1)]);
+        let blob = versioned_blob(
+            2,
+            &[record("AAPL", 1, 100), split_record(200, "AAPL", 4, 1)],
+        );
         let restored = MarketDataStore::restore(&blob).unwrap();
         assert_eq!(restored.len(), 2);
     }
@@ -1635,7 +1664,10 @@ mod tests {
             event_ts,
             option_contract: None,
         };
-        let f = |name: &str, value: i64| MarketField { name: name.to_string(), value_minor: value };
+        let f = |name: &str, value: i64| MarketField {
+            name: name.to_string(),
+            value_minor: value,
+        };
 
         // Accepted: complete_through == event_ts (what coverage_record builds).
         assert!(MarketDataRecord::new(coverage_key(200), [f("complete_through", 200)]).is_ok());
@@ -1652,14 +1684,19 @@ mod tests {
         ));
         // Rejected: extra fields (a coverage record is exactly one complete_through).
         assert!(matches!(
-            MarketDataRecord::new(coverage_key(200), [f("complete_through", 200), f("extra", 1)]),
+            MarketDataRecord::new(
+                coverage_key(200),
+                [f("complete_through", 200), f("extra", 1)]
+            ),
             Err(StoreError::InconsistentField { .. })
         ));
 
         // The same guard runs on RESTORE: an honest coverage blob restores, but a forged on-disk blob
         // carrying a mismatched coverage record (built bypassing new()) is rejected — validate_record is
         // shared by new() and restore(), so the gate's frontier is trustworthy from disk too.
-        assert!(MarketDataStore::restore(&versioned_blob(3, &[coverage_record(200, "AAPL")])).is_ok());
+        assert!(
+            MarketDataStore::restore(&versioned_blob(3, &[coverage_record(200, "AAPL")])).is_ok()
+        );
         let forged_record = MarketDataRecord {
             key: coverage_key(200),
             fields: vec![f("complete_through", 999)],
@@ -1705,7 +1742,9 @@ mod tests {
         }
         // Coverage is not provider fixture data; add one explicitly (the only legitimate path) so the
         // round-trip still exercises a v3 store carrying every kind.
-        store.upsert(coverage_record(1_700_000_000, "AAPL")).unwrap();
+        store
+            .upsert(coverage_record(1_700_000_000, "AAPL"))
+            .unwrap();
         assert_eq!(declared_version(&store.serialize()), 3);
         let restored = MarketDataStore::restore(&store.serialize()).unwrap();
         assert_eq!(restored, store);
@@ -1818,7 +1857,10 @@ mod tests {
     #[test]
     fn store_lock_missing_directory_fails_closed() {
         let dir = temp_store_dir("lock_missing").join("never-provisioned");
-        assert!(matches!(StoreLock::acquire(&dir), Err(StoreError::Io { .. })));
+        assert!(matches!(
+            StoreLock::acquire(&dir),
+            Err(StoreError::Io { .. })
+        ));
     }
 
     #[test]
