@@ -36,12 +36,8 @@
 //!     BudgetExceeded match arm); this Rust test anchors the
 //!     port-shape post-condition at the behavioral layer.
 
-use atp_data::{
-    DataLayer, IngestionJobScheduled, PacingBudgetEventSink, PacingBudgetValidator,
-};
-use atp_types::{
-    IngestionJobRequest, OrderErrorCategory, PacingBudgetEvent, PacingBudgetState,
-};
+use atp_data::{DataLayer, IngestionJobScheduled, PacingBudgetEventSink, PacingBudgetValidator};
+use atp_types::{IngestionJobRequest, OrderErrorCategory, PacingBudgetEvent, PacingBudgetState};
 use std::cell::{Cell, RefCell};
 
 struct PacingBudgetValidatorSpy {
@@ -89,7 +85,8 @@ impl PacingBudgetValidator for PacingBudgetValidatorSpy {
     }
 
     fn check_budget(&self, _schedule: &IngestionJobRequest) -> PacingBudgetState {
-        self.check_budget_calls.set(self.check_budget_calls.get() + 1);
+        self.check_budget_calls
+            .set(self.check_budget_calls.get() + 1);
         self.state.get()
     }
 }
@@ -366,7 +363,10 @@ fn err_6_identical_contract_for_minute_bar_and_option_chain_jobs() {
     // projected/permitted numerics differ. SYS-55 fans out events for
     // both ingestion jobs.
     assert_eq!(recorded[0].state, recorded[1].state);
-    assert_eq!(recorded[0].observed_at_seconds, recorded[1].observed_at_seconds);
+    assert_eq!(
+        recorded[0].observed_at_seconds,
+        recorded[1].observed_at_seconds
+    );
     assert_eq!(recorded[0].job_kind, "minute-bar-watchlist");
     assert_eq!(recorded[1].job_kind, "option-chain-capture");
 }
@@ -416,7 +416,8 @@ fn err_6_budget_exceeded_anchors_zero_job_start_via_port_shape() {
             self.permitted
         }
         fn check_budget(&self, _schedule: &IngestionJobRequest) -> PacingBudgetState {
-            self.check_budget_calls.set(self.check_budget_calls.get() + 1);
+            self.check_budget_calls
+                .set(self.check_budget_calls.get() + 1);
             // The trait has no mutator, so even a malicious validator
             // cannot move would_have_started from this read-only
             // method through the gate's public surface.

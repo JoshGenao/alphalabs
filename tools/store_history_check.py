@@ -85,9 +85,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def contract_block(config: dict) -> dict:
@@ -164,7 +162,9 @@ def check_source_neutral_signature(config: dict, src: str) -> str:
 
 def check_no_origin_field_read(config: dict, src: str) -> str:
     forbidden = contract_block(config)["forbidden_provider_tokens"]
-    pattern = re.compile(r"""\[\s*['"](""" + "|".join(re.escape(t) for t in forbidden) + r""")['"]""")
+    pattern = re.compile(
+        r"""\[\s*['"](""" + "|".join(re.escape(t) for t in forbidden) + r""")['"]"""
+    )
     hit = pattern.search(src)
     if hit:
         fail(
@@ -259,12 +259,14 @@ def check_money_scale(config: dict, src: str) -> str:
         if f'fields["{field}"]/{scale}' not in compact:
             fail(
                 f"the binding must scale the OHLC field '{field}' by {scale} "
-                f"(`fields[\"{field}\"] / {scale}`) -- minor units to major units"
+                f'(`fields["{field}"] / {scale}`) -- minor units to major units'
             )
     volume = spec["volume_field"]
     # volume is a raw integer count: it must NOT be divided by the price scale, whether referenced
     # via the _VOLUME_FIELD constant or a "volume" literal subscript.
-    if re.search(rf'(?:_VOLUME_FIELD|["\']{re.escape(volume)}["\'])\s*\]\s*/\s*{re.escape(scale)}', src):
+    if re.search(
+        rf'(?:_VOLUME_FIELD|["\']{re.escape(volume)}["\'])\s*\]\s*/\s*{re.escape(scale)}', src
+    ):
         fail(
             f"'{volume}' is a raw integer count and must NOT be divided by {scale} "
             "(only OHLC prices are scaled)"
@@ -449,7 +451,10 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
         except CoverageNotProvenError:
             pass
         bars = binding.get_bars(
-            rt["symbol"], lookback=10, frequency=rt["resolution"], normalization=NormalizationMode.RAW
+            rt["symbol"],
+            lookback=10,
+            frequency=rt["resolution"],
+            normalization=NormalizationMode.RAW,
         )
         if not bars:
             fail(
@@ -471,7 +476,10 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
             )
         # Empty match is a value, not an error -- an unknown symbol returns [].
         empty = binding.get_bars(
-            "___NOPE___", lookback=5, frequency=rt["resolution"], normalization=NormalizationMode.RAW
+            "___NOPE___",
+            lookback=5,
+            frequency=rt["resolution"],
+            normalization=NormalizationMode.RAW,
         )
         if empty != []:
             fail("an unknown symbol must return [] (empty match is a value, not an error)")

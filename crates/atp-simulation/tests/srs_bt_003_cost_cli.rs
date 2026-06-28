@@ -77,16 +77,32 @@ fn field(segment: &str, key: &str) -> i64 {
 fn defaults_prove_the_same_cost_family() {
     let out = stdout(&run(&["defaults"]));
     // The paper engine's default model of each family is the named SyRS baseline...
-    assert_eq!(value_after(&out, "sim-default-commission:"), "IbTiered", "{out}");
-    assert_eq!(value_after(&out, "sim-default-slippage:"), "NotionalBps(5)", "{out}");
+    assert_eq!(
+        value_after(&out, "sim-default-commission:"),
+        "IbTiered",
+        "{out}"
+    );
+    assert_eq!(
+        value_after(&out, "sim-default-slippage:"),
+        "NotionalBps(5)",
+        "{out}"
+    );
     assert_eq!(
         value_after(&out, "sim-default-spread:"),
         "ObservedOrFallbackBps(10)",
         "{out}"
     );
     // ...and it IS the backtest default, which IS the SyRS baseline (SYS-15e).
-    assert_eq!(value_after(&out, "sim-default-matches-backtest-default:"), "true", "{out}");
-    assert_eq!(value_after(&out, "backtest-default-matches-syrs:"), "true", "{out}");
+    assert_eq!(
+        value_after(&out, "sim-default-matches-backtest-default:"),
+        "true",
+        "{out}"
+    );
+    assert_eq!(
+        value_after(&out, "backtest-default-matches-syrs:"),
+        "true",
+        "{out}"
+    );
     assert_eq!(value_after(&out, "same-cost-family:"), "true", "{out}");
 }
 
@@ -96,7 +112,10 @@ fn default_compare_matches_fill_for_fill() {
     let fills = fill_lines(&out);
     assert_eq!(fills.len(), 2, "one round trip = two fills:\n{out}");
     for fill in &fills {
-        assert!(fill.ends_with("match=true"), "each fill must agree:\n{fill}");
+        assert!(
+            fill.ends_with("match=true"),
+            "each fill must agree:\n{fill}"
+        );
     }
     assert_eq!(int_after(&out, "fills-compared:"), 2);
     assert_eq!(value_after(&out, "cost-family-match:"), "true", "{out}");
@@ -127,8 +146,14 @@ fn each_fill_shows_both_engines_agree_with_nonzero_costs() {
             );
         }
         // The default family charges a positive commission and slippage on every fill.
-        assert!(field(backtest, "comm") > 0, "expected a real commission:\n{fill}");
-        assert!(field(backtest, "slip") > 0, "expected real slippage:\n{fill}");
+        assert!(
+            field(backtest, "comm") > 0,
+            "expected a real commission:\n{fill}"
+        );
+        assert!(
+            field(backtest, "slip") > 0,
+            "expected real slippage:\n{fill}"
+        );
     }
 }
 
@@ -171,7 +196,10 @@ fn override_is_shared_by_both_engines() {
     assert_eq!(value_after(&out, "cost-family-match:"), "true", "{out}");
     for fill in fill_lines(&out) {
         let segments = fill_segments(&fill);
-        let backtest = segments.iter().find(|s| s.starts_with("backtest ")).unwrap();
+        let backtest = segments
+            .iter()
+            .find(|s| s.starts_with("backtest "))
+            .unwrap();
         // PerTrade(100), no slippage, FixedBps(25) of $10,000 = 2500 on every fill.
         assert_eq!(field(backtest, "comm"), 100, "{fill}");
         assert_eq!(field(backtest, "slip"), 0, "{fill}");
@@ -192,7 +220,10 @@ fn full_reports_equal_equity_and_cash_for_the_round_trip() {
     );
     assert_eq!(int_after(&out, "paper-ledger-position:"), 0, "{out}");
     // The ledger accumulated a positive commission (both fills charged the IB floor).
-    assert!(int_after(&out, "paper-ledger-commission-paid-minor:") > 0, "{out}");
+    assert!(
+        int_after(&out, "paper-ledger-commission-paid-minor:") > 0,
+        "{out}"
+    );
 }
 
 #[test]

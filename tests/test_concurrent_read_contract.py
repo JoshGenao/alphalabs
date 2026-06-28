@@ -272,8 +272,15 @@ class BehavioralConcurrentReadTest(unittest.TestCase):
         if cargo is None:
             self.skipTest("cargo not on PATH")
         build = self._run(
-            cargo, "build", "-q", "-p", "atp-data",
-            "--bin", "data016_ingest_cli", "--bin", "data007_query_cli",
+            cargo,
+            "build",
+            "-q",
+            "-p",
+            "atp-data",
+            "--bin",
+            "data016_ingest_cli",
+            "--bin",
+            "data007_query_cli",
         )
         self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
         ingest_bin = str(ROOT / "target" / "debug" / "data016_ingest_cli")
@@ -282,7 +289,9 @@ class BehavioralConcurrentReadTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             # Seed the previously-ingested ("completed") data.
-            seed = self._run(ingest_bin, "ingest", "--dir", tmp, "--kind", "daily-equity-bar", "--init")
+            seed = self._run(
+                ingest_bin, "ingest", "--dir", tmp, "--kind", "daily-equity-bar", "--init"
+            )
             self.assertEqual(seed.returncode, 0, seed.stdout + seed.stderr)
 
             errors: list[str] = []
@@ -290,8 +299,14 @@ class BehavioralConcurrentReadTest(unittest.TestCase):
             def writer() -> None:
                 for i in range(1, self.WRITES + 1):
                     res = self._run(
-                        ingest_bin, "ingest", "--dir", tmp,
-                        "--kind", "daily-equity-bar", "--event-ts", str(seed_ts + i),
+                        ingest_bin,
+                        "ingest",
+                        "--dir",
+                        tmp,
+                        "--kind",
+                        "daily-equity-bar",
+                        "--event-ts",
+                        str(seed_ts + i),
                     )
                     if res.returncode != 0:
                         errors.append(f"writer ingest {i} failed: {res.stdout}{res.stderr}")
@@ -308,8 +323,18 @@ class BehavioralConcurrentReadTest(unittest.TestCase):
                         errors.append(f"inspect saw fewer than the seed records: {insp.stdout!r}")
                     # query: the source-neutral read path the named consumers use.
                     q = self._run(
-                        query_bin, "query", "--dir", tmp,
-                        "--symbol", "AAPL", "--resolution", "1d", "--start", "0", "--end", "9999999999",
+                        query_bin,
+                        "query",
+                        "--dir",
+                        tmp,
+                        "--symbol",
+                        "AAPL",
+                        "--resolution",
+                        "1d",
+                        "--start",
+                        "0",
+                        "--end",
+                        "9999999999",
                     )
                     if q.returncode != 0:
                         errors.append(f"query read failed: {q.stdout}{q.stderr}")

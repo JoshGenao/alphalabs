@@ -1,9 +1,9 @@
 use std::fmt;
 
 use atp_types::{
-    IngestionJobRequest, IngestionRecordSubmission, IngestionValidationEvent,
-    OrderErrorCategory, PacingBudgetEvent, PacingBudgetState, RecordValidationOutcome,
-    RuntimeService, StrategyId, StructuredIngestionError, StructuredPacingError,
+    IngestionJobRequest, IngestionRecordSubmission, IngestionValidationEvent, OrderErrorCategory,
+    PacingBudgetEvent, PacingBudgetState, RecordValidationOutcome, RuntimeService, StrategyId,
+    StructuredIngestionError, StructuredPacingError,
 };
 
 // The SRS-DATA-012 split-adjustment math is a CRATE-INTERNAL module, deliberately NOT a public crate
@@ -16,14 +16,14 @@ use atp_types::{
 // crate-internal math -- so there is no public path to raw-as-adjusted. The `coverage` module is a
 // sibling in the same crate, so it can call the crate-internal `normalization` functions while no
 // external caller can.
-mod normalization;
-pub mod store;
-pub mod query;
 pub mod coverage;
 pub mod fundamentals;
+mod normalization;
+pub mod query;
+pub mod store;
 
-pub use crate::query::{UnifiedHistoricalQuery, UnifiedHistoricalResult};
 pub use crate::coverage::{CoverageError, SplitAdjustedResult};
+pub use crate::query::{UnifiedHistoricalQuery, UnifiedHistoricalResult};
 
 use crate::store::{DatasetKind, MarketDataRecord, MarketDataStore, StoreError, UpsertOutcome};
 
@@ -505,7 +505,10 @@ mod tests {
             error.category,
             OrderErrorCategory::IngestionRecordValidationFailed
         );
-        assert_eq!(error.category.as_str(), "INGESTION_RECORD_VALIDATION_FAILED");
+        assert_eq!(
+            error.category.as_str(),
+            "INGESTION_RECORD_VALIDATION_FAILED"
+        );
         assert_eq!(error.original_record.record_hash, "0xdeadbeef");
         let events = sink.events.borrow();
         assert_eq!(events.len(), 1, "exactly one event per rejected record");

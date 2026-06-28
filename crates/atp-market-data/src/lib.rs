@@ -546,10 +546,7 @@ mod tests {
         let error = manager
             .request_subscription(request.clone(), &counter, &sink)
             .expect_err("ExceededLimit must reject the request");
-        assert_eq!(
-            error.category,
-            OrderErrorCategory::SubscriptionLimitReached
-        );
+        assert_eq!(error.category, OrderErrorCategory::SubscriptionLimitReached);
         assert_eq!(error.category.as_str(), "SUBSCRIPTION_LIMIT_REACHED");
         assert_eq!(error.original_request, request);
         let events = sink.events.borrow();
@@ -577,8 +574,7 @@ mod tests {
                 self.inner.limit
             }
             fn try_acquire(&self, request: &SubscriptionRequest) -> SubscriptionLimitState {
-                self.try_acquire_calls
-                    .set(self.try_acquire_calls.get() + 1);
+                self.try_acquire_calls.set(self.try_acquire_calls.get() + 1);
                 self.inner.try_acquire(request)
             }
         }

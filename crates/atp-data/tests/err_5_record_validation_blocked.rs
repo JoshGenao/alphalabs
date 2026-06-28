@@ -33,12 +33,10 @@
 //!     inside the Quarantined match arm); this Rust test anchors the
 //!     port-shape post-condition at the behavioral layer.
 
-use atp_data::{
-    DataLayer, IngestionAccepted, IngestionValidationEventSink, RecordValidator,
-};
+use atp_data::{DataLayer, IngestionAccepted, IngestionValidationEventSink, RecordValidator};
 use atp_types::{
-    IngestionRecordSubmission, IngestionValidationEvent, OrderErrorCategory,
-    QuarantineReason, RecordValidationOutcome,
+    IngestionRecordSubmission, IngestionValidationEvent, OrderErrorCategory, QuarantineReason,
+    RecordValidationOutcome,
 };
 use std::cell::{Cell, RefCell};
 
@@ -207,12 +205,28 @@ fn err_5_quarantined_state_holds_across_many_records() {
     let layer = DataLayer;
     let sink = EventSinkSpy::default();
     let cases: [(&str, &str, QuarantineReason); 6] = [
-        ("bulk-equity-bars", "0xaaa", QuarantineReason::RangeViolation),
+        (
+            "bulk-equity-bars",
+            "0xaaa",
+            QuarantineReason::RangeViolation,
+        ),
         ("bulk-equity-bars", "0xbbb", QuarantineReason::OhlcOutOfBand),
         ("ib-minute-bars", "0xccc", QuarantineReason::NegativeVolume),
-        ("ib-option-chains", "0xddd", QuarantineReason::NullRequiredField),
-        ("bulk-equity-bars", "0xeee", QuarantineReason::DuplicateRecord),
-        ("ib-option-chains", "0xfff", QuarantineReason::OptionFieldMissing),
+        (
+            "ib-option-chains",
+            "0xddd",
+            QuarantineReason::NullRequiredField,
+        ),
+        (
+            "bulk-equity-bars",
+            "0xeee",
+            QuarantineReason::DuplicateRecord,
+        ),
+        (
+            "ib-option-chains",
+            "0xfff",
+            QuarantineReason::OptionFieldMissing,
+        ),
     ];
     // One validator per case (each carries the rule it returns), but a
     // single sink so we can assert the cumulative event count.
@@ -267,10 +281,8 @@ fn err_5_identical_contract_for_live_feed_and_paper_feed_sources() {
     let live_feed_record = record("bulk-equity-bars", "0x1111");
     let paper_feed_record = record("user-parquet-replay", "0x2222");
 
-    let live_validator =
-        RecordValidatorSpy::quarantined(QuarantineReason::DuplicateRecord);
-    let paper_validator =
-        RecordValidatorSpy::quarantined(QuarantineReason::DuplicateRecord);
+    let live_validator = RecordValidatorSpy::quarantined(QuarantineReason::DuplicateRecord);
+    let paper_validator = RecordValidatorSpy::quarantined(QuarantineReason::DuplicateRecord);
 
     let live_err = layer
         .ingest_record(

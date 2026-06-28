@@ -98,7 +98,9 @@ def lib_source(config: dict, root: Path = ROOT) -> str:
 
 def cargo_source(config: dict, root: Path = ROOT) -> str:
     block = contract_block(config)
-    source_path = root / block["simulation_crate"]["path"] / block["no_broker_dependency"]["cargo_toml"]
+    source_path = (
+        root / block["simulation_crate"]["path"] / block["no_broker_dependency"]["cargo_toml"]
+    )
     if not source_path.exists():
         fail(f"source missing: {source_path.relative_to(root)}")
     return source_path.read_text(encoding="utf-8")

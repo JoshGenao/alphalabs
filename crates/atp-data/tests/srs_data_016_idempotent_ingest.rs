@@ -52,7 +52,8 @@ fn ingest_batch(
     let mut inserted = 0;
     let mut duplicates = 0;
     for record in fixture_batch(kind, event_ts) {
-        let outcome = layer.ingest_market_record(store, record, &validator, &sink, 1_700_000_000)?;
+        let outcome =
+            layer.ingest_market_record(store, record, &validator, &sink, 1_700_000_000)?;
         match outcome.applied {
             UpsertOutcome::Inserted => inserted += 1,
             UpsertOutcome::UnchangedDuplicate => duplicates += 1,
@@ -85,7 +86,11 @@ fn srs_data_016_reingest_each_kind_creates_no_duplicate_and_no_corruption() {
         // First ingest: every record is new.
         let mut store = MarketDataStore::new();
         let (inserted, dups) = ingest_batch(&mut store, kind, EVENT_TS).unwrap();
-        assert!(inserted > 0, "{}: first ingest inserts records", kind.as_str());
+        assert!(
+            inserted > 0,
+            "{}: first ingest inserts records",
+            kind.as_str()
+        );
         assert_eq!(dups, 0, "{}: first ingest has no duplicates", kind.as_str());
         store.save_to_path(&dir).unwrap();
         let len_after_first = store.len();
@@ -94,9 +99,24 @@ fn srs_data_016_reingest_each_kind_creates_no_duplicate_and_no_corruption() {
         // Re-ingest the SAME date from a freshly loaded store: every record is an idempotent no-op.
         let mut reloaded = MarketDataStore::load_from_path(&dir).unwrap();
         let (reinserted, redups) = ingest_batch(&mut reloaded, kind, EVENT_TS).unwrap();
-        assert_eq!(reinserted, 0, "{}: re-ingest inserts nothing", kind.as_str());
-        assert_eq!(redups, inserted, "{}: every re-ingested record is a no-op", kind.as_str());
-        assert_eq!(reloaded.len(), len_after_first, "{}: no duplicate rows", kind.as_str());
+        assert_eq!(
+            reinserted,
+            0,
+            "{}: re-ingest inserts nothing",
+            kind.as_str()
+        );
+        assert_eq!(
+            redups,
+            inserted,
+            "{}: every re-ingested record is a no-op",
+            kind.as_str()
+        );
+        assert_eq!(
+            reloaded.len(),
+            len_after_first,
+            "{}: no duplicate rows",
+            kind.as_str()
+        );
         reloaded.save_to_path(&dir).unwrap();
 
         // No corruption: the persisted file is byte-for-byte identical.
@@ -133,7 +153,11 @@ fn srs_data_016_reingest_all_kinds_together_is_stable() {
 
     assert_eq!(total_reinserted, 0, "no kind re-inserts on the second pass");
     assert_eq!(reloaded.len(), len, "combined catalog has no duplicates");
-    assert_eq!(store_bytes(&dir), bytes, "combined persisted file is byte-identical");
+    assert_eq!(
+        store_bytes(&dir),
+        bytes,
+        "combined persisted file is byte-identical"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -147,12 +171,16 @@ fn srs_data_016_generic_ingestion_refuses_corporate_action_coverage() {
     let layer = DataLayer;
     let mut store = MarketDataStore::new();
     let coverage = atp_data::store::coverage_record(200, "AAPL");
-    let result = layer.ingest_market_record(&mut store, coverage, &AcceptAll, &NullSink, EVENT_TS as u64);
+    let result =
+        layer.ingest_market_record(&mut store, coverage, &AcceptAll, &NullSink, EVENT_TS as u64);
     assert!(
         matches!(result, Err(MarketIngestError::UnsupportedKind { .. })),
         "generic ingestion must refuse a coverage record, got {result:?}"
     );
-    assert!(store.is_empty(), "the refused coverage record must not enter the store");
+    assert!(
+        store.is_empty(),
+        "the refused coverage record must not enter the store"
+    );
     // The provider fixture generator also emits none for coverage (defence in depth).
     assert!(fixture_batch(DatasetKind::CorporateActionCoverage, EVENT_TS).is_empty());
 }
@@ -180,15 +208,27 @@ fn srs_data_016_conflicting_reingest_fails_closed_without_corrupting() {
     };
     let conflicting = MarketDataRecord::new(
         key,
-        [MarketField { name: "close".to_string(), value_minor: 1 }],
+        [MarketField {
+            name: "close".to_string(),
+            value_minor: 1,
+        }],
     )
     .unwrap();
 
     let layer = DataLayer;
     let err = layer
-        .ingest_market_record(&mut store, conflicting, &AcceptAll, &NullSink, EVENT_TS as u64)
+        .ingest_market_record(
+            &mut store,
+            conflicting,
+            &AcceptAll,
+            &NullSink,
+            EVENT_TS as u64,
+        )
         .expect_err("a conflicting re-ingest must fail closed");
-    assert!(matches!(err, MarketIngestError::Store(StoreError::ConflictingContent { .. })));
+    assert!(matches!(
+        err,
+        MarketIngestError::Store(StoreError::ConflictingContent { .. })
+    ));
 
     // The in-memory store is untouched; persisting it again leaves the file byte-identical.
     assert_eq!(store.len(), len_before, "no record added on conflict");
@@ -210,10 +250,19 @@ fn srs_data_016_quarantined_record_is_not_written_to_the_store() {
         .next()
         .unwrap();
     let err = layer
-        .ingest_market_record(&mut store, record, &QuarantineAll, &NullSink, EVENT_TS as u64)
+        .ingest_market_record(
+            &mut store,
+            record,
+            &QuarantineAll,
+            &NullSink,
+            EVENT_TS as u64,
+        )
         .expect_err("a quarantined record must be rejected");
     assert!(matches!(err, MarketIngestError::Rejected(_)));
-    assert!(store.is_empty(), "a quarantined record never reaches the store");
+    assert!(
+        store.is_empty(),
+        "a quarantined record never reaches the store"
+    );
 }
 
 // --------------------------------------------------------------------------- //
@@ -254,7 +303,10 @@ fn srs_data_016_validation_is_bound_to_the_persisted_record() {
 
     let seen = validator.seen.borrow();
     assert_eq!(seen.len(), 1, "the gate validates exactly once");
-    assert_eq!(seen[0], expected, "validation is bound to the persisted record's derived envelope");
+    assert_eq!(
+        seen[0], expected,
+        "validation is bound to the persisted record's derived envelope"
+    );
     assert_eq!(store.len(), 1);
 }
 

@@ -28,8 +28,17 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
 
 def _build(cargo: str) -> tuple[Path, Path, Path]:
     build = _run(
-        cargo, "build", "-q", "-p", "atp-data",
-        "--bin", "data016_ingest_cli", "--bin", "data011_coverage_cli", "--bin", "data007_query_cli",
+        cargo,
+        "build",
+        "-q",
+        "-p",
+        "atp-data",
+        "--bin",
+        "data016_ingest_cli",
+        "--bin",
+        "data011_coverage_cli",
+        "--bin",
+        "data007_query_cli",
     )
     assert build.returncode == 0, build.stdout + build.stderr
     debug = ROOT / "target" / "debug"
@@ -54,17 +63,56 @@ def test_split_adjusted_output_contract() -> None:
         pytest.skip("cargo not on PATH")
     ingest_bin, coverage_bin, query_bin = _build(cargo)
     with tempfile.TemporaryDirectory() as tmp:
-        _run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar",
-             "--event-ts", "100", "--init")
-        _run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "corporate-action-split",
-             "--event-ts", "200")
-        _run(str(coverage_bin), "assert-coverage", "--dir", tmp, "--symbol", "AAPL", "--through", "200")
+        _run(
+            str(ingest_bin),
+            "ingest",
+            "--dir",
+            tmp,
+            "--kind",
+            "daily-equity-bar",
+            "--event-ts",
+            "100",
+            "--init",
+        )
+        _run(
+            str(ingest_bin),
+            "ingest",
+            "--dir",
+            tmp,
+            "--kind",
+            "corporate-action-split",
+            "--event-ts",
+            "200",
+        )
+        _run(
+            str(coverage_bin),
+            "assert-coverage",
+            "--dir",
+            tmp,
+            "--symbol",
+            "AAPL",
+            "--through",
+            "200",
+        )
 
         def query(end: int) -> subprocess.CompletedProcess[str]:
             return _run(
-                str(query_bin), "query", "--dir", tmp, "--symbol", "AAPL", "--resolution", "1d",
-                "--start", "0", "--end", str(end), "--kind", "daily-equity-bar",
-                "--normalization", "split-adjusted",
+                str(query_bin),
+                "query",
+                "--dir",
+                tmp,
+                "--symbol",
+                "AAPL",
+                "--resolution",
+                "1d",
+                "--start",
+                "0",
+                "--end",
+                str(end),
+                "--kind",
+                "daily-equity-bar",
+                "--normalization",
+                "split-adjusted",
             )
 
         # COVERED: the envelope echoes the served mode + the as-of coverage frontier.
@@ -91,12 +139,35 @@ def test_raw_path_is_unchanged_by_the_gate() -> None:
         pytest.skip("cargo not on PATH")
     ingest_bin, _coverage_bin, query_bin = _build(cargo)
     with tempfile.TemporaryDirectory() as tmp:
-        _run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar",
-             "--event-ts", "100", "--init")
+        _run(
+            str(ingest_bin),
+            "ingest",
+            "--dir",
+            tmp,
+            "--kind",
+            "daily-equity-bar",
+            "--event-ts",
+            "100",
+            "--init",
+        )
         # RAW needs no coverage and carries no coverage_through line (the gate is split-adjusted-only).
         raw = _run(
-            str(query_bin), "query", "--dir", tmp, "--symbol", "AAPL", "--resolution", "1d",
-            "--start", "0", "--end", "100", "--kind", "daily-equity-bar", "--normalization", "raw",
+            str(query_bin),
+            "query",
+            "--dir",
+            tmp,
+            "--symbol",
+            "AAPL",
+            "--resolution",
+            "1d",
+            "--start",
+            "0",
+            "--end",
+            "100",
+            "--kind",
+            "daily-equity-bar",
+            "--normalization",
+            "raw",
         )
         assert raw.returncode == 0, raw.stderr
         env = _parse_envelope(raw.stdout)

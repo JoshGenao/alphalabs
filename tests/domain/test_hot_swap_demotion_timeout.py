@@ -67,8 +67,7 @@ def test_timeout_enters_demotion_pending_blocks_promotion_and_alerts_all_channel
     )
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
-        f"ERR-7 Rust domain test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-7 Rust domain test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
         f"unexpected cargo test output:\n{combined}"
@@ -101,8 +100,7 @@ def test_timeout_blocks_promotion_across_many_demotions() -> None:
     result = _run_cargo_test("err_7_timeout_blocks_promotion_across_many_demotions")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
-        f"ERR-7 pseudo-property test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-7 pseudo-property test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
         f"unexpected cargo test output:\n{combined}"
@@ -118,8 +116,7 @@ def test_flat_outcome_over_deadline_is_failed_closed_and_blocks_promotion() -> N
     )
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
-        f"ERR-7 fail-closed test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-7 fail-closed test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
         f"unexpected cargo test output:\n{combined}"
@@ -131,13 +128,10 @@ def test_audit_sink_failure_is_best_effort_and_safety_posture_holds() -> None:
     # the cancel + alert still fire and promotion stays blocked (event
     # emission is best-effort; durable delivery is the deferred SRS-LOG-001
     # sink's concern).
-    result = _run_cargo_test(
-        "err_7_audit_sink_failure_is_best_effort_and_safety_posture_holds"
-    )
+    result = _run_cargo_test("err_7_audit_sink_failure_is_best_effort_and_safety_posture_holds")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
-        f"ERR-7 best-effort-audit test failed:\nSTDOUT:\n{result.stdout}\n"
-        f"STDERR:\n{result.stderr}"
+        f"ERR-7 best-effort-audit test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
     assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
         f"unexpected cargo test output:\n{combined}"

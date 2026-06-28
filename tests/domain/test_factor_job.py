@@ -478,9 +478,7 @@ def test_verifies_forward_window_provenance() -> None:
     check_forward_window(config, module_source(config))
     # ...and the guard must not be vacuous: dropping the horizon verification is caught (Codex F3 --
     # a mislabeled forward window would otherwise be certified as a regular panel).
-    mutated = module_source(config).replace(
-        "actual_gap != Some(forward_horizon_sessions)", "false"
-    )
+    mutated = module_source(config).replace("actual_gap != Some(forward_horizon_sessions)", "false")
     with pytest.raises(FactorJobCheckError):
         check_forward_window(config, mutated)
 

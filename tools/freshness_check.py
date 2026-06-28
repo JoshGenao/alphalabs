@@ -50,9 +50,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def freshness_block(config: dict) -> dict:
@@ -223,10 +221,7 @@ def check_freshness_guard_in_submit_live_order(config: dict, exec_src: str) -> s
 
     rejection = block["rejection_category"]
     if f"OrderErrorCategory::{rejection}" not in stale_arm:
-        fail(
-            f"{entry['method']} {stale_token} leaf must produce "
-            f"OrderErrorCategory::{rejection}"
-        )
+        fail(f"{entry['method']} {stale_token} leaf must produce OrderErrorCategory::{rejection}")
 
     event_call_token = guard["event_call"] + "("
     if event_call_token not in stale_arm:

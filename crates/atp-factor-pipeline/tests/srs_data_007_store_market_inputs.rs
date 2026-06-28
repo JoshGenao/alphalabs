@@ -40,7 +40,11 @@ fn daily_bar(symbol: &str, event_ts: i64, fields: Vec<MarketField>) -> MarketDat
 }
 
 fn close_bar(symbol: &str, event_ts: i64, close: i64, volume: i64) -> MarketDataRecord {
-    daily_bar(symbol, event_ts, vec![field("close", close), field("volume", volume)])
+    daily_bar(
+        symbol,
+        event_ts,
+        vec![field("close", close), field("volume", volume)],
+    )
 }
 
 fn split(symbol: &str, effective_ts: i64, numerator: i64, denominator: i64) -> MarketDataRecord {
@@ -52,7 +56,10 @@ fn split(symbol: &str, effective_ts: i64, numerator: i64, denominator: i64) -> M
             event_ts: effective_ts,
             option_contract: None,
         },
-        [field("denominator", denominator), field("numerator", numerator)],
+        [
+            field("denominator", denominator),
+            field("numerator", numerator),
+        ],
     )
     .expect("well-formed split record")
 }
@@ -92,7 +99,10 @@ fn insufficient_history_is_an_auditable_absence() {
     let store = store_of([close_bar("AAPL", 1, 10_000, 1_000)]);
     let input = load_daily_market_input(&store, &equity("AAPL"), 0, 10, MarketInputBasis::Raw)
         .expect("a single-bar window is a value, not an error");
-    assert_eq!(input, None, "fewer than two closes -> skip, never a fabricated factor");
+    assert_eq!(
+        input, None,
+        "fewer than two closes -> skip, never a fabricated factor"
+    );
 }
 
 #[test]
@@ -112,7 +122,10 @@ fn split_adjusted_basis_differs_from_raw_across_a_split() {
     let raw = load_daily_market_input(&store, &security, 0, 300, MarketInputBasis::Raw)
         .expect("raw read")
         .expect("two closes");
-    assert!((raw.trailing_return - (-0.7)).abs() < 1e-12, "raw spans the split jump");
+    assert!(
+        (raw.trailing_return - (-0.7)).abs() < 1e-12,
+        "raw spans the split jump"
+    );
 
     let adjusted =
         load_daily_market_input(&store, &security, 0, 300, MarketInputBasis::SplitAdjusted)
@@ -142,9 +155,10 @@ fn split_effective_after_the_as_of_date_is_not_applied_no_lookahead() {
     let raw = load_daily_market_input(&store, &security, 0, 300, MarketInputBasis::Raw)
         .expect("raw read")
         .expect("two closes");
-    let adjusted = load_daily_market_input(&store, &security, 0, 300, MarketInputBasis::SplitAdjusted)
-        .expect("covered split-adjusted read")
-        .expect("two closes");
+    let adjusted =
+        load_daily_market_input(&store, &security, 0, 300, MarketInputBasis::SplitAdjusted)
+            .expect("covered split-adjusted read")
+            .expect("two closes");
     assert!(
         (adjusted.trailing_return - raw.trailing_return).abs() < 1e-12,
         "a split effective after the as-of date must not change the factor input (no lookahead)"
@@ -169,7 +183,10 @@ fn split_adjusted_over_uncovered_store_fails_closed_naming_011() {
     .expect_err("uncovered split-adjusted must fail closed");
     match err {
         FactorInputError::CoverageNotProven { reason, .. } => {
-            assert!(reason.contains("SRS-DATA-011"), "reason must name coverage: {reason}");
+            assert!(
+                reason.contains("SRS-DATA-011"),
+                "reason must name coverage: {reason}"
+            );
         }
         other => panic!("expected CoverageNotProven, got {other:?}"),
     }

@@ -217,9 +217,7 @@ def check_gate_not_clonable(config: dict, halt_src: str) -> str:
     spec = contract_block(config)["gate_struct"]
     forbidden = spec["forbidden_derive_token"]
     # The attributes (derive list, etc.) immediately preceding the struct.
-    match = re.search(
-        rf"((?:#\[[^\]]*\]\s*)*)pub struct {re.escape(spec['struct'])}\b", halt_src
-    )
+    match = re.search(rf"((?:#\[[^\]]*\]\s*)*)pub struct {re.escape(spec['struct'])}\b", halt_src)
     attrs = match.group(1) if match else ""
     if re.search(rf"\b{re.escape(forbidden)}\b", attrs):
         fail(

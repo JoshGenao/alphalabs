@@ -251,18 +251,26 @@ mod tests {
         ]);
         let result = store.query_unified(&UnifiedHistoricalQuery::new("AAPL", "1d", 100, 200));
         let ts: Vec<i64> = result.records().iter().map(|r| r.key().event_ts).collect();
-        assert_eq!(ts, vec![100, 200], "inclusive range excludes 300, ascending order");
+        assert_eq!(
+            ts,
+            vec![100, 200],
+            "inclusive range excludes 300, ascending order"
+        );
     }
 
     #[test]
     fn single_point_range_is_inclusive_both_ends() {
         let store = store_of([daily("AAPL", 100, 1), daily("AAPL", 200, 2)]);
         assert_eq!(
-            store.query_unified(&UnifiedHistoricalQuery::new("AAPL", "1d", 200, 200)).len(),
+            store
+                .query_unified(&UnifiedHistoricalQuery::new("AAPL", "1d", 200, 200))
+                .len(),
             1
         );
         assert_eq!(
-            store.query_unified(&UnifiedHistoricalQuery::new("AAPL", "1d", 100, 100)).len(),
+            store
+                .query_unified(&UnifiedHistoricalQuery::new("AAPL", "1d", 100, 100))
+                .len(),
             1
         );
     }
@@ -285,7 +293,11 @@ mod tests {
             .unwrap(),
         ]);
         let result = store.query_unified(&UnifiedHistoricalQuery::new("AAPL", "1d", 0, 1_000));
-        assert_eq!(result.len(), 1, "only AAPL 1d matches (not MSFT, not AAPL 1m)");
+        assert_eq!(
+            result.len(),
+            1,
+            "only AAPL 1d matches (not MSFT, not AAPL 1m)"
+        );
         assert_eq!(result.records()[0].key().symbol, "AAPL");
         assert_eq!(result.records()[0].key().resolution, "1d");
     }
@@ -313,13 +325,21 @@ mod tests {
             option_contract: contract,
         };
         let store = store_of([
-            MarketDataRecord::new(shared_key(DatasetKind::DailyEquityBar, None), [field("close", 1)])
-                .unwrap(),
-            MarketDataRecord::new(shared_key(DatasetKind::MinuteEquityBar, None), [field("close", 2)])
-                .unwrap(),
+            MarketDataRecord::new(
+                shared_key(DatasetKind::DailyEquityBar, None),
+                [field("close", 1)],
+            )
+            .unwrap(),
+            MarketDataRecord::new(
+                shared_key(DatasetKind::MinuteEquityBar, None),
+                [field("close", 2)],
+            )
+            .unwrap(),
         ]);
         assert_eq!(
-            store.query_unified(&UnifiedHistoricalQuery::new("AAPL", "blend", 0, 1_000)).len(),
+            store
+                .query_unified(&UnifiedHistoricalQuery::new("AAPL", "blend", 0, 1_000))
+                .len(),
             2
         );
         let narrowed = store.query_unified(
@@ -327,7 +347,10 @@ mod tests {
                 .with_kind(DatasetKind::MinuteEquityBar),
         );
         assert_eq!(narrowed.len(), 1);
-        assert_eq!(narrowed.records()[0].key().kind, DatasetKind::MinuteEquityBar);
+        assert_eq!(
+            narrowed.records()[0].key().kind,
+            DatasetKind::MinuteEquityBar
+        );
     }
 
     #[test]
@@ -355,16 +378,38 @@ mod tests {
         ]);
         let result = store.query_unified(&UnifiedHistoricalQuery::new("AAPL", "blend", 0, 1_000));
         let ts: Vec<i64> = result.records().iter().map(|r| r.key().event_ts).collect();
-        assert_eq!(ts, vec![100, 300], "event_ts-ascending across kinds, not store (kind-first) order");
+        assert_eq!(
+            ts,
+            vec![100, 300],
+            "event_ts-ascending across kinds, not store (kind-first) order"
+        );
     }
 
     #[test]
     fn repeated_query_is_deterministic() {
-        let store = store_of([daily("AAPL", 300, 3), daily("AAPL", 100, 1), daily("AAPL", 200, 2)]);
+        let store = store_of([
+            daily("AAPL", 300, 3),
+            daily("AAPL", 100, 1),
+            daily("AAPL", 200, 2),
+        ]);
         let q = UnifiedHistoricalQuery::new("AAPL", "1d", 0, 1_000);
-        let first: Vec<i64> = store.query_unified(&q).records().iter().map(|r| r.key().event_ts).collect();
-        let second: Vec<i64> = store.query_unified(&q).records().iter().map(|r| r.key().event_ts).collect();
+        let first: Vec<i64> = store
+            .query_unified(&q)
+            .records()
+            .iter()
+            .map(|r| r.key().event_ts)
+            .collect();
+        let second: Vec<i64> = store
+            .query_unified(&q)
+            .records()
+            .iter()
+            .map(|r| r.key().event_ts)
+            .collect();
         assert_eq!(first, second);
-        assert_eq!(first, vec![100, 200, 300], "ascending regardless of insert order");
+        assert_eq!(
+            first,
+            vec![100, 200, 300],
+            "ascending regardless of insert order"
+        );
     }
 }

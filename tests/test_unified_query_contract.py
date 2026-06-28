@@ -151,7 +151,9 @@ class QueryMethodTest(_Fixture):
 
 class QueryFilterTest(_Fixture):
     def test_filter_evidence(self) -> None:
-        self.assertIn("three acceptance dimensions", check_query_filter_dimensions(self.config, self.src))
+        self.assertIn(
+            "three acceptance dimensions", check_query_filter_dimensions(self.config, self.src)
+        )
 
     def test_broken_inclusive_upper_bound_is_caught(self) -> None:
         # Making the upper bound exclusive would silently drop the end-of-range record.
@@ -218,7 +220,9 @@ class CliSourceNeutralTest(_Fixture):
 
 class CliNoWriterLockTest(_Fixture):
     def test_no_writer_lock_evidence(self) -> None:
-        self.assertIn("read-only snapshot load", check_cli_no_writer_lock(self.config, self.cli_src))
+        self.assertIn(
+            "read-only snapshot load", check_cli_no_writer_lock(self.config, self.cli_src)
+        )
 
     def test_injected_writer_lock_is_caught(self) -> None:
         # A read taking the single-writer lock would serialize against ingestion writers needlessly
@@ -296,8 +300,15 @@ class BehavioralIngestQueryTest(unittest.TestCase):
         if cargo is None:
             self.skipTest("cargo not on PATH")
         build = self._run(
-            cargo, "build", "-q", "-p", "atp-data",
-            "--bin", "data016_ingest_cli", "--bin", "data007_query_cli",
+            cargo,
+            "build",
+            "-q",
+            "-p",
+            "atp-data",
+            "--bin",
+            "data016_ingest_cli",
+            "--bin",
+            "data007_query_cli",
         )
         self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
         ingest_bin = ROOT / "target" / "debug" / "data016_ingest_cli"
@@ -305,15 +316,29 @@ class BehavioralIngestQueryTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             # Ingest two providers' worth of records: daily (≤ Databento) + minute (≤ IB).
-            first = self._run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar", "--init")
+            first = self._run(
+                str(ingest_bin), "ingest", "--dir", tmp, "--kind", "daily-equity-bar", "--init"
+            )
             self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
-            second = self._run(str(ingest_bin), "ingest", "--dir", tmp, "--kind", "minute-equity-bar")
+            second = self._run(
+                str(ingest_bin), "ingest", "--dir", tmp, "--kind", "minute-equity-bar"
+            )
             self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
 
             # Query by symbol + resolution + range -- no provider argument exists.
             queried = self._run(
-                str(query_bin), "query", "--dir", tmp,
-                "--symbol", "AAPL", "--resolution", "1d", "--start", "0", "--end", "9999999999",
+                str(query_bin),
+                "query",
+                "--dir",
+                tmp,
+                "--symbol",
+                "AAPL",
+                "--resolution",
+                "1d",
+                "--start",
+                "0",
+                "--end",
+                "9999999999",
             )
             self.assertEqual(queried.returncode, 0, queried.stdout + queried.stderr)
             lines = queried.stdout.splitlines()
@@ -331,8 +356,18 @@ class BehavioralIngestQueryTest(unittest.TestCase):
 
             # An unknown symbol is an empty result, exit 0 (not an error).
             empty = self._run(
-                str(query_bin), "query", "--dir", tmp,
-                "--symbol", "NOSUCH", "--resolution", "1d", "--start", "0", "--end", "9999999999",
+                str(query_bin),
+                "query",
+                "--dir",
+                tmp,
+                "--symbol",
+                "NOSUCH",
+                "--resolution",
+                "1d",
+                "--start",
+                "0",
+                "--end",
+                "9999999999",
             )
             self.assertEqual(empty.returncode, 0, empty.stdout + empty.stderr)
             self.assertIn("match_count:0", empty.stdout.splitlines())

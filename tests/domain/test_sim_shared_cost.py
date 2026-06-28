@@ -163,7 +163,9 @@ def test_sim_cost_math_is_integer_only() -> None:
     config = load_config()
     # The real simulation cost path is integer minor units -- no f64 that could round money.
     check_money_invariant(config, sim_source(config))
-    mutated = sim_source(config).replace("pub cash_delta_minor: i64,", "pub cash_delta_minor: f64,", 1)
+    mutated = sim_source(config).replace(
+        "pub cash_delta_minor: i64,", "pub cash_delta_minor: f64,", 1
+    )
     with pytest.raises(SimCostCheckError):
         check_money_invariant(config, mutated)
 
@@ -172,7 +174,9 @@ def test_simulation_subtracts_the_cost_from_cash() -> None:
     config = load_config()
     # simulate_fill SUBTRACTS the per-fill cost total (a cost can never add cash).
     check_shared_entry_point(config, sim_source(config))
-    mutated = sim_source(config).replace(".checked_sub(total_cost_minor)", ".checked_sub(zero_minor)", 1)
+    mutated = sim_source(config).replace(
+        ".checked_sub(total_cost_minor)", ".checked_sub(zero_minor)", 1
+    )
     with pytest.raises(SimCostCheckError):
         check_shared_entry_point(config, mutated)
 
@@ -203,6 +207,8 @@ def test_scope_names_the_cli_surface_and_adjacent_separate_features() -> None:
     for owner in ("SRS-SIM-002", "SRS-SIM-003", "SRS-SIM-004", "SRS-API-001", "SRS-BT-001-runtime"):
         assert owner in deferred, owner
     # The CLI half of the override surface is described as REALIZED (not still-deferred).
-    rest_ui = next(entry for entry in block["deferred"] if entry["feature"].startswith("SRS-API-001"))
+    rest_ui = next(
+        entry for entry in block["deferred"] if entry["feature"].startswith("SRS-API-001")
+    )
     assert "REALIZED" in rest_ui["what"]
     assert "REST" in rest_ui["what"]

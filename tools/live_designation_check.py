@@ -61,9 +61,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def contract_block(config: dict) -> dict:
@@ -87,11 +85,7 @@ def execution_source(config: dict, root: Path = ROOT) -> str:
     for source_path in (lib, designation):
         if not source_path.exists():
             fail(f"execution crate source missing: {source_path.relative_to(root)}")
-    return (
-        lib.read_text(encoding="utf-8")
-        + "\n"
-        + designation.read_text(encoding="utf-8")
-    )
+    return lib.read_text(encoding="utf-8") + "\n" + designation.read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- #

@@ -684,7 +684,10 @@ impl FundamentalStatements {
             ("total_liabilities_minor", total_liabilities_minor),
         ] {
             if value_minor < 0 {
-                return Err(FundamentalStatementsError::NegativeStatementField { field, value_minor });
+                return Err(FundamentalStatementsError::NegativeStatementField {
+                    field,
+                    value_minor,
+                });
             }
         }
         Ok(Self {
@@ -934,13 +937,13 @@ impl StructuredIngestionError {
     /// form (e.g. `"RANGE_VIOLATION"`) is read from the
     /// `QuarantineReason::as_str` map so the dashboard and notification
     /// dispatcher receive a stable discriminator.
-    pub fn quarantined(
-        record: IngestionRecordSubmission,
-        reason: QuarantineReason,
-    ) -> Self {
+    pub fn quarantined(record: IngestionRecordSubmission, reason: QuarantineReason) -> Self {
         let category = OrderErrorCategory::IngestionRecordValidationFailed;
         debug_assert!(
-            matches!(category, OrderErrorCategory::IngestionRecordValidationFailed),
+            matches!(
+                category,
+                OrderErrorCategory::IngestionRecordValidationFailed
+            ),
             "StructuredIngestionError must carry IngestionRecordValidationFailed"
         );
         let message = format!(
@@ -1313,10 +1316,22 @@ impl ResourceProfile {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResourceProfileError {
-    MemBelowFloor { mem_mb: u32, floor_mb: u32 },
-    MemAboveCeiling { mem_mb: u32, ceiling_mb: u32 },
-    CpuBelowFloor { cpu_hundredths: u32, floor_hundredths: u32 },
-    CpuAboveCeiling { cpu_hundredths: u32, ceiling_hundredths: u32 },
+    MemBelowFloor {
+        mem_mb: u32,
+        floor_mb: u32,
+    },
+    MemAboveCeiling {
+        mem_mb: u32,
+        ceiling_mb: u32,
+    },
+    CpuBelowFloor {
+        cpu_hundredths: u32,
+        floor_hundredths: u32,
+    },
+    CpuAboveCeiling {
+        cpu_hundredths: u32,
+        ceiling_hundredths: u32,
+    },
 }
 
 impl ResourceProfileError {
@@ -1543,13 +1558,12 @@ impl WorkloadPriority {
     /// data, paper) are immune from eviction.
     pub const fn default_kind(self) -> WorkloadKind {
         match self {
-            Self::LiveStrategy
-            | Self::MarketDataSubscriptionManager
-            | Self::PaperStrategy => WorkloadKind::Continuous,
-            Self::NightlyDataIngestion
-            | Self::FactorPipeline
-            | Self::Backtest
-            | Self::Research => WorkloadKind::Batch,
+            Self::LiveStrategy | Self::MarketDataSubscriptionManager | Self::PaperStrategy => {
+                WorkloadKind::Continuous
+            }
+            Self::NightlyDataIngestion | Self::FactorPipeline | Self::Backtest | Self::Research => {
+                WorkloadKind::Batch
+            }
         }
     }
 
@@ -1743,8 +1757,13 @@ impl ContainerHealthState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LaunchReadiness {
-    ReadyWithinDeadline { elapsed_millis: u64 },
-    DeadlineExceeded { elapsed_millis: u64, deadline_millis: u64 },
+    ReadyWithinDeadline {
+        elapsed_millis: u64,
+    },
+    DeadlineExceeded {
+        elapsed_millis: u64,
+        deadline_millis: u64,
+    },
 }
 
 impl LaunchReadiness {
@@ -1804,8 +1823,8 @@ pub const SOURCE_HASH_ALGORITHM_PREFIX: &str = "sha256:";
 /// Hex digest length for SHA-256. 32 bytes × 2 hex chars per byte = 64.
 pub const SOURCE_HASH_DIGEST_HEX_LENGTH: usize = 64;
 
-/// Total expected length of a serialized `SourceHash`: `"sha256:"` (7)
-/// + 64 hex chars = 71. Exposed as a const so callers and the contract
+/// Total expected length of a serialized `SourceHash`: `"sha256:"` (7) +
+/// 64 hex chars = 71. Exposed as a const so callers and the contract
 /// check share one source of truth.
 pub const SOURCE_HASH_TOTAL_LENGTH: usize = 7 + SOURCE_HASH_DIGEST_HEX_LENGTH;
 
@@ -2067,7 +2086,10 @@ impl StructuredOrchestratorError {
     ) -> Self {
         let category = OrderErrorCategory::StrategyStartupDeadlineExceeded;
         debug_assert!(
-            matches!(category, OrderErrorCategory::StrategyStartupDeadlineExceeded),
+            matches!(
+                category,
+                OrderErrorCategory::StrategyStartupDeadlineExceeded
+            ),
             "StructuredOrchestratorError must carry StrategyStartupDeadlineExceeded"
         );
         let message = format!(
@@ -2147,8 +2169,8 @@ impl StructuredOrchestratorError {
         }
     }
 
-    /// Build a `HOST_MEMORY_SAFETY_MARGIN_BREACH` rejection. SRS-ORCH-003
-    /// + SyRS SYS-57 / SYS-58: a launch refused because admitting the
+    /// Build a `HOST_MEMORY_SAFETY_MARGIN_BREACH` rejection. SRS-ORCH-003 +
+    /// SyRS SYS-57 / SYS-58: a launch refused because admitting the
     /// workload would push available host memory below the configured
     /// safety margin AND no lower-priority batch workload was evictable
     /// to free enough memory. The error carries the original launch
@@ -2245,8 +2267,13 @@ pub const HOT_SWAP_DEMOTION_TIMEOUT_SECONDS: u64 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HotSwapDemotionOutcome {
-    FlatBeforeTimeout { elapsed_seconds: u64 },
-    TimedOutDemotionPending { elapsed_seconds: u64, timeout_seconds: u64 },
+    FlatBeforeTimeout {
+        elapsed_seconds: u64,
+    },
+    TimedOutDemotionPending {
+        elapsed_seconds: u64,
+        timeout_seconds: u64,
+    },
 }
 
 impl HotSwapDemotionOutcome {
@@ -2444,8 +2471,13 @@ pub const KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS: u64 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KillSwitchLiquidationOutcome {
-    FilledBeforeTimeout { elapsed_seconds: u64 },
-    TimedOutUnfilled { elapsed_seconds: u64, timeout_seconds: u64 },
+    FilledBeforeTimeout {
+        elapsed_seconds: u64,
+    },
+    TimedOutUnfilled {
+        elapsed_seconds: u64,
+        timeout_seconds: u64,
+    },
 }
 
 impl KillSwitchLiquidationOutcome {
@@ -2687,7 +2719,7 @@ mod tests {
     /// period end, positive market value, negative net income allowed).
     fn sample_statements() -> FundamentalStatements {
         FundamentalStatements::new(
-            "aapl", // lower-case -> normalized to AAPL
+            "aapl",        // lower-case -> normalized to AAPL
             1_700_000_000, // period end
             1_702_000_000, // filed later
             5_000_000,     // revenue
@@ -2745,8 +2777,7 @@ mod tests {
 
     #[test]
     fn fundamental_statements_reject_non_positive_market_value() {
-        let err =
-            FundamentalStatements::new("AAPL", 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0).unwrap_err();
+        let err = FundamentalStatements::new("AAPL", 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0).unwrap_err();
         assert_eq!(
             err,
             FundamentalStatementsError::NonPositiveMarketValue {
@@ -2929,9 +2960,7 @@ mod tests {
     #[test]
     fn kill_switch_liquidation_outcome_distinguishes_filled_from_timeout() {
         // SRS-SAFE-002: only the timeout branch fires the SYS-44b side effects.
-        let filled = KillSwitchLiquidationOutcome::FilledBeforeTimeout {
-            elapsed_seconds: 8,
-        };
+        let filled = KillSwitchLiquidationOutcome::FilledBeforeTimeout { elapsed_seconds: 8 };
         let timed_out = KillSwitchLiquidationOutcome::TimedOutUnfilled {
             elapsed_seconds: 30,
             timeout_seconds: KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS,
@@ -3476,7 +3505,10 @@ mod tests {
             error.category,
             OrderErrorCategory::IngestionRecordValidationFailed
         );
-        assert_eq!(error.category.as_str(), "INGESTION_RECORD_VALIDATION_FAILED");
+        assert_eq!(
+            error.category.as_str(),
+            "INGESTION_RECORD_VALIDATION_FAILED"
+        );
         assert_eq!(error.error_type, "IngestionRecordValidationFailed");
         assert!(error.message.contains("SRS-DATA-013"));
         assert!(error.message.contains("SYS-77"));
@@ -3646,7 +3678,10 @@ mod tests {
             message: _,
             original_order: _,
         } = error.clone();
-        assert_eq!(format!("{error}"), "[NON_LIVE_STRATEGY_SUBMISSION] NonLiveLiveRouteBlocked: rejected");
+        assert_eq!(
+            format!("{error}"),
+            "[NON_LIVE_STRATEGY_SUBMISSION] NonLiveLiveRouteBlocked: rejected"
+        );
     }
 
     // ----------------------------------------------------------------------- //
@@ -3837,7 +3872,10 @@ mod tests {
             error.category,
             OrderErrorCategory::StrategyStartupDeadlineExceeded
         );
-        assert_eq!(error.category.as_str(), "STRATEGY_STARTUP_DEADLINE_EXCEEDED");
+        assert_eq!(
+            error.category.as_str(),
+            "STRATEGY_STARTUP_DEADLINE_EXCEEDED"
+        );
         assert_eq!(error.error_type, "StrategyStartupDeadlineExceeded");
         assert!(error.message.contains("SRS-ORCH-001"));
         assert!(error.message.contains("NFR-P9"));
@@ -3928,7 +3966,9 @@ mod tests {
             mem_mb: RESOURCE_PROFILE_MEM_FLOOR_MB - 1,
             cpu_hundredths: 25,
         };
-        let err = profile.validate().expect_err("below-floor mem must be rejected");
+        let err = profile
+            .validate()
+            .expect_err("below-floor mem must be rejected");
         assert!(matches!(err, ResourceProfileError::MemBelowFloor { .. }));
         assert_eq!(err.as_str(), "MemBelowFloor");
     }
@@ -3952,7 +3992,9 @@ mod tests {
             mem_mb: 512,
             cpu_hundredths: RESOURCE_PROFILE_CPU_FLOOR_HUNDREDTHS - 1,
         };
-        let err = profile.validate().expect_err("below-floor cpu must be rejected");
+        let err = profile
+            .validate()
+            .expect_err("below-floor cpu must be rejected");
         assert!(matches!(err, ResourceProfileError::CpuBelowFloor { .. }));
         assert_eq!(err.as_str(), "CpuBelowFloor");
     }
@@ -4037,7 +4079,10 @@ mod tests {
         let err = margin
             .validate()
             .expect_err("below-floor margin must be rejected");
-        assert!(matches!(err, HostMemorySafetyMarginError::BelowFloor { .. }));
+        assert!(matches!(
+            err,
+            HostMemorySafetyMarginError::BelowFloor { .. }
+        ));
         assert_eq!(err.as_str(), "BelowFloor");
     }
 
@@ -4278,9 +4323,8 @@ mod tests {
 
     #[test]
     fn source_hash_validate_rejects_missing_prefix() {
-        let hash = SourceHash::new(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        );
+        let hash =
+            SourceHash::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let err = hash
             .validate()
             .expect_err("missing prefix must be rejected");
@@ -4290,9 +4334,8 @@ mod tests {
 
     #[test]
     fn source_hash_validate_rejects_unknown_algorithm() {
-        let hash = SourceHash::new(
-            "md5:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        );
+        let hash =
+            SourceHash::new("md5:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let err = hash
             .validate()
             .expect_err("unknown algorithm must be rejected");
@@ -4306,9 +4349,7 @@ mod tests {
     #[test]
     fn source_hash_validate_rejects_short_digest() {
         let hash = SourceHash::new("sha256:abc");
-        let err = hash
-            .validate()
-            .expect_err("short digest must be rejected");
+        let err = hash.validate().expect_err("short digest must be rejected");
         assert!(matches!(
             err,
             SourceHashError::InvalidDigestLength {
@@ -4326,9 +4367,7 @@ mod tests {
             "sha256:{}",
             "a".repeat(SOURCE_HASH_DIGEST_HEX_LENGTH + 1)
         ));
-        let err = hash
-            .validate()
-            .expect_err("long digest must be rejected");
+        let err = hash.validate().expect_err("long digest must be rejected");
         assert!(matches!(
             err,
             SourceHashError::InvalidDigestLength {
@@ -4350,10 +4389,7 @@ mod tests {
         let err = hash
             .validate()
             .expect_err("non-hex digest must be rejected");
-        assert!(matches!(
-            err,
-            SourceHashError::NonHexDigest { found: 'z' }
-        ));
+        assert!(matches!(err, SourceHashError::NonHexDigest { found: 'z' }));
         assert_eq!(err.as_str(), "NonHexDigest");
     }
 
@@ -4371,18 +4407,13 @@ mod tests {
         let err = hash
             .validate()
             .expect_err("upper-case hex must be rejected");
-        assert!(matches!(
-            err,
-            SourceHashError::NonHexDigest { found: 'A' }
-        ));
+        assert!(matches!(err, SourceHashError::NonHexDigest { found: 'A' }));
     }
 
     #[test]
     fn deployed_version_carries_only_two_required_fields() {
-        let version = DeployedVersion::new(
-            SourceHash::new(SAMPLE_SOURCE_HASH_ALPHA),
-            1_715_700_000,
-        );
+        let version =
+            DeployedVersion::new(SourceHash::new(SAMPLE_SOURCE_HASH_ALPHA), 1_715_700_000);
         let DeployedVersion {
             source_hash: _,
             deployed_at_seconds: _,
@@ -4398,10 +4429,8 @@ mod tests {
         // The canonical form is `<hash>@<timestamp>`. Pinning this
         // here is the single source of truth — future surfaces must
         // render this exact string.
-        let version = DeployedVersion::new(
-            SourceHash::new(SAMPLE_SOURCE_HASH_ALPHA),
-            1_715_700_000,
-        );
+        let version =
+            DeployedVersion::new(SourceHash::new(SAMPLE_SOURCE_HASH_ALPHA), 1_715_700_000);
         assert_eq!(
             version.version_identifier(),
             format!("{SAMPLE_SOURCE_HASH_ALPHA}@1715700000")
@@ -4428,7 +4457,10 @@ mod tests {
             StructuredOrchestratorError::deployed_version_invalid(request.clone(), violation);
         assert_eq!(error.category, OrderErrorCategory::DeployedVersionInvalid);
         assert_eq!(error.category.as_str(), "DEPLOYED_VERSION_INVALID");
-        assert_eq!(error.error_type, "DeployedVersionInvalid::InvalidDigestLength");
+        assert_eq!(
+            error.error_type,
+            "DeployedVersionInvalid::InvalidDigestLength"
+        );
         assert!(error.message.contains("SRS-ORCH-004"));
         assert!(error.message.contains("SYS-79"));
         assert!(error.message.contains("alpha-1"));

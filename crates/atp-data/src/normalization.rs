@@ -238,7 +238,11 @@ pub fn split_adjust_record(
         }
         if split.effective_ts > event_ts {
             num = checked_mul(num, i128::from(split.numerator), "split numerator product")?;
-            den = checked_mul(den, i128::from(split.denominator), "split denominator product")?;
+            den = checked_mul(
+                den,
+                i128::from(split.denominator),
+                "split denominator product",
+            )?;
         }
     }
 
@@ -292,8 +296,8 @@ fn div_round_half_even(numer: i128, denom: i128) -> i128 {
     debug_assert!(denom > 0, "denominator must be positive");
     let quotient = numer.div_euclid(denom);
     let remainder = numer.rem_euclid(denom); // 0 <= remainder < denom
-    // Compare 2*remainder with denom WITHOUT computing 2*remainder (which could overflow for a huge
-    // denom): 2r < d  <=>  r < d-r, and d-r is in (0, denom] so the subtraction is overflow-free.
+                                             // Compare 2*remainder with denom WITHOUT computing 2*remainder (which could overflow for a huge
+                                             // denom): 2r < d  <=>  r < d-r, and d-r is in (0, denom] so the subtraction is overflow-free.
     let complement = denom - remainder;
     if remainder < complement {
         quotient // closer to the floor
@@ -308,9 +312,10 @@ fn div_round_half_even(numer: i128, denom: i128) -> i128 {
 
 /// `a * b` in `i128`, mapping an overflow to a fail-closed [`NormalizationError::Overflow`].
 fn checked_mul(a: i128, b: i128, context: &str) -> Result<i128, NormalizationError> {
-    a.checked_mul(b).ok_or_else(|| NormalizationError::Overflow {
-        context: context.to_string(),
-    })
+    a.checked_mul(b)
+        .ok_or_else(|| NormalizationError::Overflow {
+            context: context.to_string(),
+        })
 }
 
 /// The value of `record`'s field named `name`, if present.
@@ -369,7 +374,10 @@ mod tests {
                 event_ts: effective_ts,
                 option_contract: None,
             },
-            [field("denominator", denominator), field("numerator", numerator)],
+            [
+                field("denominator", denominator),
+                field("numerator", numerator),
+            ],
         )
         .expect("well-formed split record")
     }
@@ -424,7 +432,10 @@ mod tests {
     fn no_split_is_the_identity() {
         let bar = daily_bar("AAPL", 100, [9950, 10075, 9910, 10003, 100_001]);
         let adjusted = split_adjust_record(&bar, &[]).unwrap();
-        assert_eq!(adjusted, bar, "split-adjusted of an unsplit series equals the raw series");
+        assert_eq!(
+            adjusted, bar,
+            "split-adjusted of an unsplit series equals the raw series"
+        );
     }
 
     #[test]
@@ -471,7 +482,11 @@ mod tests {
                 event_ts: 100,
                 option_contract: None,
             },
-            [field("adjustment_marker", 4000), field("close", 5000), field("volume", 80)],
+            [
+                field("adjustment_marker", 4000),
+                field("close", 5000),
+                field("volume", 80),
+            ],
         )
         .unwrap();
         let splits = split_events_for("AAPL", &[&split_rec("AAPL", 200, 4, 1)]).unwrap();
@@ -500,7 +515,9 @@ mod tests {
         .unwrap();
         assert!(matches!(
             split_adjust_record(&option, &splits),
-            Err(NormalizationError::UnsupportedKind { kind: "option-chain" })
+            Err(NormalizationError::UnsupportedKind {
+                kind: "option-chain"
+            })
         ));
         // A split record itself cannot be split-adjusted either.
         let split = split_rec("AAPL", 100, 2, 1);
@@ -520,7 +537,12 @@ mod tests {
     }
 
     fn bad_split(effective_ts: i64, numerator: i64, denominator: i64) -> SplitEvent {
-        SplitEvent { symbol: "AAPL".to_string(), effective_ts, numerator, denominator }
+        SplitEvent {
+            symbol: "AAPL".to_string(),
+            effective_ts,
+            numerator,
+            denominator,
+        }
     }
 
     #[test]
@@ -562,7 +584,12 @@ mod tests {
         // AAPL 4-for-1 split must NOT touch an MSFT bar.
         let aapl = daily_bar("AAPL", 100, [0, 0, 0, 4000, 10]);
         let msft = daily_bar("MSFT", 100, [0, 0, 0, 8000, 20]);
-        let aapl_split = SplitEvent { symbol: "AAPL".to_string(), effective_ts: 200, numerator: 4, denominator: 1 };
+        let aapl_split = SplitEvent {
+            symbol: "AAPL".to_string(),
+            effective_ts: 200,
+            numerator: 4,
+            denominator: 1,
+        };
         let adjusted = split_adjust_records(&[&aapl, &msft], &[aapl_split]).unwrap();
         // AAPL is adjusted by its split (4000/4 = 1000, 10*4 = 40)...
         assert_eq!(field_of(&adjusted[0], "close"), 1000);
@@ -570,8 +597,16 @@ mod tests {
         // ...but MSFT is UNTOUCHED (the AAPL split does not apply to it).
         assert_eq!(adjusted[1], msft);
         // A malformed AAPL split also does not poison an MSFT-only batch (wrong symbol -> skipped).
-        let bad_aapl = SplitEvent { symbol: "AAPL".to_string(), effective_ts: 200, numerator: 0, denominator: 1 };
-        assert_eq!(split_adjust_records(&[&msft], &[bad_aapl]).unwrap()[0], msft);
+        let bad_aapl = SplitEvent {
+            symbol: "AAPL".to_string(),
+            effective_ts: 200,
+            numerator: 0,
+            denominator: 1,
+        };
+        assert_eq!(
+            split_adjust_records(&[&msft], &[bad_aapl]).unwrap()[0],
+            msft
+        );
     }
 
     #[test]
@@ -591,7 +626,11 @@ mod tests {
             &daily_bar("AAPL", 100, [1, 1, 1, 1, 1]),
         ];
         let aapl = split_events_for("AAPL", &records).unwrap();
-        assert_eq!(aapl.len(), 1, "only the AAPL split, not MSFT's and not the bar");
+        assert_eq!(
+            aapl.len(),
+            1,
+            "only the AAPL split, not MSFT's and not the bar"
+        );
         assert_eq!(aapl[0].numerator, 4);
     }
 
@@ -676,7 +715,10 @@ mod tests {
             // INVARIANT: a non-positive factor for THIS symbol fails closed (never a panic / miscompute).
             if has_bad_matching {
                 assert!(
-                    matches!(result, Err(NormalizationError::NonPositiveSplitFactor { .. })),
+                    matches!(
+                        result,
+                        Err(NormalizationError::NonPositiveSplitFactor { .. })
+                    ),
                     "non-positive matching split must fail closed: {splits:?}"
                 );
                 continue;
@@ -692,7 +734,10 @@ mod tests {
                 .filter(|s| s.symbol == sym && s.effective_ts > event_ts)
                 .collect();
             if applicable.is_empty() {
-                assert_eq!(adjusted, bar, "no applicable split must be the identity: {splits:?}");
+                assert_eq!(
+                    adjusted, bar,
+                    "no applicable split must be the identity: {splits:?}"
+                );
             }
 
             // INVARIANT (compose-then-divide + order-independence + no intermediate rounding drift):
@@ -743,14 +788,22 @@ mod tests {
             // Exact rounding: every OHLC field equals round-half-to-even(raw * cum_den / cum_num).
             for name in ["open", "high", "low", "close"] {
                 let raw = field_of(&bar, name) as i128;
-                let expected =
-                    div_round_half_even(raw * cum_den as i128, cum_num as i128) as i64;
-                assert_eq!(field_of(&adjusted, name), expected, "OHLC rounding for {name}: {splits:?}");
+                let expected = div_round_half_even(raw * cum_den as i128, cum_num as i128) as i64;
+                assert_eq!(
+                    field_of(&adjusted, name),
+                    expected,
+                    "OHLC rounding for {name}: {splits:?}"
+                );
             }
             // Volume takes the inverse factor.
             let raw_vol = field_of(&bar, "volume") as i128;
-            let expected_vol = div_round_half_even(raw_vol * cum_num as i128, cum_den as i128) as i64;
-            assert_eq!(field_of(&adjusted, "volume"), expected_vol, "volume rounding: {splits:?}");
+            let expected_vol =
+                div_round_half_even(raw_vol * cum_num as i128, cum_den as i128) as i64;
+            assert_eq!(
+                field_of(&adjusted, "volume"),
+                expected_vol,
+                "volume rounding: {splits:?}"
+            );
             let _ = close_of(&adjusted);
         }
     }

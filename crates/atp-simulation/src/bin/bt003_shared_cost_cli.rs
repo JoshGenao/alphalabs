@@ -44,8 +44,8 @@ use std::env;
 use std::process::ExitCode;
 
 use atp_simulation::backtest::{
-    BacktestBar, BacktestDataSource, BacktestEngine, BacktestError, BacktestRequest, BacktestResult,
-    BacktestStrategy, BarSource, DateRange, Fill,
+    BacktestBar, BacktestDataSource, BacktestEngine, BacktestError, BacktestRequest,
+    BacktestResult, BacktestStrategy, BarSource, DateRange, Fill,
 };
 use atp_simulation::cost::{CommissionModel, CostConfig, SlippageModel, SpreadImpactModel};
 use atp_simulation::sim::{PaperFill, PaperLedger, PaperSimulationEngine};
@@ -139,9 +139,18 @@ fn cmd_defaults(rest: &[String]) -> Result<(), String> {
     let sim_default = PaperSimulationEngine::default();
     let backtest_default = CostConfig::default();
 
-    println!("sim-default-commission:{}", fmt_commission(sim_default.cost_config().commission));
-    println!("sim-default-slippage:{}", fmt_slippage(sim_default.cost_config().slippage));
-    println!("sim-default-spread:{}", fmt_spread(sim_default.cost_config().spread_impact));
+    println!(
+        "sim-default-commission:{}",
+        fmt_commission(sim_default.cost_config().commission)
+    );
+    println!(
+        "sim-default-slippage:{}",
+        fmt_slippage(sim_default.cost_config().slippage)
+    );
+    println!(
+        "sim-default-spread:{}",
+        fmt_spread(sim_default.cost_config().spread_impact)
+    );
 
     // The whole point of SYS-15e: the paper engine's default family IS the backtest default, which
     // IS the published SyRS baseline. Both are shown as booleans an operator can confirm.
@@ -149,7 +158,10 @@ fn cmd_defaults(rest: &[String]) -> Result<(), String> {
     let backtest_matches_syrs = backtest_default == CostConfig::syrs_defaults();
     println!("sim-default-matches-backtest-default:{sim_matches_backtest}");
     println!("backtest-default-matches-syrs:{backtest_matches_syrs}");
-    println!("same-cost-family:{}", sim_matches_backtest && backtest_matches_syrs);
+    println!(
+        "same-cost-family:{}",
+        sim_matches_backtest && backtest_matches_syrs
+    );
     Ok(())
 }
 
@@ -181,7 +193,11 @@ fn cmd_compare(rest: &[String]) -> Result<(), String> {
     let paper = run_paper(cost_config, &bars, parsed.lot, parsed.sell_ts);
 
     let (backtest, paper) = match reconcile(parsed.inject, backtest, paper)? {
-        Reconciled::FailedClosed { fault, backtest_err, paper_err } => {
+        Reconciled::FailedClosed {
+            fault,
+            backtest_err,
+            paper_err,
+        } => {
             // A corrupt SHARED input was rejected by BOTH engines before any fill — print the
             // fail-closed evidence and exit non-zero with NO comparison line (no cash fabricated).
             return Err(format!(
@@ -206,13 +222,20 @@ fn cmd_compare(rest: &[String]) -> Result<(), String> {
     // Refuse to assert a match over ZERO fills: cost-family-match:true is only meaningful if at
     // least one real fill's cost decomposition was actually compared between the two engines.
     if backtest.trade_log.is_empty() {
-        return Err("no fills were produced — refusing to assert cost-family-match over zero fills \
+        return Err(
+            "no fills were produced — refusing to assert cost-family-match over zero fills \
                     (a vacuous proof); choose inputs that trade at least once"
-            .to_string());
+                .to_string(),
+        );
     }
 
     let mut all_match = true;
-    for (index, (bt, pf)) in backtest.trade_log.iter().zip(paper.fills.iter()).enumerate() {
+    for (index, (bt, pf)) in backtest
+        .trade_log
+        .iter()
+        .zip(paper.fills.iter())
+        .enumerate()
+    {
         let matched = fills_agree(bt, pf);
         all_match &= matched;
         println!(
@@ -234,7 +257,10 @@ fn cmd_compare(rest: &[String]) -> Result<(), String> {
     println!("cost-family-match:{all_match}");
 
     if parsed.full {
-        println!("backtest-final-equity-minor:{}", backtest.final_equity_minor);
+        println!(
+            "backtest-final-equity-minor:{}",
+            backtest.final_equity_minor
+        );
         println!("paper-ledger-cash-minor:{}", paper.ledger.cash_minor);
         println!("paper-ledger-position:{}", paper.ledger.position);
         println!(
@@ -245,9 +271,11 @@ fn cmd_compare(rest: &[String]) -> Result<(), String> {
 
     if !all_match {
         // The acceptance criterion is the MATCH; a divergence is a hard failure, not a warning.
-        return Err("cost-family-match:false — the simulation and backtest cost decompositions \
+        return Err(
+            "cost-family-match:false — the simulation and backtest cost decompositions \
                     diverged for identical config and inputs (SRS-BT-003 regression)"
-            .to_string());
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -263,7 +291,9 @@ fn run_backtest(
     lot: i64,
     sell_ts: u64,
 ) -> Result<BacktestResult, String> {
-    let catalog = FixtureCatalog { bars: bars.to_vec() };
+    let catalog = FixtureCatalog {
+        bars: bars.to_vec(),
+    };
     let request = BacktestRequest {
         strategy_id: StrategyId::new("bt003-shared-cost-cli"),
         symbol: SYMBOL.to_string(),
@@ -319,7 +349,13 @@ fn run_paper(
             continue;
         }
         let fill = engine
-            .simulate_fill(bar.ts, &bar.symbol, delta, bar.close_minor, bar.spread_minor)
+            .simulate_fill(
+                bar.ts,
+                &bar.symbol,
+                delta,
+                bar.close_minor,
+                bar.spread_minor,
+            )
             .map_err(|err| err.to_string())?;
         ledger.apply_fill(&fill).map_err(|err| err.to_string())?;
         position = position
@@ -592,7 +628,9 @@ fn parse_slippage(spec: &str) -> Result<SlippageModel, String> {
                     bps: parse_u32_field("slippage bps", bps)?,
                 })
             } else {
-                Err(format!("unknown slippage model '{spec}' (expected bps:N|none)"))
+                Err(format!(
+                    "unknown slippage model '{spec}' (expected bps:N|none)"
+                ))
             }
         }
     }

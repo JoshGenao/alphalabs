@@ -74,9 +74,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def contract_block(config: dict) -> dict:
@@ -347,7 +345,10 @@ def check_file_persistence(config: dict, src: str) -> str:
         ("file_sync_token", "an fsync of the scratch file BEFORE the rename"),
         ("atomic_rename_token", "an atomic temp+rename publish"),
         ("dir_sync_token", "an fsync of the parent directory AFTER the rename"),
-        ("restore_on_load_token", "load delegating a present file to the fail-closed restore() codec"),
+        (
+            "restore_on_load_token",
+            "load delegating a present file to the fail-closed restore() codec",
+        ),
         ("missing_dir_failclosed_token", "a missing directory failing closed (not empty history)"),
         ("missing_file_empty_token", "a missing file restoring an empty store (not an error)"),
         ("io_error_variant", "a fail-closed StoreError::Io for a real I/O failure"),
@@ -587,7 +588,9 @@ def run_checks(require_cargo: bool = False) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="SRS-DATA-016 idempotent-ingestion contract evidence")
+    parser = argparse.ArgumentParser(
+        description="SRS-DATA-016 idempotent-ingestion contract evidence"
+    )
     parser.add_argument(
         "--require-cargo",
         action="store_true",

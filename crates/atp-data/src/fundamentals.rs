@@ -107,7 +107,10 @@ pub fn build_fundamental_records(
         [
             field("available_ts", available_ts),
             field("total_assets_minor", statements.total_assets_minor()),
-            field("total_liabilities_minor", statements.total_liabilities_minor()),
+            field(
+                "total_liabilities_minor",
+                statements.total_liabilities_minor(),
+            ),
             field("book_equity_minor", statements.book_equity_minor()),
         ],
     )?;
@@ -115,9 +118,18 @@ pub fn build_fundamental_records(
         fundamental_key(symbol, FUNDAMENTAL_CASHFLOW_RESOLUTION, period_end_ts),
         [
             field("available_ts", available_ts),
-            field("operating_cash_flow_minor", statements.operating_cash_flow_minor()),
-            field("investing_cash_flow_minor", statements.investing_cash_flow_minor()),
-            field("financing_cash_flow_minor", statements.financing_cash_flow_minor()),
+            field(
+                "operating_cash_flow_minor",
+                statements.operating_cash_flow_minor(),
+            ),
+            field(
+                "investing_cash_flow_minor",
+                statements.investing_cash_flow_minor(),
+            ),
+            field(
+                "financing_cash_flow_minor",
+                statements.financing_cash_flow_minor(),
+            ),
         ],
     )?;
     // The ratios record carries EXACTLY the factor loader's required fields (available_ts,
@@ -198,7 +210,12 @@ mod tests {
         names.sort_unstable();
         assert_eq!(
             names,
-            ["available_ts", "book_equity_minor", "market_value_minor", "net_income_minor"]
+            [
+                "available_ts",
+                "book_equity_minor",
+                "market_value_minor",
+                "net_income_minor"
+            ]
         );
         assert_eq!(field_value(ratios, "net_income_minor"), -250_000);
         assert_eq!(field_value(ratios, "book_equity_minor"), 5_000_000);
@@ -209,11 +226,17 @@ mod tests {
     fn income_balance_cashflow_carry_their_line_items() {
         let records = build_fundamental_records(&sample()).expect("build succeeds");
         assert_eq!(
-            field_value(record(&records, FUNDAMENTAL_INCOME_RESOLUTION), "revenue_minor"),
+            field_value(
+                record(&records, FUNDAMENTAL_INCOME_RESOLUTION),
+                "revenue_minor"
+            ),
             5_000_000
         );
         assert_eq!(
-            field_value(record(&records, FUNDAMENTAL_BALANCE_RESOLUTION), "total_assets_minor"),
+            field_value(
+                record(&records, FUNDAMENTAL_BALANCE_RESOLUTION),
+                "total_assets_minor"
+            ),
             8_000_000
         );
         assert_eq!(

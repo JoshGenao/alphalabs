@@ -231,8 +231,8 @@ class RouteOrderGuardTest(unittest.TestCase):
         # Smuggle a broker call into the NotDesignated leaf via its unique
         # message tail — the rejection must consult no side-effecting port.
         mutated = self.exec_src.replace(
-            "(SRS-EXE-001, SyRS SYS-2a/SYS-2d)\",",
-            "(SRS-EXE-001, SyRS SYS-2a/SYS-2d) broker.submit_order(\",",
+            '(SRS-EXE-001, SyRS SYS-2a/SYS-2d)",',
+            '(SRS-EXE-001, SyRS SYS-2a/SYS-2d) broker.submit_order(",',
             1,
         )
         with self.assertRaises(LiveDesignationCheckError) as ctx:

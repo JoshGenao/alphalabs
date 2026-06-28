@@ -533,9 +533,7 @@ def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
         text=True,
     )
     if cli.returncode != 0:
-        fail(
-            f"cargo test -p {crate} --test {cli_integration} failed:\n{cli.stdout}\n{cli.stderr}"
-        )
+        fail(f"cargo test -p {crate} --test {cli_integration} failed:\n{cli.stdout}\n{cli.stderr}")
     return (
         f"cargo test -p {crate} --lib {module} + {integration} + {cli_integration}: PASS "
         "(computes the per-period Spearman IC, quantile factor-return spread, and quantile turnover; "

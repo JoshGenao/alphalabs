@@ -246,7 +246,9 @@ def test_deferred_owners_are_named() -> None:
     block = config["paper_halt_contract"]
     deferred = " ".join(f"{e['feature']} {e['what']}" for e in block["deferred"])
     for owner in ("SRS-EXE-006", "SRS-EXE-002", "SRS-LOG-001", "SRS-NOTIF-001", "SRS-API-001"):
-        assert owner in deferred, f"deferred[] must name the {owner} owner of the rest of SRS-SAFE-001"
+        assert owner in deferred, (
+            f"deferred[] must name the {owner} owner of the rest of SRS-SAFE-001"
+        )
     # The contract description must state the slice is a sub-component, not the closed requirement.
     assert "passes:false" in block["description"]
     assert "SUB-COMPONENT" in block["description"] or "sub-component" in block["description"]

@@ -206,8 +206,8 @@ class ResourceProfileErrorEnumTest(unittest.TestCase):
 
     def test_missing_mem_below_floor_variant_is_caught(self) -> None:
         mutated = self.types_src.replace(
-            "MemBelowFloor { mem_mb: u32, floor_mb: u32 },",
-            "MemBelowFloorX { mem_mb: u32, floor_mb: u32 },",
+            "    MemBelowFloor {",
+            "    MemBelowFloorX {",
             1,
         )
         with self.assertRaises(ResourceProfileCheckError) as ctx:

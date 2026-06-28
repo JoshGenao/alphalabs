@@ -745,7 +745,10 @@ mod tests {
         match err {
             AdapterError::InvalidProviderData { adapter, detail } => {
                 assert_eq!(adapter, "sharadar");
-                assert!(detail.contains("available_ts"), "detail names the cause: {detail}");
+                assert!(
+                    detail.contains("available_ts"),
+                    "detail names the cause: {detail}"
+                );
             }
             other => panic!("expected InvalidProviderData, got {other:?}"),
         }
@@ -762,7 +765,10 @@ mod tests {
         match err {
             AdapterError::InvalidProviderData { adapter, detail } => {
                 assert_eq!(adapter, "sharadar");
-                assert!(detail.contains("market_value_minor"), "detail names the cause: {detail}");
+                assert!(
+                    detail.contains("market_value_minor"),
+                    "detail names the cause: {detail}"
+                );
             }
             other => panic!("expected InvalidProviderData, got {other:?}"),
         }
@@ -793,7 +799,10 @@ mod tests {
         match err {
             AdapterError::InvalidProviderData { adapter, detail } => {
                 assert_eq!(adapter, "sharadar");
-                assert!(detail.contains("MRQ"), "detail names the rejected dimension: {detail}");
+                assert!(
+                    detail.contains("MRQ"),
+                    "detail names the rejected dimension: {detail}"
+                );
             }
             other => panic!("expected InvalidProviderData, got {other:?}"),
         }

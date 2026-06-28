@@ -133,7 +133,7 @@ class BindingTest(_Fixture):
         # If the binding stopped mapping SPLIT_ADJUSTED to the 'split-adjusted' CLI label (i.e. no longer
         # SERVED it), the guard must fire -- the binding serves the gated split-adjusted series.
         mutated = self._src("binding_source").replace(
-            "    NormalizationMode.SPLIT_ADJUSTED: \"split-adjusted\",\n",
+            '    NormalizationMode.SPLIT_ADJUSTED: "split-adjusted",\n',
             "",
         )
         self.assertNotEqual(mutated, self._src("binding_source"))

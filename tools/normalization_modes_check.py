@@ -71,9 +71,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def contract_block(config: dict) -> dict:
@@ -125,7 +123,9 @@ def check_rust_math(config: dict, norm_src: str) -> str:
     if "i128" not in norm_src:
         fail("the split math must use i128 intermediates (an i64 value times a split product)")
     if "checked_mul" not in compact:
-        fail("the split math must use checked_mul and fail closed on overflow (never wrap a money value)")
+        fail(
+            "the split math must use checked_mul and fail closed on overflow (never wrap a money value)"
+        )
     if "i64::try_from" not in compact:
         fail("the split math must narrow the i128 result back to i64 with try_from (fail-closed)")
     if "div_euclid" not in compact or "rem_euclid" not in compact:
@@ -159,7 +159,7 @@ def check_ohlc_and_volume_factors(config: dict, norm_src: str) -> str:
     # refactor that drops volume's inverse (or scales a field it should not) fails closed.
     if not re.search(r'PRICE_FIELDS[^\n]*=\s*\[[^\]]*"close"', norm_src):
         fail("normalization.rs must name the OHLC PRICE_FIELDS set (open/high/low/close)")
-    if 'VOLUME_FIELD' not in norm_src or '"volume"' not in norm_src:
+    if "VOLUME_FIELD" not in norm_src or '"volume"' not in norm_src:
         fail("normalization.rs must name the VOLUME_FIELD ('volume') that takes the inverse factor")
     return (
         "factors: OHLC (open/high/low/close) take the DEN/NUM price factor, 'volume' takes the "
@@ -246,7 +246,9 @@ def check_binding_serves_split_adjusted(config: dict, binding_src: str) -> str:
     # frontier (gate-integrity). FULLY_ADJUSTED / TOTAL_RETURN remain deferred (dividend data,
     # SRS-DATA-012) and fail closed.
     if "_NORMALIZATION_LABEL" not in compact:
-        fail("the binding must map served modes to a CLI --normalization label (_NORMALIZATION_LABEL)")
+        fail(
+            "the binding must map served modes to a CLI --normalization label (_NORMALIZATION_LABEL)"
+        )
     if 'NormalizationMode.SPLIT_ADJUSTED:"split-adjusted"' not in compact:
         fail(
             "the binding must serve split-adjusted: map SPLIT_ADJUSTED to the 'split-adjusted' CLI label "
@@ -311,7 +313,10 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
     #    symbol-only invariant, non-equity + non-positive + overflow fail-closed.
     lib = subprocess.run(
         [cargo, "test", "-p", crate, "--lib", "normalization", "--quiet"],
-        cwd=ROOT, check=False, capture_output=True, text=True,
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
     )
     if lib.returncode != 0:
         fail(f"cargo test -p {crate} --lib normalization failed:\n{lib.stdout}\n{lib.stderr}")
@@ -322,7 +327,10 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
     for binary in (block["ingest_cli_bin"], block["cli_bin"]):
         built = subprocess.run(
             [cargo, "build", "-q", "-p", crate, "--bin", binary],
-            cwd=ROOT, check=False, capture_output=True, text=True,
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
         )
         if built.returncode != 0:
             fail(f"building {binary} failed:\n{built.stdout}\n{built.stderr}")
@@ -331,19 +339,49 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
 
     with tempfile.TemporaryDirectory() as tmp:
         ingested = subprocess.run(
-            [str(ingest_bin), "ingest", "--dir", tmp, "--kind", rt["kind"],
-             "--event-ts", str(rt["bar_event_ts"]), "--init"],
-            cwd=ROOT, check=False, capture_output=True, text=True,
+            [
+                str(ingest_bin),
+                "ingest",
+                "--dir",
+                tmp,
+                "--kind",
+                rt["kind"],
+                "--event-ts",
+                str(rt["bar_event_ts"]),
+                "--init",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
         )
         if ingested.returncode != 0:
             fail(f"ingest {rt['kind']} failed:\n{ingested.stdout}\n{ingested.stderr}")
 
         def query(mode: str) -> subprocess.CompletedProcess[str]:
             return subprocess.run(
-                [str(query_bin), "query", "--dir", tmp, "--symbol", rt["symbol"],
-                 "--resolution", rt["resolution"], "--start", "0", "--end", str(rt["bar_event_ts"]),
-                 "--kind", rt["kind"], "--normalization", mode],
-                cwd=ROOT, check=False, capture_output=True, text=True,
+                [
+                    str(query_bin),
+                    "query",
+                    "--dir",
+                    tmp,
+                    "--symbol",
+                    rt["symbol"],
+                    "--resolution",
+                    rt["resolution"],
+                    "--start",
+                    "0",
+                    "--end",
+                    str(rt["bar_event_ts"]),
+                    "--kind",
+                    rt["kind"],
+                    "--normalization",
+                    mode,
+                ],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
             )
 
         # Over this UNCOVERED store (no coverage record was ingested), split-adjusted fails closed at
@@ -355,7 +393,9 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
                 f"closed at the coverage gate (SRS-DATA-011); CLI returned 0 with:\n{rejected.stdout}"
             )
         if "SRS-DATA-011" not in rejected.stderr:
-            fail(f"expected the split-adjusted gate failure to name SRS-DATA-011 coverage, got:\n{rejected.stderr}")
+            fail(
+                f"expected the split-adjusted gate failure to name SRS-DATA-011 coverage, got:\n{rejected.stderr}"
+            )
 
         raw = query("raw")
         if raw.returncode != 0:
@@ -409,8 +449,7 @@ _DEFERRED_OWNERS = (
 def assert_normalization_modes_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable without cargo (used by the L3 contract test)."""
     sources = {
-        key: _read(config, key, root)
-        for key in {src_key for _, src_key, _ in _STATIC_CHECKS}
+        key: _read(config, key, root) for key in {src_key for _, src_key, _ in _STATIC_CHECKS}
     }
     return [check(config, sources[src_key]) for _, src_key, check in _STATIC_CHECKS]
 

@@ -211,7 +211,9 @@ def test_lookback_returns_last_n_ascending() -> None:
 def test_lookback_larger_than_available_returns_all() -> None:
     records = [(1_700_000_000, _OHLCV), (1_700_086_400, _OHLCV)]
     runner = _FakeRunner(records=records)
-    assert len(_binding(runner).get_bars("AAPL", lookback=99, frequency="1d", normalization=RAW)) == 2
+    assert (
+        len(_binding(runner).get_bars("AAPL", lookback=99, frequency="1d", normalization=RAW)) == 2
+    )
 
 
 def test_lookback_zero_returns_empty_without_calling_cli() -> None:
@@ -324,7 +326,9 @@ def test_split_adjusted_passes_and_routes_through_the_gate() -> None:
 def test_split_adjusted_without_coverage_through_fails_closed() -> None:
     # Gate-integrity: a split-adjusted response that omits the coverage_through frontier is un-gated and
     # must fail closed (a stale/forged CLI that labels output split-adjusted without passing the gate).
-    no_frontier = _render("AAPL", "1d", "0", "1700000000", [(1_700_000_000, _OHLCV)], "split-adjusted")
+    no_frontier = _render(
+        "AAPL", "1d", "0", "1700000000", [(1_700_000_000, _OHLCV)], "split-adjusted"
+    )
     no_frontier = no_frontier.replace("coverage_through:1700000000\n", "")
     runner = _FakeRunner(stdout=no_frontier)
     with pytest.raises(StoreQueryError) as exc:
@@ -402,7 +406,9 @@ def test_get_bars_range_is_inclusive_and_pure() -> None:
     runner = _FakeRunner(records=records)
     start = datetime(2023, 11, 14, tzinfo=timezone.utc)
     end = datetime(2023, 11, 16, tzinfo=timezone.utc)
-    bars = _binding(runner).get_bars_range("AAPL", frequency="1d", start=start, end=end, normalization=RAW)
+    bars = _binding(runner).get_bars_range(
+        "AAPL", frequency="1d", start=start, end=end, normalization=RAW
+    )
     (argv,) = runner.calls
     assert _arg(argv, "--start") == str(int(start.timestamp()))
     assert _arg(argv, "--end") == str(int(end.timestamp()))  # inclusive: no -1
@@ -424,7 +430,9 @@ def test_get_bars_range_dividend_modes_raise_not_implemented() -> None:
     end = datetime(2023, 11, 16, tzinfo=timezone.utc)
     for mode in (NormalizationMode.FULLY_ADJUSTED, NormalizationMode.TOTAL_RETURN):
         with pytest.raises(NotImplementedError):
-            _binding(runner).get_bars_range("AAPL", frequency="1d", start=start, end=end, normalization=mode)
+            _binding(runner).get_bars_range(
+                "AAPL", frequency="1d", start=start, end=end, normalization=mode
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -434,7 +442,9 @@ def test_get_bars_range_dividend_modes_raise_not_implemented() -> None:
 # --------------------------------------------------------------------------- #
 
 _NEG_CLOCK = datetime(2024, 1, 1, tzinfo=timezone.utc)
-_NEG_END = int(_NEG_CLOCK.timestamp())  # the end_ts get_bars(default end) will request with _NEG_CLOCK
+_NEG_END = int(
+    _NEG_CLOCK.timestamp()
+)  # the end_ts get_bars(default end) will request with _NEG_CLOCK
 _T0 = 1_700_000_000  # 2023-11-14, inside [0, _NEG_END]
 _T1 = 1_700_086_400  # 2023-11-15, inside [0, _NEG_END]
 
@@ -448,8 +458,14 @@ def _rec(index: int, event_ts: int) -> str:
 
 
 def _envelope(
-    match_count: int, body: str = "", *, symbol: str = "AAPL", resolution: str = "1d",
-    start: int = 0, end: int = _NEG_END, normalization: str = "raw",
+    match_count: int,
+    body: str = "",
+    *,
+    symbol: str = "AAPL",
+    resolution: str = "1d",
+    start: int = 0,
+    end: int = _NEG_END,
+    normalization: str = "raw",
 ) -> str:
     return (
         f"symbol:{symbol}\nresolution:{resolution}\nstart:{start}\nend:{end}\nkind:any\n"

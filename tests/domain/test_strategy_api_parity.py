@@ -83,7 +83,16 @@ class _Consolidator:
 
 
 class _History:
-    def get_bars(self, symbol, *, lookback, frequency="1m", end=None, asset_class=AssetClass.EQUITY, normalization=None):
+    def get_bars(
+        self,
+        symbol,
+        *,
+        lookback,
+        frequency="1m",
+        end=None,
+        asset_class=AssetClass.EQUITY,
+        normalization=None,
+    ):
         return []
 
 
@@ -256,7 +265,9 @@ def _drive(stub: _RecordingStub) -> ParityProbeStrategy:
 
 
 def test_recorded_call_sequence_is_identical() -> None:
-    config = StrategyConfig(strategy_id="probe", tradable_asset_class=AssetClass.EQUITY, warmup_bars=3)
+    config = StrategyConfig(
+        strategy_id="probe", tradable_asset_class=AssetClass.EQUITY, warmup_bars=3
+    )
     live = LiveExecutionStub(config)
     paper = PaperExecutionStub(config)
     _drive(live)
@@ -268,7 +279,9 @@ def test_recorded_call_sequence_is_identical() -> None:
 
 
 def test_order_event_payload_shape_is_identical() -> None:
-    config = StrategyConfig(strategy_id="probe", tradable_asset_class=AssetClass.EQUITY, warmup_bars=3)
+    config = StrategyConfig(
+        strategy_id="probe", tradable_asset_class=AssetClass.EQUITY, warmup_bars=3
+    )
     live = LiveExecutionStub(config)
     paper = PaperExecutionStub(config)
     _drive(live)
@@ -277,8 +290,12 @@ def test_order_event_payload_shape_is_identical() -> None:
     # strict=True matches the equal-length invariant asserted just above (and catches a regression
     # where the two event streams diverge in length instead of silently truncating).
     for live_evt, paper_evt in zip(live.emitted_events, paper.emitted_events, strict=True):
-        live_populated = {f: getattr(live_evt, f) is not None for f in live_evt.__dataclass_fields__}
-        paper_populated = {f: getattr(paper_evt, f) is not None for f in paper_evt.__dataclass_fields__}
+        live_populated = {
+            f: getattr(live_evt, f) is not None for f in live_evt.__dataclass_fields__
+        }
+        paper_populated = {
+            f: getattr(paper_evt, f) is not None for f in paper_evt.__dataclass_fields__
+        }
         assert live_populated == paper_populated, (
             "OrderEvent populated-field shape must match across live and "
             f"paper. live={live_populated}, paper={paper_populated}"
@@ -299,13 +316,14 @@ def test_probe_strategy_source_has_no_mode_branch() -> None:
             )
         if isinstance(node, ast.Name):
             assert node.id not in forbidden_symbols, (
-                f"ParityProbeStrategy references forbidden symbol "
-                f"`{node.id}` at line {node.lineno}"
+                f"ParityProbeStrategy references forbidden symbol `{node.id}` at line {node.lineno}"
             )
 
 
 def test_off_class_order_raises_from_both_stubs() -> None:
-    config = StrategyConfig(strategy_id="probe", tradable_asset_class=AssetClass.EQUITY, warmup_bars=0)
+    config = StrategyConfig(
+        strategy_id="probe", tradable_asset_class=AssetClass.EQUITY, warmup_bars=0
+    )
     live = LiveExecutionStub(config)
     paper = PaperExecutionStub(config)
     bad = OrderRequest(

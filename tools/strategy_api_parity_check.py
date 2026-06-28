@@ -73,9 +73,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def contract_block(config: dict) -> dict:
@@ -247,10 +245,7 @@ def check_config_no_mode_fields(config: dict, root: Path) -> str:
     api = _load_sdk_module(config, root)
     cfg_cls = api.StrategyConfig
     if not dataclasses.is_dataclass(cfg_cls):
-        fail(
-            "StrategyConfig must be a dataclass — parity check relies on "
-            "introspecting its fields"
-        )
+        fail("StrategyConfig must be a dataclass — parity check relies on introspecting its fields")
     field_names = {f.name for f in dataclasses.fields(cfg_cls)}
     leaked = field_names & forbidden
     if leaked:
@@ -279,9 +274,7 @@ CHECKS = (
 )
 
 
-def assert_strategy_api_parity_static(
-    config: dict, root: Path = ROOT
-) -> list[str]:
+def assert_strategy_api_parity_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable from ``tools/architecture_check.py``."""
     return [fn(config, root) for _, fn in CHECKS]
 

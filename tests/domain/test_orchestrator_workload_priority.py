@@ -56,17 +56,15 @@ def _run_cargo_test(test_name: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _assert_cargo_passed(
-    result: subprocess.CompletedProcess[str], requirement_label: str
-) -> None:
+def _assert_cargo_passed(result: subprocess.CompletedProcess[str], requirement_label: str) -> None:
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
         f"{requirement_label} integration test failed:\n"
         f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
     )
-    assert (
-        "1 passed" in combined or "test result: ok. 1 passed" in combined
-    ), f"unexpected cargo test output:\n{combined}"
+    assert "1 passed" in combined or "test result: ok. 1 passed" in combined, (
+        f"unexpected cargo test output:\n{combined}"
+    )
 
 
 def test_ample_headroom_admits_silently() -> None:
@@ -111,9 +109,7 @@ def test_live_strategy_is_never_terminated_even_if_registry_lists_it() -> None:
     # lower-priority workload." Defensive test that even if a registry
     # implementation drifts and surfaces the live strategy as a
     # candidate, the kind-filter + debug_assert keep it immune.
-    result = _run_cargo_test(
-        "live_strategy_is_never_terminated_even_if_registry_lists_it"
-    )
+    result = _run_cargo_test("live_strategy_is_never_terminated_even_if_registry_lists_it")
     _assert_cargo_passed(result, "SRS-ORCH-003 live strategy immunity")
 
 
@@ -122,7 +118,5 @@ def test_lower_priority_incoming_does_not_evict_higher_priority_batch() -> None:
     # workload requires resources. A Research (rank 7) workload
     # arriving when only a Backtest (rank 6) is active must not evict
     # the Backtest — Research does not outrank Backtest.
-    result = _run_cargo_test(
-        "lower_priority_incoming_does_not_evict_higher_priority_batch"
-    )
+    result = _run_cargo_test("lower_priority_incoming_does_not_evict_higher_priority_batch")
     _assert_cargo_passed(result, "SRS-ORCH-003 priority comparison")
