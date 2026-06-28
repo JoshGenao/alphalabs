@@ -1,0 +1,32 @@
+# gitleaks configuration for alphalabs.
+#
+# This EXTENDS gitleaks' default ruleset (useDefault = true) so every real
+# secret-detection rule stays active — it only ADDS a narrow allowlist for a
+# vetted false positive. It does NOT replace or weaken the default rules.
+#
+# Defense-in-depth with tools/critic_check.py (check_secrets). Real credentials
+# must never be committed; this file only silences a confirmed non-secret.
+
+title = "alphalabs gitleaks config"
+
+[extend]
+useDefault = true
+
+# --------------------------------------------------------------------------- #
+# Vetted false positives (NOT real secrets)
+# --------------------------------------------------------------------------- #
+#
+# gitleaks' generic-api-key rule matches the Python keyword argument
+# `warmup_bars=canonical` inside
+#   _build_reference_setup(api, warmup_bars=canonical)
+# in tools/strategy_api_warmup_check.py: the `api` argument name followed by the
+# `…=canonical` kwarg trips the keyword+assignment heuristic. The captured value
+# is a function argument (Shannon entropy 3.73, well below a real key's ~4.5–6),
+# not a credential. The regex is deliberately the exact benign substring so this
+# allowlist cannot mask a real secret.
+[allowlist]
+description = "Python kwarg warmup_bars=canonical (function argument, not an API key)"
+regexTarget = "match"
+regexes = [
+  '''warmup_bars=canonical''',
+]
