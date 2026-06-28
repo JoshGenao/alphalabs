@@ -100,8 +100,10 @@ def fold_note(feature_id: str, *, keep_note: bool, dry_run: bool) -> None:
     block = f"=== SESSION {session_no} ===\n{body}\n"
 
     if dry_run:
-        print(f"  [dry-run] would fold {note_path.name} as SESSION {session_no}"
-              f"{'' if keep_note else ' and remove the note'}")
+        print(
+            f"  [dry-run] would fold {note_path.name} as SESSION {session_no}"
+            f"{'' if keep_note else ' and remove the note'}"
+        )
         return
 
     existing = PROGRESS_FILE.read_text(encoding="utf-8") if PROGRESS_FILE.exists() else ""
@@ -117,19 +119,25 @@ def fold_note(feature_id: str, *, keep_note: bool, dry_run: bool) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Close verified features on main.")
     parser.add_argument("feature_ids", nargs="+", help="feature ids to close")
-    parser.add_argument("--verified", action="store_true",
-                        help="REQUIRED to flip. Asserts every step in the feature "
-                             "passed end-to-end — not partial, not a unit test "
-                             "alone, not 'works in isolation', and you are "
-                             "confident a human running the steps would pass. The "
-                             "close-feature workflow passes this only when the PR "
-                             "carries the 'verified-e2e' label.")
-    parser.add_argument("--no-fold", action="store_true",
-                        help="only flip passes; do not fold the progress note")
-    parser.add_argument("--keep-note", action="store_true",
-                        help="fold the note but keep the per-session file")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="print actions without writing anything")
+    parser.add_argument(
+        "--verified",
+        action="store_true",
+        help="REQUIRED to flip. Asserts every step in the feature "
+        "passed end-to-end — not partial, not a unit test "
+        "alone, not 'works in isolation', and you are "
+        "confident a human running the steps would pass. The "
+        "close-feature workflow passes this only when the PR "
+        "carries the 'verified-e2e' label.",
+    )
+    parser.add_argument(
+        "--no-fold", action="store_true", help="only flip passes; do not fold the progress note"
+    )
+    parser.add_argument(
+        "--keep-note", action="store_true", help="fold the note but keep the per-session file"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="print actions without writing anything"
+    )
     args = parser.parse_args()
 
     if not FEATURE_FILE.exists():
