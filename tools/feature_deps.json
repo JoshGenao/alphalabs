@@ -1,4 +1,25 @@
 {
+  "ERR-7": [
+    "SRS-LOG-001",
+    "SRS-NOTIF-001",
+    "SRS-RESV-004"
+  ],
+  "ERR-8": [
+    "SRS-EXE-006",
+    "SRS-LOG-001",
+    "SRS-NOTIF-001",
+    "SRS-SAFE-001"
+  ],
+  "ERR-9": [
+    "SRS-API-001",
+    "SRS-LOG-001",
+    "SRS-MD-006",
+    "SRS-UI-001"
+  ],
+  "SRS-BT-001": [
+    "SRS-API-001",
+    "UI-3"
+  ],
   "SRS-DATA-001": [
     "SRS-DATA-008",
     "SRS-DATA-013"
