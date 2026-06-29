@@ -9,6 +9,17 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+# SRS-BT-001 operator backtest launch CLI. Launches a deterministic backtest over an
+# operator-selected [--start, --end] calendar window (parsed by the shared
+# `launch::parse_window` binding), reading bars from the platform's stored catalog via the
+# real `StoreBarSource` (SRS-DATA-007 unified query) — the "system data + configurable date
+# range" halves of the SRS-BT-001 acceptance, demonstrated over shipped product code. The
+# user-uploaded Parquet reader, the Python strategy host, and the REST/dashboard launch
+# surface (SRS-API-001 / SRS-UI) remain deferred, so SRS-BT-001 stays passes:false.
+[[bin]]
+name = "bt001_backtest_cli"
+path = "src/bin/bt001_backtest_cli.rs"
+
 # SRS-BT-009 Phase 2 operator persist/query CLI (docs/plans/bt009-closeout.md §6). A thin binary
 # over the public BacktestResultStore API — there is no Python<->Rust runtime bridge, so the
 # operator "CLI/API workflow" the acceptance names is demonstrated here in the Rust core.

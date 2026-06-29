@@ -26,10 +26,17 @@
 //! [`BarSource`] and [`BacktestStrategy`] ports (see
 //! `architecture/runtime_services.json#backtest_contract.deferred`):
 //! the real `arrow`/`parquet`-backed reader for uploaded files, the Python
-//! strategy execution host, the REST/CLI/dashboard launch surface (SRS-API-001 /
-//! SRS-UI), configurable cost models (SRS-BT-002 / SRS-BT-003), the full metric
-//! set (SRS-BT-004), and persisted results (SRS-BT-009). The deterministic-replay
-//! guarantee modeled here is the forward seam for SRS-BT-010.
+//! strategy execution host, and the REST/dashboard launch surface (SRS-API-001 /
+//! SRS-UI). An operator **CLI** launch surface for the *system-data + configurable
+//! date-range* halves now exists — the `bt001_backtest_cli` binary launches this
+//! engine over a `--start/--end` calendar window via the real
+//! [`crate::store_bar_source::StoreBarSource`] (the date binding is
+//! [`crate::launch::parse_window`]) — but it consumes fixtures and a fixture
+//! [`BacktestStrategy`], so SRS-BT-001 stays `passes:false` until the deferred
+//! Parquet reader, Python host, and REST/dashboard surface land. Configurable cost
+//! models (SRS-BT-002 / SRS-BT-003) are applied here and now closed; the full metric
+//! set (SRS-BT-004) and persisted results (SRS-BT-009) build on this engine. The
+//! deterministic-replay guarantee modeled here is the forward seam for SRS-BT-010.
 
 use std::fmt;
 

@@ -6,6 +6,20 @@ use atp_types::RuntimeService;
 /// family for paper simulation and backtesting.
 pub mod backtest;
 
+/// The backtest **launch surface** binding (SRS-BT-001). The [`backtest`] engine
+/// takes a configurable [`backtest::DateRange`] of opaque `u64` timestamps and
+/// leaves "binding them to wall-clock calendar dates [as] the launch surface's
+/// concern"; [`launch::parse_window`] is that binding — it parses operator-supplied
+/// `YYYY-MM-DD` start/end dates into the engine's inclusive epoch-second range,
+/// failing closed on a malformed / impossible / pre-epoch / inverted window. This
+/// realizes the "start and end dates are selectable" half of the acceptance
+/// criterion with real, reusable, integer-only (dependency-free) code that the
+/// `bt001_backtest_cli` operator binary uses and the deferred REST/dashboard launch
+/// surfaces (SRS-API-001 / SRS-UI) can reuse. The user-uploaded Apache Parquet
+/// reader and the Rust<->Python strategy host remain deferred, so SRS-BT-001 stays
+/// `passes:false`.
+pub mod launch;
+
 /// The backtest engine's SRS-DATA-007 system-catalog reader
 /// ([`store_bar_source::StoreBarSource`]). It implements [`backtest::BarSource`] over the durable
 /// [`atp_data::store::MarketDataStore`], reading the unified, source-neutral historical query path
