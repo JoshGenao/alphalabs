@@ -1,0 +1,72 @@
+{
+  "SRS-DATA-001": [
+    "SRS-DATA-008",
+    "SRS-DATA-013"
+  ],
+  "SRS-DATA-002": [
+    "SRS-DATA-008",
+    "SRS-DATA-013"
+  ],
+  "SRS-DATA-003": [
+    "SRS-DATA-001",
+    "SRS-DATA-008"
+  ],
+  "SRS-DATA-004": [
+    "SRS-DATA-008",
+    "SRS-DATA-013"
+  ],
+  "SRS-DATA-005": [
+    "SRS-DATA-008",
+    "SRS-DATA-013"
+  ],
+  "SRS-DATA-006": [
+    "SRS-DATA-008",
+    "SRS-DATA-013"
+  ],
+  "SRS-DATA-009": [
+    "SRS-DATA-008"
+  ],
+  "SRS-DATA-010": [
+    "SRS-DATA-008",
+    "SRS-DATA-017"
+  ],
+  "SRS-DATA-012": [
+    "SRS-DATA-011"
+  ],
+  "SRS-DATA-014": [
+    "SRS-DATA-013"
+  ],
+  "SRS-DATA-017": [
+    "SRS-DATA-008"
+  ],
+  "SRS-DATA-018": [
+    "SRS-DATA-008"
+  ],
+  "SRS-DATA-019": [
+    "SRS-DATA-011"
+  ],
+  "SRS-DATA-020": [
+    "SRS-DATA-011"
+  ],
+  "SRS-DATA-021": [
+    "SRS-DATA-011"
+  ],
+  "SRS-MD-004": [
+    "SRS-MD-003"
+  ],
+  "SRS-RESV-002": [
+    "SRS-RESV-001"
+  ],
+  "SRS-RESV-004": [
+    "SRS-RESV-003"
+  ],
+  "SRS-RESV-005": [
+    "SRS-RESV-003"
+  ],
+  "SRS-RESV-006": [
+    "SRS-RESV-003"
+  ],
+  "SRS-SDK-008": [
+    "SRS-SDK-007"
+  ]
+}

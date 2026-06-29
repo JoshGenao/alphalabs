@@ -24,48 +24,59 @@ Two-layer Critic Agent runs before every commit. **Both must approve.**
   into core, dependency-direction violations, and safety-critical changes
   without paired `tests/domain/` diffs. Wired as a git pre-commit hook by
   `tools/install_hooks.sh` (re-installed by `init.sh`).
-- **Layer 2 — judgment** (`prompts/critic_prompt.md` via
-  `/codex:adversarial-review`): LLM-driven adversarial review run in a
-  **fresh Codex context**. The default invocation is
-  `/codex:adversarial-review --wait $(cat prompts/critic_prompt.md)` —
-  the prompt file holds the repo-specific judgment criteria and Codex
-  reads the diff itself. Fallback (Codex unavailable): paste
-  `prompts/critic_prompt.md` + `git diff --cached` into any other
-  fresh-context LLM. Same JSON output schema as Layer 1.
+- **Layer 2 — judgment** (`prompts/critic_prompt.md`): an LLM-driven adversarial
+  review in a **fresh Codex context**. Autonomous agents run it as a plain Bash
+  call — `tools/codex_review.sh origin/main` — which shells out to the codex
+  companion (`/codex:adversarial-review` is `disable-model-invocation:true`, so an
+  agent can't self-trigger the slash command; the helper bypasses that). A human
+  can still type `/codex:adversarial-review --wait $(cat prompts/critic_prompt.md)`.
+  Fallback (Codex unavailable): paste `prompts/critic_prompt.md` + `git diff
+  origin/main...HEAD` into any other fresh-context LLM. Same JSON schema as Layer 1.
 
 Coding agents must NEVER bypass with `ATP_CRITIC_BYPASS=1` or
 `--no-verify`. Only humans bypass; the env-var bypass is grep-able in
 shell history by design.
 
-## Parallel agent runs
+## Parallel agent runs (self-scheduling)
 
-Multiple coding agents can run at once, each isolated in its own git worktree so
-there are no file, branch, or port collisions.
+Several coding agents run at once as **interactive** Claude sessions (so you can
+watch each one), each isolated in its own git worktree + branch + private port
+block. A lock-guarded scheduler (`tools/agent_pool.py`) hands each session a
+different, dependency-ready feature, and each session integrates its own work
+back to `main`. No file, branch, or port collisions.
 
-- **Launch:** `tools/spawn_agents.sh [-n N] [FEATURE_ID ...]` picks unclaimed
-  failing features, creates a `../alphalabs-wt-<id>` worktree on branch
-  `agent/<id>` off `origin/main`, and assigns each agent a private port block.
-  Each agent receives its feature via `ATP_FEATURE_ID` and does **not** select
-  its own work (deterministic selection would make them all pick the same one).
+- **Launch (one per terminal):** `tools/claim_and_work.sh`. It calls
+  `agent_pool.py claim` (under an `fcntl` lock) to pick the best **ready,
+  unclaimed, dependency-satisfied** feature — preferring a subsystem no sibling
+  holds — creates `../alphalabs-wt-<id>` on `agent/<id>` off `origin/main` with a
+  private port block, then opens an interactive `claude` session in that worktree
+  seeded with `prompts/coding_prompt.md`. Open N terminals → N agents on N
+  features. (`tools/spawn_agents.sh` still exists for headless/CI pre-assignment.)
+- **Dependency graph:** `tools/feature_deps.json` (committed) records what blocks
+  what; it's seeded (`agent_pool.py seed`) and **self-learns** — when an agent
+  hits an unbuilt prerequisite it runs `agent_pool.py block <id> --on <dep>`,
+  lands partial work (`integrate --mode partial`), and **claims the next ready
+  feature in the same session**. Ephemeral leases live in the gitignored
+  `tools/.agent_runtime.json`; `agent_pool.py status` shows the whole board.
 - **Isolation:** `init.sh` is `ROOT_DIR`-relative, so `.venv`, `target/`,
-  `data/`, and `.devserver.*` are worktree-local automatically. Agents never
-  edit the shared `feature_list.json` or `progress.txt`; each writes one
-  `progress.d/session-<id>.md` note.
+  `data/`, `.devserver.*` are worktree-local. Agents touch shared state
+  (`feature_list.json`, `progress.txt`, `main`) **only** through the locked
+  `integrate` step; each writes one `progress.d/session-<id>.md` resume note.
 - **No parallel integration/live tests.** While siblings run, agents run only
   `pytest -m "not integration and not e2e"` + `cargo test`. Nothing may bind the
   IB ports (4001/4002) or the dashboard/Jupyter stack — that also protects the
   single-live-IB invariant.
-- **Merge + verify:** each agent opens a PR (`agent/<id>` → `main`) and never
-  merges itself. **Merging integrates the code but does NOT mark the feature
-  passing.** A reviewer marks it passing by adding the **`verified-e2e`** label
-  — only after confirming every step in the feature's `steps[]` passes
-  end-to-end (not partial, not a unit test alone, not "works in isolation", and
-  they'd be confident a human running the steps would pass). The label triggers
-  `.github/workflows/close-feature.yml`, which runs
-  `tools/close_feature.py <id> --verified` on `main` to flip `passes:true` and
-  fold the note into `progress.txt`. Then run `tools/cleanup_agents.sh` to remove
-  the worktree + branch. (To close by hand: `tools/close_feature.py <id>
-  --verified` on `main`, then commit.)
+- **Integrate + flip (auto):** after the full gate (`run_ci_locally.sh` + tests +
+  both critics — deterministic `critic_check.py` **and** the Codex judgment pass
+  via `tools/codex_review.sh`), the agent runs
+  `agent_pool.py integrate <id> --mode complete|serialized`. `complete` rebases
+  on `main`, runs `close_feature.py <id> --verified` (flip `passes:true` + fold
+  note), and fast-forward-pushes `main` — all under the lock. **Honesty guard:**
+  a feature with a step that *needs* IB/integration/live integrates
+  `--mode serialized` (code merges, `passes` stays false); the operator finishes
+  verification later — manually or via the **`verified-e2e`** label, which still
+  triggers `.github/workflows/close-feature.yml`. After a feature is `done`, run
+  `tools/cleanup_agents.sh` to remove its worktree + branch.
 
 ## Document map
 
@@ -84,8 +95,12 @@ there are no file, branch, or port collisions.
 | Local CI mirror | `tools/run_ci_locally.sh` | Run the same step list as `ci.yml` before pushing |
 | Test layout | `tests/{unit,property,boundary,integration,e2e,domain}/` | One bug class per layer (L1–L7) |
 | Coding agent prompt | `prompts/coding_prompt.md` | Per-session workflow; includes Steps 5.5 (test layer) and 6.5 (critic) |
-| Parallel launcher | `tools/spawn_agents.sh` | Create worktrees + assign features to parallel agents |
-| Feature closer | `tools/close_feature.py` | At merge: flip `passes` + fold the progress note (run on main) |
+| Agent scheduler | `tools/agent_pool.py` | Locked self-claim / block / integrate / status; the coordination core |
+| Interactive launcher | `tools/claim_and_work.sh` | Per-terminal: claim a ready feature + open an interactive agent in its worktree |
+| Codex judgment critic | `tools/codex_review.sh` | Autonomous adversarial review (Bash call to the codex companion) |
+| Dependency graph | `tools/feature_deps.json` | Committed DAG of feature prerequisites (seeded + self-learned) |
+| Parallel launcher (headless) | `tools/spawn_agents.sh` | Pre-assign worktrees to headless agents (legacy/CI path) |
+| Feature closer | `tools/close_feature.py` | Flip `passes` + fold the progress note (run by `integrate` on main) |
 | Worktree teardown | `tools/cleanup_agents.sh` | Remove closed agents' worktrees + branches |
 | Initializer prompt | `prompts/initializer_prompt.md` | First-run scaffolding (test dirs, critic, CI) |
 
