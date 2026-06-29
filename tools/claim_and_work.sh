@@ -21,6 +21,12 @@ cd "$ROOT_DIR"
 
 command -v claude >/dev/null 2>&1 || { echo "✗ 'claude' not on PATH" >&2; exit 1; }
 
+# Owner = this shell's PID. `exec claude` below preserves the PID, so the lease's
+# owner stays the live session; in-session re-claims inherit it. The scheduler
+# uses this to never reclaim a feature whose process is still alive (even past
+# the lease TTL), which prevents double-assigning a long-running session.
+export ATP_AGENT_OWNER="$(hostname):$$"
+
 # Claim under the pool lock; `claim` prints shell-assignable FEATURE=/WORKTREE=/ports.
 claim_out="$(python3 tools/agent_pool.py claim)"
 eval "$claim_out"
