@@ -299,6 +299,12 @@ def lease_active(lease: dict, now: float, *, allow_foreign_reclaim: bool = False
     return lease.get("expiry", 0) > now
 
 
+def lease_blocks_owner(lease: dict, our_owner: str, now: float) -> bool:
+    """True if an ACTIVE lease is held by a DIFFERENT owner — i.e. we must not
+    integrate/act on this feature (a sibling owns it)."""
+    return bool(lease) and lease.get("owner") != our_owner and lease_active(lease, now)
+
+
 def worktree_dirty(wt: Path) -> bool:
     if not wt.exists():
         return False
@@ -565,10 +571,14 @@ def cmd_block(args):
         if cur:
             deps[fid] = sorted(cur)
         save_deps(deps)
-        runtime = load_runtime()
-        runtime["leases"].pop(fid, None)
-        save_runtime(runtime)
-    print(f"✓ {fid} blocked-on {sorted(set(known) - set(cycles))}; lease released")
+        # NOTE: block does NOT release the lease — you keep ownership until you
+        # `integrate --mode partial` (which releases it on success). Releasing
+        # here would open a window where a sibling could claim the same worktree
+        # before your partial work lands.
+    print(
+        f"✓ {fid} blocked-on {sorted(set(known) - set(cycles))}; lease kept "
+        f"(release it via `integrate --mode partial` or `release {fid}`)"
+    )
     if cycles:
         print(
             f"⚠ skipped (would create dependency cycle): {cycles} — resolve manually",
@@ -725,6 +735,16 @@ def cmd_integrate(args):
         return 7
 
     with Lock():
+        # Ownership: refuse to integrate a feature an active sibling lease holds.
+        our_owner = os.environ.get("ATP_AGENT_OWNER") or f"{socket.gethostname()}:{os.getpid()}"
+        lease = load_runtime()["leases"].get(fid)
+        if lease_blocks_owner(lease, our_owner, time.time()):
+            print(
+                f"✗ {fid}: leased by another active session ({lease.get('owner')}); "
+                f"refusing to integrate. Use `release {fid}` only if it is genuinely stale.",
+                file=sys.stderr,
+            )
+            return 10
         push_err = ""
         ok = False
         for _attempt in (1, 2):

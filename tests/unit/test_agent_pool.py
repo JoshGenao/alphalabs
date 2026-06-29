@@ -177,3 +177,20 @@ def test_shared_state_violations_allows_only_own_note():
         "tools/feature_deps.json",
         "progress.d/session-OTHER.md",
     ]
+
+
+# --- integrate ownership (no double-assign / cross-session integrate) --------
+def test_lease_blocks_owner():
+    now = time.time()
+    mine = f"{socket.gethostname()}:{os.getpid()}"
+    # same-host dead pid + expired → free (does not block us)
+    dead = {"owner": f"{socket.gethostname()}:2147483646", "expiry": now - 1}
+    assert agent_pool.lease_blocks_owner(dead, mine, now) is False
+    # remote owner is sticky-active → blocks us
+    foreign = {"owner": "other-host:1", "expiry": now - 1}
+    assert agent_pool.lease_blocks_owner(foreign, mine, now) is True
+    # our own lease never blocks us
+    own = {"owner": mine, "expiry": now + 9999}
+    assert agent_pool.lease_blocks_owner(own, mine, now) is False
+    # no lease → not blocked
+    assert agent_pool.lease_blocks_owner(None, mine, now) is False

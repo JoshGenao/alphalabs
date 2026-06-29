@@ -116,10 +116,12 @@ Write the code. As you work:
 If you discover this feature genuinely needs another feature `Y` that isn't done:
 
 ```bash
-# 1. record the edge + release your lease (cycle-safe; appends to feature_deps.json)
+# 1. record the edge (cycle-safe; appends to feature_deps.json). KEEPS your lease
+#    so a sibling can't grab this worktree before your partial work lands.
 python3 tools/agent_pool.py block "$ATP_FEATURE_ID" --on <Y> [<Z> ...] --reason "why"
 # 2. land any safe partial/foundational work so siblings + the next session benefit
-#    (commit on your branch first — Step 7 — then:)
+#    (commit on your branch first — Step 7 — then integrate partial, which RELEASES
+#    the lease on success; if there is nothing to land, `release` it instead):
 python3 tools/agent_pool.py integrate "$ATP_FEATURE_ID" --mode partial
 # 3. claim the next READY feature and continue IN THIS SAME SESSION
 eval "$(python3 tools/agent_pool.py claim)"
