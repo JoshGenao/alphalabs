@@ -1,0 +1,116 @@
+# Mark a feature passing ONLY when a human has verified it end-to-end.
+#
+# Merging an `agent/<feature-id>` PR integrates the code — it does NOT mark the
+# feature passing. The flip happens only when a reviewer adds the
+# `verified-e2e` label, which they do only after confirming EVERY step in the
+# feature's `steps[]` passes end-to-end (not partial, not a unit test alone, not
+# "works in isolation", and they'd be confident a human running the steps by
+# hand would pass).
+#
+# When that label is present on a merged PR, this runs
+# `tools/close_feature.py <id> --verified` on main — flipping the feature's
+# `passes` to true and folding the merged progress.d note into progress.txt —
+# then commits and pushes to main. If a merge lands without the label, the
+# `remind` job comments on the PR instead and nothing is flipped.
+#
+# Trigger is `pull_request` (closed + labeled), NOT `pull_request_target`, so a
+# fork PR never receives a write token. `main` is currently unprotected, so the
+# GITHUB_TOKEN push succeeds; if you later protect `main`, allow the
+# github-actions bot to bypass, or switch the close job to open a follow-up PR.
+
+name: close-feature
+
+on:
+  pull_request:
+    # `labeled` so applying the label AFTER merge also fires; `closed` so a
+    # merge that already carries the label fires immediately.
+    types: [closed, labeled]
+
+permissions:
+  contents: read
+
+# Serialize closes so two near-simultaneous merges never race on the push.
+concurrency:
+  group: close-feature-main
+  cancel-in-progress: false
+
+jobs:
+  close:
+    name: Flip feature_list + fold progress note
+    # Merged AND from an agent branch AND a human attached the verification label.
+    if: >-
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'agent/') &&
+      contains(github.event.pull_request.labels.*.name, 'verified-e2e')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        # Credentials persisted (unlike ci.yml) so this job can push the flip.
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # ratchet:actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # ratchet:actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Close the verified feature
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          FEATURE_ID="${HEAD_REF#agent/}"
+          echo "Closing verified feature: ${FEATURE_ID}"
+          # --verified is required by close_feature.py; it is only ever passed
+          # here, where the verified-e2e label gate has already been satisfied.
+          python3 tools/close_feature.py "${FEATURE_ID}" --verified
+
+      - name: Commit and push the flip
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          FEATURE_ID="${HEAD_REF#agent/}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit (feature already closed?)."
+            exit 0
+          fi
+          git commit -m "chore: close ${FEATURE_ID} (passes:true; fold session note) [skip ci]"
+          # Rebase-and-retry in case another close landed on main meanwhile.
+          for attempt in 1 2 3; do
+            if git pull --rebase origin main && git push origin HEAD:main; then
+              echo "pushed on attempt ${attempt}"
+              exit 0
+            fi
+            echo "push attempt ${attempt} failed; retrying..."
+            sleep 3
+          done
+          echo "::error::failed to push feature close for ${FEATURE_ID} after retries"
+          exit 1
+
+  remind:
+    name: Remind to verify
+    # Merged from an agent branch but NOT yet labeled verified-e2e.
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'agent/') &&
+      !contains(github.event.pull_request.labels.*.name, 'verified-e2e')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment that the feature was NOT marked passing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body \
+          "🟡 Merged, but **feature_list.json was NOT flipped** — this PR has no \`verified-e2e\` label.
+
+          Add \`verified-e2e\` only after confirming **every step passes end-to-end**: not a partial pass, not a unit test alone, not \"works in isolation\", and you'd be confident a human running the steps by hand would pass. Labeling triggers the close-feature workflow to mark it passing; until then it stays \`passes:false\`."

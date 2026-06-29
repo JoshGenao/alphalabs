@@ -5,11 +5,15 @@ Read it first. Follow the links. Do not guess.
 
 ## Quick-start checklist (run at the start of every session)
 
-1. `pwd` - confirm working directory
+0. `echo "${ATP_FEATURE_ID:?}"` - confirm your assigned feature (parallel runs)
+1. `pwd` - confirm working directory (your own `alphalabs-wt-<id>` worktree)
 2. `./init.sh` - start dev server, install hooks, verify environment
-3. `cat progress.txt` - read handoff from previous session
+3. `cat progress.txt` + `ls -t progress.d/` - read handoff (archived log + the
+   living per-session notes)
 4. `git log --oneline -20` - understand recent changes
 5. `cat feature_list.json | grep '"passes": false' | wc -l` - count remaining work
+
+See `prompts/coding_prompt.md` for the full per-session workflow.
 
 ## Pre-commit gate
 
@@ -33,6 +37,36 @@ Coding agents must NEVER bypass with `ATP_CRITIC_BYPASS=1` or
 `--no-verify`. Only humans bypass; the env-var bypass is grep-able in
 shell history by design.
 
+## Parallel agent runs
+
+Multiple coding agents can run at once, each isolated in its own git worktree so
+there are no file, branch, or port collisions.
+
+- **Launch:** `tools/spawn_agents.sh [-n N] [FEATURE_ID ...]` picks unclaimed
+  failing features, creates a `../alphalabs-wt-<id>` worktree on branch
+  `agent/<id>` off `origin/main`, and assigns each agent a private port block.
+  Each agent receives its feature via `ATP_FEATURE_ID` and does **not** select
+  its own work (deterministic selection would make them all pick the same one).
+- **Isolation:** `init.sh` is `ROOT_DIR`-relative, so `.venv`, `target/`,
+  `data/`, and `.devserver.*` are worktree-local automatically. Agents never
+  edit the shared `feature_list.json` or `progress.txt`; each writes one
+  `progress.d/session-<id>.md` note.
+- **No parallel integration/live tests.** While siblings run, agents run only
+  `pytest -m "not integration and not e2e"` + `cargo test`. Nothing may bind the
+  IB ports (4001/4002) or the dashboard/Jupyter stack — that also protects the
+  single-live-IB invariant.
+- **Merge + verify:** each agent opens a PR (`agent/<id>` → `main`) and never
+  merges itself. **Merging integrates the code but does NOT mark the feature
+  passing.** A reviewer marks it passing by adding the **`verified-e2e`** label
+  — only after confirming every step in the feature's `steps[]` passes
+  end-to-end (not partial, not a unit test alone, not "works in isolation", and
+  they'd be confident a human running the steps would pass). The label triggers
+  `.github/workflows/close-feature.yml`, which runs
+  `tools/close_feature.py <id> --verified` on `main` to flip `passes:true` and
+  fold the note into `progress.txt`. Then run `tools/cleanup_agents.sh` to remove
+  the worktree + branch. (To close by hand: `tools/close_feature.py <id>
+  --verified` on `main`, then commit.)
+
 ## Document map
 
 | Document | Path | Purpose |
@@ -41,13 +75,18 @@ shell history by design.
 | System requirements | `docs/SyRS_v0.7.md` | What the system must do |
 | Software requirements | `docs/SRS.md` | How the software is structured |
 | Feature list | `feature_list.json` | Source of truth for all work |
-| Session log | `progress.txt` | Handoff notes between sessions |
+| Session log | `progress.txt` | Canonical handoff log (folded in at merge) |
+| Per-session notes | `progress.d/` | One note per parallel session; see its README |
 | Environment setup | `init.sh` | How to start and smoke-test the app |
 | Critic Agent | `tools/critic_check.py` + `prompts/critic_prompt.md` | Pre-commit review gate (deterministic + judgment) |
 | CI / CD | `.github/workflows/{ci,integration,security}.yml` | Mirror of local checks; secrets isolated to `integration` env |
+| Verified close | `.github/workflows/close-feature.yml` | `verified-e2e` label on a merged `agent/<id>` PR flips `passes` + folds the note |
 | Local CI mirror | `tools/run_ci_locally.sh` | Run the same step list as `ci.yml` before pushing |
 | Test layout | `tests/{unit,property,boundary,integration,e2e,domain}/` | One bug class per layer (L1–L7) |
 | Coding agent prompt | `prompts/coding_prompt.md` | Per-session workflow; includes Steps 5.5 (test layer) and 6.5 (critic) |
+| Parallel launcher | `tools/spawn_agents.sh` | Create worktrees + assign features to parallel agents |
+| Feature closer | `tools/close_feature.py` | At merge: flip `passes` + fold the progress note (run on main) |
+| Worktree teardown | `tools/cleanup_agents.sh` | Remove closed agents' worktrees + branches |
 | Initializer prompt | `prompts/initializer_prompt.md` | First-run scaffolding (test dirs, critic, CI) |
 
 ## Architecture overview
