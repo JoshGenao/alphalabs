@@ -140,3 +140,40 @@ def test_path_in_allowlist():
     assert agent_pool.path_in_allowlist("tools/agent_pool.py") is False
     assert agent_pool.path_in_allowlist("crates/atp-data/src/store.rs") is False
     assert agent_pool.path_in_allowlist("tests/unit/test_agent_pool.py") is False
+
+
+def test_porcelain_outside_allowlist_checks_both_rename_sides():
+    porcelain = (
+        " M feature_list.json\n"  # allowlisted — fine
+        "?? tools/agent_pool.py\n"  # outside
+        "R  crates/x.rs -> progress.d/x.rs\n"  # rename source is outside
+    )
+    bad = agent_pool.porcelain_outside_allowlist(porcelain)
+    assert "tools/agent_pool.py" in bad
+    assert "crates/x.rs" in bad  # source side caught
+    assert "feature_list.json" not in bad
+    assert "progress.d/x.rs" not in bad  # destination is allowlisted
+
+
+def test_staged_outside_allowlist():
+    names = ["feature_list.json", "progress.d/session-X.md", "crates/x.rs", "tools/agent_pool.py"]
+    assert agent_pool.staged_outside_allowlist(names) == ["crates/x.rs", "tools/agent_pool.py"]
+
+
+def test_shared_state_violations_allows_only_own_note():
+    fid = "SRS-DATA-008"
+    committed = [
+        f"progress.d/session-{fid}.md",  # the agent's own resume note — allowed
+        "crates/atp-data/src/store.rs",  # feature work — allowed (not shared state)
+        "feature_list.json",  # only the integrator may write — violation
+        "progress.txt",  # violation
+        "tools/feature_deps.json",  # violation
+        "progress.d/session-OTHER.md",  # someone else's note — violation
+    ]
+    bad = agent_pool.shared_state_violations(committed, fid)
+    assert bad == [
+        "feature_list.json",
+        "progress.txt",
+        "tools/feature_deps.json",
+        "progress.d/session-OTHER.md",
+    ]

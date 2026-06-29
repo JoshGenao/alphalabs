@@ -595,17 +595,40 @@ def path_in_allowlist(path: str) -> bool:
     return any(path == p or path.startswith(p + "/") for p in INTEGRATE_ALLOWLIST)
 
 
+def porcelain_outside_allowlist(porcelain: str) -> list[str]:
+    """Parse `git status --porcelain` text; return changed paths outside the
+    allowlist, checking BOTH sides of a rename (`old -> new`)."""
+    bad = []
+    for line in porcelain.splitlines():
+        if not line.strip():
+            continue
+        rest = line[3:]
+        parts = rest.split(" -> ") if " -> " in rest else [rest]
+        for p in parts:
+            p = p.strip().strip('"')
+            if p and not path_in_allowlist(p):
+                bad.append(p)
+    return bad
+
+
 def _uncommitted_outside_allowlist(wt: Path) -> list[str]:
     """Worktree paths with uncommitted changes that integrate must not touch."""
-    out = _run(["git", "-C", str(wt), "status", "--porcelain"], check=False).stdout
-    bad = []
-    for line in out.splitlines():
-        path = line[3:].strip().strip('"')
-        if " -> " in path:  # rename: take the destination
-            path = path.split(" -> ", 1)[1]
-        if path and not path_in_allowlist(path):
-            bad.append(path)
-    return bad
+    return porcelain_outside_allowlist(
+        _run(["git", "-C", str(wt), "status", "--porcelain"], check=False).stdout
+    )
+
+
+def staged_outside_allowlist(names: list[str]) -> list[str]:
+    """Staged path names that fall outside the allowlist."""
+    return [p for p in names if p and not path_in_allowlist(p)]
+
+
+def _staged_paths(wt: Path) -> list[str]:
+    out = _run(
+        ["git", "-C", str(wt), "diff", "--cached", "--name-only", "--no-renames", "-z"],
+        check=False,
+    ).stdout
+    return [p for p in out.split("\0") if p]
 
 
 def _drop_prior_integration_commit(wt: Path) -> str:
@@ -631,23 +654,30 @@ def _drop_prior_integration_commit(wt: Path) -> str:
     return "dropped"
 
 
-def _branch_touches_feature_list(wt: Path) -> bool:
-    return (
-        _run(
-            [
-                "git",
-                "-C",
-                str(wt),
-                "diff",
-                "--quiet",
-                f"{base_ref()}...HEAD",
-                "--",
-                "feature_list.json",
-            ],
-            check=False,
-        ).returncode
-        != 0
-    )
+def shared_state_violations(committed_paths: list[str], fid: str) -> list[str]:
+    """Committed (base...HEAD) branch paths that only the integrator may write.
+
+    The agent may commit just its own resume note progress.d/session-<fid>.md;
+    feature_list.json / progress.txt / tools/feature_deps.json and any other
+    progress.d/* must come solely from the integrator's marker commit.
+    """
+    own_note = f"progress.d/session-{fid}.md"
+    permanent = {"progress.d/README.md", "progress.d/.gitkeep"}
+    bad = []
+    for p in committed_paths:
+        if p in ("feature_list.json", "progress.txt", "tools/feature_deps.json"):
+            bad.append(p)
+        elif p.startswith("progress.d/") and p != own_note and p not in permanent:
+            bad.append(p)
+    return bad
+
+
+def _branch_committed(wt: Path) -> list[str]:
+    out = _run(
+        ["git", "-C", str(wt), "diff", "--name-only", "--no-renames", f"{base_ref()}...HEAD"],
+        check=False,
+    ).stdout
+    return [p for p in out.splitlines() if p]
 
 
 def cmd_integrate(args):
@@ -715,27 +745,40 @@ def cmd_integrate(args):
                 )
                 return 3
 
+            # Defense-in-depth: the branch's own commits must not mutate shared
+            # coordination state — only the integrator's marker commit may (this
+            # holds for complete AND partial/serialized).
+            violations = shared_state_violations(_branch_committed(wt), fid)
+            if violations:
+                print(
+                    f"✗ {fid}: branch commits modify shared coordination files {violations} — "
+                    f"only the integrator may write them. Revert those commits.",
+                    file=sys.stderr,
+                )
+                return 6
+
+            # Recompute the flip against the just-rebased (latest main) tree, so the
+            # close commit is fresh each attempt — never rebased, so a concurrent
+            # flip on main can't conflict on the whole-file feature_list rewrite.
+            _sync_deps_into(wt)
             if mode == "complete":
-                # Recompute the flip against the just-rebased (latest main) tree,
-                # so the close commit is fresh each attempt — never rebased, so a
-                # concurrent flip on main can't conflict on the whole-file rewrite.
-                _sync_deps_into(wt)
                 _run([sys.executable, str(wt / "tools" / "close_feature.py"), fid, "--verified"])
-            else:  # partial | serialized — must NOT flip passes
-                if _branch_touches_feature_list(wt):
-                    print(
-                        f"✗ {fid}: {mode} mode but the branch modifies feature_list.json — "
-                        f"only --mode complete may flip passes. Revert that change.",
-                        file=sys.stderr,
-                    )
-                    return 6
-                _sync_deps_into(wt)
 
             # Stage ONLY the integration allowlist (never `git add -A`), so the
             # marker commit can never contain feature work.
             existing = [p for p in INTEGRATE_ALLOWLIST if (wt / p).exists()]
             if existing:
                 _run(["git", "-C", str(wt), "add", "-A", "--", *existing])
+            # Final assertion before committing: nothing outside the allowlist may
+            # be staged (e.g. a pre-staged rename source riding in the index).
+            outside = staged_outside_allowlist(_staged_paths(wt))
+            if outside:
+                print(
+                    f"✗ {fid}: refusing — staged changes outside the integration allowlist: "
+                    f"{outside}. Unstage them and re-run.",
+                    file=sys.stderr,
+                )
+                return 9
             if _has_staged(wt):
                 tag = (
                     "verified e2e — flip passes:true + fold note"
