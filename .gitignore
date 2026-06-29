@@ -35,3 +35,7 @@ build/
 
 # Critic Agent local artifacts
 .critic_report.json
+
+# Agent pool — ephemeral coordination state (feature_deps.json IS committed)
+tools/.agent_runtime.json
+tools/.agent_pool.lock

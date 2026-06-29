@@ -15,19 +15,20 @@ sidesteps it entirely.
 ## Lifecycle
 
 1. An agent writes `progress.d/session-<feature-id>.md` as its **chore** commit
-   (see `prompts/coding_prompt.md`, Step 8) and opens a PR.
-2. When the operator merges that PR, they run on `main`:
-
-   ```bash
-   tools/close_feature.py <feature-id>
-   ```
-
-   which flips the feature's `passes` to `true` in `feature_list.json` and
-   **folds** this note into `progress.txt` with the next sequential session
-   number, then removes the per-session file.
+   (see `prompts/coding_prompt.md`, Step 8). It is a **resume handoff** — what's
+   done, tested, and what (if anything) is left or blocking.
+2. The agent integrates via `tools/agent_pool.py integrate <id> --mode …` (which
+   holds the pool lock, rebases on `main`, and pushes):
+   - `--mode complete` → runs `tools/close_feature.py <id> --verified`, which
+     flips the feature's `passes` to `true` in `feature_list.json` and **folds**
+     this note into `progress.txt` (next sequential session number), then removes
+     the per-session file.
+   - `--mode partial` / `--mode serialized` → the code lands on `main` but
+     `passes` stays `false`; **this note stays** as the resume pointer for the
+     next session (or for the operator's serialized `verified-e2e` verification).
 
 So `progress.txt` remains the canonical, numbered, chronological log; this
-directory holds only notes that have not yet been folded in.
+directory holds only resume notes for features not yet `complete`.
 
 Files matching `session-*.md` are working notes; this `README.md` and `.gitkeep`
 are permanent.
