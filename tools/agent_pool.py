@@ -305,6 +305,11 @@ def lease_blocks_owner(lease: dict, our_owner: str, now: float) -> bool:
     return bool(lease) and lease.get("owner") != our_owner and lease_active(lease, now)
 
 
+def should_refuse_release(lease: dict, our_owner: str, force: bool, now: float) -> bool:
+    """Refuse `release` of an active lease held by a different owner unless forced."""
+    return (not force) and lease_blocks_owner(lease, our_owner, now)
+
+
 def worktree_dirty(wt: Path) -> bool:
     if not wt.exists():
         return False
@@ -854,9 +859,21 @@ def cmd_heartbeat(args):
 def cmd_release(args):
     with Lock():
         runtime = load_runtime()
-        existed = runtime["leases"].pop(args.id, None) is not None
+        lease = runtime["leases"].get(args.id)
+        if lease is None:
+            print(f"· {args.id} had no lease")
+            return 0
+        our_owner = os.environ.get("ATP_AGENT_OWNER") or f"{socket.gethostname()}:{os.getpid()}"
+        if should_refuse_release(lease, our_owner, args.force, time.time()):
+            print(
+                f"✗ {args.id}: held by another active session ({lease.get('owner')}); "
+                f"refusing to release. Pass --force only if it is genuinely stale.",
+                file=sys.stderr,
+            )
+            return 1
+        runtime["leases"].pop(args.id, None)
         save_runtime(runtime)
-    print(f"✓ released {args.id}" if existed else f"· {args.id} had no lease")
+    print(f"✓ released {args.id}")
     return 0
 
 
@@ -896,6 +913,9 @@ def main() -> int:
 
     rp = sub.add_parser("release", help="drop a lease")
     rp.add_argument("id")
+    rp.add_argument(
+        "--force", action="store_true", help="release even an active lease owned by another session"
+    )
 
     args = p.parse_args()
     return {

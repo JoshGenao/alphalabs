@@ -189,6 +189,24 @@ def test_lease_blocks_owner():
     # remote owner is sticky-active → blocks us
     foreign = {"owner": "other-host:1", "expiry": now - 1}
     assert agent_pool.lease_blocks_owner(foreign, mine, now) is True
+    # our own lease never blocks us; no lease never blocks
+    assert agent_pool.lease_blocks_owner({"owner": mine, "expiry": now + 9999}, mine, now) is False
+    assert agent_pool.lease_blocks_owner(None, mine, now) is False
+
+
+def test_should_refuse_release():
+    now = time.time()
+    mine = f"{socket.gethostname()}:{os.getpid()}"
+    foreign = {"owner": "other-host:1", "expiry": now - 1}  # active sibling
+    # refuse a live sibling's lease without --force; allow with --force
+    assert agent_pool.should_refuse_release(foreign, mine, force=False, now=now) is True
+    assert agent_pool.should_refuse_release(foreign, mine, force=True, now=now) is False
+    # our own lease is always releasable
+    own = {"owner": mine, "expiry": now + 9999}
+    assert agent_pool.should_refuse_release(own, mine, force=False, now=now) is False
+    # a stale same-host dead-pid lease is releasable
+    dead = {"owner": f"{socket.gethostname()}:2147483646", "expiry": now - 1}
+    assert agent_pool.should_refuse_release(dead, mine, force=False, now=now) is False
     # our own lease never blocks us
     own = {"owner": mine, "expiry": now + 9999}
     assert agent_pool.lease_blocks_owner(own, mine, now) is False
