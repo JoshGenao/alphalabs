@@ -117,3 +117,26 @@ def test_owner_is_live_rejects_malformed_and_remote():
     assert agent_pool.owner_is_live("no-colon") is False
     assert agent_pool.owner_is_live("some-other-host:1") is False  # not this host
     assert agent_pool.owner_is_live(f"{socket.gethostname()}:{os.getpid()}") is True
+
+
+# --- foreign-host lease stickiness (single-host contract) -------------------
+def test_lease_active_foreign_host_is_sticky_unless_reclaiming():
+    foreign_expired = {"owner": "other-host:1", "expiry": time.time() - 10_000}
+    # default: never auto-reclaim a remote owner on TTL alone (can't probe its pid)
+    assert agent_pool.lease_active(foreign_expired, time.time()) is True
+    # explicit --reclaim releases it
+    assert (
+        agent_pool.lease_active(foreign_expired, time.time(), allow_foreign_reclaim=True) is False
+    )
+
+
+# --- integrate staging allowlist (no feature work in the marker commit) -----
+def test_path_in_allowlist():
+    assert agent_pool.path_in_allowlist("feature_list.json") is True
+    assert agent_pool.path_in_allowlist("progress.txt") is True
+    assert agent_pool.path_in_allowlist("progress.d/session-SRS-DATA-008.md") is True
+    assert agent_pool.path_in_allowlist("tools/feature_deps.json") is True
+    # feature / tooling / test work must NOT be stage-able by integrate
+    assert agent_pool.path_in_allowlist("tools/agent_pool.py") is False
+    assert agent_pool.path_in_allowlist("crates/atp-data/src/store.rs") is False
+    assert agent_pool.path_in_allowlist("tests/unit/test_agent_pool.py") is False

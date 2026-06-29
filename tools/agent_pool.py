@@ -46,6 +46,10 @@ LEASE_TTL = int(os.environ.get("ATP_LEASE_TTL", 2 * 3600))  # seconds
 PORT_STRIDE = 10
 DEV_BASE, IB_LIVE_BASE, IB_PAPER_BASE = 3000, 4001, 4002
 INTEGRATE_MARKER = "[agent-integrate]"
+# The ONLY paths `integrate` may stage into its marker commit. Staging is
+# restricted to this allowlist (never `git add -A`) so a retry's `reset --hard`
+# can never sweep in and then drop an agent's feature/test/progress work.
+INTEGRATE_ALLOWLIST = ("feature_list.json", "progress.txt", "progress.d", "tools/feature_deps.json")
 
 # Coarse category -> subsystem/crate map. Used only to *prefer* a feature whose
 # crate no active sibling holds, to reduce merge conflicts. Unmapped categories
@@ -253,15 +257,20 @@ def base_ref() -> str:
 # ----------------------------------------------------------------------------
 # Lease liveness (don't reclaim a feature whose process is still alive)
 # ----------------------------------------------------------------------------
+def owner_host(owner: str) -> str:
+    """The host portion of a 'host:pid' owner string ('' if malformed)."""
+    if not owner or ":" not in owner:
+        return ""
+    return owner.rpartition(":")[0]
+
+
 def owner_is_live(owner: str) -> bool:
     """True if owner is 'host:pid', host is THIS host, and that pid is alive."""
-    if not owner or ":" not in owner:
-        return False
-    host, _, pid_s = owner.rpartition(":")
-    if host != socket.gethostname():
+    host = owner_host(owner)
+    if not host or host != socket.gethostname():
         return False  # can't probe a remote host's pid
     try:
-        pid = int(pid_s)
+        pid = int(owner.rpartition(":")[2])
     except ValueError:
         return False
     try:
@@ -273,9 +282,21 @@ def owner_is_live(owner: str) -> bool:
     return True
 
 
-def lease_active(lease: dict, now: float) -> bool:
-    """A lease holds if it hasn't expired OR its owning process is still alive."""
-    return lease.get("expiry", 0) > now or owner_is_live(lease.get("owner", ""))
+def lease_active(lease: dict, now: float, *, allow_foreign_reclaim: bool = False) -> bool:
+    """Does a lease still hold?
+
+    * Same-host owner with a live PID  -> active (even past TTL).
+    * Foreign-host owner               -> sticky-active (we cannot probe a remote
+      PID, so never auto-reclaim on TTL alone) unless ``allow_foreign_reclaim``.
+    * Same-host owner with a dead/absent PID -> governed by the TTL.
+    """
+    owner = lease.get("owner", "")
+    if owner_is_live(owner):
+        return True
+    host = owner_host(owner)
+    if host and host != socket.gethostname():
+        return not allow_foreign_reclaim  # remote: sticky unless explicitly reclaiming
+    return lease.get("expiry", 0) > now
 
 
 def worktree_dirty(wt: Path) -> bool:
@@ -287,12 +308,16 @@ def worktree_dirty(wt: Path) -> bool:
 # ----------------------------------------------------------------------------
 # Scheduling core
 # ----------------------------------------------------------------------------
-def compute(features, deps, runtime):
+def compute(features, deps, runtime, *, allow_foreign_reclaim=False):
     """Return (ready, blocked, active_leases, held_subsystems, by_id)."""
     by_id = {f["id"]: f for f in features}
     passed = {fid for fid, f in by_id.items() if f.get("passes") is True}
     now = time.time()
-    active = {fid: lease for fid, lease in runtime["leases"].items() if lease_active(lease, now)}
+    active = {
+        fid: lease
+        for fid, lease in runtime["leases"].items()
+        if lease_active(lease, now, allow_foreign_reclaim=allow_foreign_reclaim)
+    }
     held = {subsystem(by_id[fid]) for fid in active if fid in by_id}
 
     ready, blocked = [], {}
@@ -448,7 +473,9 @@ def cmd_claim(args):
         features = load_features(fetch=True)
         deps = load_deps()
         runtime = load_runtime()
-        ready, blocked, active, held, by_id = compute(features, deps, runtime)
+        ready, blocked, active, held, by_id = compute(
+            features, deps, runtime, allow_foreign_reclaim=args.reclaim
+        )
 
         choice = None
         skipped_dirty = []
@@ -563,11 +590,45 @@ def _has_staged(wt: Path) -> bool:
     return _run(["git", "-C", str(wt), "diff", "--cached", "--quiet"], check=False).returncode != 0
 
 
-def _drop_prior_integration_commit(wt: Path) -> None:
-    """If HEAD is an unpushed [agent-integrate] commit, drop it so we recompute."""
+def path_in_allowlist(path: str) -> bool:
+    """True if a repo-relative path is within the integrate allowlist."""
+    return any(path == p or path.startswith(p + "/") for p in INTEGRATE_ALLOWLIST)
+
+
+def _uncommitted_outside_allowlist(wt: Path) -> list[str]:
+    """Worktree paths with uncommitted changes that integrate must not touch."""
+    out = _run(["git", "-C", str(wt), "status", "--porcelain"], check=False).stdout
+    bad = []
+    for line in out.splitlines():
+        path = line[3:].strip().strip('"')
+        if " -> " in path:  # rename: take the destination
+            path = path.split(" -> ", 1)[1]
+        if path and not path_in_allowlist(path):
+            bad.append(path)
+    return bad
+
+
+def _drop_prior_integration_commit(wt: Path) -> str:
+    """Drop an unpushed [agent-integrate] HEAD commit so we can recompute.
+
+    Returns "none" if HEAD is not a marker commit, "dropped" if it was safely
+    reset, or "refused" if it is a marker commit that touches paths outside the
+    allowlist (a safety stop — it must never have contained feature work).
+    """
     msg = _run(["git", "-C", str(wt), "log", "-1", "--format=%s"], check=False).stdout
-    if INTEGRATE_MARKER in msg:
-        _run(["git", "-C", str(wt), "reset", "--hard", "HEAD~1"], check=False)
+    if INTEGRATE_MARKER not in msg:
+        return "none"
+    touched = [
+        p
+        for p in _run(
+            ["git", "-C", str(wt), "diff", "--name-only", "HEAD~1", "HEAD"], check=False
+        ).stdout.splitlines()
+        if p
+    ]
+    if any(not path_in_allowlist(p) for p in touched):
+        return "refused"
+    _run(["git", "-C", str(wt), "reset", "--hard", "HEAD~1"], check=False)
+    return "dropped"
 
 
 def _branch_touches_feature_list(wt: Path) -> bool:
@@ -621,11 +682,29 @@ def cmd_integrate(args):
         )
         return 0
 
+    # Refuse to integrate with uncommitted work outside the integration scope —
+    # otherwise it would be swept into the marker commit and lost on a retry.
+    dirty = _uncommitted_outside_allowlist(wt)
+    if dirty:
+        shown = ", ".join(dirty[:6]) + ("..." if len(dirty) > 6 else "")
+        print(
+            f"✗ {fid}: uncommitted changes outside integration scope ({shown}). "
+            f"Commit your feature/test work first (Step 7), then re-run integrate.",
+            file=sys.stderr,
+        )
+        return 7
+
     with Lock():
         push_err = ""
         ok = False
         for _attempt in (1, 2):
-            _drop_prior_integration_commit(wt)
+            if _drop_prior_integration_commit(wt) == "refused":
+                print(
+                    f"✗ {fid}: HEAD is an [agent-integrate] commit touching files outside the "
+                    f"allowlist — refusing to reset (manual review needed).",
+                    file=sys.stderr,
+                )
+                return 8
             _run(["git", "-C", str(wt), "fetch", "--quiet", "origin"], check=False)
             rb = _run(["git", "-C", str(wt), "rebase", base_ref()], check=False)
             if rb.returncode != 0:
@@ -652,7 +731,11 @@ def cmd_integrate(args):
                     return 6
                 _sync_deps_into(wt)
 
-            _run(["git", "-C", str(wt), "add", "-A"])
+            # Stage ONLY the integration allowlist (never `git add -A`), so the
+            # marker commit can never contain feature work.
+            existing = [p for p in INTEGRATE_ALLOWLIST if (wt / p).exists()]
+            if existing:
+                _run(["git", "-C", str(wt), "add", "-A", "--", *existing])
             if _has_staged(wt):
                 tag = (
                     "verified e2e — flip passes:true + fold note"
