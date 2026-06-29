@@ -885,9 +885,9 @@ def main(argv: list[str] | None = None) -> int:
         "SRS-LOG-001 SDK-SURFACE PASS — log record schema + sink routing "
         "contract (concrete persistent sinks deferred to SRS-LOG-001 runtime; "
         "dashboard log pane rendering deferred to SRS-UI-001; live GET /api/v1/logs "
-        "+ LOGS WebSocket + admin logs CLI runner deferred to SRS-API-001 + "
-        "operator-interface-runtime; ERROR/CRITICAL notification fan-out deferred "
-        "to SRS-NOTIF-001)"
+        "+ LOGS WebSocket + admin logs CLI handler owned by SRS-LOG-001 (registered "
+        "on the now-built operator-interface-runtime registry, python/atp_runtime); "
+        "ERROR/CRITICAL notification fan-out deferred to SRS-NOTIF-001)"
     )
     for line in evidence:
         print(f"  * {line}")

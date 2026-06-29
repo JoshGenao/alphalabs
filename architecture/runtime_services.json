@@ -3208,7 +3208,7 @@
       },
       {
         "feature": "SRS-LOG-001",
-        "what": "Log query handler behind /api/v1/logs + the `admin logs` CLI command + the LOGS WebSocket channel publisher. The SDK pins the log_class / severity / source / event_type / correlation_id / start_time / end_time request fields and the events response shape; the system-log vs strategy-log separation and the persistent sink belong to SRS-LOG-001."
+        "what": "Log query handler behind /api/v1/logs + the `admin logs` CLI command + the LOGS WebSocket channel publisher. The SDK pins the log_class / severity / source / event_type / correlation_id / start_time / end_time request fields and the events response shape; SRS-LOG-001 owns this end-to-end — the persistent sink, the system-log vs strategy-log separation, and registering the query handler / publisher on the now-built operator-interface-runtime registry (python/atp_runtime). The runtime owner map attributes the LOGS REST/CLI/WS operations to SRS-LOG-001 (the actionable blocker); the runtime only provides the registry/dispatch substrate."
       },
       {
         "feature": "SRS-NOTIF-001",
@@ -3220,7 +3220,11 @@
       },
       {
         "feature": "operator-interface-runtime",
-        "what": "The HTTP server + WebSocket server + CLI runner that bind the declared routes / channels / commands to the handlers above. The SDK contract here is server-framework-agnostic: a future runtime session picks the framework (e.g. starlette + uvicorn for REST/WS, argparse + python -m atp_cli for CLI) and wires the dispatchers; the contract block names the surface shape so the runtime cannot drift from it."
+        "what": "BUILT in python/atp_runtime (stdlib HTTP + RFC6455 WebSocket + CLI dispatcher; verified by tools/operator_interface_runtime_check.py). The runtime now serves the full declared REST/WS/CLI surface on a loopback bind and enforces the interface invariants (SRS-SEC-002 loopback-only bind, UI-4/SRS-SAFE-001 confirmation guard, structured interface errors, SRS-SEC-001 secret redaction). What REMAINS deferred for SRS-API-001 to flip passes:true: the domain handlers behind each operation — they register on atp_runtime.HandlerRegistry as their owning features land (SRS-EXE-001 kill-switch/live-designation, SRS-ORCH-004/005 lifecycle/rollback, SRS-RESV-002/003 ranking/Hot-Swap, SRS-BT-001 backtest launch, SRS-DATA-002 watchlist, SRS-LOG-001 logs, SRS-NOTIF-001 alerts); until then those operations return a structured 501 naming the owner."
+      },
+      {
+        "feature": "SRS-MD-006",
+        "what": "Domain readiness signal behind the `readiness wait` CLI command and the runtime's GET /api/v1/system/status report. The runtime owns its own liveness/status (ready=false while domain workflows are deferred), but the real trade-readiness gate — IB Gateway connectivity, IB account auth, SSD data-layer access, ingestion freshness within one trading day, system service health, NAS reachability — belongs to SRS-MD-006's startup readiness checks. `readiness wait` blocks on that real signal, so it stays deferred (501 / NOT_IMPLEMENTED) until SRS-MD-006 lands; the runtime owner map attributes it to SRS-MD-006."
       }
     ]
   },
@@ -3348,7 +3352,7 @@
       },
       {
         "feature": "SRS-API-001",
-        "what": "Live GET /api/v1/logs REST handler body + LOGS WebSocket channel publisher + admin logs CLI runner. The route / channel / command declarations already exist in python/atp_api/routes.py, python/atp_ws/channels.py, and python/atp_cli/commands.py (pinned by the operator_workflow_surface_contract block); the request/response wiring + the SSE/WS streaming belong to SRS-API-001's operator-interface-runtime."
+        "what": "Live GET /api/v1/logs REST handler body + LOGS WebSocket channel publisher + admin logs CLI runner. The route / channel / command declarations already exist in python/atp_api/routes.py, python/atp_ws/channels.py, and python/atp_cli/commands.py (pinned by the operator_workflow_surface_contract block), and the operator-interface-runtime substrate (HTTP/WS/CLI dispatch + handler registry) is now BUILT in python/atp_runtime. SRS-LOG-001 registers the GET /api/v1/logs query handler, the LOGS WebSocket publisher, and the admin-logs CLI handler on that registry once its persistent sink lands — so SRS-LOG-001 owns these LOGS operations end-to-end (the runtime only provides the registry/dispatch substrate)."
       },
       {
         "feature": "SRS-NOTIF-001",
