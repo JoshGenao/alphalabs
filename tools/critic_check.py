@@ -215,6 +215,8 @@ SAFETY_PATH_RE = re.compile(
     r"|operator[_-]?override|atp[_-]?readiness"
     r"|operator[_-]?workflow[_-]?surface|operator[_-]?workflow"
     r"|api[_-]?surface[_-]?coverage|ac[_-]?workflow"
+    r"|operator[_-]?interface[_-]?runtime|atp[_-]?runtime"
+    r"|handler[_-]?registry|deferred[_-]?handler|bind[_-]?policy"
     r"|log[_-]?record|atp[_-]?logging|log[_-]?sink"
     r"|log[_-]?dispatch|log[_-]?class|log[_-]?route"
     r"|subscription[_-]?fanout|subscription[_-]?fan[_-]?out"
