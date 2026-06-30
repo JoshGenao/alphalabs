@@ -65,9 +65,11 @@ def test_ib_adapter_check_passes_on_real_tree():
     )
     assert result.returncode == 0, f"ib_adapter_check failed:\n{result.stdout}\n{result.stderr}"
     assert "SRS-EXE-006 IB ADAPTER RUNTIME PASS" in result.stdout
-    # The PASS must be backed by the real cargo boundary suite, not a skip.
+    # The PASS must be backed by the real cargo boundary suite + the feature-on
+    # build of the gated scaffold, not a skip.
     assert "cargo smoke" in result.stdout
-    assert "boundary suite green" in result.stdout
+    assert "boundary suite ok" in result.stdout
+    assert "ib-live-transport" in result.stdout
 
 
 def test_cargo_smoke_fails_closed_without_cargo(monkeypatch):
@@ -181,6 +183,18 @@ def test_check_catches_unvalidated_host():
     broken = source.replace("pub fn ip(", "pub fn xx(")
     with pytest.raises(CHECK.IbAdapterContractError):
         CHECK.check_config_fails_closed(runtime, broken)
+
+
+def test_check_catches_ungated_live_transport():
+    # If the live socket scaffold is no longer behind the non-default feature, it
+    # would ship on the default public surface -> the check must fail.
+    runtime = _runtime()
+    source = MODULE.read_text()
+    broken = source.replace(
+        '#[cfg(feature = "ib-live-transport")]\n#[derive(Debug)]', "#[derive(Debug)]"
+    )
+    with pytest.raises(CHECK.IbAdapterContractError):
+        CHECK.check_live_transport_fails_closed(runtime, broken)
 
 
 # --------------------------------------------------------------------------- #

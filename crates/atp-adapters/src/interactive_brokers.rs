@@ -45,7 +45,10 @@ use crate::{
 };
 use atp_types::{OrderErrorCategory, OrderReceipt, OrderSubmission};
 use std::fmt;
-use std::net::{IpAddr, SocketAddr, TcpStream};
+#[cfg(feature = "ib-live-transport")]
+use std::net::TcpStream;
+use std::net::{IpAddr, SocketAddr};
+#[cfg(feature = "ib-live-transport")]
 use std::time::Duration;
 
 // --------------------------------------------------------------------------- //
@@ -230,7 +233,8 @@ impl IbConnectionConfig {
     /// endpoint — brokerage configuration must never resolve to an unintended IB
     /// Gateway on a typo.
     pub fn from_env(client_id: i32) -> Result<Self, IbConnectionConfigError> {
-        let host = std::env::var("ATP_IB_HOST").unwrap_or_else(|_| Self::DEFAULT_HOST.to_string());
+        let host =
+            Self::env_value("ATP_IB_HOST")?.unwrap_or_else(|| Self::DEFAULT_HOST.to_string());
         let live_port = Self::port_from_env("ATP_IB_LIVE_PORT", Self::DEFAULT_LIVE_PORT)?;
         let paper_port = Self::port_from_env("ATP_IB_PAPER_PORT", Self::DEFAULT_PAPER_PORT)?;
         let config = Self {
@@ -245,11 +249,26 @@ impl IbConnectionConfig {
         Ok(config)
     }
 
-    fn port_from_env(variable: &'static str, default: u16) -> Result<u16, IbConnectionConfigError> {
-        // Missing → documented default; present → parse and fail closed on malformed.
+    /// Read an `ATP_IB_*` variable, distinguishing **absent** (`Ok(None)` → use the
+    /// documented default) from **present-but-malformed**. A present non-Unicode
+    /// value is *not* "missing": it fails closed so a corrupt brokerage setting can
+    /// never silently resolve to a default endpoint.
+    fn env_value(variable: &'static str) -> Result<Option<String>, IbConnectionConfigError> {
         match std::env::var(variable) {
-            Err(_) => Ok(default),
-            Ok(raw) => Self::parse_port(variable, &raw),
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => Err(IbConnectionConfigError {
+                variable,
+                value: "<non-unicode>".to_string(),
+            }),
+        }
+    }
+
+    fn port_from_env(variable: &'static str, default: u16) -> Result<u16, IbConnectionConfigError> {
+        // Absent → documented default; present (incl. non-Unicode) → fail closed on malformed.
+        match Self::env_value(variable)? {
+            None => Ok(default),
+            Some(raw) => Self::parse_port(variable, &raw),
         }
     }
 
@@ -374,8 +393,11 @@ impl InteractiveBrokersAdapter {
 
     /// Build the functional runtime over the live [`TcpIbGateway`] for the given
     /// account (the IB **paper** account for operator-initiated adapter integration
-    /// testing — SyRS SYS-2e). The TWS wire encoding is completed under that gated
-    /// integration test (SRS-EXE-006 serialized).
+    /// testing — SyRS SYS-2e). Behind the non-default `ib-live-transport` feature:
+    /// the live transport is an operator-gated scaffold (its TWS wire encoding is
+    /// completed under the gated integration test), so the default public surface
+    /// never advertises a half-built live path.
+    #[cfg(feature = "ib-live-transport")]
     pub fn connect(
         self,
         config: IbConnectionConfig,
@@ -453,12 +475,17 @@ impl<C: IbGatewayConnection> HistoricalDataAdapter for InteractiveBrokersBrokera
 /// [`IB_CODE_LIVE_WIRE_PROTOCOL_PENDING`] rather than fabricating a result. This
 /// is the *only* part of the adapter that an automated paper-account test (not a
 /// parallel agent) can complete — which is why SRS-EXE-006 lands serialized.
+///
+/// Behind the non-default `ib-live-transport` cargo feature so the default public
+/// adapter surface never advertises this half-built live path.
+#[cfg(feature = "ib-live-transport")]
 #[derive(Debug)]
 pub struct TcpIbGateway {
     config: IbConnectionConfig,
     account: IbAccountKind,
 }
 
+#[cfg(feature = "ib-live-transport")]
 impl TcpIbGateway {
     /// Construct against the given config + account. The adapter test surface
     /// always uses [`IbAccountKind::Paper`] (SyRS SYS-2e / AC-10); the live
@@ -508,6 +535,7 @@ impl TcpIbGateway {
     }
 }
 
+#[cfg(feature = "ib-live-transport")]
 impl IbGatewayConnection for TcpIbGateway {
     fn submit_order(&self, _order: &OrderSubmission) -> Result<OrderReceipt, IbApiError> {
         // Establish the real session (fails closed if unreachable), then defer the
@@ -539,13 +567,17 @@ impl IbGatewayConnection for TcpIbGateway {
 }
 
 /// Default IB API connect timeout for the live transport's socket establishment.
+#[cfg(feature = "ib-live-transport")]
 pub const IB_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "ib-live-transport")]
     use atp_types::StrategyId;
 
+    // Only the (feature-gated) live-transport test builds an OrderSubmission here.
+    #[cfg(feature = "ib-live-transport")]
     fn order(symbol: &str, quantity: i64) -> OrderSubmission {
         OrderSubmission {
             strategy_id: StrategyId::new("live-1"),
@@ -706,6 +738,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "ib-live-transport")]
     #[test]
     fn live_transport_fails_closed_when_gateway_unreachable() {
         let config = IbConnectionConfig::new("127.0.0.1", 1, 1, 1);

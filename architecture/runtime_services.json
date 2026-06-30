@@ -419,6 +419,7 @@
       "config_parser_fn": "parse_port",
       "connect_timeout_const": "IB_CONNECT_TIMEOUT",
       "live_transport_struct": "TcpIbGateway",
+      "live_transport_feature": "ib-live-transport",
       "live_wire_pending_sentinel": "IB_CODE_LIVE_WIRE_PROTOCOL_PENDING",
       "integration_test": {
         "path": "crates/atp-adapters/tests/srs_exe_006_ib_adapter.rs",
@@ -437,9 +438,9 @@
         "documented_provider_bridges_to_functional_runtime",
         "connectionless_provider_is_not_configured_by_design"
       ],
-      "description": "SRS-EXE-006 IB Gateway brokerage adapter. Ships the deterministic IB-error -> SyRS SYS-64 classification (classify_ib_order_error -> brokerage_error -> AdapterError::Brokerage, unblocking SRS-ERR-001's broker-validation categories INVALID_SYMBOL/INSUFFICIENT_BUYING_POWER/RATE_LIMITED/CONNECTIVITY_BLOCKED), the TWS transport seam, and the four AC operations exposed through the CANONICAL BrokerageAdapter/MarketDataAdapter/HistoricalDataAdapter traits (SYS-52) so failures flow through the common AdapterError taxonomy (proven solo via a FakeIbGateway), plus the live TcpIbGateway scaffold. Config fails closed on malformed ATP_IB_* ports (IbConnectionConfigError). STAYS passes:false (serialized): the AC's automated IB paper-account integration test is operator-initiated (SyRS SYS-2e, fixed port 4002) and cannot run in the parallel agent pool.",
+      "description": "SRS-EXE-006 IB Gateway brokerage adapter. The DEFAULT build ships the fully-tested deterministic half: IB-error -> SyRS SYS-64 classification (classify_ib_order_error -> brokerage_error -> AdapterError::Brokerage, unblocking SRS-ERR-001's broker-validation categories INVALID_SYMBOL/INSUFFICIENT_BUYING_POWER/RATE_LIMITED/CONNECTIVITY_BLOCKED), the TWS transport seam, and the four AC operations exposed through the CANONICAL BrokerageAdapter/MarketDataAdapter/HistoricalDataAdapter traits (SYS-52) so failures flow through the common AdapterError taxonomy (proven solo via a FakeIbGateway). Config fails closed on malformed/non-Unicode ATP_IB_* values and non-literal-IP hosts (IbConnectionConfigError). The live socket transport (TcpIbGateway) is behind the NON-DEFAULT ib-live-transport feature so the default public surface never advertises a half-built live path. STAYS passes:false (serialized): the AC's automated IB paper-account integration test is operator-initiated (SyRS SYS-2e, fixed port 4002, --features ib-live-transport) and cannot run in the parallel agent pool.",
       "deferred": [
-        "operator-initiated IB paper-account integration test (SyRS SYS-2e / AC-2): completes the TWS wire encoding in TcpIbGateway and runs submit/cancel/subscribe/historical green against port 4002 (flips passes:true)",
+        "operator-initiated IB paper-account integration test (SyRS SYS-2e / AC-2, --features ib-live-transport): completes the TWS wire encoding in TcpIbGateway and runs submit/cancel/subscribe/historical green against port 4002 (flips passes:true)",
         "execution-engine wiring of the IB adapter to atp_execution::LiveBrokerageSubmit (SRS-EXE-001 / SRS-ORCH-*)",
         "IB TWS API version-upgrade regression testing against the paper account (SRS-EXE-007 / SYS-65)"
       ]

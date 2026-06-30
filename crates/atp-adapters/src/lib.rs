@@ -14,8 +14,12 @@ pub use atp_types::{OrderReceipt, OrderSubmission};
 pub mod interactive_brokers;
 pub use interactive_brokers::{
     classify_ib_order_error, IbAccountKind, IbApiError, IbConnectionConfig,
-    IbConnectionConfigError, IbGatewayConnection, InteractiveBrokersBrokerage, TcpIbGateway,
+    IbConnectionConfigError, IbGatewayConnection, InteractiveBrokersBrokerage,
 };
+/// The live IB socket transport is behind the non-default `ib-live-transport`
+/// feature (operator-gated scaffold; see [`interactive_brokers`]).
+#[cfg(feature = "ib-live-transport")]
+pub use interactive_brokers::{TcpIbGateway, IB_CONNECT_TIMEOUT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AdapterCapability {

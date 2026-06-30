@@ -18,10 +18,13 @@
 //! serialized (`passes:false`) until the operator runs it.
 
 use atp_adapters::interactive_brokers::{
-    IbAccountKind, IbApiError, IbConnectionConfig, IbGatewayConnection,
-    InteractiveBrokersBrokerage, TcpIbGateway, IB_CODE_MAX_RATE_EXCEEDED, IB_CODE_NOT_CONNECTED,
-    IB_CODE_NO_SECURITY_DEFINITION, IB_CODE_ORDER_REJECTED,
+    IbApiError, IbGatewayConnection, InteractiveBrokersBrokerage, IB_CODE_MAX_RATE_EXCEEDED,
+    IB_CODE_NOT_CONNECTED, IB_CODE_NO_SECURITY_DEFINITION, IB_CODE_ORDER_REJECTED,
 };
+// The live socket transport is behind the non-default `ib-live-transport` feature;
+// the operator-gated paper-account round-trip is the only test that uses it.
+#[cfg(feature = "ib-live-transport")]
+use atp_adapters::interactive_brokers::{IbAccountKind, IbConnectionConfig, TcpIbGateway};
 use atp_adapters::{
     AdapterError, AssetClass, BrokerageAdapter, HistoricalBar, HistoricalDataAdapter,
     HistoricalDataRequest, HistoricalQueryResult, InteractiveBrokersAdapter, MarketDataAdapter,
@@ -297,6 +300,7 @@ fn connectionless_provider_is_not_configured_by_design() {
 /// unless `ATP_RUN_INTEGRATION=1` AND run with `--ignored`, because the IB paper
 /// account binds a fixed shared port (SyRS SYS-2e) and must not run in the
 /// parallel agent pool. This is the gate that flips SRS-EXE-006 to `passes:true`.
+#[cfg(feature = "ib-live-transport")]
 #[test]
 #[ignore = "operator-initiated IB paper-account integration (ATP_RUN_INTEGRATION=1); binds fixed port 4002"]
 fn paper_account_round_trip() {

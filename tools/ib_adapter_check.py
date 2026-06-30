@@ -198,6 +198,15 @@ def check_live_transport_fails_closed(runtime: dict, source: str) -> str:
         fail(f"{sentinel} must be a negative sentinel (never a real IB code)")
     if f"impl IbGatewayConnection for {struct}" not in source:
         fail(f"{struct} must implement IbGatewayConnection")
+    # The half-built live socket scaffold must be behind the non-default feature so
+    # the default public surface never advertises it (it cannot be verified solo).
+    feature = runtime["live_transport_feature"]
+    if not re.search(
+        rf'#\[cfg\(feature = "{re.escape(feature)}"\)\]\s*#\[derive\(Debug\)\]\s*'
+        rf"pub struct {re.escape(struct)}\b",
+        source,
+    ):
+        fail(f"{struct} must be gated behind the non-default `{feature}` feature")
     # The IB-touching socket establishment must use an EXPLICIT timeout budget —
     # never the unbounded OS default — so a black-holed Gateway cannot hang the
     # live path. Assert both the timeout const and connect_timeout are wired in.
@@ -323,7 +332,19 @@ def check_cargo_smoke(runtime: dict) -> str:
         fail(f"cargo test srs_exe_006_ib_adapter failed:\n{combined}")
     if "test result: ok" not in combined:
         fail(f"cargo test output did not include `test result: ok`:\n{combined}")
-    return "cargo test srs_exe_006_ib_adapter: ok (boundary suite green)"
+    # Also compile the feature-gated live transport so the operator-gated scaffold
+    # cannot bit-rot (it is excluded from the default test run above).
+    feature = runtime["live_transport_feature"]
+    build = subprocess.run(
+        [cargo, "build", "-p", "atp-adapters", "--features", feature, "--quiet"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if build.returncode != 0:
+        fail(f"cargo build --features {feature} failed:\n{build.stdout}{build.stderr}")
+    return f"cargo test boundary suite ok + cargo build --features {feature} ok"
 
 
 CHECKS = (

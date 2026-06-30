@@ -9,6 +9,17 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+[features]
+# SRS-EXE-006: the live IB Gateway socket transport (TcpIbGateway) is an
+# OPERATOR-INITIATED integration scaffold — its TWS wire encoding is completed and
+# verified only against a real headless IB paper account (SyRS SYS-2e, port 4002),
+# which cannot run in the parallel agent pool. It is therefore gated OFF by default
+# so the public adapter surface never advertises a half-built live transport; the
+# operator enables `ib-live-transport` to run `paper_account_round_trip`. The
+# default build exposes the deterministic, fully-tested half (classification, the
+# transport seam, and the functional InteractiveBrokersBrokerage over any transport).
+ib-live-transport = []
+
 [dependencies]
 atp-types = { path = "../atp-types" }
 
