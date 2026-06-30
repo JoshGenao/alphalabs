@@ -3,6 +3,18 @@ use std::fmt;
 
 pub use atp_types::{OrderReceipt, OrderSubmission};
 
+/// SRS-EXE-006 — the headless IB Gateway brokerage adapter: the IB-error → SyRS
+/// SYS-64 [`atp_types::StructuredOrderError`] translation, the TWS transport seam,
+/// the four AC operations over it, and the operator-gated live transport. See the
+/// module docs for what ships solo vs. what the operator-initiated paper-account
+/// integration test completes.
+pub mod interactive_brokers;
+pub use interactive_brokers::{
+    classify_ib_order_error, to_order_submit_error, IbAccountKind, IbApiError, IbConnectionConfig,
+    IbGatewayConnection, IbHistoricalResult, IbOrderSubmitError, IbSubscriptionReceipt,
+    InteractiveBrokersBrokerage, TcpIbGateway,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AdapterCapability {
     Brokerage,

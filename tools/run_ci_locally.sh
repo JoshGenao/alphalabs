@@ -80,6 +80,7 @@ for check in \
     log_record_check \
     log_persistence_check \
     adapter_check \
+    ib_adapter_check \
     data_provider_check \
     historical_data_check \
     strategy_api_check; do

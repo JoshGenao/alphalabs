@@ -390,6 +390,49 @@
       "protocol_version": "10.45",
       "adapter_version_constant": "INTERACTIVE_BROKERS_ADAPTER_VERSION",
       "protocol_label_constant": "INTERACTIVE_BROKERS_PROTOCOL_LABEL"
+    },
+    "ib_brokerage_runtime": {
+      "srs_ref": "SRS-EXE-006",
+      "status": "serialized",
+      "module": "crates/atp-adapters/src/interactive_brokers.rs",
+      "transport_trait": "IbGatewayConnection",
+      "transport_methods": [
+        "submit_order",
+        "cancel_order",
+        "subscribe_market_data",
+        "request_historical_data"
+      ],
+      "adapter_struct": "InteractiveBrokersBrokerage",
+      "classifier_fn": "classify_ib_order_error",
+      "mapped_categories": {
+        "INVALID_SYMBOL": [200, 203],
+        "INSUFFICIENT_BUYING_POWER": [201],
+        "RATE_LIMITED": [100],
+        "CONNECTIVITY_BLOCKED": [502, 504, 1100, 2110]
+      },
+      "never_drop_variant": "Unmapped",
+      "live_transport_struct": "TcpIbGateway",
+      "live_wire_pending_sentinel": "IB_CODE_LIVE_WIRE_PROTOCOL_PENDING",
+      "integration_test": {
+        "path": "crates/atp-adapters/tests/srs_exe_006_ib_adapter.rs",
+        "operator_gated_test": "paper_account_round_trip",
+        "gate_env": "ATP_RUN_INTEGRATION",
+        "paper_port": 4002
+      },
+      "boundary_tests": [
+        "accepted_order_returns_vendor_neutral_receipt",
+        "rejection_maps_to_syrs64_invalid_symbol",
+        "rejection_maps_to_syrs64_insufficient_buying_power",
+        "rejection_maps_to_syrs64_rate_limited",
+        "unmapped_rejection_is_surfaced_not_dropped",
+        "cancel_subscribe_historical_round_trip_through_transport"
+      ],
+      "description": "SRS-EXE-006 IB Gateway brokerage adapter. Ships the deterministic IB-error -> SyRS SYS-64 StructuredOrderError translation (unblocks SRS-ERR-001's broker-validation categories INVALID_SYMBOL/INSUFFICIENT_BUYING_POWER/RATE_LIMITED/CONNECTIVITY_BLOCKED), the TWS transport seam plus the four AC operations over it (proven solo via a FakeIbGateway), and the live TcpIbGateway scaffold. STAYS passes:false (serialized): the AC's automated IB paper-account integration test is operator-initiated (SyRS SYS-2e, fixed port 4002) and cannot run in the parallel agent pool.",
+      "deferred": [
+        "operator-initiated IB paper-account integration test (SyRS SYS-2e / AC-2): completes the TWS wire encoding in TcpIbGateway and runs submit/cancel/subscribe/historical green against port 4002 (flips passes:true)",
+        "execution-engine wiring of the IB adapter to atp_execution::LiveBrokerageSubmit (SRS-EXE-001 / SRS-ORCH-*)",
+        "IB TWS API version-upgrade regression testing against the paper account (SRS-EXE-007 / SYS-65)"
+      ]
     }
   },
   "data_provider_contract": {

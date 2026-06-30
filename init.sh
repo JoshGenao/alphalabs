@@ -210,6 +210,13 @@ if ! python3 tools/adapter_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running IB Gateway adapter runtime check (SRS-EXE-006)..."
+if ! python3 tools/ib_adapter_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  IB adapter runtime check failed; run python3 tools/ib_adapter_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running data provider contract check..."
 if ! python3 tools/data_provider_check.py >/dev/null; then
   echo "✗ Environment failed"
