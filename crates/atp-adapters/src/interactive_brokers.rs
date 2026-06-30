@@ -418,28 +418,48 @@ impl TcpIbGateway {
     pub fn connect(&self) -> Result<TcpStream, IbApiError> {
         let addr = self.config.socket_addr(self.account);
         let blocked = |detail: String| IbApiError::new(IB_CODE_COULD_NOT_CONNECT, detail);
-        let socket = addr
+        // Resolve to ALL candidate addresses and try each (a host may resolve to
+        // an IPv6 record first that is down, then a reachable IPv4 — connecting to
+        // only the first would falsely report the Gateway unreachable). Each
+        // attempt is bounded by IB_CONNECT_TIMEOUT; CONNECTIVITY_BLOCKED is only
+        // returned after every candidate fails.
+        let candidates: Vec<std::net::SocketAddr> = addr
             .to_socket_addrs()
             .map_err(|err| {
                 blocked(format!(
                     "could not resolve IB Gateway address {addr}: {err}"
                 ))
             })?
-            .next()
-            .ok_or_else(|| blocked(format!("no socket address resolved for IB Gateway {addr}")))?;
-        let stream = TcpStream::connect_timeout(&socket, IB_CONNECT_TIMEOUT).map_err(|err| {
-            blocked(format!(
-                "couldn't connect to headless IB Gateway at {addr} within {:?}: {err}",
-                IB_CONNECT_TIMEOUT
-            ))
-        })?;
-        // Bound subsequent IB reads/writes to the same budget so a half-open
-        // session cannot hang the live path either.
-        stream
-            .set_read_timeout(Some(IB_CONNECT_TIMEOUT))
-            .and_then(|()| stream.set_write_timeout(Some(IB_CONNECT_TIMEOUT)))
-            .map_err(|err| blocked(format!("couldn't set IB Gateway socket timeouts: {err}")))?;
-        Ok(stream)
+            .collect();
+        if candidates.is_empty() {
+            return Err(blocked(format!(
+                "no socket address resolved for IB Gateway {addr}"
+            )));
+        }
+        let mut last_error = None;
+        for socket in &candidates {
+            match TcpStream::connect_timeout(socket, IB_CONNECT_TIMEOUT) {
+                Ok(stream) => {
+                    // Bound subsequent IB reads/writes to the same budget so a
+                    // half-open session cannot hang the live path either.
+                    stream
+                        .set_read_timeout(Some(IB_CONNECT_TIMEOUT))
+                        .and_then(|()| stream.set_write_timeout(Some(IB_CONNECT_TIMEOUT)))
+                        .map_err(|err| {
+                            blocked(format!("couldn't set IB Gateway socket timeouts: {err}"))
+                        })?;
+                    return Ok(stream);
+                }
+                Err(err) => last_error = Some(err),
+            }
+        }
+        Err(blocked(format!(
+            "couldn't connect to any of the {} resolved IB Gateway address(es) for {addr} \
+             within {:?} each: {}",
+            candidates.len(),
+            IB_CONNECT_TIMEOUT,
+            last_error.expect("non-empty candidates implies a last error")
+        )))
     }
 
     fn live_wire_pending(operation: &str) -> IbApiError {

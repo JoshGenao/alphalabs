@@ -253,9 +253,15 @@ def check_serialized_status(runtime: dict) -> str:
 
 
 def check_cargo_smoke(runtime: dict) -> str:
+    # This gate's PASS claims the cargo boundary suite proved the real Rust binary,
+    # so it must FAIL CLOSED when cargo is absent — a skip would make the evidence
+    # vacuous. SRS-EXE-006 lives in a Rust crate; cargo is a hard requirement here.
     cargo = shutil.which("cargo")
     if cargo is None:
-        return "cargo test atp-adapters: skipped (cargo not on PATH)"
+        fail(
+            "cargo is not on PATH — the SRS-EXE-006 boundary suite cannot be proven; "
+            "this gate requires the Rust toolchain (run from the worktree where init.sh built it)"
+        )
     result = subprocess.run(
         [
             cargo,

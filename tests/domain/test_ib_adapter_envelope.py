@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -50,6 +51,10 @@ def _runtime() -> dict:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.skipif(
+    shutil.which("cargo") is None,
+    reason="ib_adapter_check fails closed without cargo; the cargo boundary proof needs the toolchain",
+)
 def test_ib_adapter_check_passes_on_real_tree():
     result = subprocess.run(
         [sys.executable, str(ROOT / "tools" / "ib_adapter_check.py")],
@@ -60,6 +65,16 @@ def test_ib_adapter_check_passes_on_real_tree():
     )
     assert result.returncode == 0, f"ib_adapter_check failed:\n{result.stdout}\n{result.stderr}"
     assert "SRS-EXE-006 IB ADAPTER RUNTIME PASS" in result.stdout
+    # The PASS must be backed by the real cargo boundary suite, not a skip.
+    assert "cargo smoke" in result.stdout
+    assert "boundary suite green" in result.stdout
+
+
+def test_cargo_smoke_fails_closed_without_cargo(monkeypatch):
+    # If cargo is absent the gate must FAIL CLOSED (never a vacuous skip-as-pass).
+    monkeypatch.setattr(CHECK.shutil, "which", lambda _name: None)
+    with pytest.raises(CHECK.IbAdapterContractError):
+        CHECK.check_cargo_smoke(_runtime())
 
 
 # --------------------------------------------------------------------------- #
