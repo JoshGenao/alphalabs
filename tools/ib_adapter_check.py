@@ -169,6 +169,22 @@ def check_canonical_boundary(runtime: dict, source: str) -> str:
     )
 
 
+def check_provider_bridge(runtime: dict, source: str) -> str:
+    """The documented zero-config provider (the API-5 provider_struct) must bridge
+    to the FUNCTIONAL runtime — otherwise a caller following the documented adapter
+    contract reaches an inert NotConfigured stub. Verify the bridge constructor on
+    the discovery struct produces the functional adapter."""
+    discovery = runtime["discovery_struct"]
+    adapter = runtime["adapter_struct"]
+    bridge = runtime["bridge_method"]
+    impl_block = _block(source, rf"impl {re.escape(discovery)}\b", f"impl {discovery}")
+    if f"fn {bridge}" not in impl_block:
+        fail(f"{discovery} must expose `{bridge}` to construct the functional runtime")
+    if f"-> {adapter}<" not in impl_block:
+        fail(f"{discovery}::{bridge} must return the functional {adapter} (discovery -> runtime)")
+    return f"documented provider {discovery} bridges to the functional {adapter} via {bridge}"
+
+
 def check_live_transport_fails_closed(runtime: dict, source: str) -> str:
     struct = runtime["live_transport_struct"]
     sentinel = runtime["live_wire_pending_sentinel"]
@@ -186,7 +202,10 @@ def check_live_transport_fails_closed(runtime: dict, source: str) -> str:
     # never the unbounded OS default — so a black-holed Gateway cannot hang the
     # live path. Assert both the timeout const and connect_timeout are wired in.
     timeout_const = runtime["connect_timeout_const"]
-    connect_block = _block(source, r"pub fn connect\b", "fn connect")
+    # Scope to the live transport's own inherent impl so a same-named bridge method
+    # elsewhere (e.g. the discovery struct's `connect`) cannot satisfy this check.
+    impl_block = _block(source, rf"impl {re.escape(struct)}\b", f"impl {struct}")
+    connect_block = _block(impl_block, r"pub fn connect\b", f"{struct}::connect")
     if "connect_timeout" not in connect_block:
         fail(f"{struct}.connect must use TcpStream::connect_timeout (explicit deadline)")
     if timeout_const not in connect_block:
@@ -289,6 +308,7 @@ CHECKS = (
     ("transport seam", lambda cfg, rt, src: check_transport_trait(rt, src)),
     ("error classification", lambda cfg, rt, src: check_classifier_maps_every_code(rt, src)),
     ("canonical boundary", lambda cfg, rt, src: check_canonical_boundary(rt, src)),
+    ("provider bridge", lambda cfg, rt, src: check_provider_bridge(rt, src)),
     ("config fail-closed", lambda cfg, rt, src: check_config_fails_closed(rt, src)),
     ("live transport fail-closed", lambda cfg, rt, src: check_live_transport_fails_closed(rt, src)),
     ("integration harness", lambda cfg, rt, src: check_integration_test(rt)),

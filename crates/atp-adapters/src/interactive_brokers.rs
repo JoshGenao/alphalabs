@@ -39,7 +39,7 @@
 use crate::{
     AdapterBoundary, AdapterCapability, AdapterError, AdapterResult, AdapterVersion,
     BrokerageAdapter, HistoricalDataAdapter, HistoricalDataRequest, HistoricalQueryResult,
-    MarketDataAdapter, MarketDataSubscription, SubscriptionReceipt,
+    InteractiveBrokersAdapter, MarketDataAdapter, MarketDataSubscription, SubscriptionReceipt,
     INTERACTIVE_BROKERS_ADAPTER_VERSION, INTERACTIVE_BROKERS_CAPABILITIES,
     INTERACTIVE_BROKERS_PROTOCOL_LABEL, INTERACTIVE_BROKERS_TWS_API_VERSION,
 };
@@ -324,6 +324,34 @@ impl<C: IbGatewayConnection> InteractiveBrokersBrokerage<C> {
 
     pub fn connection(&self) -> &C {
         &self.connection
+    }
+}
+
+impl InteractiveBrokersAdapter {
+    /// Bridge the documented zero-config IB provider — [`InteractiveBrokersAdapter`],
+    /// the capability/version-discovery handle named in `adapter_contract` — to the
+    /// **functional** SRS-EXE-006 runtime by supplying a transport. The
+    /// connectionless handle itself returns `NotConfigured` for trading operations
+    /// **by design** (a broker adapter with no live session must never fabricate an
+    /// order); this is the canonical entry point from discovery to the operating
+    /// adapter.
+    pub fn with_gateway<C: IbGatewayConnection>(
+        self,
+        connection: C,
+    ) -> InteractiveBrokersBrokerage<C> {
+        InteractiveBrokersBrokerage::new(connection)
+    }
+
+    /// Build the functional runtime over the live [`TcpIbGateway`] for the given
+    /// account (the IB **paper** account for operator-initiated adapter integration
+    /// testing — SyRS SYS-2e). The TWS wire encoding is completed under that gated
+    /// integration test (SRS-EXE-006 serialized).
+    pub fn connect(
+        self,
+        config: IbConnectionConfig,
+        account: IbAccountKind,
+    ) -> InteractiveBrokersBrokerage<TcpIbGateway> {
+        self.with_gateway(TcpIbGateway::new(config, account))
     }
 }
 

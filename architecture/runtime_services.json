@@ -403,6 +403,8 @@
         "historical_data"
       ],
       "adapter_struct": "InteractiveBrokersBrokerage",
+      "discovery_struct": "InteractiveBrokersAdapter",
+      "bridge_method": "with_gateway",
       "canonical_traits": ["BrokerageAdapter", "MarketDataAdapter", "HistoricalDataAdapter"],
       "common_taxonomy_variant": "Brokerage",
       "classifier_fn": "classify_ib_order_error",
@@ -431,7 +433,9 @@
         "rejection_maps_to_syrs64_rate_limited",
         "unmapped_rejection_is_surfaced_not_dropped",
         "cancel_subscribe_historical_round_trip_through_canonical_traits",
-        "non_order_operation_failure_maps_to_classified_boundary_error"
+        "non_order_operation_failure_maps_to_classified_boundary_error",
+        "documented_provider_bridges_to_functional_runtime",
+        "connectionless_provider_is_not_configured_by_design"
       ],
       "description": "SRS-EXE-006 IB Gateway brokerage adapter. Ships the deterministic IB-error -> SyRS SYS-64 classification (classify_ib_order_error -> brokerage_error -> AdapterError::Brokerage, unblocking SRS-ERR-001's broker-validation categories INVALID_SYMBOL/INSUFFICIENT_BUYING_POWER/RATE_LIMITED/CONNECTIVITY_BLOCKED), the TWS transport seam, and the four AC operations exposed through the CANONICAL BrokerageAdapter/MarketDataAdapter/HistoricalDataAdapter traits (SYS-52) so failures flow through the common AdapterError taxonomy (proven solo via a FakeIbGateway), plus the live TcpIbGateway scaffold. Config fails closed on malformed ATP_IB_* ports (IbConnectionConfigError). STAYS passes:false (serialized): the AC's automated IB paper-account integration test is operator-initiated (SyRS SYS-2e, fixed port 4002) and cannot run in the parallel agent pool.",
       "deferred": [

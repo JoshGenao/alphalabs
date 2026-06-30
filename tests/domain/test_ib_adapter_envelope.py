@@ -133,6 +133,16 @@ def test_check_catches_missing_transport_method():
         CHECK.check_transport_trait(runtime, broken)
 
 
+def test_check_catches_unbridged_provider():
+    # If the documented provider loses its bridge to the functional runtime, a
+    # caller following the contract reaches an inert stub -> the check must fail.
+    runtime = _runtime()
+    source = MODULE.read_text()
+    broken = source.replace("pub fn with_gateway<C: IbGatewayConnection>", "pub fn gone<C>")
+    with pytest.raises(CHECK.IbAdapterContractError):
+        CHECK.check_provider_bridge(runtime, broken)
+
+
 def test_check_catches_config_silent_fallback():
     # If the port parser stops rejecting port 0, a malformed config could silently
     # fall back to a default endpoint -> the check must fail.

@@ -24,8 +24,9 @@ use atp_adapters::interactive_brokers::{
 };
 use atp_adapters::{
     AdapterError, AssetClass, BrokerageAdapter, HistoricalBar, HistoricalDataAdapter,
-    HistoricalDataRequest, HistoricalQueryResult, MarketDataAdapter, MarketDataChannel,
-    MarketDataSubscription, NormalizationMode, OrderReceipt, OrderSubmission, SubscriptionReceipt,
+    HistoricalDataRequest, HistoricalQueryResult, InteractiveBrokersAdapter, MarketDataAdapter,
+    MarketDataChannel, MarketDataSubscription, NormalizationMode, OrderReceipt, OrderSubmission,
+    SubscriptionReceipt,
 };
 use atp_types::{OrderErrorCategory, StrategyId};
 
@@ -267,6 +268,28 @@ fn non_order_operation_failure_maps_to_classified_boundary_error() {
             }
         ));
     }
+}
+
+#[test]
+fn documented_provider_bridges_to_functional_runtime() {
+    // The documented zero-config provider (InteractiveBrokersAdapter, named in
+    // adapter_contract) bridges to the FUNCTIONAL runtime via with_gateway — and the
+    // functional path returns a real receipt, NOT AdapterError::NotConfigured.
+    let adapter = InteractiveBrokersAdapter.with_gateway(FakeIbGateway::accepting());
+    let receipt = adapter
+        .submit_order(order("AAPL", 1))
+        .expect("the wired runtime submits for real, not NotConfigured");
+    assert_eq!(receipt.broker_order_id, "ib-ord-1");
+}
+
+#[test]
+fn connectionless_provider_is_not_configured_by_design() {
+    // The connectionless handle MUST NOT fabricate trading operations — with no live
+    // session, NotConfigured is the safe answer (trading requires a transport).
+    let err = InteractiveBrokersAdapter
+        .submit_order(order("AAPL", 1))
+        .expect_err("a connectionless IB adapter cannot submit");
+    assert!(matches!(err, AdapterError::NotConfigured { .. }));
 }
 
 /// AC verification — operator-initiated only. Drives the live [`TcpIbGateway`]
