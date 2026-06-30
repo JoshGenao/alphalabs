@@ -28,6 +28,14 @@
     "SRS-API-001",
     "UI-3"
   ],
+  "SRS-BT-004": [
+    "SRS-MD-001",
+    "SRS-UI-001"
+  ],
+  "SRS-BT-005": [
+    "SRS-API-001",
+    "SRS-UI-001"
+  ],
   "SRS-DATA-001": [
     "SRS-DATA-008",
     "SRS-DATA-013"
@@ -94,6 +102,14 @@
     "SRS-DATA-005"
   ],
   "SRS-LOG-001": [
+    "SRS-UI-001"
+  ],
+  "SRS-MD-001": [
+    "SRS-EXE-006",
+    "SRS-PERF-001"
+  ],
+  "SRS-MD-002": [
+    "SRS-API-001",
     "SRS-UI-001"
   ],
   "SRS-MD-004": [
