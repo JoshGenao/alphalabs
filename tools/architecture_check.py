@@ -25,6 +25,10 @@ from coverage_manifest_check import (
     CoverageManifestCheckError,
     assert_coverage_manifest_static,
 )
+from data008_tiering_check import (
+    TieringCheckError,
+    assert_data_tiering_static,
+)
 from data_provider_check import (
     DataProviderContractError,
     assert_data_provider_contract_static,
@@ -860,6 +864,23 @@ def assert_ingestion_idempotency(config: dict) -> list[str]:
     return static_evidence + [summary]
 
 
+def assert_data_tiering(config: dict) -> list[str]:
+    block = config.get("tiered_storage_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_data_tiering_static(config, ROOT)
+    summary = (
+        f"{block['data_crate']['crate']} data layer tiers storage SSD-primary / NAS-archival "
+        f"({block['tiered_store']['struct']}::ingest writes SSD-first then syncs NAS to a superset; "
+        "the >=90-day hot window is floor-enforced (MIN_HOT_RETENTION_DAYS); archive_cold drops cold "
+        "data off SSD only when confirmed byte-identical on NAS, which NAS then retains indefinitely; "
+        "an unreachable NAS degrades the ingest without losing the SSD write) -- SRS-DATA-008, the "
+        "tier the SRS-DATA-009 cold-read failover + SRS-DATA-010 eviction policy compose"
+    )
+    return static_evidence + [summary]
+
+
 def assert_unified_query(config: dict) -> list[str]:
     block = config.get("unified_query_runtime_contract")
     if block is None:
@@ -1417,6 +1438,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_ingestion_idempotency(config))
     except IngestionIdempotencyCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_data_tiering(config))
+    except TieringCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_unified_query(config))

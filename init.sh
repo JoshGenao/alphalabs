@@ -406,6 +406,13 @@ if ! python3 tools/ingestion_idempotency_check.py --require-cargo >/dev/null; th
   exit 1
 fi
 
+echo "→ Running SSD/NAS tiered-storage contract check (SRS-DATA-008)..."
+if ! python3 tools/data008_tiering_check.py --require-cargo >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Tiered-storage contract check failed; run python3 tools/data008_tiering_check.py --require-cargo for detail."
+  exit 1
+fi
+
 echo "→ Running unified historical query contract check (SRS-DATA-007)..."
 if ! python3 tools/unified_query_check.py --require-cargo >/dev/null; then
   echo "✗ Environment failed"

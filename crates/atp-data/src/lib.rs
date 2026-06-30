@@ -21,9 +21,15 @@ pub mod fundamentals;
 mod normalization;
 pub mod query;
 pub mod store;
+pub mod tiering;
 
 pub use crate::coverage::{CoverageError, SplitAdjustedResult};
 pub use crate::query::{UnifiedHistoricalQuery, UnifiedHistoricalResult};
+pub use crate::tiering::{
+    ArchiveOutcome, NasSyncStatus, RetentionReport, RetentionVerdict, TierConfig, TierError,
+    TierIngestOutcome, TieredStore, DEFAULT_HOT_RETENTION_DAYS, MIN_HOT_RETENTION_DAYS,
+    SECONDS_PER_DAY,
+};
 
 use crate::store::{DatasetKind, MarketDataRecord, MarketDataStore, StoreError, UpsertOutcome};
 
