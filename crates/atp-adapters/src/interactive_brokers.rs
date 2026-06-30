@@ -45,7 +45,7 @@ use crate::{
 };
 use atp_types::{OrderErrorCategory, OrderReceipt, OrderSubmission};
 use std::fmt;
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::time::Duration;
 
 // --------------------------------------------------------------------------- //
@@ -233,12 +233,16 @@ impl IbConnectionConfig {
         let host = std::env::var("ATP_IB_HOST").unwrap_or_else(|_| Self::DEFAULT_HOST.to_string());
         let live_port = Self::port_from_env("ATP_IB_LIVE_PORT", Self::DEFAULT_LIVE_PORT)?;
         let paper_port = Self::port_from_env("ATP_IB_PAPER_PORT", Self::DEFAULT_PAPER_PORT)?;
-        Ok(Self {
+        let config = Self {
             host,
             live_port,
             paper_port,
             client_id,
-        })
+        };
+        // Validate the host is a LITERAL IP at load (fail closed on a hostname) so a
+        // misconfiguration is caught before any IB-touching call — never mid-order.
+        config.ip()?;
+        Ok(config)
     }
 
     fn port_from_env(variable: &'static str, default: u16) -> Result<u16, IbConnectionConfigError> {
@@ -263,13 +267,39 @@ impl IbConnectionConfig {
             })
     }
 
-    /// The `host:port` socket address for the requested account kind.
-    pub fn socket_addr(&self, account: IbAccountKind) -> String {
-        let port = match account {
+    fn port(&self, account: IbAccountKind) -> u16 {
+        match account {
             IbAccountKind::Live => self.live_port,
             IbAccountKind::Paper => self.paper_port,
-        };
-        format!("{}:{}", self.host, port)
+        }
+    }
+
+    /// The `host:port` socket address string for the requested account kind (for
+    /// diagnostics / log messages).
+    pub fn socket_addr(&self, account: IbAccountKind) -> String {
+        format!("{}:{}", self.host, self.port(account))
+    }
+
+    /// Parse `host` as a **literal** [`IpAddr`]. The host must be a literal IP — a
+    /// hostname is rejected — because Phase 1 runs IB Gateway co-located
+    /// (`.env.example` `ATP_IB_HOST=127.0.0.1`) and forbidding name resolution keeps
+    /// an IB-touching call from hanging on a blocking/degraded DNS lookup that the
+    /// [`IB_CONNECT_TIMEOUT`] socket deadline cannot bound.
+    pub fn ip(&self) -> Result<IpAddr, IbConnectionConfigError> {
+        self.host
+            .trim()
+            .parse::<IpAddr>()
+            .map_err(|_| IbConnectionConfigError {
+                variable: "ATP_IB_HOST",
+                value: self.host.clone(),
+            })
+    }
+
+    /// The fully-resolved [`SocketAddr`] for the requested account — built from the
+    /// literal IP + port with **no DNS step**, so it is fully covered by the connect
+    /// deadline.
+    pub fn endpoint(&self, account: IbAccountKind) -> Result<SocketAddr, IbConnectionConfigError> {
+        Ok(SocketAddr::new(self.ip()?, self.port(account)))
     }
 }
 
@@ -438,56 +468,32 @@ impl TcpIbGateway {
     }
 
     /// Open the TCP session to headless IB Gateway (no TWS GUI; AC-2) with an
-    /// **explicit** [`IB_CONNECT_TIMEOUT`] deadline (`connect_timeout` on a resolved
-    /// `SocketAddr`, plus read/write timeouts on the stream) so a black-holed
-    /// Gateway host fails the adapter's budget instead of hanging on the OS TCP
-    /// timeout — a live-execution call must never block unbounded. Any failure is a
-    /// SYS-64-classifiable `CONNECTIVITY_BLOCKED` IB code (`502`).
+    /// **explicit** [`IB_CONNECT_TIMEOUT`] deadline (`connect_timeout` plus read/write
+    /// timeouts on the stream) so a black-holed Gateway fails the adapter's budget
+    /// instead of hanging — a live-execution call must never block unbounded. The
+    /// endpoint is a **literal** [`SocketAddr`] (the host is a validated literal IP,
+    /// [`IbConnectionConfig::ip`]), so there is **no DNS step** that could hang
+    /// outside the deadline. Any failure is a SYS-64-classifiable
+    /// `CONNECTIVITY_BLOCKED` IB code (`502`).
     pub fn connect(&self) -> Result<TcpStream, IbApiError> {
-        let addr = self.config.socket_addr(self.account);
         let blocked = |detail: String| IbApiError::new(IB_CODE_COULD_NOT_CONNECT, detail);
-        // Resolve to ALL candidate addresses and try each (a host may resolve to
-        // an IPv6 record first that is down, then a reachable IPv4 — connecting to
-        // only the first would falsely report the Gateway unreachable). Each
-        // attempt is bounded by IB_CONNECT_TIMEOUT; CONNECTIVITY_BLOCKED is only
-        // returned after every candidate fails.
-        let candidates: Vec<std::net::SocketAddr> = addr
-            .to_socket_addrs()
-            .map_err(|err| {
-                blocked(format!(
-                    "could not resolve IB Gateway address {addr}: {err}"
-                ))
-            })?
-            .collect();
-        if candidates.is_empty() {
-            return Err(blocked(format!(
-                "no socket address resolved for IB Gateway {addr}"
-            )));
-        }
-        let mut last_error = None;
-        for socket in &candidates {
-            match TcpStream::connect_timeout(socket, IB_CONNECT_TIMEOUT) {
-                Ok(stream) => {
-                    // Bound subsequent IB reads/writes to the same budget so a
-                    // half-open session cannot hang the live path either.
-                    stream
-                        .set_read_timeout(Some(IB_CONNECT_TIMEOUT))
-                        .and_then(|()| stream.set_write_timeout(Some(IB_CONNECT_TIMEOUT)))
-                        .map_err(|err| {
-                            blocked(format!("couldn't set IB Gateway socket timeouts: {err}"))
-                        })?;
-                    return Ok(stream);
-                }
-                Err(err) => last_error = Some(err),
-            }
-        }
-        Err(blocked(format!(
-            "couldn't connect to any of the {} resolved IB Gateway address(es) for {addr} \
-             within {:?} each: {}",
-            candidates.len(),
-            IB_CONNECT_TIMEOUT,
-            last_error.expect("non-empty candidates implies a last error")
-        )))
+        let socket = self
+            .config
+            .endpoint(self.account)
+            .map_err(|err| blocked(err.to_string()))?;
+        let stream = TcpStream::connect_timeout(&socket, IB_CONNECT_TIMEOUT).map_err(|err| {
+            blocked(format!(
+                "couldn't connect to headless IB Gateway at {socket} within {:?}: {err}",
+                IB_CONNECT_TIMEOUT
+            ))
+        })?;
+        // Bound subsequent IB reads/writes to the same budget so a half-open
+        // session cannot hang the live path either.
+        stream
+            .set_read_timeout(Some(IB_CONNECT_TIMEOUT))
+            .and_then(|()| stream.set_write_timeout(Some(IB_CONNECT_TIMEOUT)))
+            .map_err(|err| blocked(format!("couldn't set IB Gateway socket timeouts: {err}")))?;
+        Ok(stream)
     }
 
     fn live_wire_pending(operation: &str) -> IbApiError {
@@ -667,6 +673,23 @@ mod tests {
         );
         assert_eq!(config.socket_addr(IbAccountKind::Paper), "127.0.0.1:4002");
         assert_eq!(config.socket_addr(IbAccountKind::Live), "127.0.0.1:4001");
+        // The literal-IP endpoint carries no DNS step.
+        assert_eq!(
+            config.endpoint(IbAccountKind::Paper).unwrap(),
+            "127.0.0.1:4002".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn hostname_host_fails_closed_literal_ip_only() {
+        // A hostname (not a literal IP) is rejected: name resolution could hang an
+        // IB-touching call outside the connect deadline, so it must fail at config.
+        let bad = IbConnectionConfig::new("ib-gateway.local", 4001, 4002, 1);
+        assert!(bad.ip().is_err());
+        assert!(bad.endpoint(IbAccountKind::Paper).is_err());
+        // An IPv6 literal is accepted (it is still literal, no DNS).
+        let v6 = IbConnectionConfig::new("::1", 4001, 4002, 1);
+        assert!(v6.endpoint(IbAccountKind::Paper).is_ok());
     }
 
     #[test]

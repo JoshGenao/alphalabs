@@ -162,6 +162,27 @@ def test_check_catches_unbounded_connect():
         CHECK.check_live_transport_fails_closed(runtime, broken)
 
 
+def test_check_catches_dns_in_connect():
+    # A DNS resolution step inside connect() (unbounded by the socket deadline) must fail.
+    runtime = _runtime()
+    source = MODULE.read_text()
+    broken = source.replace(
+        "let stream = TcpStream::connect_timeout(&socket, IB_CONNECT_TIMEOUT)",
+        "let _ = socket.to_socket_addrs();\n        let stream = TcpStream::connect_timeout(&socket, IB_CONNECT_TIMEOUT)",
+    )
+    with pytest.raises(CHECK.IbAdapterContractError):
+        CHECK.check_live_transport_fails_closed(runtime, broken)
+
+
+def test_check_catches_unvalidated_host():
+    # Dropping the literal-IP host validation must fail the config check.
+    runtime = _runtime()
+    source = MODULE.read_text()
+    broken = source.replace("pub fn ip(", "pub fn xx(")
+    with pytest.raises(CHECK.IbAdapterContractError):
+        CHECK.check_config_fails_closed(runtime, broken)
+
+
 # --------------------------------------------------------------------------- #
 # 3. Scope honesty — serialized, operator-gated, stays passes:false
 # --------------------------------------------------------------------------- #

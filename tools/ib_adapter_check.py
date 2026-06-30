@@ -212,9 +212,14 @@ def check_live_transport_fails_closed(runtime: dict, source: str) -> str:
         fail(f"{struct}.connect must bound the socket with {timeout_const}")
     if "set_read_timeout" not in connect_block or "set_write_timeout" not in connect_block:
         fail(f"{struct}.connect must set read/write timeouts so a half-open session cannot hang")
+    # No DNS step inside connect — name resolution cannot be bounded by the socket
+    # deadline, so connect must use a literal SocketAddr (config endpoint), never
+    # to_socket_addrs.
+    if "to_socket_addrs" in connect_block:
+        fail(f"{struct}.connect must not resolve names (DNS can hang outside {timeout_const})")
     return (
         f"live transport {struct} fails closed via {sentinel} (no fabricated success) "
-        f"with an explicit {timeout_const} connect/read/write deadline"
+        f"with an explicit {timeout_const} connect/read/write deadline (no DNS step)"
     )
 
 
@@ -235,7 +240,17 @@ def check_config_fails_closed(runtime: dict, source: str) -> str:
         fail(f"{parser} must reject port 0 (a zero port is not a valid endpoint)")
     if error_type not in parser_block:
         fail(f"{parser} must return {error_type} on a malformed port (never coerce to a default)")
-    return f"config fails closed on malformed ATP_IB_* ports ({error_type} via {parser})"
+    # The host must be a validated literal IP (no DNS), and from_env must validate it
+    # at load so a hostname misconfiguration fails closed before any IB-touching call.
+    if "pub fn ip(" not in source or "parse::<IpAddr>()" not in source:
+        fail("config must validate ATP_IB_HOST as a literal IpAddr (no DNS resolution)")
+    from_env_block = _block(source, r"pub fn from_env\b", "fn from_env")
+    if ".ip()" not in from_env_block:
+        fail("from_env must validate the host (config.ip()) at load — fail closed on a hostname")
+    return (
+        f"config fails closed on malformed ATP_IB_* ports ({error_type} via {parser}) "
+        "and on a non-literal-IP host"
+    )
 
 
 def check_integration_test(runtime: dict) -> str:
@@ -249,12 +264,19 @@ def check_integration_test(runtime: dict) -> str:
         fail(f"{test} must be #[ignore] (binds fixed IB paper port {spec['paper_port']})")
     if spec["gate_env"] not in source:
         fail(f"{test} must be gated by {spec['gate_env']} (SyRS SYS-2e operator-initiated)")
+    # The gated test must FAIL CLOSED when explicitly invoked without the env gate —
+    # an early `return` would report a vacuous green for the documented flip gate.
+    test_block = _block(source, rf"fn {re.escape(test)}\b", f"fn {test}")
+    if "assert" not in test_block or spec["gate_env"] not in test_block:
+        fail(f"{test} must assert {spec['gate_env']} (fail closed), not silently return when unset")
+    if re.search(r"!=\s*Ok\(\"1\"\)\s*\{[^}]*return", test_block):
+        fail(f"{test} must not early-return on a missing {spec['gate_env']} (vacuous pass)")
     missing = [t for t in runtime["boundary_tests"] if f"fn {t}" not in source]
     if missing:
         fail(f"boundary tests missing from {spec['path']}: {', '.join(missing)}")
     return (
-        f"integration harness present: 1 operator-gated test ({test}) "
-        f"+ {len(runtime['boundary_tests'])} solo boundary tests"
+        f"integration harness present: 1 operator-gated test ({test}, fails closed without "
+        f"{spec['gate_env']}) + {len(runtime['boundary_tests'])} solo boundary tests"
     )
 
 

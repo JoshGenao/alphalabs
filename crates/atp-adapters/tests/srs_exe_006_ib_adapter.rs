@@ -300,10 +300,17 @@ fn connectionless_provider_is_not_configured_by_design() {
 #[test]
 #[ignore = "operator-initiated IB paper-account integration (ATP_RUN_INTEGRATION=1); binds fixed port 4002"]
 fn paper_account_round_trip() {
-    if std::env::var("ATP_RUN_INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping: set ATP_RUN_INTEGRATION=1 to run the IB paper-account integration");
-        return;
-    }
+    // #[ignore] keeps this out of the default (parallel-agent) run; once the operator
+    // explicitly invokes it (--ignored / by name) it is the SRS-EXE-006 flip gate, so
+    // a missing env gate must FAIL CLOSED — never return a vacuous green that looks
+    // like the IB paper account was exercised when nothing ran.
+    assert_eq!(
+        std::env::var("ATP_RUN_INTEGRATION").as_deref(),
+        Ok("1"),
+        "paper_account_round_trip is the SRS-EXE-006 operator flip gate: run it with \
+         ATP_RUN_INTEGRATION=1 against a headless IB paper account (port 4002). Refusing \
+         to report success without actually exercising IB.",
+    );
     let config = IbConnectionConfig::from_env(101).expect("valid ATP_IB_* configuration");
     let adapter = InteractiveBrokersBrokerage::new(TcpIbGateway::new(config, IbAccountKind::Paper));
 
