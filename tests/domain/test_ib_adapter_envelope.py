@@ -12,6 +12,11 @@ Paired with the safety-path change in ``crates/atp-adapters/src/interactive_brok
 3. **Scope honesty** — the architecture metadata marks the runtime ``serialized``
    and names the operator-initiated IB paper-account integration as the flip gate,
    and ``feature_list.json`` keeps SRS-EXE-006 ``passes:false``.
+
+This domain test is the paired safety pin for the SRS-EXE-006 substrate landed
+serialized (see ``progress.d/session-SRS-EXE-006.md``): the live TWS wire protocol
+is the operator-gated remainder, so the default surface ships only the
+deterministic, fully-tested half.
 """
 
 from __future__ import annotations
