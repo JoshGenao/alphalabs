@@ -108,6 +108,22 @@ def cargo_source(config: dict, root: Path = ROOT) -> str:
     return source_path.read_text(encoding="utf-8")
 
 
+def paper_accumulator_block(config: dict) -> dict:
+    block = contract_block(config)
+    if "paper_accumulator" not in block:
+        fail("sim_metrics_contract is missing paper_accumulator")
+    return block["paper_accumulator"]
+
+
+def paper_metrics_source(config: dict, root: Path = ROOT) -> str:
+    block = contract_block(config)
+    module = paper_accumulator_block(config)["module"]
+    source_path = root / block["simulation_crate"]["path"] / "src" / f"{module}.rs"
+    if not source_path.exists():
+        fail(f"source missing: {source_path.relative_to(root)}")
+    return source_path.read_text(encoding="utf-8")
+
+
 def _compact(text: str) -> str:
     """Strip all whitespace so rustfmt line-wrapping cannot hide a token."""
     return re.sub(r"\s+", "", text)
@@ -515,6 +531,80 @@ def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
     )
 
 
+def check_paper_accumulator(config: dict, src: str, root: Path = ROOT) -> str:
+    """SYS-86: a paper strategy must compute the SAME metric family as the backtest
+    engine. Assert the paper-side accumulator exists, produces the curve + trade log
+    from the SYS-84 ledger, reuses the shared metrics::compute, and fails closed on the
+    fabrication hazards (a missing/duplicate/non-monotonic mark)."""
+    spec = paper_accumulator_block(config)
+    compact_src = _compact(src)
+
+    if _compact(spec["struct_decl_token"]) not in compact_src:
+        fail(f"{spec['module']}.rs must declare `{spec['struct_decl_token']}`")
+    for method in spec["methods"]:
+        if _compact(method) not in compact_src:
+            fail(
+                f"{spec['struct']} must expose `{method}` so a paper strategy accumulates fills "
+                "and marks and computes the family"
+            )
+    # The accumulator must REUSE the shared family, not re-derive the math.
+    for key in ("import_token", "compute_call_token"):
+        if _compact(spec["compute_reuse"][key]) not in compact_src:
+            fail(
+                f"{spec['module']}.rs must delegate to the shared metrics family "
+                f"(missing `{spec['compute_reuse'][key]}`) so paper and backtest metrics are identical"
+            )
+    # Net liquidation is marked through the ledger primitive (mark * quantity).
+    if _compact(spec["ledger_primitive"]["usage_token"]) not in compact_src:
+        fail(
+            f"{spec['module']}.rs must mark positions via "
+            f"`{spec['ledger_primitive']['usage_token']}` (net-liq = cash + sum(market value))"
+        )
+    # The fail-closed guards that stop fabricated equity.
+    for key, label in (
+        ("missing_mark_token", "a missing mark for an open position (would value it at zero)"),
+        ("duplicate_mark_token", "a duplicate symbol in one mark instant"),
+        ("non_monotonic_mark_token", "a non-strictly-increasing mark timestamp"),
+        ("non_monotonic_fill_token", "a backwards fill"),
+        (
+            "fill_before_mark_token",
+            "a fill at or before an already-recorded mark (time-incoherent curve)",
+        ),
+        (
+            "mark_before_fill_token",
+            "a mark earlier than an already-applied fill (future-position equity)",
+        ),
+        ("non_positive_starting_cash_token", "a non-positive starting cash baseline"),
+    ):
+        if _compact(spec["fail_closed"][key]) not in compact_src:
+            fail(f"{spec['module']}.rs must fail closed on {label} (`{spec['fail_closed'][key]}`)")
+    # The lib re-export, the ledger primitive declaration, and the operator CLI exist.
+    if _compact(spec["lib_reexport_token"]) not in _compact(lib_source(config, root)):
+        fail(f"lib.rs must re-export the accumulator (`{spec['lib_reexport_token']}`)")
+    ledger_path = root / spec["ledger_primitive"]["decl_path"]
+    if not ledger_path.exists():
+        fail(f"ledger source missing: {spec['ledger_primitive']['decl_path']}")
+    if _compact(spec["ledger_primitive"]["decl_token"]) not in _compact(
+        ledger_path.read_text(encoding="utf-8")
+    ):
+        fail(
+            f"virtual_ledger.rs must declare the net-liq primitive "
+            f"`{spec['ledger_primitive']['decl_token']}`"
+        )
+    bin_path = root / spec["cli_bin_path"]
+    if not bin_path.exists():
+        fail(f"operator CLI missing: {spec['cli_bin_path']}")
+    return (
+        f"atp-simulation declares {spec['struct']} ({spec['module']}.rs): it accumulates the "
+        "mark-to-market net-liq equity curve + trade log from the SYS-84 ledger and delegates to "
+        "the shared metrics::compute (SYS-86 -- paper computes the SAME family as the backtest, "
+        f"proven equal by the {spec['parity_test']} integration test), failing closed on a "
+        "missing/duplicate/non-monotonic mark and on a fill/mark stream that interleaves out of "
+        f"chronological order (FillBeforeMark / MarkBeforeFill); the {spec['cli_bin']} CLI is the "
+        "operator surface"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Coverage and entry point
 # --------------------------------------------------------------------------- #
@@ -541,11 +631,13 @@ _STATIC_CHECKS = (
     ("module_reexport", check_module_reexport, "lib"),
     ("no_broker_dependency", check_no_broker_dependency, "cargo"),
     ("vendor_isolation", check_vendor_isolation, "metrics"),
+    ("paper_accumulator", check_paper_accumulator, "paper_metrics"),
 )
 
 _DEFERRED_OWNERS = (
     "live dashboard performance reporting (SRS-UI / SRS-API; SYS-36 <= 5s refresh)",
-    "paper/live runtime metric accumulators (the SRS-SIM-004 snapshot metrics slot)",
+    "the live runtime that SUPPLIES the paper accumulator's marks (SYS-70 feed) + its persisted/dashboard wiring "
+    "(the deterministic paper accumulator itself now exists -- paper_metrics.rs)",
     "SRS-BT-005 benchmark resolution + report identification (SYS-17, SYS-37)",
     "SRS-BT-006 factor analysis / tear-sheet (atp-factor-pipeline)",
 )
@@ -557,6 +649,7 @@ def assert_sim_metrics_static(config: dict, root: Path = ROOT) -> list[str]:
         "metrics": metrics_source(config, root),
         "lib": lib_source(config, root),
         "cargo": cargo_source(config, root),
+        "paper_metrics": paper_metrics_source(config, root),
     }
     return [check(config, sources[source_key]) for _, check, source_key in _STATIC_CHECKS]
 

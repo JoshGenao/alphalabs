@@ -119,11 +119,27 @@ pub mod paper_state;
 /// clock) so identical inputs yield identical metrics (SRS-BT-010). A metric that is
 /// undefined on the input is reported `None` rather than a fabricated zero, and a
 /// non-finite result fails closed. The same family serves backtest, paper, and live
-/// reporting (SYS-86); the live dashboard path, the paper/live runtime accumulators
-/// that feed it (the SRS-SIM-004 snapshot reserves the metrics slot for them), and
-/// the SRS-BT-005 benchmark-resolution surface are deferred, so SRS-BT-004 stays
-/// `passes:false`.
+/// reporting (SYS-86); the backtest path computes it from a [`backtest::BacktestResult`]
+/// and the paper path from the [`paper_metrics`] accumulator, while the live dashboard
+/// reporting path and the runtime that supplies the accumulator's marks (SYS-70 feed)
+/// remain deferred, so SRS-BT-004 stays `passes:false`.
 pub mod metrics;
+
+/// The paper-strategy metric ACCUMULATOR (SRS-BT-004 / SyRS SYS-86). SYS-86 requires the
+/// internal simulation engine to compute the SAME [`metrics`] family for paper strategies
+/// as the backtest engine and live dashboard. This module is the paper-side producer of
+/// the two primitives [`metrics::compute`] consumes: it accumulates the mark-to-market
+/// net-liquidation equity curve (`cash + sum(position * mark)`, the identical quantity the
+/// backtest engine marks) and the trade log from the SYS-84 [`virtual_ledger`] and the
+/// simulated [`sim::PaperFill`] stream, then feeds them to the shared family — so a paper
+/// run reports the metrics a backtest of the same activity would (a crate integration test
+/// asserts the equality). It fails closed on a missing mark for an open position, a
+/// non-positive/duplicate mark, or a non-monotonic mark/fill, and reads no clock/RNG so it
+/// stays deterministic. The accumulator is demonstrable solo over fixtures; the runtime that
+/// SUPPLIES the marks at production time (the SYS-70 subscription feed) and the live
+/// dashboard / SRS-SIM-004 persisted-slot wiring are the deferred owners, so SRS-BT-004
+/// stays `passes:false`.
+pub mod paper_metrics;
 
 /// Benchmark selection, resolution, and comparison (SRS-BT-005 / SyRS SYS-17, SYS-36,
 /// SYS-37). It wraps the [`metrics`] family: [`benchmark::BenchmarkSelection`] resolves

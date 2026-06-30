@@ -61,9 +61,11 @@ from metrics_check import (  # noqa: E402
     check_fail_closed,
     check_nan_guard,
     check_no_broker_dependency,
+    check_paper_accumulator,
     check_vendor_isolation,
     load_config,
     metrics_source,
+    paper_metrics_source,
 )
 
 
@@ -240,6 +242,56 @@ def test_win_rate_flip_attributes_cost_to_close() -> None:
         _run_cargo_test("srs_bt_004_win_rate_flip_attributes_cost_to_close"),
         "SRS-BT-004 flip cost attribution",
     )
+
+
+def test_paper_metrics_match_the_backtest_family() -> None:
+    # SYS-86 safety core: the internal simulation engine must compute the SAME metric
+    # family for a paper strategy that the backtest engine computes, or an operator would
+    # rank a paper strategy against a backtest on incomparable numbers. The integration
+    # test drives a real backtest AND the paper accumulator from the same activity and
+    # asserts the metric families are equal.
+    _assert_one_passed(
+        _run_cargo_test("srs_bt_004_paper_metrics_match_the_backtest_family"),
+        "SRS-BT-004 paper/backtest metric parity",
+    )
+
+
+def test_paper_metrics_match_the_backtest_family_with_costs() -> None:
+    # The parity must survive transaction costs (the cost decomposition flows into both
+    # the cash curve and the net-of-cost win rate identically on both paths).
+    _assert_one_passed(
+        _run_cargo_test("srs_bt_004_paper_metrics_match_the_backtest_family_with_costs"),
+        "SRS-BT-004 paper/backtest parity with costs",
+    )
+
+
+def test_paper_accumulator_fails_closed_on_a_missing_mark() -> None:
+    config = load_config()
+    # The real paper accumulator computes the family from the SYS-84 ledger and delegates
+    # to the shared metrics::compute (so paper == backtest), failing closed on the
+    # fabricated-equity hazards.
+    check_paper_accumulator(config, paper_metrics_source(config))
+    # ...and the headline guard must not be vacuous: dropping the MissingMark rejection
+    # would let an open position with no supplied mark be silently valued at zero --
+    # a fabricated net-liquidation equity, the worst failure mode for this accumulator.
+    mutated = paper_metrics_source(config).replace(
+        "PaperMetricsError::MissingMark", "PaperMetricsError::Overflow"
+    )
+    with pytest.raises(MetricsCheckError):
+        check_paper_accumulator(config, mutated)
+
+
+def test_paper_accumulator_enforces_cross_stream_ordering() -> None:
+    config = load_config()
+    # Coherence safety: the fill and mark streams must stay in chronological lockstep, or
+    # a fill at/before an already-recorded mark (or a mark before an applied fill) would
+    # fabricate a time-incoherent equity curve that metrics::compute cannot detect.
+    check_paper_accumulator(config, paper_metrics_source(config))
+    # ...and the guards must not be vacuous: dropping either cross-stream rejection is caught.
+    for token in ("PaperMetricsError::FillBeforeMark", "PaperMetricsError::MarkBeforeFill"):
+        mutated = paper_metrics_source(config).replace(token, "PaperMetricsError::Overflow")
+        with pytest.raises(MetricsCheckError):
+            check_paper_accumulator(config, mutated)
 
 
 def test_metrics_crate_has_no_broker_dependency() -> None:

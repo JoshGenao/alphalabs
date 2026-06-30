@@ -54,6 +54,7 @@ from metrics_check import (  # noqa: E402
     check_nan_guard,
     check_no_broker_dependency,
     check_numeric_boundary,
+    check_paper_accumulator,
     check_run_coherence,
     check_undefined_semantics,
     check_vendor_isolation,
@@ -61,6 +62,7 @@ from metrics_check import (  # noqa: E402
     lib_source,
     load_config,
     metrics_source,
+    paper_metrics_source,
     run_checks,
 )
 
@@ -101,6 +103,8 @@ class MetricsScriptTest(unittest.TestCase):
             "lib.rs re-exports `pub mod metrics;`",
             "Cargo.toml declares no dependency on the live/broker path (atp-adapters, atp-execution)",
             "metrics module is free of all 5 forbidden vendor SDK tokens",
+            "declares PaperMetricsAccumulator (paper_metrics.rs)",
+            "paper computes the SAME family as the backtest",
             "feature_list.json keeps SRS-BT-004 passes:false",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
@@ -112,6 +116,7 @@ class _Fixture(unittest.TestCase):
         self.src = metrics_source(self.config)
         self.lib_src = lib_source(self.config)
         self.cargo_src = cargo_source(self.config)
+        self.paper_src = paper_metrics_source(self.config)
 
 
 class MetricsStructTest(_Fixture):
@@ -438,6 +443,60 @@ class VendorIsolationTest(_Fixture):
         self.assertIn("ib_insync", str(ctx.exception))
 
 
+class PaperAccumulatorTest(_Fixture):
+    """SYS-86: the paper accumulator computes the SAME family as the backtest engine."""
+
+    def test_paper_accumulator_evidence(self) -> None:
+        evidence = check_paper_accumulator(self.config, self.paper_src)
+        self.assertIn("PaperMetricsAccumulator", evidence)
+        self.assertIn("SAME family as the backtest", evidence)
+
+    def test_missing_struct_is_caught(self) -> None:
+        mutated = self.paper_src.replace(
+            "pub struct PaperMetricsAccumulator", "pub struct RenamedAccumulator", 1
+        )
+        with self.assertRaises(MetricsCheckError) as ctx:
+            check_paper_accumulator(self.config, mutated)
+        self.assertIn("PaperMetricsAccumulator", str(ctx.exception))
+
+    def test_dropped_missing_mark_guard_is_caught(self) -> None:
+        # Removing the MissingMark guard would let an open position with no supplied
+        # mark be silently valued at zero -- a fabricated-equity bug.
+        mutated = self.paper_src.replace(
+            "PaperMetricsError::MissingMark", "PaperMetricsError::Overflow"
+        )
+        with self.assertRaises(MetricsCheckError) as ctx:
+            check_paper_accumulator(self.config, mutated)
+        self.assertIn("missing mark", str(ctx.exception).lower())
+
+    def test_dropped_cross_stream_ordering_guard_is_caught(self) -> None:
+        # Dropping either cross-stream coherence guard would let an out-of-order fill/mark
+        # interleaving fabricate a time-incoherent equity curve.
+        for token, needle in (
+            ("PaperMetricsError::FillBeforeMark", "already-recorded mark"),
+            ("PaperMetricsError::MarkBeforeFill", "already-applied fill"),
+        ):
+            mutated = self.paper_src.replace(token, "PaperMetricsError::Overflow")
+            with self.assertRaises(MetricsCheckError) as ctx:
+                check_paper_accumulator(self.config, mutated)
+            self.assertIn(needle, str(ctx.exception))
+
+    def test_dropped_compute_reuse_is_caught(self) -> None:
+        # The accumulator must DELEGATE to the shared metrics::compute, not re-derive
+        # the math (else paper and backtest metrics could diverge).
+        mutated = self.paper_src.replace("use crate::metrics::{", "use crate::nowhere::{", 1)
+        with self.assertRaises(MetricsCheckError) as ctx:
+            check_paper_accumulator(self.config, mutated)
+        self.assertIn("shared metrics family", str(ctx.exception).lower())
+
+    def test_dropped_ledger_marking_is_caught(self) -> None:
+        # Net liquidation must mark through the ledger primitive (mark * quantity).
+        mutated = self.paper_src.replace("market_value_minor(mark_minor)", "0i128.into_inner()")
+        with self.assertRaises(MetricsCheckError) as ctx:
+            check_paper_accumulator(self.config, mutated)
+        self.assertIn("net-liq", str(ctx.exception).lower())
+
+
 class CargoSmokeTest(unittest.TestCase):
     """The runnable metric path must compile where it matters."""
 
@@ -454,12 +513,12 @@ class CargoSmokeTest(unittest.TestCase):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_twenty_items(self) -> None:
-        # 19 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(run_checks()), 20)
+    def test_run_checks_emits_twenty_one_items(self) -> None:
+        # 20 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(run_checks()), 21)
 
-    def test_static_evidence_is_nineteen_items(self) -> None:
-        self.assertEqual(len(assert_sim_metrics_static(load_config(), ROOT)), 19)
+    def test_static_evidence_is_twenty_items(self) -> None:
+        self.assertEqual(len(assert_sim_metrics_static(load_config(), ROOT)), 20)
 
 
 if __name__ == "__main__":

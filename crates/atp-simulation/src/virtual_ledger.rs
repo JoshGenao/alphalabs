@@ -295,6 +295,34 @@ impl VirtualPosition {
             .ok_or(LedgerError::Overflow)
     }
 
+    /// The position's gross MARKET VALUE in minor units, marked against
+    /// `mark_minor` (the last trade price): `mark * quantity`. Positive for a long,
+    /// negative for a short, exactly zero for a flat position. Fails closed with
+    /// [`LedgerError::NonPositiveMark`] on a non-positive mark -- the SAME
+    /// corrupt-quote guard as [`unrealized_pnl_minor`](Self::unrealized_pnl_minor)
+    /// -- so a bad quote can never produce a fabricated valuation.
+    ///
+    /// This is the net-liquidation building block the paper metric accumulator
+    /// ([`crate::paper_metrics`]) sums across a strategy's positions: net
+    /// liquidation equity is `cash + sum(market_value)`, which is exactly the
+    /// backtest engine's `cash + position * close` mark-to-market, so paper and
+    /// backtest equity curves -- and therefore the SRS-BT-004 metric family --
+    /// coincide for the same activity (SYS-86). It equals
+    /// `cost_basis + unrealized_pnl` (a pinned test asserts this), so the marking
+    /// surfaces stay consistent by construction; it returns the gross valuation the
+    /// accumulator needs without the caller re-adding the basis.
+    pub fn market_value_minor(&self, mark_minor: i64) -> Result<i128, LedgerError> {
+        if mark_minor <= 0 {
+            return Err(LedgerError::NonPositiveMark { mark_minor });
+        }
+        if self.quantity == 0 {
+            return Ok(0);
+        }
+        i128::from(mark_minor)
+            .checked_mul(i128::from(self.quantity))
+            .ok_or(LedgerError::Overflow)
+    }
+
     /// Apply a priced [`PaperFill`] with average-cost accounting. Opens/adds,
     /// reduces/closes, or flips the position through zero per the module-level
     /// rules, and accumulates the fill's full transaction-cost decomposition
@@ -879,6 +907,63 @@ mod tests {
     fn flat_position_has_zero_unrealized() {
         let pos = VirtualPosition::new();
         assert_eq!(pos.unrealized_pnl_minor(&snapshot(10_000)), Ok(0));
+    }
+
+    #[test]
+    fn market_value_marks_long_and_short_gross_of_basis() {
+        // Market value is the GROSS valuation `mark * quantity` (not netted against
+        // basis), so the paper accumulator can sum it with cash for net-liq equity.
+        let mut long = VirtualPosition::new();
+        long.apply_fill(&fill("AAPL", 100, 10_000, 0)).expect("buy");
+        assert_eq!(long.market_value_minor(10_500), Ok(1_050_000));
+
+        let mut short = VirtualPosition::new();
+        short
+            .apply_fill(&fill("AAPL", -100, 10_000, 0))
+            .expect("short");
+        // A short's market value is negative (a liability to buy back): -100 * 9_500.
+        assert_eq!(short.market_value_minor(9_500), Ok(-950_000));
+    }
+
+    #[test]
+    fn market_value_equals_cost_basis_plus_unrealized() {
+        // The two marking surfaces are consistent by construction:
+        // market_value == cost_basis + unrealized_pnl for any mark. This keeps the
+        // accumulator's net-liq math reconciled with the ledger's P&L accounting.
+        for &(quantity, fill_price, mark) in
+            &[(100_i64, 10_000_i64, 10_500_i64), (-100, 10_000, 9_500)]
+        {
+            let mut pos = VirtualPosition::new();
+            pos.apply_fill(&fill("AAPL", quantity, fill_price, 0))
+                .expect("open");
+            let market_value = pos.market_value_minor(mark).expect("market value");
+            let unrealized = pos
+                .unrealized_pnl_minor(&snapshot(mark))
+                .expect("unrealized");
+            assert_eq!(market_value, pos.cost_basis_minor() + unrealized);
+        }
+    }
+
+    #[test]
+    fn flat_position_has_zero_market_value() {
+        let pos = VirtualPosition::new();
+        assert_eq!(pos.market_value_minor(10_000), Ok(0));
+    }
+
+    #[test]
+    fn market_value_fails_closed_on_non_positive_mark() {
+        let mut pos = VirtualPosition::new();
+        pos.apply_fill(&fill("AAPL", 100, 10_000, 0)).expect("buy");
+        // A corrupt (non-positive) mark must never fabricate a valuation -- the same
+        // fail-closed guard the unrealized-P&L surface enforces.
+        assert_eq!(
+            pos.market_value_minor(0),
+            Err(LedgerError::NonPositiveMark { mark_minor: 0 })
+        );
+        assert_eq!(
+            pos.market_value_minor(-5),
+            Err(LedgerError::NonPositiveMark { mark_minor: -5 })
+        );
     }
 
     #[test]

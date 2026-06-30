@@ -14,6 +14,8 @@ use atp_simulation::backtest::{
 };
 use atp_simulation::cost::CostConfig;
 use atp_simulation::metrics::{compute, Benchmark, BenchmarkPoint, MetricsConfig, MetricsError};
+use atp_simulation::paper_metrics::PaperMetricsAccumulator;
+use atp_simulation::sim::PaperFill;
 use atp_types::StrategyId;
 
 /// A fixture catalog of close-only bars that honors the requested window.
@@ -678,4 +680,132 @@ fn srs_bt_004_win_rate_flip_attributes_cost_to_close() {
     .win_rate;
     assert_eq!(flip_wr, Some(0.0));
     assert_eq!(flip_wr, cto_wr);
+}
+
+/// Drive a [`PaperMetricsAccumulator`] from a completed backtest's bars + trade log,
+/// reproducing the engine's fill-then-mark order within each bar: apply every fill at a
+/// bar's timestamp (mapping each [`Fill`] back to a [`PaperFill`] whose `cash_delta_minor`
+/// is the engine's `-(notional) - cost`), then mark the bar at its close. This is exactly
+/// what a paper runtime does over a live feed -- here the "feed" is the fixture bars.
+fn drive_paper_from_backtest(
+    bars: &[BacktestBar],
+    result: &BacktestResult,
+) -> PaperMetricsAccumulator {
+    let mut accumulator =
+        PaperMetricsAccumulator::new(STARTING_CASH_MINOR).expect("positive starting cash");
+    let mut fill_index = 0;
+    for bar in bars {
+        while fill_index < result.trade_log.len() && result.trade_log[fill_index].ts == bar.ts {
+            let fill = &result.trade_log[fill_index];
+            let total_cost = i128::from(fill.commission_minor)
+                + i128::from(fill.slippage_minor)
+                + i128::from(fill.spread_impact_minor);
+            let cash_delta =
+                -(i128::from(fill.quantity) * i128::from(fill.price_minor)) - total_cost;
+            let paper_fill = PaperFill {
+                ts: fill.ts,
+                symbol: fill.symbol.clone(),
+                quantity: fill.quantity,
+                price_minor: fill.price_minor,
+                commission_minor: fill.commission_minor,
+                slippage_minor: fill.slippage_minor,
+                spread_impact_minor: fill.spread_impact_minor,
+                cash_delta_minor: i64::try_from(cash_delta).expect("cash delta fits i64"),
+            };
+            accumulator
+                .apply_fill(&paper_fill)
+                .expect("paper fill applies");
+            fill_index += 1;
+        }
+        accumulator
+            .mark(bar.ts, &[(bar.symbol.clone(), bar.close_minor)])
+            .expect("mark applies");
+    }
+    accumulator
+}
+
+#[test]
+fn srs_bt_004_paper_metrics_match_the_backtest_family() {
+    // SYS-86: the internal simulation engine must compute the SAME metric family for a
+    // paper strategy that the backtest engine computes, so the two are directly
+    // comparable. Run a real backtest, then drive the paper accumulator from the same
+    // bars + fills and assert it reproduces the engine's exact equity curve, trade log,
+    // and -- against the same benchmark -- the exact eight metrics.
+    let bars = vec![
+        bar(1, 100),
+        bar(2, 120),
+        bar(3, 90),
+        bar(4, 130),
+        bar(5, 125),
+    ];
+    let result = run_backtest(bars.clone(), 10, 5);
+    let accumulator = drive_paper_from_backtest(&bars, &result);
+
+    // The accumulator independently reconstructs the engine's net-liq equity curve
+    // (cash + position * close) and the identical trade log.
+    assert_eq!(accumulator.equity_curve(), result.equity_curve.as_slice());
+    assert_eq!(accumulator.trade_log(), result.trade_log.as_slice());
+
+    let benchmark = Benchmark::spy();
+    let levels = aligned_benchmark(&result, 400, &[400, 420, 380, 430, 425]);
+    let config = MetricsConfig::default();
+    let paper_metrics = accumulator
+        .compute_metrics(&benchmark, Some(&levels), &config)
+        .expect("paper metrics computed");
+    let backtest_metrics = compute(
+        STARTING_CASH_MINOR,
+        &result.equity_curve,
+        &result.trade_log,
+        &benchmark,
+        Some(&levels),
+        &config,
+    )
+    .expect("backtest metrics computed");
+
+    // The whole point of SYS-86: identical activity -> identical metric family.
+    assert_eq!(paper_metrics, backtest_metrics);
+    // And the family is genuinely populated (not a vacuous all-None equality): the
+    // round trip won, with a real drawdown and a defined benchmark beta.
+    assert_eq!(paper_metrics.win_rate, Some(1.0));
+    assert!(paper_metrics.max_drawdown.unwrap() > 0.0);
+    assert!(paper_metrics.beta.is_some());
+    assert_eq!(paper_metrics.benchmark_symbol, "SPY");
+}
+
+#[test]
+fn srs_bt_004_paper_metrics_match_the_backtest_family_with_costs() {
+    // The parity must hold WITH transaction costs too (the cost decomposition flows into
+    // both the cash curve and the net-of-cost win rate identically on both paths).
+    let bars = vec![bar(1, 100), bar(2, 110), bar(3, 105), bar(4, 108)];
+    let mut request_strategy = RoundTrip { lot: 8, sell_ts: 4 };
+    let catalog = FixtureCatalog { bars: bars.clone() };
+    let request = BacktestRequest {
+        strategy_id: StrategyId::new("bt-004-cost"),
+        symbol: "AAPL".to_string(),
+        data_source: BacktestDataSource::SystemData,
+        range: DateRange::new(0, 100),
+        starting_cash_minor: STARTING_CASH_MINOR,
+        // A non-default cost config so commission/slippage/spread are non-zero on the fills.
+        cost_config: CostConfig::default(),
+    };
+    let result = BacktestEngine::new()
+        .run(&request, &mut request_strategy, &catalog)
+        .expect("backtest runs");
+    let accumulator = drive_paper_from_backtest(&bars, &result);
+
+    assert_eq!(accumulator.equity_curve(), result.equity_curve.as_slice());
+    let config = MetricsConfig::default();
+    let paper_metrics = accumulator
+        .compute_metrics(&Benchmark::spy(), None, &config)
+        .expect("paper metrics computed");
+    let backtest_metrics = compute(
+        STARTING_CASH_MINOR,
+        &result.equity_curve,
+        &result.trade_log,
+        &Benchmark::spy(),
+        None,
+        &config,
+    )
+    .expect("backtest metrics computed");
+    assert_eq!(paper_metrics, backtest_metrics);
 }

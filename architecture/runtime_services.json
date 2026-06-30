@@ -5482,6 +5482,40 @@
       ]
     },
     "rust_integration_test": "srs_bt_004_metrics",
+    "paper_accumulator": {
+      "description": "SYS-86 requires the internal simulation engine to compute the SAME metric family for paper strategies that the backtest engine computes. crates/atp-simulation/src/paper_metrics.rs is the paper-side PRODUCER of the two primitives metrics::compute consumes: PaperMetricsAccumulator accumulates the mark-to-market net-liquidation equity curve (cash + sum(position * mark), the identical quantity the backtest engine marks via cash + position * close) and the trade log from the SYS-84 virtual ledger (StrategyLedger) and the simulated PaperFill stream, then delegates to the shared metrics::compute on compute_metrics(). market_value_minor on VirtualPosition (virtual_ledger.rs) is the net-liq building block (mark * quantity, == cost_basis + unrealized_pnl, fail-closed on a non-positive mark). The accumulator fails closed on a missing mark for an open position (MissingMark -- never value a held position at zero), a duplicate symbol within one mark instant (DuplicateMark), a non-strictly-increasing mark timestamp (NonMonotonicMarkTimestamps) or a backwards fill (NonMonotonicFill), and a non-positive starting cash baseline (NonPositiveStartingCash). It also enforces CROSS-STREAM chronological coherence between the fill and mark streams: a fill at or before an already-recorded mark is rejected (FillBeforeMark -- it would retroactively change a position the curve has already valued), and a mark earlier than the latest applied fill is rejected (MarkBeforeFill -- it would value a past instant using a future position), so an out-of-order interleaving cannot fabricate a time-incoherent equity curve that metrics::compute (seeing only a monotonic curve and an in-window fill) could not detect; the legitimate within-bar apply-fills-then-mark order (equal timestamps) is permitted. It reads no clock/RNG so it is deterministic. The srs_bt_004_metrics integration test drives a real BacktestEngine and this accumulator from the same activity and asserts the metric families are EQUAL (srs_bt_004_paper_metrics_match_the_backtest_family, plus a with-costs variant). The sim_paper_metrics_cli binary renders the eight paper metrics and a parity subcommand that prints paper-backtest-parity:true only when every metric matches. This closes the in-scope paper-accumulator half; the live runtime that SUPPLIES the marks (SYS-70 feed) and the dashboard/persisted-slot wiring stay deferred, so SRS-BT-004 keeps passes:false.",
+      "module": "paper_metrics",
+      "module_path": "crates/atp-simulation/src/paper_metrics.rs",
+      "struct": "PaperMetricsAccumulator",
+      "struct_decl_token": "pub struct PaperMetricsAccumulator",
+      "lib_reexport_token": "pub mod paper_metrics;",
+      "methods": [
+        "pub fn apply_fill",
+        "pub fn mark",
+        "pub fn compute_metrics"
+      ],
+      "compute_reuse": {
+        "import_token": "use crate::metrics::{",
+        "compute_call_token": "compute("
+      },
+      "ledger_primitive": {
+        "decl_path": "crates/atp-simulation/src/virtual_ledger.rs",
+        "decl_token": "pub fn market_value_minor",
+        "usage_token": "market_value_minor(mark_minor)"
+      },
+      "fail_closed": {
+        "missing_mark_token": "PaperMetricsError::MissingMark",
+        "duplicate_mark_token": "PaperMetricsError::DuplicateMark",
+        "non_monotonic_mark_token": "PaperMetricsError::NonMonotonicMarkTimestamps",
+        "non_monotonic_fill_token": "PaperMetricsError::NonMonotonicFill",
+        "fill_before_mark_token": "PaperMetricsError::FillBeforeMark",
+        "mark_before_fill_token": "PaperMetricsError::MarkBeforeFill",
+        "non_positive_starting_cash_token": "PaperMetricsError::NonPositiveStartingCash"
+      },
+      "cli_bin": "sim_paper_metrics_cli",
+      "cli_bin_path": "crates/atp-simulation/src/bin/sim_paper_metrics_cli.rs",
+      "parity_test": "srs_bt_004_paper_metrics_match_the_backtest_family"
+    },
     "vendor_forbidden_tokens": [
       "interactive_brokers",
       "ib_insync",
@@ -5495,8 +5529,8 @@
         "what": "SYS-16 / SYS-86 require these metrics to be reported for completed backtests, paper strategies, AND the live dashboard. This slice ships the deterministic computation, but the dashboard/API path that surfaces them at a <= 5s refresh (SYS-36) is the SRS-UI / SRS-API owner, so the live-reporting half is deferred and feature_list.json keeps SRS-BT-004 passes:false."
       },
       {
-        "feature": "Paper/live runtime metric accumulators",
-        "what": "Computing the family for a paper or live strategy needs a runtime that accumulates the mark-to-market equity curve and trade log over the strategy's life and feeds this module on demand. The SRS-SIM-004 snapshot reserves a metrics slot for exactly this accumulated state (still empty until an accumulator exists). The accumulator is owned by the paper/live execution runtime, so the paper/live half is deferred."
+        "feature": "Paper/live runtime metric accumulators: the LIVE-FEED supply and the persisted/dashboard wiring",
+        "what": "The deterministic, dependency-free paper-side accumulator now EXISTS (paper_accumulator above: PaperMetricsAccumulator in paper_metrics.rs), so a paper strategy computes the SAME metric family the backtest engine does (proven equal in the srs_bt_004_metrics integration test, demonstrable over fixtures via sim_paper_metrics_cli). What remains deferred is the RUNTIME that supplies the accumulator's marks at production time -- marking each open position against the live/paper market-data feed (SYS-70 subscription manager) on the strategy's cadence -- and the wiring that feeds the accumulated family into the SRS-SIM-004 persisted metrics slot (still empty until that runtime populates it) and onto the live dashboard. Those owners are the paper/live execution runtime and SRS-UI / SRS-API, so the end-to-end runtime half stays deferred and feature_list.json keeps SRS-BT-004 passes:false."
       },
       {
         "feature": "Producers supplying the pre-trade baseline to compute",
