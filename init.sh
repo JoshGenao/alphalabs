@@ -196,6 +196,13 @@ if ! python3 tools/log_record_check.py >/dev/null; then
   exit 1
 fi
 
+echo "→ Running log persistence contract check..."
+if ! python3 tools/log_persistence_check.py >/dev/null; then
+  echo "✗ Environment failed"
+  echo "  Log persistence contract check failed; run python3 tools/log_persistence_check.py for detail."
+  exit 1
+fi
+
 echo "→ Running brokerage adapter contract check..."
 if ! python3 tools/adapter_check.py >/dev/null; then
   echo "✗ Environment failed"

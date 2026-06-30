@@ -3229,7 +3229,7 @@
     ]
   },
   "log_record_contract": {
-    "description": "SDK-surface contract for SRS-LOG-001 (separate persistent system logs from user strategy logs; render each entry with timestamp / severity / source / event type / message / correlation ID; both classes viewable from the dashboard). SCOPE: this contract covers the *structured record schema* + *sink-routing boundary* halves of SRS-LOG-001 only. (a) The LogRecord dataclass + Severity / Source / LogClass StrEnums pin the six AC-named fields + the SRS-LOG-001 separation discriminant + the optional strategy_id that the strategy half requires. (b) The RoutedLogDispatcher + LogSink Protocol pin the seam SRS-LOG-001's persistent sinks plug into when they land; the dispatcher validates the schema at the dispatch boundary and routes on log_class so a SYSTEM record cannot land in the strategy sink or vice versa. (c) EVENT_TYPES_BY_SOURCE pins the SyRS SYS-61 / SRS-LOG-001 enumerations of system event types (order routing decisions/outcomes, ingestion start/completion/failure, container start/stop/restart/OOM-kill, IB Gateway connect/disconnect/reconnect, kill switch activations, Hot-Swap promotion/demotion, resource threshold alerts, market data subscription changes). The DEFERRED halves are: (1) the concrete persistent sinks (file / SQLite / Loki / whatever the runtime picks) owned by SRS-LOG-001's runtime half; (2) the dashboard log pane rendering owned by SRS-UI-001; (3) the live GET /api/v1/logs REST handler body owned by SRS-API-001; (4) the LOGS WebSocket channel publisher owned by SRS-API-001; (5) the admin logs CLI runner owned by SRS-API-001's operator-interface-runtime; (6) the audit-log retention + rotation policy owned by SRS-LOG-001. Until those land, SRS-LOG-001 stays passes:false in feature_list.json; the SDK-surface here is the seam those features will plug into. Identical to the SDK-004 / SDK-005 / ERR-9 / SRS-API-001 partial-pass pattern. The cross-language source of truth lives here; Rust core runtime services that emit logs re-implement the same record locally per the AGENTS.md dependency direction (Rust core must not depend on the Python SDK). The Python module path and required exports below are the Python-side view; the cross-language severity_variants / log_class_variants / source_variants / system_source_variants / event_types_by_source keys are the contract Rust emitters consume directly (or from a generated Rust constants file derived from this block).",
+    "description": "SDK-surface contract for SRS-LOG-001 (separate persistent system logs from user strategy logs; render each entry with timestamp / severity / source / event type / message / correlation ID; both classes viewable from the dashboard). SCOPE: this contract covers the *structured record schema* + *sink-routing boundary* halves of SRS-LOG-001 only. (a) The LogRecord dataclass + Severity / Source / LogClass StrEnums pin the six AC-named fields + the SRS-LOG-001 separation discriminant + the optional strategy_id that the strategy half requires. (b) The RoutedLogDispatcher + LogSink Protocol pin the seam SRS-LOG-001's persistent sinks plug into when they land; the dispatcher validates the schema at the dispatch boundary and routes on log_class so a SYSTEM record cannot land in the strategy sink or vice versa. (c) EVENT_TYPES_BY_SOURCE pins the SyRS SYS-61 / SRS-LOG-001 enumerations of system event types (order routing decisions/outcomes, ingestion start/completion/failure, container start/stop/restart/OOM-kill, IB Gateway connect/disconnect/reconnect, kill switch activations, Hot-Swap promotion/demotion, resource threshold alerts, market data subscription changes). The operator-log-store SUBSTRATE (durable JSON-Lines system/strategy stores, the system-vs-strategy physical separation, the queryable read surface, and the retention/rotation policy) is now BUILT in atp_logging.persistence (contract block: log_persistence_contract) for records dispatched in-process. It is a substrate, NOT a complete runtime half: what REMAINS deferred (and keeps SRS-LOG-001 at passes:false) is (a) the core-runtime event FORWARDING path — how the Rust-owned system-event producers (order routing, IB Gateway state, kill-switch activations, ingestion/container lifecycle) actually reach the operator store — so the persistent system log is not yet populated from the real core, only from in-process dispatches; (b) the dashboard log pane rendering owned by SRS-UI-001; (c) the live GET /api/v1/logs REST handler body + LOGS WebSocket channel publisher + admin logs CLI runner owned by SRS-API-001. Until those land, SRS-LOG-001 stays passes:false in feature_list.json; the schema/dispatcher here remain the SDK surface those features (and the now-built persistence substrate) plug into. Identical to the SDK-004 / SDK-005 / ERR-9 / SRS-API-001 partial-pass pattern. The cross-language source of truth lives here; Rust core runtime services that emit logs re-implement the same record locally per the AGENTS.md dependency direction (Rust core must not depend on the Python SDK). The Python module path and required exports below are the Python-side view; the cross-language severity_variants / log_class_variants / source_variants / system_source_variants / event_types_by_source keys are the contract Rust emitters consume directly (or from a generated Rust constants file derived from this block).",
     "package": "atp_logging",
     "path": "python/atp_logging",
     "module_paths": [
@@ -3344,7 +3344,7 @@
     "deferred": [
       {
         "feature": "SRS-LOG-001-runtime",
-        "what": "Concrete persistent sinks for the system + strategy halves (file / SQLite / Loki / whatever the runtime picks), retention + rotation policy, and the queryable index that GET /api/v1/logs reads from. The SDK pins the record schema, the LogSink Protocol, and the system-vs-strategy separation invariant so the runtime sinks can plug in without renegotiation; the persistence + retention belong to SRS-LOG-001's runtime half."
+        "what": "BUILT — the concrete persistent sinks for the system + strategy halves (durable append-only JSON-Lines, system-vs-strategy separation enforced at the sink, opt-in size-based rotation + retention, and the queryable read surface GET /api/v1/logs consumes) now ship in atp_logging.persistence (contract: log_persistence_contract; check: tools/log_persistence_check.py). The SDK pinned the record schema, the LogSink Protocol, and the separation invariant; the operator-store substrate plugged in without renegotiation. SRS-LOG-001 still holds at passes:false because what remains is NOT the sink but: the core-runtime event FORWARDING path (Rust-owned producers — order routing, IB Gateway, kill-switch, ingestion/container lifecycle — do not yet write to the operator store, so the system log is populated only from in-process dispatches); the dashboard pane (SRS-UI-001); and the live REST/WebSocket/CLI handlers (SRS-API-001). See log_persistence_contract for the substrate + its deferred[]."
       },
       {
         "feature": "SRS-UI-001",
@@ -3365,6 +3365,67 @@
       {
         "feature": "operator-interface-runtime",
         "what": "The HTTP server + WebSocket server + CLI runner that bind the GET /api/v1/logs route, LOGS WebSocket channel, and admin logs CLI command to the persistent sinks. Same downstream owner as the SRS-API-001 deferral above; named here so the contract block enumerates every consumer of the SDK seam."
+      }
+    ]
+  },
+  "log_persistence_contract": {
+    "description": "RUNTIME-half contract for SRS-LOG-001 (separate persistent system logs from user strategy logs). This block pins the concrete persistent sinks that the SDK-surface log_record_contract deferred to 'SRS-LOG-001's runtime half'. atp_logging.persistence ships: (a) JsonlLogStore — a durable, append-only, JSON-Lines LogSink bound to exactly one LogClass; each store writes to its own physical file so SYSTEM and STRATEGY logs are persisted to SEPARATE sinks (the literal SRS-LOG-001 requirement), and the store ALSO refuses a wrong-class record at write() so a caller bypassing the dispatcher still cannot cross-contaminate the two audit trails. (b) build_separated_log_dispatcher — the boot wiring that binds a SYSTEM store and a separate STRATEGY store to one RoutedLogDispatcher. (c) read_records / JsonlLogStore.read / query — the read surface the live GET /api/v1/logs handler, the admin logs CLI runner, and the dashboard log pane consume; the query filters mirror the GET /api/v1/logs parameters (log_class / severity (minimum) / source / event_type / correlation_id / start_time / end_time). DURABILITY: every write appends one json line then flush + os.fsync (default on) so a kill-switch activation or IB disconnect survives a crash; a torn trailing fragment (crash mid-write, no terminating newline) is dropped — never fabricated into a record — and a complete-but-unparseable line fails closed with LogStoreCorruptionError rather than being silently skipped. ROTATION is opt-in (max_bytes=None default → unbounded append → no audit record is ever evicted); when set, at most max_files rotated segments are retained per the documented retention policy. SCOPE: a store is owned by a single writing process (in-process thread-safe via a lock; cross-process concurrent writers are out of scope). LANGUAGE/ARCHITECTURE: this sink is Python because it is the dashboard/API backend for the operator log surfaces (it backs the Python GET /api/v1/logs REST endpoint, the dashboard log pane, and the admin logs CLI). AGENTS.md permits the dashboard backend/API in another language 'if it does not become a core runtime service'; this is operator-facing read/display infrastructure, not part of the Rust trading core (execution/data/simulation). The Rust core emits its own log records locally per log_record_contract (Rust core must not depend on the Python SDK); a core-runtime durable sink + the Rust→operator-store forwarding path is a separate, deferred concern. DEFERRED (why SRS-LOG-001 stays passes:false): (a) the core-runtime event FORWARDING path — the Rust-owned system-event producers (order routing, IB Gateway state, kill-switch activations, ingestion/container lifecycle) do not yet write to this store, so the persistent system log is populated only from in-process dispatches, not the real core; (b) the dashboard log pane rendering (SRS-UI-001); (c) the live GET /api/v1/logs REST handler + LOGS WebSocket publisher + admin logs CLI runner (SRS-API-001) that register the query handler on the operator-interface-runtime registry. This block ships the operator-store SUBSTRATE, not a complete runtime half. The PASS line is 'SRS-LOG-001 PERSISTENCE PASS'.",
+    "package": "atp_logging",
+    "module_path": "python/atp_logging/persistence.py",
+    "store_class": "JsonlLogStore",
+    "store_implements_sink": true,
+    "dispatcher_builder": "build_separated_log_dispatcher",
+    "read_functions": ["read_records", "query"],
+    "store_read_method": "read",
+    "required_exports": [
+      "JsonlLogStore",
+      "LogStoreCorruptionError",
+      "LogStoreError",
+      "build_separated_log_dispatcher",
+      "query",
+      "read_records"
+    ],
+    "required_error_exports": ["LogStoreCorruptionError", "LogStoreError"],
+    "default_system_filename": "system.jsonl",
+    "default_strategy_filename": "strategy.jsonl",
+    "query_filter_fields": [
+      "log_class",
+      "min_severity",
+      "source",
+      "event_type",
+      "correlation_id",
+      "start_ns",
+      "end_ns",
+      "limit",
+      "newest_first"
+    ],
+    "fsync_default": true,
+    "rotation_opt_in": true,
+    "separation_enforced_at_sink": true,
+    "torn_tail_tolerated": true,
+    "corruption_fails_closed": true,
+    "ac_traces": ["SRS-LOG-001"],
+    "syrs_refs": ["SYS-38", "SYS-61"],
+    "strs_refs": ["SN-2.02", "C-6"],
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "deferred": [
+      {
+        "feature": "SRS-LOG-001-core-forwarding",
+        "what": "The core-runtime event FORWARDING path: the Rust-owned system-event producers (order routing outcomes, IB Gateway connection state, kill-switch activations, ingestion job + container lifecycle, market-data subscription changes, resource alerts) do not yet write to this operator store. The persistent system log is therefore populated only from in-process Python dispatches, not from the real Rust core. Wiring the Rust core's emitted records to the operator store (a forwarder, or a core-runtime durable sink the operator store aggregates) is required before the system-log COVERAGE is complete; it is deferred so this block ships the operator-store substrate without overclaiming runtime completion."
+      },
+      {
+        "feature": "SRS-UI-001",
+        "what": "Dashboard log pane rendering for both the system and strategy log classes ('both log classes are viewable from the dashboard'). The persistence read surface (read_records / query) returns the records the dashboard backend renders; the rendering + the browser-automation e2e belong to SRS-UI-001."
+      },
+      {
+        "feature": "SRS-API-001",
+        "what": "Live GET /api/v1/logs REST handler body + LOGS WebSocket channel publisher + admin logs CLI runner, registered on the operator-interface-runtime registry. These call atp_logging.persistence.read_records / query to serve the persisted trail over the operator surfaces; the handler registration belongs to SRS-LOG-001's operator-surface wiring on top of the now-built runtime substrate."
       }
     ]
   },

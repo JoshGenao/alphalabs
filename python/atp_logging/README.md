@@ -2,10 +2,13 @@
 
 `atp_logging` is the cross-language source of truth for ATP's structured
 **log record schema** and the **system-vs-strategy sink routing** boundary
-SRS-LOG-001 requires. The package consumes nothing — it is upstream of the
-persistent log sinks (deferred to SRS-LOG-001's runtime half), the
-dashboard log pane (deferred to SRS-UI-001), and the live `GET /api/v1/logs`
-endpoint + `LOGS` WebSocket publisher (deferred to SRS-API-001).
+SRS-LOG-001 requires. The schema modules (`records` / `dispatcher` /
+`errors`) consume nothing — they are upstream of every log surface; the
+**runtime half** (the concrete persistent sinks) now ships alongside them in
+[`persistence.py`](persistence.py). Still downstream of this package: the
+dashboard log pane (deferred to SRS-UI-001) and the live `GET /api/v1/logs`
+endpoint + `LOGS` WebSocket publisher + `admin logs` CLI runner (deferred to
+SRS-API-001).
 
 This package satisfies the **SDK-surface half** of SRS-LOG-001:
 
@@ -17,20 +20,29 @@ This package satisfies the **SDK-surface half** of SRS-LOG-001:
 > resource threshold alerts, and market data subscription changes; both log
 > classes are viewable from the dashboard.
 
-It does **not** ship:
+The **runtime half** now ships in [`persistence.py`](persistence.py) — the
+durable, system/strategy-separated persistent sinks plus the read/query
+surface (see the [Persistence](#persistence-runtime-half) section below and
+`architecture/runtime_services.json#log_persistence_contract`).
 
-- the concrete persistent sinks (file / SQLite / Loki / etc.) — deferred to
-  SRS-LOG-001's runtime half;
+The persistence layer is the operator-store **substrate**, not a complete
+runtime half. It still does **not** ship:
+
+- the **core-runtime event forwarding path** — the Rust-owned system-event
+  producers (order routing, IB Gateway state, kill-switch activations,
+  ingestion/container lifecycle) do **not** yet write to this store, so the
+  persistent system log is populated only from in-process dispatches, not
+  from the real core;
 - the `GET /api/v1/logs` REST handler body — deferred to SRS-API-001;
 - the `LOGS` WebSocket channel publisher — deferred to SRS-API-001;
 - the dashboard log pane rendering — deferred to SRS-UI-001;
 - the `admin logs` CLI runner — deferred to SRS-API-001's operator-
-  interface-runtime;
-- the audit-log retention + rotation policy — deferred to SRS-LOG-001.
+  interface-runtime.
 
-Because those five surfaces are not yet built, `SRS-LOG-001` stays
-`passes:false` in `feature_list.json`. The contract here is what they
-consume when they arrive.
+Because the core-event coverage and those operator surfaces are not yet
+built, `SRS-LOG-001` stays `passes:false` in `feature_list.json`. The
+operator store the dashboard/API will read is durable and queryable; what
+remains is feeding it the real core events and wiring it to the surfaces.
 
 ## Schema
 
@@ -112,11 +124,45 @@ The dispatcher raises one of the `LogRecordError` subclasses on rejection:
 All four subclass `LogRecordError`, so a downstream caller can catch the
 family with a single `except LogRecordError` clause.
 
+## Persistence (runtime half)
+
+`atp_logging.persistence` ships the concrete persistent sinks SRS-LOG-001
+requires on top of the SDK seam:
+
+```python
+from atp_logging.persistence import build_separated_log_dispatcher, read_records
+
+# Wire a SYSTEM store + a SEPARATE STRATEGY store under one directory.
+dispatcher, system_store, strategy_store = build_separated_log_dispatcher("data/logs")
+dispatcher.dispatch(record)          # routes to the correct physical file
+...
+# Read the persisted trail (the GET /api/v1/logs seam) — filter by class,
+# minimum severity, source, event_type, correlation_id, and time window.
+recent_criticals = read_records(
+    "data/logs/system.jsonl", min_severity=Severity.ERROR, limit=50, newest_first=True
+)
+```
+
+- **`JsonlLogStore`** — a durable, append-only JSON-Lines `LogSink` bound to
+  one `LogClass`. SYSTEM and STRATEGY logs land in separate files; the store
+  *also* refuses a wrong-class record at `write`, so the separation holds
+  even if a caller bypasses the dispatcher.
+- **Durability** — every append is `flush` + `os.fsync`-ed (default on) so a
+  kill-switch activation survives a crash. A torn trailing fragment (crash
+  mid-write) is dropped, never fabricated into a record; a complete but
+  unparseable line fails closed with `LogStoreCorruptionError`.
+- **Rotation** — opt-in (`max_bytes=None` by default → unbounded append, no
+  eviction); when set, at most `max_files` rotated segments are retained.
+- **Scope** — a store is owned by one writing process (thread-safe writes;
+  cross-process concurrent writers are out of scope).
+
 ## Contract metadata
 
 The single source of truth for the schema, enum variants, allowed event
 types, sink protocol, and SDK-surface boundary lives in
-`architecture/runtime_services.json#log_record_contract`. The companion
-check script `python3 tools/log_record_check.py` runs at every boot (via
-`init.sh`) and on CI to enforce that the Python implementation, the
-contract block, and the test rig stay in parity.
+`architecture/runtime_services.json#log_record_contract`; the persistent-sink
+runtime half lives in `#log_persistence_contract`. The companion check
+scripts `python3 tools/log_record_check.py` and
+`python3 tools/log_persistence_check.py` run at every boot (via `init.sh`)
+and on CI to enforce that the Python implementation, the contract blocks, and
+the test rigs stay in parity.

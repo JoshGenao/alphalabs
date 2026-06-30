@@ -100,7 +100,12 @@ class LogRecordScriptTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("SRS-LOG-001 SDK-SURFACE PASS", result.stdout)
-        for owner in ("SRS-LOG-001 runtime", "SRS-UI-001", "SRS-API-001", "SRS-NOTIF-001"):
+        # The persistent-sink runtime half is now BUILT (atp_logging.persistence);
+        # the PASS line points at it and still names the still-deferred downstream
+        # owners (dashboard SRS-UI-001, live REST/WS/CLI SRS-API-001, notify fan-out
+        # SRS-NOTIF-001).
+        self.assertIn("atp_logging.persistence", result.stdout)
+        for owner in ("SRS-UI-001", "SRS-API-001", "SRS-NOTIF-001"):
             self.assertIn(owner, result.stdout, f"PASS line should mention {owner}")
 
 

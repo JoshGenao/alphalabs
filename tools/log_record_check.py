@@ -883,7 +883,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(
         "SRS-LOG-001 SDK-SURFACE PASS — log record schema + sink routing "
-        "contract (concrete persistent sinks deferred to SRS-LOG-001 runtime; "
+        "contract (concrete persistent sinks now BUILT in atp_logging.persistence — "
+        "see tools/log_persistence_check.py; "
         "dashboard log pane rendering deferred to SRS-UI-001; live GET /api/v1/logs "
         "+ LOGS WebSocket + admin logs CLI handler owned by SRS-LOG-001 (registered "
         "on the now-built operator-interface-runtime registry, python/atp_runtime); "

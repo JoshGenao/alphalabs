@@ -120,11 +120,7 @@ class RoutedLogDispatcher:
                 original exception is preserved on ``__cause__``.
         """
 
-        if not isinstance(record, LogRecord):
-            raise LogPayloadError(f"dispatch expected a LogRecord; got {type(record).__name__}")
-
-        self._assert_payload_shape(record)
-        self._assert_log_class_invariants(record)
+        validate_log_record(record)
 
         sink = self._sinks.get(record.log_class)
         if sink is None:
@@ -142,97 +138,129 @@ class RoutedLogDispatcher:
                 f"{type(exc).__name__}: {exc}"
             ) from exc
 
-    # ------------------------------------------------------------------ #
-    # Internal validation helpers
-    # ------------------------------------------------------------------ #
 
-    def _assert_payload_shape(self, record: LogRecord) -> None:
-        # Discriminant validation: enums must be exact enum members, not
-        # raw strings (StrEnum subclasses str and would equality-match in
-        # an `in` check, but the value semantics depend on enum identity).
-        if not isinstance(record.severity, Severity):
+# ---------------------------------------------------------------------- #
+# Shared validation — reused by dispatch() and by the persistent sinks
+# (atp_logging.persistence) so a record written DIRECTLY to a store, not
+# through the dispatcher, is held to the same audit-trail invariants.
+# ---------------------------------------------------------------------- #
+
+
+def validate_log_record(record: LogRecord) -> None:
+    """Validate ``record`` against the full SDK schema + log-class invariants.
+
+    The single source of truth for "is this record fit to persist?" —
+    :meth:`RoutedLogDispatcher.dispatch` and every concrete
+    :class:`LogSink` (``atp_logging.persistence.JsonlLogStore.write``) call
+    it, so a record cannot reach a persistent audit trail with an invalid
+    timestamp, an empty required field, a forbidden ``strategy_id`` on a
+    SYSTEM record, or a source/event-type outside the SyRS SYS-61 taxonomy —
+    whether or not it went through the dispatcher.
+
+    Raises:
+        LogPayloadError: ``record`` is not a :class:`LogRecord`, a field has
+            the wrong type/range, or a non-empty string field is empty.
+        LogClassError: the cross-field invariants between ``log_class``,
+            ``source``, and ``strategy_id`` are violated.
+    """
+
+    if not isinstance(record, LogRecord):
+        raise LogPayloadError(
+            f"validate_log_record expected a LogRecord; got {type(record).__name__}"
+        )
+    _assert_payload_shape(record)
+    _assert_log_class_invariants(record)
+
+
+def _assert_payload_shape(record: LogRecord) -> None:
+    # Discriminant validation: enums must be exact enum members, not
+    # raw strings (StrEnum subclasses str and would equality-match in
+    # an `in` check, but the value semantics depend on enum identity).
+    if not isinstance(record.severity, Severity):
+        raise LogPayloadError(
+            f"LogRecord.severity must be a Severity enum member; "
+            f"got {type(record.severity).__name__}"
+        )
+    if not isinstance(record.source, Source):
+        raise LogPayloadError(
+            f"LogRecord.source must be a Source enum member; got {type(record.source).__name__}"
+        )
+    if not isinstance(record.log_class, LogClass):
+        raise LogPayloadError(
+            f"LogRecord.log_class must be a LogClass enum member; "
+            f"got {type(record.log_class).__name__}"
+        )
+
+    # Numeric type / range / finite guard on timestamp_ns.
+    timestamp_ns = record.timestamp_ns
+    if not is_finite_non_negative_int(timestamp_ns):
+        raise LogPayloadError(
+            f"LogRecord.timestamp_ns must be a non-negative finite int "
+            f"(bool / float / str / None / negative rejected); "
+            f"got {type(timestamp_ns).__name__}={timestamp_ns!r}"
+        )
+
+    # Non-empty string-field guard.
+    for field_name in _STRING_FIELDS:
+        value = getattr(record, field_name, None)
+        if not isinstance(value, str):
             raise LogPayloadError(
-                f"LogRecord.severity must be a Severity enum member; "
-                f"got {type(record.severity).__name__}"
+                f"LogRecord.{field_name} must be a non-empty str; got {type(value).__name__}"
             )
-        if not isinstance(record.source, Source):
+        if not value.strip():
             raise LogPayloadError(
-                f"LogRecord.source must be a Source enum member; got {type(record.source).__name__}"
-            )
-        if not isinstance(record.log_class, LogClass):
-            raise LogPayloadError(
-                f"LogRecord.log_class must be a LogClass enum member; "
-                f"got {type(record.log_class).__name__}"
+                f"LogRecord.{field_name} must be non-empty (whitespace-only rejected)"
             )
 
-        # Numeric type / range / finite guard on timestamp_ns.
-        timestamp_ns = record.timestamp_ns
-        if not is_finite_non_negative_int(timestamp_ns):
-            raise LogPayloadError(
-                f"LogRecord.timestamp_ns must be a non-negative finite int "
-                f"(bool / float / str / None / negative rejected); "
-                f"got {type(timestamp_ns).__name__}={timestamp_ns!r}"
-            )
 
-        # Non-empty string-field guard.
-        for field_name in _STRING_FIELDS:
-            value = getattr(record, field_name, None)
-            if not isinstance(value, str):
-                raise LogPayloadError(
-                    f"LogRecord.{field_name} must be a non-empty str; got {type(value).__name__}"
-                )
-            if not value.strip():
-                raise LogPayloadError(
-                    f"LogRecord.{field_name} must be non-empty (whitespace-only rejected)"
-                )
-
-    def _assert_log_class_invariants(self, record: LogRecord) -> None:
-        # SRS-LOG-001 separation: SYSTEM records use a SYSTEM source and
-        # must NOT carry strategy_id; STRATEGY records use Source.STRATEGY
-        # and must carry a non-empty strategy_id.
-        if record.log_class is LogClass.SYSTEM:
-            if record.source not in SYSTEM_SOURCES:
-                raise LogClassError(
-                    f"LogRecord.log_class=SYSTEM forbids source={record.source.value!r}; "
-                    f"SYSTEM sources are {sorted(s.value for s in SYSTEM_SOURCES)}"
-                )
-            if record.strategy_id is not None:
-                raise LogClassError(
-                    "LogRecord.log_class=SYSTEM must not carry strategy_id; "
-                    f"got strategy_id={record.strategy_id!r}"
-                )
-            allowed_event_types = EVENT_TYPES_BY_SOURCE[record.source]
-            if record.event_type not in allowed_event_types:
-                raise LogPayloadError(
-                    f"LogRecord.event_type={record.event_type!r} not allowed for "
-                    f"source={record.source.value!r}; "
-                    f"allowed types: {list(allowed_event_types)}"
-                )
-        elif record.log_class is LogClass.STRATEGY:
-            if record.source not in STRATEGY_SOURCES:
-                raise LogClassError(
-                    f"LogRecord.log_class=STRATEGY forbids source={record.source.value!r}; "
-                    f"STRATEGY records must use Source.STRATEGY"
-                )
-            strategy_id = record.strategy_id
-            if not isinstance(strategy_id, str):
-                raise LogClassError(
-                    "LogRecord.log_class=STRATEGY requires a non-empty strategy_id; "
-                    f"got {type(strategy_id).__name__}"
-                )
-            if not strategy_id.strip():
-                raise LogClassError(
-                    "LogRecord.log_class=STRATEGY requires a non-empty strategy_id; "
-                    "whitespace-only is rejected"
-                )
-        else:  # pragma: no cover — defensive: enum exhaustiveness guard
+def _assert_log_class_invariants(record: LogRecord) -> None:
+    # SRS-LOG-001 separation: SYSTEM records use a SYSTEM source and
+    # must NOT carry strategy_id; STRATEGY records use Source.STRATEGY
+    # and must carry a non-empty strategy_id.
+    if record.log_class is LogClass.SYSTEM:
+        if record.source not in SYSTEM_SOURCES:
             raise LogClassError(
-                f"unknown LogClass member {record.log_class!r}; "
-                "the dispatcher must be extended when LogClass gains a variant"
+                f"LogRecord.log_class=SYSTEM forbids source={record.source.value!r}; "
+                f"SYSTEM sources are {sorted(s.value for s in SYSTEM_SOURCES)}"
             )
+        if record.strategy_id is not None:
+            raise LogClassError(
+                "LogRecord.log_class=SYSTEM must not carry strategy_id; "
+                f"got strategy_id={record.strategy_id!r}"
+            )
+        allowed_event_types = EVENT_TYPES_BY_SOURCE[record.source]
+        if record.event_type not in allowed_event_types:
+            raise LogPayloadError(
+                f"LogRecord.event_type={record.event_type!r} not allowed for "
+                f"source={record.source.value!r}; "
+                f"allowed types: {list(allowed_event_types)}"
+            )
+    elif record.log_class is LogClass.STRATEGY:
+        if record.source not in STRATEGY_SOURCES:
+            raise LogClassError(
+                f"LogRecord.log_class=STRATEGY forbids source={record.source.value!r}; "
+                f"STRATEGY records must use Source.STRATEGY"
+            )
+        strategy_id = record.strategy_id
+        if not isinstance(strategy_id, str):
+            raise LogClassError(
+                "LogRecord.log_class=STRATEGY requires a non-empty strategy_id; "
+                f"got {type(strategy_id).__name__}"
+            )
+        if not strategy_id.strip():
+            raise LogClassError(
+                "LogRecord.log_class=STRATEGY requires a non-empty strategy_id; "
+                "whitespace-only is rejected"
+            )
+    else:  # pragma: no cover — defensive: enum exhaustiveness guard
+        raise LogClassError(
+            f"unknown LogClass member {record.log_class!r}; "
+            "the dispatcher must be extended when LogClass gains a variant"
+        )
 
 
 __all__ = [
     "LogSink",
     "RoutedLogDispatcher",
+    "validate_log_record",
 ]
