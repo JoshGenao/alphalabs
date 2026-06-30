@@ -5,16 +5,17 @@ The interface-level adapter surface (BrokerageAdapter / version discovery) is
 covered by ``tools/adapter_check.py`` (API-5). This check verifies the *behavior*
 SRS-EXE-006 adds in ``crates/atp-adapters/src/interactive_brokers.rs``:
 
-  * the deterministic IB-error -> SyRS SYS-64 ``StructuredOrderError`` classifier
-    maps every documented code in the contract's ``mapped_categories`` onto the
-    declared category, and the order-submission failure path never silently drops
-    a rejection (the ``Unmapped`` variant);
-  * the TWS transport seam (``IbGatewayConnection``) exposes the four AC
-    operations, and the adapter (``InteractiveBrokersBrokerage``) is generic over
-    it so it is exercised end-to-end by a deterministic double;
+  * the deterministic IB-error -> SyRS SYS-64 classifier maps every documented
+    code in the contract's ``mapped_categories`` onto the declared category;
+  * the runtime is reachable through the CANONICAL ``BrokerageAdapter`` /
+    ``MarketDataAdapter`` / ``HistoricalDataAdapter`` traits (SYS-52) and every
+    failure flows through the common ``AdapterError::Brokerage`` taxonomy (never a
+    parallel bespoke surface, never a dropped rejection);
+  * brokerage configuration FAILS CLOSED on a malformed ``ATP_IB_*`` port rather
+    than silently defaulting to an unintended endpoint;
   * the live transport scaffold (``TcpIbGateway``) fails closed via the
-    ``IB_CODE_LIVE_WIRE_PROTOCOL_PENDING`` sentinel rather than fabricating a
-    result; and
+    ``IB_CODE_LIVE_WIRE_PROTOCOL_PENDING`` sentinel (with an explicit connect
+    timeout) rather than fabricating a result; and
   * the operator-gated IB paper-account integration test exists, is ``#[ignore]``,
     and is guarded by ``ATP_RUN_INTEGRATION`` (SyRS SYS-2e) — the gate that flips
     SRS-EXE-006 to ``passes:true``.
@@ -130,17 +131,42 @@ def check_classifier_maps_every_code(runtime: dict, source: str) -> str:
     return f"classifier maps {len(covered)} SYS-64 categories from documented IB codes"
 
 
-def check_never_drop(runtime: dict, source: str) -> str:
-    variant = runtime["never_drop_variant"]
-    # The unmapped failure path must carry the raw code/message AND the original order.
-    block = _block(source, r"pub enum IbOrderSubmitError\b", "enum IbOrderSubmitError")
-    if variant not in block:
-        fail(f"IbOrderSubmitError is missing the never-drop variant {variant}")
-    if "original_order" not in block:
+def check_canonical_boundary(runtime: dict, source: str) -> str:
+    """The runtime must be reachable through the CANONICAL adapter traits (SYS-52),
+    with failures flowing through the common AdapterError taxonomy — not a parallel
+    bespoke surface. Verify the adapter implements every canonical trait and maps
+    IB failures via the mapper fn onto AdapterError::<variant> (never dropped)."""
+    adapter = runtime["adapter_struct"]
+    variant = runtime["common_taxonomy_variant"]
+    mapper = runtime["mapper_fn"]
+    for trait in runtime["canonical_traits"]:
+        if f"impl<C: IbGatewayConnection> {trait} for {adapter}<C>" not in source:
+            fail(f"{adapter} must implement the canonical {trait} trait (SYS-52 adapter interface)")
+    # The mapper is the single point IB errors cross into the common taxonomy.
+    mapper_block = _block(source, rf"fn {re.escape(mapper)}\b", f"fn {mapper}")
+    if f"AdapterError::{variant}" not in mapper_block:
+        fail(f"{mapper} must map IB failures onto AdapterError::{variant} (common taxonomy)")
+    for field in ("category:", "code:", "message:"):
+        if field not in mapper_block:
+            fail(
+                f"AdapterError::{variant} via {mapper} must carry {field} (never drop the failure)"
+            )
+    # The canonical submit_order must return AdapterResult, not a raw IB error.
+    impl_block = _block(
+        source,
+        rf"impl<C: IbGatewayConnection> BrokerageAdapter for {adapter}<C>",
+        "BrokerageAdapter impl",
+    )
+    if "-> AdapterResult<OrderReceipt>" not in impl_block:
         fail(
-            f"{variant} must preserve original_order so a failed submission is never dropped (SYS-64)"
+            f"{adapter}::submit_order must return AdapterResult<OrderReceipt> (canonical boundary)"
         )
-    return f"failed submissions are never dropped (IbOrderSubmitError::{variant} carries raw IB detail + order)"
+    if "IbApiError" in impl_block:
+        fail(f"{adapter} canonical trait methods must not leak raw IbApiError past the seam")
+    return (
+        f"{adapter} implements {len(runtime['canonical_traits'])} canonical adapter traits; "
+        f"failures flow through AdapterError::{variant} via {mapper} (never dropped)"
+    )
 
 
 def check_live_transport_fails_closed(runtime: dict, source: str) -> str:
@@ -173,30 +199,24 @@ def check_live_transport_fails_closed(runtime: dict, source: str) -> str:
     )
 
 
-def check_boundary_error_confined(runtime: dict, source: str) -> str:
-    """Raw IbApiError must stay on the IbGatewayConnection seam; the public adapter's
-    non-order operations return the typed IbAdapterError boundary (Finding: no raw
-    transport error leaks to callers)."""
-    boundary = runtime["boundary_error_type"]
-    if f"pub struct {boundary}" not in source:
-        fail(f"boundary error type {boundary} is missing")
-    impl_block = _block(
-        source,
-        r"impl<C: IbGatewayConnection> InteractiveBrokersBrokerage<C>",
-        "adapter impl",
-    )
-    for op in ("cancel_order", "subscribe_market_data", "request_historical_data"):
-        sig = re.search(rf"pub fn {op}\b[^{{]*", impl_block)
-        if not sig:
-            fail(f"adapter method {op} missing")
-        signature = sig.group(0)
-        if boundary not in signature:
-            fail(f"adapter method {op} must return the {boundary} boundary, not raw IbApiError")
-        if "IbApiError" in signature:
-            fail(f"adapter method {op} leaks raw IbApiError past the transport seam")
-    return (
-        f"non-order operations return the {boundary} boundary (raw IbApiError confined to the seam)"
-    )
+def check_config_fails_closed(runtime: dict, source: str) -> str:
+    """Brokerage configuration must FAIL CLOSED on a malformed ATP_IB_* value — a
+    typo must never silently fall back to a default endpoint (an unintended IB
+    Gateway). Verify the typed config error + the port parser that rejects
+    non-numeric / out-of-range / zero ports."""
+    error_type = runtime["config_error_type"]
+    parser = runtime["config_parser_fn"]
+    if f"pub struct {error_type}" not in source:
+        fail(f"config error type {error_type} is missing")
+    if "pub fn from_env" not in source or "Result<Self, IbConnectionConfigError>" not in source:
+        fail("from_env must return Result<Self, IbConnectionConfigError> (fail closed)")
+    parser_block = _block(source, rf"fn {re.escape(parser)}\b", f"fn {parser}")
+    # The parser must reject port 0 and surface the typed error on a bad value.
+    if "!= 0" not in parser_block and "filter" not in parser_block:
+        fail(f"{parser} must reject port 0 (a zero port is not a valid endpoint)")
+    if error_type not in parser_block:
+        fail(f"{parser} must return {error_type} on a malformed port (never coerce to a default)")
+    return f"config fails closed on malformed ATP_IB_* ports ({error_type} via {parser})"
 
 
 def check_integration_test(runtime: dict) -> str:
@@ -262,8 +282,8 @@ def check_cargo_smoke(runtime: dict) -> str:
 CHECKS = (
     ("transport seam", lambda cfg, rt, src: check_transport_trait(rt, src)),
     ("error classification", lambda cfg, rt, src: check_classifier_maps_every_code(rt, src)),
-    ("never-drop", lambda cfg, rt, src: check_never_drop(rt, src)),
-    ("boundary error confined", lambda cfg, rt, src: check_boundary_error_confined(rt, src)),
+    ("canonical boundary", lambda cfg, rt, src: check_canonical_boundary(rt, src)),
+    ("config fail-closed", lambda cfg, rt, src: check_config_fails_closed(rt, src)),
     ("live transport fail-closed", lambda cfg, rt, src: check_live_transport_fails_closed(rt, src)),
     ("integration harness", lambda cfg, rt, src: check_integration_test(rt)),
     ("serialized status", lambda cfg, rt, src: check_serialized_status(rt)),

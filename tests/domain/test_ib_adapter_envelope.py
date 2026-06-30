@@ -76,12 +76,26 @@ def test_check_catches_dropped_category_mapping():
         CHECK.check_classifier_maps_every_code(runtime, broken)
 
 
-def test_check_catches_removed_never_drop_variant():
+def test_check_catches_dropped_canonical_trait():
+    # If the adapter stops implementing a canonical trait, callers can't reach the
+    # runtime through the documented interface -> the check must fail.
     runtime = _runtime()
     source = MODULE.read_text()
-    broken = source.replace("Unmapped {", "Removed {")
+    broken = source.replace(
+        "impl<C: IbGatewayConnection> BrokerageAdapter for InteractiveBrokersBrokerage<C>",
+        "impl<C: IbGatewayConnection> SomethingElse for InteractiveBrokersBrokerage<C>",
+    )
     with pytest.raises(CHECK.IbAdapterContractError):
-        CHECK.check_never_drop(runtime, broken)
+        CHECK.check_canonical_boundary(runtime, broken)
+
+
+def test_check_catches_dropped_failure_detail():
+    # If the mapper stops carrying the raw code, a failure could be dropped -> fail.
+    runtime = _runtime()
+    source = MODULE.read_text()
+    broken = source.replace("code: error.code,", "")
+    with pytest.raises(CHECK.IbAdapterContractError):
+        CHECK.check_canonical_boundary(runtime, broken)
 
 
 def test_check_catches_fabricated_success_sentinel():
@@ -104,17 +118,14 @@ def test_check_catches_missing_transport_method():
         CHECK.check_transport_trait(runtime, broken)
 
 
-def test_check_catches_leaked_raw_transport_error():
-    # If a public non-order op returns raw IbApiError instead of the IbAdapterError
-    # boundary, the check must fail (raw transport error must not leak to callers).
+def test_check_catches_config_silent_fallback():
+    # If the port parser stops rejecting port 0, a malformed config could silently
+    # fall back to a default endpoint -> the check must fail.
     runtime = _runtime()
     source = MODULE.read_text()
-    broken = source.replace(
-        "pub fn cancel_order(&self, broker_order_id: &str) -> Result<(), IbAdapterError> {",
-        "pub fn cancel_order(&self, broker_order_id: &str) -> Result<(), IbApiError> {",
-    )
+    broken = source.replace(".filter(|&port| port != 0)", "")
     with pytest.raises(CHECK.IbAdapterContractError):
-        CHECK.check_boundary_error_confined(runtime, broken)
+        CHECK.check_config_fails_closed(runtime, broken)
 
 
 def test_check_catches_unbounded_connect():

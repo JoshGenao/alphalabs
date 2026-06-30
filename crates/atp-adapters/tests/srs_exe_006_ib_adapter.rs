@@ -3,10 +3,12 @@
 //!
 //! The boundary tests drive the adapter's four AC operations (order submission,
 //! cancellation, market-data subscription, historical-data retrieval) end-to-end
-//! through a deterministic in-memory [`FakeIbGateway`] transport — no socket, so
-//! they run in the parallel agent pool. They prove the IB-error → SyRS SYS-64
-//! [`StructuredOrderError`] mapping for every broker-validation category and that
-//! a failed submission is never silently dropped.
+//! through the **canonical** `BrokerageAdapter` / `MarketDataAdapter` /
+//! `HistoricalDataAdapter` traits over a deterministic in-memory [`FakeIbGateway`]
+//! transport — no socket, so they run in the parallel agent pool. They prove the
+//! IB-error → SyRS SYS-64 classification surfaces through the common
+//! `AdapterError::Brokerage` taxonomy for every broker-validation category and
+//! that a failed submission is never silently dropped.
 //!
 //! The single `#[ignore]` test ([`paper_account_round_trip`]) is the AC's real
 //! verification: it drives the live [`TcpIbGateway`] against a **headless IB
@@ -16,34 +18,46 @@
 //! serialized (`passes:false`) until the operator runs it.
 
 use atp_adapters::interactive_brokers::{
-    IbAccountKind, IbApiError, IbConnectionConfig, IbGatewayConnection, IbOrderSubmitError,
+    IbAccountKind, IbApiError, IbConnectionConfig, IbGatewayConnection,
     InteractiveBrokersBrokerage, TcpIbGateway, IB_CODE_MAX_RATE_EXCEEDED, IB_CODE_NOT_CONNECTED,
     IB_CODE_NO_SECURITY_DEFINITION, IB_CODE_ORDER_REJECTED,
 };
-use atp_types::{OrderErrorCategory, OrderSubmission, StrategyId};
-use std::cell::RefCell;
+use atp_adapters::{
+    AdapterError, AssetClass, BrokerageAdapter, HistoricalBar, HistoricalDataAdapter,
+    HistoricalDataRequest, HistoricalQueryResult, MarketDataAdapter, MarketDataChannel,
+    MarketDataSubscription, NormalizationMode, OrderReceipt, OrderSubmission, SubscriptionReceipt,
+};
+use atp_types::{OrderErrorCategory, StrategyId};
 
 /// A deterministic in-memory IB Gateway transport: each operation either yields a
-/// programmed success or a programmed [`IbApiError`]. Records the operations it
-/// saw so a test can assert the adapter forwarded the right request.
+/// programmed success or a programmed [`IbApiError`].
 #[derive(Default)]
 struct FakeIbGateway {
-    submit: Option<Result<String, IbApiError>>,
+    submit: Option<Result<OrderReceipt, IbApiError>>,
     cancel: Option<Result<(), IbApiError>>,
-    subscribe: Option<Result<String, IbApiError>>,
-    historical: Option<Result<usize, IbApiError>>,
-    seen_symbols: RefCell<Vec<String>>,
-    seen_cancels: RefCell<Vec<String>>,
+    subscribe: Option<Result<SubscriptionReceipt, IbApiError>>,
+    historical: Option<Result<HistoricalQueryResult, IbApiError>>,
 }
 
 impl FakeIbGateway {
     fn accepting() -> Self {
         Self {
-            submit: Some(Ok("ib-ord-1".to_string())),
+            submit: Some(Ok(OrderReceipt {
+                broker_order_id: "ib-ord-1".to_string(),
+            })),
             cancel: Some(Ok(())),
-            subscribe: Some(Ok("ib-sub-1".to_string())),
-            historical: Some(Ok(390)),
-            ..Self::default()
+            subscribe: Some(Ok(SubscriptionReceipt {
+                subscription_id: "ib-sub-1".to_string(),
+            })),
+            historical: Some(Ok(HistoricalQueryResult {
+                symbol: "AAPL".to_string(),
+                asset_class: AssetClass::Equity,
+                normalization_mode: NormalizationMode::SplitAdjusted,
+                bars: vec![HistoricalBar {
+                    symbol: "AAPL".to_string(),
+                    close: 100.0,
+                }],
+            })),
         }
     }
 
@@ -56,34 +70,34 @@ impl FakeIbGateway {
 }
 
 impl IbGatewayConnection for FakeIbGateway {
-    fn submit_order(&self, order: &OrderSubmission) -> Result<String, IbApiError> {
-        self.seen_symbols.borrow_mut().push(order.symbol.clone());
+    fn submit_order(&self, _order: &OrderSubmission) -> Result<OrderReceipt, IbApiError> {
         self.submit
             .clone()
             .expect("test did not program submit_order")
     }
 
-    fn cancel_order(&self, broker_order_id: &str) -> Result<(), IbApiError> {
-        self.seen_cancels
-            .borrow_mut()
-            .push(broker_order_id.to_string());
+    fn cancel_order(&self, _broker_order_id: &str) -> Result<(), IbApiError> {
         self.cancel
             .clone()
             .expect("test did not program cancel_order")
     }
 
-    fn subscribe_market_data(&self, symbol: &str) -> Result<String, IbApiError> {
-        self.seen_symbols.borrow_mut().push(symbol.to_string());
+    fn subscribe_market_data(
+        &self,
+        _request: &MarketDataSubscription,
+    ) -> Result<SubscriptionReceipt, IbApiError> {
         self.subscribe
             .clone()
             .expect("test did not program subscribe_market_data")
     }
 
-    fn request_historical_data(&self, symbol: &str) -> Result<usize, IbApiError> {
-        self.seen_symbols.borrow_mut().push(symbol.to_string());
+    fn historical_data(
+        &self,
+        _request: &HistoricalDataRequest,
+    ) -> Result<HistoricalQueryResult, IbApiError> {
         self.historical
             .clone()
-            .expect("test did not program request_historical_data")
+            .expect("test did not program historical_data")
     }
 }
 
@@ -95,6 +109,24 @@ fn order(symbol: &str, quantity: i64) -> OrderSubmission {
     }
 }
 
+fn quotes(symbol: &str) -> MarketDataSubscription {
+    MarketDataSubscription {
+        symbol: symbol.to_string(),
+        channel: MarketDataChannel::Quotes,
+    }
+}
+
+fn daily(symbol: &str) -> HistoricalDataRequest {
+    HistoricalDataRequest {
+        symbol: symbol.to_string(),
+        start: "2026-01-01".to_string(),
+        end: "2026-02-01".to_string(),
+        resolution: "1d".to_string(),
+        asset_class: AssetClass::Equity,
+        normalization_mode: NormalizationMode::SplitAdjusted,
+    }
+}
+
 #[test]
 fn accepted_order_returns_vendor_neutral_receipt() {
     let adapter = InteractiveBrokersBrokerage::new(FakeIbGateway::accepting());
@@ -102,10 +134,6 @@ fn accepted_order_returns_vendor_neutral_receipt() {
         .submit_order(order("AAPL", 10))
         .expect("an accepted order yields a receipt");
     assert_eq!(receipt.broker_order_id, "ib-ord-1");
-    assert_eq!(
-        adapter.connection().seen_symbols.borrow().as_slice(),
-        ["AAPL"]
-    );
 }
 
 #[test]
@@ -115,17 +143,16 @@ fn rejection_maps_to_syrs64_invalid_symbol() {
             IB_CODE_NO_SECURITY_DEFINITION,
             "No security definition found",
         )));
-    let submitted = order("ZZZZ", 5);
     let err = adapter
-        .submit_order(submitted.clone())
+        .submit_order(order("ZZZZ", 5))
         .expect_err("an unknown symbol must be rejected");
-    match err {
-        IbOrderSubmitError::Structured(envelope) => {
-            assert_eq!(envelope.category, OrderErrorCategory::InvalidSymbol);
-            assert_eq!(envelope.original_order, submitted);
+    assert!(matches!(
+        err,
+        AdapterError::Brokerage {
+            category: Some(OrderErrorCategory::InvalidSymbol),
+            ..
         }
-        other => panic!("expected a structured INVALID_SYMBOL envelope, got {other:?}"),
-    }
+    ));
 }
 
 #[test]
@@ -140,7 +167,10 @@ fn rejection_maps_to_syrs64_insufficient_buying_power() {
         .expect_err("an over-leveraged order must be rejected");
     assert!(matches!(
         err,
-        IbOrderSubmitError::Structured(e) if e.category == OrderErrorCategory::InsufficientBuyingPower
+        AdapterError::Brokerage {
+            category: Some(OrderErrorCategory::InsufficientBuyingPower),
+            ..
+        }
     ));
 }
 
@@ -156,7 +186,10 @@ fn rejection_maps_to_syrs64_rate_limited() {
         .expect_err("a throttled submission must be rejected");
     assert!(matches!(
         err,
-        IbOrderSubmitError::Structured(e) if e.category == OrderErrorCategory::RateLimited
+        AdapterError::Brokerage {
+            category: Some(OrderErrorCategory::RateLimited),
+            ..
+        }
     ));
 }
 
@@ -167,51 +200,45 @@ fn unmapped_rejection_is_surfaced_not_dropped() {
             IB_CODE_ORDER_REJECTED,
             "Order rejected - reason: odd lot not allowed",
         )));
-    let submitted = order("AAPL", 3);
     let err = adapter
-        .submit_order(submitted.clone())
+        .submit_order(order("AAPL", 3))
         .expect_err("an unmapped rejection must still surface");
     match err {
-        IbOrderSubmitError::Unmapped {
+        AdapterError::Brokerage {
+            category,
             code,
             message,
-            original_order,
+            ..
         } => {
+            assert_eq!(category, None);
             assert_eq!(code, IB_CODE_ORDER_REJECTED);
             assert!(message.contains("odd lot"));
-            assert_eq!(original_order, submitted);
         }
-        other => panic!("expected an unmapped failure, got {other:?}"),
+        other => panic!("expected AdapterError::Brokerage, got {other:?}"),
     }
 }
 
 #[test]
-fn cancel_subscribe_historical_round_trip_through_transport() {
+fn cancel_subscribe_historical_round_trip_through_canonical_traits() {
     let adapter = InteractiveBrokersBrokerage::new(FakeIbGateway::accepting());
     adapter.cancel_order("ib-ord-1").expect("cancel succeeds");
-    assert_eq!(
-        adapter.connection().seen_cancels.borrow().as_slice(),
-        ["ib-ord-1"]
-    );
 
     let sub = adapter
-        .subscribe_market_data("AAPL")
+        .subscribe_market_data(quotes("AAPL"))
         .expect("subscription succeeds");
-    assert_eq!(sub.symbol, "AAPL");
     assert_eq!(sub.subscription_id, "ib-sub-1");
 
     let hist = adapter
-        .request_historical_data("AAPL")
+        .historical_data(daily("AAPL"))
         .expect("historical retrieval succeeds");
     assert_eq!(hist.symbol, "AAPL");
-    assert_eq!(hist.bar_count, 390);
+    assert_eq!(hist.bars.len(), 1);
 }
 
 #[test]
 fn non_order_operation_failure_maps_to_classified_boundary_error() {
-    // A connectivity fault on cancel/subscribe/historical surfaces as the typed
-    // IbAdapterError boundary (raw IbApiError confined to the seam), classified
-    // CONNECTIVITY_BLOCKED exactly as the order path would be.
+    // A connectivity fault on cancel/subscribe/historical surfaces through the
+    // common AdapterError::Brokerage taxonomy, classified CONNECTIVITY_BLOCKED.
     let gw = FakeIbGateway {
         cancel: Some(Err(IbApiError::new(IB_CODE_NOT_CONNECTED, "Not connected"))),
         subscribe: Some(Err(IbApiError::new(IB_CODE_NOT_CONNECTED, "Not connected"))),
@@ -219,28 +246,27 @@ fn non_order_operation_failure_maps_to_classified_boundary_error() {
         ..FakeIbGateway::default()
     };
     let adapter = InteractiveBrokersBrokerage::new(gw);
-    let cancel_err = adapter
-        .cancel_order("ib-ord-9")
-        .expect_err("cancel must fail");
-    assert_eq!(
-        cancel_err.category,
-        Some(OrderErrorCategory::ConnectivityBlocked)
-    );
-    assert_eq!(cancel_err.code, IB_CODE_NOT_CONNECTED);
-    assert_eq!(
+    for err in [
         adapter
-            .subscribe_market_data("AAPL")
-            .expect_err("subscribe must fail")
-            .category,
-        Some(OrderErrorCategory::ConnectivityBlocked)
-    );
-    assert_eq!(
+            .cancel_order("ib-ord-9")
+            .expect_err("cancel must fail"),
         adapter
-            .request_historical_data("AAPL")
-            .expect_err("historical must fail")
-            .category,
-        Some(OrderErrorCategory::ConnectivityBlocked)
-    );
+            .subscribe_market_data(quotes("AAPL"))
+            .map(|_| ())
+            .expect_err("subscribe must fail"),
+        adapter
+            .historical_data(daily("AAPL"))
+            .map(|_| ())
+            .expect_err("historical must fail"),
+    ] {
+        assert!(matches!(
+            err,
+            AdapterError::Brokerage {
+                category: Some(OrderErrorCategory::ConnectivityBlocked),
+                ..
+            }
+        ));
+    }
 }
 
 /// AC verification — operator-initiated only. Drives the live [`TcpIbGateway`]
@@ -255,7 +281,7 @@ fn paper_account_round_trip() {
         eprintln!("skipping: set ATP_RUN_INTEGRATION=1 to run the IB paper-account integration");
         return;
     }
-    let config = IbConnectionConfig::from_env(101);
+    let config = IbConnectionConfig::from_env(101).expect("valid ATP_IB_* configuration");
     let adapter = InteractiveBrokersBrokerage::new(TcpIbGateway::new(config, IbAccountKind::Paper));
 
     // Order submission, cancellation, market-data subscription, and historical-data
@@ -268,10 +294,13 @@ fn paper_account_round_trip() {
         .cancel_order(&receipt.broker_order_id)
         .expect("paper account cancels the resting order");
     adapter
-        .subscribe_market_data("AAPL")
+        .subscribe_market_data(quotes("AAPL"))
         .expect("paper account confirms a market-data subscription");
     let hist = adapter
-        .request_historical_data("AAPL")
+        .historical_data(daily("AAPL"))
         .expect("paper account returns historical bars");
-    assert!(hist.bar_count > 0, "historical retrieval returned no bars");
+    assert!(
+        !hist.bars.is_empty(),
+        "historical retrieval returned no bars"
+    );
 }

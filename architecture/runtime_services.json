@@ -400,18 +400,21 @@
         "submit_order",
         "cancel_order",
         "subscribe_market_data",
-        "request_historical_data"
+        "historical_data"
       ],
       "adapter_struct": "InteractiveBrokersBrokerage",
+      "canonical_traits": ["BrokerageAdapter", "MarketDataAdapter", "HistoricalDataAdapter"],
+      "common_taxonomy_variant": "Brokerage",
       "classifier_fn": "classify_ib_order_error",
+      "mapper_fn": "brokerage_error",
       "mapped_categories": {
         "INVALID_SYMBOL": [200, 203],
         "INSUFFICIENT_BUYING_POWER": [201],
         "RATE_LIMITED": [100],
         "CONNECTIVITY_BLOCKED": [502, 504, 1100, 2110]
       },
-      "never_drop_variant": "Unmapped",
-      "boundary_error_type": "IbAdapterError",
+      "config_error_type": "IbConnectionConfigError",
+      "config_parser_fn": "parse_port",
       "connect_timeout_const": "IB_CONNECT_TIMEOUT",
       "live_transport_struct": "TcpIbGateway",
       "live_wire_pending_sentinel": "IB_CODE_LIVE_WIRE_PROTOCOL_PENDING",
@@ -427,10 +430,10 @@
         "rejection_maps_to_syrs64_insufficient_buying_power",
         "rejection_maps_to_syrs64_rate_limited",
         "unmapped_rejection_is_surfaced_not_dropped",
-        "cancel_subscribe_historical_round_trip_through_transport",
+        "cancel_subscribe_historical_round_trip_through_canonical_traits",
         "non_order_operation_failure_maps_to_classified_boundary_error"
       ],
-      "description": "SRS-EXE-006 IB Gateway brokerage adapter. Ships the deterministic IB-error -> SyRS SYS-64 StructuredOrderError translation (unblocks SRS-ERR-001's broker-validation categories INVALID_SYMBOL/INSUFFICIENT_BUYING_POWER/RATE_LIMITED/CONNECTIVITY_BLOCKED), the TWS transport seam plus the four AC operations over it (proven solo via a FakeIbGateway), and the live TcpIbGateway scaffold. STAYS passes:false (serialized): the AC's automated IB paper-account integration test is operator-initiated (SyRS SYS-2e, fixed port 4002) and cannot run in the parallel agent pool.",
+      "description": "SRS-EXE-006 IB Gateway brokerage adapter. Ships the deterministic IB-error -> SyRS SYS-64 classification (classify_ib_order_error -> brokerage_error -> AdapterError::Brokerage, unblocking SRS-ERR-001's broker-validation categories INVALID_SYMBOL/INSUFFICIENT_BUYING_POWER/RATE_LIMITED/CONNECTIVITY_BLOCKED), the TWS transport seam, and the four AC operations exposed through the CANONICAL BrokerageAdapter/MarketDataAdapter/HistoricalDataAdapter traits (SYS-52) so failures flow through the common AdapterError taxonomy (proven solo via a FakeIbGateway), plus the live TcpIbGateway scaffold. Config fails closed on malformed ATP_IB_* ports (IbConnectionConfigError). STAYS passes:false (serialized): the AC's automated IB paper-account integration test is operator-initiated (SyRS SYS-2e, fixed port 4002) and cannot run in the parallel agent pool.",
       "deferred": [
         "operator-initiated IB paper-account integration test (SyRS SYS-2e / AC-2): completes the TWS wire encoding in TcpIbGateway and runs submit/cancel/subscribe/historical green against port 4002 (flips passes:true)",
         "execution-engine wiring of the IB adapter to atp_execution::LiveBrokerageSubmit (SRS-EXE-001 / SRS-ORCH-*)",

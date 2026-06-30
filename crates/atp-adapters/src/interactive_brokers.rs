@@ -17,27 +17,34 @@
 //! established adapter pattern (`SharadarAdapter::map_fundamentals`): the
 //! deterministic half that does not need the wire.
 //!
-//! * [`classify_ib_order_error`] / [`to_order_submit_error`] — the load-bearing
-//!   **IB-error → SyRS SYS-64 [`StructuredOrderError`]** translation. This is the
-//!   concrete artifact the broker-side error categories
-//!   (`INVALID_SYMBOL` / `INSUFFICIENT_BUYING_POWER` / `RATE_LIMITED` /
-//!   `CONNECTIVITY_BLOCKED`) were vocabulary-only without (SRS-ERR-001 deferred
-//!   on exactly this), now produced from documented IB TWS API error codes.
-//! * [`IbGatewayConnection`] — the **transport seam** abstracting the TWS socket,
-//!   so every adapter operation is exercised end-to-end against a deterministic
-//!   in-memory double in unit/boundary tests, with the real socket transport the
-//!   only operator-gated piece.
-//! * [`InteractiveBrokersBrokerage`] — the adapter: the four AC operations
-//!   (submit / cancel / subscribe / historical) over any [`IbGatewayConnection`],
-//!   mapping IB outcomes onto vendor-neutral domain results and **never** silently
-//!   dropping a failed order submission (SYS-64).
+//! * [`classify_ib_order_error`] — the load-bearing **IB-error → SyRS SYS-64
+//!   [`OrderErrorCategory`]** classification (`INVALID_SYMBOL` /
+//!   `INSUFFICIENT_BUYING_POWER` / `RATE_LIMITED` / `CONNECTIVITY_BLOCKED`) from
+//!   documented IB TWS API codes — the broker categories SRS-ERR-001 was missing.
+//! * [`IbGatewayConnection`] — the **transport seam** abstracting the TWS socket
+//!   (raw [`IbApiError`] confined here), so every operation is exercised
+//!   end-to-end against a deterministic in-memory double, leaving only the real
+//!   socket transport operator-gated.
+//! * [`InteractiveBrokersBrokerage`] — the adapter, exposed through the **canonical**
+//!   [`BrokerageAdapter`] / [`MarketDataAdapter`] / [`HistoricalDataAdapter`]
+//!   traits (SYS-52), so callers use the documented adapter interface and every
+//!   failure flows through the common [`AdapterError`] taxonomy
+//!   ([`AdapterError::Brokerage`], carrying the SyRS category) — never dropped (SYS-64).
 //! * [`TcpIbGateway`] — the live-transport scaffold: it establishes the real TCP
-//!   session to headless IB Gateway from `ATP_IB_*` config, but its per-operation
-//!   TWS wire encoding is completed and verified under the operator-initiated
-//!   integration test, so it currently fails **loudly** (never a fabricated
-//!   success) — see [`IB_CODE_LIVE_WIRE_PROTOCOL_PENDING`].
+//!   session to headless IB Gateway from [`IbConnectionConfig`] with an explicit
+//!   timeout, but its per-operation TWS wire encoding is completed and verified
+//!   under the operator-initiated integration test, so it currently fails
+//!   **loudly** (never a fabricated success) — see [`IB_CODE_LIVE_WIRE_PROTOCOL_PENDING`].
 
-use atp_types::{OrderErrorCategory, OrderReceipt, OrderSubmission, StructuredOrderError};
+use crate::{
+    AdapterBoundary, AdapterCapability, AdapterError, AdapterResult, AdapterVersion,
+    BrokerageAdapter, HistoricalDataAdapter, HistoricalDataRequest, HistoricalQueryResult,
+    MarketDataAdapter, MarketDataSubscription, SubscriptionReceipt,
+    INTERACTIVE_BROKERS_ADAPTER_VERSION, INTERACTIVE_BROKERS_CAPABILITIES,
+    INTERACTIVE_BROKERS_PROTOCOL_LABEL, INTERACTIVE_BROKERS_TWS_API_VERSION,
+};
+use atp_types::{OrderErrorCategory, OrderReceipt, OrderSubmission};
+use std::fmt;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
@@ -49,7 +56,9 @@ use std::time::Duration;
 /// `error(reqId, errorCode, errorString)` callback: the numeric `code` plus the
 /// human-readable `message`. Modelling connectivity faults as IB error codes
 /// (502/504/1100/2110) matches how IB itself reports them, so the adapter has a
-/// single failure surface to classify.
+/// single failure surface to classify. Raw `IbApiError` stays confined to the
+/// [`IbGatewayConnection`] transport seam; the public adapter maps it onto the
+/// canonical [`AdapterError`] boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IbApiError {
     pub code: i32,
@@ -91,9 +100,9 @@ pub const IB_CODE_LIVE_WIRE_PROTOCOL_PENDING: i32 = -1;
 
 /// Map a documented IB TWS API error onto the SyRS SYS-64 [`OrderErrorCategory`],
 /// or `None` when the adapter does not (yet) recognise the code as a SYS-64
-/// broker-validation category. `None` does **not** mean "drop it" — the caller
-/// still surfaces an unmapped failure with the raw IB detail (see
-/// [`to_order_submit_error`]); it means "no fabricated category".
+/// broker-validation category. `None` does **not** mean "drop it" — the failure is
+/// still surfaced through [`AdapterError::Brokerage`] with the raw IB detail; it
+/// means "no fabricated category".
 ///
 /// IB code `201` ("Order rejected") is reason-bearing: the same numeric code
 /// covers insufficient-buying-power/margin rejections and other rejections, so it
@@ -114,7 +123,7 @@ pub fn classify_ib_order_error(error: &IbApiError) -> Option<OrderErrorCategory>
                 Some(OrderErrorCategory::InsufficientBuyingPower)
             } else {
                 // A generic order rejection we do not map onto a SYS-64 category;
-                // never dropped — surfaced as Unmapped with the raw IB detail.
+                // still surfaced through AdapterError::Brokerage, never dropped.
                 None
             }
         }
@@ -134,62 +143,24 @@ fn message_indicates_insufficient_buying_power(message: &str) -> bool {
         || lower.contains("margin requirement")
 }
 
-/// Stable `error_type` discriminator for a SYS-64 envelope produced from an IB
-/// rejection: the category wire name suffixed with the originating IB code, so an
-/// operator reading the envelope sees both the canonical category and the exact
-/// IB code that produced it (e.g. `INVALID_SYMBOL/ib-200`).
-fn ib_error_type(category: OrderErrorCategory, code: i32) -> String {
-    format!("{}/ib-{}", category.as_str(), code)
-}
-
-/// Outcome of an order submission that the IB adapter could not complete. Either
-/// a SyRS SYS-64 structured envelope (recognised broker-validation category) or
-/// an explicitly **unmapped** IB error — and an unmapped error still carries the
-/// raw IB code/message and the unchanged original order, so a failed submission
-/// is **never silently dropped** (SYS-64).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IbOrderSubmitError {
-    /// A recognised broker-validation failure as a SyRS SYS-64 [`StructuredOrderError`].
-    Structured(StructuredOrderError),
-    /// An IB error the adapter does not map onto a SYS-64 category — surfaced with
-    /// the raw IB `code` + `message` and the unchanged `original_order` for operator
-    /// triage / future mapping, never a fabricated category.
-    Unmapped {
-        code: i32,
-        message: String,
-        original_order: OrderSubmission,
-    },
-}
-
-/// Translate an [`IbApiError`] for a failed order submission into either a SYS-64
-/// [`StructuredOrderError`] (when the code maps onto a category) or an
-/// [`IbOrderSubmitError::Unmapped`] carrying the raw IB detail. The original order
-/// parameters travel **unchanged** into the envelope (SRS-ERR-001) either way.
-pub fn to_order_submit_error(
-    error: IbApiError,
-    original_order: OrderSubmission,
-) -> IbOrderSubmitError {
-    match classify_ib_order_error(&error) {
-        Some(category) => IbOrderSubmitError::Structured(StructuredOrderError {
-            category,
-            error_type: ib_error_type(category, error.code),
-            message: format!(
-                "IB Gateway rejected order for `{}` (qty {}): IB error {} — {} \
-                 (SRS-EXE-006 / SyRS SYS-64)",
-                original_order.symbol, original_order.quantity, error.code, error.message
-            ),
-            original_order,
-        }),
-        None => IbOrderSubmitError::Unmapped {
-            code: error.code,
-            message: error.message,
-            original_order,
-        },
+/// Map a transport-seam [`IbApiError`] onto the canonical [`AdapterError::Brokerage`]
+/// boundary, attaching the SyRS SYS-64 classification. This is the single point
+/// where a raw IB error crosses into the common adapter taxonomy, so a failed
+/// order submission carries `INVALID_SYMBOL` / `INSUFFICIENT_BUYING_POWER` /
+/// `RATE_LIMITED` / `CONNECTIVITY_BLOCKED` and is never silently dropped (SYS-64).
+fn brokerage_error(error: IbApiError) -> AdapterError {
+    AdapterError::Brokerage {
+        adapter: PROVIDER_NAME,
+        category: classify_ib_order_error(&error),
+        code: error.code,
+        message: error.message,
     }
 }
 
+const PROVIDER_NAME: &str = "interactive_brokers";
+
 // --------------------------------------------------------------------------- //
-// Transport seam + connection config
+// Connection config
 // --------------------------------------------------------------------------- //
 
 /// The brokerage account an IB Gateway session targets. The **paper** account is
@@ -202,6 +173,27 @@ pub enum IbAccountKind {
     Live,
     Paper,
 }
+
+/// A malformed `ATP_IB_*` configuration value. Order configuration must **fail
+/// closed**: a malformed port is reported, never silently replaced with a default
+/// that could connect to an unintended IB Gateway endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IbConnectionConfigError {
+    pub variable: &'static str,
+    pub value: String,
+}
+
+impl fmt::Display for IbConnectionConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "malformed IB Gateway configuration: {} = `{}` is not a valid TCP port (1..=65535)",
+            self.variable, self.value
+        )
+    }
+}
+
+impl std::error::Error for IbConnectionConfigError {}
 
 /// Connection parameters for a headless IB Gateway session, sourced from the
 /// `ATP_IB_*` environment (mirrors `.env.example` / `docker-compose.yml`). Held
@@ -231,24 +223,44 @@ impl IbConnectionConfig {
         }
     }
 
-    /// Read `ATP_IB_HOST` / `ATP_IB_LIVE_PORT` / `ATP_IB_PAPER_PORT` (falling back
-    /// to the documented `.env.example` defaults), with the given client id.
-    pub fn from_env(client_id: i32) -> Self {
+    /// Read `ATP_IB_HOST` / `ATP_IB_LIVE_PORT` / `ATP_IB_PAPER_PORT`. A **missing**
+    /// port uses the documented `.env.example` default; a **malformed** port
+    /// (non-numeric, out of range, or `0`) **fails closed** with an
+    /// [`IbConnectionConfigError`] rather than silently connecting to a default
+    /// endpoint — brokerage configuration must never resolve to an unintended IB
+    /// Gateway on a typo.
+    pub fn from_env(client_id: i32) -> Result<Self, IbConnectionConfigError> {
         let host = std::env::var("ATP_IB_HOST").unwrap_or_else(|_| Self::DEFAULT_HOST.to_string());
-        let live_port = std::env::var("ATP_IB_LIVE_PORT")
-            .ok()
-            .and_then(|raw| raw.parse().ok())
-            .unwrap_or(Self::DEFAULT_LIVE_PORT);
-        let paper_port = std::env::var("ATP_IB_PAPER_PORT")
-            .ok()
-            .and_then(|raw| raw.parse().ok())
-            .unwrap_or(Self::DEFAULT_PAPER_PORT);
-        Self {
+        let live_port = Self::port_from_env("ATP_IB_LIVE_PORT", Self::DEFAULT_LIVE_PORT)?;
+        let paper_port = Self::port_from_env("ATP_IB_PAPER_PORT", Self::DEFAULT_PAPER_PORT)?;
+        Ok(Self {
             host,
             live_port,
             paper_port,
             client_id,
+        })
+    }
+
+    fn port_from_env(variable: &'static str, default: u16) -> Result<u16, IbConnectionConfigError> {
+        // Missing → documented default; present → parse and fail closed on malformed.
+        match std::env::var(variable) {
+            Err(_) => Ok(default),
+            Ok(raw) => Self::parse_port(variable, &raw),
         }
+    }
+
+    /// Parse a present `ATP_IB_*_PORT` value. A non-numeric, out-of-range, or `0`
+    /// port is rejected (`Err`) — never coerced to a default — so a typo cannot
+    /// silently redirect the adapter to an unintended IB Gateway endpoint.
+    fn parse_port(variable: &'static str, raw: &str) -> Result<u16, IbConnectionConfigError> {
+        raw.trim()
+            .parse::<u16>()
+            .ok()
+            .filter(|&port| port != 0)
+            .ok_or_else(|| IbConnectionConfigError {
+                variable,
+                value: raw.to_string(),
+            })
     }
 
     /// The `host:port` socket address for the requested account kind.
@@ -261,99 +273,45 @@ impl IbConnectionConfig {
     }
 }
 
-/// A confirmed market-data subscription handle returned by the adapter.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IbSubscriptionReceipt {
-    pub symbol: String,
-    pub subscription_id: String,
-}
-
-/// A historical-data response: the symbol plus the number of bars returned. The
-/// bar payload itself flows through the data layer's vendor-neutral envelope; the
-/// adapter test surface only asserts retrieval succeeded and is non-empty.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IbHistoricalResult {
-    pub symbol: String,
-    pub bar_count: usize,
-}
-
-/// The adapter-boundary failure for the IB adapter's **non-order** operations
-/// (cancel / market-data subscription / historical retrieval). This confines the
-/// raw transport [`IbApiError`] to the [`IbGatewayConnection`] seam: a caller of
-/// the public adapter gets a consistent boundary contract — the SyRS-classified
-/// [`OrderErrorCategory`] when the IB error maps onto one (so a connectivity loss
-/// is `CONNECTIVITY_BLOCKED` here exactly as on the order path), plus the raw IB
-/// `code`/`message` for diagnostics. Order submission has its own richer SYS-64
-/// surface ([`IbOrderSubmitError`]); this is for the operations that are not
-/// order submissions.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IbAdapterError {
-    /// The SyRS SYS-64 category when the IB error maps onto one (e.g. a
-    /// connectivity fault → `CONNECTIVITY_BLOCKED`), else `None`.
-    pub category: Option<OrderErrorCategory>,
-    pub code: i32,
-    pub message: String,
-}
-
-impl IbAdapterError {
-    fn from_ib(error: IbApiError) -> Self {
-        Self {
-            category: classify_ib_order_error(&error),
-            code: error.code,
-            message: error.message,
-        }
-    }
-}
-
-impl std::fmt::Display for IbAdapterError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.category {
-            Some(category) => write!(
-                formatter,
-                "[{}] IB adapter operation failed: IB error {} — {}",
-                category.as_str(),
-                self.code,
-                self.message
-            ),
-            None => write!(
-                formatter,
-                "IB adapter operation failed: IB error {} — {}",
-                self.code, self.message
-            ),
-        }
-    }
-}
-
-impl std::error::Error for IbAdapterError {}
+// --------------------------------------------------------------------------- //
+// Transport seam
+// --------------------------------------------------------------------------- //
 
 /// The transport seam over the IB TWS socket. Every method returns the raw IB
-/// outcome (`Ok` payload or an [`IbApiError`]); the adapter
-/// ([`InteractiveBrokersBrokerage`]) owns the mapping onto the vendor-neutral
-/// domain results and the boundary error types ([`IbOrderSubmitError`] /
-/// [`IbAdapterError`]), so raw [`IbApiError`] never leaks past this seam.
-/// Abstracting the socket here is what lets the four AC operations be driven
+/// outcome (the canonical `Ok` payload or an [`IbApiError`]); the adapter
+/// ([`InteractiveBrokersBrokerage`]) owns the mapping of [`IbApiError`] onto the
+/// canonical [`AdapterError`] boundary, so raw IB errors never leak past this
+/// seam. Abstracting the socket here is what lets the four AC operations be driven
 /// end-to-end by a deterministic in-memory double in tests, leaving only the real
 /// socket transport ([`TcpIbGateway`]) operator-gated.
 pub trait IbGatewayConnection {
-    /// Submit an order; returns the IB broker order id on acceptance.
-    fn submit_order(&self, order: &OrderSubmission) -> Result<String, IbApiError>;
+    /// Submit an order; returns the [`OrderReceipt`] on acceptance.
+    fn submit_order(&self, order: &OrderSubmission) -> Result<OrderReceipt, IbApiError>;
     /// Cancel a resting order by IB broker order id.
     fn cancel_order(&self, broker_order_id: &str) -> Result<(), IbApiError>;
-    /// Subscribe to streaming market data for `symbol`; returns the subscription id.
-    fn subscribe_market_data(&self, symbol: &str) -> Result<String, IbApiError>;
-    /// Retrieve historical bars for `symbol`; returns the bar count.
-    fn request_historical_data(&self, symbol: &str) -> Result<usize, IbApiError>;
+    /// Subscribe to streaming market data; returns the [`SubscriptionReceipt`].
+    fn subscribe_market_data(
+        &self,
+        request: &MarketDataSubscription,
+    ) -> Result<SubscriptionReceipt, IbApiError>;
+    /// Retrieve historical bars; returns the vendor-neutral [`HistoricalQueryResult`].
+    fn historical_data(
+        &self,
+        request: &HistoricalDataRequest,
+    ) -> Result<HistoricalQueryResult, IbApiError>;
 }
 
 // --------------------------------------------------------------------------- //
-// The adapter
+// The adapter — exposed through the canonical SYS-52 adapter traits
 // --------------------------------------------------------------------------- //
 
-/// The Interactive Brokers brokerage adapter (SRS-EXE-006): the four AC
-/// operations over any [`IbGatewayConnection`] transport. Generic over the
-/// transport so the same adapter logic is exercised against a deterministic
-/// double in tests and against [`TcpIbGateway`] in the operator-gated
-/// integration test.
+/// The Interactive Brokers brokerage adapter (SRS-EXE-006): the four AC operations
+/// over any [`IbGatewayConnection`] transport, exposed through the **canonical**
+/// [`BrokerageAdapter`] / [`MarketDataAdapter`] / [`HistoricalDataAdapter`] traits
+/// (SYS-52) so callers use the documented adapter interface and every failure
+/// flows through the common [`AdapterError`] taxonomy. Generic over the transport
+/// so the same adapter logic runs against a deterministic double in tests and
+/// against [`TcpIbGateway`] in the operator-gated integration test.
 #[derive(Debug, Clone)]
 pub struct InteractiveBrokersBrokerage<C: IbGatewayConnection> {
     connection: C,
@@ -367,55 +325,61 @@ impl<C: IbGatewayConnection> InteractiveBrokersBrokerage<C> {
     pub fn connection(&self) -> &C {
         &self.connection
     }
+}
 
-    /// Submit an order to IB. On acceptance returns the vendor-neutral
-    /// [`OrderReceipt`]; on rejection returns an [`IbOrderSubmitError`] — a SYS-64
-    /// [`StructuredOrderError`] for a recognised broker-validation category, or an
-    /// `Unmapped` failure carrying the raw IB detail. A failed submission is never
-    /// silently dropped (SYS-64).
-    pub fn submit_order(&self, order: OrderSubmission) -> Result<OrderReceipt, IbOrderSubmitError> {
-        match self.connection.submit_order(&order) {
-            Ok(broker_order_id) => Ok(OrderReceipt { broker_order_id }),
-            Err(error) => Err(to_order_submit_error(error, order)),
+impl<C: IbGatewayConnection> AdapterBoundary for InteractiveBrokersBrokerage<C> {
+    fn provider_name(&self) -> &'static str {
+        PROVIDER_NAME
+    }
+
+    fn capabilities(&self) -> &'static [AdapterCapability] {
+        INTERACTIVE_BROKERS_CAPABILITIES
+    }
+
+    fn version(&self) -> AdapterVersion {
+        AdapterVersion {
+            adapter_version: INTERACTIVE_BROKERS_ADAPTER_VERSION,
+            protocol_version: INTERACTIVE_BROKERS_TWS_API_VERSION,
+            protocol_label: INTERACTIVE_BROKERS_PROTOCOL_LABEL,
         }
     }
+}
 
-    /// Cancel a resting order by IB broker order id. A transport failure is mapped
-    /// onto the [`IbAdapterError`] boundary (raw `IbApiError` never leaks).
-    pub fn cancel_order(&self, broker_order_id: &str) -> Result<(), IbAdapterError> {
+impl<C: IbGatewayConnection> BrokerageAdapter for InteractiveBrokersBrokerage<C> {
+    fn submit_order(&self, request: OrderSubmission) -> AdapterResult<OrderReceipt> {
+        // Any IB rejection maps onto AdapterError::Brokerage (with the SyRS
+        // category) — an Err is always returned, the submission is never dropped.
+        self.connection
+            .submit_order(&request)
+            .map_err(brokerage_error)
+    }
+
+    fn cancel_order(&self, broker_order_id: &str) -> AdapterResult<()> {
         self.connection
             .cancel_order(broker_order_id)
-            .map_err(IbAdapterError::from_ib)
+            .map_err(brokerage_error)
     }
+}
 
-    /// Subscribe to streaming market data for `symbol`.
-    pub fn subscribe_market_data(
+impl<C: IbGatewayConnection> MarketDataAdapter for InteractiveBrokersBrokerage<C> {
+    fn subscribe_market_data(
         &self,
-        symbol: &str,
-    ) -> Result<IbSubscriptionReceipt, IbAdapterError> {
-        let subscription_id = self
-            .connection
-            .subscribe_market_data(symbol)
-            .map_err(IbAdapterError::from_ib)?;
-        Ok(IbSubscriptionReceipt {
-            symbol: symbol.to_string(),
-            subscription_id,
-        })
+        request: MarketDataSubscription,
+    ) -> AdapterResult<SubscriptionReceipt> {
+        self.connection
+            .subscribe_market_data(&request)
+            .map_err(brokerage_error)
     }
+}
 
-    /// Retrieve historical bars for `symbol`.
-    pub fn request_historical_data(
+impl<C: IbGatewayConnection> HistoricalDataAdapter for InteractiveBrokersBrokerage<C> {
+    fn historical_data(
         &self,
-        symbol: &str,
-    ) -> Result<IbHistoricalResult, IbAdapterError> {
-        let bar_count = self
-            .connection
-            .request_historical_data(symbol)
-            .map_err(IbAdapterError::from_ib)?;
-        Ok(IbHistoricalResult {
-            symbol: symbol.to_string(),
-            bar_count,
-        })
+        request: HistoricalDataRequest,
+    ) -> AdapterResult<HistoricalQueryResult> {
+        self.connection
+            .historical_data(&request)
+            .map_err(brokerage_error)
     }
 }
 
@@ -450,9 +414,7 @@ impl TcpIbGateway {
     /// `SocketAddr`, plus read/write timeouts on the stream) so a black-holed
     /// Gateway host fails the adapter's budget instead of hanging on the OS TCP
     /// timeout — a live-execution call must never block unbounded. Any failure is a
-    /// SYS-64-classifiable `CONNECTIVITY_BLOCKED` IB code (`502`) so an unreachable
-    /// Gateway maps onto the same category the live execution gate uses
-    /// (ERR-2 / SRS-SAFE-003).
+    /// SYS-64-classifiable `CONNECTIVITY_BLOCKED` IB code (`502`).
     pub fn connect(&self) -> Result<TcpStream, IbApiError> {
         let addr = self.config.socket_addr(self.account);
         let blocked = |detail: String| IbApiError::new(IB_CODE_COULD_NOT_CONNECT, detail);
@@ -493,7 +455,7 @@ impl TcpIbGateway {
 }
 
 impl IbGatewayConnection for TcpIbGateway {
-    fn submit_order(&self, _order: &OrderSubmission) -> Result<String, IbApiError> {
+    fn submit_order(&self, _order: &OrderSubmission) -> Result<OrderReceipt, IbApiError> {
         // Establish the real session (fails closed if unreachable), then defer the
         // wire encoding to the operator-gated integration deliverable.
         let _stream = self.connect()?;
@@ -505,14 +467,20 @@ impl IbGatewayConnection for TcpIbGateway {
         Err(Self::live_wire_pending("cancel_order"))
     }
 
-    fn subscribe_market_data(&self, _symbol: &str) -> Result<String, IbApiError> {
+    fn subscribe_market_data(
+        &self,
+        _request: &MarketDataSubscription,
+    ) -> Result<SubscriptionReceipt, IbApiError> {
         let _stream = self.connect()?;
         Err(Self::live_wire_pending("subscribe_market_data"))
     }
 
-    fn request_historical_data(&self, _symbol: &str) -> Result<usize, IbApiError> {
+    fn historical_data(
+        &self,
+        _request: &HistoricalDataRequest,
+    ) -> Result<HistoricalQueryResult, IbApiError> {
         let _stream = self.connect()?;
-        Err(Self::live_wire_pending("request_historical_data"))
+        Err(Self::live_wire_pending("historical_data"))
     }
 }
 
@@ -571,7 +539,6 @@ mod tests {
 
     #[test]
     fn classifies_order_rejected_by_reason_text() {
-        // 201 with an insufficient-buying-power reason → INSUFFICIENT_BUYING_POWER.
         assert_eq!(
             classify_ib_order_error(&IbApiError::new(
                 IB_CODE_ORDER_REJECTED,
@@ -586,7 +553,6 @@ mod tests {
             )),
             Some(OrderErrorCategory::InsufficientBuyingPower)
         );
-        // 201 with a non-buying-power reason → unmapped (no fabricated category).
         assert_eq!(
             classify_ib_order_error(&IbApiError::new(
                 IB_CODE_ORDER_REJECTED,
@@ -605,49 +571,46 @@ mod tests {
     }
 
     #[test]
-    fn structured_envelope_carries_unchanged_order_and_category() {
-        let submitted = order("AAPL", 10);
-        let err = to_order_submit_error(
-            IbApiError::new(IB_CODE_NO_SECURITY_DEFINITION, "No security definition"),
-            submitted.clone(),
-        );
+    fn brokerage_error_carries_category_and_raw_detail() {
+        let err = brokerage_error(IbApiError::new(
+            IB_CODE_NO_SECURITY_DEFINITION,
+            "No security definition",
+        ));
         match err {
-            IbOrderSubmitError::Structured(envelope) => {
-                assert_eq!(envelope.category, OrderErrorCategory::InvalidSymbol);
-                assert_eq!(envelope.error_type, "INVALID_SYMBOL/ib-200");
-                // Original order parameters travel unchanged (SRS-ERR-001).
-                assert_eq!(envelope.original_order, submitted);
-                assert!(envelope.message.contains("AAPL"));
-                assert!(envelope.message.contains("200"));
-            }
-            other => panic!("expected a structured envelope, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn unmapped_failure_preserves_raw_ib_detail_and_order() {
-        let submitted = order("AAPL", 10);
-        let err = to_order_submit_error(
-            IbApiError::new(IB_CODE_ORDER_REJECTED, "Order rejected - reason: odd lot"),
-            submitted.clone(),
-        );
-        match err {
-            IbOrderSubmitError::Unmapped {
+            AdapterError::Brokerage {
+                adapter,
+                category,
                 code,
                 message,
-                original_order,
             } => {
-                assert_eq!(code, IB_CODE_ORDER_REJECTED);
-                assert!(message.contains("odd lot"));
-                assert_eq!(original_order, submitted);
+                assert_eq!(adapter, "interactive_brokers");
+                assert_eq!(category, Some(OrderErrorCategory::InvalidSymbol));
+                assert_eq!(code, IB_CODE_NO_SECURITY_DEFINITION);
+                assert!(message.contains("No security definition"));
             }
-            other => panic!("expected an unmapped failure, got {other:?}"),
+            other => panic!("expected AdapterError::Brokerage, got {other:?}"),
         }
     }
 
     #[test]
-    fn config_from_env_defaults_match_dotenv_example() {
-        // No env override → documented defaults; socket_addr selects by account.
+    fn unmapped_failure_is_surfaced_with_no_category_not_dropped() {
+        let err = brokerage_error(IbApiError::new(
+            IB_CODE_ORDER_REJECTED,
+            "Order rejected - reason: odd lot",
+        ));
+        match err {
+            AdapterError::Brokerage {
+                category, message, ..
+            } => {
+                assert_eq!(category, None);
+                assert!(message.contains("odd lot"));
+            }
+            other => panic!("expected AdapterError::Brokerage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_socket_addr_selects_account_port() {
         let config = IbConnectionConfig::new(
             IbConnectionConfig::DEFAULT_HOST,
             IbConnectionConfig::DEFAULT_LIVE_PORT,
@@ -659,9 +622,21 @@ mod tests {
     }
 
     #[test]
+    fn malformed_port_env_fails_closed() {
+        // A non-numeric / zero / out-of-range port must fail closed, never fall back
+        // to a default endpoint. (Uses the value parser so the test does not mutate env.)
+        assert!(IbConnectionConfig::parse_port("ATP_IB_PAPER_PORT", "abc").is_err());
+        assert!(IbConnectionConfig::parse_port("ATP_IB_PAPER_PORT", "0").is_err());
+        assert!(IbConnectionConfig::parse_port("ATP_IB_PAPER_PORT", "70000").is_err());
+        // A valid value parses (whitespace trimmed).
+        assert_eq!(
+            IbConnectionConfig::parse_port("ATP_IB_PAPER_PORT", "  4002 ").unwrap(),
+            4002
+        );
+    }
+
+    #[test]
     fn live_transport_fails_closed_when_gateway_unreachable() {
-        // Port 1 is reserved/unbound → connect fails → a CONNECTIVITY_BLOCKED IB
-        // code, never a fabricated success.
         let config = IbConnectionConfig::new("127.0.0.1", 1, 1, 1);
         let transport = TcpIbGateway::new(config, IbAccountKind::Paper);
         let err = transport

@@ -1,18 +1,20 @@
-use atp_types::{FundamentalStatements, FundamentalStatementsError, RuntimeService};
+use atp_types::{
+    FundamentalStatements, FundamentalStatementsError, OrderErrorCategory, RuntimeService,
+};
 use std::fmt;
 
 pub use atp_types::{OrderReceipt, OrderSubmission};
 
 /// SRS-EXE-006 — the headless IB Gateway brokerage adapter: the IB-error → SyRS
-/// SYS-64 [`atp_types::StructuredOrderError`] translation, the TWS transport seam,
-/// the four AC operations over it, and the operator-gated live transport. See the
+/// SYS-64 classification, the TWS transport seam, the four AC operations exposed
+/// through the canonical [`BrokerageAdapter`] / [`MarketDataAdapter`] /
+/// [`HistoricalDataAdapter`] traits, and the operator-gated live transport. See the
 /// module docs for what ships solo vs. what the operator-initiated paper-account
 /// integration test completes.
 pub mod interactive_brokers;
 pub use interactive_brokers::{
-    classify_ib_order_error, to_order_submit_error, IbAccountKind, IbApiError, IbConnectionConfig,
-    IbGatewayConnection, IbHistoricalResult, IbOrderSubmitError, IbSubscriptionReceipt,
-    InteractiveBrokersBrokerage, TcpIbGateway,
+    classify_ib_order_error, IbAccountKind, IbApiError, IbConnectionConfig,
+    IbConnectionConfigError, IbGatewayConnection, InteractiveBrokersBrokerage, TcpIbGateway,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -41,6 +43,19 @@ pub enum AdapterError {
         adapter: &'static str,
         detail: String,
     },
+    /// A brokerage adapter operation failed (SRS-EXE-006). Carries the SyRS SYS-64
+    /// [`OrderErrorCategory`] classification when the underlying vendor error maps
+    /// onto one — so a failed order submission surfaces `INVALID_SYMBOL` /
+    /// `INSUFFICIENT_BUYING_POWER` / `RATE_LIMITED` / `CONNECTIVITY_BLOCKED` through
+    /// this common taxonomy (the SRS-ERR-001 broker categories) — plus the raw
+    /// vendor `code` + `message`. `category: None` is a recognised-but-unmapped
+    /// failure that is still surfaced, never dropped (SYS-64).
+    Brokerage {
+        adapter: &'static str,
+        category: Option<OrderErrorCategory>,
+        code: i32,
+        message: String,
+    },
 }
 
 impl fmt::Display for AdapterError {
@@ -57,6 +72,22 @@ impl fmt::Display for AdapterError {
                 formatter,
                 "{adapter} adapter received invalid provider data: {detail}"
             ),
+            Self::Brokerage {
+                adapter,
+                category,
+                code,
+                message,
+            } => match category {
+                Some(category) => write!(
+                    formatter,
+                    "{adapter} brokerage operation failed [{}]: vendor error {code} — {message}",
+                    category.as_str()
+                ),
+                None => write!(
+                    formatter,
+                    "{adapter} brokerage operation failed: vendor error {code} — {message}"
+                ),
+            },
         }
     }
 }
@@ -358,7 +389,7 @@ pub trait AlternativeDataProvider: DataProviderAdapter {
     }
 }
 
-const INTERACTIVE_BROKERS_CAPABILITIES: &[AdapterCapability] = &[
+pub(crate) const INTERACTIVE_BROKERS_CAPABILITIES: &[AdapterCapability] = &[
     AdapterCapability::Brokerage,
     AdapterCapability::MarketData,
     AdapterCapability::HistoricalData,
