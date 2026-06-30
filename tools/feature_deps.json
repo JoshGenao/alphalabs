@@ -93,6 +93,9 @@
   "SRS-FAC-001": [
     "SRS-DATA-005"
   ],
+  "SRS-LOG-001": [
+    "SRS-UI-001"
+  ],
   "SRS-MD-004": [
     "SRS-MD-003"
   ],
