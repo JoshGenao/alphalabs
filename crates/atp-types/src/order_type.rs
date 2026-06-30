@@ -14,21 +14,24 @@
 //! depend on this leaf crate, so the canonical vocabulary lives here and neither
 //! side re-implements it.
 //!
-//! Status, stated honestly: the paper path **consumes** this definition today
-//! (it re-exports the types — see below). The live path does **not** yet — at
-//! HEAD `atp-execution` has no order-type intake and `OrderSubmission` carries
-//! only `symbol` + `quantity`. So the AC is **not** satisfied by this slice
-//! (SRS-EXE-003 stays `passes:false`); this module is the shared seam the live
-//! intake (SRS-EXE-006) will consume so the two paths are identical *once it
-//! lands*, not a claim that they already are.
+//! Status, stated honestly: BOTH paths consume this definition. The paper path
+//! re-exports the types (see below); and as of SRS-EXE-003 the live path does
+//! too — `atp_types::OrderSubmission` carries `asset_class` / `side` /
+//! `order_type` (+ `OrderSubmission::validate`, delegating to
+//! [`OrderType::validate_prices`]), and the IB brokerage adapter
+//! (`InteractiveBrokersBrokerage::submit_order`) validates each order type
+//! before submission (failing closed so a malformed order never reaches the
+//! broker). SRS-EXE-003 still stays `passes:false` because the end-to-end proof
+//! needs the deferred halves: the real-IB wire (operator-gated, SRS-EXE-006) and
+//! the `OrderSubmission` → `OrderLeg` bridge the real `PaperSimulationEngine`
+//! consumes (SRS-ORCH-* / SRS-SIM-001 seam) — not because the live path lacks
+//! the vocabulary.
 //!
 //! This module was **hoisted** from `atp-simulation`'s `paper_order` module
 //! (which originally defined `OrderType` / `Side` / `AssetClass` for the paper
-//! intake path under SRS-SIM-001). `paper_order` now RE-EXPORTS these types: the
-//! paper engine consumes this one definition today, and it is the SAME type the
-//! future live intake (SRS-EXE-006) will consume — so when the live path is wired
-//! the two will be identical by definition (one type, not two copies), but this
-//! slice does not yet make the live path consume it.
+//! intake path under SRS-SIM-001). `paper_order` RE-EXPORTS these types, and the
+//! live `OrderSubmission` carries the SAME types — one definition, not two
+//! copies, so the live and paper order vocabularies cannot drift.
 //! `tools/order_type_check.py` pins the re-export so a divergent copy cannot
 //! reappear.
 //!
@@ -42,9 +45,11 @@
 //! shared rule [`OrderType::validate_prices`] expresses. NOTE: the variants are
 //! `pub`, so a caller *can* construct `Limit { limit_price_minor: -5 }` without
 //! calling `validate_prices`; positivity is therefore an **intake-boundary**
-//! check, not a construction-time guarantee. The paper intake applies it today
-//! (`paper_order::validate_leg`); the live intake (SRS-EXE-006) will apply it
-//! when it lands. Restricting the variants to validated constructors / private
+//! check, not a construction-time guarantee. BOTH intakes apply it: the paper
+//! intake (`paper_order::validate_leg`) and, as of SRS-EXE-003, the live path
+//! (`OrderSubmission::validate`, called by the IB adapter before submission and
+//! by `ExecutionEngine::dispatch_order` before routing). Restricting the
+//! variants to validated constructors / private
 //! fields to make positivity unbypassable is an SRS-SIM-001 API change (it would
 //! touch every `OrderType::Limit { .. }` match/construction site across the
 //! simulation crate) and is deferred to that intake-wiring work — see the
@@ -70,10 +75,13 @@
 //!
 //! Deferred (so SRS-EXE-003 stays `passes:false`; see
 //! `architecture/runtime_services.json#order_type_contract.deferred`): the
-//! live-path intake + accept→ack round-trip through the IB adapter (SRS-EXE-006)
-//! and the paper accept→ack/fill (SRS-SIM-001/002); order STATE-TRACKING via the
-//! SRS-EXE-008 lifecycle machine; the orchestrator routing of non-live orders to
-//! the simulation engine (SRS-EXE-002); option **contract identity** + LIVE
+//! REAL-IB wire encoding + NFR latency proof for the accept→ack round-trip
+//! (SRS-EXE-006 — the *deterministic* adapter accept/validate/ack already works,
+//! crates/atp-adapters/tests/srs_exe_003_order_types.rs); the paper
+//! accept→ack/fill (SRS-SIM-001/002) + the `OrderSubmission`→`OrderLeg`
+//! sim-engine bridge the real `PaperSimulationEngine` consumes (SRS-ORCH-* /
+//! SRS-SIM-001); order STATE-TRACKING via the SRS-EXE-008 lifecycle machine +
+//! ClientCorrelationId; option **contract identity** + LIVE
 //! multi-leg composite submission (SRS-EXE-004 / SRS-DATA-004, mirroring the
 //! existing `SecurityKey` option deferral); making price positivity unbypassable
 //! *by construction* (validated constructors / private fields — the variants are
@@ -160,7 +168,7 @@ impl OrderType {
     /// (`paper_order::validate_leg`) and the SRS-SIM-002 fill path
     /// (`fill_model::validate_order_type`) both DELEGATE to this method today
     /// (mapping `OrderTypeError` into their own fail-closed errors), so they
-    /// cannot drift from it; the live intake (SRS-EXE-006) will too.
+    /// cannot drift from it; the live path does too (OrderSubmission::validate, called by the IB adapter, dispatch_order, and submit_live_order).
     /// `tools/order_type_check.py` pins those delegations in lock-step.
     pub fn validate_prices(self) -> Result<(), OrderTypeError> {
         if let Some(price_minor) = self.stop_price_minor() {

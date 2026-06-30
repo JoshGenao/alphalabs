@@ -10,9 +10,11 @@ matches the machine-readable mirror in
 ``architecture/runtime_services.json`` (block ``order_type_contract``), is in
 lock-step with the Python SDK surface (``atp_strategy.api``), and is the SINGLE
 shared definition the paper path (atp-simulation, SRS-SIM-001) consumes via
-re-export today; the live path (atp-execution, SRS-EXE-001/006) will consume the
-same definition when its order intake lands (deferred -- so the AC is not yet
-met and SRS-EXE-003 stays passes:false).
+re-export, and as of SRS-EXE-003 the live path consumes it too (atp_types::
+OrderSubmission carries the order type; the IB brokerage adapter validates it).
+SRS-EXE-003 stays passes:false for the deferred end-to-end halves (the real-IB
+wire + the OrderSubmission->OrderLeg sim bridge), not because the live path
+lacks the vocabulary.
 
 This check guarantees:
 
@@ -29,9 +31,9 @@ This check guarantees:
       limit/stop price with the documented ``OrderTypeError`` variants.
   (e) ``atp-simulation``'s ``paper_order`` RE-EXPORTS this authority (it does NOT
       redefine ``OrderType`` / ``Side`` / ``AssetClass``), so the order-type model
-      is a SINGLE shared definition — the paper path consumes it via re-export;
-      the live path will consume the same definition (deferred). This is the
-      prerequisite for "identical for live and paper", not a claim it already is.
+      is a SINGLE shared definition — the paper path consumes it via re-export
+      and the live OrderSubmission carries it too -- live and paper share ONE
+      vocabulary (identical for live and paper).
   (f) ``paper_order::validate_leg`` enforces the SAME price-positivity rule as
       ``OrderType::validate_prices`` (so the paper intake cannot drift from the
       shared authority while the call-through is deferred).
@@ -361,8 +363,9 @@ def check_paper_reexport(config: dict, paper_src: str) -> str:
             )
     return (
         f"{consumer['path']} re-exports atp-types' {', '.join(consumer['reexports'])} and defines "
-        "no local copy — the order-type model is a single shared definition (paper consumes it "
-        "via re-export; live consumption deferred)"
+        "no local copy — the order-type model is a single shared definition (BOTH paths consume it: "
+        "paper via re-export, live via OrderSubmission's asset_class/side/order_type + the adapter/"
+        "dispatch validation as of SRS-EXE-003)"
     )
 
 

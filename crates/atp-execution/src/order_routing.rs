@@ -68,7 +68,9 @@
 //! fill/ledger/persistence (SRS-SIM-002/003/004); and the operator-initiated
 //! IB-paper-account adapter-test surface (SRS-API-001 / SRS-EXE-006).
 
-use atp_types::{OrderReceipt, OrderSubmission, StrategyId, StructuredOrderError};
+use atp_types::{
+    OrderErrorCategory, OrderReceipt, OrderSubmission, StrategyId, StructuredOrderError,
+};
 
 use crate::designation::LiveRoutingDecision;
 use crate::{
@@ -127,14 +129,15 @@ pub enum OrderRoutingReceipt {
 /// The port carries the same [`OrderSubmission`] envelope the live path uses
 /// (see [`LiveBrokerageSubmit`]) — keeping the live and paper intake
 /// **symmetric** is the source-neutral invariant (live and paper must be
-/// identical). `OrderSubmission` is intentionally thin today (`strategy_id` +
-/// `symbol` + `quantity`); enriching it with full execution intent (side /
-/// asset class / order type + prices, via the SRS-EXE-003-deferred authoring →
-/// core wiring) and the SRS-EXE-008 [`ClientCorrelationId`] idempotency key is
-/// a shared change to `OrderSubmission` that must land for the **live and paper
-/// paths together** — not on this paper port alone, which would break the
-/// symmetry. It is deferred with named owners (see the module-level scope note
-/// and `order_routing_contract.deferred[]`).
+/// identical). As of SRS-EXE-003 `OrderSubmission` carries full execution
+/// intent (`asset_class` / `side` / `order_type` + prices) shared with the
+/// simulation engine's `OrderLeg`, plus `OrderSubmission::validate` (the
+/// price-positivity rule both paths apply). What is still deferred on this
+/// envelope: the SRS-EXE-008 [`ClientCorrelationId`] idempotency key (owner
+/// SRS-EXE-008) and the `OrderSubmission` → `PaperOrderRequest`/`OrderLeg`
+/// enrichment that the real `PaperSimulationEngine::accept_order` needs (owner
+/// SRS-ORCH-* / SRS-SIM-001 seam) — both must land for the **live and paper
+/// paths together** to keep the symmetry (see `order_type_contract.deferred[]`).
 ///
 /// [`LiveBrokerageSubmit`]: crate::LiveBrokerageSubmit
 /// [`ClientCorrelationId`]: atp_types::ClientCorrelationId
@@ -204,6 +207,22 @@ impl ExecutionEngine {
         S: StaleDataEventSink,
         P: InternalSimulationSubmit,
     {
+        // SRS-EXE-003 — validate the order at the SHARED entry, BEFORE routing,
+        // so both the live and the internal-simulation arms are held to the same
+        // well-formedness (non-blank symbol, positive quantity, positive prices)
+        // and the simulation port cannot receive a malformed order. (The SyRS
+        // OrderErrorCategory taxonomy has no dedicated invalid-order-parameters
+        // bucket; InvalidSymbol is the order-rejection category and the precise
+        // reason is carried in error_type — a dedicated category is a
+        // cross-cutting SRS-ERR-001 taxonomy change, deferred.)
+        if let Err(err) = submission.validate() {
+            return Err(StructuredOrderError {
+                category: OrderErrorCategory::InvalidSymbol,
+                error_type: err.error_type().to_string(),
+                message: err.to_string(),
+                original_order: submission,
+            });
+        }
         match self.route_destination(&submission.strategy_id) {
             OrderRoute::LiveBrokerage => self
                 .route_order(
@@ -349,6 +368,9 @@ mod tests {
             strategy_id: StrategyId::new(strategy),
             symbol: symbol.to_string(),
             quantity: qty,
+            asset_class: atp_types::AssetClass::Equity,
+            side: atp_types::OrderSide::Buy,
+            order_type: atp_types::OrderType::Market,
         }
     }
 
@@ -426,6 +448,37 @@ mod tests {
         assert_eq!(sim.calls.get(), 1);
         assert!(events.events.borrow().is_empty());
         assert!(stale_events.events.borrow().is_empty());
+    }
+
+    #[test]
+    fn order_routing_dispatch_rejects_malformed_order_before_any_port() {
+        // SRS-EXE-003 — a malformed order (here a non-positive quantity) is
+        // rejected at the shared dispatch entry and reaches NEITHER the broker
+        // nor the simulation port. The simulation port (which would otherwise
+        // accept it) must record zero calls — live/paper validation parity is
+        // enforced HERE, not left to the downstream port impl.
+        let engine = ExecutionEngine::default();
+        let sim = SimulationSpy::default();
+        let events = EventSinkSpy::default();
+        let stale_events = StaleEventSinkSpy::default();
+
+        let err = engine
+            .dispatch_order(
+                submission("paper-mean-rev-7", "TSLA", 0),
+                &ForbiddenBroker,
+                &AlwaysConnected,
+                &events,
+                &AlwaysFresh,
+                &stale_events,
+                &sim,
+            )
+            .expect_err("a malformed order must fail closed before any routing port");
+        assert_eq!(err.error_type, "NonPositiveQuantity");
+        assert_eq!(
+            sim.calls.get(),
+            0,
+            "a malformed order must never reach the simulation port"
+        );
     }
 
     #[test]

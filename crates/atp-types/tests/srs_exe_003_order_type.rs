@@ -1,9 +1,10 @@
 //! Integration coverage for **SRS-EXE-003** — the source-neutral order-type
 //! vocabulary + price-validation rule (market / limit / stop / stop-limit,
 //! equity / option, buy / sell) that lives in `atp-types` as the single shared
-//! definition. The paper path consumes it via re-export today; the live path
-//! (atp-execution) will consume the same definition when its order intake lands
-//! (deferred). Exercises the public API exactly as a downstream consumer would.
+//! definition. The paper path consumes it via re-export, and as of SRS-EXE-003
+//! the live path does too — `atp_types::OrderSubmission` carries the order type
+//! and the IB adapter validates it. Exercises the public API exactly as a
+//! downstream consumer would.
 //! Tests are `srs_exe_003_`-prefixed so the L7 domain test
 //! (`tests/domain/test_order_type.py`) can drive the safety-relevant subset by
 //! exact name.

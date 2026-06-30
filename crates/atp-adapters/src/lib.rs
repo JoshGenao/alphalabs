@@ -60,6 +60,16 @@ pub enum AdapterError {
         code: i32,
         message: String,
     },
+    /// An order failed the adapter's pre-submission validation (SRS-EXE-003 —
+    /// each order type is "validated" before it reaches the broker). The
+    /// adapter delegates price positivity to [`atp_types::OrderSubmission::validate`]
+    /// (the SAME rule the paper intake applies) and fails closed *here* — the
+    /// submission is never forwarded to the gateway, so a malformed order can
+    /// never create a live broker order.
+    InvalidOrder {
+        adapter: &'static str,
+        detail: String,
+    },
 }
 
 impl fmt::Display for AdapterError {
@@ -75,6 +85,10 @@ impl fmt::Display for AdapterError {
             Self::InvalidProviderData { adapter, detail } => write!(
                 formatter,
                 "{adapter} adapter received invalid provider data: {detail}"
+            ),
+            Self::InvalidOrder { adapter, detail } => write!(
+                formatter,
+                "{adapter} adapter rejected an invalid order before submission: {detail}"
             ),
             Self::Brokerage {
                 adapter,
@@ -648,6 +662,9 @@ mod tests {
             strategy_id: StrategyId::new("live-1"),
             symbol: "AAPL".to_string(),
             quantity: 10,
+            asset_class: atp_types::AssetClass::Equity,
+            side: atp_types::OrderSide::Buy,
+            order_type: atp_types::OrderType::Market,
         };
         assert_eq!(
             adapter.submit_order(request).unwrap_err(),

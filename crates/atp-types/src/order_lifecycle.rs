@@ -805,6 +805,9 @@ mod tests {
             strategy_id: StrategyId::new(STRAT),
             symbol: "AAPL".to_string(),
             quantity: 10,
+            asset_class: crate::AssetClass::Equity,
+            side: crate::OrderSide::Buy,
+            order_type: crate::OrderType::Market,
         }
     }
 
@@ -998,11 +1001,17 @@ mod tests {
             strategy_id: StrategyId::new("strat-a"),
             symbol: "AAPL".to_string(),
             quantity: 1,
+            asset_class: crate::AssetClass::Equity,
+            side: crate::OrderSide::Buy,
+            order_type: crate::OrderType::Market,
         };
         let sub_b = OrderSubmission {
             strategy_id: StrategyId::new("strat-b"),
             symbol: "AAPL".to_string(),
             quantity: 1,
+            asset_class: crate::AssetClass::Equity,
+            side: crate::OrderSide::Buy,
+            order_type: crate::OrderType::Market,
         };
         // both strategies use the SAME local id "order-1"
         ledger.submit(corr("order-1"), &sub_a).unwrap();
@@ -1228,6 +1237,9 @@ mod tests {
             strategy_id: StrategyId::new("other-strat"),
             symbol: "AAPL".to_string(),
             quantity: 10,
+            asset_class: crate::AssetClass::Equity,
+            side: crate::OrderSide::Buy,
+            order_type: crate::OrderType::Market,
         };
         assert_eq!(
             ledger
@@ -1250,6 +1262,9 @@ mod tests {
             strategy_id: StrategyId::new(STRAT),
             symbol: "AAPL".to_string(),
             quantity: 100,
+            asset_class: crate::AssetClass::Equity,
+            side: crate::OrderSide::Buy,
+            order_type: crate::OrderType::Market,
         };
         ledger.submit(corr("o"), &original).unwrap();
         ledger
@@ -1263,6 +1278,9 @@ mod tests {
             strategy_id: StrategyId::new(STRAT),
             symbol: "AAPL".to_string(),
             quantity: 60,
+            asset_class: crate::AssetClass::Equity,
+            side: crate::OrderSide::Buy,
+            order_type: crate::OrderType::Market,
         };
         ledger
             .cancel_replace(&key("o"), &replacement, corr("o-2"))

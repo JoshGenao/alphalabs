@@ -431,6 +431,18 @@ impl<C: IbGatewayConnection> AdapterBoundary for InteractiveBrokersBrokerage<C> 
 
 impl<C: IbGatewayConnection> BrokerageAdapter for InteractiveBrokersBrokerage<C> {
     fn submit_order(&self, request: OrderSubmission) -> AdapterResult<OrderReceipt> {
+        // SRS-EXE-003 — the order is VALIDATED before it can reach the broker.
+        // Delegates price positivity to `OrderSubmission::validate` (the SAME
+        // rule the paper intake applies, so live and paper cannot drift) and
+        // fails closed HERE: an invalid order is never forwarded to the gateway,
+        // so a malformed market/limit/stop/stop-limit order can never create a
+        // live broker order.
+        if let Err(err) = request.validate() {
+            return Err(AdapterError::InvalidOrder {
+                adapter: self.provider_name(),
+                detail: err.to_string(),
+            });
+        }
         // Any IB rejection maps onto AdapterError::Brokerage (with the SyRS
         // category) — an Err is always returned, the submission is never dropped.
         self.connection
@@ -605,6 +617,9 @@ mod tests {
             strategy_id: StrategyId::new("live-1"),
             symbol: symbol.to_string(),
             quantity,
+            asset_class: atp_types::AssetClass::Equity,
+            side: atp_types::OrderSide::Buy,
+            order_type: atp_types::OrderType::Market,
         }
     }
 

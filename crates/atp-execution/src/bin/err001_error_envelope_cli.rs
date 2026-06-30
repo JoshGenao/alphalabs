@@ -629,6 +629,9 @@ fn fixture_submission(strategy: &str) -> OrderSubmission {
         strategy_id: StrategyId::new(strategy),
         symbol: FIXTURE_SYMBOL.to_string(),
         quantity: FIXTURE_QTY,
+        asset_class: atp_types::AssetClass::Equity,
+        side: atp_types::OrderSide::Buy,
+        order_type: atp_types::OrderType::Market,
     }
 }
 

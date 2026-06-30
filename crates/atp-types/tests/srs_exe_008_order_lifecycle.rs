@@ -28,6 +28,9 @@ fn submission(symbol: &str, quantity: i64) -> OrderSubmission {
         strategy_id: StrategyId::new(STRAT),
         symbol: symbol.to_string(),
         quantity,
+        asset_class: atp_types::AssetClass::Equity,
+        side: atp_types::OrderSide::Buy,
+        order_type: atp_types::OrderType::Market,
     }
 }
 
@@ -82,11 +85,17 @@ fn srs_exe_008_correlation_ids_are_namespaced_per_strategy() {
         strategy_id: StrategyId::new("strat-a"),
         symbol: "AAPL".to_string(),
         quantity: 1,
+        asset_class: atp_types::AssetClass::Equity,
+        side: atp_types::OrderSide::Buy,
+        order_type: atp_types::OrderType::Market,
     };
     let sub_b = OrderSubmission {
         strategy_id: StrategyId::new("strat-b"),
         symbol: "AAPL".to_string(),
         quantity: 1,
+        asset_class: atp_types::AssetClass::Equity,
+        side: atp_types::OrderSide::Buy,
+        order_type: atp_types::OrderType::Market,
     };
     ledger.submit(corr("order-1"), &sub_a).unwrap();
     // strat-b's identical local id is a distinct order, not a duplicate
@@ -263,6 +272,9 @@ fn srs_exe_008_cancel_replace_is_cancel_then_new_retaining_original_id() {
         strategy_id: StrategyId::new("other-strat"),
         symbol: "MSFT".to_string(),
         quantity: 30,
+        asset_class: atp_types::AssetClass::Equity,
+        side: atp_types::OrderSide::Buy,
+        order_type: atp_types::OrderType::Market,
     };
     assert!(matches!(
         ledger

@@ -37,6 +37,9 @@ fn submission() -> OrderSubmission {
         strategy_id: StrategyId::new(STRAT),
         symbol: "AAPL".to_string(),
         quantity: 100,
+        asset_class: atp_types::AssetClass::Equity,
+        side: atp_types::OrderSide::Buy,
+        order_type: atp_types::OrderType::Market,
     }
 }
 

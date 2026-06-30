@@ -1,3 +1,12 @@
+// SRS-ERR-001 requires the structured order-error envelope (`StructuredOrderError`)
+// to carry the UNCHANGED `original_order` for the operator audit trail, so it is
+// intentionally large. As of SRS-EXE-003 `OrderSubmission` carries full execution
+// intent (asset_class / side / order_type + prices), pushing the audit envelope
+// over clippy's `result_large_err` size threshold. The error path is cold and the
+// envelope's contract is to carry the full order by value, so we accept the size
+// rather than Box the audit payload away from its contract.
+#![allow(clippy::result_large_err)]
+
 use std::fmt;
 
 pub mod order_lifecycle;
@@ -66,7 +75,130 @@ pub struct OrderSubmission {
     pub strategy_id: StrategyId,
     pub symbol: String,
     pub quantity: i64,
+    /// Equity or option (SRS-EXE-003 — order types are supported "for equities
+    /// and options"). Shared with the simulation engine's `OrderLeg.asset_class`
+    /// so live and paper carry the same instrument classification.
+    pub asset_class: AssetClass,
+    /// Buy or sell. Hoisted alongside the other order intent so the live and
+    /// paper intakes carry the SAME execution vocabulary (the SRS-EXE-003
+    /// source-neutral invariant — `paper_order::OrderLeg` carries the identical
+    /// `OrderSide` + `OrderType`).
+    pub side: OrderSide,
+    /// The order type (MARKET / LIMIT / STOP / STOP_LIMIT) and any trigger /
+    /// limit prices. Carrying it on the envelope is what lets the live adapter
+    /// path accept + validate + acknowledge each order type (SRS-EXE-003); the
+    /// price-positivity rule is [`OrderType::validate_prices`], surfaced here by
+    /// [`OrderSubmission::validate`].
+    pub order_type: OrderType,
 }
+
+impl OrderSubmission {
+    /// Construct a submission. The `_minor`-unit prices live inside
+    /// `order_type`; call [`validate`](Self::validate) before routing.
+    pub fn new(
+        strategy_id: StrategyId,
+        symbol: impl Into<String>,
+        quantity: i64,
+        asset_class: AssetClass,
+        side: OrderSide,
+        order_type: OrderType,
+    ) -> Self {
+        Self {
+            strategy_id,
+            symbol: symbol.into(),
+            quantity,
+            asset_class,
+            side,
+            order_type,
+        }
+    }
+
+    /// Validate the order's execution intent before it is routed to either the
+    /// live broker or the internal simulation (the SRS-EXE-003 "validated"
+    /// facet). Enforces the SAME well-formedness rules the paper intake
+    /// (`paper_order::validate_leg`) applies, so the live and paper paths cannot
+    /// drift: a non-blank `symbol`, a strictly-positive `quantity` (direction
+    /// lives in `side`), and price positivity via [`OrderType::validate_prices`]
+    /// (which `fill_model::validate_order_type` also delegates to). Fails closed;
+    /// each path maps the error into its own fail-closed error.
+    pub fn validate(&self) -> Result<(), OrderSubmissionError> {
+        if self.symbol.trim().is_empty() {
+            return Err(OrderSubmissionError::BlankSymbol);
+        }
+        if self.quantity <= 0 {
+            return Err(OrderSubmissionError::NonPositiveQuantity {
+                quantity: self.quantity,
+            });
+        }
+        self.order_type
+            .validate_prices()
+            .map_err(OrderSubmissionError::InvalidOrderType)?;
+        // SRS-EXE-003 — an OPTION order needs a full contract identity (underlying
+        // + expiration + strike + right) to avoid conflating distinct contracts
+        // on one underlying symbol — the SAME reason `SecurityKey::new` fails
+        // closed on `AssetClass::Option`. That identity model is NOT yet on the
+        // envelope (deferred to SRS-EXE-004 / SRS-DATA-004), so an option order
+        // is rejected fail-closed rather than treated as broker-ready. The order
+        // TYPES (market/limit/stop/stop-limit) themselves are asset-agnostic and
+        // proven for equities; live option submission lands with the identity model.
+        if self.asset_class == AssetClass::Option {
+            return Err(OrderSubmissionError::OptionContractIdentityUnsupported);
+        }
+        Ok(())
+    }
+}
+
+/// Fail-closed validation errors from [`OrderSubmission::validate`] — the order
+/// well-formedness rules the live and paper intakes share. `InvalidOrderType`
+/// wraps the price-positivity rule so the order-type authority stays the single
+/// source of truth for prices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrderSubmissionError {
+    /// The order symbol was empty or whitespace-only.
+    BlankSymbol,
+    /// The order quantity was not strictly positive (direction lives in `side`).
+    NonPositiveQuantity { quantity: i64 },
+    /// The order type carried a non-positive trigger/limit price.
+    InvalidOrderType(OrderTypeError),
+    /// An `AssetClass::Option` order was submitted without a full option
+    /// contract identity (underlying + expiration + strike + right). The
+    /// identity model is deferred to SRS-EXE-004 / SRS-DATA-004, so option
+    /// orders fail closed rather than conflating distinct contracts.
+    OptionContractIdentityUnsupported,
+}
+
+impl OrderSubmissionError {
+    /// A stable discriminator for the specific failure, surfaced as the
+    /// `error_type` of the structured order error (the SyRS category is the
+    /// coarse bucket; this is the precise reason).
+    pub const fn error_type(&self) -> &'static str {
+        match self {
+            Self::BlankSymbol => "BlankSymbol",
+            Self::NonPositiveQuantity { .. } => "NonPositiveQuantity",
+            Self::InvalidOrderType(_) => "InvalidOrderType",
+            Self::OptionContractIdentityUnsupported => "OptionContractIdentityUnsupported",
+        }
+    }
+}
+
+impl fmt::Display for OrderSubmissionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BlankSymbol => write!(f, "order symbol must be non-empty"),
+            Self::NonPositiveQuantity { quantity } => {
+                write!(f, "order quantity {quantity} must be strictly positive")
+            }
+            Self::InvalidOrderType(err) => write!(f, "{err}"),
+            Self::OptionContractIdentityUnsupported => write!(
+                f,
+                "option orders require a full contract identity (underlying + \
+                 expiration + strike + right), deferred to SRS-EXE-004 / SRS-DATA-004"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OrderSubmissionError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderReceipt {
@@ -3670,6 +3802,9 @@ mod tests {
                 strategy_id: StrategyId::new("paper-1"),
                 symbol: "AAPL".to_string(),
                 quantity: 10,
+                asset_class: crate::AssetClass::Equity,
+                side: crate::OrderSide::Buy,
+                order_type: crate::OrderType::Market,
             },
         };
         let StructuredOrderError {

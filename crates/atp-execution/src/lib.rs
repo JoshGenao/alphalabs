@@ -1,3 +1,9 @@
+// `StructuredOrderError` (SRS-ERR-001) carries the unchanged original order for
+// the audit trail; as of SRS-EXE-003 the enriched `OrderSubmission` pushes that
+// envelope over clippy's `result_large_err` threshold. The error path is cold and
+// the envelope's contract is to carry the full order by value — accept the size.
+#![allow(clippy::result_large_err)]
+
 use atp_strategy_engine::StrategyRuntimeBoundary;
 use atp_types::{
     ConnectivityEvent, ConnectivityState, KillSwitchAlertEvent, KillSwitchCleanupOutcome,
@@ -392,7 +398,27 @@ impl ExecutionEngine {
         match mode {
             StrategyMode::Live => match connectivity.state() {
                 ConnectivityState::Connected => match freshness.freshness(&submission.symbol) {
-                    MarketDataFreshness::Fresh => broker.submit_order(submission),
+                    // SRS-EXE-003 — VALIDATE the order on the live path immediately
+                    // before the broker-port call, AFTER the ERR-2/3 connectivity +
+                    // freshness reachability gates (those take precedence) but
+                    // BEFORE `broker.submit_order`, so a malformed order (blank
+                    // symbol / non-positive quantity / non-positive price) can
+                    // never reach the live broker even when a caller enters via
+                    // `submit_live_order` / `route_order` directly (the adapter
+                    // validation is defense-in-depth, not the only guard). The SyRS
+                    // taxonomy has no dedicated invalid-order-parameters category;
+                    // InvalidSymbol is the order-rejection bucket and the precise
+                    // reason is in error_type (a dedicated category is a
+                    // cross-cutting SRS-ERR-001 taxonomy change, deferred).
+                    MarketDataFreshness::Fresh => match submission.validate() {
+                        Ok(()) => broker.submit_order(submission),
+                        Err(err) => Err(StructuredOrderError {
+                            category: OrderErrorCategory::InvalidSymbol,
+                            error_type: err.error_type().to_string(),
+                            message: err.to_string(),
+                            original_order: submission,
+                        }),
+                    },
                     MarketDataFreshness::Stale => {
                         let staleness_seconds = freshness.staleness_seconds(&submission.symbol);
                         stale_events.record(StaleDataEvent {
@@ -887,6 +913,9 @@ mod tests {
             strategy_id: StrategyId::new("live-1"),
             symbol: "AAPL".to_string(),
             quantity: 10,
+            asset_class: atp_types::AssetClass::Equity,
+            side: atp_types::OrderSide::Buy,
+            order_type: atp_types::OrderType::Market,
         };
 
         let receipt = engine
@@ -909,6 +938,46 @@ mod tests {
     }
 
     #[test]
+    fn malformed_live_order_fails_closed_before_the_broker_port() {
+        // SRS-EXE-003 — a malformed order (non-positive quantity here) submitted
+        // straight down the live path (submit_live_order, the public ERR-1/2/3
+        // entry) is validated BEFORE the broker port: it fails closed and the
+        // broker is never called, even though connectivity is fresh + connected.
+        let engine = ExecutionEngine::default();
+        let broker = CountingBroker::new();
+        let connectivity = StubConnectivity::connected();
+        let events = RecordingEvents::new();
+        let freshness = AlwaysFresh;
+        let stale_events = RecordingStaleEvents::new();
+        let malformed = OrderSubmission {
+            strategy_id: StrategyId::new("live-1"),
+            symbol: "AAPL".to_string(),
+            quantity: 0,
+            asset_class: atp_types::AssetClass::Equity,
+            side: atp_types::OrderSide::Buy,
+            order_type: atp_types::OrderType::Market,
+        };
+
+        let err = engine
+            .submit_live_order(
+                StrategyMode::Live,
+                malformed,
+                &broker,
+                &connectivity,
+                &events,
+                &freshness,
+                &stale_events,
+            )
+            .expect_err("a malformed order must fail closed before the broker port");
+        assert_eq!(err.error_type, "NonPositiveQuantity");
+        assert_eq!(
+            broker.calls.get(),
+            0,
+            "a malformed order must never reach the broker port"
+        );
+    }
+
+    #[test]
     fn paper_strategy_submission_is_rejected_synchronously_with_no_broker_call() {
         // ERR-1: A non-live strategy submitting an order down the live
         // execution path must be rejected synchronously with a structured
@@ -925,6 +994,9 @@ mod tests {
             strategy_id: StrategyId::new("paper-research-3"),
             symbol: "TSLA".to_string(),
             quantity: 5,
+            asset_class: atp_types::AssetClass::Equity,
+            side: atp_types::OrderSide::Buy,
+            order_type: atp_types::OrderType::Market,
         };
 
         let error = engine
@@ -968,6 +1040,9 @@ mod tests {
             strategy_id: StrategyId::new("paper-x"),
             symbol: "MSFT".to_string(),
             quantity: 1,
+            asset_class: atp_types::AssetClass::Equity,
+            side: atp_types::OrderSide::Buy,
+            order_type: atp_types::OrderType::Market,
         };
         let error = engine
             .submit_live_order(
@@ -1001,6 +1076,9 @@ mod tests {
             strategy_id: StrategyId::new("live-alpha"),
             symbol: "AAPL".to_string(),
             quantity: 10,
+            asset_class: atp_types::AssetClass::Equity,
+            side: atp_types::OrderSide::Buy,
+            order_type: atp_types::OrderType::Market,
         };
 
         let error = engine
@@ -1053,6 +1131,9 @@ mod tests {
             strategy_id: StrategyId::new("live-alpha"),
             symbol: "AAPL".to_string(),
             quantity: 10,
+            asset_class: atp_types::AssetClass::Equity,
+            side: atp_types::OrderSide::Buy,
+            order_type: atp_types::OrderType::Market,
         };
 
         let error = engine
@@ -1128,6 +1209,9 @@ mod tests {
             strategy_id: StrategyId::new("live-alpha"),
             symbol: "AAPL".to_string(),
             quantity: 10,
+            asset_class: atp_types::AssetClass::Equity,
+            side: atp_types::OrderSide::Buy,
+            order_type: atp_types::OrderType::Market,
         };
 
         let error = engine

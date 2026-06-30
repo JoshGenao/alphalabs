@@ -126,6 +126,9 @@ fn order(symbol: &str, quantity: i64) -> OrderSubmission {
         strategy_id: StrategyId::new("live-1"),
         symbol: symbol.to_string(),
         quantity,
+        asset_class: atp_types::AssetClass::Equity,
+        side: atp_types::OrderSide::Buy,
+        order_type: atp_types::OrderType::Market,
     }
 }
 

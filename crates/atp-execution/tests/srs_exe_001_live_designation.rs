@@ -133,6 +133,9 @@ fn submission(strategy: &str, symbol: &str, qty: i64) -> OrderSubmission {
         strategy_id: StrategyId::new(strategy),
         symbol: symbol.to_string(),
         quantity: qty,
+        asset_class: atp_types::AssetClass::Equity,
+        side: atp_types::OrderSide::Buy,
+        order_type: atp_types::OrderType::Market,
     }
 }
 
