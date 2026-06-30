@@ -16,7 +16,8 @@ Paired with the safety-path change in ``crates/atp-adapters/src/interactive_brok
 This domain test is the paired safety pin for the SRS-EXE-006 substrate landed
 serialized (see ``progress.d/session-SRS-EXE-006.md``): the live TWS wire protocol
 is the operator-gated remainder, so the default surface ships only the
-deterministic, fully-tested half.
+deterministic, fully-tested half. The completed Codex R8 review converged to that
+single irreducible boundary (the live transport is feature-gated OFF by default).
 """
 
 from __future__ import annotations

@@ -66,7 +66,12 @@ Critic verdicts:
     (FIXED); R4 bridge documented provider -> functional runtime (FIXED); R5 bound DNS (literal-IP)
     + fail-closed operator gate (FIXED); R6 feature-gate the live scaffold + non-Unicode env
     (FIXED); R7 implement account_status/positions + compile gated test target (FIXED). R8
-    Codex hit its usage limit (resets 12:56 PM) — could not complete a final round.
+    (completed post-integration once Codex's rate limit reset, at operator request): needs-attention
+    with EXACTLY ONE finding, the IRREDUCIBLE serialized boundary — "TcpIbGateway returns the pending
+    sentinel for every op, so it cannot satisfy the paper-account path; implement the TWS wire protocol
+    [cannot be done/verified solo] OR keep the live transport off the exposed surface [DONE — it is
+    feature-gated OFF by default behind ib-live-transport]". The R1-R7 fixable findings did NOT recur;
+    the review CONVERGED to this single by-design operator-gated remainder.
     Codex never reached a clean APPROVE; the recurring theme is the live TWS wire protocol, which
     is the IRREDUCIBLE serialized boundary (it cannot be verified solo — exactly why the AC requires
     operator-initiated IB paper-account integration). Recorded honestly; NEVER faked APPROVE. The
