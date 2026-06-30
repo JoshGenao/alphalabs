@@ -104,6 +104,28 @@ def test_check_catches_missing_transport_method():
         CHECK.check_transport_trait(runtime, broken)
 
 
+def test_check_catches_leaked_raw_transport_error():
+    # If a public non-order op returns raw IbApiError instead of the IbAdapterError
+    # boundary, the check must fail (raw transport error must not leak to callers).
+    runtime = _runtime()
+    source = MODULE.read_text()
+    broken = source.replace(
+        "pub fn cancel_order(&self, broker_order_id: &str) -> Result<(), IbAdapterError> {",
+        "pub fn cancel_order(&self, broker_order_id: &str) -> Result<(), IbApiError> {",
+    )
+    with pytest.raises(CHECK.IbAdapterContractError):
+        CHECK.check_boundary_error_confined(runtime, broken)
+
+
+def test_check_catches_unbounded_connect():
+    # A connect() without an explicit timeout deadline must fail the check.
+    runtime = _runtime()
+    source = MODULE.read_text()
+    broken = source.replace("connect_timeout", "connect_no_timeout_xx")
+    with pytest.raises(CHECK.IbAdapterContractError):
+        CHECK.check_live_transport_fails_closed(runtime, broken)
+
+
 # --------------------------------------------------------------------------- #
 # 3. Scope honesty — serialized, operator-gated, stays passes:false
 # --------------------------------------------------------------------------- #

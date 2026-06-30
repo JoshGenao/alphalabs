@@ -17,7 +17,7 @@
 
 use atp_adapters::interactive_brokers::{
     IbAccountKind, IbApiError, IbConnectionConfig, IbGatewayConnection, IbOrderSubmitError,
-    InteractiveBrokersBrokerage, TcpIbGateway, IB_CODE_MAX_RATE_EXCEEDED,
+    InteractiveBrokersBrokerage, TcpIbGateway, IB_CODE_MAX_RATE_EXCEEDED, IB_CODE_NOT_CONNECTED,
     IB_CODE_NO_SECURITY_DEFINITION, IB_CODE_ORDER_REJECTED,
 };
 use atp_types::{OrderErrorCategory, OrderSubmission, StrategyId};
@@ -205,6 +205,42 @@ fn cancel_subscribe_historical_round_trip_through_transport() {
         .expect("historical retrieval succeeds");
     assert_eq!(hist.symbol, "AAPL");
     assert_eq!(hist.bar_count, 390);
+}
+
+#[test]
+fn non_order_operation_failure_maps_to_classified_boundary_error() {
+    // A connectivity fault on cancel/subscribe/historical surfaces as the typed
+    // IbAdapterError boundary (raw IbApiError confined to the seam), classified
+    // CONNECTIVITY_BLOCKED exactly as the order path would be.
+    let gw = FakeIbGateway {
+        cancel: Some(Err(IbApiError::new(IB_CODE_NOT_CONNECTED, "Not connected"))),
+        subscribe: Some(Err(IbApiError::new(IB_CODE_NOT_CONNECTED, "Not connected"))),
+        historical: Some(Err(IbApiError::new(IB_CODE_NOT_CONNECTED, "Not connected"))),
+        ..FakeIbGateway::default()
+    };
+    let adapter = InteractiveBrokersBrokerage::new(gw);
+    let cancel_err = adapter
+        .cancel_order("ib-ord-9")
+        .expect_err("cancel must fail");
+    assert_eq!(
+        cancel_err.category,
+        Some(OrderErrorCategory::ConnectivityBlocked)
+    );
+    assert_eq!(cancel_err.code, IB_CODE_NOT_CONNECTED);
+    assert_eq!(
+        adapter
+            .subscribe_market_data("AAPL")
+            .expect_err("subscribe must fail")
+            .category,
+        Some(OrderErrorCategory::ConnectivityBlocked)
+    );
+    assert_eq!(
+        adapter
+            .request_historical_data("AAPL")
+            .expect_err("historical must fail")
+            .category,
+        Some(OrderErrorCategory::ConnectivityBlocked)
+    );
 }
 
 /// AC verification — operator-initiated only. Drives the live [`TcpIbGateway`]

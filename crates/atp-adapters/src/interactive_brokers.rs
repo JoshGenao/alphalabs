@@ -38,7 +38,7 @@
 //!   success) — see [`IB_CODE_LIVE_WIRE_PROTOCOL_PENDING`].
 
 use atp_types::{OrderErrorCategory, OrderReceipt, OrderSubmission, StructuredOrderError};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 // --------------------------------------------------------------------------- //
@@ -277,12 +277,63 @@ pub struct IbHistoricalResult {
     pub bar_count: usize,
 }
 
+/// The adapter-boundary failure for the IB adapter's **non-order** operations
+/// (cancel / market-data subscription / historical retrieval). This confines the
+/// raw transport [`IbApiError`] to the [`IbGatewayConnection`] seam: a caller of
+/// the public adapter gets a consistent boundary contract — the SyRS-classified
+/// [`OrderErrorCategory`] when the IB error maps onto one (so a connectivity loss
+/// is `CONNECTIVITY_BLOCKED` here exactly as on the order path), plus the raw IB
+/// `code`/`message` for diagnostics. Order submission has its own richer SYS-64
+/// surface ([`IbOrderSubmitError`]); this is for the operations that are not
+/// order submissions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IbAdapterError {
+    /// The SyRS SYS-64 category when the IB error maps onto one (e.g. a
+    /// connectivity fault → `CONNECTIVITY_BLOCKED`), else `None`.
+    pub category: Option<OrderErrorCategory>,
+    pub code: i32,
+    pub message: String,
+}
+
+impl IbAdapterError {
+    fn from_ib(error: IbApiError) -> Self {
+        Self {
+            category: classify_ib_order_error(&error),
+            code: error.code,
+            message: error.message,
+        }
+    }
+}
+
+impl std::fmt::Display for IbAdapterError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.category {
+            Some(category) => write!(
+                formatter,
+                "[{}] IB adapter operation failed: IB error {} — {}",
+                category.as_str(),
+                self.code,
+                self.message
+            ),
+            None => write!(
+                formatter,
+                "IB adapter operation failed: IB error {} — {}",
+                self.code, self.message
+            ),
+        }
+    }
+}
+
+impl std::error::Error for IbAdapterError {}
+
 /// The transport seam over the IB TWS socket. Every method returns the raw IB
 /// outcome (`Ok` payload or an [`IbApiError`]); the adapter
-/// ([`InteractiveBrokersBrokerage`]) owns the mapping onto vendor-neutral domain
-/// results. Abstracting the socket here is what lets the four AC operations be
-/// driven end-to-end by a deterministic in-memory double in tests, leaving only
-/// the real socket transport ([`TcpIbGateway`]) operator-gated.
+/// ([`InteractiveBrokersBrokerage`]) owns the mapping onto the vendor-neutral
+/// domain results and the boundary error types ([`IbOrderSubmitError`] /
+/// [`IbAdapterError`]), so raw [`IbApiError`] never leaks past this seam.
+/// Abstracting the socket here is what lets the four AC operations be driven
+/// end-to-end by a deterministic in-memory double in tests, leaving only the real
+/// socket transport ([`TcpIbGateway`]) operator-gated.
 pub trait IbGatewayConnection {
     /// Submit an order; returns the IB broker order id on acceptance.
     fn submit_order(&self, order: &OrderSubmission) -> Result<String, IbApiError>;
@@ -329,14 +380,23 @@ impl<C: IbGatewayConnection> InteractiveBrokersBrokerage<C> {
         }
     }
 
-    /// Cancel a resting order by IB broker order id.
-    pub fn cancel_order(&self, broker_order_id: &str) -> Result<(), IbApiError> {
-        self.connection.cancel_order(broker_order_id)
+    /// Cancel a resting order by IB broker order id. A transport failure is mapped
+    /// onto the [`IbAdapterError`] boundary (raw `IbApiError` never leaks).
+    pub fn cancel_order(&self, broker_order_id: &str) -> Result<(), IbAdapterError> {
+        self.connection
+            .cancel_order(broker_order_id)
+            .map_err(IbAdapterError::from_ib)
     }
 
     /// Subscribe to streaming market data for `symbol`.
-    pub fn subscribe_market_data(&self, symbol: &str) -> Result<IbSubscriptionReceipt, IbApiError> {
-        let subscription_id = self.connection.subscribe_market_data(symbol)?;
+    pub fn subscribe_market_data(
+        &self,
+        symbol: &str,
+    ) -> Result<IbSubscriptionReceipt, IbAdapterError> {
+        let subscription_id = self
+            .connection
+            .subscribe_market_data(symbol)
+            .map_err(IbAdapterError::from_ib)?;
         Ok(IbSubscriptionReceipt {
             symbol: symbol.to_string(),
             subscription_id,
@@ -344,8 +404,14 @@ impl<C: IbGatewayConnection> InteractiveBrokersBrokerage<C> {
     }
 
     /// Retrieve historical bars for `symbol`.
-    pub fn request_historical_data(&self, symbol: &str) -> Result<IbHistoricalResult, IbApiError> {
-        let bar_count = self.connection.request_historical_data(symbol)?;
+    pub fn request_historical_data(
+        &self,
+        symbol: &str,
+    ) -> Result<IbHistoricalResult, IbAdapterError> {
+        let bar_count = self
+            .connection
+            .request_historical_data(symbol)
+            .map_err(IbAdapterError::from_ib)?;
         Ok(IbHistoricalResult {
             symbol: symbol.to_string(),
             bar_count,
@@ -379,18 +445,39 @@ impl TcpIbGateway {
         Self { config, account }
     }
 
-    /// Open the TCP session to headless IB Gateway (no TWS GUI; AC-2). Returns the
-    /// connection failure as a SYS-64-classifiable `CONNECTIVITY_BLOCKED` IB code
-    /// (`502`) so an unreachable Gateway maps onto the same category the live
-    /// execution gate uses (ERR-2 / SRS-SAFE-003).
+    /// Open the TCP session to headless IB Gateway (no TWS GUI; AC-2) with an
+    /// **explicit** [`IB_CONNECT_TIMEOUT`] deadline (`connect_timeout` on a resolved
+    /// `SocketAddr`, plus read/write timeouts on the stream) so a black-holed
+    /// Gateway host fails the adapter's budget instead of hanging on the OS TCP
+    /// timeout — a live-execution call must never block unbounded. Any failure is a
+    /// SYS-64-classifiable `CONNECTIVITY_BLOCKED` IB code (`502`) so an unreachable
+    /// Gateway maps onto the same category the live execution gate uses
+    /// (ERR-2 / SRS-SAFE-003).
     pub fn connect(&self) -> Result<TcpStream, IbApiError> {
         let addr = self.config.socket_addr(self.account);
-        TcpStream::connect(&addr).map_err(|err| {
-            IbApiError::new(
-                IB_CODE_COULD_NOT_CONNECT,
-                format!("couldn't connect to headless IB Gateway at {addr}: {err}"),
-            )
-        })
+        let blocked = |detail: String| IbApiError::new(IB_CODE_COULD_NOT_CONNECT, detail);
+        let socket = addr
+            .to_socket_addrs()
+            .map_err(|err| {
+                blocked(format!(
+                    "could not resolve IB Gateway address {addr}: {err}"
+                ))
+            })?
+            .next()
+            .ok_or_else(|| blocked(format!("no socket address resolved for IB Gateway {addr}")))?;
+        let stream = TcpStream::connect_timeout(&socket, IB_CONNECT_TIMEOUT).map_err(|err| {
+            blocked(format!(
+                "couldn't connect to headless IB Gateway at {addr} within {:?}: {err}",
+                IB_CONNECT_TIMEOUT
+            ))
+        })?;
+        // Bound subsequent IB reads/writes to the same budget so a half-open
+        // session cannot hang the live path either.
+        stream
+            .set_read_timeout(Some(IB_CONNECT_TIMEOUT))
+            .and_then(|()| stream.set_write_timeout(Some(IB_CONNECT_TIMEOUT)))
+            .map_err(|err| blocked(format!("couldn't set IB Gateway socket timeouts: {err}")))?;
+        Ok(stream)
     }
 
     fn live_wire_pending(operation: &str) -> IbApiError {

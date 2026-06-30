@@ -156,7 +156,47 @@ def check_live_transport_fails_closed(runtime: dict, source: str) -> str:
         fail(f"{sentinel} must be a negative sentinel (never a real IB code)")
     if f"impl IbGatewayConnection for {struct}" not in source:
         fail(f"{struct} must implement IbGatewayConnection")
-    return f"live transport {struct} fails closed via {sentinel} (no fabricated success)"
+    # The IB-touching socket establishment must use an EXPLICIT timeout budget —
+    # never the unbounded OS default — so a black-holed Gateway cannot hang the
+    # live path. Assert both the timeout const and connect_timeout are wired in.
+    timeout_const = runtime["connect_timeout_const"]
+    connect_block = _block(source, r"pub fn connect\b", "fn connect")
+    if "connect_timeout" not in connect_block:
+        fail(f"{struct}.connect must use TcpStream::connect_timeout (explicit deadline)")
+    if timeout_const not in connect_block:
+        fail(f"{struct}.connect must bound the socket with {timeout_const}")
+    if "set_read_timeout" not in connect_block or "set_write_timeout" not in connect_block:
+        fail(f"{struct}.connect must set read/write timeouts so a half-open session cannot hang")
+    return (
+        f"live transport {struct} fails closed via {sentinel} (no fabricated success) "
+        f"with an explicit {timeout_const} connect/read/write deadline"
+    )
+
+
+def check_boundary_error_confined(runtime: dict, source: str) -> str:
+    """Raw IbApiError must stay on the IbGatewayConnection seam; the public adapter's
+    non-order operations return the typed IbAdapterError boundary (Finding: no raw
+    transport error leaks to callers)."""
+    boundary = runtime["boundary_error_type"]
+    if f"pub struct {boundary}" not in source:
+        fail(f"boundary error type {boundary} is missing")
+    impl_block = _block(
+        source,
+        r"impl<C: IbGatewayConnection> InteractiveBrokersBrokerage<C>",
+        "adapter impl",
+    )
+    for op in ("cancel_order", "subscribe_market_data", "request_historical_data"):
+        sig = re.search(rf"pub fn {op}\b[^{{]*", impl_block)
+        if not sig:
+            fail(f"adapter method {op} missing")
+        signature = sig.group(0)
+        if boundary not in signature:
+            fail(f"adapter method {op} must return the {boundary} boundary, not raw IbApiError")
+        if "IbApiError" in signature:
+            fail(f"adapter method {op} leaks raw IbApiError past the transport seam")
+    return (
+        f"non-order operations return the {boundary} boundary (raw IbApiError confined to the seam)"
+    )
 
 
 def check_integration_test(runtime: dict) -> str:
@@ -223,6 +263,7 @@ CHECKS = (
     ("transport seam", lambda cfg, rt, src: check_transport_trait(rt, src)),
     ("error classification", lambda cfg, rt, src: check_classifier_maps_every_code(rt, src)),
     ("never-drop", lambda cfg, rt, src: check_never_drop(rt, src)),
+    ("boundary error confined", lambda cfg, rt, src: check_boundary_error_confined(rt, src)),
     ("live transport fail-closed", lambda cfg, rt, src: check_live_transport_fails_closed(rt, src)),
     ("integration harness", lambda cfg, rt, src: check_integration_test(rt)),
     ("serialized status", lambda cfg, rt, src: check_serialized_status(rt)),
