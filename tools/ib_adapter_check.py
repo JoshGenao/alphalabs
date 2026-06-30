@@ -163,6 +163,12 @@ def check_canonical_boundary(runtime: dict, source: str) -> str:
         )
     if "IbApiError" in impl_block:
         fail(f"{adapter} canonical trait methods must not leak raw IbApiError past the seam")
+    # account_status + positions (API-5) must be OVERRIDDEN, not left to inherit the
+    # default NotConfigured — else the adapter advertises a brokerage capability it
+    # fails at runtime.
+    for method in ("account_status", "positions"):
+        if f"fn {method}" not in impl_block:
+            fail(f"{adapter} must implement {method} (API-5), not inherit NotConfigured")
     return (
         f"{adapter} implements {len(runtime['canonical_traits'])} canonical adapter traits; "
         f"failures flow through AdapterError::{variant} via {mapper} (never dropped)"
@@ -332,19 +338,35 @@ def check_cargo_smoke(runtime: dict) -> str:
         fail(f"cargo test srs_exe_006_ib_adapter failed:\n{combined}")
     if "test result: ok" not in combined:
         fail(f"cargo test output did not include `test result: ok`:\n{combined}")
-    # Also compile the feature-gated live transport so the operator-gated scaffold
-    # cannot bit-rot (it is excluded from the default test run above).
+    # Also COMPILE the feature-gated integration test target (the operator flip gate
+    # paper_account_round_trip lives behind the feature). `cargo build` would not
+    # compile the test target, so use `cargo test --no-run` — this catches the gated
+    # scaffold + test bit-rotting without running it (it binds the fixed IB port).
     feature = runtime["live_transport_feature"]
+    test_name = runtime["integration_test"]["path"].split("/")[-1].removesuffix(".rs")
     build = subprocess.run(
-        [cargo, "build", "-p", "atp-adapters", "--features", feature, "--quiet"],
+        [
+            cargo,
+            "test",
+            "-p",
+            "atp-adapters",
+            "--test",
+            test_name,
+            "--features",
+            feature,
+            "--no-run",
+            "--quiet",
+        ],
         cwd=ROOT,
         capture_output=True,
         text=True,
         check=False,
     )
     if build.returncode != 0:
-        fail(f"cargo build --features {feature} failed:\n{build.stdout}{build.stderr}")
-    return f"cargo test boundary suite ok + cargo build --features {feature} ok"
+        fail(f"cargo test --features {feature} --no-run failed:\n{build.stdout}{build.stderr}")
+    return (
+        f"cargo test boundary suite ok + feature-gated test target compiles (--features {feature})"
+    )
 
 
 CHECKS = (

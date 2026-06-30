@@ -38,9 +38,9 @@
 
 use crate::{
     AdapterBoundary, AdapterCapability, AdapterError, AdapterResult, AdapterVersion,
-    BrokerageAdapter, HistoricalDataAdapter, HistoricalDataRequest, HistoricalQueryResult,
-    InteractiveBrokersAdapter, MarketDataAdapter, MarketDataSubscription, SubscriptionReceipt,
-    INTERACTIVE_BROKERS_ADAPTER_VERSION, INTERACTIVE_BROKERS_CAPABILITIES,
+    BrokerageAdapter, DataBatch, HistoricalDataAdapter, HistoricalDataRequest,
+    HistoricalQueryResult, InteractiveBrokersAdapter, MarketDataAdapter, MarketDataSubscription,
+    SubscriptionReceipt, INTERACTIVE_BROKERS_ADAPTER_VERSION, INTERACTIVE_BROKERS_CAPABILITIES,
     INTERACTIVE_BROKERS_PROTOCOL_LABEL, INTERACTIVE_BROKERS_TWS_API_VERSION,
 };
 use atp_types::{OrderErrorCategory, OrderReceipt, OrderSubmission};
@@ -348,6 +348,10 @@ pub trait IbGatewayConnection {
         &self,
         request: &HistoricalDataRequest,
     ) -> Result<HistoricalQueryResult, IbApiError>;
+    /// Account status (API-5): returns the account-data batch retrieved from IB.
+    fn account_status(&self) -> Result<DataBatch, IbApiError>;
+    /// Open positions (API-5): returns the positions batch retrieved from IB.
+    fn positions(&self) -> Result<DataBatch, IbApiError>;
 }
 
 // --------------------------------------------------------------------------- //
@@ -438,6 +442,14 @@ impl<C: IbGatewayConnection> BrokerageAdapter for InteractiveBrokersBrokerage<C>
         self.connection
             .cancel_order(broker_order_id)
             .map_err(brokerage_error)
+    }
+
+    fn account_status(&self) -> AdapterResult<DataBatch> {
+        self.connection.account_status().map_err(brokerage_error)
+    }
+
+    fn positions(&self) -> AdapterResult<DataBatch> {
+        self.connection.positions().map_err(brokerage_error)
     }
 }
 
@@ -563,6 +575,16 @@ impl IbGatewayConnection for TcpIbGateway {
     ) -> Result<HistoricalQueryResult, IbApiError> {
         let _stream = self.connect()?;
         Err(Self::live_wire_pending("historical_data"))
+    }
+
+    fn account_status(&self) -> Result<DataBatch, IbApiError> {
+        let _stream = self.connect()?;
+        Err(Self::live_wire_pending("account_status"))
+    }
+
+    fn positions(&self) -> Result<DataBatch, IbApiError> {
+        let _stream = self.connect()?;
+        Err(Self::live_wire_pending("positions"))
     }
 }
 

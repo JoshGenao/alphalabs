@@ -400,7 +400,9 @@
         "submit_order",
         "cancel_order",
         "subscribe_market_data",
-        "historical_data"
+        "historical_data",
+        "account_status",
+        "positions"
       ],
       "adapter_struct": "InteractiveBrokersBrokerage",
       "discovery_struct": "InteractiveBrokersAdapter",
@@ -436,7 +438,8 @@
         "cancel_subscribe_historical_round_trip_through_canonical_traits",
         "non_order_operation_failure_maps_to_classified_boundary_error",
         "documented_provider_bridges_to_functional_runtime",
-        "connectionless_provider_is_not_configured_by_design"
+        "connectionless_provider_is_not_configured_by_design",
+        "account_status_and_positions_are_implemented_not_notconfigured"
       ],
       "description": "SRS-EXE-006 IB Gateway brokerage adapter. The DEFAULT build ships the fully-tested deterministic half: IB-error -> SyRS SYS-64 classification (classify_ib_order_error -> brokerage_error -> AdapterError::Brokerage, unblocking SRS-ERR-001's broker-validation categories INVALID_SYMBOL/INSUFFICIENT_BUYING_POWER/RATE_LIMITED/CONNECTIVITY_BLOCKED), the TWS transport seam, and the four AC operations exposed through the CANONICAL BrokerageAdapter/MarketDataAdapter/HistoricalDataAdapter traits (SYS-52) so failures flow through the common AdapterError taxonomy (proven solo via a FakeIbGateway). Config fails closed on malformed/non-Unicode ATP_IB_* values and non-literal-IP hosts (IbConnectionConfigError). The live socket transport (TcpIbGateway) is behind the NON-DEFAULT ib-live-transport feature so the default public surface never advertises a half-built live path. STAYS passes:false (serialized): the AC's automated IB paper-account integration test is operator-initiated (SyRS SYS-2e, fixed port 4002, --features ib-live-transport) and cannot run in the parallel agent pool.",
       "deferred": [

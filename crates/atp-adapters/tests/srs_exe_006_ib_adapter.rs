@@ -26,7 +26,7 @@ use atp_adapters::interactive_brokers::{
 #[cfg(feature = "ib-live-transport")]
 use atp_adapters::interactive_brokers::{IbAccountKind, IbConnectionConfig, TcpIbGateway};
 use atp_adapters::{
-    AdapterError, AssetClass, BrokerageAdapter, HistoricalBar, HistoricalDataAdapter,
+    AdapterError, AssetClass, BrokerageAdapter, DataBatch, HistoricalBar, HistoricalDataAdapter,
     HistoricalDataRequest, HistoricalQueryResult, InteractiveBrokersAdapter, MarketDataAdapter,
     MarketDataChannel, MarketDataSubscription, NormalizationMode, OrderReceipt, OrderSubmission,
     SubscriptionReceipt,
@@ -41,6 +41,8 @@ struct FakeIbGateway {
     cancel: Option<Result<(), IbApiError>>,
     subscribe: Option<Result<SubscriptionReceipt, IbApiError>>,
     historical: Option<Result<HistoricalQueryResult, IbApiError>>,
+    account: Option<Result<DataBatch, IbApiError>>,
+    positions: Option<Result<DataBatch, IbApiError>>,
 }
 
 impl FakeIbGateway {
@@ -62,6 +64,8 @@ impl FakeIbGateway {
                     close: 100.0,
                 }],
             })),
+            account: Some(Ok(DataBatch { records: 1 })),
+            positions: Some(Ok(DataBatch { records: 3 })),
         }
     }
 
@@ -102,6 +106,18 @@ impl IbGatewayConnection for FakeIbGateway {
         self.historical
             .clone()
             .expect("test did not program historical_data")
+    }
+
+    fn account_status(&self) -> Result<DataBatch, IbApiError> {
+        self.account
+            .clone()
+            .expect("test did not program account_status")
+    }
+
+    fn positions(&self) -> Result<DataBatch, IbApiError> {
+        self.positions
+            .clone()
+            .expect("test did not program positions")
     }
 }
 
@@ -240,6 +256,37 @@ fn cancel_subscribe_historical_round_trip_through_canonical_traits() {
 }
 
 #[test]
+fn account_status_and_positions_are_implemented_not_notconfigured() {
+    // API-5 traces account status + positions to SRS-EXE-006 — the functional
+    // adapter implements them through the transport (NOT inherited NotConfigured).
+    let adapter = InteractiveBrokersBrokerage::new(FakeIbGateway::accepting());
+    assert_eq!(
+        adapter.account_status().expect("account status succeeds"),
+        DataBatch { records: 1 }
+    );
+    assert_eq!(
+        adapter.positions().expect("positions succeed"),
+        DataBatch { records: 3 }
+    );
+
+    // A failure flows through the common AdapterError::Brokerage taxonomy.
+    let down = FakeIbGateway {
+        account: Some(Err(IbApiError::new(IB_CODE_NOT_CONNECTED, "Not connected"))),
+        ..FakeIbGateway::default()
+    };
+    let adapter = InteractiveBrokersBrokerage::new(down);
+    assert!(matches!(
+        adapter
+            .account_status()
+            .expect_err("account status must fail"),
+        AdapterError::Brokerage {
+            category: Some(OrderErrorCategory::ConnectivityBlocked),
+            ..
+        }
+    ));
+}
+
+#[test]
 fn non_order_operation_failure_maps_to_classified_boundary_error() {
     // A connectivity fault on cancel/subscribe/historical surfaces through the
     // common AdapterError::Brokerage taxonomy, classified CONNECTIVITY_BLOCKED.
@@ -337,4 +384,10 @@ fn paper_account_round_trip() {
         !hist.bars.is_empty(),
         "historical retrieval returned no bars"
     );
+    adapter
+        .account_status()
+        .expect("paper account returns account status");
+    adapter
+        .positions()
+        .expect("paper account returns positions");
 }

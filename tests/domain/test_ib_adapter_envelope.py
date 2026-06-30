@@ -106,6 +106,18 @@ def test_check_catches_dropped_canonical_trait():
         CHECK.check_canonical_boundary(runtime, broken)
 
 
+def test_check_catches_unimplemented_account_methods():
+    # If account_status/positions are dropped from the BrokerageAdapter impl they
+    # inherit NotConfigured while advertising a brokerage capability -> must fail.
+    runtime = _runtime()
+    source = MODULE.read_text()
+    broken = source.replace(
+        "fn account_status(&self) -> AdapterResult<DataBatch> {", "fn x(&self) {"
+    )
+    with pytest.raises(CHECK.IbAdapterContractError):
+        CHECK.check_canonical_boundary(runtime, broken)
+
+
 def test_check_catches_dropped_failure_detail():
     # If the mapper stops carrying the raw code, a failure could be dropped -> fail.
     runtime = _runtime()
