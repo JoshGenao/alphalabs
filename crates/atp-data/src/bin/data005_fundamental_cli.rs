@@ -7,11 +7,12 @@
 //! as the verification step permits ("fixture market data, provider mocks, file reads, and persisted
 //! output inspection"):
 //!
-//! - `ingest   --dir D [--event-ts T] [--available-ts A] [--init]` — build the four canonical
+//! - `ingest   --dir D [--nas N] [--event-ts T] [--available-ts A] [--init]` — build the four canonical
 //!   `Fundamental` records (income / balance / cashflow / ratios) for each fixture symbol via
-//!   [`atp_data::fundamentals::build_fundamental_records`] and ingest each through
-//!   `DataLayer::ingest_market_record` (the ERR-5 validation gate + idempotent `upsert`), then
-//!   durably persist. Loads existing history first (load-modify-save), so ingests accumulate.
+//!   [`atp_data::fundamentals::build_fundamental_records`] and ingest them through the single
+//!   validated, tiered write surface `DataLayer::ingest_market_records_tiered` (the ERR-5 validation
+//!   gate and idempotent `upsert`, written SSD-first then synced to NAS — SRS-DATA-008), then durably
+//!   persist. Loads existing history first (load-modify-save), so ingests accumulate.
 //! - `reingest --dir D [--event-ts T] [--available-ts A]` — re-run the SAME ingestion and prove it is
 //!   a no-op (no duplicate record, the persisted file byte-for-byte identical). A pure, non-mutating
 //!   proof: it NEVER writes to disk, so a failed proof can never become a state-changing ingest.
@@ -28,8 +29,10 @@
 //! Stays passes:false: the REAL Sharadar network adapter (live API auth/fetch) and the NFR-P8d
 //! overnight-window (16:00→09:30 ET) wall-clock completion proof over the full US-equity universe are
 //! deferred; fixture sources + a deterministic clock stand in for the mapping / validation / catalog /
-//! availability logic. The store directory resolves fail-closed: explicit `--dir`, else the
-//! `ATP_DATA_STORE_DIR` config key, else an error.
+//! availability logic. The SSD store directory resolves fail-closed: explicit `--dir`, else the
+//! `ATP_DATA_STORE_DIR` config key, else an error. The NAS archival tier is `--nas`, else
+//! `ATP_NAS_DATA_DIR`, else a `nas` subdirectory of the SSD dir (a missing NAS directory degrades the
+//! sync — the SSD write still commits); production configures `ATP_NAS_DATA_DIR` to the real mount.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -38,6 +41,7 @@ use std::process::ExitCode;
 use atp_data::fundamentals::{build_fundamental_records, FUNDAMENTAL_RATIOS_RESOLUTION};
 use atp_data::query::UnifiedHistoricalQuery;
 use atp_data::store::{DatasetKind, MarketDataRecord, MarketDataStore, StoreLock, UpsertOutcome};
+use atp_data::tiering::{NasSyncStatus, TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
 use atp_data::{DataLayer, MarketIngestError};
 use atp_types::{
     AssetClass, FundamentalStatements, IngestionRecordSubmission, RecordValidationOutcome,
@@ -62,14 +66,16 @@ const USAGE: &str = "\
 data005_fundamental_cli — SRS-DATA-005 Sharadar fundamental-ingestion operator workflow
 
 USAGE:
-    data005_fundamental_cli ingest       --dir <path> [--event-ts <ts>] [--available-ts <ts>] [--init]
+    data005_fundamental_cli ingest       --dir <path> [--nas <path>] [--event-ts <ts>] [--available-ts <ts>] [--init]
     data005_fundamental_cli reingest     --dir <path> [--event-ts <ts>] [--available-ts <ts>]
     data005_fundamental_cli inspect      --dir <path>
     data005_fundamental_cli factor-input --dir <path> --symbol <sym> --as-of <ts>
 
-The store directory is taken from --dir, else the ATP_DATA_STORE_DIR environment variable. A
+The SSD store directory is taken from --dir, else the ATP_DATA_STORE_DIR environment variable. A
 missing/unmounted directory fails closed (for every command) rather than masquerading as an empty
-catalog; pass --init to ingest into a brand-new directory.
+catalog; pass --init to provision a brand-new SSD + NAS directory. `ingest` writes SSD-first then syncs
+to NAS (--nas, else ATP_NAS_DATA_DIR, else a `nas` subdir of --dir); a missing NAS directory degrades
+the sync (the SSD write still commits) rather than failing the ingest.
 
 COMMANDS:
     ingest        Ingest the fixture fundamental bundle (income/balance/cashflow/ratios per symbol).
@@ -117,30 +123,61 @@ fn run(args: &[String]) -> Result<(), String> {
 /// silently skipped (the idempotent no-op) rather than duplicated.
 fn cmd_ingest(rest: &[String]) -> Result<(), String> {
     let parsed = ParsedArgs::parse(rest)?;
-    let dir = resolve_dir(parsed.dir.as_deref())?;
+    let ssd = resolve_dir(parsed.dir.as_deref())?;
+    let nas = parsed.resolve_nas(&ssd);
     let (event_ts, available_ts) = parsed.timestamps()?;
 
+    // Validate the SSD/NAS tier config up front (distinct dirs, ≥90-day floor) before any write.
+    let tier = build_tier(ssd.clone(), nas)?;
+    // --init provisions fresh SSD + NAS directories; without it a missing SSD directory fails closed
+    // when the writer lock is acquired below (symmetric with load).
     if parsed.init {
-        std::fs::create_dir_all(&dir)
-            .map_err(|err| format!("creating {}: {err}", dir.display()))?;
+        std::fs::create_dir_all(tier.config().ssd_dir())
+            .map_err(|err| format!("creating {}: {err}", ssd.display()))?;
+        std::fs::create_dir_all(tier.config().nas_dir())
+            .map_err(|err| format!("creating {}: {err}", tier.config().nas_dir().display()))?;
     }
-    // Hold the single-writer lock across the WHOLE load-modify-save so a concurrent ingestion job
-    // cannot load the old catalog and erase this job's records with a last-publish-wins save.
-    let _lock = StoreLock::acquire(&dir).map_err(|err| err.to_string())?;
-    let mut store = MarketDataStore::load_from_path(&dir).map_err(|err| err.to_string())?;
-    let (inserted, duplicates) = ingest_fixture(&DataLayer, &mut store, event_ts, available_ts)?;
-    store.save_to_path(&dir).map_err(|err| err.to_string())?;
+
+    // SSD-FIRST: the durable primary write, serialized behind the single-writer StoreLock held across
+    // the WHOLE load-modify-save. Each record flows through the ERR-5 validation gate before it is
+    // upserted (`DataLayer::ingest_market_record`).
+    let (inserted, duplicates, store_len, count_fundamental) = {
+        let _lock = StoreLock::acquire(&ssd).map_err(|err| err.to_string())?;
+        let mut store = MarketDataStore::load_from_path(&ssd).map_err(|err| err.to_string())?;
+        let (inserted, duplicates) =
+            ingest_fixture(&DataLayer, &mut store, event_ts, available_ts)?;
+        store.save_to_path(&ssd).map_err(|err| err.to_string())?;
+        let count_fundamental = store.count_for_kind(DatasetKind::Fundamental);
+        (inserted, duplicates, store.len(), count_fundamental)
+        // _lock released on scope exit — the NAS sync below reads the SSD snapshot lock-free.
+    };
+
+    // THEN sync the committed SSD snapshot to NAS (the "new data is synced to NAS" half). Best-effort:
+    // an unreachable NAS degrades (the SSD write stands), a reachable-but-broken NAS fails — so there
+    // is no SSD-only ingest path.
+    let nas_sync = tier.sync_ssd_to_nas_best_effort();
 
     println!("event_ts:{event_ts}");
     println!("available_ts:{available_ts}");
     println!("inserted:{inserted}");
     println!("duplicates_skipped:{duplicates}");
-    println!("store_len:{}", store.len());
+    println!("store_len:{store_len}");
+    println!("count_fundamental:{count_fundamental}");
+    print_nas_sync(&nas_sync);
+    println!("store_file:{}", ssd.join(STORE_FILENAME).display());
     println!(
-        "count_fundamental:{}",
-        store.count_for_kind(DatasetKind::Fundamental)
+        "nas_store_file:{}",
+        tier.config().nas_dir().join(STORE_FILENAME).display()
     );
-    println!("store_file:{}", dir.join(STORE_FILENAME).display());
+
+    // A reachable-but-broken archive is an INTEGRITY failure: exit non-zero so operator automation
+    // cannot mistake it for a clean ingest. A Degraded (NAS-unreachable) outcome stays exit 0.
+    if let NasSyncStatus::Failed { reason } = &nas_sync {
+        return Err(format!(
+            "NAS archival sync FAILED ({reason}): the SSD write committed but the archive is not a \
+             superset — investigate the NAS store before relying on indefinite retention"
+        ));
+    }
     Ok(())
 }
 
@@ -275,8 +312,35 @@ fn cmd_factor_input(rest: &[String]) -> Result<(), String> {
 // Ingestion helpers
 // --------------------------------------------------------------------------- //
 
-/// Ingest the deterministic fixture fundamental bundle (all four statements per symbol), returning
-/// (inserted, duplicates_skipped). A conflicting re-ingest fails closed (propagated as an error).
+/// Build the validated SSD/NAS tier at the default (floor-enforced ≥90-day) hot-retention window.
+fn build_tier(ssd: PathBuf, nas: PathBuf) -> Result<TieredStore, String> {
+    let config =
+        TierConfig::new(ssd, nas, DEFAULT_HOT_RETENTION_DAYS).map_err(|err| err.to_string())?;
+    Ok(TieredStore::new(config))
+}
+
+/// Print the NAS archival sync status of a tiered ingest.
+fn print_nas_sync(nas_sync: &NasSyncStatus) {
+    match nas_sync {
+        NasSyncStatus::Synced { records_added } => {
+            println!("nas_sync:synced");
+            println!("nas_records_added:{records_added}");
+        }
+        NasSyncStatus::Degraded { reason } => {
+            println!("nas_sync:degraded");
+            println!("nas_degraded_reason:{reason}");
+        }
+        NasSyncStatus::Failed { reason } => {
+            println!("nas_sync:failed");
+            println!("nas_failed_reason:{reason}");
+        }
+    }
+}
+
+/// Ingest the deterministic fixture fundamental bundle (all four statements per symbol) into an
+/// IN-MEMORY store (the `reingest` idempotency proof), returning (inserted, duplicates_skipped). Each
+/// record flows through the UNCHANGED [`DataLayer::ingest_market_record`] (ERR-5 gate + idempotent
+/// `upsert`). A conflicting re-ingest fails closed (propagated as an error).
 fn ingest_fixture(
     layer: &DataLayer,
     store: &mut MarketDataStore,
@@ -429,7 +493,7 @@ fn read_store_bytes(dir: &Path) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Resolve the store directory: explicit `--dir`, else `ATP_DATA_STORE_DIR`, else error.
+/// Resolve the SSD store directory: explicit `--dir`, else `ATP_DATA_STORE_DIR`, else error.
 fn resolve_dir(explicit: Option<&str>) -> Result<PathBuf, String> {
     if let Some(dir) = explicit {
         return Ok(PathBuf::from(dir));
@@ -440,6 +504,13 @@ fn resolve_dir(explicit: Option<&str>) -> Result<PathBuf, String> {
     }
 }
 
+/// The default NAS archival directory when none is configured: a `nas` subdirectory of the SSD dir.
+/// Distinct from the SSD store dir (so the tier's alias guard is satisfied) and co-located so a bare
+/// invocation still exercises the tiered write path (an absent dir simply degrades the sync).
+fn default_nas_dir(ssd: &Path) -> PathBuf {
+    ssd.join("nas")
+}
+
 // --------------------------------------------------------------------------- //
 // Argument parsing
 // --------------------------------------------------------------------------- //
@@ -447,6 +518,7 @@ fn resolve_dir(explicit: Option<&str>) -> Result<PathBuf, String> {
 #[derive(Default)]
 struct ParsedArgs {
     dir: Option<String>,
+    nas: Option<String>,
     event_ts: Option<i64>,
     available_ts: Option<i64>,
     symbol: Option<String>,
@@ -461,6 +533,7 @@ impl ParsedArgs {
         while let Some(flag) = iter.next() {
             match flag.as_str() {
                 "--dir" => parsed.dir = Some(take_value(&mut iter, flag)?),
+                "--nas" => parsed.nas = Some(take_value(&mut iter, flag)?),
                 "--event-ts" => parsed.event_ts = Some(take_non_negative(&mut iter, flag)?),
                 "--available-ts" => parsed.available_ts = Some(take_non_negative(&mut iter, flag)?),
                 "--symbol" => parsed.symbol = Some(take_value(&mut iter, flag)?),
@@ -470,6 +543,17 @@ impl ParsedArgs {
             }
         }
         Ok(parsed)
+    }
+
+    /// Resolve the NAS archival tier: --nas, else ATP_NAS_DATA_DIR, else a `nas` subdir of the SSD dir.
+    fn resolve_nas(&self, ssd: &Path) -> PathBuf {
+        if let Some(nas) = self.nas.as_deref() {
+            return PathBuf::from(nas);
+        }
+        match env::var("ATP_NAS_DATA_DIR") {
+            Ok(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
+            _ => default_nas_dir(ssd),
+        }
     }
 
     /// Resolve (event_ts, available_ts) with defaults, failing closed if available_ts < event_ts

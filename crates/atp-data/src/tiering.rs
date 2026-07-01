@@ -67,23 +67,36 @@
 //! output inspection"). The `data008_tier_cli` binary exercises it and the SSD/NAS store files are
 //! directly inspectable.
 //!
-//! **Why SRS-DATA-008 stays `passes:false`:** the AC's cross-cutting clause "*all* ingestion writes
-//! to SSD first; new data is synced to NAS" is NOT yet demonstrated end-to-end — a raw ingest path
-//! (`data016_ingest_cli`, the SRS-DATA-016 idempotency demo) still persists to a single store
-//! directory with no NAS sync, and the real provider adapters are stubs. Closing SRS-DATA-008 needs
-//! the *production* ingestion paths routed through `TieredStore`; until then this is foundational
-//! substrate the DATA cluster composes, not a closed feature (Step 4: "leave passes false until the
-//! evidence proves the requirement end to end").
+//! **ALL ingestion is SSD-first, then NAS-synced (the AC's cross-cutting clause).** The single
+//! validated, tiered market-data write surface is
+//! [`DataLayer::ingest_market_records_tiered`](crate::DataLayer::ingest_market_records_tiered): it
+//! composes the unchanged ERR-5 validation gate with [`TieredStore::ingest`] (SSD-first durable
+//! write, then NAS sync). Every market-data ingestion binary syncs its SSD write to NAS via the tier:
+//! `data008_tier_cli` uses the encapsulated surface, while `data016_ingest_cli` and
+//! `data005_fundamental_cli` keep their SRS-DATA-016 idempotency + SRS-DATA-017 writer-serialization
+//! contract (a `StoreLock`-held SSD load-modify-save) and then call
+//! [`sync_ssd_to_nas_best_effort`](TieredStore::sync_ssd_to_nas_best_effort) so the committed SSD
+//! snapshot is archived to NAS. The structural guard
+//! `tools/data008_tiering_check.py::check_ingestion_routing` sweeps every binary to prove none
+//! persists via [`MarketDataStore::save_to_path`] WITHOUT a paired NAS sync — the only exception is
+//! `data011_coverage_cli` (corporate-action COVERAGE is an operator trust assertion the tiered surface
+//! deliberately refuses, not provider market data), so a new ingest path (or a real provider adapter,
+//! when built) cannot regress the "all ingestion" clause without tripping the guard.
 //!
-//! Deferred (named owners): **routing all ingestion through the tier** (above; owner: the
-//! `data016_ingest_cli` retrofit + SRS-DATA-001/003/005/006); the **real Databento/IB/Sharadar/option-chain
-//! network adapters** that FEED the tier are SRS-DATA-001/003/005/006 (the tier is provider-agnostic
-//! — it stores whatever `MarketDataRecord`s it is handed); the **cold-read failover** that serves an
-//! archived (SSD-evicted) record back from NAS transparently is SRS-DATA-009; the **eviction
-//! *policy*** (the 80 % high-water-mark trigger, the inactivity recency window, never-evict
-//! live-strategy data) is SRS-DATA-010 — this module ships only the data-loss-*safe* archival
-//! *primitive* the policy will drive; the real 1 TB SSD / 20 TB NAS **capacity** is the NFR-SC2
-//! deployment concern whose growth estimates are documented in SRS §12.1 (inspection).
+//! # Honest scope — what is deferred (none load-bearing for the tiering property)
+//!
+//! The **real Databento/IB/Sharadar/option-chain network adapters** that FEED the tier are
+//! SRS-DATA-001/003/006 (the tier is provider-agnostic — it stores whatever `MarketDataRecord`s it is
+//! handed; fixture sources stand in, and the routing guard forces the adapters through the tier when
+//! built); a **durable expected-keys manifest/catalog** so [`retention_report`](TieredStore::retention_report)
+//! can detect loss of *already-archived* (SSD-evicted) data is SRS-DATA-018 (backup + validated
+//! recovery / catalog — the honest scope bound on [`nas_superset_verdict`](RetentionReport::nas_superset_verdict));
+//! the **cold-read failover** that serves an archived record back from NAS transparently is
+//! SRS-DATA-009; the **eviction *policy*** (the 80 % high-water-mark trigger, the inactivity recency
+//! window, never-evict live-strategy data) is SRS-DATA-010 — this module ships only the
+//! data-loss-*safe* archival *primitive* the policy will drive; the real 1 TB SSD / 20 TB NAS
+//! **capacity** is the NFR-SC2 deployment concern whose growth estimates are documented in SRS §12.1
+//! (inspection).
 //!
 //! # Determinism + money discipline
 //!
@@ -530,6 +543,36 @@ impl TieredStore {
                 self.push_to_ready_nas(ssd.records())
                     .map_err(TierError::Nas)
             }
+        }
+    }
+
+    /// **Best-effort** sync of the SSD snapshot to NAS — the degrade-tolerant counterpart to
+    /// [`sync_ssd_to_nas`](Self::sync_ssd_to_nas), returning the archival [`NasSyncStatus`] instead of
+    /// erroring.
+    ///
+    /// This is what an operator ingest path calls **after** it has already committed its SSD write
+    /// (SSD-first): it must sync the new data to NAS without failing the whole ingest on a *recoverable*
+    /// NAS outage. The taxonomy matches [`ingest`](Self::ingest): an **unreachable** NAS →
+    /// [`NasSyncStatus::Degraded`] (the SSD write stands; a later [`sync_ssd_to_nas`](Self::sync_ssd_to_nas)
+    /// reconciles); an **alias** or a **reachable-but-broken** NAS (corrupt store, conflict, lock) →
+    /// [`NasSyncStatus::Failed`] (an integrity failure, never mistaken for an offline mount); a
+    /// **Ready** NAS → [`NasSyncStatus::Synced`]. The SSD store is read lock-free (the atomic-publish
+    /// snapshot), so this never blocks an active reader and needs no SSD lock.
+    pub fn sync_ssd_to_nas_best_effort(&self) -> NasSyncStatus {
+        match self.nas_access() {
+            NasAccess::Unreachable => NasSyncStatus::Degraded {
+                reason: nas_unreachable_error(),
+            },
+            NasAccess::Aliased => NasSyncStatus::Failed {
+                reason: nas_alias_error(),
+            },
+            NasAccess::Ready => match MarketDataStore::load_from_path(&self.config.ssd_dir) {
+                Ok(ssd) => match self.push_to_ready_nas(ssd.records()) {
+                    Ok(records_added) => NasSyncStatus::Synced { records_added },
+                    Err(reason) => NasSyncStatus::Failed { reason },
+                },
+                Err(reason) => NasSyncStatus::Failed { reason },
+            },
         }
     }
 

@@ -182,6 +182,20 @@ pub struct IngestionOutcome {
     pub applied: UpsertOutcome,
 }
 
+/// The combined outcome of [`DataLayer::ingest_market_records_tiered`]: how many records passed the
+/// ERR-5 validation gate and were handed to the tier, plus the tier's SSD-first write + NAS-sync
+/// result ([`TierIngestOutcome`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TieredIngestionOutcome {
+    /// Records that passed the ERR-5 validation gate and were durably written SSD-first by the tier.
+    /// A quarantined record aborts the whole batch before any SSD write, so this is either the full
+    /// input count or the batch failed closed — it is never a partial primary write.
+    pub validated: usize,
+    /// The tier write outcome: SSD insert/unchanged counts plus the NAS archival sync status
+    /// (`Synced` / `Degraded` / `Failed`). The SSD write has committed by the time this exists.
+    pub tier: TierIngestOutcome,
+}
+
 /// A failure of the idempotent market-record ingestion path: either the ERR-5 validation gate
 /// **quarantined** the record (read-only, no write), or the **store** rejected the write — a
 /// conflicting re-ingest ([`StoreError::ConflictingContent`], the "corrupts existing data" guard) or
@@ -205,6 +219,14 @@ pub enum MarketIngestError {
         /// The (vendor-neutral) kind label this entry point does not ingest.
         kind: &'static str,
     },
+    /// The **tiered** market-data write path ([`DataLayer::ingest_market_records_tiered`]) failed on
+    /// the SSD-primary tier. [`TierError`] tags WHICH tier failed: on the tiered path only an SSD
+    /// (primary) failure — or an invalid tier configuration — is fatal, because the SSD write is the
+    /// source of truth and must abort fail-closed. A NAS (archival) problem is NOT fatal — it is
+    /// reported in the returned [`TieredIngestionOutcome::tier`]'s [`NasSyncStatus`] (`Degraded` if
+    /// unreachable, `Failed` if reachable-but-broken) without losing the committed SSD write, so it
+    /// never surfaces here.
+    Tier(TierError),
 }
 
 impl From<StructuredIngestionError> for MarketIngestError {
@@ -219,6 +241,12 @@ impl From<StoreError> for MarketIngestError {
     }
 }
 
+impl From<TierError> for MarketIngestError {
+    fn from(error: TierError) -> Self {
+        Self::Tier(error)
+    }
+}
+
 impl fmt::Display for MarketIngestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -229,6 +257,7 @@ impl fmt::Display for MarketIngestError {
                 "the market-data ingestion path does not ingest '{kind}' records (corporate-action \
                  coverage is asserted only via data011_coverage_cli)"
             ),
+            Self::Tier(error) => write!(f, "tiered market-data ingestion failed: {error}"),
         }
     }
 }
@@ -284,6 +313,69 @@ impl DataLayer {
         // 2. Only reachable on a Valid classification → idempotent store write.
         let applied = store.upsert(record)?;
         Ok(IngestionOutcome { accepted, applied })
+    }
+
+    /// SRS-DATA-008 — the **single validated + tiered** market-data ingestion write surface.
+    ///
+    /// This is the entry point EVERY production/operator market-data ingestion path routes through so
+    /// the SRS-DATA-008 acceptance clause "all ingestion writes to SSD first; new data is synced to
+    /// NAS" holds by construction: it composes the UNCHANGED ERR-5 validation gate
+    /// ([`ingest_record`](Self::ingest_record)) with the SSD-first + NAS-sync discipline of
+    /// [`TieredStore::ingest`]. There is no durable market-data write here that is not SSD-first +
+    /// NAS-synced, so a caller cannot ingest market data SSD-only.
+    ///
+    /// **Ordering (fail-closed before any write).** Every record is validated read-only through the
+    /// ERR-5 gate FIRST; only once the WHOLE batch is `Valid` is a single byte written to either tier.
+    /// So a quarantined record aborts the batch before the SSD write — no partial primary write, and
+    /// (matching [`ingest_market_record`](Self::ingest_market_record)) the same trust boundary refuses
+    /// corporate-action COVERAGE ([`MarketIngestError::UnsupportedKind`]): coverage is an operator
+    /// trust assertion (asserted only via `data011_coverage_cli`), never provider market data, so no
+    /// generic ingest loop can mint a trusted frontier through the tier.
+    ///
+    /// **Failure taxonomy.** A quarantined record → [`MarketIngestError::Rejected`] (no write); an
+    /// SSD-primary write / invalid tier config → [`MarketIngestError::Tier`] (fail-closed, the source
+    /// of truth). A NAS (archival) problem is NOT fatal — the SSD write stands and the archival status
+    /// (`Degraded` if unreachable, `Failed` if reachable-but-broken) is reported in the returned
+    /// [`TieredIngestionOutcome::tier`]'s [`NasSyncStatus`], to be reconciled by a later
+    /// [`TieredStore::sync_ssd_to_nas`].
+    pub fn ingest_market_records_tiered<V, S>(
+        &self,
+        tier: &TieredStore,
+        records: impl IntoIterator<Item = MarketDataRecord>,
+        validator: &V,
+        events: &S,
+        observed_at_seconds: u64,
+    ) -> Result<TieredIngestionOutcome, MarketIngestError>
+    where
+        V: RecordValidator,
+        S: IngestionValidationEventSink,
+    {
+        // Validate the WHOLE batch read-only through the unchanged ERR-5 gate BEFORE any SSD write, so
+        // an invalid batch fails closed without touching either tier (no partial primary write).
+        let mut validated: Vec<MarketDataRecord> = Vec::new();
+        for record in records {
+            // The tier is not a second path to a trusted coverage frontier — refuse it here too, so
+            // the tiered surface has EXACTLY the same trust boundary as ingest_market_record.
+            if record.key().kind == DatasetKind::CorporateActionCoverage {
+                return Err(MarketIngestError::UnsupportedKind {
+                    kind: record.key().kind.as_str(),
+                });
+            }
+            // The ERR-5 envelope is DERIVED from the record, binding validation to exactly the record
+            // that will be persisted (no independent payload to forge).
+            let submission = record.ingestion_submission();
+            self.ingest_record(submission, validator, events, observed_at_seconds)?;
+            validated.push(record);
+        }
+        let count = validated.len();
+        // SSD-FIRST durable write, THEN NAS sync — the tier owns the ordering and the SSD
+        // single-writer lock. This is the ONLY durable market-data write in this method, and it is
+        // tiered by construction.
+        let tier_outcome = tier.ingest(validated)?;
+        Ok(TieredIngestionOutcome {
+            validated: count,
+            tier: tier_outcome,
+        })
     }
 }
 

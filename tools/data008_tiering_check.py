@@ -24,14 +24,21 @@ The tier coordinator that wraps the SRS-DATA-016 ``MarketDataStore`` directory l
   (e) the tier reads no wall-clock (the hot/cold boundary is a pure function of the caller-supplied
       ``now_ts``), uses no floating-point, names no vendor SDK, and carries no broker dependency.
 
-The PASS line is ``SRS-DATA-008 TIERED-STORAGE PASS`` — it names the deferred owners (routing all
-ingestion through the tier, the real provider network adapters via SRS-DATA-001/003/005/006,
-cold-read failover via SRS-DATA-009, the eviction POLICY via SRS-DATA-010, and real SSD/NAS capacity
-via NFR-SC2 / SRS-ARCH-004). Unlike SRS-DATA-016, SRS-DATA-008 STAYS passes:false: this check proves
-the tier SUBSTRATE is structurally present + runnable, but the AC's cross-cutting "all ingestion
-writes to SSD first; new data is synced to NAS" clause is not demonstrated end to end while a raw
-ingest path (data016_ingest_cli) still writes a single store dir with no NAS sync. Closing
-SRS-DATA-008 needs the production ingestion paths routed through TieredStore.
+  (f) ALL ingestion is SSD-first + NAS-synced (``check_ingestion_routing``): the single validated +
+      tiered write surface ``DataLayer::ingest_market_records_tiered`` exists, every market-data
+      ingestion binary (``data016_ingest_cli`` / ``data005_fundamental_cli`` / ``data008_tier_cli``)
+      routes its ``cmd_ingest`` through it, and a sweep of every binary proves the ONLY direct
+      ``save_to_path`` persister is the corporate-action COVERAGE trust assertion
+      (``data011_coverage_cli``), which the tiered surface deliberately refuses.
+
+The PASS line is ``SRS-DATA-008 TIERED-STORAGE PASS`` — it names the deferred owners (a durable
+expected-keys manifest/catalog via SRS-DATA-018, the real provider network adapters via
+SRS-DATA-001/003/006 — which the routing guard forces through the tier when built —, cold-read
+failover via SRS-DATA-009, the eviction POLICY via SRS-DATA-010, and real SSD/NAS capacity via
+NFR-SC2 / SRS-ARCH-004). This check proves the tier SUBSTRATE is structurally present + runnable AND
+that the AC's cross-cutting "all ingestion writes to SSD first; new data is synced to NAS" clause is
+met end to end over the fixture sources the Step-2 verification permits, with the guard preventing any
+future SSD-only ingestion path.
 
 Invoke:
     python3 tools/data008_tiering_check.py
@@ -109,6 +116,37 @@ def cargo_source(config: dict, root: Path = ROOT) -> str:
     return (
         root / block["data_crate"]["path"] / block["no_broker_dependency"]["cargo_toml"]
     ).read_text(encoding="utf-8")
+
+
+def bins_dir(config: dict, root: Path = ROOT) -> Path:
+    block = contract_block(config)
+    return root / block["data_crate"]["path"] / "src" / "bin"
+
+
+def bin_source(config: dict, name: str, root: Path = ROOT) -> str:
+    path = bins_dir(config, root) / f"{name}.rs"
+    if not path.is_file():
+        fail(f"expected ingestion binary not found at {path}")
+    return path.read_text(encoding="utf-8")
+
+
+def _fn_body(src: str, fn_name: str) -> str:
+    """Extract a function body by brace balance from the first `{` after the signature. Fails closed
+    if the function is absent or unbalanced (a truncated file must not silently pass a guard)."""
+    match = re.search(rf"fn\s+{re.escape(fn_name)}\b", src)
+    if match is None:
+        fail(f"expected `fn {fn_name}` (the guarded ingest entry) is absent")
+    start = src.index("{", match.end())
+    depth = 0
+    for i in range(start, len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start : i + 1]
+    fail(f"`fn {fn_name}` has an unbalanced body (could not find its closing brace)")
+    return ""  # unreachable (fail raises)
 
 
 # --------------------------------------------------------------------------- #
@@ -335,6 +373,84 @@ def check_env_config_keys(config: dict, root: Path = ROOT) -> str:
     return f".env.example declares the tier directory config keys ({', '.join(keys)})"
 
 
+def check_ingestion_routing(config: dict, root: Path = ROOT) -> str:
+    """SRS-DATA-008 'all ingestion writes to SSD first; new data is synced to NAS' — enforced
+    STRUCTURALLY, so it holds end to end and a future provider adapter cannot regress it:
+
+      (1) the single validated, tiered write surface `DataLayer::ingest_market_records_tiered`
+          (ERR-5 gate + TieredStore SSD-first + NAS sync) exists in lib.rs;
+      (2) EVERY market-data ingestion binary's cmd_ingest SYNCS its SSD write to NAS via the tier —
+          either the encapsulated `ingest_market_records_tiered` (data008_tier_cli) or an explicit
+          `sync_ssd_to_nas_best_effort` after the SSD-first write (data016/data005, which keep their
+          SRS-DATA-016 idempotency + SRS-DATA-017 writer-serialization contract on cmd_ingest);
+      (3) an ALL-binaries sweep confirms no binary that durably persists via `save_to_path` does so
+          WITHOUT a paired NAS sync — the ONLY exception is the corporate-action COVERAGE trust
+          assertion (`data011_coverage_cli`), which the tiered surface deliberately REFUSES
+          (MarketIngestError::UnsupportedKind), so it is not provider market-data ingestion. A NEW
+          ingest bin that writes SSD-only therefore trips this guard.
+    """
+    spec = contract_block(config).get("ingestion_routing")
+    if spec is None:
+        fail("tiered_storage_contract is missing the ingestion_routing block")
+    surface = spec["tiered_write_surface"]
+    markers = spec["nas_sync_markers"]
+    persist = spec["persist_token"]
+    coverage_bin = spec["coverage_exception_bin"]
+
+    def syncs_to_nas(text: str) -> bool:
+        return any(marker in text for marker in markers)
+
+    # (1) The single validated, tiered write surface is defined on DataLayer.
+    lib = lib_source(config, root)
+    if f"pub fn {surface}" not in lib:
+        fail(
+            f"the single validated, tiered market-data write surface `DataLayer::{surface}` must be "
+            "defined in lib.rs (ERR-5 validation gate + TieredStore SSD-first + NAS sync)"
+        )
+
+    # (2) Every market-data ingest bin's cmd_ingest syncs its SSD write to NAS via the tier.
+    bins = spec["market_data_ingest_bins"]
+    for name in bins:
+        body = _strip_comments(_fn_body(bin_source(config, name, root), "cmd_ingest"))
+        if not syncs_to_nas(body):
+            fail(
+                f"{name} cmd_ingest must sync its SSD write to NAS via the tier (one of: "
+                f"{', '.join(markers)}) so ingestion is SSD-first + NAS-synced (SRS-DATA-008), not "
+                "SSD-only"
+            )
+
+    # (3) All-bins sweep, scoped so a marker cannot be satisfied by an UNRELATED function. For EVERY
+    #     binary with a cmd_ingest, the marker must appear in the SAME cmd_ingest body that persists —
+    #     a bin whose cmd_ingest saves SSD-only but mentions the sync marker in some other command (e.g.
+    #     cmd_sync) is still an offender. A bin with NO cmd_ingest is checked whole-file (its
+    #     persistence is not an ingest path), with the coverage trust assertion the sole exception.
+    offenders = []
+    for path in sorted(bins_dir(config, root).glob("*.rs")):
+        code = _strip_comments(path.read_text(encoding="utf-8"))
+        if "fn cmd_ingest" in code:
+            body = _strip_comments(_fn_body(path.read_text(encoding="utf-8"), "cmd_ingest"))
+            if persist in body and not syncs_to_nas(body):
+                offenders.append(path.stem)
+        elif path.stem != coverage_bin and persist in code and not syncs_to_nas(code):
+            offenders.append(path.stem)
+    if offenders:
+        fail(
+            f"these binaries durably persist market data (`{persist}`) WITHOUT a paired NAS sync in the "
+            f"same ingest path, an SSD-only bypass of TieredStore: {', '.join(offenders)}. Sync via one "
+            f"of {', '.join(markers)} in cmd_ingest (only {coverage_bin} — the corporate-action COVERAGE "
+            "trust assertion the tiered surface refuses — may persist without a NAS sync)"
+        )
+
+    return (
+        f"ALL ingestion is SSD-first + NAS-synced: {len(bins)} market-data ingest binaries "
+        f"({', '.join(bins)}) sync their cmd_ingest SSD write to NAS via the tier, and an all-bins "
+        f"sweep (marker required in the SAME cmd_ingest that persists) confirms no binary persists via "
+        f"`{persist}` without a paired NAS sync (only {coverage_bin}, the corporate-action COVERAGE "
+        "trust assertion the tiered surface refuses, persists directly; durable backup of all catalogs "
+        "is SRS-DATA-018)"
+    )
+
+
 # Each entry: (label, collector, source_key). source_key selects which source the collector reads.
 _STATIC_CHECKS = [
     ("config", check_config, "tiering"),
@@ -351,10 +467,10 @@ _STATIC_CHECKS = [
 ]
 
 _DEFERRED_OWNERS = [
-    "route ALL production ingestion through TieredStore — the AC's 'all ingestion ... synced to NAS' "
-    "clause (data016_ingest_cli retrofit + SRS-DATA-001/003/005/006); SRS-DATA-008 stays passes:false "
-    "until then",
-    "real provider network adapters (SRS-DATA-001/003/005/006)",
+    "durable expected-keys MANIFEST/CATALOG so retention can detect loss of already-archived "
+    "(SSD-evicted) data (SRS-DATA-018 backup + validated recovery / catalog)",
+    "real provider network adapters that FEED the tier (SRS-DATA-001/003/006; provider-agnostic, "
+    "and the routing guard forces them through TieredStore when built)",
     "cold-read NAS failover (SRS-DATA-009)",
     "the eviction POLICY (SRS-DATA-010)",
     "real SSD/NAS capacity + network mount (NFR-SC2 / SRS-ARCH-004)",
@@ -382,6 +498,7 @@ def assert_data_tiering_static(config: dict, root: Path = ROOT) -> list[str]:
         f"operator CLI `{block['cli_bin']}` present (ingest/report/archive-cold/sync) and exits "
         "non-zero on a NasSyncStatus::Failed archival integrity failure"
     )
+    evidence.append(check_ingestion_routing(config, root))
     evidence.append(check_storage_growth_doc(config, root))
     evidence.append(check_env_config_keys(config, root))
     return evidence

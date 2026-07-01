@@ -14,8 +14,10 @@ archival guard, a money-into-float field, an injected nondeterminism source, a l
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -32,6 +34,7 @@ from data008_tiering_check import (  # noqa: E402
     check_archive_safety,
     check_config,
     check_determinism,
+    check_ingestion_routing,
     check_module_reexport,
     check_nas_sync_status,
     check_no_vendor_tokens,
@@ -65,6 +68,7 @@ class TieringScriptTest(unittest.TestCase):
             "reads no wall-clock",
             "carries no broker/execution dependency",
             "names no vendor SDK",
+            "ALL ingestion is SSD-first + NAS-synced",
             "documents the SSD hot-tier + NAS archival-tier growth estimates",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
@@ -212,11 +216,144 @@ class ModuleReexportTest(_Fixture):
             check_module_reexport(self.config, mutated)
 
 
+class IngestionRoutingTest(_Fixture):
+    """The 'all ingestion is SSD-first + NAS-synced' structural guard has teeth: it flags any
+    market-data ingestion binary that persists SSD-only, and its all-bins sweep catches a NEW
+    SSD-only binary too. Built over a minimal fake crate tree so the guard's disk reads are exercised."""
+
+    _SURFACE = "ingest_market_records_tiered"
+
+    def _write_tree(self, root: Path, bins: dict[str, str]) -> None:
+        (root / "architecture").mkdir(parents=True)
+        (root / "architecture" / "runtime_services.json").write_text(
+            json.dumps({"tiered_storage_contract": self.config["tiered_storage_contract"]}),
+            encoding="utf-8",
+        )
+        src = root / "crates" / "atp-data" / "src"
+        (src / "bin").mkdir(parents=True)
+        (src / "lib.rs").write_text(f"pub fn {self._SURFACE}() {{}}\n", encoding="utf-8")
+        for name, body in bins.items():
+            (src / "bin" / f"{name}.rs").write_text(body, encoding="utf-8")
+
+    def _good_encapsulated(self) -> str:
+        # data008_tier_cli style: the encapsulated validated + tiered write surface.
+        return f"fn cmd_ingest() {{ DataLayer.{self._SURFACE}(&tier, records); }}\n"
+
+    def _good_explicit_sync(self) -> str:
+        # data016/data005 style: an SSD-first StoreLock-held write, THEN a best-effort NAS sync.
+        return (
+            "fn cmd_ingest() { let _lock = StoreLock::acquire(&ssd)?; store.save_to_path(&ssd)?; "
+            "tier.sync_ssd_to_nas_best_effort(); }\n"
+        )
+
+    def test_evidence_on_real_tree(self) -> None:
+        self.assertIn("ALL ingestion is SSD-first", check_ingestion_routing(self.config))
+
+    def test_explicit_save_plus_best_effort_sync_passes(self) -> None:
+        # The data016/data005 pattern (save_to_path + sync_ssd_to_nas_best_effort) is accepted: an SSD
+        # write paired with a NAS sync is NOT an SSD-only bypass.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write_tree(
+                root,
+                {
+                    "data016_ingest_cli": self._good_explicit_sync(),
+                    "data005_fundamental_cli": self._good_explicit_sync(),
+                    "data008_tier_cli": self._good_encapsulated(),
+                    "data011_coverage_cli": "fn main() { store.save_to_path(&dir); }\n",
+                },
+            )
+            self.assertIn("ALL ingestion is SSD-first", check_ingestion_routing(self.config, root))
+
+    def test_market_data_bin_that_persists_ssd_only_is_caught(self) -> None:
+        good = self._good_encapsulated()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write_tree(
+                root,
+                {
+                    "data016_ingest_cli": "fn cmd_ingest() { store.save_to_path(&dir); }\n",  # bypass
+                    "data005_fundamental_cli": good,
+                    "data008_tier_cli": good,
+                    "data011_coverage_cli": "fn main() { store.save_to_path(&dir); }\n",  # allowed
+                },
+            )
+            with self.assertRaises(TieringCheckError) as ctx:
+                check_ingestion_routing(self.config, root)
+            self.assertIn("data016_ingest_cli", str(ctx.exception))
+
+    def test_new_ssd_only_bin_trips_the_all_bins_sweep(self) -> None:
+        good = self._good_encapsulated()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write_tree(
+                root,
+                {
+                    "data016_ingest_cli": good,
+                    "data005_fundamental_cli": good,
+                    "data008_tier_cli": good,
+                    "data011_coverage_cli": "fn main() { store.save_to_path(&dir); }\n",  # allowed
+                    "data099_rogue_cli": "fn main() { store.save_to_path(&dir); }\n",  # NEW bypass
+                },
+            )
+            with self.assertRaises(TieringCheckError) as ctx:
+                check_ingestion_routing(self.config, root)
+            self.assertIn("data099_rogue_cli", str(ctx.exception))
+
+    def test_marker_in_unrelated_function_does_not_excuse_ssd_only_cmd_ingest(self) -> None:
+        # Hardening: a bin whose cmd_ingest persists SSD-only but mentions the NAS-sync marker in an
+        # UNRELATED command (e.g. cmd_sync) must NOT evade the sweep — the marker is required in the
+        # SAME cmd_ingest that persists.
+        good = self._good_encapsulated()
+        # A NEW bin (not in the named market_data_ingest_bins, so only the sweep can catch it) whose
+        # cmd_ingest persists SSD-only but mentions the marker in cmd_sync.
+        evader = (
+            "fn cmd_ingest() { store.save_to_path(&dir); }\n"
+            "fn cmd_sync() { tier.sync_ssd_to_nas_best_effort(); }\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write_tree(
+                root,
+                {
+                    "data016_ingest_cli": good,
+                    "data005_fundamental_cli": good,
+                    "data008_tier_cli": good,
+                    "data011_coverage_cli": "fn main() { store.save_to_path(&dir); }\n",
+                    "data099_rogue_cli": evader,
+                },
+            )
+            with self.assertRaises(TieringCheckError) as ctx:
+                check_ingestion_routing(self.config, root)
+            self.assertIn("data099_rogue_cli", str(ctx.exception))
+
+    def test_missing_tiered_surface_in_lib_is_caught(self) -> None:
+        good = self._good_encapsulated()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write_tree(
+                root,
+                {
+                    "data016_ingest_cli": good,
+                    "data005_fundamental_cli": good,
+                    "data008_tier_cli": good,
+                    "data011_coverage_cli": "fn main() {}\n",
+                },
+            )
+            # Remove the single validated + tiered write surface from lib.rs -> guard fails closed.
+            (root / "crates" / "atp-data" / "src" / "lib.rs").write_text(
+                "// no surface\n", encoding="utf-8"
+            )
+            with self.assertRaises(TieringCheckError):
+                check_ingestion_routing(self.config, root)
+
+
 class StaticBundleTest(_Fixture):
     def test_full_static_bundle_passes(self) -> None:
         evidence = assert_data_tiering_static(self.config)
         self.assertTrue(any("floor-enforces" in line for line in evidence))
         self.assertTrue(any("data-loss-safe" in line for line in evidence))
+        self.assertTrue(any("ALL ingestion is SSD-first" in line for line in evidence))
 
 
 if __name__ == "__main__":

@@ -6,9 +6,11 @@
 //! permits ("CLI/API workflows with fixture market data, provider mocks, file reads, and persisted
 //! output inspection"):
 //!
-//! - `ingest      --ssd S --nas N --kind K [--event-ts T]` — ingest a fixture batch SSD-FIRST, then
-//!   sync to NAS. Prints the SSD insert counts and the NAS sync status (synced / degraded), and the
-//!   two persisted store-file paths so an operator can inspect both tiers on disk.
+//! - `ingest      --ssd S --nas N --kind K [--event-ts T]` — validate a fixture batch through the
+//!   ERR-5 gate, then ingest it SSD-FIRST and sync to NAS via the single validated + tiered write
+//!   surface (`DataLayer::ingest_market_records_tiered`). Prints the validated + SSD insert counts and
+//!   the NAS sync status (synced / degraded / failed), and the two persisted store-file paths so an
+//!   operator can inspect both tiers on disk.
 //! - `report      --ssd S --nas N [--now T] [--hot-days D]` — the cross-tier retention report: SSD /
 //!   NAS totals, the hot/cold split, any hot datum missing from SSD (a retention breach), any SSD
 //!   datum missing from NAS (a sync backlog), and the two acceptance verdicts.
@@ -37,6 +39,8 @@ use std::process::ExitCode;
 
 use atp_data::store::{fixture_batch, DatasetKind};
 use atp_data::tiering::{NasSyncStatus, TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
+use atp_data::{DataLayer, IngestionValidationEventSink, RecordValidator};
+use atp_types::{IngestionRecordSubmission, IngestionValidationEvent, RecordValidationOutcome};
 
 /// A fixed default instant and event timestamp (NOT a clock read — keeps the demo deterministic).
 /// 2023-11-14T22:13:20Z.
@@ -101,15 +105,26 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
     let kind = parsed.require_kind()?;
     let event_ts = parsed.event_ts.unwrap_or(DEFAULT_TS);
 
-    let outcome = tier
-        .ingest(fixture_batch(kind, event_ts))
+    // Route through the SINGLE validated + tiered write surface (DataLayer::ingest_market_records_tiered):
+    // every record passes the ERR-5 validation gate read-only BEFORE the tier's SSD-first durable write
+    // + NAS sync — so the tier's own operator ingest is validated exactly like data005/data016, not a
+    // second unvalidated path.
+    let outcome = DataLayer
+        .ingest_market_records_tiered(
+            &tier,
+            fixture_batch(kind, event_ts),
+            &AcceptAllValidator,
+            &NullSink,
+            observed_at(),
+        )
         .map_err(|err| err.to_string())?;
 
     println!("kind:{}", kind.as_str());
     println!("event_ts:{event_ts}");
-    println!("ssd_inserted:{}", outcome.ssd_inserted);
-    println!("ssd_unchanged:{}", outcome.ssd_unchanged);
-    match &outcome.nas_sync {
+    println!("validated:{}", outcome.validated);
+    println!("ssd_inserted:{}", outcome.tier.ssd_inserted);
+    println!("ssd_unchanged:{}", outcome.tier.ssd_unchanged);
+    match &outcome.tier.nas_sync {
         NasSyncStatus::Synced { records_added } => {
             println!("nas_sync:synced");
             println!("nas_records_added:{records_added}");
@@ -137,7 +152,7 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
     // NON-ZERO so operator automation that gates on exit status cannot mistake it for a clean ingest.
     // A Degraded (NAS-unreachable) outcome stays exit 0 — it is the documented recoverable outage a
     // later `sync` reconciles, surfaced via the printed status for the SRS-MD-006 readiness check.
-    if let NasSyncStatus::Failed { reason } = &outcome.nas_sync {
+    if let NasSyncStatus::Failed { reason } = &outcome.tier.nas_sync {
         return Err(format!(
             "NAS archival sync FAILED ({reason}): the SSD write committed but the archive is not a \
              superset — investigate the NAS store before relying on indefinite retention"
@@ -194,6 +209,29 @@ fn cmd_sync(rest: &[String]) -> Result<(), String> {
 
 fn store_filename() -> &'static str {
     atp_data::store::STORE_FILENAME
+}
+
+/// A fixed observation instant for the ERR-5 envelope (NOT a clock read — keeps the demo
+/// deterministic).
+fn observed_at() -> u64 {
+    DEFAULT_TS as u64
+}
+
+/// The DATA-013 validator (deferred) stand-in: accepts every fixture record so the demonstration
+/// focuses on the tiering property. The real SYS-77 rule logic is SRS-DATA-013's owner.
+struct AcceptAllValidator;
+
+impl RecordValidator for AcceptAllValidator {
+    fn validate(&self, _record: &IngestionRecordSubmission) -> RecordValidationOutcome {
+        RecordValidationOutcome::Valid
+    }
+}
+
+/// A no-op validation event sink (the dashboard/notification fan-out is SRS-DATA-014 / SRS-NOTIF-001).
+struct NullSink;
+
+impl IngestionValidationEventSink for NullSink {
+    fn record(&self, _event: IngestionValidationEvent) {}
 }
 
 // --------------------------------------------------------------------------- //

@@ -20,9 +20,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use atp_data::store::{
-    fixture_batch, DatasetKind, MarketDataRecord, MarketDataStore, STORE_FILENAME,
+    coverage_record, fixture_batch, DatasetKind, MarketDataRecord, MarketDataStore, STORE_FILENAME,
 };
 use atp_data::tiering::{NasSyncStatus, RetentionVerdict, TierConfig, TierError, TieredStore};
+use atp_data::{DataLayer, IngestionValidationEventSink, MarketIngestError, RecordValidator};
+use atp_types::{
+    IngestionRecordSubmission, IngestionValidationEvent, QuarantineReason, RecordValidationOutcome,
+};
+use std::cell::RefCell;
 
 const NOW: i64 = 1_700_000_000;
 const DAY: i64 = 86_400;
@@ -436,4 +441,166 @@ fn data008_reingest_is_idempotent_across_both_tiers() {
 
     assert_eq!(load(&ssd).len(), n);
     assert_eq!(load(&nas).len(), n);
+}
+
+// --------------------------------------------------------------------------- //
+// Invariant 5 — the SINGLE validated + tiered write surface
+// (DataLayer::ingest_market_records_tiered): the AC's "ALL ingestion writes to
+// SSD first; new data is synced to NAS" clause. Every operator/production ingest
+// CLI routes through this, so a validated record is written SSD-first + synced to
+// NAS, an invalid record fails closed BEFORE any SSD write, and the coverage
+// trust-kind is refused (never provider ingestion).
+// --------------------------------------------------------------------------- //
+
+/// The DATA-013 (deferred) validator stand-in: accepts every record.
+struct AcceptAll;
+impl RecordValidator for AcceptAll {
+    fn validate(&self, _record: &IngestionRecordSubmission) -> RecordValidationOutcome {
+        RecordValidationOutcome::Valid
+    }
+}
+
+/// A validator that quarantines EVERY record — to prove the tiered surface fails closed before a write.
+struct QuarantineAll;
+impl RecordValidator for QuarantineAll {
+    fn validate(&self, _record: &IngestionRecordSubmission) -> RecordValidationOutcome {
+        RecordValidationOutcome::Quarantined(QuarantineReason::RangeViolation)
+    }
+}
+
+/// Captures the ERR-5 quarantine events so the test can assert one event per quarantined record.
+#[derive(Default)]
+struct CollectingSink {
+    events: RefCell<Vec<IngestionValidationEvent>>,
+}
+impl IngestionValidationEventSink for CollectingSink {
+    fn record(&self, event: IngestionValidationEvent) {
+        self.events.borrow_mut().push(event);
+    }
+}
+
+#[test]
+fn data008_tiered_surface_validates_then_writes_ssd_first_and_syncs_nas() {
+    let (ssd, nas) = tier_dirs("tiered_surface");
+    fs::create_dir_all(&nas).unwrap(); // NAS reachable.
+    let tier = TieredStore::new(TierConfig::with_default_retention(&ssd, &nas).unwrap());
+
+    let batch = daily(NOW - 3 * DAY);
+    let n = batch.len();
+    let outcome = DataLayer
+        .ingest_market_records_tiered(
+            &tier,
+            batch.clone(),
+            &AcceptAll,
+            &CollectingSink::default(),
+            NOW as u64,
+        )
+        .expect("validated tiered ingest");
+
+    // Every record passed validation and was written SSD-first, then NAS synced to a superset.
+    assert_eq!(outcome.validated, n);
+    assert_eq!(outcome.tier.ssd_inserted, n);
+    assert_eq!(outcome.tier.ssd_unchanged, 0);
+    assert_eq!(
+        outcome.tier.nas_sync,
+        NasSyncStatus::Synced { records_added: n }
+    );
+    assert_eq!(load(&ssd).len(), n);
+    assert_eq!(load(&nas).len(), n);
+    for record in &batch {
+        assert_eq!(load(&nas).get(record.key()), Some(record));
+    }
+    // The cross-tier report independently confirms the "all ingestion synced to NAS" clause.
+    let report = tier.retention_report(NOW).expect("report");
+    assert!(report.nas_superset_verdict().is_satisfied());
+    assert_eq!(report.ssd_missing_from_nas, 0);
+}
+
+#[test]
+fn data008_tiered_surface_quarantined_record_fails_closed_before_any_ssd_write() {
+    let (ssd, nas) = tier_dirs("tiered_quarantine");
+    fs::create_dir_all(&nas).unwrap();
+    let tier = TieredStore::new(TierConfig::with_default_retention(&ssd, &nas).unwrap());
+
+    let batch = daily(NOW);
+    let sink = CollectingSink::default();
+    let err = DataLayer
+        .ingest_market_records_tiered(&tier, batch, &QuarantineAll, &sink, NOW as u64)
+        .expect_err("a quarantined record must fail closed");
+
+    // Fail-closed as a validation rejection — NOT a tier/SSD error.
+    assert!(matches!(err, MarketIngestError::Rejected(_)), "got {err:?}");
+    // The ERR-5 event fired for the first (quarantined) record...
+    assert_eq!(sink.events.borrow().len(), 1);
+    // ...and NOTHING was written to either tier (no partial primary write).
+    assert!(
+        !store_file_exists(&ssd),
+        "SSD must not be written when validation fails closed"
+    );
+    assert!(
+        !store_file_exists(&nas),
+        "NAS must not be written when validation fails closed"
+    );
+}
+
+#[test]
+fn data008_tiered_surface_refuses_corporate_action_coverage() {
+    let (ssd, nas) = tier_dirs("tiered_coverage");
+    fs::create_dir_all(&nas).unwrap();
+    let tier = TieredStore::new(TierConfig::with_default_retention(&ssd, &nas).unwrap());
+
+    // Coverage is an operator TRUST assertion (SRS-DATA-011 frontier), never provider ingestion — the
+    // tiered surface refuses it exactly like ingest_market_record, so no generic ingest loop can mint
+    // a trusted frontier that would let the split-adjusted gate ship raw-as-adjusted output.
+    let coverage = coverage_record(NOW, "AAPL");
+    assert_eq!(coverage.key().kind, DatasetKind::CorporateActionCoverage);
+    let err = DataLayer
+        .ingest_market_records_tiered(
+            &tier,
+            vec![coverage],
+            &AcceptAll,
+            &CollectingSink::default(),
+            NOW as u64,
+        )
+        .expect_err("coverage must be refused by the tiered surface");
+    assert!(
+        matches!(err, MarketIngestError::UnsupportedKind { .. }),
+        "got {err:?}"
+    );
+    assert!(
+        !store_file_exists(&ssd),
+        "a refused coverage record must not be written to SSD"
+    );
+}
+
+// --------------------------------------------------------------------------- //
+// sync_ssd_to_nas_best_effort — the degrade-tolerant NAS sync the operator ingest
+// CLIs call AFTER their SSD-first write (data016/data005): an unreachable NAS
+// degrades (the SSD write stands), a Ready NAS syncs to a superset.
+// --------------------------------------------------------------------------- //
+
+#[test]
+fn data008_best_effort_sync_degrades_when_nas_unreachable_then_syncs_when_ready() {
+    let (ssd, nas) = tier_dirs("best_effort_sync");
+    // SSD committed first (the operator CLI's SSD-first write), NAS not yet provisioned.
+    let tier = TieredStore::new(TierConfig::with_default_retention(&ssd, &nas).unwrap());
+    tier.ingest(daily(NOW - 2 * DAY))
+        .expect("seed SSD (NAS down degrades)");
+
+    // NAS unreachable -> best-effort sync DEGRADES (never errors), the SSD write is untouched.
+    fs::remove_dir_all(&nas).ok();
+    assert!(tier.sync_ssd_to_nas_best_effort().is_degraded());
+    assert_eq!(load(&ssd).len(), 2);
+
+    // Once NAS is reachable, a best-effort sync converges NAS to a superset of SSD.
+    fs::create_dir_all(&nas).unwrap();
+    let status = tier.sync_ssd_to_nas_best_effort();
+    assert!(status.is_synced());
+    assert_eq!(status, NasSyncStatus::Synced { records_added: 2 });
+    let report = tier.retention_report(NOW).expect("report");
+    assert!(report.nas_superset_verdict().is_satisfied());
+
+    // A reachable-but-broken (corrupt) NAS store FAILS closed (not a recoverable degrade).
+    fs::write(nas.join(STORE_FILENAME), b"corrupt not-a-store blob").unwrap();
+    assert!(tier.sync_ssd_to_nas_best_effort().is_failed());
 }
