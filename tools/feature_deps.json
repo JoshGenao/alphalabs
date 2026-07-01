@@ -98,6 +98,10 @@
   "SRS-EXE-002": [
     "SRS-EXE-006"
   ],
+  "SRS-EXE-003": [
+    "SRS-EXE-004",
+    "SRS-EXE-008"
+  ],
   "SRS-FAC-001": [
     "SRS-DATA-005"
   ],

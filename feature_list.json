@@ -626,7 +626,7 @@
       "Step 3: Verify acceptance criteria: Strategy code, backtests, factor jobs, and notebooks query by symbol, date range, and resolution without specifying the original source provider.",
       "Step 4: Record objective evidence from contract test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {
