@@ -907,6 +907,100 @@
     },
     "rejection_category": "MarketDataStale"
   },
+  "sequence_gap_contract": {
+    "requirement": "SRS-MD-007",
+    "description": "SRS-MD-007 (the market-data subscription manager shall detect sequence gaps in IB tick streams and reflect gap state in heartbeat/staleness; SyRS SYS-39 / SYS-39a / SYS-70; NFR-P5; StRS SN-2.03 / SN-2.04). SCOPE: this contract pins the IN-PROCESS gap-detection + per-security staleness half. MarketDataTick.tick_seq is the UPSTREAM PROVIDER sequence (see tick_sequence_source) that also serves as the SRS-MD-001 fan-out correlation id; SRS-MD-001 deferred its gap semantics to MD-007, which defines them here (a lost upstream tick leaves a skip the detector reads as a gap -- so the ingestion adapter MUST supply the provider origin sequence, not a delivery-renumbered counter). SequenceGapDetector (crates/atp-market-data) tracks, per canonical SecurityKey, the last observed tick sequence and the resulting MarketDataFreshness of that security's consolidated upstream line: a forward skip (observed > last + 1) is a GAP -- it publishes a SequenceGapEvent (symbol, expected_sequence, observed_sequence, observed_at_ns) through the SequenceGapEventSink port and marks the line Stale; a fresh monotonic tick (observed == last + 1) or an operator-acknowledged resync (acknowledge_resync) RECOVERS the line to Fresh (the two SRS-MD-007 recovery conditions); a duplicate / backwards tick (observed <= last) is neither a gap nor a recovery and leaves staleness unchanged. freshness() fails CLOSED: a security never observed returns Stale so an order on a silent line is blocked. The MarketDataFreshness the detector reports is the SAME atp-types enum the SRS-MD-004 execution gate (ExecutionEngine::submit_live_order via the MarketDataFreshnessProbe port; freshness_contract) rejects MARKET_DATA_STALE on for live AND paper submissions -- so the gap -> stale -> order-block chain is closed at the type level in-process. Wiring the detector to that gate is the deferred orchestrator-layer runtime adapter (atp-execution must not depend on atp-market-data per SRS-ARCH-002), and it must close a real seam gap: the CURRENT MarketDataFreshnessProbe is SYMBOL-ONLY (freshness(&self, symbol: &str)) while the detector is keyed on the full SecurityKey (symbol + asset class). Making the port security-aware -- carrying the asset_class OrderSubmission already holds, or a SecurityKey -- is a deferred change on the SRS-MD-004 / ERR-3 port surface (see deferred[]); until then an equity and an option sharing a display ticker cannot be distinguished by the symbol-only probe, but the detector FAILS CLOSED on options (never tracked -> Stale) and options are rejected upstream, so equities (the only currently-tradable class) are unaffected. The gap event is shaped to feed the SRS-LOG-001 LogRecord seam (Source.MARKET_DATA, event_type SEQUENCE_GAP, pinned in log_record_contract.event_types_by_source and python/atp_logging). SRS-MD-007 stays passes:false in feature_list.json until the deferred runtime + operator surfaces land (see deferred[]).",
+    "srs_refs": ["SRS-MD-007"],
+    "syrs_refs": ["SYS-39", "SYS-39a", "SYS-70", "NFR-P5"],
+    "strs_refs": ["SN-2.03", "SN-2.04"],
+    "types_crate": { "crate": "atp-types", "path": "crates/atp-types" },
+    "market_data_crate": { "crate": "atp-market-data", "path": "crates/atp-market-data" },
+    "sequence_gap_event": {
+      "struct": "SequenceGapEvent",
+      "required_fields": [
+        "symbol",
+        "expected_sequence",
+        "observed_sequence",
+        "observed_at_ns"
+      ],
+      "forbidden_fields": ["broker", "ib_session_id", "vendor", "provider", "tick_id"]
+    },
+    "gap_event_sink_port": {
+      "trait": "SequenceGapEventSink",
+      "methods": ["record"],
+      "record_result": "Result<(), SequenceGapPublishError>",
+      "fallible": true,
+      "rationale": "SRS-MD-007 makes logging a first-class AC ('gap events ARE logged via SRS-LOG-001 ... visible on the dashboard'), so a durable-write / transport failure must be SURFACEABLE, not silently swallowed. The failure is reported on GapObservation::Gap.published (an Err), NOT by aborting the observation -- a gap that could not be logged is still a detected gap and the line is still stale. The SAFETY outcome is publication-independent: observe_tick commits Stale BEFORE record, so a failing sink still fails CLOSED (line stays stale, orders blocked). Durable fail-closed persistence + operator page are the concrete SRS-LOG-001 / SRS-NOTIF-001 sink's job."
+    },
+    "publish_error": { "struct": "SequenceGapPublishError" },
+    "detector": {
+      "struct": "SequenceGapDetector",
+      "observe_method": "observe_tick",
+      "resync_method": "acknowledge_resync",
+      "freshness_method": "freshness",
+      "stale_since_method": "stale_since_ns",
+      "canonicalize_call": "tick.security_key()?",
+      "fail_closed_freshness_default": "MarketDataFreshness::Stale",
+      "gap_stale_assignment": "state.freshness = MarketDataFreshness::Stale",
+      "gap_publish_call": "events.record(",
+      "recovery_fresh_assignment": "state.freshness = MarketDataFreshness::Fresh",
+      "stale_onset_preserved_token": "if was_fresh {",
+      "stale_onset_note": "stale_since_ns is set ONLY on the Fresh->Stale transition (guarded by `if was_fresh`), so a repeated gap on an already-stale line does NOT reset the staleness age reported on the heartbeat/dashboard."
+    },
+    "gap_observation_enum": {
+      "enum": "GapObservation",
+      "variants": ["Baseline", "InSequence", "Gap", "NonMonotonic"]
+    },
+    "resync_outcome_enum": {
+      "enum": "ResyncOutcome",
+      "variants": ["Acknowledged", "NotTracked"]
+    },
+    "freshness_state": { "enum": "MarketDataFreshness", "variants": ["Fresh", "Stale"] },
+    "tick_sequence_source": {
+      "field": "MarketDataTick.tick_seq",
+      "meaning": "UPSTREAM provider sequence (the value the ingestion adapter reads from IB's own feed), monotonic per consolidated security line; doubles as the fan-out correlation id.",
+      "producer_contract": "The detector finds a gap as a SKIP in tick_seq, so gap detection is ONLY meaningful if tick_seq carries the upstream provider origin sequence -- a lost upstream tick must leave a hole. A counter re-numbered 1,2,3,... per DELIVERED callback would be gap-free by construction and silently defeat detection. Populating tick_seq from the provider origin sequence is the ingestion adapter's obligation (deferred SRS-EXE-006 / feed loop). SRS-MD-001 deliberately deferred tick_seq's gap semantics to SRS-MD-007, which defines them on MarketDataTick::tick_seq. Pinned in-process by producer_contract_a_delivery_renumbered_stream_hides_gaps."
+    },
+    "log_event": { "source": "market_data", "event_type": "SEQUENCE_GAP" },
+    "md_004_gate": {
+      "consumer_crate": "atp-execution",
+      "port": "MarketDataFreshnessProbe",
+      "port_signature_today": "freshness(&self, symbol: &str) -> MarketDataFreshness (SYMBOL-ONLY; the detector is SecurityKey-keyed, so faithfully bridging needs the port to carry asset_class / SecurityKey -- deferred, see deferred[])",
+      "rejection_category": "MarketDataStale"
+    },
+    "rust_integration_test": "srs_md_007_sequence_gap",
+    "vendor_forbidden_tokens": ["interactive_brokers", "ib_insync", "ibapi", "databento", "sharadar"],
+    "deferred": [
+      {
+        "feature": "SRS-MD-007-runtime / SRS-EXE-006",
+        "what": "The async IB tick-ingestion feed loop that calls observe_tick for each delivered tick with a real wall-clock timestamp, and the wall clock itself. SequenceGapDetector is single-threaded and clock-free (observed_at_ns is injected). CRITICAL producer obligation: this ingestion adapter MUST populate MarketDataTick.tick_seq with the UPSTREAM provider origin sequence (so a dropped IB tick leaves a skip the detector can find), NOT a delivery-renumbered counter -- see tick_sequence_source. Gap detection is only as sound as this producer contract; without a real IB feed supplying a gap-bearing sequence, MD-007 cannot be verified end to end, which is why it stays passes:false. The runtime that wraps the detector + the SRS-EXE-006 IB adapter that delivers the (gap-bearing) ticks flip SRS-MD-007 passes:true together."
+      },
+      {
+        "feature": "SRS-MD-004 runtime bridge",
+        "what": "The concrete MarketDataFreshnessProbe adapter (orchestrator layer) that reads freshness()/stale_since_ns() so submit_live_order blocks MARKET_DATA_STALE on a gap-stale line. The block itself is already built + tested in atp-execution (freshness_contract / err_3_stale_data_blocked); the detector produces the exact MarketDataFreshness::Stale it consumes. atp-execution must not depend on atp-market-data (SRS-ARCH-002), so the bridge lives in the higher orchestrator layer with the feed loop."
+      },
+      {
+        "feature": "SRS-MD-004 / ERR-3 freshness-port security-awareness",
+        "what": "PREREQUISITE for a faithful bridge: MarketDataFreshnessProbe is SYMBOL-ONLY today (freshness(&self, symbol: &str) / staleness_seconds(&self, symbol: &str), called with submission.symbol in submit_live_order), but SequenceGapDetector is keyed on the full SecurityKey (symbol + asset class). A symbol-only probe cannot distinguish an equity from an option on a shared display ticker, so the port must become security-aware -- carry the asset_class OrderSubmission already holds, or a SecurityKey -- with the submit_live_order / dispatch_order call sites and every MarketDataFreshnessProbe stub (ERR-1/2/3, EXE-001/002 tests + err001 CLI) + freshness_check.py + freshness_contract updated in lockstep. Owned by the SRS-MD-004 / ERR-3 port surface, NOT by the MD-007 detector; the detector already fails closed on options (never tracked -> Stale) and options are rejected upstream, so equities (the only currently-tradable class) are safe in the interim. Raised by the /codex:adversarial-review round-1 [high]; deferred per scope (widening a passing shared port across ~16 sites of other features is out of scope for the detector)."
+      },
+      {
+        "feature": "SRS-MD-003",
+        "what": "The COMPANION time-based heartbeat freshness monitor. MD-007 owns SEQUENCE-gap staleness; MD-003 owns elapsed-time (>15 s no update) staleness. A runtime freshness view merges both into one MarketDataFreshness per line; stale_since_ns is the seam MD-003's clock reads to compute MarketDataFreshnessProbe::staleness_seconds for a gap-stale line."
+      },
+      {
+        "feature": "SRS-LOG-001-runtime / SRS-NOTIF-001",
+        "what": "The persistent system-log sink for SEQUENCE_GAP events (Source.MARKET_DATA) AND its fail-closed durability. SequenceGapEvent is shaped to feed the LogRecord seam and the event_type is pinned in log_record_contract + python/atp_logging. SequenceGapEventSink::record is FALLIBLE (Result<(), SequenceGapPublishError>): a durable-write / transport failure is SURFACED to the caller on GapObservation::Gap.published (an Err) so the runtime can fail closed + alert on lost audit evidence, rather than silently swallowing a required log. The SAFETY outcome is publication-independent: observe_tick commits the Stale state (the SRS-MD-004 order-block) BEFORE calling record, so a dropped/failed event still leaves the line stale (fail closed), never a silently-tradable gap (pinned by gap_stale_state_is_fail_closed_when_publication_fails). The concrete durable, retryable, fail-closed PERSISTENCE of the gap audit record (the atp_logging.persistence store already fsyncs + fails closed) and the operator page on a persistence failure are owned by the SRS-LOG-001 / SRS-NOTIF-001 runtime sink that implements this port, NOT the detector. Raised by the /codex:adversarial-review round-2/3 [high]; the concrete sink is deferred to the runtime that binds it, with the port shape (fallible) + safety-independence proven in-process."
+      },
+      {
+        "feature": "SRS-UI-001 / SRS-API-001",
+        "what": "The dashboard heartbeat / staleness pane and the REST/WebSocket HEARTBEAT-channel surfacing of per-line gap state ('visible on the dashboard'). The detector exposes the read accessors (freshness, is_stale, stale_since_ns); binding them to the dashboard/API is the deferred operator-interface half (the HEARTBEAT channel is a contract-only seam in asyncapi)."
+      },
+      {
+        "feature": "SRS-DATA-004 / SRS-EXE-004 (option contract identity)",
+        "what": "observe_tick fails closed on AssetClass::Option (SecurityKey::new returns OptionContractIdentityRequired -> SubscriptionRegistryError::OptionContractUnsupported) so distinct option contracts on one underlying never share a sequence stream. The full option contract identity that would let options be tracked is deferred to the features that own it, matching the subscription registry."
+      }
+    ]
+  },
   "subscription_limit_contract": {
     "requirement": "ERR-4",
     "srs_refs": [
@@ -3337,7 +3431,7 @@
       "kill_switch": ["ACTIVATION"],
       "hot_swap": ["PROMOTION", "DEMOTION"],
       "resource_monitor": ["THRESHOLD_ALERT"],
-      "market_data": ["SUBSCRIPTION_CHANGE"],
+      "market_data": ["SUBSCRIPTION_CHANGE", "SEQUENCE_GAP"],
       "strategy": []
     },
     "required_log_record_fields": [
@@ -3585,7 +3679,7 @@
       },
       {
         "feature": "SRS-MD-003 / SRS-MD-007",
-        "what": "Heartbeat freshness monitoring (SRS-MD-003) and tick sequence-gap detection (SRS-MD-007) that mark a consolidated subscription stale. MarketDataTick.tick_seq is an opaque per-delivery counter for fan-out correlation only; sequence-GAP semantics are deliberately MD-007's concern, not modeled here."
+        "what": "Heartbeat freshness monitoring (SRS-MD-003) and tick sequence-gap detection (SRS-MD-007) that mark a consolidated subscription stale. MarketDataTick.tick_seq doubles as the fan-out correlation id, but its GAP semantics are SRS-MD-007's concern: MD-007 (sequence_gap_contract) defines tick_seq as the UPSTREAM provider sequence and builds SequenceGapDetector on it -- see sequence_gap_contract.tick_sequence_source for the ingestion-adapter producer obligation."
       },
       {
         "feature": "SRS-LOG-001-runtime",

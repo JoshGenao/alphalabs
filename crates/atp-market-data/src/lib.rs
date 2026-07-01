@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use atp_types::{
-    MarketDataTick, OrderErrorCategory, RuntimeService, SecurityKey, SecurityKeyError, StrategyId,
-    StructuredSubscriptionError, SubscriptionChange, SubscriptionChangeEvent,
-    SubscriptionLimitEvent, SubscriptionLimitState, SubscriptionRequest,
+    MarketDataFreshness, MarketDataTick, OrderErrorCategory, RuntimeService, SecurityKey,
+    SecurityKeyError, SequenceGapEvent, StrategyId, StructuredSubscriptionError,
+    SubscriptionChange, SubscriptionChangeEvent, SubscriptionLimitEvent, SubscriptionLimitState,
+    SubscriptionRequest,
 };
 
 #[derive(Debug, Default)]
@@ -454,6 +455,343 @@ impl SubscriptionLineCounter for ConsolidatedSubscriptionRegistry {
         } else {
             SubscriptionLimitState::ExceededLimit
         }
+    }
+}
+
+// --------------------------------------------------------------------------- //
+// Tick-sequence gap detection + per-security staleness (SRS-MD-007)
+// (SyRS SYS-39 / SYS-39a / SYS-70, NFR-P5; StRS SN-2.03 / SN-2.04)
+// --------------------------------------------------------------------------- //
+//
+// SRS-MD-007: "The market-data subscription manager shall detect sequence gaps
+// in IB tick streams and reflect gap state in heartbeat/staleness." The
+// consolidated registry above owns dedup + fan-out + line accounting;
+// `SequenceGapDetector` owns the ORTHOGONAL per-security sequence/staleness
+// state. Both key on the canonical [`SecurityKey`] so a runtime that fans a
+// tick out (registry) also feeds it to the detector (staleness) with one key.
+//
+// PRODUCER CONTRACT: the detector finds a gap as a SKIP in `MarketDataTick
+// .tick_seq`, so gap detection is only meaningful if `tick_seq` is the UPSTREAM
+// PROVIDER sequence — the value the ingestion adapter reads from IB's own feed,
+// where a dropped upstream tick leaves a hole — NOT a counter re-numbered per
+// delivered callback (which would be gap-free by construction and silently
+// defeat detection). Populating `tick_seq` from the provider origin sequence is
+// the ingestion adapter's obligation (deferred SRS-EXE-006 / feed loop; see
+// `sequence_gap_contract`). SRS-MD-001 deliberately deferred `tick_seq`'s gap
+// semantics to SRS-MD-007, which defines them (on `MarketDataTick::tick_seq`).
+//
+// The detector closes the loop the `freshness_contract` deferred to
+// SRS-MD-001 / SRS-MD-007: it produces the [`MarketDataFreshness`] a security's
+// consolidated line is in, in the SAME `atp-types` vocabulary the SRS-MD-004
+// execution gate (`ExecutionEngine::submit_live_order`, via the
+// `MarketDataFreshnessProbe` port) rejects `MARKET_DATA_STALE` on.
+//
+// The runtime adapter that implements `MarketDataFreshnessProbe` from this
+// detector is the deferred orchestrator-layer half (atp-execution must not
+// depend on atp-market-data per SRS-ARCH-002). Note a real seam gap it must
+// close: the CURRENT `MarketDataFreshnessProbe` is SYMBOL-ONLY
+// (`freshness(&self, symbol: &str)`), while the detector is keyed on the full
+// [`SecurityKey`] (symbol + asset class). Faithfully bridging the two requires
+// the port to become security-aware — carry the `asset_class` the
+// `OrderSubmission` already holds, or a `SecurityKey` — which is a deferred
+// change on the SRS-MD-004 / ERR-3 port surface (see
+// `runtime_services.json` `sequence_gap_contract.deferred[]`). Until then an
+// equity and an option sharing a display ticker cannot be distinguished by the
+// symbol-only probe; the detector fails closed on options (they are never
+// tracked, so `freshness` returns `Stale`) and options are rejected upstream,
+// so equities — the only currently-tradable class — are unaffected.
+
+/// Why a concrete [`SequenceGapEventSink`] failed to publish a gap event — a
+/// durable SRS-LOG-001 write error, a dashboard-transport failure, etc. Opaque
+/// to the detector: the detector does not interpret or retry it, it only
+/// surfaces the failure to the caller (on [`GapObservation::Gap::published`])
+/// so the runtime can alert on lost audit evidence. The `reason` is a
+/// human-readable message the concrete sink supplies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SequenceGapPublishError {
+    pub reason: String,
+}
+
+impl SequenceGapPublishError {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for SequenceGapPublishError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "SRS-MD-007: failed to publish sequence-gap event: {}",
+            self.reason
+        )
+    }
+}
+
+impl std::error::Error for SequenceGapPublishError {}
+
+/// Structured-event publication channel for SRS-MD-007 sequence-gap events.
+/// Concrete sinks (deferred to the SRS-LOG-001 runtime) route
+/// `SequenceGapEvent`s to the persistent system log (Source.MARKET_DATA,
+/// event_type `SEQUENCE_GAP`), the dashboard staleness / heartbeat pane, and
+/// the notification dispatcher.
+///
+/// `record` is FALLIBLE. SRS-MD-007 makes logging a first-class acceptance
+/// criterion ("gap events ARE logged via SRS-LOG-001 ... and are visible on the
+/// dashboard"), so a durable-write / transport failure MUST be surfaceable
+/// rather than silently swallowed — the runtime needs to fail closed and alert
+/// on lost audit evidence. The failure is reported to the caller on
+/// [`GapObservation::Gap`]'s `published` field, NOT by aborting the observation:
+/// a gap that could not be logged is still a detected gap, and the line is
+/// still marked stale.
+///
+/// Crucially, the SAFETY outcome does NOT depend on this publication:
+/// [`SequenceGapDetector::observe_tick`] commits the `Stale` state (which is
+/// what blocks SRS-MD-004 order submission) BEFORE it calls `record`, so a sink
+/// that drops, fails, or errors still leaves the gapped line stale and
+/// tradeless — the failure mode is fail-CLOSED, never a silently-tradable gap.
+/// DURABLE, retryable, fail-closed persistence of the audit record (the
+/// `atp_logging.persistence` store already fsyncs and fails closed) plus the
+/// operator page on a persistence failure are the concrete SRS-LOG-001 /
+/// SRS-NOTIF-001 sink's job; this port's contract is only to let those failures
+/// propagate.
+pub trait SequenceGapEventSink {
+    fn record(&self, event: SequenceGapEvent) -> Result<(), SequenceGapPublishError>;
+}
+
+/// Classification of what observing one tick did to a security's sequence
+/// stream. Returned by [`SequenceGapDetector::observe_tick`] so a caller can
+/// react (log, alert, unblock) without re-deriving the transition.
+///
+/// Not `Copy`: the `Gap` variant carries the sink's publish `Result`, whose
+/// error is not `Copy`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GapObservation {
+    /// First tick after start OR an operator resync — the sequence baseline is
+    /// established at the observed value. No gap is possible on a baseline
+    /// (there is no prior sequence to compare against), so the line is Fresh.
+    Baseline,
+    /// Monotonic in-sequence tick (`observed == last + 1`). `recovered` is
+    /// true iff this tick satisfied the SRS-MD-007 recovery condition — the
+    /// line was gap-stale and a fresh tick with a monotonic sequence cleared
+    /// it back to Fresh.
+    InSequence { recovered: bool },
+    /// A forward skip (`observed > last + 1`): one or more ticks are missing.
+    /// The line enters (or stays) stale — always, BEFORE publication, so the
+    /// SRS-MD-004 order-block is fail-closed regardless of the sink — and a
+    /// `SequenceGapEvent` was handed to the sink. `published` carries the
+    /// sink's result: `Ok(())` on success, `Err(..)` if the audit event could
+    /// not be logged / surfaced (the line is still stale; the runtime should
+    /// alert on the lost audit evidence).
+    Gap {
+        expected: u64,
+        observed: u64,
+        published: Result<(), SequenceGapPublishError>,
+    },
+    /// A duplicate or backwards sequence (`observed <= last`): NOT a gap and
+    /// NOT a recovery (recovery requires a monotonic advance). The staleness
+    /// state is left exactly as it was — a replayed / late tick can neither
+    /// clear a real gap nor open a new one.
+    NonMonotonic { last: u64, observed: u64 },
+}
+
+/// Outcome of an operator-acknowledged resync (the second SRS-MD-007 recovery
+/// condition).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResyncOutcome {
+    /// The line was tracked; it is now Fresh and awaiting a new baseline.
+    Acknowledged,
+    /// The security is not tracked (no tick ever observed) — nothing to
+    /// resync. Fails safe: an operator cannot fabricate a Fresh state for a
+    /// line that was never subscribed.
+    NotTracked,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SecurityStreamState {
+    /// `None` until the first tick after start / operator resync establishes
+    /// the baseline. A reconnect can legitimately jump the sequence, so the
+    /// next tick re-baselines rather than reporting a false gap.
+    last_sequence: Option<u64>,
+    freshness: MarketDataFreshness,
+    /// Epoch-ns the line went gap-stale; `None` while Fresh. Lets a runtime
+    /// freshness-probe adapter derive `staleness_seconds` against its own
+    /// clock without the detector owning wall-clock I/O.
+    stale_since_ns: Option<i64>,
+}
+
+impl SecurityStreamState {
+    fn fresh_awaiting_baseline() -> Self {
+        Self {
+            last_sequence: None,
+            freshness: MarketDataFreshness::Fresh,
+            stale_since_ns: None,
+        }
+    }
+}
+
+/// SRS-MD-007 tick-sequence gap detector.
+///
+/// Tracks, per canonical [`SecurityKey`], the last observed tick sequence and
+/// the resulting [`MarketDataFreshness`] of that security's consolidated
+/// upstream line. `observe_tick` classifies each delivery:
+///
+/// * `observed == last + 1` — in-sequence; if the line was gap-stale this
+///   fresh monotonic tick RECOVERS it to Fresh (recovery condition #1).
+/// * `observed > last + 1` — a GAP: missing ticks. Publishes a
+///   `SequenceGapEvent` (symbol, expected, observed, timestamp) and marks the
+///   line Stale.
+/// * `observed <= last` — a duplicate / backwards tick: neither a gap nor a
+///   recovery; state unchanged.
+///
+/// The other recovery path is [`acknowledge_resync`](Self::acknowledge_resync)
+/// (recovery condition #2). `freshness` fails CLOSED: a security never observed
+/// returns `Stale` so the SRS-MD-004 bridge blocks orders on a silent line.
+///
+/// The detector is single-threaded and models the structural sequence/
+/// staleness contract; the async feed loop, wall clock, `MarketDataFreshness
+/// Probe` bridge to `atp-execution`, and the SRS-LOG-001 / dashboard sinks are
+/// the deferred runtime (see `runtime_services.json`
+/// `sequence_gap_contract.deferred[]`).
+#[derive(Debug, Default)]
+pub struct SequenceGapDetector {
+    securities: BTreeMap<SecurityKey, SecurityStreamState>,
+}
+
+impl SequenceGapDetector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Observe one delivered tick for its security, updating the sequence /
+    /// staleness state and publishing a `SequenceGapEvent` through `events`
+    /// when (and only when) a forward gap is detected. `observed_at_ns` is the
+    /// caller's clock reading (epoch nanoseconds) stamped onto any gap event —
+    /// injected rather than read here so the detector stays free of wall-clock
+    /// I/O and every observation is deterministically reproducible.
+    ///
+    /// Fails closed on an uncanonicalizable tick (empty symbol, or an option
+    /// whose full contract identity is not yet modeled) with the same
+    /// [`SubscriptionRegistryError`] the registry's `fan_out` returns — a tick
+    /// that cannot name a security can neither advance a sequence nor open a
+    /// gap.
+    pub fn observe_tick<S: SequenceGapEventSink>(
+        &mut self,
+        tick: &MarketDataTick,
+        observed_at_ns: i64,
+        events: &S,
+    ) -> Result<GapObservation, SubscriptionRegistryError> {
+        let key = tick.security_key()?;
+        let observed = tick.tick_seq;
+        let state = self
+            .securities
+            .entry(key.clone())
+            .or_insert_with(SecurityStreamState::fresh_awaiting_baseline);
+
+        let Some(last) = state.last_sequence else {
+            // First tick after start / operator resync → establish baseline.
+            state.last_sequence = Some(observed);
+            state.freshness = MarketDataFreshness::Fresh;
+            state.stale_since_ns = None;
+            return Ok(GapObservation::Baseline);
+        };
+
+        // `checked_sub` classifies the delivery without any add that could
+        // overflow at u64::MAX: None/Some(0) => observed <= last (non-
+        // monotonic), Some(1) => in-sequence, Some(>=2) => a forward gap.
+        match observed.checked_sub(last) {
+            None | Some(0) => Ok(GapObservation::NonMonotonic { last, observed }),
+            Some(1) => {
+                let recovered = state.freshness.is_stale();
+                state.last_sequence = Some(observed);
+                state.freshness = MarketDataFreshness::Fresh;
+                state.stale_since_ns = None;
+                Ok(GapObservation::InSequence { recovered })
+            }
+            Some(_) => {
+                // observed >= last + 2, so `last + 1` cannot overflow.
+                let expected = last + 1;
+                // Commit the stale state — the SRS-MD-004 order-block
+                // mechanism — BEFORE publishing, so even a failing / dropping
+                // sink leaves the gapped line `Stale` (fail closed), never
+                // silently tradable.
+                //
+                // `stale_since_ns` records when the line FIRST went stale
+                // (Fresh -> Stale). Preserve it across REPEATED gaps on an
+                // already-stale line so the heartbeat / dashboard staleness age
+                // reflects the ORIGINAL gap onset, not the latest gap.
+                let was_fresh = !state.freshness.is_stale();
+                state.last_sequence = Some(observed);
+                state.freshness = MarketDataFreshness::Stale;
+                if was_fresh {
+                    state.stale_since_ns = Some(observed_at_ns);
+                }
+                let published = events.record(SequenceGapEvent {
+                    symbol: key.symbol().to_string(),
+                    asset_class: key.asset_class(),
+                    expected_sequence: expected,
+                    observed_sequence: observed,
+                    observed_at_ns,
+                });
+                Ok(GapObservation::Gap {
+                    expected,
+                    observed,
+                    published,
+                })
+            }
+        }
+    }
+
+    /// SRS-MD-007 recovery condition #2 — operator-acknowledged resync. After
+    /// an operator confirms the feed for `key` is resynced, the line returns to
+    /// Fresh and its sequence baseline is FORGOTTEN: the next observed tick
+    /// re-establishes the baseline at whatever sequence the resynced feed
+    /// resumes at, so a legitimate post-reconnect jump is not reported as a new
+    /// gap. Returns [`ResyncOutcome::NotTracked`] for an unsubscribed security
+    /// (fails safe — no Fresh state is fabricated for a line never observed).
+    pub fn acknowledge_resync(&mut self, key: &SecurityKey) -> ResyncOutcome {
+        match self.securities.get_mut(key) {
+            Some(state) => {
+                state.last_sequence = None;
+                state.freshness = MarketDataFreshness::Fresh;
+                state.stale_since_ns = None;
+                ResyncOutcome::Acknowledged
+            }
+            None => ResyncOutcome::NotTracked,
+        }
+    }
+
+    /// SRS-MD-004 freshness view of a security's consolidated line. Fails
+    /// CLOSED: a security the detector has never observed a tick for returns
+    /// [`MarketDataFreshness::Stale`] (no fresh data ⇒ not tradable), so the
+    /// `MarketDataFreshnessProbe` adapter that bridges this detector to the
+    /// execution gate blocks orders on an unsubscribed / silent line rather
+    /// than admitting them.
+    pub fn freshness(&self, key: &SecurityKey) -> MarketDataFreshness {
+        self.securities
+            .get(key)
+            .map_or(MarketDataFreshness::Stale, |state| state.freshness)
+    }
+
+    /// Convenience predicate over [`freshness`](Self::freshness).
+    pub fn is_stale(&self, key: &SecurityKey) -> bool {
+        self.freshness(key).is_stale()
+    }
+
+    /// Epoch-ns the security's line went gap-stale, or `None` while Fresh /
+    /// untracked. A runtime freshness-probe adapter reads this against its own
+    /// clock to compute `MarketDataFreshnessProbe::staleness_seconds`.
+    pub fn stale_since_ns(&self, key: &SecurityKey) -> Option<i64> {
+        self.securities
+            .get(key)
+            .and_then(|state| state.stale_since_ns)
+    }
+
+    /// Whether the detector has observed at least one tick for `key`.
+    pub fn is_tracked(&self, key: &SecurityKey) -> bool {
+        self.securities.contains_key(key)
     }
 }
 
@@ -986,5 +1324,598 @@ mod tests {
         assert_eq!(registry.distinct_subscriptions(), 1);
         assert!(sink.events.borrow()[0].change.changes_line_count());
         assert_eq!(sink.events.borrow()[0].asset_class, AssetClass::Equity);
+    }
+
+    // ----------------------------------------------------------------- //
+    // SRS-MD-007 tick-sequence gap detection + staleness
+    // ----------------------------------------------------------------- //
+
+    #[derive(Default)]
+    struct GapSinkSpy {
+        events: RefCell<Vec<SequenceGapEvent>>,
+    }
+
+    impl SequenceGapEventSink for GapSinkSpy {
+        fn record(&self, event: SequenceGapEvent) -> Result<(), SequenceGapPublishError> {
+            self.events.borrow_mut().push(event);
+            Ok(())
+        }
+    }
+
+    /// Sink that panics if consulted — proves a non-gap observation publishes
+    /// nothing.
+    struct ForbiddenGapSink;
+
+    impl SequenceGapEventSink for ForbiddenGapSink {
+        fn record(&self, _event: SequenceGapEvent) -> Result<(), SequenceGapPublishError> {
+            panic!("SRS-MD-007: a non-gap observation must not publish a SequenceGapEvent");
+        }
+    }
+
+    /// Sink that FAILS every publication — models a concrete SRS-LOG-001 /
+    /// dashboard sink whose durable write or transport failed. Used to prove
+    /// the stale (order-blocking) state does not depend on successful
+    /// publication and that the failure is surfaced to the caller.
+    struct FailingGapSink;
+
+    impl SequenceGapEventSink for FailingGapSink {
+        fn record(&self, _event: SequenceGapEvent) -> Result<(), SequenceGapPublishError> {
+            Err(SequenceGapPublishError::new("durable log write failed"))
+        }
+    }
+
+    const T0: i64 = 1_700_000_000_000_000_000; // fixed epoch-ns for determinism
+
+    #[test]
+    fn first_tick_establishes_baseline_and_is_fresh() {
+        // A security's first tick has no prior sequence to compare against, so
+        // it establishes the baseline — never a gap — and the line is Fresh.
+        let mut detector = SequenceGapDetector::new();
+        assert_eq!(
+            detector
+                .observe_tick(&tick("AAPL", 5), T0, &ForbiddenGapSink)
+                .unwrap(),
+            GapObservation::Baseline
+        );
+        assert_eq!(
+            detector.freshness(&eq_key("AAPL")),
+            MarketDataFreshness::Fresh
+        );
+        assert!(detector.is_tracked(&eq_key("AAPL")));
+        assert_eq!(detector.stale_since_ns(&eq_key("AAPL")), None);
+    }
+
+    #[test]
+    fn forward_skip_is_a_gap_that_marks_the_line_stale() {
+        // SRS-MD-007 core AC: an observed sequence that skips ahead of the
+        // expected next value is a gap — logged with symbol / expected /
+        // observed / timestamp — and the affected line enters the stale state.
+        let mut detector = SequenceGapDetector::new();
+        let sink = GapSinkSpy::default();
+        detector.observe_tick(&tick("AAPL", 5), T0, &sink).unwrap();
+        // Next expected is 6; 8 arrives → 6 and 7 are missing.
+        assert_eq!(
+            detector
+                .observe_tick(&tick("AAPL", 8), T0 + 1, &sink)
+                .unwrap(),
+            GapObservation::Gap {
+                expected: 6,
+                observed: 8,
+                published: Ok(())
+            }
+        );
+        assert_eq!(
+            detector.freshness(&eq_key("AAPL")),
+            MarketDataFreshness::Stale
+        );
+        assert!(detector.is_stale(&eq_key("AAPL")));
+        assert_eq!(detector.stale_since_ns(&eq_key("AAPL")), Some(T0 + 1));
+
+        let events = sink.events.borrow();
+        assert_eq!(events.len(), 1, "exactly one gap event per detected gap");
+        let event = &events[0];
+        assert_eq!(event.symbol, "AAPL");
+        assert_eq!(event.asset_class, AssetClass::Equity);
+        assert_eq!(event.expected_sequence, 6);
+        assert_eq!(event.observed_sequence, 8);
+        assert_eq!(event.observed_at_ns, T0 + 1);
+    }
+
+    #[test]
+    fn monotonic_fresh_tick_recovers_from_a_gap() {
+        // SRS-MD-007 recovery condition #1: a fresh tick with a monotonic
+        // sequence (the next expected value) clears the stale state.
+        let mut detector = SequenceGapDetector::new();
+        let sink = GapSinkSpy::default();
+        detector.observe_tick(&tick("AAPL", 5), T0, &sink).unwrap();
+        detector
+            .observe_tick(&tick("AAPL", 8), T0 + 1, &sink)
+            .unwrap();
+        assert!(detector.is_stale(&eq_key("AAPL")));
+
+        // 9 == 8 + 1 → in-sequence monotonic advance → recover. No new event.
+        assert_eq!(
+            detector
+                .observe_tick(&tick("AAPL", 9), T0 + 2, &ForbiddenGapSink)
+                .unwrap(),
+            GapObservation::InSequence { recovered: true }
+        );
+        assert_eq!(
+            detector.freshness(&eq_key("AAPL")),
+            MarketDataFreshness::Fresh
+        );
+        assert_eq!(detector.stale_since_ns(&eq_key("AAPL")), None);
+        assert_eq!(sink.events.borrow().len(), 1, "recovery adds no gap event");
+    }
+
+    #[test]
+    fn in_sequence_ticks_on_a_healthy_line_stay_fresh() {
+        // Negative control: contiguous ticks never publish and never go stale.
+        let mut detector = SequenceGapDetector::new();
+        detector
+            .observe_tick(&tick("AAPL", 1), T0, &ForbiddenGapSink)
+            .unwrap();
+        for seq in 2..=10 {
+            assert_eq!(
+                detector
+                    .observe_tick(&tick("AAPL", seq), T0, &ForbiddenGapSink)
+                    .unwrap(),
+                GapObservation::InSequence { recovered: false }
+            );
+        }
+        assert_eq!(
+            detector.freshness(&eq_key("AAPL")),
+            MarketDataFreshness::Fresh
+        );
+    }
+
+    #[test]
+    fn duplicate_or_backwards_tick_is_a_non_monotonic_noop() {
+        // A replayed (duplicate) or out-of-order (backwards) tick is neither a
+        // gap nor a recovery: it must NOT publish and must NOT change staleness.
+        let mut detector = SequenceGapDetector::new();
+        detector
+            .observe_tick(&tick("AAPL", 5), T0, &ForbiddenGapSink)
+            .unwrap();
+        // Duplicate of the last sequence.
+        assert_eq!(
+            detector
+                .observe_tick(&tick("AAPL", 5), T0, &ForbiddenGapSink)
+                .unwrap(),
+            GapObservation::NonMonotonic {
+                last: 5,
+                observed: 5
+            }
+        );
+        // Backwards.
+        assert_eq!(
+            detector
+                .observe_tick(&tick("AAPL", 3), T0, &ForbiddenGapSink)
+                .unwrap(),
+            GapObservation::NonMonotonic {
+                last: 5,
+                observed: 3
+            }
+        );
+        assert_eq!(
+            detector.freshness(&eq_key("AAPL")),
+            MarketDataFreshness::Fresh
+        );
+    }
+
+    #[test]
+    fn a_stale_line_is_not_recovered_by_a_duplicate_tick() {
+        // Safety: only a MONOTONIC fresh tick (or operator resync) recovers a
+        // gap-stale line. A duplicate / backwards tick while stale must leave
+        // the line stale — otherwise a replayed tick could silently unblock
+        // trading on a line that is still missing data.
+        let mut detector = SequenceGapDetector::new();
+        let sink = GapSinkSpy::default();
+        detector.observe_tick(&tick("AAPL", 5), T0, &sink).unwrap();
+        detector
+            .observe_tick(&tick("AAPL", 9), T0 + 1, &sink)
+            .unwrap();
+        assert!(detector.is_stale(&eq_key("AAPL")));
+        // A duplicate of the gap tick, and a backwards tick — neither recovers.
+        detector
+            .observe_tick(&tick("AAPL", 9), T0 + 2, &ForbiddenGapSink)
+            .unwrap();
+        detector
+            .observe_tick(&tick("AAPL", 4), T0 + 3, &ForbiddenGapSink)
+            .unwrap();
+        assert!(
+            detector.is_stale(&eq_key("AAPL")),
+            "a duplicate / backwards tick must not clear a real gap"
+        );
+    }
+
+    #[test]
+    fn operator_resync_recovers_and_rebaselines_at_a_jumped_sequence() {
+        // SRS-MD-007 recovery condition #2: an operator-acknowledged resync
+        // returns the line to Fresh and forgets the baseline, so the resynced
+        // feed can resume at ANY sequence (e.g. after an IB reconnect) without
+        // the first post-resync tick being mis-reported as a fresh gap.
+        let mut detector = SequenceGapDetector::new();
+        let sink = GapSinkSpy::default();
+        detector.observe_tick(&tick("AAPL", 5), T0, &sink).unwrap();
+        detector
+            .observe_tick(&tick("AAPL", 8), T0 + 1, &sink)
+            .unwrap();
+        assert!(detector.is_stale(&eq_key("AAPL")));
+
+        assert_eq!(
+            detector.acknowledge_resync(&eq_key("AAPL")),
+            ResyncOutcome::Acknowledged
+        );
+        assert_eq!(
+            detector.freshness(&eq_key("AAPL")),
+            MarketDataFreshness::Fresh
+        );
+        assert_eq!(detector.stale_since_ns(&eq_key("AAPL")), None);
+
+        // Feed resumes at a far-jumped sequence → baseline, NOT a gap.
+        assert_eq!(
+            detector
+                .observe_tick(&tick("AAPL", 100), T0 + 2, &ForbiddenGapSink)
+                .unwrap(),
+            GapObservation::Baseline
+        );
+        assert_eq!(
+            detector.freshness(&eq_key("AAPL")),
+            MarketDataFreshness::Fresh
+        );
+        // Only the original gap event was ever published.
+        assert_eq!(sink.events.borrow().len(), 1);
+    }
+
+    #[test]
+    fn resync_of_an_untracked_security_fails_safe() {
+        // An operator cannot resync a line that was never subscribed: the
+        // outcome is NotTracked and the fail-closed freshness stays Stale.
+        let mut detector = SequenceGapDetector::new();
+        assert_eq!(
+            detector.acknowledge_resync(&eq_key("AAPL")),
+            ResyncOutcome::NotTracked
+        );
+        assert_eq!(
+            detector.freshness(&eq_key("AAPL")),
+            MarketDataFreshness::Stale
+        );
+        assert!(!detector.is_tracked(&eq_key("AAPL")));
+    }
+
+    #[test]
+    fn unobserved_security_is_stale_fail_closed() {
+        // SRS-MD-004 fail-closed default: a security the detector has never
+        // seen a tick for is Stale, so the freshness bridge blocks orders on a
+        // silent / unsubscribed line rather than admitting them.
+        let detector = SequenceGapDetector::new();
+        assert_eq!(
+            detector.freshness(&eq_key("NFLX")),
+            MarketDataFreshness::Stale
+        );
+        assert!(detector.is_stale(&eq_key("NFLX")));
+        assert_eq!(detector.stale_since_ns(&eq_key("NFLX")), None);
+    }
+
+    #[test]
+    fn each_gap_publishes_its_own_event_and_the_line_stays_stale() {
+        // Two successive forward skips are two distinct loss events; each is
+        // logged with its own expected/observed and the line remains stale
+        // until a real recovery.
+        let mut detector = SequenceGapDetector::new();
+        let sink = GapSinkSpy::default();
+        detector.observe_tick(&tick("AAPL", 5), T0, &sink).unwrap();
+        detector
+            .observe_tick(&tick("AAPL", 8), T0 + 1, &sink)
+            .unwrap(); // gap 6..8
+        detector
+            .observe_tick(&tick("AAPL", 20), T0 + 2, &sink)
+            .unwrap(); // gap 9..20
+        let events = sink.events.borrow();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].expected_sequence, 6);
+        assert_eq!(events[0].observed_sequence, 8);
+        assert_eq!(events[1].expected_sequence, 9);
+        assert_eq!(events[1].observed_sequence, 20);
+        assert!(detector.is_stale(&eq_key("AAPL")));
+    }
+
+    #[test]
+    fn gap_stale_state_is_fail_closed_when_publication_fails() {
+        // Safety invariant: the SRS-MD-004 order-block (the line going Stale) is
+        // committed independently of the gap event's publication. When the sink
+        // FAILS the publication (a failed durable SRS-LOG-001 write / dashboard
+        // transport), the gapped line is still Stale — fail CLOSED, never a
+        // silently-tradable gap — AND the failure is surfaced to the caller on
+        // `published` so the runtime can alert on the lost audit evidence.
+        let mut detector = SequenceGapDetector::new();
+        detector
+            .observe_tick(&tick("AAPL", 1), T0, &FailingGapSink)
+            .unwrap();
+        let observation = detector
+            .observe_tick(&tick("AAPL", 6), T0 + 1, &FailingGapSink)
+            .unwrap();
+        match observation {
+            GapObservation::Gap {
+                expected,
+                observed,
+                published,
+            } => {
+                assert_eq!(expected, 2);
+                assert_eq!(observed, 6);
+                assert!(
+                    published.is_err(),
+                    "a failed publication must surface Err to the caller"
+                );
+            }
+            other => panic!("expected a Gap, got {other:?}"),
+        }
+        assert_eq!(
+            detector.freshness(&eq_key("AAPL")),
+            MarketDataFreshness::Stale,
+            "a failed gap-event publication must still leave the line stale (fail closed)"
+        );
+        assert_eq!(detector.stale_since_ns(&eq_key("AAPL")), Some(T0 + 1));
+    }
+
+    #[test]
+    fn repeated_gaps_preserve_the_original_stale_onset_time() {
+        // stale_since_ns must record when the line FIRST went stale, not the
+        // latest gap. A second gap on an already-stale line must NOT reset the
+        // staleness age (which would underreport it on the heartbeat/dashboard).
+        let mut detector = SequenceGapDetector::new();
+        let sink = GapSinkSpy::default();
+        detector.observe_tick(&tick("AAPL", 5), T0, &sink).unwrap();
+        // First gap → stale, onset recorded at T0 + 1.
+        detector
+            .observe_tick(&tick("AAPL", 8), T0 + 1, &sink)
+            .unwrap();
+        assert_eq!(detector.stale_since_ns(&eq_key("AAPL")), Some(T0 + 1));
+        // Second gap on the still-stale line at a LATER time must not move it.
+        detector
+            .observe_tick(&tick("AAPL", 20), T0 + 500, &sink)
+            .unwrap();
+        assert_eq!(
+            detector.stale_since_ns(&eq_key("AAPL")),
+            Some(T0 + 1),
+            "a repeated gap must preserve the original stale-onset time"
+        );
+        // A monotonic recovery clears it; the next gap starts a fresh onset.
+        detector
+            .observe_tick(&tick("AAPL", 21), T0 + 600, &sink)
+            .unwrap();
+        assert_eq!(detector.stale_since_ns(&eq_key("AAPL")), None);
+        detector
+            .observe_tick(&tick("AAPL", 30), T0 + 700, &sink)
+            .unwrap();
+        assert_eq!(
+            detector.stale_since_ns(&eq_key("AAPL")),
+            Some(T0 + 700),
+            "after recovery a new gap records a fresh onset time"
+        );
+    }
+
+    #[test]
+    fn producer_contract_a_delivery_renumbered_stream_hides_gaps() {
+        // PRODUCER CONTRACT (SRS-MD-007): the detector finds gaps as SKIPS in
+        // tick_seq, so it only works if tick_seq is the UPSTREAM provider
+        // sequence. This test documents the failure mode the producer must
+        // avoid: if the ingestion adapter re-numbered ticks 1,2,3,4 per
+        // DELIVERED callback (dropping upstream ticks silently), the stream is
+        // gap-free by construction and NO gap is ever detected — even though
+        // upstream ticks were lost. Contrast with the upstream-sequence stream
+        // below, where the same drop leaves a hole and IS detected.
+        let mut renumbered = SequenceGapDetector::new();
+        let sink = GapSinkSpy::default();
+        // Contiguous delivery counter (what a WRONG producer would supply).
+        for seq in 1..=5 {
+            renumbered
+                .observe_tick(&tick("AAPL", seq), T0 + seq as i64, &sink)
+                .unwrap();
+        }
+        assert!(
+            !renumbered.is_stale(&eq_key("AAPL")),
+            "a contiguous delivery-renumbered stream never gaps — the drop is hidden"
+        );
+        assert!(sink.events.borrow().is_empty());
+
+        // Upstream provider sequence with the same lost tick (4 is missing).
+        let mut upstream = SequenceGapDetector::new();
+        let sink2 = GapSinkSpy::default();
+        upstream.observe_tick(&tick("AAPL", 1), T0, &sink2).unwrap();
+        upstream
+            .observe_tick(&tick("AAPL", 2), T0 + 1, &sink2)
+            .unwrap();
+        upstream
+            .observe_tick(&tick("AAPL", 3), T0 + 2, &sink2)
+            .unwrap();
+        // Upstream 4 dropped; 5 arrives → a detectable gap.
+        upstream
+            .observe_tick(&tick("AAPL", 5), T0 + 3, &sink2)
+            .unwrap();
+        assert!(
+            upstream.is_stale(&eq_key("AAPL")),
+            "an upstream provider sequence exposes the drop as a gap"
+        );
+        assert_eq!(sink2.events.borrow().len(), 1);
+    }
+
+    #[test]
+    fn gaps_are_isolated_per_security() {
+        // A gap on one security's line never marks another security's line
+        // stale — staleness is per canonical SecurityKey.
+        let mut detector = SequenceGapDetector::new();
+        let sink = GapSinkSpy::default();
+        detector.observe_tick(&tick("AAPL", 1), T0, &sink).unwrap();
+        detector.observe_tick(&tick("MSFT", 1), T0, &sink).unwrap();
+        // Gap on AAPL only.
+        detector
+            .observe_tick(&tick("AAPL", 5), T0 + 1, &sink)
+            .unwrap();
+        // MSFT continues in-sequence.
+        detector
+            .observe_tick(&tick("MSFT", 2), T0 + 1, &sink)
+            .unwrap();
+        assert_eq!(
+            detector.freshness(&eq_key("AAPL")),
+            MarketDataFreshness::Stale
+        );
+        assert_eq!(
+            detector.freshness(&eq_key("MSFT")),
+            MarketDataFreshness::Fresh
+        );
+        assert_eq!(sink.events.borrow().len(), 1);
+        assert_eq!(sink.events.borrow()[0].symbol, "AAPL");
+    }
+
+    #[test]
+    fn case_and_whitespace_variants_share_one_sequence_stream() {
+        // The detector keys on the canonical SecurityKey, so "AAPL" and
+        // " aapl " are ONE line — a gap seen under either spelling marks the
+        // same stale line (consistent with the registry's dedup).
+        let mut detector = SequenceGapDetector::new();
+        let sink = GapSinkSpy::default();
+        detector.observe_tick(&tick("AAPL", 5), T0, &sink).unwrap();
+        assert_eq!(
+            detector
+                .observe_tick(&tick("  aapl ", 9), T0 + 1, &sink)
+                .unwrap(),
+            GapObservation::Gap {
+                expected: 6,
+                observed: 9,
+                published: Ok(())
+            }
+        );
+        assert_eq!(
+            detector.freshness(&eq_key("AAPL")),
+            MarketDataFreshness::Stale
+        );
+    }
+
+    #[test]
+    fn uncanonicalizable_ticks_fail_closed() {
+        // An empty-symbol or option tick cannot name a security — it can
+        // neither advance a sequence nor open a gap. The detector rejects it
+        // with the same error taxonomy the registry uses and registers nothing.
+        let mut detector = SequenceGapDetector::new();
+        assert_eq!(
+            detector.observe_tick(
+                &MarketDataTick {
+                    symbol: String::new(),
+                    asset_class: AssetClass::Equity,
+                    tick_seq: 1,
+                },
+                T0,
+                &ForbiddenGapSink,
+            ),
+            Err(SubscriptionRegistryError::EmptySymbol)
+        );
+        assert_eq!(
+            detector.observe_tick(
+                &MarketDataTick {
+                    symbol: "AAPL".to_string(),
+                    asset_class: AssetClass::Option,
+                    tick_seq: 1,
+                },
+                T0,
+                &ForbiddenGapSink,
+            ),
+            Err(SubscriptionRegistryError::OptionContractUnsupported)
+        );
+        assert!(!detector.is_tracked(&eq_key("AAPL")));
+    }
+
+    #[test]
+    fn generated_streams_keep_the_staleness_invariant() {
+        // Property sweep (seeded LCG, zero-dep): drive many randomized tick
+        // streams and assert the core invariants hold on every step —
+        //   * a forward skip publishes exactly one event and goes stale;
+        //   * an in-sequence tick recovers a stale line and never publishes;
+        //   * a duplicate/backwards tick changes neither event count nor state;
+        //   * the published event's (expected, observed) always brackets a
+        //     real gap (expected < observed, expected == last + 1).
+        let mut lcg: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || {
+            lcg = lcg
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            lcg >> 33
+        };
+        for _ in 0..400 {
+            let mut detector = SequenceGapDetector::new();
+            let sink = GapSinkSpy::default();
+            let mut last: Option<u64> = None;
+            let mut expected_events = 0usize;
+            let mut expect_stale = false;
+            let steps = 5 + (next() % 40);
+            for step in 0..steps {
+                // Choose the next sequence relative to `last`, mixing forward
+                // skips, contiguous advances, duplicates and regressions.
+                let seq = match last {
+                    None => next() % 1000,
+                    Some(l) => {
+                        let roll = next() % 4;
+                        match roll {
+                            0 => l + 1,                              // in-sequence
+                            1 => l + 2 + (next() % 50),              // forward gap
+                            2 => l,                                  // duplicate
+                            _ => l.saturating_sub(1 + (next() % 5)), // backwards
+                        }
+                    }
+                };
+                let before = sink.events.borrow().len();
+                let obs = detector
+                    .observe_tick(&tick("AAPL", seq), T0 + step as i64, &sink)
+                    .unwrap();
+                let after = sink.events.borrow().len();
+                // Borrow `obs` (GapObservation is no longer Copy — Gap carries
+                // the sink's publish Result).
+                match &obs {
+                    GapObservation::Baseline => {
+                        assert_eq!(after, before, "baseline must not publish");
+                        expect_stale = false;
+                    }
+                    GapObservation::InSequence { recovered } => {
+                        assert_eq!(after, before, "in-sequence must not publish");
+                        assert_eq!(*recovered, expect_stale, "recovered iff was stale");
+                        expect_stale = false;
+                    }
+                    GapObservation::Gap {
+                        expected,
+                        observed,
+                        published,
+                    } => {
+                        assert_eq!(after, before + 1, "a gap publishes exactly one event");
+                        assert_eq!(*expected, last.unwrap() + 1);
+                        assert!(*observed > *expected, "a gap is a strict forward skip");
+                        assert!(published.is_ok(), "the spy sink always publishes Ok");
+                        let ev = sink.events.borrow();
+                        let ev = ev.last().unwrap();
+                        assert_eq!(ev.expected_sequence, *expected);
+                        assert_eq!(ev.observed_sequence, *observed);
+                        expected_events += 1;
+                        expect_stale = true;
+                    }
+                    GapObservation::NonMonotonic { .. } => {
+                        assert_eq!(after, before, "non-monotonic must not publish");
+                        // staleness unchanged: expect_stale carries over.
+                    }
+                }
+                // The observable freshness always agrees with the tracked
+                // expectation.
+                assert_eq!(
+                    detector.is_stale(&eq_key("AAPL")),
+                    expect_stale,
+                    "freshness must track the last gap/recovery"
+                );
+                // Advance our shadow `last` exactly as the detector does.
+                last = match &obs {
+                    GapObservation::NonMonotonic { .. } => last,
+                    _ => Some(seq),
+                };
+            }
+            assert_eq!(sink.events.borrow().len(), expected_events);
+        }
     }
 }

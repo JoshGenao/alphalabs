@@ -74,7 +74,7 @@ trail).
 | `KILL_SWITCH` | `ACTIVATION` |
 | `HOT_SWAP` | `PROMOTION`, `DEMOTION` |
 | `RESOURCE_MONITOR` | `THRESHOLD_ALERT` |
-| `MARKET_DATA` | `SUBSCRIPTION_CHANGE` |
+| `MARKET_DATA` | `SUBSCRIPTION_CHANGE`, `SEQUENCE_GAP` |
 
 `STRATEGY_SOURCES` is `{Source.STRATEGY}` only. Strategy-class event types
 are not enforced — the AC explicitly leaves strategy event naming to the

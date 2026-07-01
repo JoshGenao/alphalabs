@@ -398,10 +398,13 @@ submission once connectivity is confirmed:
   condition, not a transport / vendor one.
 - `MarketDataFreshnessProbe { freshness, staleness_seconds }` is the
   port the execution engine consults at every Live + Connected
-  submission. The implementation (later: the market-data subscription
-  manager) owns the heartbeat timestamps, sequence-gap tracking, and
-  the configurable threshold. Keeping the port at the execution layer
-  preserves the SRS-ARCH-002 dependency direction.
+  submission. Its **sequence-gap** staleness source is now built —
+  `SequenceGapDetector` (`sequence_gap_contract`, SRS-MD-007) owns the
+  per-`SecurityKey` tick-sequence tracking and reports the same
+  `MarketDataFreshness`; the deferred probe adapter (orchestrator layer,
+  with the SRS-MD-003 time-based heartbeat timestamps and the
+  configurable threshold) reads it. Keeping the port at the execution
+  layer preserves the SRS-ARCH-002 dependency direction.
 - `StaleDataEventSink { record }` is the publication channel for the
   structured event; concrete sinks route it to logs (SRS-LOG-001), the
   dashboard WebSocket, and the notification dispatcher.
@@ -444,12 +447,30 @@ simulation engine in `crates/atp-simulation/src/lib.rs` currently has
 no submission entry point; the next sub-task will introduce
 `InternalSimulationEngine::submit_simulated_order` with the same
 freshness port and event sink, completing the SRS-MD-004 paper leg.
-The production market-data subscription manager (SRS-MD-007 sequence
-gap detection, SRS-MD-003 continuous heartbeat monitoring) is a future
-caller that will implement `MarketDataFreshnessProbe` and publish
-through `StaleDataEventSink`. The dashboard WebSocket subscription
-that surfaces `StaleDataEvent` to operators arrives with UI-*
-features.
+The production market-data subscription manager's SRS-MD-007
+**sequence-gap detection** half is now built in-process
+(`sequence_gap_contract`; `SequenceGapDetector` in
+`crates/atp-market-data/src/lib.rs`): it tracks per-`SecurityKey` tick
+sequences, publishes a `SequenceGapEvent` and marks the line
+`MarketDataFreshness::Stale` on a forward skip, and recovers on a fresh
+monotonic tick or an operator-acknowledged resync. The `Stale` it
+reports is the SAME `atp-types` enum this freshness gate switches on.
+Wiring the detector to that gate is the deferred runtime adapter
+(orchestrator layer, with the async feed loop; `atp-execution` must not
+depend on `atp-market-data`), and it must close a real seam gap: the
+CURRENT `MarketDataFreshnessProbe` is **symbol-only**
+(`freshness(&self, symbol: &str)`) while the detector is keyed on the
+full `SecurityKey` (symbol + asset class). Making the port
+security-aware — carrying the `asset_class` `OrderSubmission` already
+holds, or a `SecurityKey` — is a deferred change on the SRS-MD-004 /
+ERR-3 port surface (`sequence_gap_contract.deferred[]`); until then the
+detector fails closed on options and options are rejected upstream, so
+equities (the only tradable class today) are unaffected. SRS-MD-003
+continuous time-based heartbeat monitoring is the companion staleness
+half. The dashboard WebSocket subscription that surfaces
+`StaleDataEvent` / `SequenceGapEvent` to operators arrives with UI-*
+features; SRS-MD-007 stays `passes:false` until those runtime +
+operator surfaces land.
 
 `ERR-4` (market-data subscription line-limit gate, SRS-MD-002 +
 SyRS SYS-70 / SYS-64 + StRS A-13) is enforced by the

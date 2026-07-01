@@ -116,7 +116,7 @@ EVENT_TYPES_BY_SOURCE: dict[Source, tuple[str, ...]] = {
     Source.KILL_SWITCH: ("ACTIVATION",),
     Source.HOT_SWAP: ("PROMOTION", "DEMOTION"),
     Source.RESOURCE_MONITOR: ("THRESHOLD_ALERT",),
-    Source.MARKET_DATA: ("SUBSCRIPTION_CHANGE",),
+    Source.MARKET_DATA: ("SUBSCRIPTION_CHANGE", "SEQUENCE_GAP"),
     Source.STRATEGY: (),
 }
 """AC-pinned event types per system source.

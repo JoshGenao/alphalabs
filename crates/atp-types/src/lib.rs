@@ -535,13 +535,13 @@ impl std::error::Error for StructuredSubscriptionError {}
 // (`ConsolidatedSubscriptionRegistry`).
 //
 // `MarketDataTick` is the source-neutral fan-out payload the manager
-// distributes. It carries the routing `symbol` and an opaque `tick_seq`
-// identifier used to correlate a fan-out delivery with its upstream tick.
-// `tick_seq` is a plain delivery counter the registry does not interpret —
-// sequence-GAP detection is a DISTINCT concern (SRS-MD-007) and is
-// deliberately NOT modeled here. The
-// struct carries no broker / vendor / session identifiers: fan-out is a
-// source-neutral operation.
+// distributes. It carries the routing `symbol` and `tick_seq`, the UPSTREAM
+// PROVIDER sequence (see the `MarketDataTick::tick_seq` field doc) that also
+// correlates a fan-out delivery with its upstream tick. The
+// SRS-MD-001 registry does not interpret `tick_seq` (routing is by
+// `SecurityKey`); sequence-GAP detection is a DISTINCT concern (SRS-MD-007),
+// which reads a SKIP in `tick_seq` as a gap. The struct carries no broker /
+// vendor / session identifiers: fan-out is a source-neutral operation.
 //
 // `SubscriptionChange` classifies what a subscribe/unsubscribe did to the
 // consolidated set, distinguishing the line-affecting transitions
@@ -880,6 +880,20 @@ impl FundamentalStatements {
 pub struct MarketDataTick {
     pub symbol: String,
     pub asset_class: AssetClass,
+    /// UPSTREAM provider sequence for this tick on its consolidated security
+    /// line — the sequence number the ingestion adapter reads from the
+    /// provider's own feed (e.g. IB), NOT a counter re-assigned at fan-out /
+    /// delivery time. It is monotonic per security line and doubles as the
+    /// fan-out correlation id.
+    ///
+    /// **Producer contract (SRS-MD-007):** because SRS-MD-007's
+    /// `SequenceGapDetector` detects a dropped upstream tick as a SKIP in this
+    /// value, the ingestion adapter (deferred SRS-EXE-006 / feed loop) MUST
+    /// populate it from the provider's origin sequence so that a lost upstream
+    /// tick leaves a hole here. A counter that re-numbers 1,2,3,… per DELIVERED
+    /// callback would be gap-free by construction and would silently defeat gap
+    /// detection — SRS-MD-001 deliberately deferred these gap semantics to
+    /// SRS-MD-007, which defines them here. See `sequence_gap_contract`.
     pub tick_seq: u64,
 }
 
@@ -944,6 +958,49 @@ pub struct SubscriptionChangeEvent {
     pub asset_class: AssetClass,
     pub subscriber_count: u32,
     pub lines_in_use: u32,
+}
+
+// --------------------------------------------------------------------------- //
+// Market-data sequence-gap event (SRS-MD-007, SyRS SYS-39 / SYS-39a, NFR-P5)
+// --------------------------------------------------------------------------- //
+//
+// SRS-MD-007 requires the subscription manager to detect sequence gaps in the
+// IB tick stream and reflect the gap in the consolidated subscription's
+// staleness. `MarketDataTick.tick_seq` is the UPSTREAM PROVIDER sequence (see
+// its field doc) that also serves as the SRS-MD-001 fan-out correlation id;
+// SRS-MD-001 deferred its gap semantics to MD-007. When the observed sequence
+// for a security's upstream line skips ahead of the expected next value, the
+// detector publishes a `SequenceGapEvent` and marks the security stale — which
+// is only sound if the ingestion adapter populates `tick_seq` from the provider
+// origin sequence (the SRS-MD-007 producer contract).
+//
+// The event carries exactly the four SRS-MD-007 acceptance fields — `symbol`,
+// `expected_sequence`, `observed_sequence`, and the observation `timestamp`
+// (epoch nanoseconds, matching the SRS-LOG-001 `timestamp_ns` field) — plus
+// the `asset_class` that, with `symbol`, forms the canonical `SecurityKey` the
+// detector keys on (so a gap on an equity line is unambiguous when an equity
+// and an option share a display ticker). It deliberately carries NO broker /
+// vendor / session / tick identifier: a sequence gap is a data-side condition
+// on the consolidated line, not a transport or per-strategy fault — the same
+// discipline `StaleDataEvent` and `SubscriptionChangeEvent` follow. The event
+// is shaped to feed the SRS-LOG-001 `LogRecord` seam (Source.MARKET_DATA,
+// event_type `SEQUENCE_GAP`); the concrete persistent sink is the deferred
+// SRS-LOG-001 runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SequenceGapEvent {
+    pub symbol: String,
+    pub asset_class: AssetClass,
+    /// The sequence number the detector expected next (last observed + 1).
+    pub expected_sequence: u64,
+    /// The sequence number actually delivered — strictly greater than
+    /// `expected_sequence` (a gap is a forward skip; equal or lower values
+    /// are duplicates / regressions, not gaps).
+    pub observed_sequence: u64,
+    /// Epoch-nanosecond timestamp the gap was observed at. Supplied by the
+    /// caller's clock (the runtime feed loop) so the detector stays free of
+    /// wall-clock I/O and every gap event is deterministically reproducible
+    /// in tests. Matches the SRS-LOG-001 `timestamp_ns` field.
+    pub observed_at_ns: i64,
 }
 
 // --------------------------------------------------------------------------- //
