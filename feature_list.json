@@ -641,7 +641,7 @@
       "Step 3: Verify acceptance criteria: All ingestion writes to SSD first; new data is synced to NAS; SSD retains at least 90 days of configured hot data; NAS is used for indefinite retention; storage growth estimates are documented in Section 12.1.",
       "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {
