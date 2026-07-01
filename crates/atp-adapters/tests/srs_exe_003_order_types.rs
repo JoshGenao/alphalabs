@@ -44,6 +44,12 @@ impl IbGatewayConnection for RecordingGateway {
             broker_order_id: format!("ib-ord-{}", self.submit_calls.get()),
         })
     }
+    fn submit_composite_order(
+        &self,
+        _order: &atp_types::CompositeOrderSubmission,
+    ) -> Result<OrderReceipt, IbApiError> {
+        unimplemented!("composite orders are exercised by SRS-EXE-004")
+    }
     fn cancel_order(&self, _broker_order_id: &str) -> Result<(), IbApiError> {
         unimplemented!("not exercised by SRS-EXE-003")
     }

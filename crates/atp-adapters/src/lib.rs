@@ -3,7 +3,7 @@ use atp_types::{
 };
 use std::fmt;
 
-pub use atp_types::{OrderReceipt, OrderSubmission};
+pub use atp_types::{CompositeOrderSubmission, OrderReceipt, OrderSubmission};
 
 /// SRS-EXE-006 — the headless IB Gateway brokerage adapter: the IB-error → SyRS
 /// SYS-64 classification, the TWS transport seam, the four AC operations exposed
@@ -318,6 +318,19 @@ pub struct AlternativeDataSet {
 pub trait BrokerageAdapter: AdapterBoundary {
     fn submit_order(&self, _request: OrderSubmission) -> AdapterResult<OrderReceipt> {
         not_configured(self.provider_name(), "submit_order")
+    }
+
+    /// Submit a multi-leg **options composite** order (SRS-EXE-004 / SYS-4) as one
+    /// atomic transaction. Returns exactly one [`OrderReceipt`] — one broker order
+    /// id for the whole composite, never one per leg — so the legs fill together
+    /// or not at all. An implementation MUST validate
+    /// ([`CompositeOrderSubmission::validate`]) and fail closed before the
+    /// composite can reach the broker, exactly like [`submit_order`](Self::submit_order).
+    fn submit_composite_order(
+        &self,
+        _request: CompositeOrderSubmission,
+    ) -> AdapterResult<OrderReceipt> {
+        not_configured(self.provider_name(), "submit_composite_order")
     }
 
     fn cancel_order(&self, _broker_order_id: &str) -> AdapterResult<()> {

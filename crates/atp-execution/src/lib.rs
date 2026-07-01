@@ -6,11 +6,11 @@
 
 use atp_strategy_engine::StrategyRuntimeBoundary;
 use atp_types::{
-    ConnectivityEvent, ConnectivityState, KillSwitchAlertEvent, KillSwitchCleanupOutcome,
-    KillSwitchLiquidationOutcome, KillSwitchTimeoutEvent, KillSwitchTimeoutRequest,
-    MarketDataFreshness, OperatorAlertChannel, OrderErrorCategory, OrderReceipt, OrderSubmission,
-    RuntimeService, SideEffectOutcome, StaleDataEvent, StrategyMode,
-    StructuredKillSwitchTimeoutError, StructuredOrderError,
+    CompositeOrderSubmission, ConnectivityEvent, ConnectivityState, KillSwitchAlertEvent,
+    KillSwitchCleanupOutcome, KillSwitchLiquidationOutcome, KillSwitchTimeoutEvent,
+    KillSwitchTimeoutRequest, MarketDataFreshness, OperatorAlertChannel, OrderErrorCategory,
+    OrderReceipt, OrderSubmission, RuntimeService, SideEffectOutcome, StaleDataEvent, StrategyMode,
+    StructuredCompositeOrderError, StructuredKillSwitchTimeoutError, StructuredOrderError,
 };
 use std::fmt;
 
@@ -48,6 +48,20 @@ pub trait LiveBrokerageSubmit {
         &self,
         submission: OrderSubmission,
     ) -> Result<OrderReceipt, StructuredOrderError>;
+}
+
+/// SRS-EXE-004 companion to [`LiveBrokerageSubmit`]: the port the execution
+/// engine uses to push a multi-leg **composite** order to a live brokerage after
+/// it has decided the submission is allowed (mode == Live, connected, every leg's
+/// data fresh, composite well-formed). A composite routes as ONE combo order, so
+/// the port returns ONE [`OrderReceipt`]. Defined here (not in `atp-adapters`)
+/// for the same SRS-ARCH-002 reason as [`LiveBrokerageSubmit`]; the orchestrator
+/// wires the IB adapter's `submit_composite_order` to it.
+pub trait LiveCompositeBrokerageSubmit {
+    fn submit_composite_order(
+        &self,
+        submission: CompositeOrderSubmission,
+    ) -> Result<OrderReceipt, StructuredCompositeOrderError>;
 }
 
 /// ERR-2 / SRS-SAFE-003 / SRS-MD-005: port the execution engine consults at
@@ -545,6 +559,201 @@ impl ExecutionEngine {
                 original_order: submission,
             }),
             LiveRoutingDecision::Authorized => self.submit_live_order(
+                StrategyMode::Live,
+                submission,
+                broker,
+                connectivity,
+                events,
+                freshness,
+                stale_events,
+            ),
+        }
+    }
+
+    /// SRS-EXE-004 — the multi-leg **composite** analogue of [`submit_live_order`].
+    /// A composite options order routes as ONE combo order, so it MUST pass the
+    /// SAME ERR-1/2/3 live safeguards before it can touch the broker: the
+    /// composite adapter seam (`BrokerageAdapter::submit_composite_order`) does
+    /// only shape validation, so without this gate a caller could route a live
+    /// composite that bypasses the connectivity / freshness / non-live checks the
+    /// single-leg path enforces. The gates run in the SAME precedence order:
+    /// non-live mode is rejected first; then connectivity (ERR-2 / SRS-SAFE-003);
+    /// then market-data freshness for **every** leg's option contract (ERR-3 /
+    /// SRS-MD-004 — a composite is atomic, so if ANY leg's data is stale the whole
+    /// composite is blocked); then composite well-formedness
+    /// ([`CompositeOrderSubmission::validate`]) immediately before the broker port,
+    /// so a malformed composite never reaches the live broker even when a caller
+    /// enters here directly. As with the single-leg path, InvalidSymbol is the
+    /// order-rejection bucket for a shape failure and the precise reason is in
+    /// error_type (no new SYS-64 category).
+    ///
+    /// **Freshness keys by the full option contract identity, not the underlying**
+    /// ([`OptionContractIdentity::canonical_key`]): a composite bundles several
+    /// distinct contracts on one underlying (e.g. an SPY iron condor), and fresh
+    /// SPY *underlying* data does NOT imply fresh quotes for each strike/expiry/right
+    /// — treating it so would conflate the very contracts the identity model exists
+    /// to distinguish, and could route an options combo on a stale individual leg.
+    /// The concrete per-option-contract freshness IMPL is the deferred SRS-MD-001 /
+    /// SRS-DATA-004 wiring (option subscriptions are not yet keyed, so `SecurityKey`
+    /// still fails closed on options); this gate keys correctly by contract identity
+    /// so it stays sound once that impl lands.
+    ///
+    /// **Crate-private on purpose (stricter than single-leg):** unlike the
+    /// single-leg [`submit_live_order`] — kept `pub` because the ERR-1/2/3 contract
+    /// pins it as the synchronous-rejection entry point — this inner method is
+    /// `pub(crate)`, so the ONLY public way to submit a live composite is
+    /// [`route_composite_order`](Self::route_composite_order), which derives
+    /// live-ness from the engine-owned [`LiveDesignation`]. An external caller
+    /// therefore cannot reach the broker-touching composite path with a
+    /// self-asserted `StrategyMode::Live`, so the single-live-strategy invariant
+    /// (AGENTS.md) holds by construction for the composite route.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn submit_live_composite_order<B, C, E, F, S>(
+        &self,
+        mode: StrategyMode,
+        submission: CompositeOrderSubmission,
+        broker: &B,
+        connectivity: &C,
+        events: &E,
+        freshness: &F,
+        stale_events: &S,
+    ) -> Result<OrderReceipt, StructuredCompositeOrderError>
+    where
+        B: LiveCompositeBrokerageSubmit,
+        C: BrokerageConnectivity,
+        E: ConnectivityEventSink,
+        F: MarketDataFreshnessProbe,
+        S: StaleDataEventSink,
+    {
+        // A representative contract key for the connectivity event (connectivity is
+        // not per-contract); the stale gate reports the SPECIFIC stale leg below.
+        let representative_symbol = || {
+            submission
+                .legs
+                .first()
+                .map(|leg| leg.contract.canonical_key())
+                .unwrap_or_else(|| "<composite>".to_string())
+        };
+        match mode {
+            StrategyMode::Live => match connectivity.state() {
+                ConnectivityState::Connected => {
+                    // ERR-3 — every leg's OPTION CONTRACT (keyed by its full
+                    // canonical identity, not the underlying) must be fresh; a
+                    // composite is atomic, so the FIRST stale leg blocks the whole
+                    // order. Keying by underlying would conflate distinct contracts.
+                    for leg in &submission.legs {
+                        let symbol = leg.contract.canonical_key();
+                        if matches!(freshness.freshness(&symbol), MarketDataFreshness::Stale) {
+                            let staleness_seconds = freshness.staleness_seconds(&symbol);
+                            stale_events.record(StaleDataEvent {
+                                state: MarketDataFreshness::Stale,
+                                strategy_id: submission.strategy_id.clone(),
+                                symbol: symbol.clone(),
+                                staleness_seconds,
+                            });
+                            return Err(StructuredCompositeOrderError {
+                                category: OrderErrorCategory::MarketDataStale,
+                                error_type: "MarketDataStale".to_string(),
+                                message: format!(
+                                    "live composite submission for strategy `{}` blocked: \
+                                     subscribed market data for leg option contract `{}` is stale \
+                                     ({}s; threshold 15s per NFR-P5; SRS-MD-004)",
+                                    submission.strategy_id.as_str(),
+                                    symbol,
+                                    staleness_seconds,
+                                ),
+                                original_order: submission,
+                            });
+                        }
+                    }
+                    // Every leg fresh — validate the composite shape immediately
+                    // before the broker port (fail closed on empty / single-leg /
+                    // bad-leg), then submit as one combo order.
+                    match submission.validate() {
+                        Ok(()) => broker.submit_composite_order(submission),
+                        Err(err) => Err(StructuredCompositeOrderError {
+                            category: OrderErrorCategory::InvalidSymbol,
+                            error_type: err.error_type().to_string(),
+                            message: err.to_string(),
+                            original_order: submission,
+                        }),
+                    }
+                }
+                state @ (ConnectivityState::Unreachable
+                | ConnectivityState::ScheduledRestartWindow) => {
+                    events.record(ConnectivityEvent {
+                        state,
+                        strategy_id: submission.strategy_id.clone(),
+                        symbol: representative_symbol(),
+                        scheduled_restart: matches!(
+                            state,
+                            ConnectivityState::ScheduledRestartWindow
+                        ),
+                    });
+                    connectivity.request_reconnect();
+                    Err(StructuredCompositeOrderError {
+                        category: OrderErrorCategory::ConnectivityBlocked,
+                        error_type: "IbGatewayUnreachable".to_string(),
+                        message: format!(
+                            "live composite submission for strategy `{}` blocked: \
+                             IB Gateway is unreachable (SRS-SAFE-003)",
+                            submission.strategy_id.as_str()
+                        ),
+                        original_order: submission,
+                    })
+                }
+            },
+            StrategyMode::Paper => Err(StructuredCompositeOrderError {
+                category: OrderErrorCategory::NonLiveStrategySubmission,
+                error_type: "NonLiveLiveRouteBlocked".to_string(),
+                message: format!(
+                    "strategy `{}` is not the designated live strategy; \
+                     live IB execution path is reserved for the single \
+                     live strategy (SRS-EXE-001)",
+                    submission.strategy_id.as_str()
+                ),
+                original_order: submission,
+            }),
+        }
+    }
+
+    /// SRS-EXE-004 / SRS-EXE-001 — the composite analogue of [`route_order`]: the
+    /// live-routing **authority** gate for a multi-leg composite. Derives
+    /// live-ness from the engine-owned [`LiveDesignation`] (never trusted from the
+    /// caller), rejecting a composite from any non-designated strategy
+    /// synchronously with `NON_LIVE_STRATEGY_SUBMISSION` before any broker,
+    /// connectivity, or freshness port is consulted; an authorized composite
+    /// proceeds to the ERR-1/2/3 gate in [`submit_live_composite_order`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn route_composite_order<B, C, E, F, S>(
+        &self,
+        submission: CompositeOrderSubmission,
+        broker: &B,
+        connectivity: &C,
+        events: &E,
+        freshness: &F,
+        stale_events: &S,
+    ) -> Result<OrderReceipt, StructuredCompositeOrderError>
+    where
+        B: LiveCompositeBrokerageSubmit,
+        C: BrokerageConnectivity,
+        E: ConnectivityEventSink,
+        F: MarketDataFreshnessProbe,
+        S: StaleDataEventSink,
+    {
+        match self.designation.authority_for(&submission.strategy_id) {
+            LiveRoutingDecision::NotDesignated => Err(StructuredCompositeOrderError {
+                category: OrderErrorCategory::NonLiveStrategySubmission,
+                error_type: "NotDesignatedLiveStrategy".to_string(),
+                message: format!(
+                    "strategy `{}` is not the designated live strategy; composite \
+                     orders route to IB only for the single designated live strategy \
+                     (SRS-EXE-001, SyRS SYS-2a/SYS-2d)",
+                    submission.strategy_id.as_str()
+                ),
+                original_order: submission,
+            }),
+            LiveRoutingDecision::Authorized => self.submit_live_composite_order(
                 StrategyMode::Live,
                 submission,
                 broker,
@@ -1252,5 +1461,291 @@ mod tests {
         assert_eq!(recorded[0].symbol, "AAPL");
         assert_eq!(recorded[0].staleness_seconds, 22);
         assert_eq!(freshness.freshness_calls.get(), 1);
+    }
+
+    // ----------------------------------------------------------------------- //
+    // SRS-EXE-004 — composite (multi-leg options) live gate. The composite path
+    // MUST enforce the SAME ERR-1/2/3 safeguards as the single-leg path before
+    // touching the broker; these tests pin each gate.
+    // ----------------------------------------------------------------------- //
+
+    use atp_types::{
+        CompositeOrderLeg, CompositeOrderSubmission, ExpirationDate, OptionContractIdentity,
+        OptionRight,
+    };
+
+    struct CountingCompositeBroker {
+        calls: Cell<u32>,
+    }
+
+    impl CountingCompositeBroker {
+        fn new() -> Self {
+            Self {
+                calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl LiveCompositeBrokerageSubmit for CountingCompositeBroker {
+        fn submit_composite_order(
+            &self,
+            submission: CompositeOrderSubmission,
+        ) -> Result<OrderReceipt, StructuredCompositeOrderError> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(OrderReceipt {
+                broker_order_id: format!("ib-combo-{}", submission.leg_count()),
+            })
+        }
+    }
+
+    /// A composite broker that panics if the engine ever reaches it — proves a
+    /// blocked composite never touches the broker port.
+    struct ForbiddenCompositeBroker;
+
+    impl LiveCompositeBrokerageSubmit for ForbiddenCompositeBroker {
+        fn submit_composite_order(
+            &self,
+            _submission: CompositeOrderSubmission,
+        ) -> Result<OrderReceipt, StructuredCompositeOrderError> {
+            panic!("a blocked composite must never reach the broker port");
+        }
+    }
+
+    /// A freshness probe that is Stale only for `stale_symbol`, Fresh otherwise —
+    /// proves the per-leg freshness scan catches a stale leg that is NOT the first.
+    struct StaleForSymbol {
+        stale_symbol: &'static str,
+        staleness_seconds: u64,
+    }
+
+    impl MarketDataFreshnessProbe for StaleForSymbol {
+        fn freshness(&self, symbol: &str) -> MarketDataFreshness {
+            if symbol == self.stale_symbol {
+                MarketDataFreshness::Stale
+            } else {
+                MarketDataFreshness::Fresh
+            }
+        }
+
+        fn staleness_seconds(&self, _symbol: &str) -> u64 {
+            self.staleness_seconds
+        }
+    }
+
+    fn option_leg(
+        underlying: &str,
+        strike_minor: i64,
+        side: atp_types::OrderSide,
+        right: OptionRight,
+    ) -> CompositeOrderLeg {
+        let contract = OptionContractIdentity::new(
+            underlying,
+            ExpirationDate::new(2024, 6, 21).expect("valid expiry"),
+            strike_minor,
+            right,
+        )
+        .expect("valid contract");
+        CompositeOrderLeg::new(contract, side, 1, atp_types::OrderType::Market)
+    }
+
+    fn four_leg_composite(strategy: &str) -> CompositeOrderSubmission {
+        use atp_types::OrderSide;
+        CompositeOrderSubmission::new(
+            StrategyId::new(strategy),
+            vec![
+                option_leg("SPY", 48_000_000, OrderSide::Buy, OptionRight::Put),
+                option_leg("SPY", 49_000_000, OrderSide::Sell, OptionRight::Put),
+                option_leg("SPY", 52_000_000, OrderSide::Sell, OptionRight::Call),
+                option_leg("SPY", 53_000_000, OrderSide::Buy, OptionRight::Call),
+            ],
+        )
+    }
+
+    #[test]
+    fn live_composite_is_routed_to_the_broker() {
+        let engine = ExecutionEngine::default();
+        let broker = CountingCompositeBroker::new();
+        let connectivity = StubConnectivity::connected();
+        let events = RecordingEvents::new();
+        let freshness = AlwaysFresh;
+        let stale_events = RecordingStaleEvents::new();
+
+        let receipt = engine
+            .submit_live_composite_order(
+                StrategyMode::Live,
+                four_leg_composite("live-1"),
+                &broker,
+                &connectivity,
+                &events,
+                &freshness,
+                &stale_events,
+            )
+            .expect("live + connected + all-legs-fresh + well-formed must route");
+
+        assert_eq!(receipt.broker_order_id, "ib-combo-4");
+        assert_eq!(
+            broker.calls.get(),
+            1,
+            "the composite reaches the broker once"
+        );
+        assert!(events.events.borrow().is_empty());
+        assert!(stale_events.events.borrow().is_empty());
+    }
+
+    #[test]
+    fn paper_mode_composite_is_blocked_before_any_port() {
+        // ERR-1 — a non-live composite is rejected before connectivity, freshness,
+        // or the broker is consulted (the Forbidden* doubles panic if reached).
+        let engine = ExecutionEngine::default();
+        let broker = ForbiddenCompositeBroker;
+        let connectivity = ForbiddenConnectivity;
+        let events = RecordingEvents::new();
+        let freshness = ForbiddenFreshness;
+        let stale_events = RecordingStaleEvents::new();
+
+        let err = engine
+            .submit_live_composite_order(
+                StrategyMode::Paper,
+                four_leg_composite("paper-1"),
+                &broker,
+                &connectivity,
+                &events,
+                &freshness,
+                &stale_events,
+            )
+            .expect_err("a paper-mode composite must be blocked");
+        assert_eq!(err.category, OrderErrorCategory::NonLiveStrategySubmission);
+        assert_eq!(err.original_order.leg_count(), 4);
+    }
+
+    #[test]
+    fn live_composite_blocked_when_gateway_unreachable() {
+        // ERR-2 — connectivity is checked before freshness; a blocked composite
+        // requests a reconnect, publishes a ConnectivityEvent, never consults the
+        // freshness gate, and never reaches the broker.
+        let engine = ExecutionEngine::default();
+        let broker = ForbiddenCompositeBroker;
+        let connectivity = StubConnectivity::in_state(ConnectivityState::Unreachable);
+        let events = RecordingEvents::new();
+        let freshness = ForbiddenFreshness;
+        let stale_events = RecordingStaleEvents::new();
+
+        let err = engine
+            .submit_live_composite_order(
+                StrategyMode::Live,
+                four_leg_composite("live-1"),
+                &broker,
+                &connectivity,
+                &events,
+                &freshness,
+                &stale_events,
+            )
+            .expect_err("an unreachable gateway must block the composite");
+        assert_eq!(err.category, OrderErrorCategory::ConnectivityBlocked);
+        assert_eq!(connectivity.reconnect_calls.get(), 1);
+        assert_eq!(events.events.borrow().len(), 1);
+    }
+
+    #[test]
+    fn live_composite_blocked_when_a_single_leg_contract_is_stale() {
+        // ERR-3 — freshness keys by the FULL option contract identity, not the
+        // underlying: here all four legs share the SAME underlying (SPY) but only
+        // ONE contract (the 52C, the third leg) is stale. A gate that keyed by
+        // underlying would see "SPY fresh" and route; keying by contract identity
+        // catches the stale leg and blocks the whole atomic composite. This is the
+        // conflation OptionContractIdentity exists to prevent (distinct contracts
+        // sharing one underlying), applied to the live stale-data safeguard.
+        let engine = ExecutionEngine::default();
+        let broker = ForbiddenCompositeBroker;
+        let connectivity = StubConnectivity::connected();
+        let events = RecordingEvents::new();
+        // The 52C contract's canonical key (ExpirationDate 2024-06-21).
+        let freshness = StaleForSymbol {
+            stale_symbol: "SPY:20240621:C:52000000",
+            staleness_seconds: 30,
+        };
+        let stale_events = RecordingStaleEvents::new();
+
+        let err = engine
+            .submit_live_composite_order(
+                StrategyMode::Live,
+                four_leg_composite("live-1"),
+                &broker,
+                &connectivity,
+                &events,
+                &freshness,
+                &stale_events,
+            )
+            .expect_err("a stale single contract must block the whole composite");
+        assert_eq!(err.category, OrderErrorCategory::MarketDataStale);
+        let recorded = stale_events.events.borrow();
+        assert_eq!(recorded.len(), 1);
+        // The event names the SPECIFIC stale contract, not the underlying.
+        assert_eq!(recorded[0].symbol, "SPY:20240621:C:52000000");
+        assert_eq!(recorded[0].staleness_seconds, 30);
+    }
+
+    #[test]
+    fn malformed_live_composite_fails_closed_before_the_broker_port() {
+        // A single-leg "composite" is malformed (SYS-4 needs >=2 legs); it is
+        // validated AFTER the connectivity/freshness gates but BEFORE the broker,
+        // so it fails closed and the broker is never called even when connected +
+        // fresh.
+        let engine = ExecutionEngine::default();
+        let broker = ForbiddenCompositeBroker;
+        let connectivity = StubConnectivity::connected();
+        let events = RecordingEvents::new();
+        let freshness = AlwaysFresh;
+        let stale_events = RecordingStaleEvents::new();
+
+        use atp_types::OrderSide;
+        let single = CompositeOrderSubmission::new(
+            StrategyId::new("live-1"),
+            vec![option_leg(
+                "SPY",
+                50_000_000,
+                OrderSide::Buy,
+                OptionRight::Call,
+            )],
+        );
+
+        let err = engine
+            .submit_live_composite_order(
+                StrategyMode::Live,
+                single,
+                &broker,
+                &connectivity,
+                &events,
+                &freshness,
+                &stale_events,
+            )
+            .expect_err("a single-leg composite must fail closed");
+        assert_eq!(err.category, OrderErrorCategory::InvalidSymbol);
+        assert_eq!(err.error_type, "SingleLegComposite");
+    }
+
+    #[test]
+    fn route_composite_order_rejects_non_designated_strategy() {
+        // ERR-1 authority gate: a composite from a non-designated strategy is
+        // rejected before any broker/connectivity/freshness port is consulted.
+        let engine = ExecutionEngine::default();
+        let broker = ForbiddenCompositeBroker;
+        let connectivity = ForbiddenConnectivity;
+        let events = RecordingEvents::new();
+        let freshness = ForbiddenFreshness;
+        let stale_events = RecordingStaleEvents::new();
+
+        let err = engine
+            .route_composite_order(
+                four_leg_composite("not-live"),
+                &broker,
+                &connectivity,
+                &events,
+                &freshness,
+                &stale_events,
+            )
+            .expect_err("a non-designated strategy's composite must be rejected");
+        assert_eq!(err.category, OrderErrorCategory::NonLiveStrategySubmission);
+        assert_eq!(err.error_type, "NotDesignatedLiveStrategy");
     }
 }

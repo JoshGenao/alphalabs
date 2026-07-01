@@ -181,11 +181,13 @@ pub enum SubscriptionRegistryError {
     /// same mutable borrow that performs the insert, so a rejected request
     /// never registers a line (no probe-then-mutate race window).
     LineLimitReached { configured_limit: u32 },
-    /// The request named `AssetClass::Option`, whose full contract identity
-    /// (underlying + expiration + strike + right) is not yet modeled — the
-    /// manager fails closed on options (deferred to SRS-DATA-004 /
-    /// SRS-EXE-004) rather than conflating distinct contracts on one
-    /// underlying onto a single upstream line.
+    /// The request named `AssetClass::Option`. Its full contract identity
+    /// (underlying + expiration + strike + right) is now modeled by SRS-EXE-004
+    /// (`atp_types::OptionContractIdentity`, serialized), but the subscription
+    /// `SecurityKey` does not yet CARRY it, so the manager fails closed on
+    /// options (keying the identity into the line is SRS-MD-001 / SRS-DATA-004's
+    /// follow-up) rather than conflating distinct contracts on one underlying
+    /// onto a single upstream line.
     OptionContractUnsupported,
 }
 

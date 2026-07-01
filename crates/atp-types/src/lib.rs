@@ -22,6 +22,12 @@ pub use order_event::{
 pub mod order_type;
 pub use order_type::{OrderSide, OrderType, OrderTypeError};
 
+pub mod composite_order;
+pub use composite_order::{
+    CompositeOrderError, CompositeOrderLeg, CompositeOrderSubmission, ExpirationDate,
+    OptionContractError, OptionContractIdentity, OptionRight,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StrategyId(String);
 
@@ -136,11 +142,15 @@ impl OrderSubmission {
         // SRS-EXE-003 — an OPTION order needs a full contract identity (underlying
         // + expiration + strike + right) to avoid conflating distinct contracts
         // on one underlying symbol — the SAME reason `SecurityKey::new` fails
-        // closed on `AssetClass::Option`. That identity model is NOT yet on the
-        // envelope (deferred to SRS-EXE-004 / SRS-DATA-004), so an option order
-        // is rejected fail-closed rather than treated as broker-ready. The order
-        // TYPES (market/limit/stop/stop-limit) themselves are asset-agnostic and
-        // proven for equities; live option submission lands with the identity model.
+        // closed on `AssetClass::Option`. That identity model now EXISTS
+        // ([`crate::OptionContractIdentity`], authored under SRS-EXE-004, which
+        // lands serialized/`passes:false`), and the multi-leg composite path
+        // ([`crate::CompositeOrderSubmission`]) consumes it. It is NOT yet a field
+        // on THIS single-leg envelope, so a single-leg option order is still
+        // rejected fail-closed rather than treated as broker-ready — wiring the
+        // identity onto the single-leg envelope is the SRS-EXE-003 / SRS-DATA-004
+        // follow-up. The order TYPES (market/limit/stop/stop-limit) are
+        // asset-agnostic and proven for equities.
         if self.asset_class == AssetClass::Option {
             return Err(OrderSubmissionError::OptionContractIdentityUnsupported);
         }
@@ -160,10 +170,14 @@ pub enum OrderSubmissionError {
     NonPositiveQuantity { quantity: i64 },
     /// The order type carried a non-positive trigger/limit price.
     InvalidOrderType(OrderTypeError),
-    /// An `AssetClass::Option` order was submitted without a full option
-    /// contract identity (underlying + expiration + strike + right). The
-    /// identity model is deferred to SRS-EXE-004 / SRS-DATA-004, so option
-    /// orders fail closed rather than conflating distinct contracts.
+    /// An `AssetClass::Option` order was submitted on the single-leg envelope,
+    /// which does not carry a full option contract identity (underlying +
+    /// expiration + strike + right). The identity model now exists
+    /// ([`crate::OptionContractIdentity`], SRS-EXE-004) and the multi-leg
+    /// [`crate::CompositeOrderSubmission`] path uses it; wiring it onto this
+    /// single-leg envelope is the SRS-EXE-003 / SRS-DATA-004 follow-up, so a
+    /// single-leg option order fails closed rather than conflating distinct
+    /// contracts.
     OptionContractIdentityUnsupported,
 }
 
@@ -191,8 +205,10 @@ impl fmt::Display for OrderSubmissionError {
             Self::InvalidOrderType(err) => write!(f, "{err}"),
             Self::OptionContractIdentityUnsupported => write!(
                 f,
-                "option orders require a full contract identity (underlying + \
-                 expiration + strike + right), deferred to SRS-EXE-004 / SRS-DATA-004"
+                "single-leg option orders require a full contract identity (underlying + \
+                 expiration + strike + right) on this envelope; use the multi-leg \
+                 CompositeOrderSubmission path (SRS-EXE-004) or await the single-leg \
+                 wiring (SRS-EXE-003 / SRS-DATA-004)"
             ),
         }
     }
@@ -306,6 +322,35 @@ impl fmt::Display for StructuredOrderError {
 }
 
 impl std::error::Error for StructuredOrderError {}
+
+/// SRS-ERR-001 structured error envelope for a multi-leg **composite** order
+/// (SRS-EXE-004). Parallel to [`StructuredOrderError`] but carries the unchanged
+/// original [`CompositeOrderSubmission`] for the audit trail — a composite is not
+/// an [`OrderSubmission`], so it needs its own envelope rather than a synthesized
+/// single-leg stand-in. Reuses the SAME [`OrderErrorCategory`] SyRS SYS-64
+/// buckets as the single-leg path (no new category), so the composite live gate
+/// classifies non-live / connectivity / stale / invalid rejections identically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuredCompositeOrderError {
+    pub category: OrderErrorCategory,
+    pub error_type: String,
+    pub message: String,
+    pub original_order: CompositeOrderSubmission,
+}
+
+impl fmt::Display for StructuredCompositeOrderError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "[{}] {}: {}",
+            self.category.as_str(),
+            self.error_type,
+            self.message
+        )
+    }
+}
+
+impl std::error::Error for StructuredCompositeOrderError {}
 
 // --------------------------------------------------------------------------- //
 // IB Gateway connectivity state and structured event (SRS-SAFE-003, SRS-MD-005)
@@ -590,14 +635,14 @@ impl AssetClass {
 pub enum SecurityKeyError {
     /// The symbol was empty or whitespace — it can never name a security.
     EmptySymbol,
-    /// The request named `AssetClass::Option`, but a canonical option
-    /// contract identity (underlying + expiration + strike + call/put right,
-    /// or a normalized vendor-neutral contract id) is NOT yet modeled in the
-    /// platform — it is owned by SRS-DATA-004 (live option-chain snapshots)
-    /// and SRS-EXE-004 (multi-leg option orders). Keying an option by its
-    /// underlying symbol alone would conflate distinct contracts onto one
-    /// upstream IB line, so the subscription manager fails closed on options
-    /// until that contract model lands. Equity keys are unaffected.
+    /// The request named `AssetClass::Option`. A canonical option contract
+    /// identity (underlying + expiration + strike + call/put right) is now
+    /// modeled by SRS-EXE-004 ([`OptionContractIdentity`], which lands
+    /// serialized), but this `SecurityKey` does not yet CARRY it — keying an
+    /// option by its underlying symbol alone would conflate distinct contracts
+    /// onto one upstream IB line, so the subscription manager fails closed on
+    /// options until SRS-MD-001 / SRS-DATA-004 wire the identity into the key.
+    /// Equity keys are unaffected.
     OptionContractIdentityRequired,
 }
 
@@ -628,12 +673,14 @@ impl std::error::Error for SecurityKeyError {}
 /// identifier.
 ///
 /// **Scope (SRS-MD-001 SDK-surface):** only `AssetClass::Equity` is currently
-/// representable. `AssetClass::Option` is rejected by `new` because a real
-/// option contract is identified by underlying + expiration + strike +
-/// call/put, which the platform does not yet model (owned by SRS-DATA-004 /
-/// SRS-EXE-004). The `asset_class` field + the `AssetClass::Option` variant
-/// are the forward-compatible seam those features extend; until then the
-/// manager fails closed on options rather than conflating them.
+/// representable as a `SecurityKey`. A real option contract is identified by
+/// underlying + expiration + strike + call/put — now modeled by
+/// [`OptionContractIdentity`] (SRS-EXE-004, serialized) — but this key does not
+/// yet CARRY that identity, so `new` rejects `AssetClass::Option` rather than
+/// conflating distinct contracts under one underlying. The `asset_class` field +
+/// the `AssetClass::Option` variant are the forward-compatible seam SRS-MD-001 /
+/// SRS-DATA-004 extend when they wire the identity into the key; until then the
+/// manager fails closed on options.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SecurityKey {
     symbol: String,

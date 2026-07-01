@@ -117,7 +117,9 @@ fn srs_exe_003_no_contradictory_price_set_is_representable() {
 fn srs_exe_003_validation_identical_across_equity_and_option() {
     // The order-type authority is asset-class-agnostic: the same type validates
     // identically whether the leg is an equity or an option (SRS-EXE-003 covers
-    // both). Option *contract identity* is deferred to SRS-EXE-004 / SRS-DATA-004.
+    // both). Option *contract identity* is delivered by SRS-EXE-004
+    // (OptionContractIdentity + the composite path); single-leg option submission
+    // still awaits the SRS-EXE-003 / SRS-DATA-004 envelope wiring.
     for _asset in [AssetClass::Equity, AssetClass::Option] {
         for order_type in ALL_TYPES {
             assert!(order_type.validate_prices().is_ok());

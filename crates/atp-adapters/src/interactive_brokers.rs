@@ -43,7 +43,7 @@ use crate::{
     SubscriptionReceipt, INTERACTIVE_BROKERS_ADAPTER_VERSION, INTERACTIVE_BROKERS_CAPABILITIES,
     INTERACTIVE_BROKERS_PROTOCOL_LABEL, INTERACTIVE_BROKERS_TWS_API_VERSION,
 };
-use atp_types::{OrderErrorCategory, OrderReceipt, OrderSubmission};
+use atp_types::{CompositeOrderSubmission, OrderErrorCategory, OrderReceipt, OrderSubmission};
 use std::fmt;
 #[cfg(feature = "ib-live-transport")]
 use std::net::TcpStream;
@@ -336,6 +336,13 @@ impl IbConnectionConfig {
 pub trait IbGatewayConnection {
     /// Submit an order; returns the [`OrderReceipt`] on acceptance.
     fn submit_order(&self, order: &OrderSubmission) -> Result<OrderReceipt, IbApiError>;
+    /// Submit a multi-leg options **composite** order (SRS-EXE-004); returns ONE
+    /// [`OrderReceipt`] (one broker order id) for the whole composite on
+    /// acceptance — the IB combo/BAG order the spread routes as.
+    fn submit_composite_order(
+        &self,
+        order: &CompositeOrderSubmission,
+    ) -> Result<OrderReceipt, IbApiError>;
     /// Cancel a resting order by IB broker order id.
     fn cancel_order(&self, broker_order_id: &str) -> Result<(), IbApiError>;
     /// Subscribe to streaming market data; returns the [`SubscriptionReceipt`].
@@ -447,6 +454,29 @@ impl<C: IbGatewayConnection> BrokerageAdapter for InteractiveBrokersBrokerage<C>
         // category) — an Err is always returned, the submission is never dropped.
         self.connection
             .submit_order(&request)
+            .map_err(brokerage_error)
+    }
+
+    fn submit_composite_order(
+        &self,
+        request: CompositeOrderSubmission,
+    ) -> AdapterResult<OrderReceipt> {
+        // SRS-EXE-004 — the composite is VALIDATED before it can reach the broker:
+        // at least two legs (SYS-4), strictly-positive quantities, and positive
+        // trigger/limit prices (delegating to the SAME `OrderType::validate_prices`
+        // authority the single-leg path uses, so live and paper cannot drift). A
+        // malformed composite fails closed HERE and is never forwarded — one bad
+        // leg rejects the whole order, so no partial spread reaches the gateway.
+        if let Err(err) = request.validate() {
+            return Err(AdapterError::InvalidOrder {
+                adapter: self.provider_name(),
+                detail: err.to_string(),
+            });
+        }
+        // Routes as ONE IB combo order → ONE OrderReceipt (one broker order id).
+        // Any IB rejection maps onto AdapterError::Brokerage; never dropped.
+        self.connection
+            .submit_composite_order(&request)
             .map_err(brokerage_error)
     }
 
@@ -566,6 +596,17 @@ impl IbGatewayConnection for TcpIbGateway {
         // wire encoding to the operator-gated integration deliverable.
         let _stream = self.connect()?;
         Err(Self::live_wire_pending("submit_order"))
+    }
+
+    fn submit_composite_order(
+        &self,
+        _order: &CompositeOrderSubmission,
+    ) -> Result<OrderReceipt, IbApiError> {
+        // The IB combo/BAG wire encoding for the composite is completed under the
+        // operator-initiated IB paper-account integration test (SYS-2e; SRS-EXE-004
+        // lands serialized), so this fails closed rather than fabricating a receipt.
+        let _stream = self.connect()?;
+        Err(Self::live_wire_pending("submit_composite_order"))
     }
 
     fn cancel_order(&self, _broker_order_id: &str) -> Result<(), IbApiError> {

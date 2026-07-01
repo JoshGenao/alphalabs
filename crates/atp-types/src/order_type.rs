@@ -81,9 +81,13 @@
 //! accept→ack/fill (SRS-SIM-001/002) + the `OrderSubmission`→`OrderLeg`
 //! sim-engine bridge the real `PaperSimulationEngine` consumes (SRS-ORCH-* /
 //! SRS-SIM-001); order STATE-TRACKING via the SRS-EXE-008 lifecycle machine +
-//! ClientCorrelationId; option **contract identity** + LIVE
-//! multi-leg composite submission (SRS-EXE-004 / SRS-DATA-004, mirroring the
-//! existing `SecurityKey` option deferral); making price positivity unbypassable
+//! ClientCorrelationId; option **contract identity** + the multi-leg composite
+//! order path are now delivered by SRS-EXE-004
+//! (`atp_types::composite_order` — `OptionContractIdentity` +
+//! `CompositeOrderSubmission`; that feature lands serialized), so what remains
+//! for THIS single-leg slice is wiring the identity onto the single-leg
+//! `OrderSubmission` envelope (SRS-EXE-003 / SRS-DATA-004) + the operator-gated
+//! live wire (SRS-EXE-006); making price positivity unbypassable
 //! *by construction* (validated constructors / private fields — the variants are
 //! public today); and enforcing the price matrix on the Python `OrderRequest`
 //! authoring surface. The paper intake already DELEGATES price positivity to

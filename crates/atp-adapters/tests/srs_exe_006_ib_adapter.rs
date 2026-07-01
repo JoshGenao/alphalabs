@@ -38,6 +38,7 @@ use atp_types::{OrderErrorCategory, StrategyId};
 #[derive(Default)]
 struct FakeIbGateway {
     submit: Option<Result<OrderReceipt, IbApiError>>,
+    submit_composite: Option<Result<OrderReceipt, IbApiError>>,
     cancel: Option<Result<(), IbApiError>>,
     subscribe: Option<Result<SubscriptionReceipt, IbApiError>>,
     historical: Option<Result<HistoricalQueryResult, IbApiError>>,
@@ -50,6 +51,9 @@ impl FakeIbGateway {
         Self {
             submit: Some(Ok(OrderReceipt {
                 broker_order_id: "ib-ord-1".to_string(),
+            })),
+            submit_composite: Some(Ok(OrderReceipt {
+                broker_order_id: "ib-combo-1".to_string(),
             })),
             cancel: Some(Ok(())),
             subscribe: Some(Ok(SubscriptionReceipt {
@@ -82,6 +86,15 @@ impl IbGatewayConnection for FakeIbGateway {
         self.submit
             .clone()
             .expect("test did not program submit_order")
+    }
+
+    fn submit_composite_order(
+        &self,
+        _order: &atp_types::CompositeOrderSubmission,
+    ) -> Result<OrderReceipt, IbApiError> {
+        self.submit_composite
+            .clone()
+            .expect("test did not program submit_composite_order")
     }
 
     fn cancel_order(&self, _broker_order_id: &str) -> Result<(), IbApiError> {
