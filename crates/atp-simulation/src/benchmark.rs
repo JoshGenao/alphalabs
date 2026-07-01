@@ -17,7 +17,7 @@
 //!      benchmark into the integer-minor level series `compute` needs (aligned 1:1 by
 //!      timestamp with the strategy's equity curve, with a pre-trade baseline first).
 //!      Mirrors the [`BarSource`](crate::backtest::BarSource) deferral seam: the real
-//!      stored-data resolver is deferred (owner: SRS-DATA-007, the unified historical
+//!      stored-data resolver is deferred (reads via the now-complete SRS-DATA-007 unified historical
 //!      data interface); a fixture implementation drives the tests.
 //!   3. **Comparison report** -- [`BenchmarkComparison`] is the data shape a report
 //!      renders to *identify* and *contrast against* its benchmark (the benchmark
@@ -62,8 +62,10 @@
 //! that identifies the benchmark to an operator at the SYS-36 (<=5s) refresh / SYS-37 is the
 //! **SRS-UI / SRS-API** owner consuming [`BenchmarkComparison`] (the blocker keeping
 //! `passes:false`); and resolving SPY's (or a user-selected benchmark's) *actual* historical
-//! level series from stored data is the **SRS-DATA-007** owner behind [`BenchmarkSource`]
-//! (the CLI uses a fixture source).
+//! level series from stored data would read via the now-complete **SRS-DATA-007** unified
+//! interface, but wiring the real [`BenchmarkSource`] resolver to it (with the concrete-calendar
+//! bar grid for prior-close spacing, see SRS-FAC-001) is SRS-BT-005's remaining work (the CLI
+//! uses a fixture source).
 
 use crate::backtest::{DateRange, EquityPoint, Fill};
 use crate::metrics::{
@@ -124,7 +126,7 @@ impl BenchmarkSelection {
 
 /// Why a [`BenchmarkSource`] could not resolve the benchmark's levels.
 ///
-/// A real SRS-DATA-007-backed resolver reads an external/stored data layer, which can
+/// A real stored-data-backed resolver (reads via the complete SRS-DATA-007 interface) reads an external/stored data layer, which can
 /// fail operationally in ways that are NOT a malformed series: the read can time out, the
 /// catalog can be unreachable, the symbol/window can be absent, or the data can be present
 /// but too stale to trust (the platform's stale-data safeguard). The port must be able to
@@ -175,8 +177,8 @@ pub struct ResolvedBenchmark {
 /// The deferred benchmark-resolution seam: turns a selected [`Benchmark`] into the
 /// integer-minor level series the metric family compares against.
 ///
-/// A real implementation reads the benchmark's stored historical price levels (owner:
-/// SRS-DATA-007, the unified historical data interface) for `baseline_ts` followed by
+/// A real implementation reads the benchmark's stored historical price levels (via the
+/// now-complete SRS-DATA-007 unified historical data interface; the resolver wiring is SRS-BT-005) for `baseline_ts` followed by
 /// each timestamp in `axis` (the strategy equity curve's marks). The returned
 /// [`ResolvedBenchmark`] must carry the symbol it actually resolved plus its
 /// pre-trade baseline level (paired with the strategy's starting equity) at `baseline_ts`,
@@ -195,7 +197,7 @@ pub struct ResolvedBenchmark {
 ///
 /// Timeout/cancellation ENFORCEMENT (a hard deadline on a hung resolver) is the I/O
 /// adapter's responsibility, not this pure, synchronous, deterministic (SRS-BT-010)
-/// function: the deferred SRS-DATA-007 resolver performs the real external read and the
+/// function: the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) resolver performs the real external read and the
 /// async SRS-UI / SRS-API layer owns the SYS-36 (<=5s) budget. [`SourceFailure::Timeout`]
 /// is the contract by which a deadline-aware adapter REPORTS a timeout into this core.
 pub trait BenchmarkSource {
@@ -279,7 +281,7 @@ pub enum BenchmarkError {
     /// run window is INCLUSIVE, so the first mark may land exactly on `window.start`; the
     /// baseline (prior close) is then before `window.start`, which is valid. Verifying the
     /// baseline is the IMMEDIATE prior close (not an arbitrarily stale earlier observation)
-    /// requires the data layer's bar grid and is the deferred SRS-DATA-007 resolver's
+    /// requires the data layer's bar grid and is the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) resolver's
     /// responsibility; this in-scope guard is that it precedes the first mark.
     BaselineNotBeforeRun { baseline_ts: u64, first_ts: u64 },
     /// The benchmark source could not resolve its levels for an operational reason
@@ -461,7 +463,7 @@ pub fn compare(
     // mark may land exactly on window.start, in which case the prior-close baseline is
     // before window.start (valid). Verifying it is the IMMEDIATE prior close (not an
     // arbitrarily stale earlier observation) needs the data layer's bar grid and is the
-    // deferred SRS-DATA-007 resolver's responsibility; the in-scope guard is that it
+    // deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) resolver's responsibility; the in-scope guard is that it
     // precedes the first mark.
     if levels[0].ts >= first_ts {
         return Err(BenchmarkError::BaselineNotBeforeRun {

@@ -206,7 +206,7 @@ class AggregateEvidenceTest(_Fixture):
         self.assertEqual(block["schema_version"], 3)
         # The deferred legs that keep it passes:false are named.
         deferred = " ".join(block["deferred"]).lower()
-        for owner in ("dividend", "delisting", "merger", "symbol-change", "srs-data-007"):
+        for owner in ("dividend", "delisting", "merger", "symbol-change"):
             self.assertIn(owner, deferred, f"deferred owners must name {owner!r}")
 
 

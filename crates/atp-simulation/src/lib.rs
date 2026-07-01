@@ -145,7 +145,7 @@ pub mod paper_metrics;
 /// SYS-37). It wraps the [`metrics`] family: [`benchmark::BenchmarkSelection`] resolves
 /// to SPY when the operator selects none; the [`benchmark::BenchmarkSource`] port turns
 /// a selected [`metrics::Benchmark`] into the integer-minor level series
-/// [`metrics::compute`] needs (the real stored-data resolver is the deferred SRS-DATA-007
+/// [`metrics::compute`] needs (the real stored-data resolver is the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001)
 /// owner); and [`benchmark::compare`] computes alpha/beta against the resolved benchmark
 /// and packages a [`benchmark::BenchmarkComparison`] that identifies it. The resolved
 /// series is re-validated fail-closed at the source trust boundary before any metric is
@@ -154,8 +154,9 @@ pub mod paper_metrics;
 /// as `undefined` and every trust-boundary fault fails closed), but SRS-BT-005 stays
 /// `passes:false`: the AC requires the web dashboard AND backtest reports to identify the
 /// benchmark, and the dashboard / REST identification (SRS-UI / SRS-API, SYS-36 <=5s) is not
-/// built. Resolving the benchmark's actual historical levels from stored data (SRS-DATA-007,
-/// behind the fixture source the CLI uses) also remains deferred.
+/// built. Resolving the benchmark's actual historical levels from stored data (read via the
+/// now-complete SRS-DATA-007 interface; the resolver wiring is SRS-BT-005, behind the fixture
+/// source the CLI uses) also remains deferred.
 pub mod benchmark;
 
 /// Completed-backtest result persistence + query (SRS-BT-009 / SyRS SYS-21, SYS-79). It

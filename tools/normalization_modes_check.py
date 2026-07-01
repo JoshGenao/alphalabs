@@ -237,8 +237,8 @@ def check_cli_flag(config: dict, cli_src: str) -> str:
 
 def check_binding_serves_split_adjusted(config: dict, binding_src: str) -> str:
     compact = _compact(binding_src)
-    # The consumer binding serves RAW and the gated SPLIT_ADJUSTED (DATA-007 STAYS passes:false: the backtest
-    # consumer is wired + strategy/notebook read via the binding, but the factor-job execution path is deferred).
+    # The consumer binding serves RAW and the gated SPLIT_ADJUSTED (DATA-007 is COMPLETE: the backtest
+    # consumer is wired, the factor-job consumer reads the store, and strategy/notebook read via the binding).
     # Split-adjusted
     # is routed through the operator CLI's SRS-DATA-011 coverage gate (query_split_adjusted), which fails
     # closed when the symbol is not covered through --end -- so the binding MUST map SPLIT_ADJUSTED to the

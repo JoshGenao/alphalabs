@@ -14,8 +14,8 @@
 //! bridge, so the operator workflow the acceptance names is demonstrated here over the Rust core).
 //!
 //! Two acceptance pieces remain genuinely deferred and are NOT claimed by this binary:
-//!   - resolving the benchmark's *actual* stored historical level series is the **SRS-DATA-007**
-//!     owner behind [`BenchmarkSource`]; this CLI uses a deterministic in-binary fixture source (the
+//!   - resolving the benchmark's *actual* stored historical level series reads via the now-complete
+//!     **SRS-DATA-007** interface but is the deferred SRS-BT-005 resolver wiring behind [`BenchmarkSource`]; this CLI uses a deterministic in-binary fixture source (the
 //!     same stand-in the integration test uses for the deferred resolver).
 //!   - the *dashboard* report rendering at the SYS-36 (<=5s) refresh is the **SRS-UI / SRS-API**
 //!     owner consuming [`BenchmarkComparison`]; this binary is the CLI half only.
@@ -64,7 +64,7 @@ const STARTING_CASH_MINOR: i64 = 1_000_000; // $10,000.00
 const DEFAULT_LOT: i64 = 10;
 const DEFAULT_SELL_TS: u64 = 5;
 // The fixture benchmark's pre-trade baseline level and per-mark step (the aligned series the
-// deferred SRS-DATA-007 resolver will one day return from stored data).
+// deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) resolver will one day return from stored data).
 const FIXTURE_BASELINE_MINOR: i64 = 400;
 const FIXTURE_STEP_MINOR: i64 = 5;
 
@@ -507,7 +507,7 @@ impl BacktestStrategy for RoundTrip {
     }
 }
 
-/// The in-binary stand-in for the deferred SRS-DATA-007 stored-data resolver. By default it returns
+/// The in-binary stand-in for the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) stored-data resolver. By default it returns
 /// a well-formed series that echoes the requested benchmark symbol; an injected fault makes it
 /// substitute a different symbol, drop a level, emit a non-positive level, or fail operationally so
 /// the CLI can demonstrate that `compare` fails closed at the trust boundary.

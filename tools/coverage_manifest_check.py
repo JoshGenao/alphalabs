@@ -529,10 +529,10 @@ _DEFERRED_OWNERS = (
     "remainder)",
     "real provider corporate-action ingestion from Databento / IB — the operator-set / fixture frontier "
     "stands in (SRS-DATA-001/003/006)",
-    "wiring the named factor-job consumer to read split-adjusted via the gated path (SRS-DATA-007 close): the "
-    "atp-simulation StoreBarSource (backtest) and the StoreBackedHistoricalData binding (strategy / notebook) "
-    "read gated split-adjusted, but the atp-factor-pipeline store_inputs loader is not yet in the run_factor_job "
-    "execution path (needs SRS-DATA-005), and the Jupyter notebook HOST is SRS-RES-002, so DATA-007 STAYS passes:false",
+    "the split-adjusted series the gate serves is now consumed by the COMPLETE SRS-DATA-007 unified interface "
+    "(the atp-simulation StoreBarSource backtest source, the StoreBackedHistoricalData strategy/notebook binding, "
+    "and the atp-factor-pipeline store_inputs loaders all read gated split-adjusted); SRS-DATA-011 itself stays "
+    "passes:false for the dividend / delisting / merger / symbol-change corporate-action math this slice omits",
 )
 
 

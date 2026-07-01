@@ -6,12 +6,12 @@ binding call (the notebook / research consumer) to the concrete store-backed ``S
 over a REAL ingested store, and asserts each reads bars by symbol / resolution / date range with NO
 provider named — "code queries the unified historical interface without specifying the original source
 provider", proven end to end through in-process consumers rather than an operator-CLI analogy. SRS-DATA-007
-STAYS passes:false (foundational): the BACKTEST consumer is now genuinely wired as a real Rust engine
+is COMPLETE and closes to passes:true at integration (close_feature.py --verified flips feature_list.json under the scheduler lock; this branch deliberately does NOT edit that file): the BACKTEST consumer is genuinely wired as a real Rust engine
 (``atp_simulation::store_bar_source::StoreBarSource`` consumes the store in ``BacktestEngine::run``; see that
-crate's ``srs_data_007_store_bar_source`` test) and strategy + notebook read via this binding; deferred --
-the factor-job EXECUTION path (``atp_factor_pipeline::store_inputs`` is a shipped market-input loader, not yet
-invoked by ``run_factor_job``, and a complete run needs Sharadar fundamentals, SRS-DATA-005) and the Jupyter
-notebook HOST runtime (SRS-RES-002).
+crate's ``srs_data_007_store_bar_source`` test), the FACTOR-JOB consumer reads the store via
+``atp_factor_pipeline::store_inputs`` + ``run_scheduled_factor_job_over_store``, and strategy + notebook read
+via this binding. The Jupyter notebook HOST runtime (kernel / plotting / no-live-order isolation) is the
+SEPARATE SRS-RES-002 feature (docs/SRS.md line 209), not a DATA-007 consumer gap.
 
 It also pins the safety property the adversarial review demanded. The binding's default
 ``NormalizationMode.SPLIT_ADJUSTED`` (the HistoricalData Protocol default) is served ONLY through the

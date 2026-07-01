@@ -3,7 +3,7 @@
 //! Drives [`atp_simulation::benchmark::compare`] the way a real report would: run a
 //! deterministic backtest through the public [`BacktestEngine`] surface to produce a real
 //! equity curve + trade log, then compare it against a benchmark resolved through a
-//! fixture [`BenchmarkSource`] (the stand-in for the deferred SRS-DATA-007 stored-data
+//! fixture [`BenchmarkSource`] (the stand-in for the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) stored-data
 //! resolver). The SPY-default selection, the user-selected benchmark, alpha/beta against
 //! the resolved series, report identification, determinism, and the fail-closed trust
 //! boundary (wrong symbol / misaligned series) are all exercised from real engine output.
@@ -121,8 +121,8 @@ fn sample_curve() -> BacktestResult {
     run_backtest(sample_bars(), 10, 5, DateRange::new(0, 100))
 }
 
-/// How the fixture benchmark source behaves -- the stand-in for the deferred
-/// SRS-DATA-007 stored-data resolver.
+/// How the fixture benchmark source behaves -- the stand-in for the deferred benchmark
+/// stored-data resolver (reads via the complete SRS-DATA-007 interface; wiring is SRS-BT-005).
 enum SourceMode {
     /// A well-formed, aligned series: `baseline` then `baseline + step*(i+1)` per mark.
     Aligned { baseline: i64, step: i64 },

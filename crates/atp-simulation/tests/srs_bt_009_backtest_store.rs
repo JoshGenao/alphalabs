@@ -78,7 +78,7 @@ impl BacktestStrategy for RoundTrip {
     }
 }
 
-/// A well-formed aligned benchmark source (the stand-in for the deferred SRS-DATA-007
+/// A well-formed aligned benchmark source (the stand-in for the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001)
 /// resolver): a pre-trade baseline then `baseline + step*(i+1)` per equity mark.
 struct FixtureBenchmark {
     symbol: String,

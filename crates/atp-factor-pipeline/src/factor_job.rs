@@ -1,8 +1,8 @@
 //! Scheduled full-universe factor job (SRS-FAC-001 / SyRS SYS-32, SYS-33, SYS-51, NFR-P7;
 //! StRS SN-2.06, BG-3). The deterministic, dependency-free core that *produces* the factor
 //! cross-section the [`crate::factor_analysis`] tear-sheet (SRS-BT-006) consumes -- the
-//! upstream half the factor-analysis module explicitly defers to "the SRS-DATA-007 /
-//! SRS-FAC-001 horizon-aware producer".
+//! upstream half the factor-analysis module explicitly defers to "the deferred SRS-FAC-001
+//! horizon-aware producer (reading via the now-complete SRS-DATA-007 interface)".
 //!
 //! SRS-FAC-001's acceptance criterion bundles four facets, each made falsifiable here over
 //! immutable inputs:
@@ -57,7 +57,7 @@
 //! calendar ([`FactorJobError::ForwardWindowMismatch`]) -- so a mixed/mislabeled-horizon period is
 //! rejected, the regularity the tear-sheet's `mean_spread` / `mean_top` aggregates assume but
 //! cannot themselves validate (a [`FactorPeriod`] carries a start timestamp only). Proving the
-//! realized returns were actually computed over that window is the deferred SRS-DATA-007 data
+//! realized returns were actually computed over that window is the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) data
 //! layer's trust boundary, not this offline producer's.
 //!
 //! DETERMINISM (the SRS-BT-010 criterion the whole crate honors): fixed left-to-right folds, the
@@ -201,8 +201,8 @@ impl FundamentalFactorInput {
 /// CANNOT attest that the universe is the TRUSTED session-versioned US-equity manifest or that the
 /// market/fundamental values came from the real providers -- binding a run to a trusted,
 /// session-versioned universe manifest and market/Sharadar source-provenance manifest is the
-/// deferred SRS-DATA-001 (universe catalog) / SRS-DATA-007 (unified historical interface) data
-/// layer's trust boundary. A successful [`FactorScoreSet`] therefore certifies a correct
+/// deferred SRS-DATA-001 (universe catalog) data layer's trust boundary -- the records are read
+/// via the now-complete SRS-DATA-007 unified historical interface. A successful [`FactorScoreSet`] therefore certifies a correct
 /// COMPUTATION over the inputs given, not the trustworthiness of those inputs (which the data
 /// layer owns).
 #[derive(Debug, Clone, PartialEq)]
@@ -396,7 +396,7 @@ pub enum FactorJobOutcome {
 /// LABEL CONSISTENCY: it must be exactly the declared horizon of trading sessions out (resolved
 /// through the calendar), so all periods share one calendar-valid horizon and a mislabeled or
 /// mixed-horizon period is rejected. It does NOT prove the realized returns were computed over that
-/// window -- that return provenance is the deferred SRS-DATA-007 data layer's trust boundary.
+/// window -- that return provenance is the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) data layer's trust boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RealizedFactorSession {
     /// The rebalance session ordinal (becomes the [`FactorPeriod`] timestamp).
@@ -543,7 +543,7 @@ pub enum FactorJobError {
     /// A period's DECLARED forward window is inconsistent with the panel's horizon: its
     /// `forward_window_end` is not exactly `forward_horizon_sessions` trading sessions after the
     /// period (resolved through the calendar). This is a LABEL-consistency check; verifying the
-    /// returns were actually computed over that window is the deferred SRS-DATA-007 data layer.
+    /// returns were actually computed over that window is the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) data layer.
     ForwardWindowMismatch {
         /// The period whose window was mislabeled.
         session: SessionOrdinal,
@@ -1083,7 +1083,7 @@ pub fn assemble_regular_panel<C: TradingCalendar>(
         // calendar), so the panel's periods all declare the same, calendar-valid horizon and a
         // mislabeled or mixed-horizon period is rejected rather than silently averaged. This checks
         // the LABEL, not that the realized returns were actually computed over that window --
-        // binding each return to a trusted query-window manifest is the deferred SRS-DATA-007 data
+        // binding each return to a trusted query-window manifest is the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) data
         // layer's trust boundary (the producer here consumes returns the data layer computed).
         let actual_gap = trading_session_gap(
             calendar,

@@ -550,7 +550,7 @@ def check_forward_window(config: dict, src: str) -> str:
         "atp-factor-pipeline assemble_regular_panel checks each period's declared forward_window_end "
         "is exactly the declared horizon of trading sessions out (via the calendar) for LABEL "
         "CONSISTENCY (ForwardWindowMismatch) -- a mixed/mislabeled-horizon period is rejected; "
-        "proving the returns were computed over that window is the deferred SRS-DATA-007 data layer"
+        "proving the returns were computed over that window is the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) data layer"
     )
 
 
@@ -773,7 +773,7 @@ _DEFERRED_OWNERS = (
     "binding a successful run to a TRUSTED session-versioned US-equity universe manifest and "
     "market/Sharadar source-provenance manifest -- the inputs are caller-supplied, so a successful "
     "FactorScoreSet certifies a correct COMPUTATION over the inputs given, not their trustworthiness "
-    "(owner: the SRS-DATA-001 universe catalog + SRS-DATA-007 historical interface)",
+    "(owner: the deferred SRS-DATA-001 universe catalog; reads via the now-complete SRS-DATA-007 historical interface)",
     "distinguishing a DEGRADED/STALE calendar from a legitimate non-session -- the TradingCalendar "
     "port mirrors the SRS-SDK-002 value-returning surface; calendar/dependency health is the "
     "readiness/connectivity gates' job (SRS-ARCH-005, ERR-2) and the concrete calendar service",

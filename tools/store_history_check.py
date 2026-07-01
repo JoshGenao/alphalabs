@@ -17,15 +17,15 @@ ingested data by symbol/date-range/resolution with no provider named. The bindin
 and ``tools/normalization_modes_check.py``). An uncovered split-adjusted query fails closed with
 ``CoverageNotProvenError`` (naming SRS-DATA-011), never raw-as-adjusted, and the binding validates the
 ``coverage_through`` frontier the gate echoes (gate-integrity). ``FULLY_ADJUSTED`` / ``TOTAL_RETURN`` stay
-deferred (dividend data, SRS-DATA-012). SRS-DATA-007 STAYS passes:false (foundational): the BACKTEST consumer
+deferred (dividend data, SRS-DATA-012). SRS-DATA-007 is COMPLETE and closes to passes:true at integration (close_feature.py --verified flips feature_list.json under the scheduler lock; this branch deliberately does NOT edit that file); this binding is one of its four wired consumers: the BACKTEST consumer
 is now genuinely wired (atp-simulation ``StoreBarSource`` consumes the unified store in ``BacktestEngine::run``)
 and strategy + notebook/research code read via this binding (``tests/domain/test_store_history_consumer.py``);
 the FACTOR-JOB consumer now READS the store (atp-factor-pipeline ``store_inputs`` loaders +
 ``assemble_factor_inputs``, a point-in-time read primitive; ``run_scheduled_factor_job_over_store``
 DERIVES its data as-of from the calendar's ``session_as_of_ts`` for the scheduled session, so a caller
 cannot pair a session with a future as-of -- only the concrete real-calendar mapping is deferred, see
-SRS-FAC-001); deferred -- the Jupyter notebook HOST runtime (SRS-RES-002), the remaining unwired DATA-007
-consumer.
+SRS-FAC-001). The Jupyter notebook HOST runtime (SRS-RES-002) is a SEPARATE feature, not a DATA-007
+consumer gap -- DATA-007 already serves the notebook DATA ACCESS through this binding.
 
 It is a SEPARATE script from ``unified_query_check.py`` so that script's hard-coded check-count
 assertions (``tests/test_unified_query_contract.py``) stay valid -- mirroring how
@@ -512,11 +512,11 @@ _STATIC_CHECKS = (
 )
 
 _DEFERRED_OWNERS = (
-    "the Jupyter notebook HOST (SRS-RES-002) -- the BACKTEST consumer (atp-simulation StoreBarSource) is "
-    "genuinely wired and the FACTOR-JOB consumer now READS the store (atp-factor-pipeline store_inputs loaders "
-    "+ assemble_factor_inputs, a point-in-time read primitive; the as-of -> scheduled-session binding is the "
-    "deferred calendar boundary, see SRS-FAC-001), and strategy/notebook read via this binding, so the notebook "
-    "HOST is the remaining gap keeping SRS-DATA-007 passes:false",
+    "the Jupyter notebook HOST runtime (SRS-RES-002) -- a SEPARATE feature (kernel / plotting / no-live-order "
+    "isolation), NOT a DATA-007 consumer gap: the BACKTEST consumer (atp-simulation StoreBarSource) is wired, the "
+    "FACTOR-JOB consumer READS the store (atp-factor-pipeline store_inputs loaders + assemble_factor_inputs, a "
+    "point-in-time read primitive; the as-of -> scheduled-session binding is the deferred calendar boundary, see "
+    "SRS-FAC-001), and strategy/notebook read via this binding -- so DATA-007 already serves the notebook DATA ACCESS",
     "fully-adjusted / total-return normalization modes (they additionally need dividend data, "
     "SRS-DATA-012); split-adjusted is now served through the SRS-DATA-011 coverage gate",
     "the concurrent-read-DURING-write Load test for THIS named Python consumer "

@@ -76,8 +76,8 @@
 //! operator -- the CLI half of the SRS-UI / SRS-API surface (see the `tear_sheet_cli` contract
 //! block) -- so SRS-BT-006 is now `passes:true`. Still deferred, each its own feature (not
 //! SRS-BT-006): the scheduled full-universe factor job that produces the panel (SRS-FAC-001),
-//! wiring the real factor values and forward returns from the unified historical data interface
-//! (SRS-DATA-007), the REST/dashboard rendering half (SRS-UI / SRS-API), and bundling the
+//! wiring the real factor values and forward returns through the now-complete unified historical
+//! data interface (SRS-DATA-007; the real data is the deferred SRS-FAC-001 job + SRS-DATA-005 providers), the REST/dashboard rendering half (SRS-UI / SRS-API), and bundling the
 //! SRS-BT-004 `PerformanceMetrics` family into one cross-crate report.
 //!
 //! Two outputs are deliberately SCOPED OUT of this surface because they need modeling the
@@ -97,7 +97,7 @@
 //! spread scales with the horizon) and the same rebalance interval (turnover scales with the
 //! gap between rebalances). A [`FactorPeriod`] carries only a start timestamp, not a horizon or
 //! an interval, so this surface CANNOT validate regularity -- it is the producer's contract
-//! (owner: the deferred SRS-DATA-007 / SRS-FAC-001 horizon-aware producer). A panel that mixes
+//! (owner: the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) / SRS-FAC-001 horizon-aware producer). A panel that mixes
 //! 1-day and 5-day forward returns, or daily and monthly rebalances, yields aggregate means that
 //! mix incomparable quantities. The PER-PERIOD series are unaffected (each value is valid for
 //! its own period), and the [`InformationCoefficient`] family is genuinely horizon-agnostic (a
@@ -249,7 +249,7 @@ pub struct InformationCoefficient {
 /// and a [`FactorPeriod`] carries only a start timestamp, not the forward-return horizon, so
 /// this surface cannot validate that assumption (a daily panel of 5-day forward returns would
 /// compound overlapping windows and fabricate cumulative performance). The validated compounded
-/// series is deferred to a horizon-aware panel (the SRS-DATA-007 / SRS-FAC-001 producer that
+/// series is deferred to a horizon-aware panel (the deferred SRS-FAC-001 producer, reading via the now-complete SRS-DATA-007 interface, that
 /// knows each forward window).
 ///
 /// **`mean_spread` precondition (the panel must be REGULAR).** `mean_spread` averages the
@@ -257,7 +257,7 @@ pub struct InformationCoefficient {
 /// spread is ~5x a 1-day spread). So the average is only meaningful when every period shares the
 /// same forward-return horizon. This surface cannot enforce that (the panel has no horizon
 /// field), so a CONSISTENT forward-return horizon is the producer's contract (owner: the
-/// deferred SRS-DATA-007 / SRS-FAC-001 horizon-aware producer); a panel that mixes horizons
+/// deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) / SRS-FAC-001 horizon-aware producer); a panel that mixes horizons
 /// yields a `mean_spread` that mixes magnitudes. The per-period `spread_per_period` series is
 /// unaffected (each spread is valid for its own period). NOTE that the [`InformationCoefficient`]
 /// family is genuinely horizon-agnostic -- it is a RANK correlation, independent of return

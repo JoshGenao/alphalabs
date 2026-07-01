@@ -22,7 +22,7 @@ benchmark series) with the three pieces SRS-BT-005 names:
       ``BenchmarkError::SourceUnavailable``. The returned ``ResolvedBenchmark``'s ``symbol``
       is bound to the data; ``compare`` validates it equals the selection AFTER the fetch,
       so a source cannot return one benchmark's levels while the report identifies another.
-      The real stored-data resolver is the deferred SRS-DATA-007 owner and a fixture drives
+      The real stored-data resolver is the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) owner and a fixture drives
       tests; timeout/cancellation ENFORCEMENT is the I/O adapter + SYS-36 dashboard owner,
       not this pure deterministic function.
   (c) ``BenchmarkComparison`` (and ``BenchmarkReport``) carry the benchmark identity plus
@@ -34,7 +34,7 @@ benchmark series) with the three pieces SRS-BT-005 names:
       lands exactly on ``range.start`` is accepted) and the benchmark baseline must be the
       pre-trade prior close, strictly before the first mark (``BaselineNotBeforeRun``).
       Verifying the baseline is the IMMEDIATE prior close (not an arbitrarily stale earlier
-      observation) needs the data layer's bar grid and is the deferred SRS-DATA-007
+      observation) needs the data layer's bar grid and is the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001)
       resolver's responsibility. It then re-validates the resolved series at the trust
       boundary (symbol, length, timestamp alignment, strict positivity) BEFORE calling
       ``metrics::compute``, wrapping any ``MetricsError`` as ``BenchmarkError::Metrics``
@@ -55,7 +55,7 @@ but ``feature_list.json`` keeps SRS-BT-005 at ``passes:false``: the AC requires 
 dashboard AND backtest reports to identify the benchmark, and only the backtest-report leg
 (the CLI) is realized. The line names the genuinely deferred owners (the web dashboard /
 REST report rendering via SRS-UI / SRS-API -- the blocker keeping ``passes:false`` -- the
-real benchmark level-series resolution via SRS-DATA-007 behind ``BenchmarkSource``, and the
+real benchmark level-series resolution via the real ``BenchmarkSource`` resolver (which reads via the now-complete SRS-DATA-007 interface; the resolver wiring + concrete calendar are SRS-BT-005 / SRS-FAC-001), and the
 SRS-BT-009 persisted-comparison record) so the deferral is loud.
 
 Mirrors the PASS/FAIL output style of ``tools/metrics_check.py``.
@@ -179,7 +179,7 @@ def check_source_trait(config: dict, src: str) -> str:
         )
     return (
         f"atp-simulation declares the {spec['trait']} resolution port (levels -> "
-        f"{spec['returns_token']}) -- the deferred stored-data resolver seam (owner SRS-DATA-007), "
+        f"{spec['returns_token']}) -- the deferred stored-data resolver seam (reads via the complete SRS-DATA-007 interface), "
         "with a fixture impl for tests"
     )
 
@@ -319,7 +319,7 @@ def check_run_window_binding(config: dict, src: str) -> str:
         "(window.contains, EquityMarkOutsideWindow, so a backtest whose first mark lands exactly on "
         "range.start is accepted) and the benchmark baseline must be the pre-trade prior close, "
         "strictly before the first mark (BaselineNotBeforeRun); verifying it is the IMMEDIATE prior "
-        "close needs the deferred SRS-DATA-007 bar grid"
+        "close needs the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) bar grid"
     )
 
 
@@ -353,7 +353,7 @@ def check_source_failure(config: dict, src: str) -> str:
     return (
         f"atp-simulation declares {spec['enum']} ({', '.join(spec['variants'])}) as the NARROW "
         "BenchmarkSource::levels error type (so a source cannot return a consumer-only variant), "
-        "which compare maps to BenchmarkError::SourceUnavailable -- the deferred SRS-DATA-007 "
+        "which compare maps to BenchmarkError::SourceUnavailable -- the deferred (SRS-DATA-007 interface complete; real data = SRS-DATA-005 / SRS-FAC-001) "
         "resolver surfaces a timeout / unavailable / not-found / stale read distinctly (stale-data "
         "blocking) rather than hiding it behind a malformed series"
     )
@@ -612,9 +612,9 @@ _STATIC_CHECKS = (
 )
 
 _DEFERRED_OWNERS = (
-    "benchmark level-series resolution from stored data (SRS-DATA-007 behind BenchmarkSource; the CLI uses a fixture source)",
-    "immediate-prior-close baseline verification (needs the SRS-DATA-007 bar grid)",
-    "benchmark-read timeout/cancellation enforcement (SRS-DATA-007 adapter + SYS-36 dashboard)",
+    "benchmark level-series resolution from stored data (the real BenchmarkSource resolver reads via the now-complete SRS-DATA-007 interface but is unwired -- SRS-BT-005 resolver wiring + the concrete calendar SRS-FAC-001; the CLI uses a fixture source)",
+    "immediate-prior-close baseline verification (needs the concrete-calendar bar grid SRS-FAC-001, read via the complete SRS-DATA-007 interface)",
+    "benchmark-read timeout/cancellation enforcement (the I/O adapter behind the complete SRS-DATA-007 interface + SYS-36 dashboard)",
     "web dashboard / REST report benchmark identification (SRS-UI / SRS-API; SYS-36 <= 5s, SYS-37) -- the CLI half is now realized by benchmark_comparison_cli",
     "persisting the benchmark comparison into the queryable backtest record (SRS-BT-009)",
 )
