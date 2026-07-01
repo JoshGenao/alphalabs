@@ -194,3 +194,28 @@ def test_malformed_live_composite_fails_closed_before_the_broker() -> None:
 
 def test_route_composite_order_rejects_non_designated_strategy() -> None:
     _assert_single_pass(_exec_lib("tests::route_composite_order_rejects_non_designated_strategy"))
+
+
+def test_route_composite_order_routes_a_designated_strategy_composite() -> None:
+    # Positive authority path: a strategy designated through the engine-owned
+    # LiveDesignation routes its composite to the broker exactly once -- pins the
+    # designation->live delegation of the ONLY public composite entry.
+    _assert_single_pass(
+        _exec_lib("tests::route_composite_order_routes_a_designated_strategy_composite")
+    )
+
+
+def test_route_composite_order_designated_but_unreachable_blocks() -> None:
+    # Regression guard: a DESIGNATED strategy's composite must STILL pass the ERR-2
+    # connectivity gate on the PUBLIC route (not only via the crate-private method).
+    _assert_single_pass(
+        _exec_lib("tests::route_composite_order_designated_but_unreachable_blocks_before_broker")
+    )
+
+
+def test_route_composite_order_designated_but_stale_leg_blocks() -> None:
+    # Regression guard: a DESIGNATED strategy's composite must STILL pass the ERR-3
+    # per-contract freshness gate on the PUBLIC route.
+    _assert_single_pass(
+        _exec_lib("tests::route_composite_order_designated_but_stale_leg_blocks_before_broker")
+    )

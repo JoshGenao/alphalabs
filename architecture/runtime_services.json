@@ -7698,7 +7698,8 @@
       "The CompositeOrderSubmission -> PaperOrderRequest::MultiLeg sim-engine bridge (so a live-authored composite simulates through the same legs) -- the same deferred SRS-ORCH-* / SRS-SIM-001 seam as the single-leg OrderSubmission -> OrderLeg bridge.",
       "The Python multi-leg AUTHORING surface (atp_strategy.api -- a strategy constructing a composite from ergonomic floats before it reaches the core envelope) -- owner the Python Strategy API / SRS-SDK runtime.",
       "Order STATE-TRACKING of an accepted composite (one lifecycle for the whole combo) via the SRS-EXE-008 OrderLifecycle machine -- this slice fixes the composite envelope + validation + adapter seam only, not the lifecycle wiring.",
-      "The IB combo NET-limit price (a single net debit/credit for the spread rather than per-leg order types) -- a refinement of the combo wire, deferred with the operator-gated SRS-EXE-006 wire."
+      "The IB combo NET-limit price (a single net debit/credit for the spread rather than per-leg order types) -- a refinement of the combo wire, deferred with the operator-gated SRS-EXE-006 wire.",
+      "Making the adapter's BrokerageAdapter::submit_composite_order UNREACHABLE except through ExecutionEngine::route_composite_order (a crate-private wrapper + a LiveDesignation-bound admission token) -- owner SRS-EXE-006 / SRS-ORCH-*. This is the SAME deferred orchestrator/adapter wiring the SINGLE-LEG path defers (see order_type_contract + route_order's scope note: the adapter submit_order is likewise a pub transport seam whose route-only-through-the-engine enforcement is deferred). It is enforced by convention today; there is NO live bypass in the shipped code because TcpIbGateway::submit_composite_order fails closed (LIVE_WIRE_PROTOCOL_PENDING) and the deterministic gateway double is test-only -- a direct adapter call cannot create a real live order until the combo wire + this wiring land together."
     ]
   },
   "order_routing_contract": {

@@ -467,6 +467,22 @@ impl<C: IbGatewayConnection> BrokerageAdapter for InteractiveBrokersBrokerage<C>
         // authority the single-leg path uses, so live and paper cannot drift). A
         // malformed composite fails closed HERE and is never forwarded — one bad
         // leg rejects the whole order, so no partial spread reaches the gateway.
+        //
+        // TRANSPORT SEAM, not the authority gate. Like the single-leg
+        // `submit_order` above, this is the low-level broker method; it does shape
+        // validation only, NOT the ERR-1/2/3 live safeguards. The engine-owned
+        // authority + connectivity + per-contract freshness gate is
+        // `ExecutionEngine::route_composite_order` (mirroring `route_order`), and
+        // the intended production flow routes through it. Making this adapter method
+        // UNREACHABLE except through the execution engine (a crate-private wrapper +
+        // an admission token bound to `LiveDesignation`) is the SAME deferred
+        // orchestrator/adapter wiring the single-leg path defers — owner
+        // SRS-EXE-006 / SRS-ORCH-* (see `route_order`'s scope note and
+        // composite_order_contract.deferred[]). There is NO live bypass in the
+        // SHIPPED code: over the real `TcpIbGateway` this fails closed with
+        // LIVE_WIRE_PROTOCOL_PENDING (the combo wire is operator-gated), and the
+        // deterministic gateway double is test-only — a direct adapter call cannot
+        // create a real live order until that wire + wiring land.
         if let Err(err) = request.validate() {
             return Err(AdapterError::InvalidOrder {
                 adapter: self.provider_name(),

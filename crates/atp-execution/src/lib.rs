@@ -1748,4 +1748,131 @@ mod tests {
         assert_eq!(err.category, OrderErrorCategory::NonLiveStrategySubmission);
         assert_eq!(err.error_type, "NotDesignatedLiveStrategy");
     }
+
+    #[test]
+    fn route_composite_order_routes_a_designated_strategy_composite() {
+        // ERR-1 authority gate, POSITIVE path: once a strategy is designated live
+        // through the engine-owned LiveDesignation, its composite passes the
+        // authority gate and proceeds through the ERR-2/3 gate to the broker
+        // exactly once. This pins the designation->live delegation of the ONLY
+        // public composite entry (route_composite_order), so a regression in that
+        // wiring is caught (not only the rejection branch).
+        use atp_types::StrategyId;
+        let mut engine = ExecutionEngine::default();
+        engine
+            .designate(
+                StrategyId::new("live-1"),
+                LiveDesignationConfirmation::from_operator(
+                    StrategyId::new("live-1"),
+                    "operator promoted live-1 for composite test",
+                )
+                .expect("valid confirmation"),
+            )
+            .expect("designation succeeds");
+
+        let broker = CountingCompositeBroker::new();
+        let connectivity = StubConnectivity::connected();
+        let events = RecordingEvents::new();
+        let freshness = AlwaysFresh;
+        let stale_events = RecordingStaleEvents::new();
+
+        let receipt = engine
+            .route_composite_order(
+                four_leg_composite("live-1"),
+                &broker,
+                &connectivity,
+                &events,
+                &freshness,
+                &stale_events,
+            )
+            .expect("a designated strategy's well-formed composite routes to the broker");
+
+        assert_eq!(receipt.broker_order_id, "ib-combo-4");
+        assert_eq!(
+            broker.calls.get(),
+            1,
+            "the composite reaches the broker once"
+        );
+        assert!(events.events.borrow().is_empty());
+        assert!(stale_events.events.borrow().is_empty());
+    }
+
+    /// Designate a strategy live so `route_composite_order` passes the ERR-1
+    /// authority gate, isolating the ERR-2/3 checks on the PUBLIC entry.
+    fn engine_with_designated(strategy: &str) -> ExecutionEngine {
+        use atp_types::StrategyId;
+        let mut engine = ExecutionEngine::default();
+        engine
+            .designate(
+                StrategyId::new(strategy),
+                LiveDesignationConfirmation::from_operator(
+                    StrategyId::new(strategy),
+                    "operator promoted for composite gate test",
+                )
+                .expect("valid confirmation"),
+            )
+            .expect("designation succeeds");
+        engine
+    }
+
+    #[test]
+    fn route_composite_order_designated_but_unreachable_blocks_before_broker() {
+        // Regression guard: even a DESIGNATED strategy's composite must still pass
+        // the ERR-2 connectivity gate on the PUBLIC route (route_composite_order),
+        // not only when submit_live_composite_order is called directly. A forbidden
+        // broker proves route_composite_order does not shortcut to the broker after
+        // authority.
+        let engine = engine_with_designated("live-1");
+        let broker = ForbiddenCompositeBroker;
+        let connectivity = StubConnectivity::in_state(ConnectivityState::Unreachable);
+        let events = RecordingEvents::new();
+        let freshness = ForbiddenFreshness;
+        let stale_events = RecordingStaleEvents::new();
+
+        let err = engine
+            .route_composite_order(
+                four_leg_composite("live-1"),
+                &broker,
+                &connectivity,
+                &events,
+                &freshness,
+                &stale_events,
+            )
+            .expect_err("a designated composite must still be blocked when unreachable");
+        assert_eq!(err.category, OrderErrorCategory::ConnectivityBlocked);
+        assert_eq!(connectivity.reconnect_calls.get(), 1);
+        assert_eq!(events.events.borrow().len(), 1);
+    }
+
+    #[test]
+    fn route_composite_order_designated_but_stale_leg_blocks_before_broker() {
+        // Regression guard: a DESIGNATED strategy's composite must still pass the
+        // ERR-3 per-contract freshness gate on the PUBLIC route. One stale leg
+        // (keyed by full contract identity) blocks the whole combo; the forbidden
+        // broker proves it never routes.
+        let engine = engine_with_designated("live-1");
+        let broker = ForbiddenCompositeBroker;
+        let connectivity = StubConnectivity::connected();
+        let events = RecordingEvents::new();
+        let freshness = StaleForSymbol {
+            stale_symbol: "SPY:20240621:C:52000000",
+            staleness_seconds: 30,
+        };
+        let stale_events = RecordingStaleEvents::new();
+
+        let err = engine
+            .route_composite_order(
+                four_leg_composite("live-1"),
+                &broker,
+                &connectivity,
+                &events,
+                &freshness,
+                &stale_events,
+            )
+            .expect_err("a designated composite must still be blocked on a stale leg");
+        assert_eq!(err.category, OrderErrorCategory::MarketDataStale);
+        let recorded = stale_events.events.borrow();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].symbol, "SPY:20240621:C:52000000");
+    }
 }

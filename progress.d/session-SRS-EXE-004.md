@@ -87,12 +87,30 @@ Critic verdicts:
       public + authority-gated); keyed freshness by OptionContractIdentity::
       canonical_key + a contract-level-freshness test (same-underlying, one stale
       strike blocks).
-    R3 -> Codex usage limit (resets 12:54 PM) — could not run. FELL BACK to the
-      manual fresh-context review per prompts/critic_prompt.md: verified both R2
-      fixes complete (grep-confirmed pub(crate) + canonical_key + designation
-      consulted + no unwrap/panic in production), checked dependency direction,
-      single-live invariant, integer money math, no now()-branching, doc/code
-      coherence -> APPROVE. Operator can re-run Codex after the reset if desired.
+    R3 -> Codex usage limit (resets 12:54 PM) — could not run at integrate time.
+      FELL BACK to the manual fresh-context review per prompts/critic_prompt.md
+      (both R2 fixes verified) -> APPROVE. Integrated serialized on that basis.
+    R3 (re-run after reset, post-integrate follow-up) -> needs-attention:
+      (a) [high] the ADAPTER BrokerageAdapter::submit_composite_order is a pub
+          transport seam that bypasses route_composite_order — DISPOSITION: this is
+          PARITY with the single-leg adapter submit_order (same pub transport seam;
+          route_order's own scope note already defers "unreachable-except-through-
+          the-engine" to SRS-EXE-006/ORCH). No live bypass in SHIPPED code:
+          TcpIbGateway::submit_composite_order fails closed (LIVE_WIRE_PROTOCOL_
+          PENDING), double is test-only. Scoped honestly: adapter-impl doc note +
+          composite_order_contract.deferred[] entry (owner SRS-EXE-006/ORCH).
+      (b) [medium] the AUTHORIZED route_composite_order path was untested (only
+          rejection covered) — FIXED: added route_composite_order_routes_a_
+          designated_strategy_composite (designate -> route -> exactly one broker
+          call), pinned in tests/domain/test_composite_order.py.
+    R4 (on the follow-up) -> needs-attention [medium]: the positive route test only
+      covered the connected/fresh happy path, so a regression making
+      route_composite_order skip the ERR-2/3 gate after designation wouldn't be
+      caught (my negative gate tests call the crate-private inner method directly).
+      FIXED: added route_composite_order_designated_but_{unreachable,stale_leg}_
+      blocks_before_broker (designated + forbidden broker -> blocked before the
+      broker on connectivity / per-contract freshness), pinned in tests/domain/.
+      21 domain invariants now.
 
 NOTE (dropped prep commit): I initially added a SAFETY_PATH_RE prep commit
 (composite_order tokens) but Codex blocks any critic-gate self-modification pending
