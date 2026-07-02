@@ -7909,5 +7909,291 @@
       "The eviction POLICY -- the 80% high-water-mark trigger, the inactivity recency window, never-evict live-strategy data (owner: SRS-DATA-010; this module ships the data-loss-safe archival PRIMITIVE archive_cold the policy drives)",
       "Real 1 TB SSD / 20 TB NAS CAPACITY provisioning + a real network NAS mount (owner: NFR-SC2 deployment / SRS-ARCH-004 Docker Compose SSD/NAS bind mounts; growth estimates documented in SRS Section 12.1, inspection)"
     ]
+  },
+  "perf_measurement_contract": {
+    "requirement": "SRS-PERF-001",
+    "description": "SRS-PERF-001 (the software shall measure latency-sensitive performance metrics against a Precision Time Protocol (PTP)-disciplined system clock with documented offset bounds and shall report p50/p95/p99/p99.9 percentiles in verification artifacts; SyRS 5.1 NFR-P1 / NFR-P4 / NFR-P5 / NFR-P6 / NFR-P9 / NFR-P10 + SRS-MD-001 fan-out latency; StRS SN-1.01 / SN-2.03). SCOPE: this contract pins the vendor- and runtime-neutral MEASUREMENT SUBSTRATE in crates/atp-types/src/perf.rs -- the pure nearest-rank percentile engine (LatencyPercentiles over nanosecond samples: p50/p95/p99/p99.9, every reported value an actually-observed sample, no interpolation), the PtpClockDiscipline offset-bound model (Disciplined{max_offset_ns} vs Undisciplined), the LatencyNfr catalog binding each of the seven AC NFRs to its measurement boundary + budget(s), and the LatencyVerificationArtifact report type. The artifact constructor (from_samples) FAILS CLOSED: it rejects a non-PTP-disciplined clock (so a produced artifact always documents a max clock offset bound), an empty/inverted measurement window, and an empty sample set -- so every artifact carries the four percentiles, a documented offset, and a real window. tools/perf_measurement_check.py asserts each NFR budget + boundary phrase in the catalog matches its measurement condition in the spec docs: NFR-P1/P4/P5/P6/P9/P10 against the SyRS 5.1 performance table (docs/SyRS_v0.7.md, explicit '<'/'<=' ms budgets), and the SRS-MD-001 fan-out budget against the SRS requirement row (docs/SRS.md, the prose 'no more than 100 ms additional latency' AC) -- so 'measurement boundaries match the measurement conditions for each NFR' is enforced by inspection. NFR-P4 reuses the authoritative LIVE_CALLBACK_LATENCY_P95_MS / PAPER_CALLBACK_LATENCY_P95_MS constants and NFR-P9 reuses STRATEGY_STARTUP_DEADLINE_MS (no duplication); NFR-P6 mirrors atp_notification::event::DISPATCH_SLA_MS (a crate above dependency-free atp-types, so it cannot be imported) and both trace SyRS NFR-P6, pinned to it here. DEFERRED: this substrate performs NO measurement itself (no clock I/O; samples + the clock offset bound are supplied by the runtimes each NFR measures). Producing the REAL end-to-end verification artifacts requires those runtimes plus a PTP-disciplined host clock (a deployment/operator + hardware inspection that cannot run in the parallel sandbox), so SRS-PERF-001 stays passes:false in feature_list.json until the deferred owners land (see deferred[]).",
+    "srs_refs": [
+      "SRS-PERF-001",
+      "SRS-MD-001"
+    ],
+    "syrs_refs": [
+      "NFR-P1",
+      "NFR-P4",
+      "NFR-P5",
+      "NFR-P6",
+      "NFR-P9",
+      "NFR-P10",
+      "NFR-SC1",
+      "SYS-70"
+    ],
+    "strs_refs": [
+      "SN-1.01",
+      "SN-2.03"
+    ],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "module_file": "src/perf.rs",
+    "order_event_file": "src/order_event.rs",
+    "types_lib_file": "src/lib.rs",
+    "syrs_doc": "docs/SyRS_v0.7.md",
+    "srs_doc": "docs/SRS.md",
+    "percentile_method": "nearest-rank",
+    "reported_percentiles": [
+      {
+        "label": "p50",
+        "per_mille": 500
+      },
+      {
+        "label": "p95",
+        "per_mille": 950
+      },
+      {
+        "label": "p99",
+        "per_mille": 990
+      },
+      {
+        "label": "p99.9",
+        "per_mille": 999
+      }
+    ],
+    "nfrs": [
+      {
+        "id": "NFR-P1",
+        "rust_variant": "OrderSignalToAck",
+        "budget_doc": "syrs",
+        "doc_row": "NFR-P1",
+        "match_mode": "exact",
+        "boundary_phrase": "order submission API",
+        "thresholds": [
+          {
+            "label": "",
+            "bound_ms": 1000,
+            "comparison": "<",
+            "stated_percentile": "p95"
+          }
+        ],
+        "thresholds_static": "P1_THRESHOLDS"
+      },
+      {
+        "id": "NFR-P4",
+        "rust_variant": "OrderEventCallback",
+        "budget_doc": "syrs",
+        "doc_row": "NFR-P4",
+        "match_mode": "exact",
+        "boundary_phrase": "simulated fill",
+        "thresholds": [
+          {
+            "label": "live",
+            "bound_ms": 1000,
+            "comparison": "<",
+            "stated_percentile": "p95"
+          },
+          {
+            "label": "paper",
+            "bound_ms": 100,
+            "comparison": "<",
+            "stated_percentile": "p95"
+          }
+        ],
+        "thresholds_static": "P4_THRESHOLDS"
+      },
+      {
+        "id": "NFR-P5",
+        "rust_variant": "HeartbeatStaleness",
+        "budget_doc": "syrs",
+        "doc_row": "NFR-P5",
+        "match_mode": "exact",
+        "boundary_phrase": "market hours",
+        "thresholds": [
+          {
+            "label": "",
+            "bound_ms": 15000,
+            "comparison": "<=",
+            "stated_percentile": null
+          }
+        ],
+        "thresholds_static": "P5_THRESHOLDS"
+      },
+      {
+        "id": "NFR-P6",
+        "rust_variant": "ConnectivityNotification",
+        "budget_doc": "syrs",
+        "doc_row": "NFR-P6",
+        "match_mode": "exact",
+        "boundary_phrase": "email and SMS",
+        "thresholds": [
+          {
+            "label": "",
+            "bound_ms": 60000,
+            "comparison": "<=",
+            "stated_percentile": null
+          }
+        ],
+        "thresholds_static": "P6_THRESHOLDS"
+      },
+      {
+        "id": "NFR-P9",
+        "rust_variant": "StrategyStartup",
+        "budget_doc": "syrs",
+        "doc_row": "NFR-P9",
+        "match_mode": "exact",
+        "boundary_phrase": "orchestrator start command",
+        "thresholds": [
+          {
+            "label": "",
+            "bound_ms": 30000,
+            "comparison": "<=",
+            "stated_percentile": null
+          }
+        ],
+        "thresholds_static": "P9_THRESHOLDS"
+      },
+      {
+        "id": "NFR-P10",
+        "rust_variant": "PeakLoadOrderLatency",
+        "budget_doc": "syrs",
+        "doc_row": "NFR-P10",
+        "match_mode": "exact",
+        "boundary_phrase": "NFR-SC1",
+        "simultaneous_legs": true,
+        "thresholds": [
+          {
+            "label": "order_latency",
+            "bound_ms": 1000,
+            "comparison": "<",
+            "stated_percentile": "p95"
+          },
+          {
+            "label": "dashboard_refresh",
+            "bound_ms": 5000,
+            "comparison": "<=",
+            "stated_percentile": null
+          }
+        ],
+        "thresholds_static": "P10_THRESHOLDS"
+      },
+      {
+        "id": "SRS-MD-001",
+        "rust_variant": "SubscriptionFanout",
+        "budget_doc": "srs",
+        "doc_row": "SRS-MD-001",
+        "match_mode": "prose",
+        "boundary_phrase": "fan-out",
+        "thresholds": [
+          {
+            "label": "",
+            "bound_ms": 100,
+            "comparison": "<=",
+            "stated_percentile": null
+          }
+        ],
+        "thresholds_static": "FANOUT_THRESHOLDS"
+      }
+    ],
+    "defined_threshold_constants": {
+      "NFR-P1": {
+        "const": "ORDER_SIGNAL_TO_ACK_LATENCY_P95_MS",
+        "value": 1000
+      },
+      "NFR-P2": {
+        "const": "DASHBOARD_REFRESH_LATENCY_MS",
+        "value": 5000
+      },
+      "NFR-P5": {
+        "const": "HEARTBEAT_STALENESS_THRESHOLD_MS",
+        "value": 15000
+      },
+      "NFR-P6": {
+        "const": "CONNECTIVITY_NOTIFICATION_SLA_MS",
+        "value": 60000
+      },
+      "SRS-MD-001": {
+        "const": "SUBSCRIPTION_FANOUT_LATENCY_MS",
+        "value": 100
+      }
+    },
+    "reused_threshold_constants": {
+      "NFR-P4": {
+        "live": {
+          "const": "LIVE_CALLBACK_LATENCY_P95_MS",
+          "value": 1000
+        },
+        "paper": {
+          "const": "PAPER_CALLBACK_LATENCY_P95_MS",
+          "value": 100
+        }
+      },
+      "NFR-P9": {
+        "const": "STRATEGY_STARTUP_DEADLINE_MS",
+        "value": 30000
+      }
+    },
+    "clock_discipline": {
+      "enum": "PtpClockDiscipline",
+      "variants": [
+        "Disciplined",
+        "Undisciplined"
+      ],
+      "offset_field": "max_offset_ns",
+      "accessor": "max_offset_ns"
+    },
+    "artifact": {
+      "struct": "LatencyVerificationArtifact",
+      "constructor": "from_samples",
+      "offset_field": "max_clock_offset_ns",
+      "offset_accessor": "max_clock_offset_ns",
+      "leg_field": "threshold_label",
+      "leg_accessor": "threshold_label",
+      "render_tokens": [
+        "max clock offset",
+        "measurement window"
+      ],
+      "percentile_iteration": "REPORTED_PERCENTILES",
+      "fail_closed": {
+        "error_enum": "PerfMeasurementError",
+        "variants": [
+          "NoSamples",
+          "ClockNotDisciplined",
+          "EmptyMeasurementWindow",
+          "MeasurementWindowOverflow",
+          "UnknownThresholdLeg",
+          "IncompleteNfrVerification"
+        ],
+        "clock_guard": "ok_or(PerfMeasurementError::ClockNotDisciplined)",
+        "window_guard": "EmptyMeasurementWindow",
+        "overflow_guard": "MeasurementWindowOverflow",
+        "leg_guard": "UnknownThresholdLeg",
+        "samples_guard": "NoSamples"
+      },
+      "multi_leg_verification": {
+        "struct": "NfrVerification",
+        "constructor": "assemble",
+        "incomplete_variant": "IncompleteNfrVerification",
+        "labels_method": "threshold_labels",
+        "simultaneity_method": "requires_simultaneous_legs"
+      }
+    },
+    "vendor_forbidden_tokens": [
+      "ib_insync",
+      "ibapi",
+      "reqMktData",
+      "EWrapper",
+      "EClient",
+      "ib_gateway",
+      "broker_sdk"
+    ],
+    "rust_integration_test": "srs_perf_001_latency_percentiles",
+    "deferred": [
+      "SRS-EXE-001 (live IB order path supplies NFR-P1 / NFR-P10 order signal-to-ack samples)",
+      "SRS-SDK-004 / SRS-SIM-001 (live + paper order-event dispatchers supply NFR-P4 callback samples)",
+      "SRS-MD-003 (heartbeat monitor supplies NFR-P5 staleness-detection samples)",
+      "SRS-NOTIF-001 (notification dispatcher supplies NFR-P6 email+SMS delivery samples)",
+      "SRS-ORCH-001 (orchestrator startup supplies NFR-P9 container-ready samples)",
+      "SRS-MD-001 (consolidated subscription fan-out supplies fan-out delivery samples for the 100 ms budget)",
+      "PTP-disciplined host clock + measurement window (deployment/operator + hardware inspection; supplies the samples and the documented max clock offset bound the artifact records)"
+    ]
   }
 }

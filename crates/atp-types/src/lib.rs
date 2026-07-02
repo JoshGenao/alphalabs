@@ -28,6 +28,15 @@ pub use composite_order::{
     OptionContractError, OptionContractIdentity, OptionRight,
 };
 
+pub mod perf;
+pub use perf::{
+    nearest_rank_percentile_ns, LatencyNfr, LatencyPercentiles, LatencyThreshold,
+    LatencyVerificationArtifact, NfrVerification, Percentile, PerfMeasurementError,
+    PtpClockDiscipline, ThresholdComparison, CONNECTIVITY_NOTIFICATION_SLA_MS,
+    DASHBOARD_REFRESH_LATENCY_MS, HEARTBEAT_STALENESS_THRESHOLD_MS, LATENCY_NFRS,
+    ORDER_SIGNAL_TO_ACK_LATENCY_P95_MS, REPORTED_PERCENTILES, SUBSCRIPTION_FANOUT_LATENCY_MS,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StrategyId(String);
 
