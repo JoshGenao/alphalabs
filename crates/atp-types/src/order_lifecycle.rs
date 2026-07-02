@@ -380,6 +380,41 @@ impl OrderLifecycle {
             })
         }
     }
+
+    /// Rehydrate a **previously-persisted** lifecycle at an already-reached
+    /// `state` (SRS-EXE-005 restart-recovery / SyRS SYS-90, NFR-R3).
+    ///
+    /// This is a *snapshot rehydration* constructor, NOT a submission path — a
+    /// fresh order still enters the ledger only through [`OrderLedger::submit`]
+    /// or [`OrderLedger::cancel_replace`], which enforce idempotency and the
+    /// cancel-replace safety gate. `restore` reconstructs an order whose `state`
+    /// was already legally reached (through those gates) *before* it was
+    /// persisted, so it deliberately does not re-run the transition graph — the
+    /// history that produced `state` is not itself persisted, only the final
+    /// resting state. It is the direct analogue of the paper engine's
+    /// `VirtualPosition::from_components` (SRS-SIM-004), which rehydrates an
+    /// arbitrary already-reached position the same way.
+    ///
+    /// Exposed so the durable state-recovery codec in the sibling `atp-execution`
+    /// crate (which cannot see these private fields) can rebuild the ledger. That
+    /// codec validates the wire fail-closed (magic header, integrity checksum,
+    /// known [`OrderState`], key/strategy consistency) *before* handing the parts
+    /// here, and [`OrderLedger::restore_from`] re-checks the cross-order
+    /// invariants — so a corrupt/tampered snapshot never rehydrates fabricated
+    /// orders.
+    pub fn restore(
+        key: OrderKey,
+        submission: OrderSubmission,
+        state: OrderState,
+        replaces: Option<OrderKey>,
+    ) -> Self {
+        Self {
+            key,
+            submission,
+            state,
+            replaces,
+        }
+    }
 }
 
 /// The idempotency ledger: one [`OrderLifecycle`] per [`OrderKey`]. This is the
@@ -690,6 +725,90 @@ impl OrderLedger {
             .get(&replacement_key)
             .expect("replacement was just inserted"))
     }
+
+    /// A read-only view of every tracked order lifecycle, for the SRS-EXE-005
+    /// durable state snapshot. The iteration order follows the backing
+    /// `HashMap` and is therefore **unspecified**; a caller that needs a
+    /// deterministic (byte-identical) serialization sorts by [`OrderKey`]. This
+    /// exposes no mutation — the only ways to change the ledger remain `submit`,
+    /// `transition`, and `cancel_replace`.
+    pub fn orders_iter(&self) -> impl Iterator<Item = &OrderLifecycle> {
+        self.orders.values()
+    }
+
+    /// Rebuild a ledger from previously-persisted [`OrderLifecycle`]s
+    /// (SRS-EXE-005 restart recovery). The reconstructed ledger enforces the
+    /// **same** idempotency thereafter: a re-submission of any restored
+    /// `(strategy, correlation id)` is rejected as a duplicate — that is the
+    /// property behind the AC's "survive restart **without duplicate
+    /// submissions**".
+    ///
+    /// Fail-closed on a corrupt persisted set (the read side of the durable
+    /// codec's write↔read symmetry — a checksum-valid but structurally
+    /// impossible blob must not rehydrate fabricated state):
+    /// * a lifecycle whose [`OrderSubmission::strategy_id`] does not match its
+    ///   own [`OrderKey`]'s strategy — the idempotency key would not identify
+    ///   the order it carries ([`OrderLifecycleError::RestoredKeyStrategyMismatch`]);
+    /// * two lifecycles sharing one [`OrderKey`] — a duplicate idempotency key
+    ///   ([`OrderLifecycleError::RestoredDuplicateKey`]);
+    /// * a [`OrderLifecycle::replaces`] audit link that dangles (its original is
+    ///   not in the set) — the cancel-replace lineage would be silently lost
+    ///   ([`OrderLifecycleError::UnknownOrder`]);
+    /// * a cancel-replace replacement that has **gone live** (any state other than
+    ///   the held `NEW` or the auto-suppressed `REJECTED`) while its original is
+    ///   not `CANCELLED` — rehydrating that would resurrect the doubled-exposure
+    ///   the live machine's cancel-replace gate exists to prevent
+    ///   ([`OrderLifecycleError::ReplacementBlockedUntilOriginalCancelled`]).
+    pub fn restore_from(
+        orders: impl IntoIterator<Item = OrderLifecycle>,
+    ) -> Result<Self, OrderLifecycleError> {
+        let mut map: HashMap<OrderKey, OrderLifecycle> = HashMap::new();
+        for order in orders {
+            // Per-record: the carried submission's strategy must match the key's
+            // strategy, or the pair is not a coherent idempotency identity.
+            if order.key().strategy_id() != &order.submission().strategy_id {
+                return Err(OrderLifecycleError::RestoredKeyStrategyMismatch(
+                    order.key().clone(),
+                ));
+            }
+            let key = order.key().clone();
+            if map.insert(key.clone(), order).is_some() {
+                return Err(OrderLifecycleError::RestoredDuplicateKey(key));
+            }
+        }
+        // Cross-order: every cancel-replace audit link must resolve within the
+        // restored set (a dangling `replaces` would lose the lineage the
+        // cancel-replace safety gate depends on) AND a replacement that has gone
+        // live must have a CANCELLED original — the doubled-exposure gate the
+        // live machine enforces at transition time must also hold in any restored
+        // set, so a corrupt snapshot cannot rehydrate a replacement resting live
+        // alongside a still-working original.
+        for order in map.values() {
+            if let Some(original_key) = order.replaces() {
+                let original = match map.get(original_key) {
+                    Some(original) => original,
+                    None => return Err(OrderLifecycleError::UnknownOrder(original_key.clone())),
+                };
+                // A replacement that is NEW is still held (not live) and one that
+                // is REJECTED is dead (an auto-suppressed replacement legitimately
+                // has a non-cancelled terminal original); any *other* state means
+                // it reached the broker, which is only legal once the original was
+                // confirmed CANCELLED.
+                let replacement_went_live =
+                    !matches!(order.state(), OrderState::New | OrderState::Rejected);
+                if replacement_went_live && original.state() != OrderState::Cancelled {
+                    return Err(
+                        OrderLifecycleError::ReplacementBlockedUntilOriginalCancelled {
+                            replacement: order.key().clone(),
+                            original: original_key.clone(),
+                            original_state: original.state(),
+                        },
+                    );
+                }
+            }
+        }
+        Ok(Self { orders: map })
+    }
 }
 
 /// Errors raised by the order lifecycle machine for *internal* invariant
@@ -725,6 +844,13 @@ pub enum OrderLifecycleError {
         original: OrderKey,
         original_state: OrderState,
     },
+    /// A persisted lifecycle carried a submission whose strategy did not match
+    /// its own key's strategy (SRS-EXE-005 restore validation — the idempotency
+    /// key would not identify the order it carries).
+    RestoredKeyStrategyMismatch(OrderKey),
+    /// Two persisted lifecycles shared one order key (SRS-EXE-005 restore
+    /// validation — a duplicate idempotency key on rehydration).
+    RestoredDuplicateKey(OrderKey),
 }
 
 impl fmt::Display for OrderLifecycleError {
@@ -779,6 +905,16 @@ impl fmt::Display for OrderLifecycleError {
                 replacement,
                 original,
                 original_state.as_str()
+            ),
+            Self::RestoredKeyStrategyMismatch(key) => write!(
+                formatter,
+                "restored order {key} carries a submission for a different \
+                 strategy than its own key — corrupt persisted state",
+            ),
+            Self::RestoredDuplicateKey(key) => write!(
+                formatter,
+                "restored order key {key} appears more than once in the \
+                 persisted snapshot — a duplicate idempotency key",
             ),
         }
     }

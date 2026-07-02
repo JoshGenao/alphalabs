@@ -8195,5 +8195,47 @@
       "SRS-MD-001 (consolidated subscription fan-out supplies fan-out delivery samples for the 100 ms budget)",
       "PTP-disciplined host clock + measurement window (deployment/operator + hardware inspection; supplies the samples and the documented max clock offset bound the artifact records)"
     ]
+  },
+  "live_state_recovery_contract":   {
+    "description": "SRS-EXE-005 (persist live strategy state for restart recovery and re-execute the warm-up on restart; SyRS SYS-90, NFR-R3; StRS SN-2.05 / SN-1.01 / BG-1). The durable live-execution-state snapshot + restart-recovery substrate lives in crates/atp-execution (module `live_state`) and persists the order lifecycle ledger (atp-types OrderLedger, SRS-EXE-008 \u2014 whose own module defers durable cross-process persistence to THIS feature) together with the enumerated live state the AC names: pending submissions / awaiting acks / order statuses / correlation IDs (the ledger), broker IDs, fill events, open positions, the account equity snapshot, and the user-accessible JSON-serializable state dictionary. No new dependency (no serde): money stays integer minor units (i64/i128), the codec is hand-rolled and dependency-free (decimal integer lines + length-prefixed strings), a parallel per-crate copy of the SRS-SIM-004 paper_state codec rather than a shared one (hoisting it would be a cross-cutting refactor of an unrelated crate). A LiveStateSnapshot is a versioned envelope (schema_version i64, the RecoveryConfig in force, the LiveExecutionState). RecoveryConfig carries the NFR-R3 restore deadline (restore_deadline_secs u64, default 60) and reexecute_warmup_on_restart (always true \u2014 the AC mandates warm-up re-execution on restart, so it cannot be disabled; a snapshot that encodes it disabled is rejected with PersistenceError::WarmUpReexecutionRequired), and RecoveryConfig::new fails closed on a zero deadline. serialize() is DETERMINISTIC: orders, broker IDs and fills are emitted in a canonical (sorted) order so the same state serializes byte-identically regardless of HashMap iteration order. The frame is the MAGIC line ('ATP-LIVE-EXEC-STATE-V1'), a 64-bit FNV-1a integrity checksum over the body, then the body; deserialize() verifies the checksum BEFORE building any state, validates the magic header, schema version, config, and every field / cross-reference invariant (a broker ID or fill for an order not in the ledger, a non-canonical or flat position, a non-positive fill or order-type price, a restored order intent re-checked through the shared OrderSubmission::validate authority (non-blank symbol, strictly-positive quantity, positive prices, options fail-closed), a duplicate order key / key-strategy mismatch / dangling cancel-replace link / a live cancel-replace replacement over a non-cancelled original via OrderLedger::restore_from, and a malformed length-prefix that fails closed via checked_add rather than panicking), and builds the whole state in locals before returning \u2014 so a corrupt, truncated, or tampered snapshot returns an Err and yields NO partial state under fault injection. The checksum is a non-cryptographic integrity guard for ACCIDENTAL corruption (the fault-injection criterion), not a security MAC (a keyed MAC + key management is out of scope for the single-user, local-only baseline). save_to_path is atomic (unique '<pid>.<seq>' scratch -> fsync -> rename -> parent-dir fsync); load_from_path fails closed on BOTH a missing directory AND an existing directory with no snapshot file (a missing snapshot during recovery could be a lost/mis-mounted/removed file after orders were live; restoring empty would drop the ledger and could allow duplicate submissions) -- a genuine first start initializes an empty snapshot explicitly via capture(), it does NOT recover (distinguishing first-run from a lost file is the orchestrator's container-lifecycle knowledge; a durable 'initialized' manifest is the SRS-DATA-018 concern, out of scope here). Restart recovery: recover() enforces the NFR-R3 restore deadline over the caller-measured restore-phase elapsed (EXCLUDING warm-up), then re-executes the SRS-SDK-005 warm-up (via a WarmUpReexecutionPort) for every strategy with recovered state -- the UNION of the explicitly registered live_strategies set (persisted independently of orders, so a live strategy with positions/user-state but no active order is still warmed up) and every strategy owning an order in the restored ledger -- failing closed if any warm-up fails (no resume on un-warmed indicators); the restored ledger keeps its (strategy, correlation id) idempotency keys, so a re-submission after recovery is rejected as a duplicate \u2014 the AC's 'survive restart without duplicate submissions'. recover_from_path() is the production entry point that measures the restore phase with a monotonic clock; recover() is the deterministic core a test drives with an injected elapsed. The Rust integration test srs_exe_005_live_state_recovery drives capture/serialize/persist/recover end to end.",
+    "requirement": "SRS-EXE-005",
+    "srs_refs": [
+      "SRS-EXE-005"
+    ],
+    "syrs_refs": [
+      "SYS-90",
+      "NFR-R3"
+    ],
+    "strs_refs": [
+      "SN-2.05",
+      "SN-1.01",
+      "BG-1"
+    ],
+    "ac_traces": [
+      "SRS-EXE-005",
+      "SYS-90",
+      "NFR-R3"
+    ],
+    "execution_crate": {
+      "crate": "atp-execution",
+      "path": "crates/atp-execution"
+    },
+    "recovery_module": "live_state",
+    "ledger_persistence_surface": {
+      "crate": "atp-types",
+      "module": "order_lifecycle",
+      "added": [
+        "OrderLedger::orders_iter",
+        "OrderLedger::restore_from",
+        "OrderLifecycle::restore"
+      ]
+    },
+    "deferred": [
+      "Producers of broker IDs and fill events (the SRS-EXE-006 IB adapter event mapping) and of open positions and account equity (a live IB account sync) \u2014 this module persists and restores whatever is captured, it does not source those fields.",
+      "The SRS-EXE-009 durable outbox (write-ahead intent commit + acknowledged-broker-ID reconciliation for the submit-crash window) \u2014 a stronger, narrower guarantee than snapshot restore.",
+      "Wiring the periodic + on-shutdown capture loop into the live execution engine / orchestrator, and the actual SRS-SDK-005 warm-up execution (a strategy-container concern reached through WarmUpReexecutionPort).",
+      "The end-to-end 60s container-restart wall-clock proof (a live strategy container restarted with warm-up reconstructing real indicator buffers) \u2014 a fault-injection/integration exercise the operator runs, so SRS-EXE-005 stays passes:false.",
+      "Multi-leg composite option orders (SRS-EXE-004) and per-contract option positions: the v1 schema models single-leg orders (via OrderLedger) and symbol-keyed positions, NOT a live CompositeOrderSubmission (pending combo submission / combo broker ID / status / per-leg fills) or an option position keyed by OptionContractIdentity::canonical_key. This is a bound, not a silent loss: SRS-EXE-004 is passes:false with an operator-gated/pending combo wire, the composite execution path (route_composite_order) is NOT ledger-tracked, and single-leg option orders fail closed at OrderSubmission::validate (re-checked on restore), so no live composite/option state exists to recover today; when SRS-EXE-004 goes live and is wired into the SRS-EXE-008 lifecycle, SCHEMA_VERSION bumps to carry composite records keyed by canonical_key. Owners: SRS-EXE-004 + SRS-EXE-008."
+    ]
   }
 }

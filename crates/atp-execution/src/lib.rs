@@ -24,6 +24,13 @@ pub use order_routing::{
     InternalSimulationSubmit, OrderRoute, OrderRoutingReceipt, SimulatedOrderReceipt,
 };
 
+pub mod live_state;
+pub use live_state::{
+    recover, recover_from_path, AccountEquitySnapshot, FillEventRecord, LiveExecutionState,
+    LiveStateSnapshot, PersistenceError as LiveStatePersistenceError, RecoveryConfig,
+    RecoveryError, RecoveryOutcome, WarmUpError, WarmUpReexecutionPort,
+};
+
 /// The execution engine owns the single live-designation authority
 /// ([`LiveDesignation`]) — the source of truth for which strategy may route to
 /// IB (SRS-EXE-001, SyRS SYS-2a). It is a private field reached only through
