@@ -144,6 +144,12 @@
   "SRS-NOTIF-001": [
     "SRS-EXE-006"
   ],
+  "SRS-PERF-001": [
+    "SRS-MD-003",
+    "SRS-NOTIF-001",
+    "SRS-SDK-004",
+    "SRS-UI-001"
+  ],
   "SRS-RES-001": [
     "SRS-UI-001"
   ],
