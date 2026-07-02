@@ -147,6 +147,14 @@
   "SRS-RES-001": [
     "SRS-UI-001"
   ],
+  "SRS-RES-002": [
+    "SRS-RES-001"
+  ],
+  "SRS-RESV-001": [
+    "SRS-EXE-001",
+    "SRS-PERF-001",
+    "SRS-UI-001"
+  ],
   "SRS-RESV-002": [
     "SRS-RESV-001"
   ],
