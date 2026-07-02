@@ -16,6 +16,7 @@ use atp_types::{
 // crate-internal math -- so there is no public path to raw-as-adjusted. The `coverage` module is a
 // sibling in the same crate, so it can call the crate-internal `normalization` functions while no
 // external caller can.
+pub mod cold_read;
 pub mod coverage;
 pub mod fundamentals;
 mod normalization;
@@ -23,6 +24,10 @@ pub mod query;
 pub mod store;
 pub mod tiering;
 
+pub use crate::cold_read::{
+    ColdCacheReport, ColdReadConfig, ColdReadError, TieredReadResult, TieredReader,
+    DEFAULT_COLD_READ_CACHE_SHARE_PERCENT, MAX_COLD_READ_CACHE_SHARE_PERCENT,
+};
 pub use crate::coverage::{CoverageError, SplitAdjustedResult};
 pub use crate::query::{UnifiedHistoricalQuery, UnifiedHistoricalResult};
 pub use crate::tiering::{

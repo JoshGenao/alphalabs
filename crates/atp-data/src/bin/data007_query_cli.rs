@@ -19,19 +19,35 @@
 //! in `python/atp_config`), else an error. A misconfigured / unmounted directory surfaces as a store
 //! error rather than a silently empty catalog.
 //!
+//! **Transparent cold-read failover (SRS-DATA-009).** When a NAS archival tier is configured — via the
+//! `ATP_NAS_DATA_DIR` config key (so an EXISTING deployment auto-tiers with NO change to the query
+//! invocation, exactly like `--dir` resolves from `ATP_DATA_STORE_DIR`) or an explicit `--nas` — the
+//! SAME `query`, unchanged in its symbol / resolution / range dimensions, is served transparently
+//! across the tiers via [`atp_data::cold_read::TieredReader`]: SSD primary → cold-read cache → NAS for
+//! data archived off SSD outside the retention window. So an operator reading a record that
+//! [`atp_data::tiering::TieredStore::archive_cold`] moved off SSD gets it back from NAS **without
+//! changing the query**, and the NAS result is cached on SSD within the configured share (`--cache-share`
+//! % — default 20 — of `--ssd-capacity`, which defaults to a bounded value; `--now` defaults to the
+//! system clock). Tiered mode serves `raw` only (a `split-adjusted` query stays single-tier); the
+//! split-adjusted × cold-read interaction is the SRS-DATA-009 × SRS-DATA-011/012 follow-up. With no NAS
+//! tier configured the query is a single-directory read, byte-identical to before.
+//!
 //! Read-path scope: a query is a pure READ over the atomically-published on-disk snapshot
 //! ([`MarketDataStore::load_from_path`]). It does NOT acquire the single-writer `StoreLock` — a read
 //! does not need it, and `save_to_path` publishes via fsync + atomic rename so a reader never observes a
-//! half-written store. Coordinating concurrent reads *during* an active ingestion write is the deferred
-//! owner SRS-DATA-017; the SSD/NAS tiering of this directory is SRS-DATA-008/009/010; the real provider
-//! network adapters are SRS-DATA-001/003/005/006 (fixture sources stand in); the in-process Python /
-//! backtest / factor bindings over this engine are downstream consumers.
+//! half-written store (the cold-read cache write-back is owned by the `cold_read` library, not this
+//! binary). Coordinating concurrent reads *during* an active ingestion write is the deferred owner
+//! SRS-DATA-017; the eviction POLICY that drives archival is SRS-DATA-010; the real provider network
+//! adapters are SRS-DATA-001/003/005/006 (fixture sources stand in); the in-process Python / factor
+//! bindings over this engine are downstream consumers of the same interface.
 
 use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use atp_data::cold_read::{ColdReadConfig, TieredReader, DEFAULT_COLD_READ_CACHE_SHARE_PERCENT};
 use atp_data::store::{DatasetKind, MarketDataRecord, MarketDataStore};
+use atp_data::tiering::{TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
 use atp_data::UnifiedHistoricalQuery;
 
 /// The normalization mode the operator surface serves. `raw` returns stored values verbatim;
@@ -48,10 +64,20 @@ data007_query_cli — SRS-DATA-007 unified historical data access operator workf
 
 USAGE:
     data007_query_cli query --dir <path> --symbol <sym> --resolution <res> --start <ts> --end <ts> [--kind <kind>] [--normalization <mode>]
+    data007_query_cli query --dir <ssd> --nas <nas> --ssd-capacity <n> --now <ts> [--cache-share <pct>] [--hot-days <days>] --symbol ... (transparent cold-read failover, SRS-DATA-009)
 
 The store directory is taken from --dir, else the ATP_DATA_STORE_DIR environment variable. A
 missing/unmounted directory fails closed rather than masquerading as an empty catalog. The query is a
 read-only snapshot load (no single-writer lock); ingest first with data016_ingest_cli.
+
+TRANSPARENT COLD-READ FAILOVER (SRS-DATA-009): when a NAS archival tier is configured, the SAME query
+is served across the SSD/NAS tiers — records archived off SSD (outside the retention window) are read
+from NAS and cached on SSD, capped at --cache-share % (default 20) of --ssd-capacity records — WITHOUT
+changing the query invocation. The NAS tier is taken from the ATP_NAS_DATA_DIR config key (an existing
+deployment auto-tiers with NO extra flags) or an explicit --nas; --dir is the SSD primary tier. --now
+(the retention-boundary instant) defaults to the system clock; --ssd-capacity defaults to a bounded
+value (the real capacity is the NFR-SC2 deployment concern). Tiered mode serves 'raw' only (a
+split-adjusted query stays single-tier). Without a NAS tier the query is a single-directory read.
 
 The query names NO source provider — it matches purely on symbol, resolution, and the inclusive
 [start, end] event-timestamp range. --kind narrows to one vendor-neutral dataset kind (not a provider).
@@ -126,6 +152,20 @@ fn cmd_query(rest: &[String]) -> Result<(), String> {
         query = query.with_kind(kind);
     }
 
+    // SRS-DATA-009 transparent cold-read failover: when a NAS archival tier is configured, the SAME
+    // query (unchanged symbol/resolution/range) is served across SSD -> cold-read cache -> NAS, so an
+    // operator reading a record archived off SSD gets it back from NAS transparently. The NAS tier is
+    // resolved from the ENVIRONMENT (ATP_NAS_DATA_DIR) exactly like --dir resolves from
+    // ATP_DATA_STORE_DIR, so an existing deployment auto-tiers with NO change to the query invocation;
+    // an explicit --nas overrides. --dir is the SSD primary tier here. Split-adjusted is not tiered
+    // (the split-adjusted × cold-read interaction is the SRS-DATA-009 × SRS-DATA-011/012 follow-up), so
+    // a split-adjusted query with a NAS configured falls through to the single-tier SSD path unchanged.
+    if let Some(nas) = resolve_nas(&parsed) {
+        if parsed.normalization == Normalization::Raw {
+            return cmd_query_tiered(&parsed, dir, nas, &query, &symbol, &resolution, start, end);
+        }
+    }
+
     // Resolve the records + printed normalization label + optional coverage frontier per mode.
     let (records, normalization_label, coverage_through): (
         Vec<MarketDataRecord>,
@@ -169,6 +209,75 @@ fn cmd_query(rest: &[String]) -> Result<(), String> {
         println!("coverage_through:{through}");
     }
     println!("match_count:{}", records.len());
+    print_records(&records);
+    Ok(())
+}
+
+/// SRS-DATA-009 transparent cold-read failover: serve the SAME `query` across the SSD/NAS tiers via
+/// [`TieredReader`], reading archived-off records back from NAS and caching them on SSD within the
+/// configured share — the record output format is identical to the single-tier path (so a consumer's
+/// query shape and result shape are unchanged), plus per-tier provenance lines as inspectable evidence.
+/// Tiered mode serves `raw` only (the split-adjusted × cold-read interaction is the SRS-DATA-009 ×
+/// SRS-DATA-011/012 follow-up). Durable cache persistence is owned by the `cold_read` library, so this
+/// binary itself takes no store lock and never persists directly.
+#[allow(clippy::too_many_arguments)]
+fn cmd_query_tiered(
+    parsed: &ParsedArgs,
+    ssd_dir: PathBuf,
+    nas_dir: PathBuf,
+    query: &UnifiedHistoricalQuery,
+    symbol: &str,
+    resolution: &str,
+    start: i64,
+    end: i64,
+) -> Result<(), String> {
+    // Tier config resolves from flags-or-defaults so the transparent path needs NO extra invocation
+    // flags: capacity defaults to a bounded value (the real 1 TB capacity is the NFR-SC2 deployment
+    // concern), the share defaults to 20%, and `now` (the retention-boundary instant) defaults to the
+    // wall clock — read HERE at the composition root, so the cold_read library stays clock-free.
+    let capacity = parsed.ssd_capacity.unwrap_or(DEFAULT_SSD_CAPACITY_RECORDS);
+    let now = resolve_now(parsed.now)?;
+    let hot_days = parsed.hot_days.unwrap_or(DEFAULT_HOT_RETENTION_DAYS);
+    let share = parsed
+        .cache_share
+        .unwrap_or(DEFAULT_COLD_READ_CACHE_SHARE_PERCENT);
+
+    let tier_config = TierConfig::new(ssd_dir, nas_dir, hot_days).map_err(|err| err.to_string())?;
+    let cold_read = ColdReadConfig::new(capacity, share).map_err(|err| err.to_string())?;
+    let reader = TieredReader::new(TieredStore::new(tier_config), cold_read);
+    let result = reader.query(query, now).map_err(|err| err.to_string())?;
+
+    println!("symbol:{symbol}");
+    println!("resolution:{resolution}");
+    println!("start:{start}");
+    println!("end:{end}");
+    println!("kind:{}", parsed.kind.map_or("any", |kind| kind.as_str()));
+    println!("normalization:raw");
+    println!("tier:cold-read");
+    println!("now:{now}");
+    println!("served_from_ssd:{}", result.served_from_ssd);
+    println!("served_from_cache:{}", result.served_from_cache);
+    println!("served_from_nas:{}", result.served_from_nas);
+    println!("nas_reachable:{}", result.nas_reachable);
+    println!("cold_cache_entries:{}", result.cold_cache_entries);
+    println!("cold_cache_capacity:{}", result.cold_cache_capacity);
+    println!("cold_cache_within_cap:{}", result.cold_cache_within_cap());
+    println!("match_count:{}", result.len());
+    print_records(result.records());
+
+    // The cap is an invariant: exit non-zero if the cold-read cache ever exceeds its configured share.
+    if !result.cold_cache_within_cap() {
+        return Err(format!(
+            "cold-read cache invariant BREACH: {} entries exceed the cap of {}",
+            result.cold_cache_entries, result.cold_cache_capacity
+        ));
+    }
+    Ok(())
+}
+
+/// Print the source-neutral record report shared by the single-tier and tiered read paths: each
+/// record's `event_ts`, optional option contract, and integer-minor value fields — never a provider.
+fn print_records(records: &[MarketDataRecord]) {
     for (index, record) in records.iter().enumerate() {
         let key = record.key();
         println!("record.{index}.event_ts:{}", key.event_ts);
@@ -180,12 +289,17 @@ fn cmd_query(rest: &[String]) -> Result<(), String> {
             println!("record.{index}.field.{}:{}", value.name, value.value_minor);
         }
     }
-    Ok(())
 }
 
 // --------------------------------------------------------------------------- //
 // Store directory helper
 // --------------------------------------------------------------------------- //
+
+/// Default SSD capacity (in the store's record unit) the cold-read cache cap is a share of, when
+/// neither `--ssd-capacity` nor a deployment config supplies one. The real 1 TB SSD capacity is the
+/// NFR-SC2 deployment concern; this bounded default keeps transparent tiering working with zero
+/// query-invocation changes (the cache is still capped at `--cache-share` % — default 20 — of it).
+const DEFAULT_SSD_CAPACITY_RECORDS: u64 = 1_000_000;
 
 /// Resolve the store directory: explicit `--dir`, else `ATP_DATA_STORE_DIR`, else error.
 fn resolve_dir(explicit: Option<&str>) -> Result<PathBuf, String> {
@@ -196,6 +310,39 @@ fn resolve_dir(explicit: Option<&str>) -> Result<PathBuf, String> {
         Ok(dir) if !dir.trim().is_empty() => Ok(PathBuf::from(dir)),
         _ => Err("no store directory: pass --dir <path> or set ATP_DATA_STORE_DIR".to_string()),
     }
+}
+
+/// Resolve the NAS archival tier for transparent cold-read failover (SRS-DATA-009): an explicit
+/// `--nas <dir>`, else a non-empty `ATP_NAS_DATA_DIR` config key — resolved exactly like `--dir` /
+/// `ATP_DATA_STORE_DIR`, so an EXISTING deployment auto-tiers with no change to the query invocation.
+///
+/// A **configured** NAS tier engages tiering even if the mount is currently **absent/unreachable**:
+/// that surfaces as a DEGRADED cold read (`nas_reachable:false`) via [`TieredReader`]'s NAS
+/// classification, NOT a silent single-tier read that would hide the NAS outage (an archived-off cold
+/// record would then look like an empty result instead of a degraded-mode alert). Presence of the
+/// directory is deliberately NOT checked here — reachability is the tier's runtime concern. Returns
+/// `None` only when no NAS tier is configured at all (the genuine single-tier read path).
+fn resolve_nas(parsed: &ParsedArgs) -> Option<PathBuf> {
+    if let Some(nas) = parsed.nas.as_deref() {
+        return Some(PathBuf::from(nas));
+    }
+    match env::var("ATP_NAS_DATA_DIR") {
+        Ok(dir) if !dir.trim().is_empty() => Some(PathBuf::from(dir)),
+        _ => None,
+    }
+}
+
+/// Resolve the retention-boundary instant `now_ts`: an explicit `--now`, else the wall clock read HERE
+/// at the composition root (the `cold_read` library itself never reads a clock — it is a pure function
+/// of the caller-supplied `now_ts`). Fails closed if the system clock is before the Unix epoch.
+fn resolve_now(explicit: Option<i64>) -> Result<i64, String> {
+    if let Some(now) = explicit {
+        return Ok(now);
+    }
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .map_err(|_| "system clock is before the Unix epoch".to_string())
 }
 
 // --------------------------------------------------------------------------- //
@@ -210,6 +357,13 @@ struct ParsedArgs {
     end: Option<i64>,
     kind: Option<DatasetKind>,
     normalization: Normalization,
+    // SRS-DATA-009 transparent cold-read failover (optional): a configured NAS tier makes --dir the
+    // SSD primary and serves the same query across SSD -> cold-read cache -> NAS.
+    nas: Option<String>,
+    ssd_capacity: Option<u64>,
+    cache_share: Option<u32>,
+    now: Option<i64>,
+    hot_days: Option<u32>,
 }
 
 impl Default for ParsedArgs {
@@ -222,6 +376,11 @@ impl Default for ParsedArgs {
             end: None,
             kind: None,
             normalization: Normalization::Raw,
+            nas: None,
+            ssd_capacity: None,
+            cache_share: None,
+            now: None,
+            hot_days: None,
         }
     }
 }
@@ -248,6 +407,27 @@ impl ParsedArgs {
                 }
                 "--normalization" => {
                     parsed.normalization = parse_normalization(&take_value(&mut iter, flag)?)?;
+                }
+                // SRS-DATA-009 transparent cold-read failover flags (optional).
+                "--nas" => parsed.nas = Some(take_value(&mut iter, flag)?),
+                "--ssd-capacity" => {
+                    let raw = take_value(&mut iter, flag)?;
+                    parsed.ssd_capacity = Some(raw.parse::<u64>().map_err(|_| {
+                        format!("--ssd-capacity expects a non-negative integer, got '{raw}'")
+                    })?);
+                }
+                "--cache-share" => {
+                    let raw = take_value(&mut iter, flag)?;
+                    parsed.cache_share = Some(raw.parse::<u32>().map_err(|_| {
+                        format!("--cache-share expects a percentage 0..=100, got '{raw}'")
+                    })?);
+                }
+                "--now" => parsed.now = Some(parse_ts(&take_value(&mut iter, flag)?, flag)?),
+                "--hot-days" => {
+                    let raw = take_value(&mut iter, flag)?;
+                    parsed.hot_days = Some(raw.parse::<u32>().map_err(|_| {
+                        format!("--hot-days expects a non-negative integer, got '{raw}'")
+                    })?);
                 }
                 other => return Err(format!("unknown flag '{other}'\n\n{USAGE}")),
             }

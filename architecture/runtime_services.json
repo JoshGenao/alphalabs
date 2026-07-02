@@ -8237,5 +8237,126 @@
       "The end-to-end 60s container-restart wall-clock proof (a live strategy container restarted with warm-up reconstructing real indicator buffers) \u2014 a fault-injection/integration exercise the operator runs, so SRS-EXE-005 stays passes:false.",
       "Multi-leg composite option orders (SRS-EXE-004) and per-contract option positions: the v1 schema models single-leg orders (via OrderLedger) and symbol-keyed positions, NOT a live CompositeOrderSubmission (pending combo submission / combo broker ID / status / per-leg fills) or an option position keyed by OptionContractIdentity::canonical_key. This is a bound, not a silent loss: SRS-EXE-004 is passes:false with an operator-gated/pending combo wire, the composite execution path (route_composite_order) is NOT ledger-tracked, and single-leg option orders fail closed at OrderSubmission::validate (re-checked on restore), so no live composite/option state exists to recover today; when SRS-EXE-004 goes live and is wired into the SRS-EXE-008 lifecycle, SCHEMA_VERSION bumps to carry composite records keyed by canonical_key. Owners: SRS-EXE-004 + SRS-EXE-008."
     ]
+  },
+  "cold_read_failover_contract":   {
+    "description": "SRS-DATA-009 (transparent cold-read failover to NAS + bounded SSD cold-read cache; SyRS SYS-68; StRS SN-1.28 / BG-5). Acceptance: 'Requests outside SSD retention are served from NAS and cached on SSD without requiring consumer code changes; cold-read cache entries do not exceed the configurable SSD share defaulting to 20 percent and are evicted before hot runtime data.' This is the READ counterpart to the SRS-DATA-008 tier (which owns the SSD-first write + retention + archive_cold that drops cold records off SSD, keeping them only on NAS). The `cold_read` module in crates/atp-data adds TieredReader over the existing TieredStore: (1) TRANSPARENT FALLBACK -- TieredReader::query runs the SRS-DATA-007 UnifiedHistoricalQuery over SSD primary -> cold-read cache -> (for cold ranges only, start_ts < hot_window_start(now_ts)) NAS, merges deduped by natural key in the SAME event_ts-ascending order as MarketDataStore::query_unified, so the tiered read is PARITY-equal to querying SSD union NAS -- the consumer passes only symbol/resolution/range (no tier selector, no cache-miss to handle, no provider), which is what makes the fallback transparent. (2) BOUNDED CACHE -- NAS-served records are written back into a SEPARATE MarketDataStore under <ssd>/cold_read_cache (on SSD, distinct store file from the primary), capped at cold_cache_capacity = floor(ssd_capacity_records * cache_share_percent / 100) in INTEGER arithmetic (no float); ColdReadConfig defaults the share to 20% and rejects a share > 100% or a zero SSD capacity fail-closed; every cache write enforces entries <= cap by evicting to fit. (3) EVICTED BEFORE HOT -- because the cache is a physically separate store from the SSD primary (hot) tier, TieredReader::evict_cold_cache_to reclaims SSD by draining ONLY the cache (it loads the cold_cache_dir, never the ssd primary store), so hot runtime data is structurally untouchable by cache eviction; the eviction POLICY that decides WHEN to reclaim (80% high-water, inactivity recency, never-evict live-strategy data) is SRS-DATA-010. Degraded taxonomy mirrors SRS-DATA-008: an UNREACHABLE/aliased NAS degrades a cold read to a resident-only result (nas_reachable=false, not an error); a reachable-but-corrupt NAS fails closed (ColdReadError::Nas). Determinism: the hot/cold boundary is a pure function of caller-supplied now_ts (no wall-clock), integer cap (no float), no serde/vendor SDK. The operator CLI data009_cold_read_cli (query / cache-report / evict-cache) exercises it end to end and exits NON-ZERO if the cap is ever exceeded; all durable cache persistence is owned by the cold_read library module (the CLI never persists directly, so the cold-read cache write is not an SSD-only ingestion bypass of the SRS-DATA-008 routing guard).",
+    "requirement": "The software shall transparently fall back to NAS for cold historical reads.",
+    "srs_refs": [
+      "SRS-DATA-009"
+    ],
+    "syrs_refs": [
+      "SYS-68"
+    ],
+    "strs_refs": [
+      "SN-1.28",
+      "BG-5"
+    ],
+    "data_crate": {
+      "crate": "atp-data",
+      "path": "crates/atp-data"
+    },
+    "cold_read_module": "cold_read",
+    "cli_bin": "data009_cold_read_cli",
+    "module_reexport": {
+      "lib_reexport_token": "pub mod cold_read;"
+    },
+    "config_type": {
+      "struct": "ColdReadConfig",
+      "cap_fn": "pub fn cold_cache_capacity",
+      "default_share_const": "pub const DEFAULT_COLD_READ_CACHE_SHARE_PERCENT: u32 = 20;",
+      "max_share_const": "pub const MAX_COLD_READ_CACHE_SHARE_PERCENT: u32 = 100;",
+      "zero_capacity_variant": "ZeroSsdCapacity",
+      "share_above_max_variant": "CacheShareAboveMax"
+    },
+    "reader_type": {
+      "struct": "TieredReader",
+      "query_fn": "pub fn query",
+      "evict_fn": "pub fn evict_cold_cache_to",
+      "report_fn": "pub fn cold_cache_report",
+      "cache_dir_fn": "pub fn cold_cache_dir",
+      "cache_subdir_const": "pub const COLD_READ_CACHE_SUBDIR: &str = \"cold_read_cache\";"
+    },
+    "transparency": {
+      "description": "The query merges SSD/cache/NAS in the same event_ts-ascending order as query_unified (parity with SSD union NAS) and consults NAS only for cold ranges.",
+      "cold_gate_token": "hot_window_start",
+      "merge_ordering_token": "event_ts.cmp",
+      "union_query_token": "query_unified"
+    },
+    "cap_enforcement": {
+      "description": "Every cache write bounds entries to the cap by keeping the most-recent (highest event_ts) records; write_back_cache and evict_cold_cache_to both go through keep_most_recent.",
+      "write_back_fn": "fn write_back_cache",
+      "cap_helper_fn": "fn keep_most_recent"
+    },
+    "evict_before_hot": {
+      "description": "evict_cold_cache_to operates on the cold_cache_dir ONLY and never opens the SSD primary store, so hot data is structurally un-evictable here.",
+      "evict_fn": "evict_cold_cache_to",
+      "cache_dir_token": "cold_cache_dir",
+      "forbidden_ssd_primary_token": "ssd_dir"
+    },
+    "numeric_boundary": {
+      "integer_tokens": [
+        "cache_share_percent as u64",
+        "saturating_mul"
+      ],
+      "forbidden_tokens": [
+        "f64",
+        "f32"
+      ]
+    },
+    "determinism": {
+      "now_param_token": "now_ts: i64",
+      "forbidden_tokens": [
+        "SystemTime",
+        "Instant::now",
+        "rand::",
+        "par_iter",
+        "rayon",
+        "thread::spawn"
+      ]
+    },
+    "no_broker_dependency": {
+      "cargo_toml": "Cargo.toml",
+      "forbidden_dep_tokens": [
+        "atp-adapters",
+        "atp-execution"
+      ]
+    },
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "cli": {
+      "cap_breach_exit_token": "if !result.cold_cache_within_cap()",
+      "no_direct_persist_token": ".save_to_path("
+    },
+    "consumer_wiring": {
+      "description": "PARTIAL / passes:false. This slice wires the transparent cold-read into ONE existing unified-read consumer -- the SRS-DATA-007 operator read surface (data007_query_cli) -- and makes it engage from CONFIGURATION rather than a changed invocation: the NAS tier is resolved from the ATP_NAS_DATA_DIR config key (exactly like --dir resolves from ATP_DATA_STORE_DIR), so an EXISTING deployment auto-tiers with NO new flags on the query -- the same `query --symbol S --resolution R --start T0 --end T1` transparently serves records archive_cold moved off SSD back from NAS (and caches them on SSD). A CONFIGURED but unmounted NAS surfaces a DEGRADED cold read (tier:cold-read, nas_reachable:false), never a silent single-tier read that would hide the outage. An explicit --nas overrides; --now (retention boundary) defaults to the wall clock read at the CLI composition root (the cold_read library stays clock-free), --ssd-capacity to a bounded default, --cache-share to 20%. Tiered mode serves raw only (a split-adjusted query stays single-tier). Backward compatible (no NAS configured -> byte-identical single-tier), so the SRS-DATA-007 contract stays green; the CLI takes no store lock and never persists directly (cache persistence is library-owned). This does NOT yet close SRS-DATA-009 transparency: the OTHER named unified-read consumers (the backtest StoreBarSource, the Python StoreBackedHistoricalData binding, the factor store_inputs) still read a single MarketDataStore and must route through TieredReader before the 'without requiring consumer code changes' clause holds for every consumer -- see deferred[]. The feature therefore stays passes:false; this ships the cold-read MECHANISM + one wired consumer as the foundation.",
+      "consumer_cli": "data007_query_cli",
+      "tiered_reader_token": "TieredReader",
+      "cold_read_flag_token": "--nas",
+      "env_auto_token": "ATP_NAS_DATA_DIR"
+    },
+    "divergence_guard": {
+      "description": "Cross-tier read integrity: TieredReader::query merges SSD primary / cold-read cache / NAS keyed by natural key, and because a historical record is IMMUTABLE by natural key, a key that resolves to DIFFERENT content across tiers is corruption -- most importantly a stale/corrupt cold-read cache entry that still decodes but disagrees with the authoritative NAS record. merge_record compares the FULL MarketDataRecord (key + value fields) on every cross-tier duplicate and FAILS CLOSED (ColdReadError::CrossTierDivergence) rather than letting one copy silently shadow the other, so the reader can never hide historical-data corruption. Proven by a unit test that plants a valid-but-divergent cache record and asserts the read fails closed, plus a matching-record test that confirms an identical cache/NAS record is a clean dedup (not a false divergence).",
+      "error_variant": "CrossTierDivergence",
+      "merge_fn": "fn merge_record",
+      "value_compare_token": "== record"
+    },
+    "retention_guard": {
+      "description": "Cold-only NAS fallback: reaches_cold gates WHETHER NAS is consulted, but a mixed hot/cold query's NAS read must serve ONLY records older than the hot window. A record INSIDE the hot window (event_ts >= hot_window_start) that is on NAS but MISSING from SSD is an SRS-DATA-008 hot-retention breach (hot data must live on the SSD primary tier) -- TieredReader::query refuses to serve it from NAS (which would mask the breach and cache hot data as cold) and FAILS CLOSED (ColdReadError::HotRetentionBreach). A hot NAS record that IS on SSD is the normal superset case (a merge_record dedup). Proven by a mixed-range unit test where a hot record exists only on NAS (fails closed) and a healthy mixed-range test where the hot record is on SSD and the cold record on NAS (both served, only the cold one cached).",
+      "error_variant": "HotRetentionBreach",
+      "cold_filter_token": "record.key().event_ts < hot_window_start"
+    },
+    "deferred": [
+      "The eviction POLICY that decides WHEN to reclaim SSD -- the 80% high-water-mark trigger, the inactivity recency window (accessed-within-24h not evicted), never-evict currently-running-live-strategy data (owner: SRS-DATA-010; this slice ships the cold-read-cache-first, hot-segregated eviction PRIMITIVE evict_cold_cache_to the policy drives, plus the bounded write-back)",
+      "Access-recency (LRU) intra-cache eviction order -- SYS-69 'data accessed within the recency window is not evicted'; this slice keeps the most-recent-by-event_ts entries as a deterministic default (owner: SRS-DATA-010 policy)",
+      "Split-adjusted x cold-read: the tiered read serves RAW; serving split-adjusted over archived-off bars couples SRS-DATA-009 with the SRS-DATA-011 coverage frontier + SRS-DATA-012 math (owner: SRS-DATA-011/012); tiered mode fails closed on --normalization split-adjusted rather than emitting raw-as-adjusted",
+      "CLOSE BLOCKER (keeps SRS-DATA-009 passes:false): routing the OTHER named unified-read consumers' reads through TieredReader so the 'without requiring consumer code changes' clause holds for EVERY consumer, not just the operator CLI. The backtest BarSource (atp_simulation::store_bar_source::StoreBarSource) reads via a bounded allocation-free borrow-streaming pass over a single MarketDataStore; the in-process Python binding (python/atp_strategy StoreBackedHistoricalData) and the factor pipeline (atp-factor-pipeline store_inputs) likewise read a single store dir. Each is a passes:true feature with its own contract, so tiering them is a cross-crate follow-up (owners: the backtest-engine, the Python strategy/notebook host per SRS-RES-002, and the factor pipeline). This slice ships the cold-read MECHANISM + one wired consumer (the operator read surface data007_query_cli, env-transparent) as the foundation those consumers reuse; until they route through the tier, SRS-DATA-009 stays passes:false.",
+      "Real Databento / IB / Sharadar / option-chain NETWORK adapters that feed records into the tier (owner: SRS-DATA-001 / SRS-DATA-003 / SRS-DATA-005 / SRS-DATA-006; the tier is provider-agnostic -- fixture sources stand in, as the SRS-DATA-009 step permits)",
+      "Real 1 TB SSD / 20 TB NAS CAPACITY provisioning + a real network NAS mount (owner: NFR-SC2 deployment / SRS-ARCH-004; the cache cap is modeled in the store's record unit -- the deterministic fixture-testable proxy -- and the real byte capacity is the NFR-SC2 concern; growth estimates documented in SRS Section 12.1)"
+    ]
   }
 }
