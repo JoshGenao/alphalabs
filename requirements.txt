@@ -33,3 +33,13 @@ numpy==2.2.6
 pandas==2.3.3
 pandas-ta==0.4.71b0
 TA-Lib==0.6.8
+
+# SRS-RES-002 — the Jupyter research environment renders plots.
+# SyRS SYS-34b requires the research environment to have "plotting
+# capabilities" alongside the unified data interface (SYS-27) and the
+# indicator library (SYS-35); matplotlib is the canonical Python plotting
+# backend (it is also what pandas' DataFrame.plot() uses). The
+# atp_research.plotting helper renders through matplotlib's object-oriented
+# Figure API (no interactive/GUI backend required, so it works headless in
+# CI and inside the operator-supplied JupyterLab image alike).
+matplotlib==3.11.0
