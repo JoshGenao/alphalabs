@@ -9,5 +9,13 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+# SRS-SDK-004 / NFR-P4 order-event callback latency percentile CLI. Drives the
+# SRS-PERF-001 percentile substrate over caller-supplied delivery-latency samples
+# so the Python delivery-seam test evaluates p95 through the one authoritative
+# percentile engine (no re-implemented percentile math).
+[[bin]]
+name = "nfr_p95_cli"
+path = "src/bin/nfr_p95_cli.rs"
+
 [lints]
 workspace = true
