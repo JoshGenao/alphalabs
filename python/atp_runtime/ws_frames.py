@@ -82,7 +82,12 @@ def compute_accept_key(sec_websocket_key: str) -> str:
         's3pPLMBiTxaQ9kYGzzhZRbK+xOo='
     """
 
-    digest = hashlib.sha1((sec_websocket_key + _WS_GUID).encode("ascii")).digest()
+    # SHA-1 here is the RFC 6455 §4.2.2 handshake accept-key transform (a fixed
+    # protocol computation), NOT a security hash — usedforsecurity=False documents
+    # that and clears bandit B324 / FIPS without changing the output.
+    digest = hashlib.sha1(
+        (sec_websocket_key + _WS_GUID).encode("ascii"), usedforsecurity=False
+    ).digest()
     return base64.b64encode(digest).decode("ascii")
 
 
