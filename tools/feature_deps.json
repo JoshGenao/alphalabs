@@ -61,7 +61,9 @@
     "SRS-DATA-013"
   ],
   "SRS-DATA-009": [
-    "SRS-DATA-008"
+    "SRS-DATA-008",
+    "SRS-DATA-011",
+    "SRS-DATA-012"
   ],
   "SRS-DATA-010": [
     "SRS-DATA-008",
@@ -105,6 +107,10 @@
   "SRS-EXE-004": [
     "SRS-EXE-006",
     "SRS-UI-002"
+  ],
+  "SRS-EXE-005": [
+    "SRS-EXE-001",
+    "SRS-EXE-006"
   ],
   "SRS-FAC-001": [
     "SRS-DATA-005"
