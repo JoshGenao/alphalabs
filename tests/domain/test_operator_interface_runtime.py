@@ -37,6 +37,7 @@ from atp_runtime import (
     Request,
     Surface,
     assert_bind_allowed,
+    compute_accept_key,
     is_allowed_bind_host,
 )
 
@@ -465,3 +466,29 @@ def _template_for(path: str) -> str:
     """Map a concrete path back to its declared route template (params → {name})."""
 
     return path.replace("/abc/", "/{strategy_id}/")
+
+
+# --- Paired safety tests for the bandit security-annotation fixes ---
+# These anchor the invariants behind the `# nosec B104` (host denylist) and the
+# ws_frames `usedforsecurity=False` (RFC 6455 handshake) annotations, so those
+# comments can never mask a real regression.
+_LOOPBACK_OR_RFC1918 = ("127.0.0.1", "::1", "10.0.0.1", "172.16.0.1", "192.168.0.1", "localhost")
+_PUBLIC_OR_ALL_INTERFACES = ("0.0.0.0", "::", "8.8.8.8", "1.2.3.4")
+
+
+def test_bind_policy_refuses_all_interfaces_and_public_hosts():
+    # SRS-SEC-002: "0.0.0.0"/"::" are the OPPOSITE of a bind target — the runtime
+    # must refuse them and every public IP, and allow only loopback / RFC1918.
+    for host in _LOOPBACK_OR_RFC1918:
+        assert is_allowed_bind_host(host), f"{host} must be an allowed loopback/RFC1918 bind"
+    for host in _PUBLIC_OR_ALL_INTERFACES:
+        assert not is_allowed_bind_host(host), f"{host} must be refused (SRS-SEC-002)"
+        with pytest.raises(BindPolicyError):
+            assert_bind_allowed(host)
+
+
+def test_ws_accept_key_matches_rfc6455_known_answer():
+    # The SHA-1 handshake transform must produce the canonical RFC 6455 §1.3
+    # example; usedforsecurity=False documents the non-security use without
+    # altering the output.
+    assert compute_accept_key("dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="

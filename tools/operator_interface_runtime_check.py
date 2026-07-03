@@ -37,7 +37,9 @@ PACKAGE_DIR = PYTHON_ROOT / "atp_runtime"
 _ALLOWED_FIRST_PARTY = {"atp_api", "atp_cli", "atp_ws", "atp_config", "atp_runtime"}
 _VENDOR_TOKENS = ("ibapi", "ib_insync", "interactive_brokers", "databento", "sharadar")
 _ALLOWED_HOSTS = ("127.0.0.1", "::1", "10.0.0.1", "172.16.0.1", "192.168.0.1", "localhost")
-_REFUSED_HOSTS = ("0.0.0.0", "::", "8.8.8.8", "1.2.3.4")
+# Denylist of hosts the runtime must REFUSE to bind — the opposite of a bind
+# target, so bandit's "binds to all interfaces" (B104) is a false positive here.
+_REFUSED_HOSTS = ("0.0.0.0", "::", "8.8.8.8", "1.2.3.4")  # nosec B104
 _CONFIRM_ROUTES = (
     ("POST", "/api/v1/kill-switch"),
     ("POST", "/api/v1/strategies/sample/promote-live"),
