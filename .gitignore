@@ -39,3 +39,5 @@ build/
 # Agent pool — ephemeral coordination state (feature_deps.json IS committed)
 tools/.agent_runtime.json
 tools/.agent_pool.lock
+# Codex usage-limit cooldown cache (written by tools/adversarial_review.py)
+tools/.codex_cooldown.json

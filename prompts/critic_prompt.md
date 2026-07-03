@@ -161,27 +161,29 @@ You **must not** APPROVE based on:
 
 ## Cross-environment usage notes
 
-- **Primary — `/codex:adversarial-review` (from Claude Code):** the coding
-  agent runs
-  `/codex:adversarial-review --wait $(cat prompts/critic_prompt.md)`.
-  Codex reads the staged diff itself via its `git` access; this prompt is
-  delivered as the focus text so the repo-specific judgment criteria
-  above are authoritative. The Codex session is fresh and has no
-  implementation context — that's the point. **Note:** this is a slash
-  *command* from the `openai-codex` plugin (`commands/adversarial-review.md`),
-  not a skill — that's why it does not appear in the auto-discovered
-  user-invocable *skills* list alongside `codex:setup` / `codex:rescue`.
-  Past sessions logged it as "skill unavailable"; that was a
-  misclassification — invoke it as a slash command and it works.
-- **Fallback — fresh LLM context (Codex unavailable):** open this prompt
-  in a new Claude Code sub-agent, a new ChatGPT tab, or any other LLM
-  with a clean context. Paste this prompt, then paste `git diff --cached`
-  (or the range diff). Do not paste the implementation conversation —
-  context contamination defeats the purpose.
-- **Headless / CI:** set `LLM_PROVIDER=anthropic` or `openai` in the
-  environment of an automation script that POSTs this prompt + diff to the
-  respective API. Default off; opt-in only.
+The judgment pass is driven by the dispatcher
+`python3 tools/adversarial_review.py origin/main`, which picks the reviewer
+automatically. **Both reviewers below are first-class** — the Claude path is not
+an emergency measure. What makes a review valid is *fresh context* (the reviewer
+never saw the implementation conversation), not which model runs it.
 
-The output JSON is platform-agnostic — downstream tooling
-(`progress.txt`, `tools/run_ci_locally.sh`, GitHub Actions) consumes it
-identically regardless of which LLM produced it.
+- **Codex — `/codex:adversarial-review` under the hood:** used when Codex is
+  available. The dispatcher shells `tools/codex_review.sh`, which calls the
+  `openai-codex` companion (a slash *command*, `disable-model-invocation:true`, so
+  an agent can't self-trigger it; the helper bypasses that). Codex reads the diff
+  itself; this prompt is the focus text. Codex emits `approve|needs-attention`,
+  which the dispatcher normalizes to the canonical schema below.
+- **Fresh-context Claude — used when Codex is usage-limited or absent:** the
+  dispatcher pipes `git diff origin/main...HEAD` to a **separate** `claude -p`
+  process in read-only plan mode, with this prompt and an independence system
+  prompt. It may read the repo for context but never sees the build conversation —
+  context contamination defeats the purpose. This is exactly the fresh-eyes
+  substitution past sessions did by hand; it now happens automatically.
+- **Manual override:** a human can still paste this prompt + the diff into any
+  clean-context LLM tab, or force the Claude path with
+  `tools/adversarial_review.py --force-claude`.
+
+**Canonical verdict schema: `block | warn | approve`** (identical to Layer 1
+`critic_check.py`). The output JSON is platform-agnostic — downstream tooling
+(`progress.txt`, `tools/run_ci_locally.sh`, GitHub Actions) and the dispatcher's
+normalizer consume it identically regardless of which LLM produced it.

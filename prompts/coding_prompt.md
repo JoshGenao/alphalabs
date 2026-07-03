@@ -57,8 +57,9 @@ python3 -c "import json,os;f=next(x for x in json.load(open('feature_list.json')
 session already advanced this feature (its work is on `main`, which your branch
 is based on). Read it, continue from where it left off — do not restart.
 
-Your first message must summarise: the feature, any prior progress, its
-dependencies (from `agent_pool.py status`), and your plan.
+Your first message must summarise: the feature, any prior progress, and its
+dependencies (from `agent_pool.py status`). You'll present the full plan for
+approval in **Step 4.6** — you're in read-only plan mode until then.
 
 ---
 
@@ -100,7 +101,38 @@ note, `python3 tools/agent_pool.py release "$ATP_FEATURE_ID"`, and end.
 
 ---
 
-## Step 5 — Implement
+## Step 4.6 — Plan & get operator approval (you are in PLAN MODE)
+
+This session was launched **read-only** (`--permission-mode plan`). You **cannot**
+edit files, write code, or run non-read-only tools until the operator approves. Do
+**not** try to work around this — it is the review gate.
+
+Finish orienting (Steps 1–4), then present a concrete plan and **stop for the
+operator to approve it** (ExitPlanMode). The plan must state:
+
+- **What you'll build** — the specific files/modules you'll add or change.
+- **Tests** — which layer(s) (L1–L7) and the specific cases; call out the mandatory
+  `tests/domain/` test if the feature touches any safety path (Step 5.5).
+- **Completeness classification you expect** — `complete` (every step verifiable
+  solo) vs `serialized` (needs IB/integration/live/e2e). Be honest up front.
+- **Dependencies** — if you already know you'll need an unbuilt feature `Y`, say so;
+  you'll `block --on Y` after approval (Step 5).
+
+Only after the operator approves does implementation begin. Two follow-ups:
+
+- **First action after approval:** persist the approved plan to
+  `progress.d/plan-$ATP_FEATURE_ID.md` (you couldn't write it while in plan mode).
+  It is a durable artifact + a resume aid for the next session.
+- **Long planning?** Extend your lease so a sibling can't reclaim the worktree:
+  `python3 tools/agent_pool.py heartbeat "$ATP_FEATURE_ID"`.
+
+If, while planning, you conclude the feature is mis-scoped or genuinely blocked,
+say so in the plan and recommend `block`/`release` instead of implementing — do not
+plow ahead just because a feature was claimed.
+
+---
+
+## Step 5 — Implement (only after your plan is approved)
 
 Write the code. As you work:
 - Follow the architecture in `AGENTS.md`; respect SRS module boundaries and the
@@ -193,18 +225,21 @@ python3 tools/critic_check.py --staged --format json > .critic_report.json
 ```
 `block` → fix and re-run. Never `ATP_CRITIC_BYPASS=1`, never `--no-verify`.
 
-### Pass 2 — judgment (Codex, autonomous Bash call)
+### Pass 2 — judgment (fresh-context reviewer, autonomous Bash call)
 Run from inside your worktree (it diffs your branch vs the integrated main):
 ```bash
-tools/codex_review.sh origin/main      # = node codex-companion.mjs adversarial-review --wait --base origin/main <criteria>
+python3 tools/adversarial_review.py origin/main
 ```
-This replaces the old `/codex:adversarial-review` slash command (which an agent
-cannot self-invoke). It returns the same JSON verdict schema. If it prints a
-`{"verdict":"error", ...}` because Codex isn't installed, fall back to the manual
-fresh-context review in `prompts/critic_prompt.md` and record that you did so.
+This dispatcher auto-selects the reviewer: **Codex** when available, and a
+**fresh-context Claude reviewer** (diff-only, no build conversation) when Codex is
+rate-limited or unavailable — so a Codex usage limit no longer blocks you. It emits
+the canonical `{"verdict": "block|warn|approve", "reviewer": "...", ...}` and prints
+`reviewer: codex|claude-fallback` on stderr. Check availability any time with
+`python3 tools/adversarial_review.py --status`.
 
-Record both verdicts in the session note. Commit/integrate **only when both are
-`approve`** (a `warn` needs a one-line written override; any `block` halts you).
+Record the verdict **and which reviewer ran** in the session note. Commit/integrate
+**only when both passes are `approve`** (a `warn` needs a one-line written override;
+any `block` halts you — exit code 1).
 
 ---
 
@@ -275,7 +310,7 @@ What I did:  <implementation + key decisions>
 What I tested (per step): Step 1: PASS — <cmd> → <result>; ...
 Critic verdicts:
   deterministic: APPROVE — <findings>
-  judgment (codex_review.sh): APPROVE — <findings>
+  judgment (adversarial_review.py, reviewer=codex|claude-fallback): APPROVE — <findings>
 Resume / next: <what's left, exact blocking ids, where to continue>
 ```
 

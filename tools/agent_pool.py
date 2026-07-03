@@ -345,16 +345,124 @@ def compute(features, deps, runtime, *, allow_foreign_reclaim=False):
     return ready, blocked, active, held, by_id
 
 
-def pick_order(ready, by_id, held):
-    """Ready features ordered: subsystem no lease holds first, then priority, id."""
+def impact_scores(deps: dict, by_id: dict) -> dict:
+    """Map feature id -> how many *other* features it (transitively) unblocks.
+
+    The dependency map is ``{feature: [prerequisites]}``. Its reverse tells us,
+    for a prerequisite ``p``, every feature that (directly or transitively)
+    depends on ``p`` — i.e. the work ``p`` unlocks. Higher = more of a keystone.
+    Used to steer the greedy scheduler toward features that open the most
+    downstream work instead of the alphabetically-first leaf.
+    """
+    rev: dict = {}
+    for f, prereqs in deps.items():
+        for p in prereqs:
+            rev.setdefault(p, set()).add(f)
+
+    def closure(x: str) -> set:
+        seen: set = set()
+        stack = list(rev.get(x, ()))
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            stack.extend(rev.get(cur, ()))
+        return seen
+
+    return {fid: len(closure(fid)) for fid in by_id}
+
+
+def pick_order(ready, by_id, held, impact=None):
+    """Ready features ordered by: (1) subsystem no active sibling lease holds —
+    to avoid merge conflicts; (2) most downstream features unblocked (keystones
+    first); (3) priority; (4) id. ``impact`` defaults to all-zero (pure legacy
+    order) when not supplied."""
+    impact = impact or {}
     return sorted(
         ready,
         key=lambda fid: (
             subsystem(by_id[fid]) in held,  # False (0) sorts before True (1)
+            -impact.get(fid, 0),  # more-unblocking keystone first
             by_id[fid].get("priority", "P9"),
             fid,
         ),
     )
+
+
+def serialized_notes(progress_dir: Path | None = None) -> set:
+    """Feature ids whose ``progress.d/session-<id>.md`` records ``Outcome:
+    serialized`` — code is done but ≥1 step needs human IB/e2e verification.
+
+    Re-offering such a feature to a fresh agent is the churn loop: it can only
+    ever integrate ``serialized`` again (never ``complete``), so it returns to
+    the ready frontier forever. We exclude these from claiming and surface them
+    as an ``awaiting_verification`` bucket for the operator to close by hand.
+    """
+    progress_dir = progress_dir or (ROOT / "progress.d")
+    out: set = set()
+    if not progress_dir.is_dir():
+        return out
+    for note in progress_dir.glob("session-*.md"):
+        fid = note.stem[len("session-") :]
+        try:
+            text = note.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            s = line.strip().lower()
+            if not s.startswith("outcome:"):
+                continue
+            # Value after "outcome:"; the template menu line starts with
+            # "complete | ..." so only a real serialized outcome matches.
+            if s.split("outcome:", 1)[1].strip().startswith("serialized"):
+                out.add(fid)
+            break
+    return out
+
+
+def assess_frontier(features, deps, runtime, *, skip_awaiting=True) -> dict:
+    """Classify the board as done / progressing / deadlock and name the keystones.
+
+    This is what tells "the application is finished" apart from "the scheduler is
+    stuck": ``claim`` returns ``EMPTY`` for both, but only one needs operator
+    action. ``deadlock`` means nothing is claimable yet features remain — the
+    ``root_blockers`` (ranked by impact) are the not-passing prerequisites the
+    blocked set waits on, and ``guarded_root_blockers`` are the subset that match
+    the IB/integration/e2e honesty guard and so can *only* be closed by a human
+    ``integrate --force-complete`` or the ``verified-e2e`` label.
+    """
+    ready, blocked, active, held, by_id = compute(features, deps, runtime)
+    total = len(by_id)
+    passed = [fid for fid, f in by_id.items() if f.get("passes") is True]
+    awaiting = sorted(serialized_notes() & set(ready)) if skip_awaiting else []
+    awaiting_set = set(awaiting)
+    claimable = [fid for fid in ready if fid not in awaiting_set]
+
+    if len(passed) == total:
+        state = "done"
+    elif claimable:
+        state = "progressing"
+    else:
+        state = "deadlock"
+
+    impact = impact_scores(deps, by_id)
+    blockers = sorted(
+        {d for unmet in blocked.values() for d in unmet},
+        key=lambda d: (-impact.get(d, 0), d),
+    )
+    guarded = [d for d in blockers if d in by_id and needs_serialized(by_id[d])[0]]
+    return {
+        "state": state,
+        "total": total,
+        "passed": len(passed),
+        "ready": claimable,
+        "awaiting_verification": awaiting,
+        "blocked": blocked,
+        "root_blockers": blockers,
+        "guarded_root_blockers": guarded,
+        "active": active,
+    }
 
 
 def free_port_index(active) -> int:
@@ -436,14 +544,25 @@ def cmd_status(args):
     runtime = load_runtime()
     ready, blocked, active, held, by_id = compute(features, deps, runtime)
 
+    skip_awaiting = not getattr(args, "include_awaiting", False)
+    awaiting = sorted(serialized_notes() & set(ready)) if skip_awaiting else []
+    awaiting_set = set(awaiting)
+    claimable = [fid for fid in ready if fid not in awaiting_set]
+    impact = impact_scores(deps, by_id)
+    assessment = assess_frontier(features, deps, runtime, skip_awaiting=skip_awaiting)
+
     if args.json:
         print(
             json.dumps(
                 {
-                    "ready": sorted(ready),
+                    "assessment": assessment["state"],
+                    "ready": sorted(claimable),
+                    "awaiting_verification": awaiting,
                     "blocked": {k: v for k, v in sorted(blocked.items())},
                     "leases": active,
                     "done": sorted(f for f, x in by_id.items() if x.get("passes")),
+                    "root_blockers": assessment["root_blockers"],
+                    "guarded_root_blockers": assessment["guarded_root_blockers"],
                 },
                 indent=2,
             )
@@ -452,9 +571,21 @@ def cmd_status(args):
 
     done = sum(1 for f in by_id.values() if f.get("passes"))
     print(
-        f"== agent pool == done:{done}  ready:{len(ready)}  "
-        f"blocked:{len(blocked)}  leased:{len(active)}"
+        f"== agent pool == done:{done}/{assessment['total']}  ready:{len(claimable)}  "
+        f"awaiting-verify:{len(awaiting)}  blocked:{len(blocked)}  leased:{len(active)}"
     )
+    print(f"   frontier: {assessment['state'].upper()}")
+    if assessment["state"] == "deadlock" and assessment["root_blockers"]:
+        guarded = assessment["guarded_root_blockers"]
+        print(
+            "   ⚠ no autonomous progress possible — highest-impact blockers: "
+            + ", ".join(assessment["root_blockers"][:5])
+        )
+        if guarded:
+            print(
+                "   these need a human `integrate --force-complete` / verified-e2e: "
+                + ", ".join(guarded[:5])
+            )
     if active:
         print("\n-- in progress (leased) --")
         for fid, lease in sorted(active.items()):
@@ -463,10 +594,17 @@ def cmd_status(args):
             print(
                 f"  {fid:18} by {lease.get('owner', '?'):22} port#{lease.get('port_index', '?')}  {alive}"
             )
-    print("\n-- ready frontier --")
-    for fid in pick_order(ready, by_id, held):
+    print("\n-- ready frontier (most-unblocking first) --")
+    for fid in pick_order(claimable, by_id, held, impact):
         f = by_id[fid]
-        print(f"  {fid:18} {f.get('priority', '?'):3} {subsystem(f):20} {f['description'][:44]}")
+        print(
+            f"  {fid:18} {f.get('priority', '?'):3} unblocks:{impact.get(fid, 0):<3} "
+            f"{subsystem(f):20} {f['description'][:40]}"
+        )
+    if awaiting:
+        print("\n-- awaiting human verification (serialized; not re-offered) --")
+        for fid in awaiting:
+            print(f"  {fid:18} {by_id[fid]['description'][:52]}")
     if blocked:
         print("\n-- blocked (waiting on deps) --")
         for fid, unmet in sorted(blocked.items()):
@@ -488,9 +626,16 @@ def cmd_claim(args):
             features, deps, runtime, allow_foreign_reclaim=args.reclaim
         )
 
+        # Steer toward keystones (most-unblocking first) and skip features that
+        # are code-done but awaiting human e2e verification (the churn loop).
+        impact = impact_scores(deps, by_id)
+        skip_awaiting = not getattr(args, "include_awaiting", False)
+        awaiting = serialized_notes() & set(ready) if skip_awaiting else set()
+        claimable = [fid for fid in ready if fid not in awaiting]
+
         choice = None
         skipped_dirty = []
-        for fid in pick_order(ready, by_id, held):
+        for fid in pick_order(claimable, by_id, held, impact):
             wt = ROOT.parent / f"alphalabs-wt-{fid}"
             # A stale (reclaimed) worktree with uncommitted work isn't safe to
             # silently reuse — skip it unless the operator forces --reclaim.
@@ -502,16 +647,33 @@ def cmd_claim(args):
 
         if choice is None:
             print("FEATURE=EMPTY")
+            assessment = assess_frontier(features, deps, runtime, skip_awaiting=skip_awaiting)
             note = []
+            if assessment["state"] == "done":
+                note.append("ALL features pass — the application is complete. 🎉")
+            elif assessment["state"] == "deadlock":
+                note.append(
+                    "DEADLOCK — no autonomous progress possible; every remaining "
+                    "feature is blocked or awaiting human verification"
+                )
+                if assessment["guarded_root_blockers"]:
+                    note.append(
+                        "verify + `integrate --force-complete` (or verified-e2e label): "
+                        + ", ".join(assessment["guarded_root_blockers"][:5])
+                    )
+                elif assessment["root_blockers"]:
+                    note.append(
+                        "highest-impact blockers: " + ", ".join(assessment["root_blockers"][:5])
+                    )
+            if awaiting:
+                note.append(
+                    f"{len(awaiting)} awaiting human verification (serialized): "
+                    + ", ".join(sorted(awaiting))
+                )
             if skipped_dirty:
                 note.append(
                     f"{len(skipped_dirty)} ready but dirty stale worktree(s): "
                     f"{', '.join(skipped_dirty)} (re-run with --reclaim)"
-                )
-            if blocked:
-                note.append(
-                    f"{len(blocked)} blocked: "
-                    + "; ".join(f"{k}<-{','.join(v)}" for k, v in sorted(blocked.items()))
                 )
             print(
                 "# " + ("; ".join(note) if note else "no ready feature to claim."), file=sys.stderr
@@ -887,11 +1049,21 @@ def main() -> int:
     sp = sub.add_parser("status", help="show the board (ready/blocked/leased/done)")
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--no-fetch", action="store_true", help="skip git fetch (offline/fast)")
+    sp.add_argument(
+        "--include-awaiting",
+        action="store_true",
+        help="count serialized/awaiting-verification features as ready (default: excluded)",
+    )
 
     cp = sub.add_parser(
         "claim", help="claim the best ready feature; create its worktree; print env"
     )
     cp.add_argument("--reclaim", action="store_true", help="reuse a stale worktree even if dirty")
+    cp.add_argument(
+        "--include-awaiting",
+        action="store_true",
+        help="allow claiming serialized/awaiting-verification features (default: skipped)",
+    )
 
     bp = sub.add_parser("block", help="record discovered dependency edge(s) + release lease")
     bp.add_argument("id")

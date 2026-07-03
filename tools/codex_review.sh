@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 #
-# codex_review.sh — autonomous adversarial review (the judgment critic pass).
+# codex_review.sh — the Codex leg of the judgment critic pass.
 #
 # `/codex:adversarial-review` is flagged `disable-model-invocation: true`, so an
 # agent cannot self-trigger the slash command. Under the hood it is just a call
 # to the codex companion, which an agent CAN run in Bash. This script is that
 # call, with the repo's judgment criteria (prompts/critic_prompt.md) as focus.
 #
-# Run it from inside your worktree so it reviews that branch's diff vs main.
+# NORMALLY you don't call this directly — `tools/adversarial_review.py` wraps it,
+# detects Codex usage-limits, and fails over to a fresh-context Claude reviewer.
+# Run either from inside your worktree so it reviews that branch's diff vs main.
 #
 # Usage:
 #   tools/codex_review.sh [BASE_REF]          # default BASE_REF = origin/main
 #
-# Emits the same JSON verdict schema as tools/critic_check.py. If Codex is not
-# installed/ready it prints a JSON error (run /codex:setup) and exits 0 so the
-# caller can fall back to a manual fresh-context review.
+# Emits Codex's structured review payload (`--json`; verdict enum
+# approve|needs-attention), which adversarial_review.py normalizes to the repo's
+# canonical block|warn|approve. If Codex is not installed/ready it prints a JSON
+# error (run /codex:setup) and exits 0 so the caller can fall back.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -34,5 +37,6 @@ if [[ -z "$companion" || ! -f "$companion" ]]; then
   exit 0
 fi
 
-# --wait → foreground JSON verdict; --base → branch review vs the integrated main.
-exec node "$companion" adversarial-review --wait --base "$BASE_REF" "$(cat "$PROMPT_FILE")"
+# --wait → foreground; --json → structured verdict payload (parsed by
+# tools/adversarial_review.py); --base → branch review vs the integrated main.
+exec node "$companion" adversarial-review --wait --json --base "$BASE_REF" "$(cat "$PROMPT_FILE")"
