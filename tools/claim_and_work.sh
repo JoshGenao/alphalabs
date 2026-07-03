@@ -6,8 +6,10 @@
 # ready, unclaimed, dependency-satisfied feature (tools/agent_pool.py claim),
 # creates that feature's worktree + branch + private ports, then opens an
 # INTERACTIVE Claude session inside the worktree seeded with the coding prompt —
-# so you can watch the agent work and intervene. Open N terminals → N agents on
-# N different features, no file/branch/port collisions.
+# so you can watch the agent work and intervene. The session starts in PLAN MODE
+# (read-only): the agent must present a plan and get your approval before it can
+# edit anything. Open N terminals → N agents on N different features, no
+# file/branch/port collisions.
 #
 # Usage:
 #   tools/claim_and_work.sh
@@ -47,4 +49,6 @@ cd "$WORKTREE"
 export ATP_FEATURE_ID="$FEATURE" ATP_DEV_PORT ATP_IB_LIVE_PORT ATP_IB_PAPER_PORT
 
 # Interactive session (not -p/headless) so you can watch + intervene.
-exec claude "$(cat "${WORKTREE}/prompts/coding_prompt.md")"
+# --permission-mode plan opens READ-ONLY: the agent must present a plan and get
+# your approval (Step 4.6 of the coding prompt) before it can touch any file.
+exec claude --permission-mode plan "$(cat "${WORKTREE}/prompts/coding_prompt.md")"

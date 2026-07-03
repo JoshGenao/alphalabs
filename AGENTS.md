@@ -25,13 +25,17 @@ Two-layer Critic Agent runs before every commit. **Both must approve.**
   without paired `tests/domain/` diffs. Wired as a git pre-commit hook by
   `tools/install_hooks.sh` (re-installed by `init.sh`).
 - **Layer 2 — judgment** (`prompts/critic_prompt.md`): an LLM-driven adversarial
-  review in a **fresh Codex context**. Autonomous agents run it as a plain Bash
-  call — `tools/codex_review.sh origin/main` — which shells out to the codex
-  companion (`/codex:adversarial-review` is `disable-model-invocation:true`, so an
-  agent can't self-trigger the slash command; the helper bypasses that). A human
-  can still type `/codex:adversarial-review --wait $(cat prompts/critic_prompt.md)`.
-  Fallback (Codex unavailable): paste `prompts/critic_prompt.md` + `git diff
-  origin/main...HEAD` into any other fresh-context LLM. Same JSON schema as Layer 1.
+  review in a **fresh context**. Autonomous agents run it via the dispatcher —
+  `python3 tools/adversarial_review.py origin/main` — which auto-selects the
+  reviewer: **Codex** (`tools/codex_review.sh`, shelling the codex companion since
+  `/codex:adversarial-review` is `disable-model-invocation:true`) when available,
+  and a **fresh-context Claude reviewer** (`git diff | claude -p` with the critic
+  prompt, diff-only, read-only plan mode) when Codex is usage-limited or absent. It
+  predicts Codex limits from the plugin's job state + a cooldown cache, so a rate
+  limit never blocks the pipeline. Check availability with
+  `python3 tools/adversarial_review.py --status`. Canonical verdict schema is
+  `block|warn|approve` (same as Layer 1); the dispatcher normalizes Codex's
+  `approve|needs-attention` into it and tags the result with `reviewer:`.
 
 Coding agents must NEVER bypass with `ATP_CRITIC_BYPASS=1` or
 `--no-verify`. Only humans bypass; the env-var bypass is grep-able in
@@ -67,8 +71,8 @@ back to `main`. No file, branch, or port collisions.
   IB ports (4001/4002) or the dashboard/Jupyter stack — that also protects the
   single-live-IB invariant.
 - **Integrate + flip (auto):** after the full gate (`run_ci_locally.sh` + tests +
-  both critics — deterministic `critic_check.py` **and** the Codex judgment pass
-  via `tools/codex_review.sh`), the agent runs
+  both critics — deterministic `critic_check.py` **and** the judgment pass via
+  `tools/adversarial_review.py`, Codex or fresh-context Claude), the agent runs
   `agent_pool.py integrate <id> --mode complete|serialized`. `complete` rebases
   on `main`, runs `close_feature.py <id> --verified` (flip `passes:true` + fold
   note), and fast-forward-pushes `main` — all under the lock. **Honesty guard:**
@@ -97,7 +101,8 @@ back to `main`. No file, branch, or port collisions.
 | Coding agent prompt | `prompts/coding_prompt.md` | Per-session workflow; includes Steps 5.5 (test layer) and 6.5 (critic) |
 | Agent scheduler | `tools/agent_pool.py` | Locked self-claim / block / integrate / status; the coordination core |
 | Interactive launcher | `tools/claim_and_work.sh` | Per-terminal: claim a ready feature + open an interactive agent in its worktree |
-| Codex judgment critic | `tools/codex_review.sh` | Autonomous adversarial review (Bash call to the codex companion) |
+| Judgment critic dispatcher | `tools/adversarial_review.py` | Adversarial review with Codex→fresh-context-Claude failover on usage limits |
+| Codex reviewer (low-level) | `tools/codex_review.sh` | The Codex leg of the judgment pass (wrapped by the dispatcher) |
 | Dependency graph | `tools/feature_deps.json` | Committed DAG of feature prerequisites (seeded + self-learned) |
 | Parallel launcher (headless) | `tools/spawn_agents.sh` | Pre-assign worktrees to headless agents (legacy/CI path) |
 | Feature closer | `tools/close_feature.py` | Flip `passes` + fold the progress note (run by `integrate` on main) |
