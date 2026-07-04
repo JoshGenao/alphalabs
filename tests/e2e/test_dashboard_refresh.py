@@ -64,5 +64,14 @@ def test_dashboard_renders_panels_and_refreshes_within_5s(dashboard_url: str) ->
                 " return t && t !== '—' && !Number.isNaN(Number(t.replace(/,/g,''))); }",
                 timeout=5_000,
             )
+
+            # EACH required metric panel refreshes within budget — its freshness
+            # dot must reach "fresh" (not "stale"/"wait"). A fast channel must not
+            # mask a stalled METRICS/benchmark panel.
+            for panel in ("pnl", "metrics", "health"):
+                page.wait_for_function(
+                    f"document.getElementById('fresh-{panel}').dataset.state === 'fresh'",
+                    timeout=5_000,
+                )
         finally:
             browser.close()

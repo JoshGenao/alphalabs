@@ -77,6 +77,18 @@
     buildRows("body-latency", ROWS.latency, {});
     // Budget is a real, known constant — fill it immediately.
     setField("body-latency", "refresh_budget_ms", { value: BUDGET_MS, data_source: "live" }, "ms");
+    // Per-panel freshness indicator (driven by monitorFreshness).
+    for (const panel of ["pnl", "metrics", "health", "latency"]) addFreshDot(panel);
+  }
+
+  function addFreshDot(panel) {
+    const meta = document.querySelector('[data-panel="' + panel + '"] .panel__meta');
+    if (!meta) return;
+    const dot = el("span", "freshdot");
+    dot.id = "fresh-" + panel;
+    dot.dataset.state = "wait";
+    dot.title = "awaiting data";
+    meta.insertBefore(dot, meta.firstChild);
   }
 
   function strategyLead(_panel) {
@@ -150,22 +162,58 @@
     row.classList.add("flash");
   }
 
-  // ----- refresh-latency instrumentation (real, self-measured) ----------- //
+  // ----- per-channel freshness + SLA instrumentation --------------------- //
+  // The ≤5s NFR-P2 SLA must hold for EACH required metric group, not "any
+  // event": a 1s PNL/HEARTBEAT tick must NOT mask a stalled 5s METRICS/benchmark
+  // panel. So freshness is tracked per channel and the gauge reflects the WORST
+  // required channel's staleness — and a timer (not just events) drives it, so a
+  // channel that goes SILENT still turns its panel + the gauge stale.
+  const PANEL_FRESH = [
+    { panel: "pnl", ch: "PNL", budget: 1000, gauge: true },
+    { panel: "metrics", ch: "METRICS", budget: 5000, gauge: true },
+    { panel: "health", ch: "HEARTBEAT", budget: 1000, gauge: true },
+    { panel: "latency", ch: "SYSTEM", budget: POLL_MS, gauge: false },
+  ];
+  const STALE_GRACE_MS = 1500; // tolerate normal cadence jitter; flag real stalls
+  const lastChannelAt = Object.create(null); // channel -> performance.now()
   let lastFrameAt = 0;
-  let lastAnyEventAt = 0;
 
-  function recordRefresh() {
-    const now = performance.now();
-    if (lastAnyEventAt) {
-      const observed = now - lastAnyEventAt;
-      renderPulse(observed);
-      // The dashboard's own observed refresh latency IS real latency data.
-      setField("body-latency", "observed_refresh_ms", { value: Math.round(observed), data_source: "client-measured" }, "ms");
-    }
-    lastAnyEventAt = now;
+  function noteActivity(channel) {
+    lastChannelAt[channel] = performance.now();
     lastFrameAt = Date.now();
     startCountdown();
     stamp();
+  }
+
+  function monitorFreshness() {
+    const now = performance.now();
+    let worst = 0;
+    let gaugeReady = true;
+    for (const { panel, ch, budget, gauge } of PANEL_FRESH) {
+      const seen = lastChannelAt[ch] !== undefined;
+      const staleness = seen ? now - lastChannelAt[ch] : Infinity;
+      markPanelFreshness(panel, seen, seen && staleness > budget + STALE_GRACE_MS);
+      if (gauge) {
+        if (!seen) gaugeReady = false;
+        else worst = Math.max(worst, staleness);
+      }
+    }
+    if (gaugeReady) {
+      // Honest observed refresh = the WORST required channel's staleness vs the
+      // 5s budget (not the fastest channel's inter-arrival).
+      renderPulse(worst);
+      setField(
+        "body-latency", "observed_refresh_ms",
+        { value: Math.round(worst), data_source: "client-measured" }, "ms"
+      );
+    }
+  }
+
+  function markPanelFreshness(panel, seen, stale) {
+    const dot = $("fresh-" + panel);
+    if (!dot) return;
+    dot.dataset.state = !seen ? "wait" : stale ? "stale" : "fresh";
+    dot.title = !seen ? "awaiting data" : stale ? "STALE — no refresh within budget" : "fresh";
   }
 
   function renderPulse(observedMs) {
@@ -194,11 +242,13 @@
   }
 
   function stamp() {
+    if (!lastFrameAt) return;
     const since = Date.now() - lastFrameAt;
     const s = Math.round(since / 1000);
     $("last-update").textContent = "last frame " + (s <= 0 ? "just now" : s + "s ago");
   }
   setInterval(stamp, 1000);
+  setInterval(monitorFreshness, 500);
 
   // ----- WebSocket ------------------------------------------------------- //
   let ws = null;
@@ -237,7 +287,7 @@
     } else if (channel === "HEARTBEAT") {
       for (const [k, , kind] of ROWS.health) setField("body-health", k, data[k], kind);
     }
-    recordRefresh();
+    noteActivity(channel);
   }
 
   function applyMeta(bodyId, strategyId) {
@@ -261,6 +311,8 @@
   }
 
   function applySnapshot(snap) {
+    // The system snapshot poll is the "SYSTEM" (latency panel) freshness source.
+    lastChannelAt["SYSTEM"] = performance.now();
     const health = snap.health || {};
     renderReadiness(health);
     const lat = snap.latency || {};

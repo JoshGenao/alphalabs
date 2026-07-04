@@ -33,15 +33,17 @@ pytestmark = pytest.mark.boundary
 
 
 @pytest.fixture()
-def running_dashboard() -> Iterator[tuple[str, int]]:
+def running_dashboard() -> Iterator[tuple[str, int, DashboardPublisher]]:
     runtime = OperatorInterfaceRuntime()
     publisher: DashboardPublisher = mount_dashboard(runtime, ReadinessBackedProvider({}))
-    publisher.start()
+    # The publisher is returned UN-started: the WS test starts it AFTER a client
+    # subscribes, so the immediate first tick deterministically reaches that
+    # client. Asset/snapshot tests do not need it running.
     host, port = runtime.start(host="127.0.0.1", port=0)
     try:
-        yield host, port
+        yield host, port, publisher
     finally:
-        publisher.stop()
+        publisher.stop()  # no-op if never started
         runtime.stop()
 
 
@@ -56,7 +58,7 @@ def _get(host: str, port: int, path: str) -> tuple[int, str, bytes]:
 
 
 def test_static_assets_are_served_with_correct_content_types(running_dashboard) -> None:
-    host, port = running_dashboard
+    host, port, _ = running_dashboard
     status, ctype, body = _get(host, port, "/dashboard")
     assert status == 200 and ctype.startswith("text/html")
     assert b'id="body-pnl"' in body and b"MISSION" in body
@@ -70,7 +72,7 @@ def test_static_assets_are_served_with_correct_content_types(running_dashboard) 
 
 
 def test_system_snapshot_returns_the_four_metric_groups(running_dashboard) -> None:
-    host, port = running_dashboard
+    host, port, _ = running_dashboard
     status, ctype, body = _get(host, port, "/dashboard/api/system")
     assert status == 200 and ctype.startswith("application/json")
     snap = json.loads(body)
@@ -81,7 +83,7 @@ def test_system_snapshot_returns_the_four_metric_groups(running_dashboard) -> No
 
 
 def test_healthz_still_served_after_mounting_the_dashboard(running_dashboard) -> None:
-    host, port = running_dashboard
+    host, port, _ = running_dashboard
     status, _, body = _get(host, port, "/healthz")
     assert status == 200 and json.loads(body)["status"] == "ok"
 
@@ -113,33 +115,50 @@ def _ws_send(sock: socket.socket, message: dict) -> None:
     sock.sendall(bytes([0x81, 0x80 | len(payload)]) + mask + masked)
 
 
-def test_websocket_subscribe_receives_a_live_event_within_5s(running_dashboard) -> None:
-    host, port = running_dashboard
+def test_every_required_channel_refreshes_within_budget(running_dashboard) -> None:
+    """Each required metric group refreshes within the 5s budget — not just "some event".
+
+    Regression guard for a client/SLA model that could report the refresh SLA
+    healthy off a fast 1s channel while the 5s METRICS/benchmark panel is stale:
+    the proof must be *per required channel*. Subscribe first, then start the
+    publisher so its immediate first tick reaches this client deterministically.
+    """
+    host, port, publisher = running_dashboard
     sock = _ws_connect(host, port)
     try:
         _ws_send(sock, {"type": "SUBSCRIBE", "channels": list(OWNED_CHANNELS)})
-        deadline = time.monotonic() + 5.0
+        time.sleep(0.2)  # let the SUBSCRIBE register before the first publish
         start = time.monotonic()
-        sock.settimeout(5.0)
+        publisher.start()
+
+        first_seen: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        sock.settimeout(4.0)
         buffer = b""
-        event: dict | None = None
+        # Collect long enough to also prove the fast channels KEEP refreshing
+        # (>=2 events), not just deliver a single first tick.
+        deadline = time.monotonic() + 3.5
         while time.monotonic() < deadline:
             frame, buffer = decode_frame(buffer, require_mask=False)
             if frame is not None:
                 if frame.opcode == OpCode.TEXT:
                     message = json.loads(frame.text)
                     if message.get("type") == "EVENT":
-                        event = message
-                        break
+                        channel = message["channel"]
+                        first_seen.setdefault(channel, time.monotonic() - start)
+                        counts[channel] = counts.get(channel, 0) + 1
+                        assert isinstance(message["data"], dict)
                 continue
             try:
                 buffer += sock.recv(65536)
             except TimeoutError:
                 break
-        elapsed = time.monotonic() - start
-        assert event is not None, "no EVENT within the 5s refresh budget"
-        assert elapsed < 5.0, f"refresh took {elapsed:.2f}s (NFR-P2 budget is 5s)"
-        assert event["channel"] in OWNED_CHANNELS
-        assert isinstance(event["data"], dict)
+
+        missing = set(OWNED_CHANNELS) - set(first_seen)
+        assert not missing, f"required channels never refreshed: {missing}"
+        for channel, elapsed in first_seen.items():
+            assert elapsed < 5.0, f"{channel} first refresh took {elapsed:.2f}s (>5s NFR-P2 budget)"
+        # The 1s channels must keep refreshing (guards a deliver-once-then-silent bug).
+        assert counts.get("PNL", 0) >= 2 and counts.get("HEARTBEAT", 0) >= 2, counts
     finally:
         sock.close()
