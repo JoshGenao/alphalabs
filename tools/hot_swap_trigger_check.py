@@ -274,7 +274,37 @@ def check_trigger_log_port(config: dict, orch_src: str) -> str:
     return _check_port(
         orch_src,
         contract_block(config)["trigger_log_port"],
-        "the best-effort swap-trigger log sink (durable SYS-61 store deferred to SRS-LOG-001)",
+        "the load-bearing swap-trigger log sink — a rejected record fails closed "
+        "(durable SYS-61 store deferred to SRS-LOG-001)",
+    )
+
+
+def check_log_port_load_bearing(config: dict, _source: str) -> str:
+    # SYS-49a "all swap triggers shall be logged" is load-bearing (fail closed) on
+    # the actionable path — the contract must document that and must NOT carry the
+    # stale "best-effort" wording that would license a sink to swallow a rejected
+    # record and return success.
+    block = contract_block(config)
+    guard = block["guard"]
+    marker = guard["log_port_load_bearing_marker"]
+    stale = guard["stale_best_effort_marker"]
+    note = block.get("trigger_log_port", {}).get("note", "")
+    if marker.lower() not in note.lower():
+        fail(
+            f"trigger_log_port.note must document the record outcome as '{marker}' "
+            "(a rejected record fails closed — kept out of `selected` / manual `Err`)"
+        )
+    # Scan the descriptive prose (notes + deferred), excluding the `guard` config
+    # which legitimately holds `stale` as the marker value being searched for.
+    prose = {key: value for key, value in block.items() if key != "guard"}
+    if stale.lower() in json.dumps(prose).lower():
+        fail(
+            f"hot_swap_trigger_contract still describes the log/inputs as '{stale}' — "
+            "the record outcome is load-bearing (fail closed); reconcile the stale wording"
+        )
+    return (
+        f"hot_swap_trigger_contract documents HotSwapTriggerLog as {marker} "
+        f"(a rejected record fails closed) with no stale '{stale}' wording"
     )
 
 
@@ -320,10 +350,77 @@ def check_evaluation_guard(config: dict, orch_src: str) -> str:
             "in the required priority order (drawdown-demotion first as the risk "
             "control, then top-ranked, then highest-momentum)"
         )
+
+    # Fail closed on the audit log: the automatic evaluation must surface an
+    # `unlogged` set (a fired-but-rejected trigger kept out of the actionable
+    # path), and manual promotion must fail closed to the unlogged-error type.
+    unlogged_field = guard["fail_closed_unlogged_field"]
+    if unlogged_field not in eval_body:
+        fail(
+            f"{guard['evaluate_method']} does not surface the `{unlogged_field}` set "
+            "— a fired trigger whose log record is rejected must be kept out of "
+            "`selected` (fail closed: no unlogged live-strategy swap)"
+        )
+    manual_body = _fn_block(orch_src, guard["manual_method"])
+    manual_error = guard["manual_error_struct"]
+    if manual_error not in manual_body:
+        fail(
+            f"{guard['manual_method']} does not fail closed to `{manual_error}` when "
+            "the required audit-log record is rejected"
+        )
+
+    # Degraded inputs are surfaced (not silently collapsed): a probe/source Err
+    # fails closed but records its reason in `degraded_inputs`.
+    degraded_field = guard["degraded_inputs_field"]
+    if degraded_field not in eval_body:
+        fail(
+            f"{guard['evaluate_method']} does not surface `{degraded_field}` — a "
+            "degraded LiveStrategyProbe / ReservoirRankingSource (Err) must fail "
+            "closed WITH its reason recorded, not collapse silently to an empty state"
+        )
     return (
         f"atp-orchestrator::{guard['evaluate_method']} + {guard['manual_method']} "
-        f"route every fire through {fire_helper}, which records via {guard['log_call']} "
-        "(all triggers logged); automatic triggers are evaluated drawdown-first"
+        f"route every fire through {fire_helper} (records via {guard['log_call']}), "
+        "evaluate drawdown-first, and FAIL CLOSED on a rejected log (unlogged triggers "
+        f"never `selected`; manual returns {manual_error})"
+    )
+
+
+def _check_struct_required(src: str, spec: dict, crate: str, note: str) -> str:
+    try:
+        body = _struct_body(src, spec["struct"])
+    except AssertionError as error:
+        fail(str(error))
+    missing = [
+        field
+        for field in spec["required_fields"]
+        if not re.search(rf"\bpub\s+{re.escape(field)}\s*:", body)
+    ]
+    if missing:
+        fail(f"{spec['struct']} is missing required fields: {', '.join(missing)}")
+    return (
+        f"{crate} declares {spec['struct']} with fields "
+        f"({', '.join(spec['required_fields'])}) — {note}"
+    )
+
+
+def check_trigger_evaluation(config: dict, orch_src: str) -> str:
+    return _check_struct_required(
+        orch_src,
+        contract_block(config)["trigger_evaluation"],
+        "atp-orchestrator",
+        "the evaluation result: fired (all), unlogged (rejected-log subset, fail "
+        "closed), selected (highest-priority logged trigger)",
+    )
+
+
+def check_manual_unlogged_error(config: dict, types_src: str) -> str:
+    return _check_struct_required(
+        types_src,
+        contract_block(config)["manual_unlogged_error"],
+        "atp-types",
+        "the fail-closed Err a manual trigger returns when its required log record "
+        "is rejected (carries the unlogged proposal for observability)",
     )
 
 
@@ -360,6 +457,9 @@ _STATIC_CHECKS = (
     ("live_strategy_probe_port", check_live_strategy_probe_port, "orch"),
     ("reservoir_ranking_source_port", check_reservoir_ranking_source_port, "orch"),
     ("trigger_log_port", check_trigger_log_port, "orch"),
+    ("log_port_load_bearing", check_log_port_load_bearing, "orch"),
+    ("trigger_evaluation", check_trigger_evaluation, "orch"),
+    ("manual_unlogged_error", check_manual_unlogged_error, "types"),
     ("evaluation_guard", check_evaluation_guard, "orch"),
     ("demotion_request_bridge", check_demotion_request_bridge, "types"),
 )

@@ -3999,19 +3999,22 @@
       "trait": "LiveStrategyProbe",
       "methods": [
         "current_live"
-      ]
+      ],
+      "note": "current_live() -> Result<Option<LiveStrategyState>, HotSwapSideEffectError>: Ok(Some) = live; Ok(None) = genuinely no live strategy (healthy); Err = degraded (could not read). The evaluator fails closed on Ok(None) AND Err (no swap) but surfaces the Err reason in TriggerEvaluation.degraded_inputs so a degraded dependency is not indistinguishable from 'no live strategy'."
     },
     "reservoir_ranking_source_port": {
       "trait": "ReservoirRankingSource",
       "methods": [
         "snapshot"
-      ]
+      ],
+      "note": "snapshot() -> Result<ReservoirRankingSnapshot, HotSwapSideEffectError>: Ok(snapshot) (possibly empty = no candidates, healthy) vs Err = degraded. The evaluator fails closed on Err and surfaces the reason in TriggerEvaluation.degraded_inputs."
     },
     "trigger_log_port": {
       "trait": "HotSwapTriggerLog",
       "methods": [
         "record"
-      ]
+      ],
+      "note": "record() -> Result<(), HotSwapSideEffectError>: the sink MUST return Err when it cannot ACCEPT the required audit record. Unlike an incidental audit sink, this outcome is LOAD-BEARING: a rejected record keeps the trigger out of the actionable TriggerEvaluation.selected and makes request_manual_promotion return Err (fail closed). A concrete SRS-LOG-001 sink must not swallow a rejected write and return Ok. Durable persistence of an ACCEPTED (Ok) record is the deferred SRS-LOG-001 concern."
     },
     "entry_points": [
       {
@@ -4023,6 +4026,22 @@
         "type": "StrategyOrchestrator"
       }
     ],
+    "trigger_evaluation": {
+      "struct": "TriggerEvaluation",
+      "required_fields": [
+        "fired",
+        "unlogged",
+        "selected",
+        "degraded_inputs"
+      ]
+    },
+    "manual_unlogged_error": {
+      "struct": "UnloggedHotSwapTrigger",
+      "required_fields": [
+        "proposal",
+        "rejection_reason"
+      ]
+    },
     "guard": {
       "evaluate_method": "evaluate_automatic_triggers",
       "manual_method": "request_manual_promotion",
@@ -4033,13 +4052,19 @@
         "config.top_ranked_promotion",
         "config.highest_momentum_promotion"
       ],
+      "fail_closed_unlogged_field": "unlogged",
+      "degraded_inputs_field": "degraded_inputs",
+      "manual_error_struct": "UnloggedHotSwapTrigger",
+      "log_port_load_bearing_marker": "load-bearing",
+      "stale_best_effort_marker": "best-effort",
       "demotion_request_bridge": "to_demotion_request",
       "demotion_request_struct": "HotSwapDemotionRequest"
     },
     "deferred": [
       "Concrete ReservoirRankingSource backed by the real SRS-RESV-002 / SYS-48 ranking (Sharpe/Sortino + momentum over the configurable evaluation window) and LiveStrategyProbe backed by the SRS-RESV-001 reservoir + live-strategy drawdown — this slice injects both through ports so the trigger layer is buildable and testable without the ranking runtime (owner: SRS-RESV-001 / SRS-RESV-002).",
+      "RICHER typed error taxonomy on the injected LiveStrategyProbe / ReservoirRankingSource ports: the ports ALREADY return Result (Err = degraded), and evaluation fails closed while surfacing the reason string in TriggerEvaluation.degraded_inputs — so a degraded dependency is NOT silently collapsed into a healthy empty state. Replacing the single reason-string HotSwapSideEffectError with a structured CONNECTIVITY_BLOCKED / STALE_DATA / SOURCE_UNAVAILABLE taxonomy (and any retry/backoff policy) is deferred to the concrete probes (same reason-string-now / typed-later precedent as the demotion contract's IB-cancel error taxonomy) (owner: SRS-RESV-001 / SRS-RESV-002).",
       "Swap EXECUTION: the demote-before-promote sequence + liquidation-timeout gate is SRS-RESV-004 (resolve_demotion, already built); flat-start promotion is SRS-RESV-005; cool-down enforcement (default 7 days, manual-swap confirmation during cool-down per SYS-49e) is SRS-RESV-006. This trigger layer only decides + logs, and hands a selected proposal to resolve_demotion via to_demotion_request (owner: SRS-RESV-004 / SRS-RESV-005 / SRS-RESV-006).",
-      "Durable, queryable, dashboard-viewable SYS-61 system-log store consuming HotSwapTriggerEvent (the Hot-Swap trigger log class) — the SRS-LOG-001 sink. This slice records every fired trigger through the best-effort HotSwapTriggerLog port and demonstrates durable JSONL persistence in the resv003_hot_swap_trigger_cli --log flag; the shared durable store is deferred (owner: SRS-LOG-001).",
+      "Durable, queryable, dashboard-viewable SYS-61 system-log store consuming HotSwapTriggerEvent (the Hot-Swap trigger log class) — the SRS-LOG-001 sink. This slice records every fired trigger through the HotSwapTriggerLog port (a REJECTED record fails closed — kept out of selected / manual returns Err; see trigger_log_port.note) and demonstrates durable JSONL persistence in the resv003_hot_swap_trigger_cli --log flag; the shared durable store, which must persist an ACCEPTED record, is deferred (owner: SRS-LOG-001).",
       "SRS-API-001 /api/v1/hot-swap REST handler + hot-swap trigger CLI body and the SRS-UI-001 / UI-5 dashboard Hot-Swap controls that drive evaluate_automatic_triggers / request_manual_promotion and surface trigger configuration + status to the operator. The CLI arm ships here as resv003_hot_swap_trigger_cli; the dashboard/REST arms are deferred (owner: SRS-API-001 / SRS-UI-001 / UI-5)."
     ]
   },

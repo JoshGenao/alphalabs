@@ -2689,8 +2689,9 @@ impl std::error::Error for StructuredHotSwapDemotionError {}
 // are enable/disable-able per type and DEFAULT TO DISABLED — encoded as
 // `#[default] Disabled` on each per-trigger enum so the "default off" safety
 // invariant is both idiomatic and statically checkable. All fired triggers are
-// logged (SYS-61) via the orchestrator's best-effort `HotSwapTriggerLog` port;
-// the durable/queryable system-log store is the deferred SRS-LOG-001 sink.
+// logged (SYS-61) via the orchestrator's `HotSwapTriggerLog` port, whose outcome
+// is load-bearing (a REJECTED record fails closed — kept out of the actionable
+// path); the durable/queryable system-log store is the deferred SRS-LOG-001 sink.
 //
 // The ranking/drawdown INPUTS (SRS-RESV-001/002, unbuilt) arrive through
 // source-neutral DTOs injected via orchestrator ports — mirroring how the
@@ -2986,8 +2987,9 @@ impl HotSwapTriggerProposal {
 
 /// SRS-RESV-003 structured, loggable record of a fired Hot-Swap trigger (SyRS
 /// SYS-49a "all swap triggers shall be logged" → SYS-61). Emitted through the
-/// orchestrator's best-effort `HotSwapTriggerLog` port for EVERY fired trigger;
-/// the durable/queryable system-log store is the deferred SRS-LOG-001 sink.
+/// orchestrator's `HotSwapTriggerLog` port for EVERY fired trigger; a rejected
+/// record fails closed (kept out of the actionable path). The durable/queryable
+/// system-log store is the deferred SRS-LOG-001 sink.
 /// Mirrors `HotSwapDemotionEvent`'s shape (structured, source-neutral, carries
 /// the observation timestamp).
 #[derive(Debug, Clone, PartialEq)]
@@ -2998,6 +3000,41 @@ pub struct HotSwapTriggerEvent {
     pub rationale: TriggerRationale,
     pub observed_at_seconds: u64,
 }
+
+/// SRS-RESV-003 a Hot-Swap trigger that FIRED but whose REQUIRED audit-log
+/// record was REJECTED by the sink. Surfaced (never swallowed) so a caller can
+/// never treat an unlogged swap trigger as audited or hand it to the
+/// SRS-RESV-004 gate — that would lose the audit trail for a live-strategy
+/// change. SYS-49a's "all swap triggers shall be logged" is therefore
+/// load-bearing (fail closed), not merely best-effort, on the ACTIONABLE path:
+/// the automatic evaluator keeps such a trigger out of `TriggerEvaluation::selected`,
+/// and `request_manual_promotion` returns this as its `Err`. The unlogged
+/// `proposal` is carried so the failure is fully observable. (Durable delivery
+/// of a successfully-attempted record remains the deferred SRS-LOG-001 sink's
+/// concern; this type is only about a sink that actively rejected the write.)
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnloggedHotSwapTrigger {
+    pub proposal: HotSwapTriggerProposal,
+    /// The sink's reason for rejecting the required audit-log record, carried so a
+    /// caller (e.g. the operator CLI) can surface WHY the swap was refused.
+    pub rejection_reason: String,
+}
+
+impl fmt::Display for UnloggedHotSwapTrigger {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "SRS-RESV-003: hot-swap trigger {} (demote {} -> promote {}) fired but its \
+             required audit-log record was rejected ({}); refusing to treat it as actionable",
+            self.proposal.kind.as_str(),
+            self.proposal.demoting_strategy_id.as_str(),
+            self.proposal.candidate_strategy_id.as_str(),
+            self.rejection_reason,
+        )
+    }
+}
+
+impl std::error::Error for UnloggedHotSwapTrigger {}
 
 #[cfg(test)]
 mod resv003_trigger_config_tests {
@@ -3135,6 +3172,26 @@ mod resv003_trigger_config_tests {
         let event = proposal.to_event();
         assert_eq!(event.kind, HotSwapTriggerKind::TopRankedPromotion);
         assert_eq!(event.candidate_strategy_id.as_str(), "cand");
+    }
+
+    #[test]
+    fn unlogged_trigger_carries_the_proposal_and_renders_the_kind() {
+        let proposal = HotSwapTriggerProposal {
+            kind: HotSwapTriggerKind::ManualPromotion,
+            demoting_strategy_id: StrategyId::new("live"),
+            candidate_strategy_id: StrategyId::new("cand"),
+            rationale: TriggerRationale::ManualSelection,
+            observed_at_seconds: 7,
+        };
+        let unlogged = UnloggedHotSwapTrigger {
+            proposal: proposal.clone(),
+            rejection_reason: "log store unwritable".to_string(),
+        };
+        assert_eq!(unlogged.proposal, proposal);
+        let rendered = unlogged.to_string();
+        assert!(rendered.contains("MANUAL_PROMOTION"));
+        assert!(rendered.contains("audit-log record was rejected"));
+        assert!(rendered.contains("log store unwritable"));
     }
 }
 

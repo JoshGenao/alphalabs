@@ -20,7 +20,6 @@ use atp_types::{
     LiveStrategyState, RankedStrategy, RankingPromotionTrigger, ReservoirRankingSnapshot,
     StrategyId, TriggerRationale,
 };
-use std::cell::RefCell;
 use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -53,14 +52,17 @@ evaluate FLAGS:
     --drawdown-threshold <bps>   ENABLE drawdown-demotion at this threshold (1..=10000)
     --top-ranked                 ENABLE top-ranked promotion
     --highest-momentum           ENABLE highest-momentum promotion
-    --log <path>                 append each fired trigger to a durable JSONL log (fsynced)
+    --log <path>                 durable JSONL audit log (write+flush+fsync). REQUIRED
+                                 to log a fired trigger: if any trigger fires without
+                                 a sink the pass fails closed (nonzero exit)
     --inject disabled            non-vacuity: ignore the enable flags and use the
                                  default (all-disabled) config, proving nothing fires
 
 manual FLAGS:
     --demoting <id>              the current live strategy to demote (required)
     --candidate <id>             the reservoir strategy to promote (required)
-    --log <path>                 append the trigger to a durable JSONL log (fsynced)
+    --log <path>                 durable JSONL audit log (REQUIRED — manual always
+                                 fires; without a sink the command fails closed)
 ";
 
 fn main() -> ExitCode {
@@ -270,7 +272,26 @@ fn cmd_evaluate(rest: &[String]) -> Result<(), String> {
             rationale_to_string(&proposal.rationale),
         );
     }
+    // A fired trigger whose required audit-log record was REJECTED is surfaced
+    // here (with the sink's reason) and is never `selected` (fail closed).
+    for unlogged in &evaluation.unlogged {
+        println!(
+            "unlogged:{} candidate:{} reason:{}",
+            unlogged.proposal.kind.as_str(),
+            unlogged.proposal.candidate_strategy_id.as_str(),
+            unlogged.rejection_reason,
+        );
+    }
+    for reason in &evaluation.degraded_inputs {
+        println!("degraded-input:{reason}");
+    }
+    let logged = evaluation.fired.len() - evaluation.unlogged.len();
     println!("fired-count:{}", evaluation.fired.len());
+    println!("logged-count:{logged}");
+    println!("unlogged-count:{}", evaluation.unlogged.len());
+    println!("degraded-count:{}", evaluation.degraded_inputs.len());
+    // "all swap triggers are logged": every fired trigger's record was accepted.
+    println!("all-triggers-logged:{}", evaluation.unlogged.is_empty());
     println!(
         "selected:{}",
         evaluation
@@ -279,16 +300,40 @@ fn cmd_evaluate(rest: &[String]) -> Result<(), String> {
             .map(|proposal| proposal.kind.as_str())
             .unwrap_or("NONE"),
     );
-    let logged = log.events.borrow().len();
-    println!("logged-count:{logged}");
-    // Mechanical guarantee of "all swap triggers are logged": one log record per
-    // fired trigger, recorded in the same path that builds the proposal.
-    println!("all-triggers-logged:{}", logged == evaluation.fired.len());
 
     if let Some(path) = &log_path {
         let persisted = count_log_records(Path::new(path))?;
         println!("log-persisted:{path}");
         println!("log-file-records:{persisted}");
+    }
+
+    // Fail closed at the PROCESS level: if any fired trigger's record was rejected
+    // (`unlogged`) or an input port was degraded, exit nonzero so shell automation
+    // treats the pass as a failure rather than a clean evaluation.
+    if !evaluation.unlogged.is_empty() {
+        let reasons: Vec<String> = evaluation
+            .unlogged
+            .iter()
+            .map(|unlogged| {
+                format!(
+                    "{}: {}",
+                    unlogged.proposal.kind.as_str(),
+                    unlogged.rejection_reason
+                )
+            })
+            .collect();
+        return Err(format!(
+            "{} fired trigger(s) could not be logged — the evaluation pass is not \
+             actionable (fail closed): {}",
+            evaluation.unlogged.len(),
+            reasons.join("; ")
+        ));
+    }
+    if !evaluation.degraded_inputs.is_empty() {
+        return Err(format!(
+            "degraded input port(s): {} (fail closed)",
+            evaluation.degraded_inputs.join("; ")
+        ));
     }
     Ok(())
 }
@@ -334,7 +379,7 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
     let candidate = candidate.ok_or_else(|| format!("--candidate <id> is required\n\n{USAGE}"))?;
 
     let log = CollectingTriggerLog::new(log_path.as_deref().map(PathBuf::from));
-    let proposal = StrategyOrchestrator.request_manual_promotion(
+    let outcome = StrategyOrchestrator.request_manual_promotion(
         StrategyId::new(&demoting),
         StrategyId::new(&candidate),
         &log,
@@ -342,6 +387,12 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
     );
 
     println!("manual-always-available:true");
+    // Ok = fired AND logged (safe to hand to the RESV-004 gate); Err = fired but
+    // the required audit-log record was rejected (fail closed — not actionable).
+    let (proposal, logged) = match &outcome {
+        Ok(proposal) => (proposal, true),
+        Err(unlogged) => (&unlogged.proposal, false),
+    };
     println!(
         "fired:{} demoting:{} candidate:{} rationale:{}",
         proposal.kind.as_str(),
@@ -349,14 +400,21 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
         proposal.candidate_strategy_id.as_str(),
         rationale_to_string(&proposal.rationale),
     );
-    println!("logged-count:{}", log.events.borrow().len());
+    println!("manual-logged:{logged}");
 
     if let Some(path) = &log_path {
         let persisted = count_log_records(Path::new(path))?;
         println!("log-persisted:{path}");
         println!("log-file-records:{persisted}");
     }
-    Ok(())
+
+    // Fail closed at the PROCESS level: a rejected audit-log record must make the
+    // command exit nonzero so shell automation cannot treat an unlogged manual
+    // Hot-Swap trigger as a successful command.
+    match outcome {
+        Ok(_) => Ok(()),
+        Err(unlogged) => Err(unlogged.to_string()),
+    }
 }
 
 // --------------------------------------------------------------------------- //
@@ -488,8 +546,14 @@ fn append_event_line(path: &Path, event: &HotSwapTriggerEvent) -> Result<(), Str
 }
 
 fn count_log_records(path: &Path) -> Result<usize, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|error| format!("cannot read log file {}: {error}", path.display()))?;
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        // A missing file means zero records were persisted (e.g. every append was
+        // rejected) — that is a 0 count, not a read error. Returning it lets the
+        // caller's fail-closed check surface the real rejection reason instead.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("cannot read log file {}: {error}", path.display())),
+    };
     Ok(content
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -505,8 +569,8 @@ struct FixedLiveProbe {
 }
 
 impl LiveStrategyProbe for FixedLiveProbe {
-    fn current_live(&self) -> Option<LiveStrategyState> {
-        self.state.clone()
+    fn current_live(&self) -> Result<Option<LiveStrategyState>, HotSwapSideEffectError> {
+        Ok(self.state.clone())
     }
 }
 
@@ -515,35 +579,38 @@ struct FixedRanking {
 }
 
 impl ReservoirRankingSource for FixedRanking {
-    fn snapshot(&self) -> ReservoirRankingSnapshot {
-        self.snapshot.clone()
+    fn snapshot(&self) -> Result<ReservoirRankingSnapshot, HotSwapSideEffectError> {
+        Ok(self.snapshot.clone())
     }
 }
 
-/// Collects every trigger event in memory AND, when a `--log` path is given,
-/// durably appends it to a JSONL file. Best-effort: a file-write failure is
-/// surfaced as `Err` but the in-memory record still stands (the evaluator treats
-/// the sink as best-effort and never un-fires a trigger).
+/// The CLI's concrete swap-trigger log sink. When a `--log` path is given it
+/// durably appends each fired trigger to a JSONL file (write + flush + fsync);
+/// a file-write failure is surfaced as `Err` (a REJECTED record → the trigger is
+/// kept out of the actionable path, fail closed).
+///
+/// With NO `--log` path there is no real audit destination, so a record is
+/// REJECTED (`Err`) rather than silently accepted — a firing CLI command without
+/// a sink must not claim a trigger was logged when nothing was persisted. A
+/// concrete deployment wires the deferred SRS-LOG-001 durable store here; until
+/// then `--log` is required to log (and therefore to act on) a fired trigger.
 struct CollectingTriggerLog {
-    events: RefCell<Vec<HotSwapTriggerEvent>>,
     sink_path: Option<PathBuf>,
 }
 
 impl CollectingTriggerLog {
     fn new(sink_path: Option<PathBuf>) -> Self {
-        Self {
-            events: RefCell::new(Vec::new()),
-            sink_path,
-        }
+        Self { sink_path }
     }
 }
 
 impl HotSwapTriggerLog for CollectingTriggerLog {
     fn record(&self, event: HotSwapTriggerEvent) -> Result<(), HotSwapSideEffectError> {
-        self.events.borrow_mut().push(event.clone());
-        if let Some(path) = &self.sink_path {
-            append_event_line(path, &event).map_err(HotSwapSideEffectError::new)?;
+        match &self.sink_path {
+            Some(path) => append_event_line(path, &event).map_err(HotSwapSideEffectError::new),
+            None => Err(HotSwapSideEffectError::new(
+                "no audit-log sink configured — pass --log <path> to log a fired trigger",
+            )),
         }
-        Ok(())
     }
 }

@@ -7,9 +7,10 @@ use atp_types::{
     ReservoirRankingSnapshot, ResourceProfile, ResourceProfileError, RuntimeService,
     SideEffectOutcome, StrategyId, StrategyLaunchOutcome, StrategyLaunchRequest, StrategyMode,
     StructuredHotSwapDemotionError, StructuredOrchestratorError, TriggerRationale,
-    WorkloadAdmissionEvent, WorkloadAdmissionReason, WorkloadId, WorkloadKind, WorkloadPriority,
-    HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT, RESOURCE_PROFILE_CPU_CEILING_HUNDREDTHS,
-    RESOURCE_PROFILE_CPU_FLOOR_HUNDREDTHS, STRATEGY_STARTUP_DEADLINE_MS,
+    UnloggedHotSwapTrigger, WorkloadAdmissionEvent, WorkloadAdmissionReason, WorkloadId,
+    WorkloadKind, WorkloadPriority, HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT,
+    RESOURCE_PROFILE_CPU_CEILING_HUNDREDTHS, RESOURCE_PROFILE_CPU_FLOOR_HUNDREDTHS,
+    STRATEGY_STARTUP_DEADLINE_MS,
 };
 use std::fmt;
 
@@ -643,54 +644,116 @@ pub struct HotSwapDemotionResolved {
 //     the evaluator cannot promote/demote through it).
 //   * `ReservoirRankingSource` — the injected ranking snapshot the promotion
 //     triggers select candidates from (fail-closed accessors).
-//   * `HotSwapTriggerLog` — the best-effort sink recorded on EVERY fired trigger
-//     ("all swap triggers shall be logged"), whose durable delivery is the
-//     deferred SRS-LOG-001 sink.
+//   * `HotSwapTriggerLog` — the sink recorded on EVERY fired trigger ("all swap
+//     triggers shall be logged"); its outcome is load-bearing (a REJECTED record
+//     keeps the trigger out of the actionable path — fail closed). Durable
+//     persistence of an ACCEPTED record is the deferred SRS-LOG-001 sink.
 // Everything not owned here — demotion execution, promotion, cool-down, the
 // durable log store, and the REST/dashboard handlers — is enumerated in
 // `architecture/runtime_services.json` `hot_swap_trigger_contract.deferred[]`.
 
 /// SRS-RESV-003 read-only probe for the current live strategy (identity +
-/// observed drawdown, in basis points). `None` means no strategy is live — every
-/// automatic trigger then fails closed (no demoting side, no fire). Mirrors the
-/// no-mutator discipline of `HotSwapLiquidationProbe`: the evaluator observes,
-/// it never promotes/demotes through this port.
+/// observed drawdown, in basis points). Mirrors the no-mutator discipline of
+/// `HotSwapLiquidationProbe`: the evaluator observes, it never promotes/demotes
+/// through this port.
+///
+/// Three-way outcome so a DEGRADED dependency is never silently indistinguishable
+/// from a healthy empty state: `Ok(Some)` = a strategy is live; `Ok(None)` =
+/// genuinely no live strategy (healthy, no swap); `Err` = the probe could not
+/// read live state (degraded — e.g. registry unavailable). The evaluator fails
+/// closed on BOTH `Ok(None)` and `Err` (no swap), but records the `Err` reason in
+/// `TriggerEvaluation::degraded_inputs` so the degradation is observable and a
+/// caller can retry / alert rather than mistake it for "no live strategy". The
+/// concrete probe's richer typed error taxonomy (vs today's reason string) is the
+/// deferred SRS-RESV-001 live-state probe, per
+/// `hot_swap_trigger_contract.deferred[]`.
 pub trait LiveStrategyProbe {
-    fn current_live(&self) -> Option<LiveStrategyState>;
+    fn current_live(&self) -> Result<Option<LiveStrategyState>, HotSwapSideEffectError>;
 }
 
 /// SRS-RESV-003 read-only source of the reservoir ranking snapshot (the
 /// SRS-RESV-002 / SyRS SYS-48 output, injected). The evaluator selects promotion
 /// candidates through the snapshot's fail-closed accessors (`top_by_rank` /
 /// `top_by_momentum`).
+///
+/// `Ok(snapshot)` (possibly empty = no candidates, healthy) vs `Err` = the
+/// ranking could not be read (degraded). The evaluator fails closed on `Err` (no
+/// promotion) and records the reason in `TriggerEvaluation::degraded_inputs`, so a
+/// degraded ranking source is distinguishable from a healthy empty ranking rather
+/// than silently collapsed. The concrete source's richer typed error taxonomy is
+/// the deferred SRS-RESV-002 ranking source (see
+/// `hot_swap_trigger_contract.deferred[]`).
 pub trait ReservoirRankingSource {
-    fn snapshot(&self) -> ReservoirRankingSnapshot;
+    fn snapshot(&self) -> Result<ReservoirRankingSnapshot, HotSwapSideEffectError>;
 }
 
-/// SRS-RESV-003 best-effort log sink for fired Hot-Swap triggers (SyRS SYS-49a
-/// "all swap triggers shall be logged" → SYS-61). The evaluator records EVERY
-/// fired trigger through this port in the same code path that produces the
-/// proposal, so a proposal cannot exist without a log attempt. Returns `Result`
-/// so a concrete sink surfaces a publication failure rather than swallowing it;
-/// emission is best-effort (mirrors `HotSwapDemotionEventSink`) — a sink failure
-/// does not un-fire the trigger or change the evaluation. Durable delivery is
-/// the deferred SRS-LOG-001 sink's responsibility.
+/// SRS-RESV-003 log sink for fired Hot-Swap triggers (SyRS SYS-49a "all swap
+/// triggers shall be logged" → SYS-61). The evaluator records EVERY fired trigger
+/// through this port in the same code path that produces the proposal, so a
+/// proposal cannot exist without a log attempt. Returns `Result` so a concrete
+/// sink surfaces a rejection rather than swallowing it — and unlike the
+/// incidental audit on `HotSwapDemotionEventSink`, that outcome is LOAD-BEARING
+/// here: a rejected record keeps the trigger out of the actionable
+/// `TriggerEvaluation::selected` / makes `request_manual_promotion` return `Err`
+/// (fail closed), because SYS-49a requires every swap trigger to be logged before
+/// a live-strategy swap acts on it. The record's DURABLE persistence (bounded
+/// queue + journal/retry once the write is accepted) remains the deferred
+/// SRS-LOG-001 sink's responsibility; `Ok` means the sink accepted the write.
 pub trait HotSwapTriggerLog {
     fn record(&self, event: HotSwapTriggerEvent) -> Result<(), HotSwapSideEffectError>;
 }
 
-/// SRS-RESV-003 result of an automatic-trigger evaluation pass. `fired` is the
-/// full, priority-ordered set of triggers that fired this pass (each already
-/// logged) — the "all swap triggers are logged" evidence. `selected` is the
-/// single highest-priority proposal (drawdown-demotion first, then top-ranked,
-/// then highest-momentum) that the SRS-RESV-004/005 execution path should act
-/// on: exactly one swap can happen under the single-live-strategy invariant, so
-/// the evaluator resolves the priority here rather than pushing "pick one" onto
-/// the caller. `selected` is `Some(fired[0])` when any trigger fired, else `None`.
+/// SRS-RESV-003 result of an automatic-trigger evaluation pass.
+///
+/// `fired` is the full, priority-ordered set of triggers that fired this pass
+/// (a firing is recorded here whether or not its log write was accepted — the
+/// complete firing record).
+///
+/// `unlogged` is the subset of `fired` whose REQUIRED audit-log record was
+/// REJECTED by the sink, each carried as an `UnloggedHotSwapTrigger` so the
+/// sink's rejection REASON (e.g. unwritable path, no sink configured) travels end
+/// to end — an operator needs the actionable cause to repair the degraded audit
+/// path, not just a count. NONE of its entries is ever `selected`. SYS-49a's "all
+/// swap triggers shall be logged" is load-bearing (fail closed), not best-effort,
+/// on the ACTIONABLE path: handing SRS-RESV-004 an unlogged Hot-Swap trigger would
+/// lose the audit trail for a live-strategy change. (A sink that ACCEPTS the write
+/// but has not yet durably persisted it is the deferred SRS-LOG-001 concern;
+/// `unlogged` is only about a sink that actively rejected the write.)
+///
+/// `selected` is the single actionable proposal the SRS-RESV-004/005 execution
+/// path should act on: the highest-priority fired trigger (drawdown-demotion
+/// first, then top-ranked, then highest-momentum), but ONLY when the WHOLE pass
+/// logged cleanly (`unlogged` is empty). It is `None` when nothing fired OR ANY
+/// fired trigger's record was rejected — "all swap triggers are logged" is ATOMIC
+/// for the pass, so a single rejected record (even for a lower-priority trigger)
+/// blocks every swap from this pass (fail closed). Exactly one swap can happen
+/// under the single-live-strategy invariant, so the evaluator resolves the
+/// priority here rather than pushing "pick one" onto the caller.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TriggerEvaluation {
     pub fired: Vec<HotSwapTriggerProposal>,
+    pub unlogged: Vec<UnloggedHotSwapTrigger>,
     pub selected: Option<HotSwapTriggerProposal>,
+    /// Reasons an injected input port (`LiveStrategyProbe` / `ReservoirRankingSource`)
+    /// reported it could NOT read its dependency this pass. Non-empty ⇒ the
+    /// evaluation is DEGRADED: it failed closed (no fire, `selected` is `None`),
+    /// but the degradation is surfaced here so it is distinguishable from a healthy
+    /// "no live strategy" / "no candidates" outcome — never silently collapsed.
+    pub degraded_inputs: Vec<String>,
+}
+
+impl TriggerEvaluation {
+    /// A no-swap evaluation (nothing fired, nothing selected) carrying any
+    /// `degraded_inputs` reasons. Used on the fail-closed early exits (no live
+    /// strategy, or a degraded input port).
+    fn empty(degraded_inputs: Vec<String>) -> Self {
+        Self {
+            fired: Vec::new(),
+            unlogged: Vec::new(),
+            selected: None,
+            degraded_inputs,
+        }
+    }
 }
 
 impl StrategyOrchestrator {
@@ -1129,12 +1192,16 @@ impl StrategyOrchestrator {
     ///     threshold).
     ///
     /// Every fired trigger is recorded through `log` in the same path that builds
-    /// the proposal (see `fire_trigger`; best-effort — a sink failure does not
-    /// un-fire it), so "all swap triggers are logged" holds by construction.
-    /// Returns the full priority-ordered `fired` set plus the single
-    /// highest-priority `selected` proposal. Read-only w.r.t. execution: it
-    /// proposes + logs, never promotes/demotes — the SRS-RESV-004 gate
-    /// (`resolve_demotion`) executes a `selected` swap.
+    /// the proposal (see `fire_trigger`), so a proposal can never exist without a
+    /// paired log attempt. The log OUTCOME is load-bearing on the actionable path:
+    /// a trigger whose record the sink REJECTS goes into `unlogged` and is kept
+    /// out of `selected` (fail closed — handing SRS-RESV-004 an unlogged swap
+    /// trigger would lose the audit trail for a live-strategy change). Returns the
+    /// full priority-ordered `fired` set, the `unlogged` subset, and the single
+    /// highest-priority `selected` proposal (only when its own record was
+    /// accepted). Read-only w.r.t. execution: it proposes + logs, never
+    /// promotes/demotes — the SRS-RESV-004 gate (`resolve_demotion`) executes a
+    /// `selected` swap.
     pub fn evaluate_automatic_triggers<L, R, S>(
         &self,
         config: &HotSwapTriggerConfig,
@@ -1149,16 +1216,25 @@ impl StrategyOrchestrator {
         S: HotSwapTriggerLog,
     {
         let mut fired: Vec<HotSwapTriggerProposal> = Vec::new();
+        // Aligned with `fired`: each fired trigger's log-record outcome. Used to
+        // derive `unlogged` (carrying the rejection reason) and the fail-closed
+        // `selected`.
+        let mut record_outcomes: Vec<Result<(), HotSwapSideEffectError>> = Vec::new();
 
-        // No live strategy ⇒ nothing to demote ⇒ every automatic trigger fails
-        // closed. (Manual promotion is a separate, always-available path.)
-        let Some(live_state) = live.current_live() else {
-            return TriggerEvaluation {
-                fired,
-                selected: None,
-            };
+        // Read the live-strategy probe. A degraded probe (`Err`) fails closed
+        // (no swap) BUT is surfaced in `degraded_inputs` so it is distinguishable
+        // from a healthy `Ok(None)` = genuinely no live strategy. (Manual
+        // promotion is a separate, always-available path.)
+        let live_state = match live.current_live() {
+            Ok(Some(state)) => state,
+            Ok(None) => return TriggerEvaluation::empty(Vec::new()),
+            Err(error) => return TriggerEvaluation::empty(vec![error.reason]),
         };
-        let snapshot = ranking.snapshot();
+        // A degraded ranking source likewise fails closed with the reason surfaced.
+        let snapshot = match ranking.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => return TriggerEvaluation::empty(vec![error.reason]),
+        };
 
         // Priority 1 — drawdown-demotion (SYS-49a(b)): the live strategy breached
         // its configured drawdown threshold. The replacement candidate is the
@@ -1167,7 +1243,7 @@ impl StrategyOrchestrator {
             if live_state.drawdown_bps >= threshold.get() {
                 if let Some(candidate) = snapshot.top_by_rank() {
                     if candidate.strategy_id != live_state.strategy_id {
-                        fired.push(self.fire_trigger(
+                        let (proposal, outcome) = self.fire_trigger(
                             HotSwapTriggerKind::DrawdownDemotion,
                             &live_state.strategy_id,
                             &candidate.strategy_id,
@@ -1177,7 +1253,9 @@ impl StrategyOrchestrator {
                             },
                             log,
                             observed_at_seconds,
-                        ));
+                        );
+                        fired.push(proposal);
+                        record_outcomes.push(outcome);
                     }
                 }
             }
@@ -1188,7 +1266,7 @@ impl StrategyOrchestrator {
         if config.top_ranked_promotion.is_enabled() {
             if let Some(candidate) = snapshot.top_by_rank() {
                 if candidate.strategy_id != live_state.strategy_id {
-                    fired.push(self.fire_trigger(
+                    let (proposal, outcome) = self.fire_trigger(
                         HotSwapTriggerKind::TopRankedPromotion,
                         &live_state.strategy_id,
                         &candidate.strategy_id,
@@ -1198,7 +1276,9 @@ impl StrategyOrchestrator {
                         },
                         log,
                         observed_at_seconds,
-                    ));
+                    );
+                    fired.push(proposal);
+                    record_outcomes.push(outcome);
                 }
             }
         }
@@ -1208,7 +1288,7 @@ impl StrategyOrchestrator {
         if config.highest_momentum_promotion.is_enabled() {
             if let Some(candidate) = snapshot.top_by_momentum() {
                 if candidate.strategy_id != live_state.strategy_id {
-                    fired.push(self.fire_trigger(
+                    let (proposal, outcome) = self.fire_trigger(
                         HotSwapTriggerKind::HighestMomentumPromotion,
                         &live_state.strategy_id,
                         &candidate.strategy_id,
@@ -1217,20 +1297,55 @@ impl StrategyOrchestrator {
                         },
                         log,
                         observed_at_seconds,
-                    ));
+                    );
+                    fired.push(proposal);
+                    record_outcomes.push(outcome);
                 }
             }
         }
 
-        let selected = fired.first().cloned();
-        TriggerEvaluation { fired, selected }
+        // Fail closed on the audit log: every fired trigger whose record was
+        // rejected is surfaced in `unlogged` (with the sink's reason) and can never
+        // be `selected`.
+        let unlogged: Vec<UnloggedHotSwapTrigger> = fired
+            .iter()
+            .zip(&record_outcomes)
+            .filter_map(|(proposal, outcome)| match outcome {
+                Ok(()) => None,
+                Err(error) => Some(UnloggedHotSwapTrigger {
+                    proposal: proposal.clone(),
+                    rejection_reason: error.reason.clone(),
+                }),
+            })
+            .collect();
+        // `selected` is the highest-priority fired trigger — but ONLY when the
+        // WHOLE pass logged cleanly (`unlogged` empty). "All swap triggers are
+        // logged" (SYS-49a) is ATOMIC for the pass: if ANY fired trigger's record
+        // was rejected, the audit log is in a known-degraded state, so no swap from
+        // this pass is actionable (fail closed) — not even a higher-priority
+        // trigger that happened to log before a later one was rejected.
+        let selected = if unlogged.is_empty() {
+            fired.first().cloned()
+        } else {
+            None
+        };
+        TriggerEvaluation {
+            fired,
+            unlogged,
+            selected,
+            // Reached only when both input ports read cleanly, so no degradation.
+            degraded_inputs: Vec::new(),
+        }
     }
 
     /// SRS-RESV-003 / SyRS SYS-49a(a) manual Hot-Swap promotion. Manual selection
     /// is ALWAYS available — it is not gated by `HotSwapTriggerConfig` and fires
     /// regardless of the automatic-trigger posture. The operator names the
     /// demoting (current live) strategy and the candidate; the trigger fires and
-    /// is logged (best-effort) unconditionally. The cool-down confirmation
+    /// is recorded through `log`. Returns `Ok(proposal)` when the record was
+    /// accepted (safe to hand to the SRS-RESV-004 gate) and
+    /// `Err(UnloggedHotSwapTrigger)` when the sink rejected it — fail closed, so a
+    /// caller never acts on an unlogged manual swap. The cool-down confirmation
     /// warning for a manual swap during cool-down (SYS-49e) is the deferred
     /// SRS-RESV-006 concern and is intentionally NOT enforced here.
     pub fn request_manual_promotion<S: HotSwapTriggerLog>(
@@ -1239,20 +1354,31 @@ impl StrategyOrchestrator {
         candidate_strategy_id: StrategyId,
         log: &S,
         observed_at_seconds: u64,
-    ) -> HotSwapTriggerProposal {
-        self.fire_trigger(
+    ) -> Result<HotSwapTriggerProposal, UnloggedHotSwapTrigger> {
+        let (proposal, outcome) = self.fire_trigger(
             HotSwapTriggerKind::ManualPromotion,
             &demoting_strategy_id,
             &candidate_strategy_id,
             TriggerRationale::ManualSelection,
             log,
             observed_at_seconds,
-        )
+        );
+        match outcome {
+            Ok(()) => Ok(proposal),
+            Err(error) => Err(UnloggedHotSwapTrigger {
+                proposal,
+                rejection_reason: error.reason,
+            }),
+        }
     }
 
-    /// SRS-RESV-003 build a fired-trigger proposal AND log it (best-effort) in
+    /// SRS-RESV-003 build a fired-trigger proposal AND record it through `log` in
     /// one place, so a proposal can never be produced without a paired log
-    /// attempt — the mechanical guarantee behind "all swap triggers are logged".
+    /// attempt — the mechanical half of "all swap triggers are logged". Returns
+    /// the proposal plus the sink's record outcome (`Ok` = accepted); the caller
+    /// uses that to fail closed (keep an unlogged trigger out of the actionable
+    /// path, carrying the rejection reason) rather than swallowing the rejection
+    /// here.
     fn fire_trigger<S: HotSwapTriggerLog>(
         &self,
         kind: HotSwapTriggerKind,
@@ -1261,7 +1387,7 @@ impl StrategyOrchestrator {
         rationale: TriggerRationale,
         log: &S,
         observed_at_seconds: u64,
-    ) -> HotSwapTriggerProposal {
+    ) -> (HotSwapTriggerProposal, Result<(), HotSwapSideEffectError>) {
         let proposal = HotSwapTriggerProposal {
             kind,
             demoting_strategy_id: demoting_strategy_id.clone(),
@@ -1269,10 +1395,8 @@ impl StrategyOrchestrator {
             rationale,
             observed_at_seconds,
         };
-        // Best-effort audit emission (mirrors `resolve_demotion`): a sink failure
-        // does not un-fire the trigger or drop it from `fired`.
-        let _ = log.record(proposal.to_event());
-        proposal
+        let outcome = log.record(proposal.to_event());
+        (proposal, outcome)
     }
 
     /// Read-only constant accessor for NFR-P9's startup-time ceiling.
