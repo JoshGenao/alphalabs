@@ -230,7 +230,21 @@ class Dispatcher:
     ) -> None:
         self._registry = registry
         self._routes = RouteTable()
-        self._meta_get = meta_get
+        # A concrete dict (not the read-only Mapping param) so a consumer can
+        # register additional meta GET paths after construction (e.g. a mounted
+        # dashboard's JSON snapshot). Mutating a `Mapping` fails mypy strict.
+        self._meta_get = dict(meta_get)
+
+    def register_meta_route(self, path: str, provider: Callable[[], dict[str, object]]) -> None:
+        """Register a runtime-served GET path returning a JSON-serialisable dict.
+
+        Generic seam for a top-layer consumer (e.g. a mounted dashboard) to add
+        a discovery/snapshot endpoint outside the ``/api/v1`` contract without
+        touching :data:`atp_api.ROUTES`. Register before :meth:`start` so live
+        handler threads never read the map mid-mutation.
+        """
+
+        self._meta_get[path] = provider
 
     def dispatch_rest(self, method: str, raw_path: str, body_bytes: bytes) -> tuple[int, dict]:
         """Dispatch one REST request to a ``(status, body)`` pair."""
@@ -327,10 +341,15 @@ class LoopbackHTTPServer(ThreadingHTTPServer):
         handler_class: type[BaseHTTPRequestHandler],
         dispatcher: Dispatcher,
         ws_hub: WsHub,
+        asset_routes: Mapping[str, tuple[str, bytes]] | None = None,
     ) -> None:
         assert_bind_allowed(server_address[0])
         self.dispatcher = dispatcher
         self.ws_hub = ws_hub
+        # Immutable, pre-materialised GET path -> (content_type, body_bytes).
+        # Exact-key lookup only (never open(request-path)), so there is no
+        # filesystem access per request and no path-traversal surface.
+        self.asset_routes: dict[str, tuple[str, bytes]] = dict(asset_routes or {})
         super().__init__(server_address, handler_class)
 
     def handle_error(
@@ -379,6 +398,16 @@ def make_request_handler() -> type[BaseHTTPRequestHandler]:
             if method == "GET" and self._is_ws_upgrade():
                 self._serve_websocket()
                 return
+            if method == "GET":
+                # Static asset routes (dashboard HTML/JS/CSS) — exact-key lookup
+                # into a pre-materialised map, before the JSON dispatch. No disk
+                # access and no request-derived path, so no traversal surface.
+                server = cast(LoopbackHTTPServer, self.server)
+                asset = server.asset_routes.get(urlsplit(self.path).path)
+                if asset is not None:
+                    content_type, asset_body = asset
+                    self._write_raw(200, content_type, asset_body)
+                    return
             length = int(self.headers.get("Content-Length", 0) or 0)
             if length > _MAX_BODY_BYTES:
                 # Refuse before reading a single body byte; close so an undrained
@@ -409,11 +438,14 @@ def make_request_handler() -> type[BaseHTTPRequestHandler]:
 
         def _write_json(self, status: int, body: dict) -> None:
             payload = json.dumps(body, sort_keys=True).encode("utf-8")
+            self._write_raw(status, "application/json", payload)
+
+        def _write_raw(self, status: int, content_type: str, body: bytes) -> None:
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(payload)
+            self.wfile.write(body)
 
         # ----- WebSocket upgrade (RFC 6455) ----- #
 

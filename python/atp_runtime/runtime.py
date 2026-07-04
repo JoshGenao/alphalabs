@@ -27,6 +27,7 @@ SRS trace
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from atp_api import ROUTES, Capability, build_openapi, routes_by_capability
@@ -84,6 +85,9 @@ class OperatorInterfaceRuntime:
             "/healthz": lambda: {"status": "ok", "service": "atp-operator-interface-runtime"},
         }
         self._dispatcher = Dispatcher(self._registry, meta_get)
+        # Static assets (dashboard HTML/JS/CSS) a top-layer consumer mounts via
+        # register_asset_routes; threaded into the server at start() time.
+        self._asset_routes: dict[str, tuple[str, bytes]] = {}
         self._server: LoopbackHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -251,6 +255,28 @@ class OperatorInterfaceRuntime:
 
         return CliDispatcher(self._registry)
 
+    def register_meta_route(self, path: str, provider: Callable[[], dict[str, object]]) -> None:
+        """Register a runtime-served GET path returning a JSON dict (generic seam).
+
+        A top-layer consumer (e.g. a mounted dashboard) registers a discovery /
+        snapshot endpoint outside the ``/api/v1`` contract. Register before
+        :meth:`start`. The runtime itself imports no consumer package — the
+        provider is an opaque ``Callable``.
+        """
+
+        self._dispatcher.register_meta_route(path, provider)
+
+    def register_asset_routes(self, routes: Mapping[str, tuple[str, bytes]]) -> None:
+        """Register static GET assets as an exact path -> ``(content_type, bytes)`` map.
+
+        A top-layer consumer (e.g. a mounted dashboard) serves pre-materialised
+        HTML/JS/CSS. Register before :meth:`start`; the map is passed to the
+        server at bind time and served by exact-key lookup (no filesystem access,
+        no path traversal).
+        """
+
+        self._asset_routes.update(routes)
+
     def register_publisher(self, channel: str) -> None:
         """Claim ownership of a WebSocket channel's publisher.
 
@@ -288,7 +314,11 @@ class OperatorInterfaceRuntime:
             raise RuntimeError("runtime already started; call stop() before starting again")
         assert_bind_allowed(host)
         self._server = LoopbackHTTPServer(
-            (host, port), make_request_handler(), self._dispatcher, self._ws_hub
+            (host, port),
+            make_request_handler(),
+            self._dispatcher,
+            self._ws_hub,
+            self._asset_routes,
         )
         self._thread = threading.Thread(
             target=self._server.serve_forever, name="atp-operator-interface", daemon=True
