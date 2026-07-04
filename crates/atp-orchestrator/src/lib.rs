@@ -1,11 +1,13 @@
 use atp_types::{
     ContainerHealthEvent, ContainerHealthState, ContainerLifecycleAction, DeployedVersion,
-    HostMemorySafetyMargin, HostMemorySafetyMarginError, HotSwapDemotionEvent,
-    HotSwapDemotionOutcome, HotSwapDemotionRequest, LaunchReadiness, OperatorAlertChannel,
-    OperatorAlertEvent, RegisteredWorkload, ResourceProfile, ResourceProfileError, RuntimeService,
+    DrawdownDemotionTrigger, HostMemorySafetyMargin, HostMemorySafetyMarginError,
+    HotSwapDemotionEvent, HotSwapDemotionOutcome, HotSwapDemotionRequest, HotSwapTriggerConfig,
+    HotSwapTriggerEvent, HotSwapTriggerKind, HotSwapTriggerProposal, LaunchReadiness,
+    LiveStrategyState, OperatorAlertChannel, OperatorAlertEvent, RegisteredWorkload,
+    ReservoirRankingSnapshot, ResourceProfile, ResourceProfileError, RuntimeService,
     SideEffectOutcome, StrategyId, StrategyLaunchOutcome, StrategyLaunchRequest, StrategyMode,
-    StructuredHotSwapDemotionError, StructuredOrchestratorError, WorkloadAdmissionEvent,
-    WorkloadAdmissionReason, WorkloadId, WorkloadKind, WorkloadPriority,
+    StructuredHotSwapDemotionError, StructuredOrchestratorError, TriggerRationale,
+    WorkloadAdmissionEvent, WorkloadAdmissionReason, WorkloadId, WorkloadKind, WorkloadPriority,
     HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT, RESOURCE_PROFILE_CPU_CEILING_HUNDREDTHS,
     RESOURCE_PROFILE_CPU_FLOOR_HUNDREDTHS, STRATEGY_STARTUP_DEADLINE_MS,
 };
@@ -626,6 +628,71 @@ pub struct HotSwapDemotionResolved {
     pub elapsed_seconds: u64,
 }
 
+// --------------------------------------------------------------------------- //
+// Hot-Swap trigger evaluation ports (SRS-RESV-003, SyRS SYS-49a)
+// --------------------------------------------------------------------------- //
+//
+// SRS-RESV-003 is the trigger DECISION + CONFIGURATION + LOGGING layer that
+// feeds the SRS-RESV-004 demotion gate (`resolve_demotion`). The evaluator
+// (`evaluate_automatic_triggers` / `request_manual_promotion`) consumes three
+// injected ports — mirroring the demotion gate's `HotSwapLiquidationProbe` /
+// `HotSwapDemotionEventSink` seam so RESV-003 is buildable and testable without
+// the unbuilt reservoir/ranking runtime (SRS-RESV-001/002) or durable log store
+// (SRS-LOG-001):
+//   * `LiveStrategyProbe` — the demoting side + drawdown observation (read-only;
+//     the evaluator cannot promote/demote through it).
+//   * `ReservoirRankingSource` — the injected ranking snapshot the promotion
+//     triggers select candidates from (fail-closed accessors).
+//   * `HotSwapTriggerLog` — the best-effort sink recorded on EVERY fired trigger
+//     ("all swap triggers shall be logged"), whose durable delivery is the
+//     deferred SRS-LOG-001 sink.
+// Everything not owned here — demotion execution, promotion, cool-down, the
+// durable log store, and the REST/dashboard handlers — is enumerated in
+// `architecture/runtime_services.json` `hot_swap_trigger_contract.deferred[]`.
+
+/// SRS-RESV-003 read-only probe for the current live strategy (identity +
+/// observed drawdown, in basis points). `None` means no strategy is live — every
+/// automatic trigger then fails closed (no demoting side, no fire). Mirrors the
+/// no-mutator discipline of `HotSwapLiquidationProbe`: the evaluator observes,
+/// it never promotes/demotes through this port.
+pub trait LiveStrategyProbe {
+    fn current_live(&self) -> Option<LiveStrategyState>;
+}
+
+/// SRS-RESV-003 read-only source of the reservoir ranking snapshot (the
+/// SRS-RESV-002 / SyRS SYS-48 output, injected). The evaluator selects promotion
+/// candidates through the snapshot's fail-closed accessors (`top_by_rank` /
+/// `top_by_momentum`).
+pub trait ReservoirRankingSource {
+    fn snapshot(&self) -> ReservoirRankingSnapshot;
+}
+
+/// SRS-RESV-003 best-effort log sink for fired Hot-Swap triggers (SyRS SYS-49a
+/// "all swap triggers shall be logged" → SYS-61). The evaluator records EVERY
+/// fired trigger through this port in the same code path that produces the
+/// proposal, so a proposal cannot exist without a log attempt. Returns `Result`
+/// so a concrete sink surfaces a publication failure rather than swallowing it;
+/// emission is best-effort (mirrors `HotSwapDemotionEventSink`) — a sink failure
+/// does not un-fire the trigger or change the evaluation. Durable delivery is
+/// the deferred SRS-LOG-001 sink's responsibility.
+pub trait HotSwapTriggerLog {
+    fn record(&self, event: HotSwapTriggerEvent) -> Result<(), HotSwapSideEffectError>;
+}
+
+/// SRS-RESV-003 result of an automatic-trigger evaluation pass. `fired` is the
+/// full, priority-ordered set of triggers that fired this pass (each already
+/// logged) — the "all swap triggers are logged" evidence. `selected` is the
+/// single highest-priority proposal (drawdown-demotion first, then top-ranked,
+/// then highest-momentum) that the SRS-RESV-004/005 execution path should act
+/// on: exactly one swap can happen under the single-live-strategy invariant, so
+/// the evaluator resolves the priority here rather than pushing "pick one" onto
+/// the caller. `selected` is `Some(fired[0])` when any trigger fired, else `None`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TriggerEvaluation {
+    pub fired: Vec<HotSwapTriggerProposal>,
+    pub selected: Option<HotSwapTriggerProposal>,
+}
+
 impl StrategyOrchestrator {
     pub fn service(&self) -> RuntimeService {
         RuntimeService::StrategyOrchestrator
@@ -1046,6 +1113,166 @@ impl StrategyOrchestrator {
                 ))
             }
         }
+    }
+
+    /// SRS-RESV-003 / SyRS SYS-49a automatic Hot-Swap trigger evaluation. For
+    /// each automatic trigger, in a FIXED priority order — drawdown-demotion
+    /// (risk control) first, then top-ranked, then highest-momentum — the gate:
+    ///   * fires NOTHING and logs NOTHING when the trigger is `Disabled` (the
+    ///     SYS-49a "default to disabled" posture: a default config yields an
+    ///     empty evaluation even when every input condition is met);
+    ///   * when `Enabled`, resolves the demoting side from `live.current_live()`
+    ///     and the candidate from the ranking snapshot (drawdown / top-ranked →
+    ///     `top_by_rank`; momentum → `top_by_momentum`), and fires ONLY when both
+    ///     resolve, the candidate differs from the live strategy, and the
+    ///     trigger's own condition holds (drawdown: observed ≥ configured
+    ///     threshold).
+    ///
+    /// Every fired trigger is recorded through `log` in the same path that builds
+    /// the proposal (see `fire_trigger`; best-effort — a sink failure does not
+    /// un-fire it), so "all swap triggers are logged" holds by construction.
+    /// Returns the full priority-ordered `fired` set plus the single
+    /// highest-priority `selected` proposal. Read-only w.r.t. execution: it
+    /// proposes + logs, never promotes/demotes — the SRS-RESV-004 gate
+    /// (`resolve_demotion`) executes a `selected` swap.
+    pub fn evaluate_automatic_triggers<L, R, S>(
+        &self,
+        config: &HotSwapTriggerConfig,
+        live: &L,
+        ranking: &R,
+        log: &S,
+        observed_at_seconds: u64,
+    ) -> TriggerEvaluation
+    where
+        L: LiveStrategyProbe,
+        R: ReservoirRankingSource,
+        S: HotSwapTriggerLog,
+    {
+        let mut fired: Vec<HotSwapTriggerProposal> = Vec::new();
+
+        // No live strategy ⇒ nothing to demote ⇒ every automatic trigger fails
+        // closed. (Manual promotion is a separate, always-available path.)
+        let Some(live_state) = live.current_live() else {
+            return TriggerEvaluation {
+                fired,
+                selected: None,
+            };
+        };
+        let snapshot = ranking.snapshot();
+
+        // Priority 1 — drawdown-demotion (SYS-49a(b)): the live strategy breached
+        // its configured drawdown threshold. The replacement candidate is the
+        // top-ranked reservoir strategy (fail closed to no-fire if none).
+        if let DrawdownDemotionTrigger::Enabled { threshold } = config.drawdown_demotion {
+            if live_state.drawdown_bps >= threshold.get() {
+                if let Some(candidate) = snapshot.top_by_rank() {
+                    if candidate.strategy_id != live_state.strategy_id {
+                        fired.push(self.fire_trigger(
+                            HotSwapTriggerKind::DrawdownDemotion,
+                            &live_state.strategy_id,
+                            &candidate.strategy_id,
+                            TriggerRationale::DrawdownBreached {
+                                observed_bps: live_state.drawdown_bps,
+                                threshold_bps: threshold.get(),
+                            },
+                            log,
+                            observed_at_seconds,
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Priority 2 — top-ranked promotion (SYS-49a(c) top-ranked): promote the
+        // top-ranked reservoir strategy when it is not already live.
+        if config.top_ranked_promotion.is_enabled() {
+            if let Some(candidate) = snapshot.top_by_rank() {
+                if candidate.strategy_id != live_state.strategy_id {
+                    fired.push(self.fire_trigger(
+                        HotSwapTriggerKind::TopRankedPromotion,
+                        &live_state.strategy_id,
+                        &candidate.strategy_id,
+                        TriggerRationale::TopRanked {
+                            rank: candidate.rank,
+                            score: candidate.risk_adjusted_score,
+                        },
+                        log,
+                        observed_at_seconds,
+                    ));
+                }
+            }
+        }
+
+        // Priority 3 — highest-momentum promotion (SYS-49a(c) highest momentum):
+        // promote the highest-momentum reservoir strategy when not already live.
+        if config.highest_momentum_promotion.is_enabled() {
+            if let Some(candidate) = snapshot.top_by_momentum() {
+                if candidate.strategy_id != live_state.strategy_id {
+                    fired.push(self.fire_trigger(
+                        HotSwapTriggerKind::HighestMomentumPromotion,
+                        &live_state.strategy_id,
+                        &candidate.strategy_id,
+                        TriggerRationale::HighestMomentum {
+                            momentum_score: candidate.momentum_score,
+                        },
+                        log,
+                        observed_at_seconds,
+                    ));
+                }
+            }
+        }
+
+        let selected = fired.first().cloned();
+        TriggerEvaluation { fired, selected }
+    }
+
+    /// SRS-RESV-003 / SyRS SYS-49a(a) manual Hot-Swap promotion. Manual selection
+    /// is ALWAYS available — it is not gated by `HotSwapTriggerConfig` and fires
+    /// regardless of the automatic-trigger posture. The operator names the
+    /// demoting (current live) strategy and the candidate; the trigger fires and
+    /// is logged (best-effort) unconditionally. The cool-down confirmation
+    /// warning for a manual swap during cool-down (SYS-49e) is the deferred
+    /// SRS-RESV-006 concern and is intentionally NOT enforced here.
+    pub fn request_manual_promotion<S: HotSwapTriggerLog>(
+        &self,
+        demoting_strategy_id: StrategyId,
+        candidate_strategy_id: StrategyId,
+        log: &S,
+        observed_at_seconds: u64,
+    ) -> HotSwapTriggerProposal {
+        self.fire_trigger(
+            HotSwapTriggerKind::ManualPromotion,
+            &demoting_strategy_id,
+            &candidate_strategy_id,
+            TriggerRationale::ManualSelection,
+            log,
+            observed_at_seconds,
+        )
+    }
+
+    /// SRS-RESV-003 build a fired-trigger proposal AND log it (best-effort) in
+    /// one place, so a proposal can never be produced without a paired log
+    /// attempt — the mechanical guarantee behind "all swap triggers are logged".
+    fn fire_trigger<S: HotSwapTriggerLog>(
+        &self,
+        kind: HotSwapTriggerKind,
+        demoting_strategy_id: &StrategyId,
+        candidate_strategy_id: &StrategyId,
+        rationale: TriggerRationale,
+        log: &S,
+        observed_at_seconds: u64,
+    ) -> HotSwapTriggerProposal {
+        let proposal = HotSwapTriggerProposal {
+            kind,
+            demoting_strategy_id: demoting_strategy_id.clone(),
+            candidate_strategy_id: candidate_strategy_id.clone(),
+            rationale,
+            observed_at_seconds,
+        };
+        // Best-effort audit emission (mirrors `resolve_demotion`): a sink failure
+        // does not un-fire the trigger or drop it from `fired`.
+        let _ = log.record(proposal.to_event());
+        proposal
     }
 
     /// Read-only constant accessor for NFR-P9's startup-time ceiling.

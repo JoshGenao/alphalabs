@@ -2671,6 +2671,474 @@ impl fmt::Display for StructuredHotSwapDemotionError {
 impl std::error::Error for StructuredHotSwapDemotionError {}
 
 // --------------------------------------------------------------------------- //
+// Hot-Swap trigger configuration + decision types (SRS-RESV-003)
+// (SyRS SYS-49a; StRS SN-1.25 / SN-1.30)
+// --------------------------------------------------------------------------- //
+//
+// SRS-RESV-003 owns the trigger DECISION + CONFIGURATION + LOGGING layer that
+// sits UPSTREAM of the SRS-RESV-004 demotion gate (`resolve_demotion`). It
+// decides *whether/why* a Hot-Swap should be proposed and records every fired
+// trigger; it does NOT execute the swap. A fired proposal converts to the
+// existing `HotSwapDemotionRequest` via `to_demotion_request`, which the
+// RESV-004 gate consumes — the clean, non-duplicating boundary.
+//
+// Per SYS-49a a Hot-Swap may be triggered by (a) manual operator selection
+// [always available], or automatically by (b) the live strategy breaching a
+// user-configured drawdown threshold, (c) the reservoir ranking's top-ranked
+// strategy, or (d) the highest-momentum strategy. The three AUTOMATIC triggers
+// are enable/disable-able per type and DEFAULT TO DISABLED — encoded as
+// `#[default] Disabled` on each per-trigger enum so the "default off" safety
+// invariant is both idiomatic and statically checkable. All fired triggers are
+// logged (SYS-61) via the orchestrator's best-effort `HotSwapTriggerLog` port;
+// the durable/queryable system-log store is the deferred SRS-LOG-001 sink.
+//
+// The ranking/drawdown INPUTS (SRS-RESV-001/002, unbuilt) arrive through
+// source-neutral DTOs injected via orchestrator ports — mirroring how the
+// RESV-004 gate consumes `HotSwapLiquidationProbe` — so RESV-003 is buildable
+// and testable without the ranking implementation.
+
+/// SRS-RESV-003 Hot-Swap trigger taxonomy (SyRS SYS-49a). `ManualPromotion`
+/// is the always-available operator action; the other three are the automatic
+/// triggers that default to disabled. `as_str()` is the single source of truth
+/// for the wire string a dashboard / log surface renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HotSwapTriggerKind {
+    ManualPromotion,
+    DrawdownDemotion,
+    TopRankedPromotion,
+    HighestMomentumPromotion,
+}
+
+impl HotSwapTriggerKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ManualPromotion => "MANUAL_PROMOTION",
+            Self::DrawdownDemotion => "DRAWDOWN_DEMOTION",
+            Self::TopRankedPromotion => "TOP_RANKED_PROMOTION",
+            Self::HighestMomentumPromotion => "HIGHEST_MOMENTUM_PROMOTION",
+        }
+    }
+
+    /// The three automatic triggers (drawdown-demotion, top-ranked,
+    /// highest-momentum) are enable/disable-able and default to disabled;
+    /// `ManualPromotion` is always available and is NOT an automatic trigger.
+    pub const fn is_automatic(self) -> bool {
+        !matches!(self, Self::ManualPromotion)
+    }
+}
+
+/// SRS-RESV-003 lower bound for a configured drawdown threshold (1 bp).
+pub const DRAWDOWN_THRESHOLD_BPS_MIN: u32 = 1;
+/// SRS-RESV-003 upper bound for a configured drawdown threshold (10_000 bp =
+/// 100%). A threshold above a total loss is unreachable and is rejected.
+pub const DRAWDOWN_THRESHOLD_BPS_MAX: u32 = 10_000;
+
+/// SRS-RESV-003 / SyRS SYS-49a(b) user-configured drawdown threshold, in
+/// integer basis points (1 bp = 0.01%). Integer bps (not float) keeps the
+/// money-adjacent config exact and side-steps float-equality hazards. Validated
+/// at construction to the inclusive `[1, 10_000]` bp range: a 0-bp threshold
+/// would fire on any strategy and a >100% drawdown is unreachable, so an
+/// out-of-range config fails closed rather than arming a nonsensical trigger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DrawdownThresholdBps(u32);
+
+/// SRS-RESV-003 out-of-range drawdown-threshold rejection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrawdownThresholdError {
+    pub value: u32,
+}
+
+impl fmt::Display for DrawdownThresholdError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "SRS-RESV-003: drawdown threshold {} bps out of range [{}, {}]",
+            self.value, DRAWDOWN_THRESHOLD_BPS_MIN, DRAWDOWN_THRESHOLD_BPS_MAX
+        )
+    }
+}
+
+impl std::error::Error for DrawdownThresholdError {}
+
+impl DrawdownThresholdBps {
+    /// Construct a validated threshold, or reject an out-of-range value
+    /// (`[1, 10_000]` bps). Fail-closed: a rejected value cannot arm a trigger.
+    pub fn new(bps: u32) -> Result<Self, DrawdownThresholdError> {
+        if (DRAWDOWN_THRESHOLD_BPS_MIN..=DRAWDOWN_THRESHOLD_BPS_MAX).contains(&bps) {
+            Ok(Self(bps))
+        } else {
+            Err(DrawdownThresholdError { value: bps })
+        }
+    }
+
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+/// SRS-RESV-003 drawdown-demotion automatic trigger (SyRS SYS-49a(b)).
+/// Defaults to `Disabled` (`#[default]`) so the "automatic triggers default to
+/// disabled" invariant holds without an explicit opt-out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DrawdownDemotionTrigger {
+    #[default]
+    Disabled,
+    Enabled {
+        threshold: DrawdownThresholdBps,
+    },
+}
+
+impl DrawdownDemotionTrigger {
+    pub const fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled { .. })
+    }
+
+    /// The configured threshold when enabled, else `None`.
+    pub fn threshold(self) -> Option<DrawdownThresholdBps> {
+        match self {
+            Self::Enabled { threshold } => Some(threshold),
+            Self::Disabled => None,
+        }
+    }
+}
+
+/// SRS-RESV-003 ranking-based promotion automatic trigger — shared by the
+/// top-ranked and highest-momentum triggers (SyRS SYS-49a(c)). Defaults to
+/// `Disabled`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RankingPromotionTrigger {
+    #[default]
+    Disabled,
+    Enabled,
+}
+
+impl RankingPromotionTrigger {
+    pub const fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
+
+/// SRS-RESV-003 Hot-Swap trigger configuration (SyRS SYS-49a). Each of the
+/// three AUTOMATIC triggers is independently enable/disable-able and defaults
+/// to disabled (via `#[derive(Default)]` over the `#[default] Disabled`
+/// per-trigger enums). Manual promotion is always available and is NOT gated by
+/// this config, so it has no field here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HotSwapTriggerConfig {
+    pub drawdown_demotion: DrawdownDemotionTrigger,
+    pub top_ranked_promotion: RankingPromotionTrigger,
+    pub highest_momentum_promotion: RankingPromotionTrigger,
+}
+
+impl HotSwapTriggerConfig {
+    /// Explicit alias for `Default::default()` — every automatic trigger
+    /// disabled. Named for intent so call sites document the SYS-49a
+    /// "default to disabled" contract.
+    pub fn all_disabled() -> Self {
+        Self::default()
+    }
+
+    /// True when at least one automatic trigger is enabled. Manual promotion
+    /// remains available regardless of this config.
+    pub const fn any_automatic_enabled(&self) -> bool {
+        self.drawdown_demotion.is_enabled()
+            || self.top_ranked_promotion.is_enabled()
+            || self.highest_momentum_promotion.is_enabled()
+    }
+}
+
+/// SRS-RESV-003 source-neutral snapshot of the current live strategy, injected
+/// via the orchestrator's `LiveStrategyProbe`. Carries the live strategy's
+/// identity AND its observed drawdown (basis points) in one value so the
+/// automatic triggers can name the demoting side (identity) and evaluate the
+/// drawdown-demotion condition (`drawdown_bps`) without a second lookup. Omits
+/// every broker / IB / vendor / container identifier — the reservoir/orchestrator
+/// runtime owns those.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveStrategyState {
+    pub strategy_id: StrategyId,
+    pub drawdown_bps: u32,
+}
+
+/// SRS-RESV-003 one row of the reservoir ranking (SRS-RESV-002 / SyRS SYS-48
+/// output), injected via `ReservoirRankingSource`. `rank` is 1-based (1 = best);
+/// `risk_adjusted_score` (Sharpe/Sortino family) and `momentum_score` (rate of
+/// change of the risk-adjusted metric) are the metrics the promotion triggers
+/// select on. Scores are dimensionless (not money), so `f64` is used;
+/// non-finite scores are rejected by the snapshot accessors (fail closed).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RankedStrategy {
+    pub strategy_id: StrategyId,
+    pub rank: u32,
+    pub risk_adjusted_score: f64,
+    pub momentum_score: f64,
+}
+
+impl RankedStrategy {
+    /// True when both scores are finite (neither NaN nor infinite). The
+    /// snapshot accessors use this to fail closed: a non-finite score never
+    /// yields a promotion candidate (no fabricated pick, no panic).
+    pub fn scores_finite(&self) -> bool {
+        self.risk_adjusted_score.is_finite() && self.momentum_score.is_finite()
+    }
+}
+
+/// SRS-RESV-003 injected reservoir ranking snapshot (the SRS-RESV-002 / SYS-48
+/// output). `evaluation_window_days` is carried for log/audit context only. The
+/// accessors are the promotion-candidate selectors; both FAIL CLOSED — they
+/// return `None` for an empty ranking or a non-finite selected score — so an
+/// automatic promotion trigger never fires on a missing or corrupt ranking.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReservoirRankingSnapshot {
+    pub evaluation_window_days: u32,
+    pub ranked: Vec<RankedStrategy>,
+}
+
+impl ReservoirRankingSnapshot {
+    /// The top-ranked strategy (lowest `rank`), or `None` if the ranking is
+    /// empty or the selected row has non-finite scores (fail closed).
+    pub fn top_by_rank(&self) -> Option<&RankedStrategy> {
+        let best = self.ranked.iter().min_by_key(|row| row.rank)?;
+        if best.scores_finite() {
+            Some(best)
+        } else {
+            None
+        }
+    }
+
+    /// The highest-momentum strategy, or `None` if the ranking is empty or ANY
+    /// row's scores are non-finite (fail closed — a NaN must not silently win
+    /// or lose a `partial_cmp`). Ties break deterministically toward the lower
+    /// `rank`.
+    pub fn top_by_momentum(&self) -> Option<&RankedStrategy> {
+        if self.ranked.iter().any(|row| !row.scores_finite()) {
+            return None;
+        }
+        self.ranked.iter().max_by(|a, b| {
+            a.momentum_score
+                .partial_cmp(&b.momentum_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.rank.cmp(&a.rank))
+        })
+    }
+}
+
+/// SRS-RESV-003 why a trigger fired — recorded on the log event + carried on
+/// the proposal so the dashboard / audit surface renders the cause without
+/// re-deriving it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TriggerRationale {
+    ManualSelection,
+    DrawdownBreached {
+        observed_bps: u32,
+        threshold_bps: u32,
+    },
+    TopRanked {
+        rank: u32,
+        score: f64,
+    },
+    HighestMomentum {
+        momentum_score: f64,
+    },
+}
+
+/// SRS-RESV-003 a single fired Hot-Swap trigger: the swap it proposes (demote
+/// `demoting_strategy_id` → promote `candidate_strategy_id`), the trigger
+/// `kind`, and the `rationale`. Both ids are always resolved (never optional):
+/// an automatic trigger fires only when the live strategy AND a distinct
+/// candidate both resolve, so `to_demotion_request` can always produce a valid
+/// `HotSwapDemotionRequest` for the SRS-RESV-004 gate. Source-neutral: no
+/// broker / IB / vendor / container identifiers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HotSwapTriggerProposal {
+    pub kind: HotSwapTriggerKind,
+    pub demoting_strategy_id: StrategyId,
+    pub candidate_strategy_id: StrategyId,
+    pub rationale: TriggerRationale,
+    pub observed_at_seconds: u64,
+}
+
+impl HotSwapTriggerProposal {
+    /// Convert this fired trigger into the SRS-RESV-004 demotion envelope the
+    /// `resolve_demotion` gate consumes, using the shared
+    /// `HOT_SWAP_DEMOTION_TIMEOUT_SECONDS` default so RESV-003 and RESV-004
+    /// carry one timeout source of truth. This is the clean handoff boundary:
+    /// RESV-003 decides + logs; RESV-004 executes.
+    pub fn to_demotion_request(&self) -> HotSwapDemotionRequest {
+        HotSwapDemotionRequest {
+            demoting_strategy_id: self.demoting_strategy_id.clone(),
+            candidate_strategy_id: self.candidate_strategy_id.clone(),
+            timeout_seconds: HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+        }
+    }
+
+    /// Build the loggable audit record for this fired trigger.
+    pub fn to_event(&self) -> HotSwapTriggerEvent {
+        HotSwapTriggerEvent {
+            kind: self.kind,
+            demoting_strategy_id: self.demoting_strategy_id.clone(),
+            candidate_strategy_id: self.candidate_strategy_id.clone(),
+            rationale: self.rationale.clone(),
+            observed_at_seconds: self.observed_at_seconds,
+        }
+    }
+}
+
+/// SRS-RESV-003 structured, loggable record of a fired Hot-Swap trigger (SyRS
+/// SYS-49a "all swap triggers shall be logged" → SYS-61). Emitted through the
+/// orchestrator's best-effort `HotSwapTriggerLog` port for EVERY fired trigger;
+/// the durable/queryable system-log store is the deferred SRS-LOG-001 sink.
+/// Mirrors `HotSwapDemotionEvent`'s shape (structured, source-neutral, carries
+/// the observation timestamp).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HotSwapTriggerEvent {
+    pub kind: HotSwapTriggerKind,
+    pub demoting_strategy_id: StrategyId,
+    pub candidate_strategy_id: StrategyId,
+    pub rationale: TriggerRationale,
+    pub observed_at_seconds: u64,
+}
+
+#[cfg(test)]
+mod resv003_trigger_config_tests {
+    use super::*;
+
+    #[test]
+    fn config_default_disables_every_automatic_trigger() {
+        let config = HotSwapTriggerConfig::default();
+        assert_eq!(config.drawdown_demotion, DrawdownDemotionTrigger::Disabled);
+        assert_eq!(
+            config.top_ranked_promotion,
+            RankingPromotionTrigger::Disabled
+        );
+        assert_eq!(
+            config.highest_momentum_promotion,
+            RankingPromotionTrigger::Disabled
+        );
+        assert!(!config.any_automatic_enabled());
+        assert_eq!(config, HotSwapTriggerConfig::all_disabled());
+    }
+
+    #[test]
+    fn per_trigger_enums_default_to_disabled() {
+        assert_eq!(
+            DrawdownDemotionTrigger::default(),
+            DrawdownDemotionTrigger::Disabled
+        );
+        assert_eq!(
+            RankingPromotionTrigger::default(),
+            RankingPromotionTrigger::Disabled
+        );
+    }
+
+    #[test]
+    fn trigger_kind_wire_strings_and_automatic_flag() {
+        assert_eq!(
+            HotSwapTriggerKind::ManualPromotion.as_str(),
+            "MANUAL_PROMOTION"
+        );
+        assert_eq!(
+            HotSwapTriggerKind::DrawdownDemotion.as_str(),
+            "DRAWDOWN_DEMOTION"
+        );
+        assert_eq!(
+            HotSwapTriggerKind::TopRankedPromotion.as_str(),
+            "TOP_RANKED_PROMOTION"
+        );
+        assert_eq!(
+            HotSwapTriggerKind::HighestMomentumPromotion.as_str(),
+            "HIGHEST_MOMENTUM_PROMOTION"
+        );
+        assert!(!HotSwapTriggerKind::ManualPromotion.is_automatic());
+        assert!(HotSwapTriggerKind::DrawdownDemotion.is_automatic());
+        assert!(HotSwapTriggerKind::TopRankedPromotion.is_automatic());
+        assert!(HotSwapTriggerKind::HighestMomentumPromotion.is_automatic());
+    }
+
+    #[test]
+    fn drawdown_threshold_validates_range() {
+        assert!(DrawdownThresholdBps::new(0).is_err());
+        assert!(DrawdownThresholdBps::new(10_001).is_err());
+        assert_eq!(DrawdownThresholdBps::new(1).unwrap().get(), 1);
+        assert_eq!(DrawdownThresholdBps::new(1_000).unwrap().get(), 1_000);
+        assert_eq!(DrawdownThresholdBps::new(10_000).unwrap().get(), 10_000);
+    }
+
+    #[test]
+    fn ranking_accessors_fail_closed_on_empty_and_non_finite() {
+        let empty = ReservoirRankingSnapshot {
+            evaluation_window_days: 30,
+            ranked: vec![],
+        };
+        assert!(empty.top_by_rank().is_none());
+        assert!(empty.top_by_momentum().is_none());
+
+        let nan = ReservoirRankingSnapshot {
+            evaluation_window_days: 30,
+            ranked: vec![RankedStrategy {
+                strategy_id: StrategyId::new("cand"),
+                rank: 1,
+                risk_adjusted_score: f64::NAN,
+                momentum_score: 0.5,
+            }],
+        };
+        assert!(nan.top_by_rank().is_none());
+        assert!(nan.top_by_momentum().is_none());
+    }
+
+    #[test]
+    fn ranking_accessors_select_top_by_rank_and_momentum() {
+        let snapshot = ReservoirRankingSnapshot {
+            evaluation_window_days: 30,
+            ranked: vec![
+                RankedStrategy {
+                    strategy_id: StrategyId::new("beta"),
+                    rank: 2,
+                    risk_adjusted_score: 1.2,
+                    momentum_score: 0.9,
+                },
+                RankedStrategy {
+                    strategy_id: StrategyId::new("alpha"),
+                    rank: 1,
+                    risk_adjusted_score: 1.5,
+                    momentum_score: 0.3,
+                },
+            ],
+        };
+        assert_eq!(
+            snapshot.top_by_rank().unwrap().strategy_id.as_str(),
+            "alpha"
+        );
+        assert_eq!(
+            snapshot.top_by_momentum().unwrap().strategy_id.as_str(),
+            "beta"
+        );
+    }
+
+    #[test]
+    fn proposal_maps_to_demotion_request_with_shared_timeout() {
+        let proposal = HotSwapTriggerProposal {
+            kind: HotSwapTriggerKind::TopRankedPromotion,
+            demoting_strategy_id: StrategyId::new("live"),
+            candidate_strategy_id: StrategyId::new("cand"),
+            rationale: TriggerRationale::TopRanked {
+                rank: 1,
+                score: 1.5,
+            },
+            observed_at_seconds: 42,
+        };
+        let request = proposal.to_demotion_request();
+        assert_eq!(request.demoting_strategy_id.as_str(), "live");
+        assert_eq!(request.candidate_strategy_id.as_str(), "cand");
+        assert_eq!(request.timeout_seconds, HOT_SWAP_DEMOTION_TIMEOUT_SECONDS);
+
+        let event = proposal.to_event();
+        assert_eq!(event.kind, HotSwapTriggerKind::TopRankedPromotion);
+        assert_eq!(event.candidate_strategy_id.as_str(), "cand");
+    }
+}
+
+// --------------------------------------------------------------------------- //
 // Kill-switch liquidation-timeout domain types (ERR-8, SRS-SAFE-002)
 // (SyRS SYS-44b; StRS SN-1.11)
 // --------------------------------------------------------------------------- //

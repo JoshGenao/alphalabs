@@ -3870,6 +3870,179 @@
       "SRS-API-001 /api/v1/hot-swap REST handler + 'hot-swap' CLI body that drive resolve_demotion and surface the demotion-pending / promotion-blocked state to the operator (owner: SRS-RESV-003 live sequencing)."
     ]
   },
+  "hot_swap_trigger_contract": {
+    "requirement": "SRS-RESV-003",
+    "srs_refs": [
+      "SRS-RESV-003"
+    ],
+    "syrs_refs": [
+      "SYS-49a"
+    ],
+    "strs_refs": [
+      "SN-1.25",
+      "SN-1.30"
+    ],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "orchestrator_crate": {
+      "crate": "atp-orchestrator",
+      "path": "crates/atp-orchestrator"
+    },
+    "trigger_kind": {
+      "enum": "HotSwapTriggerKind",
+      "variants": [
+        "ManualPromotion",
+        "DrawdownDemotion",
+        "TopRankedPromotion",
+        "HighestMomentumPromotion"
+      ],
+      "wire_strings": {
+        "ManualPromotion": "MANUAL_PROMOTION",
+        "DrawdownDemotion": "DRAWDOWN_DEMOTION",
+        "TopRankedPromotion": "TOP_RANKED_PROMOTION",
+        "HighestMomentumPromotion": "HIGHEST_MOMENTUM_PROMOTION"
+      }
+    },
+    "default_disabled_enums": [
+      {
+        "enum": "DrawdownDemotionTrigger",
+        "default_variant": "Disabled",
+        "variants": [
+          "Disabled",
+          "Enabled"
+        ]
+      },
+      {
+        "enum": "RankingPromotionTrigger",
+        "default_variant": "Disabled",
+        "variants": [
+          "Disabled",
+          "Enabled"
+        ]
+      }
+    ],
+    "trigger_config": {
+      "struct": "HotSwapTriggerConfig",
+      "required_fields": [
+        "drawdown_demotion",
+        "top_ranked_promotion",
+        "highest_momentum_promotion"
+      ],
+      "derives_default": true
+    },
+    "live_strategy_state": {
+      "struct": "LiveStrategyState",
+      "required_fields": [
+        "strategy_id",
+        "drawdown_bps"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "ib_order_id",
+        "tick_id",
+        "databento_dataset",
+        "sharadar_table",
+        "raw_parquet_path",
+        "vendor_credentials",
+        "container_id",
+        "docker_image"
+      ]
+    },
+    "trigger_proposal": {
+      "struct": "HotSwapTriggerProposal",
+      "required_fields": [
+        "kind",
+        "demoting_strategy_id",
+        "candidate_strategy_id",
+        "rationale",
+        "observed_at_seconds"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "ib_order_id",
+        "tick_id",
+        "databento_dataset",
+        "sharadar_table",
+        "raw_parquet_path",
+        "vendor_credentials",
+        "container_id",
+        "docker_image"
+      ]
+    },
+    "trigger_event": {
+      "struct": "HotSwapTriggerEvent",
+      "required_fields": [
+        "kind",
+        "demoting_strategy_id",
+        "candidate_strategy_id",
+        "rationale",
+        "observed_at_seconds"
+      ],
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "ib_order_id",
+        "tick_id",
+        "databento_dataset",
+        "sharadar_table",
+        "raw_parquet_path",
+        "vendor_credentials",
+        "container_id",
+        "docker_image"
+      ]
+    },
+    "live_strategy_probe_port": {
+      "trait": "LiveStrategyProbe",
+      "methods": [
+        "current_live"
+      ]
+    },
+    "reservoir_ranking_source_port": {
+      "trait": "ReservoirRankingSource",
+      "methods": [
+        "snapshot"
+      ]
+    },
+    "trigger_log_port": {
+      "trait": "HotSwapTriggerLog",
+      "methods": [
+        "record"
+      ]
+    },
+    "entry_points": [
+      {
+        "method": "evaluate_automatic_triggers",
+        "type": "StrategyOrchestrator"
+      },
+      {
+        "method": "request_manual_promotion",
+        "type": "StrategyOrchestrator"
+      }
+    ],
+    "guard": {
+      "evaluate_method": "evaluate_automatic_triggers",
+      "manual_method": "request_manual_promotion",
+      "fire_helper": "fire_trigger",
+      "log_call": "log.record",
+      "priority_ordered_fields": [
+        "config.drawdown_demotion",
+        "config.top_ranked_promotion",
+        "config.highest_momentum_promotion"
+      ],
+      "demotion_request_bridge": "to_demotion_request",
+      "demotion_request_struct": "HotSwapDemotionRequest"
+    },
+    "deferred": [
+      "Concrete ReservoirRankingSource backed by the real SRS-RESV-002 / SYS-48 ranking (Sharpe/Sortino + momentum over the configurable evaluation window) and LiveStrategyProbe backed by the SRS-RESV-001 reservoir + live-strategy drawdown — this slice injects both through ports so the trigger layer is buildable and testable without the ranking runtime (owner: SRS-RESV-001 / SRS-RESV-002).",
+      "Swap EXECUTION: the demote-before-promote sequence + liquidation-timeout gate is SRS-RESV-004 (resolve_demotion, already built); flat-start promotion is SRS-RESV-005; cool-down enforcement (default 7 days, manual-swap confirmation during cool-down per SYS-49e) is SRS-RESV-006. This trigger layer only decides + logs, and hands a selected proposal to resolve_demotion via to_demotion_request (owner: SRS-RESV-004 / SRS-RESV-005 / SRS-RESV-006).",
+      "Durable, queryable, dashboard-viewable SYS-61 system-log store consuming HotSwapTriggerEvent (the Hot-Swap trigger log class) — the SRS-LOG-001 sink. This slice records every fired trigger through the best-effort HotSwapTriggerLog port and demonstrates durable JSONL persistence in the resv003_hot_swap_trigger_cli --log flag; the shared durable store is deferred (owner: SRS-LOG-001).",
+      "SRS-API-001 /api/v1/hot-swap REST handler + hot-swap trigger CLI body and the SRS-UI-001 / UI-5 dashboard Hot-Swap controls that drive evaluate_automatic_triggers / request_manual_promotion and surface trigger configuration + status to the operator. The CLI arm ships here as resv003_hot_swap_trigger_cli; the dashboard/REST arms are deferred (owner: SRS-API-001 / SRS-UI-001 / UI-5)."
+    ]
+  },
   "kill_switch_timeout_contract": {
     "requirement": "ERR-8",
     "srs_refs": [

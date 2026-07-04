@@ -55,6 +55,10 @@ from hot_swap_demotion_check import (
     HotSwapDemotionCheckError,
     assert_hot_swap_demotion_static,
 )
+from hot_swap_trigger_check import (
+    HotSwapTriggerCheckError,
+    assert_hot_swap_trigger_static,
+)
 from ingestion_idempotency_check import (
     IngestionIdempotencyCheckError,
     assert_ingestion_idempotency_static,
@@ -548,6 +552,24 @@ def assert_hot_swap_demotion(config: dict) -> list[str]:
         f"({', '.join(block['operator_alert_channel']['variants'])}), records "
         f"{block['demotion_event']['struct']}, and blocks promotion (ERR-7, "
         "SRS-RESV-004, SyRS SYS-49b / SYS-49c)"
+    )
+    return static_evidence + [summary]
+
+
+def assert_hot_swap_trigger(config: dict) -> list[str]:
+    block = config.get("hot_swap_trigger_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_hot_swap_trigger_static(config, ROOT)
+    summary = (
+        f"{block['orchestrator_crate']['crate']} decides + logs Hot-Swap triggers on "
+        f"{block['trigger_kind']['enum']} "
+        f"({len(block['trigger_kind']['variants'])} triggers): the "
+        f"{len(block['default_disabled_enums'])} automatic-trigger enums default to "
+        "disabled, every fired trigger is logged, and a selected proposal bridges to "
+        f"the SRS-RESV-004 gate via {block['guard']['demotion_request_bridge']} "
+        "(SRS-RESV-003, SyRS SYS-49a)"
     )
     return static_evidence + [summary]
 
@@ -1370,6 +1392,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_hot_swap_demotion(config))
     except HotSwapDemotionCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_hot_swap_trigger(config))
+    except HotSwapTriggerCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_kill_switch_timeout(config))

@@ -9,6 +9,14 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+# SRS-RESV-003 Hot-Swap trigger configuration + logging operator CLI. Demonstrates
+# the configurable manual + automatic triggers, the default-disabled posture, and
+# the swap-trigger log. The dashboard/REST arms of the surface are deferred to
+# SRS-UI-001 / UI-5 and SRS-API-001.
+[[bin]]
+name = "resv003_hot_swap_trigger_cli"
+path = "src/bin/resv003_hot_swap_trigger_cli.rs"
+
 [dependencies]
 atp-types = { path = "../atp-types" }
 
