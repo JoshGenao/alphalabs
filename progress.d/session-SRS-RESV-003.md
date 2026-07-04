@@ -94,3 +94,36 @@ RESUME / NEXT:
   tests/domain test, which is present); atp-types unit tests are inline (resv003_trigger_config_tests);
   hot_swap_trigger_check.py is static-only and reached via architecture_check (no standalone
   ci.yml/run_ci loop entry needed).
+
+=== FIX 2026-07-04 (adversarial-review-driven, fail-closed hardening) ===
+Trigger: the tools/adversarial_review.py fix (commit 3880988) unwraps Codex's --json envelope,
+which previously made EVERY Codex reply "unparseable" → a fail-open claude-fallback APPROVE. Re-ran
+the now-fixed reviewer on the RESV-003 diff; Codex returned REAL verdicts and, across 6 rounds,
+caught 5 genuine fail-opens/gaps the broken reviewer had masked. All fixed + regression-tested in
+commit `fix(SRS-RESV-003): fail closed on rejected/absent trigger log + degraded inputs`:
+  1. [high] fire_trigger swallowed log.record() Err and still returned a `selected` proposal →
+     an UNLOGGED Hot-Swap trigger could reach the RESV-004 gate and swap a LIVE strategy. Now the
+     log outcome is LOAD-BEARING: fire_trigger returns (proposal, Result); TriggerEvaluation gains
+     `unlogged`; `selected` requires the whole pass logged.
+  2. [high] partial-log-rejection: `selected` keyed only off the FIRST trigger's flag → a later
+     rejected record still left selected=Some. "All swap triggers are logged" is now ATOMIC for the
+     pass (selected requires unlogged.is_empty()).
+  3. [high] CLI cmd_manual printed manual-logged:false but exited 0 → shell automation saw success.
+     Manual returns Result<_, UnloggedHotSwapTrigger{proposal, rejection_reason}>; CLI exits nonzero
+     (evaluate too, when any trigger unlogged / any input degraded).
+  4. [high] CLI no-`--log` sink returned Ok without persisting → firing command claimed logged with
+     no record. CollectingTriggerLog now REJECTS when no sink; --log required to log (and act on) a
+     fired trigger.
+  5. [high] automatic path dropped the rejection REASON (only a count). unlogged is now
+     Vec<UnloggedHotSwapTrigger> carrying the reason end-to-end; CLI surfaces the concrete cause.
+  + doc-drift: reconciled all "best-effort" wording → "load-bearing"; the guard now REJECTS stale
+    "best-effort" wording in the contract.
+Also: LiveStrategyProbe/ReservoirRankingSource now return Result — a degraded (Err) input fails
+closed AND surfaces its reason in TriggerEvaluation.degraded_inputs (distinct from healthy
+Ok(None)/empty); typed error taxonomy stays deferred to concrete RESV-001/002 probes.
+Tests grew to 17 L7 + 6 L4 CLI-exit boundary + 12 domain cases. Verified: cargo test --workspace
+(1412 pass); clippy/fmt -D warnings clean; architecture_check + hot_swap_trigger_check PASS.
+Critics: deterministic APPROVE (no findings); judgment APPROVE (reviewer=claude-fallback, Codex
+rate-limited at re-review time — the designed Codex→Claude failover; earlier rounds 1-5 were real
+Codex BLOCKs that drove these fixes). Still SERIALIZED (passes:false) — Step 2 dashboard/REST e2e
+unchanged.
