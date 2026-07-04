@@ -73,5 +73,15 @@ def test_dashboard_renders_panels_and_refreshes_within_5s(dashboard_url: str) ->
                     f"document.getElementById('fresh-{panel}').dataset.state === 'fresh'",
                     timeout=5_000,
                 )
+
+            # The freshness contract fails at the budget boundary: a channel over
+            # its 5s budget is NOT 'fresh' (regression for the grace-window bug).
+            assert page.evaluate("window.freshnessState(6000, 5000, 1500)") != "fresh"
+            assert page.evaluate("window.freshnessState(4000, 5000, 1500)") == "fresh"
+            # The self-measured worst-case refresh stays within the NFR-P2 budget.
+            observed = page.evaluate(
+                "Number(document.getElementById('pulse-value').textContent.replace(/,/g, ''))"
+            )
+            assert observed <= 5000
         finally:
             browser.close()

@@ -70,6 +70,10 @@ def test_static_assets_are_served_with_correct_content_types(running_dashboard) 
     assert status == 200 and ctype.startswith("application/javascript")
     assert b"/ws/v1" in body  # the SPA subscribes over the real WS path
 
+    status, ctype, body = _get(host, port, "/dashboard/freshness.js")
+    assert status == 200 and ctype.startswith("application/javascript")
+    assert b"freshnessState" in body
+
 
 def test_system_snapshot_returns_the_four_metric_groups(running_dashboard) -> None:
     host, port, _ = running_dashboard

@@ -39,6 +39,7 @@ _ASSET_SPEC: tuple[tuple[str, str, str], ...] = (
     ("/dashboard", "index.html", "text/html; charset=utf-8"),
     ("/dashboard/", "index.html", "text/html; charset=utf-8"),
     ("/dashboard/styles.css", "styles.css", "text/css; charset=utf-8"),
+    ("/dashboard/freshness.js", "freshness.js", "application/javascript; charset=utf-8"),
     ("/dashboard/app.js", "app.js", "application/javascript; charset=utf-8"),
 )
 

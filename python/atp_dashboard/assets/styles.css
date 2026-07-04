@@ -211,6 +211,7 @@ body {
 /* per-panel freshness dot — proves EACH required channel refreshes in-budget */
 .freshdot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-faint); flex: none; }
 .freshdot[data-state="fresh"] { background: var(--ok); box-shadow: 0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); animation: ping 2s var(--ease) infinite; }
+.freshdot[data-state="warn"] { background: var(--warn); box-shadow: 0 0 8px color-mix(in srgb, var(--warn) 70%, transparent); }
 .freshdot[data-state="stale"] { background: var(--bad); box-shadow: 0 0 8px color-mix(in srgb, var(--bad) 70%, transparent); }
 .freshdot[data-state="wait"] { background: var(--ink-faint); }
 

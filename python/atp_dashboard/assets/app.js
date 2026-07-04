@@ -192,7 +192,9 @@
     for (const { panel, ch, budget, gauge } of PANEL_FRESH) {
       const seen = lastChannelAt[ch] !== undefined;
       const staleness = seen ? now - lastChannelAt[ch] : Infinity;
-      markPanelFreshness(panel, seen, seen && staleness > budget + STALE_GRACE_MS);
+      // "fresh" holds ONLY within budget; grace is a separate warn state so an
+      // over-budget channel is never reported healthy (SRS-UI-001 / NFR-P2).
+      markPanelFreshness(panel, freshnessState(staleness, budget, STALE_GRACE_MS));
       if (gauge) {
         if (!seen) gaugeReady = false;
         else worst = Math.max(worst, staleness);
@@ -209,11 +211,18 @@
     }
   }
 
-  function markPanelFreshness(panel, seen, stale) {
+  const FRESH_TITLES = {
+    wait: "awaiting data",
+    fresh: "fresh — refreshing within budget",
+    warn: "over budget (within jitter grace)",
+    stale: "STALE — refresh contract violated",
+  };
+
+  function markPanelFreshness(panel, state) {
     const dot = $("fresh-" + panel);
     if (!dot) return;
-    dot.dataset.state = !seen ? "wait" : stale ? "stale" : "fresh";
-    dot.title = !seen ? "awaiting data" : stale ? "STALE — no refresh within budget" : "fresh";
+    dot.dataset.state = state;
+    dot.title = FRESH_TITLES[state] || state;
   }
 
   function renderPulse(observedMs) {
