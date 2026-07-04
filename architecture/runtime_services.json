@@ -1321,10 +1321,15 @@
     },
     "rejection_category": "IngestionRecordValidationFailed",
     "rejection_wire_string": "INGESTION_RECORD_VALIDATION_FAILED",
+    "delivered": [
+      "SRS-DATA-013 Sys77RecordValidator (atp-data ingestion_validation): the concrete read-only kind-aware classifier for the six SyRS SYS-77 rules (a..f) against equity OHLCV and option-chain records, one deterministic reason per record",
+      "DataLayer::ingest_market_records_quarantining: quarantine-and-continue batch write — invalid records quarantined (returned, never written to primary), valid subset written SSD-first + NAS-synced via the SRS-DATA-008 tier; duplicate (rule e) spans the batch AND the SSD+NAS tiered view",
+      "QuarantineSummarySink / QuarantineSummary: the count-and-nature-of-quarantined-records aggregation for the SyRS SYS-77 alert clause (surfaced via data013_ingestion_validation_cli)"
+    ],
     "deferred": [
-      "Concrete RecordValidator implementing the six SyRS SYS-77 rules (a..f) against equity and options records (owner: SRS-DATA-001..006 + SRS-DATA-013)",
-      "Quarantine storage backend that persists the rejected payload + reason + timestamp + source (owner: SRS-DATA-014 / SRS-DATA-015)",
-      "Notification dispatcher hookup that fans the per-record event into dashboard alert counts and SMTP/SMS reason summaries (owner: SRS-NOTIF-001 / SYS-77 alert clause)"
+      "Durable quarantine STORE that persists the rejected payload + reason + timestamp + source for inspection/recovery — the gate emits the event and the quarantining path returns the records, but nothing persists them durably yet (owner: SRS-DATA-014 / SRS-DATA-015)",
+      "Notification dispatcher + dashboard hookup that fans the per-record event into dashboard alert counts and SMTP/SMS reason summaries — this feature produces the structured counts-and-reasons those surfaces will consume, it does not render them (owner: SRS-UI-001 / SRS-NOTIF-001 / SYS-77 alert clause)",
+      "Indexed per-key tiered existence check for duplicate detection at production NAS scale (this feature loads the SSD+NAS stores in full, matching the current in-memory MarketDataStore model) (owner: SRS-DATA-009 tiered read / SRS-DATA-018 catalog)"
     ]
   },
   "pacing_budget_contract": {

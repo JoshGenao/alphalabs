@@ -37,10 +37,10 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use atp_data::store::{fixture_batch, DatasetKind, MarketDataRecord};
+use atp_data::store::{fixture_batch, DatasetKind};
 use atp_data::tiering::{NasSyncStatus, TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
-use atp_data::{DataLayer, IngestionValidationEventSink, RecordValidator};
-use atp_types::{IngestionValidationEvent, RecordValidationOutcome};
+use atp_data::{DataLayer, IngestionValidationEventSink, Sys77RecordValidator};
+use atp_types::IngestionValidationEvent;
 
 /// A fixed default instant and event timestamp (NOT a clock read — keeps the demo deterministic).
 /// 2023-11-14T22:13:20Z.
@@ -113,7 +113,7 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
         .ingest_market_records_tiered(
             &tier,
             fixture_batch(kind, event_ts),
-            &AcceptAllValidator,
+            &Sys77RecordValidator::new(),
             &NullSink,
             observed_at(),
         )
@@ -215,16 +215,6 @@ fn store_filename() -> &'static str {
 /// deterministic).
 fn observed_at() -> u64 {
     DEFAULT_TS as u64
-}
-
-/// The DATA-013 validator (deferred) stand-in: accepts every fixture record so the demonstration
-/// focuses on the tiering property. The real SYS-77 rule logic is SRS-DATA-013's owner.
-struct AcceptAllValidator;
-
-impl RecordValidator for AcceptAllValidator {
-    fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
-        RecordValidationOutcome::Valid
-    }
 }
 
 /// A no-op validation event sink (the dashboard/notification fan-out is SRS-DATA-014 / SRS-NOTIF-001).

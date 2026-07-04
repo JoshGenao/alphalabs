@@ -12,9 +12,10 @@
 //!      that aggregates the per-record events into the "count and nature of quarantined records" the
 //!      SyRS SYS-77 alert clause requires (counts-by-reason + total).
 //!   3. [`DataLayer::ingest_market_records_quarantining`] — the **quarantine-and-continue** batch write
-//!      path: quarantined records are dropped (never written to the primary tables) while the valid
-//!      subset is written SSD-first + NAS-synced through the SRS-DATA-008 tier, and the summary reports
-//!      how many were quarantined and why.
+//!      path: quarantined records are set aside (never written to primary storage; **returned**, not
+//!      silently dropped, so the deferred quarantine store can persist them) while the valid subset is
+//!      written SSD-first + NAS-synced through the SRS-DATA-008 tier, and the summary reports how many
+//!      were quarantined and why. Duplicate detection spans the batch AND the existing primary store.
 //!
 //! Out of scope (deferred, per `architecture/runtime_services.json` → `ingestion_validation_contract`):
 //! the durable *quarantine store* that persists rejected payloads (SRS-DATA-014 / DATA-015) and the
@@ -26,7 +27,9 @@ use std::collections::{BTreeSet, HashMap};
 
 use atp_types::{IngestionValidationEvent, QuarantineReason, RecordValidationOutcome};
 
-use crate::store::{DatasetKind, MarketDataRecord, MarketField, NaturalKey};
+use crate::store::{
+    DatasetKind, MarketDataRecord, MarketDataStore, MarketField, NaturalKey, STORE_FILENAME,
+};
 use crate::tiering::{TierIngestOutcome, TieredStore};
 use crate::{DataLayer, IngestionValidationEventSink, MarketIngestError, RecordValidator};
 
@@ -148,14 +151,17 @@ fn classify_ohlcv(record: &MarketDataRecord) -> Option<QuarantineReason> {
 /// SYS-77 (f) for an option-chain snapshot: the SYS-23 required fields must be present, plus the
 /// non-negativity range checks. The OCC contract identity lives on the natural key.
 fn classify_option(record: &MarketDataRecord) -> Option<QuarantineReason> {
-    // (f) the OCC option contract must be present and non-empty (also enforced structurally at
-    // construction; re-checked here so the SYS-77 reason is reported for a malformed identity).
-    let contract_present = record
-        .key()
-        .option_contract
-        .as_ref()
-        .is_some_and(|c| !c.trim().is_empty());
-    if !contract_present {
+    // (f) the OCC option contract must be present AND structurally valid. SYS-23's required identity
+    // fields — expiration, strike, and right (call/put) — are ENCODED in the OCC symbol, not carried
+    // as separate value fields, so a merely non-empty string is not enough: a truncated, wrong-
+    // underlying, or non-OCC string would smuggle a structurally-invalid option identity into primary
+    // storage. `occ_contract_ok` requires the standard 21-char OCC layout (root/expiration/right/strike)
+    // and that the root matches the natural-key underlying.
+    let contract = match record.key().option_contract.as_deref() {
+        Some(c) if !c.trim().is_empty() => c,
+        _ => return Some(QuarantineReason::OptionFieldMissing),
+    };
+    if !occ_contract_ok(contract, &record.key().symbol) {
         return Some(QuarantineReason::OptionFieldMissing);
     }
     // (f) SYS-23 required value fields present.
@@ -179,6 +185,39 @@ fn classify_option(record: &MarketDataRecord) -> Option<QuarantineReason> {
         return Some(QuarantineReason::RangeViolation);
     }
     None
+}
+
+/// Validate the OCC option-symbol structure carried on the natural key. A standard OCC symbol is 21
+/// ASCII chars: a 6-char space-padded underlying root, a 6-digit `YYMMDD` expiration, a 1-char `C`/`P`
+/// right, and an 8-digit strike (price × 1000). This enforces SYS-23's required option identity
+/// (expiration, strike, right) — which is encoded here rather than in discrete fields — and that the
+/// root matches the natural-key underlying, so a non-empty-but-malformed contract cannot pass rule (f).
+fn occ_contract_ok(contract: &str, underlying: &str) -> bool {
+    // ASCII + fixed width, so byte-index slicing below is on char boundaries and cannot panic.
+    if !contract.is_ascii() || contract.len() != 21 {
+        return false;
+    }
+    // Root [0..6): left-justified, right-space-padded underlying; trimmed it must equal the symbol.
+    if contract[0..6].trim_end() != underlying {
+        return false;
+    }
+    // Expiration [6..12): 6 digits forming a plausible YYMMDD.
+    let exp = &contract[6..12];
+    if !exp.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let month: u32 = exp[2..4].parse().unwrap_or(0);
+    let day: u32 = exp[4..6].parse().unwrap_or(0);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return false;
+    }
+    // Right [12..13): call or put.
+    let right = contract.as_bytes()[12];
+    if right != b'C' && right != b'P' {
+        return false;
+    }
+    // Strike [13..21): 8 digits.
+    contract[13..21].bytes().all(|b| b.is_ascii_digit())
 }
 
 /// The integer-minor value of the named field, or `None` if the record does not carry it.
@@ -255,14 +294,19 @@ impl IngestionValidationEventSink for QuarantineSummarySink {
 // --------------------------------------------------------------------------- //
 
 /// The outcome of [`DataLayer::ingest_market_records_quarantining`]: how many records were written to
-/// the primary tier, how many were quarantined, and the tier's SSD-first + NAS-sync result for the
-/// valid subset.
+/// the primary tier, the records that were quarantined, and the tier's SSD-first + NAS-sync result for
+/// the valid subset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuarantiningIngestionOutcome {
-    /// Records that passed SYS-77 validation and were handed to the tier for the primary write.
+    /// Records that passed SYS-77 validation (and cross-store duplicate checks) and were handed to the
+    /// tier for the primary write.
     pub written: usize,
-    /// Records quarantined (never written to primary). Equals the paired sink's `quarantined_total`.
-    pub quarantined: usize,
+    /// The quarantined records themselves — never written to primary, but **returned rather than
+    /// silently dropped** so a caller (or the deferred SRS-DATA-014/015 quarantine store) can persist
+    /// the rejected payloads for inspection/recovery. `quarantined_records.len()` equals the paired
+    /// sink's `quarantined_total`. This crate does NOT persist them durably — that store is
+    /// SRS-DATA-014/015 (per the contract's `deferred[]`), which is why this feature stays serialized.
+    pub quarantined_records: Vec<MarketDataRecord>,
     /// The SSD-first durable write + NAS archival sync result for the valid subset.
     pub tier: TierIngestOutcome,
 }
@@ -273,10 +317,19 @@ impl DataLayer {
     /// Unlike [`ingest_market_records_tiered`](Self::ingest_market_records_tiered) (SRS-DATA-008, which
     /// fails the whole batch closed on the first invalid record), this path implements the SYS-77
     /// disposition: each record is validated read-only through the unchanged ERR-5 gate; a **quarantined
-    /// record is dropped** (its structured event is emitted through `events` for the count-and-nature
-    /// summary and it is **never written to the primary tables**), while the batch **continues**; the
-    /// **valid subset** is then written through the SRS-DATA-008 tier (SSD-first durable write + NAS
-    /// sync), so no valid record is lost and no invalid record reaches primary storage.
+    /// record is set aside** (its structured event is emitted through `events` for the count-and-nature
+    /// summary, it is **never written to the primary tables**, and it is **returned** in
+    /// [`QuarantiningIngestionOutcome::quarantined_records`] rather than silently dropped so a caller or
+    /// the deferred SRS-DATA-014/015 quarantine store can persist it), while the batch **continues**; the
+    /// **surviving valid subset** is then written through the SRS-DATA-008 tier (SSD-first durable write +
+    /// NAS sync), so no valid record is lost and no invalid record reaches primary storage.
+    ///
+    /// **Duplicate detection (rule e) spans the batch AND the existing store.** The validator flags
+    /// within-batch repeats; this method additionally quarantines a candidate whose natural key already
+    /// exists in the primary store with DIFFERING content as `DuplicateRecord` — so a cross-run conflict
+    /// is a per-record quarantine (event + returned record), not a whole-batch abort via
+    /// [`StoreError::ConflictingContent`](crate::store::StoreError). An IDENTICAL existing record is left
+    /// in place (the tier's idempotent upsert collapses it, SRS-DATA-016).
     ///
     /// Routing the valid subset through [`TieredStore::ingest`] keeps SRS-DATA-008's "all ingestion is
     /// SSD-first + NAS-synced" invariant intact. The same trust boundary as the sibling paths applies:
@@ -299,7 +352,7 @@ impl DataLayer {
         S: IngestionValidationEventSink,
     {
         let mut valid: Vec<MarketDataRecord> = Vec::new();
-        let mut quarantined = 0usize;
+        let mut quarantined_records: Vec<MarketDataRecord> = Vec::new();
         for record in records {
             // Same trust boundary as ingest_market_record / ingest_market_records_tiered: the tier is
             // not a second path to a trusted coverage frontier, so refuse COVERAGE here too.
@@ -309,21 +362,92 @@ impl DataLayer {
                 });
             }
             match self.ingest_record(&record, validator, events, observed_at_seconds) {
-                // Valid → collect for the primary write.
+                // Valid → candidate for the primary write (subject to the cross-store check below).
                 Ok(_) => valid.push(record),
                 // Quarantined → the gate already emitted the structured IngestionValidationEvent
-                // through `events` (the counts-and-reasons aggregation). Drop the record (no primary
-                // write) and CONTINUE the batch. This is the SYS-77 quarantine disposition.
-                Err(_) => quarantined += 1,
+                // through `events` (the counts-and-reasons aggregation). Keep the record (returned, not
+                // silently dropped) and CONTINUE the batch. This is the SYS-77 quarantine disposition.
+                Err(_) => quarantined_records.push(record),
             }
         }
-        let written = valid.len();
-        // Write ONLY the valid subset — SSD-first durable, then NAS sync — through the SRS-DATA-008
-        // tier. Quarantined records are absent from `valid`, so they never reach the primary tables.
-        let tier_outcome = tier.ingest(valid)?;
+
+        // Cross-store duplicate pass (SYS-77 rule e beyond the within-batch check): a candidate whose
+        // natural key already exists in the primary store with DIFFERING content is a conflicting
+        // duplicate — quarantine it as DuplicateRecord (emit the event + return the record) rather than
+        // letting it abort the WHOLE tiered write as a StoreError::ConflictingContent. An IDENTICAL
+        // existing record stays (the tier's idempotent upsert collapses it, SRS-DATA-016). The snapshot
+        // is read outside the tier's single-writer lock, so a concurrent conflicting write in the narrow
+        // window still fails closed at `tier.ingest`; a missing store (first ingest) reads as empty and
+        // a genuinely broken store surfaces at `tier.ingest`.
+        //
+        // The snapshot spans the WHOLE tiered view — SSD (hot primary) AND NAS (archival) — not just
+        // SSD, so a re-ingest that conflicts with a COLD record archived off SSD (present only on NAS,
+        // once SRS-DATA-008 `archive_cold` / the SRS-DATA-010 eviction policy has run) is quarantined
+        // BEFORE the SSD write, rather than committing a divergent value to SSD and only surfacing the
+        // clash as a failed NAS sync afterwards. A tier whose store is present-but-unreadable (corrupt)
+        // FAILS CLOSED below.
+        //
+        // KNOWN DEFERRED BOUND (operator-authorized): a tier whose store is genuinely ABSENT contributes
+        // no keys. That is correct for a first ingest / an unprovisioned NAS, but it cannot distinguish
+        // that from an UNMOUNTED-but-populated NAS — so a conflicting re-ingest of a cold key while its
+        // NAS is unmounted is not caught here (its NAS sync degrades and alerts). Failing closed on any
+        // NAS-unavailability would break SRS-DATA-008's deliberately degrade-tolerant write path; the
+        // correct fix is a durable expected-key CATALOG (SRS-DATA-018) that knows a key exists even when
+        // its tier is offline. (Loading both stores in full also matches the current in-memory
+        // `MarketDataStore` model; an indexed per-key tiered existence check is the scalable future form
+        // — SRS-DATA-009 tiered read / SRS-DATA-018 catalog.)
+        let mut existing_hashes: HashMap<NaturalKey, String> = HashMap::new();
+        for dir in [tier.config().ssd_dir(), tier.config().nas_dir()] {
+            match MarketDataStore::load_from_path(dir) {
+                Ok(store) => {
+                    for record in store.records() {
+                        existing_hashes
+                            .entry(record.key().clone())
+                            .or_insert_with(|| record.ingestion_submission().record_hash);
+                    }
+                }
+                // FAIL CLOSED, don't fail open: a tier whose store FILE is present but unreadable
+                // (corrupt) is NOT "no keys" — it may hold a conflicting record we cannot see, so abort
+                // BEFORE any SSD write rather than silently proceeding. A tier with no store file yet
+                // (first ingest / an unprovisioned NAS) legitimately contributes no keys. (Definitive
+                // presence across an UNMOUNTED but populated NAS needs the deferred SRS-DATA-018 catalog;
+                // in that case the tier's NAS sync degrades and alerts.)
+                Err(err) => {
+                    if dir.join(STORE_FILENAME).exists() {
+                        return Err(MarketIngestError::Store(err));
+                    }
+                }
+            }
+        }
+        let mut to_write: Vec<MarketDataRecord> = Vec::new();
+        for record in valid {
+            if let Some(existing_hash) = existing_hashes.get(record.key()) {
+                let submission = record.ingestion_submission();
+                if *existing_hash != submission.record_hash {
+                    events.record(IngestionValidationEvent {
+                        state: RecordValidationOutcome::Quarantined(
+                            QuarantineReason::DuplicateRecord,
+                        ),
+                        reason: QuarantineReason::DuplicateRecord,
+                        source: submission.source,
+                        record_hash: submission.record_hash,
+                        observed_at_seconds,
+                    });
+                    quarantined_records.push(record);
+                    continue;
+                }
+                // Identical existing record → idempotent; let the tier dedup it (UnchangedDuplicate).
+            }
+            to_write.push(record);
+        }
+
+        let written = to_write.len();
+        // Write ONLY the surviving valid subset — SSD-first durable, then NAS sync — through the
+        // SRS-DATA-008 tier. Quarantined records are absent, so they never reach the primary tables.
+        let tier_outcome = tier.ingest(to_write)?;
         Ok(QuarantiningIngestionOutcome {
             written,
-            quarantined,
+            quarantined_records,
             tier: tier_outcome,
         })
     }
@@ -712,6 +836,57 @@ mod tests {
             ],
         );
         assert_eq!(quarantined(&rec), QuarantineReason::RangeViolation);
+    }
+
+    /// A well-formed option snapshot (all SYS-23 value fields present & non-negative) carrying
+    /// `contract` for underlying `symbol` — so the ONLY thing under test is the OCC contract structure.
+    fn option_with_contract(symbol: &str, contract: &str) -> MarketDataRecord {
+        make_record(
+            DatasetKind::OptionChainSnapshot,
+            symbol,
+            "chain",
+            TS,
+            Some(contract),
+            &[
+                ("bid", 100),
+                ("ask", 120),
+                ("last", 110),
+                ("volume", 25),
+                ("open_interest", 300),
+                ("implied_vol_micros", 250_000),
+            ],
+        )
+    }
+
+    #[test]
+    fn valid_occ_contract_passes() {
+        assert_eq!(
+            validate(&option_with_contract("AAPL", "AAPL  240119C00150000")),
+            RecordValidationOutcome::Valid
+        );
+    }
+
+    #[test]
+    fn malformed_occ_contract_is_option_field_missing() {
+        // Each is a non-empty string that is NOT a structurally-valid OCC symbol, so SYS-23's encoded
+        // identity (expiration / strike / right / underlying) is missing or malformed → rule (f) fails.
+        let cases = [
+            ("AAPL", "GARBAGE"),               // wrong length, not OCC
+            ("AAPL", "MSFT  240119C00150000"), // underlying root != natural-key symbol
+            ("AAPL", "AAPL  2401X9C00150000"), // non-digit expiration
+            ("AAPL", "AAPL  241399C00150000"), // impossible month (13)
+            ("AAPL", "AAPL  240100C00150000"), // impossible day (00)
+            ("AAPL", "AAPL  240119X00150000"), // right is neither C nor P
+            ("AAPL", "AAPL  240119C0015000X"), // non-digit strike
+            ("AAPL", "AAPL  240119C0015000"),  // 20 chars (strike too short)
+        ];
+        for (symbol, contract) in cases {
+            assert_eq!(
+                quarantined(&option_with_contract(symbol, contract)),
+                QuarantineReason::OptionFieldMissing,
+                "malformed OCC {contract:?} must be OptionFieldMissing"
+            );
+        }
     }
 
     #[test]

@@ -80,7 +80,8 @@ fn mixed_batch_quarantines_invalid_and_writes_only_valid() {
         "the four well-formed fixtures are written"
     );
     assert_eq!(
-        outcome.quarantined, 6,
+        outcome.quarantined_records.len(),
+        6,
         "one record quarantined per SYS-77 rule"
     );
     assert_eq!(
@@ -92,7 +93,8 @@ fn mixed_batch_quarantines_invalid_and_writes_only_valid() {
     let summary = sink.summary();
     assert_eq!(summary.quarantined_total, 6);
     assert_eq!(
-        summary.quarantined_total, outcome.quarantined as u64,
+        summary.quarantined_total,
+        outcome.quarantined_records.len() as u64,
         "the sink total and the outcome's quarantined count agree (one event per drop)"
     );
     for reason in ALL_QUARANTINE_REASONS {
@@ -130,6 +132,20 @@ fn mixed_batch_quarantines_invalid_and_writes_only_valid() {
         "the quarantined option contract must NOT reach primary storage"
     );
 
+    // The quarantined records are RETURNED (not silently dropped) so the deferred SRS-DATA-014/015
+    // quarantine store can persist the rejected payloads for inspection/recovery.
+    let quarantined_symbols: Vec<&str> = outcome
+        .quarantined_records
+        .iter()
+        .map(|r| r.key().symbol.as_str())
+        .collect();
+    for sym in ["TSLA", "NVDA", "AMZN", "META"] {
+        assert!(
+            quarantined_symbols.contains(&sym),
+            "quarantined {sym} must be returned, not dropped"
+        );
+    }
+
     // Valid records are archived to NAS (the tier synced), not lost.
     assert!(
         matches!(outcome.tier.nas_sync, NasSyncStatus::Synced { .. }),
@@ -154,7 +170,7 @@ fn all_valid_batch_writes_everything_with_zero_quarantine() {
         .expect("a well-formed batch ingests cleanly");
 
     assert_eq!(outcome.written, expected);
-    assert_eq!(outcome.quarantined, 0);
+    assert_eq!(outcome.quarantined_records.len(), 0);
     assert_eq!(sink.summary().quarantined_total, 0);
     assert_eq!(primary_records(&ssd).len(), expected);
 }
@@ -181,7 +197,7 @@ fn duplicate_within_batch_is_quarantined_not_written() {
         .expect("ingests with the duplicate quarantined");
 
     assert_eq!(outcome.written, 1, "only the first AAPL bar is written");
-    assert_eq!(outcome.quarantined, 1);
+    assert_eq!(outcome.quarantined_records.len(), 1);
     assert_eq!(sink.summary().count(QuarantineReason::DuplicateRecord), 1);
     assert_eq!(primary_records(&ssd).len(), 1);
 }
@@ -226,6 +242,183 @@ fn coverage_kind_is_refused_fail_closed() {
             .map(|s| s.records().is_empty())
             .unwrap_or(true),
         "a refused batch writes nothing to primary storage"
+    );
+}
+
+#[test]
+fn conflicting_cross_store_duplicate_is_quarantined_not_batch_abort() {
+    // SYS-77 rule (e) beyond the within-batch check: a record whose natural key already exists in the
+    // primary store with DIFFERING content is a cross-store DuplicateRecord. It must be quarantined
+    // (event + returned) while OTHER valid records in the same batch are still written — NOT abort the
+    // whole batch as a tier ConflictingContent (the pre-fix behavior).
+    let (ssd, nas) = tier_dirs("cross_store_dup");
+    let tier = tier(&ssd, &nas);
+
+    // Seed the primary store with AAPL@150.
+    DataLayer
+        .ingest_market_records_quarantining(
+            &tier,
+            vec![ohlcv("AAPL", 150)],
+            &Sys77RecordValidator::new(),
+            &QuarantineSummarySink::new(),
+            OBSERVED_AT,
+        )
+        .expect("seed ingest");
+    assert_eq!(primary_records(&ssd).len(), 1);
+
+    // Second batch: a CONFLICTING AAPL (same key, different value) + a fresh MSFT.
+    let sink = QuarantineSummarySink::new();
+    let outcome = DataLayer
+        .ingest_market_records_quarantining(
+            &tier,
+            vec![ohlcv("AAPL", 151), ohlcv("MSFT", 320)],
+            &Sys77RecordValidator::new(),
+            &sink,
+            OBSERVED_AT,
+        )
+        .expect("a conflicting cross-store duplicate must NOT abort the batch");
+
+    assert_eq!(
+        outcome.written, 1,
+        "the fresh MSFT is written (quarantine-and-continue)"
+    );
+    assert_eq!(outcome.quarantined_records.len(), 1);
+    assert_eq!(outcome.quarantined_records[0].key().symbol, "AAPL");
+    assert_eq!(
+        sink.summary().count(QuarantineReason::DuplicateRecord),
+        1,
+        "the cross-store conflict is reported as DuplicateRecord, not an uncounted tier error"
+    );
+    // The primary store keeps the ORIGINAL AAPL@150 (the conflict never overwrote it) plus MSFT.
+    let present = primary_records(&ssd);
+    assert_eq!(present.len(), 2);
+    assert!(present.iter().any(|(_, s, _)| s == "MSFT"));
+}
+
+#[test]
+fn identical_cross_store_reingest_is_idempotent_not_quarantined() {
+    // Re-ingesting an IDENTICAL record (same key, same value) across batches is idempotent
+    // (SRS-DATA-016), NOT a DuplicateRecord quarantine.
+    let (ssd, nas) = tier_dirs("idempotent_reingest");
+    let tier = tier(&ssd, &nas);
+
+    for _ in 0..2 {
+        let outcome = DataLayer
+            .ingest_market_records_quarantining(
+                &tier,
+                vec![ohlcv("AAPL", 150)],
+                &Sys77RecordValidator::new(),
+                &QuarantineSummarySink::new(),
+                OBSERVED_AT,
+            )
+            .expect("idempotent re-ingest");
+        assert_eq!(
+            outcome.quarantined_records.len(),
+            0,
+            "an identical re-ingest is idempotent, not a duplicate violation"
+        );
+    }
+    assert_eq!(
+        primary_records(&ssd).len(),
+        1,
+        "no duplicate row created across runs"
+    );
+}
+
+#[test]
+fn conflict_with_nas_archived_cold_record_is_quarantined_no_ssd_mutation() {
+    // The cross-TIER case: a record archived off SSD (present only on the NAS archival tier) must still
+    // be seen by the conflict snapshot, so a re-ingest with the same natural key + DIFFERING content is
+    // quarantined as DuplicateRecord BEFORE the SSD write — not committed to SSD and only surfaced as a
+    // failed NAS sync afterwards (which would leave the SSD primary holding the divergent value).
+    const DAY: i64 = 86_400;
+    let (ssd, nas) = tier_dirs("nas_archived_conflict");
+    let tier = tier(&ssd, &nas);
+    let now = TS + 500 * DAY; // well past any hot-retention window → the TS-dated record is cold
+
+    // Ingest AAPL@150 (dated at TS, cold relative to `now`) and archive it off SSD onto NAS.
+    DataLayer
+        .ingest_market_records_quarantining(
+            &tier,
+            vec![ohlcv("AAPL", 150)],
+            &Sys77RecordValidator::new(),
+            &QuarantineSummarySink::new(),
+            OBSERVED_AT,
+        )
+        .expect("seed ingest");
+    let archived = tier.archive_cold(now).expect("archive cold data off SSD");
+    assert!(
+        archived.archived >= 1,
+        "the cold AAPL bar is archived off SSD"
+    );
+    assert!(
+        primary_records(&ssd).iter().all(|(_, s, _)| s != "AAPL"),
+        "AAPL is no longer on the SSD primary tier (archived to NAS)"
+    );
+
+    // Re-ingest a CONFLICTING AAPL (same key, different value).
+    let sink = QuarantineSummarySink::new();
+    let outcome = DataLayer
+        .ingest_market_records_quarantining(
+            &tier,
+            vec![ohlcv("AAPL", 151)],
+            &Sys77RecordValidator::new(),
+            &sink,
+            OBSERVED_AT,
+        )
+        .expect("conflicting re-ingest of an archived key must not abort or error");
+
+    assert_eq!(outcome.written, 0, "the conflicting record is not written");
+    assert_eq!(outcome.quarantined_records.len(), 1);
+    assert_eq!(
+        sink.summary().count(QuarantineReason::DuplicateRecord),
+        1,
+        "the archived-record conflict is reported as DuplicateRecord"
+    );
+    // Crucially: the divergent value never reached the SSD primary tier.
+    assert!(
+        primary_records(&ssd).iter().all(|(_, s, _)| s != "AAPL"),
+        "the conflicting AAPL must NOT be committed to the SSD primary tier"
+    );
+}
+
+#[test]
+fn corrupt_tier_store_fails_closed_before_ssd_write() {
+    // FAIL CLOSED, not open: if a tier needed for the cross-tier duplicate snapshot is present but
+    // UNREADABLE (corrupt), the ingest must abort BEFORE any SSD write rather than treating it as "no
+    // keys" and committing a possibly-conflicting record.
+    use atp_data::store::STORE_FILENAME;
+    let (ssd, nas) = tier_dirs("corrupt_nas");
+    let tier = tier(&ssd, &nas);
+
+    // Seed a real NAS store (so the store file exists), then corrupt it.
+    DataLayer
+        .ingest_market_records_quarantining(
+            &tier,
+            vec![ohlcv("AAPL", 150)],
+            &Sys77RecordValidator::new(),
+            &QuarantineSummarySink::new(),
+            OBSERVED_AT,
+        )
+        .expect("seed ingest provisions the NAS store");
+    fs::write(nas.join(STORE_FILENAME), b"not a valid store file").expect("corrupt the NAS store");
+
+    // A subsequent ingest must FAIL CLOSED — the corrupt NAS cannot be read for the dup snapshot, and a
+    // conflicting archived record could hide there.
+    let err = DataLayer
+        .ingest_market_records_quarantining(
+            &tier,
+            vec![ohlcv("MSFT", 320)],
+            &Sys77RecordValidator::new(),
+            &QuarantineSummarySink::new(),
+            OBSERVED_AT,
+        )
+        .expect_err("a corrupt tier store must fail closed, not silently proceed");
+    assert!(matches!(err, MarketIngestError::Store(_)));
+    // MSFT was never written — the method aborted before the SSD write.
+    assert!(
+        primary_records(&ssd).iter().all(|(_, s, _)| s != "MSFT"),
+        "the ingest failed closed — nothing new committed to the SSD primary tier"
     );
 }
 

@@ -42,8 +42,8 @@ use atp_data::fundamentals::{build_fundamental_records, FUNDAMENTAL_RATIOS_RESOL
 use atp_data::query::UnifiedHistoricalQuery;
 use atp_data::store::{DatasetKind, MarketDataRecord, MarketDataStore, StoreLock, UpsertOutcome};
 use atp_data::tiering::{NasSyncStatus, TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
-use atp_data::{DataLayer, MarketIngestError};
-use atp_types::{AssetClass, FundamentalStatements, RecordValidationOutcome, SecurityKey};
+use atp_data::{DataLayer, MarketIngestError, Sys77RecordValidator};
+use atp_types::{AssetClass, FundamentalStatements, SecurityKey};
 
 /// The default fixture fiscal period-end timestamp (a fixed epoch second — NOT a clock read, so a
 /// re-ingest is deterministic). 2023-11-14T22:13:20Z.
@@ -344,7 +344,10 @@ fn ingest_fixture(
     event_ts: i64,
     available_ts: i64,
 ) -> Result<(usize, usize), String> {
-    let validator = AcceptAllValidator;
+    // The real SRS-DATA-013 SYS-77 validator now gates this operator ingest path (was an accept-all
+    // stub). Fundamentals are outside SYS-77's OHLCV/option field rules, so the validator applies only
+    // the duplicate check — behaviour-preserving for the well-formed fixtures.
+    let validator = Sys77RecordValidator::new();
     let events = NullSink;
     let mut inserted = 0;
     let mut duplicates = 0;
@@ -444,17 +447,6 @@ fn count_for_resolution(store: &MarketDataStore, resolution: &str) -> usize {
         .iter()
         .filter(|r| r.key().kind == DatasetKind::Fundamental && r.key().resolution == resolution)
         .count()
-}
-
-/// The DATA-013 validator (deferred) stand-in: accepts every fixture record so the demonstration
-/// focuses on the ingestion / catalog / availability path. The real SYS-77 rule logic is
-/// SRS-DATA-013's owner.
-struct AcceptAllValidator;
-
-impl atp_data::RecordValidator for AcceptAllValidator {
-    fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
-        RecordValidationOutcome::Valid
-    }
 }
 
 /// A no-op validation event sink (the dashboard/notification fan-out is SRS-DATA-014 / SRS-NOTIF-001).

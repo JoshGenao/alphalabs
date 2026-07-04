@@ -56,12 +56,26 @@ WHAT I TESTED (per step):
     core is verified solo.
 
 Critic verdicts:
-  deterministic (critic_check.py, origin/main..HEAD after rebase; also pre-commit --staged): APPROVE — no findings
-  judgment (adversarial_review.py, reviewer=claude-fallback — codex output unparseable): APPROVE — no findings.
-    Corroborated by an independent skeptical sub-agent review (read files + ran tests/checks): APPROVE,
-    no real bugs — 2 non-blocking observations (dedup key includes DatasetKind beyond literal
-    symbol+date+resolution = physically-unreachable false-negative, consistent with store identity;
-    `written` counts records handed to the tier not net-new inserts, doc states this) require no change.
+  deterministic (critic_check.py, pre-commit --staged every commit): APPROVE — no findings.
+  judgment (adversarial_review.py): the FIRST run (pre-3880988) fell back to claude-fallback because
+    Codex's --json envelope was unparseable → a false APPROVE (Codex's real verdict was silently
+    dropped). After the operator applied the tools/adversarial_review.py fix (commit 3880988 unwraps
+    the envelope), the REAL Codex verdict was BLOCK. Fixed across 4 Codex rounds — all concrete
+    in-scope findings resolved + tested:
+      R1: option validation accepted any non-empty contract string → OCC structure validation
+          (occ_contract_ok, +8 unit cases); duplicate detection was batch-local → store-aware pass;
+          quarantined records silently dropped → now RETURNED (quarantined_records: Vec).
+      R2: cross-tier gap (cold record archived off SSD, only on NAS) → snapshot spans SSD ∪ NAS;
+          +archive-off-SSD regression test.
+      R3: fail-OPEN on a present-but-corrupt tier store → now FAILS CLOSED (MarketIngestError::Store);
+          contract drift (runtime_services.json still marked the built validator deferred) → contract
+          now lists delivered vs genuinely-deferred.
+      R4: (D) demo ingest CLIs still used AcceptAllValidator → data016/008/005 rewired to
+          Sys77RecordValidator (behaviour-preserving; sibling tests + DATA-008/016 checkers green).
+          (C) NAS-UNMOUNTED conflict-absence proof — DEFERRED (operator-authorized via AskUserQuestion):
+          fully fixing needs the SRS-DATA-018 durable catalog; failing closed on any NAS-unavailability
+          would break SRS-DATA-008's degrade-tolerant write path. Documented + pinned in code +
+          runtime_services.json deferred[]. NOT a faked approve — the residual is the authorized deferral.
 
 Resume / next: COMPLETE at the data-layer scope. To flip passes:true (verified-e2e), verify the
 dashboard alert pane + email/SMS reason summaries once SRS-UI-001 + SRS-NOTIF-001 land, wiring a

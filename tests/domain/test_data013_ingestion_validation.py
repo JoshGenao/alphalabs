@@ -112,6 +112,45 @@ def test_rust_coverage_kind_is_refused_fail_closed() -> None:
     )
 
 
+def test_rust_conflicting_cross_store_duplicate_is_quarantined_not_batch_abort() -> None:
+    # Safety: a cross-run conflicting key (same key, different value, already in primary) must be
+    # quarantined as DuplicateRecord and the rest of the batch still written — NOT abort the whole
+    # tiered write (which would drop legitimate records and mis-report the conflict class).
+    _assert_one_passed(
+        _run_cargo_test("conflicting_cross_store_duplicate_is_quarantined_not_batch_abort"),
+        "SRS-DATA-013 cross-store conflicting duplicate quarantined, batch continues",
+    )
+
+
+def test_rust_identical_cross_store_reingest_is_idempotent() -> None:
+    # Safety: an identical re-ingest across runs must stay idempotent (no duplicate row, no false
+    # DuplicateRecord quarantine) — SRS-DATA-016 preserved by the store-aware duplicate pass.
+    _assert_one_passed(
+        _run_cargo_test("identical_cross_store_reingest_is_idempotent_not_quarantined"),
+        "SRS-DATA-013 identical cross-store re-ingest is idempotent",
+    )
+
+
+def test_rust_conflict_with_nas_archived_cold_record_is_quarantined() -> None:
+    # Safety (cross-tier): a record archived off SSD (present only on NAS) whose key is re-ingested with
+    # a DIFFERING value must be quarantined as DuplicateRecord BEFORE the SSD write — never committed to
+    # the SSD primary tier and only surfaced as a failed NAS sync afterwards.
+    _assert_one_passed(
+        _run_cargo_test("conflict_with_nas_archived_cold_record_is_quarantined_no_ssd_mutation"),
+        "SRS-DATA-013 NAS-archived conflicting re-ingest quarantined, no SSD mutation",
+    )
+
+
+def test_rust_corrupt_tier_store_fails_closed_before_ssd_write() -> None:
+    # Safety (fail-closed): if a tier needed for the cross-tier duplicate snapshot is present but
+    # unreadable (corrupt), the ingest must abort BEFORE any SSD write — never treat an unreadable tier
+    # as "no keys" and commit a possibly-conflicting record.
+    _assert_one_passed(
+        _run_cargo_test("corrupt_tier_store_fails_closed_before_ssd_write"),
+        "SRS-DATA-013 corrupt tier store fails closed before SSD write",
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Behavioral: the operator CLI workflow over a real temp SSD/NAS tier.
 # --------------------------------------------------------------------------- #
@@ -195,6 +234,27 @@ def test_cli_quarantines_and_writes_only_valid_with_counts_and_reasons() -> None
             assert absent not in records, (
                 f"quarantined record {absent} must NOT reach primary storage"
             )
+
+
+# --------------------------------------------------------------------------- #
+# Operator ingest paths enforce SYS-77 validation (not an accept-all stub).
+# --------------------------------------------------------------------------- #
+
+
+def test_operator_ingest_clis_use_the_real_validator_not_accept_all() -> None:
+    # Safety (SRS-DATA-013): the operator market/options ingest CLIs must gate on the real SYS-77
+    # Sys77RecordValidator, not an accept-all stub — otherwise the existing ingest routes would write
+    # unvalidated records to primary storage, contradicting "validate ingested market and options
+    # records before writing to primary storage".
+    bin_dir = REPO_ROOT / "crates" / "atp-data" / "src" / "bin"
+    for cli in ("data016_ingest_cli", "data008_tier_cli", "data005_fundamental_cli"):
+        src = (bin_dir / f"{cli}.rs").read_text(encoding="utf-8")
+        assert "Sys77RecordValidator" in src, (
+            f"{cli} must gate ingestion on the real SYS-77 Sys77RecordValidator"
+        )
+        assert "AcceptAllValidator" not in src, (
+            f"{cli} must not accept every record via an accept-all validator stub"
+        )
 
 
 # --------------------------------------------------------------------------- #

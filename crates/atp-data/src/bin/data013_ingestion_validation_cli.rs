@@ -111,7 +111,7 @@ fn cmd_ingest(rest: &[String]) -> Result<(), String> {
         println!("count_{}:{count}", reason.as_str());
     }
     // Sanity: the sink total and the outcome's quarantined count must agree (one event per drop).
-    println!("quarantined_records:{}", outcome.quarantined);
+    println!("quarantined_records:{}", outcome.quarantined_records.len());
 
     println!("ssd_inserted:{}", outcome.tier.ssd_inserted);
     println!("ssd_unchanged:{}", outcome.tier.ssd_unchanged);

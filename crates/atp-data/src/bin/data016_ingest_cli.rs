@@ -45,12 +45,9 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use atp_data::store::{
-    fixture_batch, DatasetKind, MarketDataRecord, MarketDataStore, StoreLock, UpsertOutcome,
-};
+use atp_data::store::{fixture_batch, DatasetKind, MarketDataStore, StoreLock, UpsertOutcome};
 use atp_data::tiering::{NasSyncStatus, TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
-use atp_data::{DataLayer, MarketIngestError};
-use atp_types::RecordValidationOutcome;
+use atp_data::{DataLayer, MarketIngestError, Sys77RecordValidator};
 
 /// The default fixture event timestamp (a fixed epoch second — NOT a clock read, so a re-ingest is
 /// deterministic). 2023-11-14T22:13:20Z.
@@ -251,7 +248,11 @@ fn ingest_batch(
     kind: DatasetKind,
     event_ts: i64,
 ) -> Result<(usize, usize), String> {
-    let validator = AcceptAllValidator;
+    // The real SRS-DATA-013 SYS-77 validator now gates this operator ingest path (was an accept-all
+    // stub); a fresh validator per batch keeps its within-batch duplicate detection clean. A record
+    // that fails validation is quarantined by the ERR-5 gate and fails the batch closed here — the
+    // deterministic fixtures are all well-formed, so this is behaviour-preserving for the demo.
+    let validator = Sys77RecordValidator::new();
     let events = NullSink;
     let mut inserted = 0;
     let mut duplicates = 0;
@@ -292,16 +293,6 @@ fn build_tier(ssd: PathBuf, nas: PathBuf) -> Result<TieredStore, String> {
     let config =
         TierConfig::new(ssd, nas, DEFAULT_HOT_RETENTION_DAYS).map_err(|err| err.to_string())?;
     Ok(TieredStore::new(config))
-}
-
-/// The DATA-013 validator (deferred) stand-in: accepts every fixture record so the demonstration
-/// focuses on the idempotency + tiering properties. The real SYS-77 rule logic is SRS-DATA-013's owner.
-struct AcceptAllValidator;
-
-impl atp_data::RecordValidator for AcceptAllValidator {
-    fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
-        RecordValidationOutcome::Valid
-    }
 }
 
 /// A no-op validation event sink (the dashboard/notification fan-out is SRS-DATA-014 / SRS-NOTIF-001).
