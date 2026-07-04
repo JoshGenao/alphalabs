@@ -139,6 +139,33 @@ def normalize_verdict(payload: dict, reviewer: str) -> dict:
     }
 
 
+def _verdict_from_envelope(obj: dict) -> dict | None:
+    """Dig the canonical verdict object out of a parsed reply.
+
+    The Claude fallback (and older Codex builds) emit a bare object with
+    ``verdict`` at the top level. The Codex companion's ``--json`` mode instead
+    wraps it in an envelope whose top-level keys are ``review/target/context/
+    codex/result/rawOutput/…`` — the parsed verdict is at ``obj["result"]`` and
+    the raw reviewer text is duplicated as a JSON *string* in
+    ``obj["rawOutput"]`` and ``obj["codex"]["stdout"]``. Without this unwrap the
+    envelope parses fine as JSON but has no top-level ``verdict``, so it looks
+    "unparseable" and Codex's verdict is silently dropped for the fallback.
+    """
+    if "verdict" in obj:
+        return obj
+    result = obj.get("result")
+    if isinstance(result, dict) and "verdict" in result:
+        return result
+    raw = obj.get("rawOutput")
+    if isinstance(raw, str) and (inner := extract_json(raw)):
+        return inner
+    codex = obj.get("codex")
+    if isinstance(codex, dict) and isinstance(codex.get("stdout"), str):
+        if inner := extract_json(codex["stdout"]):
+            return inner
+    return None
+
+
 def extract_json(text: str) -> dict | None:
     """Pull the JSON verdict object out of an LLM's (possibly prose-wrapped) reply."""
     if not text:
@@ -153,10 +180,10 @@ def extract_json(text: str) -> dict | None:
     for c in candidates:
         try:
             obj = json.loads(c)
-            if isinstance(obj, dict) and "verdict" in obj:
-                return obj
         except json.JSONDecodeError:
             continue
+        if isinstance(obj, dict) and (verdict_obj := _verdict_from_envelope(obj)):
+            return verdict_obj
     return None
 
 

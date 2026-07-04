@@ -82,6 +82,36 @@ def test_extract_json_fenced_and_bare_and_none():
     assert ar.extract_json("no json at all") is None
 
 
+def test_extract_json_unwraps_codex_json_envelope():
+    # The codex companion's `--json` mode nests the verdict under `result`
+    # (and duplicates it as a string in `rawOutput`); the top level has no
+    # `verdict` key. Without unwrapping, this looks unparseable and Codex's
+    # verdict is silently dropped for the Claude fallback.
+    envelope = json.dumps(
+        {
+            "review": "Adversarial Review",
+            "context": {"branch": "main"},
+            "codex": {"status": 0, "stdout": '{"verdict":"needs-attention"}'},
+            "result": {
+                "verdict": "needs-attention",
+                "summary": "target not identifiable",
+                "findings": [{"severity": "critical", "title": "x"}],
+            },
+            "rawOutput": '{"verdict":"needs-attention"}',
+            "parseError": None,
+        }
+    )
+    got = ar.extract_json(envelope)
+    assert got is not None, "codex --json envelope must be unwrapped, not dropped"
+    assert got["verdict"] == "needs-attention"
+    assert got["findings"][0]["severity"] == "critical"
+
+
+def test_extract_json_falls_back_to_rawoutput_when_result_absent():
+    envelope = json.dumps({"codex": {"status": 0}, "rawOutput": '{"verdict":"approve"}'})
+    assert ar.extract_json(envelope)["verdict"] == "approve"
+
+
 # --- cooldown prediction ----------------------------------------------------
 def test_cooldown_from_cache_future_and_past(tmp_path, monkeypatch):
     now = datetime.now().astimezone()
