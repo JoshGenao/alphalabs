@@ -208,8 +208,8 @@ class IngestRecordUnchangedTest(_Fixture):
         # Injecting a store write into the ERR-5 ingest_record body must be caught (it would break
         # ingestion_validation_check.py's read-only quarantine-arm contract).
         mutated = self.lib_src.replace(
-            "match validator.validate(&record) {",
-            "let _ = store.upsert(record);\n        match validator.validate(&record) {",
+            "match validator.validate(record) {",
+            "let _ = store.upsert(record);\n        match validator.validate(record) {",
             1,
         )
         with self.assertRaises(IngestionIdempotencyCheckError) as ctx:

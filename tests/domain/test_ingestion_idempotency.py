@@ -317,8 +317,8 @@ def test_record_hash_is_full_record_sha256_non_vacuous(sources) -> None:
 
 def test_gate_stays_store_free_is_non_vacuous(sources) -> None:
     mutated = sources["lib"].replace(
-        "match validator.validate(&record) {",
-        "let _ = store.upsert(record);\n        match validator.validate(&record) {",
+        "match validator.validate(record) {",
+        "let _ = store.upsert(record);\n        match validator.validate(record) {",
         1,
     )
     with pytest.raises(IngestionIdempotencyCheckError):

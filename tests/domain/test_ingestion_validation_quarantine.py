@@ -8,14 +8,16 @@ the primary storage tier exactly as it found it (zero write on
 rejection).
 
 L7 domain (safety) test. The Rust integration test at
-``crates/atp-data/tests/err_5_record_validation_blocked.rs`` builds spy
-implementations of ``RecordValidator`` and
-``IngestionValidationEventSink`` that count calls / record events;
-this Python test shells out to ``cargo test`` to anchor those
-post-conditions in the domain-test layer so the deterministic critic
-recognizes the diff as having a paired ``tests/domain/`` safety test
-(matched by ``ingestion[_-]?validation`` / ``record[_-]?quarantine`` in
-``SAFETY_PATH_RE``).
+``crates/atp-data/tests/err_5_record_validation_blocked.rs`` drives the
+gate with spy implementations of ``RecordValidator`` /
+``IngestionValidationEventSink`` (to control the outcome and count
+calls / events in isolation) AND with the REAL ``Sys77RecordValidator``
+over the deterministic mixed fixture (so each of the six rules is
+exercised by actual malformed records). This Python test shells out to
+``cargo test`` to anchor those post-conditions in the domain-test layer
+so the deterministic critic recognizes the diff as having a paired
+``tests/domain/`` safety test (matched by ``ingestion[_-]?validation`` /
+``record[_-]?quarantine`` in ``SAFETY_PATH_RE``).
 """
 
 from __future__ import annotations
@@ -82,11 +84,12 @@ def test_valid_outcome_returns_accepted_and_emits_no_event() -> None:
 
 
 def test_quarantined_state_holds_across_many_records() -> None:
-    # Pseudo-property: the Rust test sweeps all six QuarantineReason
-    # variants across multiple (source, record_hash) combinations and
-    # verifies the gate emits exactly one event per blocked record with
-    # the per-case reason correctly recorded.
-    result = _run_cargo_test("err_5_quarantined_state_holds_across_many_records")
+    # Pseudo-property: the Rust test drives the REAL Sys77RecordValidator
+    # over the deterministic mixed fixture (one malformed record per
+    # SYS-77 rule) and verifies the gate emits exactly one event per
+    # blocked record, covering all six QuarantineReason variants, while
+    # the well-formed records return Ok with no event.
+    result = _run_cargo_test("err_5_real_validator_sweep_emits_one_event_per_rule")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
         f"ERR-5 pseudo-property test failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
@@ -98,11 +101,13 @@ def test_quarantined_state_holds_across_many_records() -> None:
 
 def test_identical_contract_for_live_feed_and_paper_feed_sources() -> None:
     # SyRS SYS-77 source-invariance: the rejection envelope must be
-    # identical regardless of which feed produced the record. The data
-    # layer API takes no StrategyMode parameter and no per-vendor branch
-    # precisely so that every ingestion source flows through the same
-    # gate.
-    result = _run_cargo_test("err_5_identical_contract_for_live_feed_and_paper_feed_sources")
+    # identical regardless of which source/kind produced the record. The
+    # Rust test drives records of two different kinds (a daily equity bar
+    # and an option-chain snapshot, whose derived source tags differ)
+    # through the same gate and asserts byte-identical category/wire
+    # strings — the data layer API takes no StrategyMode parameter and no
+    # per-vendor branch.
+    result = _run_cargo_test("err_5_identical_contract_across_sources")
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
         f"ERR-5 SYS-77 source-invariance test failed:\nSTDOUT:\n{result.stdout}\n"

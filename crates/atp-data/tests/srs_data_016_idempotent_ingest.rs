@@ -24,14 +24,14 @@ use atp_types::{
 
 struct AcceptAll;
 impl RecordValidator for AcceptAll {
-    fn validate(&self, _record: &IngestionRecordSubmission) -> RecordValidationOutcome {
+    fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
         RecordValidationOutcome::Valid
     }
 }
 
 struct QuarantineAll;
 impl RecordValidator for QuarantineAll {
-    fn validate(&self, _record: &IngestionRecordSubmission) -> RecordValidationOutcome {
+    fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
         RecordValidationOutcome::Quarantined(QuarantineReason::RangeViolation)
     }
 }
@@ -279,8 +279,10 @@ fn srs_data_016_validation_is_bound_to_the_persisted_record() {
         seen: RefCell<Vec<IngestionRecordSubmission>>,
     }
     impl RecordValidator for Capturing {
-        fn validate(&self, record: &IngestionRecordSubmission) -> RecordValidationOutcome {
-            self.seen.borrow_mut().push(record.clone());
+        fn validate(&self, record: &MarketDataRecord) -> RecordValidationOutcome {
+            // The gate hands the validator the canonical record; the source+hash envelope it derives
+            // is the one bound to the persisted record. Capture that derived envelope.
+            self.seen.borrow_mut().push(record.ingestion_submission());
             RecordValidationOutcome::Valid
         }
     }

@@ -1,8 +1,8 @@
 use std::fmt;
 
 use atp_types::{
-    IngestionJobRequest, IngestionRecordSubmission, IngestionValidationEvent, OrderErrorCategory,
-    PacingBudgetEvent, PacingBudgetState, RecordValidationOutcome, RuntimeService, StrategyId,
+    IngestionJobRequest, IngestionValidationEvent, OrderErrorCategory, PacingBudgetEvent,
+    PacingBudgetState, RecordValidationOutcome, RuntimeService, StrategyId,
     StructuredIngestionError, StructuredPacingError,
 };
 
@@ -19,6 +19,7 @@ use atp_types::{
 pub mod cold_read;
 pub mod coverage;
 pub mod fundamentals;
+pub mod ingestion_validation;
 mod normalization;
 pub mod query;
 pub mod store;
@@ -29,6 +30,9 @@ pub use crate::cold_read::{
     DEFAULT_COLD_READ_CACHE_SHARE_PERCENT, MAX_COLD_READ_CACHE_SHARE_PERCENT,
 };
 pub use crate::coverage::{CoverageError, SplitAdjustedResult};
+pub use crate::ingestion_validation::{
+    QuarantineSummary, QuarantineSummarySink, QuarantiningIngestionOutcome, Sys77RecordValidator,
+};
 pub use crate::query::{UnifiedHistoricalQuery, UnifiedHistoricalResult};
 pub use crate::tiering::{
     ArchiveOutcome, NasSyncStatus, RetentionReport, RetentionVerdict, TierConfig, TierError,
@@ -49,14 +53,20 @@ pub struct DataLayer;
 // ("Data Layer | Ingestion, validation, storage catalog, …"). ERR-5's gate
 // consults two ports:
 //
-//   * `RecordValidator` — the read-only probe that classifies an
-//     `IngestionRecordSubmission` against the six SyRS SYS-77 rules
-//     (a..f). Concrete implementations (deferred to SRS-DATA-001..006 +
-//     SRS-DATA-013) own the actual rule logic against equity OHLCV and
-//     option-chain payloads. The trait exposes no mutator — the
+//   * `RecordValidator` — the read-only probe that classifies a
+//     [`MarketDataRecord`] against the six SyRS SYS-77 rules (a..f).
+//     The concrete SRS-DATA-013 implementation ([`Sys77RecordValidator`]
+//     in [`ingestion_validation`]) owns the actual rule logic against
+//     equity OHLCV and option-chain payloads; the probe receives the
+//     canonical record (not just its source+hash envelope) precisely so
+//     it can range-check OHLC and detect duplicate natural keys — a SHA
+//     hash carries neither. The trait exposes no mutator — the
 //     zero-write-to-primary invariant is anchored at the port shape so
 //     a concrete validator cannot accidentally commit a record through
-//     the probe call.
+//     the probe call. The gate derives the source+hash
+//     [`atp_types::IngestionRecordSubmission`] envelope from the record itself for
+//     the acceptance/rejection surface, so validation is always bound to
+//     exactly the record that will be persisted.
 //
 //   * `IngestionValidationEventSink` — the structured-event publication
 //     channel. Concrete sinks (deferred to SRS-DATA-014 / SRS-DATA-015 +
@@ -72,11 +82,14 @@ pub struct DataLayer;
 // would force the type crate to know about ports, inverting the dependency
 // direction.
 pub trait RecordValidator {
-    /// Classify a record against the six SyRS SYS-77 rules. Returns
-    /// `Valid` if the record may proceed to primary storage, or
+    /// Classify a [`MarketDataRecord`] against the six SyRS SYS-77 rules.
+    /// Returns `Valid` if the record may proceed to primary storage, or
     /// `Quarantined(reason)` naming the rule it violated. Read-only with
     /// respect to any primary-storage state — the validator never writes.
-    fn validate(&self, record: &IngestionRecordSubmission) -> RecordValidationOutcome;
+    /// The record (not merely its source+hash envelope) is passed so a
+    /// concrete validator can inspect the OHLCV / option-chain field
+    /// values and the natural key the rules operate on.
+    fn validate(&self, record: &MarketDataRecord) -> RecordValidationOutcome;
 }
 
 pub trait IngestionValidationEventSink {
@@ -130,7 +143,7 @@ impl DataLayer {
     /// record.
     pub fn ingest_record<V, S>(
         &self,
-        record: IngestionRecordSubmission,
+        record: &MarketDataRecord,
         validator: &V,
         events: &S,
         observed_at_seconds: u64,
@@ -139,20 +152,24 @@ impl DataLayer {
         V: RecordValidator,
         S: IngestionValidationEventSink,
     {
-        match validator.validate(&record) {
+        // The source+hash rejection/acceptance envelope is DERIVED from the record, so validation is
+        // bound to exactly the record that will be persisted (there is no independent envelope to
+        // forge) and the event/error carry a stable SHA-256 over the whole record.
+        let submission = record.ingestion_submission();
+        match validator.validate(record) {
             RecordValidationOutcome::Valid => Ok(IngestionAccepted {
-                source: record.source,
-                record_hash: record.record_hash,
+                source: submission.source,
+                record_hash: submission.record_hash,
             }),
             RecordValidationOutcome::Quarantined(reason) => {
                 events.record(IngestionValidationEvent {
                     state: RecordValidationOutcome::Quarantined(reason),
                     reason,
-                    source: record.source.clone(),
-                    record_hash: record.record_hash.clone(),
+                    source: submission.source.clone(),
+                    record_hash: submission.record_hash.clone(),
                     observed_at_seconds,
                 });
-                Err(StructuredIngestionError::quarantined(record, reason))
+                Err(StructuredIngestionError::quarantined(submission, reason))
             }
         }
     }
@@ -310,11 +327,10 @@ impl DataLayer {
                 kind: record.key().kind.as_str(),
             });
         }
-        // The ERR-5 envelope is DERIVED from the record, binding validation to exactly the record
-        // that will be persisted (no independent payload to forge).
-        let submission = record.ingestion_submission();
-        // 1. ERR-5 validation gate (UNCHANGED) — quarantines an invalid record read-only.
-        let accepted = self.ingest_record(submission, validator, events, observed_at_seconds)?;
+        // 1. ERR-5 validation gate — quarantines an invalid record read-only. The gate derives the
+        //    source+hash envelope from the record itself, so validation is bound to exactly the record
+        //    that will be persisted (no independent payload to forge).
+        let accepted = self.ingest_record(&record, validator, events, observed_at_seconds)?;
         // 2. Only reachable on a Valid classification → idempotent store write.
         let applied = store.upsert(record)?;
         Ok(IngestionOutcome { accepted, applied })
@@ -366,10 +382,9 @@ impl DataLayer {
                     kind: record.key().kind.as_str(),
                 });
             }
-            // The ERR-5 envelope is DERIVED from the record, binding validation to exactly the record
-            // that will be persisted (no independent payload to forge).
-            let submission = record.ingestion_submission();
-            self.ingest_record(submission, validator, events, observed_at_seconds)?;
+            // The gate derives the source+hash envelope from the record, binding validation to exactly
+            // the record that will be persisted (no independent payload to forge).
+            self.ingest_record(&record, validator, events, observed_at_seconds)?;
             validated.push(record);
         }
         let count = validated.len();
@@ -537,9 +552,19 @@ mod tests {
     }
 
     impl RecordValidator for StubValidator {
-        fn validate(&self, _record: &IngestionRecordSubmission) -> RecordValidationOutcome {
+        fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
             self.outcome
         }
+    }
+
+    /// A well-formed record for the gate-mechanics tests. The stub validators ignore its content
+    /// (they return a canned outcome), so any valid fixture record exercises the gate the same way;
+    /// the source + record_hash the gate echoes are DERIVED from it.
+    fn sample_record() -> MarketDataRecord {
+        crate::store::fixture_batch(DatasetKind::DailyEquityBar, 1_700_000_000)
+            .into_iter()
+            .next()
+            .expect("daily-equity fixture batch is non-empty")
     }
 
     #[derive(Default)]
@@ -561,13 +586,6 @@ mod tests {
         }
     }
 
-    fn record(source: &str, hash: &str) -> IngestionRecordSubmission {
-        IngestionRecordSubmission {
-            source: source.to_string(),
-            record_hash: hash.to_string(),
-        }
-    }
-
     #[test]
     fn valid_outcome_returns_accepted_and_emits_no_event() {
         let layer = DataLayer;
@@ -576,16 +594,14 @@ mod tests {
         };
         let sink = ForbiddenSink;
 
+        let rec = sample_record();
+        let expected = rec.ingestion_submission();
         let accepted = layer
-            .ingest_record(
-                record("bulk-equity-bars", "0xabc"),
-                &validator,
-                &sink,
-                1_715_000_000,
-            )
+            .ingest_record(&rec, &validator, &sink, 1_715_000_000)
             .expect("Valid outcome must accept the record");
-        assert_eq!(accepted.source, "bulk-equity-bars");
-        assert_eq!(accepted.record_hash, "0xabc");
+        // The gate echoes back the source + record_hash it derived from the record.
+        assert_eq!(accepted.source, expected.source);
+        assert_eq!(accepted.record_hash, expected.record_hash);
     }
 
     #[test]
@@ -596,13 +612,10 @@ mod tests {
         };
         let sink = StubSink::default();
 
+        let rec = sample_record();
+        let expected = rec.ingestion_submission();
         let error = layer
-            .ingest_record(
-                record("bulk-equity-bars", "0xdeadbeef"),
-                &validator,
-                &sink,
-                1_715_000_000,
-            )
+            .ingest_record(&rec, &validator, &sink, 1_715_000_000)
             .expect_err("Quarantined outcome must reject the record");
         assert_eq!(
             error.category,
@@ -612,12 +625,13 @@ mod tests {
             error.category.as_str(),
             "INGESTION_RECORD_VALIDATION_FAILED"
         );
-        assert_eq!(error.original_record.record_hash, "0xdeadbeef");
+        // The rejection envelope carries the source+hash derived from the offending record.
+        assert_eq!(error.original_record.record_hash, expected.record_hash);
         let events = sink.events.borrow();
         assert_eq!(events.len(), 1, "exactly one event per rejected record");
         assert_eq!(events[0].reason, QuarantineReason::RangeViolation);
-        assert_eq!(events[0].source, "bulk-equity-bars");
-        assert_eq!(events[0].record_hash, "0xdeadbeef");
+        assert_eq!(events[0].source, expected.source);
+        assert_eq!(events[0].record_hash, expected.record_hash);
         assert_eq!(events[0].observed_at_seconds, 1_715_000_000);
         assert!(events[0].state.is_quarantined());
     }
@@ -633,7 +647,7 @@ mod tests {
             validate_calls: Cell<u32>,
         }
         impl RecordValidator for CountingValidator {
-            fn validate(&self, _record: &IngestionRecordSubmission) -> RecordValidationOutcome {
+            fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
                 self.validate_calls.set(self.validate_calls.get() + 1);
                 self.outcome
             }
@@ -645,12 +659,7 @@ mod tests {
             validate_calls: Cell::new(0),
         };
         let sink = StubSink::default();
-        let _ = layer.ingest_record(
-            record("fundamental-records", "0x123"),
-            &validator,
-            &sink,
-            1_715_000_000,
-        );
+        let _ = layer.ingest_record(&sample_record(), &validator, &sink, 1_715_000_000);
         assert_eq!(
             validator.validate_calls.get(),
             1,

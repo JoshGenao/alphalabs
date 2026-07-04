@@ -37,10 +37,10 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use atp_data::store::{fixture_batch, DatasetKind};
+use atp_data::store::{fixture_batch, DatasetKind, MarketDataRecord};
 use atp_data::tiering::{NasSyncStatus, TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
 use atp_data::{DataLayer, IngestionValidationEventSink, RecordValidator};
-use atp_types::{IngestionRecordSubmission, IngestionValidationEvent, RecordValidationOutcome};
+use atp_types::{IngestionValidationEvent, RecordValidationOutcome};
 
 /// A fixed default instant and event timestamp (NOT a clock read — keeps the demo deterministic).
 /// 2023-11-14T22:13:20Z.
@@ -222,7 +222,7 @@ fn observed_at() -> u64 {
 struct AcceptAllValidator;
 
 impl RecordValidator for AcceptAllValidator {
-    fn validate(&self, _record: &IngestionRecordSubmission) -> RecordValidationOutcome {
+    fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
         RecordValidationOutcome::Valid
     }
 }

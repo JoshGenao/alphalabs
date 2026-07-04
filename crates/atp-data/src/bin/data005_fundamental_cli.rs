@@ -43,10 +43,7 @@ use atp_data::query::UnifiedHistoricalQuery;
 use atp_data::store::{DatasetKind, MarketDataRecord, MarketDataStore, StoreLock, UpsertOutcome};
 use atp_data::tiering::{NasSyncStatus, TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
 use atp_data::{DataLayer, MarketIngestError};
-use atp_types::{
-    AssetClass, FundamentalStatements, IngestionRecordSubmission, RecordValidationOutcome,
-    SecurityKey,
-};
+use atp_types::{AssetClass, FundamentalStatements, RecordValidationOutcome, SecurityKey};
 
 /// The default fixture fiscal period-end timestamp (a fixed epoch second — NOT a clock read, so a
 /// re-ingest is deterministic). 2023-11-14T22:13:20Z.
@@ -455,7 +452,7 @@ fn count_for_resolution(store: &MarketDataStore, resolution: &str) -> usize {
 struct AcceptAllValidator;
 
 impl atp_data::RecordValidator for AcceptAllValidator {
-    fn validate(&self, _record: &IngestionRecordSubmission) -> RecordValidationOutcome {
+    fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
         RecordValidationOutcome::Valid
     }
 }

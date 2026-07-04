@@ -19,7 +19,7 @@ use atp_data::{
     DataLayer, IngestionValidationEventSink, MarketIngestError, RecordValidator,
     UnifiedHistoricalQuery,
 };
-use atp_types::{IngestionRecordSubmission, IngestionValidationEvent, RecordValidationOutcome};
+use atp_types::{IngestionValidationEvent, RecordValidationOutcome};
 
 // --------------------------------------------------------------------------- //
 // Test doubles + helpers (mirror the SRS-DATA-016 integration harness).
@@ -27,7 +27,7 @@ use atp_types::{IngestionRecordSubmission, IngestionValidationEvent, RecordValid
 
 struct AcceptAll;
 impl RecordValidator for AcceptAll {
-    fn validate(&self, _record: &IngestionRecordSubmission) -> RecordValidationOutcome {
+    fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
         RecordValidationOutcome::Valid
     }
 }

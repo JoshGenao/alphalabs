@@ -27,19 +27,19 @@ use std::fs;
 use std::path::PathBuf;
 
 use atp_data::fundamentals::build_fundamental_records;
-use atp_data::store::{DatasetKind, MarketDataStore, StoreError, UpsertOutcome};
+use atp_data::store::{DatasetKind, MarketDataRecord, MarketDataStore, StoreError, UpsertOutcome};
 use atp_data::{DataLayer, IngestionValidationEventSink, MarketIngestError, RecordValidator};
 use atp_factor_pipeline::store_inputs::load_fundamental_input;
 use atp_types::{
-    AssetClass, FundamentalStatements, IngestionRecordSubmission, IngestionValidationEvent,
-    RecordValidationOutcome, SecurityKey,
+    AssetClass, FundamentalStatements, IngestionValidationEvent, RecordValidationOutcome,
+    SecurityKey,
 };
 
 // ---- ingestion stubs (the concrete SYS-77 validator + alert sink are deferred SRS-DATA-013) -------
 
 struct AcceptAll;
 impl RecordValidator for AcceptAll {
-    fn validate(&self, _record: &IngestionRecordSubmission) -> RecordValidationOutcome {
+    fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
         RecordValidationOutcome::Valid
     }
 }

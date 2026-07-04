@@ -24,9 +24,7 @@ use atp_data::store::{
 };
 use atp_data::tiering::{NasSyncStatus, RetentionVerdict, TierConfig, TierError, TieredStore};
 use atp_data::{DataLayer, IngestionValidationEventSink, MarketIngestError, RecordValidator};
-use atp_types::{
-    IngestionRecordSubmission, IngestionValidationEvent, QuarantineReason, RecordValidationOutcome,
-};
+use atp_types::{IngestionValidationEvent, QuarantineReason, RecordValidationOutcome};
 use std::cell::RefCell;
 
 const NOW: i64 = 1_700_000_000;
@@ -455,7 +453,7 @@ fn data008_reingest_is_idempotent_across_both_tiers() {
 /// The DATA-013 (deferred) validator stand-in: accepts every record.
 struct AcceptAll;
 impl RecordValidator for AcceptAll {
-    fn validate(&self, _record: &IngestionRecordSubmission) -> RecordValidationOutcome {
+    fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
         RecordValidationOutcome::Valid
     }
 }
@@ -463,7 +461,7 @@ impl RecordValidator for AcceptAll {
 /// A validator that quarantines EVERY record — to prove the tiered surface fails closed before a write.
 struct QuarantineAll;
 impl RecordValidator for QuarantineAll {
-    fn validate(&self, _record: &IngestionRecordSubmission) -> RecordValidationOutcome {
+    fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
         RecordValidationOutcome::Quarantined(QuarantineReason::RangeViolation)
     }
 }

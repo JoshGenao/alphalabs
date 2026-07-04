@@ -45,10 +45,12 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use atp_data::store::{fixture_batch, DatasetKind, MarketDataStore, StoreLock, UpsertOutcome};
+use atp_data::store::{
+    fixture_batch, DatasetKind, MarketDataRecord, MarketDataStore, StoreLock, UpsertOutcome,
+};
 use atp_data::tiering::{NasSyncStatus, TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
 use atp_data::{DataLayer, MarketIngestError};
-use atp_types::{IngestionRecordSubmission, RecordValidationOutcome};
+use atp_types::RecordValidationOutcome;
 
 /// The default fixture event timestamp (a fixed epoch second — NOT a clock read, so a re-ingest is
 /// deterministic). 2023-11-14T22:13:20Z.
@@ -297,7 +299,7 @@ fn build_tier(ssd: PathBuf, nas: PathBuf) -> Result<TieredStore, String> {
 struct AcceptAllValidator;
 
 impl atp_data::RecordValidator for AcceptAllValidator {
-    fn validate(&self, _record: &IngestionRecordSubmission) -> RecordValidationOutcome {
+    fn validate(&self, _record: &MarketDataRecord) -> RecordValidationOutcome {
         RecordValidationOutcome::Valid
     }
 }

@@ -371,8 +371,8 @@ class IngestionValidationGuardTest(unittest.TestCase):
         # validator — the regression the validator-call check exists to
         # catch.
         mutated = self.data_src.replace(
-            "match validator.validate(&record)",
-            "match never_called(&record)",
+            "match validator.validate(record)",
+            "match never_called(record)",
             1,
         )
         with self.assertRaises(IngestionValidationCheckError) as ctx:
