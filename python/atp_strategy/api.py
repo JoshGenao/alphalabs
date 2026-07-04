@@ -625,6 +625,20 @@ def assert_order_event_payload(event: "OrderEvent") -> None:
             f"fill_price value: expected non-negative, got "
             f"{event.fill_price!r}"
         )
+    # ``commission`` must be non-negative when present. Commission is a
+    # cost (the IB tiered model floors it at a per-order minimum >= 0);
+    # a negative fee has no meaning and would silently corrupt
+    # downstream P&L / reconciliation if it reached user code. This is
+    # the single-authority invariant the shared delivery seam
+    # (``atp_strategy.dispatch.deliver_order_event``, used by BOTH the
+    # paper and live dispatchers) relies on — symmetric with the
+    # ``fill_price`` rule above.
+    if event.commission is not None and event.commission < 0:
+        raise OrderEventContractError(
+            f"{event_value} event {event.order_id!r} has invalid "
+            f"commission value: expected non-negative, got "
+            f"{event.commission!r}"
+        )
     # Integers: ``fill_quantity`` is ``int | None`` (the dataclass
     # annotation permits ``None`` on ``ACK`` / ``EXPIRED`` and on
     # never-acknowledged events at the runtime boundary), but

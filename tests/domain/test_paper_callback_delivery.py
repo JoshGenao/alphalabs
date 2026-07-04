@@ -329,6 +329,93 @@ class FailClosedDeliveryTest(unittest.TestCase):
         guard.assert_called_once_with(event)
         self.assertEqual(strategy.received, [])  # user code not reached
 
+    def test_negative_commission_never_reaches_callback(self) -> None:
+        """A negative commission is a fee corruption; the downstream guard checks
+        only that commission is finite, so the seam must reject it at the boundary
+        (a negative fee delivered to user code would corrupt P&L / reconciliation)."""
+        strategy = _RecordingStrategy()
+        bad = SimulatedFill(
+            event_type=OrderEventType.FILL,
+            sim_order_id="ord-neg-comm",
+            client_order_id="cli-neg-comm",
+            strategy_id="s1",
+            symbol="AAPL",
+            fill_price_minor=12_345,
+            fill_quantity=10,
+            cumulative_filled=10,
+            remaining_quantity=0,
+            commission_minor=-5,  # negative fee
+            reason=None,
+            simulated_fill_at_ns=time.perf_counter_ns(),
+            timestamp="2026-07-03T13:30:00Z",
+        )
+        with self.assertRaises(OrderEventContractError):
+            deliver_simulated_fill(strategy, None, bad)
+        self.assertEqual(strategy.received, [])
+
+    def test_negative_commission_rejected_on_direct_delivery(self) -> None:
+        """The shared seam (used by BOTH paper and live dispatchers) accepts a
+        pre-built OrderEvent, so the non-negative commission invariant must hold in
+        the guard itself — not only in the SimulatedFill builder. A direct
+        OrderEvent with a negative fee must be rejected before the callback."""
+        strategy = _RecordingStrategy()
+        event = OrderEvent(
+            event_type=OrderEventType.FILL,
+            order_id="ord-direct-neg",
+            client_order_id="cli-direct-neg",
+            strategy_id="s1",
+            symbol="AAPL",
+            fill_price=100.0,
+            fill_quantity=10,
+            cumulative_filled=10,
+            remaining_quantity=0,
+            commission=-0.05,  # negative fee, pre-built (live-dispatcher shape)
+            reason=None,
+            timestamp="2026-07-03T13:30:00Z",
+        )
+        with self.assertRaises(OrderEventContractError):
+            deliver_order_event(strategy, None, event, fill_at_ns=time.perf_counter_ns())
+        self.assertEqual(strategy.received, [])
+
+    def test_negative_fill_price_rejected(self) -> None:
+        bad = SimulatedFill(
+            event_type=OrderEventType.FILL,
+            sim_order_id="ord-neg-px",
+            client_order_id="cli-neg-px",
+            strategy_id="s1",
+            symbol="AAPL",
+            fill_price_minor=-12_345,  # negative price has no physical meaning
+            fill_quantity=10,
+            cumulative_filled=10,
+            remaining_quantity=0,
+            commission_minor=5,
+            reason=None,
+            simulated_fill_at_ns=time.perf_counter_ns(),
+            timestamp="2026-07-03T13:30:00Z",
+        )
+        with self.assertRaises(OrderEventContractError):
+            build_order_event(bad)
+
+    def test_future_fill_at_ns_never_reaches_callback(self) -> None:
+        """A fill stamped after delivery starts (future / wrong clock domain) would
+        yield a negative NFR-P4 latency sample; the seam fails closed before
+        delivering rather than returning a negative sample."""
+        strategy = _RecordingStrategy()
+        event = build_order_event(_fill())
+        future = time.perf_counter_ns() + 10_000_000_000  # 10s in the future
+        with self.assertRaises(OrderEventContractError):
+            deliver_order_event(strategy, None, event, fill_at_ns=future)
+        self.assertEqual(strategy.received, [])
+
+    def test_valid_delivery_latency_is_non_negative(self) -> None:
+        """A valid (past) fill stamp yields a non-negative delivery-latency sample."""
+        strategy = _RecordingStrategy()
+        event = build_order_event(_fill())
+        t0 = time.perf_counter_ns()
+        sample = deliver_order_event(strategy, None, event, fill_at_ns=t0)
+        self.assertGreaterEqual(sample, 0)
+        self.assertEqual(len(strategy.received), 1)
+
 
 # --------------------------------------------------------------------------- #
 # Money conversion round-trip

@@ -138,6 +138,15 @@ def _minor_to_units(field_name: str, order_id: str, minor: int | None) -> float 
     and surfaces as a structured :class:`OrderEventContractError` rather than a
     silently-wrong float — the same fail-closed posture the field-presence guard
     takes at the dispatch boundary.
+
+    A **negative** minor value is also rejected here. Fill price and commission are
+    both non-negative by construction (a fill price is > 0, a never-filled
+    cancel/reject reports 0.0, and commission is a cost floored at >= 0 by the IB
+    tiered model). The downstream :func:`assert_order_event_payload` guard rejects a
+    negative ``fill_price`` but only checks that ``commission`` is *finite* — so
+    without this check a negative ``commission_minor`` descriptor would be delivered
+    to user code as a negative fee, corrupting P&L / reconciliation instead of
+    failing closed.
     """
     if minor is None:
         return None
@@ -145,6 +154,11 @@ def _minor_to_units(field_name: str, order_id: str, minor: int | None) -> float 
         raise OrderEventContractError(
             f"SimulatedFill {order_id!r} has invalid {field_name}: expected int "
             f"minor units, got {type(minor).__name__}={minor!r}"
+        )
+    if minor < 0:
+        raise OrderEventContractError(
+            f"SimulatedFill {order_id!r} has invalid {field_name}: expected "
+            f"non-negative minor units, got {minor}"
         )
     return minor / MINOR_UNITS_PER_UNIT
 
@@ -236,12 +250,14 @@ def deliver_order_event(
             deterministic tests); defaults to :func:`time.perf_counter_ns`.
 
     Returns:
-        The delivery latency in nanoseconds (``>= 0`` for a monotonic clock).
+        The delivery latency in nanoseconds — guaranteed ``>= 0`` (a fill that
+        post-dates delivery is rejected, see Raises).
 
     Raises:
         OrderEventContractError: the payload fails the field-presence guard, the
-            sink has no ``on_order_event`` callable, or ``fill_at_ns`` is not an
-            ``int``. On any of these the callback is not invoked.
+            sink has no ``on_order_event`` callable, ``fill_at_ns`` is not an
+            ``int``, or ``fill_at_ns`` post-dates the start of delivery (a future or
+            wrong-clock-domain stamp). On any of these the callback is not invoked.
     """
     # Fetch the callback once; a None / missing / non-callable ``on_order_event``
     # (including ``strategy is None``, since ``getattr(None, ...)`` is ``None``)
@@ -256,6 +272,19 @@ def deliver_order_event(
         raise OrderEventContractError(
             "deliver_order_event: fill_at_ns must be an int monotonic-ns stamp "
             f"(got {type(fill_at_ns).__name__}={fill_at_ns!r})"
+        )
+    # Fail closed on a fill timestamp that post-dates the start of delivery (a
+    # future stamp, or one from a different clock domain than ``clock``) BEFORE any
+    # user code runs. Otherwise ``clock() - fill_at_ns`` would be negative, silently
+    # understating the NFR-P4 latency and breaking the u64 percentile ingestion in
+    # nfr_p95_cli. ``clock`` is monotonic, so ``start_ns <= end_ns`` and the sample
+    # below is guaranteed ``>= 0``.
+    start_ns = clock()
+    if fill_at_ns > start_ns:
+        raise OrderEventContractError(
+            "deliver_order_event: fill_at_ns post-dates delivery "
+            f"(fill_at_ns={fill_at_ns} > now={start_ns}); a fill cannot be stamped "
+            "after its own delivery — check the clock domain of fill_at_ns"
         )
     # Fail closed BEFORE invoking user code: a malformed / fabricated payload must
     # never reach the strategy callback.

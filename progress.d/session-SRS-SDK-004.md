@@ -94,3 +94,22 @@ Resume / next (to flip passes:true):
   API (out of scope for the transition-derived authority).
 - The reusable seam (deliver_order_event) and nfr_p95_cli are the substrate both
   legs consume — do NOT rebuild; wire the descriptor source + run on a PTP host.
+
+=== FOLLOW-UP 2026-07-04 (Codex re-review after adversarial_review.py fix 3880988) ===
+The original judgment pass ran as the CLAUDE FALLBACK because adversarial_review.py
+was dropping Codex's verdict (the `--json` envelope nests it under `result`;
+extract_json saw no top-level `verdict` → "unparseable" → 100% fallback). Commit
+3880988 (`_verdict_from_envelope`) fixes that. Re-running the now-fixed reviewer
+against this feature reached CODEX, which found two real fail-opens the fallback
+missed (both now fixed, commit fa9adef):
+- [high] negative commission delivered as a negative fee → P&L corruption. Fixed at
+  TWO layers: `_minor_to_units` rejects negative minor units, AND
+  `assert_order_event_payload` now enforces non-negative commission (symmetric with
+  its fill_price rule) so the SHARED deliver_order_event seam protects the live
+  dispatcher's pre-built OrderEvents too, not just the SimulatedFill builder path.
+- [medium] `deliver_order_event` could return a negative NFR-P4 latency sample for a
+  future / wrong-clock-domain fill stamp. Fixed: reject `fill_at_ns > now` before
+  delivery; sample is now guaranteed >= 0.
+New L7 tests cover both (incl. a direct pre-built OrderEvent with negative
+commission). Verdicts: deterministic APPROVE; judgment (reviewer=CODEX) APPROVE.
+Still serialized (passes:false) — the live + engine-inclusive p95 legs are unchanged.
