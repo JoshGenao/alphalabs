@@ -225,11 +225,14 @@ def test_rest_lifecycle_rollback_requires_confirmation_like_the_cli():
 
 def test_deferred_domain_op_is_inert_and_names_owner():
     runtime = OperatorInterfaceRuntime()
-    # Confirmed kill switch with NO handler wired → structured 501, no effect.
+    # Confirmed kill switch on a BARE runtime (no atp_safety composition, so
+    # no backend was explicitly supplied) → structured 501, no effect. This is
+    # the SRS-SAFE-001 no-fabrication posture: uncovered capability → no
+    # public surface.
     status, body = runtime.dispatch_rest("POST", "/api/v1/kill-switch?confirm=true", b"{}")
     assert status == 501
     assert body["error"]["type"] == "HANDLER_DEFERRED"
-    assert body["error"]["detail"]["owner"] == "SRS-EXE-001"
+    assert body["error"]["detail"]["owner"] == "SRS-SAFE-001"
     # Status report still says not-ready: nothing was actually executed.
     _, status_body = runtime.dispatch_rest("GET", "/api/v1/system/status")
     assert status_body["ready"] is False

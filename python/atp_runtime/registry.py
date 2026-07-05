@@ -11,8 +11,9 @@ The registry is the single seam every downstream feature plugs into. Until a
 feature lands, its operations resolve to a :class:`DeferredHandler` that
 returns a structured ``501 NOT_IMPLEMENTED`` envelope naming the owning
 feature and **performs no side effect** — the kill-switch route, for example,
-is reachable and documented but inert until ``SRS-EXE-001`` registers a real
-handler.
+was reachable-but-inert until its owner (``SRS-SAFE-001``, via
+``atp_safety.wire_kill_switch``) registered the real handler; on a bare,
+un-composed runtime it still is.
 
 SRS trace
 ---------
@@ -145,11 +146,11 @@ class DeferredHandler:
     its owner registers a real handler.
 
     Attributes:
-        owner: Feature id that owns the real behaviour (e.g. ``"SRS-EXE-001"``).
+        owner: Feature id that owns the real behaviour (e.g. ``"SRS-SAFE-001"``).
         summary: One-line description carried in the response detail.
 
     Example:
-        >>> h = DeferredHandler(owner="SRS-EXE-001", summary="kill switch")
+        >>> h = DeferredHandler(owner="SRS-SAFE-001", summary="kill switch")
         >>> h.handle(Request(Surface.REST,
         ...     OperationKey(Surface.REST, "POST /api/v1/kill-switch"))).status_code
         501

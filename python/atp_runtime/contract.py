@@ -40,7 +40,7 @@ RUNTIME_OWNER = "runtime"
 REST_CAPABILITY_OWNERS: dict[str, str] = {
     "STRATEGY_LIFECYCLE": "SRS-ORCH-004",
     "LIVE_DESIGNATION": "SRS-EXE-001",
-    "KILL_SWITCH": "SRS-EXE-001",
+    "KILL_SWITCH": "SRS-SAFE-001",
     "HOT_SWAP": "SRS-RESV-003",
     "BACKTEST_LAUNCH": "SRS-BT-001",
     "BACKTEST_QUERY": "SRS-BT-009",
@@ -60,7 +60,7 @@ REST_CAPABILITY_OWNERS: dict[str, str] = {
 # where a single group spans two owners (e.g. ``admin version`` is runtime-owned
 # while ``admin logs`` belongs to SRS-LOG-001).
 CLI_GROUP_OWNERS: dict[str, str] = {
-    "kill-switch": "SRS-EXE-001",
+    "kill-switch": "SRS-SAFE-001",
     "strategy": "SRS-ORCH-004",
     "live": "SRS-EXE-001",
     "hot-swap": "SRS-RESV-003",

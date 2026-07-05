@@ -375,14 +375,17 @@ _STATIC_CHECKS = (
     ("vendor_isolation", check_vendor_isolation, "halt"),
 )
 
-# Genuinely DEFERRED owners of the rest of the SRS-SAFE-001 kill-switch sequence — separate
-# requirements that this paper-engine halt gate does NOT close. SRS-SAFE-001 stays passes:false.
+# Genuinely DEFERRED owners of the LIVE half of the SRS-SAFE-001 kill-switch sequence — separate
+# requirements this paper-engine halt gate does NOT close. The activation runtime above the gate
+# (fan-out + cancel/liquidate/disconnect sequence + 5s NFR-P3 measurement + operator surfaces) is
+# now BUILT as the SRS-SAFE-001 slice (see kill_switch_activation_contract + tools/
+# kill_switch_check.py); SRS-SAFE-001 still stays passes:false until the live path exists.
 _DEFERRED_OWNERS = (
-    "SRS-EXE-006 (cancel resting IB orders + disconnect IB Gateway)",
-    "SRS-EXE-002 / SAFE-001 runtime (activation fan-out + liquidation + 5s NFR-P3 budget)",
-    "SRS-LOG-001 (HALTED observability within 1s)",
+    "SRS-EXE-006 (the REAL IB transport behind the activation gate's cancel/liquidate/disconnect port)",
+    "SRS-EXE-002 (hosting every real paper strategy on fleet-registered halt gates)",
+    "SRS-LOG-001 (the log feature's own dashboard-viewing flip; the activation layer now writes ACTIVATION+HALTED durably)",
     "SRS-NOTIF-001 (operator email/SMS)",
-    "SRS-API-001 / SRS-UI (dashboard/CLI/REST kill-switch trigger)",
+    "SRS-API-001 / SRS-UI (the operator runtime's own flip; the kill-switch handlers themselves are wired by atp_safety)",
 )
 
 

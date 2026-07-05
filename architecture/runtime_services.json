@@ -3328,11 +3328,15 @@
     "deferred": [
       {
         "feature": "SRS-EXE-001",
-        "what": "Real kill-switch + live-designation route handlers + IB cancel / liquidate / halt / disconnect sequence. The SDK pins the route paths, request fields, response fields, and the requires_confirmation guard so the handler can land without renegotiation; the IB-side sequencing belongs to SRS-EXE-001."
+        "what": "Real live-designation route handlers + the live IB order-routing sequence. The SDK pins the route paths, request fields, response fields, and the requires_confirmation guard so the handler can land without renegotiation; the live-designation handlers and IB-side order routing belong to SRS-EXE-001. (The kill-switch handlers moved to their owner SRS-SAFE-001 and are now REAL — see that deferred entry.)"
+      },
+      {
+        "feature": "SRS-SAFE-001",
+        "what": "Kill-switch handlers are REAL when composed: python/atp_safety wire_kill_switch(runtime, *, backend, system_log_store, state_dir) registers POST /api/v1/kill-switch + kill-switch activate/status (kill_switch_activation_contract). backend is a required explicit argument with no default and no fixture fallback, so a BARE runtime still serves the structured deferred 501 for the kill-switch operations — that un-composed default (and the live-IB backend behind the port, SRS-EXE-006) is what keeps SRS-SAFE-001 in this deferred list; the operation is only served where a composer explicitly supplied an honest backend."
       },
       {
         "feature": "SRS-EXE-006",
-        "what": "Headless IB Gateway brokerage adapter the kill-switch / live-designation handlers route to. Until this lands the kill-switch and live-designation REST routes have no IB-side execution partner."
+        "what": "Headless IB Gateway brokerage adapter the kill-switch / live-designation handlers route to. Until this lands the kill-switch backend runs the mocked-IB fixture transport (safe001_kill_switch_cli) and the live-designation REST routes have no IB-side execution partner."
       },
       {
         "feature": "SRS-ORCH-004",
