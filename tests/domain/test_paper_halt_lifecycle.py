@@ -9,10 +9,14 @@ been pulled yet simulated fills (and the callbacks they drive) keep flowing.
 DOMAIN-LEVEL REALIZATION (honest scope): there is no callback-emitting runtime loop and no Python
 strategy host yet, so "no further on_fill callbacks emitted" is realized by refusing to PRODUCE a
 fill -- a halted ``HaltablePaperEngine`` returns ``HaltError::Halted`` with no ``PaperFill``, so no
-fill exists to drive a callback. SRS-SAFE-001 STAYS ``passes:false``: this is ONE named
-sub-component; the rest of the QuantConnect-Liquidate sequence is deferred to its named owners
-(SRS-EXE-006 IB cancel/disconnect; SRS-EXE-002 / SAFE-001 runtime activation + 5s NFR-P3; SRS-LOG-001
-1s observability; SRS-NOTIF-001 email/SMS; SRS-API-001 / SRS-UI trigger).
+fill exists to drive a callback. SRS-SAFE-001 STAYS ``passes:false`` (serialized): this is ONE named
+sub-component; the activation sequence above it is now built as the SRS-SAFE-001 runtime slice
+(``kill_switch_activation_contract`` -- the atp-execution ``kill_switch`` gate, the atp-simulation
+``halt_fleet`` fan-out, the orchestrator fixture CLI, and the ``python/atp_safety`` operator
+surfaces; see ``tests/domain/test_kill_switch_activation.py``), while the LIVE path stays deferred
+to its named owners (SRS-EXE-006 real IB transport behind the brokerage port; SRS-EXE-002 hosting of
+real strategies on fleet-registered gates; SRS-LOG-001's own feature flip; SRS-NOTIF-001 email/SMS;
+SRS-API-001's own feature flip for the operator runtime the trigger rides on).
 
 This test proves the invariant from three angles:
 
@@ -235,9 +239,10 @@ def test_safe_001_stays_unflipped() -> None:
     entry = next((f for f in features if f["id"] == "SRS-SAFE-001"), None)
     assert entry is not None, "SRS-SAFE-001 must exist in feature_list.json"
     assert entry["passes"] is False, (
-        "SRS-SAFE-001 must stay passes:false -- the paper-engine halt gate is one sub-component, "
-        "not the full kill switch (IB cancel/disconnect, activation + 5s budget, notifications, "
-        "and the dashboard/CLI/REST trigger are deferred)"
+        "SRS-SAFE-001 must stay passes:false (serialized) -- the activation runtime slice is built "
+        "over the mocked-IB fixture transport its own verification steps prescribe, but the LIVE "
+        "path (real SRS-EXE-006 IB transport, live SRS-EXE-001/005 state producers, SRS-EXE-002 "
+        "hosting, SRS-NOTIF-001 notifications) is still deferred"
     )
 
 

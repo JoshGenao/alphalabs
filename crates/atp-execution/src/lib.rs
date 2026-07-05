@@ -24,6 +24,11 @@ pub use order_routing::{
     InternalSimulationSubmit, OrderRoute, OrderRoutingReceipt, SimulatedOrderReceipt,
 };
 
+pub mod kill_switch;
+pub use kill_switch::{
+    KillSwitchActivationEventSink, KillSwitchBrokerageControl, KillSwitchClock, PaperHaltFanout,
+};
+
 pub mod live_state;
 pub use live_state::{
     recover, recover_from_path, AccountEquitySnapshot, FillEventRecord, LiveExecutionState,
@@ -817,13 +822,17 @@ impl ExecutionEngine {
     /// does not roll back the side effects or change the refusal.
     ///
     /// **Scope — stateless single-attempt gate.** This decides ONE timeout
-    /// outcome. The full SRS-SAFE-001 kill-switch sequence (cancel all resting
-    /// orders, submit liquidation orders, halt paper engines, always
-    /// disconnect), the 30 s async wait loop, the real IB cancel/disconnect
-    /// (SRS-EXE-006), the real email/SMS transport (SRS-NOTIF-001), and any
-    /// durable post-timeout lockout are the deferred runtime, enumerated in
+    /// outcome. The SRS-SAFE-001 activation sequence itself (halt paper
+    /// engines, cancel all resting orders, submit liquidation orders, always
+    /// disconnect) is the sibling [`kill_switch::activate_kill_switch`]
+    /// gate (`kill_switch_activation_contract`); the 30 s async wait loop,
+    /// the real IB cancel/disconnect (SRS-EXE-006), the real email/SMS
+    /// transport (SRS-NOTIF-001), and any durable post-timeout lockout are
+    /// still the deferred runtime, enumerated in
     /// `architecture/runtime_services.json` `kill_switch_timeout_contract
     /// .deferred[]`. ERR-8 stays `passes:false` until that runtime lands.
+    ///
+    /// [`kill_switch::activate_kill_switch`]: crate::kill_switch
     // The error is boxed (`Box<StructuredKillSwitchTimeoutError>`): the SYS-44b
     // envelope carries the full unfilled-order details (order id, symbol, side,
     // quantity) the operator needs to resolve positions manually, which makes

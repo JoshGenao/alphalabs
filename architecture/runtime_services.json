@@ -4257,10 +4257,10 @@
     "rejection_category": "KillSwitchLiquidationTimeout",
     "rejection_wire_string": "KILL_SWITCH_LIQUIDATION_TIMEOUT",
     "deferred": [
-      "Concrete KillSwitchLiquidationProbe driving the real SRS-SAFE-001 QuantConnect Liquidate sequence (cancel all resting IB orders, submit market liquidation orders for every open live-strategy position, halt the paper simulation engines, disconnect from IB) and the 30-second async wait loop awaiting fill confirmation (owner: SRS-SAFE-001 kill-switch runtime + NFR-P3 5-second activation budget) — the slice models only the binary SRS-SAFE-002 timeout outcome the loop produces.",
+      "Concrete KillSwitchLiquidationProbe and the 30-second async wait loop awaiting fill confirmation on a LIVE liquidation order. The SRS-SAFE-001 QuantConnect Liquidate sequence itself (halt the paper simulation engines, cancel all resting orders, submit market liquidation orders for every open live-strategy position, disconnect) is now the sibling activation gate kill_switch::activate_kill_switch with the NFR-P3 5-second budget measured on an injected monotonic clock (kill_switch_activation_contract); the probe/wait-loop that feeds THIS timeout gate still needs the live SRS-EXE-006 IB runtime — the slice models only the binary SRS-SAFE-002 timeout outcome the loop produces.",
       "Typed KillSwitchProbeError taxonomy: the fill-confirmation probe returns Result<KillSwitchLiquidationOutcome, KillSwitchProbeError> so connectivity loss / order-state unavailability / probe timeout surface as a typed error (the gate fails closed via StructuredKillSwitchTimeoutError::probe_unavailable — distinct category KILL_SWITCH_LIQUIDATION_PROBE_UNAVAILABLE — taking NO automated cancel/disconnect on the unconfirmable order state). Today KillSwitchProbeError carries a reason string; the structured CONNECTIVITY_BLOCKED / order-state / transport-timeout variants land with the concrete probe runtime (owner: SRS-EXE-006 IB adapter). The operator notification + order resolution on the unconfirmable state are the caller's / deferred kill-switch runtime's responsibility.",
       "Full probe outcome-consistency hardening: the gate normalises a FilledBeforeTimeout-over-deadline into a timeout (fail closed toward running the SYS-44b cleanup — the safe direction), but it does NOT defend the inverse — a TimedOutUnfilled reported before request.timeout_seconds elapses (or with a mismatched timeout_seconds) would fire the destructive cancel + disconnect early. Handling that correctly requires a distinct probe-inconsistency rejection without the premature cancel/disconnect, which is the deferred kill-switch runtime's richer semantics. Until then the probe's outcome-consistency (filled ⟹ within deadline; timeout ⟹ at/after the deadline with a matching timeout_seconds) is the KillSwitchLiquidationProbe contract precondition; the shipped slice has no concrete probe so none can violate it.",
-      "Durable post-timeout lockout: resolve_kill_switch_timeout is a STATELESS single-attempt decision surface — on timeout it pages, cancels, disconnects, records, and refuses for THAT call, but it does not persist a kill-switch lockout, so SYS-44b's 'the operator shall resolve remaining positions manually' is not enforced across a later retry. The persistent post-timeout store + operator manual-resolution command are the deferred kill-switch runtime (owner: SRS-SAFE-001 + the SRS-API-001 manual-resolution operator workflow).",
+      "Durable post-timeout lockout: resolve_kill_switch_timeout is a STATELESS single-attempt decision surface — on timeout it pages, cancels, disconnects, records, and refuses for THAT call, but it does not persist a kill-switch lockout, so SYS-44b's 'the operator shall resolve remaining positions manually' is not enforced across a later retry. The SRS-SAFE-001 operator layer (python/atp_safety) now persists a durable last-ACTIVATION record as the activation replay guard, but the SYS-44b post-TIMEOUT lockout store + operator manual-resolution command remain deferred (owner: the SRS-API-001 manual-resolution operator workflow + the live kill-switch runtime).",
       "Concrete IbLiquidationCleanup routing the timeout-branch cancel + disconnect to the IB adapter's BrokerageAdapter::cancel_order and disconnect (owner: SRS-EXE-006 + the atp-adapters IB integration). The port is fallible (returns Result<(), KillSwitchSideEffectError>) and resolve_kill_switch_timeout records each outcome on KillSwitchTimeoutEvent.liquidation_cancel / .ib_disconnect; the typed CONNECTIVITY_BLOCKED / transport-timeout failure taxonomy (vs today's reason-string KillSwitchSideEffectError) lands with the IB runtime.",
       "Concrete KillSwitchOperatorAlertSink email/SMS transport — atp-notification is a stub today; the email/SMS dispatcher is the deferred SRS-NOTIF-001 fan-out. The port is fallible (returns Result<(), KillSwitchSideEffectError>) and resolve_kill_switch_timeout records the outcome on KillSwitchTimeoutEvent.operator_alert; the typed transport-failure taxonomy lands with the SRS-NOTIF-001 dispatcher.",
       "SRS-LOG-001 persistent sink consuming KillSwitchTimeoutEvent (the kill-switch-activation log event class, SYS-61) and SRS-UI-001 dashboard kill-switch pane (UI-4 'see cancellation, liquidation submission, timeout, notification, and disconnect status').",
@@ -5435,7 +5435,7 @@
     ]
   },
   "paper_halt_contract": {
-    "description": "SRS-SAFE-001 paper-engine HALTED gate sub-component (SyRS SYS-44a; NFR-P3; NFR-SC1; StRS SN-1.11). The kill switch's acceptance criterion includes: 'paper simulation engines transition to the HALTED state with no further on_fill callbacks emitted'. This slice ships ONE named sub-component of that clause: the per-engine Running -> Halted transition and the refuse-to-fill gate, in crates/atp-simulation (module `halt`), std-only and in-crate (no new dependency). DOMAIN-LEVEL REALIZATION (honest scope): there is no callback-emitting runtime loop and no Python strategy host yet, so 'no further on_fill callbacks emitted' is realized at the domain level -- a HALTED HaltablePaperEngine refuses to PRODUCE a sim::PaperFill (HaltablePaperEngine::simulate_fill returns HaltError::Halted with no fill value), so no fill exists to drive an on_fill callback. The inner sim::PaperSimulationEngine::simulate_fill stays a pure, stateless, deterministic cost path and is NOT modified. SEALED GATE (and its honest limit): HaltablePaperEngine owns a PRIVATE PaperSimulationEngine (the `engine` field is not pub, there is no accessor returning &PaperSimulationEngine, no Deref, no into_inner) AND the gate is not Clone (a clone would be an independent value whose own state could stay Running after the original is halted, so a pre-halt copy could keep filling -- the exact bypass the gate prevents). So for a given gate VALUE the only path to a paper fill is the gate's own simulate_fill, which matches on the run state first: PaperEngineState::Halted returns HaltError::Halted BEFORE touching the inner engine, while PaperEngineState::Running delegates to self.engine.simulate_fill and maps a fill-native SimError to HaltError::Sim UNCHANGED (the gate never masks a fill error while Running). This seals a HELD gate, NOT the whole system: the bare PaperSimulationEngine stays a public fill primitive (backtests, the SRS-SIM-001/002/003 operator CLIs, and the SRS-SIM-003 virtual-ledger path construct and drive it directly), so a caller can still build a bare engine and fill OUTSIDE the gate; guaranteeing every non-live strategy is HOSTED on a halt-aware engine (so a kill switch reaches all of them) is the Strategy Orchestrator's routing job (SRS-EXE-002), deferred -- this slice provides the per-engine sealed-halt primitive that orchestrator will compose. simulate_fill is &self (it only READS state to decide), so a fill never mutates the engine and the path stays deterministic. IDEMPOTENT HALT: halt(reason) is &mut self; the first call flips the state to Halted, records a HaltTransition with a monotonic sequence (starts at 1; no wall-clock time), and returns HaltOutcome::Transitioned; any later call is a no-op returning HaltOutcome::AlreadyHalted that leaves the state Halted and the recorded transition (sequence + reason) untouched. HaltReason is intentionally a closed set (KillSwitch only -- no speculative variants). HaltTransition (reason + sequence) is the in-memory groundwork for SRS-LOG-001 observability and carries NO wall-clock time, so it makes no latency claim. HaltError composes the fill-native SimError via `impl From<SimError> for HaltError`, exactly as SimError composes CostError. The Rust integration test srs_safe_001_paper_halt drives the gate end to end (running fills identically to the bare engine; a halted engine produces no fill for buy/sell/spread orders; halt is idempotent; the transition is observable; the gate does not mask fill-native errors; the same order fills then is refused across the transition; determinism across identical sequences). The PASS line is 'SRS-SAFE-001 HALT-GATE PASS' -- a SUB-COMPONENT pass, NOT a full/SDK-SURFACE pass. feature_list.json keeps SRS-SAFE-001 passes:false: this is one named sub-component and the full QuantConnect-Liquidate sequence is genuinely unbuilt and owned elsewhere (see deferred[]).",
+    "description": "SRS-SAFE-001 paper-engine HALTED gate sub-component (SyRS SYS-44a; NFR-P3; NFR-SC1; StRS SN-1.11). The kill switch's acceptance criterion includes: 'paper simulation engines transition to the HALTED state with no further on_fill callbacks emitted'. This slice ships ONE named sub-component of that clause: the per-engine Running -> Halted transition and the refuse-to-fill gate, in crates/atp-simulation (module `halt`), std-only and in-crate (no new dependency). DOMAIN-LEVEL REALIZATION (honest scope): there is no callback-emitting runtime loop and no Python strategy host yet, so 'no further on_fill callbacks emitted' is realized at the domain level -- a HALTED HaltablePaperEngine refuses to PRODUCE a sim::PaperFill (HaltablePaperEngine::simulate_fill returns HaltError::Halted with no fill value), so no fill exists to drive an on_fill callback. The inner sim::PaperSimulationEngine::simulate_fill stays a pure, stateless, deterministic cost path and is NOT modified. SEALED GATE (and its honest limit): HaltablePaperEngine owns a PRIVATE PaperSimulationEngine (the `engine` field is not pub, there is no accessor returning &PaperSimulationEngine, no Deref, no into_inner) AND the gate is not Clone (a clone would be an independent value whose own state could stay Running after the original is halted, so a pre-halt copy could keep filling -- the exact bypass the gate prevents). So for a given gate VALUE the only path to a paper fill is the gate's own simulate_fill, which matches on the run state first: PaperEngineState::Halted returns HaltError::Halted BEFORE touching the inner engine, while PaperEngineState::Running delegates to self.engine.simulate_fill and maps a fill-native SimError to HaltError::Sim UNCHANGED (the gate never masks a fill error while Running). This seals a HELD gate, NOT the whole system: the bare PaperSimulationEngine stays a public fill primitive (backtests, the SRS-SIM-001/002/003 operator CLIs, and the SRS-SIM-003 virtual-ledger path construct and drive it directly), so a caller can still build a bare engine and fill OUTSIDE the gate; guaranteeing every non-live strategy is HOSTED on a halt-aware engine (so a kill switch reaches all of them) is the Strategy Orchestrator's routing job (SRS-EXE-002), deferred -- this slice provides the per-engine sealed-halt primitive that orchestrator will compose. simulate_fill is &self (it only READS state to decide), so a fill never mutates the engine and the path stays deterministic. IDEMPOTENT HALT: halt(reason) is &mut self; the first call flips the state to Halted, records a HaltTransition with a monotonic sequence (starts at 1; no wall-clock time), and returns HaltOutcome::Transitioned; any later call is a no-op returning HaltOutcome::AlreadyHalted that leaves the state Halted and the recorded transition (sequence + reason) untouched. HaltReason is intentionally a closed set (KillSwitch only -- no speculative variants). HaltTransition (reason + sequence) is the in-memory groundwork for SRS-LOG-001 observability and carries NO wall-clock time, so it makes no latency claim. HaltError composes the fill-native SimError via `impl From<SimError> for HaltError`, exactly as SimError composes CostError. The Rust integration test srs_safe_001_paper_halt drives the gate end to end (running fills identically to the bare engine; a halted engine produces no fill for buy/sell/spread orders; halt is idempotent; the transition is observable; the gate does not mask fill-native errors; the same order fills then is refused across the transition; determinism across identical sequences). The PASS line is 'SRS-SAFE-001 HALT-GATE PASS' -- a SUB-COMPONENT pass, NOT a full/SDK-SURFACE pass. feature_list.json keeps SRS-SAFE-001 passes:false: this module is one named sub-component; the activation sequence above it is now built as the SRS-SAFE-001 runtime slice (kill_switch_activation_contract: atp-execution kill_switch gate + atp-simulation halt_fleet fan-out + the orchestrator fixture CLI + the python/atp_safety operator surfaces), and the feature stays unflipped because the LIVE path (real SRS-EXE-006 IB transport, live SRS-EXE-005/SRS-EXE-001 state producers, SRS-EXE-002 hosting of real strategies on fleet-registered gates) is still deferred (see deferred[]).",
     "requirement": "SRS-SAFE-001",
     "srs_refs": [
       "SRS-SAFE-001"
@@ -5538,11 +5538,11 @@
     "deferred": [
       {
         "feature": "IB resting-order cancel + Gateway disconnect (SRS-EXE-006)",
-        "what": "Cancelling all resting IB orders for the live strategy and disconnecting from IB Gateway after liquidation is the SRS-EXE-006 brokerage adapter. This slice is the paper-engine half only and imports no broker/adapter/live type."
+        "what": "Cancelling all resting IB orders for the live strategy and disconnecting from IB Gateway after liquidation now route through the SRS-SAFE-001 activation gate's KillSwitchBrokerageControl port (kill_switch_activation_contract); the REAL transport behind that port is the SRS-EXE-006 brokerage adapter, deferred. This halt module is the paper-engine half only and imports no broker/adapter/live type."
       },
       {
-        "feature": "Kill-switch activation orchestration + 5s NFR-P3 budget (SRS-EXE-002 / SAFE-001 runtime)",
-        "what": "The operator-triggered activation that fans the halt out to every paper engine, submits market liquidation orders for every open live position, and meets the 5-second NFR-P3 cancellation/submission budget is the SRS-EXE-002 orchestrator + the SRS-SAFE-001 runtime. This gate is one engine's state transition with no wall-clock budget."
+        "feature": "Kill-switch activation orchestration + 5s NFR-P3 budget (SRS-SAFE-001 activation gate; hosting SRS-EXE-002)",
+        "what": "The operator-triggered activation that fans the halt out to every paper engine, cancels resting orders, submits market liquidation orders for every open live position, and measures the 5-second NFR-P3 cancellation/submission budget is now BUILT as the SRS-SAFE-001 activation gate: atp-execution kill_switch::activate_kill_switch over the PaperHaltFanout port, composed with atp-simulation halt_fleet::PaperEngineFleet (see kill_switch_activation_contract). This per-engine gate remains one engine's state transition with no wall-clock budget, and hosting every REAL paper strategy on a fleet-registered gate so the fan-out reaches it is still the SRS-EXE-002 orchestrator's routing job."
       },
       {
         "feature": "System-wide routing of all paper strategies onto halt-aware engines (SRS-EXE-002)",
@@ -5550,7 +5550,7 @@
       },
       {
         "feature": "SRS-LOG-001 1-second HALTED observability",
-        "what": "HaltTransition is the in-memory groundwork (reason + monotonic sequence); emitting it to the persistent, queryable log store within 1 second of activation (SYS-61 / SRS-LOG-001) needs the deferred runtime + log sink. No latency SLA is claimed here."
+        "what": "HaltTransition is the in-memory groundwork (reason + monotonic sequence) and claims no latency SLA. The SRS-SAFE-001 activation gate now stamps a monotonic halt_completed_ms mark judged against KILL_SWITCH_HALT_OBSERVABILITY_BUDGET_MS (1 second), and the operator layer (python/atp_safety) writes the ACTIVATION + HALTED records durably to the SRS-LOG-001 JsonlLogStore system sink with a measured write latency (kill_switch_activation_contract). The SRS-LOG-001 feature's own flip (dashboard viewing + core-runtime forwarding) remains deferred to SRS-LOG-001."
       },
       {
         "feature": "Operator notification email/SMS (SRS-NOTIF-001 / SRS-SAFE-002)",
@@ -5558,11 +5558,179 @@
       },
       {
         "feature": "Dashboard / CLI / REST kill-switch trigger (SRS-API-001 / SRS-UI)",
-        "what": "The operator trigger surface accessible from dashboard, CLI, and REST API (SYS-44a; UI-4; API-4) is SRS-API-001 / SRS-UI. This slice exposes halt() as a Rust-core method only."
+        "what": "The operator trigger surface accessible from dashboard, CLI, and REST API (SYS-44a; UI-4; API-4) is now wired by SRS-SAFE-001: python/atp_safety wire_kill_switch registers real handlers for POST /api/v1/kill-switch and kill-switch activate/status on the SRS-API-001 operator runtime (which itself stays passes:false until its own flip), and the dashboard ships a minimal confirm-then-POST control; the rich status-feedback control remains UI-4. This halt module still exposes halt() as a Rust-core method only."
       },
       {
         "feature": "on_fill callback runtime + Python strategy host (SRS-SDK / SRS-EXE-002)",
         "what": "There is no callback-emitting loop or Python strategy host yet, so 'no further on_fill callbacks' is realized by refusing to PRODUCE a fill. The simulated-callback dispatcher (SYS-84/SYS-85 paper callbacks) and the Python runtime are separate deferred requirements; this gate guarantees the upstream condition (no fill) that makes a downstream callback impossible."
+      }
+    ]
+  },
+  "kill_switch_activation_contract": {
+    "description": "SRS-SAFE-001 kill-switch ACTIVATION runtime slice (SyRS SYS-44a; NFR-P3; NFR-SC1; StRS SN-1.11) — the QuantConnect-Liquidate sequence the paper_halt_contract sub-component composes into. The gate is atp-execution module `kill_switch`: ExecutionEngine::activate_kill_switch(request, &LiveExecutionState, clock, brokerage, paper_engines, events) -> KillSwitchActivationReport, generic over four ports (KillSwitchClock monotonic_ms; KillSwitchBrokerageControl cancel_resting_order / submit_market_liquidation / disconnect; PaperHaltFanout halt_all_for_kill_switch; KillSwitchActivationEventSink record). PHASE ORDER (pinned): halt_all_for_kill_switch FIRST, then cancel_resting_order for every resting order, then submit_market_liquidation for every open position, then disconnect LAST. The prose requirement lists cancel -> liquidate -> halt -> disconnect, but its measurable ACs force halt-first: the HALTED transition must be observable through SRS-LOG-001 within 1 second of activation (KILL_SWITCH_HALT_OBSERVABILITY_BUDGET_MS = 1000) while cancel + liquidation submission may lawfully take up to 5 seconds (NFR-P3, KILL_SWITCH_ACTIVATION_BUDGET_MS = 5000, measured activation -> liquidations_submitted_ms on the INJECTED monotonic clock — no hidden wall-clock); disconnect-after-liquidation is the AC's one explicit ordering and is always last. CONTINUE-TO-SAFETY (SAFE-002 precedent): every phase is attempted regardless of earlier failures, every outcome is recorded as a SideEffectOutcome on the report (Failed{reason} preserved, never masked), nothing rolls back, and the report is ALWAYS returned — KillSwitchActivationReport.fully_clean() is the operator's clean signal and within_nfr_p3() the budget verdict. RESTING = OrderLedger non-terminal filtered to the live strategy, sorted by domain order id for deterministic audit evidence, each carrying its broker binding or an honest None (an order that never reached the broker is handed to the port, not skipped). LIQUIDATION = per nonzero open_positions entry: long net -> SELL |net|, short net -> BUY |net|, OrderType::Market, AssetClass::Equity, OrderSubmission::validate() BEFORE the port; a validation or port failure is recorded on that position's LiquidationSubmission and the remaining positions still liquidate (single-live-strategy invariant SYS-2a makes every open position live-strategy-owned). FAN-OUT = atp-simulation module `halt_fleet`: PaperEngineFleet owns HaltablePaperEngine gates (register fails closed on blank/duplicate id; no accessor returns an engine), halt_all visits EVERY engine idempotently with the count invariant transitioned + already_halted == engines_total; the reference-baseline 30-engine fleet is exercised in tests. Vocabulary lives in atp-types beside the SAFE-002 structs (KillSwitchActivationRequest / RestingOrderCancel(+Outcome) / LiquidationSubmission / PaperHaltSummary / KillSwitchActivationTimings / KillSwitchActivationEvent / KillSwitchActivationReport, reusing SideEffectOutcome) and carries no vendor identifiers (broker_order_id is the established OrderReceipt vocabulary — the one broker-facing handle a cancel cannot be named without; the vendor transport stays behind the execution-layer ports, forbidden field names as in kill_switch_timeout_contract). COMPOSITION: atp-execution and atp-simulation stay independent — the orchestrator (crates/atp-orchestrator, unconstrained by dependency_direction.enforced_crates and named by paper_halt_contract as the composition layer) provides FleetHaltPort + the deterministic FixtureBrokerageControl (the mocked-IB transport SRS-SAFE-001's own verification steps prescribe) and the operator CLI bin safe001_kill_switch_cli: scenario mode drives the REAL gate over a REAL LiveExecutionState + REAL PaperEngineFleet with fault injection and emits the report as JSON; perf mode repeats fresh activations (default 50 positions / 50 resting orders / 30 engines — the NFR-SC1 reference shape) and reports nearest-rank p50/p95/p99/p99.9 (atp-types perf::LatencyPercentiles; NFR-P3 is a one-shot deadline so no LatencyNfr catalog variant is added) plus verdict:PASS|FAIL on max <= 5000 ms. OPERATOR SURFACES (python/atp_safety): wire_kill_switch(runtime, *, backend, system_log_store, state_dir) registers real handlers for REST POST /api/v1/kill-switch and CLI kill-switch activate / kill-switch status on the SRS-API-001 operator runtime — backend is a REQUIRED explicit argument with NO default and NO fixture fallback (a bare runtime keeps serving the deferred 501; uncovered capability -> no public surface), RustCliKillSwitchBackend bridges over subprocess to the CLI fail-closed (missing binary / nonzero exit / timeout / unparseable output are structured errors, never success-shaped), a backend failure returns KILL_SWITCH_BACKEND_UNAVAILABLE (500) and never fabricates an activation, the handler writes the ACTIVATION + HALTED system LogRecords durably to the SRS-LOG-001 JsonlLogStore (correlation_id = activation_id) with the measured write latency recorded against the 1-second budget, persists the last-activation report durably (scratch + fsync + atomic rename + dir fsync), and replays it idempotently on a second activate (no second backend call); kill-switch status reports the persisted last activation or an honest activated:false. feature_list.json keeps SRS-SAFE-001 passes:false (serialized): the scenario + performance evidence runs over the mocked-IB fixture transport the feature's own Step 2 prescribes, and the LIVE end-to-end path is enumerated in deferred[].",
+    "requirement": "SRS-SAFE-001",
+    "srs_refs": [
+      "SRS-SAFE-001"
+    ],
+    "syrs_refs": [
+      "SYS-44a",
+      "NFR-P3",
+      "NFR-SC1"
+    ],
+    "strs_refs": [
+      "SN-1.11"
+    ],
+    "ac_traces": [
+      "SRS-SAFE-001",
+      "SYS-44a",
+      "NFR-P3"
+    ],
+    "execution_crate": {
+      "crate": "atp-execution",
+      "path": "crates/atp-execution"
+    },
+    "gate_module": "kill_switch",
+    "entry_point": {
+      "method": "activate_kill_switch",
+      "on": "ExecutionEngine",
+      "returns": "KillSwitchActivationReport",
+      "state_source": "LiveExecutionState"
+    },
+    "ports": {
+      "clock": {
+        "trait": "KillSwitchClock",
+        "methods": [
+          "monotonic_ms"
+        ]
+      },
+      "brokerage": {
+        "trait": "KillSwitchBrokerageControl",
+        "methods": [
+          "cancel_resting_order",
+          "submit_market_liquidation",
+          "disconnect"
+        ]
+      },
+      "paper_halt": {
+        "trait": "PaperHaltFanout",
+        "methods": [
+          "halt_all_for_kill_switch"
+        ]
+      },
+      "events": {
+        "trait": "KillSwitchActivationEventSink",
+        "methods": [
+          "record"
+        ]
+      }
+    },
+    "phase_order_tokens": [
+      "halt_all_for_kill_switch",
+      "cancel_resting_order",
+      "submit_market_liquidation",
+      "disconnect"
+    ],
+    "budgets": {
+      "activation_budget_const": "KILL_SWITCH_ACTIVATION_BUDGET_MS",
+      "activation_budget_ms": 5000,
+      "halt_observability_const": "KILL_SWITCH_HALT_OBSERVABILITY_BUDGET_MS",
+      "halt_observability_ms": 1000,
+      "nfr_p3_measurement_field": "liquidations_submitted_ms"
+    },
+    "report_struct": {
+      "struct": "KillSwitchActivationReport",
+      "fields": [
+        "activation_id",
+        "live_strategy_id",
+        "paper_halt",
+        "paper_halt_summary",
+        "resting_order_cancels",
+        "liquidations",
+        "ib_disconnect",
+        "timings",
+        "activated_at_epoch_ms"
+      ],
+      "clean_fn": "fully_clean",
+      "budget_fn": "within_nfr_p3"
+    },
+    "vendor_forbidden_field_tokens": [
+      "ib_session_id",
+      "ib_order_id",
+      "tick_id",
+      "databento_dataset",
+      "sharadar_table",
+      "raw_parquet_path",
+      "vendor_credentials",
+      "container_id",
+      "docker_image"
+    ],
+    "fleet": {
+      "crate": "atp-simulation",
+      "module": "halt_fleet",
+      "struct": "PaperEngineFleet",
+      "halt_all_fn": "halt_all",
+      "count_invariant": "transitioned + already_halted == engines_total",
+      "reference_baseline_engines": 30
+    },
+    "orchestrator_composition": {
+      "crate": "atp-orchestrator",
+      "module": "kill_switch_activation",
+      "fixture_brokerage": "FixtureBrokerageControl",
+      "fleet_port": "FleetHaltPort",
+      "cli_bin": "safe001_kill_switch_cli",
+      "perf_defaults": {
+        "positions": 50,
+        "resting_orders": 50,
+        "engines": 30
+      },
+      "perf_verdict_rule": "max liquidations_submitted_ms <= 5000",
+      "percentile_source": "atp_types::perf::LatencyPercentiles"
+    },
+    "operator_surface": {
+      "package": "python/atp_safety",
+      "wiring_fn": "wire_kill_switch",
+      "backend_required": "backend is a required keyword-only argument with no default and no fixture fallback",
+      "backend_bridge": "RustCliKillSwitchBackend",
+      "backend_unavailable_error": "KILL_SWITCH_BACKEND_UNAVAILABLE",
+      "operation_keys": [
+        "POST /api/v1/kill-switch",
+        "kill-switch activate",
+        "kill-switch status"
+      ],
+      "log_event_types": [
+        "ACTIVATION",
+        "HALTED"
+      ],
+      "durable_state": "persist_last_activation (scratch + fsync + atomic rename + dir fsync); second activate replays the persisted report"
+    },
+    "rust_integration_tests": [
+      "srs_safe_001_kill_switch_activation",
+      "srs_safe_001_halt_fleet"
+    ],
+    "deferred": [
+      {
+        "feature": "Real IB brokerage control (SRS-EXE-006)",
+        "what": "The concrete KillSwitchBrokerageControl routing cancel_resting_order / submit_market_liquidation / disconnect to the headless IB Gateway adapter (and a disconnect seam on the adapter transport itself) is SRS-EXE-006's live wiring. The activation evidence here runs over the deterministic FixtureBrokerageControl — the mocked-IB transport the feature's verification steps prescribe — so the LIVE cancel/liquidate/disconnect is unproven until the adapter's operator-gated integration path runs."
+      },
+      {
+        "feature": "Live execution-state producers (SRS-EXE-001 / SRS-EXE-005)",
+        "what": "LiveExecutionState is the persist/restore schema; its LIVE producers (order ledger population from real routing, broker-id bindings from IB acks, open positions from account sync) are the SRS-EXE-001 live order path + SRS-EXE-005 recovery runtime. Scenario/perf evidence builds representative states through the validated builders."
+      },
+      {
+        "feature": "Hosting every paper strategy on fleet-registered gates (SRS-EXE-002)",
+        "what": "PaperEngineFleet seals the engines it HOLDS; guaranteeing every running non-live strategy in the deployed system is hosted on a fleet-registered HaltablePaperEngine (so halt_all reaches all of them) is the Strategy Orchestrator's routing job."
+      },
+      {
+        "feature": "Operator notification email/SMS (SRS-NOTIF-001 / SRS-SAFE-002)",
+        "what": "Kill-switch activation email/SMS and the 30-second unfilled-liquidation timeout escalation (SYS-44b) are SRS-NOTIF-001 + the SRS-SAFE-002 timeout gate's live runtime; this activation slice dispatches no notification."
+      },
+      {
+        "feature": "Rich dashboard kill-switch control (UI-4)",
+        "what": "The dashboard ships a minimal confirm-then-POST activation control rendering the returned report verbatim; the full control with cancellation / liquidation-submission / timeout / notification / disconnect status feedback is UI-4."
+      },
+      {
+        "feature": "Durable cross-process activation lockout",
+        "what": "Replay protection is the operator layer's durable last-activation record (a second activate replays the persisted report, no second backend call). A cross-process lockout enforced below the operator layer — and the SYS-44b post-timeout manual-resolution lockout — remain deferred with the live kill-switch runtime (see kill_switch_timeout_contract.deferred[])."
       }
     ]
   },

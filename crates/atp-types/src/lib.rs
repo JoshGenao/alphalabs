@@ -3469,6 +3469,165 @@ impl fmt::Display for StructuredKillSwitchTimeoutError {
 
 impl std::error::Error for StructuredKillSwitchTimeoutError {}
 
+// ---------------------------------------------------------------------------
+// Kill-switch ACTIVATION vocabulary (SRS-SAFE-001, SyRS SYS-44a, NFR-P3)
+// ---------------------------------------------------------------------------
+//
+// The QuantConnect-Liquidate activation sequence's source-neutral envelope +
+// report types, consumed by `atp-execution`'s `kill_switch` module (the
+// activation gate) and rendered by the operator surfaces (REST / CLI /
+// dashboard, SRS-API-001 route `POST /api/v1/kill-switch`).
+//
+// Boundary with the SRS-SAFE-002 vocabulary ABOVE: SAFE-002 owns the
+// post-submission 30-second unfilled-liquidation timeout
+// (`KillSwitchTimeoutRequest` / `KillSwitchTimeoutEvent`); SAFE-001 owns the
+// activation itself — halt paper engines, cancel resting orders, submit the
+// market liquidations, disconnect. `SideEffectOutcome` is REUSED (the shared
+// side-effect-observability vocabulary) so a failed cancel / liquidation /
+// halt / disconnect is distinguishable from success on every surface.
+//
+// Vendor neutrality mirrors the SAFE-002 contract: no IB session/vendor
+// identifiers on these types. `broker_order_id` (the established
+// `OrderReceipt` vocabulary) is the one broker-facing handle carried, because
+// cancelling a resting order is impossible without naming which order to
+// cancel; the vendor transport stays behind the execution-layer ports.
+
+/// SRS-SAFE-001 activation envelope: who pulled the switch is the operator
+/// runtime's concern; this names WHAT the sequence acts on — the single live
+/// strategy — plus the correlation identity (`activation_id`) every audit
+/// record and surface response carries, and the operator-facing wall-clock
+/// activation timestamp (epoch ms). Timing MEASUREMENT uses the injected
+/// monotonic clock, never this wall-clock field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KillSwitchActivationRequest {
+    pub activation_id: String,
+    pub live_strategy_id: StrategyId,
+    pub activated_at_epoch_ms: u64,
+}
+
+/// One resting (non-terminal) live-strategy order the activation must cancel.
+/// `order_id` is the domain order key (`OrderKey` display form);
+/// `broker_order_id` is `None` when the ledger has no broker binding yet (the
+/// order never reached the broker — recorded, not silently skipped).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestingOrderCancel {
+    pub order_id: String,
+    pub symbol: String,
+    pub broker_order_id: Option<String>,
+}
+
+/// The observable outcome of one resting-order cancel attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestingOrderCancelOutcome {
+    pub order: RestingOrderCancel,
+    pub outcome: SideEffectOutcome,
+}
+
+/// One market liquidation the activation submitted (or attempted): the
+/// opposite-direction close of a single open live-strategy position.
+/// `side`/`quantity` carry the opposite-direction proof — `Sell |net|` for a
+/// long position, `Buy |net|` for a short — so the report itself evidences
+/// the SYS-44a clause without re-deriving from position state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiquidationSubmission {
+    pub symbol: String,
+    pub side: OrderSide,
+    pub quantity: i64,
+    pub outcome: SideEffectOutcome,
+}
+
+/// Fan-out totals from halting every paper simulation engine. The fleet
+/// invariant `transitioned + already_halted == engines_total` is asserted by
+/// the fan-out implementation; carrying all three here keeps the report
+/// auditable without re-querying the fleet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaperHaltSummary {
+    pub engines_total: u64,
+    pub transitioned: u64,
+    pub already_halted: u64,
+}
+
+/// Monotonic elapsed-milliseconds marks for each completed activation phase,
+/// measured from activation (`t0`) by the injected `KillSwitchClock`.
+/// `liquidations_submitted_ms` is the NFR-P3 measurement point ("cancellation
+/// of all resting IB orders and submission of market liquidation orders ...
+/// completes within 5 seconds"); `halt_completed_ms` is the paper-halt mark
+/// the SRS-LOG-001 1-second observability budget is judged against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KillSwitchActivationTimings {
+    pub halt_completed_ms: u64,
+    pub cancels_completed_ms: u64,
+    pub liquidations_submitted_ms: u64,
+    pub disconnect_completed_ms: u64,
+}
+
+/// SRS-SAFE-001 / NFR-P3 activation budget: all resting-order cancels
+/// confirmed AND all market liquidation orders submitted within 5,000 ms of
+/// activation (SyRS NFR-P3 doc row; measured on the injected monotonic
+/// clock).
+pub const KILL_SWITCH_ACTIVATION_BUDGET_MS: u64 = 5_000;
+
+/// SRS-SAFE-001 / SRS-LOG-001 observability budget: the paper-engine HALTED
+/// transition must be observable through the persistent system log within
+/// 1,000 ms of activation.
+pub const KILL_SWITCH_HALT_OBSERVABILITY_BUDGET_MS: u64 = 1_000;
+
+/// The full, always-returned record of one kill-switch activation — the
+/// SRS-SAFE-001 counterpart of `KillSwitchTimeoutEvent`. Every phase outcome
+/// is carried (nothing rolls back, nothing is dropped): a `Failed` outcome on
+/// any element means the operator must treat that phase as NOT safely
+/// completed, while the remaining phases were still attempted
+/// (continue-to-safety, the SAFE-002 precedent).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KillSwitchActivationReport {
+    pub activation_id: String,
+    pub live_strategy_id: StrategyId,
+    /// Outcome of the paper-engine halt fan-out as a whole (`Failed` when the
+    /// fan-out port itself failed; per-engine detail is in
+    /// `paper_halt_summary`, `None` only when the fan-out never produced one).
+    pub paper_halt: SideEffectOutcome,
+    pub paper_halt_summary: Option<PaperHaltSummary>,
+    pub resting_order_cancels: Vec<RestingOrderCancelOutcome>,
+    pub liquidations: Vec<LiquidationSubmission>,
+    pub ib_disconnect: SideEffectOutcome,
+    pub timings: KillSwitchActivationTimings,
+    pub activated_at_epoch_ms: u64,
+}
+
+impl KillSwitchActivationReport {
+    /// `true` iff NO phase recorded a failure — the operator-facing
+    /// "cleanly liquidated" signal. `NotAttempted` on a phase with nothing to
+    /// do (no resting orders, no open positions, empty fleet) still counts as
+    /// clean; any `Failed` anywhere does not.
+    pub fn fully_clean(&self) -> bool {
+        !self.paper_halt.is_failed()
+            && !self.ib_disconnect.is_failed()
+            && !self
+                .resting_order_cancels
+                .iter()
+                .any(|cancel| cancel.outcome.is_failed())
+            && !self
+                .liquidations
+                .iter()
+                .any(|liquidation| liquidation.outcome.is_failed())
+    }
+
+    /// NFR-P3 verdict: all cancels confirmed and all liquidations submitted
+    /// within the 5,000 ms activation budget.
+    pub fn within_nfr_p3(&self) -> bool {
+        self.timings.liquidations_submitted_ms <= KILL_SWITCH_ACTIVATION_BUDGET_MS
+    }
+}
+
+/// The audit-event payload recorded (best-effort) at the end of every
+/// activation — the SRS-LOG-001 "kill-switch activations" system-log event's
+/// in-memory groundwork. Identical content to the report; a distinct type so
+/// the sink port cannot be handed a half-built report by accident.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KillSwitchActivationEvent {
+    pub report: KillSwitchActivationReport,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

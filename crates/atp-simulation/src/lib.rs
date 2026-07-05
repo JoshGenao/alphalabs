@@ -64,6 +64,7 @@ pub mod sim;
 /// observability; email/SMS = SRS-NOTIF-001; dashboard/CLI/REST trigger = SRS-API-001 / SRS-UI) is
 /// deferred, so SRS-SAFE-001 stays `passes:false`.
 pub mod halt;
+pub mod halt_fleet;
 
 /// The internal simulation engine's paper order-intake path (SRS-SIM-001). It
 /// accepts market/limit/stop/stop-limit, equity/option, and multi-leg composite

@@ -39,16 +39,20 @@
 //! # What is real here vs deferred
 //!
 //! This module ships ONE named sub-component: the per-engine Running -> Halted transition and the
-//! refuse-to-fill gate. **SRS-SAFE-001 stays `passes:false`.** The rest of the QuantConnect-Liquidate
-//! sequence is genuinely unbuilt and owned elsewhere
-//! (`architecture/runtime_services.json#paper_halt_contract.deferred`): cancelling all resting IB
-//! orders and disconnecting from IB Gateway is the SRS-EXE-006 adapter; the operator-triggered
-//! activation that fans the halt out to every paper engine, cancels/liquidates, and meets the
-//! 5-second NFR-P3 budget is the SRS-EXE-002 orchestrator + SRS-SAFE-001 runtime; emitting the
-//! HALTED transition to the log sink within the SRS-LOG-001 1-second budget is SRS-LOG-001 +that
-//! runtime ([`HaltTransition`] is only the in-memory groundwork, carrying no wall-clock time);
-//! operator email/SMS is SRS-NOTIF-001; the dashboard/CLI/REST kill-switch trigger is SRS-API-001 /
-//! SRS-UI; the `on_fill` callback runtime + Python strategy host are SRS-SDK / SRS-EXE-002.
+//! refuse-to-fill gate. **SRS-SAFE-001 stays `passes:false`.** The activation layers above it now
+//! exist as the SRS-SAFE-001 runtime slice
+//! (`architecture/runtime_services.json#kill_switch_activation_contract`): the multi-engine fan-out
+//! is [`crate::halt_fleet::PaperEngineFleet`]; the operator-triggered activation that fans the halt
+//! out, cancels/liquidates, measures the 5-second NFR-P3 budget, and stamps the halt mark against
+//! the 1-second SRS-LOG-001 observability budget is `atp-execution`'s
+//! `kill_switch::activate_kill_switch` gate (composed by the orchestrator + operator runtime).
+//! Still genuinely deferred and owned elsewhere
+//! (`architecture/runtime_services.json#paper_halt_contract.deferred`): the REAL brokerage
+//! transport behind the cancel/disconnect port is the SRS-EXE-006 adapter; hosting every non-live
+//! strategy on a fleet-registered gate is the SRS-EXE-002 orchestrator's routing job; the SRS-LOG-001
+//! feature's own dashboard-viewing flip ([`HaltTransition`] remains the in-memory groundwork,
+//! carrying no wall-clock time); operator email/SMS is SRS-NOTIF-001; the rich dashboard control is
+//! UI-4; the `on_fill` callback runtime + Python strategy host are SRS-SDK / SRS-EXE-002.
 
 use std::fmt;
 
