@@ -28,9 +28,10 @@
 //! [`atp_data::tiering::TieredStore::archive_cold`] moved off SSD gets it back from NAS **without
 //! changing the query**, and the NAS result is cached on SSD within the configured share (`--cache-share`
 //! % — default 20 — of `--ssd-capacity`, which defaults to a bounded value; `--now` defaults to the
-//! system clock). Tiered mode serves `raw` only (a `split-adjusted` query stays single-tier); the
-//! split-adjusted × cold-read interaction is the SRS-DATA-009 × SRS-DATA-011/012 follow-up. With no NAS
-//! tier configured the query is a single-directory read, byte-identical to before.
+//! system clock). Tiered mode serves `raw` only (a `split-adjusted` / `fully-adjusted` query stays
+//! single-tier); the adjusted × cold-read interaction is the SRS-DATA-009 × SRS-DATA-011/012
+//! follow-up. With no NAS tier configured the query is a single-directory read, byte-identical to
+//! before.
 //!
 //! Read-path scope: a query is a pure READ over the atomically-published on-disk snapshot
 //! ([`MarketDataStore::load_from_path`]). It does NOT acquire the single-writer `StoreLock` — a read
@@ -48,15 +49,16 @@ use std::process::ExitCode;
 use atp_data::cold_read::{ColdReadConfig, TieredReader, DEFAULT_COLD_READ_CACHE_SHARE_PERCENT};
 use atp_data::store::{DatasetKind, MarketDataRecord, MarketDataStore};
 use atp_data::tiering::{TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
-use atp_data::UnifiedHistoricalQuery;
+use atp_data::{CorporateActionEvent, UnifiedHistoricalQuery};
 
 /// The normalization mode the operator surface serves. `raw` returns stored values verbatim;
-/// `split-adjusted` routes through the coverage-enforcing gate. `fully-adjusted` / `total-return`
-/// fail closed at parse time (dividend data deferred to SRS-DATA-012).
+/// `split-adjusted` and `fully-adjusted` (splits AND dividends, SyRS SYS-29) route through the
+/// coverage-enforcing gate. `total-return` fails closed at parse time (deferred to SRS-DATA-012).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Normalization {
     Raw,
     SplitAdjusted,
+    FullyAdjusted,
 }
 
 const USAGE: &str = "\
@@ -83,7 +85,9 @@ The query names NO source provider — it matches purely on symbol, resolution, 
 [start, end] event-timestamp range. --kind narrows to one vendor-neutral dataset kind (not a provider).
 
 KINDS (optional --kind disambiguator):
-    daily-equity-bar | minute-equity-bar | option-chain | fundamental | corporate-action-split
+    daily-equity-bar | minute-equity-bar | option-chain | fundamental | corporate-action-split |
+    corporate-action-dividend | corporate-action-delisting | corporate-action-merger |
+    corporate-action-symbol-change
 
 NORMALIZATION (optional --normalization, default raw):
     raw             stored values verbatim
@@ -92,10 +96,18 @@ NORMALIZATION (optional --normalization, default raw):
                     REQUIRES an equity-bar --kind (daily-equity-bar | minute-equity-bar) and fails
                     closed (naming have/need coverage) when the symbol is not covered through --end, so
                     it never emits raw-as-adjusted output. Ingest coverage with data011_coverage_cli.
-    (fully-adjusted | total-return are deferred: they additionally need dividend data, SRS-DATA-012)
+    fully-adjusted  splits AND dividends (SyRS SYS-29 'fully adjusted'): the same coverage gate and
+                    rules as split-adjusted, with pre-ex-date prices additionally back-adjusted by each
+                    dividend's (reference close - amount) / reference close; volume is never
+                    dividend-scaled. Fails closed on a dividend with no prior close.
+    (total-return is deferred: dividend reinvestment + per-subscription selection, SRS-DATA-012)
 
-A split-adjusted result adds a `coverage_through:<D>` line (the as-of frontier the adjustment was
-computed against, always >= --end).
+Both adjusted modes resolve the symbol's RENAME LINEAGE (a query for the current symbol returns its
+predecessors' bars relabeled; coverage asserted for the queried symbol governs its whole lineage) and
+add these lines: `coverage_through:<D>` (the proven frontier, always >= --end),
+`adjusted_through:<ts>` (the basis the bars are quoted on), `event_count:<n>` and `event.<i>.*`
+(in-window delistings / mergers / symbol changes a P&L consumer must handle structurally — mark the
+position final, convert at the surfaced terms, follow the lineage hop).
 
 COMMANDS:
     query    Print every record matching symbol + resolution + [start, end] (event_ts-ascending).
@@ -157,47 +169,66 @@ fn cmd_query(rest: &[String]) -> Result<(), String> {
     // operator reading a record archived off SSD gets it back from NAS transparently. The NAS tier is
     // resolved from the ENVIRONMENT (ATP_NAS_DATA_DIR) exactly like --dir resolves from
     // ATP_DATA_STORE_DIR, so an existing deployment auto-tiers with NO change to the query invocation;
-    // an explicit --nas overrides. --dir is the SSD primary tier here. Split-adjusted is not tiered
-    // (the split-adjusted × cold-read interaction is the SRS-DATA-009 × SRS-DATA-011/012 follow-up), so
-    // a split-adjusted query with a NAS configured falls through to the single-tier SSD path unchanged.
+    // an explicit --nas overrides. --dir is the SSD primary tier here. Adjusted reads are not tiered
+    // (the adjusted × cold-read interaction is the SRS-DATA-009 × SRS-DATA-011/012 follow-up), so a
+    // split-adjusted / fully-adjusted query with a NAS configured falls through to the single-tier SSD
+    // path unchanged.
     if let Some(nas) = resolve_nas(&parsed) {
         if parsed.normalization == Normalization::Raw {
             return cmd_query_tiered(&parsed, dir, nas, &query, &symbol, &resolution, start, end);
         }
     }
 
-    // Resolve the records + printed normalization label + optional coverage frontier per mode.
-    let (records, normalization_label, coverage_through): (
-        Vec<MarketDataRecord>,
-        &str,
-        Option<i64>,
-    ) = match parsed.normalization {
-        // RAW: stored values verbatim over the atomically-published snapshot.
-        Normalization::Raw => {
-            let matched = store.query_unified(&query);
-            let records = matched
-                .records()
-                .iter()
-                .map(|record| (*record).clone())
-                .collect();
-            (records, "raw", None)
-        }
-        // SPLIT-ADJUSTED: route through the SINGLE coverage-enforcing gate
-        // (MarketDataStore::query_split_adjusted). It fails closed (exit non-zero) on NotCovered
-        // (coverage for the symbol does not reach --end), on a missing/non-equity --kind, and on a
-        // malformed split -- so this surface never emits raw-as-adjusted output. There is no
-        // CLI-side split math; the gate is the only path to split-adjusted output.
-        Normalization::SplitAdjusted => {
-            let adjusted = store
-                .query_split_adjusted(&query)
-                .map_err(|err| err.to_string())?;
-            (
-                adjusted.records,
-                "split-adjusted",
-                Some(adjusted.coverage_through),
-            )
-        }
-    };
+    // Resolve the records + printed normalization label + the gated result metadata (the coverage
+    // frontier, the adjustment basis, and the surfaced structural events) per mode.
+    type GatedMeta = (i64, i64, Vec<CorporateActionEvent>);
+    let (records, normalization_label, gated): (Vec<MarketDataRecord>, &str, Option<GatedMeta>) =
+        match parsed.normalization {
+            // RAW: stored values verbatim over the atomically-published snapshot.
+            Normalization::Raw => {
+                let matched = store.query_unified(&query);
+                let records = matched
+                    .records()
+                    .iter()
+                    .map(|record| (*record).clone())
+                    .collect();
+                (records, "raw", None)
+            }
+            // SPLIT-ADJUSTED / FULLY-ADJUSTED: route through the SINGLE coverage-enforcing gate
+            // (MarketDataStore::query_split_adjusted / query_fully_adjusted). It fails closed (exit
+            // non-zero) on NotCovered (coverage for the symbol does not reach --end), on a
+            // missing/non-equity --kind, on inconsistent rename-lineage data, and on a malformed
+            // split/dividend -- so this surface never emits raw-as-adjusted output. There is no
+            // CLI-side adjustment math; the gate is the only path to adjusted output.
+            Normalization::SplitAdjusted => {
+                let adjusted = store
+                    .query_split_adjusted(&query)
+                    .map_err(|err| err.to_string())?;
+                (
+                    adjusted.records,
+                    "split-adjusted",
+                    Some((
+                        adjusted.coverage_through,
+                        adjusted.adjusted_through,
+                        adjusted.events,
+                    )),
+                )
+            }
+            Normalization::FullyAdjusted => {
+                let adjusted = store
+                    .query_fully_adjusted(&query)
+                    .map_err(|err| err.to_string())?;
+                (
+                    adjusted.records,
+                    "fully-adjusted",
+                    Some((
+                        adjusted.coverage_through,
+                        adjusted.adjusted_through,
+                        adjusted.events,
+                    )),
+                )
+            }
+        };
 
     println!("symbol:{symbol}");
     println!("resolution:{resolution}");
@@ -205,12 +236,61 @@ fn cmd_query(rest: &[String]) -> Result<(), String> {
     println!("end:{end}");
     println!("kind:{}", parsed.kind.map_or("any", |kind| kind.as_str()));
     println!("normalization:{normalization_label}");
-    if let Some(through) = coverage_through {
-        println!("coverage_through:{through}");
+    if let Some((coverage_through, adjusted_through, events)) = gated {
+        println!("coverage_through:{coverage_through}");
+        println!("adjusted_through:{adjusted_through}");
+        print_events(&events);
     }
     println!("match_count:{}", records.len());
     print_records(&records);
     Ok(())
+}
+
+/// Print the structural corporate-action events a gated read surfaced for the query window — the
+/// facts a P&L consumer must handle structurally (mark a delisted position final, convert at the
+/// merger terms, follow the lineage hop). Lines never start with `record.`, so record parsers are
+/// unaffected; merger-only term lines are omitted for the other kinds.
+fn print_events(events: &[CorporateActionEvent]) {
+    println!("event_count:{}", events.len());
+    for (index, event) in events.iter().enumerate() {
+        match event {
+            CorporateActionEvent::Delisting {
+                symbol,
+                effective_ts,
+            } => {
+                println!("event.{index}.kind:delisting");
+                println!("event.{index}.symbol:{symbol}");
+                println!("event.{index}.successor:-");
+                println!("event.{index}.effective_ts:{effective_ts}");
+            }
+            CorporateActionEvent::Merger {
+                symbol,
+                successor,
+                numerator,
+                denominator,
+                cash_per_share_minor,
+                effective_ts,
+            } => {
+                println!("event.{index}.kind:merger");
+                println!("event.{index}.symbol:{symbol}");
+                println!("event.{index}.successor:{successor}");
+                println!("event.{index}.effective_ts:{effective_ts}");
+                println!("event.{index}.numerator:{numerator}");
+                println!("event.{index}.denominator:{denominator}");
+                println!("event.{index}.cash_per_share_minor:{cash_per_share_minor}");
+            }
+            CorporateActionEvent::SymbolChange {
+                predecessor,
+                successor,
+                effective_ts,
+            } => {
+                println!("event.{index}.kind:symbol-change");
+                println!("event.{index}.symbol:{predecessor}");
+                println!("event.{index}.successor:{successor}");
+                println!("event.{index}.effective_ts:{effective_ts}");
+            }
+        }
+    }
 }
 
 /// SRS-DATA-009 transparent cold-read failover: serve the SAME `query` across the SSD/NAS tiers via
@@ -400,7 +480,7 @@ impl ParsedArgs {
                     let raw = take_value(&mut iter, flag)?;
                     let kind = DatasetKind::from_label(&raw).ok_or_else(|| {
                         format!(
-                            "unknown --kind '{raw}' (expected daily-equity-bar | minute-equity-bar | option-chain | fundamental | corporate-action-split)"
+                            "unknown --kind '{raw}' (expected daily-equity-bar | minute-equity-bar | option-chain | fundamental | corporate-action-split | corporate-action-dividend | corporate-action-delisting | corporate-action-merger | corporate-action-symbol-change)"
                         )
                     })?;
                     parsed.kind = Some(kind);
@@ -457,22 +537,25 @@ impl ParsedArgs {
     }
 }
 
-/// Parse the `--normalization` value. `raw` returns stored values verbatim; `split-adjusted` routes
-/// through the coverage-enforcing gate ([`MarketDataStore::query_split_adjusted`]) — the value is
-/// ACCEPTED here, and the gate itself fails closed when the symbol is not covered through `--end`
-/// (so split-adjusted is served only when coverage makes the label honest, never raw-as-adjusted).
-/// `fully-adjusted` / `total-return` are rejected as DEFERRED (they additionally need dividend data,
-/// SRS-DATA-012). An unknown value fails closed.
+/// Parse the `--normalization` value. `raw` returns stored values verbatim; `split-adjusted` and
+/// `fully-adjusted` route through the coverage-enforcing gate
+/// ([`MarketDataStore::query_split_adjusted`] / [`MarketDataStore::query_fully_adjusted`]) — the
+/// values are ACCEPTED here, and the gate itself fails closed when the symbol is not covered through
+/// `--end` (so an adjusted label is served only when coverage makes it honest, never
+/// raw-as-adjusted). `total-return` is rejected as DEFERRED (dividend reinvestment and the
+/// per-subscription mode selection, SRS-DATA-012). An unknown value fails closed.
 fn parse_normalization(raw: &str) -> Result<Normalization, String> {
     match raw {
         "raw" => Ok(Normalization::Raw),
         "split-adjusted" => Ok(Normalization::SplitAdjusted),
-        "fully-adjusted" | "total-return" => Err(format!(
-            "--normalization '{raw}' is deferred to SRS-DATA-012 (fully-adjusted needs dividend data, \
-             total-return needs dividend reinvestment); this surface serves 'raw' and 'split-adjusted'"
+        "fully-adjusted" => Ok(Normalization::FullyAdjusted),
+        "total-return" => Err(format!(
+            "--normalization '{raw}' is deferred to SRS-DATA-012 (total-return needs dividend \
+             reinvestment and per-subscription mode selection); this surface serves 'raw', \
+             'split-adjusted', and 'fully-adjusted'"
         )),
         other => Err(format!(
-            "unknown --normalization '{other}' (this operator surface serves 'raw' | 'split-adjusted')"
+            "unknown --normalization '{other}' (this operator surface serves 'raw' | 'split-adjusted' | 'fully-adjusted')"
         )),
     }
 }

@@ -84,14 +84,18 @@ use atp_types::IngestionRecordSubmission;
 /// parse. **Version history:** v1 = the original four dataset kinds (daily / minute equity bar,
 /// option-chain, fundamental); v2 added [`DatasetKind::CorporateActionSplit`] (codec tag 4); v3 added
 /// [`DatasetKind::CorporateActionCoverage`] (codec tag 5, the SRS-DATA-011 completeness-through-date
-/// frontier). A store is serialized at the MINIMUM version that can represent its contained kinds (see
+/// frontier); v4 added the remaining four SRS-DATA-011 corporate-action FACT kinds —
+/// [`DatasetKind::CorporateActionDividend`] (tag 6), [`DatasetKind::CorporateActionDelisting`] (tag 7),
+/// [`DatasetKind::CorporateActionMerger`] (tag 8), and [`DatasetKind::CorporateActionSymbolChange`]
+/// (tag 9). A store is serialized at the MINIMUM version that can represent its contained kinds (see
 /// [`serialize`](MarketDataStore::serialize)), so a store that contains a coverage record is written as
-/// v3 and an OLDER v1/v2 reader rejects it cleanly at the version gate
-/// ([`StoreError::UnknownSchemaVersion`]) instead of hitting the unknown tag mid-restore.
-/// [`MarketDataStore::restore`] reads ALL versions in `[MIN_SUPPORTED_SCHEMA_VERSION, SCHEMA_VERSION]`
-/// (a legacy v1/v2 store still loads), but a store may NOT carry a kind introduced in a later version
-/// than the one it declares — that is rejected as inconsistent.
-pub const SCHEMA_VERSION: i64 = 3;
+/// v3, one that carries a dividend/delisting/merger/symbol-change record as v4, and an OLDER reader
+/// rejects it cleanly at the version gate ([`StoreError::UnknownSchemaVersion`]) instead of hitting the
+/// unknown tag mid-restore. [`MarketDataStore::restore`] reads ALL versions in
+/// `[MIN_SUPPORTED_SCHEMA_VERSION, SCHEMA_VERSION]` (a legacy v1/v2/v3 store still loads), but a store
+/// may NOT carry a kind introduced in a later version than the one it declares — that is rejected as
+/// inconsistent.
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// The oldest serialized schema version [`MarketDataStore::restore`] still accepts (read backward
 /// compatibility). A blob at any version outside `[MIN_SUPPORTED_SCHEMA_VERSION, SCHEMA_VERSION]` is
@@ -159,6 +163,54 @@ pub enum DatasetKind {
     /// ([`MarketDataStore::query_split_adjusted`](crate::coverage)) serves split-adjusted output only
     /// when a symbol's frontier `D >= query.end_ts`.
     CorporateActionCoverage,
+    /// A cash-dividend corporate action (SRS-DATA-011): keyed by `(symbol, event_ts = ex-date)` with
+    /// an `amount_minor` field (cash per share, integer minor units, validated `> 0`). `event_ts` is
+    /// the EX-DIVIDEND instant — the first session the shares trade WITHOUT the dividend — so the
+    /// fully-adjusted math's strict `ex_ts > t` boundary mirrors the split boundary. The input the
+    /// SRS-DATA-012 fully-adjusted (splits AND dividends) read applies.
+    CorporateActionDividend,
+    /// A delisting corporate action (SRS-DATA-011): keyed by `(symbol, event_ts = the delisting
+    /// instant)` with a self-describing `last_trading_ts = event_ts` field (the coverage-record
+    /// pattern). The series simply ends; the coverage-gated reads SURFACE the event so a backtest
+    /// spanning the date can mark the position final rather than silently seeing data stop.
+    CorporateActionDelisting,
+    /// A merger corporate action (SRS-DATA-011): the record `symbol` is the ACQUIRED instrument,
+    /// the successor (acquirer) symbol rides in the resolution label `merger:<SUCCESSOR>` (a
+    /// [`MarketField`] value is an `i64`, so the label is the record's one string slot for a
+    /// counterparty symbol — the same subtype-label idiom as `fundamental:income`). Value fields:
+    /// `numerator`/`denominator` (shares of the successor per `denominator` shares of the acquired)
+    /// and `cash_per_share_minor` (the cash leg, integer minor units, `>= 0`). `event_ts` is the
+    /// effective instant: the acquired series terminates there and the coverage-gated reads surface
+    /// the conversion terms. A merger does NOT splice the acquired history into the successor's.
+    CorporateActionMerger,
+    /// A symbol-change (ticker rename) corporate action (SRS-DATA-011): the record `symbol` is the
+    /// OLD symbol, the successor rides in the resolution label `symbol-change:<SUCCESSOR>`, and a
+    /// self-describing `effective_ts = event_ts` field pins the rename instant. The coverage-gated
+    /// reads resolve the LINEAGE: querying the current symbol returns the predecessor's bars
+    /// (relabeled) for instants before the change, so a backtest spanning the rename sees one
+    /// continuous series.
+    CorporateActionSymbolChange,
+}
+
+/// The resolution-label prefix a [`DatasetKind::CorporateActionMerger`] record carries; the successor
+/// (acquirer) symbol follows the prefix (`merger:<SUCCESSOR>`). See [`successor_symbol`].
+pub const MERGER_RESOLUTION_PREFIX: &str = "merger:";
+/// The resolution-label prefix a [`DatasetKind::CorporateActionSymbolChange`] record carries; the
+/// successor (new) symbol follows the prefix (`symbol-change:<SUCCESSOR>`). See [`successor_symbol`].
+pub const SYMBOL_CHANGE_RESOLUTION_PREFIX: &str = "symbol-change:";
+
+/// The successor symbol a merger / symbol-change record names in its resolution label
+/// (`merger:<SUCCESSOR>` / `symbol-change:<SUCCESSOR>`), or `None` for every other kind. Store
+/// validation guarantees the successor is non-empty and differs from the record's own symbol (so a
+/// self-referential rename/merger can never enter the store), making this a total, trustworthy read
+/// for any stored record of the two kinds.
+pub fn successor_symbol(key: &NaturalKey) -> Option<&str> {
+    let prefix = match key.kind {
+        DatasetKind::CorporateActionMerger => MERGER_RESOLUTION_PREFIX,
+        DatasetKind::CorporateActionSymbolChange => SYMBOL_CHANGE_RESOLUTION_PREFIX,
+        _ => return None,
+    };
+    key.resolution.strip_prefix(prefix)
 }
 
 impl DatasetKind {
@@ -171,6 +223,10 @@ impl DatasetKind {
             Self::Fundamental => "fundamental",
             Self::CorporateActionSplit => "corporate-action-split",
             Self::CorporateActionCoverage => "corporate-action-coverage",
+            Self::CorporateActionDividend => "corporate-action-dividend",
+            Self::CorporateActionDelisting => "corporate-action-delisting",
+            Self::CorporateActionMerger => "corporate-action-merger",
+            Self::CorporateActionSymbolChange => "corporate-action-symbol-change",
         }
     }
 
@@ -185,6 +241,10 @@ impl DatasetKind {
             | Self::Fundamental => 1,
             Self::CorporateActionSplit => 2,
             Self::CorporateActionCoverage => 3,
+            Self::CorporateActionDividend
+            | Self::CorporateActionDelisting
+            | Self::CorporateActionMerger
+            | Self::CorporateActionSymbolChange => 4,
         }
     }
 
@@ -198,6 +258,10 @@ impl DatasetKind {
             Self::Fundamental => 3,
             Self::CorporateActionSplit => 4,
             Self::CorporateActionCoverage => 5,
+            Self::CorporateActionDividend => 6,
+            Self::CorporateActionDelisting => 7,
+            Self::CorporateActionMerger => 8,
+            Self::CorporateActionSymbolChange => 9,
         }
     }
 
@@ -209,6 +273,10 @@ impl DatasetKind {
             3 => Ok(Self::Fundamental),
             4 => Ok(Self::CorporateActionSplit),
             5 => Ok(Self::CorporateActionCoverage),
+            6 => Ok(Self::CorporateActionDividend),
+            7 => Ok(Self::CorporateActionDelisting),
+            8 => Ok(Self::CorporateActionMerger),
+            9 => Ok(Self::CorporateActionSymbolChange),
             _ => Err(StoreError::CorruptRecord {
                 context: "unknown dataset kind tag",
             }),
@@ -224,12 +292,16 @@ impl DatasetKind {
             "fundamental" => Some(Self::Fundamental),
             "corporate-action-split" => Some(Self::CorporateActionSplit),
             "corporate-action-coverage" => Some(Self::CorporateActionCoverage),
+            "corporate-action-dividend" => Some(Self::CorporateActionDividend),
+            "corporate-action-delisting" => Some(Self::CorporateActionDelisting),
+            "corporate-action-merger" => Some(Self::CorporateActionMerger),
+            "corporate-action-symbol-change" => Some(Self::CorporateActionSymbolChange),
             _ => None,
         }
     }
 
     /// All kinds, in canonical order — the full set the CLI inspect counts iterate.
-    pub fn all() -> [DatasetKind; 6] {
+    pub fn all() -> [DatasetKind; 10] {
         [
             Self::DailyEquityBar,
             Self::MinuteEquityBar,
@@ -237,23 +309,32 @@ impl DatasetKind {
             Self::Fundamental,
             Self::CorporateActionSplit,
             Self::CorporateActionCoverage,
+            Self::CorporateActionDividend,
+            Self::CorporateActionDelisting,
+            Self::CorporateActionMerger,
+            Self::CorporateActionSymbolChange,
         ]
     }
 
     /// The kinds the **provider** fixture/ingestion path handles — the four market-data sources plus
-    /// the split corporate-action FACT, all of which originate from a provider adapter (Databento / IB
-    /// / Sharadar). This DELIBERATELY excludes [`CorporateActionCoverage`](Self::CorporateActionCoverage):
-    /// a coverage frontier is an OPERATOR trust assertion (asserted only via `data011_coverage_cli` /
-    /// [`coverage_record`]), never provider market data, so [`fixture_batch`] emits none for it and
+    /// the five corporate-action FACT kinds (split, dividend, delisting, merger, symbol change), all
+    /// of which originate from a provider adapter (Databento / IB / Sharadar). This DELIBERATELY
+    /// excludes [`CorporateActionCoverage`](Self::CorporateActionCoverage): a coverage frontier is an
+    /// OPERATOR trust assertion (asserted only via `data011_coverage_cli` / [`coverage_record`]),
+    /// never provider market data, so [`fixture_batch`] emits none for it and
     /// [`DataLayer::ingest_market_record`](crate::DataLayer::ingest_market_record) refuses it. A generic
     /// ingestion flow iterates THIS set, not [`all`](Self::all), so it can never mint a trusted frontier.
-    pub fn provider_ingestion_kinds() -> [DatasetKind; 5] {
+    pub fn provider_ingestion_kinds() -> [DatasetKind; 9] {
         [
             Self::DailyEquityBar,
             Self::MinuteEquityBar,
             Self::OptionChainSnapshot,
             Self::Fundamental,
             Self::CorporateActionSplit,
+            Self::CorporateActionDividend,
+            Self::CorporateActionDelisting,
+            Self::CorporateActionMerger,
+            Self::CorporateActionSymbolChange,
         ]
     }
 }
@@ -450,6 +531,90 @@ fn validate_record(record: &MarketDataRecord) -> Result<(), StoreError> {
             return Err(StoreError::InconsistentField {
                 context: "coverage record must carry exactly one 'complete_through' field equal to its event_ts",
             });
+        }
+    }
+    // The remaining corporate-action FACT kinds feed the coverage-gated adjustment/lineage reads, and
+    // `MarketDataRecord::new` is public — so their self-consistency is enforced HERE (upsert AND
+    // restore, the same discipline as the coverage record), not left to the fixture constructors.
+    if record.key.kind == DatasetKind::CorporateActionDividend {
+        // Exactly one positive cash amount: a zero/negative dividend would corrupt the fully-adjusted
+        // factor (prev_close - amount)/prev_close (identity or a price INCREASE) — fail closed at write.
+        let consistent = matches!(
+            record.fields.as_slice(),
+            [field] if field.name == "amount_minor" && field.value_minor > 0
+        );
+        if !consistent {
+            return Err(StoreError::InconsistentField {
+                context: "dividend record must carry exactly one positive 'amount_minor' field",
+            });
+        }
+    }
+    if record.key.kind == DatasetKind::CorporateActionDelisting {
+        // Self-describing terminal marker: exactly one last_trading_ts equal to the key event_ts (the
+        // coverage-record pattern), so a serialized delisting is readable without re-deriving the key.
+        let consistent = matches!(
+            record.fields.as_slice(),
+            [field] if field.name == "last_trading_ts" && field.value_minor == record.key.event_ts
+        );
+        if !consistent {
+            return Err(StoreError::InconsistentField {
+                context: "delisting record must carry exactly one 'last_trading_ts' field equal to its event_ts",
+            });
+        }
+    }
+    if record.key.kind == DatasetKind::CorporateActionSymbolChange {
+        let consistent = matches!(
+            record.fields.as_slice(),
+            [field] if field.name == "effective_ts" && field.value_minor == record.key.event_ts
+        );
+        if !consistent {
+            return Err(StoreError::InconsistentField {
+                context: "symbol-change record must carry exactly one 'effective_ts' field equal to its event_ts",
+            });
+        }
+    }
+    if record.key.kind == DatasetKind::CorporateActionMerger {
+        // The gated reads SURFACE a merger's conversion terms to P&L consumers, so the terms are
+        // validated at write: exactly the three term fields, a positive share-ratio denominator, a
+        // non-negative numerator and cash leg, and at least one non-zero consideration (an all-zero
+        // merger converts a position into nothing — that is a delisting, not a merger).
+        let terms = |name: &str| {
+            record
+                .fields
+                .iter()
+                .find(|field| field.name == name)
+                .map(|field| field.value_minor)
+        };
+        let consistent = record.fields.len() == 3
+            && matches!(terms("cash_per_share_minor"), Some(cash) if cash >= 0)
+            && matches!(terms("denominator"), Some(den) if den > 0)
+            && matches!(terms("numerator"), Some(num) if num >= 0)
+            && (terms("numerator") != Some(0) || terms("cash_per_share_minor") != Some(0));
+        if !consistent {
+            return Err(StoreError::InconsistentField {
+                context:
+                    "merger record must carry exactly 'cash_per_share_minor' (>= 0), \
+                          'denominator' (> 0), and 'numerator' (>= 0) with a non-zero consideration",
+            });
+        }
+    }
+    // A merger / symbol-change record names its successor in the resolution label
+    // (`merger:<SUCCESSOR>` / `symbol-change:<SUCCESSOR>`). The successor must be present, non-empty,
+    // and DIFFERENT from the record's own symbol — a self-referential successor is the trivial lineage
+    // cycle, blocked at the record level so it can never enter the store (upsert or restore).
+    if matches!(
+        record.key.kind,
+        DatasetKind::CorporateActionMerger | DatasetKind::CorporateActionSymbolChange
+    ) {
+        match successor_symbol(&record.key) {
+            Some(successor) if !successor.trim().is_empty() && successor != record.key.symbol => {}
+            _ => {
+                return Err(StoreError::InconsistentField {
+                    context: "merger/symbol-change record must name a non-empty successor symbol \
+                              (resolution 'merger:<SUCCESSOR>' / 'symbol-change:<SUCCESSOR>') that \
+                              differs from its own symbol",
+                });
+            }
         }
     }
     Ok(())
@@ -1237,6 +1402,21 @@ pub fn fixture_batch(kind: DatasetKind, event_ts: i64) -> Vec<MarketDataRecord> 
         // ingestion flow iterating dataset kinds over fixture_batch can never mint a trusted frontier
         // (and DataLayer::ingest_market_record refuses the kind besides). See provider_ingestion_kinds.
         DatasetKind::CorporateActionCoverage => Vec::new(),
+        // A deterministic $1.00 AAPL cash dividend ex on `event_ts` — against the fixture AAPL daily
+        // close of 10000 minor the fully-adjusted factor is (10000-100)/10000 = 99/100.
+        DatasetKind::CorporateActionDividend => vec![dividend_record(event_ts, "AAPL", 100)],
+        // A deterministic MSFT delisting at `event_ts` (the terminal marker the gated reads surface).
+        DatasetKind::CorporateActionDelisting => vec![delisting_record(event_ts, "MSFT")],
+        // A deterministic MSFT->AAPL merger at `event_ts`: 1 AAPL share per 2 MSFT plus 500 minor cash
+        // per MSFT share (the conversion terms the gated reads surface).
+        DatasetKind::CorporateActionMerger => {
+            vec![merger_record(event_ts, "MSFT", "AAPL", 1, 2, 500)]
+        }
+        // A deterministic AAPL->AAPLN ticker rename at `event_ts` (the lineage hop the gated reads
+        // resolve: querying AAPLN returns the pre-change AAPL bars relabeled).
+        DatasetKind::CorporateActionSymbolChange => {
+            vec![symbol_change_record(event_ts, "AAPL", "AAPLN")]
+        }
     }
 }
 
@@ -1350,6 +1530,102 @@ pub fn coverage_record(through: i64, symbol: &str) -> MarketDataRecord {
         [field("complete_through", through)],
     )
     .expect("fixture coverage record is well-formed")
+}
+
+/// A cash-dividend corporate-action record (SRS-DATA-011): keyed by `(symbol, ex_ts)` with the cash
+/// amount per share as the single `amount_minor` field (integer minor units; store validation requires
+/// it strictly positive). `ex_ts` is the EX-DIVIDEND instant — the first session trading WITHOUT the
+/// dividend — mirroring the split record's "first session on the new basis" semantic, so the
+/// fully-adjusted math's strict `ex_ts > t` boundary matches the split boundary. The vendor-neutral
+/// resolution label is `dividend`.
+pub fn dividend_record(ex_ts: i64, symbol: &str, amount_minor: i64) -> MarketDataRecord {
+    MarketDataRecord::new(
+        NaturalKey {
+            kind: DatasetKind::CorporateActionDividend,
+            symbol: symbol.to_string(),
+            resolution: "dividend".to_string(),
+            event_ts: ex_ts,
+            option_contract: None,
+        },
+        [field("amount_minor", amount_minor)],
+    )
+    .expect("fixture dividend record is well-formed")
+}
+
+/// A delisting corporate-action record (SRS-DATA-011): keyed by `(symbol, last_ts)` with a
+/// self-describing `last_trading_ts = last_ts` field (the coverage-record pattern — store validation
+/// requires the field to equal the key `event_ts`). `last_ts` is the delisting instant: the symbol's
+/// series ends there, and the coverage-gated reads surface the event so a backtest spanning the date
+/// marks the position final rather than silently seeing the data stop. The vendor-neutral resolution
+/// label is `delisting`.
+pub fn delisting_record(last_ts: i64, symbol: &str) -> MarketDataRecord {
+    MarketDataRecord::new(
+        NaturalKey {
+            kind: DatasetKind::CorporateActionDelisting,
+            symbol: symbol.to_string(),
+            resolution: "delisting".to_string(),
+            event_ts: last_ts,
+            option_contract: None,
+        },
+        [field("last_trading_ts", last_ts)],
+    )
+    .expect("fixture delisting record is well-formed")
+}
+
+/// A merger corporate-action record (SRS-DATA-011): the record symbol is the ACQUIRED instrument and
+/// the successor (acquirer) rides in the resolution label `merger:<SUCCESSOR>` (a value field is an
+/// `i64`, so the label is the record's string slot for the counterparty symbol; store validation
+/// requires a non-empty successor differing from the acquired symbol). The conversion terms are the
+/// `numerator`/`denominator` share ratio (`numerator` successor shares per `denominator` acquired
+/// shares) and `cash_per_share_minor` (the cash leg per acquired share, integer minor units).
+/// `effective_ts` is the effective instant: the acquired series terminates there.
+pub fn merger_record(
+    effective_ts: i64,
+    acquired: &str,
+    successor: &str,
+    numerator: i64,
+    denominator: i64,
+    cash_per_share_minor: i64,
+) -> MarketDataRecord {
+    MarketDataRecord::new(
+        NaturalKey {
+            kind: DatasetKind::CorporateActionMerger,
+            symbol: acquired.to_string(),
+            resolution: format!("{MERGER_RESOLUTION_PREFIX}{successor}"),
+            event_ts: effective_ts,
+            option_contract: None,
+        },
+        [
+            field("cash_per_share_minor", cash_per_share_minor),
+            field("denominator", denominator),
+            field("numerator", numerator),
+        ],
+    )
+    .expect("fixture merger record is well-formed")
+}
+
+/// A symbol-change (ticker rename) corporate-action record (SRS-DATA-011): the record symbol is the
+/// OLD symbol, the successor rides in the resolution label `symbol-change:<SUCCESSOR>` (store
+/// validation requires it non-empty and different from the old symbol), and a self-describing
+/// `effective_ts = event_ts` field pins the rename instant (the coverage-record pattern). Bars of the
+/// old symbol dated strictly BEFORE `effective_ts` belong to the successor's lineage; the
+/// coverage-gated reads resolve that lineage so a query for the current symbol spans the rename.
+pub fn symbol_change_record(
+    effective_ts: i64,
+    old_symbol: &str,
+    successor: &str,
+) -> MarketDataRecord {
+    MarketDataRecord::new(
+        NaturalKey {
+            kind: DatasetKind::CorporateActionSymbolChange,
+            symbol: old_symbol.to_string(),
+            resolution: format!("{SYMBOL_CHANGE_RESOLUTION_PREFIX}{successor}"),
+            event_ts: effective_ts,
+            option_contract: None,
+        },
+        [field("effective_ts", effective_ts)],
+    )
+    .expect("fixture symbol-change record is well-formed")
 }
 
 fn field(name: &str, value_minor: i64) -> MarketField {
@@ -1566,8 +1842,8 @@ mod tests {
     }
 
     #[test]
-    fn current_schema_version_is_three_after_adding_the_coverage_kind() {
-        assert_eq!(SCHEMA_VERSION, 3);
+    fn current_schema_version_is_four_after_adding_the_corporate_action_kinds() {
+        assert_eq!(SCHEMA_VERSION, 4);
         assert_eq!(MIN_SUPPORTED_SCHEMA_VERSION, 1);
         // A store carrying a split record still serializes at v2 (the split kind's version)...
         let mut with_split = MarketDataStore::new();
@@ -1577,13 +1853,29 @@ mod tests {
             MarketDataStore::restore(&with_split.serialize()).unwrap(),
             with_split
         );
-        // ...and a store carrying a coverage record serializes at the current (v3) version, so an
-        // older v1/v2 reader rejects it at the version gate rather than mid-restore on the unknown tag.
+        // ...a store carrying a coverage record still serializes at v3 (the coverage kind's version)...
         let mut with_coverage = MarketDataStore::new();
         with_coverage.upsert(coverage_record(200, "AAPL")).unwrap();
         assert_eq!(declared_version(&with_coverage.serialize()), 3);
         let restored = MarketDataStore::restore(&with_coverage.serialize()).unwrap();
         assert_eq!(restored, with_coverage);
+        // ...and a store carrying any of the four v4 corporate-action kinds serializes at the current
+        // (v4) version, so an older v1/v2/v3 reader rejects it at the version gate rather than
+        // mid-restore on the unknown tag.
+        for v4_record in [
+            dividend_record(200, "AAPL", 100),
+            delisting_record(200, "MSFT"),
+            merger_record(200, "MSFT", "AAPL", 1, 2, 500),
+            symbol_change_record(200, "AAPL", "AAPLN"),
+        ] {
+            let mut with_v4 = MarketDataStore::new();
+            with_v4.upsert(v4_record).unwrap();
+            assert_eq!(declared_version(&with_v4.serialize()), 4);
+            assert_eq!(
+                MarketDataStore::restore(&with_v4.serialize()).unwrap(),
+                with_v4
+            );
+        }
     }
 
     #[test]
@@ -1611,6 +1903,16 @@ mod tests {
             .unwrap();
         with_coverage.upsert(coverage_record(200, "AAPL")).unwrap();
         assert_eq!(declared_version(&with_coverage.serialize()), 3);
+
+        // Only a store carrying one of the v4 corporate-action kinds is written at v4 — a coverage-only
+        // store stays v3-readable by an older v3 tool (the format bump is scoped to stores using the
+        // new kinds).
+        let mut with_dividend = MarketDataStore::new();
+        with_dividend.upsert(record("AAPL", 1, 100)).unwrap();
+        with_dividend
+            .upsert(dividend_record(200, "AAPL", 100))
+            .unwrap();
+        assert_eq!(declared_version(&with_dividend.serialize()), 4);
 
         // An empty store is the lowest supported version.
         assert_eq!(
@@ -1724,6 +2026,238 @@ mod tests {
     }
 
     #[test]
+    fn corporate_action_fact_records_are_validated_at_new_and_restore() {
+        // The four v4 corporate-action FACT kinds feed the coverage-gated adjustment/lineage reads,
+        // and MarketDataRecord::new is public — so validate_record (shared by new() and restore())
+        // must reject a malformed record of each kind, the same discipline as the coverage record.
+        let key = |kind: DatasetKind, symbol: &str, resolution: &str, event_ts: i64| NaturalKey {
+            kind,
+            symbol: symbol.to_string(),
+            resolution: resolution.to_string(),
+            event_ts,
+            option_contract: None,
+        };
+        let f = |name: &str, value: i64| MarketField {
+            name: name.to_string(),
+            value_minor: value,
+        };
+
+        // DIVIDEND: exactly one positive amount_minor.
+        let div_key = || {
+            key(
+                DatasetKind::CorporateActionDividend,
+                "AAPL",
+                "dividend",
+                200,
+            )
+        };
+        assert!(MarketDataRecord::new(div_key(), [f("amount_minor", 100)]).is_ok());
+        for bad in [
+            MarketDataRecord::new(div_key(), [f("amount_minor", 0)]), // non-positive amount
+            MarketDataRecord::new(div_key(), [f("amount_minor", -5)]),
+            MarketDataRecord::new(div_key(), [f("amount", 100)]), // wrong field name
+            MarketDataRecord::new(div_key(), [f("amount_minor", 100), f("extra", 1)]),
+        ] {
+            assert!(matches!(bad, Err(StoreError::InconsistentField { .. })));
+        }
+
+        // DELISTING: exactly one last_trading_ts equal to the key event_ts (self-describing).
+        let del_key = || {
+            key(
+                DatasetKind::CorporateActionDelisting,
+                "MSFT",
+                "delisting",
+                300,
+            )
+        };
+        assert!(MarketDataRecord::new(del_key(), [f("last_trading_ts", 300)]).is_ok());
+        assert!(matches!(
+            MarketDataRecord::new(del_key(), [f("last_trading_ts", 999)]), // forged instant
+            Err(StoreError::InconsistentField { .. })
+        ));
+
+        // SYMBOL CHANGE: effective_ts == event_ts AND a non-empty successor differing from the symbol.
+        assert!(MarketDataRecord::new(
+            key(
+                DatasetKind::CorporateActionSymbolChange,
+                "AAPL",
+                "symbol-change:AAPLN",
+                400
+            ),
+            [f("effective_ts", 400)],
+        )
+        .is_ok());
+        for (resolution, field_value) in [
+            ("symbol-change:AAPLN", 999), // forged instant
+            ("symbol-change:", 400),      // empty successor
+            ("symbol-change:AAPL", 400),  // self successor (the trivial lineage cycle)
+            ("rename:AAPLN", 400),        // missing prefix
+        ] {
+            assert!(
+                matches!(
+                    MarketDataRecord::new(
+                        key(
+                            DatasetKind::CorporateActionSymbolChange,
+                            "AAPL",
+                            resolution,
+                            400
+                        ),
+                        [f("effective_ts", field_value)],
+                    ),
+                    Err(StoreError::InconsistentField { .. })
+                ),
+                "symbol-change '{resolution}' / effective_ts {field_value} must be rejected"
+            );
+        }
+
+        // MERGER: a non-empty successor differing from the acquired symbol in the resolution label.
+        assert!(MarketDataRecord::new(
+            key(
+                DatasetKind::CorporateActionMerger,
+                "MSFT",
+                "merger:AAPL",
+                500
+            ),
+            [
+                f("cash_per_share_minor", 500),
+                f("denominator", 2),
+                f("numerator", 1)
+            ],
+        )
+        .is_ok());
+        for resolution in ["merger:", "merger:MSFT", "acquisition:AAPL"] {
+            assert!(
+                matches!(
+                    MarketDataRecord::new(
+                        key(DatasetKind::CorporateActionMerger, "MSFT", resolution, 500),
+                        [
+                            f("cash_per_share_minor", 500),
+                            f("denominator", 2),
+                            f("numerator", 1)
+                        ],
+                    ),
+                    Err(StoreError::InconsistentField { .. })
+                ),
+                "merger resolution '{resolution}' must be rejected"
+            );
+        }
+        // Merger TERMS are validated too (the gated reads surface them to P&L consumers): a
+        // non-positive denominator, a negative numerator or cash leg, an all-zero consideration, or
+        // missing/extra fields all fail closed. A cash-only merger (numerator 0, cash > 0) is valid.
+        assert!(MarketDataRecord::new(
+            key(
+                DatasetKind::CorporateActionMerger,
+                "MSFT",
+                "merger:AAPL",
+                500
+            ),
+            [
+                f("cash_per_share_minor", 500),
+                f("denominator", 1),
+                f("numerator", 0)
+            ],
+        )
+        .is_ok());
+        for fields in [
+            vec![
+                f("cash_per_share_minor", 500),
+                f("denominator", 0),
+                f("numerator", 1),
+            ], // den 0
+            vec![
+                f("cash_per_share_minor", -1),
+                f("denominator", 2),
+                f("numerator", 1),
+            ], // cash < 0
+            vec![
+                f("cash_per_share_minor", 500),
+                f("denominator", 2),
+                f("numerator", -1),
+            ], // num < 0
+            vec![
+                f("cash_per_share_minor", 0),
+                f("denominator", 2),
+                f("numerator", 0),
+            ], // no consideration
+            vec![f("denominator", 2), f("numerator", 1)], // missing cash
+        ] {
+            assert!(
+                matches!(
+                    MarketDataRecord::new(
+                        key(
+                            DatasetKind::CorporateActionMerger,
+                            "MSFT",
+                            "merger:AAPL",
+                            500
+                        ),
+                        fields.clone(),
+                    ),
+                    Err(StoreError::InconsistentField { .. })
+                ),
+                "merger terms {fields:?} must be rejected"
+            );
+        }
+
+        // The same guard runs on RESTORE: a forged on-disk blob (built bypassing new()) is rejected.
+        let forged = MarketDataRecord {
+            key: key(
+                DatasetKind::CorporateActionDividend,
+                "AAPL",
+                "dividend",
+                200,
+            ),
+            fields: vec![f("amount_minor", 0)],
+        };
+        assert!(matches!(
+            MarketDataStore::restore(&versioned_blob(4, &[forged])),
+            Err(StoreError::InconsistentField { .. })
+        ));
+        assert!(
+            MarketDataStore::restore(&versioned_blob(4, &[dividend_record(200, "AAPL", 100)]))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn successor_symbol_reads_the_resolution_label_for_the_two_lineage_kinds() {
+        let merger = merger_record(500, "MSFT", "AAPL", 1, 2, 500);
+        assert_eq!(successor_symbol(merger.key()), Some("AAPL"));
+        let rename = symbol_change_record(400, "AAPL", "AAPLN");
+        assert_eq!(successor_symbol(rename.key()), Some("AAPLN"));
+        // Every other kind — even one whose resolution happens to carry the prefix text — reads None.
+        let bar = record("AAPL", 1, 100);
+        assert_eq!(successor_symbol(bar.key()), None);
+        assert_eq!(
+            successor_symbol(dividend_record(200, "AAPL", 100).key()),
+            None
+        );
+    }
+
+    #[test]
+    fn restore_rejects_a_lower_version_store_carrying_a_v4_only_kind() {
+        // A v1/v2/v3 blob may not carry any of the four v4-introduced corporate-action kinds: a forged
+        // lower-version blob smuggling one is rejected as inconsistent (the forward-compat guard).
+        for version in [1, 2, 3] {
+            for v4_record in [
+                dividend_record(200, "AAPL", 100),
+                delisting_record(200, "MSFT"),
+                merger_record(200, "MSFT", "AAPL", 1, 2, 500),
+                symbol_change_record(200, "AAPL", "AAPLN"),
+            ] {
+                let kind = v4_record.key().kind;
+                let blob = versioned_blob(version, &[v4_record]);
+                assert!(
+                    matches!(
+                        MarketDataStore::restore(&blob),
+                        Err(StoreError::CorruptRecord { .. })
+                    ),
+                    "v{version} blob carrying the v4-only {kind:?} kind must be rejected"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn restore_rejects_an_unknown_future_schema_version() {
         let blob = versioned_blob(99, &[record("AAPL", 1, 100)]);
         assert!(matches!(
@@ -1741,11 +2275,11 @@ mod tests {
             }
         }
         // Coverage is not provider fixture data; add one explicitly (the only legitimate path) so the
-        // round-trip still exercises a v3 store carrying every kind.
+        // round-trip still exercises a store carrying every kind.
         store
             .upsert(coverage_record(1_700_000_000, "AAPL"))
             .unwrap();
-        assert_eq!(declared_version(&store.serialize()), 3);
+        assert_eq!(declared_version(&store.serialize()), 4);
         let restored = MarketDataStore::restore(&store.serialize()).unwrap();
         assert_eq!(restored, store);
         assert_eq!(restored.serialize(), store.serialize());

@@ -68,7 +68,9 @@ syncs to NAS (--nas, else ATP_NAS_DATA_DIR, else a `nas` subdir of --dir); a mis
 degrades the sync (the SSD write still commits) rather than failing the ingest.
 
 KINDS:
-    daily-equity-bar | minute-equity-bar | option-chain | fundamental | corporate-action-split
+    daily-equity-bar | minute-equity-bar | option-chain | fundamental | corporate-action-split |
+    corporate-action-dividend | corporate-action-delisting | corporate-action-merger |
+    corporate-action-symbol-change
     (corporate-action-coverage is NOT ingested here -- the SRS-DATA-011 coverage frontier is a trust
      assertion, asserted only via `data011_coverage_cli assert-coverage --symbol <sym> --through <ts>`)
 
@@ -378,7 +380,7 @@ impl ParsedArgs {
                     let raw = take_value(&mut iter, flag)?;
                     let kind = DatasetKind::from_label(&raw).ok_or_else(|| {
                         format!(
-                            "unknown --kind '{raw}' (expected daily-equity-bar | minute-equity-bar | option-chain | fundamental | corporate-action-split)"
+                            "unknown --kind '{raw}' (expected daily-equity-bar | minute-equity-bar | option-chain | fundamental | corporate-action-split | corporate-action-dividend | corporate-action-delisting | corporate-action-merger | corporate-action-symbol-change)"
                         )
                     })?;
                     // Corporate-action COVERAGE is a trust assertion (the SRS-DATA-011 frontier the

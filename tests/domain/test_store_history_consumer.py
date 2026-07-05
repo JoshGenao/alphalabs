@@ -322,9 +322,10 @@ def test_consumer_split_adjusted_uncovered_fails_closed() -> None:
 
 
 def test_consumer_normalization_safety_over_uncovered_store() -> None:
-    # The bare default (no normalization arg, the path WarmupController uses) and an explicit
-    # SPLIT_ADJUSTED both fail closed at the coverage gate over an uncovered store; the dividend modes
-    # additionally need dividend data (SRS-DATA-012) and fail closed before any query.
+    # The bare default (no normalization arg, the path WarmupController uses), an explicit
+    # SPLIT_ADJUSTED, and FULLY_ADJUSTED (splits AND dividends, served through the same gate) ALL fail
+    # closed at the coverage gate over an uncovered store; TOTAL_RETURN fails closed before any query
+    # (SRS-DATA-012).
     cargo = _cargo()
     if cargo is None:
         pytest.skip("cargo not on PATH")
@@ -337,20 +338,21 @@ def test_consumer_normalization_safety_over_uncovered_store() -> None:
             == 0
         )
         history = StoreBackedHistoricalData(store_dir=tmp, query_binary=query_bin)
-        # Coverage-gated modes: both the bare default and explicit SPLIT_ADJUSTED fail closed naming 011.
-        for call in (
-            lambda: history.get_bars("AAPL", lookback=1, frequency="1d"),
-            lambda: history.get_bars(
-                "AAPL", lookback=1, frequency="1d", normalization=NormalizationMode.SPLIT_ADJUSTED
-            ),
+        # Coverage-gated modes: every gate-served mode fails closed naming 011 when uncovered.
+        for mode_kwargs in (
+            {},
+            {"normalization": NormalizationMode.SPLIT_ADJUSTED},
+            {"normalization": NormalizationMode.FULLY_ADJUSTED},
         ):
             with pytest.raises(CoverageNotProvenError) as exc:
-                call()
+                history.get_bars("AAPL", lookback=1, frequency="1d", **mode_kwargs)
             assert "SRS-DATA-011" in str(exc.value)
-        # Dividend modes fail closed before any query (no dividend data, SRS-DATA-012).
-        for mode in (NormalizationMode.FULLY_ADJUSTED, NormalizationMode.TOTAL_RETURN):
-            with pytest.raises(NotImplementedError):
-                history.get_bars("AAPL", lookback=1, frequency="1d", normalization=mode)
+        # TOTAL_RETURN fails closed before any query (dividend reinvestment + per-subscription
+        # selection, SRS-DATA-012).
+        with pytest.raises(NotImplementedError):
+            history.get_bars(
+                "AAPL", lookback=1, frequency="1d", normalization=NormalizationMode.TOTAL_RETURN
+            )
 
 
 def test_store_history_binding_is_registered_in_architecture_metadata() -> None:

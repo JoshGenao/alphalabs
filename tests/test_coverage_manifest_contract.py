@@ -23,13 +23,17 @@ from coverage_manifest_check import (  # noqa: E402
     _read,
     assert_coverage_manifest_static,
     check_cli_routes_gated,
+    check_corporate_action_kinds,
     check_coverage_cli,
     check_coverage_kind,
     check_data_layer_rejects_coverage,
+    check_gate_applies_dividends,
     check_gate_condition,
     check_ingest_excludes_coverage,
     check_kind_narrowed_gate,
+    check_lineage_bounded,
     check_single_public_entry,
+    check_terminal_events_surfaced,
     contract_block,
     load_config,
 )
@@ -78,12 +82,12 @@ class CoverageKindTest(_Fixture):
             check_coverage_kind(self.config, mutated)
 
     def test_unbumped_schema_version_is_caught(self) -> None:
-        # If SCHEMA_VERSION were not bumped to 3, a v1/v2 reader could not reject a coverage-bearing
-        # store at the version gate -> the guard must fire.
+        # If SCHEMA_VERSION were not bumped to 4, an older reader could not reject a store carrying
+        # the corporate-action kinds at the version gate -> the guard must fire.
         mutated = self._mutate(
             "store_source",
+            "pub const SCHEMA_VERSION: i64 = 4;",
             "pub const SCHEMA_VERSION: i64 = 3;",
-            "pub const SCHEMA_VERSION: i64 = 2;",
         )
         with self.assertRaises(CoverageManifestCheckError):
             check_coverage_kind(self.config, mutated)
@@ -112,10 +116,22 @@ class GateConditionTest(_Fixture):
         with self.assertRaises(CoverageManifestCheckError):
             check_gate_condition(self.config, mutated)
 
-    def test_dropped_as_of_d_split_bound_is_caught(self) -> None:
-        # Removing the `event_ts <= coverage_through` bound would let a split beyond the frontier adjust
-        # the series past the advertised coverage_through (the as-of-D contract break Codex flagged).
-        mutated = self._mutate("coverage_module", "key.event_ts <= coverage_through", "true")
+    def test_dropped_basis_bound_is_caught(self) -> None:
+        # Removing the `event_ts <= adjusted_through` bound would let an event beyond the read's basis
+        # adjust the series past the advertised adjusted_through (the as-of contract break Codex
+        # flagged for splits, now uniform across all corporate actions).
+        mutated = self._mutate("coverage_module", "key.event_ts <= adjusted_through", "true")
+        with self.assertRaises(CoverageManifestCheckError):
+            check_gate_condition(self.config, mutated)
+
+    def test_lookahead_basis_swap_is_caught(self) -> None:
+        # If the point-in-time reads adjusted through the FRONTIER instead of the as-of date, a future
+        # split/dividend would leak into a historical read (lookahead) -> the guard must fire.
+        mutated = self._mutate(
+            "coverage_module",
+            "AdjustmentBasis::AsOfEnd => query.end_ts",
+            "AdjustmentBasis::AsOfEnd => coverage_through",
+        )
         with self.assertRaises(CoverageManifestCheckError):
             check_gate_condition(self.config, mutated)
 
@@ -191,22 +207,119 @@ class DataLayerRejectsCoverageTest(_Fixture):
             check_data_layer_rejects_coverage(self.config, mutated)
 
 
+class CorporateActionKindsTest(_Fixture):
+    def test_dropped_variant_is_caught(self) -> None:
+        mutated = self._mutate("store_source", "CorporateActionDividend", "RenamedDividendKind")
+        with self.assertRaises(CoverageManifestCheckError):
+            check_corporate_action_kinds(self.config, mutated)
+
+    def test_retagged_codec_is_caught(self) -> None:
+        # Reassigning a codec tag would silently corrupt every persisted v4 store on restore.
+        mutated = self._mutate(
+            "store_source",
+            "Self::CorporateActionMerger => 8,",
+            "Self::CorporateActionMerger => 18,",
+        )
+        with self.assertRaises(CoverageManifestCheckError):
+            check_corporate_action_kinds(self.config, mutated)
+
+    def test_dropped_dividend_amount_validation_is_caught(self) -> None:
+        # If validate_record stopped requiring a positive amount_minor, a zero/negative dividend could
+        # corrupt the fully-adjusted factor (identity or a price increase) -> the guard must fire.
+        mutated = self._mutate(
+            "store_source",
+            'field.name == "amount_minor" && field.value_minor > 0',
+            'field.name == "amount_minor"',
+        )
+        with self.assertRaises(CoverageManifestCheckError):
+            check_corporate_action_kinds(self.config, mutated)
+
+    def test_dropped_self_successor_block_is_caught(self) -> None:
+        # If validate_record stopped rejecting successor == own symbol, the trivial lineage self-cycle
+        # could enter the store -> the guard must fire.
+        mutated = self._mutate(
+            "store_source", "successor != record.key.symbol", "!successor.is_empty()"
+        )
+        with self.assertRaises(CoverageManifestCheckError):
+            check_corporate_action_kinds(self.config, mutated)
+
+
+class GateAppliesDividendsTest(_Fixture):
+    def test_dropped_fully_adjusted_read_is_caught(self) -> None:
+        mutated = self._mutate("coverage_module", "query_fully_adjusted", "query_dividend_scaled")
+        with self.assertRaises(CoverageManifestCheckError):
+            check_gate_applies_dividends(self.config, mutated)
+
+    def test_dropped_raw_reference_close_resolution_is_caught(self) -> None:
+        # The reference close must resolve from the RAW series strictly before the ex-date; dropping
+        # the strict bound (e.g. <=) would pick the ex-date bar itself -> the guard must fire.
+        mutated = self._mutate("coverage_module", "event_ts < ex_ts", "event_ts <= ex_ts")
+        with self.assertRaises(CoverageManifestCheckError):
+            check_gate_applies_dividends(self.config, mutated)
+
+    def test_split_only_mode_leaking_dividends_is_caught(self) -> None:
+        # The split-adjusted mode must ignore dividend records entirely (mode semantics).
+        mutated = self._mutate(
+            "coverage_module",
+            "AdjustmentMode::SplitOnly => Vec::new()",
+            "AdjustmentMode::SplitOnly => todo!()",
+        )
+        with self.assertRaises(CoverageManifestCheckError):
+            check_gate_applies_dividends(self.config, mutated)
+
+
+class TerminalEventsSurfacedTest(_Fixture):
+    def test_dropped_events_field_is_caught(self) -> None:
+        mutated = self._mutate(
+            "coverage_module", "events: Vec<CorporateActionEvent>", "events_hidden: Vec<()>"
+        )
+        with self.assertRaises(CoverageManifestCheckError):
+            check_terminal_events_surfaced(self.config, mutated)
+
+    def test_dropped_merger_terms_are_caught(self) -> None:
+        mutated = self._mutate("coverage_module", "cash_per_share_minor", "cash_leg")
+        with self.assertRaises(CoverageManifestCheckError):
+            check_terminal_events_surfaced(self.config, mutated)
+
+
+class LineageBoundedTest(_Fixture):
+    def test_dropped_cycle_error_is_caught(self) -> None:
+        mutated = self._mutate("coverage_module", "LineageCycle", "LineageLoop")
+        with self.assertRaises(CoverageManifestCheckError):
+            check_lineage_bounded(self.config, mutated)
+
+    def test_dropped_depth_bound_is_caught(self) -> None:
+        mutated = self._mutate("coverage_module", "MAX_LINEAGE_DEPTH", "UNBOUNDED_DEPTH")
+        with self.assertRaises(CoverageManifestCheckError):
+            check_lineage_bounded(self.config, mutated)
+
+
 class AggregateEvidenceTest(_Fixture):
     def test_static_check_count_is_pinned(self) -> None:
-        # Eight static guards (coverage kind, gate condition, kind-narrowed gate, single public entry,
+        # Twelve static guards (coverage kind, gate condition, kind-narrowed gate, single public entry,
         # CLI routing, coverage CLI, ingest-excludes-coverage [data016 CLI], data-layer-rejects-coverage
-        # [ingest_market_record]). A dropped or silently-added guard changes this count — pin it.
-        self.assertEqual(len(assert_coverage_manifest_static(self.config, ROOT)), 8)
+        # [ingest_market_record], corporate-action kinds, gate-applies-dividends,
+        # terminal-events-surfaced, lineage-bounded). A dropped or silently-added guard changes this
+        # count — pin it.
+        self.assertEqual(len(assert_coverage_manifest_static(self.config, ROOT)), 12)
 
-    def test_block_stays_passes_false_and_names_owners(self) -> None:
+    def test_block_passes_true_and_names_remaining_owners(self) -> None:
         block = contract_block(self.config)
-        # SRS-DATA-011 is foundational substrate this session, not a feature close.
-        self.assertFalse(block["passes"])
+        # SRS-DATA-011 is CLOSED: all six action types are reflected (splits/reverse-splits and
+        # dividends in the served prices; delistings/mergers/symbol-changes as lineage + surfaced
+        # events), so the block flips passes:true.
+        self.assertTrue(block["passes"])
         self.assertEqual(block["requirement"], "SRS-DATA-011")
-        self.assertEqual(block["schema_version"], 3)
-        # The deferred legs that keep it passes:false are named.
+        self.assertEqual(block["schema_version"], 4)
+        # All six action types are supported; none remain deferred.
+        self.assertEqual(
+            block["supported_action_types"],
+            ["split", "reverse-split", "dividend", "delisting", "merger", "symbol-change"],
+        )
+        self.assertEqual(block["deferred_action_types"], [])
+        # The remaining deferrals are OTHER features' scope, named with their owners.
         deferred = " ".join(block["deferred"]).lower()
-        for owner in ("dividend", "delisting", "merger", "symbol-change"):
+        for owner in ("srs-data-012", "srs-data-001", "sys-28b", "srs-data-009"):
             self.assertIn(owner, deferred, f"deferred owners must name {owner!r}")
 
 

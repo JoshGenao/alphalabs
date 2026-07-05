@@ -8,7 +8,8 @@ coverage gate end to end over a real ingested store: ingest a daily bar (AAPL@10
     bar (close 2500 = 10000/4, volume 400000 = 100000*4) and echoes ``coverage_through:200``;
   * UNCOVERED -> the same query past the frontier ([0,250]) FAILS closed naming SRS-DATA-011.
 
-SRS-DATA-011 STAYS passes:false (foundational: only splits / reverse-splits have math + coverage).
+The full six-action-type scenario walk (dividends, delistings, mergers, symbol changes) is
+``tests/integration/test_data011_corporate_actions_e2e.py``.
 """
 
 from __future__ import annotations

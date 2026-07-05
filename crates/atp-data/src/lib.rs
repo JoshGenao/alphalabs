@@ -6,16 +6,17 @@ use atp_types::{
     StructuredIngestionError, StructuredPacingError,
 };
 
-// The SRS-DATA-012 split-adjustment math is a CRATE-INTERNAL module, deliberately NOT a public crate
-// API and NOT re-exported from the crate root. Exposing `split_adjust_records` / `SplitEvent` publicly
-// would let a Rust consumer obtain split-adjusted IDENTITY values over an empty / incomplete split set
-// -- raw-as-adjusted, the exact hazard the operator surfaces fail closed on. A split-adjusted result is
+// The SRS-DATA-012 adjustment math (split-adjusted AND fully-adjusted) is a CRATE-INTERNAL module,
+// deliberately NOT a public crate API and NOT re-exported from the crate root. Exposing
+// `split_adjust_records` / `fully_adjust_records` / `SplitEvent` / `DividendEvent` publicly would let
+// a Rust consumer obtain adjusted IDENTITY values over an empty / incomplete corporate-action set
+// -- raw-as-adjusted, the exact hazard the operator surfaces fail closed on. An adjusted result is
 // only honest with proven corporate-action coverage (SRS-DATA-011). The SINGLE public path to
-// split-adjusted output is `coverage::MarketDataStore::query_split_adjusted`, which ENFORCES that
-// coverage (a per-symbol completeness-through-date frontier `>= query.end_ts`) before it reaches this
-// crate-internal math -- so there is no public path to raw-as-adjusted. The `coverage` module is a
-// sibling in the same crate, so it can call the crate-internal `normalization` functions while no
-// external caller can.
+// adjusted output is the `coverage` gate module (`query_split_adjusted[_as_of]` /
+// `query_fully_adjusted[_as_of]`), which ENFORCES that coverage (a per-symbol
+// completeness-through-date frontier `>= query.end_ts`) before it reaches this crate-internal math
+// -- so there is no public path to raw-as-adjusted. The `coverage` module is a sibling in the same
+// crate, so it can call the crate-internal `normalization` functions while no external caller can.
 pub mod cold_read;
 pub mod coverage;
 pub mod fundamentals;
@@ -29,7 +30,7 @@ pub use crate::cold_read::{
     ColdCacheReport, ColdReadConfig, ColdReadError, TieredReadResult, TieredReader,
     DEFAULT_COLD_READ_CACHE_SHARE_PERCENT, MAX_COLD_READ_CACHE_SHARE_PERCENT,
 };
-pub use crate::coverage::{CoverageError, SplitAdjustedResult};
+pub use crate::coverage::{CorporateActionEvent, CoverageError, SplitAdjustedResult};
 pub use crate::ingestion_validation::{
     QuarantineSummary, QuarantineSummarySink, QuarantiningIngestionOutcome, Sys77RecordValidator,
 };

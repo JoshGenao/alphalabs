@@ -1,11 +1,13 @@
-"""SRS-DATA-011 coverage gate — L4 boundary test (the CLI's split-adjusted output contract).
+"""SRS-DATA-011 coverage gate — L4 boundary test (the CLI's adjusted output contract).
 
-Pins the trust-boundary CONTRACT of ``data007_query_cli --normalization split-adjusted`` (the surface a
-Python consumer would parse): a covered query echoes ``normalization:split-adjusted`` and a
-``coverage_through:<D>`` line (so a consumer can validate the adjustment + know the as-of basis), and an
-uncovered query fails closed with a DISTINCT, parseable failure (exit != 0, stderr naming the have/need
-frontiers + SRS-DATA-011) — never a silent fall-through to raw-as-adjusted. Builds the data CLIs on
-demand (skips if cargo is unavailable, like the other cargo-driven boundary checks).
+Pins the trust-boundary CONTRACT of ``data007_query_cli --normalization split-adjusted`` /
+``fully-adjusted`` (the surface a Python consumer would parse): a covered query echoes the served
+``normalization:<mode>``, a ``coverage_through:<D>`` line (so a consumer can validate the adjustment +
+know the proven frontier), an ``adjusted_through:<ts>`` basis line, and an ``event_count:<n>`` line
+(plus ``event.<i>.*`` structural corporate actions when the window spans one); an uncovered query
+fails closed with a DISTINCT, parseable failure (exit != 0, stderr naming the have/need frontiers +
+SRS-DATA-011) — never a silent fall-through to raw-as-adjusted. Builds the data CLIs on demand (skips
+if cargo is unavailable, like the other cargo-driven boundary checks).
 """
 
 from __future__ import annotations
@@ -95,7 +97,9 @@ def test_split_adjusted_output_contract() -> None:
             "200",
         )
 
-        def query(end: int) -> subprocess.CompletedProcess[str]:
+        def query(
+            end: int, normalization: str = "split-adjusted"
+        ) -> subprocess.CompletedProcess[str]:
             return _run(
                 str(query_bin),
                 "query",
@@ -112,23 +116,38 @@ def test_split_adjusted_output_contract() -> None:
                 "--kind",
                 "daily-equity-bar",
                 "--normalization",
-                "split-adjusted",
+                normalization,
             )
 
-        # COVERED: the envelope echoes the served mode + the as-of coverage frontier.
+        # COVERED: the envelope echoes the served mode + the proven coverage frontier + the basis +
+        # the (empty here) structural-event count.
         covered = query(100)
         assert covered.returncode == 0, covered.stderr
         env = _parse_envelope(covered.stdout)
         assert env.get("normalization") == "split-adjusted", env
         assert env.get("coverage_through") == "200", env
+        assert env.get("adjusted_through") == "200", env
+        assert env.get("event_count") == "0", env
         assert env.get("match_count") == "1", env
 
-        # UNCOVERED: a DISTINCT, parseable fail-closed (no raw-as-adjusted), naming have/need + the owner.
-        uncovered = query(250)
-        assert uncovered.returncode != 0
-        assert not uncovered.stdout.strip(), "a refused query must not emit any record output"
-        assert "SRS-DATA-011" in uncovered.stderr
-        assert "200" in uncovered.stderr and "250" in uncovered.stderr
+        # COVERED fully-adjusted: the same contract with its own mode echo (the dividend leg's math is
+        # pinned by the crate unit tests + coverage_manifest_check round-trip; this is the envelope).
+        fully = query(100, "fully-adjusted")
+        assert fully.returncode == 0, fully.stderr
+        env = _parse_envelope(fully.stdout)
+        assert env.get("normalization") == "fully-adjusted", env
+        assert env.get("coverage_through") == "200", env
+        assert env.get("adjusted_through") == "200", env
+        assert env.get("event_count") == "0", env
+
+        # UNCOVERED: a DISTINCT, parseable fail-closed (no raw-as-adjusted), naming have/need + the
+        # owner — identically for BOTH adjusted modes.
+        for normalization in ("split-adjusted", "fully-adjusted"):
+            uncovered = query(250, normalization)
+            assert uncovered.returncode != 0
+            assert not uncovered.stdout.strip(), "a refused query must not emit any record output"
+            assert "SRS-DATA-011" in uncovered.stderr
+            assert "200" in uncovered.stderr and "250" in uncovered.stderr
 
 
 def test_raw_path_is_unchanged_by_the_gate() -> None:
@@ -173,3 +192,5 @@ def test_raw_path_is_unchanged_by_the_gate() -> None:
         env = _parse_envelope(raw.stdout)
         assert env.get("normalization") == "raw", env
         assert "coverage_through" not in env, "raw output must not carry a coverage_through line"
+        assert "adjusted_through" not in env, "raw output must not carry an adjusted_through line"
+        assert "event_count" not in env, "raw output must not carry an event_count line"

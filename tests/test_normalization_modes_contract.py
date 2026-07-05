@@ -185,15 +185,38 @@ class AggregateEvidenceTest(_Fixture):
 
     def test_public_vs_library_modes_are_separated(self) -> None:
         block = contract_block(self.config)
-        # split-adjusted is served on the operator CLI AND the strategy binding behind the SRS-DATA-011
-        # coverage gate, so it is both a public_request_mode and a binding_request_mode; FULLY_ADJUSTED /
-        # TOTAL_RETURN stay deferred from public exposure (dividend data).
-        self.assertEqual(block["public_request_modes"], ["RAW", "SPLIT_ADJUSTED"])
-        self.assertEqual(block["binding_request_modes"], ["RAW", "SPLIT_ADJUSTED"])
-        self.assertEqual(block["core_library_modes"], ["RAW", "SPLIT_ADJUSTED"])
-        self.assertIn("FULLY_ADJUSTED", block["deferred_public_modes"])
-        self.assertIn("TOTAL_RETURN", block["deferred_public_modes"])
+        # split-adjusted AND fully-adjusted are served on the operator CLI AND the strategy binding
+        # behind the SRS-DATA-011 coverage gate, so both are public_request_modes and
+        # binding_request_modes; TOTAL_RETURN stays deferred from public exposure (dividend
+        # reinvestment + per-subscription selection).
+        self.assertEqual(block["public_request_modes"], ["RAW", "SPLIT_ADJUSTED", "FULLY_ADJUSTED"])
+        self.assertEqual(
+            block["binding_request_modes"], ["RAW", "SPLIT_ADJUSTED", "FULLY_ADJUSTED"]
+        )
+        self.assertEqual(block["core_library_modes"], ["RAW", "SPLIT_ADJUSTED", "FULLY_ADJUSTED"])
+        self.assertEqual(block["deferred_public_modes"], ["TOTAL_RETURN"])
         self.assertNotIn("SPLIT_ADJUSTED", block["deferred_public_modes"])
+        self.assertNotIn("FULLY_ADJUSTED", block["deferred_public_modes"])
+
+    def test_reverting_fully_adjusted_to_parse_reject_is_caught(self) -> None:
+        # If the CLI parser went back to rejecting fully-adjusted at parse (the pre-close state), the
+        # guard must fire: the mode is now SERVED through the gate, not deferred.
+        mutated = self._src("cli_source").replace(
+            '"fully-adjusted" => Ok(Normalization::FullyAdjusted),', ""
+        )
+        self.assertNotEqual(mutated, self._src("cli_source"))
+        with self.assertRaises(NormalizationModesCheckError):
+            check_cli_flag(self.config, mutated)
+
+    def test_binding_dropping_fully_adjusted_is_caught(self) -> None:
+        # If the binding dropped the FULLY_ADJUSTED label mapping, the served mode would silently
+        # regress to NotImplementedError -- the guard must fire.
+        mutated = self._src("binding_source").replace(
+            'NormalizationMode.FULLY_ADJUSTED: "fully-adjusted",', ""
+        )
+        self.assertNotEqual(mutated, self._src("binding_source"))
+        with self.assertRaises(NormalizationModesCheckError):
+            check_binding_serves_split_adjusted(self.config, mutated)
 
 
 if __name__ == "__main__":

@@ -1,13 +1,14 @@
-//! SRS-DATA-012 — split-adjusted historical normalization (the historical slice).
+//! SRS-DATA-012 — split-adjusted + fully-adjusted historical normalization (the historical slice).
 //!
 //! The acceptance criterion (docs/SRS.md SRS-DATA-012): *"support raw, split-adjusted, fully
 //! adjusted, and total-return normalization modes per security subscription ... indicators can
-//! request adjusted series."* This module implements the **split-adjusted** historical read: given a
-//! symbol's raw equity bars (from [`MarketDataStore::query_unified`](crate::query)) and its stock-split
-//! corporate actions (records of [`DatasetKind::CorporateActionSplit`]), it returns the bars on a
-//! split-comparable basis so a backtest / indicator spanning a split date sees a continuous series.
-//! Fully-adjusted (dividends) and total-return modes are deferred (they need dividend data); the
-//! live-subscription leg of SRS-DATA-012 is deferred (the Market Data Subscription Manager is unbuilt).
+//! request adjusted series."* This module implements the **split-adjusted** and **fully-adjusted**
+//! (splits AND dividends, per SyRS SYS-29) historical reads: given a symbol's raw equity bars (from
+//! [`MarketDataStore::query_unified`](crate::query)) and its corporate actions (records of
+//! [`DatasetKind::CorporateActionSplit`] / [`DatasetKind::CorporateActionDividend`]), it returns the
+//! bars on an adjustment-comparable basis so a backtest / indicator spanning a corporate-action date
+//! sees a continuous series. The total-return mode is deferred (SRS-DATA-012), as is the
+//! live-subscription leg (the Market Data Subscription Manager is unbuilt).
 //!
 //! ## The math (integer-exact, deterministic, no `f64`)
 //!
@@ -80,6 +81,40 @@ pub struct SplitEvent {
     pub denominator: i64,
 }
 
+/// A cash-dividend corporate action for ONE symbol (the SRS-DATA-011 dividend leg the SYS-29
+/// **fully-adjusted** — splits AND dividends — read applies). `ex_ts` is the ex-dividend instant: the
+/// first session the shares trade WITHOUT the dividend, so the boundary is **strict** (`ex_ts > t`),
+/// mirroring [`SplitEvent::effective_ts`]. The back-adjustment factor for a bar strictly before
+/// `ex_ts` is `(prev_close_minor - amount_minor) / prev_close_minor` — the fraction of the share
+/// price NOT paid out — applied to the OHLC price fields only (a dividend never changes the share
+/// count, so `volume` is untouched; that is the split factor's job).
+///
+/// `prev_close_minor` / `prev_close_ts` are the **reference close**: the last RAW close strictly
+/// before `ex_ts`, resolved by the caller from the same store the bars come from (the coverage gate
+/// resolves it over the full — not window-clipped — raw series, so a dividend whose reference bar
+/// precedes the query window still adjusts correctly). Both the amount and the reference close are
+/// validated here (publicly constructible, same discipline as [`SplitEvent`]): `amount_minor` and
+/// `prev_close_minor` must be strictly positive, `amount_minor` strictly less than
+/// `prev_close_minor` (a dividend >= the whole share price would zero/negate a price), and
+/// `prev_close_ts` strictly before `ex_ts`. A split effective in `(prev_close_ts, ex_ts]` makes the
+/// reference close and the amount sit on DIFFERENT share bases — that configuration fails closed
+/// ([`NormalizationError::BasisCrossingDividend`]) rather than composing mismatched bases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DividendEvent {
+    /// The symbol this dividend applies to. A dividend adjusts only records whose symbol equals this.
+    pub symbol: String,
+    /// The ex-dividend instant (epoch seconds) — the first session trading without the dividend.
+    pub ex_ts: i64,
+    /// The cash amount per share in integer minor units. Validated strictly positive and strictly
+    /// less than `prev_close_minor`.
+    pub amount_minor: i64,
+    /// The last RAW close strictly before `ex_ts` (integer minor units). Validated strictly positive.
+    pub prev_close_minor: i64,
+    /// The `event_ts` of the bar `prev_close_minor` was read from. Validated strictly before `ex_ts`;
+    /// used to detect a basis-crossing split between the reference close and the ex-date.
+    pub prev_close_ts: i64,
+}
+
 /// A fail-closed split-normalization error. Money math never silently wraps or divides by zero.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NormalizationError {
@@ -113,6 +148,47 @@ pub enum NormalizationError {
         /// The (vendor-neutral) kind label that cannot be split-adjusted.
         kind: &'static str,
     },
+    /// A dividend record was missing its `amount_minor` value field.
+    MissingDividendField {
+        /// The symbol the malformed dividend was keyed to.
+        symbol: String,
+        /// The missing field name.
+        field: &'static str,
+    },
+    /// A dividend's terms cannot produce a valid back-adjustment factor: a non-positive amount or
+    /// reference close, an amount at/above the reference close (the factor would zero or negate a
+    /// price), or a reference close not strictly before the ex-date. Rejected rather than applied.
+    InvalidDividendTerm {
+        /// The symbol the malformed dividend was keyed to.
+        symbol: String,
+        /// The ex-dividend instant.
+        ex_ts: i64,
+        /// The offending cash amount (integer minor units).
+        amount_minor: i64,
+        /// The offending reference close (integer minor units).
+        prev_close_minor: i64,
+    },
+    /// No raw close exists strictly before a dividend's ex-date, so its back-adjustment factor cannot
+    /// be computed. Fail closed — a silent factor of 1 would serve under-adjusted prices as
+    /// fully-adjusted.
+    MissingReferenceClose {
+        /// The symbol whose dividend has no reference close.
+        symbol: String,
+        /// The ex-dividend instant with no prior raw close.
+        ex_ts: i64,
+    },
+    /// A split is effective in `(prev_close_ts, ex_ts]` — between a dividend's reference close and
+    /// its ex-date — so the cash amount and the reference close sit on DIFFERENT share bases and the
+    /// factor `(prev_close - amount) / prev_close` would mix them. Fail closed rather than compose
+    /// mismatched bases.
+    BasisCrossingDividend {
+        /// The symbol whose dividend straddles a split.
+        symbol: String,
+        /// The ex-dividend instant.
+        ex_ts: i64,
+        /// The effective instant of the split between the reference close and the ex-date.
+        split_effective_ts: i64,
+    },
 }
 
 impl std::fmt::Display for NormalizationError {
@@ -137,6 +213,35 @@ impl std::fmt::Display for NormalizationError {
             Self::Overflow { context } => {
                 write!(f, "split-adjustment overflow ({context}) — refusing to wrap a money value")
             }
+            Self::MissingDividendField { symbol, field } => {
+                write!(f, "dividend record for {symbol} is missing its '{field}' field")
+            }
+            Self::InvalidDividendTerm {
+                symbol,
+                ex_ts,
+                amount_minor,
+                prev_close_minor,
+            } => write!(
+                f,
+                "invalid dividend term for {symbol} ex {ex_ts}: amount {amount_minor} against \
+                 reference close {prev_close_minor} (need 0 < amount < reference close, reference \
+                 strictly before the ex-date)"
+            ),
+            Self::MissingReferenceClose { symbol, ex_ts } => write!(
+                f,
+                "no raw close exists strictly before {symbol}'s dividend ex {ex_ts}: the \
+                 fully-adjusted factor cannot be computed — refusing to serve under-adjusted prices"
+            ),
+            Self::BasisCrossingDividend {
+                symbol,
+                ex_ts,
+                split_effective_ts,
+            } => write!(
+                f,
+                "a split effective at {split_effective_ts} sits between {symbol}'s dividend \
+                 reference close and its ex-date {ex_ts}: the amount and the reference close are on \
+                 different share bases — refusing to compose mismatched bases"
+            ),
         }
     }
 }
@@ -285,6 +390,201 @@ pub fn split_adjust_records(
     records
         .iter()
         .map(|record| split_adjust_record(record, splits))
+        .collect()
+}
+
+/// Extract the [`DividendEvent`]s for `symbol` from a set of dividend records (records of
+/// [`DatasetKind::CorporateActionDividend`]), resolving each ex-date's **reference close** through
+/// `prev_close_of` — a caller-supplied lookup from `ex_ts` to `(prev_close_ts, prev_close_minor)`,
+/// the last RAW close strictly before the ex-date (the coverage gate resolves it over the full raw
+/// series, keeping this math store-free). Records of other kinds or other symbols are ignored, so a
+/// caller can pass a kind-narrowed batch. Fails closed on a missing `amount_minor` field and on an
+/// ex-date with no prior raw close ([`NormalizationError::MissingReferenceClose`]) — a dividend whose
+/// factor cannot be computed must fail the read, never silently contribute a factor of 1.
+pub fn dividend_events_for(
+    symbol: &str,
+    dividend_records: &[&MarketDataRecord],
+    prev_close_of: impl Fn(i64) -> Option<(i64, i64)>,
+) -> Result<Vec<DividendEvent>, NormalizationError> {
+    let mut events = Vec::new();
+    for record in dividend_records {
+        let key = record.key();
+        if key.kind != DatasetKind::CorporateActionDividend || key.symbol != symbol {
+            continue;
+        }
+        let amount_minor = field_value(record, "amount_minor").ok_or_else(|| {
+            NormalizationError::MissingDividendField {
+                symbol: symbol.to_string(),
+                field: "amount_minor",
+            }
+        })?;
+        let (prev_close_ts, prev_close_minor) = prev_close_of(key.event_ts).ok_or_else(|| {
+            NormalizationError::MissingReferenceClose {
+                symbol: symbol.to_string(),
+                ex_ts: key.event_ts,
+            }
+        })?;
+        events.push(DividendEvent {
+            symbol: symbol.to_string(),
+            ex_ts: key.event_ts,
+            amount_minor,
+            prev_close_minor,
+            prev_close_ts,
+        });
+    }
+    Ok(events)
+}
+
+/// FULLY-adjust one EQUITY-BAR record against `splits` AND `dividends` — the SYS-29 "fully adjusted
+/// (splits and dividends)" basis. The natural key (including `event_ts`) is preserved. Per bar at
+/// `event_ts = t`, over this symbol's events strictly after the bar (`effective_ts > t` /
+/// `ex_ts > t`, both boundaries strict):
+///
+/// ```text
+///   NUM = ∏ split numerator_i          DEN = ∏ split denominator_i
+///   REF = ∏ dividend prev_close_j      NET = ∏ (dividend prev_close_j − amount_j)
+///   adjusted_price(t)  = round( raw_price · DEN · NET / (NUM · REF) )   // one division per field
+///   adjusted_volume(t) = round( raw_volume · NUM / DEN )                // dividends NEVER scale volume
+/// ```
+///
+/// The same compose-then-divide / `i128` / round-half-to-even disciplines as
+/// [`split_adjust_record`] apply, and every matching split AND dividend is re-validated here
+/// (both event types are publicly constructible): a non-positive split factor, an invalid dividend
+/// term (`amount <= 0`, `prev_close <= 0`, `amount >= prev_close`, or a reference close not strictly
+/// before the ex-date), or a split effective between a dividend's reference close and its ex-date
+/// ([`NormalizationError::BasisCrossingDividend`] — the amount and reference close would sit on
+/// different share bases) all fail closed uniformly, before any arithmetic. With no applicable event
+/// the cumulative factor is the identity. Fails closed with [`NormalizationError::UnsupportedKind`]
+/// for any non-equity-bar record, exactly like the split-only read.
+pub fn fully_adjust_record(
+    record: &MarketDataRecord,
+    splits: &[SplitEvent],
+    dividends: &[DividendEvent],
+) -> Result<MarketDataRecord, NormalizationError> {
+    if !matches!(
+        record.key().kind,
+        DatasetKind::DailyEquityBar | DatasetKind::MinuteEquityBar
+    ) {
+        return Err(NormalizationError::UnsupportedKind {
+            kind: record.key().kind.as_str(),
+        });
+    }
+    let symbol = &record.key().symbol;
+    let event_ts = record.key().event_ts;
+
+    // Split legs: the same validate-then-compose loop as split_adjust_record (kept as a sibling so
+    // the split-only read's body stays byte-stable). Only THIS symbol's splits apply.
+    let mut num: i128 = 1;
+    let mut den: i128 = 1;
+    for split in splits {
+        if split.symbol != *symbol {
+            continue;
+        }
+        if split.numerator <= 0 || split.denominator <= 0 {
+            return Err(NormalizationError::NonPositiveSplitFactor {
+                symbol: symbol.clone(),
+                numerator: split.numerator,
+                denominator: split.denominator,
+            });
+        }
+        if split.effective_ts > event_ts {
+            num = checked_mul(num, i128::from(split.numerator), "split numerator product")?;
+            den = checked_mul(
+                den,
+                i128::from(split.denominator),
+                "split denominator product",
+            )?;
+        }
+    }
+
+    // Dividend legs: validate EVERY matching dividend (applicable or not — the uniform fail-closed
+    // discipline the split loop pins), then compose the applicable back-adjustment ratios. A ratio is
+    // (prev_close − amount) / prev_close: dimensionless on the reference close's share basis, so it
+    // composes with split factors — PROVIDED no split re-based the shares between the reference close
+    // and the ex-date (the basis-crossing check below; mixing bases would miscompute the factor).
+    let mut net: i128 = 1;
+    let mut refe: i128 = 1;
+    for dividend in dividends {
+        if dividend.symbol != *symbol {
+            continue;
+        }
+        if dividend.amount_minor <= 0
+            || dividend.prev_close_minor <= 0
+            || dividend.amount_minor >= dividend.prev_close_minor
+            || dividend.prev_close_ts >= dividend.ex_ts
+        {
+            return Err(NormalizationError::InvalidDividendTerm {
+                symbol: symbol.clone(),
+                ex_ts: dividend.ex_ts,
+                amount_minor: dividend.amount_minor,
+                prev_close_minor: dividend.prev_close_minor,
+            });
+        }
+        for split in splits {
+            if split.symbol == *symbol
+                && split.effective_ts > dividend.prev_close_ts
+                && split.effective_ts <= dividend.ex_ts
+            {
+                return Err(NormalizationError::BasisCrossingDividend {
+                    symbol: symbol.clone(),
+                    ex_ts: dividend.ex_ts,
+                    split_effective_ts: split.effective_ts,
+                });
+            }
+        }
+        if dividend.ex_ts > event_ts {
+            net = checked_mul(
+                net,
+                i128::from(dividend.prev_close_minor - dividend.amount_minor),
+                "dividend net product",
+            )?;
+            refe = checked_mul(
+                refe,
+                i128::from(dividend.prev_close_minor),
+                "dividend reference product",
+            )?;
+        }
+    }
+
+    let price_num = checked_mul(den, net, "price factor numerator")?;
+    let price_den = checked_mul(num, refe, "price factor denominator")?;
+    let mut adjusted: Vec<MarketField> = Vec::with_capacity(record.fields().len());
+    for field in record.fields() {
+        let value = i128::from(field.value_minor);
+        let new_value = if PRICE_FIELDS.contains(&field.name.as_str()) {
+            // price · (DEN · NET) / (NUM · REF) — one division (both products validated positive).
+            let scaled = checked_mul(value, price_num, &field.name)?;
+            div_round_half_even(scaled, price_den)
+        } else if field.name == VOLUME_FIELD {
+            // volume · NUM / DEN — the SPLIT factor only; a dividend never changes the share count.
+            let scaled = checked_mul(value, num, &field.name)?;
+            div_round_half_even(scaled, den)
+        } else {
+            value
+        };
+        let narrowed = i64::try_from(new_value).map_err(|_| NormalizationError::Overflow {
+            context: format!("field '{}' result {new_value}", field.name),
+        })?;
+        adjusted.push(MarketField {
+            name: field.name.clone(),
+            value_minor: narrowed,
+        });
+    }
+
+    Ok(MarketDataRecord::new(record.key().clone(), adjusted)
+        .expect("fully-adjusted record preserves the source record's validity"))
+}
+
+/// Fully-adjust a borrowed slice of records (the entry point the coverage gate calls over a
+/// kind-narrowed, `event_ts`-ascending result). Returns owned adjusted records in the same order.
+pub fn fully_adjust_records(
+    records: &[&MarketDataRecord],
+    splits: &[SplitEvent],
+    dividends: &[DividendEvent],
+) -> Result<Vec<MarketDataRecord>, NormalizationError> {
+    records
+        .iter()
+        .map(|record| fully_adjust_record(record, splits, dividends))
         .collect()
 }
 
@@ -646,6 +946,214 @@ mod tests {
     }
 
     // ----------------------------------------------------------------------- //
+    // Fully-adjusted (splits AND dividends, SYS-29) — fixed-example tests.
+    // ----------------------------------------------------------------------- //
+
+    fn dividend(
+        symbol: &str,
+        ex_ts: i64,
+        amount: i64,
+        prev_ts: i64,
+        prev_close: i64,
+    ) -> DividendEvent {
+        DividendEvent {
+            symbol: symbol.to_string(),
+            ex_ts,
+            amount_minor: amount,
+            prev_close_minor: prev_close,
+            prev_close_ts: prev_ts,
+        }
+    }
+
+    fn dividend_rec(symbol: &str, ex_ts: i64, amount: i64) -> MarketDataRecord {
+        crate::store::dividend_record(ex_ts, symbol, amount)
+    }
+
+    #[test]
+    fn dividend_back_adjusts_pre_ex_prices_and_never_volume() {
+        // $1.00 dividend (100 minor) ex at 200, reference close 10000 @100 → factor 99/100.
+        let bar = daily_bar("AAPL", 100, [10_000, 10_000, 10_000, 10_000, 100_000]);
+        let divs = [dividend("AAPL", 200, 100, 100, 10_000)];
+        let adjusted = fully_adjust_record(&bar, &[], &divs).unwrap();
+        assert_eq!(field_of(&adjusted, "close"), 9_900); // 10000 · 99/100
+        assert_eq!(field_of(&adjusted, "open"), 9_900);
+        // Volume is UNTOUCHED by a dividend (no share-count change).
+        assert_eq!(field_of(&adjusted, "volume"), 100_000);
+        // The natural key (incl. event_ts) is unchanged.
+        assert_eq!(adjusted.key(), bar.key());
+    }
+
+    #[test]
+    fn dividend_ex_date_boundary_is_strict() {
+        let divs = [dividend("AAPL", 200, 100, 150, 10_000)];
+        // A bar ON the ex-date (200) already trades without the dividend -> unadjusted.
+        let on_bar = daily_bar("AAPL", 200, [0, 0, 0, 10_000, 10]);
+        let on = fully_adjust_record(&on_bar, &[], &divs).unwrap();
+        assert_eq!(field_of(&on, "close"), 10_000);
+        // A bar the second before (199) is cum-dividend -> adjusted.
+        let before_bar = daily_bar("AAPL", 199, [0, 0, 0, 10_000, 10]);
+        let before = fully_adjust_record(&before_bar, &[], &divs).unwrap();
+        assert_eq!(field_of(&before, "close"), 9_900);
+    }
+
+    #[test]
+    fn split_and_dividend_compose_into_one_price_factor() {
+        // Dividend ex at 150 (ref close 10000 @100, $1.00) THEN a 4-for-1 split at 200. A bar at 100:
+        // price · (1·9900) / (4·10000) = 10000 · 9900/40000 = 2475; volume · 4/1 = 400000 (split only).
+        let bar = daily_bar("AAPL", 100, [10_000, 10_000, 10_000, 10_000, 100_000]);
+        let splits = [SplitEvent {
+            symbol: "AAPL".to_string(),
+            effective_ts: 200,
+            numerator: 4,
+            denominator: 1,
+        }];
+        let divs = [dividend("AAPL", 150, 100, 100, 10_000)];
+        let adjusted = fully_adjust_record(&bar, &splits, &divs).unwrap();
+        assert_eq!(field_of(&adjusted, "close"), 2_475);
+        assert_eq!(field_of(&adjusted, "volume"), 400_000);
+        // The split-only read over the same inputs gives 2500 — the dividend leg is the difference.
+        let split_only = split_adjust_record(&bar, &splits).unwrap();
+        assert_eq!(field_of(&split_only, "close"), 2_500);
+    }
+
+    #[test]
+    fn fully_adjusted_with_no_events_is_the_identity_and_split_only_matches() {
+        let bar = daily_bar("AAPL", 100, [9_950, 10_075, 9_910, 10_003, 100_001]);
+        assert_eq!(fully_adjust_record(&bar, &[], &[]).unwrap(), bar);
+        // With splits but no dividends, fully-adjusted == split-adjusted (same math, empty dividend leg).
+        let splits = [SplitEvent {
+            symbol: "AAPL".to_string(),
+            effective_ts: 200,
+            numerator: 4,
+            denominator: 1,
+        }];
+        assert_eq!(
+            fully_adjust_record(&bar, &splits, &[]).unwrap(),
+            split_adjust_record(&bar, &splits).unwrap()
+        );
+    }
+
+    #[test]
+    fn invalid_dividend_terms_fail_closed_uniformly() {
+        let bar = daily_bar("AAPL", 100, [0, 0, 0, 10_000, 10]);
+        let bad_terms = [
+            dividend("AAPL", 200, 0, 100, 10_000),  // non-positive amount
+            dividend("AAPL", 200, -5, 100, 10_000), // negative amount
+            dividend("AAPL", 200, 100, 100, 0),     // non-positive reference close
+            dividend("AAPL", 200, 10_000, 100, 10_000), // amount == reference close (zeroes price)
+            dividend("AAPL", 200, 12_000, 100, 10_000), // amount > reference close (negates price)
+            dividend("AAPL", 200, 100, 200, 10_000), // reference NOT strictly before ex-date
+            // Even a NON-applicable (ex_ts <= event_ts) malformed dividend fails closed, so the
+            // result is uniform across every bar in a series, not bar-date-dependent.
+            dividend("AAPL", 50, 0, 40, 10_000),
+        ];
+        for bad in bad_terms {
+            let label = format!("{bad:?}");
+            assert!(
+                matches!(
+                    fully_adjust_record(&bar, &[], &[bad]),
+                    Err(NormalizationError::InvalidDividendTerm { .. })
+                ),
+                "expected InvalidDividendTerm for {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn basis_crossing_split_between_reference_close_and_ex_date_fails_closed() {
+        // A split effective in (prev_close_ts, ex_ts] puts the dividend amount and its reference
+        // close on different share bases — composing them would miscompute the factor. Fail closed.
+        let bar = daily_bar("AAPL", 100, [0, 0, 0, 10_000, 10]);
+        let divs = [dividend("AAPL", 200, 100, 150, 10_000)];
+        for split_ts in [151, 200] {
+            let splits = [SplitEvent {
+                symbol: "AAPL".to_string(),
+                effective_ts: split_ts,
+                numerator: 4,
+                denominator: 1,
+            }];
+            assert!(
+                matches!(
+                    fully_adjust_record(&bar, &splits, &divs),
+                    Err(NormalizationError::BasisCrossingDividend { .. })
+                ),
+                "split@{split_ts} inside (150, 200] must fail closed"
+            );
+        }
+        // A split at/before the reference close (150) or strictly after the ex-date is fine.
+        for split_ts in [150, 201] {
+            let splits = [SplitEvent {
+                symbol: "AAPL".to_string(),
+                effective_ts: split_ts,
+                numerator: 4,
+                denominator: 1,
+            }];
+            assert!(
+                fully_adjust_record(&bar, &splits, &divs).is_ok(),
+                "split@{split_ts} outside (150, 200] must compose"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dividend_only_adjusts_its_own_symbol() {
+        let aapl = daily_bar("AAPL", 100, [0, 0, 0, 10_000, 10]);
+        let msft = daily_bar("MSFT", 100, [0, 0, 0, 8_000, 20]);
+        let divs = [dividend("AAPL", 200, 100, 100, 10_000)];
+        let adjusted = fully_adjust_records(&[&aapl, &msft], &[], &divs).unwrap();
+        assert_eq!(field_of(&adjusted[0], "close"), 9_900);
+        assert_eq!(
+            adjusted[1], msft,
+            "an AAPL dividend must not touch an MSFT bar"
+        );
+        // A malformed AAPL dividend does not poison an MSFT-only batch (wrong symbol -> skipped).
+        let bad = dividend("AAPL", 200, 0, 100, 10_000);
+        assert_eq!(
+            fully_adjust_records(&[&msft], &[], &[bad]).unwrap()[0],
+            msft
+        );
+    }
+
+    #[test]
+    fn dividend_events_for_extracts_and_fails_closed_on_missing_reference() {
+        let records = [
+            &dividend_rec("AAPL", 200, 100),
+            &dividend_rec("MSFT", 200, 50), // other symbol: ignored
+            &daily_bar("AAPL", 100, [1, 1, 1, 1, 1]), // other kind: ignored
+        ];
+        // Resolver knows a close @100 of 10000 before ex 200.
+        let events = dividend_events_for("AAPL", &records, |ex_ts| {
+            (ex_ts == 200).then_some((100, 10_000))
+        })
+        .unwrap();
+        assert_eq!(
+            events,
+            vec![dividend("AAPL", 200, 100, 100, 10_000)],
+            "only the AAPL dividend, resolved against its reference close"
+        );
+        // No prior close -> MissingReferenceClose, never a silent factor of 1.
+        assert!(matches!(
+            dividend_events_for("AAPL", &records, |_| None),
+            Err(NormalizationError::MissingReferenceClose { ex_ts: 200, .. })
+        ));
+    }
+
+    #[test]
+    fn fully_adjusted_overflow_fails_closed_rather_than_wrapping() {
+        // Two maximal dividend legs push the i128 price product past i128::MAX (MAX bar value times
+        // a (MAX-1)^2 net product) → the checked multiply fails closed, never a silent wrap.
+        let bar = daily_bar("AAPL", 100, [0, 0, 0, i64::MAX, 0]);
+        let divs = [
+            dividend("AAPL", 200, 1, 100, i64::MAX),
+            dividend("AAPL", 300, 1, 250, i64::MAX),
+        ];
+        assert!(matches!(
+            fully_adjust_record(&bar, &[], &divs),
+            Err(NormalizationError::Overflow { .. })
+        ));
+    }
+
+    // ----------------------------------------------------------------------- //
     // Generative property test (L2-style). `atp-data` is a zero-dependency crate, so rather than pull
     // in proptest/quickcheck this drives the split math over thousands of deterministically-generated
     // (seeded) bar + split sequences and asserts the money-math INVARIANTS Codex flagged: identity with
@@ -805,6 +1313,156 @@ mod tests {
                 "volume rounding: {splits:?}"
             );
             let _ = close_of(&adjusted);
+        }
+    }
+
+    /// The fully-adjusted (splits AND dividends) sibling of `property_split_adjustment_invariants`:
+    /// the same seeded generator drives `fully_adjust_record` over thousands of bar + split + dividend
+    /// sequences and asserts the SYS-29 invariants — identity with no applicable event, split-only
+    /// equivalence with an empty dividend leg, exact composed-rational pricing, volume never touched
+    /// by a dividend, order-independence, symbol isolation, and uniform fail-closed rejection of
+    /// invalid dividend terms.
+    #[test]
+    fn property_fully_adjusted_invariants() {
+        let symbols = ["AAPL", "MSFT", "ZZZ"];
+        let mut rng = Rng(0xD1F1_DE4D_5EED);
+        for _ in 0..5000 {
+            let sym = symbols[rng.range(0, 2) as usize];
+            let event_ts = rng.range(1, 200);
+            let ohlcv = [
+                rng.range(0, 5_000_000),
+                rng.range(0, 5_000_000),
+                rng.range(0, 5_000_000),
+                rng.range(1, 5_000_000),
+                rng.range(0, 5_000_000),
+            ];
+            let bar = daily_bar(sym, event_ts, ohlcv);
+
+            // 0..=2 splits with VALID factors, kept clear of the dividend reference windows below
+            // (splits at ts 1..=200 vs dividend reference windows in 201..; basis-crossing is its own
+            // fixed test) so every generated combination composes.
+            let mut splits = Vec::new();
+            for _ in 0..rng.range(0, 2) {
+                splits.push(SplitEvent {
+                    symbol: symbols[rng.range(0, 2) as usize].to_string(),
+                    effective_ts: rng.range(1, 200),
+                    numerator: rng.range(1, 8),
+                    denominator: rng.range(1, 8),
+                });
+            }
+
+            // 0..=2 dividends with reference windows strictly after every split (prev_ts >= 201), a
+            // random mix of valid and INVALID terms (amount >= prev_close / non-positive amount).
+            let mut dividends = Vec::new();
+            let mut has_bad_matching = false;
+            for _ in 0..rng.range(0, 2) {
+                let d_sym = symbols[rng.range(0, 2) as usize];
+                let prev_ts = rng.range(201, 300);
+                let ex_ts = prev_ts + rng.range(1, 20);
+                let prev_close = rng.range(100, 100_000);
+                // ~1 in 4 draws an invalid amount (zero, negative, or >= prev_close).
+                let amount = if rng.range(0, 3) == 0 {
+                    prev_close + rng.range(0, 5) - 2 // straddles prev_close; may also be valid
+                } else {
+                    rng.range(1, prev_close - 1)
+                };
+                if d_sym == sym && (amount <= 0 || amount >= prev_close) {
+                    has_bad_matching = true;
+                }
+                dividends.push(DividendEvent {
+                    symbol: d_sym.to_string(),
+                    ex_ts,
+                    amount_minor: amount,
+                    prev_close_minor: prev_close,
+                    prev_close_ts: prev_ts,
+                });
+            }
+
+            let result = fully_adjust_record(&bar, &splits, &dividends);
+
+            // INVARIANT: an invalid dividend term for THIS symbol fails closed (never a panic /
+            // miscompute), uniformly — whether or not the dividend is applicable to this bar.
+            if has_bad_matching {
+                assert!(
+                    matches!(result, Err(NormalizationError::InvalidDividendTerm { .. })),
+                    "invalid matching dividend must fail closed: {dividends:?}"
+                );
+                continue;
+            }
+            let adjusted = result.expect("well-formed events adjust without error");
+
+            // INVARIANT: identity when nothing applies; split-only equivalence with no dividends.
+            let applicable_splits: Vec<&SplitEvent> = splits
+                .iter()
+                .filter(|s| s.symbol == sym && s.effective_ts > event_ts)
+                .collect();
+            let applicable_divs: Vec<&DividendEvent> = dividends
+                .iter()
+                .filter(|d| d.symbol == sym && d.ex_ts > event_ts)
+                .collect();
+            if applicable_splits.is_empty() && applicable_divs.is_empty() {
+                assert_eq!(adjusted, bar, "no applicable event must be the identity");
+            }
+            if dividends.is_empty() {
+                assert_eq!(
+                    adjusted,
+                    split_adjust_record(&bar, &splits).unwrap(),
+                    "an empty dividend leg must equal the split-only read"
+                );
+            }
+
+            // INVARIANT: exact composed-rational pricing — every OHLC field equals
+            // round-half-even(raw · DEN·NET / (NUM·REF)); volume equals the SPLIT-only inverse.
+            let mut num: i128 = 1;
+            let mut den: i128 = 1;
+            for s in &applicable_splits {
+                num *= s.numerator as i128;
+                den *= s.denominator as i128;
+            }
+            let mut net: i128 = 1;
+            let mut refe: i128 = 1;
+            for d in &applicable_divs {
+                net *= (d.prev_close_minor - d.amount_minor) as i128;
+                refe *= d.prev_close_minor as i128;
+            }
+            for name in ["open", "high", "low", "close"] {
+                let raw = field_of(&bar, name) as i128;
+                let expected = div_round_half_even(raw * den * net, num * refe) as i64;
+                assert_eq!(
+                    field_of(&adjusted, name),
+                    expected,
+                    "OHLC {name}: {dividends:?}"
+                );
+            }
+            let raw_vol = field_of(&bar, "volume") as i128;
+            let expected_vol = div_round_half_even(raw_vol * num, den) as i64;
+            assert_eq!(
+                field_of(&adjusted, "volume"),
+                expected_vol,
+                "volume must take the split factor ONLY (a dividend never scales volume): {dividends:?}"
+            );
+
+            // INVARIANT: order-independence and symbol isolation.
+            let mut reversed = dividends.clone();
+            reversed.reverse();
+            assert_eq!(
+                fully_adjust_record(&bar, &splits, &reversed).unwrap(),
+                adjusted,
+                "dividend application must be order-independent"
+            );
+            let mut with_foreign = dividends.clone();
+            with_foreign.push(DividendEvent {
+                symbol: "NOSUCH".to_string(),
+                ex_ts: 999,
+                amount_minor: 50,
+                prev_close_minor: 10_000,
+                prev_close_ts: 998,
+            });
+            assert_eq!(
+                fully_adjust_record(&bar, &splits, &with_foreign).unwrap(),
+                adjusted,
+                "a foreign-symbol dividend must not change this bar"
+            );
         }
     }
 }

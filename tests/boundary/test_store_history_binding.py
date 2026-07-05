@@ -61,9 +61,10 @@ def _render(
     normalization: str = "raw",
 ) -> str:
     """Render data007_query_cli output, echoing the queried symbol/resolution/start/end/normalization
-    (as the real CLI does). For split-adjusted, the real CLI also echoes the proven coverage frontier
-    ``coverage_through`` (always >= end); the fake sets it to ``end`` (D == end, the inclusive boundary
-    the gate guarantees) so a fake split-adjusted response is gate-valid by construction."""
+    (as the real CLI does). For the gate-served adjusted modes (split-adjusted / fully-adjusted), the
+    real CLI also echoes the proven coverage frontier ``coverage_through`` (always >= end); the fake
+    sets it to ``end`` (D == end, the inclusive boundary the gate guarantees) so a fake adjusted
+    response is gate-valid by construction."""
     lines = [
         f"symbol:{symbol}",
         f"resolution:{resolution}",
@@ -72,7 +73,7 @@ def _render(
         "kind:any",
         f"normalization:{normalization}",
     ]
-    if normalization == "split-adjusted":
+    if normalization in ("split-adjusted", "fully-adjusted"):
         lines.append(f"coverage_through:{end}")
     lines.append(f"match_count:{len(records)}")
     for i, (event_ts, fields) in enumerate(records):
@@ -294,17 +295,47 @@ def test_default_normalization_serves_split_adjusted_through_the_gate() -> None:
     assert _arg(runner.calls[0], "--normalization") == "split-adjusted"
 
 
-@pytest.mark.parametrize(
-    "mode",
-    [NormalizationMode.FULLY_ADJUSTED, NormalizationMode.TOTAL_RETURN],
-)
-def test_dividend_normalization_modes_raise_not_implemented(mode: NormalizationMode) -> None:
-    # FULLY_ADJUSTED / TOTAL_RETURN additionally need dividend data (SRS-DATA-012); they stay OUT of the
-    # served label map and fail closed before any query. (SPLIT_ADJUSTED is now served, see above.)
+def test_total_return_normalization_raises_not_implemented() -> None:
+    # TOTAL_RETURN needs dividend reinvestment + per-subscription selection (SRS-DATA-012); it stays
+    # OUT of the served label map and fails closed before any query. (SPLIT_ADJUSTED and
+    # FULLY_ADJUSTED are now served through the gate, see the neighbouring tests.)
     runner = _FakeRunner(records=[(1_700_000_000, _OHLCV)])
     with pytest.raises(NotImplementedError):
-        _binding(runner).get_bars("AAPL", lookback=1, frequency="1d", normalization=mode)
+        _binding(runner).get_bars(
+            "AAPL", lookback=1, frequency="1d", normalization=NormalizationMode.TOTAL_RETURN
+        )
     assert runner.calls == []  # refused before any query
+
+
+def test_fully_adjusted_passes_and_routes_through_the_gate() -> None:
+    # FULLY_ADJUSTED (splits AND dividends, SYS-29) is served through the same coverage gate as
+    # SPLIT_ADJUSTED: the binding issues --normalization fully-adjusted and the gate-integrity
+    # validation (the echoed coverage_through) applies to it identically.
+    runner = _FakeRunner(records=[(1_700_000_000, _OHLCV)])
+    bars = _binding(runner).get_bars(
+        "AAPL", lookback=1, frequency="1d", normalization=NormalizationMode.FULLY_ADJUSTED
+    )
+    assert len(bars) == 1
+    assert _arg(runner.calls[0], "--normalization") == "fully-adjusted"
+
+
+def test_fully_adjusted_without_coverage_through_fails_closed() -> None:
+    # Gate-integrity applies to fully-adjusted exactly like split-adjusted: a fully-adjusted response
+    # that omits the coverage_through frontier is un-gated and must fail closed.
+    no_frontier = _render(
+        "AAPL", "1d", "0", "1700000000", [(1_700_000_000, _OHLCV)], "fully-adjusted"
+    )
+    no_frontier = no_frontier.replace("coverage_through:1700000000\n", "")
+    runner = _FakeRunner(stdout=no_frontier)
+    with pytest.raises(StoreQueryError) as exc:
+        _binding(runner).get_bars_range(
+            "AAPL",
+            frequency="1d",
+            start=datetime(1970, 1, 1, tzinfo=timezone.utc),
+            end=datetime.fromtimestamp(1_700_000_000, tz=timezone.utc),
+            normalization=NormalizationMode.FULLY_ADJUSTED,
+        )
+    assert "coverage_through" in str(exc.value)
 
 
 def test_raw_normalization_passes() -> None:
@@ -424,15 +455,27 @@ def test_get_bars_range_default_serves_split_adjusted() -> None:
     assert _arg(runner.calls[0], "--normalization") == "split-adjusted"
 
 
-def test_get_bars_range_dividend_modes_raise_not_implemented() -> None:
+def test_get_bars_range_total_return_raises_not_implemented() -> None:
     runner = _FakeRunner(records=[(1_700_000_000, _OHLCV)])
     start = datetime(2023, 11, 14, tzinfo=timezone.utc)
     end = datetime(2023, 11, 16, tzinfo=timezone.utc)
-    for mode in (NormalizationMode.FULLY_ADJUSTED, NormalizationMode.TOTAL_RETURN):
-        with pytest.raises(NotImplementedError):
-            _binding(runner).get_bars_range(
-                "AAPL", frequency="1d", start=start, end=end, normalization=mode
-            )
+    with pytest.raises(NotImplementedError):
+        _binding(runner).get_bars_range(
+            "AAPL",
+            frequency="1d",
+            start=start,
+            end=end,
+            normalization=NormalizationMode.TOTAL_RETURN,
+        )
+    # FULLY_ADJUSTED is served (through the gate), no longer refused.
+    bars = _binding(runner).get_bars_range(
+        "AAPL",
+        frequency="1d",
+        start=start,
+        end=end,
+        normalization=NormalizationMode.FULLY_ADJUSTED,
+    )
+    assert len(bars) == 1
 
 
 # --------------------------------------------------------------------------- #

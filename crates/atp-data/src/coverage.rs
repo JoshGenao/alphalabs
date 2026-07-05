@@ -1,86 +1,172 @@
-//! SRS-DATA-011 — corporate-action **coverage** gate (the keystone that makes a split-adjusted label
-//! honest).
+//! SRS-DATA-011 — corporate-action **coverage** gate (the keystone that makes an adjusted label
+//! honest) plus the corporate-action REFLECTION surface: split/reverse-split and dividend adjustment,
+//! symbol-change lineage, and delisting/merger/symbol-change event surfacing.
 //!
 //! The acceptance criterion (docs/SRS.md SRS-DATA-011): *"Splits, reverse splits, dividends,
 //! delistings, mergers, and symbol changes are reflected in historical records so that backtests
 //! spanning corporate-action dates produce correct P&L calculations under the selected normalization
-//! mode."* This module ships the **coverage** half — the keystone that lets the (crate-internal)
-//! SRS-DATA-012 split-adjustment math finally be served on a public surface, but **only** when coverage
-//! proves every relevant split is known. Only SPLITS / reverse-splits have adjustment math + coverage
-//! here; dividends, delistings, mergers, and symbol changes are deferred (SRS-DATA-011 remainder), so
-//! SRS-DATA-011 stays `passes:false`.
+//! mode."* This module serves all six action types through ONE coverage-enforcing gate:
+//!
+//! * **splits / reverse splits** — re-quoted into the served prices (split-adjusted and
+//!   fully-adjusted modes; the crate-internal SRS-DATA-012 math);
+//! * **dividends** — re-quoted into the served prices under the SYS-29 **fully-adjusted** (splits AND
+//!   dividends) mode ([`MarketDataStore::query_fully_adjusted`]); volume is never dividend-scaled;
+//! * **symbol changes** — resolved as LINEAGE: querying the current symbol returns the predecessor's
+//!   bars (relabeled to the queried symbol) for instants before the rename, with adjustments composed
+//!   across the hop, so a backtest spanning the rename sees one continuous series;
+//! * **delistings / mergers / symbol changes** — surfaced STRUCTURALLY on the result
+//!   ([`SplitAdjustedResult::events`]) when their effective instant falls inside the query window, so
+//!   a P&L consumer can mark a delisted position final, convert at merger terms, or follow the
+//!   lineage hop (position/order REMAPPING itself is SYS-28b/c / SYS-88 — the execution and
+//!   simulation layers consume this data; the data layer's job is the honest record).
 //!
 //! # The gate (the crux)
 //!
-//! The split math re-quotes a bar at `event_ts = t` by every split with `effective_ts > t` (STRICT).
-//! Every in-window bar has `t <= end_ts`, so the deepest requirement for an internally-consistent
-//! split-adjusted `[start_ts, end_ts]` window is that **all splits with `effective_ts <= end_ts` are
-//! known**. Define the **coverage frontier** `D = max(complete_through)` over the symbol's
-//! [`CorporateActionCoverage`](crate::store::DatasetKind::CorporateActionCoverage) records (`None` if
-//! the symbol has no coverage record). [`MarketDataStore::query_split_adjusted`] serves split-adjusted
-//! output **iff a coverage record exists AND `D >= end_ts`**; otherwise it FAILS CLOSED with
+//! The adjustment math re-quotes a bar at `event_ts = t` by every event with `effective_ts > t`
+//! (STRICT). Every in-window bar has `t <= end_ts`, so the deepest requirement for an
+//! internally-consistent adjusted `[start_ts, end_ts]` window is that **all corporate actions with
+//! `effective_ts <= end_ts` are known**. Define the **coverage frontier** `D = max(complete_through)`
+//! over the symbol's [`CorporateActionCoverage`](crate::store::DatasetKind::CorporateActionCoverage)
+//! records (`None` if the symbol has no coverage record). Every gated read serves adjusted output
+//! **iff a coverage record exists AND `D >= end_ts`**; otherwise it FAILS CLOSED with
 //! [`CoverageError::NotCovered`].
 //!
 //! `D >= end_ts` (not `==`) is correct, and these are the edges an adversarial reviewer probes:
 //!
-//! * A known split in `(end_ts, D]` has `effective_ts > end_ts >=` every in-window bar, so it applies
+//! * A known event in `(end_ts, D]` has `effective_ts > end_ts >=` every in-window bar, so it applies
 //!   *uniformly* to all of them — the series stays internally consistent (this is why the bound is
 //!   `>=`, not `==`).
-//! * A split exactly at `end_ts` (`effective_ts == end_ts`) leaves the `end_ts` bar unadjusted (the
+//! * An event exactly at `end_ts` (`effective_ts == end_ts`) leaves the `end_ts` bar unadjusted (the
 //!   strict `effective_ts > t` boundary) while adjusting every earlier in-window bar — and it has
 //!   `effective_ts = end_ts <= D`, so it is known and handled. The strict math boundary and the `>=`
 //!   gate boundary are mutually coherent; there is no off-by-one.
-//! * `D < end_ts` (or no record) could leave an unknown split in `(D, end_ts]` that adjusts some
-//!   in-window bars — that bar would be silently under-adjusted (a phantom split-drop = wrong P&L), so
-//!   it must fail closed.
+//! * `D < end_ts` (or no record) could leave an unknown event in `(D, end_ts]` that adjusts some
+//!   in-window bars — that bar would be silently under-adjusted (a phantom event-drop = wrong P&L),
+//!   so it must fail closed.
 //!
-//! The result is an honest **"as-of-`D` split-adjusted"** series with no phantom split-drops inside the
-//! window — the SRS-DATA-011 *"correct P&L for backtests spanning corporate-action dates"* property. To
-//! keep the basis exactly as-of-`D`, the adjustment applies ONLY splits with `effective_ts <= D` (so a
-//! bar at `t` is adjusted for splits in `(t, D]`): a split with `effective_ts > D` is EXCLUDED even if
-//! its record is already in the store, because coverage guarantees completeness only through `D` — the
-//! `(D, ...]` range may hide unknown splits, so applying a known later split would silently adjust the
-//! series PAST the advertised `coverage_through:D`. Over-claiming a "current-adjusted" series would be
-//! the fail-open; `D >= end_ts` (applying splits up to `D`) is the strongest honest claim available
-//! without future corporate-action data.
+//! The result is an honest **"as-of-basis adjusted"** series with no phantom event-drops inside the
+//! window — the SRS-DATA-011 *"correct P&L for backtests spanning corporate-action dates"* property.
+//! Each read's basis is its `adjusted_through` cutoff: the frontier-basis reads apply every event
+//! with `effective_ts <= D`, the point-in-time (`_as_of`) reads only events with
+//! `effective_ts <= query.end_ts` (no lookahead through a future event). An event with
+//! `effective_ts` beyond the cutoff is EXCLUDED even if its record is already in the store: for the
+//! frontier basis, coverage guarantees completeness only through `D` (the `(D, ...]` range may hide
+//! unknown events, so applying a known later one would silently adjust the series PAST the advertised
+//! `coverage_through:D`); for the as-of basis, the event simply has not happened yet at the run's
+//! as-of date. Over-claiming a "current-adjusted" series would be the fail-open.
+//!
+//! # Coverage over a symbol-change lineage (a documented trust decision)
+//!
+//! Asserting coverage for symbol `S` through `D` asserts that **all corporate actions across `S`'s
+//! symbol-change lineage** (its predecessors, via
+//! [`CorporateActionSymbolChange`](crate::store::DatasetKind::CorporateActionSymbolChange) records)
+//! effective on or before `D` are known — the instrument is ONE continuous entity through a rename,
+//! so a per-segment frontier would be a fiction (the operator asserting "AAPLN is complete through D"
+//! is asserting knowledge of the instrument's history, which includes its AAPL era). The QUERIED
+//! symbol's frontier therefore governs the whole lineage-resolved read. Lineage resolution itself
+//! fails closed on inconsistent rename data ([`CoverageError::LineageCycle`] /
+//! [`CoverageError::AmbiguousLineage`]): a rename cycle, two predecessors claiming one successor, a
+//! predecessor with multiple renames, out-of-order hops, or a bar dated outside its symbol's lineage
+//! validity window. A merger does NOT splice the acquired series into the acquirer's — the acquired
+//! series terminates and the conversion terms are surfaced as an event.
 //!
 //! # The gated public entry point (no uncovered capability on ANY surface)
 //!
-//! The split-adjustment math (`crate::normalization`) stays **crate-internal** — `split_adjust_records`
-//! / `SplitEvent` are not re-exported. This module is a sibling in the same crate, so it can call those
-//! crate-internal functions while no external caller can. This coverage GATE is the **only** public path
-//! to split-adjusted output: it exposes TWO coverage-enforcing reads — [`MarketDataStore::query_split_adjusted`]
-//! (the current-frontier basis, adjusted through `D`) and [`MarketDataStore::query_split_adjusted_as_of`]
-//! (the point-in-time basis, adjusted only through `query.end_ts`) — and NEITHER can return adjusted
-//! records without the coverage check passing, so there is no public path to raw-as-adjusted. The query
-//! kind is also required to be an equity bar (`DailyEquityBar` / `MinuteEquityBar`) so the math's
-//! `UnsupportedKind` path is unreachable at runtime and a split-adjusted *series* is equity-only by
-//! construction.
+//! The adjustment math (`crate::normalization`) stays **crate-internal** — `split_adjust_records` /
+//! `fully_adjust_records` / `SplitEvent` / `DividendEvent` are not re-exported. This module is a
+//! sibling in the same crate, so it can call those crate-internal functions while no external caller
+//! can. This coverage GATE is the **only** public path to adjusted output: it exposes FOUR
+//! coverage-enforcing reads — [`MarketDataStore::query_split_adjusted`] /
+//! [`MarketDataStore::query_fully_adjusted`] (the current-frontier basis, adjusted through `D`) and
+//! [`MarketDataStore::query_split_adjusted_as_of`] / [`MarketDataStore::query_fully_adjusted_as_of`]
+//! (the point-in-time basis, adjusted only through `query.end_ts`) — and NONE can return adjusted
+//! records without the coverage check passing, so there is no public path to raw-as-adjusted. The
+//! query kind is also required to be an equity bar (`DailyEquityBar` / `MinuteEquityBar`) so the
+//! math's `UnsupportedKind` path is unreachable at runtime and an adjusted *series* is equity-only by
+//! construction. The RAW read (`query_unified`, SRS-DATA-007) is untouched: verbatim storage, no
+//! lineage, no adjustment.
 
-use crate::normalization::{self, NormalizationError};
+use std::collections::BTreeSet;
+
+use crate::normalization::{self, DividendEvent, NormalizationError, SplitEvent};
 use crate::query::UnifiedHistoricalQuery;
-use crate::store::{DatasetKind, MarketDataRecord, MarketDataStore};
+use crate::store::{successor_symbol, DatasetKind, MarketDataRecord, MarketDataStore, NaturalKey};
 
-/// The result of a covered [`MarketDataStore::query_split_adjusted`]: the split-adjusted records (owned,
-/// in `event_ts`-ascending order) plus the proven coverage frontier `D` AND the instant the series is
-/// actually adjusted through — kept SEPARATE so a consumer is never misled about the basis the bars are
-/// quoted on (the two coincide for [`MarketDataStore::query_split_adjusted`] but DIFFER for the
-/// point-in-time [`MarketDataStore::query_split_adjusted_as_of`]).
+/// The hard bound on symbol-change lineage depth. A real instrument renames a handful of times; a
+/// chain deeper than this is inconsistent data (or a cycle the visited-set check somehow missed) and
+/// fails closed as [`CoverageError::LineageCycle`] rather than walking unbounded.
+const MAX_LINEAGE_DEPTH: usize = 32;
+
+/// A structural (non-price) corporate action a gated read SURFACES when its effective instant falls
+/// inside the query window `[start_ts, end_ts]`. Splits and dividends are already reflected in the
+/// served prices; these are the events a P&L consumer must handle STRUCTURALLY: a delisting marks the
+/// position final, a merger converts it at the surfaced terms, a symbol change is the lineage hop the
+/// served (already lineage-resolved) series spans. Every surfaced event is within proven coverage
+/// (the gate guarantees `D >= end_ts >= event.effective_ts`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CorporateActionEvent {
+    /// The symbol's series terminates at `effective_ts` (its last trading instant).
+    Delisting {
+        /// The delisted symbol (a lineage predecessor's own name, if the hop is upstream).
+        symbol: String,
+        /// The delisting instant (the record's `event_ts`).
+        effective_ts: i64,
+    },
+    /// The acquired symbol converts into the successor at `effective_ts`: `numerator` successor
+    /// shares per `denominator` acquired shares plus `cash_per_share_minor` per acquired share.
+    Merger {
+        /// The ACQUIRED symbol (this series terminates at the effective instant).
+        symbol: String,
+        /// The successor (acquirer) symbol.
+        successor: String,
+        /// Successor shares received per `denominator` acquired shares (>= 0; store-validated).
+        numerator: i64,
+        /// The acquired-share denominator of the share ratio (> 0; store-validated).
+        denominator: i64,
+        /// The cash leg per acquired share in integer minor units (>= 0; store-validated).
+        cash_per_share_minor: i64,
+        /// The merger's effective instant.
+        effective_ts: i64,
+    },
+    /// The instrument was renamed `predecessor` -> `successor` at `effective_ts`. The served series
+    /// already spans the hop (predecessor bars are relabeled to the queried symbol).
+    SymbolChange {
+        /// The old symbol.
+        predecessor: String,
+        /// The new symbol.
+        successor: String,
+        /// The rename's effective instant.
+        effective_ts: i64,
+    },
+}
+
+/// The result of a covered gated read (split-adjusted OR fully-adjusted; the name predates the
+/// fully-adjusted read and is kept for its consumers): the adjusted records (owned, in
+/// `event_ts`-ascending order) plus the proven coverage frontier `D`, the instant the series is
+/// actually adjusted through — kept SEPARATE so a consumer is never misled about the basis the bars
+/// are quoted on (the two coincide for the frontier-basis reads but DIFFER for the point-in-time
+/// `_as_of` reads) — and the in-window structural corporate-action [`events`](Self::events).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SplitAdjustedResult {
-    /// The split-adjusted records, owned, in `event_ts`-ascending order (the query result re-quoted).
+    /// The adjusted records, owned, in `event_ts`-ascending order (the query result re-quoted; for a
+    /// symbol with a rename lineage, predecessor bars are included relabeled to the queried symbol).
     pub records: Vec<MarketDataRecord>,
-    /// The proven coverage frontier `D` (the completeness-through instant): every split effective on or
-    /// before `D` is known. Always `>= query.end_ts`. This is the COVERAGE proof, NOT necessarily the
-    /// adjustment basis — see `adjusted_through`.
+    /// The proven coverage frontier `D` (the completeness-through instant): every corporate action
+    /// effective on or before `D` is known. Always `>= query.end_ts`. This is the COVERAGE proof, NOT
+    /// necessarily the adjustment basis — see `adjusted_through`.
     pub coverage_through: i64,
-    /// The instant the series is actually ADJUSTED THROUGH — the split cutoff, i.e. the "as-of basis"
-    /// the records are quoted on: splits effective on or before this are applied, later ones are NOT.
-    /// `query_split_adjusted` adjusts through the frontier `D` (so `adjusted_through == coverage_through`,
-    /// the current basis); `query_split_adjusted_as_of` adjusts through `query.end_ts` (the point-in-time
-    /// basis, so `adjusted_through <= coverage_through`). A consumer that needs the basis the bars are
-    /// quoted on reads THIS field, never `coverage_through`.
+    /// The instant the series is actually ADJUSTED THROUGH — the corporate-action cutoff, i.e. the
+    /// "as-of basis" the records are quoted on: events effective on or before this are applied,
+    /// later ones are NOT. The frontier-basis reads adjust through `D` (so `adjusted_through ==
+    /// coverage_through`, the current basis); the `_as_of` reads adjust through `query.end_ts` (the
+    /// point-in-time basis, so `adjusted_through <= coverage_through`). A consumer that needs the
+    /// basis the bars are quoted on reads THIS field, never `coverage_through`.
     pub adjusted_through: i64,
+    /// The structural corporate actions (delistings, mergers, symbol changes) across the queried
+    /// symbol's lineage whose effective instant falls inside `[query.start_ts, query.end_ts]`, in
+    /// `effective_ts`-ascending order. Splits and dividends are NOT listed here — they are already
+    /// reflected in the served prices. An empty list is the common case, never an error.
+    pub events: Vec<CorporateActionEvent>,
 }
 
 /// A fail-closed split-adjusted-serving error. Split-adjusted output is served only behind proven
@@ -105,9 +191,27 @@ pub enum CoverageError {
         /// The (vendor-neutral) kind label the query named, or `"unspecified"` for a kind-agnostic query.
         kind: &'static str,
     },
-    /// The split-adjustment math fails closed (a malformed split record, a non-positive factor, an
-    /// overflow). Passed through verbatim so the caller sees the precise money-math reason.
+    /// The adjustment math fails closed (a malformed split/dividend record, a non-positive factor,
+    /// an invalid dividend term, a missing dividend reference close, an overflow). Passed through
+    /// verbatim so the caller sees the precise money-math reason.
     Normalization(NormalizationError),
+    /// Symbol-change lineage resolution found a rename CYCLE (or exceeded the hard depth bound):
+    /// following predecessors from the queried symbol revisited a symbol. Inconsistent rename data —
+    /// fail closed rather than loop or serve a self-referential history.
+    LineageCycle {
+        /// The symbol at which the cycle (or the depth bound) was detected.
+        symbol: String,
+    },
+    /// Symbol-change lineage data is AMBIGUOUS or inconsistent: two predecessors claim one successor,
+    /// a predecessor has multiple renames, hops are out of chronological order, or a bar is dated
+    /// outside its symbol's lineage validity window. Serving a series stitched from ambiguous lineage
+    /// could double-count or mis-attribute history — fail closed.
+    AmbiguousLineage {
+        /// The symbol whose lineage data is ambiguous.
+        symbol: String,
+        /// What was ambiguous/inconsistent.
+        context: &'static str,
+    },
 }
 
 impl std::fmt::Display for CoverageError {
@@ -135,6 +239,17 @@ impl std::fmt::Display for CoverageError {
                  (daily-equity-bar | minute-equity-bar); got '{kind}'"
             ),
             Self::Normalization(err) => write!(f, "{err}"),
+            Self::LineageCycle { symbol } => write!(
+                f,
+                "symbol-change lineage for {symbol} contains a rename cycle (or exceeds the depth \
+                 bound): the rename records are inconsistent — refusing to serve a self-referential \
+                 history"
+            ),
+            Self::AmbiguousLineage { symbol, context } => write!(
+                f,
+                "symbol-change lineage for {symbol} is ambiguous ({context}): refusing to stitch a \
+                 series from inconsistent rename data"
+            ),
         }
     }
 }
@@ -169,113 +284,100 @@ impl MarketDataStore {
     }
 
     /// **The coverage-enforcing split-adjusted read (SRS-DATA-011 / SRS-DATA-012).** Returns the
-    /// query's equity bars re-quoted onto a split-comparable basis — but ONLY when the symbol's
-    /// corporate-action coverage frontier extends through the query end.
+    /// query's equity bars — lineage-resolved across any symbol changes — re-quoted onto a
+    /// split-comparable basis, but ONLY when the queried symbol's corporate-action coverage frontier
+    /// extends through the query end.
     ///
-    /// This is one of the two coverage-gated public reads (the other is
-    /// [`query_split_adjusted_as_of`](Self::query_split_adjusted_as_of)); together they are the only
-    /// public path to split-adjusted output (the raw split math stays crate-internal). It fails closed:
+    /// This is one of the four coverage-gated public reads (with
+    /// [`query_split_adjusted_as_of`](Self::query_split_adjusted_as_of),
+    /// [`query_fully_adjusted`](Self::query_fully_adjusted), and
+    /// [`query_fully_adjusted_as_of`](Self::query_fully_adjusted_as_of)); together they are the only
+    /// public path to adjusted output (the raw adjustment math stays crate-internal). It fails closed:
     /// * [`CoverageError::UnsupportedQueryKind`] unless `query.kind` is an explicit equity-bar kind, so
-    ///   the split-adjustment math's `UnsupportedKind` path is unreachable at runtime;
+    ///   the adjustment math's `UnsupportedKind` path is unreachable at runtime;
     /// * [`CoverageError::NotCovered`] unless a coverage record exists and `frontier >= query.end_ts`
     ///   (see the module docs for why `>=` is the precise, honest condition);
+    /// * [`CoverageError::LineageCycle`] / [`CoverageError::AmbiguousLineage`] on inconsistent
+    ///   symbol-change data (see the module docs);
     /// * [`CoverageError::Normalization`] if a split record is malformed (passed through verbatim).
     ///
-    /// On success the result carries the adjusted records, the `coverage_through` frontier `D`, and
+    /// On success the result carries the adjusted records, the `coverage_through` frontier `D`,
     /// `adjusted_through` (here `== coverage_through`, since this method adjusts through the frontier —
-    /// the CURRENT basis). For a POINT-IN-TIME basis (no future-split leak), use
+    /// the CURRENT basis), and the in-window structural [`events`](SplitAdjustedResult::events). For a
+    /// POINT-IN-TIME basis (no future-event leak), use
     /// [`query_split_adjusted_as_of`](Self::query_split_adjusted_as_of), where `adjusted_through` caps at
     /// `query.end_ts`. An empty in-range result is a valid covered result (`records` empty), never an error.
     pub fn query_split_adjusted(
         &self,
         query: &UnifiedHistoricalQuery,
     ) -> Result<SplitAdjustedResult, CoverageError> {
-        // (1) Equity-bar kind guard. Split adjustment is an equity-bar operation; require an explicit
-        // DailyEquityBar / MinuteEquityBar kind so a kind-agnostic query cannot sweep in an
-        // option-chain / fundamental record (which the math would reject mid-stream as UnsupportedKind)
-        // and so the served series is equity-only by construction.
-        match query.kind {
-            Some(DatasetKind::DailyEquityBar) | Some(DatasetKind::MinuteEquityBar) => {}
-            Some(other) => {
-                return Err(CoverageError::UnsupportedQueryKind {
-                    kind: other.as_str(),
-                })
-            }
-            None => {
-                return Err(CoverageError::UnsupportedQueryKind {
-                    kind: "unspecified",
-                })
-            }
-        }
-
-        // (2) Coverage gate. The frontier must exist AND reach at least the query end, else the
-        // uncovered tail could hide a split that adjusts an in-window bar -> fail closed.
-        let frontier = self.coverage_frontier(&query.symbol);
-        let coverage_through = match frontier {
-            Some(d) if d >= query.end_ts => d,
-            have => {
-                return Err(CoverageError::NotCovered {
-                    symbol: query.symbol.clone(),
-                    have_through: have,
-                    need_through: query.end_ts,
-                })
-            }
-        };
-
-        // (3) Collect the symbol's split records up to the coverage frontier D (the as-of date) -- NOT
-        // just the query window, and NOT every split store-wide. A split with effective_ts in
-        // (end_ts, D] legitimately re-bases the in-window bars onto the as-of-D basis, so the set is not
-        // bounded by the query range. But a split with effective_ts > D is EXCLUDED: it is beyond the
-        // proven-complete frontier (coverage only guarantees completeness through D, so the (D, ...]
-        // range may hide unknown splits), and applying it would silently adjust the series PAST the
-        // advertised coverage_through:D. So the served series is consistently adjusted for every split
-        // effective on or before D and no further -- an honest as-of-D basis. (A malformed split beyond
-        // D is likewise out of scope and cannot fail an as-of-D query.) `split_events_for` re-filters by
-        // kind + symbol and fails closed on a malformed split within the frontier.
-        let split_refs: Vec<&MarketDataRecord> = self
-            .records()
-            .iter()
-            .filter(|record| {
-                let key = record.key();
-                key.kind == DatasetKind::CorporateActionSplit
-                    && key.symbol == query.symbol
-                    && key.event_ts <= coverage_through
-            })
-            .collect();
-        let splits = normalization::split_events_for(&query.symbol, &split_refs)?;
-
-        // (4) The equity bars in range (kind-narrowed, event_ts-ascending), then (5) apply the
-        // crate-internal split math. Every record is the guarded equity-bar kind, so UnsupportedKind is
-        // unreachable; an empty match yields an empty (still covered) result.
-        let matched = self.query_unified(query);
-        let adjusted = normalization::split_adjust_records(matched.records(), &splits)?;
-        Ok(SplitAdjustedResult {
-            records: adjusted,
-            coverage_through,
-            // Adjusted through the frontier D (every split <= D applied) -- the current basis.
-            adjusted_through: coverage_through,
-        })
+        self.query_adjusted(query, AdjustmentMode::SplitOnly, AdjustmentBasis::Frontier)
     }
 
     /// Like [`query_split_adjusted`](Self::query_split_adjusted) but POINT-IN-TIME as of the query's
     /// `end_ts` (the run's as-of date): it still requires coverage proven through `end_ts`, but it
-    /// applies ONLY splits effective AT OR BEFORE `end_ts`.
+    /// applies ONLY corporate actions effective AT OR BEFORE `end_ts`.
     ///
-    /// A split effective AFTER `end_ts` — even one within the proven coverage frontier `D` — is NOT
-    /// applied: at the run's as-of date that split has not happened yet, so re-basing the historical
-    /// window onto a FUTURE corporate action would bias a factor / point-in-time backtest (lookahead).
-    /// So the served series is adjusted for every split on/before the as-of date and no further; coverage
-    /// through `D >= end_ts` still guarantees that on/before-`end_ts` split set is COMPLETE (the uncovered
-    /// tail could otherwise hide an in-window-affecting split, so an uncovered query still fails closed).
-    /// [`query_split_adjusted`] by contrast adjusts to the as-of-`D` (coverage-frontier) basis — the
-    /// "current" basis a LIVE strategy wants, not a point-in-time historical one.
+    /// An event effective AFTER `end_ts` — even one within the proven coverage frontier `D` — is NOT
+    /// applied: at the run's as-of date it has not happened yet, so re-basing the historical window
+    /// onto a FUTURE corporate action would bias a factor / point-in-time backtest (lookahead). So the
+    /// served series is adjusted for every event on/before the as-of date and no further; coverage
+    /// through `D >= end_ts` still guarantees that on/before-`end_ts` event set is COMPLETE (the
+    /// uncovered tail could otherwise hide an in-window-affecting event, so an uncovered query still
+    /// fails closed). [`query_split_adjusted`] by contrast adjusts to the as-of-`D`
+    /// (coverage-frontier) basis — the "current" basis a LIVE strategy wants, not a point-in-time
+    /// historical one.
     pub fn query_split_adjusted_as_of(
         &self,
         query: &UnifiedHistoricalQuery,
     ) -> Result<SplitAdjustedResult, CoverageError> {
-        // (1) Equity-bar kind guard (identical to query_split_adjusted).
-        match query.kind {
-            Some(DatasetKind::DailyEquityBar) | Some(DatasetKind::MinuteEquityBar) => {}
+        self.query_adjusted(query, AdjustmentMode::SplitOnly, AdjustmentBasis::AsOfEnd)
+    }
+
+    /// **The coverage-enforcing FULLY-adjusted read (SRS-DATA-011 / SyRS SYS-29 "fully adjusted =
+    /// splits and dividends").** Like [`query_split_adjusted`](Self::query_split_adjusted) — the same
+    /// gate, lineage resolution, event surfacing, and frontier basis — but the served prices are
+    /// additionally back-adjusted for every cash dividend within the basis: a bar strictly before a
+    /// dividend's ex-date is scaled by `(reference close − amount) / reference close`, composed
+    /// exactly (one division per field) with the split factors. Volume is NEVER dividend-scaled (a
+    /// dividend changes no share count). Each dividend's reference close is the last RAW close in the
+    /// lineage series strictly before its ex-date; a dividend with no prior close fails the read
+    /// closed ([`NormalizationError::MissingReferenceClose`] via [`CoverageError::Normalization`]) —
+    /// never a silent factor of 1 — as does a split effective between a reference close and its
+    /// ex-date ([`NormalizationError::BasisCrossingDividend`]: mismatched share bases).
+    pub fn query_fully_adjusted(
+        &self,
+        query: &UnifiedHistoricalQuery,
+    ) -> Result<SplitAdjustedResult, CoverageError> {
+        self.query_adjusted(query, AdjustmentMode::Full, AdjustmentBasis::Frontier)
+    }
+
+    /// Like [`query_fully_adjusted`](Self::query_fully_adjusted) but POINT-IN-TIME as of the query's
+    /// `end_ts`: only splits AND dividends effective/ex at or before the as-of date are applied (the
+    /// same no-lookahead discipline as
+    /// [`query_split_adjusted_as_of`](Self::query_split_adjusted_as_of) — a dividend ex in
+    /// `(end_ts, D]` must not bias a point-in-time read).
+    pub fn query_fully_adjusted_as_of(
+        &self,
+        query: &UnifiedHistoricalQuery,
+    ) -> Result<SplitAdjustedResult, CoverageError> {
+        self.query_adjusted(query, AdjustmentMode::Full, AdjustmentBasis::AsOfEnd)
+    }
+
+    /// The single gated read core every public adjusted read delegates to — one gate, one lineage
+    /// resolution, one event-surfacing path, so no mode/basis combination can skip a check.
+    fn query_adjusted(
+        &self,
+        query: &UnifiedHistoricalQuery,
+        mode: AdjustmentMode,
+        basis: AdjustmentBasis,
+    ) -> Result<SplitAdjustedResult, CoverageError> {
+        // (1) Equity-bar kind guard. Adjustment is an equity-bar operation; require an explicit
+        // DailyEquityBar / MinuteEquityBar kind so a kind-agnostic query cannot sweep in an
+        // option-chain / fundamental record (which the math would reject mid-stream as UnsupportedKind)
+        // and so the served series is equity-only by construction.
+        let kind = match query.kind {
+            Some(kind @ (DatasetKind::DailyEquityBar | DatasetKind::MinuteEquityBar)) => kind,
             Some(other) => {
                 return Err(CoverageError::UnsupportedQueryKind {
                     kind: other.as_str(),
@@ -286,11 +388,12 @@ impl MarketDataStore {
                     kind: "unspecified",
                 })
             }
-        }
+        };
 
-        // (2) Coverage gate: the frontier must still reach at least the as-of date (query end), so the
-        // on/before-end_ts split set is provably complete; an uncovered tail could hide an in-window
-        // split -> fail closed.
+        // (2) Coverage gate on the QUERIED symbol (whose frontier governs its whole lineage — the
+        // documented trust decision in the module docs). The frontier must exist AND reach at least
+        // the query end, else the uncovered tail could hide an event that adjusts an in-window bar ->
+        // fail closed.
         let frontier = self.coverage_frontier(&query.symbol);
         let coverage_through = match frontier {
             Some(d) if d >= query.end_ts => d,
@@ -303,32 +406,395 @@ impl MarketDataStore {
             }
         };
 
-        // (3) Collect splits effective AT OR BEFORE the AS-OF date (query.end_ts), NOT the coverage
-        // frontier D: a split in (end_ts, D] is in the future relative to the run's as-of date and must
-        // NOT be applied (the point-in-time difference from query_split_adjusted, which caps at D).
-        let split_refs: Vec<&MarketDataRecord> = self
-            .records()
+        // (3) The adjustment basis: the cutoff every applied corporate action is bounded to. The
+        // frontier basis applies every event with effective_ts <= D -- NOT just the query window
+        // (an event in (end_ts, D] legitimately re-bases the in-window bars) and NOT past D (coverage
+        // proves completeness only through D, so a known event beyond D would silently adjust the
+        // series PAST the advertised coverage_through; a malformed event beyond the cutoff likewise
+        // cannot fail the read -- it is out of scope). The as-of basis caps at query.end_ts: an event
+        // after the run's as-of date has not happened yet (no lookahead).
+        let adjusted_through = match basis {
+            AdjustmentBasis::Frontier => coverage_through,
+            AdjustmentBasis::AsOfEnd => query.end_ts,
+        };
+
+        // (4) Symbol-change LINEAGE: the queried symbol's predecessor segments, bounded to renames
+        // effective within the basis. Fails closed on a cycle / ambiguous rename data.
+        let lineage = self.resolve_lineage(&query.symbol, adjusted_through)?;
+
+        // (5) The FULL raw lineage series (relabeled to the queried symbol, event_ts-ascending) -- not
+        // window-clipped, because a dividend's reference close may precede the window.
+        let series = self.lineage_raw_series(kind, query, &lineage)?;
+
+        // (6) The applied corporate actions across the lineage, bounded to the basis cutoff.
+        // `split_events_for` / `dividend_events_for` re-filter by kind + symbol and fail closed on a
+        // malformed event within the cutoff.
+        let splits = self.lineage_split_events(query, &lineage, adjusted_through)?;
+        let dividends = match mode {
+            // Split-adjusted deliberately ignores dividend records entirely (mode semantics: the
+            // SYS-29 split-adjusted basis reflects share-count changes only).
+            AdjustmentMode::SplitOnly => Vec::new(),
+            AdjustmentMode::Full => {
+                self.lineage_dividend_events(query, &lineage, adjusted_through, &series)?
+            }
+        };
+
+        // (7) Window-filter the relabeled series and apply the crate-internal math. Every record is
+        // the guarded equity-bar kind, so UnsupportedKind is unreachable; an empty match yields an
+        // empty (still covered) result.
+        let in_window: Vec<&MarketDataRecord> = series
             .iter()
             .filter(|record| {
-                let key = record.key();
-                key.kind == DatasetKind::CorporateActionSplit
-                    && key.symbol == query.symbol
-                    && key.event_ts <= query.end_ts
+                let t = record.key().event_ts;
+                t >= query.start_ts && t <= query.end_ts
             })
             .collect();
-        let splits = normalization::split_events_for(&query.symbol, &split_refs)?;
+        let adjusted = match mode {
+            AdjustmentMode::SplitOnly => normalization::split_adjust_records(&in_window, &splits)?,
+            AdjustmentMode::Full => {
+                normalization::fully_adjust_records(&in_window, &splits, &dividends)?
+            }
+        };
 
-        // (4)/(5) The equity bars in range, then the crate-internal split math.
-        let matched = self.query_unified(query);
-        let adjusted = normalization::split_adjust_records(matched.records(), &splits)?;
+        // (8) Surface the in-window STRUCTURAL events (delistings, mergers, symbol changes) across
+        // the lineage -- all provably known (the gate guarantees D >= end_ts >= event.effective_ts).
+        let events = self.corporate_events_in_window(query, &lineage);
+
         Ok(SplitAdjustedResult {
             records: adjusted,
             coverage_through,
-            // POINT-IN-TIME basis: adjusted only through the as-of date (query.end_ts), NOT the frontier
-            // D -- so the advertised basis never overstates the actual adjustment (no future-split leak).
-            adjusted_through: query.end_ts,
+            adjusted_through,
+            events,
         })
     }
+
+    /// Resolve the queried symbol's rename LINEAGE: walk
+    /// [`CorporateActionSymbolChange`](DatasetKind::CorporateActionSymbolChange) records whose
+    /// successor is the current symbol and whose `event_ts <= cutoff`, newest hop first, producing
+    /// the validity segments the series builder enforces. Fails closed on: two predecessors claiming
+    /// one successor, a predecessor with multiple renames, hops out of chronological order
+    /// ([`CoverageError::AmbiguousLineage`]), a revisited symbol, or a chain deeper than the hard
+    /// bound ([`CoverageError::LineageCycle`]).
+    fn resolve_lineage(
+        &self,
+        symbol: &str,
+        cutoff: i64,
+    ) -> Result<Vec<LineageSegment>, CoverageError> {
+        let mut visited: BTreeSet<String> = BTreeSet::new();
+        visited.insert(symbol.to_string());
+        // The walk collects (predecessor, change_ts) hops, nearest rename first.
+        let mut hops: Vec<(String, i64)> = Vec::new();
+        let mut current = symbol.to_string();
+        loop {
+            if hops.len() >= MAX_LINEAGE_DEPTH {
+                return Err(CoverageError::LineageCycle { symbol: current });
+            }
+            let mut candidates: Vec<&MarketDataRecord> = self
+                .records()
+                .iter()
+                .filter(|record| {
+                    let key = record.key();
+                    key.kind == DatasetKind::CorporateActionSymbolChange
+                        && key.event_ts <= cutoff
+                        && successor_symbol(key) == Some(current.as_str())
+                })
+                .collect();
+            let hop = match candidates.len() {
+                0 => break,
+                1 => candidates.remove(0),
+                _ => {
+                    return Err(CoverageError::AmbiguousLineage {
+                        symbol: current,
+                        context: "two predecessors claim one successor",
+                    })
+                }
+            };
+            let predecessor = hop.key().symbol.clone();
+            let change_ts = hop.key().event_ts;
+            // The predecessor's ONLY outgoing rename within the cutoff must be the hop just followed:
+            // a second one means the same symbol was renamed twice -- inconsistent data.
+            let outgoing = self
+                .records()
+                .iter()
+                .filter(|record| {
+                    let key = record.key();
+                    key.kind == DatasetKind::CorporateActionSymbolChange
+                        && key.symbol == predecessor
+                        && key.event_ts <= cutoff
+                })
+                .count();
+            if outgoing != 1 {
+                return Err(CoverageError::AmbiguousLineage {
+                    symbol: predecessor,
+                    context: "a predecessor has multiple renames",
+                });
+            }
+            // Each earlier hop must be strictly earlier in time (P renamed to C before C renamed on).
+            if let Some((_, prior_ts)) = hops.last() {
+                if change_ts >= *prior_ts {
+                    return Err(CoverageError::AmbiguousLineage {
+                        symbol: predecessor,
+                        context: "lineage hops out of chronological order",
+                    });
+                }
+            }
+            if !visited.insert(predecessor.clone()) {
+                return Err(CoverageError::LineageCycle {
+                    symbol: predecessor,
+                });
+            }
+            hops.push((predecessor.clone(), change_ts));
+            current = predecessor;
+        }
+
+        // Hops -> validity segments: the queried symbol is valid from its (nearest) rename onward;
+        // each predecessor is valid from ITS rename (unbounded for the oldest) until the rename that
+        // retired it.
+        let mut segments = Vec::with_capacity(hops.len() + 1);
+        let mut valid_until: Option<i64> = None;
+        let mut segment_symbol = symbol.to_string();
+        for (predecessor, change_ts) in &hops {
+            segments.push(LineageSegment {
+                symbol: segment_symbol,
+                valid_from: Some(*change_ts),
+                valid_until,
+            });
+            valid_until = Some(*change_ts);
+            segment_symbol = predecessor.clone();
+        }
+        segments.push(LineageSegment {
+            symbol: segment_symbol,
+            valid_from: None,
+            valid_until,
+        });
+        Ok(segments)
+    }
+
+    /// The FULL raw equity-bar series across the lineage segments, relabeled to the queried symbol,
+    /// `event_ts`-ascending. Deliberately NOT window-clipped (a dividend reference close may precede
+    /// the query window). Fails closed if any bar is dated outside its symbol's validity window — a
+    /// predecessor bar on/after its rename (or a successor bar before it) would collide with or
+    /// mis-attribute the other segment's history.
+    fn lineage_raw_series(
+        &self,
+        kind: DatasetKind,
+        query: &UnifiedHistoricalQuery,
+        lineage: &[LineageSegment],
+    ) -> Result<Vec<MarketDataRecord>, CoverageError> {
+        let mut series: Vec<MarketDataRecord> = Vec::new();
+        for segment in lineage {
+            for record in self.records() {
+                let key = record.key();
+                if key.kind != kind
+                    || key.symbol != segment.symbol
+                    || key.resolution != query.resolution
+                {
+                    continue;
+                }
+                let t = key.event_ts;
+                if segment.valid_from.is_some_and(|from| t < from)
+                    || segment.valid_until.is_some_and(|until| t >= until)
+                {
+                    return Err(CoverageError::AmbiguousLineage {
+                        symbol: segment.symbol.clone(),
+                        context: "a bar is dated outside its symbol's lineage validity window",
+                    });
+                }
+                series.push(relabeled(record, &query.symbol));
+            }
+        }
+        // Segments' windows are disjoint, so timestamps are unique; sort for the ascending contract.
+        series.sort_by_key(|record| record.key().event_ts);
+        Ok(series)
+    }
+
+    /// The split events across the lineage, bounded to `effective_ts <= adjusted_through` and
+    /// retagged to the queried symbol (the instrument is one continuous entity through a rename, so a
+    /// predecessor's split applies to the relabeled series exactly like the current symbol's).
+    fn lineage_split_events(
+        &self,
+        query: &UnifiedHistoricalQuery,
+        lineage: &[LineageSegment],
+        adjusted_through: i64,
+    ) -> Result<Vec<SplitEvent>, CoverageError> {
+        let mut splits: Vec<SplitEvent> = Vec::new();
+        for segment in lineage {
+            let refs: Vec<&MarketDataRecord> = self
+                .records()
+                .iter()
+                .filter(|record| {
+                    let key = record.key();
+                    key.kind == DatasetKind::CorporateActionSplit
+                        && key.symbol == segment.symbol
+                        && key.event_ts <= adjusted_through
+                })
+                .collect();
+            splits.extend(
+                normalization::split_events_for(&segment.symbol, &refs)?
+                    .into_iter()
+                    .map(|mut event| {
+                        event.symbol = query.symbol.clone();
+                        event
+                    }),
+            );
+        }
+        Ok(splits)
+    }
+
+    /// The dividend events across the lineage, bounded to `ex_ts <= adjusted_through` and retagged to
+    /// the queried symbol. Each dividend's REFERENCE CLOSE is resolved as the last raw close in the
+    /// (relabeled, full) lineage `series` strictly before its ex-date — the RAW series, never the
+    /// adjusted one, and never window-clipped. A dividend with no prior close fails the read closed.
+    fn lineage_dividend_events(
+        &self,
+        query: &UnifiedHistoricalQuery,
+        lineage: &[LineageSegment],
+        adjusted_through: i64,
+        series: &[MarketDataRecord],
+    ) -> Result<Vec<DividendEvent>, CoverageError> {
+        let prev_close_of = |ex_ts: i64| {
+            series
+                .iter()
+                .rev()
+                .filter(|record| record.key().event_ts < ex_ts)
+                .find_map(|record| {
+                    field_of(record, "close").map(|close| (record.key().event_ts, close))
+                })
+        };
+        let mut dividends: Vec<DividendEvent> = Vec::new();
+        for segment in lineage {
+            let refs: Vec<&MarketDataRecord> = self
+                .records()
+                .iter()
+                .filter(|record| {
+                    let key = record.key();
+                    key.kind == DatasetKind::CorporateActionDividend
+                        && key.symbol == segment.symbol
+                        && key.event_ts <= adjusted_through
+                })
+                .collect();
+            dividends.extend(
+                normalization::dividend_events_for(&segment.symbol, &refs, prev_close_of)?
+                    .into_iter()
+                    .map(|mut event| {
+                        event.symbol = query.symbol.clone();
+                        event
+                    }),
+            );
+        }
+        Ok(dividends)
+    }
+
+    /// The structural corporate-action events (delistings, mergers, symbol changes) across the
+    /// lineage whose effective instant falls inside `[query.start_ts, query.end_ts]`,
+    /// `effective_ts`-ascending. Merger terms are read directly off the record — store validation
+    /// (`validate_record`) guarantees their presence and sanity, so extraction is total.
+    fn corporate_events_in_window(
+        &self,
+        query: &UnifiedHistoricalQuery,
+        lineage: &[LineageSegment],
+    ) -> Vec<CorporateActionEvent> {
+        let mut events: Vec<CorporateActionEvent> = Vec::new();
+        for segment in lineage {
+            for record in self.records() {
+                let key = record.key();
+                if key.symbol != segment.symbol
+                    || key.event_ts < query.start_ts
+                    || key.event_ts > query.end_ts
+                {
+                    continue;
+                }
+                match key.kind {
+                    DatasetKind::CorporateActionDelisting => {
+                        events.push(CorporateActionEvent::Delisting {
+                            symbol: key.symbol.clone(),
+                            effective_ts: key.event_ts,
+                        });
+                    }
+                    DatasetKind::CorporateActionMerger => {
+                        events.push(CorporateActionEvent::Merger {
+                            symbol: key.symbol.clone(),
+                            successor: successor_symbol(key)
+                                .expect("store validation guarantees a merger successor")
+                                .to_string(),
+                            numerator: field_of(record, "numerator")
+                                .expect("store validation guarantees merger terms"),
+                            denominator: field_of(record, "denominator")
+                                .expect("store validation guarantees merger terms"),
+                            cash_per_share_minor: field_of(record, "cash_per_share_minor")
+                                .expect("store validation guarantees merger terms"),
+                            effective_ts: key.event_ts,
+                        });
+                    }
+                    DatasetKind::CorporateActionSymbolChange => {
+                        events.push(CorporateActionEvent::SymbolChange {
+                            predecessor: key.symbol.clone(),
+                            successor: successor_symbol(key)
+                                .expect("store validation guarantees a symbol-change successor")
+                                .to_string(),
+                            effective_ts: key.event_ts,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        events.sort_by_key(|event| match event {
+            CorporateActionEvent::Delisting { effective_ts, .. }
+            | CorporateActionEvent::Merger { effective_ts, .. }
+            | CorporateActionEvent::SymbolChange { effective_ts, .. } => *effective_ts,
+        });
+        events
+    }
+}
+
+/// Which corporate actions a gated read re-quotes into the served prices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdjustmentMode {
+    /// Splits / reverse splits only (the SYS-29 split-adjusted basis).
+    SplitOnly,
+    /// Splits AND dividends (the SYS-29 fully-adjusted basis).
+    Full,
+}
+
+/// Which cutoff bounds the applied corporate actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdjustmentBasis {
+    /// Apply every event within the proven coverage frontier `D` (the "current" basis).
+    Frontier,
+    /// Apply only events effective at or before `query.end_ts` (the point-in-time basis).
+    AsOfEnd,
+}
+
+/// One symbol's validity window within a rename lineage: bars of `symbol` legitimately exist only in
+/// `[valid_from, valid_until)` (either bound absent = unbounded). Enforced by the series builder.
+struct LineageSegment {
+    symbol: String,
+    valid_from: Option<i64>,
+    valid_until: Option<i64>,
+}
+
+/// The queried symbol's relabeling of a lineage bar: the same record with the key symbol swapped
+/// (verbatim clone when it already matches). Total: only the symbol changes, so validity holds.
+fn relabeled(record: &MarketDataRecord, symbol: &str) -> MarketDataRecord {
+    if record.key().symbol == symbol {
+        return record.clone();
+    }
+    let key = NaturalKey {
+        symbol: symbol.to_string(),
+        ..record.key().clone()
+    };
+    MarketDataRecord::new(key, record.fields().iter().cloned())
+        .expect("relabeling preserves the source record's validity")
+}
+
+/// The value of `record`'s field named `name`, if present.
+fn field_of(record: &MarketDataRecord, name: &str) -> Option<i64> {
+    record
+        .fields()
+        .iter()
+        .find(|field| field.name == name)
+        .map(|field| field.value_minor)
 }
 
 #[cfg(test)]
@@ -792,5 +1258,444 @@ mod tests {
             .unwrap();
         assert_eq!(close_of(&result.records[0], "close"), 10_003);
         assert_eq!(close_of(&result.records[0], "volume"), 100_001);
+    }
+
+    // ----------------------------------------------------------------------- //
+    // Fully-adjusted (splits AND dividends) through the gate.
+    // ----------------------------------------------------------------------- //
+
+    use crate::store::{delisting_record, dividend_record, merger_record, symbol_change_record};
+
+    #[test]
+    fn covered_fully_adjusted_applies_dividends_and_splits_but_split_adjusted_ignores_dividends() {
+        // Bar @100 (close 10000, vol 100000); $1.00 dividend ex @150 (reference close = the bar
+        // itself); 4-for-1 split @200; coverage through 200.
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            dividend_record(150, "AAPL", 100),
+            split("AAPL", 200, 4, 1),
+            coverage_record(200, "AAPL"),
+        ]);
+        let q = daily_query("AAPL", 0, 100);
+        // Fully-adjusted: 10000 · (1·9900)/(4·10000) = 2475; volume takes the SPLIT factor only.
+        let full = store.query_fully_adjusted(&q).unwrap();
+        assert_eq!(full.coverage_through, 200);
+        assert_eq!(full.adjusted_through, 200);
+        assert_eq!(close_of(&full.records[0], "close"), 2_475);
+        assert_eq!(close_of(&full.records[0], "volume"), 400_000);
+        // Split-adjusted over the SAME store ignores the dividend record entirely: 10000/4 = 2500.
+        let split_only = store.query_split_adjusted(&q).unwrap();
+        assert_eq!(close_of(&split_only.records[0], "close"), 2_500);
+        assert_eq!(close_of(&split_only.records[0], "volume"), 400_000);
+    }
+
+    #[test]
+    fn fully_adjusted_fails_closed_when_uncovered_exactly_like_split_adjusted() {
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            dividend_record(150, "AAPL", 100),
+        ]);
+        for query_fn in [
+            MarketDataStore::query_fully_adjusted,
+            MarketDataStore::query_fully_adjusted_as_of,
+        ] {
+            let err = query_fn(&store, &daily_query("AAPL", 0, 100)).unwrap_err();
+            assert_eq!(
+                err,
+                CoverageError::NotCovered {
+                    symbol: "AAPL".to_string(),
+                    have_through: None,
+                    need_through: 100,
+                }
+            );
+        }
+        // The kind guard is identical too.
+        assert_eq!(
+            store
+                .query_fully_adjusted(&UnifiedHistoricalQuery::new("AAPL", "1d", 0, 100))
+                .unwrap_err(),
+            CoverageError::UnsupportedQueryKind {
+                kind: "unspecified"
+            }
+        );
+    }
+
+    #[test]
+    fn dividend_in_the_covered_tail_applies_on_the_frontier_basis_but_not_as_of() {
+        // Dividend ex @200 is AFTER the window end (100) but within coverage (300): the frontier
+        // basis applies it; the point-in-time basis must NOT (dividend lookahead).
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            dividend_record(200, "AAPL", 100),
+            coverage_record(300, "AAPL"),
+        ]);
+        let q = daily_query("AAPL", 0, 100);
+        let frontier = store.query_fully_adjusted(&q).unwrap();
+        assert_eq!(close_of(&frontier.records[0], "close"), 9_900);
+        assert_eq!(frontier.adjusted_through, 300);
+        let as_of = store.query_fully_adjusted_as_of(&q).unwrap();
+        assert_eq!(
+            close_of(&as_of.records[0], "close"),
+            10_000,
+            "a future dividend must not bias a point-in-time read"
+        );
+        assert_eq!(as_of.coverage_through, 300);
+        assert_eq!(as_of.adjusted_through, 100);
+    }
+
+    #[test]
+    fn dividend_beyond_the_frontier_is_excluded_even_if_malformed() {
+        // A dividend past D is out of the as-of-D scope: not applied, and a malformed one (missing
+        // reference close -- no bar before ex 400 beyond D) cannot fail an otherwise-covered query.
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            dividend_record(250, "AAPL", 100), // beyond D=200
+            coverage_record(200, "AAPL"),
+        ]);
+        let result = store
+            .query_fully_adjusted(&daily_query("AAPL", 0, 100))
+            .unwrap();
+        assert_eq!(close_of(&result.records[0], "close"), 10_000);
+    }
+
+    #[test]
+    fn dividend_reference_close_comes_from_the_raw_series_before_the_window() {
+        // The reference close for a dividend is the last RAW close strictly before its ex-date --
+        // even when that bar precedes the query window (the series is resolved store-wide, not
+        // window-clipped) and even when a split later re-quotes the served bars.
+        let store = store_of([
+            daily_bar("AAPL", 50, 20_000, 100_000), // the reference bar, OUTSIDE the window
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            dividend_record(60, "AAPL", 200), // ex @60: reference = close 20000 @50 -> factor 99/100
+            coverage_record(200, "AAPL"),
+        ]);
+        // Window [100, 100]: only the bar @100, which is ON/after ex 60 -> dividend does not apply to
+        // it; but the RESOLUTION of the reference close must not fail (bar @50 exists store-wide).
+        let result = store
+            .query_fully_adjusted(&daily_query("AAPL", 100, 100))
+            .unwrap();
+        assert_eq!(close_of(&result.records[0], "close"), 10_000);
+        // Window [0, 100]: the bar @50 IS pre-ex -> adjusted by (20000-200)/20000 = 99/100.
+        let both = store
+            .query_fully_adjusted(&daily_query("AAPL", 0, 100))
+            .unwrap();
+        assert_eq!(close_of(&both.records[0], "close"), 19_800);
+        assert_eq!(close_of(&both.records[1], "close"), 10_000);
+    }
+
+    #[test]
+    fn dividend_with_no_prior_close_fails_the_read_closed() {
+        // No bar exists before the ex-date -> the factor cannot be computed -> the WHOLE read fails
+        // closed (never a silent factor of 1 dressed as fully-adjusted).
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            dividend_record(50, "AAPL", 100), // ex @50, but the first bar is @100
+            coverage_record(200, "AAPL"),
+        ]);
+        let err = store
+            .query_fully_adjusted(&daily_query("AAPL", 0, 100))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            CoverageError::Normalization(NormalizationError::MissingReferenceClose {
+                ex_ts: 50,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn basis_crossing_split_between_reference_and_ex_date_fails_closed_through_the_gate() {
+        // A split effective between the dividend's reference close (@100) and its ex-date (@160)
+        // puts the amount and the reference on different share bases -> fail closed.
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            split("AAPL", 150, 4, 1),
+            dividend_record(160, "AAPL", 25),
+            coverage_record(200, "AAPL"),
+        ]);
+        let err = store
+            .query_fully_adjusted(&daily_query("AAPL", 0, 100))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            CoverageError::Normalization(NormalizationError::BasisCrossingDividend { .. })
+        ));
+        // The split-adjusted read over the same store is untouched by the dividend (mode semantics).
+        assert!(store
+            .query_split_adjusted(&daily_query("AAPL", 0, 100))
+            .is_ok());
+    }
+
+    // ----------------------------------------------------------------------- //
+    // Symbol-change lineage through the gate.
+    // ----------------------------------------------------------------------- //
+
+    #[test]
+    fn querying_the_successor_returns_the_predecessor_history_relabeled() {
+        // AAPL bars @100/@200, renamed AAPL->AAPLN @300, AAPLN bar @400; coverage on the QUERIED
+        // symbol (AAPLN) through 500. The lineage read returns one continuous series, every record
+        // relabeled to the queried symbol.
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            daily_bar("AAPL", 200, 11_000, 100_000),
+            symbol_change_record(300, "AAPL", "AAPLN"),
+            daily_bar("AAPLN", 400, 12_000, 100_000),
+            coverage_record(500, "AAPLN"),
+        ]);
+        let result = store
+            .query_split_adjusted(&daily_query("AAPLN", 0, 500))
+            .unwrap();
+        assert_eq!(result.records.len(), 3);
+        for (record, (ts, close)) in
+            result
+                .records
+                .iter()
+                .zip([(100, 10_000), (200, 11_000), (400, 12_000)])
+        {
+            assert_eq!(
+                record.key().symbol,
+                "AAPLN",
+                "every bar is relabeled to the queried symbol"
+            );
+            assert_eq!(record.key().event_ts, ts);
+            assert_eq!(close_of(record, "close"), close);
+        }
+        // The rename is surfaced as an in-window structural event.
+        assert_eq!(
+            result.events,
+            vec![CorporateActionEvent::SymbolChange {
+                predecessor: "AAPL".to_string(),
+                successor: "AAPLN".to_string(),
+                effective_ts: 300,
+            }]
+        );
+    }
+
+    #[test]
+    fn adjustments_compose_across_the_lineage_hop() {
+        // A PREDECESSOR-era split (AAPL 2-for-1 @150) and a SUCCESSOR-era dividend (AAPLN $1.00 ex
+        // @450, reference close 12000 @400) both apply to the relabeled series: the instrument is one
+        // continuous entity through the rename.
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            split("AAPL", 150, 2, 1),
+            symbol_change_record(300, "AAPL", "AAPLN"),
+            daily_bar("AAPLN", 400, 12_000, 100_000),
+            dividend_record(450, "AAPLN", 120),
+            coverage_record(500, "AAPLN"),
+        ]);
+        let result = store
+            .query_fully_adjusted(&daily_query("AAPLN", 0, 500))
+            .unwrap();
+        // Bar @100: split (÷2) AND dividend ((12000-120)/12000 = 99/100) -> 10000·(1·11880)/(2·12000)
+        // = 4950; volume ×2.
+        assert_eq!(close_of(&result.records[0], "close"), 4_950);
+        assert_eq!(close_of(&result.records[0], "volume"), 200_000);
+        // Bar @400 (post-split, pre-ex): dividend only -> 12000·99/100 = 11880; volume untouched.
+        assert_eq!(close_of(&result.records[1], "close"), 11_880);
+        assert_eq!(close_of(&result.records[1], "volume"), 100_000);
+    }
+
+    #[test]
+    fn lineage_is_gated_by_the_queried_symbols_coverage_not_the_predecessors() {
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            symbol_change_record(300, "AAPL", "AAPLN"),
+            coverage_record(500, "AAPL"), // coverage on the PREDECESSOR only
+        ]);
+        let err = store
+            .query_split_adjusted(&daily_query("AAPLN", 0, 400))
+            .unwrap_err();
+        assert!(
+            matches!(err, CoverageError::NotCovered { ref symbol, .. } if symbol == "AAPLN"),
+            "the QUERIED symbol's frontier governs the lineage read: {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_rename_cycle_fails_closed() {
+        // A->B @200 and B->A @100 (chronologically consistent hops) form a cycle: B's lineage walks
+        // to A (hop @200), then A's predecessor is B again -> revisited -> fail closed.
+        let store = store_of([
+            symbol_change_record(200, "A", "B"),
+            symbol_change_record(100, "B", "A"),
+            coverage_record(500, "B"),
+        ]);
+        let err = store
+            .query_split_adjusted(&daily_query("B", 0, 400))
+            .unwrap_err();
+        assert!(matches!(err, CoverageError::LineageCycle { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn two_predecessors_claiming_one_successor_fail_closed() {
+        let store = store_of([
+            symbol_change_record(200, "A", "C"),
+            symbol_change_record(300, "B", "C"),
+            coverage_record(500, "C"),
+        ]);
+        let err = store
+            .query_split_adjusted(&daily_query("C", 0, 400))
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CoverageError::AmbiguousLineage {
+                    context: "two predecessors claim one successor",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_predecessor_with_multiple_renames_fails_closed() {
+        // A renamed to B @200 but ALSO to C @300: A's history cannot belong to both successors.
+        let store = store_of([
+            symbol_change_record(200, "A", "B"),
+            symbol_change_record(300, "A", "C"),
+            coverage_record(500, "B"),
+        ]);
+        let err = store
+            .query_split_adjusted(&daily_query("B", 0, 400))
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CoverageError::AmbiguousLineage {
+                    context: "a predecessor has multiple renames",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_bar_outside_its_lineage_validity_window_fails_closed() {
+        // A predecessor bar dated ON the rename (300) collides with the successor era -> fail closed
+        // rather than double-count or mis-attribute it.
+        let store = store_of([
+            daily_bar("AAPL", 300, 10_000, 100_000), // AAPL bar AT the rename instant
+            symbol_change_record(300, "AAPL", "AAPLN"),
+            coverage_record(500, "AAPLN"),
+        ]);
+        let err = store
+            .query_split_adjusted(&daily_query("AAPLN", 0, 400))
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CoverageError::AmbiguousLineage {
+                    context: "a bar is dated outside its symbol's lineage validity window",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_rename_in_the_covered_tail_resolves_on_the_frontier_basis_but_not_as_of() {
+        // The rename @300 is AFTER the as-of date (200) but within coverage (500): the frontier basis
+        // resolves the lineage (serving AAPL's bars under AAPLN); the point-in-time basis does not --
+        // at the as-of date the rename has not happened, so AAPLN has no history yet.
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            symbol_change_record(300, "AAPL", "AAPLN"),
+            coverage_record(500, "AAPLN"),
+        ]);
+        let q = daily_query("AAPLN", 0, 200);
+        let frontier = store.query_split_adjusted(&q).unwrap();
+        assert_eq!(
+            frontier.records.len(),
+            1,
+            "frontier basis resolves the rename lineage"
+        );
+        let as_of = store.query_split_adjusted_as_of(&q).unwrap();
+        assert!(
+            as_of.records.is_empty(),
+            "as of 200 the rename has not happened: no lookahead through a future rename"
+        );
+    }
+
+    // ----------------------------------------------------------------------- //
+    // Structural event surfacing (delistings, mergers, symbol changes).
+    // ----------------------------------------------------------------------- //
+
+    #[test]
+    fn delisting_and_merger_events_are_surfaced_in_window_with_exact_terms() {
+        let store = store_of([
+            daily_bar("MSFT", 100, 8_000, 50_000),
+            delisting_record(150, "MSFT"),
+            merger_record(180, "MSFT", "AAPL", 1, 2, 500),
+            coverage_record(200, "MSFT"),
+        ]);
+        let result = store
+            .query_split_adjusted(&daily_query("MSFT", 0, 200))
+            .unwrap();
+        assert_eq!(
+            result.events,
+            vec![
+                CorporateActionEvent::Delisting {
+                    symbol: "MSFT".to_string(),
+                    effective_ts: 150,
+                },
+                CorporateActionEvent::Merger {
+                    symbol: "MSFT".to_string(),
+                    successor: "AAPL".to_string(),
+                    numerator: 1,
+                    denominator: 2,
+                    cash_per_share_minor: 500,
+                    effective_ts: 180,
+                },
+            ],
+            "events are surfaced effective_ts-ascending with their exact stored terms"
+        );
+        // The bars themselves are untouched by structural events (no price re-quote).
+        assert_eq!(close_of(&result.records[0], "close"), 8_000);
+    }
+
+    #[test]
+    fn events_outside_the_window_are_not_surfaced() {
+        let store = store_of([
+            daily_bar("MSFT", 100, 8_000, 50_000),
+            delisting_record(150, "MSFT"),
+            coverage_record(300, "MSFT"),
+        ]);
+        // Window [0, 149]: the delisting @150 is outside -> not surfaced.
+        let before = store
+            .query_split_adjusted(&daily_query("MSFT", 0, 149))
+            .unwrap();
+        assert!(before.events.is_empty());
+        // Window [200, 300]: also outside (the window starts after it).
+        let after = store
+            .query_split_adjusted(&daily_query("MSFT", 200, 300))
+            .unwrap();
+        assert!(after.events.is_empty());
+    }
+
+    #[test]
+    fn covered_empty_window_still_surfaces_its_events() {
+        // No bar falls in [140, 160] but the delisting @150 does: a covered empty-record result still
+        // carries the structural event (a backtest holding through the window needs it).
+        let store = store_of([
+            daily_bar("MSFT", 100, 8_000, 50_000),
+            delisting_record(150, "MSFT"),
+            coverage_record(300, "MSFT"),
+        ]);
+        let result = store
+            .query_split_adjusted(&daily_query("MSFT", 140, 160))
+            .unwrap();
+        assert!(result.records.is_empty());
+        assert_eq!(
+            result.events,
+            vec![CorporateActionEvent::Delisting {
+                symbol: "MSFT".to_string(),
+                effective_ts: 150,
+            }]
+        );
     }
 }

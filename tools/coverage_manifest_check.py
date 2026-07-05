@@ -1,42 +1,58 @@
 #!/usr/bin/env python3
-"""Contract evidence script for SRS-DATA-011 corporate-action COVERAGE (the keystone gate).
+"""Contract evidence script for SRS-DATA-011 corporate-action adjustment + COVERAGE (the keystone gate).
 
 SRS-DATA-011 (adjust historical price data for corporate actions; SyRS SYS-28a / StRS SN-1.14).
 Acceptance: "Splits, reverse splits, dividends, delistings, mergers, and symbol changes are reflected in
 historical records so that backtests spanning corporate-action dates produce correct P&L calculations
 under the selected normalization mode."
 
-This pins the COVERAGE-MANIFEST keystone as FOUNDATIONAL substrate (NOT a feature close — SRS-DATA-011
-STAYS passes:false: only splits / reverse-splits have adjustment math + coverage here; dividends,
-delistings, mergers, and symbol changes are deferred, and real provider corporate-action ingestion is
-deferred). It lets the (crate-internal) SRS-DATA-012 split-adjustment math finally be served on a public
-surface, but ONLY behind proven coverage.
+ALL SIX action types are reflected through ONE coverage-enforcing gate: splits / reverse-splits and
+dividends are re-quoted into the served prices (split-adjusted; fully-adjusted = splits AND dividends,
+SYS-29); symbol changes are resolved as rename LINEAGE (predecessor bars relabeled to the queried
+symbol); delistings / mergers / symbol changes are surfaced structurally on the result (events) so a
+P&L consumer marks positions final / converts at the surfaced terms / follows the hop. Real provider
+corporate-action ingestion stays deferred (the operator-set / fixture frontier stands in,
+SRS-DATA-001/003/006); total-return + per-subscription selection stay deferred (SRS-DATA-012).
 
 What this pins:
   (a) the coverage kind — store.rs declares the vendor-neutral DatasetKind::CorporateActionCoverage
-      (label "corporate-action-coverage", tag 5, min_schema_version 3) and SCHEMA_VERSION == 3, so the
+      (label "corporate-action-coverage", tag 5, min_schema_version 3) and SCHEMA_VERSION == 4, so the
       per-symbol completeness-through-date frontier persists in the SAME idempotent/durable store;
-  (b) the gate condition — coverage.rs::query_split_adjusted serves split-adjusted ONLY when the
-      symbol's coverage frontier D = max(complete_through) satisfies D >= query.end_ts, else fails
-      closed with CoverageError::NotCovered { have_through, need_through } (D >= end_ts, not ==);
+  (b) the gate condition — every gated read serves adjusted output ONLY when the queried symbol's
+      coverage frontier D = max(complete_through) satisfies D >= query.end_ts, else fails closed with
+      CoverageError::NotCovered { have_through, need_through } (D >= end_ts, not ==); the applied
+      corporate actions are bounded to the read's basis cutoff (`event_ts <= adjusted_through`: the
+      frontier D for the current-basis reads, query.end_ts for the point-in-time _as_of reads);
   (c) the kind-narrowed gate — the gate requires an equity-bar query kind (DailyEquityBar /
-      MinuteEquityBar), so the split math's UnsupportedKind path is unreachable at runtime and a
-      split-adjusted series is equity-only by construction;
+      MinuteEquityBar), so the math's UnsupportedKind path is unreachable at runtime and an adjusted
+      series is equity-only by construction;
   (d) the single public entry point — lib.rs exposes `pub mod coverage` (the coverage-enforcing gate,
-      whose query_split_adjusted current-frontier and query_split_adjusted_as_of point-in-time reads are
-      BOTH coverage-gated) while the split math stays crate-internal (`mod normalization`, not
-      re-exported), so the ONLY public path to split-adjusted output is the coverage gate (no public path
+      whose four reads — query_split_adjusted[_as_of] / query_fully_adjusted[_as_of] — are ALL
+      coverage-gated) while the adjustment math stays crate-internal (`mod normalization`, not
+      re-exported), so the ONLY public path to adjusted output is the coverage gate (no public path
       to raw-as-adjusted);
-  (e) the CLI routing — data007_query_cli routes --normalization split-adjusted through
-      query_split_adjusted, echoes coverage_through, and fails closed (naming SRS-DATA-011) when
-      uncovered;
+  (e) the CLI routing — data007_query_cli routes --normalization split-adjusted AND fully-adjusted
+      through the gate, echoes coverage_through / adjusted_through / event_count, and fails closed
+      (naming SRS-DATA-011) when uncovered; total-return still fails closed naming SRS-DATA-012;
   (f) the coverage CLI — data011_coverage_cli records the frontier (assert-coverage --symbol --through
-      under the StoreLock) and shows it (show-coverage).
+      under the StoreLock) and shows it (show-coverage);
+  (g) the corporate-action kinds — store.rs declares the four v4 FACT kinds (dividend tag 6, delisting
+      tag 7, merger tag 8, symbol-change tag 9; SCHEMA_VERSION 3->4) with validate_record enforcement
+      at upsert AND restore, fixture batches for each, and coverage still the ONLY refused trust kind;
+  (h) the dividend leg — the gate applies dividends through the crate-internal fully_adjust math with
+      the reference close resolved from the RAW lineage series and fail-closed missing-reference /
+      basis-crossing handling; volume is never dividend-scaled;
+  (i) terminal-event surfacing — delistings / mergers / symbol changes are surfaced as structured
+      events on the gated result;
+  (j) bounded lineage — rename-lineage resolution fails closed on cycles (visited set + a hard depth
+      bound) and on ambiguous rename data.
 
 Plus a cargo round-trip (--require-cargo): the coverage gate's crate unit suite, then an end-to-end
-ingest (daily bar + split + coverage) proving (1) COVERED -> split-adjusted returns the ADJUSTED bar
-(close 2500 / volume 400000 / coverage_through:200), and (2) UNCOVERED (query end beyond the frontier) ->
-the CLI FAILS closed naming SRS-DATA-011.
+ingest proving (1) COVERED -> split-adjusted returns the ADJUSTED bar (close 2500 / volume 400000 /
+coverage_through:200) and fully-adjusted composes the dividend@150 (close 2475 / volume 400000);
+(2) UNCOVERED (query end beyond the frontier) -> the CLI FAILS closed naming SRS-DATA-011; and (3) a
+rename-lineage store relabels the predecessor's bars under the queried successor and surfaces the
+symbol-change event, and a delisting + merger store surfaces both events with their exact terms.
 
 PASS line: ``SRS-DATA-011 CORPORATE-ACTION COVERAGE PASS``.
 
@@ -182,22 +198,36 @@ def check_gate_condition(config: dict, coverage_src: str) -> str:
         fail(
             "coverage_frontier must be the MAX completeness-through over the symbol's coverage records"
         )
-    # The split set is collected up to the coverage frontier D (the as-of date), not the query window:
-    # a split in (end, D] still adjusts in-window bars, but a split with effective_ts > D is EXCLUDED so
-    # the result is never adjusted past the advertised coverage_through (the as-of-D contract).
+    # The applied corporate actions are collected up to the read's basis cutoff (adjusted_through: the
+    # frontier D for the current-basis reads, query.end_ts for the point-in-time _as_of reads), not the
+    # query window: an event in (end, cutoff] still adjusts in-window bars, but an event beyond the
+    # cutoff is EXCLUDED so the result is never adjusted past the advertised basis.
     if "CorporateActionSplit" not in coverage_src:
         fail("query_split_adjusted must collect the symbol's CorporateActionSplit records")
-    if "event_ts<=coverage_through" not in compact:
+    if "event_ts<=adjusted_through" not in compact:
         fail(
-            "query_split_adjusted must bound the applied splits to effective_ts <= the coverage frontier "
-            "(`event_ts <= coverage_through`) -- a split beyond D would adjust the series PAST the "
-            "advertised coverage_through (breaking the as-of-D contract)"
+            "the gated reads must bound the applied corporate actions to effective_ts <= the read's "
+            "basis cutoff (`event_ts <= adjusted_through`) -- an event beyond the basis would adjust "
+            "the series PAST the advertised adjusted_through (breaking the as-of contract)"
+        )
+    # The frontier-basis reads adjust through D; the _as_of reads through query.end_ts (no lookahead).
+    if "AdjustmentBasis::Frontier=>coverage_through" not in compact:
+        fail(
+            "the frontier-basis reads must set adjusted_through = the coverage frontier "
+            "(`AdjustmentBasis::Frontier => coverage_through`)"
+        )
+    if "AdjustmentBasis::AsOfEnd=>query.end_ts" not in compact:
+        fail(
+            "the point-in-time reads must cap adjusted_through at the as-of date "
+            "(`AdjustmentBasis::AsOfEnd => query.end_ts`) -- no lookahead through a future event"
         )
     return (
-        "gate condition: coverage.rs::query_split_adjusted serves split-adjusted ONLY when the symbol's "
+        "gate condition: every gated read serves adjusted output ONLY when the queried symbol's "
         "frontier D = max(complete_through) satisfies D >= query.end_ts, else fails closed with "
-        "NotCovered{have_through,need_through}; the applied split set is bounded to effective_ts <= D "
-        "(the as-of-D contract -- a split in (end, D] adjusts in-window bars, a split > D is excluded)"
+        "NotCovered{have_through,need_through}; the applied corporate actions are bounded to "
+        "effective_ts <= adjusted_through (the frontier D for the current-basis reads, query.end_ts "
+        "for the _as_of reads -- an event in (end, cutoff] adjusts in-window bars, one beyond the "
+        "cutoff is excluded)"
     )
 
 
@@ -248,10 +278,10 @@ def check_single_public_entry(config: dict, lib_src: str) -> str:
         )
     return (
         "single public entry: lib.rs exposes `pub mod coverage` (the coverage-enforcing gate — "
-        "query_split_adjusted for the current-frontier basis AND query_split_adjusted_as_of for the "
-        "point-in-time basis, BOTH coverage-gated) while the split math stays crate-internal "
+        "query_split_adjusted[_as_of] AND query_fully_adjusted[_as_of], ALL four coverage-gated "
+        "through one private core) while the adjustment math stays crate-internal "
         "(`mod normalization`, not re-exported) — so the coverage gate is the ONLY public path to "
-        "split-adjusted output, with no public path to raw-as-adjusted"
+        "adjusted output, with no public path to raw-as-adjusted"
     )
 
 
@@ -266,21 +296,37 @@ def check_cli_routes_gated(config: dict, cli_src: str) -> str:
         fail(
             "data007_query_cli must ACCEPT --normalization split-adjusted (route it through the gate)"
         )
-    if "coverage_through" not in cli_src:
+    # fully-adjusted (splits AND dividends, SYS-29) is SERVED through the gate too.
+    if '"fully-adjusted"=>Ok' not in compact:
         fail(
-            "data007_query_cli must echo a coverage_through:<D> line for a served split-adjusted result"
+            "data007_query_cli must ACCEPT --normalization fully-adjusted (route it through the gate)"
         )
-    # fully-adjusted / total-return remain rejected (dividends deferred); SRS-DATA-011 named.
-    if '"fully-adjusted"' not in compact or '"total-return"' not in compact:
-        fail("data007_query_cli must still reject --normalization fully-adjusted / total-return")
+    if "query_fully_adjusted" not in compact:
+        fail(
+            "data007_query_cli must route --normalization fully-adjusted through the coverage gate "
+            "MarketDataStore::query_fully_adjusted (never CLI-side dividend math)"
+        )
+    if "coverage_through" not in cli_src:
+        fail("data007_query_cli must echo a coverage_through:<D> line for a served adjusted result")
+    if "adjusted_through" not in cli_src or "event_count" not in cli_src:
+        fail(
+            "data007_query_cli must echo the adjustment basis (adjusted_through:<ts>) and the surfaced "
+            "structural events (event_count:<n> + event.<i>.* lines) for a served adjusted result"
+        )
+    # total-return remains rejected (SRS-DATA-012); SRS-DATA-011 named for the coverage gate.
+    if '"total-return"' not in compact:
+        fail("data007_query_cli must still explicitly reject --normalization total-return")
+    if "SRS-DATA-012" not in cli_src:
+        fail("data007_query_cli must name SRS-DATA-012 (the total-return deferral owner)")
     if "SRS-DATA-011" not in cli_src:
         fail(
-            "data007_query_cli must name SRS-DATA-011 (the coverage owner the split-adjusted gate needs)"
+            "data007_query_cli must name SRS-DATA-011 (the coverage owner the adjusted gate needs)"
         )
     return (
-        "CLI routing: data007_query_cli routes --normalization split-adjusted through the coverage gate "
-        "(query_split_adjusted), echoes coverage_through, and fails closed (naming SRS-DATA-011) when "
-        "uncovered; fully-adjusted / total-return remain deferred"
+        "CLI routing: data007_query_cli routes --normalization split-adjusted AND fully-adjusted "
+        "through the coverage gate (query_split_adjusted / query_fully_adjusted), echoes "
+        "coverage_through / adjusted_through / event_count + event.<i>.* lines, and fails closed "
+        "(naming SRS-DATA-011) when uncovered; total-return remains deferred (naming SRS-DATA-012)"
     )
 
 
@@ -351,6 +397,152 @@ def check_data_layer_rejects_coverage(config: dict, lib_src: str) -> str:
     )
 
 
+def check_corporate_action_kinds(config: dict, store_src: str) -> str:
+    compact = _compact(store_src)
+    # The four v4 corporate-action FACT kinds, their stable codec tags, and the schema bump. A dropped
+    # variant / retagged codec / unbumped SCHEMA_VERSION would silently corrupt persisted stores.
+    for kind, tag in (
+        ("CorporateActionDividend", 6),
+        ("CorporateActionDelisting", 7),
+        ("CorporateActionMerger", 8),
+        ("CorporateActionSymbolChange", 9),
+    ):
+        if kind not in store_src:
+            fail(f"store.rs must declare the vendor-neutral DatasetKind::{kind}")
+        if f"{kind}=>{tag}" not in compact:
+            fail(f"store.rs must give DatasetKind::{kind} the codec tag {tag}")
+    if "SCHEMA_VERSION:i64=4" not in compact:
+        fail(
+            "store.rs SCHEMA_VERSION must be 4 (the corporate-action kinds' version) so an older "
+            "reader rejects a v4 store at the version gate, not mid-restore on an unknown tag"
+        )
+    # The fixture constructors (the deterministic provider stand-ins) exist for each kind.
+    for constructor in (
+        "fndividend_record",
+        "fndelisting_record",
+        "fnmerger_record",
+        "fnsymbol_change_record",
+    ):
+        if constructor not in compact:
+            fail(f"store.rs must provide the {constructor[2:]}(...) fixture constructor")
+    # validate_record enforces each kind's self-consistency at upsert AND restore: a positive dividend
+    # amount, self-describing delisting/symbol-change instants, validated merger terms, and a
+    # non-empty successor differing from the record's own symbol (blocks the trivial self-cycle).
+    for needle, what in (
+        ('field.name=="amount_minor"&&field.value_minor>0', "a positive dividend amount_minor"),
+        (
+            'field.name=="last_trading_ts"&&field.value_minor==record.key.event_ts',
+            "a self-describing delisting last_trading_ts",
+        ),
+        (
+            'field.name=="effective_ts"&&field.value_minor==record.key.event_ts',
+            "a self-describing symbol-change effective_ts",
+        ),
+        ("successor!=record.key.symbol", "a successor differing from the record's own symbol"),
+    ):
+        if needle not in compact:
+            fail(f"store.rs validate_record must enforce {what} (upsert AND restore)")
+    # The successor rides in the resolution label; the reader helper must exist for the gate.
+    if "fnsuccessor_symbol" not in compact:
+        fail(
+            "store.rs must provide successor_symbol(&NaturalKey) for the merger/symbol-change label"
+        )
+    # Coverage remains the ONLY refused trust kind: the provider set includes the four new kinds.
+    if "CorporateActionCoverage=>Vec::new()" not in compact:
+        fail("fixture_batch must still emit NO records for CorporateActionCoverage")
+    return (
+        "corporate-action kinds: store.rs declares the four v4 FACT kinds (dividend tag 6, delisting "
+        "tag 7, merger tag 8, symbol-change tag 9) with SCHEMA_VERSION 4, fixture constructors, and "
+        "validate_record self-consistency at upsert AND restore (positive dividend amount, "
+        "self-describing delisting/symbol-change instants, validated merger terms, successor != own "
+        "symbol); coverage remains the only refused trust kind"
+    )
+
+
+def check_gate_applies_dividends(config: dict, coverage_src: str) -> str:
+    compact = _compact(coverage_src)
+    # The fully-adjusted reads exist and route through the crate-internal dividend math.
+    for token in ("query_fully_adjusted", "query_fully_adjusted_as_of"):
+        if token not in coverage_src:
+            fail(f"coverage.rs must expose `{token}` (the SYS-29 fully-adjusted gated read)")
+    if "fully_adjust_records" not in compact:
+        fail(
+            "the fully-adjusted read must apply the crate-internal fully_adjust_records math "
+            "(splits AND dividends composed exactly)"
+        )
+    if "dividend_events_for" not in compact:
+        fail(
+            "the gate must extract dividends via dividend_events_for (fail-closed extraction with a "
+            "resolved reference close)"
+        )
+    # The reference close resolves from the RAW lineage series, strictly before the ex-date.
+    if "prev_close_of" not in coverage_src or "event_ts<ex_ts" not in compact:
+        fail(
+            "the gate must resolve each dividend's reference close as the last RAW close strictly "
+            "before its ex-date (`event_ts < ex_ts` over the raw lineage series)"
+        )
+    # Split-adjusted deliberately ignores dividends (mode semantics): the SplitOnly arm yields none.
+    if "AdjustmentMode::SplitOnly=>Vec::new()" not in compact:
+        fail(
+            "the split-adjusted mode must ignore dividend records entirely "
+            "(`AdjustmentMode::SplitOnly => Vec::new()`)"
+        )
+    return (
+        "dividend leg: the gate serves fully-adjusted (splits AND dividends) through the "
+        "crate-internal fully_adjust_records math, extracting dividends fail-closed via "
+        "dividend_events_for with each reference close resolved as the last RAW close strictly before "
+        "the ex-date; split-adjusted ignores dividends by construction"
+    )
+
+
+def check_terminal_events_surfaced(config: dict, coverage_src: str) -> str:
+    # Delistings / mergers / symbol changes are surfaced as STRUCTURED events on the gated result --
+    # the facts a P&L consumer needs (mark final / conversion terms / lineage hop).
+    for token in (
+        "CorporateActionEvent",
+        "Delisting",
+        "Merger",
+        "SymbolChange",
+        "cash_per_share_minor",
+    ):
+        if token not in coverage_src:
+            fail(f"coverage.rs must surface `{token}` on the gated result (structural events)")
+    compact = _compact(coverage_src)
+    if "events:Vec<CorporateActionEvent>" not in compact:
+        fail(
+            "SplitAdjustedResult must carry `events: Vec<CorporateActionEvent>` (the in-window "
+            "delistings / mergers / symbol changes)"
+        )
+    return (
+        "terminal events: the gated result carries events: Vec<CorporateActionEvent> -- in-window "
+        "delistings, mergers (with numerator/denominator/cash_per_share_minor terms), and symbol "
+        "changes -- so a P&L consumer marks positions final, converts at the surfaced terms, or "
+        "follows the lineage hop"
+    )
+
+
+def check_lineage_bounded(config: dict, coverage_src: str) -> str:
+    compact = _compact(coverage_src)
+    # Rename-lineage resolution must fail closed on inconsistent data, never loop or mis-stitch.
+    for token in ("LineageCycle", "AmbiguousLineage"):
+        if token not in coverage_src:
+            fail(f"coverage.rs must fail closed with CoverageError::{token} on bad lineage data")
+    if "MAX_LINEAGE_DEPTH" not in coverage_src:
+        fail("lineage resolution must enforce a hard depth bound (MAX_LINEAGE_DEPTH)")
+    if "visited.insert" not in compact:
+        fail("lineage resolution must track visited symbols (cycle detection)")
+    if "successor_symbol" not in coverage_src:
+        fail(
+            "lineage resolution must read successors via store::successor_symbol (validated labels)"
+        )
+    return (
+        "bounded lineage: rename-lineage resolution walks successor links with a visited set and a "
+        "hard depth bound, failing closed (LineageCycle / AmbiguousLineage) on cycles, dual "
+        "predecessors, multi-rename predecessors, out-of-order hops, and bars outside their validity "
+        "window -- never an unbounded walk or a mis-stitched series"
+    )
+
+
 def check_round_trip(config: dict, require_cargo: bool = False) -> str:
     """Prove the coverage gate end-to-end: the crate unit suite, then COVERED -> adjusted and
     UNCOVERED -> fail-closed over a real ingested store."""
@@ -396,37 +588,36 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
     def run(*args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(list(args), cwd=ROOT, check=False, capture_output=True, text=True)
 
+    def field_values(stdout: str, record_index: int = 0) -> dict[str, int]:
+        prefix = f"record.{record_index}.field."
+        fields: dict[str, int] = {}
+        for line in stdout.splitlines():
+            if line.startswith(prefix):
+                name, value = line[len(prefix) :].split(":", 1)
+                fields[name] = int(value)
+        return fields
+
     with tempfile.TemporaryDirectory() as tmp:
-        # Ingest the daily bar + the split, then assert coverage through the split's effective date.
-        if (
-            run(
+        # Ingest the daily bar + the split + the dividend, then assert coverage through the split's
+        # effective date.
+        for kind, event_ts, extra in (
+            (rt["kind"], rt["bar_event_ts"], ["--init"]),
+            (rt["split_kind"], rt["split_event_ts"], []),
+            (rt["dividend_kind"], rt["dividend_event_ts"], []),
+        ):
+            ingested = run(
                 str(ingest_bin),
                 "ingest",
                 "--dir",
                 tmp,
                 "--kind",
-                rt["kind"],
+                kind,
                 "--event-ts",
-                str(rt["bar_event_ts"]),
-                "--init",
-            ).returncode
-            != 0
-        ):
-            fail("ingest daily bar failed")
-        if (
-            run(
-                str(ingest_bin),
-                "ingest",
-                "--dir",
-                tmp,
-                "--kind",
-                rt["split_kind"],
-                "--event-ts",
-                str(rt["split_event_ts"]),
-            ).returncode
-            != 0
-        ):
-            fail("ingest split failed")
+                str(event_ts),
+                *extra,
+            )
+            if ingested.returncode != 0:
+                fail(f"ingest {kind} failed:\n{ingested.stdout}\n{ingested.stderr}")
         asserted = run(
             str(coverage_bin),
             "assert-coverage",
@@ -444,7 +635,7 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
                 f"assert-coverage must report frontier:{rt['covered_through']}, got:\n{asserted.stdout}"
             )
 
-        def query(end: int) -> subprocess.CompletedProcess[str]:
+        def query(end: int, normalization: str) -> subprocess.CompletedProcess[str]:
             return run(
                 str(query_bin),
                 "query",
@@ -461,20 +652,17 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
                 "--kind",
                 rt["kind"],
                 "--normalization",
-                "split-adjusted",
+                normalization,
             )
 
-        # COVERED -> the ADJUSTED bar (close 2500 / volume 400000) + coverage_through echo.
-        covered = query(rt["covered_query_end"])
+        # COVERED split-adjusted -> the ADJUSTED bar (close 2500 / volume 400000; the dividend record
+        # is deliberately IGNORED by the split-adjusted mode) + coverage_through echo.
+        covered = query(rt["covered_query_end"], "split-adjusted")
         if covered.returncode != 0:
             fail(
                 f"covered split-adjusted query must succeed, got:\n{covered.stdout}\n{covered.stderr}"
             )
-        fields = {}
-        for line in covered.stdout.splitlines():
-            if line.startswith("record.0.field."):
-                name, value = line[len("record.0.field.") :].split(":", 1)
-                fields[name] = int(value)
+        fields = field_values(covered.stdout)
         if fields.get("close") != rt["adjusted_close_minor"]:
             fail(
                 f"covered split-adjusted close {fields.get('close')} != {rt['adjusted_close_minor']}"
@@ -486,22 +674,197 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
         if "normalization:split-adjusted" not in covered.stdout:
             fail("covered result must echo normalization:split-adjusted")
 
-        # UNCOVERED (query end beyond the frontier) -> fail closed naming SRS-DATA-011.
-        uncovered = query(rt["uncovered_query_end"])
-        if uncovered.returncode == 0:
+        # COVERED fully-adjusted -> the dividend composes with the split (close 2475; volume takes the
+        # split factor ONLY -- a dividend never scales volume) + basis echoes.
+        fully = query(rt["covered_query_end"], "fully-adjusted")
+        if fully.returncode != 0:
+            fail(f"covered fully-adjusted query must succeed, got:\n{fully.stdout}\n{fully.stderr}")
+        fields = field_values(fully.stdout)
+        if fields.get("close") != rt["fully_adjusted_close_minor"]:
             fail(
-                "split-adjusted query past the coverage frontier must FAIL closed; CLI returned 0 "
-                f"with:\n{uncovered.stdout}"
+                f"covered fully-adjusted close {fields.get('close')} != "
+                f"{rt['fully_adjusted_close_minor']} (the dividend leg must compose with the split)"
             )
-        if "SRS-DATA-011" not in uncovered.stderr:
-            fail(f"the uncovered gate failure must name SRS-DATA-011, got:\n{uncovered.stderr}")
+        if fields.get("volume") != rt["fully_adjusted_volume"]:
+            fail(
+                f"covered fully-adjusted volume {fields.get('volume')} != {rt['fully_adjusted_volume']} "
+                "(a dividend must never scale volume)"
+            )
+        if "normalization:fully-adjusted" not in fully.stdout:
+            fail("covered result must echo normalization:fully-adjusted")
+        if f"adjusted_through:{rt['covered_through']}" not in fully.stdout:
+            fail(f"fully-adjusted result must echo adjusted_through:{rt['covered_through']}")
+
+        # UNCOVERED (query end beyond the frontier) -> BOTH adjusted modes fail closed naming
+        # SRS-DATA-011.
+        for normalization in ("split-adjusted", "fully-adjusted"):
+            uncovered = query(rt["uncovered_query_end"], normalization)
+            if uncovered.returncode == 0:
+                fail(
+                    f"{normalization} query past the coverage frontier must FAIL closed; CLI "
+                    f"returned 0 with:\n{uncovered.stdout}"
+                )
+            if "SRS-DATA-011" not in uncovered.stderr:
+                fail(f"the uncovered gate failure must name SRS-DATA-011, got:\n{uncovered.stderr}")
+
+    lineage = rt["lineage"]
+    with tempfile.TemporaryDirectory() as tmp:
+        # LINEAGE scenario: bars + a rename (predecessor -> successor), coverage on the QUERIED
+        # successor; the read returns the predecessor's bar relabeled + the symbol-change event.
+        for kind, event_ts, extra in (
+            (rt["kind"], rt["bar_event_ts"], ["--init"]),
+            (lineage["symbol_change_kind"], lineage["change_event_ts"], []),
+        ):
+            if (
+                run(
+                    str(ingest_bin),
+                    "ingest",
+                    "--dir",
+                    tmp,
+                    "--kind",
+                    kind,
+                    "--event-ts",
+                    str(event_ts),
+                    *extra,
+                ).returncode
+                != 0
+            ):
+                fail(f"lineage-scenario ingest {kind} failed")
+        if (
+            run(
+                str(coverage_bin),
+                "assert-coverage",
+                "--dir",
+                tmp,
+                "--symbol",
+                lineage["successor"],
+                "--through",
+                str(lineage["query_end"]),
+            ).returncode
+            != 0
+        ):
+            fail("lineage-scenario assert-coverage failed")
+        relabeled = run(
+            str(query_bin),
+            "query",
+            "--dir",
+            tmp,
+            "--symbol",
+            lineage["successor"],
+            "--resolution",
+            rt["resolution"],
+            "--start",
+            "0",
+            "--end",
+            str(lineage["query_end"]),
+            "--kind",
+            rt["kind"],
+            "--normalization",
+            "split-adjusted",
+        )
+        if relabeled.returncode != 0:
+            fail(
+                "the lineage read (querying the successor) must succeed, got:\n"
+                f"{relabeled.stdout}\n{relabeled.stderr}"
+            )
+        if f"record.0.event_ts:{lineage['relabeled_bar_ts']}" not in relabeled.stdout:
+            fail("the lineage read must return the predecessor's bar under the queried successor")
+        if field_values(relabeled.stdout).get("close") != lineage["relabeled_close_minor"]:
+            fail("the relabeled predecessor bar must carry its original close")
+        for needle in (
+            "event.0.kind:symbol-change",
+            f"event.0.symbol:{lineage['predecessor']}",
+            f"event.0.successor:{lineage['successor']}",
+            f"event.0.effective_ts:{lineage['change_event_ts']}",
+        ):
+            if needle not in relabeled.stdout:
+                fail(f"the lineage read must surface the symbol-change event ({needle!r} missing)")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # TERMINAL scenario: a delisting + a merger on the acquired symbol; both surfaced with their
+        # exact stored terms.
+        for kind, event_ts, extra in (
+            (rt["kind"], rt["bar_event_ts"], ["--init"]),
+            (lineage["delisting_kind"], lineage["delisting_event_ts"], []),
+            (lineage["merger_kind"], lineage["merger_event_ts"], []),
+        ):
+            if (
+                run(
+                    str(ingest_bin),
+                    "ingest",
+                    "--dir",
+                    tmp,
+                    "--kind",
+                    kind,
+                    "--event-ts",
+                    str(event_ts),
+                    *extra,
+                ).returncode
+                != 0
+            ):
+                fail(f"terminal-scenario ingest {kind} failed")
+        if (
+            run(
+                str(coverage_bin),
+                "assert-coverage",
+                "--dir",
+                tmp,
+                "--symbol",
+                lineage["acquired"],
+                "--through",
+                str(lineage["query_end"]),
+            ).returncode
+            != 0
+        ):
+            fail("terminal-scenario assert-coverage failed")
+        terminal = run(
+            str(query_bin),
+            "query",
+            "--dir",
+            tmp,
+            "--symbol",
+            lineage["acquired"],
+            "--resolution",
+            rt["resolution"],
+            "--start",
+            "0",
+            "--end",
+            str(lineage["query_end"]),
+            "--kind",
+            rt["kind"],
+            "--normalization",
+            "split-adjusted",
+        )
+        if terminal.returncode != 0:
+            fail(
+                f"the terminal-events read must succeed, got:\n{terminal.stdout}\n{terminal.stderr}"
+            )
+        if field_values(terminal.stdout).get("close") != lineage["acquired_close_minor"]:
+            fail("the acquired symbol's bar must be served verbatim (no structural re-quote)")
+        for needle in (
+            "event_count:2",
+            "event.0.kind:delisting",
+            f"event.0.effective_ts:{lineage['delisting_event_ts']}",
+            "event.1.kind:merger",
+            f"event.1.successor:{lineage['predecessor']}",
+            f"event.1.numerator:{lineage['merger_numerator']}",
+            f"event.1.denominator:{lineage['merger_denominator']}",
+            f"event.1.cash_per_share_minor:{lineage['merger_cash_per_share_minor']}",
+            f"event.1.effective_ts:{lineage['merger_event_ts']}",
+        ):
+            if needle not in terminal.stdout:
+                fail(f"the terminal-events read must surface {needle!r}")
 
     return (
         "round-trip: the coverage gate's crate unit suite passes; an end-to-end ingest (daily bar + "
-        f"split + coverage through {rt['covered_through']}) proves COVERED -> split-adjusted returns the "
-        f"ADJUSTED bar (close {rt['adjusted_close_minor']} / volume {rt['adjusted_volume']} / "
-        f"coverage_through:{rt['covered_through']}), and UNCOVERED (query end {rt['uncovered_query_end']} "
-        "> frontier) FAILS closed naming SRS-DATA-011"
+        f"split + dividend + coverage through {rt['covered_through']}) proves COVERED -> split-adjusted "
+        f"returns the ADJUSTED bar (close {rt['adjusted_close_minor']} / volume {rt['adjusted_volume']}) "
+        f"and fully-adjusted composes the dividend (close {rt['fully_adjusted_close_minor']} / volume "
+        f"{rt['fully_adjusted_volume']}, never dividend-scaled), UNCOVERED (query end "
+        f"{rt['uncovered_query_end']} > frontier) FAILS closed naming SRS-DATA-011 for BOTH adjusted "
+        "modes, a rename-lineage read relabels the predecessor's bars under the queried successor and "
+        "surfaces the symbol-change event, and a delisting + merger store surfaces both events with "
+        "their exact stored terms"
     )
 
 
@@ -520,19 +883,21 @@ _STATIC_CHECKS = (
     ("coverage_cli", "coverage_cli_source", check_coverage_cli),
     ("ingest_excludes_coverage", "ingest_cli_source", check_ingest_excludes_coverage),
     ("data_layer_rejects_coverage", "lib_source", check_data_layer_rejects_coverage),
+    ("corporate_action_kinds", "store_source", check_corporate_action_kinds),
+    ("gate_applies_dividends", "coverage_module", check_gate_applies_dividends),
+    ("terminal_events_surfaced", "coverage_module", check_terminal_events_surfaced),
+    ("lineage_bounded", "coverage_module", check_lineage_bounded),
 )
 
 _DEFERRED_OWNERS = (
-    "dividend / delisting / merger / symbol-change adjustment math and their coverage — only splits / "
-    "reverse-splits are handled this session (SRS-DATA-011 remainder)",
-    "fully-adjusted / total-return modes and the live-subscription normalization path (SRS-DATA-012 "
-    "remainder)",
+    "total-return normalization and the per-subscription LIVE mode selection (SRS-DATA-012)",
     "real provider corporate-action ingestion from Databento / IB — the operator-set / fixture frontier "
-    "stands in (SRS-DATA-001/003/006)",
-    "the split-adjusted series the gate serves is now consumed by the COMPLETE SRS-DATA-007 unified interface "
-    "(the atp-simulation StoreBarSource backtest source, the StoreBackedHistoricalData strategy/notebook binding, "
-    "and the atp-factor-pipeline store_inputs loaders all read gated split-adjusted); SRS-DATA-011 itself stays "
-    "passes:false for the dividend / delisting / merger / symbol-change corporate-action math this slice omits",
+    "stands in, exactly as the SRS-DATA-011 verification step permits (SRS-DATA-001/003/006)",
+    "paper/live position + resting-order remapping on the surfaced delisting / merger / symbol-change "
+    "events — this data layer supplies the facts those layers consume (SYS-28b/c SRS-EXE remainder + "
+    "SYS-88 SRS-SIM remainder)",
+    "adjusted reads over the SSD/NAS cold-read tier — tiered mode serves raw only (SRS-DATA-009 "
+    "follow-up)",
 )
 
 

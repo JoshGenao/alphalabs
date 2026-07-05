@@ -994,14 +994,15 @@ def assert_normalization_modes(config: dict) -> list[str]:
         "onto a split-comparable basis -- compose-then-divide (one division per field), i128 "
         "intermediates with fail-closed try_from narrowing, round-half-to-even, and the strict "
         "effective_ts > event_ts boundary (OHLC scaled by DEN/NUM, volume by the inverse). "
-        "The raw split-adjustment math is exposed on NO public surface DIRECTLY: data007_query_cli AND the "
-        "StoreBackedHistoricalData consumer binding serve --normalization split-adjusted ONLY through the "
-        "SRS-DATA-011 coverage-enforcing gate (query_split_adjusted, which fails closed when the symbol is "
+        "The raw adjustment math is exposed on NO public surface DIRECTLY: data007_query_cli AND the "
+        "StoreBackedHistoricalData consumer binding serve --normalization split-adjusted AND "
+        "fully-adjusted (splits + dividends, SYS-29) ONLY through the SRS-DATA-011 coverage-enforcing "
+        "gate (query_split_adjusted / query_fully_adjusted, which fail closed when the symbol is "
         "not covered through --end; the binding additionally validates the echoed coverage_through frontier "
         "and raises CoverageNotProvenError when uncovered -- the SRS-DATA-007 binding advance, now that "
         "DATA-007 is COMPLETE and the named consumers read via this path). SRS-DATA-012 STAYS "
-        "passes:false: this is the HISTORICAL split-adjusted slice -- the LIVE subscription path and the "
-        "FULLY_ADJUSTED / TOTAL_RETURN (dividend) modes are also deferred (SyRS SYS-29 / StRS SN-1.15)"
+        "passes:false: this is the HISTORICAL adjusted slice -- the LIVE subscription path and the "
+        "TOTAL_RETURN mode are still deferred (SyRS SYS-29 / StRS SN-1.15)"
     )
     return static_evidence + [summary]
 
@@ -1013,19 +1014,22 @@ def assert_coverage_manifest(config: dict) -> list[str]:
 
     static_evidence = assert_coverage_manifest_static(config, ROOT)
     summary = (
-        "SRS-DATA-011 corporate-action COVERAGE keystone: store.rs persists a vendor-neutral "
-        f"DatasetKind ({block['coverage_kind_label']}, tag 5, schema v{block['schema_version']}) "
-        "carrying a per-symbol completeness-through-date frontier, and coverage.rs::query_split_adjusted "
-        "serves the (crate-internal) split-adjustment math ONLY when that frontier D >= query.end_ts "
-        "(else fails closed with NotCovered) -- an honest 'as-of-D split-adjusted' series with no "
-        "phantom split-drops in the window. The coverage-enforcing gate is the SINGLE public path to "
-        "split-adjusted output (the split math stays crate-internal, not re-exported), and it requires "
-        "an equity-bar query kind so the math's UnsupportedKind path is unreachable. data007_query_cli "
-        "routes --normalization split-adjusted through the gate (echoing coverage_through), and "
-        "data011_coverage_cli records the frontier under the StoreLock. SRS-DATA-011 STAYS passes:false "
-        "(foundational): only splits / reverse-splits have math + coverage; dividends / delistings / "
-        "mergers / symbol-changes and real provider corporate-action ingestion are deferred "
-        "(SyRS SYS-28a / StRS SN-1.14)"
+        "SRS-DATA-011 corporate-action adjustment + COVERAGE keystone: store.rs persists a "
+        f"vendor-neutral coverage DatasetKind ({block['coverage_kind_label']}, tag 5) plus the four "
+        f"schema-v{block['schema_version']} corporate-action FACT kinds (dividend / delisting / "
+        "merger / symbol-change, tags 6-9), and the coverage.rs gate serves the (crate-internal) "
+        "adjustment math ONLY when the queried symbol's frontier D >= query.end_ts (else fails closed "
+        "with NotCovered) -- an honest as-of-basis adjusted series with no phantom event-drops in the "
+        "window. ALL SIX action types are reflected: splits/reverse-splits + dividends in the served "
+        "prices (split-adjusted / fully-adjusted), symbol changes as relabeled rename lineage, and "
+        "delistings / mergers / symbol changes surfaced as structural events with their terms. The "
+        "coverage-enforcing gate is the SINGLE public path to adjusted output (the math stays "
+        "crate-internal, not re-exported), and it requires an equity-bar query kind so the math's "
+        "UnsupportedKind path is unreachable. data007_query_cli routes --normalization split-adjusted "
+        "and fully-adjusted through the gate (echoing coverage_through / adjusted_through / event "
+        "lines), and data011_coverage_cli records the frontier under the StoreLock. SRS-DATA-011 is "
+        "CLOSED; real provider corporate-action ingestion stays deferred to SRS-DATA-001/003/006 with "
+        "the operator-set / fixture frontier standing in (SyRS SYS-28a / StRS SN-1.14)"
     )
     return static_evidence + [summary]
 

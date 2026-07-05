@@ -143,10 +143,17 @@ def test_consumer_binding_fails_closed_split_adjusted_without_coverage() -> None
         assert "SRS-DATA-011" in str(exc.value)
         with pytest.raises(CoverageNotProvenError):
             binding.get_bars("AAPL", lookback=5, frequency="1d")
-        # Dividend modes still fail closed before any query (no dividend data, SRS-DATA-012).
-        for mode in (NormalizationMode.FULLY_ADJUSTED, NormalizationMode.TOTAL_RETURN):
-            with pytest.raises(NotImplementedError):
-                binding.get_bars("AAPL", lookback=5, frequency="1d", normalization=mode)
+        # FULLY_ADJUSTED is served through the SAME gate now, so over the uncovered store it fails
+        # closed at the gate too (CoverageNotProvenError, not NotImplementedError).
+        with pytest.raises(CoverageNotProvenError):
+            binding.get_bars(
+                "AAPL", lookback=5, frequency="1d", normalization=NormalizationMode.FULLY_ADJUSTED
+            )
+        # TOTAL_RETURN still fails closed before any query (SRS-DATA-012).
+        with pytest.raises(NotImplementedError):
+            binding.get_bars(
+                "AAPL", lookback=5, frequency="1d", normalization=NormalizationMode.TOTAL_RETURN
+            )
         # RAW still works through the binding.
         (raw_bar,) = binding.get_bars(
             "AAPL", lookback=5, frequency="1d", normalization=NormalizationMode.RAW

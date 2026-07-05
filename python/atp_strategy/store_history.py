@@ -24,18 +24,20 @@ Scope / honesty
 * **Source-neutral.** There is NO provider/vendor/source/feed parameter, and no origin field
   is read off the result — the core ``SRS-DATA-007`` invariant.
 * **Normalization.** This consumer binding serves ``NormalizationMode.RAW`` (the stored values
-  **verbatim**) and ``NormalizationMode.SPLIT_ADJUSTED`` — the :class:`HistoricalData` Protocol default.
-  Split-adjusted is served ONLY through the ``data007_query_cli`` operator surface, which routes it
-  through the ``SRS-DATA-011`` coverage-enforcing gate (``MarketDataStore::query_split_adjusted``): the
-  adjustment is computed as-of the proven coverage frontier ``D`` (echoed back as ``coverage_through``,
-  ``D >= end``), applying only splits effective ``<= D``, and the gate fails closed when the symbol is
-  not covered through the query end. So a "split-adjusted" label is only ever returned when proven
-  corporate-action coverage makes it honest; an uncovered query raises :class:`CoverageNotProvenError`
-  (naming ``SRS-DATA-011``), never silent raw-as-adjusted. The binding additionally validates that a
-  split-adjusted response carries the ``coverage_through`` frontier (and a raw response does not) — a
-  stale/forged CLI that emits a split-adjusted label without passing the gate is caught at the trust
-  boundary. ``FULLY_ADJUSTED`` / ``TOTAL_RETURN`` still fail closed with :class:`NotImplementedError`:
-  they additionally need dividend data (``SRS-DATA-012``).
+  **verbatim**), ``NormalizationMode.SPLIT_ADJUSTED`` — the :class:`HistoricalData` Protocol default —
+  and ``NormalizationMode.FULLY_ADJUSTED`` (splits AND dividends, SyRS SYS-29). The adjusted modes are
+  served ONLY through the ``data007_query_cli`` operator surface, which routes them through the
+  ``SRS-DATA-011`` coverage-enforcing gate (``MarketDataStore::query_split_adjusted`` /
+  ``query_fully_adjusted``): the adjustment is computed as-of the proven coverage frontier ``D``
+  (echoed back as ``coverage_through``, ``D >= end``), applying only corporate actions effective
+  ``<= D``, and the gate fails closed when the symbol is not covered through the query end. So an
+  adjusted label is only ever returned when proven corporate-action coverage makes it honest; an
+  uncovered query raises :class:`CoverageNotProvenError` (naming ``SRS-DATA-011``), never silent
+  raw-as-adjusted. The binding additionally validates that an adjusted response carries the
+  ``coverage_through`` frontier (and a raw response does not) — a stale/forged CLI that emits an
+  adjusted label without passing the gate is caught at the trust boundary. ``TOTAL_RETURN`` still
+  fails closed with :class:`NotImplementedError` (dividend reinvestment + per-subscription mode
+  selection, ``SRS-DATA-012``).
 * **No hang.** Every CLI invocation is bounded by a per-query ``timeout`` (default
   :data:`_DEFAULT_QUERY_TIMEOUT_S`); a wedged CLI surfaces a :class:`StoreQueryError`, never an
   indefinite block of a strategy container.
@@ -93,16 +95,22 @@ _VOLUME_FIELD = "volume"
 _EQUITY_BAR_KIND_BY_RESOLUTION = {"1d": "daily-equity-bar", "1m": "minute-equity-bar"}
 
 # The normalization modes this CONSUMER binding serves -> the data007_query_cli --normalization value.
-# RAW returns stored values verbatim. SPLIT_ADJUSTED (the HistoricalData Protocol default) is served ONLY
-# through the data007_query_cli coverage-enforcing gate (MarketDataStore::query_split_adjusted): it is
-# adjusted as-of the proven coverage frontier and fails closed (naming SRS-DATA-011) when the symbol is
+# RAW returns stored values verbatim. SPLIT_ADJUSTED (the HistoricalData Protocol default) and
+# FULLY_ADJUSTED (splits AND dividends, SyRS SYS-29) are served ONLY through the data007_query_cli
+# coverage-enforcing gate (MarketDataStore::query_split_adjusted / query_fully_adjusted): they are
+# adjusted as-of the proven coverage frontier and fail closed (naming SRS-DATA-011) when the symbol is
 # not covered through the query end, so a strategy can never get raw bars dressed up as adjusted.
-# FULLY_ADJUSTED / TOTAL_RETURN stay OUT of this map (they additionally need dividend data, SRS-DATA-012)
-# so _reject_unsupported fails them closed with NotImplementedError.
+# TOTAL_RETURN stays OUT of this map (dividend reinvestment + per-subscription mode selection,
+# SRS-DATA-012) so _reject_unsupported fails it closed with NotImplementedError.
 _NORMALIZATION_LABEL = {
     NormalizationMode.RAW: "raw",
     NormalizationMode.SPLIT_ADJUSTED: "split-adjusted",
+    NormalizationMode.FULLY_ADJUSTED: "fully-adjusted",
 }
+
+# The gate-served (coverage-enforced) CLI labels: every adjusted response must carry the
+# coverage_through frontier the gate stamped (gate-integrity); a raw response must not.
+_GATED_NORMALIZATION_LABELS = ("split-adjusted", "fully-adjusted")
 
 # Default per-query subprocess budget (seconds). A local store read is sub-second; this bound exists
 # so a wedged CLI surfaces a TimeoutExpired -> StoreQueryError rather than hanging a strategy container.
@@ -122,14 +130,15 @@ class StoreQueryError(StrategyAPIError):
 
 
 class CoverageNotProvenError(StoreQueryError):
-    """Raised when a split-adjusted read is refused because corporate-action coverage is not proven.
+    """Raised when an adjusted read is refused because corporate-action coverage is not proven.
 
     A :class:`StoreQueryError` subtype, so existing callers still catch ONE structured failure, but
     distinct so a consumer can branch on "the symbol is not covered through the query end yet" (ingest
     coverage via ``data011_coverage_cli``) versus a transport / parse failure. The ``data007_query_cli``
-    split-adjusted gate (``MarketDataStore::query_split_adjusted``) fails closed when the symbol's
-    coverage frontier does not reach the query end; the binding maps that exit (its stderr names
-    ``SRS-DATA-011``) to this error rather than EVER falling back to raw bars dressed up as adjusted.
+    coverage gate (``MarketDataStore::query_split_adjusted`` / ``query_fully_adjusted``) fails closed
+    when the symbol's coverage frontier does not reach the query end; the binding maps that exit (its
+    stderr names ``SRS-DATA-011``) to this error rather than EVER falling back to raw bars dressed up
+    as adjusted.
     """
 
 
@@ -235,9 +244,10 @@ class StoreBackedHistoricalData:
         ``normalization`` defaults to ``SPLIT_ADJUSTED`` (the :class:`HistoricalData` Protocol
         default): the binding routes it through the ``data007_query_cli`` coverage gate, returning bars
         adjusted as-of the proven coverage frontier, and raises :class:`CoverageNotProvenError` (naming
-        SRS-DATA-011) if the symbol is not covered through ``end``. Pass
-        ``normalization=NormalizationMode.RAW`` for the stored values verbatim; fully-adjusted /
-        total-return remain deferred (SRS-DATA-012). See the module docstring.
+        SRS-DATA-011) if the symbol is not covered through ``end``. ``FULLY_ADJUSTED`` (splits AND
+        dividends) is served through the same gate. Pass ``normalization=NormalizationMode.RAW`` for
+        the stored values verbatim; total-return remains deferred (SRS-DATA-012). See the module
+        docstring.
         """
         if not isinstance(lookback, int) or isinstance(lookback, bool):
             raise ValueError(f"lookback must be a non-negative int (got {lookback!r})")
@@ -274,8 +284,8 @@ class StoreBackedHistoricalData:
         jobs call for reproducibility; :meth:`get_bars` is the lookback-shaped wrapper. Like
         :meth:`get_bars`, ``normalization`` defaults to ``SPLIT_ADJUSTED`` and is served through the
         coverage gate (raising :class:`CoverageNotProvenError`, naming SRS-DATA-011, when the symbol is
-        not covered through ``end``); pass ``NormalizationMode.RAW`` for verbatim values. Fully-adjusted
-        / total-return remain deferred (SRS-DATA-012).
+        not covered through ``end``); ``FULLY_ADJUSTED`` is served through the same gate; pass
+        ``NormalizationMode.RAW`` for verbatim values. Total-return remains deferred (SRS-DATA-012).
         """
         self._reject_unsupported(asset_class, normalization)
         start_ts = self._epoch_seconds(start)
@@ -301,10 +311,10 @@ class StoreBackedHistoricalData:
         """Fail closed for out-of-scope asset class / normalization rather than mis-answering."""
         if normalization not in _NORMALIZATION_LABEL:
             raise NotImplementedError(
-                f"StoreBackedHistoricalData serves NormalizationMode.RAW (verbatim stored values) and "
-                f"NormalizationMode.SPLIT_ADJUSTED (through the SRS-DATA-011 coverage gate); "
-                f"{normalization} is deferred — fully-adjusted / total-return additionally need dividend "
-                "data (SRS-DATA-012)."
+                f"StoreBackedHistoricalData serves NormalizationMode.RAW (verbatim stored values), "
+                f"NormalizationMode.SPLIT_ADJUSTED, and NormalizationMode.FULLY_ADJUSTED (both through "
+                f"the SRS-DATA-011 coverage gate); {normalization} is deferred — total-return needs "
+                "dividend reinvestment and per-subscription mode selection (SRS-DATA-012)."
             )
         if asset_class != AssetClass.EQUITY:
             raise NotImplementedError(
@@ -362,8 +372,9 @@ class StoreBackedHistoricalData:
         # sharing this symbol + resolution cannot poison the OHLCV-bar read (DatasetKind is a dataset
         # type, NOT a provider — the query stays source-neutral).
         kind = self._equity_bar_kind(resolution)
-        # normalization is RAW or SPLIT_ADJUSTED here (the others are rejected upstream by
-        # _reject_unsupported). The Rust core applies SPLIT_ADJUSTED; the binding never scales itself.
+        # normalization is RAW, SPLIT_ADJUSTED, or FULLY_ADJUSTED here (the others are rejected
+        # upstream by _reject_unsupported). The Rust core applies the adjustment; the binding never
+        # scales itself.
         normalization_label = _NORMALIZATION_LABEL[normalization]
         # argv is a LIST (shell=False) — never a shell string — so a symbol can never inject.
         argv = [
@@ -401,13 +412,13 @@ class StoreBackedHistoricalData:
             ) from launch_error
         if completed.returncode != 0:
             stderr = completed.stderr.strip()
-            # The split-adjusted gate fails closed (exit non-zero, stderr names SRS-DATA-011) when the
+            # The coverage gate fails closed (exit non-zero, stderr names SRS-DATA-011) when the
             # symbol's coverage frontier does not reach --end. Map that to the dedicated structured error
             # so a consumer can distinguish "not covered yet" from a transport failure — never a raw
             # fallback. (The gate also names SRS-DATA-011 in its remediation hint, so the needle is stable.)
             if "SRS-DATA-011" in stderr:
                 raise CoverageNotProvenError(
-                    f"data007_query_cli refused split-adjusted for symbol={symbol!r} "
+                    f"data007_query_cli refused {normalization_label} for symbol={symbol!r} "
                     f"resolution={resolution!r} (corporate-action coverage not proven through the query "
                     f"end): {stderr}"
                 )
@@ -515,29 +526,30 @@ class StoreBackedHistoricalData:
                 f"{normalization_label!r} for symbol={symbol!r}; refusing to relabel the adjustment "
                 "(CLI/schema drift or a wrong/stale query binary)"
             )
-        # Gate-integrity: a split-adjusted response MUST carry the coverage_through frontier it was
-        # adjusted as-of (proving it passed MarketDataStore::query_split_adjusted), and that frontier
-        # must reach the requested end; a raw response MUST NOT carry one. A stale/forged CLI that emits
-        # a split-adjusted label without passing the gate (no/short coverage_through) is caught here
-        # rather than handing a strategy un-gated "adjusted" bars at the SRS-DATA-011/012 trust boundary.
-        if normalization_label == "split-adjusted":
+        # Gate-integrity: an ADJUSTED response (split-adjusted / fully-adjusted) MUST carry the
+        # coverage_through frontier it was adjusted as-of (proving it passed the coverage gate —
+        # MarketDataStore::query_split_adjusted / query_fully_adjusted), and that frontier must reach
+        # the requested end; a raw response MUST NOT carry one. A stale/forged CLI that emits an
+        # adjusted label without passing the gate (no/short coverage_through) is caught here rather
+        # than handing a strategy un-gated "adjusted" bars at the SRS-DATA-011/012 trust boundary.
+        if normalization_label in _GATED_NORMALIZATION_LABELS:
             if echoed_coverage_through is None:
                 raise StoreQueryError(
-                    f"data007_query_cli returned split-adjusted output without a coverage_through "
+                    f"data007_query_cli returned {normalization_label} output without a coverage_through "
                     f"frontier for symbol={symbol!r}; refusing un-gated adjusted bars (CLI/schema drift "
-                    "or a split-adjusted response that bypassed the SRS-DATA-011 coverage gate)"
+                    f"or a {normalization_label} response that bypassed the SRS-DATA-011 coverage gate)"
                 )
             if echoed_coverage_through < end_ts:
                 raise StoreQueryError(
                     f"data007_query_cli echoed coverage_through={echoed_coverage_through} below the "
-                    f"requested end={end_ts} for symbol={symbol!r}; refusing split-adjusted output not "
-                    "proven complete through the query end (SRS-DATA-011)"
+                    f"requested end={end_ts} for symbol={symbol!r}; refusing {normalization_label} output "
+                    "not proven complete through the query end (SRS-DATA-011)"
                 )
         elif echoed_coverage_through is not None:
             raise StoreQueryError(
                 f"data007_query_cli echoed coverage_through={echoed_coverage_through} for a "
                 f"{normalization_label!r} query for symbol={symbol!r}; refusing inconsistent output "
-                "(coverage_through is only valid for split-adjusted)"
+                "(coverage_through is only valid for a gate-served adjusted mode)"
             )
         if match_count is None:
             raise StoreQueryError(

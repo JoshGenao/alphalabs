@@ -112,10 +112,18 @@ fn classify_fields(record: &MarketDataRecord) -> Option<QuarantineReason> {
     match record.key().kind {
         DatasetKind::DailyEquityBar | DatasetKind::MinuteEquityBar => classify_ohlcv(record),
         DatasetKind::OptionChainSnapshot => classify_option(record),
-        // Not in SYS-77's OHLCV/option rule set — only the duplicate check (rule e) applies.
+        // Not in SYS-77's OHLCV/option rule set — only the duplicate check (rule e) applies. The
+        // corporate-action FACT kinds carry their own per-kind self-consistency validation in
+        // store.rs::validate_record (a positive dividend amount, self-describing delisting /
+        // symbol-change instants, validated merger terms, successor != own symbol), enforced at
+        // upsert AND restore — stricter than anything SYS-77 names for them.
         DatasetKind::Fundamental
         | DatasetKind::CorporateActionSplit
-        | DatasetKind::CorporateActionCoverage => None,
+        | DatasetKind::CorporateActionCoverage
+        | DatasetKind::CorporateActionDividend
+        | DatasetKind::CorporateActionDelisting
+        | DatasetKind::CorporateActionMerger
+        | DatasetKind::CorporateActionSymbolChange => None,
     }
 }
 
