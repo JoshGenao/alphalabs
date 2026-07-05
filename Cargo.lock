@@ -51,6 +51,8 @@ dependencies = [
 name = "atp-orchestrator"
 version = "0.1.0"
 dependencies = [
+ "atp-execution",
+ "atp-simulation",
  "atp-types",
 ]
 

@@ -14,6 +14,8 @@ use atp_types::{
 };
 use std::fmt;
 
+pub mod kill_switch_activation;
+
 #[derive(Debug, Default)]
 pub struct StrategyOrchestrator;
 

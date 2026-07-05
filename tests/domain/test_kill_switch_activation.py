@@ -30,6 +30,7 @@ NFR-P3 5-second wall-clock evidence lives in the companion
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -182,4 +183,135 @@ def test_fleet_registration_fails_closed() -> None:
     _assert_passed(
         _fleet_test("srs_safe_001_registration_fails_closed_on_duplicate_and_blank_ids"),
         "SRS-SAFE-001 fleet fail-closed registration test",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Operator CLI (safe001_kill_switch_cli): the orchestrator composition — the
+# REAL gate + REAL fleet + REAL LiveExecutionState over the mocked-IB fixture
+# transport, shelled exactly as the python/atp_safety backend shells it.
+# --------------------------------------------------------------------------- #
+
+_CLI_RELATIVE = Path("target") / "debug" / "safe001_kill_switch_cli"
+
+
+def _cli_binary() -> Path:
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip(reason="cargo not on PATH; cannot build the kill-switch CLI")
+    build = subprocess.run(
+        [cargo, "build", "-p", "atp-orchestrator", "--bin", "safe001_kill_switch_cli"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, (
+        f"CLI build failed:\nSTDOUT:\n{build.stdout}\nSTDERR:\n{build.stderr}"
+    )
+    binary = REPO_ROOT / _CLI_RELATIVE
+    assert binary.exists(), f"built binary missing at {binary}"
+    return binary
+
+
+def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(_cli_binary()), *args],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def _parse_report(stdout: str) -> dict:
+    line = next(
+        (line for line in stdout.splitlines() if line.startswith("report:")), None
+    )
+    assert line is not None, f"no report: line in CLI output:\n{stdout}"
+    return json.loads(line[len("report:") :])
+
+
+def test_cli_clean_scenario_reports_full_sequence_and_exits_zero() -> None:
+    result = _run_cli(
+        "activate",
+        "--position", "AAPL:100",
+        "--position", "MSFT:-50",
+        "--resting", "4",
+        "--engines", "6",
+    )
+    assert result.returncode == 0, f"clean activation must exit 0:\n{result.stderr}"
+    report = _parse_report(result.stdout)
+
+    # SYS-44a (a): one opposite-direction MARKET liquidation per position.
+    liquidations = {entry["symbol"]: entry for entry in report["liquidations"]}
+    assert liquidations["AAPL"]["side"] == "SELL"
+    assert liquidations["AAPL"]["quantity"] == 100
+    assert liquidations["MSFT"]["side"] == "BUY"
+    assert liquidations["MSFT"]["quantity"] == 50
+    assert all(
+        entry["outcome"]["status"] == "SUCCEEDED" for entry in report["liquidations"]
+    )
+    assert len(report["resting_order_cancels"]) == 4
+
+    # SYS-44a (b): every REAL engine gate is HALTED (composition-level fact).
+    assert report["all_engines_halted"] is True
+    assert report["paper_halt_summary"]["engines_total"] == 6
+    assert report["paper_halt_summary"]["transitioned"] == 6
+
+    # Timing marks are monotone and the NFR-P3 verdict is carried.
+    timings = report["timings"]
+    assert (
+        timings["halt_completed_ms"]
+        <= timings["cancels_completed_ms"]
+        <= timings["liquidations_submitted_ms"]
+        <= timings["disconnect_completed_ms"]
+    )
+    assert report["fully_clean"] is True
+    assert report["within_nfr_p3"] is True
+    assert report["ib_disconnect"]["status"] == "SUCCEEDED"
+
+
+def test_cli_fault_injection_is_surfaced_and_exits_nonzero() -> None:
+    result = _run_cli(
+        "activate",
+        "--position", "AAPL:100",
+        "--fail-liquidation", "AAPL",
+        "--fail-disconnect",
+        "--resting", "2",
+        "--engines", "3",
+    )
+    assert result.returncode == 1, (
+        "an activation whose report records failures must exit 1 "
+        f"(got {result.returncode}):\n{result.stderr}"
+    )
+    report = _parse_report(result.stdout)
+    aapl = next(entry for entry in report["liquidations"] if entry["symbol"] == "AAPL")
+    assert aapl["outcome"]["status"] == "FAILED"
+    assert "injected liquidation failure" in aapl["outcome"]["reason"]
+    assert report["ib_disconnect"]["status"] == "FAILED"
+    assert report["fully_clean"] is False
+    # Continue-to-safety: the paper halt still succeeded and the cancels ran.
+    assert report["all_engines_halted"] is True
+    assert len(report["resting_order_cancels"]) == 2
+
+
+def test_cli_rejects_unknown_flags_and_degenerate_positions() -> None:
+    unknown = _run_cli("activate", "--bogus")
+    assert unknown.returncode == 2, "unknown flag must be a usage error (exit 2)"
+    assert "report:" not in unknown.stdout, "no report may be produced on a usage error"
+
+    flat = _run_cli("activate", "--position", "AAPL:0")
+    assert flat.returncode == 2, "a zero-quantity position must be rejected"
+    assert "non-zero" in flat.stderr
+
+
+def test_cli_perf_reference_shape_passes_the_nfr_p3_budget() -> None:
+    result = _run_cli("perf", "--iterations", "5")
+    assert result.returncode == 0, f"perf run must PASS:\n{result.stdout}\n{result.stderr}"
+    assert "verdict:PASS" in result.stdout
+    assert "budget_ms:5000" in result.stdout
+    assert "shape: positions:50 resting:50 engines:30" in result.stdout, (
+        "perf must default to the NFR-SC1 reference shape"
     )

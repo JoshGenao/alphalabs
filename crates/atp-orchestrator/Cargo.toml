@@ -17,7 +17,22 @@ path = "src/lib.rs"
 name = "resv003_hot_swap_trigger_cli"
 path = "src/bin/resv003_hot_swap_trigger_cli.rs"
 
+# SRS-SAFE-001 kill-switch activation operator CLI. Drives the REAL
+# atp-execution activation gate over a REAL LiveExecutionState + REAL
+# atp-simulation PaperEngineFleet with the deterministic mocked-IB fixture
+# transport the feature's own verification steps prescribe (scenario mode),
+# and the NFR-P3 perf run (perf mode). The python/atp_safety backend shells
+# this binary; the live IB transport is the deferred SRS-EXE-006 adapter.
+[[bin]]
+name = "safe001_kill_switch_cli"
+path = "src/bin/safe001_kill_switch_cli.rs"
+
 [dependencies]
+# The orchestrator is the composition layer (SRS-ARCH-001): it is allowed to
+# see both the execution gate and the simulation fleet, which stay
+# independent of each other (SRS-ARCH-002 dependency direction).
+atp-execution = { path = "../atp-execution" }
+atp-simulation = { path = "../atp-simulation" }
 atp-types = { path = "../atp-types" }
 
 [lints]
