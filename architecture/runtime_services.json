@@ -3433,7 +3433,7 @@
         "OOM_KILL"
       ],
       "ib_gateway": ["CONNECT", "DISCONNECT", "RECONNECT"],
-      "kill_switch": ["ACTIVATION"],
+      "kill_switch": ["ACTIVATION", "HALTED"],
       "hot_swap": ["PROMOTION", "DEMOTION"],
       "resource_monitor": ["THRESHOLD_ALERT"],
       "market_data": ["SUBSCRIPTION_CHANGE", "SEQUENCE_GAP"],

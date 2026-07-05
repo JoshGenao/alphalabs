@@ -113,7 +113,7 @@ EVENT_TYPES_BY_SOURCE: dict[Source, tuple[str, ...]] = {
         "OOM_KILL",
     ),
     Source.IB_GATEWAY: ("CONNECT", "DISCONNECT", "RECONNECT"),
-    Source.KILL_SWITCH: ("ACTIVATION",),
+    Source.KILL_SWITCH: ("ACTIVATION", "HALTED"),
     Source.HOT_SWAP: ("PROMOTION", "DEMOTION"),
     Source.RESOURCE_MONITOR: ("THRESHOLD_ALERT",),
     Source.MARKET_DATA: ("SUBSCRIPTION_CHANGE", "SEQUENCE_GAP"),
@@ -128,6 +128,14 @@ under ``Source.STRATEGY`` signals that strategy-class event types are
 user-defined and not enforced — the AC explicitly leaves strategy event
 naming to the strategy author per SN-2.02 ("a logging API that the user
 invokes from within their Python strategies").
+
+``KILL_SWITCH`` carries two event types: ``ACTIVATION`` (the SRS-LOG-001
+"kill-switch activations" system event) and ``HALTED`` — the SRS-SAFE-001
+acceptance clause "HALTED-state transition is observable through SRS-LOG-001
+within 1 second of activation" makes the paper-engine HALTED transition a
+distinct, queryable system record rather than a detail buried inside the
+activation message (``python/atp_safety`` writes both, correlated by
+activation id).
 """
 
 

@@ -375,7 +375,7 @@ class LogRecordMutationTest(unittest.TestCase):
         def mutate(rig: _MutationRig) -> None:
             rig.replace_in(
                 "python/atp_logging/records.py",
-                '    Source.KILL_SWITCH: ("ACTIVATION",),\n',
+                '    Source.KILL_SWITCH: ("ACTIVATION", "HALTED"),\n',
                 "    Source.KILL_SWITCH: (),\n",
             )
 
