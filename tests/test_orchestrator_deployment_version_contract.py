@@ -361,11 +361,14 @@ class RegistryPortTest(unittest.TestCase):
         self.assertIn("sha2", str(ctx.exception))
 
     def test_bare_unit_record_signature_is_caught(self) -> None:
-        # Replace the Result-returning signature with a bare `();`.
+        # Replace the Result-returning signature with a bare `();` — at EVERY
+        # occurrence: since SRS-ORCH-005 landed the concrete RetainingVersionRegistry,
+        # the pinned signature legitimately appears on the trait AND its impl, and the
+        # guard is satisfied by any one of them (a first-occurrence-only mutation would
+        # leave the impl's copy standing and read the guard as vacuous).
         mutated = self.orch_src.replace(
             "fn record(\n        &self,\n        strategy_id: &StrategyId,\n        version: DeployedVersion,\n    ) -> Result<(), DeployedVersionRegistryError>",
             "fn record(&self, strategy_id: &StrategyId, version: DeployedVersion)",
-            1,
         )
         with self.assertRaises(DeploymentVersionCheckError) as ctx:
             check_registry_port(self.config, mutated)

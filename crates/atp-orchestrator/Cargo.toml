@@ -27,6 +27,16 @@ path = "src/bin/resv003_hot_swap_trigger_cli.rs"
 name = "safe001_kill_switch_cli"
 path = "src/bin/safe001_kill_switch_cli.rs"
 
+# SRS-ORCH-005 rollback operator CLI. Demonstrates the SYS-80 previous-version
+# retention, the exact-target rollback gate, and the NFR-S2 live-rollback
+# confirmation control (structural mirror of live promotion's). The runtime's
+# CLI/REST lifecycle dispatch shells this bin (python/atp_orchestration); the
+# dashboard control is deferred to SRS-UI-001, and the real live-designation
+# probe to SRS-EXE-001 / SRS-RESV-*.
+[[bin]]
+name = "orch005_rollback_cli"
+path = "src/bin/orch005_rollback_cli.rs"
+
 [dependencies]
 # The orchestrator is the composition layer (SRS-ARCH-001): it is allowed to
 # see both the execution gate and the simulation fleet, which stay

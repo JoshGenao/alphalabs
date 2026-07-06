@@ -5,8 +5,8 @@ use atp_types::{
     HotSwapTriggerEvent, HotSwapTriggerKind, HotSwapTriggerProposal, LaunchReadiness,
     LiveStrategyState, OperatorAlertChannel, OperatorAlertEvent, RegisteredWorkload,
     ReservoirRankingSnapshot, ResourceProfile, ResourceProfileError, RuntimeService,
-    SideEffectOutcome, StrategyId, StrategyLaunchOutcome, StrategyLaunchRequest, StrategyMode,
-    StructuredHotSwapDemotionError, StructuredOrchestratorError, TriggerRationale,
+    SideEffectOutcome, SourceHash, StrategyId, StrategyLaunchOutcome, StrategyLaunchRequest,
+    StrategyMode, StructuredHotSwapDemotionError, StructuredOrchestratorError, TriggerRationale,
     UnloggedHotSwapTrigger, WorkloadAdmissionEvent, WorkloadAdmissionReason, WorkloadId,
     WorkloadKind, WorkloadPriority, HOST_MEMORY_SAFETY_MARGIN_MB_DEFAULT,
     RESOURCE_PROFILE_CPU_CEILING_HUNDREDTHS, RESOURCE_PROFILE_CPU_FLOOR_HUNDREDTHS,
@@ -394,6 +394,370 @@ impl fmt::Display for DeployedVersionRegistryError {
 }
 
 impl std::error::Error for DeployedVersionRegistryError {}
+
+// --------------------------------------------------------------------------- //
+// Rollback gate (SRS-ORCH-005, SyRS SYS-80, NFR-S2)
+// --------------------------------------------------------------------------- //
+//
+// SYS-80: "The Strategy Orchestrator shall retain the previous version of a
+// strategy's code upon redeployment and shall support rollback to the previous
+// version via the dashboard, CLI, or REST API. Rollback of the live strategy
+// shall follow the same confirmation safeguard as live deployment (NFR-S2)."
+//
+// Three pieces live here:
+//
+//   * `RetainedDeployedVersionRegistry` — the SYS-80 retention READ port,
+//     a supertrait extension of the frozen SRS-ORCH-004 `DeployedVersionRegistry`
+//     (whose `record`/`lookup` contract is pinned by
+//     `tools/orchestrator_deployment_version_check.py` and unchanged here).
+//     A rollback-capable registry retains the version each `record` replaced;
+//     `previous` exposes it. Retention is bounded at ONE prior version — the
+//     requirement names "the previous version", not a history.
+//
+//   * `RollbackConfirmation` — the NFR-S2 explicit-confirmation token for a
+//     LIVE-strategy rollback. It mirrors the live-promotion control
+//     (`LiveDesignationConfirmation` in `crates/atp-execution/src/designation.rs`)
+//     STRUCTURALLY — typed, strategy-bound, sole `from_operator` constructor
+//     rejecting an empty acknowledgement, private fields, no `Default`, no public
+//     boolean — rather than importing it: a SHARED token type would let a
+//     confirmation minted for a rollback be replayed to designate a strategy
+//     live (or vice versa). Two distinct types make that cross-workflow replay a
+//     compile error while keeping the CONTROL identical (the orchestrator does
+//     depend on `atp-execution` for kill-switch composition, so the import would
+//     compile — the replay-safety argument, not the dependency graph, is why the
+//     mirror is deliberate); `tools/orchestrator_rollback_check.py` enforces the
+//     structural parity against designation.rs so the mirror cannot silently
+//     drift.
+//
+//   * `StrategyOrchestrator::rollback` — the fail-closed gate: every guard runs
+//     BEFORE the single registry write, a live strategy requires the
+//     strategy-bound confirmation, and an unprovable live status refuses rather
+//     than assumes (see the method Rustdoc).
+//
+// The surfaces the acceptance names route here: the CLI/REST lifecycle
+// dispatcher (python/atp_orchestration) shells the `orch005_rollback_cli`
+// operator bin, which drives this gate; the dashboard control is the deferred
+// SRS-UI-001 leg (see `rollback_contract.deferred[]`).
+
+/// SRS-ORCH-005 / SyRS SYS-80 retained pair: the current deployment plus the one
+/// it replaced. `RetainedDeployedVersionRegistry::record` moves current ->
+/// previous; `previous` is `None` until a strategy has been deployed at least
+/// twice (a first deployment replaced nothing — rollback is inert by
+/// construction, never a fabricated target).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainedVersions {
+    /// The version currently deployed (the last `record`).
+    pub current: DeployedVersion,
+    /// The version the current one replaced, if any — the only legal rollback
+    /// target (SYS-80 names "the previous version").
+    pub previous: Option<DeployedVersion>,
+}
+
+/// SRS-ORCH-005 / SyRS SYS-80 retention read port. A rollback-capable registry
+/// is first an SRS-ORCH-004 [`DeployedVersionRegistry`] (the supertrait's
+/// `record`/`lookup` contract is unchanged); `previous` exposes the version the
+/// current deployment replaced, or `Ok(None)` when the strategy has no prior
+/// version (never deployed twice, or retention was lost). Returns `Result` for
+/// the same reason the supertrait does: a concrete registry can genuinely fail,
+/// and the rollback gate must fail closed on that rather than treat it as "no
+/// previous version".
+pub trait RetainedDeployedVersionRegistry: DeployedVersionRegistry {
+    /// The retained previous version for `strategy_id` — the only legal
+    /// rollback target.
+    fn previous(
+        &self,
+        strategy_id: &StrategyId,
+    ) -> Result<Option<DeployedVersion>, DeployedVersionRegistryError>;
+}
+
+/// SRS-ORCH-005 in-memory retaining registry — the concrete implementation the
+/// `orch005_rollback_cli` operator bin (and the crate's tests) drive.
+/// DELIBERATELY non-durable: the durable registry store behind the dashboard /
+/// REST readers is the deferred owner named in
+/// `architecture/runtime_services.json` `rollback_contract.deferred[]` (the bin
+/// persists this registry's contents to its `--state` file as its own
+/// demonstration port). A poisoned lock surfaces as a typed
+/// [`DeployedVersionRegistryError`] — fail closed, never a silent empty read.
+#[derive(Debug, Default)]
+pub struct RetainingVersionRegistry {
+    entries: std::sync::Mutex<std::collections::HashMap<String, RetainedVersions>>,
+}
+
+impl RetainingVersionRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Seed one strategy's retained pair verbatim (the bin's state-file load
+    /// path). Routing loads through the same constructor-validated shape keeps
+    /// a tampered state file from smuggling an unvalidated pair.
+    pub fn seed(
+        &self,
+        strategy_id: &StrategyId,
+        retained: RetainedVersions,
+    ) -> Result<(), DeployedVersionRegistryError> {
+        let mut entries = self.entries.lock().map_err(poisoned_registry_lock)?;
+        entries.insert(strategy_id.as_str().to_string(), retained);
+        Ok(())
+    }
+
+    /// The full retained pair for `strategy_id` (the bin's state-file save +
+    /// `show` read path). `Ok(None)` when the strategy was never recorded.
+    pub fn retained(
+        &self,
+        strategy_id: &StrategyId,
+    ) -> Result<Option<RetainedVersions>, DeployedVersionRegistryError> {
+        let entries = self.entries.lock().map_err(poisoned_registry_lock)?;
+        Ok(entries.get(strategy_id.as_str()).cloned())
+    }
+
+    /// Every retained entry in deterministic (strategy-id-sorted) order — the
+    /// bin's state-file serialization source.
+    pub fn entries_sorted(
+        &self,
+    ) -> Result<Vec<(String, RetainedVersions)>, DeployedVersionRegistryError> {
+        let entries = self.entries.lock().map_err(poisoned_registry_lock)?;
+        let mut rows: Vec<(String, RetainedVersions)> = entries
+            .iter()
+            .map(|(id, retained)| (id.clone(), retained.clone()))
+            .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(rows)
+    }
+}
+
+fn poisoned_registry_lock<T>(_: std::sync::PoisonError<T>) -> DeployedVersionRegistryError {
+    DeployedVersionRegistryError::new("retaining registry lock poisoned")
+}
+
+impl DeployedVersionRegistry for RetainingVersionRegistry {
+    /// SYS-80 retention write: recording a new version moves the current one to
+    /// `previous`. Re-recording the IDENTICAL version is a no-op for retention
+    /// (a redeploy of the same hash replaced nothing — it must not overwrite
+    /// the genuine previous version with a self-referential copy).
+    fn record(
+        &self,
+        strategy_id: &StrategyId,
+        version: DeployedVersion,
+    ) -> Result<(), DeployedVersionRegistryError> {
+        let mut entries = self.entries.lock().map_err(poisoned_registry_lock)?;
+        let key = strategy_id.as_str().to_string();
+        match entries.remove(&key) {
+            None => {
+                entries.insert(
+                    key,
+                    RetainedVersions {
+                        current: version,
+                        previous: None,
+                    },
+                );
+            }
+            Some(existing) => {
+                let previous = if existing.current.source_hash == version.source_hash {
+                    // Same-hash redeploy: retention unchanged (never make a
+                    // version its own rollback target).
+                    existing.previous
+                } else {
+                    Some(existing.current)
+                };
+                entries.insert(
+                    key,
+                    RetainedVersions {
+                        current: version,
+                        previous,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn lookup(
+        &self,
+        strategy_id: &StrategyId,
+    ) -> Result<Option<DeployedVersion>, DeployedVersionRegistryError> {
+        let entries = self.entries.lock().map_err(poisoned_registry_lock)?;
+        Ok(entries
+            .get(strategy_id.as_str())
+            .map(|retained| retained.current.clone()))
+    }
+}
+
+impl RetainedDeployedVersionRegistry for RetainingVersionRegistry {
+    fn previous(
+        &self,
+        strategy_id: &StrategyId,
+    ) -> Result<Option<DeployedVersion>, DeployedVersionRegistryError> {
+        let entries = self.entries.lock().map_err(poisoned_registry_lock)?;
+        Ok(entries
+            .get(strategy_id.as_str())
+            .and_then(|retained| retained.previous.clone()))
+    }
+}
+
+/// SyRS SYS-80 / NFR-S2 explicit-confirmation token for a LIVE-strategy
+/// rollback, bound to the strategy it confirms. The STRUCTURAL mirror of the
+/// live-promotion control (`LiveDesignationConfirmation`,
+/// crates/atp-execution/src/designation.rs — see the section comment for why it
+/// is mirrored, not imported): a **private** field pair, **no `Default`**, **no
+/// public boolean**, and the sole constructor [`from_operator`] recording the
+/// operator-supplied acknowledgement and the specific [`StrategyId`] being
+/// confirmed — so a token confirmed for strategy A cannot be replayed to roll
+/// back strategy B ([`RollbackError::ConfirmationMismatch`]).
+///
+/// [`from_operator`]: RollbackConfirmation::from_operator
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollbackConfirmation {
+    strategy_id: StrategyId,
+    operator_acknowledgement: String,
+}
+
+impl RollbackConfirmation {
+    /// Build the explicit-confirmation token for `strategy_id` from the
+    /// operator acknowledgement captured at the operator surface (the CLI
+    /// `--confirm` / REST `confirm` control — the same act live promotion
+    /// captures, NFR-S2). The acknowledgement must be non-empty — an empty
+    /// acknowledgement is not an explicit confirmation
+    /// ([`RollbackError::MissingConfirmation`]).
+    pub fn from_operator(
+        strategy_id: StrategyId,
+        operator_acknowledgement: impl Into<String>,
+    ) -> Result<Self, RollbackError> {
+        let operator_acknowledgement = operator_acknowledgement.into();
+        if operator_acknowledgement.trim().is_empty() {
+            return Err(RollbackError::MissingConfirmation);
+        }
+        Ok(Self {
+            strategy_id,
+            operator_acknowledgement,
+        })
+    }
+
+    /// The strategy this confirmation authorizes for rollback.
+    pub fn confirmed_strategy(&self) -> &StrategyId {
+        &self.strategy_id
+    }
+
+    /// The operator acknowledgement phrase carried for audit.
+    pub fn operator_acknowledgement(&self) -> &str {
+        &self.operator_acknowledgement
+    }
+}
+
+/// SRS-ORCH-005 fail-closed rollback refusals. Every variant refuses BEFORE the
+/// registry write — a refused rollback has no side effects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RollbackError {
+    /// The requested target hash is not a well-formed `sha256:<64-hex>` wire
+    /// form (rejected before any registry read, mirroring the launch gate).
+    TargetHashInvalid(atp_types::SourceHashError),
+    /// The strategy has no recorded deployment at all.
+    NeverDeployed { strategy_id: StrategyId },
+    /// The strategy has a current deployment but no retained previous version —
+    /// there is nothing to roll back to (SYS-80 retention starts at the second
+    /// deployment). Inert, never a fabricated target.
+    NoPreviousVersion { strategy_id: StrategyId },
+    /// The requested target does not equal the retained previous version's
+    /// hash. The misfire guard: a caller must NAME the exact version it is
+    /// rolling back to; `retained_previous` is carried so the operator can
+    /// retry correctly.
+    TargetMismatch {
+        requested: SourceHash,
+        retained_previous: SourceHash,
+    },
+    /// The strategy is currently live and no confirmation token was supplied.
+    /// NFR-S2: rollback of the live strategy requires the same explicit
+    /// confirmation control as live promotion.
+    MissingConfirmation,
+    /// A confirmation token was supplied but is bound to a DIFFERENT strategy —
+    /// a token minted for one rollback cannot be replayed for another.
+    ConfirmationMismatch {
+        confirmed: StrategyId,
+        requested: StrategyId,
+    },
+    /// The live-status probe failed, so the gate cannot PROVE the strategy is
+    /// not live. Fail closed: an unprovable live status refuses the rollback
+    /// rather than assuming "not live" (assuming would let a live rollback
+    /// through unconfirmed exactly when the safety data is degraded).
+    LiveStatusUnavailable { reason: String },
+    /// The registry write itself failed. Unlike `launch` (where the container
+    /// is already running and a best-effort record cannot retroactively refuse
+    /// the launch), the record here IS the rollback — a failed write means the
+    /// rollback did not happen, and returning `Ok` would lie to the operator.
+    RegistryFailed(DeployedVersionRegistryError),
+}
+
+impl fmt::Display for RollbackError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TargetHashInvalid(violation) => write!(
+                formatter,
+                "SRS-ORCH-005: rollback target hash invalid — {violation}",
+            ),
+            Self::NeverDeployed { strategy_id } => write!(
+                formatter,
+                "SRS-ORCH-005: rollback refused — strategy '{}' has no recorded deployment",
+                strategy_id.as_str(),
+            ),
+            Self::NoPreviousVersion { strategy_id } => write!(
+                formatter,
+                "SRS-ORCH-005: rollback refused — strategy '{}' has no retained previous \
+                 version to roll back to (SYS-80 retention starts at the second deployment)",
+                strategy_id.as_str(),
+            ),
+            Self::TargetMismatch {
+                requested,
+                retained_previous,
+            } => write!(
+                formatter,
+                "SRS-ORCH-005: rollback refused — requested target {} does not match the \
+                 retained previous version {} (rollback restores exactly the previous version)",
+                requested.as_str(),
+                retained_previous.as_str(),
+            ),
+            Self::MissingConfirmation => write!(
+                formatter,
+                "SRS-ORCH-005: rollback of the LIVE strategy requires the same explicit \
+                 confirmation control as live promotion (NFR-S2 / SyRS SYS-80)",
+            ),
+            Self::ConfirmationMismatch {
+                confirmed,
+                requested,
+            } => write!(
+                formatter,
+                "SRS-ORCH-005: confirmation token is bound to strategy '{}' but the rollback \
+                 targets '{}' — a confirmation cannot be replayed across strategies",
+                confirmed.as_str(),
+                requested.as_str(),
+            ),
+            Self::LiveStatusUnavailable { reason } => write!(
+                formatter,
+                "SRS-ORCH-005: rollback refused — live status unavailable ({reason}); cannot \
+                 prove the strategy is not live, so the NFR-S2 confirmation requirement cannot \
+                 be waived (fail closed)",
+            ),
+            Self::RegistryFailed(error) => write!(
+                formatter,
+                "SRS-ORCH-005: rollback registry write failed — {error}",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RollbackError {}
+
+/// SRS-ORCH-005 evidence of a completed rollback: which version the strategy
+/// left, which retained version it returned to (re-recorded with a fresh
+/// timestamp — the rollback is itself a deployment event, and the honest
+/// timestamp keeps the audit trail ordered), and whether the strategy was live
+/// (in which case the confirmation control was enforced).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollbackOutcome {
+    pub strategy_id: StrategyId,
+    pub rolled_back_from: SourceHash,
+    pub rolled_back_to: DeployedVersion,
+    pub was_live: bool,
+}
 
 // --------------------------------------------------------------------------- //
 // Strategy container lifecycle ports
@@ -951,6 +1315,124 @@ impl StrategyOrchestrator {
         observed_at_seconds: u64,
     ) -> DeployedVersion {
         DeployedVersion::new(request.deployment_hash.clone(), observed_at_seconds)
+    }
+
+    /// SRS-ORCH-005 / SyRS SYS-80 / NFR-S2 rollback gate: restore `strategy_id`
+    /// to its retained previous deployed version. Every guard runs BEFORE the
+    /// single registry write, in a fixed order, so a refused rollback has no
+    /// side effects:
+    ///
+    /// 1. `target_version_hash` must be a well-formed `sha256:<64-hex>` wire
+    ///    form ([`RollbackError::TargetHashInvalid`]) — mirroring the launch
+    ///    gate, a malformed hash never reaches the registry;
+    /// 2. the strategy must have a recorded deployment
+    ///    ([`RollbackError::NeverDeployed`]) and a retained previous version
+    ///    ([`RollbackError::NoPreviousVersion`] — SYS-80 retention starts at
+    ///    the second deployment; rollback is inert before that);
+    /// 3. the requested target must NAME the retained previous version's exact
+    ///    hash ([`RollbackError::TargetMismatch`] carries the retained hash so
+    ///    the operator can retry correctly) — the misfire guard against rolling
+    ///    back to a stale or mistyped version;
+    /// 4. if `live_probe` reports `strategy_id` as the current live strategy,
+    ///    a [`RollbackConfirmation`] bound to THIS strategy is required
+    ///    ([`RollbackError::MissingConfirmation`] /
+    ///    [`RollbackError::ConfirmationMismatch`]) — the same explicit,
+    ///    strategy-bound confirmation control live promotion uses (NFR-S2; see
+    ///    the section comment on the structural mirror of
+    ///    `LiveDesignationConfirmation`). A probe FAILURE refuses
+    ///    ([`RollbackError::LiveStatusUnavailable`]): an unprovable live status
+    ///    must not waive the confirmation requirement (fail closed);
+    /// 5. only then the single write: the previous version is re-recorded as
+    ///    current with a FRESH `observed_at_seconds` (a rollback is itself a
+    ///    deployment event; the retaining `record` naturally makes the
+    ///    rolled-back-from version the new previous, so a second rollback
+    ///    rolls forward). Unlike `launch` — where the container is already
+    ///    running and the record is best-effort — a `record` failure here
+    ///    propagates ([`RollbackError::RegistryFailed`]): the write IS the
+    ///    rollback, and returning `Ok` on a failed write would lie to the
+    ///    operator.
+    ///
+    /// A NON-live rollback needs no confirmation token (the AC scopes the
+    /// confirmation control to "rollback of the live strategy"); the CLI/REST
+    /// transport surfaces additionally require their own `--confirm`/`confirm`
+    /// control on every rollback (stricter is safe — see
+    /// python/atp_runtime/rest_server.py's action-level guard).
+    pub fn rollback<V, L>(
+        &self,
+        strategy_id: StrategyId,
+        target_version_hash: SourceHash,
+        confirmation: Option<RollbackConfirmation>,
+        version_registry: &V,
+        live_probe: &L,
+        observed_at_seconds: u64,
+    ) -> Result<RollbackOutcome, RollbackError>
+    where
+        V: RetainedDeployedVersionRegistry,
+        L: LiveStrategyProbe,
+    {
+        // (1) Wire-form validation before any registry read.
+        if let Err(violation) = target_version_hash.validate() {
+            return Err(RollbackError::TargetHashInvalid(violation));
+        }
+
+        // (2) The strategy must have a current deployment and a retained
+        // previous version.
+        let current = version_registry
+            .lookup(&strategy_id)
+            .map_err(RollbackError::RegistryFailed)?
+            .ok_or_else(|| RollbackError::NeverDeployed {
+                strategy_id: strategy_id.clone(),
+            })?;
+        let previous = version_registry
+            .previous(&strategy_id)
+            .map_err(RollbackError::RegistryFailed)?
+            .ok_or_else(|| RollbackError::NoPreviousVersion {
+                strategy_id: strategy_id.clone(),
+            })?;
+
+        // (3) The misfire guard: the caller names the exact retained hash.
+        if target_version_hash != previous.source_hash {
+            return Err(RollbackError::TargetMismatch {
+                requested: target_version_hash,
+                retained_previous: previous.source_hash,
+            });
+        }
+
+        // (4) NFR-S2: a LIVE strategy requires the strategy-bound confirmation;
+        // an unprovable live status refuses rather than assumes not-live.
+        let was_live = match live_probe.current_live() {
+            Err(error) => {
+                return Err(RollbackError::LiveStatusUnavailable {
+                    reason: error.to_string(),
+                })
+            }
+            Ok(Some(live)) if live.strategy_id == strategy_id => {
+                let confirmation = confirmation.ok_or(RollbackError::MissingConfirmation)?;
+                if confirmation.confirmed_strategy() != &strategy_id {
+                    return Err(RollbackError::ConfirmationMismatch {
+                        confirmed: confirmation.confirmed_strategy().clone(),
+                        requested: strategy_id,
+                    });
+                }
+                true
+            }
+            Ok(_) => false,
+        };
+
+        // (5) The single write — re-record the previous version as current with
+        // a fresh timestamp. A failure here propagates: the write IS the
+        // rollback.
+        let rolled_back_to =
+            DeployedVersion::new(previous.source_hash.clone(), observed_at_seconds);
+        version_registry
+            .record(&strategy_id, rolled_back_to.clone())
+            .map_err(RollbackError::RegistryFailed)?;
+        Ok(RollbackOutcome {
+            strategy_id,
+            rolled_back_from: current.source_hash,
+            rolled_back_to,
+            was_live,
+        })
     }
 
     /// SyRS SYS-13 auto-restart gate. Matches on the runtime port's
