@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -307,3 +308,87 @@ def test_cli_perf_reference_shape_passes_the_nfr_p3_budget() -> None:
     assert "shape: positions:50 resting:50 engines:30" in result.stdout, (
         "perf must default to the NFR-SC1 reference shape"
     )
+
+
+def test_concurrent_confirmed_activations_fire_the_sequence_exactly_once(
+    tmp_path: Path,
+) -> None:
+    # Safety invariant (adversarial-review hardening): the operator runtime
+    # serves REST on a threading server, so two concurrent confirmed
+    # activations must NOT both observe "never activated" and both run the
+    # liquidate sequence — the handler serializes activations and the loser
+    # replays the winner's persisted response (same activation_id, one
+    # backend call total).
+    import threading
+
+    from atp_logging import LogClass
+    from atp_logging.persistence import JsonlLogStore
+    from atp_runtime import OperatorInterfaceRuntime
+    from atp_safety import ActivationOutcome, wire_kill_switch
+
+    start_barrier = threading.Barrier(2)
+
+    class SlowBackend:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self._lock = threading.Lock()
+
+        def activate(self, activation_id: str) -> ActivationOutcome:
+            with self._lock:
+                self.calls.append(activation_id)
+            time.sleep(0.2)  # hold the sequence open while the rival arrives
+            report = {
+                "activation_id": activation_id,
+                "live_strategy_id": "alpha-live",
+                "activated_at_epoch_ms": 1_750_000_000_000,
+                "paper_halt": {"status": "SUCCEEDED"},
+                "paper_halt_summary": {
+                    "engines_total": 30,
+                    "transitioned": 30,
+                    "already_halted": 0,
+                },
+                "resting_order_cancels": [],
+                "liquidations": [],
+                "ib_disconnect": {"status": "SUCCEEDED"},
+                "timings": {
+                    "halt_completed_ms": 0,
+                    "cancels_completed_ms": 0,
+                    "liquidations_submitted_ms": 0,
+                    "disconnect_completed_ms": 0,
+                },
+                "fully_clean": True,
+                "within_nfr_p3": True,
+                "all_engines_halted": True,
+            }
+            return ActivationOutcome(report=report, ran_clean=True)
+
+    backend = SlowBackend()
+    runtime = OperatorInterfaceRuntime()
+    store = JsonlLogStore(tmp_path / "system.jsonl", log_class=LogClass.SYSTEM)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    wire_kill_switch(runtime, backend=backend, system_log_store=store, state_dir=state_dir)
+
+    results: list[tuple[int, dict]] = []
+    results_lock = threading.Lock()
+
+    def fire() -> None:
+        start_barrier.wait()
+        outcome = runtime.dispatch_rest("POST", "/api/v1/kill-switch?confirm=true", b"{}")
+        with results_lock:
+            results.append(outcome)
+
+    threads = [threading.Thread(target=fire) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert len(results) == 2
+    assert all(status == 200 for status, _ in results)
+    assert len(backend.calls) == 1, (
+        "two concurrent confirmed activations must fire the liquidate sequence "
+        f"exactly once, got {len(backend.calls)} backend calls"
+    )
+    ids = {body["activation_id"] for _, body in results}
+    assert ids == {backend.calls[0]}, "the loser replays the winner's activation"

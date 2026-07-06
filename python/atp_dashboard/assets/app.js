@@ -386,14 +386,28 @@
       });
       const body = await res.json();
       if (res.ok) {
-        killStatus(
+        // A 200 means the sequence RAN — not that every phase succeeded.
+        // Count FAILED per-order outcomes so a partial failure is loudly
+        // distinguishable from a clean liquidation (the rich per-phase
+        // status control is UI-4; this affordance must still never dress a
+        // failure as success).
+        const countFailed = (entries) => Array.isArray(entries)
+          ? entries.filter((e) => e && e.outcome && e.outcome.status === "FAILED").length
+          : 0;
+        const failed = countFailed(body.liquidation_orders) + countFailed(body.cancelled_orders);
+        const disconnected = body.ib_gateway_disconnected === true;
+        const summary =
           "activated " + String(body.activation_id) +
           ": engines_halted=" + String(body.paper_engines_halted) +
           " liquidations=" + (Array.isArray(body.liquidation_orders) ? body.liquidation_orders.length : "?") +
           " cancels=" + (Array.isArray(body.cancelled_orders) ? body.cancelled_orders.length : "?") +
-          " ib_disconnected=" + String(body.ib_gateway_disconnected),
-          "fired"
-        );
+          " ib_disconnected=" + String(body.ib_gateway_disconnected);
+        if (failed > 0 || !disconnected) {
+          killStatus(summary + " — WITH FAILURES: " + failed + " order phase(s) FAILED" +
+            (!disconnected ? ", IB NOT disconnected" : "") + " — inspect kill-switch status", "error");
+        } else {
+          killStatus(summary, "fired");
+        }
       } else {
         const err = body && body.error ? body.error : {};
         killStatus("REFUSED " + res.status + " " + String(err.type || "UNKNOWN"), "error");

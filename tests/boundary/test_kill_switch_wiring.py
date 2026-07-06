@@ -330,3 +330,35 @@ def test_dashboard_affordance_targets_the_contract_route() -> None:
     assert 'method: "POST"' in app_js
     index_html = (repo_root / "python/atp_dashboard/assets/index.html").read_text(encoding="utf-8")
     assert 'id="killswitch-btn"' in index_html
+
+
+def test_unpersistable_replay_guard_is_surfaced_never_silent(tmp_path: Path) -> None:
+    # The one window an operator-layer guard cannot close: the sequence ran
+    # but the guard record could not be persisted. The handler must surface
+    # KILL_SWITCH_REPLAY_GUARD_UNARMED (explicitly warning a blind retry
+    # would re-fire) and still best-effort land the audit records — never a
+    # success-shaped 200, never a silent log.
+    import shutil as shutil_module
+
+    backend = FakeBackend()
+    runtime = OperatorInterfaceRuntime()
+    store = JsonlLogStore(tmp_path / "system.jsonl", log_class=LogClass.SYSTEM)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    wire_kill_switch(runtime, backend=backend, system_log_store=store, state_dir=state_dir)
+
+    # Yank the state directory AFTER wiring: persist_last_activation fails.
+    shutil_module.rmtree(state_dir)
+
+    status, body = runtime.dispatch_rest("POST", "/api/v1/kill-switch?confirm=true", b"{}")
+    assert status == 500
+    assert body["error"]["type"] == "KILL_SWITCH_REPLAY_GUARD_UNARMED"
+    assert "re-run" in body["error"]["message"] or "re-fire" in body["error"]["message"]
+    assert body["error"]["detail"]["audit_recorded"] is True, (
+        "the audit records must still be attempted best-effort"
+    )
+    records = store.read(source=Source.KILL_SWITCH)
+    assert [record.event_type for record in records] == ["ACTIVATION", "HALTED"], (
+        "one durable trace of the activation must exist even with the guard unarmed"
+    )
+    assert len(backend.calls) == 1

@@ -4,9 +4,12 @@ One transport-free activate handler serves both ``POST /api/v1/kill-switch``
 and ``kill-switch activate`` (the SDK pinned identical semantics on both
 surfaces); a status handler serves ``kill-switch status``.
 
-Activation flow — ordered so a failure at any point can never re-fire the
-liquidate sequence on retry:
+Activation flow — ordered to make an accidental re-fire of the liquidate
+sequence as narrow as an operator-layer guard can make it:
 
+0. A per-handler ``threading.Lock`` serializes same-process activations (the
+   operator runtime serves REST on a threading server): two concurrent
+   confirmed POSTs cannot both observe "never activated" and both fire.
 1. Replay guard: a persisted last-activation record short-circuits to its
    stored response (same ``activation_id``, HTTP 200, NO second backend
    call). A corrupt record fails closed — corruption must not look like
@@ -15,15 +18,23 @@ liquidate sequence on retry:
    A backend that cannot run raises ``KILL_SWITCH_BACKEND_UNAVAILABLE``
    (500); a hung backend raises ``TimeoutError`` (504 / CLI exit TIMEOUT).
    Neither is ever success-shaped.
-3. The last-activation record is persisted durably (the replay guard arms
-   BEFORE anything else can fail).
+3. The last-activation record is persisted durably — the replay guard arms
+   as the FIRST thing after the sequence runs. HONEST LIMIT: the persist
+   itself can fail (disk full, volume gone) AFTER the sequence already ran;
+   that window is inherent to an operator-layer guard. It is surfaced as its
+   own structured error (``KILL_SWITCH_REPLAY_GUARD_UNARMED``, after a
+   best-effort attempt to at least land the audit records) explicitly
+   warning that a blind retry WOULD re-run the sequence — never silently
+   swallowed. A cross-process/durable lockout below this layer is deferred
+   (``kill_switch_activation_contract.deferred[]``).
 4. The ``ACTIVATION`` + ``HALTED`` SRS-LOG-001 SYSTEM records are written
    durably; the activation→durable-HALTED-write latency is measured against
    the 1-second budget and stored on the record. A failed audit write is an
    AC violation this layer owns: the handler raises
    ``KILL_SWITCH_AUDIT_WRITE_FAILED`` (500) carrying the sequence outcome in
    ``detail`` — the sequence itself already ran and is guarded against
-   replay, so a retry returns the persisted record instead of re-firing.
+   replay, so a retry returns the persisted record (and retries the pending
+   audit writes) instead of re-firing.
 5. The SDK-pinned response body (exactly the frozen ``response_fields``:
    ``activation_id`` / ``activated_at`` / ``cancelled_orders`` /
    ``liquidation_orders`` / ``paper_engines_halted`` /
@@ -32,6 +43,7 @@ liquidate sequence on retry:
 
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -127,6 +139,13 @@ class KillSwitchActivateHandler:
         self._backend = backend
         self._store = system_log_store
         self._state_dir = Path(state_dir)
+        # The operator runtime serves REST on a threading server; without
+        # serialization two concurrent confirmed activations could BOTH
+        # observe "never activated" (check-then-act) and both fire the
+        # liquidate sequence. One lock per handler instance closes the
+        # same-process race; the cross-process lockout stays deferred
+        # (kill_switch_activation_contract.deferred[]).
+        self._activation_lock = threading.Lock()
 
     def handle(self, request: Request) -> HandlerResult:
         # Defense in depth: the transport already enforces the confirmation
@@ -136,7 +155,10 @@ class KillSwitchActivateHandler:
                 ErrorCategory.CONFIRMATION_REQUIRED,
                 "kill-switch activation requires a confirmation token (UI-4 / SRS-SAFE-001)",
             )
+        with self._activation_lock:
+            return self._handle_confirmed(request)
 
+    def _handle_confirmed(self, request: Request) -> HandlerResult:
         replay = _load_guard(self._state_dir)
         if replay is not None:
             response = replay.get("response")
@@ -171,7 +193,12 @@ class KillSwitchActivateHandler:
         response = _response_from_report(outcome.report)
 
         # Arm the replay guard BEFORE the audit writes: whatever fails from
-        # here on, a retry replays this record instead of re-firing.
+        # here on, a retry replays this record instead of re-firing. If the
+        # persist ITSELF fails the sequence has already run with NO guard —
+        # the one window an operator-layer guard cannot close. Surface it as
+        # its own structured error (after trying to at least land the audit
+        # records, so one durable trace exists) that explicitly warns a blind
+        # retry would re-run the sequence.
         record: dict[str, object] = {
             "activation_id": activation_id,
             "response": response,
@@ -181,7 +208,27 @@ class KillSwitchActivateHandler:
             "halted_log_latency_ms": None,
             "persisted_at_ns": time.time_ns(),
         }
-        persist_last_activation(self._state_dir, record)
+        try:
+            persist_last_activation(self._state_dir, record)
+        except Exception as error:  # noqa: BLE001 - surfaced, never swallowed
+            audit_recorded = True
+            try:
+                self._store.write(build_activation_record(outcome.report))
+                self._store.write(build_halted_record(outcome.report))
+            except Exception:  # noqa: BLE001 - best-effort; primary error follows
+                audit_recorded = False
+            raise InterfaceError(
+                ErrorCategory.INTERNAL_ERROR,
+                "kill-switch activation RAN but the replay guard could NOT be "
+                "persisted — a retried activation WOULD re-run the liquidate "
+                "sequence; resolve the state directory before retrying",
+                type="KILL_SWITCH_REPLAY_GUARD_UNARMED",
+                detail={
+                    "reason": str(error),
+                    "response": response,
+                    "audit_recorded": audit_recorded,
+                },
+            ) from error
 
         try:
             self._store.write(build_activation_record(outcome.report))

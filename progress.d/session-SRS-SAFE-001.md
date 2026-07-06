@@ -115,6 +115,34 @@ Critic verdicts:
        handler", i.e. the spec marks its own types provisional; re-typing the
        snapshot belongs to the atp_api SDK surface and is deliberately not churned
        here (UI-001 precedent). Documented in python/atp_safety/README.md.
+  judgment ROUND 2 (2026-07-06): the dispatcher's two re-runs both failed on
+    INFRASTRUCTURE (one non-final "awaiting investigations" output; one API
+    connection-drop the dispatcher fail-closed normalized to "block" — a
+    transport failure, not a judgment; Codex rate-limited through the session).
+    Per the established failover, a REAL fresh-context sub-agent critic ran
+    prompts/critic_prompt.md over the full branch diff (reviewer=
+    claude-subagent-fresh; it independently re-ran kill_switch_check,
+    critic --range, the Rust suites and 163 Python tests): verdict WARN,
+    4 substantive findings, resolved:
+    a. FIXED (warn, async-race): the replay guard was check-then-act on a
+       threading REST server — two concurrent confirmed POSTs could both fire
+       the sequence. A per-handler threading.Lock now serializes activations;
+       the loser replays the winner's response (domain test:
+       test_concurrent_confirmed_activations_fire_the_sequence_exactly_once).
+    b. FIXED (warn, overstated guarantee): persist_last_activation can fail
+       AFTER the sequence ran, leaving the guard unarmed. Now surfaced as its
+       own KILL_SWITCH_REPLAY_GUARD_UNARMED error (explicitly warning a blind
+       retry WOULD re-fire) after a best-effort audit write so one durable
+       trace exists; the module docstring no longer claims an invariant the
+       code cannot hold (boundary test:
+       test_unpersistable_replay_guard_is_surfaced_never_silent).
+    c. RE-ACCEPTED (warn, conditional): the OpenAPI staleness override stands,
+       on the reviewer's stated condition that the snapshot is re-typed when
+       the atp_api surface next churns.
+    d. FIXED (info): the dashboard affordance now counts FAILED per-order
+       outcomes and renders "WITH FAILURES: n ... inspect kill-switch status"
+       in error tone instead of clean-looking counts; full per-phase status
+       feedback remains UI-4.
 
 Gate run (2026-07-05, post-rebase onto e8cc4bc):
   ruff check . clean; cargo fmt --check clean workspace-wide; cargo clippy
