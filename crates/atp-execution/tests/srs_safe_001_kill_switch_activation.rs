@@ -222,6 +222,7 @@ fn market_order(strategy: &str, symbol: &str, quantity: i64, side: OrderSide) ->
 ///   * `c-rest-ack`  — resting (ACKED), broker id `B-ACK`;
 ///   * `c-filled`    — terminal (FILLED) — must NOT be cancelled;
 ///   * one PAPER-strategy resting order — must NOT be cancelled;
+///
 /// and open positions AAPL +100 (long) / MSFT -50 (short).
 fn fixture_state() -> LiveExecutionState {
     let mut ledger = OrderLedger::new();

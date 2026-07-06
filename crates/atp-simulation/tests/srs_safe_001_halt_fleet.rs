@@ -39,7 +39,9 @@ fn fleet_of(count: usize) -> PaperEngineFleet {
 
 fn fill_on(fleet: &PaperEngineFleet, engine_id: &str) -> Result<(), HaltError> {
     fleet
-        .simulate_fill_on(engine_id, 1_700_000_000, "AAPL", 10, 150_00, Some(2))
+        // 15_000 minor units = $150.00 (regrouped for clippy's
+        // inconsistent_digit_grouping; value unchanged).
+        .simulate_fill_on(engine_id, 1_700_000_000, "AAPL", 10, 15_000, Some(2))
         .expect("engine id is registered")
         .map(|_| ())
 }
