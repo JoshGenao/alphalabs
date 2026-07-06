@@ -337,9 +337,20 @@ fn parse_version(
     Ok(DeployedVersion::new(SourceHash::new(hash), deployed_at))
 }
 
-/// Persist the snapshot durably: scratch write + fsync -> atomic rename (the
-/// repo's durable-file pattern), so a crash mid-save never leaves a torn file
-/// where the previous snapshot was.
+/// Process-local scratch-file disambiguator (combined with the pid for
+/// cross-process uniqueness). Affects only the scratch NAME, never the
+/// persisted bytes — the tool stays deterministic.
+static SCRATCH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Persist the snapshot durably: a UNIQUE scratch file (`<state>.tmp.<pid>.<seq>`,
+/// so two concurrent invocations can never create/truncate each other's scratch),
+/// fsynced, then atomically renamed onto the state path, then a parent-directory
+/// fsync (the rename is a directory-entry change; a crash right after it must not
+/// roll the publish back). This is the repo's durable-file pattern
+/// (crates/atp-simulation/src/backtest_store.rs::save_to_path). Guarantee
+/// scope: last-publish-wins between genuinely concurrent writers — the
+/// single-logical-writer coordination (a lock) belongs to the deferred durable
+/// registry store (rollback_contract.deferred[]).
 fn save_state(path: &Path, registry: &RetainingVersionRegistry) -> Result<(), String> {
     let mut body = String::from(STATE_MAGIC);
     body.push('\n');
@@ -347,6 +358,15 @@ fn save_state(path: &Path, registry: &RetainingVersionRegistry) -> Result<(), St
         .entries_sorted()
         .map_err(|error| error.to_string())?
     {
+        // Write-side validation is a SUPERSET of what the loader refuses, so an
+        // exit-0 save can never produce a snapshot a later load rejects (a
+        // success-acknowledged write must not brick the durable record).
+        if strategy.trim().is_empty() {
+            return Err(
+                "strategy id is empty; refusing to write a snapshot the loader would refuse"
+                    .to_string(),
+            );
+        }
         if strategy.contains('\t') || strategy.contains('\n') {
             return Err(format!(
                 "strategy id {strategy:?} contains a field separator; refusing to write an \
@@ -366,21 +386,37 @@ fn save_state(path: &Path, registry: &RetainingVersionRegistry) -> Result<(), St
             retained.current.deployed_at_seconds,
         ));
     }
-    let scratch = path.with_extension("tmp");
+    let seq = SCRATCH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch = path.with_extension(format!("tmp.{}.{seq}", std::process::id()));
     {
         let mut file = fs::File::create(&scratch).map_err(|error| {
             format!("cannot create scratch file {}: {error}", scratch.display())
         })?;
-        file.write_all(body.as_bytes())
+        if let Err(error) = file
+            .write_all(body.as_bytes())
             .and_then(|()| file.sync_all())
-            .map_err(|error| format!("cannot write scratch file {}: {error}", scratch.display()))?;
+        {
+            let _ = fs::remove_file(&scratch);
+            return Err(format!(
+                "cannot write scratch file {}: {error}",
+                scratch.display()
+            ));
+        }
     }
     fs::rename(&scratch, path).map_err(|error| {
+        let _ = fs::remove_file(&scratch);
         format!(
             "cannot publish state file {} (rename from scratch): {error}",
             path.display()
         )
-    })
+    })?;
+    // fsync the parent directory so the rename itself is durable.
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    let dir_handle = fs::File::open(parent.unwrap_or_else(|| Path::new(".")))
+        .map_err(|error| format!("cannot open state directory for fsync: {error}"))?;
+    dir_handle
+        .sync_all()
+        .map_err(|error| format!("cannot fsync state directory: {error}"))
 }
 
 // --------------------------------------------------------------------------- //
@@ -474,9 +510,14 @@ impl ParsedArgs {
     }
 
     fn require_strategy(&self) -> Result<String, String> {
-        self.strategy
-            .clone()
-            .ok_or("missing required --strategy".to_string())
+        // Reject an empty/whitespace id AT PARSE, mirroring the loader's refusal —
+        // an exit-0 command must never write (or address) a snapshot entry the
+        // loader would refuse.
+        match self.strategy.as_deref().map(str::trim) {
+            None => Err("missing required --strategy".to_string()),
+            Some("") => Err("--strategy must not be empty".to_string()),
+            Some(_) => Ok(self.strategy.clone().expect("checked above")),
+        }
     }
 }
 

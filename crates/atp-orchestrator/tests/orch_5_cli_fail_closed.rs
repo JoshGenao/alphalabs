@@ -275,8 +275,94 @@ fn orch_5_cli_malformed_flags_exit_nonzero() {
             "missing subcommand args",
             vec!["rollback", "--state", state_str],
         ),
+        (
+            // Write-side symmetry with the loader: an empty/whitespace strategy id
+            // is refused at parse, so an exit-0 record can never write a snapshot
+            // entry every later load refuses (bricking the durable record).
+            "empty strategy id",
+            vec![
+                "record",
+                "--state",
+                state_str,
+                "--strategy",
+                "",
+                "--hash",
+                HASH_V1,
+            ],
+        ),
+        (
+            "whitespace strategy id",
+            vec![
+                "record",
+                "--state",
+                state_str,
+                "--strategy",
+                "   ",
+                "--hash",
+                HASH_V1,
+            ],
+        ),
     ] {
         let (ok, _, _) = run(&args);
         assert!(!ok, "{label} must exit nonzero");
     }
+    // None of the refused commands above may have altered the snapshot.
+    let (ok, shown, _) = run(&["show", "--state", state_str, "--strategy", "alpha-1"]);
+    assert!(
+        ok,
+        "the snapshot must still load after every refused command"
+    );
+    assert!(shown.contains(&format!("current:{HASH_V2}@200")), "{shown}");
+}
+
+#[test]
+fn orch_5_cli_concurrent_saves_never_clobber_each_others_scratch() {
+    // The scratch file is UNIQUE per (pid, seq): concurrent invocations may race the
+    // final rename (last-publish-wins; the single-logical-writer lock is the deferred
+    // durable-store owner) but must never truncate each other's scratch bytes — every
+    // surviving snapshot is a complete, loadable publish of ONE writer.
+    let state = state_path("orch005-concurrent.state");
+    let state_str = state.to_str().unwrap().to_string();
+    let handles: Vec<_> = (0..8)
+        .map(|worker| {
+            let state_str = state_str.clone();
+            std::thread::spawn(move || {
+                let strategy = format!("alpha-{worker}");
+                Command::new(BIN)
+                    .args([
+                        "record",
+                        "--state",
+                        &state_str,
+                        "--strategy",
+                        &strategy,
+                        "--hash",
+                        HASH_V1,
+                    ])
+                    .output()
+                    .expect("run orch005_rollback_cli")
+            })
+        })
+        .collect();
+    for handle in handles {
+        let _ = handle.join().expect("worker finished");
+    }
+    // Whatever interleaving happened, the published snapshot must be complete and
+    // loadable (never a torn/foreign file) — `show` on any strategy it contains works,
+    // and a fresh record on top still succeeds.
+    let (ok, _, err) = run(&[
+        "record",
+        "--state",
+        &state_str,
+        "--strategy",
+        "final-check",
+        "--hash",
+        HASH_V2,
+    ]);
+    assert!(
+        ok,
+        "the snapshot must remain loadable after concurrent saves: {err}"
+    );
+    let (ok, shown, _) = run(&["show", "--state", &state_str, "--strategy", "final-check"]);
+    assert!(ok);
+    assert!(shown.contains(&format!("current:{HASH_V2}")), "{shown}");
 }

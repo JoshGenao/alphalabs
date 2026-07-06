@@ -83,10 +83,23 @@ WHAT I TESTED (per AC step):
     operator_interface_runtime / cli / rest_api / architecture checks all PASS; clippy
     --workspace --all-targets -D warnings clean; cargo fmt --check clean; ruff clean.
 Critic verdicts:
-  deterministic (critic_check.py --staged): PENDING (run at commit)
-  judgment: PENDING (adversarial_review.py origin/main — Codex on cooldown, Claude fallback; a
-  hollow empty-summary approve will NOT be accepted, per the DATA-011 precedent a full sub-agent
-  re-review runs instead)
+  deterministic (critic_check.py --staged): APPROVE — no findings (both commits).
+  judgment: Codex on usage cooldown AND the adversarial_review.py `claude -p` fallback hit its own
+  session limit (its "block" was just the limit banner — no verdict). Ran the sanctioned
+  fresh-context SUB-AGENT critic (prompts/critic_prompt.md + independence prompt, read-only, 32
+  tool calls, re-ran the cargo/pytest/check evidence itself): WARN with an auditable attack log —
+  NO confirmation bypass, NO fail-open (probed: padded-action transport-guard skip is caught by the
+  handler's confirmed re-check; unmapped bin stderr -> 500 closed; tampered/foreign/duplicate
+  snapshots refuse; route hijack impossible — restart still 501 ORCH-004, STRATEGY_MANAGEMENT stays
+  fully_served:false). 2 MEDIUM + 2 LOW, all FIXED in the follow-up commit:
+  (1) [medium] fixed scratch path + no parent-dir fsync -> adopted the backtest_store pattern
+      (unique <state>.tmp.<pid>.<seq> scratch + parent fsync) + a concurrent-saves bin test;
+  (2) [medium] write/read asymmetry (record --strategy "" exit 0 bricked the snapshot) -> empty/
+      whitespace ids refused at parse AND at save (write-side superset of the loader) + bin tests;
+  (3) [low] handler passes no --observed-at so served-path timestamps share the fixed constant ->
+      wording honestied in RollbackOutcome doc + rollback_contract (no gate logic branches on it);
+  (4) [low] lifecycle-route implementation count is route-granular -> noted in the contract
+      (verified: fully_served stays false, owner still named — no readiness over-claim).
 Resume / next: operator (or SRS-UI-001) finishes the dashboard leg: a UI-2 strategy-management
   control (button + UI-4-style confirm modal) POSTing the confirmed lifecycle rollback route that
   mount_rollback serves, then browser-automation evidence -> flip via verified-e2e. Real

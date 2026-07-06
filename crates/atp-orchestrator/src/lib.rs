@@ -747,10 +747,14 @@ impl fmt::Display for RollbackError {
 impl std::error::Error for RollbackError {}
 
 /// SRS-ORCH-005 evidence of a completed rollback: which version the strategy
-/// left, which retained version it returned to (re-recorded with a fresh
-/// timestamp — the rollback is itself a deployment event, and the honest
-/// timestamp keeps the audit trail ordered), and whether the strategy was live
-/// (in which case the confirmation control was enforced).
+/// left, which retained version it returned to (re-recorded with the CALLER's
+/// `observed_at_seconds` — the rollback is itself a deployment event; the gate
+/// never reads a clock, so timestamp ordering is only as good as the caller's
+/// supplied instants — the operator bin defaults to a fixed deterministic
+/// constant unless `--observed-at` is passed, and the runtime handler does not
+/// pass one, so version_identifier displays on that path share the fixed
+/// suffix until the deferred clock/composition wiring lands), and whether the
+/// strategy was live (in which case the confirmation control was enforced).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RollbackOutcome {
     pub strategy_id: StrategyId,
