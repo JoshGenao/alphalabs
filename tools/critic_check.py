@@ -347,7 +347,16 @@ def check_test_deletion(diff: DiffSlice, report: Report) -> None:
 
 
 def check_safety_critical_paired(diff: DiffSlice, report: Report) -> None:
-    safety_files = [p for p in diff.files_changed if SAFETY_PATH_RE.search(p) and "test" not in p]
+    # Session notes under progress.d/ are documentation, not safety code: a note NAMED after a
+    # safety feature (session-SRS-DATA-011.md, session-SRS-SAFE-001.md, ...) matches SAFETY_PATH_RE
+    # by its feature id alone, so without this carve-out the integrator's own fold-and-flip commit
+    # (which DELETES the note) and any notes-only handoff edit would demand a tests/domain diff that
+    # has no behavior to test. The pairing requirement stays intact for every code path.
+    safety_files = [
+        p
+        for p in diff.files_changed
+        if SAFETY_PATH_RE.search(p) and "test" not in p and not p.startswith("progress.d/")
+    ]
     if not safety_files:
         return
     has_domain_test_diff = any(
