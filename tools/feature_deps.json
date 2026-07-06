@@ -179,6 +179,11 @@
   "SRS-RESV-006": [
     "SRS-RESV-003"
   ],
+  "SRS-SAFE-001": [
+    "SRS-EXE-001",
+    "SRS-EXE-002",
+    "SRS-EXE-006"
+  ],
   "SRS-SDK-008": [
     "SRS-SDK-007"
   ]
