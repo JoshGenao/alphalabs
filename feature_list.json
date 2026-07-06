@@ -686,7 +686,7 @@
       "Step 3: Verify acceptance criteria: Splits, reverse splits, dividends, delistings, mergers, and symbol changes are reflected in historical records so that backtests spanning corporate-action dates produce correct P&L calculations under the selected normalization mode.",
       "Step 4: Record objective evidence from test, scenario demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {
