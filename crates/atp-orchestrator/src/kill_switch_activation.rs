@@ -286,7 +286,11 @@ pub fn build_scenario_state(scenario: &Scenario) -> Result<LiveExecutionState, S
             symbol,
             i64::from(index % 9 + 1),
             AssetClass::Equity,
-            if index % 2 == 0 { OrderSide::Buy } else { OrderSide::Sell },
+            if index % 2 == 0 {
+                OrderSide::Buy
+            } else {
+                OrderSide::Sell
+            },
             OrderType::Market,
         );
         ledger
@@ -337,9 +341,8 @@ pub fn run_fixture_activation(scenario: &Scenario) -> Result<FixtureActivation, 
         live_strategy_id: StrategyId::new(scenario.live_strategy_id.clone()),
         activated_at_epoch_ms: epoch_ms_now(),
     };
-    let report = ExecutionEngine::default().activate_kill_switch(
-        request, &state, &clock, &brokerage, &fleet, &events,
-    );
+    let report = ExecutionEngine::default()
+        .activate_kill_switch(request, &state, &clock, &brokerage, &fleet, &events);
     Ok(FixtureActivation {
         report,
         all_engines_halted: fleet.all_halted(),
@@ -366,7 +369,10 @@ mod tests {
     fn fixture_activation_halts_every_real_engine_and_reports_clean() {
         let outcome = run_fixture_activation(&Scenario::reference_baseline())
             .expect("reference scenario runs");
-        assert!(outcome.all_engines_halted, "every REAL engine gate is HALTED");
+        assert!(
+            outcome.all_engines_halted,
+            "every REAL engine gate is HALTED"
+        );
         assert!(outcome.report.fully_clean());
         assert!(outcome.report.within_nfr_p3());
         assert_eq!(outcome.report.liquidations.len(), 50);
@@ -377,7 +383,10 @@ mod tests {
         assert_eq!(outcome.events_recorded, 1);
         // Composition-level ordering: halt happened before the transport saw
         // any call, and disconnect is the final transport call.
-        assert_eq!(outcome.brokerage_calls.last().map(String::as_str), Some("disconnect"));
+        assert_eq!(
+            outcome.brokerage_calls.last().map(String::as_str),
+            Some("disconnect")
+        );
     }
 
     #[test]
@@ -391,8 +400,7 @@ mod tests {
             .report
             .liquidations
             .iter()
-            .any(|liquidation| liquidation.symbol == "SYM03"
-                && liquidation.outcome.is_failed()));
+            .any(|liquidation| liquidation.symbol == "SYM03" && liquidation.outcome.is_failed()));
         assert!(outcome.report.ib_disconnect.is_failed());
         // Continue-to-safety survived the faults: every position was still
         // attempted and every engine is still halted.
@@ -406,7 +414,14 @@ mod tests {
         let positions = generated_positions(10);
         assert_eq!(positions.len(), 10);
         assert!(positions.iter().all(|(_, quantity)| *quantity != 0));
-        assert!(positions.iter().step_by(2).all(|(_, quantity)| *quantity > 0));
-        assert!(positions.iter().skip(1).step_by(2).all(|(_, quantity)| *quantity < 0));
+        assert!(positions
+            .iter()
+            .step_by(2)
+            .all(|(_, quantity)| *quantity > 0));
+        assert!(positions
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .all(|(_, quantity)| *quantity < 0));
     }
 }

@@ -28,7 +28,10 @@ fn fleet_of(count: usize) -> PaperEngineFleet {
     let mut fleet = PaperEngineFleet::new();
     for index in 0..count {
         fleet
-            .register(format!("paper-{index:02}"), HaltablePaperEngine::running_default())
+            .register(
+                format!("paper-{index:02}"),
+                HaltablePaperEngine::running_default(),
+            )
             .expect("register engine");
     }
     fleet
@@ -122,7 +125,11 @@ fn srs_safe_001_empty_fleet_reports_zeros_not_an_error() {
     assert!(fleet.is_empty());
     let report = fleet.halt_all(HaltReason::KillSwitch);
     assert_eq!(
-        (report.engines_total, report.transitioned, report.already_halted),
+        (
+            report.engines_total,
+            report.transitioned,
+            report.already_halted
+        ),
         (0, 0, 0)
     );
     assert!(report.outcomes.is_empty());

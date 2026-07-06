@@ -289,3 +289,23 @@ body {
 }
 
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* --- kill switch (SRS-SAFE-001 minimal affordance; rich control = UI-4) --- */
+.killswitch { display: inline-flex; align-items: center; gap: 10px; }
+.killswitch__btn {
+  font: inherit; font-weight: 700; letter-spacing: 0.06em; font-size: 0.72rem;
+  color: #fff; background: var(--bad); border: 1px solid transparent;
+  border-radius: 999px; padding: 7px 14px; cursor: pointer;
+  transition: filter 120ms ease, transform 120ms ease;
+}
+.killswitch__btn:hover { filter: brightness(1.08); }
+.killswitch__btn[data-armed="true"] {
+  background: transparent; color: var(--bad); border-color: var(--bad);
+  animation: killswitch-armed 0.9s ease-in-out infinite alternate;
+}
+.killswitch__btn:disabled { opacity: 0.55; cursor: wait; }
+@keyframes killswitch-armed { from { filter: none; } to { filter: brightness(1.35); } }
+.killswitch__status { font-size: 0.72rem; color: var(--deferred); max-width: 34ch; }
+.killswitch__status[data-tone="armed"] { color: var(--warn); }
+.killswitch__status[data-tone="fired"] { color: var(--bad); font-weight: 600; }
+.killswitch__status[data-tone="error"] { color: var(--bad); }

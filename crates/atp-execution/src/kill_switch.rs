@@ -60,10 +60,9 @@
 //! stays `passes:false` until the live path exists.
 
 use atp_types::{
-    AssetClass, KillSwitchActivationEvent, KillSwitchActivationReport,
-    KillSwitchActivationRequest, KillSwitchActivationTimings, LiquidationSubmission, OrderSide,
-    OrderSubmission, OrderType, PaperHaltSummary, RestingOrderCancel, RestingOrderCancelOutcome,
-    SideEffectOutcome,
+    AssetClass, KillSwitchActivationEvent, KillSwitchActivationReport, KillSwitchActivationRequest,
+    KillSwitchActivationTimings, LiquidationSubmission, OrderSide, OrderSubmission, OrderType,
+    PaperHaltSummary, RestingOrderCancel, RestingOrderCancelOutcome, SideEffectOutcome,
 };
 
 use crate::live_state::LiveExecutionState;

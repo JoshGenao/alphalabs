@@ -353,6 +353,71 @@
     }
   }
 
+  // ----- kill switch (SRS-SAFE-001 minimal affordance; rich control = UI-4) //
+  // Two-step arm-then-fire against the CONTRACT route on this same runtime.
+  // The rendered outcome is the runtime's own response, verbatim — a refusal
+  // (428/500/501/504) is shown as its error type, never dressed as success.
+  const KILL_SWITCH_ROUTE = "/api/v1/kill-switch?confirm=true";
+  const KILL_ARM_WINDOW_MS = 5000;
+  let killArmTimer = null;
+
+  function killStatus(text, tone) {
+    const el = $("killswitch-status");
+    el.textContent = text;
+    el.dataset.tone = tone;
+  }
+
+  function disarmKillSwitch() {
+    const btn = $("killswitch-btn");
+    btn.dataset.armed = "false";
+    btn.textContent = "KILL SWITCH";
+    if (killArmTimer) { clearTimeout(killArmTimer); killArmTimer = null; }
+  }
+
+  async function fireKillSwitch() {
+    const btn = $("killswitch-btn");
+    btn.disabled = true;
+    killStatus("activating…", "pending");
+    try {
+      const res = await fetch(KILL_SWITCH_ROUTE, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      const body = await res.json();
+      if (res.ok) {
+        killStatus(
+          "activated " + String(body.activation_id) +
+          ": engines_halted=" + String(body.paper_engines_halted) +
+          " liquidations=" + (Array.isArray(body.liquidation_orders) ? body.liquidation_orders.length : "?") +
+          " cancels=" + (Array.isArray(body.cancelled_orders) ? body.cancelled_orders.length : "?") +
+          " ib_disconnected=" + String(body.ib_gateway_disconnected),
+          "fired"
+        );
+      } else {
+        const err = body && body.error ? body.error : {};
+        killStatus("REFUSED " + res.status + " " + String(err.type || "UNKNOWN"), "error");
+        btn.disabled = false;
+      }
+    } catch (error) {
+      killStatus("FAILED: " + String(error), "error");
+      btn.disabled = false;
+    }
+    disarmKillSwitch();
+  }
+
+  $("killswitch-btn").addEventListener("click", () => {
+    const btn = $("killswitch-btn");
+    if (btn.dataset.armed !== "true") {
+      btn.dataset.armed = "true";
+      btn.textContent = "CONFIRM LIQUIDATE?";
+      killStatus("armed — click again within 5s to liquidate", "armed");
+      killArmTimer = setTimeout(() => { disarmKillSwitch(); killStatus("", ""); }, KILL_ARM_WINDOW_MS);
+      return;
+    }
+    fireKillSwitch();
+  });
+
   // ----- boot ------------------------------------------------------------ //
   buildAll();
   connect();

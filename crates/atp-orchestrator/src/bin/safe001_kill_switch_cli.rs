@@ -124,16 +124,32 @@ impl ParsedArgs {
         while let Some(flag) = iter.next() {
             match flag.as_str() {
                 "--activation-id" => {
-                    set_once(&mut parsed.activation_id, take_value(&mut iter, flag)?, flag)?;
+                    set_once(
+                        &mut parsed.activation_id,
+                        take_value(&mut iter, flag)?,
+                        flag,
+                    )?;
                 }
                 "--live-strategy" => {
-                    set_once(&mut parsed.live_strategy, take_value(&mut iter, flag)?, flag)?;
+                    set_once(
+                        &mut parsed.live_strategy,
+                        take_value(&mut iter, flag)?,
+                        flag,
+                    )?;
                 }
                 "--resting" => {
-                    set_once(&mut parsed.resting, parse_u32(&take_value(&mut iter, flag)?, flag)?, flag)?;
+                    set_once(
+                        &mut parsed.resting,
+                        parse_u32(&take_value(&mut iter, flag)?, flag)?,
+                        flag,
+                    )?;
                 }
                 "--positions" => {
-                    set_once(&mut parsed.positions, parse_u32(&take_value(&mut iter, flag)?, flag)?, flag)?;
+                    set_once(
+                        &mut parsed.positions,
+                        parse_u32(&take_value(&mut iter, flag)?, flag)?,
+                        flag,
+                    )?;
                 }
                 "--position" => {
                     parsed
@@ -141,7 +157,11 @@ impl ParsedArgs {
                         .push(parse_position(&take_value(&mut iter, flag)?)?);
                 }
                 "--engines" => {
-                    set_once(&mut parsed.engines, parse_u32(&take_value(&mut iter, flag)?, flag)?, flag)?;
+                    set_once(
+                        &mut parsed.engines,
+                        parse_u32(&take_value(&mut iter, flag)?, flag)?,
+                        flag,
+                    )?;
                 }
                 "--fail-cancel" => parsed.fail_cancel.push(take_value(&mut iter, flag)?),
                 "--fail-liquidation" => {
@@ -161,7 +181,11 @@ impl ParsedArgs {
                     )?;
                 }
                 "--iterations" => {
-                    set_once(&mut parsed.iterations, parse_u32(&take_value(&mut iter, flag)?, flag)?, flag)?;
+                    set_once(
+                        &mut parsed.iterations,
+                        parse_u32(&take_value(&mut iter, flag)?, flag)?,
+                        flag,
+                    )?;
                 }
                 other => return Err(format!("unknown flag '{other}'\n\n{USAGE}")),
             }
@@ -212,13 +236,15 @@ fn take_value(iter: &mut std::slice::Iter<'_, String>, flag: &str) -> Result<Str
 }
 
 fn parse_u32(raw: &str, flag: &str) -> Result<u32, String> {
-    raw.parse::<u32>()
-        .map_err(|_| format!("flag '{flag}' requires a non-negative integer, got '{raw}'\n\n{USAGE}"))
+    raw.parse::<u32>().map_err(|_| {
+        format!("flag '{flag}' requires a non-negative integer, got '{raw}'\n\n{USAGE}")
+    })
 }
 
 fn parse_u64(raw: &str, flag: &str) -> Result<u64, String> {
-    raw.parse::<u64>()
-        .map_err(|_| format!("flag '{flag}' requires a non-negative integer, got '{raw}'\n\n{USAGE}"))
+    raw.parse::<u64>().map_err(|_| {
+        format!("flag '{flag}' requires a non-negative integer, got '{raw}'\n\n{USAGE}")
+    })
 }
 
 /// `SYM:QTY` with a non-zero signed quantity (e.g. `AAPL:100`, `MSFT:-50`).
@@ -229,9 +255,9 @@ fn parse_position(raw: &str) -> Result<(String, i64), String> {
     if symbol.trim().is_empty() {
         return Err(format!("--position has a blank symbol: '{raw}'\n\n{USAGE}"));
     }
-    let quantity: i64 = quantity_raw
-        .parse()
-        .map_err(|_| format!("--position quantity must be a signed integer, got '{raw}'\n\n{USAGE}"))?;
+    let quantity: i64 = quantity_raw.parse().map_err(|_| {
+        format!("--position quantity must be a signed integer, got '{raw}'\n\n{USAGE}")
+    })?;
     if quantity == 0 {
         return Err(format!(
             "--position quantity must be non-zero (a flat symbol is not an open position): '{raw}'\n\n{USAGE}"
@@ -285,8 +311,8 @@ fn cmd_perf(rest: &[String]) -> Result<ExitCode, String> {
         let outcome = run_fixture_activation(&scenario)?;
         let elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         activation_ns_samples.push(elapsed_ns);
-        max_liquidations_submitted_ms = max_liquidations_submitted_ms
-            .max(outcome.report.timings.liquidations_submitted_ms);
+        max_liquidations_submitted_ms =
+            max_liquidations_submitted_ms.max(outcome.report.timings.liquidations_submitted_ms);
         if !(outcome.report.fully_clean() && outcome.all_engines_halted) {
             any_unclean = true;
         }
@@ -316,10 +342,13 @@ fn cmd_perf(rest: &[String]) -> Result<ExitCode, String> {
     // NFR-P3 verdict rule (kill_switch_activation_contract): every
     // activation's cancel+liquidation-submission mark within 5 000 ms — and
     // a run that recorded ANY failure cannot claim a clean perf pass.
-    let pass =
-        max_liquidations_submitted_ms <= KILL_SWITCH_ACTIVATION_BUDGET_MS && !any_unclean;
+    let pass = max_liquidations_submitted_ms <= KILL_SWITCH_ACTIVATION_BUDGET_MS && !any_unclean;
     println!("verdict:{}", if pass { "PASS" } else { "FAIL" });
-    Ok(if pass { ExitCode::SUCCESS } else { ExitCode::from(1) })
+    Ok(if pass {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
 }
 
 fn json_escape(value: &str) -> String {
@@ -342,7 +371,10 @@ fn outcome_to_json(outcome: &SideEffectOutcome) -> String {
         SideEffectOutcome::NotAttempted => "{\"status\":\"NOT_ATTEMPTED\"}".to_string(),
         SideEffectOutcome::Succeeded => "{\"status\":\"SUCCEEDED\"}".to_string(),
         SideEffectOutcome::Failed { reason } => {
-            format!("{{\"status\":\"FAILED\",\"reason\":\"{}\"}}", json_escape(reason))
+            format!(
+                "{{\"status\":\"FAILED\",\"reason\":\"{}\"}}",
+                json_escape(reason)
+            )
         }
     }
 }

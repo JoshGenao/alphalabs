@@ -38,6 +38,16 @@
           <span class="chip__k">READINESS</span>
           <span class="chip__v" id="readiness-state">—</span>
         </div>
+
+        <!-- SRS-SAFE-001 minimal kill-switch affordance (SYS-44a: "accessible
+             from the dashboard"). Two-step arm-then-fire; POSTs to the
+             CONTRACT route on this same runtime and renders the returned
+             report values verbatim — no fabricated status. The rich control
+             with per-phase status feedback is UI-4. -->
+        <div class="killswitch" role="group" aria-label="Kill switch — QuantConnect Liquidate sequence (SRS-SAFE-001)">
+          <button class="killswitch__btn" id="killswitch-btn" type="button" data-armed="false">KILL&nbsp;SWITCH</button>
+          <span class="killswitch__status" id="killswitch-status" role="status" aria-live="assertive"></span>
+        </div>
       </div>
 
       <div class="pulse" role="group" aria-label="Observed dashboard refresh latency">

@@ -254,3 +254,18 @@ def test_wire_kill_switch_requires_an_existing_state_dir(tmp_path: Path) -> None
             system_log_store=store,
             state_dir=tmp_path / "missing",
         )
+
+
+def test_dashboard_affordance_targets_the_contract_route() -> None:
+    # SYS-44a "accessible from the dashboard": the minimal SRS-SAFE-001
+    # control POSTs to the CONTRACT route on the same runtime (the dashboard
+    # itself adds NO mutating endpoint — test_dashboard_safety.py pins that).
+    # This drift guard fails if the asset ever points somewhere else.
+    repo_root = Path(__file__).resolve().parents[2]
+    app_js = (repo_root / "python/atp_dashboard/assets/app.js").read_text(encoding="utf-8")
+    assert '"/api/v1/kill-switch?confirm=true"' in app_js
+    assert 'method: "POST"' in app_js
+    index_html = (repo_root / "python/atp_dashboard/assets/index.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'id="killswitch-btn"' in index_html

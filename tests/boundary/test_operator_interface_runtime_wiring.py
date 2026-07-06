@@ -115,7 +115,7 @@ def test_http_confirmed_domain_op_returns_deferred_envelope(running_runtime):
     status, body = _request(host, port, "POST", "/api/v1/kill-switch?confirm=true")
     assert status == 501
     assert body["error"]["type"] == "HANDLER_DEFERRED"
-    assert body["error"]["detail"]["owner"] == "SRS-EXE-001"
+    assert body["error"]["detail"]["owner"] == "SRS-SAFE-001"
 
 
 def test_http_structured_404_and_405(running_runtime):
@@ -344,6 +344,6 @@ def test_cli_confirmation_guard_and_deferral():
     # With --confirm: exit 64 (NOT_IMPLEMENTED), structured deferral.
     code, out = _cli(runtime, ["kill-switch", "activate", "--confirm", "--json"])
     assert code == 64
-    assert json.loads(out)["error"]["detail"]["owner"] == "SRS-EXE-001"
+    assert json.loads(out)["error"]["detail"]["owner"] == "SRS-SAFE-001"
     # A non-confirmation deferred command also reports NOT_IMPLEMENTED.
     assert _cli(runtime, ["strategy", "list", "--json"])[0] == 64

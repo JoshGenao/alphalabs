@@ -40,8 +40,7 @@ use atp_execution::{
 use atp_types::{
     ClientCorrelationId, KillSwitchActivationEvent, KillSwitchActivationReport,
     KillSwitchActivationRequest, OrderKey, OrderLedger, OrderSide, OrderState, OrderSubmission,
-    OrderType, PaperHaltSummary, SideEffectOutcome, StrategyId,
-    KILL_SWITCH_ACTIVATION_BUDGET_MS,
+    OrderType, PaperHaltSummary, SideEffectOutcome, StrategyId, KILL_SWITCH_ACTIVATION_BUDGET_MS,
 };
 
 const LIVE: &str = "alpha-live";
@@ -99,7 +98,9 @@ impl KillSwitchBrokerageControl for BrokerageSpy {
         &self,
         cancel: &atp_types::RestingOrderCancel,
     ) -> Result<(), KillSwitchSideEffectError> {
-        self.log.borrow_mut().push(format!("cancel:{}", cancel.order_id));
+        self.log
+            .borrow_mut()
+            .push(format!("cancel:{}", cancel.order_id));
         self.cancels.borrow_mut().push(cancel.clone());
         if self.fail_cancel_order_ids.contains(&cancel.order_id) {
             return Err(KillSwitchSideEffectError::new(format!(
@@ -130,7 +131,9 @@ impl KillSwitchBrokerageControl for BrokerageSpy {
     fn disconnect(&self) -> Result<(), KillSwitchSideEffectError> {
         self.log.borrow_mut().push("disconnect".to_string());
         if self.fail_disconnect {
-            return Err(KillSwitchSideEffectError::new("injected disconnect failure"));
+            return Err(KillSwitchSideEffectError::new(
+                "injected disconnect failure",
+            ));
         }
         Ok(())
     }
@@ -190,10 +193,7 @@ impl EventSinkSpy {
 }
 
 impl KillSwitchActivationEventSink for EventSinkSpy {
-    fn record(
-        &self,
-        event: KillSwitchActivationEvent,
-    ) -> Result<(), KillSwitchSideEffectError> {
+    fn record(&self, event: KillSwitchActivationEvent) -> Result<(), KillSwitchSideEffectError> {
         self.recorded.borrow_mut().push(event);
         if self.fail {
             return Err(KillSwitchSideEffectError::new("injected sink failure"));
@@ -228,11 +228,17 @@ fn fixture_state() -> LiveExecutionState {
     let live = StrategyId::new(LIVE);
 
     ledger
-        .submit(correlation("c-rest-new"), &market_order(LIVE, "AAPL", 10, OrderSide::Buy))
+        .submit(
+            correlation("c-rest-new"),
+            &market_order(LIVE, "AAPL", 10, OrderSide::Buy),
+        )
         .expect("submit resting-new");
 
     ledger
-        .submit(correlation("c-rest-ack"), &market_order(LIVE, "MSFT", 5, OrderSide::Sell))
+        .submit(
+            correlation("c-rest-ack"),
+            &market_order(LIVE, "MSFT", 5, OrderSide::Sell),
+        )
         .expect("submit resting-acked");
     let ack_key = OrderKey::new(live.clone(), correlation("c-rest-ack"));
     ledger
@@ -243,7 +249,10 @@ fn fixture_state() -> LiveExecutionState {
         .expect("resting-acked -> ACKED");
 
     ledger
-        .submit(correlation("c-filled"), &market_order(LIVE, "NVDA", 7, OrderSide::Buy))
+        .submit(
+            correlation("c-filled"),
+            &market_order(LIVE, "NVDA", 7, OrderSide::Buy),
+        )
         .expect("submit filled");
     let filled_key = OrderKey::new(live.clone(), correlation("c-filled"));
     ledger
@@ -257,7 +266,10 @@ fn fixture_state() -> LiveExecutionState {
         .expect("filled -> FILLED");
 
     ledger
-        .submit(correlation("c-paper"), &market_order(PAPER, "TSLA", 3, OrderSide::Buy))
+        .submit(
+            correlation("c-paper"),
+            &market_order(PAPER, "TSLA", 3, OrderSide::Buy),
+        )
         .expect("submit paper-strategy order");
 
     LiveExecutionState::new(ledger)
@@ -326,7 +338,10 @@ fn srs_safe_001_phase_ordering_halt_cancels_liquidations_disconnect() {
     let last_liquidation = position("liquidate:", true);
     let disconnect = position("disconnect", false);
 
-    assert!(halt < first_cancel, "halt must run before any cancel: {log:?}");
+    assert!(
+        halt < first_cancel,
+        "halt must run before any cancel: {log:?}"
+    );
     assert!(
         last_cancel < first_liquidation,
         "every cancel must precede the first liquidation: {log:?}"
@@ -353,7 +368,11 @@ fn srs_safe_001_cancels_exactly_the_resting_live_strategy_orders() {
     let report = activate_with(&brokerage, &fanout, &events, &clock);
 
     let cancels = brokerage.cancels.borrow();
-    assert_eq!(cancels.len(), 2, "exactly the two resting live orders: {cancels:?}");
+    assert_eq!(
+        cancels.len(),
+        2,
+        "exactly the two resting live orders: {cancels:?}"
+    );
     assert_eq!(report.resting_order_cancels.len(), 2);
 
     let new_order = cancels
@@ -371,7 +390,9 @@ fn srs_safe_001_cancels_exactly_the_resting_live_strategy_orders() {
     assert_eq!(acked_order.broker_order_id.as_deref(), Some("B-ACK"));
 
     assert!(
-        !cancels.iter().any(|cancel| cancel.order_id.contains("c-filled")),
+        !cancels
+            .iter()
+            .any(|cancel| cancel.order_id.contains("c-filled")),
         "a terminal (FILLED) order must not be cancelled"
     );
     assert!(
@@ -399,18 +420,29 @@ fn srs_safe_001_liquidations_close_every_position_opposite_side_abs_quantity() {
     for submission in submissions.iter() {
         assert_eq!(submission.order_type, OrderType::Market);
         assert_eq!(submission.strategy_id, StrategyId::new(LIVE));
-        assert!(submission.validate().is_ok(), "gate submits only validated orders");
+        assert!(
+            submission.validate().is_ok(),
+            "gate submits only validated orders"
+        );
     }
     let aapl = submissions
         .iter()
         .find(|submission| submission.symbol == "AAPL")
         .expect("AAPL liquidation");
-    assert_eq!((aapl.side, aapl.quantity), (OrderSide::Sell, 100), "long 100 → SELL 100");
+    assert_eq!(
+        (aapl.side, aapl.quantity),
+        (OrderSide::Sell, 100),
+        "long 100 → SELL 100"
+    );
     let msft = submissions
         .iter()
         .find(|submission| submission.symbol == "MSFT")
         .expect("MSFT liquidation");
-    assert_eq!((msft.side, msft.quantity), (OrderSide::Buy, 50), "short 50 → BUY 50");
+    assert_eq!(
+        (msft.side, msft.quantity),
+        (OrderSide::Buy, 50),
+        "short 50 → BUY 50"
+    );
 
     assert_eq!(report.liquidations.len(), 2);
     assert!(report
@@ -429,7 +461,9 @@ fn srs_safe_001_failures_are_recorded_and_never_stop_later_phases() {
     brokerage
         .fail_cancel_order_ids
         .insert(format!("{LIVE}/c-rest-new"));
-    brokerage.fail_liquidation_symbols.insert("AAPL".to_string());
+    brokerage
+        .fail_liquidation_symbols
+        .insert("AAPL".to_string());
     brokerage.fail_disconnect = true;
     let fanout = FanoutSpy::halting(Rc::clone(&log), 30);
     let events = EventSinkSpy::recording();
@@ -437,14 +471,21 @@ fn srs_safe_001_failures_are_recorded_and_never_stop_later_phases() {
 
     let report = activate_with(&brokerage, &fanout, &events, &clock);
 
-    assert_eq!(brokerage.cancels.borrow().len(), 2, "both cancels still attempted");
+    assert_eq!(
+        brokerage.cancels.borrow().len(),
+        2,
+        "both cancels still attempted"
+    );
     assert_eq!(
         brokerage.liquidations.borrow().len(),
         2,
         "both liquidations still attempted"
     );
     assert_eq!(
-        log.borrow().iter().filter(|entry| *entry == "disconnect").count(),
+        log.borrow()
+            .iter()
+            .filter(|entry| *entry == "disconnect")
+            .count(),
         1,
         "disconnect still attempted after failures"
     );
@@ -469,7 +510,10 @@ fn srs_safe_001_failures_are_recorded_and_never_stop_later_phases() {
         .expect("AAPL liquidation present");
     assert!(failed_liquidation.outcome.is_failed());
     assert!(report.ib_disconnect.is_failed());
-    assert!(!report.fully_clean(), "any failure anywhere means NOT fully clean");
+    assert!(
+        !report.fully_clean(),
+        "any failure anywhere means NOT fully clean"
+    );
 }
 
 #[test]
@@ -528,7 +572,10 @@ fn srs_safe_001_event_sink_receives_the_exact_report_and_is_best_effort() {
     let report = activate_with(&brokerage, &fanout, &events, &clock);
     let recorded = events.recorded.borrow();
     assert_eq!(recorded.len(), 1, "activation recorded exactly once");
-    assert_eq!(recorded[0].report, report, "the sink sees the exact returned report");
+    assert_eq!(
+        recorded[0].report, report,
+        "the sink sees the exact returned report"
+    );
 
     // Best-effort: a failing sink changes nothing about the report.
     let log2: CallLog = Rc::new(RefCell::new(Vec::new()));
@@ -537,7 +584,10 @@ fn srs_safe_001_event_sink_receives_the_exact_report_and_is_best_effort() {
     let failing_events = EventSinkSpy::failing();
     let clock2 = StepClock::with_step(1);
     let report2 = activate_with(&brokerage2, &fanout2, &failing_events, &clock2);
-    assert_eq!(report2, report, "a sink failure never alters the activation outcome");
+    assert_eq!(
+        report2, report,
+        "a sink failure never alters the activation outcome"
+    );
     assert_eq!(failing_events.recorded.borrow().len(), 1);
 }
 

@@ -78,6 +78,34 @@ def test_kill_switch_confirmation_guard_is_unchanged(mounted_runtime) -> None:
     assert body["error"]["category"] == "CONFIRMATION_REQUIRED"
 
 
+def test_kill_switch_affordance_uses_only_the_contract_route(mounted_runtime) -> None:
+    # SYS-44a: the SRS-SAFE-001 dashboard affordance POSTs to the CONTRACT
+    # route on this same runtime — it introduces NO dashboard-namespaced
+    # mutation (the read-only assertions above must keep holding) and no
+    # second kill path. The client control also cannot bypass the server-side
+    # guard: an unwired runtime still refuses its POST target (501 deferred,
+    # never a silent success).
+    _, host, port = mounted_runtime
+    from pathlib import Path
+
+    app_js = (
+        Path(__file__).resolve().parents[2] / "python/atp_dashboard/assets/app.js"
+    ).read_text(encoding="utf-8")
+    fetch_targets = [
+        line for line in app_js.splitlines() if "fetch(" in line and "api/v1" in line
+    ]
+    assert all("kill-switch" not in target or "KILL_SWITCH_ROUTE" in target for target in fetch_targets)
+    assert 'const KILL_SWITCH_ROUTE = "/api/v1/kill-switch?confirm=true";' in app_js, (
+        "the affordance must target exactly the contract route with the "
+        "confirmation token the transport guard requires"
+    )
+    # The button's target on THIS (un-wired) runtime stays fail-closed:
+    status, body = _request(host, port, "POST", "/api/v1/kill-switch?confirm=true")
+    assert status == 501
+    assert body["error"]["type"] == "HANDLER_DEFERRED"
+    assert body["error"]["detail"]["owner"] == "SRS-SAFE-001"
+
+
 def test_dashboard_bind_is_loopback_or_rfc1918_only() -> None:
     # SRS-SEC-002: loopback / RFC 1918 accepted; all-interfaces + public refused.
     for allowed in ("127.0.0.1", "10.1.2.3", "192.168.1.9"):
