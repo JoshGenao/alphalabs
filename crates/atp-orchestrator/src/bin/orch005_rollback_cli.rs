@@ -53,6 +53,9 @@ SUBCOMMANDS:
                 version becomes the retained previous). Creates the state file
                 on first use.
     show        Print a strategy's current + retained previous version.
+    list        Print EVERY recorded strategy's current + retained previous
+                version, strategy-id-sorted (the SYS-41 active-strategy
+                inventory read the SRS-UI-002 dashboard panel shells).
     rollback    Restore the retained previous version. The target hash must
                 NAME that exact version; rollback of the LIVE strategy requires
                 --acknowledge (the NFR-S2 confirmation control, matching live
@@ -100,6 +103,7 @@ fn run(args: &[String]) -> Result<(), String> {
     match command.as_str() {
         "record" => cmd_record(rest),
         "show" => cmd_show(rest),
+        "list" => cmd_list(rest),
         "rollback" => cmd_rollback(rest),
         "help" | "--help" | "-h" => {
             print!("{USAGE}");
@@ -175,6 +179,40 @@ fn cmd_show(rest: &[String]) -> Result<(), String> {
     println!("strategy:{strategy}");
     println!("current:{}", retained.current.version_identifier());
     println!("previous:{}", previous_identifier(&retained));
+    Ok(())
+}
+
+/// The SYS-41 / SRS-UI-002 inventory read: every recorded strategy's retained
+/// pair, strategy-id-sorted, as deterministic indexed `key:value` lines the
+/// dashboard's inventory source parses (`strategy.<i>.id` / `.current` /
+/// `.previous`). A missing state file fails closed like `show` — an absent
+/// snapshot is data absence, never an empty inventory.
+fn cmd_list(rest: &[String]) -> Result<(), String> {
+    if wants_help(rest) {
+        print!("{USAGE}");
+        return Ok(());
+    }
+    let parsed = ParsedArgs::parse(rest)?;
+    let state_path = parsed.require_state()?;
+    if parsed.strategy.is_some() {
+        return Err("`list` takes no --strategy (use `show` for one strategy)".to_string());
+    }
+    let registry = load_state(&state_path)?;
+    let rows = registry
+        .entries_sorted()
+        .map_err(|error| error.to_string())?;
+    println!("strategy_count:{}", rows.len());
+    for (index, (strategy, retained)) in rows.iter().enumerate() {
+        println!("strategy.{index}.id:{strategy}");
+        println!(
+            "strategy.{index}.current:{}",
+            retained.current.version_identifier()
+        );
+        println!(
+            "strategy.{index}.previous:{}",
+            previous_identifier(retained)
+        );
+    }
     Ok(())
 }
 

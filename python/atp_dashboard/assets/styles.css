@@ -309,3 +309,19 @@ body {
 .killswitch__status[data-tone="armed"] { color: var(--warn); }
 .killswitch__status[data-tone="fired"] { color: var(--bad); font-weight: 600; }
 .killswitch__status[data-tone="error"] { color: var(--bad); }
+
+/* --- SRS-UI-002 strategy inventory panel --- */
+.panel--wide { grid-column: 1 / -1; }
+.inventory__summary { font-size: 0.78rem; color: var(--deferred); margin-bottom: 10px; }
+.inventory__summary[data-tone="ok"] { color: var(--fg); }
+.inventory__summary[data-tone="warn"] { color: var(--warn); }
+.inventory__summary[data-tone="error"] { color: var(--bad); }
+.inventory { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.inventory th {
+  text-align: left; font-weight: 600; font-size: 0.68rem; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--deferred); padding: 6px 10px 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.inventory td { padding: 7px 10px 7px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+.inventory td .srctag { margin-left: 6px; }
+.inventory__name { font-weight: 600; }

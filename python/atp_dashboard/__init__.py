@@ -13,6 +13,12 @@ deferred placeholders, never fabricated.
 
 from __future__ import annotations
 
+from .inventory import (
+    INVENTORY_CHANNEL,
+    RollbackSnapshotInventorySource,
+    StrategyInventoryProvider,
+    StrategyInventorySource,
+)
 from .provider import (
     DEFERRED,
     LIVE,
@@ -23,17 +29,28 @@ from .provider import (
     deferred_field,
 )
 from .publisher import DashboardPublisher, cadence_for
-from .server import SYSTEM_SNAPSHOT_PATH, load_assets, mount_dashboard, serve
+from .server import (
+    STRATEGIES_SNAPSHOT_PATH,
+    SYSTEM_SNAPSHOT_PATH,
+    load_assets,
+    mount_dashboard,
+    serve,
+)
 
 __all__ = [
     "DEFERRED",
+    "INVENTORY_CHANNEL",
     "LIVE",
     "OWNED_CHANNELS",
     "REFRESH_BUDGET_MS",
+    "STRATEGIES_SNAPSHOT_PATH",
     "SYSTEM_SNAPSHOT_PATH",
     "DashboardMetricsProvider",
     "DashboardPublisher",
     "ReadinessBackedProvider",
+    "RollbackSnapshotInventorySource",
+    "StrategyInventoryProvider",
+    "StrategyInventorySource",
     "cadence_for",
     "deferred_field",
     "load_assets",

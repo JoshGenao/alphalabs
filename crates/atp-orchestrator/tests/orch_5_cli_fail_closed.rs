@@ -97,6 +97,58 @@ fn orch_5_cli_unconfirmed_live_rollback_exits_nonzero_and_leaves_state_unchanged
 }
 
 #[test]
+fn orch_5_cli_list_prints_the_sorted_inventory_and_fails_closed_on_a_missing_snapshot() {
+    // The SYS-41 / SRS-UI-002 inventory read: every recorded strategy, id-sorted,
+    // as indexed proof lines; a missing snapshot is data absence (fail closed),
+    // never an empty inventory.
+    let state = state_path("orch005-list.state");
+    seed_two_versions(&state);
+    let (ok, _, err) = run(&[
+        "record",
+        "--state",
+        state.to_str().unwrap(),
+        "--strategy",
+        "beta-9",
+        "--hash",
+        HASH_V1,
+        "--observed-at",
+        "300",
+    ]);
+    assert!(ok, "seed beta-9 failed: {err}");
+
+    let (ok, out, err) = run(&["list", "--state", state.to_str().unwrap()]);
+    assert!(ok, "list failed: {err}");
+    assert!(out.contains("strategy_count:2"), "{out}");
+    assert!(out.contains("strategy.0.id:alpha-1"), "{out}");
+    assert!(
+        out.contains(&format!("strategy.0.current:{HASH_V2}@200")),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!("strategy.0.previous:{HASH_V1}@100")),
+        "{out}"
+    );
+    assert!(out.contains("strategy.1.id:beta-9"), "{out}");
+    assert!(out.contains("strategy.1.previous:-"), "{out}");
+
+    // A missing snapshot fails closed; `list` also refuses a stray --strategy.
+    let missing = state_path("orch005-list-missing.state");
+    let (ok, _, _) = run(&["list", "--state", missing.to_str().unwrap()]);
+    assert!(
+        !ok,
+        "a missing snapshot must fail closed, never read as an empty inventory"
+    );
+    let (ok, _, _) = run(&[
+        "list",
+        "--state",
+        state.to_str().unwrap(),
+        "--strategy",
+        "alpha-1",
+    ]);
+    assert!(!ok, "`list` must refuse --strategy (use `show`)");
+}
+
+#[test]
 fn orch_5_cli_confirmed_live_rollback_round_trips_durably() {
     let state = state_path("orch005-confirmed.state");
     seed_two_versions(&state);

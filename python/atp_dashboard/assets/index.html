@@ -97,6 +97,35 @@
         </div>
         <div class="panel__body" id="body-latency" aria-live="polite"></div>
       </section>
+
+      <!-- SRS-UI-002 / SyRS SYS-41: active strategy inventory. The deployed
+           code version is REAL (SYS-79, from the orchestrator's deployment
+           record via STRATEGY_STATE); mode / asset class / container status /
+           P&L / positions render as honest deferred cells until their
+           producer features land. -->
+      <section class="panel panel--wide" data-panel="strategies" style="--i:4">
+        <div class="panel__head">
+          <h2 class="panel__title">Strategy Inventory</h2>
+          <span class="panel__meta"><span class="tag tag--chan">STRATEGY_STATE</span><span class="panel__cadence">5s</span></span>
+        </div>
+        <div class="panel__body" id="body-strategies" aria-live="polite">
+          <div class="inventory__summary" id="inventory-summary">awaiting inventory…</div>
+          <table class="inventory" id="inventory-table" hidden>
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Mode</th>
+                <th scope="col">Asset</th>
+                <th scope="col">Container</th>
+                <th scope="col">Deployed version</th>
+                <th scope="col">P&amp;L</th>
+                <th scope="col">Positions</th>
+              </tr>
+            </thead>
+            <tbody id="inventory-rows"></tbody>
+          </table>
+        </div>
+      </section>
     </main>
 
     <footer class="legend" role="contentinfo">

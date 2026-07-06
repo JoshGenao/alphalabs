@@ -78,7 +78,7 @@
     // Budget is a real, known constant — fill it immediately.
     setField("body-latency", "refresh_budget_ms", { value: BUDGET_MS, data_source: "live" }, "ms");
     // Per-panel freshness indicator (driven by monitorFreshness).
-    for (const panel of ["pnl", "metrics", "health", "latency"]) addFreshDot(panel);
+    for (const panel of ["pnl", "metrics", "health", "latency", "strategies"]) addFreshDot(panel);
   }
 
   function addFreshDot(panel) {
@@ -173,6 +173,11 @@
     { panel: "metrics", ch: "METRICS", budget: 5000, gauge: true },
     { panel: "health", ch: "HEARTBEAT", budget: 1000, gauge: true },
     { panel: "latency", ch: "SYSTEM", budget: POLL_MS, gauge: false },
+    // SRS-UI-002 inventory: NOT part of the NFR-P2 gauge — the channel is a
+    // composition-time opt-in (a bare SRS-UI-001 mount publishes no
+    // STRATEGY_STATE and must not read as an SLA breach); the panel's own
+    // freshness dot still reports it honestly.
+    { panel: "strategies", ch: "STRATEGY_STATE", budget: 5000, gauge: false },
   ];
   const STALE_GRACE_MS = 1500; // tolerate normal cadence jitter; flag real stalls
   const lastChannelAt = Object.create(null); // channel -> performance.now()
@@ -271,7 +276,7 @@
     ws.onopen = () => {
       backoff = 500;
       setConn("open", "LIVE");
-      ws.send(JSON.stringify({ type: "SUBSCRIBE", channels: ["PNL", "METRICS", "HEARTBEAT"] }));
+      ws.send(JSON.stringify({ type: "SUBSCRIBE", channels: ["PNL", "METRICS", "HEARTBEAT", "STRATEGY_STATE"] }));
     };
     ws.onmessage = (ev) => {
       let msg; try { msg = JSON.parse(ev.data); } catch (_e) { return; }
@@ -295,8 +300,70 @@
       for (const [k, , kind] of ROWS.metrics) setField("body-metrics", k, data[k], kind);
     } else if (channel === "HEARTBEAT") {
       for (const [k, , kind] of ROWS.health) setField("body-health", k, data[k], kind);
+    } else if (channel === "STRATEGY_STATE") {
+      onInventoryEvent(data);
     }
     noteActivity(channel);
+  }
+
+  // ----- SRS-UI-002 strategy inventory ------------------------------------ //
+  // One summary event + one event per strategy per tick. Rows are keyed by
+  // strategy_id; a cell arriving as {value:null, data_source:"deferred:<owner>"}
+  // renders as the explicit "—" with the owning feature tag — never fabricated.
+  function inventoryCell(raw) {
+    const td = el("td");
+    let value = raw, source = "live";
+    if (raw && typeof raw === "object" && "value" in raw) { value = raw.value; source = raw.data_source || "live"; }
+    if (value === null || value === undefined) {
+      const v = el("span", "metric__value is-deferred"); v.textContent = "—";
+      const tag = el("span", "srctag"); tag.textContent = shortSource(source);
+      td.append(v, tag);
+    } else {
+      const v = el("span", "metric__value"); v.textContent = String(value);
+      td.appendChild(v);
+      if (typeof source === "string" && source.startsWith("live")) {
+        const tag = el("span", "srctag srctag--live"); tag.textContent = "live";
+        td.appendChild(tag);
+      }
+    }
+    return td;
+  }
+
+  function renderInventoryRow(data) {
+    const rows = $("inventory-rows");
+    if (!rows) return;
+    const key = String(data.strategy_id);
+    let tr = rows.querySelector('[data-strategy="' + CSS.escape(key) + '"]');
+    if (!tr) { tr = el("tr"); tr.dataset.strategy = key; rows.appendChild(tr); }
+    tr.textContent = "";
+    const name = el("td", "inventory__name"); name.textContent = String(data.name || key);
+    tr.appendChild(name);
+    tr.appendChild(inventoryCell(data.mode));
+    tr.appendChild(inventoryCell(data.asset_class));
+    tr.appendChild(inventoryCell(data.container_status));
+    tr.appendChild(inventoryCell(data.version_identifier || data.deployment_version_hash));
+    tr.appendChild(inventoryCell(data.pnl));
+    tr.appendChild(inventoryCell(data.position_count));
+    $("inventory-table").hidden = false;
+  }
+
+  function onInventoryEvent(data) {
+    const summary = $("inventory-summary");
+    if (data.event === "inventory-summary") {
+      if (!summary) return;
+      if (data.ok === false) {
+        summary.textContent = "inventory unavailable: " + String(data.error || "unknown");
+        summary.dataset.tone = "error";
+      } else {
+        const n = Number(data.strategy_count);
+        summary.textContent = n === 0
+          ? "no strategies deployed"
+          : n + " strateg" + (n === 1 ? "y" : "ies") + " · deployed version live · other cells await their producer features";
+        summary.dataset.tone = "ok";
+      }
+      return;
+    }
+    if (data.strategy_id) renderInventoryRow(data);
   }
 
   function applyMeta(bodyId, strategyId) {
@@ -317,6 +384,35 @@
       if (res.ok) applySnapshot(await res.json());
     } catch (_e) { /* transient; next tick retries */ }
     setTimeout(poll, POLL_MS);
+  }
+
+  // ----- strategy-inventory poll (SRS-UI-002 first paint + fallback) ------ //
+  // The WS STRATEGY_STATE events drive live updates; this poll gives the table
+  // its first paint and reports an UN-mounted inventory honestly (the route is
+  // registered only when a composer mounts the SRS-UI-002 provider).
+  async function pollStrategies() {
+    try {
+      const res = await fetch("/dashboard/api/strategies", { cache: "no-store" });
+      if (res.ok) {
+        const snap = await res.json();
+        onInventoryEvent({
+          event: "inventory-summary",
+          ok: snap.ok,
+          error: snap.error,
+          strategy_count: Array.isArray(snap.strategies) ? snap.strategies.length : null,
+        });
+        if (snap.ok && Array.isArray(snap.strategies)) {
+          for (const row of snap.strategies) renderInventoryRow(row);
+        }
+      } else if (res.status === 404) {
+        const summary = $("inventory-summary");
+        if (summary) {
+          summary.textContent = "inventory not mounted — SRS-UI-002 provider not composed on this runtime";
+          summary.dataset.tone = "warn";
+        }
+      }
+    } catch (_e) { /* transient; next tick retries */ }
+    setTimeout(pollStrategies, POLL_MS);
   }
 
   function applySnapshot(snap) {
@@ -436,4 +532,5 @@
   buildAll();
   connect();
   poll();
+  pollStrategies();
 })();

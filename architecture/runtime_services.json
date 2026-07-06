@@ -2144,7 +2144,7 @@
     },
     "deferred": [
       "Concrete DeployedVersionRegistry implementation backed by a durable store (SQLite, sled, or the SRS-DATA-* state layer once the data layer lands). Today the trait is consumed only by spy implementations in tests; the production caller will land alongside the dashboard / REST API surface (owner: SRS-API-001 / SRS-UI-002).",
-      "Dashboard wiring (SyRS SYS-41) that renders the version_identifier on the active-strategy inventory. Owner: SRS-UI-002 + SRS-UI-001.",
+      "Dashboard wiring (SyRS SYS-41) LANDED via SRS-UI-002: atp_dashboard.inventory renders each recorded strategy's version_identifier on the strategy-inventory panel (the STRATEGY_STATE channel + GET /dashboard/api/strategies), fed by orch005_rollback_cli list over the SRS-ORCH-005 deployment snapshot; the production in-process DeployedVersionRegistry caller remains deferred. Owner of the remaining leg: SRS-API-001.",
       "REST API endpoint (SyRS IF-9) that returns the version_identifier per strategy id. Owner: SRS-API-001.",
       "Backtest result column carrying the strategy code version (SyRS SYS-21). The orchestrator's DeployedVersion record is the source of truth; the backtest pipeline (SRS-BT-001 / SRS-BT-009) will project it onto each backtest result row when those surfaces land.",
       "Concrete failure variants on DeployedVersionRegistryError (durable-store outage / permission denied / mutex poisoning / file-system full). The reason string carries the cause for now; structured variants will be added when the concrete registry adapter lands.",

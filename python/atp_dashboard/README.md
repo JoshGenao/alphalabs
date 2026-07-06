@@ -27,6 +27,14 @@ ReadinessBackedProvider ──payloads──▶ DashboardPublisher ──runtime
 * **`assets/`** — a dependency-free, single-page dashboard (no external CDN/fonts).
 * **`server.py`** — `mount_dashboard(runtime, provider)` wires the routes; `serve()`
   is the blocking process entrypoint.
+* **`inventory.py`** (`SRS-UI-002` / SyRS SYS-41) — the strategy-inventory panel's
+  provider: `mount_dashboard(..., inventory=StrategyInventoryProvider(...))` adds the
+  `STRATEGY_STATE` channel and `GET /dashboard/api/strategies`. The **deployed code
+  version is real** (SYS-79 — read via `orch005_rollback_cli list` over the
+  SRS-ORCH-005 deployment snapshot); mode / asset class / container status / P&L /
+  position count render as honest deferred cells until their producer features land
+  (`SRS-ORCH-001/004`, `SRS-SIM-003`, `SRS-BT-004`). Composition-time opt-in: a bare
+  SRS-UI-001 mount claims no inventory channel and serves no inventory route.
 
 ## Run
 

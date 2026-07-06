@@ -1,11 +1,14 @@
-"""Dashboard WebSocket publisher (SRS-UI-001).
+"""Dashboard WebSocket publisher (SRS-UI-001; SRS-UI-002 inventory channel).
 
 Drives the live-update side of the dashboard: claims the three channels
-SRS-UI-001 owns (``PNL`` / ``METRICS`` / ``HEARTBEAT``) via
-:meth:`OperatorInterfaceRuntime.register_publisher`, then runs a single daemon
-ticker thread that publishes each channel's current payload at its declared
-``refresh_seconds`` cadence (each ``≤ MAX_REFRESH_SECONDS`` — the NFR-P2 5 s
-ceiling) through :meth:`OperatorInterfaceRuntime.publish`.
+SRS-UI-001 owns (``PNL`` / ``METRICS`` / ``HEARTBEAT``) — plus, when a
+strategy-inventory provider is mounted, the SRS-UI-002 ``STRATEGY_STATE``
+channel — via :meth:`OperatorInterfaceRuntime.register_publisher`, then runs a
+single daemon ticker thread that publishes each channel's current payload at
+its declared ``refresh_seconds`` cadence (each ``≤ MAX_REFRESH_SECONDS`` — the
+NFR-P2 5 s ceiling) through :meth:`OperatorInterfaceRuntime.publish`.
+``STRATEGY_STATE`` publishes one summary event plus one event per recorded
+strategy per tick (the per-strategy shape the atp_ws contract declares).
 
 An **immediate first tick** is emitted per channel on start (rather than
 sleep-then-publish) so a freshly-subscribed client sees data well inside the 5 s
@@ -29,6 +32,7 @@ from collections.abc import Iterable
 from atp_runtime import OperatorInterfaceRuntime
 from atp_ws import EVENT_CHANNELS, MAX_REFRESH_SECONDS
 
+from .inventory import INVENTORY_CHANNEL, StrategyInventoryProvider
 from .provider import OWNED_CHANNELS, DashboardMetricsProvider
 
 #: Longest a fast poll may sleep between due-time checks — keeps ``stop()``
@@ -65,25 +69,35 @@ class DashboardPublisher:
         provider: DashboardMetricsProvider,
         *,
         channels: Iterable[str] = OWNED_CHANNELS,
+        inventory: StrategyInventoryProvider | None = None,
     ) -> None:
         self._runtime = runtime
         self._provider = provider
+        self._inventory = inventory
         self._channels: tuple[str, ...] = tuple(channels)
-        # Fail fast on a mis-declared cadence before any thread starts.
-        self._cadences: dict[str, int] = {c: cadence_for(c) for c in self._channels}
+        # Fail fast on a mis-declared cadence before any thread starts. The
+        # inventory channel joins the schedule only when its provider is mounted
+        # (SRS-UI-002 is composition-time opt-in, like the dashboard itself).
+        scheduled = list(self._channels)
+        if inventory is not None:
+            scheduled.append(INVENTORY_CHANNEL)
+        self._scheduled: tuple[str, ...] = tuple(scheduled)
+        self._cadences: dict[str, int] = {c: cadence_for(c) for c in self._scheduled}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     @property
     def channels(self) -> tuple[str, ...]:
-        return self._channels
+        """Every channel this publisher claims (owned + the mounted inventory)."""
+
+        return self._scheduled
 
     def start(self) -> None:
         """Register the owned publishers and start the ticker thread (not re-entrant)."""
 
         if self._thread is not None:
             raise RuntimeError("publisher already started; call stop() first")
-        for channel in self._channels:
+        for channel in self._scheduled:
             self._runtime.register_publisher(channel)
         self._stop.clear()
         self._thread = threading.Thread(
@@ -100,21 +114,36 @@ class DashboardPublisher:
             self._thread = None
 
     def publish_once(self) -> dict[str, int]:
-        """Publish the current payload for every owned channel once (delivery counts)."""
+        """Publish the current payload for every claimed channel once (delivery counts)."""
 
-        return {
+        counts = {
             channel: self._runtime.publish(channel, self._provider.channel_payload(channel))
             for channel in self._channels
         }
+        if self._inventory is not None:
+            counts[INVENTORY_CHANNEL] = self._publish_inventory()
+        return counts
+
+    def _publish_inventory(self) -> int:
+        """One STRATEGY_STATE tick: the summary event + one event per strategy."""
+
+        assert self._inventory is not None  # only scheduled when mounted
+        return sum(
+            self._runtime.publish(INVENTORY_CHANNEL, event)
+            for event in self._inventory.strategy_state_events()
+        )
 
     def _run(self) -> None:
         # Immediate first tick: every channel is due at start.
-        next_fire: dict[str, float] = {c: time.monotonic() for c in self._channels}
+        next_fire: dict[str, float] = {c: time.monotonic() for c in self._scheduled}
         while not self._stop.is_set():
             now = time.monotonic()
-            for channel in self._channels:
+            for channel in self._scheduled:
                 if now >= next_fire[channel]:
-                    self._runtime.publish(channel, self._provider.channel_payload(channel))
+                    if channel == INVENTORY_CHANNEL:
+                        self._publish_inventory()
+                    else:
+                        self._runtime.publish(channel, self._provider.channel_payload(channel))
                     next_fire[channel] = now + self._cadences[channel]
             soonest = min(next_fire.values())
             wait = max(0.0, min(soonest - time.monotonic(), _POLL_CEILING_S))

@@ -28,6 +28,7 @@ from types import FrameType
 
 from atp_runtime import OperatorInterfaceRuntime
 
+from .inventory import StrategyInventoryProvider
 from .provider import DashboardMetricsProvider, ReadinessBackedProvider
 from .publisher import DashboardPublisher
 
@@ -46,6 +47,10 @@ _ASSET_SPEC: tuple[tuple[str, str, str], ...] = (
 #: REST path the dashboard SPA polls for the health + latency snapshot.
 SYSTEM_SNAPSHOT_PATH = "/dashboard/api/system"
 
+#: REST path the dashboard SPA polls for the SRS-UI-002 strategy inventory
+#: (served only when an inventory provider is mounted).
+STRATEGIES_SNAPSHOT_PATH = "/dashboard/api/strategies"
+
 
 def load_assets() -> dict[str, tuple[str, bytes]]:
     """Read the dashboard's static assets once into an immutable route map."""
@@ -60,16 +65,26 @@ def load_assets() -> dict[str, tuple[str, bytes]]:
 def mount_dashboard(
     runtime: OperatorInterfaceRuntime,
     provider: DashboardMetricsProvider,
+    *,
+    inventory: StrategyInventoryProvider | None = None,
 ) -> DashboardPublisher:
     """Register the dashboard's routes on ``runtime`` and return its publisher.
 
     Call before :meth:`OperatorInterfaceRuntime.start`. Returns an un-started
     :class:`DashboardPublisher`; the caller starts it (and the runtime).
+
+    ``inventory`` (optional — the SRS-UI-002 strategy-inventory provider) adds
+    the ``GET /dashboard/api/strategies`` poll route and puts the
+    ``STRATEGY_STATE`` channel on the publisher's schedule; without it the
+    dashboard is exactly the SRS-UI-001 surface (the inventory panel renders
+    its explicit unavailable state).
     """
 
     runtime.register_asset_routes(load_assets())
     runtime.register_meta_route(SYSTEM_SNAPSHOT_PATH, provider.system_snapshot)
-    return DashboardPublisher(runtime, provider)
+    if inventory is not None:
+        runtime.register_meta_route(STRATEGIES_SNAPSHOT_PATH, inventory.inventory_snapshot)
+    return DashboardPublisher(runtime, provider, inventory=inventory)
 
 
 def serve(host: str = "127.0.0.1", port: int = 8080) -> None:

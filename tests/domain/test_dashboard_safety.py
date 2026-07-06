@@ -142,6 +142,38 @@ def test_publisher_claims_only_the_owned_channels() -> None:
         # Not a control channel: the dashboard never claims to publish, e.g., a
         # kill-switch or account-mutation stream.
         assert not runtime.is_publisher_registered("ACCOUNT_STATUS")
+        # SRS-UI-002 is composition-time OPT-IN: a bare SRS-UI-001 mount never
+        # claims the inventory channel (and serves no inventory route) — the
+        # dashboard cannot pretend an inventory feed exists that nobody mounted.
+        assert not runtime.is_publisher_registered("STRATEGY_STATE")
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
+def test_inventory_mount_claims_strategy_state_and_stays_honest() -> None:
+    # With the SRS-UI-002 provider mounted the publisher claims STRATEGY_STATE
+    # too — and an UNREADABLE inventory source publishes an explicit
+    # unavailable summary (ok:false + the reason), never fabricated rows.
+    from atp_dashboard import RollbackSnapshotInventorySource, StrategyInventoryProvider
+
+    runtime = OperatorInterfaceRuntime()
+    inventory = StrategyInventoryProvider(
+        RollbackSnapshotInventorySource(
+            state_path="/nonexistent/inventory.state",
+            binary="/nonexistent/orch005_rollback_cli",
+        )
+    )
+    publisher = mount_dashboard(runtime, ReadinessBackedProvider({}), inventory=inventory)
+    publisher.start()
+    try:
+        assert runtime.is_publisher_registered("STRATEGY_STATE")
+        events = inventory.strategy_state_events()
+        assert len(events) == 1
+        assert events[0]["ok"] is False and events[0]["strategy_count"] is None
+        status, body = runtime.dispatch_rest("GET", "/dashboard/api/strategies", b"")
+        assert status == 200
+        assert body["ok"] is False and body["strategies"] == []
     finally:
         publisher.stop()
         runtime.stop()
