@@ -94,9 +94,37 @@ What I tested (per AC step):
     gate run below); ruff + format clean; atp_safety mypy strict-clean.
 
 Critic verdicts:
-  deterministic (critic_check.py --staged): APPROVE on every commit — no findings.
-  judgment (adversarial_review.py origin/main): recorded in the FOLLOW-UP below after
-    the full gate run.
+  deterministic (critic_check.py --staged): APPROVE on every commit — no findings;
+    critic_check.py --range origin/main..HEAD: APPROVE (post-rebase).
+  judgment (adversarial_review.py origin/main, reviewer=claude-fallback — Codex
+    rate-limited at review time; verdict carried NON-empty findings, not the
+    distrusted empty-summary shape): WARN, 3 findings, resolved as follows:
+    1. FIXED (doc-drift): the operator-interface-runtime deferred[] narrative still
+       attributed the kill-switch handler to SRS-EXE-001 — re-pointed to SRS-SAFE-001.
+    2. FIXED (hardening, was info): a failed durable audit write left audit_recorded
+       false forever on replay — the replay path now RETRIES the pending
+       ACTIVATION+HALTED writes (nothing was written before, so no duplication;
+       still-failing keeps surfacing KILL_SWITCH_AUDIT_WRITE_FAILED; the sequence
+       never re-fires). New paired domain + boundary tests
+       (test_failed_audit_write_* in tests/domain/test_kill_switch_halted_observability.py
+       and tests/boundary/test_kill_switch_wiring.py).
+    3. OVERRIDE (warn, one line): the OpenAPI 200 schema types the kill-switch
+       response fields as placeholder strings while the handler returns concrete
+       int/bool/arrays — accepted: the route's own description declares "Concrete
+       request and response schemas land with the downstream feature that owns the
+       handler", i.e. the spec marks its own types provisional; re-typing the
+       snapshot belongs to the atp_api SDK surface and is deliberately not churned
+       here (UI-001 precedent). Documented in python/atp_safety/README.md.
+
+Gate run (2026-07-05, post-rebase onto e8cc4bc):
+  ruff check . clean; cargo fmt --check clean workspace-wide; cargo clippy
+  --workspace -D warnings clean; pytest -m "not integration and not e2e" 2992
+  passed / 0 failed; cargo test --workspace 1437 passed / 0 failed; all 18
+  architecture/contract check tools PASS. run_ci_locally.sh cannot exit 0 on
+  current main regardless of this branch: tests/domain/test_coverage_gate_domain.py
+  (byte-identical to origin/main) fails the ruff-format gate and the repo-wide
+  mypy baseline is red — both PRE-EXISTING on main (documented; integrate skips
+  mypy; the sibling file is not this branch's to reformat).
 
 Resume / next:
 - Classification serialized. What flips passes:true (kill_switch_activation_contract

@@ -146,6 +146,14 @@ class KillSwitchActivateHandler:
                     "persisted kill-switch activation record carries no response",
                     type="KILL_SWITCH_STATE_CORRUPT",
                 )
+            # If the original activation's durable audit writes FAILED, the
+            # AC-required ACTIVATION + HALTED records never landed — retry
+            # them on replay (nothing was written before, so this duplicates
+            # nothing) rather than leaving the log silent forever. Still
+            # failing is still surfaced; the replay guard keeps the sequence
+            # itself from re-firing either way.
+            if not replay.get("audit_recorded", False):
+                self._retry_pending_audit(replay)
             return HandlerResult(200, dict(response))
 
         activation_id = f"act-{uuid.uuid4().hex[:16]}"
@@ -194,6 +202,38 @@ class KillSwitchActivateHandler:
         persist_last_activation(self._state_dir, record)
 
         return HandlerResult(200, response)
+
+    def _retry_pending_audit(self, replay: dict[str, object]) -> None:
+        """Retry the durable ACTIVATION + HALTED writes a prior activation
+        left unwritten. On success the record flips ``audit_recorded`` (the
+        measured 1-second latency stays ``None`` — the original activation
+        moment is long past, and fabricating a latency would be dishonest).
+        Still failing re-raises the same structured error, so a silent log
+        can never masquerade as an audited activation."""
+
+        report = replay.get("report")
+        if not isinstance(report, Mapping):
+            raise InterfaceError(
+                ErrorCategory.INTERNAL_ERROR,
+                "persisted kill-switch activation record carries no report — "
+                "cannot write the pending SRS-LOG-001 audit records",
+                type="KILL_SWITCH_STATE_CORRUPT",
+            )
+        try:
+            self._store.write(build_activation_record(report))
+            self._store.write(build_halted_record(report))
+        except Exception as error:  # noqa: BLE001 - surfaced, never swallowed
+            raise InterfaceError(
+                ErrorCategory.INTERNAL_ERROR,
+                "kill-switch activation already RAN but its durable SRS-LOG-001 "
+                "audit records are STILL unwritten — the HALTED transition remains "
+                "unlogged (replay guard intact; the sequence will not re-fire)",
+                type="KILL_SWITCH_AUDIT_WRITE_FAILED",
+                detail={"reason": str(error)},
+            ) from error
+        updated = dict(replay)
+        updated["audit_recorded"] = True
+        persist_last_activation(self._state_dir, updated)
 
 
 class KillSwitchStatusHandler:

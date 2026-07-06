@@ -189,3 +189,79 @@ def test_halted_record_cannot_masquerade_as_a_strategy_record(tmp_path: Path) ->
             )
         )
     assert strategy_store.read() == []
+
+
+def test_failed_audit_write_cannot_leave_the_halted_record_silent(tmp_path: Path) -> None:
+    # Safety invariant (adversarial-review hardening): an activation whose
+    # durable audit write FAILED must (a) surface KILL_SWITCH_AUDIT_WRITE_FAILED
+    # rather than a success-shaped 200, (b) never re-fire the liquidate
+    # sequence on retry, and (c) retry the pending ACTIVATION + HALTED writes
+    # on replay so the AC-required HALTED record eventually lands once the
+    # store heals — the system log can never stay silent about an activation
+    # that actually happened.
+    from atp_runtime import OperatorInterfaceRuntime
+    from atp_safety import ActivationOutcome, wire_kill_switch
+
+    class FakeBackend:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def activate(self, activation_id: str) -> ActivationOutcome:
+            self.calls.append(activation_id)
+            report = {
+                "activation_id": activation_id,
+                "live_strategy_id": "alpha-live",
+                "activated_at_epoch_ms": 1_750_000_000_000,
+                "paper_halt": {"status": "SUCCEEDED"},
+                "paper_halt_summary": {
+                    "engines_total": 30,
+                    "transitioned": 30,
+                    "already_halted": 0,
+                },
+                "resting_order_cancels": [],
+                "liquidations": [],
+                "ib_disconnect": {"status": "SUCCEEDED"},
+                "timings": {
+                    "halt_completed_ms": 0,
+                    "cancels_completed_ms": 0,
+                    "liquidations_submitted_ms": 0,
+                    "disconnect_completed_ms": 0,
+                },
+                "fully_clean": True,
+                "within_nfr_p3": True,
+                "all_engines_halted": True,
+            }
+            return ActivationOutcome(report=report, ran_clean=True)
+
+    class FlakyStore:
+        def __init__(self, inner: JsonlLogStore) -> None:
+            self.inner = inner
+            self.failing = True
+
+        def write(self, record: LogRecord) -> None:
+            if self.failing:
+                raise OSError("injected: audit volume unavailable")
+            self.inner.write(record)
+
+        def read(self, **filters: object) -> list[LogRecord]:
+            return self.inner.read(**filters)
+
+    backend = FakeBackend()
+    runtime = OperatorInterfaceRuntime()
+    store = FlakyStore(JsonlLogStore(tmp_path / "system.jsonl", log_class=LogClass.SYSTEM))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    wire_kill_switch(runtime, backend=backend, system_log_store=store, state_dir=state_dir)
+
+    status, body = runtime.dispatch_rest("POST", "/api/v1/kill-switch?confirm=true", b"{}")
+    assert status == 500
+    assert body["error"]["type"] == "KILL_SWITCH_AUDIT_WRITE_FAILED"
+    assert store.read() == [], "nothing fabricated while the store is down"
+
+    store.failing = False
+    status, body = runtime.dispatch_rest("POST", "/api/v1/kill-switch?confirm=true", b"{}")
+    assert status == 200
+    assert backend.calls == [body["activation_id"]], "replay never re-fires the sequence"
+    halted = store.read(source=Source.KILL_SWITCH, event_type="HALTED")
+    assert len(halted) == 1, "the pending HALTED record lands once the store heals"
+    assert halted[0].correlation_id == body["activation_id"]

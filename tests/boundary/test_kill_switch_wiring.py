@@ -256,6 +256,69 @@ def test_wire_kill_switch_requires_an_existing_state_dir(tmp_path: Path) -> None
         )
 
 
+class FlakyStore:
+    """Durable-store wrapper that fails writes until healed (reads delegate)."""
+
+    def __init__(self, inner: JsonlLogStore) -> None:
+        self.inner = inner
+        self.failing = True
+
+    def write(self, record) -> None:
+        if self.failing:
+            raise OSError("injected: audit volume unavailable")
+        self.inner.write(record)
+
+    def read(self, **filters):
+        return self.inner.read(**filters)
+
+
+def test_failed_audit_write_is_retried_on_replay_never_refires(tmp_path: Path) -> None:
+    # The sequence RAN but the durable SRS-LOG-001 writes failed: the handler
+    # surfaces KILL_SWITCH_AUDIT_WRITE_FAILED (500) with the replay guard
+    # already armed. A retry must NOT re-fire the liquidate sequence — it
+    # replays the persisted response AND retries the pending audit writes, so
+    # the AC-required HALTED record eventually lands once the store heals.
+    backend = FakeBackend()
+    runtime = OperatorInterfaceRuntime()
+    store = FlakyStore(JsonlLogStore(tmp_path / "system.jsonl", log_class=LogClass.SYSTEM))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    wire_kill_switch(runtime, backend=backend, system_log_store=store, state_dir=state_dir)
+
+    status, body = runtime.dispatch_rest("POST", "/api/v1/kill-switch?confirm=true", b"{}")
+    assert status == 500
+    assert body["error"]["type"] == "KILL_SWITCH_AUDIT_WRITE_FAILED"
+    assert len(backend.calls) == 1, "the sequence itself ran exactly once"
+    assert store.read() == [], "no audit record was fabricated"
+
+    # Store still broken: the retry replays (no re-fire) and surfaces the
+    # still-failing audit write.
+    status, body = runtime.dispatch_rest("POST", "/api/v1/kill-switch?confirm=true", b"{}")
+    assert status == 500
+    assert body["error"]["type"] == "KILL_SWITCH_AUDIT_WRITE_FAILED"
+    assert len(backend.calls) == 1, "a repeat activation must never re-liquidate"
+
+    # Store heals: the replay retries the pending writes and returns the
+    # persisted response with the SAME activation id.
+    store.failing = False
+    status, body = runtime.dispatch_rest("POST", "/api/v1/kill-switch?confirm=true", b"{}")
+    assert status == 200
+    assert body["activation_id"] == backend.calls[0]
+    assert len(backend.calls) == 1
+    records = store.read(source=Source.KILL_SWITCH)
+    assert [record.event_type for record in records] == ["ACTIVATION", "HALTED"]
+    assert {record.correlation_id for record in records} == {backend.calls[0]}
+
+    # Status now reports the audit as recorded (latency honestly None — the
+    # original activation moment is unmeasurable after the fact).
+    cli = runtime.cli_dispatcher()
+    out = io.StringIO()
+    assert cli.dispatch(["kill-switch", "status", "--json"], stdout=out) == 0
+    last = json.loads(out.getvalue())["last_activation"]
+    assert last["audit_recorded"] is True
+    assert last["halted_log_latency_ms"] is None
+
+
 def test_dashboard_affordance_targets_the_contract_route() -> None:
     # SYS-44a "accessible from the dashboard": the minimal SRS-SAFE-001
     # control POSTs to the CONTRACT route on the same runtime (the dashboard
