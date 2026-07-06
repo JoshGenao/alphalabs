@@ -88,13 +88,13 @@ def test_kill_switch_affordance_uses_only_the_contract_route(mounted_runtime) ->
     _, host, port = mounted_runtime
     from pathlib import Path
 
-    app_js = (
-        Path(__file__).resolve().parents[2] / "python/atp_dashboard/assets/app.js"
-    ).read_text(encoding="utf-8")
-    fetch_targets = [
-        line for line in app_js.splitlines() if "fetch(" in line and "api/v1" in line
-    ]
-    assert all("kill-switch" not in target or "KILL_SWITCH_ROUTE" in target for target in fetch_targets)
+    app_js = (Path(__file__).resolve().parents[2] / "python/atp_dashboard/assets/app.js").read_text(
+        encoding="utf-8"
+    )
+    fetch_targets = [line for line in app_js.splitlines() if "fetch(" in line and "api/v1" in line]
+    assert all(
+        "kill-switch" not in target or "KILL_SWITCH_ROUTE" in target for target in fetch_targets
+    )
     assert 'const KILL_SWITCH_ROUTE = "/api/v1/kill-switch?confirm=true";' in app_js, (
         "the affordance must target exactly the contract route with the "
         "confirmation token the transport guard requires"

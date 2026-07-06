@@ -43,9 +43,7 @@ pytestmark = [pytest.mark.domain, pytest.mark.safety]
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _run_cargo_test(
-    package: str, suite: str, test_name: str
-) -> subprocess.CompletedProcess[str]:
+def _run_cargo_test(package: str, suite: str, test_name: str) -> subprocess.CompletedProcess[str]:
     cargo = shutil.which("cargo")
     if cargo is None:
         pytest.skip(reason="cargo not on PATH; cannot run Rust integration test")
@@ -69,9 +67,7 @@ def _assert_passed(result: subprocess.CompletedProcess[str], label: str) -> None
 
 
 def _activation_test(test_name: str) -> subprocess.CompletedProcess[str]:
-    return _run_cargo_test(
-        "atp-execution", "srs_safe_001_kill_switch_activation", test_name
-    )
+    return _run_cargo_test("atp-execution", "srs_safe_001_kill_switch_activation", test_name)
 
 
 def _fleet_test(test_name: str) -> subprocess.CompletedProcess[str]:
@@ -83,9 +79,7 @@ def test_phase_ordering_halt_cancels_liquidations_disconnect() -> None:
     # cancel before the first liquidation, disconnect strictly after the LAST
     # liquidation, exactly one disconnect.
     _assert_passed(
-        _activation_test(
-            "srs_safe_001_phase_ordering_halt_cancels_liquidations_disconnect"
-        ),
+        _activation_test("srs_safe_001_phase_ordering_halt_cancels_liquidations_disconnect"),
         "SRS-SAFE-001 phase-ordering Rust domain test",
     )
 
@@ -95,9 +89,7 @@ def test_cancels_exactly_the_resting_live_strategy_orders() -> None:
     # cancelled, once each; a FILLED order and another strategy's order are
     # untouched; the broker binding (or its honest absence) is carried.
     _assert_passed(
-        _activation_test(
-            "srs_safe_001_cancels_exactly_the_resting_live_strategy_orders"
-        ),
+        _activation_test("srs_safe_001_cancels_exactly_the_resting_live_strategy_orders"),
         "SRS-SAFE-001 resting-cancel selectivity test",
     )
 
@@ -119,9 +111,7 @@ def test_failures_are_recorded_and_never_stop_later_phases() -> None:
     # failure is each recorded as Failed{reason}; every later phase is still
     # attempted; the report is returned and NOT fully_clean.
     _assert_passed(
-        _activation_test(
-            "srs_safe_001_failures_are_recorded_and_never_stop_later_phases"
-        ),
+        _activation_test("srs_safe_001_failures_are_recorded_and_never_stop_later_phases"),
         "SRS-SAFE-001 continue-to-safety fault-injection test",
     )
 
@@ -170,9 +160,7 @@ def test_fleet_second_halt_is_idempotent() -> None:
     # Idempotence: a second halt_all reports 30 already_halted / 0
     # transitioned and preserves each engine's original transition record.
     _assert_passed(
-        _fleet_test(
-            "srs_safe_001_second_halt_is_idempotent_and_preserves_original_transitions"
-        ),
+        _fleet_test("srs_safe_001_second_halt_is_idempotent_and_preserves_original_transitions"),
         "SRS-SAFE-001 fleet idempotence test",
     )
 
@@ -226,9 +214,7 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _parse_report(stdout: str) -> dict:
-    line = next(
-        (line for line in stdout.splitlines() if line.startswith("report:")), None
-    )
+    line = next((line for line in stdout.splitlines() if line.startswith("report:")), None)
     assert line is not None, f"no report: line in CLI output:\n{stdout}"
     return json.loads(line[len("report:") :])
 
@@ -236,10 +222,14 @@ def _parse_report(stdout: str) -> dict:
 def test_cli_clean_scenario_reports_full_sequence_and_exits_zero() -> None:
     result = _run_cli(
         "activate",
-        "--position", "AAPL:100",
-        "--position", "MSFT:-50",
-        "--resting", "4",
-        "--engines", "6",
+        "--position",
+        "AAPL:100",
+        "--position",
+        "MSFT:-50",
+        "--resting",
+        "4",
+        "--engines",
+        "6",
     )
     assert result.returncode == 0, f"clean activation must exit 0:\n{result.stderr}"
     report = _parse_report(result.stdout)
@@ -250,9 +240,7 @@ def test_cli_clean_scenario_reports_full_sequence_and_exits_zero() -> None:
     assert liquidations["AAPL"]["quantity"] == 100
     assert liquidations["MSFT"]["side"] == "BUY"
     assert liquidations["MSFT"]["quantity"] == 50
-    assert all(
-        entry["outcome"]["status"] == "SUCCEEDED" for entry in report["liquidations"]
-    )
+    assert all(entry["outcome"]["status"] == "SUCCEEDED" for entry in report["liquidations"])
     assert len(report["resting_order_cancels"]) == 4
 
     # SYS-44a (b): every REAL engine gate is HALTED (composition-level fact).
@@ -276,11 +264,15 @@ def test_cli_clean_scenario_reports_full_sequence_and_exits_zero() -> None:
 def test_cli_fault_injection_is_surfaced_and_exits_nonzero() -> None:
     result = _run_cli(
         "activate",
-        "--position", "AAPL:100",
-        "--fail-liquidation", "AAPL",
+        "--position",
+        "AAPL:100",
+        "--fail-liquidation",
+        "AAPL",
         "--fail-disconnect",
-        "--resting", "2",
-        "--engines", "3",
+        "--resting",
+        "2",
+        "--engines",
+        "3",
     )
     assert result.returncode == 1, (
         "an activation whose report records failures must exit 1 "
