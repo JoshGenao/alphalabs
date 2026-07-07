@@ -70,9 +70,23 @@ WHAT I TESTED (per AC step):
     (unit+boundary+domain) 42 passed; cargo orchestrator suites green incl. the new list test;
     ruff + node --check clean.
 Critic verdicts:
-  deterministic (critic_check.py --staged): recorded at commit (see commit).
-  judgment: recorded at commit (Codex/claude-CLI availability permitting; else the sanctioned
-  fresh-context sub-agent critic per the DATA-011/ORCH-005 precedent — never a hollow approve).
+  deterministic (critic_check.py --staged): APPROVE — no findings (both commits).
+  judgment (fresh-context sub-agent critic; Codex on usage cooldown): ROUND 1 = BLOCK with two
+  empirically-confirmed defects + one warn — (1) unguarded int() in _parse_rows let a non-integer
+  strategy_count escape as ValueError and KILL the shared publisher ticker (starving
+  PNL/METRICS/HEARTBEAT silently); (2) the bin accepted \r in strategy ids, which forged whole
+  proof lines through Python's str.splitlines(); (3) the inventory subprocess on the shared ticker
+  could starve the 1s channels up to its 10s timeout. ALL FIXED in d9cb0f7: guarded parse
+  (ValueError -> InventoryUnavailable; negative count refused; '\n'-only split), bin refuses
+  control/U+2028/U+2029 chars at parse AND save (write side = strict superset of every downstream
+  splitter; snapshot byte-identical on refusal), inventory isolated on its own guarded ticker
+  thread + every tick exception-guarded, with empirical regression tests for each. ROUND 2 =
+  APPROVE, zero findings — the reviewer re-probed everything (extended fuzz: unicode-digit
+  indices, whitespace/signed/underscore counts, ALL splitlines separators incl. FS/GS/RS/NEL/LS/PS,
+  NUL, over-refusal of legit ids; measured PNL inter-tick gaps ~1.0s under an 8s-sleeping
+  inventory; confirmed the guard swallows only Exception per-tick with the freshness dot + REST
+  ok:false surfacing failures honestly) and could not construct a fabrication, escaped exception,
+  thread kill, starvation, or forged proof line.
 Resume / next: the flip needs the five deferred field producers wired into
   atp_dashboard.inventory's rows: mode/asset_class/lifecycle (SRS-ORCH-004 registry),
   container_status (SRS-ORCH-001/ARCH-004), position_count (SRS-SIM-003 live wiring), pnl
