@@ -100,8 +100,13 @@ def _minute_cents(count: int) -> list[tuple[int, dict[str, int]]]:
     return [
         (
             _BASE + i * 60,
-            {"open": 10000 + i, "high": 10100 + i, "low": 9900 - i, "close": 10050 + i,
-             "volume": 1000 + i},
+            {
+                "open": 10000 + i,
+                "high": 10100 + i,
+                "low": 9900 - i,
+                "close": 10050 + i,
+                "volume": 1000 + i,
+            },
         )
         for i in range(count)
     ]
@@ -178,8 +183,9 @@ def test_fifteen_minute_folds_all_into_one_bucket() -> None:
 
 
 def test_daily_stays_native_no_consolidation() -> None:
-    runner = _FakeRunner([(_BASE, {"open": 10000, "high": 10100, "low": 9900, "close": 10050,
-                                   "volume": 1000})])
+    runner = _FakeRunner(
+        [(_BASE, {"open": 10000, "high": 10100, "low": 9900, "close": 10050, "volume": 1000})]
+    )
     _binding(runner, clock_ts=_BASE + 10_000).get_bars(
         "AAPL", lookback=1, frequency="1d", normalization=RAW
     )

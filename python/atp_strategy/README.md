@@ -194,9 +194,15 @@ standard way: open = first, high = max, low = min, close = last, volume = sum.
 Intraday buckets align to the wall-clock period (5-minute / 15-minute / hourly
 boundaries); daily buckets group by the US-Eastern session date.
 
-Live, consolidate incrementally inside `on_bar` — `update(bar)` returns a
-completed higher-period `Bar` only when a bar opens a new bucket, and `None`
-while the bucket is still filling:
+**Bucket lifecycle (important for live/backtest parity).** `update(bar)` returns
+a completed higher-period `Bar` only when a later bar opens the *next* bucket —
+that is the moment the current bucket is provably closed; it returns `None` while
+the bucket is still filling. The **final** bucket of a session has no following
+bar to close it, so you emit it with `flush()`. Live, flush at the session close
+via `ctx.schedule.at_market_close`; a backtest over a bounded series flushes
+implicitly (`consolidate_bars` includes the final bucket). Flushing at close is
+what keeps the live stream identical to the backtest — omit it and the closing
+bar of each session is dropped:
 
 ```python
 from atp_strategy import TimeBarConsolidator
@@ -204,16 +210,23 @@ from atp_strategy import TimeBarConsolidator
 class FiveMinuteMomentum(Strategy):
     def on_start(self, ctx):
         self._five_min = TimeBarConsolidator("5m")
+        ctx.schedule.at_market_close(self._emit_final_bar)  # flush the closing bucket
 
     def on_bar(self, ctx, bar):
-        completed = self._five_min.update(bar)  # None until a 5-minute bar closes
-        if completed is not None:
-            ctx.log(f"5m close {completed.close} vol {completed.volume}")
+        self._handle(ctx, self._five_min.update(bar))  # None until a 5m bar closes
+
+    def _emit_final_bar(self, ctx):
+        self._handle(ctx, self._five_min.flush())  # the 15:55–16:00 bucket at close
+
+    def _handle(self, ctx, bar):
+        if bar is not None:
+            ctx.log(f"5m close {bar.close} vol {bar.volume}")
 ```
 
 For a historical series (backtest, warm-up, or a research notebook), consolidate
-a whole list at once. The streamed and batched bars are identical, so a signal
-computed on consolidated bars behaves the same live and in simulation:
+a whole list at once. The streamed sequence (every `update` plus the closing
+`flush`) equals the batch result, so a signal computed on consolidated bars
+behaves the same live and in simulation:
 
 ```python
 from atp_strategy import consolidate_bars
@@ -224,8 +237,11 @@ def on_warmup_complete(self, ctx):
     ctx.log(f"{len(hourly)} hourly bars from {len(minute)} minute bars")
 ```
 
-`ctx.consolidate(symbol, period)` is the equivalent runtime-managed handle for the
-live minute subscription.
+`ctx.consolidate(symbol, period)` returns a runtime-managed consolidator: the
+runtime feeds it the live minute subscription and flushes it at each session
+close, so a strategy using it receives the closing bucket without wiring the
+flush itself (the runtime feed + session-close flush are provided by the
+execution/simulation runtime, `SRS-SDK-001`).
 
 ## State access
 

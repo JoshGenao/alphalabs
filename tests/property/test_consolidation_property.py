@@ -93,8 +93,15 @@ def _oracle(bars: list[Bar], period: str) -> list[Bar]:
     out: list[Bar] = []
     for ts, row in zip(resampled.index, resampled.itertuples(index=False), strict=True):
         out.append(
-            Bar("X", ts.isoformat(), float(row.open), float(row.high), float(row.low),
-                float(row.close), int(row.volume))
+            Bar(
+                "X",
+                ts.isoformat(),
+                float(row.open),
+                float(row.high),
+                float(row.low),
+                float(row.close),
+                int(row.volume),
+            )
         )
     return out
 

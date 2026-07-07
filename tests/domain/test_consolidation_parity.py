@@ -142,6 +142,29 @@ def test_ac14_parity_holds_across_a_multi_day_span() -> None:
     assert len(consolidate_bars(bars, "1d")) == 2
 
 
+@pytest.mark.parametrize("period", ["5m", "15m", "1h"])
+def test_final_session_bucket_is_delivered_by_flush_at_close(period: str) -> None:
+    # The reviewer's live-parity hazard: update() emits a bucket only when a LATER bar opens the
+    # next one. At market close there is no next bar, so the CLOSING bucket is delivered only by
+    # flush() (what a live strategy wires to ctx.schedule.at_market_close, and what the runtime does
+    # for ctx.consolidate). Prove: update-only DROPS the final bucket; update + a single flush at
+    # close delivers it and matches the backtest exactly — no next-period bar required.
+    bars = _rth_session("2026-05-04", tz_offset="+00:00")  # 09:30–15:59 ET, 390 minute bars
+    backtest = consolidate_bars(bars, period)  # includes the closing bucket implicitly
+
+    consolidator = TimeBarConsolidator(period)
+    live_updates = [c for c in (consolidator.update(b) for b in bars) if c is not None]
+
+    # update() alone never emitted the last bucket (no bar after the session close opened a new one).
+    assert live_updates == backtest[:-1]
+    assert live_updates != backtest
+
+    final = consolidator.flush()  # the at_market_close / runtime flush
+    assert final is not None
+    assert final == backtest[-1]  # the exact closing bucket a backtest produced
+    assert live_updates + [final] == backtest  # live (with close flush) == backtest, bar-for-bar
+
+
 def test_consolidation_is_deterministic_no_wall_clock() -> None:
     # Pure function of the input: repeated calls are identical (no now()/random), the property
     # that makes a backtest reproducible and a live signal match its simulation.

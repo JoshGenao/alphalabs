@@ -1334,7 +1334,16 @@ class StrategyContext(Protocol):
         — the runtime consolidates the subscribed minute bars into
         the requested period without requiring a separate
         subscription. Iterate the returned ``BarConsolidator`` to
-        receive each completed consolidated ``Bar``.
+        receive each completed consolidated ``Bar``. A bucket is
+        delivered once it closes (a bar in the next period arrives);
+        the runtime additionally FLUSHES the consolidator at each
+        session close, so the final bucket of a session is delivered
+        with no following bar — the streamed bars therefore match a
+        backtest's :func:`atp_strategy.consolidate_bars` output
+        exactly. (The concrete implementation is
+        :class:`atp_strategy.TimeBarConsolidator`; the live
+        minute-feed and session-close flush are provided by the
+        execution/simulation runtime, ``SRS-SDK-001``.)
         """
 
 
