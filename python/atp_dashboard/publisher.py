@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from atp_runtime import OperatorInterfaceRuntime
 from atp_ws import EVENT_CHANNELS, MAX_REFRESH_SECONDS
@@ -85,6 +85,7 @@ class DashboardPublisher:
         self._cadences: dict[str, int] = {c: cadence_for(c) for c in self._scheduled}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._inventory_thread: threading.Thread | None = None
 
     @property
     def channels(self) -> tuple[str, ...]:
@@ -93,7 +94,13 @@ class DashboardPublisher:
         return self._scheduled
 
     def start(self) -> None:
-        """Register the owned publishers and start the ticker thread (not re-entrant)."""
+        """Register the owned publishers and start the ticker thread(s) (not re-entrant).
+
+        The inventory channel runs on its OWN daemon ticker: its provider shells
+        a subprocess (bounded, but up to its timeout), and a wedged binary must
+        delay only STRATEGY_STATE (whose panel dot goes stale honestly) — never
+        starve the 1 s PNL/HEARTBEAT ticks that feed the NFR-P2 gauge.
+        """
 
         if self._thread is not None:
             raise RuntimeError("publisher already started; call stop() first")
@@ -104,14 +111,22 @@ class DashboardPublisher:
             target=self._run, name="atp-dashboard-publisher", daemon=True
         )
         self._thread.start()
+        if self._inventory is not None:
+            self._inventory_thread = threading.Thread(
+                target=self._run_inventory, name="atp-dashboard-inventory", daemon=True
+            )
+            self._inventory_thread.start()
 
     def stop(self) -> None:
-        """Signal the ticker to exit and join it with a bounded timeout."""
+        """Signal the tickers to exit and join them with a bounded timeout."""
 
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=MAX_REFRESH_SECONDS + 1)
             self._thread = None
+        if self._inventory_thread is not None:
+            self._inventory_thread.join(timeout=MAX_REFRESH_SECONDS + 1)
+            self._inventory_thread = None
 
     def publish_once(self) -> dict[str, int]:
         """Publish the current payload for every claimed channel once (delivery counts)."""
@@ -133,18 +148,48 @@ class DashboardPublisher:
             for event in self._inventory.strategy_state_events()
         )
 
+    @staticmethod
+    def _guarded(tick: Callable[[], object], channel: str) -> None:
+        """Run one channel tick, containing ANY failure to that tick.
+
+        A monitoring publisher must keep publishing: one channel's bad tick (a
+        provider bug, a drifted subprocess, a transient OSError) must never kill
+        the ticker thread and silently starve every other channel — the outage
+        would be invisible exactly when observability matters. The failed
+        channel simply misses this tick; its panel freshness dot reports the
+        gap honestly.
+        """
+
+        try:
+            tick()
+        except Exception:  # noqa: BLE001 - observability must not crash
+            pass
+
     def _run(self) -> None:
         # Immediate first tick: every channel is due at start.
-        next_fire: dict[str, float] = {c: time.monotonic() for c in self._scheduled}
+        next_fire: dict[str, float] = {c: time.monotonic() for c in self._channels}
         while not self._stop.is_set():
             now = time.monotonic()
-            for channel in self._scheduled:
+            for channel in self._channels:
                 if now >= next_fire[channel]:
-                    if channel == INVENTORY_CHANNEL:
-                        self._publish_inventory()
-                    else:
-                        self._runtime.publish(channel, self._provider.channel_payload(channel))
+                    self._guarded(
+                        lambda c=channel: self._runtime.publish(
+                            c, self._provider.channel_payload(c)
+                        ),
+                        channel,
+                    )
                     next_fire[channel] = now + self._cadences[channel]
             soonest = min(next_fire.values())
             wait = max(0.0, min(soonest - time.monotonic(), _POLL_CEILING_S))
+            self._stop.wait(wait)
+
+    def _run_inventory(self) -> None:
+        # The isolated STRATEGY_STATE ticker (see start()). Immediate first tick.
+        cadence = self._cadences[INVENTORY_CHANNEL]
+        next_fire = time.monotonic()
+        while not self._stop.is_set():
+            if time.monotonic() >= next_fire:
+                self._guarded(self._publish_inventory, INVENTORY_CHANNEL)
+                next_fire = time.monotonic() + cadence
+            wait = max(0.0, min(next_fire - time.monotonic(), _POLL_CEILING_S))
             self._stop.wait(wait)

@@ -405,10 +405,9 @@ fn save_state(path: &Path, registry: &RetainingVersionRegistry) -> Result<(), St
                     .to_string(),
             );
         }
-        if strategy.contains('\t') || strategy.contains('\n') {
+        if let Err(reason) = validate_strategy_id_chars(&strategy) {
             return Err(format!(
-                "strategy id {strategy:?} contains a field separator; refusing to write an \
-                 unparseable snapshot"
+                "strategy id {strategy:?} {reason}; refusing to write an unparseable snapshot"
             ));
         }
         let (prev_hash, prev_ts) = match &retained.previous {
@@ -550,13 +549,43 @@ impl ParsedArgs {
     fn require_strategy(&self) -> Result<String, String> {
         // Reject an empty/whitespace id AT PARSE, mirroring the loader's refusal —
         // an exit-0 command must never write (or address) a snapshot entry the
-        // loader would refuse.
+        // loader would refuse. Line/field-breaking characters are refused here
+        // too (see validate_strategy_id_chars): the id round-trips through the
+        // TSV snapshot AND this bin's line-oriented stdout into downstream
+        // parsers, so any embedded line separator could forge whole proof lines.
         match self.strategy.as_deref().map(str::trim) {
             None => Err("missing required --strategy".to_string()),
             Some("") => Err("--strategy must not be empty".to_string()),
-            Some(_) => Ok(self.strategy.clone().expect("checked above")),
+            Some(_) => {
+                let strategy = self.strategy.clone().expect("checked above");
+                validate_strategy_id_chars(&strategy)
+                    .map_err(|reason| format!("--strategy {reason}"))?;
+                Ok(strategy)
+            }
         }
     }
+}
+
+/// Refuse any strategy-id character that could break the TSV snapshot or this
+/// bin's line-oriented `key:value` stdout in ANY downstream line splitter: all
+/// control characters (covers `\t`, `\n`, `\r`, `\x0b`, `\x0c`, NEL is C1) plus
+/// the Unicode line/paragraph separators — Python's `str.splitlines()`, for
+/// example, splits on `\r`, `\x0b`, `\x0c`, `\u{85}`, `\u{2028}`, and
+/// `\u{2029}`, so an id embedding one of them could forge whole inventory
+/// lines. The write side must be a strict superset of every consumer's
+/// splitter, not just the Rust loader's `\n`.
+fn validate_strategy_id_chars(strategy: &str) -> Result<(), String> {
+    if strategy
+        .chars()
+        .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
+    {
+        return Err(
+            "contains a control or line-separator character (would break the snapshot or the \
+             line-oriented output)"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn set_once(slot: &mut Option<String>, value: String, flag: &str) -> Result<(), String> {

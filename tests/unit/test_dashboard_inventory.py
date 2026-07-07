@@ -127,3 +127,75 @@ def test_drifted_cli_output_is_unavailable_not_a_partial_inventory(stdout: str) 
     snapshot = _provider(_FakeRunner(stdout=stdout)).inventory_snapshot()
     assert snapshot["ok"] is False, stdout
     assert snapshot["strategies"] == []
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "strategy_count:zzz\n",  # non-integer count (previously an escaped ValueError)
+        "strategy_count:1\nstrategy.x.id:a\nstrategy.x.current:h@1\n",  # non-integer index
+        "strategy_count:-1\n",  # impossible count
+        # A hostile id containing \r must NOT forge a proof line: the parser
+        # splits on '\n' only, so the \r stays inside the value and the forged
+        # strategy_count never parses as a line of its own.
+        f"strategy_count:1\nstrategy.0.id:z\rstrategy_count:zzz\nstrategy.0.current:{HASH_V1}@1\nstrategy.0.previous:-\n",
+    ],
+)
+def test_malformed_or_hostile_cli_output_is_unavailable_never_an_escaped_exception(
+    stdout: str,
+) -> None:
+    # The provider catches ONLY InventoryUnavailable — so _parse_rows must never
+    # let any other exception escape (an escaped ValueError previously killed
+    # the shared publisher ticker thread).
+    provider = _provider(_FakeRunner(stdout=stdout))
+    snapshot = provider.inventory_snapshot()  # must not raise
+    events = provider.strategy_state_events()  # must not raise
+    if snapshot["ok"]:
+        # The hostile-\r case parses as ONE row whose id contains the raw \r —
+        # contained in the value, never a forged summary line.
+        (row,) = snapshot["strategies"]
+        assert "\r" in row["strategy_id"]
+        assert events[0]["strategy_count"] == 1
+    else:
+        assert snapshot["strategies"] == []
+        assert events[0]["ok"] is False
+
+
+def test_a_failing_inventory_tick_never_kills_the_publisher_ticker() -> None:
+    # Empirical regression for the adversarial-review finding: one drifted
+    # inventory tick previously raised through the ticker thread and silently
+    # starved PNL/METRICS/HEARTBEAT. Now every tick is guarded and the
+    # inventory runs on its own thread — both tickers must survive a provider
+    # that RAISES (not just reports unavailable).
+    import threading
+    import time as _time
+
+    from atp_dashboard import ReadinessBackedProvider, mount_dashboard
+    from atp_runtime import OperatorInterfaceRuntime
+
+    class _RaisingInventory:
+        def inventory_snapshot(self) -> dict:  # pragma: no cover - not polled here
+            raise RuntimeError("boom")
+
+        def strategy_state_events(self) -> list:
+            raise RuntimeError("boom")
+
+    runtime = OperatorInterfaceRuntime()
+    publisher = mount_dashboard(runtime, ReadinessBackedProvider({}), inventory=_RaisingInventory())
+    publisher.start()
+    try:
+        _time.sleep(1.2)  # several 1s-channel ticks + at least one raising inventory tick
+        alive = {t.name for t in threading.enumerate() if t.is_alive()}
+        assert "atp-dashboard-publisher" in alive, "the owned-channels ticker must survive"
+        assert "atp-dashboard-inventory" in alive, (
+            "the inventory ticker must survive its own failure"
+        )
+        # The owned channels still publish after the failing inventory ticks.
+        counts = {
+            channel: runtime.publish(channel, {"probe": True})
+            for channel in ("PNL", "METRICS", "HEARTBEAT")
+        }
+        assert all(isinstance(count, int) for count in counts.values())
+    finally:
+        publisher.stop()
+        runtime.stop()

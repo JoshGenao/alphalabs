@@ -71,7 +71,10 @@ __all__ = [
 _DEFAULT_BINARY = Path(__file__).resolve().parents[2] / "target" / "debug" / "orch005_rollback_cli"
 
 # Per-invocation subprocess budget (seconds) — a wedged binary surfaces as an
-# unavailable inventory, never a hung dashboard tick.
+# unavailable inventory. The publisher runs the inventory on its OWN ticker
+# thread (see publisher.py), so even a full-timeout hang delays only the
+# STRATEGY_STATE channel (its panel dot goes stale honestly) and can never
+# starve the 1 s PNL/HEARTBEAT ticks that feed the NFR-P2 gauge.
 _DEFAULT_TIMEOUT_S = 10.0
 
 #: The feature that owns each still-deferred inventory field's live producer.
@@ -149,23 +152,36 @@ class RollbackSnapshotInventorySource:
 
 def _parse_rows(stdout: str) -> list[dict[str, str]]:
     """Parse the ``strategy_count`` / ``strategy.<i>.*`` proof lines fail-closed:
-    a count/row mismatch or a row missing its id/current fields is CLI drift,
-    reported as unavailable rather than a partial inventory."""
+    ANY malformation — a non-integer count/index, a count/row mismatch, or a row
+    missing its id/current fields — is CLI drift, reported as
+    :class:`InventoryUnavailable` rather than a partial inventory or an escaped
+    exception (a monitoring surface must not crash; the provider catches only
+    ``InventoryUnavailable``, so nothing else may leave this function)."""
 
     count: int | None = None
     rows: dict[int, dict[str, str]] = {}
-    for line in stdout.splitlines():
+    # Split on the bin's actual record separator ('\n') ONLY — never
+    # str.splitlines(), whose extra separators (\r, \v, \f, U+2028...) would let
+    # a hostile strategy id embedded in a value forge whole proof lines.
+    for line in stdout.split("\n"):
         key, sep, value = line.partition(":")
         if not sep:
             continue
-        if key == "strategy_count":
-            count = int(value)
-        elif key.startswith("strategy."):
-            parts = key.split(".", 2)
-            if len(parts) == 3:
-                rows.setdefault(int(parts[1]), {})[parts[2]] = value
+        try:
+            if key == "strategy_count":
+                count = int(value)
+            elif key.startswith("strategy."):
+                parts = key.split(".", 2)
+                if len(parts) == 3:
+                    rows.setdefault(int(parts[1]), {})[parts[2]] = value
+        except ValueError as malformed:
+            raise InventoryUnavailable(
+                f"inventory CLI output malformed (non-integer count/index in {line!r})"
+            ) from malformed
     if count is None:
         raise InventoryUnavailable("inventory CLI output missing strategy_count")
+    if count < 0:
+        raise InventoryUnavailable(f"inventory CLI output impossible: strategy_count={count}")
     ordered = [rows[index] for index in sorted(rows)]
     if len(ordered) != count or sorted(rows) != list(range(count)):
         raise InventoryUnavailable(

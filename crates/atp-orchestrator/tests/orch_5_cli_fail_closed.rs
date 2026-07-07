@@ -418,3 +418,45 @@ fn orch_5_cli_concurrent_saves_never_clobber_each_others_scratch() {
     assert!(ok);
     assert!(shown.contains(&format!("current:{HASH_V2}")), "{shown}");
 }
+
+#[test]
+fn orch_5_cli_line_breaking_strategy_ids_are_refused_at_parse() {
+    // A strategy id embedding ANY line/field-breaking character could forge
+    // whole proof lines in a downstream line splitter (Python's splitlines()
+    // splits on \r, \x0b, \x0c, NEL, U+2028/U+2029 — not just \n). The write
+    // side must be a strict superset of every consumer's splitter: refused at
+    // parse, exit nonzero, snapshot untouched.
+    let state = state_path("orch005-ctrl-id.state");
+    seed_two_versions(&state);
+    let before = fs::read_to_string(&state).expect("state exists");
+    for hostile in [
+        "z\rstrategy_count:zzz",
+        "z\tfield",
+        "z\nnewline",
+        "z\u{0b}vt",
+        "z\u{0c}ff",
+        "z\u{85}nel",
+        "z\u{2028}ls",
+        "z\u{2029}ps",
+    ] {
+        let (ok, _, err) = run(&[
+            "record",
+            "--state",
+            state.to_str().unwrap(),
+            "--strategy",
+            hostile,
+            "--hash",
+            HASH_V1,
+        ]);
+        assert!(!ok, "hostile id {hostile:?} must be refused");
+        assert!(
+            err.contains("control or line-separator"),
+            "refusal must name the cause for {hostile:?}: {err}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(&state).expect("state exists"),
+        before,
+        "refused ids must leave the snapshot byte-identical"
+    );
+}
