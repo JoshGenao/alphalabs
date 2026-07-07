@@ -181,6 +181,52 @@ def on_warmup_complete(self, ctx):
     ctx.log(f"loaded {len(bars)} historical bars")
 ```
 
+`frequency` accepts `"1m"` and `"1d"` (served from the stored datasets) plus
+`"5m"`, `"15m"`, and `"1h"`, which are consolidated on the fly from the stored
+minute bars (`SRS-SDK-007`) — no pre-processed higher-timeframe dataset is
+required.
+
+## Consolidation (`SRS-SDK-007`)
+
+Time-based bar consolidation turns a minute series into `"5m"`, `"15m"`, `"1h"`,
+or `"1d"` bars **without a pre-processed dataset**. OHLCV is aggregated the
+standard way: open = first, high = max, low = min, close = last, volume = sum.
+Intraday buckets align to the wall-clock period (5-minute / 15-minute / hourly
+boundaries); daily buckets group by the US-Eastern session date.
+
+Live, consolidate incrementally inside `on_bar` — `update(bar)` returns a
+completed higher-period `Bar` only when a bar opens a new bucket, and `None`
+while the bucket is still filling:
+
+```python
+from atp_strategy import TimeBarConsolidator
+
+class FiveMinuteMomentum(Strategy):
+    def on_start(self, ctx):
+        self._five_min = TimeBarConsolidator("5m")
+
+    def on_bar(self, ctx, bar):
+        completed = self._five_min.update(bar)  # None until a 5-minute bar closes
+        if completed is not None:
+            ctx.log(f"5m close {completed.close} vol {completed.volume}")
+```
+
+For a historical series (backtest, warm-up, or a research notebook), consolidate
+a whole list at once. The streamed and batched bars are identical, so a signal
+computed on consolidated bars behaves the same live and in simulation:
+
+```python
+from atp_strategy import consolidate_bars
+
+def on_warmup_complete(self, ctx):
+    minute = ctx.history.get_bars("AAPL", lookback=390, frequency="1m")
+    hourly = consolidate_bars(minute, "1h")
+    ctx.log(f"{len(hourly)} hourly bars from {len(minute)} minute bars")
+```
+
+`ctx.consolidate(symbol, period)` is the equivalent runtime-managed handle for the
+live minute subscription.
+
 ## State access
 
 `get_state` / `set_state` persist JSON-serializable values. State survives

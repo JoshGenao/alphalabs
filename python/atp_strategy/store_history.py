@@ -38,6 +38,12 @@ Scope / honesty
   adjusted label without passing the gate is caught at the trust boundary. ``TOTAL_RETURN`` still
   fails closed with :class:`NotImplementedError` (dividend reinvestment + per-subscription mode
   selection, ``SRS-DATA-012``).
+* **Resolutions.** ``1d`` (daily) and ``1m`` (minute) are served from native stored datasets. The
+  richer intraday resolutions ``5m`` / ``15m`` / ``1h`` are served by CONSOLIDATING the stored ``1m``
+  series on the fly (``SRS-SDK-007`` / SyRS ``SYS-30a``) — the underlying ``1m`` fetch flows through
+  the same coverage gate and envelope validation, then :func:`atp_strategy.resample.consolidate_bars`
+  folds it into the requested period "without pre-processed datasets" (``SC-16``). Any other
+  resolution fails closed with :class:`NotImplementedError`.
 * **No hang.** Every CLI invocation is bounded by a per-query ``timeout`` (default
   :data:`_DEFAULT_QUERY_TIMEOUT_S`); a wedged CLI surfaces a :class:`StoreQueryError`, never an
   indefinite block of a strategy container.
@@ -63,6 +69,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from .api import AssetClass, Bar, NormalizationMode, StrategyAPIError
+from .resample import consolidate_bars
 
 __all__ = [
     "CoverageNotProvenError",
@@ -92,7 +99,18 @@ _VOLUME_FIELD = "volume"
 # Equity-bar resolution -> vendor-neutral DatasetKind label (NOT a provider; the data007_query_cli
 # --kind disambiguator). Narrowing an equity query to its bar kind stops a fundamental / option-chain
 # record that happens to share the same symbol + resolution from poisoning an OHLCV-bar read.
+# Only the DAILY and MINUTE datasets are stored natively; the richer intraday resolutions
+# (_CONSOLIDATED_FROM_MINUTE) are derived on the fly from stored 1m bars (SRS-SDK-007), never stored.
 _EQUITY_BAR_KIND_BY_RESOLUTION = {"1d": "daily-equity-bar", "1m": "minute-equity-bar"}
+
+# Resolutions served by CONSOLIDATING the stored 1m series (SRS-SDK-007 / SyRS SYS-30a), rather than
+# by a native stored dataset. A query at one of these fetches the underlying 1m bars over the SAME
+# range (through the same coverage gate + envelope validation) and folds them into the requested
+# period via ``atp_strategy.resample.consolidate_bars`` — "without pre-processed datasets" (SC-16).
+# Split adjustment commutes with consolidation (monotonic scaling + sum), so consolidating adjusted
+# 1m bars yields correctly-adjusted higher-period bars. Daily ("1d") stays NATIVE (a real stored
+# series, not an intraday roll-up) and minute ("1m") is the source, so neither is listed here.
+_CONSOLIDATED_FROM_MINUTE = ("5m", "15m", "1h")
 
 # The normalization modes this CONSUMER binding serves -> the data007_query_cli --normalization value.
 # RAW returns stored values verbatim. SPLIT_ADJUSTED (the HistoricalData Protocol default) and
@@ -353,8 +371,8 @@ class StoreBackedHistoricalData:
         if kind is None:
             raise NotImplementedError(
                 f"StoreBackedHistoricalData serves the daily ('1d') and minute ('1m') equity-bar "
-                f"datasets; resolution {resolution!r} is out of scope (richer resolutions need bar "
-                "consolidation, SRS-SDK-007, deferred)"
+                f"datasets natively and the 5m/15m/1h resolutions by consolidating 1m (SRS-SDK-007); "
+                f"resolution {resolution!r} is out of scope"
             )
         return kind
 
@@ -368,6 +386,19 @@ class StoreBackedHistoricalData:
         normalization: NormalizationMode,
     ) -> list[Bar]:
         """Run the source-neutral query CLI and parse its stdout into ascending bars."""
+        # SRS-SDK-007: the richer intraday resolutions are not stored — derive them by fetching the
+        # underlying 1m series over the SAME range (which re-enters this method, so it flows through
+        # the same coverage gate, timeout, and envelope validation) and consolidating. Placed BEFORE
+        # _equity_bar_kind so 5m/15m/1h never look up a native kind that does not exist.
+        if resolution in _CONSOLIDATED_FROM_MINUTE:
+            minute_bars = self._query(
+                symbol=symbol,
+                resolution="1m",
+                start_ts=start_ts,
+                end_ts=end_ts,
+                normalization=normalization,
+            )
+            return consolidate_bars(minute_bars, resolution)
         # Narrow to the vendor-neutral equity-bar DatasetKind so a fundamental / option-chain record
         # sharing this symbol + resolution cannot poison the OHLCV-bar read (DatasetKind is a dataset
         # type, NOT a provider — the query stays source-neutral).

@@ -169,11 +169,12 @@ def test_equity_query_narrows_to_the_equity_bar_kind() -> None:
 
 
 def test_unsupported_resolution_raises_not_implemented() -> None:
-    # Only the daily ('1d') and minute ('1m') equity-bar datasets exist; richer resolutions need bar
-    # consolidation (SRS-SDK-007, deferred) and must fail closed rather than query an unknown kind.
+    # '1d'/'1m' are native and 5m/15m/1h are served by consolidating 1m (SRS-SDK-007); any OTHER
+    # resolution must still fail closed rather than query an unknown kind. (5m/15m/1h consolidation
+    # is pinned in tests/boundary/test_store_history_consolidation.py.)
     runner = _FakeRunner(records=[(1_700_000_000, _OHLCV)])
     with pytest.raises(NotImplementedError):
-        _binding(runner).get_bars("AAPL", lookback=1, frequency="5m", normalization=RAW)
+        _binding(runner).get_bars("AAPL", lookback=1, frequency="30m", normalization=RAW)
 
 
 def test_symbol_is_passed_verbatim_as_one_list_element() -> None:

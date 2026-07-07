@@ -3043,6 +3043,7 @@
       "Strategy",
       "StrategyConfig",
       "StrategyContext",
+      "TimeBarConsolidator",
       "TradingCalendar",
       "UsEquityTradingCalendar",
       "WarmupController",
@@ -3051,7 +3052,8 @@
       "NormalizationMode",
       "assert_asset_class",
       "assert_order_event_payload",
-      "assert_warmup_complete"
+      "assert_warmup_complete",
+      "consolidate_bars"
     ],
     "summary_documented_symbols": [
       "AssetClassViolation",

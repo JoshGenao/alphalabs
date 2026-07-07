@@ -48,6 +48,7 @@ from .api import (
     assert_order_event_payload,
 )
 from .calendar import UsEquityTradingCalendar
+from .resample import TimeBarConsolidator, consolidate_bars
 from .scheduler import InMemoryScheduler
 from .warmup import WarmupController, WarmupState, assert_warmup_complete
 
@@ -56,6 +57,11 @@ from .warmup import WarmupController, WarmupState, assert_warmup_complete
 # primitive — a strategy consumes the ``HistoricalData`` Protocol via ``ctx.history`` and never
 # constructs the concrete binding; the host/notebook imports it explicitly from
 # ``atp_strategy.store_history`` so the documented author surface (__all__) stays focused.
+#
+# ``TimeBarConsolidator`` / ``consolidate_bars`` (SRS-SDK-007) ARE re-exported: they are pure
+# authoring/analysis primitives over ``Bar`` (the concrete implementation behind the exported
+# ``BarConsolidator`` Protocol and ``StrategyContext.consolidate``), used both to stream live
+# consolidated bars and to consolidate a historical series without a pre-processed dataset.
 
 __all__ = [
     "ATR",
@@ -68,6 +74,7 @@ __all__ = [
     "BollingerBands",
     "BollingerValue",
     "CalendarHorizonExceeded",
+    "consolidate_bars",
     "EMA",
     "HistoricalData",
     "InMemoryScheduler",
@@ -97,6 +104,7 @@ __all__ = [
     "StrategyAPIError",
     "StrategyConfig",
     "StrategyContext",
+    "TimeBarConsolidator",
     "TradingCalendar",
     "UsEquityTradingCalendar",
     "WarmupController",
