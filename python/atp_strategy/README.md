@@ -237,11 +237,13 @@ def on_warmup_complete(self, ctx):
     ctx.log(f"{len(hourly)} hourly bars from {len(minute)} minute bars")
 ```
 
-`ctx.consolidate(symbol, period)` returns a runtime-managed consolidator: the
-runtime feeds it the live minute subscription and flushes it at each session
-close, so a strategy using it receives the closing bucket without wiring the
-flush itself (the runtime feed + session-close flush are provided by the
-execution/simulation runtime, `SRS-SDK-001`).
+`ctx.consolidate(symbol, period)` is intended to return a runtime-managed
+consolidator that the runtime feeds from the live minute subscription and flushes
+at each session close. That runtime wiring is **deferred** — it belongs to the
+execution/simulation runtime (`SRS-SDK-001`) and is not yet implemented. Until it
+lands, use the self-managed `TimeBarConsolidator` (with the `at_market_close`
+flush shown above), `consolidate_bars`, or `ctx.history.get_bars(...,
+frequency="5m")` — all of which work today.
 
 ## State access
 

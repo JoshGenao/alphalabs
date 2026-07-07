@@ -1330,20 +1330,23 @@ class StrategyContext(Protocol):
     def consolidate(self, symbol: str, period: str) -> BarConsolidator:
         """Open a time-based consolidator for ``symbol`` at ``period`` (``SRS-SDK-007``).
 
-        ``period`` accepts ``"5m"``, ``"15m"``, ``"1h"``, and ``"1d"``
-        — the runtime consolidates the subscribed minute bars into
-        the requested period without requiring a separate
-        subscription. Iterate the returned ``BarConsolidator`` to
-        receive each completed consolidated ``Bar``. A bucket is
-        delivered once it closes (a bar in the next period arrives);
-        the runtime additionally FLUSHES the consolidator at each
-        session close, so the final bucket of a session is delivered
-        with no following bar — the streamed bars therefore match a
-        backtest's :func:`atp_strategy.consolidate_bars` output
-        exactly. (The concrete implementation is
-        :class:`atp_strategy.TimeBarConsolidator`; the live
-        minute-feed and session-close flush are provided by the
-        execution/simulation runtime, ``SRS-SDK-001``.)
+        ``period`` accepts ``"5m"``, ``"15m"``, ``"1h"``, and ``"1d"``.
+        Returns a :class:`atp_strategy.TimeBarConsolidator`; a bucket
+        is delivered once it closes (a bar in the next period arrives).
+
+        DEFERRED — the runtime-managed wiring that would FEED this
+        handle the live minute subscription and FLUSH it at each
+        session close is the responsibility of the execution /
+        simulation runtime and is **not yet implemented**
+        (``SRS-SDK-001``); a concrete ``StrategyContext.consolidate``
+        does not exist until that runtime lands. The consolidation
+        engine itself is complete: consolidate minute data today via
+        the fully-supported paths — :func:`atp_strategy.consolidate_bars`
+        (batch), a self-managed :class:`atp_strategy.TimeBarConsolidator`
+        (stream ``update`` in ``on_bar`` + ``flush`` from a
+        ``ctx.schedule.at_market_close`` callback), or
+        ``ctx.history.get_bars(..., frequency="5m")`` (consolidated
+        history derived from stored ``1m``).
         """
 
 
