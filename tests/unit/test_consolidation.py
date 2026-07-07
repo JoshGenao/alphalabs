@@ -24,7 +24,7 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from atp_strategy import Bar, TimeBarConsolidator, consolidate_bars  # noqa: E402
-from atp_strategy.resample import SUPPORTED_PERIODS  # noqa: E402
+from atp_strategy.resample import SUPPORTED_PERIODS, period_seconds  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
@@ -171,6 +171,14 @@ def test_streaming_matches_batch() -> None:
 def test_period_property_and_supported_set() -> None:
     assert TimeBarConsolidator("15m").period == "15m"
     assert SUPPORTED_PERIODS == frozenset({"5m", "15m", "1h", "1d"})
+
+
+def test_period_seconds_intraday_widths_and_daily_rejected() -> None:
+    assert period_seconds("5m") == 300
+    assert period_seconds("15m") == 900
+    assert period_seconds("1h") == 3600
+    with pytest.raises(ValueError, match="no fixed second-width"):
+        period_seconds("1d")  # a calendar day varies in length (DST)
 
 
 # --------------------------------------------------------------------------- #

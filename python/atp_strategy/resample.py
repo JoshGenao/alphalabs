@@ -58,7 +58,7 @@ from datetime import date, datetime, timezone
 
 from .api import Bar
 
-__all__ = ["SUPPORTED_PERIODS", "TimeBarConsolidator", "consolidate_bars"]
+__all__ = ["SUPPORTED_PERIODS", "TimeBarConsolidator", "consolidate_bars", "period_seconds"]
 
 # Identical to ``atp_strategy.calendar.EASTERN`` — daily buckets group by the ET session
 # date (DST-aware). Not imported from ``calendar`` to keep this module free of the
@@ -80,6 +80,23 @@ def _require_period(period: str) -> None:
             f"unsupported consolidation period {period!r}; "
             f"supported periods are {sorted(SUPPORTED_PERIODS)}"
         )
+
+
+def period_seconds(period: str) -> int:
+    """The fixed bucket width in seconds for an intraday period (``5m``/``15m``/``1h``).
+
+    Raises :class:`ValueError` for ``"1d"``: a daily bucket spans a US-Eastern calendar
+    date, whose length in seconds varies across DST transitions, so it has no fixed width.
+    Used by range-bounded consumers (the store binding) to decide whether a bucket's whole
+    period lies inside a requested ``[start, end]`` window.
+    """
+    try:
+        return _INTRADAY_PERIOD_SECONDS[period]
+    except KeyError:
+        raise ValueError(
+            f"period {period!r} has no fixed second-width; fixed-width intraday periods are "
+            f"{sorted(_INTRADAY_PERIOD_SECONDS)} (daily buckets span a variable-length calendar day)"
+        ) from None
 
 
 def _instant(bar: Bar) -> datetime:

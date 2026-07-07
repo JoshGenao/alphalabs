@@ -69,7 +69,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from .api import AssetClass, Bar, NormalizationMode, StrategyAPIError
-from .resample import consolidate_bars
+from .resample import consolidate_bars, period_seconds
 
 __all__ = [
     "CoverageNotProvenError",
@@ -376,6 +376,31 @@ class StoreBackedHistoricalData:
             )
         return kind
 
+    @staticmethod
+    def _complete_buckets_in_range(
+        bars: list[Bar], resolution: str, start_ts: int, end_ts: int
+    ) -> list[Bar]:
+        """Keep only consolidated buckets whose FULL period lies inside the inclusive ``[start_ts, end_ts]``.
+
+        A consolidated intraday bar is labelled at its period start; the period covers
+        ``[b, b + width)``. If the caller's range begins or ends mid-bucket, that bucket was
+        fetched only PARTIALLY (the query range truncated it), yet a naive consolidation would
+        emit it looking like a complete higher-timeframe bar — mislabelled outside the range and
+        corrupting a backtest / warm-up signal. So a bucket is returned only when its whole
+        period is covered by the request (``b >= start_ts`` and ``b + width - 1 <= end_ts``);
+        an edge bucket the range cut is dropped rather than mis-served. This also drops the
+        still-open trailing bucket on a real-clock ``get_bars`` (its period extends past ``end``),
+        matching the streaming consolidator, which emits a bucket only once it has closed. A gap
+        WITHIN a fully-covered bucket is left as-is (not filled), exactly as native bar reads are.
+        """
+        width = period_seconds(resolution)
+        kept: list[Bar] = []
+        for bar in bars:
+            bucket_start = int(datetime.fromisoformat(bar.timestamp).timestamp())
+            if bucket_start >= start_ts and bucket_start + width - 1 <= end_ts:
+                kept.append(bar)
+        return kept
+
     def _query(
         self,
         *,
@@ -398,7 +423,9 @@ class StoreBackedHistoricalData:
                 end_ts=end_ts,
                 normalization=normalization,
             )
-            return consolidate_bars(minute_bars, resolution)
+            return self._complete_buckets_in_range(
+                consolidate_bars(minute_bars, resolution), resolution, start_ts, end_ts
+            )
         # Narrow to the vendor-neutral equity-bar DatasetKind so a fundamental / option-chain record
         # sharing this symbol + resolution cannot poison the OHLCV-bar read (DatasetKind is a dataset
         # type, NOT a provider — the query stays source-neutral).
