@@ -78,7 +78,7 @@
     // Budget is a real, known constant — fill it immediately.
     setField("body-latency", "refresh_budget_ms", { value: BUDGET_MS, data_source: "live" }, "ms");
     // Per-panel freshness indicator (driven by monitorFreshness).
-    for (const panel of ["pnl", "metrics", "health", "latency", "strategies"]) addFreshDot(panel);
+    for (const panel of ["pnl", "metrics", "health", "latency", "strategies", "backtest"]) addFreshDot(panel);
   }
 
   function addFreshDot(panel) {
@@ -178,6 +178,9 @@
     // STRATEGY_STATE and must not read as an SLA breach); the panel's own
     // freshness dot still reports it honestly.
     { panel: "strategies", ch: "STRATEGY_STATE", budget: 5000, gauge: false },
+    // UI-3 backtest history: REST-poll (no WS channel), likewise off the gauge;
+    // its dot tracks the /dashboard/api/backtests poll cadence.
+    { panel: "backtest", ch: "BACKTEST", budget: POLL_MS, gauge: false },
   ];
   const STALE_GRACE_MS = 1500; // tolerate normal cadence jitter; flag real stalls
   const lastChannelAt = Object.create(null); // channel -> performance.now()
@@ -528,9 +531,382 @@
     fireKillSwitch();
   });
 
+  // ----- UI-3 backtest controls + result history (SRS-UI-004 / SYS-42/43a) //
+  // CONTROLS: the launch form POSTs to the CONTRACT route on this same runtime
+  // (never a /dashboard path) and renders the runtime's own response verbatim —
+  // a 501 HANDLER_DEFERRED (the live launch handler is SRS-API-001's) is shown
+  // as an honest "deferred", never dressed as a success. HISTORY: the REAL
+  // SRS-BT-009 store via GET /dashboard/api/backtests; a row drills into an
+  // inline equity-curve chart + trade log + SPY benchmark comparison.
+  const BACKTEST_LAUNCH_ROUTE = "/api/v1/backtests";
+  const BACKTEST_HISTORY_ROUTE = "/dashboard/api/backtests";
+  const btRecords = Object.create(null); // run_id -> record (for drill-down)
+  let btSelected = null;
+
+  function fmtMinor(minor) {
+    const n = Number(minor);
+    if (!isFinite(n)) return "—";
+    return (n / 100).toLocaleString(undefined, { style: "currency", currency: "USD" });
+  }
+  function fmtAxisMinor(minor) {
+    return (Number(minor) / 100).toLocaleString(undefined, {
+      style: "currency", currency: "USD", maximumFractionDigits: 0,
+    });
+  }
+  function paramsText(record) {
+    const ps = Array.isArray(record.parameters) ? record.parameters : [];
+    return ps.length ? ps.map((p) => p.key + "=" + p.value).join(", ") : "—";
+  }
+  // A metric cell: null => mathematically undefined (real run, no fabricated 0).
+  function metricCellInto(td, kind, value) {
+    if (value === null || value === undefined) {
+      td.textContent = "—"; td.className = "bt-num is-undef"; return;
+    }
+    td.textContent = fmt(kind, value);
+    td.className = "bt-num" + directionClass(kind, value);
+  }
+
+  function initBacktest() {
+    const form = $("backtest-form");
+    if (!form) return;
+    if (!$("bt-start").value) $("bt-start").value = "2024-01-01";
+    if (!$("bt-end").value) $("bt-end").value = "2024-12-31";
+    form.addEventListener("submit", submitBacktest);
+  }
+
+  async function submitBacktest(ev) {
+    ev.preventDefault();
+    const strategy = $("bt-strategy").value.trim();
+    const start = $("bt-start").value;
+    const end = $("bt-end").value;
+    if (!strategy || !start || !end) {
+      btRunStatus("strategy, start and end are required", "error");
+      return;
+    }
+    const body = {
+      strategy_id: strategy,
+      start_date: start,
+      end_date: end,
+      parameter_overrides: $("bt-params").value.trim(),
+      cost_model: $("bt-cost").value,
+    };
+    const btn = $("bt-run");
+    btn.disabled = true;
+    btRunStatus("submitting…", "pending");
+    try {
+      const res = await fetch(BACKTEST_LAUNCH_ROUTE, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      let payload = {};
+      try { payload = await res.json(); } catch (_e) { /* empty body */ }
+      if (res.ok) {
+        // A live launch (SRS-API-001) would return {backtest_id, queued_at}.
+        btRunStatus(
+          "queued " + String(payload.backtest_id || "") +
+          (payload.queued_at ? " @ " + String(payload.queued_at) : ""), "ok"
+        );
+      } else if (res.status === 501) {
+        // The runtime names the deferred owner itself; show it verbatim rather
+        // than guessing (declared owner SRS-BT-001; REST handler wiring SRS-API-001).
+        const owner = ((payload.error || {}).detail || {}).owner || "the backtest launch owner";
+        btRunStatus("launch handler not yet wired — deferred to " + String(owner), "deferred");
+      } else {
+        const err = payload && payload.error ? payload.error : {};
+        btRunStatus("REFUSED " + res.status + " " + String(err.type || "UNKNOWN"), "error");
+      }
+    } catch (error) {
+      btRunStatus("FAILED: " + String(error), "error");
+    }
+    btn.disabled = false;
+  }
+
+  function btRunStatus(text, tone) {
+    const el = $("bt-run-status");
+    if (!el) return;
+    el.textContent = text; el.dataset.tone = tone;
+  }
+
+  async function pollBacktests() {
+    try {
+      const res = await fetch(BACKTEST_HISTORY_ROUTE, { cache: "no-store" });
+      if (res.ok) {
+        lastChannelAt["BACKTEST"] = performance.now();
+        renderBacktestHistory(await res.json());
+      } else if (res.status === 404) {
+        const s = $("backtest-summary");
+        if (s) {
+          s.textContent = "history not mounted — SRS-UI-004 provider not composed on this runtime";
+          s.dataset.tone = "warn";
+        }
+      }
+    } catch (_e) { /* transient; next tick retries */ }
+    setTimeout(pollBacktests, POLL_MS);
+  }
+
+  function renderBacktestHistory(snap) {
+    const summary = $("backtest-summary");
+    const table = $("bthistory-table");
+    const list = $("bt-strategy-list");
+    const records = snap && Array.isArray(snap.backtests) ? snap.backtests : [];
+    if (summary) {
+      if (snap && snap.ok === false) {
+        summary.textContent = "history unavailable: " + String(snap.error || "unknown");
+        summary.dataset.tone = "error";
+      } else if (!records.length) {
+        summary.textContent = "no completed backtests — launch one above";
+        summary.dataset.tone = "ok";
+      } else {
+        summary.textContent = records.length + " completed backtest" +
+          (records.length === 1 ? "" : "s") + " · newest first · select a row for details";
+        summary.dataset.tone = "ok";
+      }
+    }
+    // Refresh known run ids (drop rows no longer present) + strategy datalist.
+    const seen = Object.create(null);
+    const strategies = Object.create(null);
+    for (const record of records) {
+      btRecords[record.run_id] = record;
+      seen[record.run_id] = true;
+      if (record.strategy) strategies[record.strategy] = true;
+      renderBacktestRow(record);
+    }
+    const rows = $("bthistory-rows");
+    if (rows) {
+      for (const tr of Array.from(rows.children)) {
+        if (!seen[tr.dataset.run]) tr.remove();
+      }
+      // Reorder rows to match the (newest-first) snapshot order on every poll —
+      // a newer run arriving on a later poll must move to the top, not strand at
+      // the bottom (renderBacktestRow only ever appends a NEW row).
+      for (const record of records) {
+        const tr = rows.querySelector('[data-run="' + CSS.escape(String(record.run_id)) + '"]');
+        if (tr) rows.appendChild(tr);
+      }
+    }
+    if (list) {
+      list.textContent = "";
+      for (const name of Object.keys(strategies)) {
+        const opt = el("option"); opt.value = name; list.appendChild(opt);
+      }
+    }
+    if (table) table.hidden = records.length === 0;
+    if (btSelected && !seen[btSelected]) closeBacktestDetail();
+  }
+
+  function renderBacktestRow(record) {
+    const rows = $("bthistory-rows");
+    if (!rows) return;
+    const key = String(record.run_id);
+    let tr = rows.querySelector('[data-run="' + CSS.escape(key) + '"]');
+    if (!tr) {
+      tr = el("tr");
+      tr.dataset.run = key;
+      tr.tabIndex = 0;
+      tr.setAttribute("role", "button");
+      tr.addEventListener("click", () => showBacktestDetail(key));
+      tr.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); showBacktestDetail(key); }
+      });
+      rows.appendChild(tr);
+    }
+    tr.textContent = "";
+    const runTd = el("td", "bt-run-id"); runTd.textContent = key; tr.appendChild(runTd);
+    const stratTd = el("td"); stratTd.textContent = String(record.strategy || "—"); tr.appendChild(stratTd);
+    const paramTd = el("td", "bt-params"); paramTd.textContent = paramsText(record);
+    paramTd.title = paramsText(record); tr.appendChild(paramTd);
+    const win = record.run_window || {};
+    const winTd = el("td"); winTd.textContent = String(win.start) + "–" + String(win.end); tr.appendChild(winTd);
+    const m = record.metrics || {};
+    const sharpeTd = el("td"); metricCellInto(sharpeTd, "ratio", m.sharpe); tr.appendChild(sharpeTd);
+    const ddTd = el("td"); metricCellInto(ddTd, "pct", m.max_drawdown); tr.appendChild(ddTd);
+    const retTd = el("td"); metricCellInto(retTd, "pct", m.annualized_return); tr.appendChild(retTd);
+    const cmp = record.comparison || {};
+    const vsTd = el("td"); metricCellInto(vsTd, "pct", cmp.excess_return); tr.appendChild(vsTd);
+    tr.setAttribute("aria-selected", btSelected === key ? "true" : "false");
+  }
+
+  function showBacktestDetail(runId) {
+    const record = btRecords[runId];
+    const detail = $("backtest-detail");
+    if (!record || !detail) return;
+    btSelected = runId;
+    for (const tr of Array.from($("bthistory-rows").children)) {
+      tr.setAttribute("aria-selected", tr.dataset.run === runId ? "true" : "false");
+    }
+    detail.textContent = "";
+    detail.hidden = false;
+
+    // Header
+    const head = el("div", "btd__head");
+    const title = el("span", "btd__title"); title.textContent = String(record.run_id);
+    const sub = el("span", "btd__sub");
+    sub.textContent = String(record.strategy) + " · " + String(record.symbol) +
+      " · window " + String((record.run_window || {}).start) + "–" + String((record.run_window || {}).end) +
+      " · " + String(record.source) + " · " + String(record.code_version);
+    const close = el("button", "btd__close"); close.type = "button"; close.textContent = "close ✕";
+    close.addEventListener("click", closeBacktestDetail);
+    head.append(title, sub, close);
+    detail.appendChild(head);
+
+    // Equity-curve chart (real inline SVG from the persisted equity points)
+    const chartWrap = el("div", "btd__chartwrap");
+    const chartLabel = el("span", "btd__section-label"); chartLabel.textContent = "Equity curve";
+    const chartHost = el("div");
+    const points = Array.isArray(record.equity_curve) ? record.equity_curve : [];
+    chartHost.innerHTML = equityChartSVG(points, Number(record.starting_cash_minor));
+    const readout = el("div", "btd__readout");
+    readout.textContent = points.length
+      ? points.length + " marks · start " + fmtMinor(points[0].equity_minor) +
+        " → end " + fmtMinor(points[points.length - 1].equity_minor)
+      : "no equity points recorded";
+    chartWrap.append(chartLabel, chartHost, readout);
+    detail.appendChild(chartWrap);
+    wireChartHover(chartHost.querySelector("svg"), points, readout);
+
+    // Metrics + benchmark comparison stat grid
+    const metricsWrap = el("div", "btd__metrics");
+    const M = record.metrics || {}, C = record.comparison || {};
+    const stats = [
+      ["Sharpe", "ratio", M.sharpe], ["Sortino", "ratio", M.sortino],
+      ["Alpha", "ratio", M.alpha], ["Beta", "ratio", M.beta],
+      ["Max drawdown", "pct", M.max_drawdown], ["Win rate", "pct", M.win_rate],
+      ["Ann. return", "pct", M.annualized_return], ["Ann. vol", "pct", M.annualized_volatility],
+      ["Excess vs " + String(C.benchmark_symbol || "SPY"), "pct", C.excess_return],
+      ["Beta vs benchmark", "ratio", C.beta],
+    ];
+    for (const [label, kind, value] of stats) {
+      const cell = el("div", "btstat");
+      const k = el("span", "btstat__k"); k.textContent = label;
+      const v = el("span", "btstat__v");
+      if (value === null || value === undefined) { v.textContent = "—"; v.className = "btstat__v is-undef"; }
+      else { v.textContent = fmt(kind, value); v.className = "btstat__v" + directionClass(kind, value); }
+      cell.append(k, v); metricsWrap.appendChild(cell);
+    }
+    detail.appendChild(metricsWrap);
+
+    // Full trade log
+    const trades = Array.isArray(record.trade_log) ? record.trade_log : [];
+    const tradesWrap = el("div", "bttrades");
+    const tLabel = el("span", "btd__section-label");
+    tLabel.textContent = "Trade log (" + trades.length + " fill" + (trades.length === 1 ? "" : "s") + ")";
+    tradesWrap.appendChild(tLabel);
+    if (trades.length) {
+      const tbl = el("table");
+      const thead = el("thead");
+      const htr = el("tr");
+      for (const h of ["Fill", "ts", "Qty", "Price", "Commission", "Slippage", "Spread"]) {
+        const th = el("th"); th.textContent = h; htr.appendChild(th);
+      }
+      thead.appendChild(htr); tbl.appendChild(thead);
+      const tbody = el("tbody");
+      trades.forEach((f, i) => {
+        const tr = el("tr");
+        const cells = [
+          String(i), String(f.ts), String(f.quantity), fmtMinor(f.price_minor),
+          fmtMinor(f.commission_minor), fmtMinor(f.slippage_minor), fmtMinor(f.spread_impact_minor),
+        ];
+        for (const c of cells) { const td = el("td"); td.textContent = c; tr.appendChild(td); }
+        tbody.appendChild(tr);
+      });
+      tbl.appendChild(tbody); tradesWrap.appendChild(tbl);
+    }
+    detail.appendChild(tradesWrap);
+  }
+
+  function closeBacktestDetail() {
+    const detail = $("backtest-detail");
+    if (detail) { detail.hidden = true; detail.textContent = ""; }
+    btSelected = null;
+    const rows = $("bthistory-rows");
+    if (rows) for (const tr of Array.from(rows.children)) tr.setAttribute("aria-selected", "false");
+  }
+
+  // Build the equity curve as a single-series line+area SVG (dataviz: one series,
+  // no legend, recessive axes, min/max markers). Only NUMBERS are interpolated
+  // into the markup — every store-derived string is set via textContent elsewhere,
+  // so a hostile run id / param can never reach innerHTML.
+  function equityChartSVG(points, startingMinor) {
+    const W = 680, H = 200, PL = 58, PR = 14, PT = 16, PB = 24;
+    if (!points.length) {
+      return '<svg class="eqchart" viewBox="0 0 ' + W + ' ' + H + '" role="img" ' +
+        'aria-label="no equity points recorded"></svg>';
+    }
+    const xs = points.map((p) => Number(p.ts));
+    const ys = points.map((p) => Number(p.equity_minor));
+    let minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+    const base = isFinite(startingMinor) ? startingMinor : null;
+    if (base !== null) { minY = Math.min(minY, base); maxY = Math.max(maxY, base); }
+    const minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+    const spanY = (maxY - minY) || 1, spanX = (maxX - minX) || 1;
+    const sx = (t) => PL + ((t - minX) / spanX) * (W - PL - PR);
+    const sy = (v) => PT + (1 - (v - minY) / spanY) * (H - PT - PB);
+    const pts = points.map((p) => [sx(Number(p.ts)), sy(Number(p.equity_minor))]);
+    const linePath = pts.map((q, i) => (i ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1)).join(" ");
+    const areaPath = "M" + pts[0][0].toFixed(1) + " " + (H - PB) + " " +
+      pts.map((q) => "L" + q[0].toFixed(1) + " " + q[1].toFixed(1)).join(" ") +
+      " L" + pts[pts.length - 1][0].toFixed(1) + " " + (H - PB) + " Z";
+    const gy1 = sy(maxY).toFixed(1), gy0 = sy(minY).toFixed(1);
+    let svg = '<svg class="eqchart" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' +
+      "equity curve, " + points.length + " marks" + '">';
+    svg += '<defs><linearGradient id="eqfill" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="var(--accent)" stop-opacity="0.32"></stop>' +
+      '<stop offset="100%" stop-color="var(--accent)" stop-opacity="0"></stop></linearGradient></defs>';
+    svg += '<line class="eqchart__grid" x1="' + PL + '" y1="' + gy1 + '" x2="' + (W - PR) + '" y2="' + gy1 + '"></line>';
+    svg += '<line class="eqchart__grid" x1="' + PL + '" y1="' + gy0 + '" x2="' + (W - PR) + '" y2="' + gy0 + '"></line>';
+    if (base !== null) {
+      const by = sy(base).toFixed(1);
+      svg += '<line class="eqchart__base" x1="' + PL + '" y1="' + by + '" x2="' + (W - PR) + '" y2="' + by + '"></line>';
+    }
+    svg += '<text class="eqchart__label" x="6" y="' + (Number(gy1) + 3).toFixed(1) + '">' + fmtAxisMinor(maxY) + "</text>";
+    svg += '<text class="eqchart__label" x="6" y="' + (Number(gy0) + 3).toFixed(1) + '">' + fmtAxisMinor(minY) + "</text>";
+    svg += '<path class="eqchart__area" d="' + areaPath + '"></path>';
+    svg += '<path class="eqchart__line" d="' + linePath + '"></path>';
+    const hi = ys.indexOf(Math.max.apply(null, ys)), lo = ys.indexOf(Math.min.apply(null, ys));
+    svg += '<circle class="eqchart__pt eqchart__hi" cx="' + sx(xs[hi]).toFixed(1) + '" cy="' + sy(ys[hi]).toFixed(1) + '" r="3.6"></circle>';
+    svg += '<circle class="eqchart__pt eqchart__lo" cx="' + sx(xs[lo]).toFixed(1) + '" cy="' + sy(ys[lo]).toFixed(1) + '" r="3.6"></circle>';
+    svg += '<circle class="eqchart__pt" cx="' + pts[pts.length - 1][0].toFixed(1) + '" cy="' + pts[pts.length - 1][1].toFixed(1) + '" r="3.6"></circle>';
+    // A moving hover cursor + highlight, driven by wireChartHover.
+    svg += '<line class="eqchart__cursor" x1="0" y1="' + PT + '" x2="0" y2="' + (H - PB) + '" style="opacity:0"></line>';
+    svg += '<circle class="eqchart__pt eqchart__hover" r="4" style="opacity:0"></circle>';
+    // Per-point invisible hit targets (data numbers only) for hover.
+    for (let i = 0; i < pts.length; i++) {
+      svg += '<circle class="eqchart__hit" cx="' + pts[i][0].toFixed(1) + '" cy="' + pts[i][1].toFixed(1) +
+        '" r="10" fill="transparent" data-i="' + i + '"><title>t=' + xs[i] + " · " + fmtAxisMinor(ys[i]) + "</title></circle>";
+    }
+    svg += "</svg>";
+    return svg;
+  }
+
+  function wireChartHover(svg, points, readout) {
+    if (!svg || !points.length) return;
+    const cursor = svg.querySelector(".eqchart__cursor");
+    const hover = svg.querySelector(".eqchart__hover");
+    const base = readout ? readout.textContent : "";
+    svg.addEventListener("mouseover", (e) => {
+      const hit = e.target.closest && e.target.closest(".eqchart__hit");
+      if (!hit) return;
+      const i = Number(hit.dataset.i);
+      const p = points[i];
+      if (!p) return;
+      const cx = hit.getAttribute("cx"), cy = hit.getAttribute("cy");
+      if (cursor) { cursor.setAttribute("x1", cx); cursor.setAttribute("x2", cx); cursor.style.opacity = "1"; }
+      if (hover) { hover.setAttribute("cx", cx); hover.setAttribute("cy", cy); hover.style.opacity = "1"; }
+      if (readout) readout.textContent = "t=" + p.ts + " · equity " + fmtMinor(p.equity_minor);
+    });
+    svg.addEventListener("mouseleave", () => {
+      if (cursor) cursor.style.opacity = "0";
+      if (hover) hover.style.opacity = "0";
+      if (readout) readout.textContent = base;
+    });
+  }
+
   // ----- boot ------------------------------------------------------------ //
   buildAll();
+  initBacktest();
   connect();
   poll();
   pollStrategies();
+  pollBacktests();
 })();

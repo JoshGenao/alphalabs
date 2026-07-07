@@ -147,6 +147,104 @@ def inventory_dashboard_url(tmp_path) -> Iterator[str]:
         runtime.stop()
 
 
+@pytest.fixture()
+def backtest_dashboard_url(tmp_path) -> Iterator[str]:
+    """UI-3 / SRS-UI-004: a dashboard with the backtest-history provider mounted
+    over a REAL store seeded through the real bt009_store_cli persist."""
+
+    import subprocess
+    from pathlib import Path
+
+    from atp_dashboard import BacktestHistoryProvider, StoreCliBacktestHistorySource
+
+    root = Path(__file__).resolve().parents[2]
+    binary = root / "target" / "debug" / "bt009_store_cli"
+    if not binary.exists():
+        build = subprocess.run(
+            ["cargo", "build", "-q", "-p", "atp-simulation", "--bin", "bt009_store_cli"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if build.returncode != 0:
+            pytest.skip(f"cannot build bt009_store_cli: {build.stderr}")
+    results = tmp_path / "results"
+    results.mkdir()
+    subprocess.run(
+        [str(binary), "persist", "--init", "--dir", str(results)],
+        check=True,
+        capture_output=True,
+    )
+
+    runtime = OperatorInterfaceRuntime()
+    provider = BacktestHistoryProvider(
+        StoreCliBacktestHistorySource(results_dir=results, binary=binary)
+    )
+    publisher = mount_dashboard(runtime, ReadinessBackedProvider({}), backtests=provider)
+    publisher.start()
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        yield f"http://{host}:{port}/dashboard"
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
+def test_backtest_panel_renders_real_history_and_honest_deferred_launch(
+    backtest_dashboard_url: str,
+) -> None:
+    """UI-3 / SyRS SYS-42 + SYS-43a: the backtest panel lists the REAL persisted
+    runs (strategy, params, metrics), drills a row down into the inline
+    equity-curve chart + trade log, and the launch control POSTs to the contract
+    route — rendering the runtime's honest 501 (deferred), never a fake success."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.goto(backtest_dashboard_url, wait_until="domcontentloaded")
+
+            assert page.locator('[data-panel="backtest"]').count() == 1
+            # The controls form is present (SYS-43a).
+            for field in ("bt-strategy", "bt-start", "bt-end", "bt-cost", "bt-params"):
+                assert page.locator(f"#{field}").count() == 1
+
+            # The REAL persisted runs render, newest first.
+            page.wait_for_function(
+                "document.querySelectorAll('#bthistory-rows tr').length === 2", timeout=5_000
+            )
+            row = page.locator('#bthistory-rows tr[data-run="run-momentum"]')
+            assert row.count() == 1
+            assert "momentum" in row.inner_text()
+            # Newest-first ordering: run-meanrev (completed_at 1700000500) sorts
+            # above run-momentum (1700000000) — the reorder pass keeps it on top.
+            assert (
+                page.locator("#bthistory-rows tr").first.get_attribute("data-run")
+                == "run-meanrev"
+            )
+
+            # Drill down: the equity-curve chart + trade log render from real data.
+            row.click()
+            page.wait_for_function(
+                "!document.getElementById('backtest-detail').hidden", timeout=5_000
+            )
+            assert page.locator("#backtest-detail svg.eqchart path.eqchart__line").count() == 1
+            assert page.locator("#backtest-detail .bttrades table tbody tr").count() == 2
+
+            # The launch control POSTs to the CONTRACT route and renders the honest
+            # 501 deferred outcome — never dressed as a success.
+            page.fill("#bt-strategy", "momentum")
+            page.click("#bt-run")
+            page.wait_for_function(
+                "document.getElementById('bt-run-status').dataset.tone === 'deferred'",
+                timeout=5_000,
+            )
+            assert "not yet wired" in page.locator("#bt-run-status").inner_text()
+        finally:
+            browser.close()
+
+
 def test_strategy_inventory_panel_renders_real_versions_and_honest_deferred_cells(
     inventory_dashboard_url: str,
 ) -> None:

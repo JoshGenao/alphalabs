@@ -164,6 +164,131 @@ fn srs_bt_009_cli_persist_then_query_every_axis() {
 }
 
 #[test]
+fn srs_bt_009_cli_query_kv_format_is_indexed_proof_lines() {
+    // `--format kv --full` emits the flat, indexed record.<i>.<field> proof lines the SRS-UI-004
+    // dashboard history view parses: a leading record_count, contiguous indices, every artifact on
+    // its own key:value line (value after the FIRST colon so `sha:deadbeef` survives), and the
+    // interior fills + equity points under --full for the drill-down chart.
+    let dir = temp_dir("kv_format");
+    assert!(run(&dir, &["persist", "--init"]).status.success());
+
+    let out = stdout(&run(&dir, &["query", "--format", "kv", "--full"]));
+    // The record_count anchors the contiguous 0..N indexing the consumer fails closed against.
+    assert!(
+        out.contains("record_count:2"),
+        "kv must lead with record_count"
+    );
+    // Scalar artifacts, one per line, both records present and index-contiguous.
+    assert!(out.contains("record.0.run_id:run-momentum"));
+    assert!(out.contains("record.1.run_id:run-meanrev"));
+    // A colon-bearing value survives (parser splits on the FIRST colon only).
+    assert!(out.contains("record.0.code_version:sha:deadbeef"));
+    assert!(out.contains("record.0.completed_at:1700000000"));
+    assert!(out.contains("record.0.run_window_start:0"));
+    assert!(out.contains("record.0.run_window_end:100"));
+    // All eight metrics are emitted (real, full-precision — never a fabricated 0).
+    for metric in [
+        "metric.sharpe:",
+        "metric.sortino:",
+        "metric.alpha:",
+        "metric.beta:",
+        "metric.max_drawdown:",
+        "metric.annualized_return:",
+        "metric.annualized_volatility:",
+        "metric.win_rate:",
+    ] {
+        assert!(
+            out.contains(&format!("record.0.{metric}")),
+            "kv missing {metric}"
+        );
+    }
+    // Benchmark comparison identity + indexed parameters.
+    assert!(out.contains("record.0.comparison.benchmark_symbol:SPY"));
+    assert!(out.contains("record.0.comparison.is_default:true"));
+    assert!(out.contains("record.0.param_count:2"));
+    assert!(out.contains("record.0.param.0.key:lookback"));
+    assert!(out.contains("record.0.param.0.value:20"));
+    // --full renders every interior fill + equity point for the drill-down.
+    assert!(out.contains("record.0.trade_count:2"));
+    assert!(out.contains("record.0.equity_count:5"));
+    assert!(out.contains("record.0.trade.0.ts:1"));
+    assert!(out.contains("record.0.trade.1.quantity:-10"));
+    assert!(out.contains("record.0.equity.2.ts:3"));
+    assert!(out.contains("record.0.equity.2.equity_minor:999888"));
+    // No human preamble leaks into the machine format.
+    assert!(
+        !out.contains("match the query"),
+        "kv must not emit the human preamble"
+    );
+    assert!(
+        !out.contains("filters:"),
+        "kv must not emit the human preamble"
+    );
+
+    // Without --full the per-entry detail is omitted but the summary counts remain.
+    let summary = stdout(&run(&dir, &["query", "--format", "kv"]));
+    assert!(summary.contains("record.0.trade_count:2"));
+    assert!(!summary.contains("record.0.trade.0.ts:"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn srs_bt_009_cli_query_bad_format_fails_closed() {
+    // An unknown --format value is rejected rather than silently defaulting to a rendering the
+    // consumer cannot parse.
+    let dir = temp_dir("bad_format");
+    assert!(run(&dir, &["persist", "--init"]).status.success());
+    let output = run(&dir, &["query", "--format", "xml"]);
+    assert!(
+        !output.status.success(),
+        "an unknown --format must exit non-zero"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn srs_bt_009_cli_query_kv_rejects_control_char_in_value() {
+    // The store does not forbid a control character in a parameter value at persist time, so a
+    // newline-bearing value could forge a `record.<i>.<field>:` proof line in the flat kv machine
+    // format. The kv emitter fails CLOSED on such a value (unforgeable by construction) — while the
+    // human rendering, which is not a line-forgeable machine grammar, is unaffected.
+    let dir = temp_dir("kv_control_char");
+    let persisted = run(
+        &dir,
+        &[
+            "persist",
+            "--init",
+            "--run-id",
+            "run-evil",
+            "--strategy",
+            "evil",
+            "--completed-at",
+            "100",
+            "--param",
+            "k=v\nrecord.0.run_id:HACKED",
+        ],
+    );
+    assert!(
+        persisted.status.success(),
+        "the store accepts the value verbatim (persist is not the guard): {}",
+        String::from_utf8_lossy(&persisted.stderr)
+    );
+    let kv = run(&dir, &["query", "--format", "kv", "--full"]);
+    assert!(
+        !kv.status.success(),
+        "kv must fail closed on a control-char (forgeable) value"
+    );
+    assert!(
+        String::from_utf8_lossy(&kv.stderr).contains("control character"),
+        "the failure names the control-character guard"
+    );
+    // The human rendering still round-trips the stored record.
+    assert!(run(&dir, &["query"]).status.success());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn srs_bt_009_cli_persist_preserves_existing_history() {
     // Regression for the persist-clobbers-history hazard: a persist must LOAD existing records and
     // accumulate, never replace the store with only its own fixtures.

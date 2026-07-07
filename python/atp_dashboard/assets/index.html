@@ -126,6 +126,81 @@
           </table>
         </div>
       </section>
+
+      <!-- UI-3 / SyRS SYS-42 + SYS-43a: backtest controls + result history.
+           CONTROLS: the launch form (strategy · date range · parameter
+           overrides · cost model) POSTs to the CONTRACT route
+           POST /api/v1/backtests whose live handler is deferred (declared owner
+           SRS-BT-001; REST handler wiring SRS-API-001) — until it lands the
+           runtime answers 501, rendered honestly, exactly as the kill-switch
+           affordance does. HISTORY: fed by the REAL
+           SRS-BT-009 durable store (GET /dashboard/api/backtests); a row drills
+           into the trade log, an inline equity-curve chart, and the SPY
+           benchmark comparison. -->
+      <section class="panel panel--wide panel--backtest" data-panel="backtest" style="--i:5">
+        <div class="panel__head">
+          <h2 class="panel__title">Backtest</h2>
+          <span class="panel__meta"><span class="tag tag--chan">SRS-UI-004</span><span class="panel__cadence">poll</span></span>
+        </div>
+        <div class="panel__body" id="body-backtest" aria-live="polite">
+          <div class="backtest">
+            <form class="backtest__controls" id="backtest-form" aria-label="Launch a backtest (SyRS SYS-43a)" novalidate>
+              <div class="bt-field">
+                <label for="bt-strategy">Strategy</label>
+                <input id="bt-strategy" name="strategy_id" type="text" list="bt-strategy-list" autocomplete="off" placeholder="strategy id" required />
+                <datalist id="bt-strategy-list"></datalist>
+                <span class="bt-hint">arbitrary Python-strategy selection deferred — strategy host (SRS-ORCH-004)</span>
+              </div>
+              <div class="bt-field">
+                <label for="bt-start">Start date</label>
+                <input id="bt-start" name="start_date" type="date" required />
+              </div>
+              <div class="bt-field">
+                <label for="bt-end">End date</label>
+                <input id="bt-end" name="end_date" type="date" required />
+              </div>
+              <div class="bt-field">
+                <label for="bt-cost">Cost model</label>
+                <select id="bt-cost" name="cost_model">
+                  <option value="syrs_default">IB defaults (SyRS)</option>
+                  <option value="zero">Frictionless (zero)</option>
+                </select>
+              </div>
+              <div class="bt-field bt-field--wide">
+                <label for="bt-params">Parameter overrides</label>
+                <input id="bt-params" name="parameter_overrides" type="text" autocomplete="off" placeholder="lookback=20, threshold=0.5" />
+              </div>
+              <div class="bt-actions">
+                <button type="submit" class="bt-run" id="bt-run">Run backtest</button>
+                <span class="bt-run__status" id="bt-run-status" role="status" aria-live="assertive"></span>
+              </div>
+            </form>
+
+            <div class="backtest__history">
+              <div class="backtest__summary" id="backtest-summary">awaiting backtest history…</div>
+              <div class="bthistory__scroll">
+                <table class="bthistory" id="bthistory-table" hidden>
+                  <thead>
+                    <tr>
+                      <th scope="col">Run</th>
+                      <th scope="col">Strategy</th>
+                      <th scope="col">Parameters</th>
+                      <th scope="col">Window</th>
+                      <th scope="col">Sharpe</th>
+                      <th scope="col">Max DD</th>
+                      <th scope="col">Ann. return</th>
+                      <th scope="col" title="Excess return vs the run's benchmark (shown in the drill-down)">Excess</th>
+                    </tr>
+                  </thead>
+                  <tbody id="bthistory-rows"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="backtest__detail" id="backtest-detail" hidden aria-live="polite"></div>
+          </div>
+        </div>
+      </section>
     </main>
 
     <footer class="legend" role="contentinfo">

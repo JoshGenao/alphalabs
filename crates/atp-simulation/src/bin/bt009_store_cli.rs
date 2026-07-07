@@ -13,10 +13,12 @@
 //!   flags it seeds an idempotent demo pair. The blob on disk is the checksummed codec output, so
 //!   an operator can inspect it directly.
 //! - `query [--dir D] [--strategy S] [--from T --to T] [--completed-from T --completed-to T]
-//!   [--param k=v]... [--full]` — load the persisted store with
+//!   [--param k=v]... [--full] [--format human|kv]` — load the persisted store with
 //!   [`BacktestResultStore::load_from_path`] and print every record matching the requested axes,
 //!   with all seven artifacts (`--full` renders the complete trade log and equity curve, not just
-//!   their first/last summaries).
+//!   their first/last summaries). `--format kv` (default `human`) emits the same records as flat,
+//!   indexed `record.<i>.<field>` proof lines — the machine-readable format the SRS-UI-004 dashboard
+//!   history view parses (a single format owner; the dashboard never parses the human rendering).
 //!
 //! The results directory is resolved fail-closed: an explicit `--dir` wins, else the
 //! `ATP_BACKTEST_RESULTS_DIR` config key (read here as an environment variable — the configuration
@@ -65,7 +67,8 @@ USAGE:
     bt009_store_cli persist [--dir <path>] [--init]
     bt009_store_cli persist [--dir <path>] [--init] --run-id <id> --strategy <id> --completed-at <ts> [--param <k=v>]...
     bt009_store_cli query   [--dir <path>] [--strategy <id>] [--from <ts> --to <ts>]
-                            [--completed-from <ts> --completed-to <ts>] [--param <k=v>]... [--full]
+                            [--completed-from <ts> --completed-to <ts>] [--param <k=v>]...
+                            [--full] [--format human|kv]
 
 The results directory is taken from --dir, else the ATP_BACKTEST_RESULTS_DIR environment
 variable. A missing/unmounted directory fails closed (for both persist and query) rather than
@@ -85,6 +88,7 @@ QUERY AXES (each optional; combined axes AND together):
     --completed-from --completed-to records completed within the inclusive window
     --param <k=v>                   records run with exactly this parameter set (repeatable)
     --full                          render the complete trade log and equity curve per record
+    --format <human|kv>             human (default) or flat indexed record.<i>.<field> proof lines
 ";
 
 fn main() -> ExitCode {
@@ -213,17 +217,42 @@ fn cmd_query(rest: &[String]) -> Result<(), String> {
     let query = parsed.to_query()?;
     let matches = store.query(&query);
 
-    println!(
-        "loaded {} record(s) from {}; {} match the query",
-        store.len(),
-        dir.join(STORE_FILENAME).display(),
-        matches.len(),
-    );
-    print_filters(&parsed);
-    for record in matches {
-        print_record(record, parsed.full);
+    match parsed.format {
+        // The machine format: flat indexed proof lines only, no human preamble, so a consumer
+        // (the SRS-UI-004 dashboard history view) parses exactly one grammar. This CLI is the
+        // single format owner; the dashboard never parses the human rendering below.
+        OutputFormat::Kv => print_records_kv(&matches, parsed.full)?,
+        OutputFormat::Human => {
+            println!(
+                "loaded {} record(s) from {}; {} match the query",
+                store.len(),
+                dir.join(STORE_FILENAME).display(),
+                matches.len(),
+            );
+            print_filters(&parsed);
+            for record in matches {
+                print_record(record, parsed.full);
+            }
+        }
     }
     Ok(())
+}
+
+/// The `query` output format: the default human rendering or the flat, indexed `record.<i>.<field>`
+/// machine format the SRS-UI-004 dashboard parses.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum OutputFormat {
+    #[default]
+    Human,
+    Kv,
+}
+
+fn parse_format(raw: &str) -> Result<OutputFormat, String> {
+    match raw {
+        "human" => Ok(OutputFormat::Human),
+        "kv" => Ok(OutputFormat::Kv),
+        other => Err(format!("--format expects 'human' or 'kv', got '{other}'")),
+    }
 }
 
 // --------------------------------------------------------------------------- //
@@ -244,6 +273,7 @@ struct ParsedArgs {
     params: Vec<(String, String)>,
     full: bool,
     init: bool,
+    format: OutputFormat,
 }
 
 impl ParsedArgs {
@@ -262,6 +292,7 @@ impl ParsedArgs {
                 "--completed-to" => parsed.completed_to = Some(take_ts(&mut iter, flag)?),
                 "--full" => parsed.full = true,
                 "--init" => parsed.init = true,
+                "--format" => parsed.format = parse_format(&take_value(&mut iter, flag)?)?,
                 "--param" => {
                     let raw = take_value(&mut iter, flag)?;
                     let (key, value) = raw
@@ -453,6 +484,122 @@ fn print_record(record: &BacktestRecord, full: bool) {
             );
         }
     }
+}
+
+/// A string field is safe to emit only if it is exactly one line: in the flat `key:value` machine
+/// format a control character (a newline above all) would forge or corrupt a proof line. The store
+/// does not forbid such values at persist time (a `--param` value can carry one), so the emitter
+/// fails CLOSED here rather than emit a forgeable line — the machine format is unforgeable by
+/// construction, and the dashboard parser rejects the residual vectors as a second line of defense.
+fn kv_field<'a>(label: &str, value: &'a str) -> Result<&'a str, String> {
+    if value.chars().any(char::is_control) {
+        return Err(format!(
+            "cannot emit kv machine format: {label} contains a control character (forgeable output)"
+        ));
+    }
+    Ok(value)
+}
+
+/// Emit the matched records as flat, indexed `record.<i>.<field>` proof lines — the machine format
+/// the SRS-UI-004 dashboard history view parses. Every field is on its own `key:value` line (value
+/// after the FIRST colon, so a colon-bearing value like a `sha:...` code version survives); the
+/// leading `record_count` plus the contiguous 0..N indexing let the consumer fail closed on any
+/// drift or forged line rather than render a partial/forged history. Undefined metrics render as
+/// `n/a` (mathematically undefined — never a fabricated 0). `--full` adds every interior fill and
+/// equity point, which the dashboard drill-down (trade log + equity-curve chart) consumes.
+fn print_records_kv(records: &[&BacktestRecord], full: bool) -> Result<(), String> {
+    println!("record_count:{}", records.len());
+    for (index, record) in records.iter().enumerate() {
+        let p = format!("record.{index}");
+        println!("{p}.run_id:{}", kv_field("run_id", record.run_id.as_str())?);
+        println!(
+            "{p}.strategy:{}",
+            kv_field("strategy", record.request.strategy_id.as_str())?
+        );
+        println!("{p}.symbol:{}", kv_field("symbol", &record.request.symbol)?);
+        println!("{p}.source:{}", record.request.data_source.as_str());
+        println!("{p}.run_window_start:{}", record.request.range.start);
+        println!("{p}.run_window_end:{}", record.request.range.end);
+        println!(
+            "{p}.starting_cash_minor:{}",
+            record.request.starting_cash_minor
+        );
+        println!("{p}.completed_at:{}", record.completed_at_ts);
+        println!(
+            "{p}.code_version:{}",
+            kv_field("code_version", record.code_version.as_str())?
+        );
+
+        let m = &record.metrics;
+        println!(
+            "{p}.benchmark_symbol:{}",
+            kv_field("benchmark_symbol", &m.benchmark_symbol)?
+        );
+        println!("{p}.metric.sharpe:{}", fmt_opt(m.sharpe_ratio));
+        println!("{p}.metric.sortino:{}", fmt_opt(m.sortino_ratio));
+        println!("{p}.metric.alpha:{}", fmt_opt(m.alpha));
+        println!("{p}.metric.beta:{}", fmt_opt(m.beta));
+        println!("{p}.metric.max_drawdown:{}", fmt_opt(m.max_drawdown));
+        println!(
+            "{p}.metric.annualized_return:{}",
+            fmt_opt(m.annualized_return)
+        );
+        println!(
+            "{p}.metric.annualized_volatility:{}",
+            fmt_opt(m.annualized_volatility)
+        );
+        println!("{p}.metric.win_rate:{}", fmt_opt(m.win_rate));
+
+        let c = &record.comparison;
+        println!(
+            "{p}.comparison.benchmark_symbol:{}",
+            kv_field("comparison.benchmark_symbol", &c.benchmark_symbol)?
+        );
+        println!("{p}.comparison.is_default:{}", c.is_default_benchmark);
+        println!("{p}.comparison.alpha:{}", fmt_opt(c.alpha));
+        println!("{p}.comparison.beta:{}", fmt_opt(c.beta));
+        println!(
+            "{p}.comparison.strategy_total_return:{}",
+            fmt_opt(c.strategy_total_return)
+        );
+        println!(
+            "{p}.comparison.benchmark_total_return:{}",
+            fmt_opt(c.benchmark_total_return)
+        );
+        println!("{p}.comparison.excess_return:{}", fmt_opt(c.excess_return));
+
+        let params = record.parameters.entries();
+        println!("{p}.param_count:{}", params.len());
+        for (j, (key, value)) in params.iter().enumerate() {
+            println!("{p}.param.{j}.key:{}", kv_field("param key", key)?);
+            println!("{p}.param.{j}.value:{}", kv_field("param value", value)?);
+        }
+
+        println!("{p}.trade_count:{}", record.trade_log.len());
+        println!("{p}.equity_count:{}", record.equity_curve.len());
+        if full {
+            for (k, fill) in record.trade_log.iter().enumerate() {
+                println!("{p}.trade.{k}.ts:{}", fill.ts);
+                println!(
+                    "{p}.trade.{k}.symbol:{}",
+                    kv_field("fill symbol", &fill.symbol)?
+                );
+                println!("{p}.trade.{k}.quantity:{}", fill.quantity);
+                println!("{p}.trade.{k}.price_minor:{}", fill.price_minor);
+                println!("{p}.trade.{k}.commission_minor:{}", fill.commission_minor);
+                println!("{p}.trade.{k}.slippage_minor:{}", fill.slippage_minor);
+                println!(
+                    "{p}.trade.{k}.spread_impact_minor:{}",
+                    fill.spread_impact_minor
+                );
+            }
+            for (k, point) in record.equity_curve.iter().enumerate() {
+                println!("{p}.equity.{k}.ts:{}", point.ts);
+                println!("{p}.equity.{k}.equity_minor:{}", point.equity_minor);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn format_params(parameters: &StrategyParameters) -> String {

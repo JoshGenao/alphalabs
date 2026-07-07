@@ -151,6 +151,73 @@ def test_publisher_claims_only_the_owned_channels() -> None:
         runtime.stop()
 
 
+def test_backtest_history_route_is_read_only(mounted_runtime) -> None:
+    # UI-3: the backtest panel adds a launch CONTROL, but the /dashboard namespace
+    # stays read-only — a mutating verb on the history route is not a registered
+    # route (the launch goes to the /api/v1 contract route, asserted below).
+    _, host, port = mounted_runtime
+    for method in ("POST", "PUT", "DELETE"):
+        assert _request(host, port, method, "/dashboard/api/backtests")[0] in (404, 405)
+
+
+def test_backtest_launch_affordance_uses_only_the_contract_route(mounted_runtime) -> None:
+    # SYS-43a: the UI-3 launch affordance POSTs to the CONTRACT route on this same
+    # runtime — it introduces NO dashboard-namespaced mutation, and on an un-wired
+    # runtime the POST target stays fail-closed (501 deferred, never a silent
+    # launch). The live launch handler is deferred (declared owner SRS-BT-001).
+    _, host, port = mounted_runtime
+    from pathlib import Path
+
+    app_js = (Path(__file__).resolve().parents[2] / "python/atp_dashboard/assets/app.js").read_text(
+        encoding="utf-8"
+    )
+    # The affordance targets exactly the contract route via a named constant, and
+    # the history route is polled GET-only (never a dashboard-namespaced mutation).
+    assert 'const BACKTEST_LAUNCH_ROUTE = "/api/v1/backtests";' in app_js
+    assert "fetch(BACKTEST_LAUNCH_ROUTE, {" in app_js
+    assert 'fetch(BACKTEST_HISTORY_ROUTE, { cache: "no-store" })' in app_js
+    fetch_targets = [line for line in app_js.splitlines() if "fetch(" in line and "api/v1" in line]
+    assert all(
+        "backtest" not in target or "BACKTEST_LAUNCH_ROUTE" in target for target in fetch_targets
+    )
+    # The button's target on THIS (un-wired) runtime stays fail-closed.
+    status, body = _request(host, port, "POST", "/api/v1/backtests")
+    assert status == 501
+    assert body["error"]["type"] == "HANDLER_DEFERRED"
+    assert body["error"]["detail"]["owner"] == "SRS-BT-001"
+
+
+def test_backtest_mount_serves_history_route_and_stays_honest() -> None:
+    # With the SRS-UI-004 provider mounted the history route is served — and an
+    # UNREADABLE store yields an explicit unavailable history (ok:false), never
+    # fabricated runs. Without it the route is absent (composition opt-in honesty).
+    from atp_dashboard import BacktestHistoryProvider, StoreCliBacktestHistorySource
+
+    bare = OperatorInterfaceRuntime()
+    mount_dashboard(bare, ReadinessBackedProvider({}))
+    assert bare.dispatch_rest("GET", "/dashboard/api/backtests", b"")[0] == 404
+
+    runtime = OperatorInterfaceRuntime()
+    provider = BacktestHistoryProvider(
+        StoreCliBacktestHistorySource(
+            results_dir="/nonexistent/results",
+            binary="/nonexistent/bt009_store_cli",
+        )
+    )
+    publisher = mount_dashboard(runtime, ReadinessBackedProvider({}), backtests=provider)
+    publisher.start()
+    try:
+        status, body = runtime.dispatch_rest("GET", "/dashboard/api/backtests", b"")
+        assert status == 200
+        assert body["ok"] is False and body["backtests"] == []
+        # A backtest history provider must NOT claim a WS publisher channel — the
+        # history is REST-served (there is no BACKTEST channel).
+        assert not runtime.is_publisher_registered("STRATEGY_STATE")
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
 def test_inventory_mount_claims_strategy_state_and_stays_honest() -> None:
     # With the SRS-UI-002 provider mounted the publisher claims STRATEGY_STATE
     # too — and an UNREADABLE inventory source publishes an explicit

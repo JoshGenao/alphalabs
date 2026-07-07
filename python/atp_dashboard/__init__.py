@@ -13,6 +13,12 @@ deferred placeholders, never fabricated.
 
 from __future__ import annotations
 
+from .backtests import (
+    BacktestHistoryProvider,
+    BacktestHistorySource,
+    BacktestHistoryUnavailable,
+    StoreCliBacktestHistorySource,
+)
 from .inventory import (
     INVENTORY_CHANNEL,
     RollbackSnapshotInventorySource,
@@ -30,14 +36,17 @@ from .provider import (
 )
 from .publisher import DashboardPublisher, cadence_for
 from .server import (
+    BACKTESTS_SNAPSHOT_PATH,
     STRATEGIES_SNAPSHOT_PATH,
     SYSTEM_SNAPSHOT_PATH,
     load_assets,
     mount_dashboard,
+    mount_default_dashboard,
     serve,
 )
 
 __all__ = [
+    "BACKTESTS_SNAPSHOT_PATH",
     "DEFERRED",
     "INVENTORY_CHANNEL",
     "LIVE",
@@ -45,15 +54,20 @@ __all__ = [
     "REFRESH_BUDGET_MS",
     "STRATEGIES_SNAPSHOT_PATH",
     "SYSTEM_SNAPSHOT_PATH",
+    "BacktestHistoryProvider",
+    "BacktestHistorySource",
+    "BacktestHistoryUnavailable",
     "DashboardMetricsProvider",
     "DashboardPublisher",
     "ReadinessBackedProvider",
     "RollbackSnapshotInventorySource",
+    "StoreCliBacktestHistorySource",
     "StrategyInventoryProvider",
     "StrategyInventorySource",
     "cadence_for",
     "deferred_field",
     "load_assets",
     "mount_dashboard",
+    "mount_default_dashboard",
     "serve",
 ]
