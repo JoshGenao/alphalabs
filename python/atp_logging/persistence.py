@@ -75,6 +75,7 @@ from pathlib import Path
 from .dispatcher import RoutedLogDispatcher, validate_log_record
 from .errors import LogClassError, LogRecordError
 from .records import LogClass, LogRecord, Severity, Source
+from .redaction import DEFAULT_REDACTOR, SecretRedactor
 
 __all__ = [
     "JsonlLogStore",
@@ -156,6 +157,7 @@ class JsonlLogStore:
         max_bytes: int | None = None,
         max_files: int = 5,
         fsync: bool = True,
+        redactor: SecretRedactor | None = None,
     ) -> None:
         if not isinstance(log_class, LogClass):
             raise LogStoreError(
@@ -177,6 +179,12 @@ class JsonlLogStore:
         self._max_bytes = max_bytes
         self._max_files = max_files
         self._fsync = bool(fsync)
+        # SRS-SEC-001: the store is the persistence boundary, so it must NEVER
+        # default to zero redaction. When no value-aware redactor is injected we
+        # fall back to the always-on pattern-based DEFAULT_REDACTOR — production
+        # boot injects SecretRedactor(atp_config.secret_values(env)) for full
+        # IB/SMTP/SMS value coverage.
+        self._redactor = redactor if redactor is not None else DEFAULT_REDACTOR
         self._lock = threading.Lock()
         self._closed = False
 
@@ -240,6 +248,15 @@ class JsonlLogStore:
         # (invalid timestamp, empty field, forbidden strategy_id, or an
         # out-of-taxonomy source/event_type).
         validate_log_record(record)
+
+        # SRS-SEC-001: redact credentials at the persistence boundary — the
+        # LAST line of defence. A record written directly to the store
+        # (bypassing the dispatcher) is scrubbed here, so an IB/SMTP/SMS secret
+        # can never land in the on-disk audit trail in plaintext. ``_redactor``
+        # is always set (DEFAULT_REDACTOR at minimum), so there is no
+        # zero-redaction path. Redaction preserves the schema (message /
+        # correlation_id stay non-empty).
+        record = self._redactor.redact_record(record)
 
         line = (
             json.dumps(record.as_dict(), ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -593,6 +610,7 @@ def build_separated_log_dispatcher(
     fsync: bool = True,
     system_filename: str = "system.jsonl",
     strategy_filename: str = "strategy.jsonl",
+    redactor: SecretRedactor | None = None,
 ) -> tuple[RoutedLogDispatcher, JsonlLogStore, JsonlLogStore]:
     """Wire a SYSTEM store and a *separate* STRATEGY store to a dispatcher.
 
@@ -604,6 +622,14 @@ def build_separated_log_dispatcher(
 
     Returns the ``(dispatcher, system_store, strategy_store)`` triple; the
     caller owns closing the two stores (or using them as context managers).
+
+    Credential redaction (SRS-SEC-001) is always installed on the dispatcher
+    **and** both stores, so secrets are scrubbed on every path — including a
+    record written directly to a store, bypassing the dispatcher. When
+    ``redactor`` is omitted it falls back to the always-on pattern-based
+    ``DEFAULT_REDACTOR`` (never zero redaction); the boot layer should inject the
+    value-aware ``SecretRedactor(atp_config.secret_values(env))`` for full
+    IB/SMTP/SMS value coverage.
 
     The two sinks MUST resolve to different physical files — that is the
     SRS-LOG-001 separation guarantee. Each filename must therefore be a bare
@@ -620,6 +646,10 @@ def build_separated_log_dispatcher(
         raise LogStoreError(
             f"system and strategy sinks must use different files; both were {system_filename!r}"
         )
+    # Never wire a zero-redaction path: fall back to the pattern-based default
+    # (SRS-SEC-001) so both stores AND the dispatcher redact even when the boot
+    # layer forgot to inject the value-aware redactor.
+    redactor = redactor if redactor is not None else DEFAULT_REDACTOR
     base = Path(directory)
     system_store = JsonlLogStore(
         base / system_filename,
@@ -627,6 +657,7 @@ def build_separated_log_dispatcher(
         max_bytes=max_bytes,
         max_files=max_files,
         fsync=fsync,
+        redactor=redactor,
     )
     try:
         strategy_store = JsonlLogStore(
@@ -635,6 +666,7 @@ def build_separated_log_dispatcher(
             max_bytes=max_bytes,
             max_files=max_files,
             fsync=fsync,
+            redactor=redactor,
         )
     except BaseException:
         system_store.close()
@@ -648,7 +680,7 @@ def build_separated_log_dispatcher(
             "system and strategy sinks resolved to the same physical file "
             f"({system_store.path} ≡ {strategy_store.path}); they must be separate"
         )
-    dispatcher = RoutedLogDispatcher()
+    dispatcher = RoutedLogDispatcher(redactor=redactor)
     dispatcher.register_sink(LogClass.SYSTEM, system_store)
     dispatcher.register_sink(LogClass.STRATEGY, strategy_store)
     return dispatcher, system_store, strategy_store

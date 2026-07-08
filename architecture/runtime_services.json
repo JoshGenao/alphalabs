@@ -2291,6 +2291,7 @@
       "ATP_IB_HOST",
       "ATP_IB_LIVE_PORT",
       "ATP_IB_PAPER_PORT",
+      "ATP_IB_ACCOUNT",
       "ATP_MARKET_DATA_LINE_LIMIT",
       "ATP_SSD_DATA_DIR",
       "ATP_NAS_DATA_DIR",
@@ -2403,6 +2404,21 @@
         "srs_trace": [
           "SRS-EXE-006",
           "SyRS:AC-15"
+        ]
+      },
+      {
+        "name": "ATP_IB_ACCOUNT",
+        "category": "ib_account",
+        "type": "secret",
+        "validator": {
+          "non_empty": true
+        },
+        "default": "placeholder-set-in-environment",
+        "secret": true,
+        "srs_trace": [
+          "SRS-SEC-001",
+          "NFR-S1",
+          "StRS:C-3"
         ]
       },
       {
@@ -3649,12 +3665,13 @@
     ]
   },
   "log_persistence_contract": {
-    "description": "RUNTIME-half contract for SRS-LOG-001 (separate persistent system logs from user strategy logs). This block pins the concrete persistent sinks that the SDK-surface log_record_contract deferred to 'SRS-LOG-001's runtime half'. atp_logging.persistence ships: (a) JsonlLogStore — a durable, append-only, JSON-Lines LogSink bound to exactly one LogClass; each store writes to its own physical file so SYSTEM and STRATEGY logs are persisted to SEPARATE sinks (the literal SRS-LOG-001 requirement), and the store ALSO refuses a wrong-class record at write() so a caller bypassing the dispatcher still cannot cross-contaminate the two audit trails. (b) build_separated_log_dispatcher — the boot wiring that binds a SYSTEM store and a separate STRATEGY store to one RoutedLogDispatcher. (c) read_records / JsonlLogStore.read / query — the read surface the live GET /api/v1/logs handler, the admin logs CLI runner, and the dashboard log pane consume; the query filters mirror the GET /api/v1/logs parameters (log_class / severity (minimum) / source / event_type / correlation_id / start_time / end_time). DURABILITY: every write appends one json line then flush + os.fsync (default on) so a kill-switch activation or IB disconnect survives a crash; a torn trailing fragment (crash mid-write, no terminating newline) is dropped — never fabricated into a record — and a complete-but-unparseable line fails closed with LogStoreCorruptionError rather than being silently skipped. ROTATION is opt-in (max_bytes=None default → unbounded append → no audit record is ever evicted); when set, at most max_files rotated segments are retained per the documented retention policy. SCOPE: a store is owned by a single writing process (in-process thread-safe via a lock; cross-process concurrent writers are out of scope). LANGUAGE/ARCHITECTURE: this sink is Python because it is the dashboard/API backend for the operator log surfaces (it backs the Python GET /api/v1/logs REST endpoint, the dashboard log pane, and the admin logs CLI). AGENTS.md permits the dashboard backend/API in another language 'if it does not become a core runtime service'; this is operator-facing read/display infrastructure, not part of the Rust trading core (execution/data/simulation). The Rust core emits its own log records locally per log_record_contract (Rust core must not depend on the Python SDK); a core-runtime durable sink + the Rust→operator-store forwarding path is a separate, deferred concern. DEFERRED (why SRS-LOG-001 stays passes:false): (a) the core-runtime event FORWARDING path — the Rust-owned system-event producers (order routing, IB Gateway state, kill-switch activations, ingestion/container lifecycle) do not yet write to this store, so the persistent system log is populated only from in-process dispatches, not the real core; (b) the dashboard log pane rendering (SRS-UI-001); (c) the live GET /api/v1/logs REST handler + LOGS WebSocket publisher + admin logs CLI runner (SRS-API-001) that register the query handler on the operator-interface-runtime registry. This block ships the operator-store SUBSTRATE, not a complete runtime half. The PASS line is 'SRS-LOG-001 PERSISTENCE PASS'.",
+    "description": "RUNTIME-half contract for SRS-LOG-001 (separate persistent system logs from user strategy logs). This block pins the concrete persistent sinks that the SDK-surface log_record_contract deferred to 'SRS-LOG-001's runtime half'. atp_logging.persistence ships: (a) JsonlLogStore — a durable, append-only, JSON-Lines LogSink bound to exactly one LogClass; each store writes to its own physical file so SYSTEM and STRATEGY logs are persisted to SEPARATE sinks (the literal SRS-LOG-001 requirement), and the store ALSO refuses a wrong-class record at write() so a caller bypassing the dispatcher still cannot cross-contaminate the two audit trails. (b) build_separated_log_dispatcher — the boot wiring that binds a SYSTEM store and a separate STRATEGY store to one RoutedLogDispatcher. (c) read_records / JsonlLogStore.read / query — the read surface the live GET /api/v1/logs handler, the admin logs CLI runner, and the dashboard log pane consume; the query filters mirror the GET /api/v1/logs parameters (log_class / severity (minimum) / source / event_type / correlation_id / start_time / end_time). DURABILITY: every write appends one json line then flush + os.fsync (default on) so a kill-switch activation or IB disconnect survives a crash; a torn trailing fragment (crash mid-write, no terminating newline) is dropped — never fabricated into a record — and a complete-but-unparseable line fails closed with LogStoreCorruptionError rather than being silently skipped. ROTATION is opt-in (max_bytes=None default → unbounded append → no audit record is ever evicted); when set, at most max_files rotated segments are retained per the documented retention policy. SCOPE: a store is owned by a single writing process (in-process thread-safe via a lock; cross-process concurrent writers are out of scope). LANGUAGE/ARCHITECTURE: this sink is Python because it is the dashboard/API backend for the operator log surfaces (it backs the Python GET /api/v1/logs REST endpoint, the dashboard log pane, and the admin logs CLI). AGENTS.md permits the dashboard backend/API in another language 'if it does not become a core runtime service'; this is operator-facing read/display infrastructure, not part of the Rust trading core (execution/data/simulation). The Rust core emits its own log records locally per log_record_contract (Rust core must not depend on the Python SDK); a core-runtime durable sink + the Rust→operator-store forwarding path is a separate, deferred concern. DEFERRED (why SRS-LOG-001 stays passes:false): (a) the core-runtime event FORWARDING path — the Rust-owned system-event producers (order routing, IB Gateway state, kill-switch activations, ingestion/container lifecycle) do not yet write to this store, so the persistent system log is populated only from in-process dispatches, not the real core; (b) the dashboard log pane rendering (SRS-UI-001); (c) the live GET /api/v1/logs REST handler + LOGS WebSocket publisher + admin logs CLI runner (SRS-API-001) that register the query handler on the operator-interface-runtime registry. This block ships the operator-store SUBSTRATE, not a complete runtime half. The PASS line is 'SRS-LOG-001 PERSISTENCE PASS'. CREDENTIAL REDACTION (SRS-SEC-001): every store + dispatcher redacts before persisting — build_separated_log_dispatcher and JsonlLogStore never default to zero redaction (they fall back to atp_logging.redaction.DEFAULT_REDACTOR, an always-on pattern-based floor that masks secret-shaped tokens + bare IB account ids). The VALUE-AWARE production boot wiring is atp_logging_boot.build_boot_log_dispatcher (secure_boot_wiring): it overlays the encrypted credential vault and registers the live SecretRedactor(secret_values(env)) + the vault-unlock secrets, so arbitrary (unshaped) SMTP/SMS credential VALUES are masked too. Production log wiring MUST use build_boot_log_dispatcher; build_separated_log_dispatcher is the lower-level primitive with the pattern floor only.",
     "package": "atp_logging",
     "module_path": "python/atp_logging/persistence.py",
     "store_class": "JsonlLogStore",
     "store_implements_sink": true,
     "dispatcher_builder": "build_separated_log_dispatcher",
+    "secure_boot_wiring": "atp_logging_boot.build_boot_log_dispatcher",
     "read_functions": ["read_records", "query"],
     "store_read_method": "read",
     "required_exports": [

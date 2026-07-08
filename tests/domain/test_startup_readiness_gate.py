@@ -192,13 +192,16 @@ class Err9HoldAndFanOutTest(unittest.TestCase):
         boot = _RefBootOrchestrator(gate=gate)
         boot.fan_out()
         log_keys = {r["key"] for r in boot.log_sink.records}
-        # All four placeholder secrets must escalate to error in production.
+        # All placeholder secrets must escalate to error in production —
+        # the two vendor keys, the two notification keys, and the IB
+        # account identifier (ATP_IB_ACCOUNT, SRS-SEC-001).
         self.assertTrue(
             {
                 "DATABENTO_API_KEY",
                 "SHARADAR_API_KEY",
                 "ATP_SMTP_API_KEY",
                 "ATP_SMS_API_KEY",
+                "ATP_IB_ACCOUNT",
             }.issubset(log_keys)
         )
         assert boot.api.last_response is not None

@@ -130,11 +130,16 @@ family with a single `except LogRecordError` clause.
 requires on top of the SDK seam:
 
 ```python
-from atp_logging.persistence import build_separated_log_dispatcher, read_records
+from atp_logging.persistence import read_records
+from atp_logging_boot import build_boot_log_dispatcher
 
-# Wire a SYSTEM store + a SEPARATE STRATEGY store under one directory.
-dispatcher, system_store, strategy_store = build_separated_log_dispatcher("data/logs")
-dispatcher.dispatch(record)          # routes to the correct physical file
+# PRODUCTION boot wiring (SRS-SEC-001): overlays the encrypted credential vault
+# and installs a value-aware redactor sourced from the config secrets, so IB /
+# SMTP / SMS credential VALUES are masked before persistence. Always use this
+# for production log wiring — the lower-level build_separated_log_dispatcher
+# only installs the pattern-based redaction floor.
+dispatcher, system_store, strategy_store = build_boot_log_dispatcher("data/logs", os.environ)
+dispatcher.dispatch(record)          # routes to the correct physical file, redacted
 ...
 # Read the persisted trail (the GET /api/v1/logs seam) — filter by class,
 # minimum severity, source, event_type, correlation_id, and time window.

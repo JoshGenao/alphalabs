@@ -25,12 +25,12 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 |---|---|
 | `credentials` | Vendor data-provider API keys (Databento, Sharadar). |
 | `storage_paths` | SSD primary tier and NAS archival tier paths. |
-| `ib_account` | Interactive Brokers Gateway host, live/paper ports, deployment selector. |
+| `ib_account` | Interactive Brokers Gateway host, live/paper ports, deployment selector, and the brokerage account identifier (secret; SRS-SEC-001). |
 | `market_data_limits` | Operator-configured IB market-data subscription line cap. |
 | `resource_limits` | Live and paper strategy memory/CPU caps and the host memory safety margin. |
 | `notification_channels` | Email and SMS dispatch credentials. |
 
-## Required keys (18)
+## Required keys (19)
 
 | Key | Category | Type | Default | Secret | SRS trace |
 |---|---|---|---|---|---|
@@ -38,6 +38,7 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 | `ATP_IB_HOST` | ib_account | host | `127.0.0.1` | no | SRS-EXE-006 |
 | `ATP_IB_LIVE_PORT` | ib_account | int | `4001` | no | SRS-EXE-006, SyRS:AC-15 |
 | `ATP_IB_PAPER_PORT` | ib_account | int | `4002` | no | SRS-EXE-006, SyRS:AC-15 |
+| `ATP_IB_ACCOUNT` | ib_account | secret | placeholder | yes | SRS-SEC-001, NFR-S1, StRS:C-3 |
 | `ATP_MARKET_DATA_LINE_LIMIT` | market_data_limits | int | `100` | no | SRS-MD-002, SyRS:SYS-70 |
 | `ATP_SSD_DATA_DIR` | storage_paths | path | `/var/lib/atp/ssd` | no | SRS-DATA-008 |
 | `ATP_NAS_DATA_DIR` | storage_paths | path | `/var/lib/atp/nas` | no | SRS-DATA-008/009 |
@@ -82,7 +83,7 @@ ReadinessReport(
     ],
     evidence=[
         "SRS-ARCH-005 configuration system evidence:",
-        "18 keys catalogued across 6 categories (ATP_ENV='development')",
+        "19 keys catalogued across 6 categories (ATP_ENV='development')",
         "credentials: 2 keys — OK (DATABENTO_API_KEY, SHARADAR_API_KEY)",
         "...",
     ],

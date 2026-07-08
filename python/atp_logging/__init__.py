@@ -35,6 +35,12 @@ from .records import (
     is_finite_non_negative_int,
 )
 
+# NOTE: the SRS-SEC-001 redaction layer (SecretRedactor / build_secret_redactor)
+# lives in ``atp_logging.redaction`` and is imported from there directly — it is
+# deliberately kept OUT of this package ``__all__``, which is pinned to the
+# SRS-LOG-001 ``log_record_contract.required_exports`` cross-language contract
+# (same convention as the persistence sinks in ``atp_logging.persistence``).
+
 __all__ = [
     "EVENT_TYPES_BY_SOURCE",
     "LogClass",

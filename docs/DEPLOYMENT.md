@@ -25,9 +25,36 @@ that a future cloud deployment is not precluded.
 
 ```bash
 cp .env.example .env
-# Edit .env to supply real secrets, IB account ports, SSD/NAS paths.
+# Edit .env to set IB account ports, SSD/NAS paths, and ATP_ENV.
+# Development: leave the catalogued secrets as the placeholder value.
 docker compose --env-file .env --profile phase1 up
 ```
+
+**Credentials in staging/production (SRS-SEC-001).** The readiness gate
+**rejects** any catalogued secret (`ATP_IB_ACCOUNT`, `ATP_SMTP_API_KEY`,
+`ATP_SMS_API_KEY`, `DATABENTO_API_KEY`, `SHARADAR_API_KEY`) supplied as a real
+plaintext value when `ATP_ENV` is `staging`/`production` — those credentials
+must be encrypted at rest in the credential vault, never edited into `.env`.
+Keep the placeholders in `.env` and seal the real secrets instead:
+
+```bash
+mkdir -p ./secrets && chmod 700 ./secrets
+python -m atp_config.vault generate-key > ./secrets/atp.key && chmod 600 ./secrets/atp.key
+ATP_IB_ACCOUNT=U... ATP_SMTP_API_KEY=... ATP_SMS_API_KEY=... \
+  DATABENTO_API_KEY=... SHARADAR_API_KEY=... \
+  ATP_VAULT_KEY_FILE=./secrets/atp.key \
+  python -m atp_config.vault seal ./secrets/atp.vault
+# Point the stack at the read-only in-container mount (compose bind-mounts
+# ${ATP_SECRETS_DIR} at /run/atp-secrets):
+#   ATP_SECRETS_DIR=./secrets
+#   ATP_VAULT_FILE=/run/atp-secrets/atp.vault
+#   ATP_VAULT_KEY_FILE=/run/atp-secrets/atp.key
+```
+
+At startup `load_vault_into_env` decrypts the vault into memory (fail-closed on a
+wrong key), so no plaintext credential sits on disk. Development
+(`ATP_ENV=development`) keeps plaintext-env flexibility and does not require the
+vault.
 
 The `phase1` profile gates the entire deployment stack so the existing
 `architecture-check` profile used by SRS-ARCH-001 remains independent.
@@ -83,6 +110,7 @@ variables sourced from `.env` (SRS-ARCH-005). The required keys are:
 - `ATP_ENV` — deployment selector (development / staging / production).
 - `ATP_IB_HOST`, `ATP_IB_LIVE_PORT`, `ATP_IB_PAPER_PORT` — IB Gateway
   endpoints; live and paper run on separate ports per SyRS AC-15.
+- `ATP_IB_ACCOUNT` — IB brokerage account identifier (secret; SRS-SEC-001).
 - `ATP_MARKET_DATA_LINE_LIMIT` — IB market-data line cap.
 - `ATP_SSD_DATA_DIR`, `ATP_NAS_DATA_DIR` — host-side bind paths for the
   storage tiers.
@@ -90,6 +118,12 @@ variables sourced from `.env` (SRS-ARCH-005). The required keys are:
   credentials.
 - `DATABENTO_API_KEY`, `SHARADAR_API_KEY` — vendor data provider
   credentials, isolated behind adapter interfaces (SRS-ARCH-003).
+
+The five secret keys (`ATP_IB_ACCOUNT`, `ATP_SMTP_API_KEY`, `ATP_SMS_API_KEY`,
+`DATABENTO_API_KEY`, `SHARADAR_API_KEY`) must be sealed in the encrypted
+credential vault for staging/production (see *Bring-up commands* above),
+delivered via `ATP_VAULT_FILE` / `ATP_VAULT_KEY_FILE` and the read-only
+`/run/atp-secrets` mount — never as plaintext `.env` values (SRS-SEC-001).
 
 The dashboard/API service binds to `127.0.0.1:8080` by default
 (SRS-SEC-002); external exposure requires explicit operator
@@ -142,13 +176,13 @@ The configuration system is the declarative catalogue of every required
 deployment variable plus a startup validator that surfaces structured
 readiness failures. The catalogue lives in the `configuration` block of
 `architecture/runtime_services.json`; the validator lives in
-`python/atp_config`. Sixteen keys are catalogued across six categories:
+`python/atp_config`. Nineteen keys are catalogued across six categories:
 
 | Category | Keys |
 |---|---|
 | `credentials` | `DATABENTO_API_KEY`, `SHARADAR_API_KEY` |
-| `storage_paths` | `ATP_SSD_DATA_DIR`, `ATP_NAS_DATA_DIR` |
-| `ib_account` | `ATP_ENV`, `ATP_IB_HOST`, `ATP_IB_LIVE_PORT`, `ATP_IB_PAPER_PORT` |
+| `storage_paths` | `ATP_SSD_DATA_DIR`, `ATP_NAS_DATA_DIR`, `ATP_BACKTEST_RESULTS_DIR`, `ATP_DATA_STORE_DIR` |
+| `ib_account` | `ATP_ENV`, `ATP_IB_HOST`, `ATP_IB_LIVE_PORT`, `ATP_IB_PAPER_PORT`, `ATP_IB_ACCOUNT` |
 | `market_data_limits` | `ATP_MARKET_DATA_LINE_LIMIT` |
 | `resource_limits` | `ATP_LIVE_STRATEGY_MEM_MB`, `ATP_LIVE_STRATEGY_CPU`, `ATP_PAPER_STRATEGY_MEM_MB`, `ATP_PAPER_STRATEGY_CPU`, `ATP_HOST_MEMORY_SAFETY_MARGIN_MB` |
 | `notification_channels` | `ATP_SMTP_API_KEY`, `ATP_SMS_API_KEY` |

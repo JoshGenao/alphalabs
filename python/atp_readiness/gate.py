@@ -30,10 +30,16 @@ from enum import StrEnum
 from typing import Any
 
 from atp_config import (
+    PLACEHOLDER_VALUE,
+    PRODUCTION_ENVS,
+    REQUIRED_KEYS,
+    Category,
+    ReadinessFailure,
     ReadinessReport,
     Severity,
     load_and_validate,
 )
+from atp_config.vault import VAULT_FILE_ENV, VaultError, load_vault_into_env
 
 from .errors import (
     GateTransitionError,
@@ -114,15 +120,19 @@ class ReadinessGate:
     def from_env(cls, env: Mapping[str, str], *, atp_env: str | None = None) -> ReadinessGate:
         """Build a gate seeded with the result of the SRS-ARCH-005 validator.
 
-        Calls :func:`atp_config.load_and_validate` on ``env`` and transitions
-        ``INITIALIZING`` -> ``PRE_TRADE_BLOCKED`` (when the report contains
-        any error-severity failure) or ``INITIALIZING`` -> ``READY``.
+        When ``ATP_VAULT_FILE`` is set, the SRS-SEC-001 encrypted credential
+        vault is decrypted and overlaid onto ``env`` first (so an operator can
+        supply secrets encrypted-at-rest instead of as plaintext env vars);
+        a vault that cannot be opened fails **closed** to ``PRE_TRADE_BLOCKED``
+        with a structured failure rather than trading on missing credentials.
+        Then :func:`atp_config.load_and_validate` runs and transitions
+        ``INITIALIZING`` -> ``PRE_TRADE_BLOCKED`` (any error-severity failure)
+        or ``INITIALIZING`` -> ``READY``.
         """
 
         _assert_env_is_mapping(env)
         gate = cls()
-        report = load_and_validate(env, atp_env=atp_env)
-        gate._apply_report(report)
+        gate._apply_report(_load_report(env, atp_env))
         return gate
 
     # ------------------------------------------------------------------ #
@@ -170,8 +180,7 @@ class ReadinessGate:
                 "reevaluate requires a seeded gate; call ReadinessGate.from_env first"
             )
         _assert_env_is_mapping(env)
-        report = load_and_validate(env, atp_env=atp_env)
-        self._apply_report(report)
+        self._apply_report(_load_report(env, atp_env))
 
     def operator_override(self, override: OperatorOverride) -> None:
         """Release the pre-trade hold with a fully-audited operator override.
@@ -327,6 +336,82 @@ def _assert_env_is_mapping(env: Any) -> None:
             "ReadinessGate.from_env / reevaluate require a Mapping[str, str]; "
             f"got {type(env).__name__}"
         )
+
+
+def _load_report(env: Mapping[str, str], atp_env: str | None) -> ReadinessReport:
+    """Overlay the SRS-SEC-001 credential vault, then run the SRS-ARCH-005 validator.
+
+    ``load_vault_into_env`` is a no-op unless ``ATP_VAULT_FILE`` is set, so
+    existing plaintext-env dev deployments are unaffected. A configured-but-broken
+    vault (missing file, wrong key, tampered token) fails **closed**: it yields a
+    single error-severity :class:`ReadinessFailure` so the gate holds pre-trade
+    rather than validating against missing credentials.
+
+    Encryption at rest is *enforced* in staging/production: a catalogued secret
+    supplied as a real value in the plaintext environment (rather than sealed in
+    the vault) is a hard readiness error there — see
+    :func:`_plaintext_secret_failures`.
+    """
+
+    try:
+        resolved = load_vault_into_env(env)
+    except VaultError as error:
+        return _vault_error_report(error)
+    report = load_and_validate(resolved, atp_env=atp_env)
+    effective_env = atp_env if atp_env is not None else env.get("ATP_ENV")
+    report.failures.extend(_plaintext_secret_failures(env, effective_env))
+    return report
+
+
+def _plaintext_secret_failures(
+    env: Mapping[str, str], effective_atp_env: str | None
+) -> list[ReadinessFailure]:
+    """Reject plaintext catalogued secrets in staging/production (SRS-SEC-001).
+
+    In a production environment every ``secret`` credential must be sealed in the
+    encrypted vault, not left in a plaintext ``.env`` / compose value. A real
+    (non-placeholder) secret value present in the *original* environment is an
+    encryption-at-rest violation — regardless of whether a vault is also
+    configured, since the plaintext copy still sits unencrypted at rest.
+    Placeholders are handled separately by the SRS-ARCH-005 validator.
+    """
+
+    if effective_atp_env not in PRODUCTION_ENVS:
+        return []
+    failures: list[ReadinessFailure] = []
+    for spec in REQUIRED_KEYS:
+        if not spec.secret:
+            continue
+        raw = env.get(spec.name)
+        if raw and raw != PLACEHOLDER_VALUE:
+            failures.append(
+                ReadinessFailure(
+                    key=spec.name,
+                    category=spec.category,
+                    severity=Severity.ERROR,
+                    reason=(
+                        f"{spec.name} is supplied as a plaintext value while "
+                        f"ATP_ENV={effective_atp_env!r}; staging/production credentials "
+                        f"must be sealed in the encrypted vault ({VAULT_FILE_ENV}) — SRS-SEC-001"
+                    ),
+                    srs_trace=("SRS-SEC-001", "NFR-S1", "NFR-S4"),
+                )
+            )
+    return failures
+
+
+def _vault_error_report(error: VaultError) -> ReadinessReport:
+    failure = ReadinessFailure(
+        key="ATP_VAULT_FILE",
+        category=Category.CREDENTIALS,
+        severity=Severity.ERROR,
+        reason=f"credential vault could not be opened: {error}",
+        srs_trace=("SRS-SEC-001", "NFR-S1", "NFR-S4"),
+    )
+    return ReadinessReport(
+        failures=[failure],
+        evidence=["SRS-SEC-001 credential vault load failed — holding pre-trade (fail-closed)"],
+    )
 
 
 __all__ = ["GateState", "ReadinessGate"]

@@ -79,8 +79,9 @@ class ValidatorBehaviourTest(unittest.TestCase):
         report = load_and_validate(_defaults())
         self.assertTrue(report.ok, [f.as_dict() for f in report.errors])
         self.assertEqual(len(report.errors), 0)
-        # Placeholder secrets surface as warnings.
-        self.assertEqual(len(report.warnings), 4)
+        # Placeholder secrets surface as warnings: the two vendor keys, the
+        # two notification keys, and the IB account identifier (SRS-SEC-001).
+        self.assertEqual(len(report.warnings), 5)
 
     def test_missing_required_key_fails_with_structured_failure(self) -> None:
         env = _defaults()

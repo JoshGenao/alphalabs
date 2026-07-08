@@ -191,6 +191,25 @@ def render_failures(report: ReadinessReport) -> str:
     return report.as_json_lines()
 
 
+def secret_values(env: Mapping[str, str]) -> set[str]:
+    """Return the live plaintext values of the catalogued ``secret`` keys.
+
+    For every SRS-ARCH-005 catalogue key flagged ``secret`` (IB account, SMTP,
+    SMS, and the vendor data-provider keys), include its value from ``env`` when
+    present and not the placeholder. The SRS-SEC-001 log-redaction layer uses
+    this to learn exactly which plaintext credentials must never reach a log.
+    """
+
+    out: set[str] = set()
+    for spec in REQUIRED_KEYS:
+        if not spec.secret:
+            continue
+        value = env.get(spec.name)
+        if value and value != PLACEHOLDER_VALUE:
+            out.add(value)
+    return out
+
+
 def parse_env_example(text: str) -> dict[str, str]:
     """Parse a ``.env``-style file into a mapping.
 
@@ -228,4 +247,5 @@ __all__ = [
     "merge_env",
     "parse_env_example",
     "render_failures",
+    "secret_values",
 ]

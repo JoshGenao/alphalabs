@@ -154,6 +154,140 @@ def assert_deployment_doc(config: dict, root: Path = ROOT) -> list[str]:
     ]
 
 
+# Phase 1 services that load ATP catalogued credentials (run config/readiness)
+# and therefore MUST be able to open the vault.
+_VAULT_CONSUMER_SERVICES = (
+    "phase1-orchestrator",
+    "phase1-execution-engine",
+    "phase1-strategy-engine",
+    "phase1-simulation-engine",
+    "phase1-market-data",
+    "phase1-data-layer",
+    "phase1-factor-pipeline",
+    "phase1-notification-dispatcher",
+    "phase1-dashboard-api",
+)
+# Services that must NOT open the vault: jupyter + strategy containers
+# (SRS-SEC-004 least-privilege) and the IB Gateway (out-of-band auth).
+_VAULT_ISOLATED_SERVICES = (
+    "phase1-jupyter",
+    "phase1-strategy-runtime",
+    "phase1-ib-gateway",
+)
+_MOUNT_TOKEN = "/run/atp-secrets"
+# Keys the x-atp-no-secrets anchor must blank for isolated services: the five
+# catalogued secrets + every vault-unlock secret (key file AND passphrase).
+_SECRET_BLANK_KEYS = (
+    "ATP_IB_ACCOUNT",
+    "ATP_SMTP_API_KEY",
+    "ATP_SMS_API_KEY",
+    "DATABENTO_API_KEY",
+    "SHARADAR_API_KEY",
+    "ATP_VAULT_FILE",
+    "ATP_VAULT_KEY_FILE",
+    "ATP_VAULT_PASSPHRASE",
+)
+
+
+def _anchor_block(compose_text: str, name: str) -> str | None:
+    """Return the text of a top-level ``x-...`` anchor block, or None if absent."""
+
+    marker = f"\n{name}:"
+    start = compose_text.find(marker)
+    if start < 0:
+        return None
+    rest = compose_text[start + 1 :]
+    end = re.search(r"\n[A-Za-z0-9_-]+:", rest[len(name) + 1 :])
+    return rest if end is None else rest[: end.start() + len(name) + 1]
+
+
+def _service_block(compose_text: str, name: str) -> str | None:
+    """Return the compose text of one phase1 service block, or None if absent."""
+
+    marker = f"\n  {name}:\n"
+    start = compose_text.find(marker)
+    if start < 0:
+        return None
+    rest = compose_text[start + len(marker) :]
+    # The block ends at the next 2-space service key OR the next top-level
+    # (0-indent) section (`volumes:` / `networks:`), whichever comes first — so
+    # the LAST service does not over-capture the trailing named-volume block.
+    end = re.search(r"\n  [A-Za-z0-9_-]+:\n|\n[A-Za-z0-9_-]+:\n", rest)
+    return rest if end is None else rest[: end.start()]
+
+
+def _service_has_vault_mount(block: str) -> bool:
+    """True if the service block actually mounts the vault (anchor ref or literal).
+
+    Matches the ``*atp-volumes`` anchor reference (which carries the mount) or an
+    inlined ``:/run/atp-secrets:ro`` bind — NOT the bare ``/run/atp-secrets``
+    string that appears in explanatory comments.
+    """
+
+    return "*atp-volumes" in block or ":/run/atp-secrets:ro" in block
+
+
+def assert_credential_vault_wiring(config: dict, root: Path = ROOT) -> list[str]:
+    """The SRS-SEC-001 encrypted vault must be deliverable to every credential consumer.
+
+    Verifies the compose stack passes ``ATP_VAULT_FILE`` / ``ATP_VAULT_KEY_FILE``,
+    that each credential-consuming phase1 service mounts the vault volume
+    (``*atp-volumes`` includes the read-only ``/run/atp-secrets`` bind), and that
+    the isolated services (jupyter + strategy containers + IB Gateway) do NOT
+    receive the mount (SRS-SEC-004 / least-privilege).
+    """
+
+    deployment = deployment_config(config)
+    compose_text = (root / deployment["compose_file"]).read_text(encoding="utf-8")
+
+    for token in ("ATP_VAULT_FILE", "ATP_VAULT_KEY_FILE"):
+        if token not in compose_text:
+            fail(f"compose does not pass {token} to services (SRS-SEC-001 vault delivery)")
+    if f"{_MOUNT_TOKEN}:ro" not in compose_text:
+        fail(f"compose does not mount the credential vault read-only at {_MOUNT_TOKEN} (SRS-SEC-001)")
+
+    # The *atp-no-secrets anchor must blank EVERY catalogued secret + all
+    # vault-unlock material (key file AND passphrase) so an isolated service
+    # cannot receive a credential even via .env (SRS-SEC-004).
+    no_secrets = _anchor_block(compose_text, "x-atp-no-secrets")
+    if no_secrets is None:
+        fail("compose is missing the x-atp-no-secrets blanking anchor (SRS-SEC-004)")
+    for key in _SECRET_BLANK_KEYS:
+        if f'{key}: ""' not in no_secrets:
+            fail(f"x-atp-no-secrets does not blank {key} (SRS-SEC-004 credential isolation)")
+
+    # The vault mount lives inside the *atp-volumes anchor; a consuming service
+    # references it via `volumes: *atp-volumes` and keeps the full credential env.
+    for service in _VAULT_CONSUMER_SERVICES:
+        block = _service_block(compose_text, service)
+        if block is None:
+            fail(f"compose is missing credential-consuming service {service}")
+        if not _service_has_vault_mount(block):
+            fail(f"{service} consumes credentials but does not mount the vault (volumes: *atp-volumes)")
+        if "*atp-no-secrets" in block:
+            fail(f"{service} consumes credentials but blanks them via *atp-no-secrets")
+
+    # Isolated services must neither mount the vault NOR receive the catalogued
+    # secrets — they merge *atp-no-secrets over *atp-env to blank every secret.
+    for service in _VAULT_ISOLATED_SERVICES:
+        block = _service_block(compose_text, service)
+        if block is None:
+            continue
+        if _service_has_vault_mount(block):
+            fail(f"{service} must NOT mount the credential vault (SRS-SEC-004 / least-privilege)")
+        if "*atp-no-secrets" not in block:
+            fail(
+                f"{service} must blank the catalogued secrets via *atp-no-secrets "
+                "(SRS-SEC-004 credential isolation)"
+            )
+
+    return [
+        f"compose delivers the SRS-SEC-001 vault + credentials to all "
+        f"{len(_VAULT_CONSUMER_SERVICES)} credential-consuming services and blanks both from "
+        f"{len(_VAULT_ISOLATED_SERVICES)} isolated services (jupyter / strategy / IB Gateway)",
+    ]
+
+
 def assert_deployment_static(config: dict, root: Path = ROOT) -> list[str]:
     evidence: list[str] = [
         "SRS-ARCH-004 Phase 1 deployment evidence:",
@@ -163,6 +297,7 @@ def assert_deployment_static(config: dict, root: Path = ROOT) -> list[str]:
     evidence.extend(assert_dockerfiles_present(config, root))
     evidence.extend(assert_env_example(config, root))
     evidence.extend(assert_deployment_doc(config, root))
+    evidence.extend(assert_credential_vault_wiring(config, root))
     return evidence
 
 

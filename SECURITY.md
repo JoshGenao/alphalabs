@@ -51,3 +51,43 @@ receives security updates; there are no stable release branches yet.
   intentional, not a vulnerability.
 - Denial-of-service against a single-user local deployment that
   requires already-authenticated local access.
+
+## Credential handling (SRS-SEC-001)
+
+Brokerage (IB account) and notification (SMTP, SMS) credentials — plus the
+vendor data-provider keys — are treated as secrets end to end (NFR-S1, NFR-S4):
+
+- **Encryption at rest.** The credential vault
+  (`python/atp_config/vault.py`) seals secrets into an encrypted file using
+  Fernet (AES-128-CBC + HMAC-SHA256 authenticated encryption). The key comes
+  from a `0600` key file (`ATP_VAULT_KEY_FILE`) or an `ATP_VAULT_PASSPHRASE`
+  (scrypt-derived). When `ATP_VAULT_FILE` is set, `load_vault_into_env`
+  decrypts the secrets into memory at startup, so an operator can run the
+  stack **without** a plaintext `.env` on the host. Decryption is fail-closed:
+  a wrong key or tampered file yields no plaintext. Set the vault up with
+  `python -m atp_config.vault generate-key` / `... seal <file>`.
+  **Enforced in production:** in `staging`/`production` the readiness gate
+  rejects any catalogued secret supplied as a real plaintext value — those
+  credentials must be sealed in the vault — so encryption at rest cannot be
+  silently bypassed. Development keeps plaintext-env flexibility.
+- **No plaintext credential logging.** The redaction layer
+  (`python/atp_logging/redaction.py`) is installed on the SRS-LOG-001
+  dispatcher and both persistent stores, scrubbing secret values (and
+  secret-shaped tokens) from log records before they are written. The
+  persistence boundary is **never** zero-redaction: a store built without an
+  injected redactor falls back to an always-on pattern-based floor
+  (`DEFAULT_REDACTOR`). The sanctioned production boot path is
+  `atp_logging_boot.build_boot_log_dispatcher(dir, env)`, which overlays the
+  vault and then builds the value-aware `SecretRedactor(secret_values(env))`
+  itself — so bare IB/SMTP/SMS credential *values* are masked without the caller
+  injecting anything. The operator-facing config view separately renders secret
+  keys as `***REDACTED***`.
+- **Enforcement.** `tools/credential_security_check.py` (in CI) proves the
+  vault produces ciphertext and that redaction is wired on every path; the
+  L7 `tests/domain/test_credential_redaction.py` proves IB/SMTP/SMS secrets
+  never reach the logs. Committed secrets are independently blocked by
+  `tools/critic_check.py` + `.gitleaks.toml`.
+
+The concrete Rust SMTP/SMS channel adapters (which will read these vault-sealed
+keys) remain deferred to the SRS-NOTIF-001 adapter work; this feature provides
+the at-rest + redaction mechanism they consume.

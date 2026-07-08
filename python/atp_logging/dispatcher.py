@@ -35,6 +35,7 @@ from .records import (
     Source,
     is_finite_non_negative_int,
 )
+from .redaction import SecretRedactor
 
 
 @runtime_checkable
@@ -73,8 +74,9 @@ class RoutedLogDispatcher:
     their own lock).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, redactor: SecretRedactor | None = None) -> None:
         self._sinks: dict[LogClass, LogSink] = {}
+        self._redactor = redactor
 
     def register_sink(self, log_class: LogClass, sink: LogSink) -> None:
         """Bind ``sink`` to ``log_class``.
@@ -121,6 +123,14 @@ class RoutedLogDispatcher:
         """
 
         validate_log_record(record)
+
+        # SRS-SEC-001: scrub credentials before the record reaches any sink so
+        # an IB/SMTP/SMS secret embedded in a message can never be persisted in
+        # plaintext. Redaction preserves schema validity (message /
+        # correlation_id stay non-empty), so the sink's own validation still
+        # holds.
+        if self._redactor is not None:
+            record = self._redactor.redact_record(record)
 
         sink = self._sinks.get(record.log_class)
         if sink is None:

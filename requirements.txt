@@ -2,6 +2,15 @@
 # Add packages here as features land (e.g. ib_insync for the IB adapter,
 # databento for DATA-1).
 
+# SRS-SEC-001 — credential encryption at rest (NFR-S1 / NFR-S4).
+# The credential vault (python/atp_config/vault.py) seals brokerage +
+# notification secrets to an encrypted file using Fernet (AES-128-CBC +
+# HMAC-SHA256 authenticated encryption). `cryptography` is the de-facto,
+# OWASP-recommended Python crypto library; SEC-001 scopes it in. Pinned to
+# the current stable 4x line (wheels ship for macOS/Linux CI — no OpenSSL
+# build needed).
+cryptography>=43,<46
+
 # SRS-SDK-002 — trading-calendar-aware scheduling.
 # exchange_calendars supplies NYSE/NASDAQ holiday and early-close data;
 # croniter parses the cron-expression arm of the Scheduler Protocol.

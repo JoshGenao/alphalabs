@@ -25,7 +25,14 @@ from .validate import (
     merge_env,
     parse_env_example,
     render_failures,
+    secret_values,
 )
+
+# NOTE: the SRS-SEC-001 credential vault lives in ``atp_config.vault`` and is
+# imported from there directly (``from atp_config.vault import CredentialVault``).
+# It is deliberately kept OUT of this package ``__init__`` so that importing
+# ``atp_config`` for plain env validation does not require ``cryptography`` —
+# only the vault feature does.
 
 __all__ = [
     "CATEGORIES",
@@ -43,4 +50,5 @@ __all__ = [
     "merge_env",
     "parse_env_example",
     "render_failures",
+    "secret_values",
 ]

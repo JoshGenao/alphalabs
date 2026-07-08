@@ -3,7 +3,13 @@ x-atp-env: &atp-env
   ATP_IB_HOST: ${ATP_IB_HOST:-127.0.0.1}
   ATP_IB_LIVE_PORT: ${ATP_IB_LIVE_PORT:-4001}
   ATP_IB_PAPER_PORT: ${ATP_IB_PAPER_PORT:-4002}
+  ATP_IB_ACCOUNT: ${ATP_IB_ACCOUNT:-placeholder-set-in-environment}
   ATP_MARKET_DATA_LINE_LIMIT: ${ATP_MARKET_DATA_LINE_LIMIT:-100}
+  # SRS-SEC-001 encrypted credential vault (opt-in; empty in dev). In
+  # staging/production, seal secrets in the vault and point these at the
+  # read-only in-container paths (see the x-atp-secrets mount below).
+  ATP_VAULT_FILE: ${ATP_VAULT_FILE:-}
+  ATP_VAULT_KEY_FILE: ${ATP_VAULT_KEY_FILE:-}
   ATP_SSD_DATA_DIR: ${ATP_SSD_DATA_DIR:-/var/lib/atp/ssd}
   ATP_NAS_DATA_DIR: ${ATP_NAS_DATA_DIR:-/var/lib/atp/nas}
   ATP_SMTP_API_KEY: ${ATP_SMTP_API_KEY:-placeholder-set-in-environment}
@@ -19,6 +25,27 @@ x-atp-env: &atp-env
 x-atp-volumes: &atp-volumes
   - atp_ssd:/ssd
   - atp_nas:/nas
+  # SRS-SEC-001: the encrypted credential vault + key material, mounted
+  # READ-ONLY from a host secrets directory into a stable in-container path.
+  # ATP_VAULT_FILE / ATP_VAULT_KEY_FILE point at /run/atp-secrets/*. This
+  # anchor is NOT applied to phase1-jupyter (own read-only data-only mounts),
+  # so Jupyter cannot open the vault (SRS-SEC-004 credential isolation).
+  - ${ATP_SECRETS_DIR:-./secrets}:/run/atp-secrets:ro
+
+# SRS-SEC-001 / SRS-SEC-004 least-privilege: services that must NOT hold
+# brokerage/notification credentials merge this OVER *atp-env to blank every
+# catalogued secret + the vault key material, so even a plaintext .env cannot
+# leak credentials into an isolated container (jupyter / IB Gateway / strategy
+# runtime). Listed first in the `<<` sequence so these blanks win.
+x-atp-no-secrets: &atp-no-secrets
+  ATP_IB_ACCOUNT: ""
+  ATP_SMTP_API_KEY: ""
+  ATP_SMS_API_KEY: ""
+  DATABENTO_API_KEY: ""
+  SHARADAR_API_KEY: ""
+  ATP_VAULT_FILE: ""
+  ATP_VAULT_KEY_FILE: ""
+  ATP_VAULT_PASSPHRASE: ""
 
 services:
   # --- Architecture-check profile (SRS-ARCH-001 language boundary) ---
@@ -203,6 +230,8 @@ services:
       - path: .env
         required: false
     environment: *atp-env
+    # SRS-SEC-001: SMTP/SMS credential consumer — needs the read-only vault mount.
+    volumes: *atp-volumes
 
   phase1-dashboard-api:
     profiles: ["phase1"]
@@ -228,7 +257,9 @@ services:
     env_file:
       - path: .env
         required: false
-    environment: *atp-env
+    # SRS-SEC-004: no brokerage/notification credentials — blanked via *atp-no-secrets.
+    environment:
+      <<: [*atp-no-secrets, *atp-env]
     # SRS-RES-001 + SRS-SEC-004: Jupyter has read-only access to data
     # mounts and is reachable through the dashboard, not directly.
     volumes:
@@ -245,7 +276,12 @@ services:
     env_file:
       - path: .env
         required: false
-    environment: *atp-env
+    # IB Gateway authenticates to IB out-of-band (its own credentials), so it
+    # holds NO ATP brokerage/notification credentials and cannot open the vault:
+    # all catalogued secrets + vault paths are blanked and no /run/atp-secrets
+    # mount is granted (SRS-SEC-001 / SRS-SEC-004 least-privilege).
+    environment:
+      <<: [*atp-no-secrets, *atp-env]
     # SRS-EXE-006: headless IB Gateway. Replace this stub image with the
     # licensed IB Gateway container in production deployments.
     ports:
@@ -260,7 +296,12 @@ services:
     env_file:
       - path: .env
         required: false
-    environment: *atp-env
+    # SRS-SEC-004 least-privilege: strategy containers must not read brokerage
+    # or notification credentials — all catalogued secrets + vault paths are
+    # blanked and no /run/atp-secrets mount is granted, so a strategy cannot
+    # read a credential or open the vault.
+    environment:
+      <<: [*atp-no-secrets, *atp-env]
     # SyRS SYS-11 resource profiles. The orchestrator clones this template
     # for each strategy instance. Live profile: <=512 MB / <=0.25 CPU;
     # paper profile: <=300 MB / <=0.10 CPU.
@@ -274,7 +315,11 @@ services:
         limits:
           cpus: "0.25"
           memory: "512M"
-    volumes: *atp-volumes
+    # SRS-SEC-004: data tiers only — the credential vault (/run/atp-secrets) is
+    # deliberately NOT mounted here, so a strategy container cannot open it.
+    volumes:
+      - atp_ssd:/ssd
+      - atp_nas:/nas
 
 volumes:
   atp_ssd:
