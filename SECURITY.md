@@ -91,3 +91,35 @@ vendor data-provider keys — are treated as secrets end to end (NFR-S1, NFR-S4)
 The concrete Rust SMTP/SMS channel adapters (which will read these vault-sealed
 keys) remain deferred to the SRS-NOTIF-001 adapter work; this feature provides
 the at-rest + redaction mechanism they consume.
+
+## Network binding (SRS-SEC-002)
+
+The dashboard/API service — the only ATP process that opens a listening socket
+(it serves the REST API and WebSocket surface on one port) — binds **only to
+loopback or RFC 1918 addresses** and refuses anything else (NFR-S3, StRS
+SN-2.01):
+
+- **Default-safe bind.** `runtime.start` defaults to `127.0.0.1`, and
+  `python -m atp_dashboard` reads `ATP_DASHBOARD_BIND_HOST` (default
+  `127.0.0.1`). Every published `docker-compose.yml` port is bound to a
+  loopback / RFC 1918 host (`127.0.0.1:8080:8080`, `127.0.0.1:8888:8888`,
+  `${ATP_IB_HOST:-127.0.0.1}:…`) — never a bare `PORT:PORT` that would publish
+  on `0.0.0.0`.
+- **Fail-closed policy, no public opt-in.** `is_allowed_bind_host` /
+  `assert_bind_allowed` (`python/atp_runtime/rest_server.py`) permit only
+  loopback (`127.0.0.0/8`, `::1`) and the three RFC 1918 IPv4 ranges; `0.0.0.0`,
+  `::`, link-local, CGNAT, and any publicly-routable address raise
+  `BindPolicyError` **before** the socket opens. The runtime intentionally
+  provides **no** flag or environment variable to bind a public interface.
+- **External exposure is auth-gated and operator-managed.** Reaching the
+  dashboard from beyond the local network requires the operator to place an
+  **authenticated access-control component (e.g. a reverse proxy)** in front of
+  the loopback / RFC 1918 bind (NFR-S3; OWASP authentication guidance). The ATP
+  process is never itself exposed on a public interface; see
+  `docs/DEPLOYMENT.md` (portability constraint 5).
+- **Enforcement.** `tools/network_binding_check.py` (in CI) proves the compose
+  mappings are loopback/RFC 1918-bound, that no source binds all interfaces,
+  that the policy fails closed, and that this external-authentication
+  requirement is documented; the L7 `tests/domain/test_network_binding.py`
+  starts the real runtime on its default host and proves it listens on loopback
+  only.

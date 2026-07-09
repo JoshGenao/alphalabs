@@ -78,6 +78,7 @@ for check in \
     operator_workflow_surface_check \
     operator_interface_runtime_check \
     credential_security_check \
+    network_binding_check \
     log_record_check \
     log_persistence_check \
     adapter_check \
