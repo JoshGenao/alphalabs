@@ -126,9 +126,12 @@ delivered via `ATP_VAULT_FILE` / `ATP_VAULT_KEY_FILE` and the read-only
 `/run/atp-secrets` mount — never as plaintext `.env` values (SRS-SEC-001).
 
 The dashboard/API service binds to `127.0.0.1:8080` by default
-(SRS-SEC-002); external exposure requires explicit operator
-configuration with documented external authentication and is out of
-scope for the Phase 1 baseline.
+(SRS-SEC-002) and exposes no process-level public-bind mode — a
+non-loopback / non-RFC 1918 host fails closed. Making it reachable
+beyond the local network requires the operator to front the loopback
+bind with an authenticated reverse proxy (the explicit operator
+configuration and documented external authentication SRS-SEC-002
+mandates); that proxy is out of scope for the Phase 1 baseline.
 
 ## Portability constraints for future deployment
 
@@ -158,9 +161,12 @@ acceptance criterion is met without precluding a later cloud target.
    copied verbatim.
 5. **Loopback-only network exposure.** SRS-SEC-002 requires the
    dashboard/API to bind to RFC 1918 or loopback addresses by default.
-   Cloud deployment must add a reverse proxy with operator-managed
-   external authentication; raw publicly-routable bind is an explicit
-   non-default.
+   The dashboard/API process itself provides no public-bind mode (a
+   non-loopback / non-RFC 1918 host fails closed with `BindPolicyError`);
+   publicly-routable reachability is possible only by the operator
+   placing an authenticated reverse proxy in front of that loopback /
+   RFC 1918 bind — the explicit operator configuration and documented
+   external authentication SRS-SEC-002 requires.
 6. **Single-host log and time assumptions.** Phase 1 logs and clock
    sources are local. Cloud deployment will need centralised log
    aggregation and confirmed clock skew bounds before live trading

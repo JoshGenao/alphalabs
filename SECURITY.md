@@ -105,17 +105,21 @@ SN-2.01):
   loopback / RFC 1918 host (`127.0.0.1:8080:8080`, `127.0.0.1:8888:8888`,
   `${ATP_IB_HOST:-127.0.0.1}:…`) — never a bare `PORT:PORT` that would publish
   on `0.0.0.0`.
-- **Fail-closed policy, no public opt-in.** `is_allowed_bind_host` /
-  `assert_bind_allowed` (`python/atp_runtime/rest_server.py`) permit only
+- **Fail-closed policy — no process-level public bind.** `is_allowed_bind_host`
+  / `assert_bind_allowed` (`python/atp_runtime/rest_server.py`) permit only
   loopback (`127.0.0.0/8`, `::1`) and the three RFC 1918 IPv4 ranges; `0.0.0.0`,
   `::`, link-local, CGNAT, and any publicly-routable address raise
-  `BindPolicyError` **before** the socket opens. The runtime intentionally
-  provides **no** flag or environment variable to bind a public interface.
-- **External exposure is auth-gated and operator-managed.** Reaching the
-  dashboard from beyond the local network requires the operator to place an
-  **authenticated access-control component (e.g. a reverse proxy)** in front of
-  the loopback / RFC 1918 bind (NFR-S3; OWASP authentication guidance). The ATP
-  process is never itself exposed on a public interface; see
+  `BindPolicyError` **before** the socket opens. The runtime deliberately exposes
+  **no** flag or environment variable that binds the process itself to a public
+  interface.
+- **External exposure is auth-gated and operator-managed.** Because the process
+  never binds a public interface, the *only* way to reach the dashboard from
+  beyond the local network is for the operator to place an **authenticated
+  access-control component (e.g. a reverse proxy)** in front of the loopback /
+  RFC 1918 bind (NFR-S3; OWASP authentication guidance). That authenticated
+  reverse proxy **is** the "explicit operator configuration and documented
+  external authentication" SRS-SEC-002 requires for publicly-routable access —
+  the ATP process stays bound to loopback / RFC 1918 behind it. See
   `docs/DEPLOYMENT.md` (portability constraint 5).
 - **Enforcement.** `tools/network_binding_check.py` (in CI) proves the compose
   mappings are loopback/RFC 1918-bound, that no source binds all interfaces,
