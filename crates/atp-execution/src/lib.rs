@@ -6,13 +6,15 @@
 
 use atp_strategy_engine::StrategyRuntimeBoundary;
 use atp_types::{
-    CompositeOrderSubmission, ConnectivityEvent, ConnectivityState, KillSwitchAlertEvent,
-    KillSwitchCleanupOutcome, KillSwitchLiquidationOutcome, KillSwitchTimeoutEvent,
-    KillSwitchTimeoutRequest, MarketDataFreshness, OperatorAlertChannel, OrderErrorCategory,
-    OrderReceipt, OrderSubmission, RuntimeService, SideEffectOutcome, StaleDataEvent, StrategyMode,
-    StructuredCompositeOrderError, StructuredKillSwitchTimeoutError, StructuredOrderError,
+    ClientCorrelationId, CompositeOrderSubmission, ConnectivityEvent, ConnectivityState,
+    KillSwitchAlertEvent, KillSwitchCleanupOutcome, KillSwitchLiquidationOutcome,
+    KillSwitchTimeoutEvent, KillSwitchTimeoutRequest, MarketDataFreshness, OperatorAlertChannel,
+    OrderErrorCategory, OrderReceipt, OrderState, OrderSubmission, RuntimeService,
+    SideEffectOutcome, StaleDataEvent, StrategyMode, StructuredCompositeOrderError,
+    StructuredKillSwitchTimeoutError, StructuredOrderError,
 };
 use std::fmt;
+use std::path::Path;
 
 pub mod designation;
 pub use designation::{
@@ -36,6 +38,14 @@ pub use live_state::{
     RecoveryError, RecoveryOutcome, WarmUpError, WarmUpReexecutionPort,
 };
 
+pub mod outbox;
+pub use outbox::{
+    reconcile, BrokerOpenOrder, BrokerOpenOrderSnapshot, BrokerOpenOrderSource,
+    BrokerReconcileError, ConflictKind, OrderOutbox, OutboxEntry, OutboxError,
+    OutboxPersistenceError, OutboxSnapshot, ReconcileConflict, ReconciliationPlan,
+    SnapshotCoverage,
+};
+
 /// The execution engine owns the single live-designation authority
 /// ([`LiveDesignation`]) — the source of truth for which strategy may route to
 /// IB (SRS-EXE-001, SyRS SYS-2a). It is a private field reached only through
@@ -46,6 +56,85 @@ pub use live_state::{
 pub struct ExecutionEngine {
     designation: LiveDesignation,
 }
+
+/// Why a post-broker acknowledgement (or a post-rejection cleanup) could not be
+/// durably recorded — a durable write failure or an outbox state-machine refusal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AckFailure {
+    /// The durable write of the outbox failed.
+    Persistence(OutboxPersistenceError),
+    /// The outbox refused the transition (e.g. an unexpected state).
+    Outbox(OutboxError),
+}
+
+impl fmt::Display for AckFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Persistence(err) => write!(formatter, "durable write failed: {err}"),
+            Self::Outbox(err) => write!(formatter, "outbox transition refused: {err}"),
+        }
+    }
+}
+
+/// SRS-EXE-009 — the failure surface of
+/// [`ExecutionEngine::submit_live_order_durably`]. It **distinguishes whether a live
+/// order might exist**, which is the safety-critical fact a caller needs to decide
+/// whether a retry is safe:
+/// * [`Rejected`](Self::Rejected) / [`WriteAheadPersistence`](Self::WriteAheadPersistence)
+///   — NO live order exists (the broker rejected, or was never consulted); safe to
+///   resolve/retry.
+/// * [`AckNotDurable`](Self::AckNotDurable) — the broker **accepted** the order (a
+///   live order EXISTS — see the carried `receipt`) but the acknowledgement could
+///   not be durably bound; the caller must NOT blind-retry (that would duplicate the
+///   live order) — it must reconcile the durable outbox against the broker.
+/// * [`RejectionCleanupFailed`](Self::RejectionCleanupFailed) — the order was
+///   rejected (no live order) but the durable `REJECTED` cleanup failed, so a
+///   lingering `PENDING_SUBMIT` may remain that reconciliation must resolve before
+///   any retry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DurableSubmitError {
+    /// The order was rejected — an idempotent duplicate-correlation-id commit or the
+    /// ERR-1/2/3 gate / broker rejection (SRS-ERR-001 envelope). No live order
+    /// exists; the intent is durably `REJECTED`.
+    Rejected(StructuredOrderError),
+    /// The **write-ahead** durable write failed BEFORE the broker was consulted. No
+    /// live order exists and the caller's outbox is unchanged → a retry is safe.
+    WriteAheadPersistence(OutboxPersistenceError),
+    /// The broker **accepted** the order (a live order EXISTS — see `receipt`) but
+    /// the acknowledgement could not be durably recorded. Do NOT blind-retry;
+    /// reconcile the durable outbox against the broker on the next cycle.
+    AckNotDurable {
+        receipt: OrderReceipt,
+        source: AckFailure,
+    },
+    /// A rejection occurred (no live order) but the durable `REJECTED` cleanup could
+    /// not be recorded — a lingering `PENDING_SUBMIT` reconciliation must resolve.
+    RejectionCleanupFailed(AckFailure),
+}
+
+impl fmt::Display for DurableSubmitError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Rejected(err) => write!(formatter, "durable live submission rejected: {err}"),
+            Self::WriteAheadPersistence(err) => write!(
+                formatter,
+                "durable live submission write-ahead failed (no live order): {err}"
+            ),
+            Self::AckNotDurable { receipt, source } => write!(
+                formatter,
+                "durable live submission acknowledged (broker id {}) but NOT durably bound — \
+                 reconcile, do not retry: {source}",
+                receipt.broker_order_id
+            ),
+            Self::RejectionCleanupFailed(source) => write!(
+                formatter,
+                "durable live submission rejected but REJECTED cleanup failed — reconcile: {source}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DurableSubmitError {}
 
 /// Port trait the execution engine uses to push an order to a live brokerage
 /// after it has decided the submission is allowed (mode == Live, connected,
@@ -436,6 +525,17 @@ impl ExecutionEngine {
                     // InvalidSymbol is the order-rejection bucket and the precise
                     // reason is in error_type (a dedicated category is a
                     // cross-cutting SRS-ERR-001 taxonomy change, deferred).
+                    // SRS-EXE-009: the durable-submit path already exists as
+                    // [`Self::route_order_durably`] (authority-gated: commit +
+                    // persist to the OUTBOX BEFORE the broker, bind the ack, mark a
+                    // rejection terminal). This pinned ERR-1/2/3 entry is NOT yet
+                    // routed through it — making the durable path the PRODUCTION one
+                    // (or making this non-durable path unreachable for live) is the
+                    // deferred SRS-EXE-001 runtime + Strategy Orchestrator, since it
+                    // re-architects this pinned contract (see
+                    // `outbox_reconciliation_contract.deferred[]`). SRS-EXE-009 stays
+                    // passes:false until that wiring + the real-IB restart
+                    // reconciliation e2e (NFR-R3) land.
                     MarketDataFreshness::Fresh => match submission.validate() {
                         Ok(()) => broker.submit_order(submission),
                         Err(err) => Err(StructuredOrderError {
@@ -572,6 +672,234 @@ impl ExecutionEngine {
             }),
             LiveRoutingDecision::Authorized => self.submit_live_order(
                 StrategyMode::Live,
+                submission,
+                broker,
+                connectivity,
+                events,
+                freshness,
+                stale_events,
+            ),
+        }
+    }
+
+    /// SRS-EXE-009 — the **durable-submit** composition: the outbox-enforced way to
+    /// submit a live order. This is the execution-layer seam that makes the AC's
+    /// "durably commit live order intents **before** submission to IB" a real,
+    /// enforced, ordered code path.
+    ///
+    /// Every outbox mutation is staged on a clone and durably persisted BEFORE it is
+    /// adopted into the caller's outbox, so a failed durable write never leaves the
+    /// in-memory outbox out of sync with the durable record.
+    ///
+    /// Sequence:
+    /// 1. **Write-ahead:** [`OrderOutbox::commit_intent`] records the intent at
+    ///    `PENDING_SUBMIT`, then [`OrderOutbox::persist`] flushes it to `store_dir`
+    ///    — BEFORE any broker contact. If the durable write fails, this returns
+    ///    [`DurableSubmitError::WriteAheadPersistence`] and the broker is **never**
+    ///    consulted (fail closed: no live order without a durable record).
+    /// 2. The pinned ERR-1/2/3 gate + broker submission run via
+    ///    [`submit_live_order`](Self::submit_live_order) (kept byte-stable).
+    /// 3. On `Ok(receipt)`, [`OrderOutbox::bind_ack`] binds the broker id (`ACKED`)
+    ///    and the outbox is re-persisted; a failure here is
+    ///    [`DurableSubmitError::AckNotDurable`] carrying the `receipt` (a live order
+    ///    EXISTS — reconcile, never blind-retry). On a synchronous rejection the
+    ///    intent is durably marked `REJECTED` (a cleanup failure surfaces
+    ///    [`DurableSubmitError::RejectionCleanupFailed`]), so a rejected order is
+    ///    **never** left resubmittable.
+    ///
+    /// A crash BETWEEN the durable commit and the broker acknowledgement leaves a
+    /// `PENDING_SUBMIT` intent that [`crate::outbox::reconcile`] resolves against the
+    /// broker on restart (adopt if the broker has it, resubmit only if it provably
+    /// never landed).
+    ///
+    /// **Authority.** This inner primitive is `pub(crate)` and always submits with
+    /// `StrategyMode::Live` — it takes **no** caller-supplied mode, so it can never be
+    /// used to self-declare live-ness. The ONLY public way to reach it is
+    /// [`route_order_durably`](Self::route_order_durably), which derives live-ness
+    /// from the engine-owned [`LiveDesignation`] authority (exactly as
+    /// [`route_order`] gates [`submit_live_order`]). So the single-live-strategy
+    /// invariant (AGENTS.md) holds by construction for the durable path too.
+    ///
+    /// **Scope.** Wiring the durable seam into the PRODUCTION
+    /// [`route_order`](Self::route_order) call site (so EVERY live submission consults
+    /// the outbox) re-architects the pinned single-live authority / ERR-1/2/3 path and
+    /// is the deferred SRS-EXE-001 runtime + Strategy Orchestrator
+    /// (`architecture/runtime_services.json`
+    /// `outbox_reconciliation_contract.deferred[]`). SRS-EXE-009 stays `passes:false`
+    /// until that wiring and the real-IB restart reconciliation e2e (NFR-R3) land.
+    ///
+    /// [`submit_live_order`]: Self::submit_live_order
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn submit_live_order_durably<B, C, E, F, S>(
+        &self,
+        outbox: &mut OrderOutbox,
+        store_dir: &Path,
+        correlation_id: ClientCorrelationId,
+        submission: OrderSubmission,
+        broker: &B,
+        connectivity: &C,
+        events: &E,
+        freshness: &F,
+        stale_events: &S,
+    ) -> Result<OrderReceipt, DurableSubmitError>
+    where
+        B: LiveBrokerageSubmit,
+        C: BrokerageConnectivity,
+        E: ConnectivityEventSink,
+        F: MarketDataFreshnessProbe,
+        S: StaleDataEventSink,
+    {
+        // 0. Validate the submission BEFORE any durable write. `commit_intent`
+        //    persists the raw submission, and the fail-closed `OutboxSnapshot::
+        //    deserialize` re-runs `OrderSubmission::validate` on restore — so a
+        //    persisted INVALID order (blank symbol / non-positive quantity / a
+        //    single-leg option) would make the WHOLE durable outbox fail to load and
+        //    block recovery for unrelated live orders. Rejecting it here (outbox
+        //    untouched, nothing persisted) makes that poison-pill impossible. The
+        //    inner `submit_live_order` validates again (defense-in-depth); this just
+        //    moves the check ahead of the durable commit for the durable path.
+        if let Err(err) = submission.validate() {
+            return Err(DurableSubmitError::Rejected(StructuredOrderError {
+                category: OrderErrorCategory::InvalidSymbol,
+                error_type: err.error_type().to_string(),
+                message: err.to_string(),
+                original_order: submission,
+            }));
+        }
+
+        // Every outbox mutation is STAGED on a clone and durably persisted BEFORE it
+        // is adopted into the caller's `outbox`, so a failed durable write never
+        // leaves the in-memory outbox holding an intent whose durable record does not
+        // match (which restart reconciliation could misread and resubmit).
+
+        // 1. Write-ahead: stage the commit on a clone, persist it, and adopt it into
+        //    the caller's outbox ONLY after the durable write succeeds. A duplicate
+        //    correlation id is rejected idempotently; a failed durable write fails
+        //    closed here (the broker is NEVER consulted, and the caller's outbox is
+        //    left untouched — no poisoned PENDING_SUBMIT).
+        let mut staged = outbox.clone();
+        let key = staged
+            .commit_intent(correlation_id, &submission)
+            .map_err(DurableSubmitError::Rejected)?;
+        staged
+            .persist(store_dir)
+            .map_err(DurableSubmitError::WriteAheadPersistence)?;
+        *outbox = staged;
+
+        // 2. The pinned ERR-1/2/3 gate + broker submission. Always Live — this inner
+        //    is only ever reached through route_order_durably's authority gate.
+        match self.submit_live_order(
+            StrategyMode::Live,
+            submission,
+            broker,
+            connectivity,
+            events,
+            freshness,
+            stale_events,
+        ) {
+            Ok(receipt) => {
+                // 3a. The broker ACCEPTED — a live order now EXISTS. Bind the ack,
+                //     persist, then adopt. A failure here is reported as AckNotDurable
+                //     carrying the receipt (NOT WriteAheadPersistence): the caller must
+                //     reconcile against the broker, never blind-retry (which would
+                //     duplicate the live order).
+                let mut staged = outbox.clone();
+                if let Err(err) = staged.bind_ack(&key, &receipt.broker_order_id) {
+                    return Err(DurableSubmitError::AckNotDurable {
+                        receipt,
+                        source: AckFailure::Outbox(err),
+                    });
+                }
+                if let Err(err) = staged.persist(store_dir) {
+                    return Err(DurableSubmitError::AckNotDurable {
+                        receipt,
+                        source: AckFailure::Persistence(err),
+                    });
+                }
+                *outbox = staged;
+                Ok(receipt)
+            }
+            Err(rejection) => {
+                // 3b. A synchronous rejection means NO live order was created. The
+                //     terminal REJECTED transition MUST be durably recorded BEFORE
+                //     returning — a durable PENDING_SUBMIT that survives here could be
+                //     resubmitted on restart. If the cleanup cannot be proven, surface
+                //     RejectionCleanupFailed (a durable inconsistency to reconcile)
+                //     rather than the rejection, and leave the caller's outbox
+                //     unchanged.
+                let mut staged = outbox.clone();
+                if let Err(err) = staged.observe_state(&key, OrderState::Rejected) {
+                    return Err(DurableSubmitError::RejectionCleanupFailed(
+                        AckFailure::Outbox(err),
+                    ));
+                }
+                if let Err(err) = staged.persist(store_dir) {
+                    return Err(DurableSubmitError::RejectionCleanupFailed(
+                        AckFailure::Persistence(err),
+                    ));
+                }
+                *outbox = staged;
+                Err(DurableSubmitError::Rejected(rejection))
+            }
+        }
+    }
+
+    /// SRS-EXE-009 / SRS-EXE-001 — the **public** durable-submit entry: the
+    /// authority-gated analogue of [`route_order`](Self::route_order) that routes a
+    /// live order through the durable outbox. It derives live-ness from the
+    /// engine-owned [`LiveDesignation`] authority (`self.designation`, never trusted
+    /// from the caller): a submission from any strategy that is **not** the designated
+    /// live strategy is rejected synchronously with a `NON_LIVE_STRATEGY_SUBMISSION`
+    /// error **before any outbox mutation or broker contact** — a non-designated
+    /// caller cannot even obtain a durable intent, let alone reach IB. Only an
+    /// [`LiveRoutingDecision::Authorized`] submission proceeds to the durable seam
+    /// [`submit_live_order_durably`](Self::submit_live_order_durably) (write-ahead
+    /// commit + persist BEFORE the broker call, bind the ack, mark a rejection
+    /// terminal).
+    ///
+    /// This mirrors the [`route_composite_order`](Self::route_composite_order) /
+    /// [`submit_live_composite_order`] authority pattern, so the single-live-strategy
+    /// invariant (AGENTS.md) holds for the durable path by construction.
+    ///
+    /// [`submit_live_composite_order`]: Self::submit_live_composite_order
+    #[allow(clippy::too_many_arguments)]
+    pub fn route_order_durably<B, C, E, F, S>(
+        &self,
+        outbox: &mut OrderOutbox,
+        store_dir: &Path,
+        correlation_id: ClientCorrelationId,
+        submission: OrderSubmission,
+        broker: &B,
+        connectivity: &C,
+        events: &E,
+        freshness: &F,
+        stale_events: &S,
+    ) -> Result<OrderReceipt, DurableSubmitError>
+    where
+        B: LiveBrokerageSubmit,
+        C: BrokerageConnectivity,
+        E: ConnectivityEventSink,
+        F: MarketDataFreshnessProbe,
+        S: StaleDataEventSink,
+    {
+        match self.designation.authority_for(&submission.strategy_id) {
+            LiveRoutingDecision::NotDesignated => {
+                Err(DurableSubmitError::Rejected(StructuredOrderError {
+                    category: OrderErrorCategory::NonLiveStrategySubmission,
+                    error_type: "NotDesignatedLiveStrategy".to_string(),
+                    message: format!(
+                        "strategy `{}` is not the designated live strategy; durable live \
+                         orders route to IB only for the single designated live strategy \
+                         (SRS-EXE-001, SyRS SYS-2a/SYS-2d)",
+                        submission.strategy_id.as_str()
+                    ),
+                    original_order: submission,
+                }))
+            }
+            LiveRoutingDecision::Authorized => self.submit_live_order_durably(
+                outbox,
+                store_dir,
+                correlation_id,
                 submission,
                 broker,
                 connectivity,

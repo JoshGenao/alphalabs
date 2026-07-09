@@ -17,6 +17,15 @@ path = "src/lib.rs"
 name = "err001_error_envelope_cli"
 path = "src/bin/err001_error_envelope_cli.rs"
 
+# SRS-EXE-009 durable-outbox restart-reconciliation operator + fault-injection CLI. Drives the real
+# atp_execution::outbox types through the AC scenarios a restart exercises (write-ahead commit ->
+# save_to_path -> a fresh load_from_path = the process-restart boundary) against scripted broker
+# snapshots (mocked IB), proving a bound/ambiguous intent is never resubmitted. std-only; depends only
+# on the already-declared atp-execution / atp-types crates.
+[[bin]]
+name = "exe009_outbox_reconcile_cli"
+path = "src/bin/exe009_outbox_reconcile_cli.rs"
+
 [dependencies]
 atp-strategy-engine = { path = "../atp-strategy-engine" }
 atp-types = { path = "../atp-types" }

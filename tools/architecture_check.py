@@ -112,6 +112,10 @@ from order_type_check import (
     OrderTypeCheckError,
     assert_order_type_static,
 )
+from outbox_reconciliation_check import (
+    OutboxReconciliationCheckError,
+    assert_outbox_reconciliation_static,
+)
 from pacing_budget_check import (
     PacingBudgetCheckError,
     assert_pacing_budget_static,
@@ -662,6 +666,23 @@ def assert_order_routing(config: dict) -> list[str]:
         f"to the internal simulation engine through the {block['simulation_port']['trait']} "
         f"port — a paper order never creates an IB order (AC-10); live runtime wiring deferred "
         "(SRS-EXE-002 stays passes:false)"
+    )
+    return static_evidence + [summary]
+
+
+def assert_outbox_reconciliation(config: dict) -> list[str]:
+    block = config.get("outbox_reconciliation_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_outbox_reconciliation_static(config, ROOT)
+    summary = (
+        f"{block['execution_crate']['crate']} declares the SRS-EXE-009 durable "
+        f"{block['outbox']['struct']}: {block['outbox']['write_ahead_method']} commits an "
+        f"order intent durably before submission and {block['reconciliation']['entry_point']} "
+        f"reconciles it against a {block['reconciliation']['broker_port']} on restart — a bound "
+        f"intent is never resubmitted, retention holds until a terminal state (SyRS SYS-90 / "
+        "NFR-R3 / NFR-R4); real-IB reconciliation wiring deferred (SRS-EXE-009 stays passes:false)"
     )
     return static_evidence + [summary]
 
@@ -1424,6 +1445,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_order_routing(config))
     except OrderRoutingCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_outbox_reconciliation(config))
+    except OutboxReconciliationCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_backtest(config))

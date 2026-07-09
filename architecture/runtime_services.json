@@ -1206,6 +1206,117 @@
       "NFR-P1 / AC-15 live-order acknowledgement latency proof (<1,000 ms p95 from strategy API invocation to acknowledgement callback under a running IB Gateway) — owner SRS-PERF-001 / SRS-EXE-001 performance test. SRS-EXE-001 stays passes:false until these land."
     ]
   },
+  "outbox_reconciliation_contract": {
+    "requirement": "SRS-EXE-009",
+    "srs_refs": [
+      "SRS-EXE-009"
+    ],
+    "syrs_refs": [
+      "SYS-90",
+      "NFR-R3",
+      "NFR-R4"
+    ],
+    "strs_refs": [
+      "SN-2.05"
+    ],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "execution_crate": {
+      "crate": "atp-execution",
+      "path": "crates/atp-execution"
+    },
+    "module": "crates/atp-execution/src/outbox.rs",
+    "outbox": {
+      "struct": "OrderOutbox",
+      "entry": "OutboxEntry",
+      "write_ahead_method": "commit_intent",
+      "ack_method": "bind_ack",
+      "observe_method": "observe_state",
+      "retention_method": "prune_terminal",
+      "commit_state": "PendingSubmit",
+      "duplicate_rejection_category": "DuplicateClientCorrelationId",
+      "error_enum": "OutboxError"
+    },
+    "durable_codec": {
+      "struct": "OutboxSnapshot",
+      "magic": "ATP-ORDER-OUTBOX-V1",
+      "methods": [
+        "capture",
+        "serialize",
+        "deserialize",
+        "save_to_path",
+        "load_from_path"
+      ],
+      "durability_sequence": [
+        "sync_all",
+        "rename",
+        "sync_all"
+      ],
+      "integrity_error": "ChecksumMismatch",
+      "error_enum": "OutboxPersistenceError"
+    },
+    "reconciliation": {
+      "entry_point": "reconcile",
+      "broker_port": "BrokerOpenOrderSource",
+      "broker_snapshot": "BrokerOpenOrderSnapshot",
+      "broker_order": "BrokerOpenOrder",
+      "coverage_enum": "SnapshotCoverage",
+      "coverage_variants": [
+        "OpenOnly",
+        "OpenAndRecentlyCompleted"
+      ],
+      "plan_struct": "ReconciliationPlan",
+      "plan_fields": [
+        "skip_bound",
+        "adopt_ack",
+        "resubmit",
+        "mark_terminal",
+        "unresolved"
+      ],
+      "conflict_enum": "ConflictKind",
+      "conflict_variants": [
+        "BrokerIdMismatch",
+        "UnverifiableSubmitWindow",
+        "StateDisagreement",
+        "DuplicateBrokerRows"
+      ]
+    },
+    "durable_submit": {
+      "method": "route_order_durably",
+      "inner": "submit_live_order_durably",
+      "authority_call": "self.designation.authority_for",
+      "type": "ExecutionEngine",
+      "lib": "crates/atp-execution/src/lib.rs",
+      "error_enum": "DurableSubmitError",
+      "seam_test": "srs_exe_009_durable_submit",
+      "ordering": "route_order_durably derives live-ness from self.designation (a non-designated strategy is rejected before any outbox mutation or broker contact), then the pub(crate) inner submit_live_order_durably runs commit_intent + persist BEFORE submit_live_order (the broker call); a failed write-ahead returns WriteAheadPersistence with no broker contact; the ack binds the broker id (a post-broker persist failure is AckNotDurable carrying the receipt); a synchronous rejection durably marks the intent REJECTED so it is never resubmitted; a crash between commit and ack leaves PENDING_SUBMIT for reconcile. All mutations are staged on a clone and adopted only after the durable write succeeds, so a failed write never poisons the in-memory outbox."
+    },
+    "terminal_states": [
+      "FILLED",
+      "CANCELLED",
+      "REJECTED",
+      "EXPIRED"
+    ],
+    "cli_binary": "exe009_outbox_reconcile_cli",
+    "integration_test": "srs_exe_009_outbox_reconcile",
+    "cli_test": "srs_exe_009_outbox_reconcile_cli",
+    "domain_test": "tests/domain/test_outbox_reconciliation.py",
+    "safety_invariants": [
+      "A bound intent (an acknowledged broker_order_id present) is NEVER placed in the resubmit set (SRS-EXE-009 AC bullet 3).",
+      "An unacknowledged intent absent from an open-only broker view is never auto-resubmitted (UnverifiableSubmitWindow) — resubmit requires OpenAndRecentlyCompleted coverage.",
+      "commit_intent durably records the intent at PENDING_SUBMIT before submission; a duplicate correlation id is rejected idempotently with DuplicateClientCorrelationId.",
+      "Entries are retained until a terminal state (FILLED/CANCELLED/REJECTED/EXPIRED) is observed, then released by prune_terminal.",
+      "A broker snapshot reporting more than one order for one correlation key is surfaced as an unresolved DuplicateBrokerRows conflict — never collapsed into a single adopt/skip/resubmit that could mask a duplicate live order."
+    ],
+    "deferred": [
+      "The concrete BrokerOpenOrderSource that queries IB's open + recently-completed orders (the SRS-EXE-006 IB adapter event/query mapping) — this feature defines the execution-layer port and the reconciliation decision logic, not the IB query itself. Owner SRS-EXE-006.",
+      "Making the durable path the PRODUCTION one so EVERY live submission consults the outbox — route the production route_order through the authority-gated ExecutionEngine::route_order_durably (which commits + persists the intent BEFORE broker.submit_order and binds the ack), or make the non-durable submit_live_order unreachable for live production. Owner SRS-EXE-001 runtime + the Strategy Orchestrator. That change re-architects the pinned single-live authority / ERR-1/2/3 path (kept byte-stable here); this slice ships the durable outbox substrate + reconciliation + the solo-tested authority-gated seam those paths will consult.",
+      "Driving the outbox transitions (bind_ack / observe_state / prune_terminal) from real broker order events (ACK / fill / cancel / reject callbacks) and the full SRS-EXE-008 order-lifecycle idempotency contract — owner SRS-EXE-006 IB adapter / SRS-EXE-008. SRS-EXE-008 is itself blocked on this feature (the durable outbox substrate).",
+      "The end-to-end real-IB restart reconciliation proof (a live execution engine restarted mid-submit reconciling against a live IB open+completed-orders query within the NFR-R3 60 s window) — a fault-injection/integration exercise the operator runs, so SRS-EXE-009 stays passes:false until it lands."
+    ]
+  },
   "ingestion_validation_contract": {
     "requirement": "ERR-5",
     "srs_refs": [
