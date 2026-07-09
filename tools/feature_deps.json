@@ -192,6 +192,9 @@
     "SRS-EXE-002",
     "SRS-EXE-006"
   ],
+  "SRS-SDK-007": [
+    "SRS-MD-001"
+  ],
   "SRS-SDK-008": [
     "SRS-SDK-007"
   ],
