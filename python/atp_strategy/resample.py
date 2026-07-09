@@ -241,8 +241,10 @@ class TimeBarConsolidator:
     the next one (proof the bucket has closed). The last bucket of a session has no following
     bar, so it is emitted by :meth:`flush`. To match a backtest bar-for-bar, a live consumer
     must flush at the session close (e.g. from a ``ctx.schedule.at_market_close`` callback);
-    the runtime-managed ``ctx.consolidate`` handle is flushed at session boundaries by the
-    runtime (``SRS-SDK-001``). :func:`consolidate_bars` includes the final bucket implicitly —
+    a runtime-managed ``ctx.consolidate`` handle would be flushed at session boundaries by the
+    execution/simulation runtime that hosts live/paper strategies (``SRS-SDK-001`` deferred the
+    concrete drivers; not yet implemented). :func:`consolidate_bars` includes the final bucket
+    implicitly —
     it is exactly ``update``-all + ``flush``.
 
     Args:

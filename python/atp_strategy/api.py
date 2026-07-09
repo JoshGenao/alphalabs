@@ -1337,9 +1337,12 @@ class StrategyContext(Protocol):
         DEFERRED — the runtime-managed wiring that would FEED this
         handle the live minute subscription and FLUSH it at each
         session close is the responsibility of the execution /
-        simulation runtime and is **not yet implemented**
-        (``SRS-SDK-001``); a concrete ``StrategyContext.consolidate``
-        does not exist until that runtime lands. The consolidation
+        simulation runtime that hosts live/paper strategies and is
+        **not yet implemented**: ``SRS-SDK-001`` delivered only the
+        parity invariant and deferred the concrete Live/Paper
+        ``StrategyContext`` drivers, so a concrete
+        ``StrategyContext.consolidate`` does not exist until that runtime
+        lands. The consolidation
         engine itself is complete: consolidate minute data today via
         the fully-supported paths — :func:`atp_strategy.consolidate_bars`
         (batch), a self-managed :class:`atp_strategy.TimeBarConsolidator`

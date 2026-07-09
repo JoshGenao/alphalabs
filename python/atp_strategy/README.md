@@ -240,9 +240,10 @@ def on_warmup_complete(self, ctx):
 `ctx.consolidate(symbol, period)` is intended to return a runtime-managed
 consolidator that the runtime feeds from the live minute subscription and flushes
 at each session close. That runtime wiring is **deferred** — it belongs to the
-execution/simulation runtime (`SRS-SDK-001`) and is not yet implemented. Until it
-lands, use the self-managed `TimeBarConsolidator` (with the `at_market_close`
-flush shown above), `consolidate_bars`, or `ctx.history.get_bars(...,
+execution/simulation runtime that hosts live/paper strategies (`SRS-SDK-001` delivered the
+parity invariant and deferred the concrete Live/Paper `StrategyContext` drivers) and is not
+yet implemented. Until it lands, use the self-managed `TimeBarConsolidator` (with the
+`at_market_close` flush shown above), `consolidate_bars`, or `ctx.history.get_bars(...,
 frequency="5m")` — all of which work today.
 
 ## State access
