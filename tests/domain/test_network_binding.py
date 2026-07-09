@@ -113,4 +113,43 @@ def test_network_binding_inspection_check_passes() -> None:
     import network_binding_check
 
     evidence = network_binding_check.run_checks()  # raises ContractCheckError on any violation
-    assert len(evidence) == 5
+    assert evidence and all(isinstance(item, str) and item for item in evidence)
+
+
+def _primary_non_loopback_ipv4() -> str | None:
+    """Best-effort primary non-loopback IPv4 of this host (sends no packets).
+
+    A UDP ``connect`` only fixes the outbound route, so ``getsockname`` yields the
+    interface the kernel would use — without any traffic. Returns ``None`` when the
+    host has no usable non-loopback IPv4 (e.g. an isolated CI runner).
+    """
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("8.8.8.8", 80))
+        ip = probe.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        probe.close()
+    if ip.startswith("127.") or ip in ("0.0.0.0", ""):
+        return None
+    return ip
+
+
+def test_external_interface_connection_is_refused(default_bound_runtime) -> None:
+    """SRS-SEC-002 AC: an external-host connect against a non-RFC1918 *interface*
+    fails under the default (loopback-only) configuration.
+
+    The runtime is bound to loopback only, so a connection addressed to this
+    host's real (non-loopback) interface has nothing listening there and is
+    refused. Skipped when the host exposes no non-loopback interface.
+    """
+
+    _, port = default_bound_runtime
+    external_ip = _primary_non_loopback_ipv4()
+    if external_ip is None:
+        pytest.skip("no non-loopback interface available to exercise external refusal")
+    with pytest.raises(OSError):  # ConnectionRefusedError / TimeoutError are OSError
+        with socket.create_connection((external_ip, port), timeout=2):
+            pass

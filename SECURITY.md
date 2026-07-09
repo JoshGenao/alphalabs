@@ -101,10 +101,13 @@ SN-2.01):
 
 - **Default-safe bind.** `runtime.start` defaults to `127.0.0.1`, and
   `python -m atp_dashboard` reads `ATP_DASHBOARD_BIND_HOST` (default
-  `127.0.0.1`). Every published `docker-compose.yml` port is bound to a
-  loopback / RFC 1918 host (`127.0.0.1:8080:8080`, `127.0.0.1:8888:8888`,
-  `${ATP_IB_HOST:-127.0.0.1}:…`) — never a bare `PORT:PORT` that would publish
-  on `0.0.0.0`.
+  `127.0.0.1`). The dashboard/API service publishes a **fixed** loopback
+  mapping (`127.0.0.1:8080:8080`) with no operator-overrideable host, and
+  Jupyter likewise (`127.0.0.1:8888:8888`). No compose service publishes a bare
+  `PORT:PORT` (which would bind `0.0.0.0`), and every published-port default
+  host is loopback / RFC 1918. (The IB-gateway ports default to loopback via
+  `${ATP_IB_HOST:-127.0.0.1}`; changing `ATP_IB_HOST` is an operator action for
+  the broker connection, outside the dashboard/API SRS-SEC-002 boundary.)
 - **Fail-closed policy — no process-level public bind.** `is_allowed_bind_host`
   / `assert_bind_allowed` (`python/atp_runtime/rest_server.py`) permit only
   loopback (`127.0.0.0/8`, `::1`) and the three RFC 1918 IPv4 ranges; `0.0.0.0`,

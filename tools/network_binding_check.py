@@ -79,10 +79,18 @@ def _resolve_interpolations(value: str) -> str:
     return value
 
 
-def _published_port_entries(compose_text: str) -> list[str]:
-    """Return every ``- "..."`` entry that appears under a ``ports:`` key."""
+def _service_port_entries(compose_text: str) -> list[tuple[str, str]]:
+    """Return ``(service, mapping)`` for every published port under ``services:``.
 
-    entries: list[str] = []
+    Tracks the enclosing ``services:`` block, the current service name (a key at
+    the service indentation), and the ``ports:`` list under it, so each published
+    port is attributed to the service that owns it.
+    """
+
+    entries: list[tuple[str, str]] = []
+    in_services = False
+    service_indent = 0
+    current_service: str | None = None
     in_ports = False
     ports_indent = 0
     for line in compose_text.splitlines():
@@ -90,18 +98,31 @@ def _published_port_entries(compose_text: str) -> list[str]:
         if not stripped or stripped.startswith("#"):
             continue
         indent = len(line) - len(line.lstrip())
+        if indent == 0:
+            in_services = stripped == "services:"
+            current_service = None
+            in_ports = False
+            continue
+        if not in_services:
+            continue
+        # First indented key under ``services:`` fixes the per-service indent.
+        if current_service is None or indent <= service_indent:
+            if stripped.endswith(":") and " " not in stripped[:-1]:
+                service_indent = indent
+                current_service = stripped[:-1]
+                in_ports = False
+                continue
         if stripped == "ports:":
             in_ports = True
             ports_indent = indent
             continue
-        if not in_ports:
-            continue
-        if stripped.startswith("- "):
-            entries.append(stripped[2:].strip().strip('"').strip("'"))
-            continue
-        # A non-list key at or above the ports indentation ends the block.
-        if indent <= ports_indent:
-            in_ports = False
+        if in_ports:
+            if stripped.startswith("- "):
+                mapping = stripped[2:].strip().strip('"').strip("'")
+                entries.append((current_service or "?", mapping))
+                continue
+            if indent <= ports_indent:
+                in_ports = False
     return entries
 
 
@@ -123,24 +144,66 @@ def _mapping_bind_host(mapping: str) -> str | None:
     return None
 
 
-def check_compose_ports_loopback_bound(is_allowed) -> str:
-    text = COMPOSE.read_text("utf-8")
-    entries = _published_port_entries(text)
+def check_dashboard_api_binds_loopback(is_allowed) -> str:
+    """The SRS-SEC-002 subject — the dashboard/API service — must publish only a
+    *fixed* loopback / RFC 1918 host, with no operator-overrideable interpolation.
+
+    This is the strong AC-1 claim: unlike a ``${VAR:-127.0.0.1}`` default (which
+    an operator could override to a public host), the dashboard/API bind is a
+    literal that cannot be redirected to a public interface via ``.env``.
+    """
+
+    entries = _service_port_entries(COMPOSE.read_text("utf-8"))
+    dashboard = [(svc, m) for svc, m in entries if "dashboard" in svc]
+    if not dashboard:
+        fail("no published ports found for the dashboard/API service (compose drift?)")
+    for svc, mapping in dashboard:
+        if "$" in mapping:
+            fail(
+                f"{svc} port mapping {mapping!r} uses an operator-overrideable host "
+                f"interpolation; SRS-SEC-002 requires a fixed loopback/RFC 1918 bind"
+            )
+        host = _mapping_bind_host(mapping)
+        if host is None or not is_allowed(host):
+            fail(
+                f"{svc} port mapping {mapping!r} does not publish on a loopback/RFC 1918 "
+                f"host (SRS-SEC-002)"
+            )
+    published = ", ".join(m for _, m in dashboard)
+    return f"dashboard/API publishes only fixed loopback/RFC 1918 ports ({published})"
+
+
+def check_no_service_publishes_all_interfaces(is_allowed) -> str:
+    """No compose service publishes on all interfaces, and every published-port
+    DEFAULT host is loopback / RFC 1918.
+
+    This is deliberately a *default*-host claim: a ``${VAR:-127.0.0.1}`` mapping
+    (e.g. the IB gateway) is safe by default but an operator can still override
+    ``VAR``. It is NOT proof that an override is constrained — only the
+    dashboard/API (see above) is required to be non-overrideable. What this rules
+    out for every service is a bare ``PORT:PORT`` (which binds ``0.0.0.0``) and a
+    hard-coded publicly-routable publish.
+    """
+
+    entries = _service_port_entries(COMPOSE.read_text("utf-8"))
     if not entries:
         fail("no published port mappings found in docker-compose.yml (parser drift?)")
-    for entry in entries:
-        host = _mapping_bind_host(entry)
+    for svc, mapping in entries:
+        host = _mapping_bind_host(mapping)
         if host is None:
             fail(
-                f"docker-compose port mapping {entry!r} publishes on all interfaces "
-                f"(0.0.0.0) — must bind loopback/RFC1918 (SRS-SEC-002)"
+                f"{svc} port mapping {mapping!r} publishes on all interfaces (0.0.0.0) — "
+                f"must bind loopback/RFC 1918 (SRS-SEC-002)"
             )
         if not is_allowed(host):
             fail(
-                f"docker-compose port mapping {entry!r} binds non-loopback/non-RFC1918 "
+                f"{svc} port mapping {mapping!r} has a non-loopback/non-RFC 1918 default "
                 f"host {host!r} (SRS-SEC-002)"
             )
-    return f"all {len(entries)} docker-compose published ports bind loopback/RFC 1918 hosts"
+    return (
+        f"no service publishes a bare/public port; all {len(entries)} published-port "
+        f"default hosts are loopback/RFC 1918"
+    )
 
 
 def check_no_source_binds_all_interfaces() -> str:
@@ -270,7 +333,8 @@ def check_external_exposure_documented() -> str:
 def run_checks() -> list[str]:
     is_allowed, assert_allowed, BindPolicyError = _import()
     return [
-        check_compose_ports_loopback_bound(is_allowed),
+        check_dashboard_api_binds_loopback(is_allowed),
+        check_no_service_publishes_all_interfaces(is_allowed),
         check_no_source_binds_all_interfaces(),
         check_bind_policy_refuses_public(is_allowed, assert_allowed, BindPolicyError),
         check_default_bind_host_is_loopback(is_allowed),
