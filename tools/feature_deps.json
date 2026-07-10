@@ -117,6 +117,10 @@
     "SRS-EXE-006",
     "SRS-EXE-009"
   ],
+  "SRS-EXE-009": [
+    "SRS-EXE-001",
+    "SRS-EXE-006"
+  ],
   "SRS-FAC-001": [
     "SRS-DATA-005"
   ],
