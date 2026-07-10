@@ -141,3 +141,21 @@ EXE-009 unblocks EXE-008 (order-lifecycle idempotency); EXE-008 should wire bind
 observe_state to real broker events and commit_intent into the live submit path.
 Optional hardening: the dropped SAFETY_PATH_RE outbox extension (needs separate
 human review of the critic gate).
+
+--- DE-CHURN ADDENDUM (2026-07-10) ---
+This feature was RE-OFFERED by the scheduler despite being code-complete+serialized
+on main. Root cause: (1) tools/feature_deps.json had NO blocked_on entry for
+SRS-EXE-009, so it read as a ready/claimable feature; (2) serialized_notes() reads
+the MAIN-REPO checkout (ROOT/progress.d/), which lagged origin/main and so could not
+see this very note → EXE-009 was not parked in the awaiting_verification bucket.
+passes:false + no dep + invisible note ⇒ re-offered forever.
+ACTION: recorded `block SRS-EXE-009 --on SRS-EXE-001 SRS-EXE-006` (cycle-safe;
+mirrors the EXE-008→[EXE-001,EXE-006,EXE-009] edge and the DEFERRED owners named
+above). Landed via `integrate --mode partial`; passes stays FALSE.
+The code is UNCHANGED — do NOT rebuild outbox.rs / the CLI / the durable-submit seam.
+When EXE-001 (production route_order wiring) and EXE-006 (concrete IB
+BrokerOpenOrderSource) are passes:true, EXE-009 re-enters the pool; flip it only via
+the operator real-IB restart-reconciliation e2e (verified-e2e), never solo.
+SYSTEMIC (operator): the lagging main-repo checkout also hides SEC-002/SDK-007/
+DATA-012 notes → same churn on those; a `git -C <main-repo> pull --ff-only` (or having
+integrate refresh the main checkout) prevents this class globally.
