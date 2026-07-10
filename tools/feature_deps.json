@@ -70,7 +70,9 @@
     "SRS-DATA-017"
   ],
   "SRS-DATA-012": [
-    "SRS-DATA-011"
+    "SRS-DATA-006",
+    "SRS-DATA-011",
+    "SRS-MD-001"
   ],
   "SRS-DATA-014": [
     "SRS-DATA-013"
