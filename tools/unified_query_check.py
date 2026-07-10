@@ -44,9 +44,9 @@ scheduled session, so a caller cannot pair a session with a future as-of -- only
 mapping is deferred, see SRS-FAC-001); and strategy + notebook/research code read via the binding. The Jupyter
 notebook HOST is the SEPARATE SRS-RES-002 feature (docs/SRS.md line 209), not a DATA-007 consumer gap -- the notebook DATA ACCESS goes through the binding. Other owners
 that compose this read path also remain deferred (the real provider network
-adapters via SRS-DATA-001/003/005/006, read-while-write via SRS-DATA-017, the TOTAL_RETURN +
-live-subscription normalization of SRS-DATA-012, SSD/NAS tiering via SRS-DATA-008/009/010,
-the dashboard/REST surfaces via SRS-UI / SRS-API).
+adapters via SRS-DATA-001/003/005/006, read-while-write via SRS-DATA-017, the LIVE-subscription
+normalization selection of SRS-DATA-012 (all four historical modes are served), SSD/NAS tiering via
+SRS-DATA-008/009/010, the dashboard/REST surfaces via SRS-UI / SRS-API).
 
 Mirrors the PASS/FAIL output style of ``tools/ingestion_idempotency_check.py``.
 
@@ -400,9 +400,10 @@ _DEFERRED_OWNERS = (
     "(SRS-DATA-001/003/005/006); fixture sources stand in, as the verification step permits",
     "concurrent READS during an active ingestion WRITE -- read-while-write coordination "
     "(SRS-DATA-017; the atomic whole-file publish is the groundwork)",
-    "TOTAL_RETURN + live-subscription normalization (dividend reinvestment + per-subscription "
-    "selection, SRS-DATA-012); split-adjusted AND fully-adjusted are served through the SRS-DATA-011 "
-    "coverage gate by both the operator CLI and the StoreBackedHistoricalData consumer binding",
+    "the LIVE-subscription normalization selection + option-chain binding access (SRS-DATA-012, owners "
+    "SRS-MD-001 / SRS-DATA-006); all four historical modes (raw / split-adjusted / fully-adjusted / "
+    "total-return) are served through the SRS-DATA-011 coverage gate by both the operator CLI and the "
+    "StoreBackedHistoricalData consumer binding",
     "the Jupyter notebook HOST runtime (SRS-RES-002) -- a SEPARATE feature (kernel / plotting / no-live-order "
     "isolation), NOT a DATA-007 consumer gap: the BACKTEST consumer (atp-simulation StoreBarSource) is wired, the "
     "FACTOR-JOB consumer READS the store (atp-factor-pipeline store_inputs loaders + assemble_factor_inputs, a "
