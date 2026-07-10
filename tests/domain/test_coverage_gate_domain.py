@@ -12,9 +12,9 @@ and asserts:
     fully-adjusted (splits AND dividends, SYS-29) read composes the dividend leg (2475 with a $1.00
     dividend ex before the split; volume never dividend-scaled), so a backtest sees a continuous
     adjusted series — correct P&L;
-  * UNCOVERED — when coverage is absent OR does not reach the query end, BOTH adjusted reads FAIL
-    CLOSED (a structured error naming SRS-DATA-011), so a backtest is never handed raw bars dressed as
-    adjusted;
+  * UNCOVERED — when coverage is absent OR does not reach the query end, EVERY adjusted read
+    (split-adjusted / fully-adjusted / total-return, the SRS-DATA-012 modes) FAILS CLOSED (a structured
+    error naming SRS-DATA-011), so a backtest is never handed raw bars dressed as adjusted;
   * LINEAGE — a query for the current symbol spans a rename (the predecessor's bars come back
     relabeled) and the symbol-change event is surfaced, so a backtest spanning the rename sees one
     continuous series plus the structural fact.
@@ -150,7 +150,7 @@ def test_backtest_gets_adjusted_only_when_covered_else_fails_closed() -> None:
 
         # (1) NO coverage yet -> a backtest reading ANY adjusted history FAILS CLOSED (never raw bars
         # dressed as adjusted). This is the keystone safety property.
-        for mode in ("split-adjusted", "fully-adjusted"):
+        for mode in ("split-adjusted", "fully-adjusted", "total-return"):
             no_coverage = adjusted(100, mode)
             assert no_coverage.returncode != 0
             assert "SRS-DATA-011" in no_coverage.stderr
@@ -182,10 +182,18 @@ def test_backtest_gets_adjusted_only_when_covered_else_fails_closed() -> None:
         assert "coverage_through:200" in fully.stdout
         # Volume takes the SPLIT factor only -- a dividend never scales a share count.
         assert "record.0.field.volume:400000" in fully.stdout
+        # total-return (SRS-DATA-012) is served behind the SAME coverage gate. At this pre-ex bar
+        # (dividend ex @150 > the queried bar @100) no dividend is reinvested yet, so the served value
+        # is the split-only 2500 -- correct mode semantics; the reinvested-forward P&L over a POST-ex
+        # bar is the integration test's scenario.
+        total = adjusted(100, "total-return")
+        assert total.returncode == 0, total.stderr
+        assert _close(total.stdout) == 2500
+        assert "coverage_through:200" in total.stdout
 
-        # (3) A query PAST the frontier (end 250 > 200) still FAILS CLOSED for BOTH adjusted modes:
+        # (3) A query PAST the frontier (end 250 > 200) still FAILS CLOSED for EVERY adjusted mode:
         # partial coverage is not enough -- an action could exist in the uncovered tail (200, 250].
-        for mode in ("split-adjusted", "fully-adjusted"):
+        for mode in ("split-adjusted", "fully-adjusted", "total-return"):
             past_frontier = adjusted(250, mode)
             assert past_frontier.returncode != 0
             assert "SRS-DATA-011" in past_frontier.stderr
@@ -294,7 +302,9 @@ def test_lineage_read_spans_a_rename_and_surfaces_the_event() -> None:
         assert "event.0.effective_ts:300" in result.stdout
 
 
-def test_corporate_action_facts_pass_the_sys77_ingestion_validator_but_coverage_stays_refused() -> None:
+def test_corporate_action_facts_pass_the_sys77_ingestion_validator_but_coverage_stays_refused() -> (
+    None
+):
     # The merged seam with SRS-DATA-013: the operator ingest CLI routes every record through the real
     # SYS-77 validator (Sys77RecordValidator). The four corporate-action FACT kinds are not in
     # SYS-77's OHLCV/option rule set — only the duplicate rule applies (their per-kind

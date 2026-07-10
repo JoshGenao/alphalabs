@@ -12,7 +12,8 @@ SYS-29); symbol changes are resolved as rename LINEAGE (predecessor bars relabel
 symbol); delistings / mergers / symbol changes are surfaced structurally on the result (events) so a
 P&L consumer marks positions final / converts at the surfaced terms / follows the hop. Real provider
 corporate-action ingestion stays deferred (the operator-set / fixture frontier stands in,
-SRS-DATA-001/003/006); total-return + per-subscription selection stay deferred (SRS-DATA-012).
+SRS-DATA-001/003/006); the LIVE per-subscription normalization selection stays deferred (SRS-DATA-012
+remainder, blocked on SRS-MD-001; total-return itself is now served historically).
 
 What this pins:
   (a) the coverage kind — store.rs declares the vendor-neutral DatasetKind::CorporateActionCoverage
@@ -31,9 +32,9 @@ What this pins:
       coverage-gated) while the adjustment math stays crate-internal (`mod normalization`, not
       re-exported), so the ONLY public path to adjusted output is the coverage gate (no public path
       to raw-as-adjusted);
-  (e) the CLI routing — data007_query_cli routes --normalization split-adjusted AND fully-adjusted
-      through the gate, echoes coverage_through / adjusted_through / event_count, and fails closed
-      (naming SRS-DATA-011) when uncovered; total-return still fails closed naming SRS-DATA-012;
+  (e) the CLI routing — data007_query_cli routes --normalization split-adjusted, fully-adjusted, AND
+      total-return through the gate, echoes coverage_through / adjusted_through / event_count, and fails
+      closed (naming SRS-DATA-011) when uncovered; total-return is now served (query_total_return);
   (f) the coverage CLI — data011_coverage_cli records the frontier (assert-coverage --symbol --through
       under the StoreLock) and shows it (show-coverage);
   (g) the corporate-action kinds — store.rs declares the four v4 FACT kinds (dividend tag 6, delisting
@@ -313,20 +314,28 @@ def check_cli_routes_gated(config: dict, cli_src: str) -> str:
             "data007_query_cli must echo the adjustment basis (adjusted_through:<ts>) and the surfaced "
             "structural events (event_count:<n> + event.<i>.* lines) for a served adjusted result"
         )
-    # total-return remains rejected (SRS-DATA-012); SRS-DATA-011 named for the coverage gate.
-    if '"total-return"' not in compact:
-        fail("data007_query_cli must still explicitly reject --normalization total-return")
+    # total-return is now SERVED through the SAME coverage gate (query_total_return; the SRS-DATA-012
+    # close). Only the LIVE-subscription mode selection remains deferred (SRS-DATA-012 remainder), so
+    # the CLI still names SRS-DATA-012. SRS-DATA-011 is named for the coverage gate.
+    if '"total-return"' not in compact or "query_total_return" not in compact:
+        fail(
+            "data007_query_cli must serve --normalization total-return through the coverage gate "
+            "(MarketDataStore::query_total_return)"
+        )
     if "SRS-DATA-012" not in cli_src:
-        fail("data007_query_cli must name SRS-DATA-012 (the total-return deferral owner)")
+        fail(
+            "data007_query_cli must name SRS-DATA-012 (owner of total-return + the deferred LIVE selection)"
+        )
     if "SRS-DATA-011" not in cli_src:
         fail(
             "data007_query_cli must name SRS-DATA-011 (the coverage owner the adjusted gate needs)"
         )
     return (
-        "CLI routing: data007_query_cli routes --normalization split-adjusted AND fully-adjusted "
-        "through the coverage gate (query_split_adjusted / query_fully_adjusted), echoes "
-        "coverage_through / adjusted_through / event_count + event.<i>.* lines, and fails closed "
-        "(naming SRS-DATA-011) when uncovered; total-return remains deferred (naming SRS-DATA-012)"
+        "CLI routing: data007_query_cli routes --normalization split-adjusted, fully-adjusted, AND "
+        "total-return through the coverage gate (query_split_adjusted / query_fully_adjusted / "
+        "query_total_return), echoes coverage_through / adjusted_through / event_count + event.<i>.* "
+        "lines, and fails closed (naming SRS-DATA-011) when uncovered; the LIVE per-subscription "
+        "selection remains deferred (naming SRS-DATA-012)"
     )
 
 
@@ -890,7 +899,8 @@ _STATIC_CHECKS = (
 )
 
 _DEFERRED_OWNERS = (
-    "total-return normalization and the per-subscription LIVE mode selection (SRS-DATA-012)",
+    "the per-subscription LIVE normalization-mode selection (SRS-DATA-012 remainder, blocked on "
+    "SRS-MD-001; all four HISTORICAL modes including total-return are served)",
     "real provider corporate-action ingestion from Databento / IB — the operator-set / fixture frontier "
     "stands in, exactly as the SRS-DATA-011 verification step permits (SRS-DATA-001/003/006)",
     "paper/live position + resting-order remapping on the surfaced delisting / merger / symbol-change "

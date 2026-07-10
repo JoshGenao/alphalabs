@@ -994,8 +994,9 @@ def assert_store_history(config: dict) -> list[str]:
         "run_scheduled_factor_job_over_store DERIVES its data as-of from the calendar's session_as_of_ts for "
         "the scheduled session, so a caller cannot pair a session with a future as-of -- only the concrete "
         "real-calendar mapping is deferred, see SRS-FAC-001); the Jupyter notebook HOST runtime (SRS-RES-002) is a SEPARATE feature, not a DATA-007 gap; "
-        "FULLY_ADJUSTED / TOTAL_RETURN remain deferred (dividend data, SRS-DATA-012). The "
-        "split-adjustment math is pinned by normalization_modes_check (SRS-DATA-012) and "
+        "FULLY_ADJUSTED / TOTAL_RETURN are now served through the same coverage gate (the SRS-DATA-012 "
+        "HISTORICAL modes; the LIVE per-subscription selection stays deferred, owner SRS-MD-001). The "
+        "normalization math is pinned by normalization_modes_check (SRS-DATA-012) and "
         "coverage_manifest_check (SRS-DATA-011); the concurrent-read-DURING-write Load test is the "
         "deferred SRS-DATA-017 close (SRS-DATA-007, SyRS SYS-27 / SYS-53)"
     )
@@ -1022,8 +1023,9 @@ def assert_normalization_modes(config: dict) -> list[str]:
         "not covered through --end; the binding additionally validates the echoed coverage_through frontier "
         "and raises CoverageNotProvenError when uncovered -- the SRS-DATA-007 binding advance, now that "
         "DATA-007 is COMPLETE and the named consumers read via this path). SRS-DATA-012 STAYS "
-        "passes:false: this is the HISTORICAL adjusted slice -- the LIVE subscription path and the "
-        "TOTAL_RETURN mode are still deferred (SyRS SYS-29 / StRS SN-1.15)"
+        "passes:false: all four HISTORICAL modes (raw / split-adjusted / fully-adjusted / total-return) "
+        "are served, but the LIVE subscription normalization selection stays deferred, owner SRS-MD-001 "
+        "(SyRS SYS-29 / StRS SN-1.15)"
     )
     return static_evidence + [summary]
 

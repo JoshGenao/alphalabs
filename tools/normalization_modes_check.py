@@ -222,10 +222,20 @@ def check_cli_flag(config: dict, cli_src: str) -> str:
             "data007_query_cli must ACCEPT --normalization fully-adjusted and route it through the "
             "coverage gate MarketDataStore::query_fully_adjusted (never CLI-side dividend math)"
         )
-    if '"total-return"' not in compact or "SRS-DATA-012" not in cli_src:
+    # total-return (splits AND reinvested dividends, the SRS-DATA-012 close) is now SERVED -- accepted
+    # at parse and routed through the SAME coverage gate (MarketDataStore::query_total_return), never
+    # CLI-side reinvestment math and never a silent fall-through to raw.
+    if '"total-return"=>Ok' not in compact or "query_total_return" not in compact:
         fail(
-            "data007_query_cli must explicitly REJECT --normalization total-return as deferred "
-            "(naming SRS-DATA-012) rather than silently serving raw values"
+            "data007_query_cli must ACCEPT --normalization total-return and route it through the "
+            "coverage gate MarketDataStore::query_total_return (never CLI-side reinvestment math)"
+        )
+    # It must still name SRS-DATA-012 -- the owner of the total-return mode and the deferred
+    # LIVE-subscription normalization selection.
+    if "SRS-DATA-012" not in cli_src:
+        fail(
+            "data007_query_cli must name SRS-DATA-012 (the owner of the total-return mode and the "
+            "deferred LIVE-subscription normalization selection)"
         )
     if "SRS-DATA-011" not in cli_src:
         fail(
@@ -237,10 +247,11 @@ def check_cli_flag(config: dict, cli_src: str) -> str:
         fail("data007_query_cli must echo the served normalization mode (normalization:<mode>)")
     return (
         "CLI surface: data007_query_cli serves --normalization raw, and split-adjusted / fully-adjusted "
-        "ONLY through the coverage-enforcing gate (query_split_adjusted / query_fully_adjusted) which "
-        "fails closed (naming SRS-DATA-011) when the symbol is not covered through --end; total-return "
-        "remains deferred (naming SRS-DATA-012). The raw adjustment math is never exposed CLI-side -- "
-        "the gate is the only path to it"
+        "/ total-return ONLY through the coverage-enforcing gate (query_split_adjusted / "
+        "query_fully_adjusted / query_total_return) which fails closed (naming SRS-DATA-011) when the "
+        "symbol is not covered through --end; all four HISTORICAL modes are selectable per query and the "
+        "LIVE-subscription selection remains deferred (naming SRS-DATA-012). The raw adjustment math is "
+        "never exposed CLI-side -- the gate is the only path to it"
     )
 
 
@@ -268,12 +279,19 @@ def check_binding_serves_split_adjusted(config: dict, binding_src: str) -> str:
             "the binding must serve fully-adjusted: map FULLY_ADJUSTED to the 'fully-adjusted' CLI "
             "label so it routes through the same SRS-DATA-011 coverage gate"
         )
+    if 'NormalizationMode.TOTAL_RETURN:"total-return"' not in compact:
+        fail(
+            "the binding must serve total-return: map TOTAL_RETURN to the 'total-return' CLI label so "
+            "it routes through the same SRS-DATA-011 coverage gate (the SRS-DATA-012 close)"
+        )
+    # The binding must still fail closed (NotImplementedError) for anything it does NOT serve -- an
+    # unmapped normalization value or a non-EQUITY (option-chain) asset class -- never mis-answering.
     if "raiseNotImplementedError" not in compact:
-        fail("the binding must raise NotImplementedError for every adjusted mode it does not serve")
+        fail("the binding must raise NotImplementedError for a request it does not serve")
     if "normalizationnotin_NORMALIZATION_LABEL" not in compact:
         fail(
             "the binding must fail closed for any mode it does not serve "
-            "(`normalization not in _NORMALIZATION_LABEL`) -- total-return is deferred"
+            "(`normalization not in _NORMALIZATION_LABEL`)"
         )
     # It must keep the Protocol default (SPLIT_ADJUSTED) so the bare-default consumer call serves the
     # gated adjusted series (CoverageNotProvenError when uncovered), not a silent RAW default.
@@ -298,10 +316,11 @@ def check_binding_serves_split_adjusted(config: dict, binding_src: str) -> str:
         )
     return (
         "binding: StoreBackedHistoricalData serves RAW and the gated SPLIT_ADJUSTED (the Protocol "
-        "default) + FULLY_ADJUSTED, mapping them to their CLI labels so they route through the "
-        "SRS-DATA-011 coverage gate (CoverageNotProvenError when uncovered, never raw-as-adjusted), "
-        "validates the echoed coverage_through frontier (gate-integrity), and fails closed on "
-        "total-return (SRS-DATA-012)"
+        "default) + FULLY_ADJUSTED + TOTAL_RETURN, mapping them to their CLI labels so they route "
+        "through the SRS-DATA-011 coverage gate (CoverageNotProvenError when uncovered, never "
+        "raw-as-adjusted), validates the echoed coverage_through frontier (gate-integrity), and fails "
+        "closed on an unserved mode / non-equity asset class (the LIVE selection is the SRS-DATA-012 "
+        "remainder)"
     )
 
 
@@ -411,6 +430,19 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
                 f"expected the split-adjusted gate failure to name SRS-DATA-011 coverage, got:\n{rejected.stderr}"
             )
 
+        # total-return routes through the SAME coverage gate: over the uncovered store it must ALSO
+        # fail closed (proving it is served through the gate, never raw-as-adjusted).
+        rejected_tr = query("total-return")
+        if rejected_tr.returncode == 0:
+            fail(
+                "data007_query_cli --normalization total-return over an UNCOVERED store must FAIL "
+                f"closed at the coverage gate (SRS-DATA-011); CLI returned 0 with:\n{rejected_tr.stdout}"
+            )
+        if "SRS-DATA-011" not in rejected_tr.stderr:
+            fail(
+                f"expected the total-return gate failure to name SRS-DATA-011 coverage, got:\n{rejected_tr.stderr}"
+            )
+
         raw = query("raw")
         if raw.returncode != 0:
             fail(f"raw query failed:\n{raw.stdout}\n{raw.stderr}")
@@ -424,12 +456,14 @@ def check_round_trip(config: dict, require_cargo: bool = False) -> str:
             fail("the CLI must echo normalization:raw")
 
     return (
-        "round-trip: the split-adjustment MATH is proven by the crate's OWN unit tests (cargo test --lib "
-        "normalization: forward/reverse/multi-split, the effective-date boundary, round-half-to-even, the "
-        "symbol-only invariant, non-equity + non-positive + overflow fail-closed); the raw split math is "
-        "crate-internal (not a public crate API); and over an UNCOVERED store the data007_query_cli "
-        "operator surface fails closed on split-adjusted at the coverage gate (naming SRS-DATA-011), so no "
-        "public surface emits raw-as-adjusted output without proven coverage"
+        "round-trip: the split / dividend / total-return MATH is proven by the crate's OWN unit tests "
+        "(cargo test --lib normalization: forward/reverse/multi-split, the effective-date boundary, "
+        "round-half-to-even, the symbol-only invariant, total-return reinvestment continuity, non-equity "
+        "+ non-positive + overflow fail-closed, plus three seeded property tests); the raw adjustment "
+        "math is crate-internal (not a public crate API); and over an UNCOVERED store the "
+        "data007_query_cli operator surface fails closed on BOTH split-adjusted AND total-return at the "
+        "coverage gate (naming SRS-DATA-011), so no public surface emits raw-as-adjusted output without "
+        "proven coverage"
     )
 
 
@@ -449,12 +483,12 @@ _STATIC_CHECKS = (
 )
 
 _DEFERRED_OWNERS = (
-    "fully-adjusted (splits + dividends) and total-return normalization modes — they need dividend "
-    "data + a reinvestment-treatment decision (deferred within SRS-DATA-012)",
     "the LIVE subscription normalization-mode selection — the Market Data Subscription Manager is "
-    "unbuilt (SRS-DATA-012 names live subscriptions; this slice is the HISTORICAL read)",
-    "corporate-action ingestion from a real provider — split events stand in via the fixture batch "
-    "(SRS-DATA-011 owns scheduled corporate-action ingestion)",
+    "unbuilt (SRS-DATA-012 names live subscriptions; the HISTORICAL read serves all four modes -- "
+    "raw / split-adjusted / fully-adjusted / total-return -- so this is the only remaining slice; "
+    "owner SRS-MD-001 -> SRS-EXE-006, SRS-PERF-001)",
+    "corporate-action ingestion from a real provider — split/dividend events stand in via the fixture "
+    "batch (SRS-DATA-001/003/006 own scheduled corporate-action ingestion)",
     "an authoritative SDK<->core money-unit scale — the binding assumes the cents (x100) fixture "
     "convention for equity OHLC (deferred with the runtime money boundary, atp-types)",
 )

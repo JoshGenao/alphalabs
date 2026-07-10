@@ -364,6 +364,49 @@ impl MarketDataStore {
         self.query_adjusted(query, AdjustmentMode::Full, AdjustmentBasis::AsOfEnd)
     }
 
+    /// **The coverage-enforcing TOTAL-RETURN read (SRS-DATA-012 / SyRS SYS-29 "total return").** Like
+    /// [`query_fully_adjusted`](Self::query_fully_adjusted) — the same gate, lineage resolution, event
+    /// surfacing, and frontier basis, and the same coverage requirement (`frontier >= query.end_ts`
+    /// else [`CoverageError::NotCovered`]) — but the served prices REINVEST each cash dividend forward
+    /// instead of back-adjusting for it: a bar on or after a dividend's ex-date is scaled UP by
+    /// `reference close / (reference close − amount)` (the INVERSE of the fully-adjusted factor),
+    /// composed exactly with the split factors. Volume is NEVER dividend-scaled. The result is the
+    /// growth-of-one-share total-return index anchored at the earliest bar — a genuinely distinct
+    /// series from the fully-adjusted (charting) basis, which anchors the latest bar at raw. The same
+    /// fail-closed money-math discipline applies (missing reference close, basis-crossing split,
+    /// invalid term, overflow).
+    ///
+    /// Because a reinvested dividend has `ex_ts <= t` and every in-window bar has `t <= query.end_ts`,
+    /// this read applies NO dividend ex after the query end — so it is inherently point-in-time over
+    /// the dividend leg (no dividend lookahead by construction). The gate therefore resolves (and
+    /// validates) dividends only through `query.end_ts`, NOT the coverage frontier `D`: a future
+    /// (malformed / basis-crossing / missing-reference) dividend in `(query.end_ts, D]` — which no
+    /// returned bar could ever use — cannot fail the read. The frontier vs point-in-time distinction
+    /// still governs the SPLIT leg (`effective_ts > t`; a split in `(end_ts, D]` IS back-adjusted into
+    /// the in-window bars), so [`query_total_return_as_of`](Self::query_total_return_as_of) is provided
+    /// for symmetry: it caps applied splits at `query.end_ts` exactly like the other `_as_of` reads.
+    pub fn query_total_return(
+        &self,
+        query: &UnifiedHistoricalQuery,
+    ) -> Result<SplitAdjustedResult, CoverageError> {
+        self.query_adjusted(
+            query,
+            AdjustmentMode::TotalReturn,
+            AdjustmentBasis::Frontier,
+        )
+    }
+
+    /// Like [`query_total_return`](Self::query_total_return) but POINT-IN-TIME as of the query's
+    /// `end_ts`: only splits effective at or before the as-of date are applied (the reinvested-dividend
+    /// leg is already point-in-time by construction, `ex_ts <= t <= end_ts`, so it is basis-invariant;
+    /// the split leg is what the `_as_of` cap governs — a split in `(end_ts, D]` is not applied).
+    pub fn query_total_return_as_of(
+        &self,
+        query: &UnifiedHistoricalQuery,
+    ) -> Result<SplitAdjustedResult, CoverageError> {
+        self.query_adjusted(query, AdjustmentMode::TotalReturn, AdjustmentBasis::AsOfEnd)
+    }
+
     /// The single gated read core every public adjusted read delegates to — one gate, one lineage
     /// resolution, one event-surfacing path, so no mode/basis combination can skip a check.
     fn query_adjusted(
@@ -434,8 +477,23 @@ impl MarketDataStore {
             // Split-adjusted deliberately ignores dividend records entirely (mode semantics: the
             // SYS-29 split-adjusted basis reflects share-count changes only).
             AdjustmentMode::SplitOnly => Vec::new(),
+            // Fully-adjusted (back-adjust) applies every dividend with ex_ts > t, so a dividend in
+            // (query.end_ts, D] legitimately re-bases the in-window bars -> resolve (and validate)
+            // through the frontier cutoff `adjusted_through`.
             AdjustmentMode::Full => {
                 self.lineage_dividend_events(query, &lineage, adjusted_through, &series)?
+            }
+            // Total-return (reinvest) applies ONLY dividends with ex_ts <= t, and every in-window bar
+            // has t <= query.end_ts, so a dividend ex AFTER the query end is NEVER applied. Resolve
+            // (and therefore VALIDATE) dividends only through `query.end_ts`, NOT the coverage frontier:
+            // a future (malformed / basis-crossing / missing-reference) dividend in
+            // (query.end_ts, D] must not fail a total-return read whose returned bars can never use it.
+            // This is the no-dividend-lookahead property enforced at the RESOLUTION boundary, not only
+            // in the per-bar application. The SPLIT leg above still uses the frontier cutoff (a split in
+            // (end_ts, D] with effective_ts > t IS back-adjusted into the in-window bars), which is what
+            // still distinguishes query_total_return from query_total_return_as_of.
+            AdjustmentMode::TotalReturn => {
+                self.lineage_dividend_events(query, &lineage, query.end_ts, &series)?
             }
         };
 
@@ -453,6 +511,9 @@ impl MarketDataStore {
             AdjustmentMode::SplitOnly => normalization::split_adjust_records(&in_window, &splits)?,
             AdjustmentMode::Full => {
                 normalization::fully_adjust_records(&in_window, &splits, &dividends)?
+            }
+            AdjustmentMode::TotalReturn => {
+                normalization::total_return_records(&in_window, &splits, &dividends)?
             }
         };
 
@@ -753,8 +814,10 @@ impl MarketDataStore {
 enum AdjustmentMode {
     /// Splits / reverse splits only (the SYS-29 split-adjusted basis).
     SplitOnly,
-    /// Splits AND dividends (the SYS-29 fully-adjusted basis).
+    /// Splits AND dividends, back-adjusted (the SYS-29 fully-adjusted basis).
     Full,
+    /// Splits AND dividends, reinvested forward (the SYS-29 total-return basis, SRS-DATA-012).
+    TotalReturn,
 }
 
 /// Which cutoff bounds the applied corporate actions.
@@ -1425,6 +1488,159 @@ mod tests {
         assert!(store
             .query_split_adjusted(&daily_query("AAPL", 0, 100))
             .is_ok());
+    }
+
+    // ----------------------------------------------------------------------- //
+    // Total-return (reinvested dividends, SRS-DATA-012) through the gate.
+    // ----------------------------------------------------------------------- //
+
+    #[test]
+    fn covered_total_return_reinvests_dividends_distinct_from_fully_adjusted() {
+        // Reference close 10000 @100; $1.00 dividend ex @150; post-ex bar @200 (dropped to 9900);
+        // coverage through 300.
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            dividend_record(150, "AAPL", 100),
+            daily_bar("AAPL", 200, 9_900, 100_000),
+            coverage_record(300, "AAPL"),
+        ]);
+        let q = daily_query("AAPL", 0, 200);
+        // TOTAL-RETURN reinvests forward: the pre-ex bar @100 stays raw (10000), the post-ex bar @200
+        // is grossed UP by 10000/9900 -> 10000. A continuous, reinvested series.
+        let tr = store.query_total_return(&q).unwrap();
+        assert_eq!(tr.coverage_through, 300);
+        assert_eq!(tr.adjusted_through, 300);
+        assert_eq!(close_of(&tr.records[0], "close"), 10_000); // bar@100 raw (ex 150 > 100)
+        assert_eq!(close_of(&tr.records[1], "close"), 10_000); // bar@200 reinvested 9900·10000/9900
+        assert_eq!(close_of(&tr.records[1], "volume"), 100_000); // dividend never scales volume
+
+        // FULLY-ADJUSTED back-adjusts the OTHER way: pre-ex bar @100 scaled DOWN to 9900, post-ex
+        // bar @200 stays raw (9900). DISTINCT series from total-return (both flat here, different level).
+        let fa = store.query_fully_adjusted(&q).unwrap();
+        assert_eq!(close_of(&fa.records[0], "close"), 9_900);
+        assert_eq!(close_of(&fa.records[1], "close"), 9_900);
+        assert_ne!(
+            close_of(&tr.records[1], "close"),
+            close_of(&fa.records[1], "close"),
+            "total-return and fully-adjusted are distinct series"
+        );
+        // SPLIT-ADJUSTED ignores the dividend entirely (mode semantics): both bars verbatim.
+        let sa = store.query_split_adjusted(&q).unwrap();
+        assert_eq!(close_of(&sa.records[0], "close"), 10_000);
+        assert_eq!(close_of(&sa.records[1], "close"), 9_900);
+    }
+
+    #[test]
+    fn total_return_fails_closed_when_uncovered_exactly_like_the_other_adjusted_reads() {
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            dividend_record(150, "AAPL", 100),
+        ]);
+        for query_fn in [
+            MarketDataStore::query_total_return,
+            MarketDataStore::query_total_return_as_of,
+        ] {
+            let err = query_fn(&store, &daily_query("AAPL", 0, 200)).unwrap_err();
+            assert_eq!(
+                err,
+                CoverageError::NotCovered {
+                    symbol: "AAPL".to_string(),
+                    have_through: None,
+                    need_through: 200,
+                }
+            );
+        }
+        // The equity-kind guard is identical too.
+        assert_eq!(
+            store
+                .query_total_return(&UnifiedHistoricalQuery::new("AAPL", "1d", 0, 200))
+                .unwrap_err(),
+            CoverageError::UnsupportedQueryKind {
+                kind: "unspecified"
+            }
+        );
+    }
+
+    #[test]
+    fn total_return_as_of_caps_splits_at_window_end_while_the_reinvest_leg_is_basis_invariant() {
+        // Reference close 10000 @100; dividend ex @120; queried post-ex bar @150 (dropped to 9900);
+        // a 4-for-1 split @200 AFTER the window end (150) but within coverage (300).
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            dividend_record(120, "AAPL", 100),
+            daily_bar("AAPL", 150, 9_900, 100_000),
+            split("AAPL", 200, 4, 1),
+            coverage_record(300, "AAPL"),
+        ]);
+        let q = daily_query("AAPL", 0, 150);
+        // Frontier basis applies the future split (÷4) AND the reinvested dividend: bar@150 =
+        // 9900·(1·10000)/(4·9900) = 2500.
+        let frontier = store.query_total_return(&q).unwrap();
+        assert_eq!(frontier.adjusted_through, 300);
+        assert_eq!(close_of(&frontier.records[1], "close"), 2_500);
+        // Point-in-time basis EXCLUDES the future split (effective_ts 200 > 150), but the dividend
+        // reinvestment is unchanged (ex 120 <= 150, basis-invariant): bar@150 = 9900·10000/9900 = 10000.
+        let as_of = store.query_total_return_as_of(&q).unwrap();
+        assert_eq!(as_of.adjusted_through, 150);
+        assert_eq!(as_of.coverage_through, 300);
+        assert_eq!(close_of(&as_of.records[1], "close"), 10_000);
+        // The pre-ex bar @100 is raw under as-of (no split, ex 120 > 100), split-only under frontier.
+        assert_eq!(close_of(&as_of.records[0], "close"), 10_000);
+        assert_eq!(close_of(&frontier.records[0], "close"), 2_500); // 10000/4 (split only, ex 120 > 100)
+    }
+
+    #[test]
+    fn total_return_frontier_ignores_an_invalid_future_dividend_beyond_the_query_end() {
+        // REGRESSION (adversarial review): a dividend ex @250 in (query.end_ts=200, D=300] with an
+        // INVALID term (amount 10000 >= its reference close 10000 @200). Total-return can never apply
+        // it (reinvest needs ex_ts <= t <= 200), so it MUST NOT fail the read -- the no-dividend-
+        // lookahead property enforced at the resolution boundary, not just the per-bar application.
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            daily_bar("AAPL", 200, 10_000, 100_000),
+            dividend_record(250, "AAPL", 10_000), // ex @250: amount 10000 >= reference close 10000
+            coverage_record(300, "AAPL"),
+        ]);
+        let q = daily_query("AAPL", 0, 200);
+        // total-return succeeds and returns the raw bars (no dividend ex <= 200 applies).
+        let tr = store.query_total_return(&q).unwrap();
+        assert_eq!(close_of(&tr.records[0], "close"), 10_000);
+        assert_eq!(close_of(&tr.records[1], "close"), 10_000);
+        // CONTRAST: fully-adjusted DOES apply an ex @250 > t dividend on the frontier basis, so it
+        // legitimately validates it and FAILS closed on the invalid term (the two modes differ here).
+        assert!(matches!(
+            store.query_fully_adjusted(&q),
+            Err(CoverageError::Normalization(
+                NormalizationError::InvalidDividendTerm { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn total_return_frontier_ignores_a_future_basis_crossing_dividend_beyond_the_query_end() {
+        // REGRESSION (adversarial review): a dividend ex @300 in (query.end_ts=250, D=400] whose
+        // reference close (@200) is separated from its ex-date by a split @260 -> a BasisCrossingDividend
+        // for fully-adjusted. Total-return never applies the ex @300 dividend (ex > 250 >= t), so the
+        // future basis-crossing must NOT fail the total-return read.
+        let store = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            daily_bar("AAPL", 200, 10_000, 100_000),
+            split("AAPL", 260, 4, 1),
+            dividend_record(300, "AAPL", 100), // ex @300, reference close @200; split @260 in (200, 300]
+            coverage_record(400, "AAPL"),
+        ]);
+        let q = daily_query("AAPL", 0, 250);
+        // total-return succeeds: the future dividend @300 is out of scope (its basis-crossing is never
+        // checked because it is never resolved), the split @260 still back-adjusts the in-window bars.
+        assert!(store.query_total_return(&q).is_ok());
+        // CONTRAST: fully-adjusted resolves the ex @300 dividend on the frontier basis and FAILS closed
+        // on the basis-crossing split.
+        assert!(matches!(
+            store.query_fully_adjusted(&q),
+            Err(CoverageError::Normalization(
+                NormalizationError::BasisCrossingDividend { .. }
+            ))
+        ));
     }
 
     // ----------------------------------------------------------------------- //

@@ -14,10 +14,10 @@ pinned at the boundary:
 * OHLC minor units are scaled by 100 (cents); ``volume`` is a raw, UNSCALED int count;
 * ``event_ts`` becomes a UTC ISO-8601 timestamp;
 * the binding serves ``RAW`` (``--normalization raw``) and the gated ``SPLIT_ADJUSTED`` (the Protocol
-  default, ``--normalization split-adjusted``): a split-adjusted response must carry the
-  ``coverage_through`` frontier (gate-integrity) and an uncovered query maps to ``CoverageNotProvenError``
-  (naming SRS-DATA-011); ``FULLY_ADJUSTED`` / ``TOTAL_RETURN`` (and an ``OPTION`` asset class) raise
-  ``NotImplementedError`` (dividend data, SRS-DATA-012);
+  default, ``--normalization split-adjusted``), ``FULLY_ADJUSTED``, and ``TOTAL_RETURN`` (SRS-DATA-012):
+  an adjusted response must carry the ``coverage_through`` frontier (gate-integrity) and an uncovered
+  query maps to ``CoverageNotProvenError`` (naming SRS-DATA-011); an ``OPTION`` asset class (or an
+  unmapped mode) raises ``NotImplementedError``;
 * the CLI-echoed ``normalization`` mode must match the request, else fail closed (a stale binary that
   ignores the flag cannot return raw values labelled as adjusted);
 * a truncated / drifted output (``match_count`` mismatch, missing index, malformed integer) fails closed;
@@ -61,10 +61,10 @@ def _render(
     normalization: str = "raw",
 ) -> str:
     """Render data007_query_cli output, echoing the queried symbol/resolution/start/end/normalization
-    (as the real CLI does). For the gate-served adjusted modes (split-adjusted / fully-adjusted), the
-    real CLI also echoes the proven coverage frontier ``coverage_through`` (always >= end); the fake
-    sets it to ``end`` (D == end, the inclusive boundary the gate guarantees) so a fake adjusted
-    response is gate-valid by construction."""
+    (as the real CLI does). For the gate-served adjusted modes (split-adjusted / fully-adjusted /
+    total-return), the real CLI also echoes the proven coverage frontier ``coverage_through`` (always
+    >= end); the fake sets it to ``end`` (D == end, the inclusive boundary the gate guarantees) so a
+    fake adjusted response is gate-valid by construction."""
     lines = [
         f"symbol:{symbol}",
         f"resolution:{resolution}",
@@ -73,7 +73,7 @@ def _render(
         "kind:any",
         f"normalization:{normalization}",
     ]
-    if normalization in ("split-adjusted", "fully-adjusted"):
+    if normalization in ("split-adjusted", "fully-adjusted", "total-return"):
         lines.append(f"coverage_through:{end}")
     lines.append(f"match_count:{len(records)}")
     for i, (event_ts, fields) in enumerate(records):
@@ -296,16 +296,17 @@ def test_default_normalization_serves_split_adjusted_through_the_gate() -> None:
     assert _arg(runner.calls[0], "--normalization") == "split-adjusted"
 
 
-def test_total_return_normalization_raises_not_implemented() -> None:
-    # TOTAL_RETURN needs dividend reinvestment + per-subscription selection (SRS-DATA-012); it stays
-    # OUT of the served label map and fails closed before any query. (SPLIT_ADJUSTED and
-    # FULLY_ADJUSTED are now served through the gate, see the neighbouring tests.)
+def test_total_return_passes_and_routes_through_the_gate() -> None:
+    # TOTAL_RETURN (splits AND reinvested dividends, SRS-DATA-012) is served through the SAME coverage
+    # gate as SPLIT_ADJUSTED / FULLY_ADJUSTED: the binding issues --normalization total-return and the
+    # gate-integrity validation (the echoed coverage_through) applies to it identically. Only the LIVE
+    # per-subscription selection remains deferred (SRS-DATA-012 remainder, SRS-MD-001).
     runner = _FakeRunner(records=[(1_700_000_000, _OHLCV)])
-    with pytest.raises(NotImplementedError):
-        _binding(runner).get_bars(
-            "AAPL", lookback=1, frequency="1d", normalization=NormalizationMode.TOTAL_RETURN
-        )
-    assert runner.calls == []  # refused before any query
+    bars = _binding(runner).get_bars(
+        "AAPL", lookback=1, frequency="1d", normalization=NormalizationMode.TOTAL_RETURN
+    )
+    assert len(bars) == 1
+    assert _arg(runner.calls[0], "--normalization") == "total-return"
 
 
 def test_fully_adjusted_passes_and_routes_through_the_gate() -> None:
@@ -456,27 +457,24 @@ def test_get_bars_range_default_serves_split_adjusted() -> None:
     assert _arg(runner.calls[0], "--normalization") == "split-adjusted"
 
 
-def test_get_bars_range_total_return_raises_not_implemented() -> None:
-    runner = _FakeRunner(records=[(1_700_000_000, _OHLCV)])
+def test_get_bars_range_serves_fully_adjusted_and_total_return_through_the_gate() -> None:
+    # Both dividend-aware modes are served through the coverage gate on the range primitive too.
     start = datetime(2023, 11, 14, tzinfo=timezone.utc)
     end = datetime(2023, 11, 16, tzinfo=timezone.utc)
-    with pytest.raises(NotImplementedError):
-        _binding(runner).get_bars_range(
+    for mode, label in (
+        (NormalizationMode.FULLY_ADJUSTED, "fully-adjusted"),
+        (NormalizationMode.TOTAL_RETURN, "total-return"),
+    ):
+        runner = _FakeRunner(records=[(1_700_000_000, _OHLCV)])
+        bars = _binding(runner).get_bars_range(
             "AAPL",
             frequency="1d",
             start=start,
             end=end,
-            normalization=NormalizationMode.TOTAL_RETURN,
+            normalization=mode,
         )
-    # FULLY_ADJUSTED is served (through the gate), no longer refused.
-    bars = _binding(runner).get_bars_range(
-        "AAPL",
-        frequency="1d",
-        start=start,
-        end=end,
-        normalization=NormalizationMode.FULLY_ADJUSTED,
-    )
-    assert len(bars) == 1
+        assert len(bars) == 1
+        assert _arg(runner.calls[0], "--normalization") == label
 
 
 # --------------------------------------------------------------------------- #

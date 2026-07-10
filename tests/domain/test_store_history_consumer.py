@@ -323,9 +323,9 @@ def test_consumer_split_adjusted_uncovered_fails_closed() -> None:
 
 def test_consumer_normalization_safety_over_uncovered_store() -> None:
     # The bare default (no normalization arg, the path WarmupController uses), an explicit
-    # SPLIT_ADJUSTED, and FULLY_ADJUSTED (splits AND dividends, served through the same gate) ALL fail
-    # closed at the coverage gate over an uncovered store; TOTAL_RETURN fails closed before any query
-    # (SRS-DATA-012).
+    # SPLIT_ADJUSTED, FULLY_ADJUSTED (splits AND dividends), and TOTAL_RETURN (splits AND reinvested
+    # dividends, SRS-DATA-012) -- ALL served through the SAME coverage gate -- fail closed at the gate
+    # over an uncovered store (naming SRS-DATA-011), never raw-as-adjusted.
     cargo = _cargo()
     if cargo is None:
         pytest.skip("cargo not on PATH")
@@ -343,16 +343,11 @@ def test_consumer_normalization_safety_over_uncovered_store() -> None:
             {},
             {"normalization": NormalizationMode.SPLIT_ADJUSTED},
             {"normalization": NormalizationMode.FULLY_ADJUSTED},
+            {"normalization": NormalizationMode.TOTAL_RETURN},
         ):
             with pytest.raises(CoverageNotProvenError) as exc:
                 history.get_bars("AAPL", lookback=1, frequency="1d", **mode_kwargs)
             assert "SRS-DATA-011" in str(exc.value)
-        # TOTAL_RETURN fails closed before any query (dividend reinvestment + per-subscription
-        # selection, SRS-DATA-012).
-        with pytest.raises(NotImplementedError):
-            history.get_bars(
-                "AAPL", lookback=1, frequency="1d", normalization=NormalizationMode.TOTAL_RETURN
-            )
 
 
 def test_store_history_binding_is_registered_in_architecture_metadata() -> None:

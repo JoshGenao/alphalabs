@@ -119,11 +119,13 @@ def test_cli_serves_raw_and_fails_closed_split_adjusted_without_coverage() -> No
         assert "normalization:raw" in raw.stdout
         assert "record.0.field.close:10000" in raw.stdout
 
-        # Over this UNCOVERED store (no coverage record ingested), split-adjusted FAILS closed at the
-        # coverage gate (no raw-as-adjusted), naming the corporate-action coverage owner.
-        adj = query("split-adjusted")
-        assert adj.returncode != 0
-        assert "SRS-DATA-011" in adj.stderr
+        # Over this UNCOVERED store (no coverage record ingested), every adjusted mode FAILS closed at
+        # the coverage gate (no raw-as-adjusted), naming the corporate-action coverage owner. This
+        # includes total-return (the SRS-DATA-012 close), which routes through the SAME gate.
+        for adjusted_mode in ("split-adjusted", "fully-adjusted", "total-return"):
+            adj = query(adjusted_mode)
+            assert adj.returncode != 0, adjusted_mode
+            assert "SRS-DATA-011" in adj.stderr, adjusted_mode
 
 
 def test_consumer_binding_fails_closed_split_adjusted_without_coverage() -> None:
@@ -143,17 +145,14 @@ def test_consumer_binding_fails_closed_split_adjusted_without_coverage() -> None
         assert "SRS-DATA-011" in str(exc.value)
         with pytest.raises(CoverageNotProvenError):
             binding.get_bars("AAPL", lookback=5, frequency="1d")
-        # FULLY_ADJUSTED is served through the SAME gate now, so over the uncovered store it fails
-        # closed at the gate too (CoverageNotProvenError, not NotImplementedError).
-        with pytest.raises(CoverageNotProvenError):
-            binding.get_bars(
-                "AAPL", lookback=5, frequency="1d", normalization=NormalizationMode.FULLY_ADJUSTED
-            )
-        # TOTAL_RETURN still fails closed before any query (SRS-DATA-012).
-        with pytest.raises(NotImplementedError):
-            binding.get_bars(
-                "AAPL", lookback=5, frequency="1d", normalization=NormalizationMode.TOTAL_RETURN
-            )
+        # FULLY_ADJUSTED and TOTAL_RETURN are served through the SAME gate now, so over the uncovered
+        # store they fail closed at the gate too (CoverageNotProvenError, not NotImplementedError).
+        for adjusted_mode in (
+            NormalizationMode.FULLY_ADJUSTED,
+            NormalizationMode.TOTAL_RETURN,
+        ):
+            with pytest.raises(CoverageNotProvenError):
+                binding.get_bars("AAPL", lookback=5, frequency="1d", normalization=adjusted_mode)
         # RAW still works through the binding.
         (raw_bar,) = binding.get_bars(
             "AAPL", lookback=5, frequency="1d", normalization=NormalizationMode.RAW

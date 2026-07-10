@@ -193,6 +193,50 @@ def test_dividend_backtest_pnl_under_the_fully_adjusted_mode() -> None:
         assert split_records[0]["close"] - records[0]["close"] == 25
 
 
+def test_total_return_backtest_reinvests_the_dividend_forward() -> None:
+    # SRS-DATA-012 total-return: the SAME $1.00 dividend ex @150 the fully-adjusted test uses, but the
+    # total-return mode REINVESTS it forward (the growth-of-one-share index) instead of back-adjusting.
+    # A price-return (raw) backtest buying AAPL @100 (close 10000) and evaluating @300 (close 10000)
+    # sees FLAT P&L across the dividend; the total-return series captures the reinvested dividend: the
+    # post-ex bar is grossed UP by reference/(reference-amount) = 10000/9900, so @300 reads 10101.
+    cargo = _cargo()
+    if cargo is None:
+        pytest.skip("cargo not on PATH")
+    ingest_bin, coverage_bin, query_bin = _build(cargo)
+    with tempfile.TemporaryDirectory() as tmp:
+        _ingest(ingest_bin, tmp, "daily-equity-bar", 100, init=True)
+        _ingest(ingest_bin, tmp, "corporate-action-dividend", 150)
+        _ingest(ingest_bin, tmp, "daily-equity-bar", 300)
+        _assert_coverage(coverage_bin, tmp, "AAPL", 300)
+
+        total = _query(query_bin, tmp, "AAPL", 0, 300, "total-return")
+        assert total.returncode == 0, total.stderr
+        envelope, tr_records, _events = _parse(total.stdout)
+        assert envelope["normalization"] == "total-return"
+        assert envelope["coverage_through"] == "300"
+        assert [r["event_ts"] for r in tr_records] == [100, 300]
+        # Pre-ex bar @100 stays raw (the dividend is not yet ex); post-ex bar @300 reinvested UP.
+        assert tr_records[0]["close"] == 10000
+        assert tr_records[1]["close"] == 10101  # 10000 * 10000/9900, round-half-even
+        # Volume is never dividend-scaled (no split here either): verbatim.
+        assert tr_records[1]["volume"] == 100000
+        # The total-return P&L across the dividend is POSITIVE (the reinvested dividend), whereas the
+        # raw price-return series is flat over the same window -- the mode difference IS the dividend.
+        tr_pnl = tr_records[1]["close"] - tr_records[0]["close"]
+        assert tr_pnl == 101
+        raw = _query(query_bin, tmp, "AAPL", 0, 300, "raw")
+        _, raw_records, _ = _parse(raw.stdout)
+        assert raw_records[1]["close"] - raw_records[0]["close"] == 0
+
+        # Total-return is DISTINCT from fully-adjusted (which anchors the latest bar at raw and
+        # back-adjusts the pre-ex bar DOWN to 9900): different levels, same reinvestment content.
+        fully = _query(query_bin, tmp, "AAPL", 0, 300, "fully-adjusted")
+        _, fa_records, _ = _parse(fully.stdout)
+        assert fa_records[0]["close"] == 9900
+        assert fa_records[1]["close"] == 10000
+        assert tr_records[1]["close"] != fa_records[1]["close"]
+
+
 def test_delisting_backtest_marks_the_position_final() -> None:
     # MSFT delists @150. A backtest holding MSFT through [0, 300] gets the full (terminated) series
     # plus the structural delisting event: it marks the position final at the last served close

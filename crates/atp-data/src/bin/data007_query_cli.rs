@@ -28,8 +28,8 @@
 //! [`atp_data::tiering::TieredStore::archive_cold`] moved off SSD gets it back from NAS **without
 //! changing the query**, and the NAS result is cached on SSD within the configured share (`--cache-share`
 //! % — default 20 — of `--ssd-capacity`, which defaults to a bounded value; `--now` defaults to the
-//! system clock). Tiered mode serves `raw` only (a `split-adjusted` / `fully-adjusted` query stays
-//! single-tier); the adjusted × cold-read interaction is the SRS-DATA-009 × SRS-DATA-011/012
+//! system clock). Tiered mode serves `raw` only (a `split-adjusted` / `fully-adjusted` / `total-return`
+//! query stays single-tier); the adjusted × cold-read interaction is the SRS-DATA-009 × SRS-DATA-011/012
 //! follow-up. With no NAS tier configured the query is a single-directory read, byte-identical to
 //! before.
 //!
@@ -51,14 +51,15 @@ use atp_data::store::{DatasetKind, MarketDataRecord, MarketDataStore};
 use atp_data::tiering::{TierConfig, TieredStore, DEFAULT_HOT_RETENTION_DAYS};
 use atp_data::{CorporateActionEvent, UnifiedHistoricalQuery};
 
-/// The normalization mode the operator surface serves. `raw` returns stored values verbatim;
-/// `split-adjusted` and `fully-adjusted` (splits AND dividends, SyRS SYS-29) route through the
-/// coverage-enforcing gate. `total-return` fails closed at parse time (deferred to SRS-DATA-012).
+/// The normalization mode the operator surface serves (SRS-DATA-012, SyRS SYS-29). `raw` returns
+/// stored values verbatim; `split-adjusted`, `fully-adjusted` (splits AND dividends), and
+/// `total-return` (splits AND reinvested dividends) all route through the coverage-enforcing gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Normalization {
     Raw,
     SplitAdjusted,
     FullyAdjusted,
+    TotalReturn,
 }
 
 const USAGE: &str = "\
@@ -100,7 +101,13 @@ NORMALIZATION (optional --normalization, default raw):
                     rules as split-adjusted, with pre-ex-date prices additionally back-adjusted by each
                     dividend's (reference close - amount) / reference close; volume is never
                     dividend-scaled. Fails closed on a dividend with no prior close.
-    (total-return is deferred: dividend reinvestment + per-subscription selection, SRS-DATA-012)
+    total-return    splits AND reinvested dividends (SyRS SYS-29 'total return', SRS-DATA-012): the
+                    same coverage gate, but each dividend is REINVESTED forward — a bar on/after an
+                    ex-date is scaled UP by reference close / (reference close - amount), the inverse of
+                    the fully-adjusted back-adjustment — yielding the growth-of-one-share index (a
+                    distinct series from fully-adjusted). Volume is never dividend-scaled; same
+                    fail-closed rules. (Historical selection; the LIVE-subscription selection awaits the
+                    Market Data Subscription Manager, SRS-MD-001.)
 
 Both adjusted modes resolve the symbol's RENAME LINEAGE (a query for the current symbol returns its
 predecessors' bars relabeled; coverage asserted for the queried symbol governs its whole lineage) and
@@ -171,8 +178,8 @@ fn cmd_query(rest: &[String]) -> Result<(), String> {
     // ATP_DATA_STORE_DIR, so an existing deployment auto-tiers with NO change to the query invocation;
     // an explicit --nas overrides. --dir is the SSD primary tier here. Adjusted reads are not tiered
     // (the adjusted × cold-read interaction is the SRS-DATA-009 × SRS-DATA-011/012 follow-up), so a
-    // split-adjusted / fully-adjusted query with a NAS configured falls through to the single-tier SSD
-    // path unchanged.
+    // split-adjusted / fully-adjusted / total-return query with a NAS configured falls through to the
+    // single-tier SSD path unchanged.
     if let Some(nas) = resolve_nas(&parsed) {
         if parsed.normalization == Normalization::Raw {
             return cmd_query_tiered(&parsed, dir, nas, &query, &symbol, &resolution, start, end);
@@ -221,6 +228,22 @@ fn cmd_query(rest: &[String]) -> Result<(), String> {
                 (
                     adjusted.records,
                     "fully-adjusted",
+                    Some((
+                        adjusted.coverage_through,
+                        adjusted.adjusted_through,
+                        adjusted.events,
+                    )),
+                )
+            }
+            // TOTAL-RETURN: the same coverage-enforcing gate (MarketDataStore::query_total_return),
+            // reinvesting dividends forward instead of back-adjusting. Fails closed identically.
+            Normalization::TotalReturn => {
+                let adjusted = store
+                    .query_total_return(&query)
+                    .map_err(|err| err.to_string())?;
+                (
+                    adjusted.records,
+                    "total-return",
                     Some((
                         adjusted.coverage_through,
                         adjusted.adjusted_through,
@@ -537,25 +560,22 @@ impl ParsedArgs {
     }
 }
 
-/// Parse the `--normalization` value. `raw` returns stored values verbatim; `split-adjusted` and
-/// `fully-adjusted` route through the coverage-enforcing gate
-/// ([`MarketDataStore::query_split_adjusted`] / [`MarketDataStore::query_fully_adjusted`]) — the
-/// values are ACCEPTED here, and the gate itself fails closed when the symbol is not covered through
-/// `--end` (so an adjusted label is served only when coverage makes it honest, never
-/// raw-as-adjusted). `total-return` is rejected as DEFERRED (dividend reinvestment and the
-/// per-subscription mode selection, SRS-DATA-012). An unknown value fails closed.
+/// Parse the `--normalization` value (SRS-DATA-012). `raw` returns stored values verbatim;
+/// `split-adjusted`, `fully-adjusted`, and `total-return` route through the coverage-enforcing gate
+/// ([`MarketDataStore::query_split_adjusted`] / [`MarketDataStore::query_fully_adjusted`] /
+/// [`MarketDataStore::query_total_return`]) — the values are ACCEPTED here, and the gate itself fails
+/// closed when the symbol is not covered through `--end` (so an adjusted label is served only when
+/// coverage makes it honest, never raw-as-adjusted). All four HISTORICAL modes are selectable per
+/// query; the LIVE-subscription mode selection awaits the Market Data Subscription Manager
+/// (SRS-MD-001), the deferred remainder of SRS-DATA-012. An unknown value fails closed.
 fn parse_normalization(raw: &str) -> Result<Normalization, String> {
     match raw {
         "raw" => Ok(Normalization::Raw),
         "split-adjusted" => Ok(Normalization::SplitAdjusted),
         "fully-adjusted" => Ok(Normalization::FullyAdjusted),
-        "total-return" => Err(format!(
-            "--normalization '{raw}' is deferred to SRS-DATA-012 (total-return needs dividend \
-             reinvestment and per-subscription mode selection); this surface serves 'raw', \
-             'split-adjusted', and 'fully-adjusted'"
-        )),
+        "total-return" => Ok(Normalization::TotalReturn),
         other => Err(format!(
-            "unknown --normalization '{other}' (this operator surface serves 'raw' | 'split-adjusted' | 'fully-adjusted')"
+            "unknown --normalization '{other}' (this operator surface serves 'raw' | 'split-adjusted' | 'fully-adjusted' | 'total-return')"
         )),
     }
 }

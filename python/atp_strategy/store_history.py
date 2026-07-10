@@ -23,21 +23,22 @@ Scope / honesty
 ---------------
 * **Source-neutral.** There is NO provider/vendor/source/feed parameter, and no origin field
   is read off the result — the core ``SRS-DATA-007`` invariant.
-* **Normalization.** This consumer binding serves ``NormalizationMode.RAW`` (the stored values
-  **verbatim**), ``NormalizationMode.SPLIT_ADJUSTED`` — the :class:`HistoricalData` Protocol default —
-  and ``NormalizationMode.FULLY_ADJUSTED`` (splits AND dividends, SyRS SYS-29). The adjusted modes are
-  served ONLY through the ``data007_query_cli`` operator surface, which routes them through the
-  ``SRS-DATA-011`` coverage-enforcing gate (``MarketDataStore::query_split_adjusted`` /
-  ``query_fully_adjusted``): the adjustment is computed as-of the proven coverage frontier ``D``
-  (echoed back as ``coverage_through``, ``D >= end``), applying only corporate actions effective
-  ``<= D``, and the gate fails closed when the symbol is not covered through the query end. So an
-  adjusted label is only ever returned when proven corporate-action coverage makes it honest; an
-  uncovered query raises :class:`CoverageNotProvenError` (naming ``SRS-DATA-011``), never silent
-  raw-as-adjusted. The binding additionally validates that an adjusted response carries the
+* **Normalization.** This consumer binding serves all four ``SRS-DATA-012`` HISTORICAL modes:
+  ``NormalizationMode.RAW`` (the stored values **verbatim**), ``NormalizationMode.SPLIT_ADJUSTED``
+  — the :class:`HistoricalData` Protocol default — ``NormalizationMode.FULLY_ADJUSTED`` (splits AND
+  dividends, SyRS SYS-29), and ``NormalizationMode.TOTAL_RETURN`` (splits AND reinvested dividends).
+  The adjusted modes are served ONLY through the ``data007_query_cli`` operator surface, which routes
+  them through the ``SRS-DATA-011`` coverage-enforcing gate (``MarketDataStore::query_split_adjusted``
+  / ``query_fully_adjusted`` / ``query_total_return``): the adjustment is computed as-of the proven
+  coverage frontier ``D`` (echoed back as ``coverage_through``, ``D >= end``), applying only corporate
+  actions effective ``<= D``, and the gate fails closed when the symbol is not covered through the
+  query end. So an adjusted label is only ever returned when proven corporate-action coverage makes it
+  honest; an uncovered query raises :class:`CoverageNotProvenError` (naming ``SRS-DATA-011``), never
+  silent raw-as-adjusted. The binding additionally validates that an adjusted response carries the
   ``coverage_through`` frontier (and a raw response does not) — a stale/forged CLI that emits an
-  adjusted label without passing the gate is caught at the trust boundary. ``TOTAL_RETURN`` still
-  fails closed with :class:`NotImplementedError` (dividend reinvestment + per-subscription mode
-  selection, ``SRS-DATA-012``).
+  adjusted label without passing the gate is caught at the trust boundary. The LIVE-subscription mode
+  selection (as opposed to this HISTORICAL read) awaits the Market Data Subscription Manager
+  (``SRS-MD-001``), the deferred remainder of ``SRS-DATA-012``.
 * **Resolutions.** ``1d`` (daily) and ``1m`` (minute) are served from native stored datasets. The
   richer intraday resolutions ``5m`` / ``15m`` / ``1h`` are served by CONSOLIDATING the stored ``1m``
   series on the fly (``SRS-SDK-007`` / SyRS ``SYS-30a``) — the underlying ``1m`` fetch flows through
@@ -113,22 +114,24 @@ _EQUITY_BAR_KIND_BY_RESOLUTION = {"1d": "daily-equity-bar", "1m": "minute-equity
 _CONSOLIDATED_FROM_MINUTE = ("5m", "15m", "1h")
 
 # The normalization modes this CONSUMER binding serves -> the data007_query_cli --normalization value.
-# RAW returns stored values verbatim. SPLIT_ADJUSTED (the HistoricalData Protocol default) and
-# FULLY_ADJUSTED (splits AND dividends, SyRS SYS-29) are served ONLY through the data007_query_cli
-# coverage-enforcing gate (MarketDataStore::query_split_adjusted / query_fully_adjusted): they are
+# RAW returns stored values verbatim. SPLIT_ADJUSTED (the HistoricalData Protocol default),
+# FULLY_ADJUSTED (splits AND dividends, SyRS SYS-29), and TOTAL_RETURN (splits AND reinvested
+# dividends, SRS-DATA-012) are served ONLY through the data007_query_cli coverage-enforcing gate
+# (MarketDataStore::query_split_adjusted / query_fully_adjusted / query_total_return): they are
 # adjusted as-of the proven coverage frontier and fail closed (naming SRS-DATA-011) when the symbol is
-# not covered through the query end, so a strategy can never get raw bars dressed up as adjusted.
-# TOTAL_RETURN stays OUT of this map (dividend reinvestment + per-subscription mode selection,
-# SRS-DATA-012) so _reject_unsupported fails it closed with NotImplementedError.
+# not covered through the query end, so a strategy can never get raw bars dressed up as adjusted. All
+# four HISTORICAL modes are selectable per query; the LIVE-subscription selection awaits the Market
+# Data Subscription Manager (SRS-MD-001), the deferred remainder of SRS-DATA-012.
 _NORMALIZATION_LABEL = {
     NormalizationMode.RAW: "raw",
     NormalizationMode.SPLIT_ADJUSTED: "split-adjusted",
     NormalizationMode.FULLY_ADJUSTED: "fully-adjusted",
+    NormalizationMode.TOTAL_RETURN: "total-return",
 }
 
 # The gate-served (coverage-enforced) CLI labels: every adjusted response must carry the
 # coverage_through frontier the gate stamped (gate-integrity); a raw response must not.
-_GATED_NORMALIZATION_LABELS = ("split-adjusted", "fully-adjusted")
+_GATED_NORMALIZATION_LABELS = ("split-adjusted", "fully-adjusted", "total-return")
 
 # Default per-query subprocess budget (seconds). A local store read is sub-second; this bound exists
 # so a wedged CLI surfaces a TimeoutExpired -> StoreQueryError rather than hanging a strategy container.
@@ -263,9 +266,9 @@ class StoreBackedHistoricalData:
         default): the binding routes it through the ``data007_query_cli`` coverage gate, returning bars
         adjusted as-of the proven coverage frontier, and raises :class:`CoverageNotProvenError` (naming
         SRS-DATA-011) if the symbol is not covered through ``end``. ``FULLY_ADJUSTED`` (splits AND
-        dividends) is served through the same gate. Pass ``normalization=NormalizationMode.RAW`` for
-        the stored values verbatim; total-return remains deferred (SRS-DATA-012). See the module
-        docstring.
+        dividends) and ``TOTAL_RETURN`` (splits AND reinvested dividends, SRS-DATA-012) are served
+        through the same gate. Pass ``normalization=NormalizationMode.RAW`` for the stored values
+        verbatim. See the module docstring.
         """
         if not isinstance(lookback, int) or isinstance(lookback, bool):
             raise ValueError(f"lookback must be a non-negative int (got {lookback!r})")
@@ -302,8 +305,8 @@ class StoreBackedHistoricalData:
         jobs call for reproducibility; :meth:`get_bars` is the lookback-shaped wrapper. Like
         :meth:`get_bars`, ``normalization`` defaults to ``SPLIT_ADJUSTED`` and is served through the
         coverage gate (raising :class:`CoverageNotProvenError`, naming SRS-DATA-011, when the symbol is
-        not covered through ``end``); ``FULLY_ADJUSTED`` is served through the same gate; pass
-        ``NormalizationMode.RAW`` for verbatim values. Total-return remains deferred (SRS-DATA-012).
+        not covered through ``end``); ``FULLY_ADJUSTED`` and ``TOTAL_RETURN`` (SRS-DATA-012) are served
+        through the same gate; pass ``NormalizationMode.RAW`` for verbatim values.
         """
         self._reject_unsupported(asset_class, normalization)
         start_ts = self._epoch_seconds(start)
@@ -329,10 +332,9 @@ class StoreBackedHistoricalData:
         """Fail closed for out-of-scope asset class / normalization rather than mis-answering."""
         if normalization not in _NORMALIZATION_LABEL:
             raise NotImplementedError(
-                f"StoreBackedHistoricalData serves NormalizationMode.RAW (verbatim stored values), "
-                f"NormalizationMode.SPLIT_ADJUSTED, and NormalizationMode.FULLY_ADJUSTED (both through "
-                f"the SRS-DATA-011 coverage gate); {normalization} is deferred — total-return needs "
-                "dividend reinvestment and per-subscription mode selection (SRS-DATA-012)."
+                f"StoreBackedHistoricalData serves NormalizationMode.RAW (verbatim stored values) and "
+                f"the coverage-gated SPLIT_ADJUSTED / FULLY_ADJUSTED / TOTAL_RETURN historical series "
+                f"(SRS-DATA-012); {normalization} is not a served historical normalization mode."
             )
         if asset_class != AssetClass.EQUITY:
             raise NotImplementedError(

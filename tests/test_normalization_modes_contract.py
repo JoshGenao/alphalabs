@@ -185,18 +185,18 @@ class AggregateEvidenceTest(_Fixture):
 
     def test_public_vs_library_modes_are_separated(self) -> None:
         block = contract_block(self.config)
-        # split-adjusted AND fully-adjusted are served on the operator CLI AND the strategy binding
-        # behind the SRS-DATA-011 coverage gate, so both are public_request_modes and
-        # binding_request_modes; TOTAL_RETURN stays deferred from public exposure (dividend
-        # reinvestment + per-subscription selection).
-        self.assertEqual(block["public_request_modes"], ["RAW", "SPLIT_ADJUSTED", "FULLY_ADJUSTED"])
-        self.assertEqual(
-            block["binding_request_modes"], ["RAW", "SPLIT_ADJUSTED", "FULLY_ADJUSTED"]
-        )
-        self.assertEqual(block["core_library_modes"], ["RAW", "SPLIT_ADJUSTED", "FULLY_ADJUSTED"])
-        self.assertEqual(block["deferred_public_modes"], ["TOTAL_RETURN"])
-        self.assertNotIn("SPLIT_ADJUSTED", block["deferred_public_modes"])
-        self.assertNotIn("FULLY_ADJUSTED", block["deferred_public_modes"])
+        # All four HISTORICAL modes -- raw, split-adjusted, fully-adjusted, total-return -- are served
+        # on the operator CLI AND the strategy binding behind the SRS-DATA-011 coverage gate (the three
+        # adjusted modes), so all four are public_request_modes / binding_request_modes /
+        # core_library_modes. deferred_public_modes is now EMPTY: every historical mode is served; only
+        # the LIVE per-subscription selection remains deferred (SRS-DATA-012 remainder, SRS-MD-001).
+        served = ["RAW", "SPLIT_ADJUSTED", "FULLY_ADJUSTED", "TOTAL_RETURN"]
+        self.assertEqual(block["public_request_modes"], served)
+        self.assertEqual(block["binding_request_modes"], served)
+        self.assertEqual(block["core_library_modes"], served)
+        self.assertEqual(block["deferred_public_modes"], [])
+        for mode in served:
+            self.assertNotIn(mode, block["deferred_public_modes"])
 
     def test_reverting_fully_adjusted_to_parse_reject_is_caught(self) -> None:
         # If the CLI parser went back to rejecting fully-adjusted at parse (the pre-close state), the
@@ -213,6 +213,26 @@ class AggregateEvidenceTest(_Fixture):
         # regress to NotImplementedError -- the guard must fire.
         mutated = self._src("binding_source").replace(
             'NormalizationMode.FULLY_ADJUSTED: "fully-adjusted",', ""
+        )
+        self.assertNotEqual(mutated, self._src("binding_source"))
+        with self.assertRaises(NormalizationModesCheckError):
+            check_binding_serves_split_adjusted(self.config, mutated)
+
+    def test_reverting_total_return_to_parse_reject_is_caught(self) -> None:
+        # If the CLI parser went back to rejecting total-return at parse (the pre-close state), the
+        # guard must fire: the mode is now SERVED through the gate (query_total_return), not deferred.
+        mutated = self._src("cli_source").replace(
+            '"total-return" => Ok(Normalization::TotalReturn),', ""
+        )
+        self.assertNotEqual(mutated, self._src("cli_source"))
+        with self.assertRaises(NormalizationModesCheckError):
+            check_cli_flag(self.config, mutated)
+
+    def test_binding_dropping_total_return_is_caught(self) -> None:
+        # If the binding dropped the TOTAL_RETURN label mapping, the served mode would silently regress
+        # to NotImplementedError -- the guard must fire.
+        mutated = self._src("binding_source").replace(
+            'NormalizationMode.TOTAL_RETURN: "total-return",', ""
         )
         self.assertNotEqual(mutated, self._src("binding_source"))
         with self.assertRaises(NormalizationModesCheckError):
