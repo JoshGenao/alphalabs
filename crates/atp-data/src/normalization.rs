@@ -1,14 +1,16 @@
-//! SRS-DATA-012 — split-adjusted + fully-adjusted historical normalization (the historical slice).
+//! SRS-DATA-012 — split-adjusted, fully-adjusted, and total-return historical normalization (the
+//! historical slice).
 //!
 //! The acceptance criterion (docs/SRS.md SRS-DATA-012): *"support raw, split-adjusted, fully
 //! adjusted, and total-return normalization modes per security subscription ... indicators can
-//! request adjusted series."* This module implements the **split-adjusted** and **fully-adjusted**
-//! (splits AND dividends, per SyRS SYS-29) historical reads: given a symbol's raw equity bars (from
+//! request adjusted series."* This module implements the **split-adjusted**, **fully-adjusted**
+//! (splits AND dividends, per SyRS SYS-29), and **total-return** (splits AND reinvested dividends)
+//! historical reads: given a symbol's raw equity bars (from
 //! [`MarketDataStore::query_unified`](crate::query)) and its corporate actions (records of
 //! [`DatasetKind::CorporateActionSplit`] / [`DatasetKind::CorporateActionDividend`]), it returns the
 //! bars on an adjustment-comparable basis so a backtest / indicator spanning a corporate-action date
-//! sees a continuous series. The total-return mode is deferred (SRS-DATA-012), as is the
-//! live-subscription leg (the Market Data Subscription Manager is unbuilt).
+//! sees a continuous series. The remaining SRS-DATA-012 deferral is the LIVE-subscription mode
+//! selection (the Market Data Subscription Manager is unbuilt).
 //!
 //! ## The math (integer-exact, deterministic, no `f64`)
 //!

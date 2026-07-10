@@ -16,8 +16,9 @@ ingested data by symbol/date-range/resolution with no provider named. The bindin
 (``MarketDataStore::query_split_adjusted`` on the operator CLI; see ``tools/coverage_manifest_check.py``
 and ``tools/normalization_modes_check.py``). An uncovered split-adjusted query fails closed with
 ``CoverageNotProvenError`` (naming SRS-DATA-011), never raw-as-adjusted, and the binding validates the
-``coverage_through`` frontier the gate echoes (gate-integrity). ``FULLY_ADJUSTED`` / ``TOTAL_RETURN`` stay
-deferred (dividend data, SRS-DATA-012). SRS-DATA-007 is COMPLETE and closes to passes:true at integration (close_feature.py --verified flips feature_list.json under the scheduler lock; this branch deliberately does NOT edit that file); this binding is one of its four wired consumers: the BACKTEST consumer
+``coverage_through`` frontier the gate echoes (gate-integrity). ``FULLY_ADJUSTED`` and ``TOTAL_RETURN``
+are served through the SAME coverage gate (SRS-DATA-012); the binding fails closed (NotImplementedError)
+only for a non-equity (option-chain) asset class or an unmapped mode. SRS-DATA-007 is COMPLETE and closes to passes:true at integration (close_feature.py --verified flips feature_list.json under the scheduler lock; this branch deliberately does NOT edit that file); this binding is one of its four wired consumers: the BACKTEST consumer
 is now genuinely wired (atp-simulation ``StoreBarSource`` consumes the unified store in ``BacktestEngine::run``)
 and strategy + notebook/research code read via this binding (``tests/domain/test_store_history_consumer.py``);
 the FACTOR-JOB consumer now READS the store (atp-factor-pipeline ``store_inputs`` loaders +
@@ -38,9 +39,10 @@ Static checks (no cargo; used by the L3 contract test):
       INPUT -- a consumer cannot specify an origin);
   (c) no origin field is read off the result (no ``["provider"]`` / ``["source"]`` style key read);
   (d) normalization honesty -- the binding serves RAW and the gated SPLIT_ADJUSTED (the Protocol default)
-      + FULLY_ADJUSTED, maps them to their CLI labels, validates the echoed ``coverage_through``
-      frontier (gate-integrity), and fails closed on total-return (SRS-DATA-012); an uncovered
-      adjusted query fails closed naming SRS-DATA-011, never raw-as-adjusted;
+      + FULLY_ADJUSTED + TOTAL_RETURN, maps them to their CLI labels, validates the echoed
+      ``coverage_through`` frontier (gate-integrity), and fails closed (NotImplementedError) for a
+      non-equity (option-chain) asset class / unmapped mode; an uncovered adjusted query fails closed
+      naming SRS-DATA-011, never raw-as-adjusted;
   (e) money math -- ``_PRICE_MINOR_SCALE`` is named and applied to the OHLC fields, and ``volume`` is a
       raw count that is NEVER divided by the scale;
   (f) the subprocess is invoked with a LIST argv under a bounded timeout and never ``shell=True``
@@ -181,11 +183,11 @@ def check_normalization_honesty(config: dict, src: str) -> str:
     compact = _compact(src)
     if "raiseNotImplementedError" not in compact:
         fail(
-            "the binding must raise NotImplementedError for every normalization mode it does not serve "
-            "(total-return is deferred) -- never return raw bars as adjusted"
+            "the binding must raise NotImplementedError for a request it does not serve "
+            "(an unmapped mode / non-equity option asset class) -- never return raw bars as adjusted"
         )
-    # The binding fails closed for any mode NOT in its served label map (total-return, which needs
-    # dividend reinvestment + per-subscription selection, SRS-DATA-012).
+    # The binding fails closed for any mode NOT in its served label map (defensive: all four SRS-DATA-012
+    # historical modes are mapped, so this guards a non-enum value / future mode).
     if "normalizationnotin_NORMALIZATION_LABEL" not in compact:
         fail(
             "the binding must fail closed for any normalization mode it does not serve "
@@ -224,11 +226,11 @@ def check_normalization_honesty(config: dict, src: str) -> str:
         )
     return (
         "normalization honesty: the binding serves NormalizationMode.RAW and the gated SPLIT_ADJUSTED "
-        "(the Protocol default) + FULLY_ADJUSTED, keeps that default so an omitted normalization serves "
-        "the coverage-gated adjusted series (CoverageNotProvenError when uncovered, never "
-        "raw-as-adjusted), validates the coverage_through frontier (gate-integrity), and fails closed "
-        "on total-return (SRS-DATA-012); SRS-DATA-011 is the coverage gate. See "
-        "tools/normalization_modes_check.py"
+        "(the Protocol default) + FULLY_ADJUSTED + TOTAL_RETURN, keeps that default so an omitted "
+        "normalization serves the coverage-gated adjusted series (CoverageNotProvenError when uncovered, "
+        "never raw-as-adjusted), validates the coverage_through frontier (gate-integrity), and fails "
+        "closed on a non-equity (option-chain) asset class / unmapped mode (SRS-DATA-012 historical "
+        "modes are all served); SRS-DATA-011 is the coverage gate. See tools/normalization_modes_check.py"
     )
 
 
@@ -518,8 +520,9 @@ _DEFERRED_OWNERS = (
     "FACTOR-JOB consumer READS the store (atp-factor-pipeline store_inputs loaders + assemble_factor_inputs, a "
     "point-in-time read primitive; the as-of -> scheduled-session binding is the deferred calendar boundary, see "
     "SRS-FAC-001), and strategy/notebook read via this binding -- so DATA-007 already serves the notebook DATA ACCESS",
-    "the total-return normalization mode (dividend reinvestment + per-subscription selection, "
-    "SRS-DATA-012); split-adjusted AND fully-adjusted are served through the SRS-DATA-011 coverage gate",
+    "option-chain bar ACCESS through this EQUITY binding (owner SRS-DATA-006 + the binding's equity "
+    "scope) and the LIVE per-subscription normalization selection (SRS-DATA-012, SRS-MD-001); all four "
+    "historical normalization modes (raw / split-adjusted / fully-adjusted / total-return) are served",
     "the concurrent-read-DURING-write Load test for THIS named Python consumer "
     "(SRS-DATA-017; the binding drives the lock-free read path, the substrate guarantee is proven, "
     "but the Python-consumer-vs-held-writer Load test is the deferred 017 close)",

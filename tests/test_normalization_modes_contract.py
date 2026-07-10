@@ -43,7 +43,7 @@ class ScriptRunTest(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("SRS-DATA-012 SPLIT-ADJUSTED NORMALIZATION PASS", result.stdout)
+        self.assertIn("SRS-DATA-012 NORMALIZATION MODES PASS", result.stdout)
         for needle in (
             "split kind",
             "money math",

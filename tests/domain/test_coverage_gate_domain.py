@@ -8,10 +8,10 @@ strategy can never silently consume raw-as-adjusted bars. This domain test drive
 and asserts:
 
   * COVERED — when the symbol's coverage frontier reaches the query end, the pre-split bar is re-quoted
-    onto the split-comparable basis (a 10000 close under a 4-for-1 split reads 2500), and the
-    fully-adjusted (splits AND dividends, SYS-29) read composes the dividend leg (2475 with a $1.00
-    dividend ex before the split; volume never dividend-scaled), so a backtest sees a continuous
-    adjusted series — correct P&L;
+    onto the split-comparable basis (a 10000 close under a 4-for-1 split reads 2500), the fully-adjusted
+    (splits AND dividends, SYS-29) read composes the dividend leg (2475 with a $1.00 dividend ex before
+    the split; volume never dividend-scaled), and the total-return read (SRS-DATA-012) is served behind
+    the SAME gate — so a backtest sees a continuous adjusted series under any selected mode — correct P&L;
   * UNCOVERED — when coverage is absent OR does not reach the query end, EVERY adjusted read
     (split-adjusted / fully-adjusted / total-return, the SRS-DATA-012 modes) FAILS CLOSED (a structured
     error naming SRS-DATA-011), so a backtest is never handed raw bars dressed as adjusted;

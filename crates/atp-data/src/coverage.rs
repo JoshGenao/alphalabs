@@ -7,8 +7,8 @@
 //! spanning corporate-action dates produce correct P&L calculations under the selected normalization
 //! mode."* This module serves all six action types through ONE coverage-enforcing gate:
 //!
-//! * **splits / reverse splits** — re-quoted into the served prices (split-adjusted and
-//!   fully-adjusted modes; the crate-internal SRS-DATA-012 math);
+//! * **splits / reverse splits** — re-quoted into the served prices (split-adjusted, fully-adjusted,
+//!   and total-return modes; the crate-internal SRS-DATA-012 math);
 //! * **dividends** — re-quoted into the served prices under the SYS-29 **fully-adjusted** (splits AND
 //!   dividends) mode ([`MarketDataStore::query_fully_adjusted`]); volume is never dividend-scaled;
 //! * **symbol changes** — resolved as LINEAGE: querying the current symbol returns the predecessor's
@@ -73,12 +73,13 @@
 //! # The gated public entry point (no uncovered capability on ANY surface)
 //!
 //! The adjustment math (`crate::normalization`) stays **crate-internal** — `split_adjust_records` /
-//! `fully_adjust_records` / `SplitEvent` / `DividendEvent` are not re-exported. This module is a
-//! sibling in the same crate, so it can call those crate-internal functions while no external caller
-//! can. This coverage GATE is the **only** public path to adjusted output: it exposes FOUR
-//! coverage-enforcing reads — [`MarketDataStore::query_split_adjusted`] /
-//! [`MarketDataStore::query_fully_adjusted`] (the current-frontier basis, adjusted through `D`) and
-//! [`MarketDataStore::query_split_adjusted_as_of`] / [`MarketDataStore::query_fully_adjusted_as_of`]
+//! `fully_adjust_records` / `total_return_records` / `SplitEvent` / `DividendEvent` are not
+//! re-exported. This module is a sibling in the same crate, so it can call those crate-internal
+//! functions while no external caller can. This coverage GATE is the **only** public path to adjusted
+//! output: it exposes SIX coverage-enforcing reads — [`MarketDataStore::query_split_adjusted`] /
+//! [`MarketDataStore::query_fully_adjusted`] / [`MarketDataStore::query_total_return`] (the
+//! current-frontier basis, adjusted through `D`) and [`MarketDataStore::query_split_adjusted_as_of`] /
+//! [`MarketDataStore::query_fully_adjusted_as_of`] / [`MarketDataStore::query_total_return_as_of`]
 //! (the point-in-time basis, adjusted only through `query.end_ts`) — and NONE can return adjusted
 //! records without the coverage check passing, so there is no public path to raw-as-adjusted. The
 //! query kind is also required to be an equity bar (`DailyEquityBar` / `MinuteEquityBar`) so the
@@ -288,10 +289,12 @@ impl MarketDataStore {
     /// split-comparable basis, but ONLY when the queried symbol's corporate-action coverage frontier
     /// extends through the query end.
     ///
-    /// This is one of the four coverage-gated public reads (with
+    /// This is one of the six coverage-gated public reads (with
     /// [`query_split_adjusted_as_of`](Self::query_split_adjusted_as_of),
-    /// [`query_fully_adjusted`](Self::query_fully_adjusted), and
-    /// [`query_fully_adjusted_as_of`](Self::query_fully_adjusted_as_of)); together they are the only
+    /// [`query_fully_adjusted`](Self::query_fully_adjusted),
+    /// [`query_fully_adjusted_as_of`](Self::query_fully_adjusted_as_of),
+    /// [`query_total_return`](Self::query_total_return), and
+    /// [`query_total_return_as_of`](Self::query_total_return_as_of)); together they are the only
     /// public path to adjusted output (the raw adjustment math stays crate-internal). It fails closed:
     /// * [`CoverageError::UnsupportedQueryKind`] unless `query.kind` is an explicit equity-bar kind, so
     ///   the adjustment math's `UnsupportedKind` path is unreachable at runtime;

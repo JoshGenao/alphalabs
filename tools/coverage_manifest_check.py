@@ -28,10 +28,10 @@ What this pins:
       MinuteEquityBar), so the math's UnsupportedKind path is unreachable at runtime and an adjusted
       series is equity-only by construction;
   (d) the single public entry point — lib.rs exposes `pub mod coverage` (the coverage-enforcing gate,
-      whose four reads — query_split_adjusted[_as_of] / query_fully_adjusted[_as_of] — are ALL
-      coverage-gated) while the adjustment math stays crate-internal (`mod normalization`, not
-      re-exported), so the ONLY public path to adjusted output is the coverage gate (no public path
-      to raw-as-adjusted);
+      whose six reads — query_split_adjusted[_as_of] / query_fully_adjusted[_as_of] /
+      query_total_return[_as_of] — are ALL coverage-gated) while the adjustment math stays
+      crate-internal (`mod normalization`, not re-exported), so the ONLY public path to adjusted output
+      is the coverage gate (no public path to raw-as-adjusted);
   (e) the CLI routing — data007_query_cli routes --normalization split-adjusted, fully-adjusted, AND
       total-return through the gate, echoes coverage_through / adjusted_through / event_count, and fails
       closed (naming SRS-DATA-011) when uncovered; total-return is now served (query_total_return);
@@ -279,8 +279,8 @@ def check_single_public_entry(config: dict, lib_src: str) -> str:
         )
     return (
         "single public entry: lib.rs exposes `pub mod coverage` (the coverage-enforcing gate — "
-        "query_split_adjusted[_as_of] AND query_fully_adjusted[_as_of], ALL four coverage-gated "
-        "through one private core) while the adjustment math stays crate-internal "
+        "query_split_adjusted[_as_of] / query_fully_adjusted[_as_of] / query_total_return[_as_of], ALL "
+        "six coverage-gated through one private core) while the adjustment math stays crate-internal "
         "(`mod normalization`, not re-exported) — so the coverage gate is the ONLY public path to "
         "adjusted output, with no public path to raw-as-adjusted"
     )
