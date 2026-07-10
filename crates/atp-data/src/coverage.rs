@@ -675,6 +675,11 @@ impl MarketDataStore {
     /// The split events across the lineage, bounded to `effective_ts <= adjusted_through` and
     /// retagged to the queried symbol (the instrument is one continuous entity through a rename, so a
     /// predecessor's split applies to the relabeled series exactly like the current symbol's).
+    ///
+    /// Like [`lineage_raw_series`](Self::lineage_raw_series) does for bars, a within-cutoff split dated
+    /// OUTSIDE its symbol's lineage validity window (a predecessor split on/after its rename, or a
+    /// successor split before it) FAILS CLOSED ([`CoverageError::AmbiguousLineage`]) — inconsistent
+    /// rename data must never be retagged to the queried symbol and silently applied to the wrong bars.
     fn lineage_split_events(
         &self,
         query: &UnifiedHistoricalQuery,
@@ -683,16 +688,19 @@ impl MarketDataStore {
     ) -> Result<Vec<SplitEvent>, CoverageError> {
         let mut splits: Vec<SplitEvent> = Vec::new();
         for segment in lineage {
-            let refs: Vec<&MarketDataRecord> = self
-                .records()
-                .iter()
-                .filter(|record| {
-                    let key = record.key();
-                    key.kind == DatasetKind::CorporateActionSplit
-                        && key.symbol == segment.symbol
-                        && key.event_ts <= adjusted_through
-                })
-                .collect();
+            let mut refs: Vec<&MarketDataRecord> = Vec::new();
+            for record in self.records() {
+                let key = record.key();
+                if key.kind != DatasetKind::CorporateActionSplit || key.symbol != segment.symbol {
+                    continue;
+                }
+                // Bounded to the read's basis cutoff (within adjusted_through); a within-cutoff split
+                // outside the segment's validity window fails closed.
+                if key.event_ts <= adjusted_through {
+                    check_action_in_segment_window(segment, key.event_ts)?;
+                    refs.push(record);
+                }
+            }
             splits.extend(
                 normalization::split_events_for(&segment.symbol, &refs)?
                     .into_iter()
@@ -708,7 +716,9 @@ impl MarketDataStore {
     /// The dividend events across the lineage, bounded to `ex_ts <= adjusted_through` and retagged to
     /// the queried symbol. Each dividend's REFERENCE CLOSE is resolved as the last raw close in the
     /// (relabeled, full) lineage `series` strictly before its ex-date — the RAW series, never the
-    /// adjusted one, and never window-clipped. A dividend with no prior close fails the read closed.
+    /// adjusted one, and never window-clipped. A dividend with no prior close fails the read closed, as
+    /// does a within-cutoff dividend dated outside its symbol's lineage validity window (the same
+    /// fail-closed discipline the split leg and [`lineage_raw_series`](Self::lineage_raw_series) apply).
     fn lineage_dividend_events(
         &self,
         query: &UnifiedHistoricalQuery,
@@ -727,16 +737,21 @@ impl MarketDataStore {
         };
         let mut dividends: Vec<DividendEvent> = Vec::new();
         for segment in lineage {
-            let refs: Vec<&MarketDataRecord> = self
-                .records()
-                .iter()
-                .filter(|record| {
-                    let key = record.key();
-                    key.kind == DatasetKind::CorporateActionDividend
-                        && key.symbol == segment.symbol
-                        && key.event_ts <= adjusted_through
-                })
-                .collect();
+            let mut refs: Vec<&MarketDataRecord> = Vec::new();
+            for record in self.records() {
+                let key = record.key();
+                if key.kind != DatasetKind::CorporateActionDividend || key.symbol != segment.symbol
+                {
+                    continue;
+                }
+                // Bounded to the read's basis cutoff (within adjusted_through); a within-cutoff
+                // dividend outside the segment's validity window fails closed (same discipline as the
+                // split leg / raw series: inconsistent rename data).
+                if key.event_ts <= adjusted_through {
+                    check_action_in_segment_window(segment, key.event_ts)?;
+                    refs.push(record);
+                }
+            }
             dividends.extend(
                 normalization::dividend_events_for(&segment.symbol, &refs, prev_close_of)?
                     .into_iter()
@@ -832,12 +847,33 @@ enum AdjustmentBasis {
     AsOfEnd,
 }
 
-/// One symbol's validity window within a rename lineage: bars of `symbol` legitimately exist only in
-/// `[valid_from, valid_until)` (either bound absent = unbounded). Enforced by the series builder.
+/// One symbol's validity window within a rename lineage: bars AND corporate actions of `symbol`
+/// legitimately exist only in `[valid_from, valid_until)` (either bound absent = unbounded). Enforced
+/// by the series builder (bars) and the split/dividend collectors (actions).
 struct LineageSegment {
     symbol: String,
     valid_from: Option<i64>,
     valid_until: Option<i64>,
+}
+
+/// Fail closed ([`CoverageError::AmbiguousLineage`]) if a within-cutoff corporate action for `segment`
+/// is dated outside its symbol's lineage validity window `[valid_from, valid_until)` — the same
+/// discipline [`MarketDataStore::lineage_raw_series`] applies to bars. A predecessor action on/after
+/// its rename (or a successor action before it) is inconsistent rename data: retagging it to the
+/// queried symbol would silently mis-adjust the wrong bars, so it must fail the read rather than apply.
+fn check_action_in_segment_window(
+    segment: &LineageSegment,
+    event_ts: i64,
+) -> Result<(), CoverageError> {
+    if segment.valid_from.is_some_and(|from| event_ts < from)
+        || segment.valid_until.is_some_and(|until| event_ts >= until)
+    {
+        return Err(CoverageError::AmbiguousLineage {
+            symbol: segment.symbol.clone(),
+            context: "a corporate action is dated outside its symbol's lineage validity window",
+        });
+    }
+    Ok(())
 }
 
 /// The queried symbol's relabeling of a lineage bar: the same record with the key symbol swapped
@@ -1814,6 +1850,60 @@ mod tests {
             ),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn a_corporate_action_outside_its_lineage_validity_window_fails_closed() {
+        // REGRESSION (adversarial review): a within-cutoff split/dividend dated OUTSIDE its symbol's
+        // lineage validity window is inconsistent rename data. It must FAIL CLOSED (the same discipline
+        // lineage_raw_series applies to bars), never be retagged to the queried symbol and silently
+        // applied to the wrong bars. Rename AAPL -> AAPLN @300: AAPL valid [.., 300); AAPLN valid [300, ..).
+        let action_ctx = "a corporate action is dated outside its symbol's lineage validity window";
+
+        // (1) A PREDECESSOR split dated AFTER the rename (AAPL @350 >= AAPL's valid_until 300).
+        let bad_split = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            symbol_change_record(300, "AAPL", "AAPLN"),
+            daily_bar("AAPLN", 400, 12_000, 100_000),
+            split("AAPL", 350, 2, 1),
+            coverage_record(500, "AAPLN"),
+        ]);
+        assert!(matches!(
+            bad_split.query_split_adjusted(&daily_query("AAPLN", 0, 500)),
+            Err(CoverageError::AmbiguousLineage { context, .. }) if context == action_ctx
+        ));
+
+        // (2) A SUCCESSOR dividend dated BEFORE the rename (AAPLN @250 < AAPLN's valid_from 300). The
+        // fully-adjusted AND total-return reads both fail closed (they share the dividend collector).
+        let bad_div = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            daily_bar("AAPL", 200, 10_000, 100_000),
+            symbol_change_record(300, "AAPL", "AAPLN"),
+            daily_bar("AAPLN", 400, 12_000, 100_000),
+            dividend_record(250, "AAPLN", 100),
+            coverage_record(500, "AAPLN"),
+        ]);
+        for read in [
+            MarketDataStore::query_fully_adjusted,
+            MarketDataStore::query_total_return,
+        ] {
+            assert!(matches!(
+                read(&bad_div, &daily_query("AAPLN", 0, 500)),
+                Err(CoverageError::AmbiguousLineage { context, .. }) if context == action_ctx
+            ));
+        }
+
+        // Non-vacuity: a WITHIN-window predecessor split (AAPL @150 < 300) over the same lineage SUCCEEDS.
+        let ok = store_of([
+            daily_bar("AAPL", 100, 10_000, 100_000),
+            split("AAPL", 150, 2, 1),
+            symbol_change_record(300, "AAPL", "AAPLN"),
+            daily_bar("AAPLN", 400, 12_000, 100_000),
+            coverage_record(500, "AAPLN"),
+        ]);
+        assert!(ok
+            .query_split_adjusted(&daily_query("AAPLN", 0, 500))
+            .is_ok());
     }
 
     #[test]

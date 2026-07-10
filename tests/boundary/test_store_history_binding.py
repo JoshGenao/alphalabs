@@ -428,10 +428,11 @@ def test_uncovered_split_adjusted_exit_maps_to_coverage_not_proven_error() -> No
 
 def test_option_asset_class_raises_not_implemented() -> None:
     # This EQUITY binding defers option-chain bar access (owner: real option ingestion SRS-DATA-006 +
-    # the binding's equity scope), even for RAW -- so SRS-DATA-012 is NOT reported as fully complete
-    # through this surface. The SRS-DATA-012 "options strategies can request raw prices" clause is met
-    # at the DATA LAYER instead: the operator CLI serves raw option-chain records verbatim, and the
-    # coverage gate refuses an adjusted read on a non-equity kind (so an options query resolves to raw).
+    # the binding's equity scope), even for RAW -- so the strategy-facing "options can request raw
+    # prices" path is NOT closed by SRS-DATA-012 (a passes:false contributor). Its normalization-MODE
+    # half IS done at the data layer (the operator CLI serves raw option-chain records verbatim, and the
+    # coverage gate refuses an adjusted read on a non-equity kind so an options query resolves to raw),
+    # but an in-process strategy cannot yet get raw option DATA through ctx.history.
     runner = _FakeRunner(records=[(1_700_000_000, _OHLCV)])
     with pytest.raises(NotImplementedError):
         _binding(runner).get_bars(

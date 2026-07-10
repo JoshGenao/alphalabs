@@ -302,6 +302,60 @@ def test_lineage_read_spans_a_rename_and_surfaces_the_event() -> None:
         assert "event.0.effective_ts:300" in result.stdout
 
 
+def test_lineage_read_fails_closed_on_a_corporate_action_outside_its_validity_window() -> None:
+    # REGRESSION (adversarial review): a corporate action dated OUTSIDE its symbol's rename validity
+    # window must FAIL CLOSED, never be retagged to the queried symbol and silently mis-adjust the wrong
+    # bars (the same discipline the gate applies to out-of-window BARS). AAPL renamed to AAPLN @300; an
+    # AAPL split @350 (AFTER the rename, outside AAPL's window [.., 300)) is inconsistent rename data.
+    cargo = _cargo()
+    if cargo is None:
+        pytest.skip("cargo not on PATH")
+    ingest_bin, coverage_bin, query_bin = _build(cargo)
+    with tempfile.TemporaryDirectory() as tmp:
+        for kind, ts, init in [
+            ("daily-equity-bar", 100, True),  # AAPL @100 (predecessor era)
+            ("corporate-action-symbol-change", 300, False),  # AAPL -> AAPLN @300
+            ("corporate-action-split", 350, False),  # AAPL split @350 -- OUT of AAPL's window
+        ]:
+            args = [str(ingest_bin), "ingest", "--dir", tmp, "--kind", kind, "--event-ts", str(ts)]
+            if init:
+                args.append("--init")
+            assert _run(*args).returncode == 0, f"{kind}@{ts}"
+        assert (
+            _run(
+                str(coverage_bin),
+                "assert-coverage",
+                "--dir",
+                tmp,
+                "--symbol",
+                "AAPLN",
+                "--through",
+                "500",
+            ).returncode
+            == 0
+        )
+        result = _run(
+            str(query_bin),
+            "query",
+            "--dir",
+            tmp,
+            "--symbol",
+            "AAPLN",
+            "--resolution",
+            "1d",
+            "--start",
+            "0",
+            "--end",
+            "500",
+            "--kind",
+            "daily-equity-bar",
+            "--normalization",
+            "split-adjusted",
+        )
+        assert result.returncode != 0, result.stdout
+        assert "outside its symbol's lineage validity window" in result.stderr, result.stderr
+
+
 def test_corporate_action_facts_pass_the_sys77_ingestion_validator_but_coverage_stays_refused() -> (
     None
 ):

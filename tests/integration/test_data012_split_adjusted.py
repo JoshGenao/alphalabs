@@ -129,11 +129,12 @@ def test_cli_serves_raw_and_fails_closed_split_adjusted_without_coverage() -> No
 
 
 def test_cli_serves_raw_option_chain_but_refuses_adjusted_on_options() -> None:
-    # SRS-DATA-012 "options strategies can request raw prices": met at the DATA LAYER / operator CLI.
-    # The RAW mode serves option-chain records verbatim (query_unified is kind-agnostic), while every
-    # adjusted mode REFUSES a non-equity kind (UnsupportedQueryKind) -- so an options query structurally
-    # resolves to raw and can never get a meaningless adjusted option price. (Option-chain access
-    # through the in-process EQUITY strategy binding is a SEPARATE deferred scope, owner SRS-DATA-006.)
+    # SRS-DATA-012 "options strategies can request raw prices" -- the normalization-MODE half, served at
+    # the DATA LAYER / operator CLI. The RAW mode serves option-chain records verbatim (query_unified is
+    # kind-agnostic), while every adjusted mode REFUSES a non-equity kind (UnsupportedQueryKind) -- so an
+    # options query structurally resolves to raw and can never get a meaningless adjusted option price.
+    # The strategy-facing option DATA path (ctx.history) is NOT closed by DATA-012 (deferred, owner
+    # SRS-DATA-006) -- see tests/boundary/test_store_history_binding.py::test_option_asset_class_raises.
     cargo = _cargo()
     if cargo is None:
         pytest.skip("cargo not on PATH")
