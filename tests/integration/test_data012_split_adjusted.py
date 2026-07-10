@@ -128,6 +128,65 @@ def test_cli_serves_raw_and_fails_closed_split_adjusted_without_coverage() -> No
             assert "SRS-DATA-011" in adj.stderr, adjusted_mode
 
 
+def test_cli_serves_raw_option_chain_but_refuses_adjusted_on_options() -> None:
+    # SRS-DATA-012 "options strategies can request raw prices": met at the DATA LAYER / operator CLI.
+    # The RAW mode serves option-chain records verbatim (query_unified is kind-agnostic), while every
+    # adjusted mode REFUSES a non-equity kind (UnsupportedQueryKind) -- so an options query structurally
+    # resolves to raw and can never get a meaningless adjusted option price. (Option-chain access
+    # through the in-process EQUITY strategy binding is a SEPARATE deferred scope, owner SRS-DATA-006.)
+    cargo = _cargo()
+    if cargo is None:
+        pytest.skip("cargo not on PATH")
+    ingest_bin, query_bin = _build(cargo)
+    with tempfile.TemporaryDirectory() as tmp:
+        assert (
+            _run(
+                str(ingest_bin),
+                "ingest",
+                "--dir",
+                tmp,
+                "--kind",
+                "option-chain",
+                "--event-ts",
+                str(BAR_TS),
+                "--init",
+            ).returncode
+            == 0
+        )
+
+        def option_query(mode: str) -> subprocess.CompletedProcess[str]:
+            return _run(
+                str(query_bin),
+                "query",
+                "--dir",
+                tmp,
+                "--symbol",
+                "AAPL",
+                "--resolution",
+                "chain",
+                "--start",
+                "0",
+                "--end",
+                str(BAR_TS),
+                "--kind",
+                "option-chain",
+                "--normalization",
+                mode,
+            )
+
+        # RAW serves the option-chain records verbatim (an options strategy CAN request raw prices).
+        raw = option_query("raw")
+        assert raw.returncode == 0, raw.stderr
+        assert "normalization:raw" in raw.stdout
+        assert "match_count:2" in raw.stdout
+        assert "record.0.field.bid:" in raw.stdout
+        # Every adjusted mode is REFUSED on a non-equity kind (so options can only get raw).
+        for adjusted_mode in ("split-adjusted", "fully-adjusted", "total-return"):
+            adj = option_query(adjusted_mode)
+            assert adj.returncode != 0, adjusted_mode
+            assert "equity-bar" in adj.stderr, adjusted_mode
+
+
 def test_consumer_binding_fails_closed_split_adjusted_without_coverage() -> None:
     cargo = _cargo()
     if cargo is None:
