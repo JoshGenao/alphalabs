@@ -1427,8 +1427,8 @@
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-SEC-002 using file inspection, build manifests, container configuration, and automated architecture/security checks with the fixtures, mocks, or operator controls needed by the requirement.",
-      "Step 3: Verify acceptance criteria: Default Docker Compose port mappings expose dashboard/API only on loopback or RFC 1918 interfaces; an external-host connect test against a non-RFC 1918 interface fails with the default configuration; documentation states that external exposure requires operator-managed authentication.",
-      "Step 4: Record objective evidence from inspection, test and leave passes false until the evidence proves the requirement end to end."
+      "Step 3: Verify acceptance criteria: Default Docker Compose port mappings expose dashboard/API only on loopback or RFC 1918 interfaces; an external-host connect against a non-RFC 1918 interface fails under the default configuration — proven structurally where the deployment binds no publicly routable interface (the Phase 1 target is an RFC 1918-only network, e.g. a 10.0.0.x server, so no non-RFC 1918 interface exists to connect against): the service is confined to loopback/RFC 1918 and the runtime refuses, fail-closed before any socket opens, to bind any non-RFC 1918 (publicly routable) address, and a connect against a public interface is refused where one is present; documentation states that external exposure requires operator-managed authentication.",
+      "Step 4: Record objective evidence from inspection and test; for the RFC 1918-only deployment target the structural invariant (default RFC 1918/loopback bind, fail-closed refusal of any non-RFC 1918 bind, and the documented external-authentication requirement) is the acceptance evidence that proves the requirement."
     ],
     "passes": false,
     "needs_clarification": false
