@@ -80,7 +80,7 @@ use crate::virtual_ledger::{canonical_symbol, LedgerError, StrategyLedger};
 /// so the same SYS-84 average-cost accounting the live paper engine uses produces the
 /// marked position values -- paper metrics are computed from the SAME ledger state the
 /// strategy trades against, independent of the IB account.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaperMetricsAccumulator {
     /// The pre-trade baseline equity (cash before any fill), in minor units. This is the
     /// REQUIRED `starting_equity_minor` baseline [`metrics::compute`](crate::metrics::compute)
@@ -124,6 +124,134 @@ impl PaperMetricsAccumulator {
             equity_curve: Vec::new(),
             last_mark_ts: None,
             last_fill_ts: None,
+        })
+    }
+
+    /// Reconstruct an accumulator from already-parsed persisted components
+    /// (SRS-SIM-004 restore of the SYS-89 "accumulated performance metrics"
+    /// sub-state). Crate-internal: the [`paper_state`](crate::paper_state)
+    /// deserializer decodes the fields and the [`StrategyLedger`] (whose own
+    /// per-position invariants it has already validated) and hands them here, where
+    /// this constructor RE-VALIDATES the accumulator's own construction invariants
+    /// before building it, so a tampered-but-structurally-valid snapshot fails closed
+    /// (the integrity checksum in `paper_state` guards raw byte corruption; this
+    /// guards a foreign writer that emits an internally-incoherent accumulator):
+    ///
+    ///   * `starting_cash_minor` is strictly positive (the first period return's
+    ///     denominator) -- [`PaperMetricsError::NonPositiveStartingCash`];
+    ///   * the trade log's timestamps are non-decreasing (the `apply_fill` invariant;
+    ///     equal is allowed for several fills against one bar) --
+    ///     [`PaperMetricsError::NonMonotonicFill`], and each [`Fill`] has a non-empty
+    ///     symbol, a strictly-positive price, and non-negative cost components --
+    ///     [`PaperMetricsError::InconsistentSnapshot`];
+    ///   * the equity curve's timestamps are strictly increasing (the `mark`
+    ///     invariant) -- [`PaperMetricsError::NonMonotonicMarkTimestamps`];
+    ///   * `last_fill_ts` / `last_mark_ts` match the last trade-log / equity-curve
+    ///     timestamp exactly (and are `None` iff the respective series is empty) --
+    ///     [`PaperMetricsError::InconsistentSnapshot`];
+    ///   * `cash_minor` RECONCILES with the trade log: it must equal
+    ///     `starting_cash_minor` plus each fill's re-derived cash delta
+    ///     (`-(quantity * price) - commission - slippage - spread_impact`, the exact
+    ///     quantity `sim::simulate_fill` folds in), so a checksum-valid snapshot whose
+    ///     cash disagrees with its own trades cannot restore fabricated equity --
+    ///     [`PaperMetricsError::InconsistentSnapshot`] (or [`PaperMetricsError::Overflow`]
+    ///     on a value the checked i128 math cannot represent).
+    ///
+    /// The ledger positions are trusted as decoded (the checksum guards their bytes),
+    /// mirroring how the ledger restore trusts a checksum-verified signed cost basis
+    /// rather than replaying it.
+    pub(crate) fn from_components(
+        starting_cash_minor: i64,
+        cash_minor: i128,
+        ledger: StrategyLedger,
+        trade_log: Vec<Fill>,
+        equity_curve: Vec<EquityPoint>,
+        last_mark_ts: Option<u64>,
+        last_fill_ts: Option<u64>,
+    ) -> Result<Self, PaperMetricsError> {
+        if starting_cash_minor <= 0 {
+            return Err(PaperMetricsError::NonPositiveStartingCash {
+                minor_units: starting_cash_minor,
+            });
+        }
+        // Reconcile the running cash against the trade log while validating each fill.
+        // `cash_minor` is `starting_cash_minor` plus each fill's cash delta, and the
+        // simulator defines that delta EXACTLY as `-(quantity * price) - (commission +
+        // slippage + spread_impact)` (sim::simulate_fill). Because the trade log stores
+        // those raw components, the running cash is fully re-derivable here -- so a
+        // checksum-valid snapshot from a buggy or foreign writer whose `cash_minor`
+        // disagrees with its own trade log is rejected fail-closed rather than restored
+        // to fabricate net-liquidation equity and metrics on the next mark.
+        let mut expected_cash: i128 = i128::from(starting_cash_minor);
+        let mut previous_fill_ts: Option<u64> = None;
+        for fill in &trade_log {
+            if let Some(previous) = previous_fill_ts {
+                if fill.ts < previous {
+                    return Err(PaperMetricsError::NonMonotonicFill { ts: fill.ts });
+                }
+            }
+            previous_fill_ts = Some(fill.ts);
+            if fill.symbol.trim().is_empty() {
+                return Err(PaperMetricsError::InconsistentSnapshot {
+                    context: "empty trade-log fill symbol",
+                });
+            }
+            if fill.price_minor <= 0 {
+                return Err(PaperMetricsError::InconsistentSnapshot {
+                    context: "non-positive trade-log fill price",
+                });
+            }
+            if fill.commission_minor < 0 || fill.slippage_minor < 0 || fill.spread_impact_minor < 0
+            {
+                return Err(PaperMetricsError::InconsistentSnapshot {
+                    context: "negative trade-log fill cost component",
+                });
+            }
+            // The simulator's signed cash impact, re-derived from the stored components
+            // with checked i128 math (a corrupt/huge value fails closed via Overflow).
+            let notional = i128::from(fill.quantity)
+                .checked_mul(i128::from(fill.price_minor))
+                .ok_or(PaperMetricsError::Overflow)?;
+            let cost = i128::from(fill.commission_minor)
+                + i128::from(fill.slippage_minor)
+                + i128::from(fill.spread_impact_minor);
+            expected_cash = expected_cash
+                .checked_sub(notional)
+                .and_then(|cash| cash.checked_sub(cost))
+                .ok_or(PaperMetricsError::Overflow)?;
+        }
+        if expected_cash != cash_minor {
+            return Err(PaperMetricsError::InconsistentSnapshot {
+                context: "cash_minor does not reconcile with the trade log",
+            });
+        }
+        let mut previous_mark_ts: Option<u64> = None;
+        for point in &equity_curve {
+            if let Some(previous) = previous_mark_ts {
+                if point.ts <= previous {
+                    return Err(PaperMetricsError::NonMonotonicMarkTimestamps { ts: point.ts });
+                }
+            }
+            previous_mark_ts = Some(point.ts);
+        }
+        if last_fill_ts != trade_log.last().map(|fill| fill.ts) {
+            return Err(PaperMetricsError::InconsistentSnapshot {
+                context: "last_fill_ts does not match the trade log tail",
+            });
+        }
+        if last_mark_ts != equity_curve.last().map(|point| point.ts) {
+            return Err(PaperMetricsError::InconsistentSnapshot {
+                context: "last_mark_ts does not match the equity curve tail",
+            });
+        }
+        Ok(Self {
+            starting_cash_minor,
+            cash_minor,
+            ledger,
+            trade_log,
+            equity_curve,
+            last_mark_ts,
+            last_fill_ts,
         })
     }
 
@@ -332,6 +460,18 @@ impl PaperMetricsAccumulator {
     pub fn ledger(&self) -> &StrategyLedger {
         &self.ledger
     }
+
+    /// The last mark timestamp (the equity curve's tail), used by SRS-SIM-004
+    /// persistence to snapshot the accumulator's cross-stream cursor.
+    pub(crate) fn last_mark_ts(&self) -> Option<u64> {
+        self.last_mark_ts
+    }
+
+    /// The last applied-fill timestamp (the trade log's tail), used by SRS-SIM-004
+    /// persistence to snapshot the accumulator's cross-stream cursor.
+    pub(crate) fn last_fill_ts(&self) -> Option<u64> {
+        self.last_fill_ts
+    }
 }
 
 /// Fail-closed errors from the paper-metric accumulator. Carries no broker/vendor
@@ -364,6 +504,11 @@ pub enum PaperMetricsError {
     MissingMark { symbol: String },
     /// Cash or net-liquidation money math exceeded the representable range.
     Overflow,
+    /// A persisted accumulator (SRS-SIM-004 restore) was internally incoherent: a
+    /// trade-log fill with an empty symbol, a non-positive price, or a negative cost
+    /// component, or a `last_fill_ts` / `last_mark_ts` cursor that does not match the
+    /// tail of the respective series. `context` names the violation.
+    InconsistentSnapshot { context: &'static str },
     /// The metric family computation itself failed closed (e.g. an empty equity curve or a
     /// misaligned benchmark); carries the underlying [`MetricsError`].
     Metrics(MetricsError),
@@ -413,6 +558,10 @@ impl fmt::Display for PaperMetricsError {
             Self::Overflow => {
                 write!(f, "paper metric accumulator money math overflowed")
             }
+            Self::InconsistentSnapshot { context } => write!(
+                f,
+                "persisted paper metric accumulator is internally incoherent: {context}"
+            ),
             Self::Metrics(error) => {
                 write!(
                     f,
@@ -782,5 +931,180 @@ mod tests {
             .unwrap();
         assert!(metrics.beta.is_some());
         assert!(metrics.alpha.is_some());
+    }
+
+    // ----------------------------------------------------------------------- //
+    // from_components (SRS-SIM-004 restore) fail-closed re-validation
+    // ----------------------------------------------------------------------- //
+
+    /// Build a coherent accumulator via the public API for the restore tests.
+    fn coherent_accumulator() -> PaperMetricsAccumulator {
+        let mut acc = PaperMetricsAccumulator::new(1_000_000).unwrap();
+        acc.apply_fill(&paper_fill(1, "AAPL", 100, 10_000, 5))
+            .unwrap();
+        acc.mark(1, &marks(&[("AAPL", 10_100)])).unwrap();
+        acc.apply_fill(&paper_fill(2, "AAPL", -50, 10_200, 5))
+            .unwrap();
+        acc.mark(2, &marks(&[("AAPL", 10_300)])).unwrap();
+        acc
+    }
+
+    #[test]
+    fn from_components_round_trips_a_coherent_accumulator() {
+        let acc = coherent_accumulator();
+        let rebuilt = PaperMetricsAccumulator::from_components(
+            acc.starting_cash_minor(),
+            acc.cash_minor(),
+            acc.ledger().clone(),
+            acc.trade_log().to_vec(),
+            acc.equity_curve().to_vec(),
+            acc.last_mark_ts(),
+            acc.last_fill_ts(),
+        )
+        .expect("coherent components rebuild");
+        assert_eq!(rebuilt, acc);
+    }
+
+    #[test]
+    fn from_components_rejects_non_positive_starting_cash() {
+        let acc = coherent_accumulator();
+        assert!(matches!(
+            PaperMetricsAccumulator::from_components(
+                0,
+                acc.cash_minor(),
+                acc.ledger().clone(),
+                acc.trade_log().to_vec(),
+                acc.equity_curve().to_vec(),
+                acc.last_mark_ts(),
+                acc.last_fill_ts(),
+            ),
+            Err(PaperMetricsError::NonPositiveStartingCash { .. })
+        ));
+    }
+
+    #[test]
+    fn from_components_rejects_a_backwards_trade_log() {
+        let acc = coherent_accumulator();
+        // Reverse the two fills so timestamps go 2 then 1 (non-monotonic).
+        let mut trade_log = acc.trade_log().to_vec();
+        trade_log.reverse();
+        assert!(matches!(
+            PaperMetricsAccumulator::from_components(
+                acc.starting_cash_minor(),
+                acc.cash_minor(),
+                acc.ledger().clone(),
+                trade_log,
+                acc.equity_curve().to_vec(),
+                acc.last_mark_ts(),
+                acc.last_fill_ts(),
+            ),
+            Err(PaperMetricsError::NonMonotonicFill { .. })
+        ));
+    }
+
+    #[test]
+    fn from_components_rejects_a_non_increasing_equity_curve() {
+        let acc = coherent_accumulator();
+        let mut curve = acc.equity_curve().to_vec();
+        curve.reverse(); // timestamps now go 2 then 1
+        assert!(matches!(
+            PaperMetricsAccumulator::from_components(
+                acc.starting_cash_minor(),
+                acc.cash_minor(),
+                acc.ledger().clone(),
+                acc.trade_log().to_vec(),
+                curve,
+                acc.last_mark_ts(),
+                acc.last_fill_ts(),
+            ),
+            Err(PaperMetricsError::NonMonotonicMarkTimestamps { .. })
+        ));
+    }
+
+    #[test]
+    fn from_components_rejects_an_incoherent_last_fill_cursor() {
+        let acc = coherent_accumulator();
+        // last_fill_ts must equal the trade log's tail (2); claim 99 instead.
+        assert!(matches!(
+            PaperMetricsAccumulator::from_components(
+                acc.starting_cash_minor(),
+                acc.cash_minor(),
+                acc.ledger().clone(),
+                acc.trade_log().to_vec(),
+                acc.equity_curve().to_vec(),
+                acc.last_mark_ts(),
+                Some(99),
+            ),
+            Err(PaperMetricsError::InconsistentSnapshot { .. })
+        ));
+    }
+
+    #[test]
+    fn from_components_rejects_an_incoherent_last_mark_cursor() {
+        let acc = coherent_accumulator();
+        assert!(matches!(
+            PaperMetricsAccumulator::from_components(
+                acc.starting_cash_minor(),
+                acc.cash_minor(),
+                acc.ledger().clone(),
+                acc.trade_log().to_vec(),
+                acc.equity_curve().to_vec(),
+                None,
+                acc.last_fill_ts(),
+            ),
+            Err(PaperMetricsError::InconsistentSnapshot { .. })
+        ));
+    }
+
+    #[test]
+    fn from_components_rejects_a_fill_with_a_bad_field() {
+        let acc = coherent_accumulator();
+        let mut trade_log = acc.trade_log().to_vec();
+        trade_log[0].price_minor = 0; // a non-positive price is corrupt
+        assert!(matches!(
+            PaperMetricsAccumulator::from_components(
+                acc.starting_cash_minor(),
+                acc.cash_minor(),
+                acc.ledger().clone(),
+                trade_log,
+                acc.equity_curve().to_vec(),
+                acc.last_mark_ts(),
+                acc.last_fill_ts(),
+            ),
+            Err(PaperMetricsError::InconsistentSnapshot { .. })
+        ));
+    }
+
+    #[test]
+    fn from_components_rejects_cash_that_does_not_reconcile_with_the_trade_log() {
+        // The adversarial-review fix: `cash_minor` must equal starting cash plus the
+        // trade log's re-derived cash deltas. A checksum-valid snapshot whose cash is
+        // internally inconsistent (here, off by one) is rejected fail-closed rather than
+        // restored to fabricate net-liq equity on the next mark.
+        let acc = coherent_accumulator();
+        assert!(matches!(
+            PaperMetricsAccumulator::from_components(
+                acc.starting_cash_minor(),
+                acc.cash_minor() + 1, // tampered running cash
+                acc.ledger().clone(),
+                acc.trade_log().to_vec(),
+                acc.equity_curve().to_vec(),
+                acc.last_mark_ts(),
+                acc.last_fill_ts(),
+            ),
+            Err(PaperMetricsError::InconsistentSnapshot { .. })
+        ));
+        // ...and a snapshot whose cash DOES reconcile round-trips (the guard is not
+        // vacuous -- it accepts the genuine cash).
+        assert!(PaperMetricsAccumulator::from_components(
+            acc.starting_cash_minor(),
+            acc.cash_minor(),
+            acc.ledger().clone(),
+            acc.trade_log().to_vec(),
+            acc.equity_curve().to_vec(),
+            acc.last_mark_ts(),
+            acc.last_fill_ts(),
+        )
+        .is_ok());
     }
 }

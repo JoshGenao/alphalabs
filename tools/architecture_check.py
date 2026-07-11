@@ -824,9 +824,10 @@ def assert_sim_persistence(config: dict) -> list[str]:
         f"({block['snapshot_struct']['struct']} envelope over the SRS-SIM-003 "
         f"{block['config_struct']['struct']}: interval {block['config_defaults']['interval_value']}s "
         f"/ restore deadline {block['config_defaults']['deadline_value']}s default) with a "
-        "deterministic, dependency-free codec — capture/serialize/restore round-trips the virtual "
-        "ledger exactly and fails closed on a corrupt snapshot, with reserved forward-compatible "
-        "slots for the not-yet-built pending-order, metric, and user-state sub-states (SRS-SIM-004, "
+        "deterministic, dependency-free codec — capture/serialize/restore round-trips the ledger, "
+        "accumulated metrics, and user-state dictionaries exactly, atomically persists to disk, "
+        "enforces the 30s restore deadline, and fails closed on a corrupt snapshot, with a reserved "
+        "forward-compatible slot for the not-yet-built pending-order sub-state (SRS-SIM-004, "
         "SyRS SYS-89)"
     )
     return static_evidence + [summary]

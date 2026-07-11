@@ -50,11 +50,12 @@
 //! ## Deferred (why SRS-BT-004 stays `passes:false`)
 //!
 //! End-to-end SRS-BT-004 needs the live dashboard reporting path and the paper/live
-//! equity-and-trade accumulators that feed this family at runtime (the SRS-SIM-004
-//! snapshot reserves a metrics slot for exactly that, still empty until an
-//! accumulator exists), plus the SRS-BT-005 benchmark-resolution surface. This slice
-//! ships the deterministic, dependency-free computation; those owners flip the
-//! end-to-end status, so `feature_list.json` keeps SRS-BT-004 `passes:false`.
+//! equity-and-trade accumulators that feed this family at runtime (the
+//! PaperMetricsAccumulator now exists and is persisted/restored by the SRS-SIM-004
+//! snapshot, but the live wiring that drives it and reports on the dashboard is
+//! deferred), plus the SRS-BT-005 benchmark-resolution surface. This slice ships the
+//! deterministic, dependency-free computation; those owners flip the end-to-end
+//! status, so `feature_list.json` keeps SRS-BT-004 `passes:false`.
 
 use std::collections::HashMap;
 

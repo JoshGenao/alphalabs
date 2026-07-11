@@ -98,16 +98,21 @@ pub mod fill_model;
 pub mod virtual_ledger;
 
 /// The internal simulation engine's paper-state persistence path (SRS-SIM-004 /
-/// SyRS SYS-89). It captures a [`virtual_ledger::VirtualLedgerBook`] plus the
-/// [`paper_state::PersistenceConfig`] cadence (default 60s interval, 30s restore
-/// deadline) into a versioned [`paper_state::PaperStateSnapshot`], serializes it to
-/// a deterministic, dependency-free text form (sorted keys, length-prefixed
-/// symbols), and restores it fail-closed on a corrupt or tampered blob. Only the
-/// virtual ledger has a runtime type today, so the pending-order, metric, and
-/// user-state sub-states SYS-89 also names are reserved, forward-compatible slots;
-/// the live 60s timer + 30s-restore container wiring (SRS-EXE-002 / SYS-89), the
-/// paper-order pending store, the SYS-85 / SRS-BT-004 metric family, and the Python
-/// runtime are deferred, so SRS-SIM-004 stays `passes:false`.
+/// SyRS SYS-89). It captures three of the four SYS-89 sub-states —
+/// [`virtual_ledger::VirtualLedgerBook`], the per-strategy
+/// [`paper_metrics::PaperMetricsAccumulator`] metrics, and the per-strategy
+/// user-state dictionaries — plus the [`paper_state::PersistenceConfig`] cadence
+/// (default 60s interval, 30s restore deadline) into a versioned
+/// [`paper_state::PaperStateSnapshot`], serializes it to a deterministic,
+/// dependency-free text form (sorted keys, length-prefixed symbols), persists it
+/// atomically to disk ([`paper_state::PaperStateSnapshot::save_to_path`]), and
+/// restores it fail-closed on a corrupt/tampered blob while enforcing the 30s restore
+/// deadline ([`paper_state::recover_from_path`]). The fourth sub-state SYS-89 names,
+/// pending simulated orders, has no runtime store yet, so it is a reserved,
+/// forward-compatible slot. The live 60s timer + real container-restart wiring
+/// (SRS-EXE-002 / SYS-89 lifecycle), the paper-order pending store, and the Python
+/// strategy runtime that WRITES the user-state dictionary are deferred, so
+/// SRS-SIM-004 stays `passes:false`.
 pub mod paper_state;
 
 /// The shared performance-metric family (SRS-BT-004 / SyRS SYS-16, SYS-86). It
@@ -136,10 +141,11 @@ pub mod metrics;
 /// run reports the metrics a backtest of the same activity would (a crate integration test
 /// asserts the equality). It fails closed on a missing mark for an open position, a
 /// non-positive/duplicate mark, or a non-monotonic mark/fill, and reads no clock/RNG so it
-/// stays deterministic. The accumulator is demonstrable solo over fixtures; the runtime that
-/// SUPPLIES the marks at production time (the SYS-70 subscription feed) and the live
-/// dashboard / SRS-SIM-004 persisted-slot wiring are the deferred owners, so SRS-BT-004
-/// stays `passes:false`.
+/// stays deterministic. The accumulator is demonstrable solo over fixtures and is persisted
+/// and restored by the SRS-SIM-004 snapshot (its construction invariants re-validated
+/// fail-closed on restore); the runtime that SUPPLIES the marks at production time (the SYS-70 subscription feed) and
+/// the live dashboard reporting path are the deferred owners, so SRS-BT-004 stays
+/// `passes:false`.
 pub mod paper_metrics;
 
 /// Benchmark selection, resolution, and comparison (SRS-BT-005 / SyRS SYS-17, SYS-36,

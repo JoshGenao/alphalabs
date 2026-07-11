@@ -45,16 +45,22 @@ from sim_persistence_check import (  # noqa: E402
     check_config_struct,
     check_config_validation,
     check_determinism,
+    check_disk_persistence,
     check_error_enum,
     check_fail_closed,
     check_integrity,
+    check_metrics_persistence,
     check_module_reexport,
     check_money_invariant,
     check_no_broker_dependency,
+    check_persist_cli,
     check_reserved_slots,
+    check_restore_deadline,
     check_schema_version,
     check_snapshot_struct,
+    check_user_state_persistence,
     check_vendor_isolation,
+    cli_source,
     lib_source,
     load_config,
     persistence_source,
@@ -75,16 +81,19 @@ class SimPersistenceScriptTest(unittest.TestCase):
         self.assertIn("SRS-SIM-004 SDK-SURFACE PASS", result.stdout)
         for needle in (
             "PaperStateSnapshot as a versioned envelope (schema_version: i64, config: "
-            "PersistenceConfig, book: VirtualLedgerBook)",
+            "PersistenceConfig, book: VirtualLedgerBook, metrics: HashMap<StrategyId, "
+            "PaperMetricsAccumulator>, user_state: HashMap<StrategyId, String>)",
+            "capturing three of the four SYS-89 sub-states",
             "PersistenceConfig with the SYS-89 cadence (interval_secs: u64, "
             "restore_deadline_secs: u64, persist_on_shutdown: bool)",
             "DEFAULT_INTERVAL_SECS = 60s, DEFAULT_RESTORE_DEADLINE_SECS = 30s, persist on shutdown",
             "fails closed on a zero-second interval or restore deadline "
             "(PersistenceError::NonPositiveConfig) AND on a restore deadline above the SYS-89 30s "
             "ceiling (PersistenceError::RestoreDeadlineTooLong)",
-            "PersistenceError with 9 fail-closed variants (CorruptSnapshot, UnknownSchemaVersion, "
+            "PersistenceError with 11 fail-closed variants (CorruptSnapshot, UnknownSchemaVersion, "
             "InconsistentField, DuplicateRecord, UnsupportedSection, NonPositiveConfig, "
-            "RestoreDeadlineTooLong, ChecksumMismatch, ShutdownPersistenceRequired)",
+            "RestoreDeadlineTooLong, ChecksumMismatch, ShutdownPersistenceRequired, Io, "
+            "RestoreDeadlineExceeded)",
             "rejects a foreign blob or unknown version (UnknownSchemaVersion)",
             "restore() round-trip (restore(serialize(capture(book))) == book)",
             "sorts strategies by id and positions by canonical symbol",
@@ -92,9 +101,21 @@ class SimPersistenceScriptTest(unittest.TestCase):
             "integrity checksum over the body, verified BEFORE any state is built",
             "fails closed with PersistenceError::ChecksumMismatch under fault injection",
             "fail-closed and atomic",
-            "reserves forward-compatible slots (pending simulated orders, accumulated paper "
-            "metrics, user-state dictionary)",
+            "reserves a forward-compatible slot (pending simulated orders)",
             "fails closed (UnsupportedSection) on a non-empty slot",
+            "persists the snapshot atomically to disk (save_to_path: scratch file with a "
+            "<pid>.<seq> suffix -> fsync -> rename onto paper_sim_state.snapshot -> parent-dir "
+            "fsync)",
+            "load_from_path fails closed (PersistenceError::Io) on a missing store directory or "
+            "snapshot file",
+            "enforces the SYS-89 30s restore deadline",
+            "PersistenceError::RestoreDeadlineExceeded",
+            "persists the SYS-89 accumulated-metrics sub-state",
+            "PaperMetricsAccumulator::from_components",
+            "persists the SYS-89 user-state dictionary sub-state",
+            "validates on restore that each value is a well-formed JSON object (is_json_object)",
+            "ships the operator CLI sim004_persist_cli with the persist/restore/roundtrip "
+            "subcommands and 6 fault-injection paths",
             "paper_state money is integer minor units: no f64",
             "lib.rs re-exports `pub mod paper_state;`",
             "Cargo.toml declares no dependency on the live/broker path (atp-adapters, atp-execution)",
@@ -110,6 +131,7 @@ class _Fixture(unittest.TestCase):
         self.src = persistence_source(self.config)
         self.lib_src = lib_source(self.config)
         self.cargo_src = cargo_source(self.config)
+        self.cli_src = cli_source(self.config)
 
 
 class SnapshotStructTest(_Fixture):
@@ -218,6 +240,14 @@ class SchemaVersionTest(_Fixture):
             check_schema_version(self.config, mutated)
         self.assertIn("magic-header guard", str(ctx.exception))
 
+    def test_removed_v1_migration_is_caught(self) -> None:
+        # Dropping the v1 backward-read branch would strand existing v1 snapshots on an
+        # upgrade (they would fail recovery with UnknownSchemaVersion).
+        mutated = self.src.replace("if schema_version == SCHEMA_VERSION_V1", "if false", 1)
+        with self.assertRaises(SimPersistenceCheckError) as ctx:
+            check_schema_version(self.config, mutated)
+        self.assertIn("v1", str(ctx.exception))
+
 
 class CodecTest(_Fixture):
     def test_codec_evidence(self) -> None:
@@ -299,7 +329,7 @@ class FailClosedTest(_Fixture):
 class ReservedSlotsTest(_Fixture):
     def test_reserved_slots_evidence(self) -> None:
         evidence = check_reserved_slots(self.config, self.src)
-        self.assertIn("forward-compatible slots", evidence)
+        self.assertIn("forward-compatible slot", evidence)
 
     def test_dropped_slot_is_caught(self) -> None:
         # Removing the pending-orders slot (both the serialize comment and the
@@ -310,9 +340,11 @@ class ReservedSlotsTest(_Fixture):
         self.assertIn("pending simulated orders", str(ctx.exception))
 
     def test_removed_unsupported_guard_is_caught(self) -> None:
+        # The deserialize guard returns UnsupportedSection on a non-zero pending slot;
+        # swapping it for a different error drops the fail-closed guarantee.
         mutated = self.src.replace(
-            "PersistenceError::UnsupportedSection { context }",
-            "PersistenceError::CorruptSnapshot { context }",
+            "Err(PersistenceError::UnsupportedSection {",
+            "Err(PersistenceError::CorruptSnapshot {",
         )
         with self.assertRaises(SimPersistenceCheckError) as ctx:
             check_reserved_slots(self.config, mutated)
@@ -388,6 +420,113 @@ class VendorIsolationTest(_Fixture):
         self.assertIn("ib_insync", str(ctx.exception))
 
 
+class DiskPersistenceTest(_Fixture):
+    def test_disk_evidence(self) -> None:
+        evidence = check_disk_persistence(self.config, self.src)
+        self.assertIn("persists the snapshot atomically to disk", evidence)
+
+    def test_removed_dir_fsync_is_caught(self) -> None:
+        # Dropping the parent-directory fsync means the rename may not survive a crash
+        # (renaming the dir handle removes the `dir_handle.sync_all()` token).
+        mutated = self.src.replace("dir_handle", "renamed_handle")
+        with self.assertRaises(SimPersistenceCheckError) as ctx:
+            check_disk_persistence(self.config, mutated)
+        self.assertIn("parent directory", str(ctx.exception))
+
+    def test_removed_missing_dir_guard_is_caught(self) -> None:
+        # Dropping the missing-directory guard would let load substitute an empty state.
+        mutated = self.src.replace("if !dir.is_dir()", "if false", 1)
+        with self.assertRaises(SimPersistenceCheckError) as ctx:
+            check_disk_persistence(self.config, mutated)
+        self.assertIn("store directory", str(ctx.exception))
+
+
+class RestoreDeadlineTest(_Fixture):
+    def test_deadline_evidence(self) -> None:
+        evidence = check_restore_deadline(self.config, self.src)
+        self.assertIn("SYS-89 30s restore deadline", evidence)
+
+    def test_removed_deadline_guard_is_caught(self) -> None:
+        mutated = self.src.replace(
+            "if restore_elapsed > Duration::from_secs(self.restore_deadline_secs)", "if false", 1
+        )
+        with self.assertRaises(SimPersistenceCheckError) as ctx:
+            check_restore_deadline(self.config, mutated)
+        self.assertIn("deadline", str(ctx.exception))
+
+    def test_removed_monotonic_clock_is_caught(self) -> None:
+        # Without timing the restore, the deadline is assumed, not measured.
+        mutated = self.src.replace("Instant::now()", "start_placeholder()", 1)
+        with self.assertRaises(SimPersistenceCheckError) as ctx:
+            check_restore_deadline(self.config, mutated)
+        self.assertIn("monotonic clock", str(ctx.exception))
+
+
+class MetricsPersistenceTest(_Fixture):
+    def test_metrics_evidence(self) -> None:
+        evidence = check_metrics_persistence(self.config, self.src)
+        self.assertIn("accumulated-metrics sub-state", evidence)
+
+    def test_dropped_metrics_field_is_caught(self) -> None:
+        # The field token also appears on the read_metrics local, so replace all.
+        mutated = self.src.replace(
+            "metrics: HashMap<StrategyId, PaperMetricsAccumulator>",
+            "reserved_metrics_slot: usize",
+        )
+        with self.assertRaises(SimPersistenceCheckError) as ctx:
+            check_metrics_persistence(self.config, mutated)
+        self.assertIn("accumulated metrics", str(ctx.exception))
+
+    def test_removed_metrics_revalidation_is_caught(self) -> None:
+        # Restoring metrics without re-validating construction invariants would trust
+        # a foreign writer's incoherent accumulator (removing the call, not the docs).
+        mutated = self.src.replace("PaperMetricsAccumulator::from_components(", "trust_blindly(", 1)
+        with self.assertRaises(SimPersistenceCheckError) as ctx:
+            check_metrics_persistence(self.config, mutated)
+        self.assertIn("RE-VALIDATE", str(ctx.exception))
+
+
+class UserStatePersistenceTest(_Fixture):
+    def test_user_state_evidence(self) -> None:
+        evidence = check_user_state_persistence(self.config, self.src)
+        self.assertIn("user-state dictionary sub-state", evidence)
+
+    def test_dropped_user_state_field_is_caught(self) -> None:
+        # The field token also appears on the read_user_state local, so replace all.
+        mutated = self.src.replace(
+            "user_state: HashMap<StrategyId, String>", "reserved_user_state_slot: usize"
+        )
+        with self.assertRaises(SimPersistenceCheckError) as ctx:
+            check_user_state_persistence(self.config, mutated)
+        self.assertIn("user-state dictionaries", str(ctx.exception))
+
+    def test_removed_json_object_guard_is_caught(self) -> None:
+        # SYS-89 names a DICTIONARY; dropping the JSON-object validation would restore
+        # a non-object user-state value.
+        mutated = self.src.replace("if !is_json_object(&json)", "if false", 1)
+        with self.assertRaises(SimPersistenceCheckError) as ctx:
+            check_user_state_persistence(self.config, mutated)
+        self.assertIn("JSON object", str(ctx.exception))
+
+
+class PersistCliTest(_Fixture):
+    def test_cli_evidence(self) -> None:
+        evidence = check_persist_cli(self.config, self.cli_src)
+        self.assertIn("sim004_persist_cli", evidence)
+
+    def test_dropped_subcommand_is_caught(self) -> None:
+        mutated = self.cli_src.replace('"roundtrip"', '"renamed"')
+        with self.assertRaises(SimPersistenceCheckError) as ctx:
+            check_persist_cli(self.config, mutated)
+        self.assertIn("roundtrip", str(ctx.exception))
+
+    def test_dropped_fault_is_caught(self) -> None:
+        mutated = self.cli_src.replace('"tampered-checksum"', '"renamed-fault"')
+        with self.assertRaises(SimPersistenceCheckError) as ctx:
+            check_persist_cli(self.config, mutated)
+        self.assertIn("tampered-checksum", str(ctx.exception))
+
+
 class CargoSmokeTest(unittest.TestCase):
     """The runnable persistence path must compile where it matters."""
 
@@ -404,12 +543,12 @@ class CargoSmokeTest(unittest.TestCase):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_sixteen_items(self) -> None:
-        # 15 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(run_checks()), 16)
+    def test_run_checks_emits_twenty_one_items(self) -> None:
+        # 20 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(run_checks()), 21)
 
-    def test_static_evidence_is_fifteen_items(self) -> None:
-        self.assertEqual(len(assert_sim_persistence_static(load_config(), ROOT)), 15)
+    def test_static_evidence_is_twenty_items(self) -> None:
+        self.assertEqual(len(assert_sim_persistence_static(load_config(), ROOT)), 20)
 
 
 if __name__ == "__main__":

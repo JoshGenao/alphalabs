@@ -11,9 +11,12 @@ The paper-state persistence path lives in ``crates/atp-simulation`` (module
 ``paper_state``), per the structural contract in
 ``architecture/runtime_services.json`` (block ``sim_persistence_contract``):
 
-  (a) ``PaperStateSnapshot`` is a versioned envelope (``schema_version`` i64,
-      ``config``, ``book``) that captures the FULL SRS-SIM-003 ``VirtualLedgerBook``
-      without any new dependency (no serde; money stays integer minor units).
+  (a) ``PaperStateSnapshot`` (SCHEMA_VERSION 2) is a versioned envelope
+      (``schema_version`` i64, ``config``, ``book``, ``metrics``, ``user_state``)
+      that captures three of the four SYS-89 sub-states -- the SRS-SIM-003
+      ``VirtualLedgerBook``, a per-strategy ``PaperMetricsAccumulator`` map, and a
+      per-strategy user-state (JSON object) map -- without any new dependency (no
+      serde; money stays integer minor units).
   (b) ``PersistenceConfig`` carries the SYS-89 cadence: ``interval_secs`` (u64,
       default 60), ``restore_deadline_secs`` (u64, default 30), and
       ``persist_on_shutdown`` (bool, default true); ``new`` fails closed on a
@@ -31,20 +34,29 @@ The paper-state persistence path lives in ``crates/atp-simulation`` (module
       canonical symbols, no duplicate records, no trailing data) and builds the
       whole book in a local, so a corrupt or tampered blob yields no
       partially-restored state (``PersistenceError`` variants).
-  (f) the SYS-89 sub-states that have no runtime type yet (pending orders,
-      metrics, user-state) are reserved, forward-compatible slots; a non-zero
-      reserved slot is rejected (``UnsupportedSection``) rather than dropped.
-  (g) every money figure is an integer minor unit; the module contains no ``f64``;
+  (f) the one SYS-89 sub-state with no runtime type yet -- pending simulated orders
+      -- is a reserved, forward-compatible slot; a non-zero reserved slot is rejected
+      (``UnsupportedSection``) rather than dropped. The metrics and user-state
+      sub-states ARE captured: restore rebuilds each accumulator through
+      ``PaperMetricsAccumulator::from_components`` (re-validating its construction
+      invariants) and validates each user-state value is a JSON object
+      (``is_json_object``).
+  (g) the snapshot is atomically persisted to disk (``save_to_path``: scratch ->
+      fsync -> rename -> parent-dir fsync) and ``load_from_path`` /
+      ``recover_from_path`` fail closed on a missing/corrupt store while enforcing the
+      SYS-89 30s restore deadline (``restore_within_deadline``); the operator CLI
+      ``sim004_persist_cli`` demonstrates cross-process survival and fault injection.
+  (h) every money figure is an integer minor unit; the module contains no ``f64``;
       ``lib.rs`` re-exports ``pub mod paper_state;`` and the module carries no
       vendor-SDK token (SRS-ARCH-003); the ``atp-simulation`` crate has no
       dependency on the live/broker path (``atp-execution`` / ``atp-adapters``),
       so persisted paper state is independent of the IB account.
 
 The PASS line is ``SRS-SIM-004 SDK-SURFACE PASS`` -- it names the deferred owners
-(the live 60s timer / 30s-restore container wiring via SRS-EXE-002 / SYS-89, the
-pending-order store, the SYS-85 / SRS-BT-004 metric family, and the Python
-runtime) so the partial-pass status (feature_list.json keeps ``passes:false``) is
-loud.
+(the live 60s timer + real container-restart-within-30s wiring via SRS-EXE-002 /
+SYS-89, the pending-order store, and the Python strategy runtime that WRITES the
+user-state dictionary) so the partial-pass status (feature_list.json keeps
+``passes:false``) is loud.
 
 Mirrors the PASS/FAIL output style of ``tools/sim_ledger_check.py``.
 
@@ -114,6 +126,14 @@ def cargo_source(config: dict, root: Path = ROOT) -> str:
     return source_path.read_text(encoding="utf-8")
 
 
+def cli_source(config: dict, root: Path = ROOT) -> str:
+    block = contract_block(config)
+    source_path = root / block["simulation_crate"]["path"] / block["persist_cli"]["path"]
+    if not source_path.exists():
+        fail(f"source missing: {source_path.relative_to(root)}")
+    return source_path.read_text(encoding="utf-8")
+
+
 def _compact(text: str) -> str:
     """Strip all whitespace so rustfmt line-wrapping cannot hide a token."""
     return re.sub(r"\s+", "", text)
@@ -131,18 +151,21 @@ def check_snapshot_struct(config: dict, src: str) -> str:
         "schema_version": "schema_version:i64",
         "config": "config:PersistenceConfig",
         "book": "book:VirtualLedgerBook",
+        "metrics": "metrics:HashMap<StrategyId,PaperMetricsAccumulator>",
+        "user_state": "user_state:HashMap<StrategyId,String>",
     }
     missing = [f for f in spec["fields"] if _compact(expected[f]) not in body]
     if missing:
         fail(
             f"{spec['struct']} must be a versioned envelope holding "
             f"{', '.join(expected[f] for f in missing)} -- the schema version, the persistence "
-            "config, and the captured virtual ledger book"
+            "config, and the three captured SYS-89 sub-states (ledger, metrics, user-state)"
         )
     return (
         f"atp-simulation declares {spec['struct']} as a versioned envelope "
-        "(schema_version: i64, config: PersistenceConfig, book: VirtualLedgerBook) capturing the "
-        "full SRS-SIM-003 ledger"
+        "(schema_version: i64, config: PersistenceConfig, book: VirtualLedgerBook, "
+        "metrics: HashMap<StrategyId, PaperMetricsAccumulator>, "
+        "user_state: HashMap<StrategyId, String>) capturing three of the four SYS-89 sub-states"
     )
 
 
@@ -246,15 +269,20 @@ def check_schema_version(config: dict, src: str) -> str:
         ("version_guard_token", "the schema-version guard"),
         ("version_error_token", "the UnknownSchemaVersion error"),
         ("magic_guard_token", "the magic-header guard"),
+        ("v1_const_token", "the legacy SCHEMA_VERSION_V1 constant"),
+        ("v1_migration_token", "the v1 backward-read migration branch"),
     ):
         if _compact(spec[key]) not in compact_src:
             fail(
-                f"paper_state must version its snapshot and reject foreign/old blobs: missing "
-                f"{label} (`{spec[key]}`)"
+                f"paper_state must version its snapshot, reject foreign/unknown blobs, AND read the "
+                f"legacy v1 layout so an upgrade never strands persisted state: missing {label} "
+                f"(`{spec[key]}`)"
             )
     return (
-        "atp-simulation versions the snapshot (SCHEMA_VERSION + MAGIC header) and rejects a foreign "
-        "blob or unknown version (UnknownSchemaVersion) rather than mis-reading it"
+        "atp-simulation versions the snapshot (SCHEMA_VERSION + MAGIC header), rejects a foreign "
+        "blob or unknown version (UnknownSchemaVersion) rather than mis-reading it, and migrates a "
+        "legacy v1 (ledger-only) snapshot forward with empty metrics/user-state so a version bump "
+        "does not strand recovery"
     )
 
 
@@ -347,8 +375,9 @@ def check_reserved_slots(config: dict, src: str) -> str:
             "rather than silently dropping it"
         )
     return (
-        f"atp-simulation reserves forward-compatible slots ({', '.join(spec['slots'])}) for the "
-        "not-yet-built SYS-89 sub-states and fails closed (UnsupportedSection) on a non-empty slot"
+        f"atp-simulation reserves a forward-compatible slot ({', '.join(spec['slots'])}) for the "
+        "not-yet-built SYS-89 pending-simulated-orders sub-state and fails closed (UnsupportedSection) "
+        "on a non-empty slot"
     )
 
 
@@ -427,6 +456,143 @@ def check_vendor_isolation(config: dict, src: str) -> str:
     )
 
 
+def check_disk_persistence(config: dict, src: str) -> str:
+    spec = contract_block(config)["disk_persistence"]
+    for fn in (spec["save_fn"], spec["load_fn"]):
+        if not re.search(rf"\bpub\s+fn\s+{re.escape(fn)}\b", src):
+            fail(f"paper_state must expose the on-disk store surface `pub fn {fn}`")
+    compact_src = _compact(src)
+    for key, label in (
+        ("store_filename_token", "name the store file"),
+        ("create_dir_token", "create the store directory"),
+        ("scratch_suffix_token", "write a per-process/per-call scratch file (<pid>.<seq>)"),
+        ("fsync_token", "fsync the scratch file before publishing"),
+        ("rename_token", "atomically rename the scratch onto the live store"),
+        ("dir_fsync_token", "fsync the parent directory so the rename survives a crash"),
+        ("missing_dir_token", "fail closed on a missing store directory"),
+    ):
+        if _compact(spec[key]) not in compact_src:
+            fail(
+                f"the atomic on-disk store must {label} (`{spec[key]}`) -- the scratch->fsync->"
+                "rename->dir-fsync durability recipe"
+            )
+    if _compact(spec["io_error_token"]) not in compact_src:
+        fail(
+            f"a store I/O failure (missing dir/file, write/rename error) must fail closed with "
+            f"`{spec['io_error_token']}`, never an empty state"
+        )
+    return (
+        "atp-simulation persists the snapshot atomically to disk (save_to_path: scratch file with a "
+        "<pid>.<seq> suffix -> fsync -> rename onto paper_sim_state.snapshot -> parent-dir fsync) and "
+        "load_from_path fails closed (PersistenceError::Io) on a missing store directory or snapshot "
+        "file rather than substituting an empty state"
+    )
+
+
+def check_restore_deadline(config: dict, src: str) -> str:
+    spec = contract_block(config)["restore_deadline"]
+    for fn in (spec["deadline_fn"], spec["recover_fn"]):
+        if not re.search(rf"\bpub\s+fn\s+{re.escape(fn)}\b", src):
+            fail(f"paper_state must expose `pub fn {fn}` (the SYS-89 30s restore-deadline surface)")
+    compact_src = _compact(src)
+    if _compact(spec["instant_token"]) not in compact_src:
+        fail(
+            f"recover_from_path must time the state-restore phase with a monotonic clock "
+            f"(`{spec['instant_token']}`) so the deadline is measured, not assumed"
+        )
+    if _compact(spec["guard_token"]) not in compact_src:
+        fail(
+            f"restore_within_deadline must fail closed when the restore phase overran the configured "
+            f"deadline (`{spec['guard_token']}`)"
+        )
+    if _compact(spec["error_token"]) not in compact_src:
+        fail(f"an over-deadline restore must fail closed with `{spec['error_token']}`")
+    return (
+        "atp-simulation enforces the SYS-89 30s restore deadline: recover_from_path times the restore "
+        "phase with a monotonic clock (Instant) and restore_within_deadline fails closed "
+        "(PersistenceError::RestoreDeadlineExceeded) on an overrun, so a too-slow restore never "
+        "silently resumes"
+    )
+
+
+def check_metrics_persistence(config: dict, src: str) -> str:
+    spec = contract_block(config)["metrics_persistence"]
+    compact_src = _compact(src)
+    if _compact(spec["field_token"]) not in compact_src:
+        fail(
+            f"the snapshot must carry the per-strategy accumulated metrics (`{spec['field_token']}`) "
+            "so SYS-89's 'accumulated metrics' sub-state is persisted, not a reserved empty slot"
+        )
+    if not re.search(rf"\bpub\s+fn\s+{re.escape(spec['capture_full_fn'])}\b", src):
+        fail(
+            f"paper_state must expose `pub fn {spec['capture_full_fn']}` to capture all sub-states"
+        )
+    if not re.search(rf"{re.escape(spec['read_fn'])}\b", src):
+        fail(f"deserialize must read the metrics section (`{spec['read_fn']}`)")
+    if _compact(spec["from_components_token"]) not in compact_src:
+        fail(
+            f"restore must RE-VALIDATE each metrics accumulator's invariants via "
+            f"`{spec['from_components_token']}` (fail-closed), not trust the bytes blindly"
+        )
+    if _compact(spec["duplicate_token"]) not in compact_src:
+        fail(f"restore must reject a duplicate metrics strategy id (`{spec['duplicate_token']}`)")
+    return (
+        "atp-simulation persists the SYS-89 accumulated-metrics sub-state: the snapshot carries a "
+        "per-strategy PaperMetricsAccumulator map, capture_full captures it, and deserialize rebuilds "
+        "each accumulator through PaperMetricsAccumulator::from_components, which re-validates its "
+        "construction invariants (positive baseline, monotonic trade log, increasing equity curve, "
+        "coherent cursors) fail-closed"
+    )
+
+
+def check_user_state_persistence(config: dict, src: str) -> str:
+    spec = contract_block(config)["user_state_persistence"]
+    compact_src = _compact(src)
+    if _compact(spec["field_token"]) not in compact_src:
+        fail(
+            f"the snapshot must carry the per-strategy user-state dictionaries "
+            f"(`{spec['field_token']}`) so SYS-89's user-state sub-state is persisted"
+        )
+    if not re.search(rf"{re.escape(spec['read_fn'])}\b", src):
+        fail(f"deserialize must read the user-state section (`{spec['read_fn']}`)")
+    if not re.search(rf"{re.escape(spec['json_validator_fn'])}\b", src):
+        fail(
+            f"paper_state must structurally validate the user-state value is a JSON object "
+            f"(`{spec['json_validator_fn']}`)"
+        )
+    if _compact(spec["json_guard_token"]) not in compact_src:
+        fail(
+            f"restore must reject a user-state value that is not a JSON object "
+            f"(`{spec['json_guard_token']}`) -- SYS-89 names a DICTIONARY"
+        )
+    return (
+        "atp-simulation persists the SYS-89 user-state dictionary sub-state as a per-strategy opaque "
+        "JSON object (length-prefixed, so arbitrary JSON round-trips) and validates on restore that "
+        "each value is a well-formed JSON object (is_json_object), failing closed on a non-dictionary"
+    )
+
+
+def check_persist_cli(config: dict, cli_text: str) -> str:
+    spec = contract_block(config)["persist_cli"]
+    compact_src = _compact(cli_text)
+    for subcommand in spec["subcommands"]:
+        if f'"{subcommand}"' not in cli_text:
+            fail(f"{spec['bin']} must expose the `{subcommand}` subcommand")
+    for fault in spec["faults"]:
+        if f'"{fault}"' not in cli_text:
+            fail(f"{spec['bin']} must expose the `--inject {fault}` fault-injection path")
+    if _compact(spec["fail_closed_token"]) not in compact_src:
+        fail(
+            f"{spec['bin']} must report a fail-closed restore under fault injection "
+            f"(`{spec['fail_closed_token']}`)"
+        )
+    return (
+        f"atp-simulation ships the operator CLI {spec['bin']} with the "
+        f"{'/'.join(spec['subcommands'])} subcommands and {len(spec['faults'])} fault-injection paths "
+        f"({', '.join(spec['faults'])}), each making the restore fail closed"
+    )
+
+
 def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
     block = contract_block(config)
     crate = block["simulation_crate"]["crate"]
@@ -448,21 +614,26 @@ def check_cargo_test_smoke(config: dict, require_cargo: bool = False) -> str:
     )
     if lib.returncode != 0:
         fail(f"cargo test -p {crate} --lib failed:\n{lib.stdout}\n{lib.stderr}")
-    integ = subprocess.run(
-        [cargo, "test", "-p", crate, "--test", integration, "--quiet"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if integ.returncode != 0:
-        fail(f"cargo test -p {crate} --test {integration} failed:\n{integ.stdout}\n{integ.stderr}")
+    cli_test = block["rust_cli_test"]
+    for test in (integration, cli_test):
+        run = subprocess.run(
+            [cargo, "test", "-p", crate, "--test", test, "--quiet"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if run.returncode != 0:
+            fail(f"cargo test -p {crate} --test {test} failed:\n{run.stdout}\n{run.stderr}")
     return (
-        f"cargo test -p {crate} --lib + {integration}: PASS "
-        "(capture/serialize/restore round-trips a real book exactly, serialization is deterministic "
-        "and independent of insertion order, an OCC option symbol with spaces survives, a flat "
-        "closed position keeps its realized P&L, and a corrupt/tampered snapshot fails closed with "
-        "no partial state)"
+        f"cargo test -p {crate} --lib + {integration} + {cli_test}: PASS "
+        "(capture/serialize/restore round-trips the full state -- ledger, metrics, and user-state -- "
+        "exactly and deterministically; an OCC option symbol with spaces survives; a flat closed "
+        "position keeps its realized P&L; the on-disk store round-trips atomically and load fails "
+        "closed on a missing/corrupt store; the SYS-89 30s restore deadline is enforced; a "
+        "corrupt/tampered/non-dictionary snapshot fails closed with no partial state; and the "
+        "sim004_persist_cli binary survives a cross-process persist->restore while every fault "
+        "injection fails closed)"
     )
 
 
@@ -483,6 +654,11 @@ _STATIC_CHECKS = (
     ("determinism", check_determinism, "persistence"),
     ("fail_closed", check_fail_closed, "persistence"),
     ("reserved_slots", check_reserved_slots, "persistence"),
+    ("disk_persistence", check_disk_persistence, "persistence"),
+    ("restore_deadline", check_restore_deadline, "persistence"),
+    ("metrics_persistence", check_metrics_persistence, "persistence"),
+    ("user_state_persistence", check_user_state_persistence, "persistence"),
+    ("persist_cli", check_persist_cli, "cli"),
     ("integrity", check_integrity, "persistence"),
     ("money_invariant", check_money_invariant, "persistence"),
     ("module_reexport", check_module_reexport, "lib"),
@@ -491,10 +667,11 @@ _STATIC_CHECKS = (
 )
 
 _DEFERRED_OWNERS = (
-    "live 60s persistence timer + 30s restore on container restart (SRS-EXE-002 / SYS-89 lifecycle)",
+    "live 60s persistence timer + real container-restart wall-clock restore within 30s of boot "
+    "(SRS-EXE-002 / SYS-89 lifecycle)",
     "pending-order store (SRS-SIM-001 / SRS-SIM-002 paper-order path)",
-    "SYS-85 accumulated paper performance metrics (SRS-BT-004 metric family)",
-    "user-state dictionary (SRS-SDK Python strategy runtime)",
+    "Python user-state WRITER via the strategy API (SRS-SDK strategy runtime) -- the dictionary is "
+    "persisted/restored here, but nothing writes it at runtime yet",
     "SYS-88 corporate-action adjustment of persisted positions (SRS-DATA-021)",
 )
 
@@ -505,6 +682,7 @@ def assert_sim_persistence_static(config: dict, root: Path = ROOT) -> list[str]:
         "persistence": persistence_source(config, root),
         "lib": lib_source(config, root),
         "cargo": cargo_source(config, root),
+        "cli": cli_source(config, root),
     }
     return [check(config, sources[source_key]) for _, check, source_key in _STATIC_CHECKS]
 
