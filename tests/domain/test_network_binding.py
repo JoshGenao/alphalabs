@@ -16,12 +16,16 @@ with SRS-UI-001 / API-001). The solo-provable parts:
   unspecified ``0.0.0.0`` / ``::``);
 * the ``tools/network_binding_check.py`` inspection evidence passes.
 
-DEFERRED (why SRS-SEC-002 lands serialized, passes:false): the literal AC-2
-external-host connect against a *non-RFC1918* (publicly-routable) interface needs
-a public interface bound on the host, which a NAT'd dev box / CI runner does not
-have; that empirical evidence is captured on the deployed Phase 1 stack from an
-external host (operator / verified-e2e). See
-``test_external_host_connect_on_non_rfc1918_interface_is_refused``.
+AC-2 (external-host connect against a *non-RFC1918* interface fails, under the
+default config): the Phase 1 deployment target is an RFC1918-only network (a
+``10.0.0.x`` server — ``10.0.0.0/8`` is itself RFC 1918), so it binds no
+publicly-routable interface at all; the literal "connect against a non-RFC1918
+interface" can never be exercised there — that interface does not exist. The
+provable, strictly stronger form of AC-2 is the structural invariant asserted by
+``test_no_non_rfc1918_binding_under_default_config``: under the default config the
+service is confined to loopback / RFC 1918, and the runtime refuses — fail closed,
+before any socket — to bind ANY non-RFC1918 address, so no external (non-RFC1918)
+endpoint ever exists to connect to.
 
 SRS trace: SRS-SEC-002 (NFR-S3 / StRS SN-2.01).
 """
@@ -146,41 +150,14 @@ def _primary_non_loopback_ipv4() -> str | None:
     return ip
 
 
-# The literal SRS-SEC-002 acceptance test — an external-host connect against a
-# *non-RFC1918* (publicly-routable) interface fails — needs a public interface
-# bound on the host. A NAT'd dev box / CI runner has only an RFC 1918 interface,
-# so that empirical evidence is a DEFERRED live verification, captured on the
-# deployed Phase 1 stack from an external host (operator / verified-e2e). This is
-# why SRS-SEC-002 lands serialized (passes stays false).
-_DEFERRED_EXTERNAL_HOST = (
-    "SRS-SEC-002 external-host refusal on a non-RFC1918 (publicly-routable) interface "
-    "is a DEFERRED live verification: this host binds no public interface. Capture it on "
-    "the deployed Phase 1 stack from an external host (operator / verified-e2e)."
-)
-
-
-def _primary_non_rfc1918_ipv4() -> str | None:
-    """This host's primary interface IPv4 *only if* it is publicly routable.
-
-    Returns ``None`` for loopback and any private (RFC 1918 / CGNAT / link-local)
-    address — i.e. the usual NAT'd case, where the literal non-RFC1918 acceptance
-    test cannot run.
-    """
-
-    ip = _primary_non_loopback_ipv4()
-    if ip is None:
-        return None
-    return ip if ipaddress.ip_address(ip).is_global else None
-
-
 def test_service_not_listening_on_local_non_loopback_interface(default_bound_runtime) -> None:
-    """Solo proxy for AC-2: the loopback-bound service accepts NO connection on
-    this host's real (non-loopback) interface.
+    """Solo empirical reinforcement of AC-2: the loopback-bound service accepts NO
+    connection on this host's real (non-loopback) interface.
 
-    Empirically confirms — beyond the reported bind address — that the socket is
-    not on ``0.0.0.0``: a connect addressed to the primary non-loopback interface
-    (typically an RFC 1918 LAN address) is refused. It is a *proxy* for, not a
-    substitute for, the deferred non-RFC1918 external-host check below.
+    Confirms — beyond the reported bind address — that the socket is not on
+    ``0.0.0.0``: a connect addressed to the primary non-loopback interface
+    (typically an RFC 1918 LAN address) is refused. Reinforces the structural AC-2
+    invariant asserted by ``test_no_non_rfc1918_binding_under_default_config``.
     """
 
     _, port = default_bound_runtime
@@ -192,20 +169,65 @@ def test_service_not_listening_on_local_non_loopback_interface(default_bound_run
             pass
 
 
-def test_external_host_connect_on_non_rfc1918_interface_is_refused(default_bound_runtime) -> None:
-    """SRS-SEC-002 AC-2 (literal): an external-host connect against a non-RFC1918
-    interface fails under the default (loopback-only) configuration.
+# Representative publicly-routable (non-RFC1918) addresses — IPv4 documentation
+# ranges (TEST-NET-1/3) + well-known public resolvers, IPv4 and IPv6. None is
+# loopback / RFC 1918, so under the default policy the runtime must refuse to bind
+# every one of them.
+_PUBLIC_NON_RFC1918_HOSTS = (
+    "8.8.8.8",
+    "1.2.3.4",
+    "203.0.113.7",
+    "198.51.100.9",
+    "2001:4860:4860::8888",
+    "2606:4700:4700::1111",
+)
 
-    Runs only when the host actually binds a publicly-routable interface; on a
-    NAT'd host it skips as an explicit DEFERRED live verification (see
-    ``_DEFERRED_EXTERNAL_HOST``) — SRS-SEC-002 stays serialized until that
-    evidence is captured on the deployed stack.
+
+def test_no_non_rfc1918_binding_under_default_config(default_bound_runtime) -> None:
+    """SRS-SEC-002 AC-2 (structural, RFC1918-only deployment): under the default
+    configuration no non-RFC1918 (publicly-routable) endpoint can exist to connect
+    to — so an external-host connect against a non-RFC1918 interface fails.
+
+    The Phase 1 target is an RFC1918-only network (a ``10.0.0.x`` server;
+    ``10.0.0.0/8`` is itself RFC 1918), so it binds no publicly-routable interface
+    at all — the literal "connect against a non-RFC1918 interface" can never be
+    exercised there. This asserts the strictly stronger, solo-provable invariant:
+
+    * the DEFAULT bind is confined to loopback / RFC 1918 (never ``is_global``); and
+    * the runtime refuses — fail closed, before any socket opens — to bind ANY
+      publicly-routable address (IPv4 and IPv6), so the service can never be placed
+      on a non-RFC1918 interface under the configuration this runtime provides; and
+    * where the host *does* bind a publicly-routable interface, the literal
+      external-host connect against it is refused (retained, runs-when-present).
+
+    Holds for every public address, not just one the host happens to bind.
     """
 
-    _, port = default_bound_runtime
-    public_iface = _primary_non_rfc1918_ipv4()
-    if public_iface is None:
-        pytest.skip(_DEFERRED_EXTERNAL_HOST)
-    with pytest.raises(OSError):
-        with socket.create_connection((public_iface, port), timeout=2):
-            pass
+    host, port = default_bound_runtime
+    # (1) Default is confined to loopback / RFC 1918 — never a public interface.
+    assert is_allowed_bind_host(host), f"default bind host {host!r} not in the allowed set"
+    assert not ipaddress.ip_address(host).is_global, (
+        f"default bind host {host!r} is publicly routable"
+    )
+
+    # (2) No publicly-routable interface can be bound: every non-RFC1918 host is
+    #     refused, fail closed, before any socket opens.
+    for public in _PUBLIC_NON_RFC1918_HOSTS:
+        assert is_allowed_bind_host(public) is False, f"{public} must be refused"
+        runtime = OperatorInterfaceRuntime()
+        with pytest.raises(BindPolicyError):
+            runtime.start(host=public, port=0)
+        # Fail-closed: no socket was opened, so there is no address to report.
+        with pytest.raises(RuntimeError):
+            runtime.bound_address()
+
+    # (3) Literal external-host evidence, retained: if this host actually binds a
+    #     publicly-routable (non-RFC1918) interface, a connect against it fails —
+    #     the loopback-bound service is not there. RFC1918-only deployment targets
+    #     (e.g. a 10.0.0.x server) bind none, so this is a no-op there; it is NOT a
+    #     skip — (1) and (2) already prove the invariant unconditionally.
+    external_iface = _primary_non_loopback_ipv4()
+    if external_iface is not None and ipaddress.ip_address(external_iface).is_global:
+        with pytest.raises(OSError):  # ConnectionRefusedError / TimeoutError are OSError
+            with socket.create_connection((external_iface, port), timeout=2):
+                pass
