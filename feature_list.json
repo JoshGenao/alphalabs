@@ -1423,7 +1423,7 @@
     "category": "security",
     "srs_ref": "SRS-5.9 SRS-SEC-002",
     "priority": "P1",
-    "description": "Verify that by default, the dashboard/API service shall bind only to RFC 1918 or loopback addresses. Binding to publicly routable interfaces shall require explicit operator configuration and documented external authentication.",
+    "description": "Verify that by default, the dashboard/API service shall bind only to RFC 1918 or loopback addresses. The service exposes no process-level publicly-routable bind mode; publicly routable exposure is provided only through operator-managed configuration external to the service (an authenticated reverse proxy) with documented external authentication.",
     "steps": [
       "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "Step 2: Exercise SRS-SEC-002 using file inspection, build manifests, container configuration, and automated architecture/security checks with the fixtures, mocks, or operator controls needed by the requirement.",
