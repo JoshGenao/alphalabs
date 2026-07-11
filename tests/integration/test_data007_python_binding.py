@@ -13,7 +13,8 @@ symbol / date range / resolution with NO provider named — the SRS-DATA-007 acc
 
 The binding drives the lock-free read path (``data007_query_cli`` takes no ``StoreLock``), so this also
 exercises the read side of the SRS-DATA-017 read-during-write property (whose Python-consumer-vs-held-
-writer Load test is the deferred 017 close).
+writer Load test is now written -- tests/integration/test_data017_named_consumer_concurrent_read.py --
+with its operator-gated ATP_RUN_INTEGRATION run the remaining 017 close).
 """
 
 from __future__ import annotations

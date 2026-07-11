@@ -960,11 +960,13 @@ def assert_concurrent_read(config: dict) -> list[str]:
         "threads/processes against a lock-held writer, which exercise the SAME load_from_path path a "
         "named in-process consumer would use). SRS-DATA-017 STAYS passes:false: the FIRST in-process "
         "Python consumer binding now EXISTS (StoreBackedHistoricalData; store_history_binding_contract) "
-        "and reads via this exact lock-free path, but the concurrent-read-DURING-write Load test for "
+        "and reads via this exact lock-free path, and the concurrent-read-DURING-write Load test for "
         "THAT named Python consumer -- a Python-consumer-vs-held-writer load test, not the Rust-CLI "
-        "analog -- is not yet in place, so flipping would over-claim the AC's named-consumer concurrency "
-        "(the dashboard / REST consumer surfaces remain SRS-UI / SRS-API); that Load test is the "
-        "remaining load-bearing close (SRS-DATA-017, SyRS SYS-63)"
+        "analog -- is now WRITTEN (tests/integration/test_data017_named_consumer_concurrent_read.py; "
+        "reader path solo-verified by tests/domain/test_data017_named_consumer_read.py), but it is "
+        "ATP_RUN_INTEGRATION-gated and unrun in the autonomous session, so the OPERATOR's gated run of "
+        "it is the remaining load-bearing close and the feature stays passes:false until then "
+        "(the dashboard / REST consumer surfaces remain SRS-UI / SRS-API) (SRS-DATA-017, SyRS SYS-63)"
     )
     return static_evidence + [summary]
 
@@ -997,8 +999,9 @@ def assert_store_history(config: dict) -> list[str]:
         "FULLY_ADJUSTED / TOTAL_RETURN are now served through the same coverage gate (the SRS-DATA-012 "
         "HISTORICAL modes; the LIVE per-subscription selection stays deferred, owner SRS-MD-001). The "
         "normalization math is pinned by normalization_modes_check (SRS-DATA-012) and "
-        "coverage_manifest_check (SRS-DATA-011); the concurrent-read-DURING-write Load test is the "
-        "deferred SRS-DATA-017 close (SRS-DATA-007, SyRS SYS-27 / SYS-53)"
+        "coverage_manifest_check (SRS-DATA-011); the concurrent-read-DURING-write Load test through this "
+        "named consumer is now written (tests/integration/test_data017_named_consumer_concurrent_read.py), "
+        "its operator-gated ATP_RUN_INTEGRATION run the remaining SRS-DATA-017 close (SRS-DATA-007, SyRS SYS-27 / SYS-53)"
     )
     return static_evidence + [summary]
 

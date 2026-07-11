@@ -387,9 +387,11 @@ _STATIC_CHECKS = (
 )
 
 _DEFERRED_OWNERS = (
-    "in-process Python / backtest / factor / notebook query bindings over this store -- the Rust "
-    "data007_query_cli + data016_ingest_cli inspect surfaces are the operator-demonstrable lock-free "
-    "readers (SRS-UI / SRS-API / the SRS-SDK strategy host)",
+    "the OPERATOR-GATED (ATP_RUN_INTEGRATION=1) held-writer run of the now-written named Python "
+    "consumer Load test (StoreBackedHistoricalData; "
+    "tests/integration/test_data017_named_consumer_concurrent_read.py, reader path solo-verified by "
+    "tests/domain/test_data017_named_consumer_read.py) -- the dashboard / REST consumer surfaces "
+    "remain SRS-UI / SRS-API / the SRS-SDK strategy host",
     "real Databento / IB / Sharadar / option-chain NETWORK adapters that materialize records "
     "(SRS-DATA-001 / 003 / 005 / 006; fixture sources stand in)",
     "SSD-primary / NAS-archival tiering, eviction, and cold-read failover of the store directory "

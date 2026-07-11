@@ -525,7 +525,9 @@ _DEFERRED_OWNERS = (
     "historical normalization modes (raw / split-adjusted / fully-adjusted / total-return) are served",
     "the concurrent-read-DURING-write Load test for THIS named Python consumer "
     "(SRS-DATA-017; the binding drives the lock-free read path, the substrate guarantee is proven, "
-    "but the Python-consumer-vs-held-writer Load test is the deferred 017 close)",
+    "and the Python-consumer-vs-held-writer Load test is now written -- "
+    "tests/integration/test_data017_named_consumer_concurrent_read.py -- with its operator-gated "
+    "ATP_RUN_INTEGRATION run the remaining 017 close)",
     "real Databento/IB/Sharadar/option-chain NETWORK adapters that materialize records "
     "(SRS-DATA-001/003/005/006; fixture sources stand in)",
     "an authoritative SDK<->core money-unit scale constant -- the binding assumes the cents (x100) "
