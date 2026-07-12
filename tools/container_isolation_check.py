@@ -334,9 +334,39 @@ def _assert_service_least_privilege(
         fail(f"compose is missing the strategy-container service {service!r} (SRS-SEC-003)")
     eff = _strip_comments(raw)
 
-    # (0) Reject a DUPLICATE security key: a second `privileged:` / `network_mode:`
-    #     / `cap_add:` etc. silently overrides the hardened value (Docker takes the
-    #     last), so a duplicate is a bypass and is refused outright.
+    # (0a) Fail closed on Compose constructs this static check cannot resolve but
+    #      Docker WOULD apply, on the strategy's security surface:
+    #        * a service-level `<<:` merge could inject `cap_add` / `pid: host` /
+    #          etc. from an anchor (invisible to a direct-line read);
+    #        * a YAML alias (`*anchor`) or `${VAR}` interpolation on a security key
+    #          resolves to a value only known later.
+    #      The template's sole merge is `environment: <<: [*...]` — nested under
+    #      `environment` (neither a service-level key nor a security key), so it is
+    #      unaffected. This mirrors SEC-002's fail-closed-on-interpolation stance.
+    child_indent = _child_indent(eff)
+    for line in eff.splitlines():
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        stripped = line.strip()
+        if indent == child_indent and stripped.startswith("<<:"):
+            fail(
+                f"{service} uses a service-level `<<:` merge; SRS-SEC-003 refuses a merge that "
+                f"could inject an unchecked privilege / namespace setting from an anchor"
+            )
+        if indent == child_indent:
+            for key in _SINGLETON_SECURITY_KEYS:
+                if stripped.startswith(f"{key}:"):
+                    value = stripped[len(key) + 1 :].strip()
+                    if "*" in value or "$" in value:
+                        fail(
+                            f"{service} sets `{key}:` to a YAML alias / interpolation ({value!r}); "
+                            f"SRS-SEC-003 refuses a security value it cannot resolve statically"
+                        )
+
+    # (0b) Reject a DUPLICATE security key: a second `privileged:` / `network_mode:`
+    #      / `cap_add:` etc. silently overrides the hardened value (Docker takes the
+    #      last), so a duplicate is a bypass and is refused outright.
     for key in _SINGLETON_SECURITY_KEYS:
         count = _service_key_count(eff, key)
         if count > 1:
@@ -551,6 +581,8 @@ _FIXTURES = (
     "duplicate-privileged",
     "cap-add-benign",
     "nested-internal-label",
+    "service-level-merge",
+    "aliased-security-value",
 )
 
 
@@ -638,6 +670,18 @@ def make_fixture_root(fixture: str) -> tempfile.TemporaryDirectory[str]:
         text = text.replace(
             "    driver: bridge\n    internal: true",
             '    driver: bridge\n    internal: false\n    labels:\n      internal: "true"',
+        )
+    elif fixture == "service-level-merge":
+        # A service-level `<<:` merge could inject security keys from an anchor.
+        text = text.replace(
+            "    privileged: false\n",
+            "    privileged: false\n    <<: *atp-env\n",
+        )
+    elif fixture == "aliased-security-value":
+        # A YAML alias on a security key hides its resolved value from the check.
+        text = text.replace(
+            "    cap_drop:\n      - ALL\n",
+            "    cap_drop:\n      - ALL\n    cap_add: *atp-env\n",
         )
     else:
         temp_dir.cleanup()

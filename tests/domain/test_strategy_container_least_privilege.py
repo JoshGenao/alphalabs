@@ -104,6 +104,28 @@ def test_repo_wide_no_host_networking() -> None:
     assert "privileged: true" not in effective_all
 
 
+def test_no_unresolvable_security_constructs(strategy_blocks) -> None:
+    """The strategy service uses no service-level merge or aliased/interpolated
+    security value that Docker would resolve but a static check cannot see."""
+
+    for block in strategy_blocks:
+        child = cic._child_indent(block)
+        for line in block.splitlines():
+            if not line.strip():
+                continue
+            indent = len(line) - len(line.lstrip())
+            if indent != child:
+                continue
+            stripped = line.strip()
+            assert not stripped.startswith("<<:"), "no service-level merge allowed"
+            for key in cic._SINGLETON_SECURITY_KEYS:
+                if stripped.startswith(f"{key}:"):
+                    value = stripped[len(key) + 1 :].strip()
+                    assert "*" not in value and "$" not in value, (
+                        f"security key {key!r} must not use an alias / interpolation: {value!r}"
+                    )
+
+
 def test_no_host_network_egress(strategy_blocks) -> None:
     """AC clause 2 (stronger) — the strategy is confined to an internal, no-egress network.
 
@@ -175,6 +197,8 @@ def test_no_cross_strategy_filesystem_access(strategy_blocks, contract) -> None:
         "duplicate-privileged",
         "cap-add-benign",
         "nested-internal-label",
+        "service-level-merge",
+        "aliased-security-value",
     ],
 )
 def test_check_rejects_each_violation(fixture: str) -> None:
