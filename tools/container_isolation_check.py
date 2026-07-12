@@ -308,28 +308,39 @@ def _assert_service_least_privilege(
             f"{service} declares no volumes (compose drift?) — expected only the "
             f"read-only named data tiers"
         )
+    # STRICT allow-list: a strategy container may mount ONLY the sanctioned
+    # read-only data tiers. ANYTHING else — a host bind, a host-path source, or an
+    # extra shared named volume — is rejected, because the orchestrator clones this
+    # template for every strategy, so any extra shared mount becomes a cross-
+    # strategy filesystem channel the SRS-SEC-003 acceptance clause forbids.
+    allowed = {}
+    for sanctioned in contract["sanctioned_readonly_data_volumes"]:
+        parsed = _parse_volume_entry(f"- {sanctioned}")
+        allowed[(parsed["source"], parsed["target"])] = parsed["read_only"]
     for mount in mounts:
-        # Allow-list: strategy containers may mount ONLY named volumes (the data
-        # tiers). Any host bind — short, long-syntax `type: bind`, or a host-path
-        # source — is a cross-filesystem-access hazard and is rejected.
-        if mount["kind"] == "bind":
+        if mount["kind"] == "bind" or mount["source"][:1] in ("/", ".", "~", "{"):
             fail(
-                f"{service} uses a bind mount ({mount['raw']!r}); strategy containers may mount "
-                f"only the read-only named data tiers (SRS-SEC-003 filesystem isolation)"
+                f"{service} uses a host/bind mount ({mount['raw']!r}); strategy containers may "
+                f"mount only the sanctioned read-only named data tiers (SRS-SEC-003 filesystem "
+                f"isolation)"
             )
-        if mount["source"][:1] in ("/", ".", "~", "{"):
+        if (mount["source"], mount["target"]) not in allowed:
             fail(
-                f"{service} mounts a host path ({mount['raw']!r}); strategy containers may mount "
-                f"only the read-only named data tiers (SRS-SEC-003 filesystem isolation)"
+                f"{service} mounts {mount['raw']!r}, which is not a sanctioned read-only data "
+                f"tier; a strategy container may share NO other filesystem with sibling "
+                f"strategies (SRS-SEC-003 filesystem isolation)"
             )
-        if mount["target"] in ("/ssd", "/nas") and not mount["read_only"]:
+        if not mount["read_only"]:
             fail(
                 f"{service} mounts data tier {mount['raw']!r} read-write; SRS-SEC-003 requires the "
                 f"shared tiers be read-only so a strategy cannot write into a tier a sibling reads"
             )
-    for sanctioned in contract["sanctioned_readonly_data_volumes"]:
-        if sanctioned not in eff:
-            fail(f"{service} must mount the read-only data tier {sanctioned!r} (SRS-SEC-003)")
+    present = {(m["source"], m["target"]) for m in mounts if m["read_only"]}
+    for source, target in allowed:
+        if (source, target) not in present:
+            fail(
+                f"{service} must mount the read-only data tier {source}:{target} (SRS-SEC-003)"
+            )
 
     return [
         f"{service}: no privileged mode (privileged:false + no-new-privileges), all Linux "
@@ -401,6 +412,7 @@ _FIXTURES = (
     "flow-syntax-bind",
     "default-bridge",
     "external-network",
+    "extra-shared-volume",
 )
 
 
@@ -452,6 +464,13 @@ def make_fixture_root(fixture: str) -> tempfile.TemporaryDirectory[str]:
     elif fixture == "external-network":
         # The strategy network loses its no-egress guarantee. Must be rejected.
         text = text.replace("    internal: true", "    internal: false")
+    elif fixture == "extra-shared-volume":
+        # A valid extra shared named volume — mounted by every cloned strategy, so
+        # a cross-strategy filesystem channel. Must be rejected (allow-list).
+        text = text.replace(
+            "      - atp_ssd:/ssd:ro\n",
+            "      - atp_ssd:/ssd:ro\n      - strategy_shared:/shared\n",
+        )
     else:
         temp_dir.cleanup()
         raise ValueError(f"unknown fixture: {fixture}")

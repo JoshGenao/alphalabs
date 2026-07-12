@@ -118,22 +118,35 @@ def test_no_host_network_egress(strategy_blocks) -> None:
 
 
 def test_no_cross_strategy_filesystem_access(strategy_blocks, contract) -> None:
-    """AC clause 3 — read-only data tiers, no host bind, no docker socket, no vault."""
+    """AC clause 3 — mounts are EXACTLY the sanctioned read-only tiers, nothing else.
+
+    Strict allow-list: no credential vault, no docker socket, no host bind, and no
+    extra shared named volume (which would be a cross-strategy channel once the
+    template is cloned per strategy).
+    """
+
+    allowed = set()
+    for sanctioned in contract["sanctioned_readonly_data_volumes"]:
+        parsed = cic._parse_volume_entry(f"- {sanctioned}")
+        allowed.add((parsed["source"], parsed["target"]))
 
     for block in strategy_blocks:
-        # No credential vault, no docker socket, no volumes_from.
         assert not cic._service_has_vault_mount(block)
         for token in contract["forbidden_mount_tokens"]:
             assert token not in block, f"strategy block must not reference {token!r}"
-        volumes = cic._yaml_list_items(block, "volumes") or []
-        assert volumes, "strategy service must declare its read-only data-tier mounts"
-        for item in volumes:
-            source = item.split(":", 1)[0].strip()
-            assert source[:1] not in ("/", ".", "~"), f"host-path bind not allowed: {item!r}"
-            if ":/ssd" in item or ":/nas" in item:
-                assert item.endswith(":ro"), f"data tier must be read-only: {item!r}"
-        for sanctioned in contract["sanctioned_readonly_data_volumes"]:
-            assert sanctioned in block, f"missing read-only data tier {sanctioned!r}"
+        mounts = cic._volume_mounts(block) or []
+        assert mounts, "strategy service must declare its read-only data-tier mounts"
+        for mount in mounts:
+            assert mount["kind"] != "bind", f"bind mount not allowed: {mount['raw']!r}"
+            assert mount["source"][:1] not in ("/", ".", "~", "{"), (
+                f"host-path bind not allowed: {mount['raw']!r}"
+            )
+            assert (mount["source"], mount["target"]) in allowed, (
+                f"non-sanctioned mount not allowed: {mount['raw']!r}"
+            )
+            assert mount["read_only"], f"data tier must be read-only: {mount['raw']!r}"
+        present = {(m["source"], m["target"]) for m in mounts if m["read_only"]}
+        assert allowed <= present, "all sanctioned read-only data tiers must be mounted"
 
 
 @pytest.mark.parametrize(
@@ -148,6 +161,7 @@ def test_no_cross_strategy_filesystem_access(strategy_blocks, contract) -> None:
         "flow-syntax-bind",
         "default-bridge",
         "external-network",
+        "extra-shared-volume",
     ],
 )
 def test_check_rejects_each_violation(fixture: str) -> None:
