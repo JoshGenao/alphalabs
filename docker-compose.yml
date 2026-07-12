@@ -307,10 +307,12 @@ services:
     # access to other strategy containers' filesystems.
     #   - never privileged, and no new privileges can be gained at exec time;
     #   - every Linux capability dropped (nothing added back);
-    #   - no `network_mode: host` — the strategy joins ONLY the default isolated
-    #     Compose project bridge, reaching the data / execution / simulation
-    #     engines through the SYS-12 internal service interface, never the host
-    #     network stack;
+    #   - no host network access: never `network_mode: host`, and the strategy is
+    #     confined to the dedicated `atp_strategy_net` network declared below with
+    #     `internal: true`, so it has NO route to the host, the LAN, or the
+    #     internet. The concrete StrategyContainerRuntime (deferred; owner
+    #     SRS-ARCH-004 / SRS-ORCH-002) attaches the specific internal services a
+    #     strategy may reach via the SYS-12 interface onto this network;
     #   - the shared SSD/NAS tiers are mounted READ-ONLY below, so a strategy
     #     cannot write into a tier another strategy could read.
     privileged: false
@@ -318,6 +320,8 @@ services:
       - ALL
     security_opt:
       - "no-new-privileges:true"
+    networks:
+      - atp_strategy_net
     # SyRS SYS-11 resource profiles. The orchestrator clones this template
     # for each strategy instance. Live profile: <=512 MB / <=0.25 CPU;
     # paper profile: <=300 MB / <=0.10 CPU.
@@ -354,3 +358,14 @@ volumes:
       type: none
       o: bind
       device: ${ATP_NAS_DATA_DIR:-/var/lib/atp/nas}
+
+networks:
+  # SRS-SEC-003 (NFR-S5): strategy containers have NO host network access. This
+  # dedicated bridge is `internal: true`, so Docker attaches no gateway to it —
+  # a container confined to it can reach only other containers explicitly placed
+  # on the same network, never the host, the LAN, or the internet. The concrete
+  # StrategyContainerRuntime (deferred; owner SRS-ARCH-004 / SRS-ORCH-002) joins
+  # the specific internal services a strategy may reach via SYS-12 onto it.
+  atp_strategy_net:
+    driver: bridge
+    internal: true

@@ -2486,6 +2486,7 @@
       "/run/docker.sock",
       "volumes_from"
     ],
+    "require_internal_network": true,
     "credential_vault_mount_token": "/run/atp-secrets:ro",
     "sanctioned_readonly_data_volumes": [
       "atp_ssd:/ssd:ro",

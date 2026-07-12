@@ -144,9 +144,14 @@ Benchmark) — the three SRS-SEC-003 acceptance clauses:
   kernel privilege and cannot escalate at exec time.
 - **No host network access.** The service sets no `network_mode: host` (nor
   `service:` / `container:` namespace sharing), no `pid: host`, and no `ipc: host`
-  / `shareable`. It joins only the default, isolated Compose project bridge and
-  reaches the Data Layer, Execution / Simulation Engine, and logging through the
-  SYS-12 internal service interface — never the host's network stack. This holds
+  / `shareable`. It is confined to the dedicated `atp_strategy_net` network, which
+  is declared `internal: true` — Docker attaches **no gateway**, so a strategy has
+  no route to the host, the LAN, or the internet. (Absence of `network_mode: host`
+  alone is *not* sufficient: a container with no explicit network joins the default
+  Compose bridge, which routes outbound through the host — the internal network is
+  what removes that egress.) The concrete `StrategyContainerRuntime` (deferred;
+  owner SRS-ARCH-004 / SRS-ORCH-002) attaches the specific internal services a
+  strategy may reach via the SYS-12 interface onto this network. This holds
   **repo-wide**: no compose service uses host networking.
 - **No access to other strategy filesystems.** Container-per-strategy gives each
   instance its own writable root layer. The service mounts no host Docker socket,
@@ -167,7 +172,8 @@ Benchmark) — the three SRS-SEC-003 acceptance clauses:
   convention SRS-ARCH-004 and SRS-SEC-004 are verified under.
 
 **Future hardening (not yet applied).** A read-only container root filesystem
-(`read_only: true` + a `tmpfs` scratch mount) and a dedicated `internal: true`
-strategy network are stronger CIS controls deferred to the concrete container
-runtime, where they can be validated against a live strategy image without risking
-an unverifiable startup break in the template.
+(`read_only: true` + a `tmpfs` scratch mount) is a stronger CIS control deferred to
+the concrete container runtime, where it can be validated against a live strategy
+image without risking an unverifiable startup break in the template. (The dedicated
+`internal: true` strategy network is already applied — see the "no host network
+access" bullet above.)

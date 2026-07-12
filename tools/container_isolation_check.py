@@ -271,6 +271,27 @@ def _assert_service_least_privilege(
                 f"(SRS-SEC-003 no host network / namespace sharing)"
             )
 
+    # (3b) No host network EGRESS: the strategy is confined to a dedicated,
+    #      `internal: true` network. A container with no explicit network joins
+    #      the default Compose bridge, which routes outbound to the host / LAN /
+    #      internet — so "no `network_mode: host`" alone is NOT no-host-network
+    #      access. Requiring an internal (no-gateway) network removes all egress.
+    if contract.get("require_internal_network"):
+        networks = _yaml_list_items(eff, "networks")
+        if not networks:
+            fail(
+                f"{service} declares no networks, so it joins the default Compose bridge "
+                f"(host/LAN/internet egress); SRS-SEC-003 requires a dedicated internal network"
+            )
+        for net in networks:
+            net_block = _service_block(compose_text, net)
+            if net_block is None or "internal: true" not in _strip_comments(net_block):
+                fail(
+                    f"{service} is attached to network {net!r}, which is not declared "
+                    f"'internal: true' at the top level; SRS-SEC-003 requires no host network "
+                    f"access (an internal, no-egress network)"
+                )
+
     # (4) Filesystem isolation: no host-path binds, no docker socket, no
     #     volumes_from, no credential vault; the data tiers are read-only.
     for token in contract["forbidden_mount_tokens"]:
@@ -312,8 +333,9 @@ def _assert_service_least_privilege(
 
     return [
         f"{service}: no privileged mode (privileged:false + no-new-privileges), all Linux "
-        f"capabilities dropped, no host network / namespace sharing, and only read-only named "
-        f"data tiers (no host bind, no docker socket, no vault, no volumes_from)",
+        f"capabilities dropped, no host network / namespace sharing, confined to an internal "
+        f"(no-egress) network, and only read-only named data tiers (no host bind, no docker "
+        f"socket, no vault, no volumes_from)",
     ]
 
 
@@ -377,6 +399,8 @@ _FIXTURES = (
     "no-cap-drop",
     "long-syntax-bind",
     "flow-syntax-bind",
+    "default-bridge",
+    "external-network",
 )
 
 
@@ -421,6 +445,13 @@ def make_fixture_root(fixture: str) -> tempfile.TemporaryDirectory[str]:
             "    volumes:\n      - {type: bind, source: /etc, target: /host_etc}\n"
             "      - atp_ssd:/ssd:ro",
         )
+    elif fixture == "default-bridge":
+        # Drop the internal-network attachment: the strategy falls back to the
+        # default Compose bridge (host/LAN/internet egress). Must be rejected.
+        text = text.replace("    networks:\n      - atp_strategy_net\n", "")
+    elif fixture == "external-network":
+        # The strategy network loses its no-egress guarantee. Must be rejected.
+        text = text.replace("    internal: true", "    internal: false")
     else:
         temp_dir.cleanup()
         raise ValueError(f"unknown fixture: {fixture}")

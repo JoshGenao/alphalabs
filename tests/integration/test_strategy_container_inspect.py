@@ -93,7 +93,23 @@ def created_strategy_container():
             timeout=60,
         )
         assert inspect.returncode == 0, inspect.stderr
-        yield json.loads(inspect.stdout)[0]
+        container = json.loads(inspect.stdout)[0]
+
+        # Inspect the networks the container is attached to and confirm each is
+        # internal (no gateway → no host/LAN/internet egress).
+        network_names = list((container.get("NetworkSettings") or {}).get("Networks") or {})
+        internal_flags: dict[str, bool] = {}
+        for name in network_names:
+            net = subprocess.run(
+                ["docker", "network", "inspect", name],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if net.returncode == 0:
+                internal_flags[name] = bool(json.loads(net.stdout)[0].get("Internal"))
+        container["_atp_network_internal_flags"] = internal_flags
+        yield container
     finally:
         _run(["down", "-v"], timeout=300)
         shutil.rmtree(data_root, ignore_errors=True)
@@ -112,6 +128,15 @@ def test_strategy_container_is_not_privileged(created_strategy_container) -> Non
 def test_strategy_container_has_no_host_network(created_strategy_container) -> None:
     network_mode = created_strategy_container["HostConfig"]["NetworkMode"]
     assert network_mode != "host", "strategy container must not use host networking"
+
+
+def test_strategy_container_networks_are_internal(created_strategy_container) -> None:
+    """Every network the strategy joins is internal (no gateway → no host/LAN egress)."""
+
+    internal_flags = created_strategy_container["_atp_network_internal_flags"]
+    assert internal_flags, "strategy container must attach to at least one inspected network"
+    for name, is_internal in internal_flags.items():
+        assert is_internal, f"strategy network {name!r} must be internal (no egress)"
 
 
 def test_strategy_container_data_tiers_are_read_only(created_strategy_container) -> None:

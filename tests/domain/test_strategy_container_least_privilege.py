@@ -97,6 +97,26 @@ def test_repo_wide_no_host_networking() -> None:
     assert "privileged: true" not in effective_all
 
 
+def test_no_host_network_egress(strategy_blocks) -> None:
+    """AC clause 2 (stronger) — the strategy is confined to an internal, no-egress network.
+
+    Absence of ``network_mode: host`` alone still leaves a container on the default
+    Compose bridge with host/LAN/internet egress; SRS-SEC-003 requires no host
+    network access, so the strategy must join a dedicated ``internal: true`` network.
+    """
+
+    compose_text = COMPOSE.read_text("utf-8")
+    for block in strategy_blocks:
+        networks = cic._yaml_list_items(block, "networks")
+        assert networks, "strategy service must attach to a dedicated internal network"
+        for net in networks:
+            net_block = cic._service_block(compose_text, net)
+            assert net_block is not None, f"network {net!r} is not declared top-level"
+            assert "internal: true" in cic._strip_comments(net_block), (
+                f"network {net!r} must be internal: true (no egress)"
+            )
+
+
 def test_no_cross_strategy_filesystem_access(strategy_blocks, contract) -> None:
     """AC clause 3 — read-only data tiers, no host bind, no docker socket, no vault."""
 
@@ -126,6 +146,8 @@ def test_no_cross_strategy_filesystem_access(strategy_blocks, contract) -> None:
         "no-cap-drop",
         "long-syntax-bind",
         "flow-syntax-bind",
+        "default-bridge",
+        "external-network",
     ],
 )
 def test_check_rejects_each_violation(fixture: str) -> None:

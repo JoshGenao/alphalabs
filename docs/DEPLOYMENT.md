@@ -88,12 +88,13 @@ CPU cores; paper container ≤ 300 MB RAM and ≤ 0.10 CPU cores.
 
 **Least-privilege (SRS-SEC-003 / NFR-S5).** The template runs with no
 privileged mode (`privileged: false`, all Linux capabilities dropped,
-`no-new-privileges:true`), no host network access (no `network_mode: host`
-— it joins only the isolated Compose project bridge), and no access to
-other strategy filesystems (own writable root layer, read-only SSD/NAS
-tiers, no host Docker socket, no `volumes_from`, no credential-vault mount).
-`tools/container_isolation_check.py` enforces this statically in CI. See
-`SECURITY.md` § "Least-privilege strategy containers (SRS-SEC-003)".
+`no-new-privileges:true`), no host network access (no `network_mode: host`,
+and confined to the `internal: true` `atp_strategy_net` network so it has no
+host/LAN/internet egress), and no access to other strategy filesystems (own
+writable root layer, read-only SSD/NAS tiers, no host Docker socket, no
+`volumes_from`, no credential-vault mount). `tools/container_isolation_check.py`
+enforces this statically in CI. See `SECURITY.md` § "Least-privilege strategy
+containers (SRS-SEC-003)".
 
 ## Storage tiers
 
