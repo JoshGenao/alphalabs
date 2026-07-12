@@ -56,6 +56,22 @@ from deployment_check import _service_block, _service_has_vault_mount
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"
 
+# Security-relevant service keys that must appear at most once on the strategy
+# service — a duplicate silently overrides the hardened value (Docker last-wins).
+_SINGLETON_SECURITY_KEYS = (
+    "privileged",
+    "network_mode",
+    "pid",
+    "ipc",
+    "user",
+    "userns_mode",
+    "cap_drop",
+    "cap_add",
+    "security_opt",
+    "networks",
+    "volumes",
+)
+
 
 class ContainerIsolationCheckError(AssertionError):
     pass
@@ -95,13 +111,24 @@ def _strip_comments(text: str) -> str:
     return "\n".join(line.split("#", 1)[0] for line in text.splitlines())
 
 
-def _yaml_list_items(block: str, key: str) -> list[str] | None:
-    """Return the block-list items under ``key:`` in a compose block, or None.
+def _flow_items(inline: str) -> list[str]:
+    """Split a YAML flow sequence ``[a, b, c]`` into its unquoted items."""
 
-    ``key:`` on its own line, followed by ``- item`` lines at deeper indent. Stops
-    at the first non-blank line indented no deeper than the key (the next sibling
-    directive). Returns None when the key is absent so callers can distinguish
-    "no such directive" from "an empty list".
+    inner = inline.strip()
+    if inner.startswith("["):
+        inner = inner[1:]
+    if inner.endswith("]"):
+        inner = inner[:-1]
+    return [part.strip().strip('"').strip("'") for part in inner.split(",") if part.strip()]
+
+
+def _yaml_list_items(block: str, key: str) -> list[str] | None:
+    """Return the items under ``key:`` in a compose block, or None if absent.
+
+    Handles BOTH YAML list spellings so a flow list cannot hide a value from the
+    security checks: block (``key:`` then ``- item`` lines at deeper indent) and
+    flow (``key: [a, b, c]`` inline). Returns None when the key is absent so callers
+    can distinguish "no such directive" from "an empty list".
     """
 
     items: list[str] = []
@@ -111,8 +138,14 @@ def _yaml_list_items(block: str, key: str) -> list[str] | None:
             continue
         indent = len(line) - len(line.lstrip())
         if key_indent is None:
-            if line.strip() == f"{key}:":
+            stripped = line.strip()
+            if stripped == f"{key}:":
                 key_indent = indent
+            elif stripped.startswith(f"{key}:"):
+                inline = stripped[len(key) + 1 :].strip()
+                if inline.startswith("["):
+                    return _flow_items(inline)
+                return []  # an inline scalar — not a list
             continue
         if indent <= key_indent:
             break
@@ -120,6 +153,55 @@ def _yaml_list_items(block: str, key: str) -> list[str] | None:
         if stripped.startswith("- "):
             items.append(stripped[2:].strip().strip('"').strip("'"))
     return items if key_indent is not None else None
+
+
+_TRUE_SCALARS = frozenset({"true", "yes", "on", "1"})
+_FALSE_SCALARS = frozenset({"false", "no", "off", "0"})
+
+
+def _scalar_bool(value: str | None) -> bool | None:
+    """Normalize a YAML scalar to a bool: handles true/"true"/yes/on and negatives."""
+
+    if value is None:
+        return None
+    token = value.strip().strip('"').strip("'").lower()
+    if token in _TRUE_SCALARS:
+        return True
+    if token in _FALSE_SCALARS:
+        return False
+    return None
+
+
+def _child_indent(block: str) -> int:
+    indents = [len(ln) - len(ln.lstrip()) for ln in block.splitlines() if ln.strip()]
+    return min(indents) if indents else 0
+
+
+def _service_key_count(block: str, key: str) -> int:
+    """Count ``key:`` occurrences at the service's direct-child indent."""
+
+    child = _child_indent(block)
+    count = 0
+    for line in block.splitlines():
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent == child and line.strip().startswith(f"{key}:"):
+            count += 1
+    return count
+
+
+def _service_scalar(block: str, key: str) -> str | None:
+    """Return the unquoted scalar value of ``key:`` at the service-child indent."""
+
+    child = _child_indent(block)
+    for line in block.splitlines():
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent == child and line.strip().startswith(f"{key}:"):
+            return line.strip()[len(key) + 1 :].strip().strip('"').strip("'")
+    return None
 
 
 def _yaml_list_blocks(block: str, key: str) -> list[str] | None:
@@ -221,6 +303,18 @@ def _parse_volume_entry(entry: str) -> dict:
 
 
 def _volume_mounts(block: str) -> list[dict] | None:
+    # Flow list — ``volumes: [atp_ssd:/ssd:ro, ...]`` — must be parsed too, so a
+    # mount cannot hide from the allow-list behind inline syntax.
+    child = _child_indent(block)
+    for line in block.splitlines():
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent == child and line.strip().startswith("volumes:"):
+            inline = line.strip()[len("volumes:") :].strip()
+            if inline.startswith("["):
+                return [_parse_volume_entry(f"- {item}") for item in _flow_items(inline)]
+            break
     blocks = _yaml_list_blocks(block, "volumes")
     if blocks is None:
         return None
@@ -240,12 +334,34 @@ def _assert_service_least_privilege(
         fail(f"compose is missing the strategy-container service {service!r} (SRS-SEC-003)")
     eff = _strip_comments(raw)
 
-    # (1) No privileged mode + no privilege escalation at exec time.
-    for directive in contract["required_directives"]:
-        if directive not in eff:
-            fail(f"{service} must declare {directive!r} (SRS-SEC-003 least-privilege)")
+    # (0) Reject a DUPLICATE security key: a second `privileged:` / `network_mode:`
+    #     / `cap_add:` etc. silently overrides the hardened value (Docker takes the
+    #     last), so a duplicate is a bypass and is refused outright.
+    for key in _SINGLETON_SECURITY_KEYS:
+        count = _service_key_count(eff, key)
+        if count > 1:
+            fail(
+                f"{service} declares `{key}:` {count} times; duplicate security keys are refused "
+                f"— a later value could silently override the hardened one (SRS-SEC-003)"
+            )
 
-    # (2) Drop the ALL capability set; add none of the dangerous ones back.
+    # (1) No privileged mode + no privilege escalation at exec time. `privileged`
+    #     is normalized as a bool, so true / "true" / yes / on are all rejected.
+    privileged = _service_scalar(eff, "privileged")
+    if _scalar_bool(privileged) is not False:
+        fail(
+            f"{service} must declare `privileged: false` (got {privileged!r}); "
+            f"SRS-SEC-003 forbids privileged mode"
+        )
+    security_opt = [opt.replace(" ", "").lower() for opt in (_yaml_list_items(eff, "security_opt") or [])]
+    if "no-new-privileges:true" not in security_opt:
+        fail(
+            f"{service} must set `security_opt: [no-new-privileges:true]` "
+            f"(SRS-SEC-003 no privilege escalation)"
+        )
+
+    # (2) Drop the ALL capability set; add none of the dangerous ones back. Both
+    #     block and flow (`cap_add: [SYS_ADMIN]`) list forms are parsed.
     required_drop = contract["required_dropped_capability"]
     dropped = _yaml_list_items(eff, "cap_drop")
     if not dropped or required_drop not in {cap.upper() for cap in dropped}:
@@ -263,13 +379,22 @@ def _assert_service_least_privilege(
             f"(SRS-SEC-003 least-privilege)"
         )
 
-    # (3) No host network access / namespace sharing on the service.
-    for token in contract["forbidden_host_namespace_directives"]:
-        if token in eff:
-            fail(
-                f"{service} must not declare {token!r} "
-                f"(SRS-SEC-003 no host network / namespace sharing)"
-            )
+    # (3) No host network access / namespace sharing on the service. Scalars are
+    #     compared after unquoting, so `network_mode: "host"` is caught too.
+    network_mode = _service_scalar(eff, "network_mode")
+    if network_mode is not None and (
+        network_mode == "host"
+        or network_mode.startswith("service:")
+        or network_mode.startswith("container:")
+    ):
+        fail(
+            f"{service} must not declare `network_mode: {network_mode}` "
+            f"(SRS-SEC-003 no host network / namespace sharing)"
+        )
+    if _service_scalar(eff, "pid") == "host":
+        fail(f"{service} must not share the host PID namespace (SRS-SEC-003)")
+    if _service_scalar(eff, "ipc") in ("host", "shareable"):
+        fail(f"{service} must not share the host IPC namespace (SRS-SEC-003)")
 
     # (3b) No host network EGRESS: the strategy is confined to a dedicated,
     #      `internal: true` network. A container with no explicit network joins
@@ -413,6 +538,9 @@ _FIXTURES = (
     "default-bridge",
     "external-network",
     "extra-shared-volume",
+    "inline-cap-add",
+    "quoted-privileged",
+    "duplicate-privileged",
 )
 
 
@@ -470,6 +598,22 @@ def make_fixture_root(fixture: str) -> tempfile.TemporaryDirectory[str]:
         text = text.replace(
             "      - atp_ssd:/ssd:ro\n",
             "      - atp_ssd:/ssd:ro\n      - strategy_shared:/shared\n",
+        )
+    elif fixture == "inline-cap-add":
+        # A flow-list cap_add that the block-only parser used to miss. Rejected.
+        text = text.replace(
+            "    cap_drop:\n      - ALL\n",
+            "    cap_drop:\n      - ALL\n    cap_add: [SYS_ADMIN]\n",
+        )
+    elif fixture == "quoted-privileged":
+        # A quoted boolean the substring check used to miss. Rejected.
+        text = text.replace("privileged: false", 'privileged: "true"')
+    elif fixture == "duplicate-privileged":
+        # A duplicate `privileged:` whose later value (Docker last-wins) re-enables
+        # privileged mode. The duplicate is refused outright.
+        text = text.replace(
+            "    privileged: false\n",
+            '    privileged: false\n    privileged: "true"\n',
         )
     else:
         temp_dir.cleanup()

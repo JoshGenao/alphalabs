@@ -69,22 +69,30 @@ def test_no_privileged_mode(strategy_blocks) -> None:
     """AC clause 1 — no privileged mode; drop all caps; no privilege escalation."""
 
     for block in strategy_blocks:
-        assert "privileged: false" in block
-        assert "privileged: true" not in block
-        assert "no-new-privileges:true" in block
+        # privileged is declared exactly once and normalizes to boolean false.
+        assert cic._service_key_count(block, "privileged") == 1
+        assert cic._scalar_bool(cic._service_scalar(block, "privileged")) is False
+        security_opt = [o.replace(" ", "").lower() for o in (cic._yaml_list_items(block, "security_opt") or [])]
+        assert "no-new-privileges:true" in security_opt
         dropped = cic._yaml_list_items(block, "cap_drop")
         assert dropped is not None and "ALL" in {c.upper() for c in dropped}
-        # No dangerous capability is added back.
+        # No dangerous capability is added back (block or flow syntax).
         added = cic._yaml_list_items(block, "cap_add") or []
         assert not ({c.upper() for c in added} & {"ALL", "NET_ADMIN", "SYS_ADMIN"})
 
 
-def test_no_host_network_access(strategy_blocks, contract) -> None:
+def test_no_host_network_access(strategy_blocks) -> None:
     """AC clause 2 — no host network / namespace sharing on the strategy service."""
 
     for block in strategy_blocks:
-        for token in contract["forbidden_host_namespace_directives"]:
-            assert token not in block, f"strategy block must not contain {token!r}"
+        network_mode = cic._service_scalar(block, "network_mode")
+        assert network_mode is None or not (
+            network_mode == "host"
+            or network_mode.startswith("service:")
+            or network_mode.startswith("container:")
+        ), f"strategy must not use network_mode {network_mode!r}"
+        assert cic._service_scalar(block, "pid") != "host"
+        assert cic._service_scalar(block, "ipc") not in ("host", "shareable")
 
 
 def test_repo_wide_no_host_networking() -> None:
@@ -162,6 +170,9 @@ def test_no_cross_strategy_filesystem_access(strategy_blocks, contract) -> None:
         "default-bridge",
         "external-network",
         "extra-shared-volume",
+        "inline-cap-add",
+        "quoted-privileged",
+        "duplicate-privileged",
     ],
 )
 def test_check_rejects_each_violation(fixture: str) -> None:

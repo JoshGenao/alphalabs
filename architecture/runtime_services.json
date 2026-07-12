@@ -2456,23 +2456,7 @@
     "subject_services": [
       "phase1-strategy-runtime"
     ],
-    "required_directives": [
-      "privileged: false",
-      "no-new-privileges:true"
-    ],
     "required_dropped_capability": "ALL",
-    "forbidden_host_namespace_directives": [
-      "privileged: true",
-      "network_mode: host",
-      "network_mode: \"host\"",
-      "network_mode: 'host'",
-      "network_mode: service:",
-      "network_mode: container:",
-      "pid: host",
-      "pid: \"host\"",
-      "ipc: host",
-      "ipc: shareable"
-    ],
     "forbidden_added_capabilities": [
       "ALL",
       "NET_ADMIN",
