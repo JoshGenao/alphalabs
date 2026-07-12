@@ -8654,6 +8654,83 @@
       "Real 1 TB SSD / 20 TB NAS CAPACITY provisioning + a real network NAS mount (owner: NFR-SC2 deployment / SRS-ARCH-004 Docker Compose SSD/NAS bind mounts; growth estimates documented in SRS Section 12.1, inspection)"
     ]
   },
+  "availability_measurement_contract": {
+    "requirement": "SRS-REL-001",
+    "description": "SRS-REL-001 (the software shall support the SyRS market-hours availability objective; SyRS NFR-R1 / NFR-R6 / SYS-76; StRS SN-2.05 / BG-6). SCOPE: this contract pins the offline verification/analysis MEASUREMENT SUBSTRATE in python/atp_reliability -- NOT a core runtime service (an availability artifact generator that reads durable evidence, analogous to the crates/atp-types/src/perf.rs latency substrate; permitted non-Rust by AC-16, alongside atp_readiness / atp_safety / atp_cli). The pure, clock-free engine (availability.py::compute_availability) ingests caller-supplied market-session windows, positively-observed COVERAGE spans, and classified downtime intervals and produces an AvailabilityVerificationArtifact with a three-valued verdict (PASS / FAIL / INCONCLUSIVE) against the NFR-R1 objective (>= 99.9% availability during US equity market hours over a rolling 30-day period, target_per_mille 999). It FAILS CLOSED: (1) no-data is NOT up -- availability is measured only over positively-observed market-seconds; unmeasured market time is reported and REFUSES certification (INCONCLUSIVE) rather than being counted as uptime; (2) the verdict is an exact integer per-mille inequality ((1000-target)*effective_ns >= 1000*downtime_ns), never a lossy f64 compare at the 99.9% boundary; (3) an exclusion that leaks inside market hours (excluded_in_session_ns > 0) forces INCONCLUSIVE (no laundering of downtime as 'planned'); (4) inverted intervals, empty windows, overlapping sessions, and zero market exposure raise. Only OutageCause.HOST_UNPLANNED counts (NFR-R1's included scope: unplanned host-level outages such as hardware failure / kernel panic); NFR-R1 EXCLUDES planned maintenance and the SYS-75 scheduled IB Gateway restart (~23:45 ET), and sub-host causes (ib_connectivity=NFR-R2, container_churn=NFR-R5, kill_switch_halt=SRS-SAFE-001) are non-counting. The evidence adapters (evidence.py) reuse the real DST/holiday-aware UsEquityTradingCalendar (SYS-50) for the 09:30-16:00 ET session windows (13:00 ET early-close aware) and map the atp_logging SYS-61 taxonomy to non-counting subsystem downtime only -- a dead host emits no logs, so log records can never witness the host-level outages NFR-R1 includes; that positive host-liveness signal is the deferred feed. The SyRS NFR-R1 parenthetical '<= 1.17 minutes downtime per trading day on average' is a NON-BINDING approximation: 0.1% of a 6.5-hour (23400 s) session is 23.4 s, not 70.2 s; the machine gate is the ratio and the average is reported for information only. DEFERRED: the engine performs no measurement itself (no clock I/O; sessions/coverage/downtime are supplied). Producing the REAL end-to-end evidence that proves >= 99.9% over a rolling 30-day period requires a deployed system observed over 30 real days plus a unified host-liveness feed -- a deployment/operator activity that cannot run in the parallel sandbox -- so SRS-REL-001 stays passes:false in feature_list.json until the deferred owners land (see deferred[]).",
+    "srs_refs": [
+      "SRS-REL-001"
+    ],
+    "syrs_refs": [
+      "NFR-R1",
+      "NFR-R6",
+      "SYS-76"
+    ],
+    "strs_refs": [
+      "SN-2.05",
+      "BG-6"
+    ],
+    "module": "python/atp_reliability",
+    "engine_module": "python/atp_reliability/availability.py",
+    "evidence_module": "python/atp_reliability/evidence.py",
+    "cli_module": "python/atp_reliability/cli.py",
+    "cli_entry": "PYTHONPATH=python python -m atp_reliability",
+    "syrs_doc": "docs/SyRS_v0.7.md",
+    "srs_doc": "docs/SRS.md",
+    "verification_method": "Analysis, system test",
+    "target_per_mille": 999,
+    "rolling_window_days": 30,
+    "rolling_window_enforced": true,
+    "rolling_window_exact": true,
+    "rolling_window_note": "NFR-R1 is a ROLLING 30-day metric, so a certifying PASS requires the analysis window to be EXACTLY rolling_window_days: a shorter window does not cover the period, and a LONGER window is refused so downtime cannot be diluted across it (a failing 30-day sub-period hidden inside a passing 60-day average). Either yields INCONCLUSIVE regardless of the ratio. A verification artifact measures exactly one rolling window (re-run daily to slide it).",
+    "market_hours_boundary": "US equity market hours 09:30-16:00 ET, Mon-Fri, excluding market holidays; rolling 30-day period; planned maintenance and the SYS-75 scheduled IB Gateway restart excluded; unplanned host-level outages included",
+    "regular_session_seconds": 23400,
+    "early_close_session_seconds": 12600,
+    "one_seventeen_minute_reconciliation": "The SyRS NFR-R1 parenthetical '<= 1.17 minutes downtime per trading day on average' is a non-binding approximation: 0.1% of a 6.5-hour (23400 s) session is 23.4 s, not 70.2 s. The binding machine gate is the per-mille availability ratio (target_per_mille 999); average downtime per session is informational.",
+    "outage_causes": {
+      "counting": [
+        "host_unplanned"
+      ],
+      "excluded": [
+        "planned_maintenance",
+        "ib_gateway_restart"
+      ],
+      "non_counting": [
+        "ib_connectivity",
+        "container_churn",
+        "kill_switch_halt"
+      ]
+    },
+    "exclusions": [
+      "Planned maintenance (host reboots, Docker/OS updates) scheduled outside market hours",
+      "The SYS-75 scheduled IB Gateway daily restart (~23:45 ET)"
+    ],
+    "included": [
+      "Unplanned host-level outages (hardware failure, kernel panic)"
+    ],
+    "verdicts": [
+      "PASS",
+      "FAIL",
+      "INCONCLUSIVE"
+    ],
+    "error_types": [
+      "EmptyMeasurementWindow",
+      "InvertedInterval",
+      "OverlappingSessions",
+      "NoTradingSessions",
+      "ZeroMarketExposure"
+    ],
+    "cli_exit_codes": {
+      "PASS": 0,
+      "not_certified": 1,
+      "refused": 2
+    },
+    "deferred": [
+      "The real host-liveness / heartbeat-cadence feed that produces positively-observed uptime coverage during market hours (a dead host emits no logs; this is the only oracle that can witness the unplanned host-level outages NFR-R1 includes)",
+      "The operator host-outage ledger classifying observed outages as planned vs unplanned",
+      "The Rust->operator log-forwarding path that unifies core-runtime (Rust) and operator (Python) event sources into one durable evidence store (deferred; see log_persistence_contract.deferred)",
+      "The 30-real-day operational proof run that produces the end-to-end >= 99.9% evidence (owner: NFR-R1 deployment/operator, analysis + system test) -- keeps SRS-REL-001 passes:false until run"
+    ]
+  },
   "perf_measurement_contract": {
     "requirement": "SRS-PERF-001",
     "description": "SRS-PERF-001 (the software shall measure latency-sensitive performance metrics against a Precision Time Protocol (PTP)-disciplined system clock with documented offset bounds and shall report p50/p95/p99/p99.9 percentiles in verification artifacts; SyRS 5.1 NFR-P1 / NFR-P4 / NFR-P5 / NFR-P6 / NFR-P9 / NFR-P10 + SRS-MD-001 fan-out latency; StRS SN-1.01 / SN-2.03). SCOPE: this contract pins the vendor- and runtime-neutral MEASUREMENT SUBSTRATE in crates/atp-types/src/perf.rs -- the pure nearest-rank percentile engine (LatencyPercentiles over nanosecond samples: p50/p95/p99/p99.9, every reported value an actually-observed sample, no interpolation), the PtpClockDiscipline offset-bound model (Disciplined{max_offset_ns} vs Undisciplined), the LatencyNfr catalog binding each of the seven AC NFRs to its measurement boundary + budget(s), and the LatencyVerificationArtifact report type. The artifact constructor (from_samples) FAILS CLOSED: it rejects a non-PTP-disciplined clock (so a produced artifact always documents a max clock offset bound), an empty/inverted measurement window, and an empty sample set -- so every artifact carries the four percentiles, a documented offset, and a real window. tools/perf_measurement_check.py asserts each NFR budget + boundary phrase in the catalog matches its measurement condition in the spec docs: NFR-P1/P4/P5/P6/P9/P10 against the SyRS 5.1 performance table (docs/SyRS_v0.7.md, explicit '<'/'<=' ms budgets), and the SRS-MD-001 fan-out budget against the SRS requirement row (docs/SRS.md, the prose 'no more than 100 ms additional latency' AC) -- so 'measurement boundaries match the measurement conditions for each NFR' is enforced by inspection. NFR-P4 reuses the authoritative LIVE_CALLBACK_LATENCY_P95_MS / PAPER_CALLBACK_LATENCY_P95_MS constants and NFR-P9 reuses STRATEGY_STARTUP_DEADLINE_MS (no duplication); NFR-P6 mirrors atp_notification::event::DISPATCH_SLA_MS (a crate above dependency-free atp-types, so it cannot be imported) and both trace SyRS NFR-P6, pinned to it here. DEFERRED: this substrate performs NO measurement itself (no clock I/O; samples + the clock offset bound are supplied by the runtimes each NFR measures). Producing the REAL end-to-end verification artifacts requires those runtimes plus a PTP-disciplined host clock (a deployment/operator + hardware inspection that cannot run in the parallel sandbox), so SRS-PERF-001 stays passes:false in feature_list.json until the deferred owners land (see deferred[]).",
