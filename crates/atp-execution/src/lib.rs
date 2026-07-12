@@ -46,6 +46,14 @@ pub use outbox::{
     SnapshotCoverage,
 };
 
+pub mod corporate_action_orders;
+pub use corporate_action_orders::{
+    plan_and_emit, plan_resting_order, plan_resting_orders, CorporateActionKind, PriceField,
+    RestingOrderAlertError, RestingOrderAlertFailure, RestingOrderCancelReason,
+    RestingOrderCorpActionAlert, RestingOrderCorpActionAlertSink, RestingOrderCorpActionReport,
+    RestingOrderCorporateAction, RestingOrderOutcome,
+};
+
 /// The execution engine owns the single live-designation authority
 /// ([`LiveDesignation`]) — the source of truth for which strategy may route to
 /// IB (SRS-EXE-001, SyRS SYS-2a). It is a private field reached only through

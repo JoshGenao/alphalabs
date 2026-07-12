@@ -26,6 +26,16 @@ path = "src/bin/err001_error_envelope_cli.rs"
 name = "exe009_outbox_reconcile_cli"
 path = "src/bin/exe009_outbox_reconcile_cli.rs"
 
+# SRS-DATA-019 resting-order corporate-action planner. Drives the real
+# atp_execution::corporate_action_orders planner over fixture resting orders + a fixture corporate
+# action (split/reverse-split/delisting), emitting per-order adjust/cancel JSON with the operator
+# notification + strategy-callback intents. Pure planner; the live order state + broker cancel wiring
+# is deferred (SRS-EXE-001/006). std-only; depends only on the already-declared atp-execution /
+# atp-types crates.
+[[bin]]
+name = "data019_order_lifecycle_corp_action_cli"
+path = "src/bin/data019_order_lifecycle_corp_action_cli.rs"
+
 [dependencies]
 atp-strategy-engine = { path = "../atp-strategy-engine" }
 atp-types = { path = "../atp-types" }
