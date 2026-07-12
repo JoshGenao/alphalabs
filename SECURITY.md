@@ -130,3 +130,44 @@ SN-2.01):
   requirement is documented; the L7 `tests/domain/test_network_binding.py`
   starts the real runtime on its default host and proves it listens on loopback
   only.
+
+## Least-privilege strategy containers (SRS-SEC-003)
+
+Every user strategy runs in its own Docker container, cloned by the Strategy
+Orchestrator from the `phase1-strategy-runtime` template in `docker-compose.yml`.
+That template runs with **least-privilege permissions** (NFR-S5; CIS Docker
+Benchmark) — the three SRS-SEC-003 acceptance clauses:
+
+- **No privileged mode.** The service declares `privileged: false`, drops **all**
+  Linux capabilities (`cap_drop: [ALL]`, none added back), and sets
+  `security_opt: ["no-new-privileges:true"]`, so a strategy runs with the minimum
+  kernel privilege and cannot escalate at exec time.
+- **No host network access.** The service sets no `network_mode: host` (nor
+  `service:` / `container:` namespace sharing), no `pid: host`, and no `ipc: host`
+  / `shareable`. It joins only the default, isolated Compose project bridge and
+  reaches the Data Layer, Execution / Simulation Engine, and logging through the
+  SYS-12 internal service interface — never the host's network stack. This holds
+  **repo-wide**: no compose service uses host networking.
+- **No access to other strategy filesystems.** Container-per-strategy gives each
+  instance its own writable root layer. The service mounts no host Docker socket,
+  no host-path bind, and no `volumes_from`; the shared SSD/NAS data tiers are
+  mounted **read-only** (`atp_ssd:/ssd:ro`, `atp_nas:/nas:ro`) so a strategy cannot
+  write into a tier a sibling would read, and the SRS-SEC-001 credential vault is
+  not mounted at all (see SRS-SEC-004).
+- **Enforcement.** `tools/container_isolation_check.py` (in CI, and transitively
+  via `tools/architecture_check.py`) statically inspects the compose template and
+  fails closed on any privileged / host-network / cross-filesystem violation; its
+  `--fixture` self-tests prove it rejects each. The L7
+  `tests/domain/test_strategy_container_least_privilege.py` asserts the same
+  invariant, and a gated L5 `tests/integration/test_strategy_container_inspect.py`
+  runs `docker inspect` on a real strategy container when `ATP_RUN_INTEGRATION=1`.
+  Because the concrete Docker-backed `StrategyContainerRuntime` is deferred (owner:
+  SRS-ARCH-004 / SRS-ORCH-002), the compose template is the authoritative
+  declarative source and this static inspection is the primary evidence — the same
+  convention SRS-ARCH-004 and SRS-SEC-004 are verified under.
+
+**Future hardening (not yet applied).** A read-only container root filesystem
+(`read_only: true` + a `tmpfs` scratch mount) and a dedicated `internal: true`
+strategy network are stronger CIS controls deferred to the concrete container
+runtime, where they can be validated against a live strategy image without risking
+an unverifiable startup break in the template.

@@ -33,6 +33,10 @@ from data_provider_check import (
     DataProviderContractError,
     assert_data_provider_contract_static,
 )
+from container_isolation_check import (
+    ContainerIsolationCheckError,
+    assert_container_isolation_static,
+)
 from dependency_boundary_check import DependencyBoundaryError, assert_dependency_direction
 from deployment_check import DeploymentCheckError, assert_deployment_static
 from determinism_check import DeterminismCheckError, assert_determinism_static
@@ -1580,6 +1584,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_deployment_static(config, ROOT))
     except DeploymentCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_container_isolation_static(config, ROOT))
+    except ContainerIsolationCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_configuration_static(config, ROOT))

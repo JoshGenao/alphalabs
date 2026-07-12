@@ -70,6 +70,7 @@ for check in \
     dependency_boundary_check \
     adapter_isolation_check \
     deployment_check \
+    container_isolation_check \
     config_check \
     startup_readiness_gate_check \
     rest_api_check \

@@ -79,12 +79,21 @@ consistent with the SRS-ARCH-004 metadata block in
 | `phase1-dashboard-api` | `docker/dashboard-api.Dockerfile` | SRS-SEC-002 (loopback bind) |
 | `phase1-jupyter` | `docker/jupyter.Dockerfile` | SRS-RES-001, SRS-SEC-004 |
 | `phase1-ib-gateway` | `docker/ib-gateway.Dockerfile` (operator-supplied in production) | SRS-EXE-006 |
-| `phase1-strategy-runtime` | `docker/strategy-python.Dockerfile` | SRS-ORCH-001, SyRS SYS-11 |
+| `phase1-strategy-runtime` | `docker/strategy-python.Dockerfile` | SRS-ORCH-001, SyRS SYS-11, SRS-SEC-003 (least-privilege) |
 
 The strategy runtime container is the canonical template the Strategy
 Orchestrator clones for each live or paper strategy instance. Resource
 profiles match SyRS SYS-11: live container ≤ 512 MB RAM and ≤ 0.25
 CPU cores; paper container ≤ 300 MB RAM and ≤ 0.10 CPU cores.
+
+**Least-privilege (SRS-SEC-003 / NFR-S5).** The template runs with no
+privileged mode (`privileged: false`, all Linux capabilities dropped,
+`no-new-privileges:true`), no host network access (no `network_mode: host`
+— it joins only the isolated Compose project bridge), and no access to
+other strategy filesystems (own writable root layer, read-only SSD/NAS
+tiers, no host Docker socket, no `volumes_from`, no credential-vault mount).
+`tools/container_isolation_check.py` enforces this statically in CI. See
+`SECURITY.md` § "Least-privilege strategy containers (SRS-SEC-003)".
 
 ## Storage tiers
 
@@ -97,10 +106,10 @@ into every service that needs them:
 | `atp_ssd` | `${ATP_SSD_DATA_DIR}` | `/ssd` | Primary runtime tier |
 | `atp_nas` | `${ATP_NAS_DATA_DIR}` | `/nas` | Archive tier |
 
-The Jupyter service mounts both paths read-only (SRS-SEC-004). All
-other services receive read-write mounts. The data layer is the only
-component that writes to NAS; other services read through the unified
-data interface.
+The Jupyter service (SRS-SEC-004) and the strategy-runtime service
+(SRS-SEC-003) mount both paths read-only; the remaining core services
+receive read-write mounts. The data layer is the only component that
+writes to NAS; other services read through the unified data interface.
 
 ## Environment-specific configuration
 

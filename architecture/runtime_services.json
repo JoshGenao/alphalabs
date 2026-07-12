@@ -2437,6 +2437,63 @@
       "portability constraints"
     ]
   },
+  "container_isolation_contract": {
+    "requirement": "SRS-SEC-003",
+    "srs_refs": [
+      "SRS-SEC-003"
+    ],
+    "syrs_refs": [
+      "NFR-S5",
+      "SYS-10",
+      "SYS-11",
+      "SYS-12"
+    ],
+    "strs_refs": [
+      "SN-1.10",
+      "SN-3.01"
+    ],
+    "compose_file": "docker-compose.yml",
+    "subject_services": [
+      "phase1-strategy-runtime"
+    ],
+    "required_directives": [
+      "privileged: false",
+      "no-new-privileges:true"
+    ],
+    "required_dropped_capability": "ALL",
+    "forbidden_host_namespace_directives": [
+      "privileged: true",
+      "network_mode: host",
+      "network_mode: \"host\"",
+      "network_mode: 'host'",
+      "network_mode: service:",
+      "network_mode: container:",
+      "pid: host",
+      "pid: \"host\"",
+      "ipc: host",
+      "ipc: shareable"
+    ],
+    "forbidden_added_capabilities": [
+      "ALL",
+      "NET_ADMIN",
+      "NET_RAW",
+      "SYS_ADMIN",
+      "SYS_PTRACE",
+      "SYS_MODULE"
+    ],
+    "forbidden_mount_tokens": [
+      "/var/run/docker.sock",
+      "/run/docker.sock",
+      "volumes_from"
+    ],
+    "credential_vault_mount_token": "/run/atp-secrets:ro",
+    "sanctioned_readonly_data_volumes": [
+      "atp_ssd:/ssd:ro",
+      "atp_nas:/nas:ro"
+    ],
+    "security_doc": "SECURITY.md",
+    "security_doc_marker": "SRS-SEC-003"
+  },
   "configuration": {
     "requirement": "SRS-ARCH-005",
     "package": "atp_config",

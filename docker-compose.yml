@@ -302,6 +302,22 @@ services:
     # read a credential or open the vault.
     environment:
       <<: [*atp-no-secrets, *atp-env]
+    # SRS-SEC-003 least-privilege (NFR-S5 / CIS Docker Benchmark): strategy
+    # containers run with NO privileged mode, NO host network access, and NO
+    # access to other strategy containers' filesystems.
+    #   - never privileged, and no new privileges can be gained at exec time;
+    #   - every Linux capability dropped (nothing added back);
+    #   - no `network_mode: host` — the strategy joins ONLY the default isolated
+    #     Compose project bridge, reaching the data / execution / simulation
+    #     engines through the SYS-12 internal service interface, never the host
+    #     network stack;
+    #   - the shared SSD/NAS tiers are mounted READ-ONLY below, so a strategy
+    #     cannot write into a tier another strategy could read.
+    privileged: false
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     # SyRS SYS-11 resource profiles. The orchestrator clones this template
     # for each strategy instance. Live profile: <=512 MB / <=0.25 CPU;
     # paper profile: <=300 MB / <=0.10 CPU.
@@ -317,9 +333,11 @@ services:
           memory: "512M"
     # SRS-SEC-004: data tiers only — the credential vault (/run/atp-secrets) is
     # deliberately NOT mounted here, so a strategy container cannot open it.
+    # SRS-SEC-003: mounted READ-ONLY so a strategy cannot write into the shared
+    # SSD/NAS tiers a sibling strategy could then read (filesystem isolation).
     volumes:
-      - atp_ssd:/ssd
-      - atp_nas:/nas
+      - atp_ssd:/ssd:ro
+      - atp_nas:/nas:ro
 
 volumes:
   atp_ssd:
