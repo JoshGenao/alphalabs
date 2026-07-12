@@ -343,6 +343,9 @@ def _assert_service_least_privilege(
     #      The template's sole merge is `environment: <<: [*...]` — nested under
     #      `environment` (neither a service-level key nor a security key), so it is
     #      unaffected. This mirrors SEC-002's fail-closed-on-interpolation stance.
+    #      (The gated tests/integration docker-inspect proves the fully-RESOLVED
+    #      config — extends, merges, interpolation, and any -f override — for the
+    #      real container; this static gate refuses what it cannot resolve.)
     child_indent = _child_indent(eff)
     for line in eff.splitlines():
         if not line.strip():
@@ -353,6 +356,11 @@ def _assert_service_least_privilege(
             fail(
                 f"{service} uses a service-level `<<:` merge; SRS-SEC-003 refuses a merge that "
                 f"could inject an unchecked privilege / namespace setting from an anchor"
+            )
+        if indent == child_indent and stripped.startswith("extends:"):
+            fail(
+                f"{service} uses `extends:`; SRS-SEC-003 refuses inheritance that could bring in "
+                f"an unchecked network_mode / pid / cap_add / mount from another service"
             )
         if indent == child_indent:
             for key in _SINGLETON_SECURITY_KEYS:
@@ -583,6 +591,7 @@ _FIXTURES = (
     "nested-internal-label",
     "service-level-merge",
     "aliased-security-value",
+    "extends-inheritance",
 )
 
 
@@ -682,6 +691,13 @@ def make_fixture_root(fixture: str) -> tempfile.TemporaryDirectory[str]:
         text = text.replace(
             "    cap_drop:\n      - ALL\n",
             "    cap_drop:\n      - ALL\n    cap_add: *atp-env\n",
+        )
+    elif fixture == "extends-inheritance":
+        # `extends:` could inherit an unsafe network_mode / cap_add / mount from
+        # another service; refused outright.
+        text = text.replace(
+            "    privileged: false\n",
+            "    privileged: false\n    extends:\n      service: phase1-ib-gateway\n",
         )
     else:
         temp_dir.cleanup()

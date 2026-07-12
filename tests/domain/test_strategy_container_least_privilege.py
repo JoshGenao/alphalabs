@@ -118,6 +118,7 @@ def test_no_unresolvable_security_constructs(strategy_blocks) -> None:
                 continue
             stripped = line.strip()
             assert not stripped.startswith("<<:"), "no service-level merge allowed"
+            assert not stripped.startswith("extends:"), "no extends inheritance allowed"
             for key in cic._SINGLETON_SECURITY_KEYS:
                 if stripped.startswith(f"{key}:"):
                     value = stripped[len(key) + 1 :].strip()
@@ -199,6 +200,7 @@ def test_no_cross_strategy_filesystem_access(strategy_blocks, contract) -> None:
         "nested-internal-label",
         "service-level-merge",
         "aliased-security-value",
+        "extends-inheritance",
     ],
 )
 def test_check_rejects_each_violation(fixture: str) -> None:
