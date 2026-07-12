@@ -118,7 +118,15 @@ def test_no_cross_strategy_filesystem_access(strategy_blocks, contract) -> None:
 
 @pytest.mark.parametrize(
     "fixture",
-    ["allow-privileged", "host-network", "writable-data-tier", "docker-socket", "no-cap-drop"],
+    [
+        "allow-privileged",
+        "host-network",
+        "writable-data-tier",
+        "docker-socket",
+        "no-cap-drop",
+        "long-syntax-bind",
+        "flow-syntax-bind",
+    ],
 )
 def test_check_rejects_each_violation(fixture: str) -> None:
     """The check fails closed (non-zero exit) on every seeded least-privilege violation.

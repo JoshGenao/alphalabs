@@ -122,6 +122,111 @@ def _yaml_list_items(block: str, key: str) -> list[str] | None:
     return items if key_indent is not None else None
 
 
+def _yaml_list_blocks(block: str, key: str) -> list[str] | None:
+    """Return each block-list item under ``key:`` as its full raw text.
+
+    Unlike ``_yaml_list_items`` (which keeps only the ``- `` line), this preserves
+    a list item's nested continuation lines — needed to see the ``source:`` /
+    ``target:`` of a Compose **long-syntax** volume entry. An item begins at a
+    ``- `` line at the list-item indent; deeper-indented lines belong to it.
+    Returns None when ``key:`` is absent.
+    """
+
+    key_indent: int | None = None
+    item_indent: int | None = None
+    entries: list[list[str]] = []
+    for line in block.splitlines():
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        if key_indent is None:
+            if line.strip() == f"{key}:":
+                key_indent = indent
+            continue
+        if indent <= key_indent:
+            break
+        if line.lstrip().startswith("- ") and (item_indent is None or indent <= item_indent):
+            item_indent = indent
+            entries.append([line])
+        elif entries:
+            entries[-1].append(line)
+    return ["\n".join(item) for item in entries] if key_indent is not None else None
+
+
+def _parse_volume_entry(entry: str) -> dict:
+    """Normalize one Compose volume entry (short, long, or flow) to a common shape.
+
+    Returns ``{"raw", "kind", "source", "target", "read_only"}`` covering all three
+    Compose spellings so a long-/flow-syntax bind mount cannot slip past the
+    filesystem checks:
+
+    * short   ``- source:target[:ro]``
+    * long    ``- type: bind`` / ``source:`` / ``target:`` / ``read_only:``
+    * flow    ``- {type: bind, source: /h, target: /t, read_only: true}``
+
+    ``kind`` is the mount ``type`` when stated ("bind" / "volume" / "tmpfs"),
+    else "" (short named-volume form).
+    """
+
+    out = {"raw": " ".join(entry.split()), "kind": "", "source": "", "target": "", "read_only": False}
+    lines = entry.splitlines()
+    first = lines[0].strip()
+    if first.startswith("- "):
+        first = first[2:].strip()
+
+    def _apply(mapping: dict) -> None:
+        out["kind"] = mapping.get("type", "").strip().strip('"').strip("'")
+        out["source"] = mapping.get("source", "").strip().strip('"').strip("'")
+        out["target"] = mapping.get("target", "").strip().strip('"').strip("'")
+        out["read_only"] = mapping.get("read_only", "").strip().lower() in ("true", "yes", "on")
+
+    # Flow mapping: ``{type: bind, source: /h, target: /t}``.
+    if first.startswith("{"):
+        mapping: dict[str, str] = {}
+        for pair in first.strip("{}").split(","):
+            if ":" in pair:
+                key, value = pair.split(":", 1)
+                mapping[key.strip()] = value
+        _apply(mapping)
+        return out
+
+    # Long (block) mapping: gather ``key: value`` pairs from the inline first key
+    # plus every nested line.
+    mapping = {}
+    candidates = [first] + [ln.strip() for ln in lines[1:]]
+    for candidate in candidates:
+        parts = candidate.split(":", 1)
+        if len(parts) == 2 and parts[0].strip() in {
+            "type",
+            "source",
+            "target",
+            "read_only",
+        }:
+            mapping[parts[0].strip()] = parts[1]
+    if mapping:
+        _apply(mapping)
+        return out
+
+    # Short scalar: ``source:target[:mode]``.
+    scalar = first.strip('"').strip("'")
+    segments = scalar.split(":")
+    if len(segments) >= 2:
+        out["source"] = segments[0]
+        out["target"] = segments[1]
+        out["read_only"] = "ro" in segments[2:]
+        out["kind"] = "bind" if out["source"][:1] in ("/", ".", "~") else "volume"
+    else:
+        out["source"] = scalar
+    return out
+
+
+def _volume_mounts(block: str) -> list[dict] | None:
+    blocks = _yaml_list_blocks(block, "volumes")
+    if blocks is None:
+        return None
+    return [_parse_volume_entry(entry) for entry in blocks]
+
+
 # --------------------------------------------------------------------------- #
 # per-service least-privilege assertions
 # --------------------------------------------------------------------------- #
@@ -174,22 +279,31 @@ def _assert_service_least_privilege(
     if _service_has_vault_mount(eff):
         fail(f"{service} must not mount the credential vault (SRS-SEC-003 / SRS-SEC-004)")
 
-    volumes = _yaml_list_items(eff, "volumes") or []
-    if not volumes:
+    #     Volumes are normalized across BOTH Compose spellings (short + long +
+    #     flow) so a long-syntax host bind cannot slip past the host-path check.
+    mounts = _volume_mounts(eff)
+    if not mounts:
         fail(
             f"{service} declares no volumes (compose drift?) — expected only the "
             f"read-only named data tiers"
         )
-    for item in volumes:
-        source = item.split(":", 1)[0].strip()
-        if source[:1] in ("/", ".", "~"):
+    for mount in mounts:
+        # Allow-list: strategy containers may mount ONLY named volumes (the data
+        # tiers). Any host bind — short, long-syntax `type: bind`, or a host-path
+        # source — is a cross-filesystem-access hazard and is rejected.
+        if mount["kind"] == "bind":
             fail(
-                f"{service} mounts a host path {item!r}; strategy containers may mount only "
-                f"the read-only named data tiers (SRS-SEC-003 filesystem isolation)"
+                f"{service} uses a bind mount ({mount['raw']!r}); strategy containers may mount "
+                f"only the read-only named data tiers (SRS-SEC-003 filesystem isolation)"
             )
-        if (":/ssd" in item or ":/nas" in item) and not item.endswith(":ro"):
+        if mount["source"][:1] in ("/", ".", "~", "{"):
             fail(
-                f"{service} mounts data tier {item!r} read-write; SRS-SEC-003 requires the "
+                f"{service} mounts a host path ({mount['raw']!r}); strategy containers may mount "
+                f"only the read-only named data tiers (SRS-SEC-003 filesystem isolation)"
+            )
+        if mount["target"] in ("/ssd", "/nas") and not mount["read_only"]:
+            fail(
+                f"{service} mounts data tier {mount['raw']!r} read-write; SRS-SEC-003 requires the "
                 f"shared tiers be read-only so a strategy cannot write into a tier a sibling reads"
             )
     for sanctioned in contract["sanctioned_readonly_data_volumes"]:
@@ -255,7 +369,15 @@ def assert_container_isolation_static(config: dict, root: Path = ROOT) -> list[s
 # negative self-test fixtures (prove the check FAILS on a violation)
 # --------------------------------------------------------------------------- #
 
-_FIXTURES = ("allow-privileged", "host-network", "writable-data-tier", "docker-socket", "no-cap-drop")
+_FIXTURES = (
+    "allow-privileged",
+    "host-network",
+    "writable-data-tier",
+    "docker-socket",
+    "no-cap-drop",
+    "long-syntax-bind",
+    "flow-syntax-bind",
+)
 
 
 def make_fixture_root(fixture: str) -> tempfile.TemporaryDirectory[str]:
@@ -285,6 +407,20 @@ def make_fixture_root(fixture: str) -> tempfile.TemporaryDirectory[str]:
         )
     elif fixture == "no-cap-drop":
         text = text.replace("    cap_drop:\n      - ALL\n", "")
+    elif fixture == "long-syntax-bind":
+        # A Compose long-syntax bind of the host root — the exact bypass the
+        # short-only parser missed. Must be rejected.
+        text = text.replace(
+            "    volumes:\n      - atp_ssd:/ssd:ro",
+            "    volumes:\n      - type: bind\n        source: /\n        target: /host_root\n"
+            "      - atp_ssd:/ssd:ro",
+        )
+    elif fixture == "flow-syntax-bind":
+        text = text.replace(
+            "    volumes:\n      - atp_ssd:/ssd:ro",
+            "    volumes:\n      - {type: bind, source: /etc, target: /host_etc}\n"
+            "      - atp_ssd:/ssd:ro",
+        )
     else:
         temp_dir.cleanup()
         raise ValueError(f"unknown fixture: {fixture}")
