@@ -208,6 +208,73 @@ def save_deps(d: dict) -> None:
     _atomic_write(DEPS_FILE, json.dumps(d, indent=2, sort_keys=True) + "\n")
 
 
+def _union_deps(base: dict, extra: dict) -> dict:
+    """Per-key union of dependency edge-lists (deduped, sorted).
+
+    ``block`` only ever ADDS edges to ``tools/feature_deps.json`` (never removes),
+    so reconciling origin/main's committed edges (``base``) with any in-place,
+    not-yet-integrated ``block`` edits (``extra``) is a union -- neither side is
+    ever dropped. Keys present only in ``base`` keep origin/main's value verbatim.
+    """
+    merged = {k: list(v) for k, v in base.items()}
+    for fid, edges in extra.items():
+        merged[fid] = sorted(set(merged.get(fid, [])) | set(edges))
+    return merged
+
+
+def _sync_primary_checkout(root: Path = ROOT) -> None:
+    """Fast-forward the primary checkout to origin/main so working-tree reads
+    (``load_features`` / ``serialized_notes`` / ``progress.d``) don't lag behind
+    features integrated from sibling worktrees -- WITHOUT losing the in-place
+    ``block`` edits the canonical ``tools/feature_deps.json`` carries.
+
+    Best-effort and FAIL-SAFE: offline, an ahead/diverged primary checkout, an
+    unexpected dirty file, or any git error leaves the checkout untouched. MUST be
+    called under ``Lock()`` so no concurrent ``block``/``integrate`` races on
+    ``feature_deps.json``. Diagnostics go to STDERR only -- ``cmd_claim``'s stdout
+    is ``eval``'d by the launcher and must stay clean.
+    """
+    git = ["git", "-C", str(root)]
+    deps_rel = "tools/feature_deps.json"
+    if _run(git + ["fetch", "--quiet", "origin", "main"], check=False).returncode != 0:
+        return  # offline / no remote -- best effort
+    if (
+        _run(git + ["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"], check=False).returncode
+        != 0
+    ):
+        return  # primary checkout is ahead of / diverged from origin/main -- leave it for a human
+    behind = _run(git + ["rev-list", "--count", "HEAD..FETCH_HEAD"], check=False).stdout.strip()
+    if behind in ("", "0"):
+        return  # already current
+    dirty = [
+        line[3:]
+        for line in _run(git + ["status", "--porcelain"], check=False).stdout.splitlines()
+        if line.strip()
+    ]
+    unexpected = [p for p in dirty if p != deps_rel]
+    if unexpected:
+        print(
+            "⚠ agent_pool: primary checkout has unexpected local changes "
+            f"({', '.join(unexpected)[:200]}); skipping ROOT sync -- it will lag origin/main "
+            "until resolved",
+            file=sys.stderr,
+        )
+        return  # never stomp an operator's local edits
+    deps_path = root / deps_rel
+    local = load_json(deps_path, {})  # snapshot the canonical deps (may hold in-flight block edits)
+    _run(git + ["checkout", "--", deps_rel], check=False)  # clean the tree so the ff can apply
+    if _run(git + ["merge", "--ff-only", "--quiet", "FETCH_HEAD"], check=False).returncode != 0:
+        # Unexpected ff failure -- restore our snapshot and bail (never leave ROOT worse).
+        _atomic_write(deps_path, json.dumps(local, indent=2, sort_keys=True) + "\n")
+        print("⚠ agent_pool: ROOT fast-forward failed; restored feature_deps.json", file=sys.stderr)
+        return
+    merged = _union_deps(
+        load_json(deps_path, {}), local
+    )  # origin/main's edges ∪ our in-place edits
+    if merged != load_json(deps_path, {}):
+        _atomic_write(deps_path, json.dumps(merged, indent=2, sort_keys=True) + "\n")
+
+
 def load_runtime() -> dict:
     rt = load_json(RUNTIME_FILE, {"leases": {}})
     rt.setdefault("leases", {})
@@ -619,6 +686,10 @@ def cmd_status(args):
 
 def cmd_claim(args):
     with Lock():
+        # Keep the primary checkout current with origin/main FIRST (under the lock,
+        # so no block/integrate races) -- otherwise serialized_notes()/load_features()
+        # read a stale working tree and re-offer already-de-churned features.
+        _sync_primary_checkout()
         features = load_features(fetch=True)
         deps = load_deps()
         runtime = load_runtime()
