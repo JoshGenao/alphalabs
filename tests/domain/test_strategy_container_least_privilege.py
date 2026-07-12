@@ -76,9 +76,8 @@ def test_no_privileged_mode(strategy_blocks) -> None:
         assert "no-new-privileges:true" in security_opt
         dropped = cic._yaml_list_items(block, "cap_drop")
         assert dropped is not None and "ALL" in {c.upper() for c in dropped}
-        # No dangerous capability is added back (block or flow syntax).
-        added = cic._yaml_list_items(block, "cap_add") or []
-        assert not ({c.upper() for c in added} & {"ALL", "NET_ADMIN", "SYS_ADMIN"})
+        # NOTHING is added back (block or flow syntax) — cap_add must be empty.
+        assert not (cic._yaml_list_items(block, "cap_add") or [])
 
 
 def test_no_host_network_access(strategy_blocks) -> None:
@@ -120,8 +119,9 @@ def test_no_host_network_egress(strategy_blocks) -> None:
         for net in networks:
             net_block = cic._service_block(compose_text, net)
             assert net_block is not None, f"network {net!r} is not declared top-level"
-            assert "internal: true" in cic._strip_comments(net_block), (
-                f"network {net!r} must be internal: true (no egress)"
+            internal = cic._service_scalar(cic._strip_comments(net_block), "internal")
+            assert cic._scalar_bool(internal) is True, (
+                f"network {net!r} must have direct-child internal: true (no egress)"
             )
 
 
@@ -173,6 +173,8 @@ def test_no_cross_strategy_filesystem_access(strategy_blocks, contract) -> None:
         "inline-cap-add",
         "quoted-privileged",
         "duplicate-privileged",
+        "cap-add-benign",
+        "nested-internal-label",
     ],
 )
 def test_check_rejects_each_violation(fixture: str) -> None:

@@ -360,8 +360,11 @@ def _assert_service_least_privilege(
             f"(SRS-SEC-003 no privilege escalation)"
         )
 
-    # (2) Drop the ALL capability set; add none of the dangerous ones back. Both
-    #     block and flow (`cap_add: [SYS_ADMIN]`) list forms are parsed.
+    # (2) Drop the ALL capability set; add NONE back. Both block and flow
+    #     (`cap_add: [CHOWN]`) list forms are parsed, and ANY non-empty cap_add is
+    #     rejected — a strategy container regains no kernel capability (the docs and
+    #     compose comments state nothing is added back), so even a "benign" cap
+    #     (CHOWN / SETUID / …) is refused, not just a hazardous deny-list.
     required_drop = contract["required_dropped_capability"]
     dropped = _yaml_list_items(eff, "cap_drop")
     if not dropped or required_drop not in {cap.upper() for cap in dropped}:
@@ -370,13 +373,10 @@ def _assert_service_least_privilege(
             f"(SRS-SEC-003 least-privilege)"
         )
     added = _yaml_list_items(eff, "cap_add") or []
-    bad_added = sorted(
-        {cap.upper() for cap in added} & set(contract["forbidden_added_capabilities"])
-    )
-    if bad_added:
+    if added:
         fail(
-            f"{service} adds forbidden capabilities via cap_add: {', '.join(bad_added)} "
-            f"(SRS-SEC-003 least-privilege)"
+            f"{service} adds capabilities via cap_add: {', '.join(added)}; SRS-SEC-003 strategy "
+            f"containers drop ALL capabilities and add NONE back (least-privilege)"
         )
 
     # (3) No host network access / namespace sharing on the service. Scalars are
@@ -410,11 +410,19 @@ def _assert_service_least_privilege(
             )
         for net in networks:
             net_block = _service_block(compose_text, net)
-            if net_block is None or "internal: true" not in _strip_comments(net_block):
+            if net_block is None:
                 fail(
-                    f"{service} is attached to network {net!r}, which is not declared "
-                    f"'internal: true' at the top level; SRS-SEC-003 requires no host network "
-                    f"access (an internal, no-egress network)"
+                    f"{service} is attached to network {net!r}, which is not declared at the top "
+                    f"level; SRS-SEC-003 requires an internal, no-egress network"
+                )
+            # Read the network's DIRECT-child `internal:` scalar — not a substring
+            # of the whole block, so a nested `labels: {internal: true}` under an
+            # `internal: false` network cannot masquerade as internal.
+            internal = _service_scalar(_strip_comments(net_block), "internal")
+            if _scalar_bool(internal) is not True:
+                fail(
+                    f"{service} is attached to network {net!r} whose `internal:` is {internal!r}, "
+                    f"not true; SRS-SEC-003 requires a no-egress (internal) network"
                 )
 
     # (4) Filesystem isolation: no host-path binds, no docker socket, no
@@ -541,6 +549,8 @@ _FIXTURES = (
     "inline-cap-add",
     "quoted-privileged",
     "duplicate-privileged",
+    "cap-add-benign",
+    "nested-internal-label",
 )
 
 
@@ -614,6 +624,20 @@ def make_fixture_root(fixture: str) -> tempfile.TemporaryDirectory[str]:
         text = text.replace(
             "    privileged: false\n",
             '    privileged: false\n    privileged: "true"\n',
+        )
+    elif fixture == "cap-add-benign":
+        # Even a "benign"-looking capability re-added is rejected — the template
+        # drops ALL and adds none back.
+        text = text.replace(
+            "    cap_drop:\n      - ALL\n",
+            "    cap_drop:\n      - ALL\n    cap_add:\n      - CHOWN\n",
+        )
+    elif fixture == "nested-internal-label":
+        # internal:false network whose nested label says internal:true — must not
+        # masquerade as a no-egress network.
+        text = text.replace(
+            "    driver: bridge\n    internal: true",
+            '    driver: bridge\n    internal: false\n    labels:\n      internal: "true"',
         )
     else:
         temp_dir.cleanup()

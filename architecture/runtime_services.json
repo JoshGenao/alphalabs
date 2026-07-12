@@ -2457,14 +2457,6 @@
       "phase1-strategy-runtime"
     ],
     "required_dropped_capability": "ALL",
-    "forbidden_added_capabilities": [
-      "ALL",
-      "NET_ADMIN",
-      "NET_RAW",
-      "SYS_ADMIN",
-      "SYS_PTRACE",
-      "SYS_MODULE"
-    ],
     "forbidden_mount_tokens": [
       "/var/run/docker.sock",
       "/run/docker.sock",
