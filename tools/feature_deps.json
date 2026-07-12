@@ -84,7 +84,11 @@
     "SRS-DATA-008"
   ],
   "SRS-DATA-019": [
-    "SRS-DATA-011"
+    "SRS-DATA-011",
+    "SRS-EXE-001",
+    "SRS-EXE-006",
+    "SRS-NOTIF-001",
+    "SRS-SDK-004"
   ],
   "SRS-DATA-020": [
     "SRS-DATA-011"
