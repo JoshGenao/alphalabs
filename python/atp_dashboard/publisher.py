@@ -28,12 +28,15 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable, Iterable
+from functools import partial
 
 from atp_runtime import OperatorInterfaceRuntime
 from atp_ws import EVENT_CHANNELS, MAX_REFRESH_SECONDS
 
+from .account import ACCOUNT_CHANNEL, AccountStatusProvider
 from .inventory import INVENTORY_CHANNEL, StrategyInventoryProvider
 from .provider import OWNED_CHANNELS, DashboardMetricsProvider
+from .reservoir import RESERVOIR_CHANNEL, ReservoirRankingProvider
 
 #: Longest a fast poll may sleep between due-time checks — keeps ``stop()``
 #: responsive even when the soonest channel is a full ``MAX_REFRESH_SECONDS`` off.
@@ -70,15 +73,29 @@ class DashboardPublisher:
         *,
         channels: Iterable[str] = OWNED_CHANNELS,
         inventory: StrategyInventoryProvider | None = None,
+        account: AccountStatusProvider | None = None,
+        reservoir: ReservoirRankingProvider | None = None,
     ) -> None:
         self._runtime = runtime
         self._provider = provider
         self._inventory = inventory
         self._channels: tuple[str, ...] = tuple(channels)
+        # Opt-in single-event channels (SRS-UI-003 account + Reservoir) ride the
+        # MAIN ticker: each is a pure-Python deferred builder (no subprocess, no
+        # blocking I/O), so — unlike the inventory channel, which needs its own
+        # thread precisely to contain a shelled CLI that may hang to its timeout —
+        # they cannot starve the fast PNL/HEARTBEAT ticks and need no isolation.
+        extra: dict[str, Callable[[], list[dict[str, object]]]] = {}
+        if account is not None:
+            extra[ACCOUNT_CHANNEL] = account.account_status_events
+        if reservoir is not None:
+            extra[RESERVOIR_CHANNEL] = reservoir.reservoir_ranking_events
+        self._extra = extra
+        self._main_channels: tuple[str, ...] = self._channels + tuple(extra)
         # Fail fast on a mis-declared cadence before any thread starts. The
         # inventory channel joins the schedule only when its provider is mounted
         # (SRS-UI-002 is composition-time opt-in, like the dashboard itself).
-        scheduled = list(self._channels)
+        scheduled = list(self._main_channels)
         if inventory is not None:
             scheduled.append(INVENTORY_CHANNEL)
         self._scheduled: tuple[str, ...] = tuple(scheduled)
@@ -89,7 +106,7 @@ class DashboardPublisher:
 
     @property
     def channels(self) -> tuple[str, ...]:
-        """Every channel this publisher claims (owned + the mounted inventory)."""
+        """Every channel this publisher claims (owned + mounted opt-in channels)."""
 
         return self._scheduled
 
@@ -131,13 +148,20 @@ class DashboardPublisher:
     def publish_once(self) -> dict[str, int]:
         """Publish the current payload for every claimed channel once (delivery counts)."""
 
-        counts = {
-            channel: self._runtime.publish(channel, self._provider.channel_payload(channel))
-            for channel in self._channels
-        }
+        counts = {channel: self._publish_channel(channel) for channel in self._main_channels}
         if self._inventory is not None:
             counts[INVENTORY_CHANNEL] = self._publish_inventory()
         return counts
+
+    def _publish_channel(self, channel: str) -> int:
+        """Publish one main-ticker channel once: an owned provider payload, or —
+        for an opt-in single-event source (account / Reservoir) — each event it
+        emits this tick (returns the total delivery count)."""
+
+        builder = self._extra.get(channel)
+        if builder is not None:
+            return sum(self._runtime.publish(channel, event) for event in builder())
+        return self._runtime.publish(channel, self._provider.channel_payload(channel))
 
     def _publish_inventory(self) -> int:
         """One STRATEGY_STATE tick: the summary event + one event per strategy."""
@@ -166,18 +190,14 @@ class DashboardPublisher:
             pass
 
     def _run(self) -> None:
-        # Immediate first tick: every channel is due at start.
-        next_fire: dict[str, float] = {c: time.monotonic() for c in self._channels}
+        # Immediate first tick: every main-ticker channel is due at start (owned
+        # SRS-UI-001 channels + the opt-in SRS-UI-003 account / Reservoir channels).
+        next_fire: dict[str, float] = {c: time.monotonic() for c in self._main_channels}
         while not self._stop.is_set():
             now = time.monotonic()
-            for channel in self._channels:
+            for channel in self._main_channels:
                 if now >= next_fire[channel]:
-                    self._guarded(
-                        lambda c=channel: self._runtime.publish(
-                            c, self._provider.channel_payload(c)
-                        ),
-                        channel,
-                    )
+                    self._guarded(partial(self._publish_channel, channel), channel)
                     next_fire[channel] = now + self._cadences[channel]
             soonest = min(next_fire.values())
             wait = max(0.0, min(soonest - time.monotonic(), _POLL_CEILING_S))

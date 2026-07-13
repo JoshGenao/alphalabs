@@ -201,13 +201,106 @@
           </div>
         </div>
       </section>
+
+      <!-- SRS-UI-003 / SyRS SYS-43b: account-level IB status. Total IB account
+           equity, daily & cumulative P&L, margin usage, buying power, and IB
+           connection state "as reported by the IB account" — every value is an
+           honest deferred cell until the SRS-EXE-006 live IB adapter lands
+           (its account_status is behind the ib-live-transport feature over a
+           live socket). No number is fabricated. -->
+      <section class="panel panel--account" data-panel="account" style="--i:6">
+        <div class="panel__head">
+          <h2 class="panel__title">Account · IB</h2>
+          <span class="panel__meta"><span class="tag tag--chan">ACCOUNT_STATUS</span><span class="panel__cadence">5s</span></span>
+        </div>
+        <div class="panel__body" id="body-account" aria-live="polite">
+          <div class="account">
+            <div class="account__hero" data-field="equity">
+              <span class="account__k">Total IB account equity</span>
+              <span class="account__hero-v"><span class="metric__value is-deferred">—</span></span>
+              <span class="srctag">…</span>
+            </div>
+            <div class="account__pnl">
+              <div class="account__pnlcard" data-field="daily_pnl">
+                <span class="account__k">Daily P&amp;L</span>
+                <span class="metric__value is-deferred">—</span>
+                <span class="srctag">…</span>
+              </div>
+              <div class="account__pnlcard" data-field="cumulative_pnl">
+                <span class="account__k">Cumulative P&amp;L</span>
+                <span class="metric__value is-deferred">—</span>
+                <span class="srctag">…</span>
+              </div>
+            </div>
+            <div class="account__meterwrap" data-field="margin_usage">
+              <div class="account__meter-head">
+                <span class="account__k">Margin usage</span>
+                <span class="metric__value is-deferred">—</span>
+              </div>
+              <div class="account__meter" role="img" aria-label="Margin usage against the account maintenance limit">
+                <span class="account__meter-fill" id="account-margin-fill" data-state="deferred"></span>
+              </div>
+              <span class="srctag">…</span>
+            </div>
+            <div class="account__foot">
+              <div class="account__cell" data-field="buying_power">
+                <span class="account__k">Buying power remaining</span>
+                <span class="metric__value is-deferred">—</span>
+                <span class="srctag">…</span>
+              </div>
+              <div class="account__cell account__cell--conn" data-field="ib_connection_state">
+                <span class="account__k">IB connection</span>
+                <span class="account__connpill" id="account-conn-pill" data-state="deferred">—</span>
+                <span class="srctag">…</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SRS-UI-003 / SyRS SYS-48: Reservoir overview. Paper-strategy ranking
+           with Sharpe / Sortino / momentum over the shared evaluation window
+           (selectable 1/7/15/30/60/90 days, default 30). The window selector is
+           a REAL SYS-48 control; the ranking OUTPUT is deferred to the
+           SRS-RESV-002 ranking engine (the RESERVOIR_RANKING channel + the
+           GET /api/v1/reservoir/ranking contract route are schema-only). No
+           ranking or momentum score is fabricated. -->
+      <section class="panel panel--wide panel--reservoir" data-panel="reservoir" style="--i:7">
+        <div class="panel__head">
+          <h2 class="panel__title">Reservoir Overview</h2>
+          <span class="panel__meta"><span class="tag tag--chan">RESERVOIR_RANKING</span><span class="panel__cadence">5s</span></span>
+        </div>
+        <div class="panel__body" id="body-reservoir" aria-live="polite">
+          <div class="reservoir">
+            <div class="reservoir__bar">
+              <label class="reservoir__winlabel" for="resv-window">Evaluation window (SYS-48)</label>
+              <select class="reservoir__select" id="resv-window" aria-label="Reservoir evaluation window in calendar days (SYS-48)"></select>
+              <span class="reservoir__summary" id="reservoir-summary">awaiting reservoir ranking…</span>
+            </div>
+            <div class="reservoir__scroll">
+              <table class="reservoir__table" id="reservoir-table" hidden>
+                <thead>
+                  <tr>
+                    <th scope="col">Rank</th>
+                    <th scope="col">Strategy</th>
+                    <th scope="col">Sharpe</th>
+                    <th scope="col">Sortino</th>
+                    <th scope="col">Momentum</th>
+                  </tr>
+                </thead>
+                <tbody id="reservoir-rows"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
     </main>
 
     <footer class="legend" role="contentinfo">
       <span class="legend__item"><span class="swatch swatch--live"></span>live</span>
       <span class="legend__item"><span class="swatch swatch--deferred"></span>deferred — awaiting producer feature</span>
       <span class="legend__spacer"></span>
-      <span class="legend__note">Metric values are honest placeholders until <code>SRS-BT-004</code> / <code>SRS-BT-005</code> / <code>SRS-PERF-001</code> / <code>SRS-MD-006/007</code> land. No values are fabricated.</span>
+      <span class="legend__note">Metric values are honest placeholders until <code>SRS-BT-004</code> / <code>SRS-BT-005</code> / <code>SRS-PERF-001</code> / <code>SRS-MD-006/007</code> land. Account values await <code>SRS-EXE-006</code> (live IB); Reservoir rankings await <code>SRS-RESV-002</code>. No values are fabricated.</span>
       <span class="legend__stamp" id="last-update">awaiting first frame…</span>
     </footer>
   </div>

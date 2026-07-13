@@ -78,7 +78,7 @@
     // Budget is a real, known constant — fill it immediately.
     setField("body-latency", "refresh_budget_ms", { value: BUDGET_MS, data_source: "live" }, "ms");
     // Per-panel freshness indicator (driven by monitorFreshness).
-    for (const panel of ["pnl", "metrics", "health", "latency", "strategies", "backtest"]) addFreshDot(panel);
+    for (const panel of ["pnl", "metrics", "health", "latency", "strategies", "backtest", "account", "reservoir"]) addFreshDot(panel);
   }
 
   function addFreshDot(panel) {
@@ -181,6 +181,11 @@
     // UI-3 backtest history: REST-poll (no WS channel), likewise off the gauge;
     // its dot tracks the /dashboard/api/backtests poll cadence.
     { panel: "backtest", ch: "BACKTEST", budget: POLL_MS, gauge: false },
+    // SRS-UI-003 account + Reservoir: composition-time opt-in channels (a bare
+    // SRS-UI-001 mount publishes neither and must not read as an SLA breach), so
+    // they stay OFF the NFR-P2 gauge — each panel's own dot reports it honestly.
+    { panel: "account", ch: "ACCOUNT_STATUS", budget: 5000, gauge: false },
+    { panel: "reservoir", ch: "RESERVOIR_RANKING", budget: 5000, gauge: false },
   ];
   const STALE_GRACE_MS = 1500; // tolerate normal cadence jitter; flag real stalls
   const lastChannelAt = Object.create(null); // channel -> performance.now()
@@ -279,7 +284,7 @@
     ws.onopen = () => {
       backoff = 500;
       setConn("open", "LIVE");
-      ws.send(JSON.stringify({ type: "SUBSCRIBE", channels: ["PNL", "METRICS", "HEARTBEAT", "STRATEGY_STATE"] }));
+      ws.send(JSON.stringify({ type: "SUBSCRIBE", channels: ["PNL", "METRICS", "HEARTBEAT", "STRATEGY_STATE", "ACCOUNT_STATUS", "RESERVOIR_RANKING"] }));
     };
     ws.onmessage = (ev) => {
       let msg; try { msg = JSON.parse(ev.data); } catch (_e) { return; }
@@ -305,6 +310,10 @@
       for (const [k, , kind] of ROWS.health) setField("body-health", k, data[k], kind);
     } else if (channel === "STRATEGY_STATE") {
       onInventoryEvent(data);
+    } else if (channel === "ACCOUNT_STATUS") {
+      onAccountEvent(data);
+    } else if (channel === "RESERVOIR_RANKING") {
+      renderReservoir(data);
     }
     noteActivity(channel);
   }
@@ -374,6 +383,213 @@
     if (!row) return;
     if (strategyId) { row.textContent = strategyId; row.classList.remove("is-deferred"); }
     else { row.textContent = "none"; row.classList.add("is-deferred"); }
+  }
+
+  // Unwrap a {value, data_source} cell to its bare value (or pass a scalar through).
+  function cellValue(raw) {
+    return (raw && typeof raw === "object" && "value" in raw) ? raw.value : raw;
+  }
+
+  // ----- SRS-UI-003 account-level IB status (ACCOUNT_STATUS) -------------- //
+  // Total IB account equity, daily/cumulative P&L, margin usage, buying power,
+  // and IB connection state "as reported by the IB account". Every field is an
+  // honest deferred cell until SRS-EXE-006 (live IB) lands — never fabricated.
+  const ACCOUNT_FIELDS = [
+    ["equity", "money"],
+    ["daily_pnl", "money"],
+    ["cumulative_pnl", "money"],
+    ["margin_usage", "pct"],
+    ["buying_power", "money"],
+  ];
+
+  function onAccountEvent(data) {
+    for (const [k, kind] of ACCOUNT_FIELDS) setField("body-account", k, data[k], kind);
+    renderMarginMeter(data.margin_usage);
+    renderConnPill(data.ib_connection_state);
+  }
+
+  function renderMarginMeter(raw) {
+    const fill = $("account-margin-fill");
+    if (!fill) return;
+    const value = cellValue(raw);
+    if (typeof value === "number" && isFinite(value)) {
+      const frac = Math.max(0, Math.min(value, 1));
+      fill.style.width = (frac * 100).toFixed(1) + "%";
+      fill.dataset.state = frac >= 0.9 ? "bad" : frac >= 0.6 ? "warn" : "ok";
+    } else {
+      fill.style.width = "0%";
+      fill.dataset.state = "deferred";
+    }
+  }
+
+  function renderConnPill(raw) {
+    const pill = $("account-conn-pill");
+    if (!pill) return;
+    const cell = pill.closest('[data-field="ib_connection_state"]');
+    const tag = cell && cell.querySelector(".srctag");
+    let value = raw, source = "live";
+    if (raw && typeof raw === "object" && "value" in raw) { value = raw.value; source = raw.data_source || "live"; }
+    if (value === null || value === undefined) {
+      pill.textContent = "awaiting";
+      pill.dataset.state = "deferred";
+      if (tag) { tag.textContent = shortSource(source); tag.className = "srctag"; }
+    } else {
+      const s = String(value).toUpperCase();
+      pill.textContent = s;
+      pill.dataset.state = /CONNECT|UP|READY|OK/.test(s) ? "ok" : /DISCON|DOWN|LOST|ERROR|FAIL/.test(s) ? "bad" : "warn";
+      if (tag) { tag.textContent = "live"; tag.className = "srctag srctag--live"; }
+    }
+  }
+
+  // ----- SRS-UI-003 Reservoir overview (RESERVOIR_RANKING) --------------- //
+  // Paper-strategy ranking (Sharpe / Sortino / momentum) over the SYS-48 shared
+  // evaluation window. The window control is REAL (SYS-48 constants); the
+  // ranking output is deferred to SRS-RESV-002 — a deferred `rankings` cell
+  // renders as an honest "awaiting" summary, NOT an empty "0 strategies" table.
+  const RESV_WINDOWS = [1, 7, 15, 30, 60, 90]; // SYS-48 fallback if route unmounted
+  const RESV_DEFAULT = 30;                       // SYS-48 default
+  let resvWindow = RESV_DEFAULT;
+  let resvLast = { rankings: { value: null, data_source: "deferred:SRS-RESV-002" } };
+
+  function buildReservoirWindows(windows, dflt) {
+    const sel = $("resv-window");
+    if (!sel) return;
+    const list = (Array.isArray(windows) && windows.length ? windows : RESV_WINDOWS).map(Number);
+    const want = list.join(",");
+    if (sel.dataset.windows === want) return; // already built with this option set
+    const keep = sel.value ? Number(sel.value) : (typeof dflt === "number" ? dflt : RESV_DEFAULT);
+    sel.dataset.windows = want;
+    sel.textContent = "";
+    for (const w of list) {
+      const opt = el("option"); opt.value = String(w); opt.textContent = w + (w === 1 ? " day" : " days");
+      sel.appendChild(opt);
+    }
+    sel.value = String(list.indexOf(keep) >= 0 ? keep : (typeof dflt === "number" ? dflt : RESV_DEFAULT));
+    resvWindow = Number(sel.value);
+  }
+
+  function initReservoir() {
+    buildReservoirWindows(RESV_WINDOWS, RESV_DEFAULT);
+    const sel = $("resv-window");
+    if (sel) sel.addEventListener("change", () => {
+      resvWindow = Number(sel.value);
+      renderReservoir(resvLast); // re-render the summary/table for the newly selected window
+    });
+  }
+
+  function renderReservoir(snap) {
+    resvLast = snap || resvLast;
+    const summary = $("reservoir-summary");
+    const table = $("reservoir-table");
+    if (snap && snap.ok === false) {
+      if (summary) { summary.textContent = "reservoir ranking unavailable: " + String(snap.error || "unknown"); summary.dataset.tone = "error"; }
+      if (table) table.hidden = true;
+      return;
+    }
+    const rankings = cellValue(snap && snap.rankings);
+    if (rankings === null || rankings === undefined) {
+      // Deferred: an honest "awaiting" state, NOT an empty ranked table.
+      if (summary) {
+        summary.textContent = "ranking awaiting SRS-RESV-002 (SYS-48 engine) · window " + resvWindow +
+          "d — Sharpe / Sortino / momentum not yet computed";
+        summary.dataset.tone = "warn";
+      }
+      if (table) table.hidden = true;
+      return;
+    }
+    // Real ranking (renders when the engine lands): one medallioned row per strategy.
+    const rows = Array.isArray(rankings) ? rankings : [];
+    const body = $("reservoir-rows");
+    if (body) {
+      body.textContent = "";
+      for (const row of rows) renderReservoirRow(row);
+    }
+    if (summary) {
+      summary.textContent = rows.length + " paper strateg" + (rows.length === 1 ? "y" : "ies") +
+        " ranked · window " + resvWindow + "d";
+      summary.dataset.tone = "ok";
+    }
+    if (table) table.hidden = rows.length === 0;
+  }
+
+  function renderReservoirRow(row) {
+    const body = $("reservoir-rows");
+    if (!body) return;
+    const rank = cellValue(row.rank);
+    const tr = el("tr");
+    const rankTd = el("td", "resv-rank");
+    const medal = el("span", "resv-medal");
+    medal.dataset.rank = rank === null || rank === undefined ? "" : String(rank);
+    medal.textContent = rank === null || rank === undefined ? "—" : String(rank);
+    rankTd.appendChild(medal);
+    tr.appendChild(rankTd);
+    const nameTd = el("td", "resv-name"); nameTd.textContent = String(cellValue(row.strategy_id) || "—");
+    tr.appendChild(nameTd);
+    const sharpeTd = el("td"); metricCellInto(sharpeTd, "ratio", cellValue(row.sharpe != null ? row.sharpe : row.risk_adjusted_score)); tr.appendChild(sharpeTd);
+    const sortinoTd = el("td"); metricCellInto(sortinoTd, "ratio", cellValue(row.sortino)); tr.appendChild(sortinoTd);
+    // Momentum cell carries the inline-SVG indicator AND the value — built by
+    // hand (not metricCellInto, which sets textContent and would wipe the spark).
+    const momTd = el("td", "resv-mom");
+    const mom = cellValue(row.momentum_score);
+    momTd.appendChild(momentumIndicator(mom));
+    const momVal = el("span", "resv-momval");
+    if (typeof mom === "number" && isFinite(mom)) {
+      momVal.textContent = fmt("ratio", mom);
+      momVal.className = "resv-momval" + directionClass("ratio", mom);
+    } else {
+      momVal.textContent = "—"; momVal.className = "resv-momval is-undef";
+    }
+    momTd.appendChild(momVal);
+    tr.appendChild(momTd);
+    body.appendChild(tr);
+  }
+
+  // A tiny inline-SVG momentum indicator (up/down/flat) — dataviz-style, no deps.
+  function momentumIndicator(value) {
+    const span = el("span", "resv-spark");
+    const dir = typeof value === "number" && isFinite(value) ? (value > 0 ? "up" : value < 0 ? "down" : "flat") : "none";
+    span.dataset.dir = dir;
+    const path = dir === "up" ? "M1 11 L7 5 L13 8 L19 2"
+      : dir === "down" ? "M1 3 L7 8 L13 5 L19 11"
+      : dir === "flat" ? "M1 7 H19" : "";
+    span.innerHTML = path
+      ? '<svg viewBox="0 0 20 14" width="34" height="14" aria-hidden="true"><path d="' + path + '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+      : "";
+    return span;
+  }
+
+  const ACCOUNT_ROUTE = "/dashboard/api/account";
+  const RESERVOIR_ROUTE = "/dashboard/api/reservoir";
+
+  // First paint + honest "not mounted" fallback for the SRS-UI-003 panels; the
+  // WS ACCOUNT_STATUS / RESERVOIR_RANKING events drive live refresh thereafter.
+  async function pollAccount() {
+    try {
+      const res = await fetch(ACCOUNT_ROUTE, { cache: "no-store" });
+      if (res.ok) {
+        lastChannelAt["ACCOUNT_STATUS"] = performance.now();
+        onAccountEvent(await res.json());
+      } else if (res.status === 404) {
+        renderConnPill(null);
+      }
+    } catch (_e) { /* transient; next tick retries */ }
+    setTimeout(pollAccount, POLL_MS);
+  }
+
+  async function pollReservoir() {
+    try {
+      const res = await fetch(RESERVOIR_ROUTE, { cache: "no-store" });
+      if (res.ok) {
+        lastChannelAt["RESERVOIR_RANKING"] = performance.now();
+        const snap = await res.json();
+        buildReservoirWindows(snap.allowed_windows, snap.default_window);
+        renderReservoir(snap);
+      } else if (res.status === 404) {
+        const s = $("reservoir-summary");
+        if (s) { s.textContent = "reservoir not mounted — SRS-UI-003 provider not composed on this runtime"; s.dataset.tone = "warn"; }
+      }
+    } catch (_e) { /* transient; next tick retries */ }
+    setTimeout(pollReservoir, POLL_MS);
   }
 
   function setConn(state, label) {
@@ -905,8 +1121,11 @@
   // ----- boot ------------------------------------------------------------ //
   buildAll();
   initBacktest();
+  initReservoir();
   connect();
   poll();
   pollStrategies();
   pollBacktests();
+  pollAccount();
+  pollReservoir();
 })();

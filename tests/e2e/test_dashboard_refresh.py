@@ -220,8 +220,7 @@ def test_backtest_panel_renders_real_history_and_honest_deferred_launch(
             # Newest-first ordering: run-meanrev (completed_at 1700000500) sorts
             # above run-momentum (1700000000) — the reorder pass keeps it on top.
             assert (
-                page.locator("#bthistory-rows tr").first.get_attribute("data-run")
-                == "run-meanrev"
+                page.locator("#bthistory-rows tr").first.get_attribute("data-run") == "run-meanrev"
             )
 
             # Drill down: the equity-curve chart + trade log render from real data.
@@ -281,5 +280,84 @@ def test_strategy_inventory_panel_renders_real_versions_and_honest_deferred_cell
                 "document.getElementById('fresh-strategies').dataset.state === 'fresh'",
                 timeout=7_000,
             )
+        finally:
+            browser.close()
+
+
+@pytest.fixture()
+def account_reservoir_dashboard_url() -> Iterator[str]:
+    from atp_dashboard import AccountStatusProvider, ReservoirRankingProvider
+
+    runtime = OperatorInterfaceRuntime()
+    publisher = mount_dashboard(
+        runtime,
+        ReadinessBackedProvider({}),
+        account=AccountStatusProvider(),
+        reservoir=ReservoirRankingProvider(),
+    )
+    publisher.start()
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        yield f"http://{host}:{port}/dashboard"
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
+def test_account_and_reservoir_panels_render_honest_deferred(
+    account_reservoir_dashboard_url: str,
+) -> None:
+    """SRS-UI-003 / SyRS SYS-43b + SYS-48: the account + Reservoir panels render.
+    Every account/ranking value is an explicit deferred cell (no fabrication),
+    the SYS-48 evaluation-window selector is a REAL control (1/7/15/30/60/90,
+    default 30), and each panel's freshness dot reaches "fresh" within the
+    NFR-P2 budget while staying OFF the pulse gauge."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.goto(account_reservoir_dashboard_url, wait_until="domcontentloaded")
+
+            assert page.locator('[data-panel="account"]').count() == 1
+            assert page.locator('[data-panel="reservoir"]').count() == 1
+            page.wait_for_function(
+                "document.getElementById('conn').dataset.state === 'open'", timeout=5_000
+            )
+
+            # The account hero equity + cells render explicit deferred placeholders.
+            page.wait_for_function(
+                "() => document.querySelector('.account__hero .metric__value').textContent.trim() === '—'",
+                timeout=5_000,
+            )
+            # The IB connection pill honestly reports the deferred producer.
+            page.wait_for_function(
+                "() => document.getElementById('account-conn-pill').dataset.state === 'deferred'",
+                timeout=5_000,
+            )
+            account_text = page.locator('[data-panel="account"]').inner_text()
+            assert "SRS-EXE-006" in account_text  # names the deferred owner
+            assert "—" in account_text
+
+            # The SYS-48 evaluation-window selector is a REAL control.
+            options = page.eval_on_selector_all(
+                "#resv-window option", "els => els.map(e => e.value)"
+            )
+            assert options == ["1", "7", "15", "30", "60", "90"]
+            assert page.eval_on_selector("#resv-window", "e => e.value") == "30"
+            # The ranking is honestly deferred (not an empty "0 strategies" table).
+            page.wait_for_function(
+                "() => document.getElementById('reservoir-table').hidden === true", timeout=5_000
+            )
+            summary = page.locator("#reservoir-summary").inner_text()
+            assert "SRS-RESV-002" in summary
+
+            # Both panels' freshness dots reach fresh (≤5s ticks arrive) — and they
+            # are OFF the NFR-P2 pulse gauge (a bare mount must not read as a breach).
+            for panel in ("account", "reservoir"):
+                page.wait_for_function(
+                    f"document.getElementById('fresh-{panel}').dataset.state === 'fresh'",
+                    timeout=7_000,
+                )
         finally:
             browser.close()

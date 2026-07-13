@@ -29,10 +29,12 @@ from types import FrameType
 
 from atp_runtime import OperatorInterfaceRuntime
 
+from .account import AccountStatusProvider
 from .backtests import BacktestHistoryProvider, StoreCliBacktestHistorySource
 from .inventory import StrategyInventoryProvider
 from .provider import DashboardMetricsProvider, ReadinessBackedProvider
 from .publisher import DashboardPublisher
+from .reservoir import ReservoirRankingProvider
 
 _ASSET_DIR = Path(__file__).resolve().parent / "assets"
 
@@ -57,6 +59,16 @@ STRATEGIES_SNAPSHOT_PATH = "/dashboard/api/strategies"
 #: (served only when a backtest-history provider is mounted).
 BACKTESTS_SNAPSHOT_PATH = "/dashboard/api/backtests"
 
+#: REST path the dashboard SPA polls for the SRS-UI-003 account-level IB status
+#: (served only when an account provider is mounted).
+ACCOUNT_SNAPSHOT_PATH = "/dashboard/api/account"
+
+#: REST path the dashboard SPA polls for the SRS-UI-003 Reservoir ranking overview
+#: (served only when a Reservoir provider is mounted). This is a dashboard-namespaced
+#: first-paint poll, NOT the SYS-48 contract route ``GET /api/v1/reservoir/ranking``
+#: (owner SRS-RESV-002), which stays a 501 deferred handler until the ranking engine lands.
+RESERVOIR_SNAPSHOT_PATH = "/dashboard/api/reservoir"
+
 
 def load_assets() -> dict[str, tuple[str, bytes]]:
     """Read the dashboard's static assets once into an immutable route map."""
@@ -74,6 +86,8 @@ def mount_dashboard(
     *,
     inventory: StrategyInventoryProvider | None = None,
     backtests: BacktestHistoryProvider | None = None,
+    account: AccountStatusProvider | None = None,
+    reservoir: ReservoirRankingProvider | None = None,
 ) -> DashboardPublisher:
     """Register the dashboard's routes on ``runtime`` and return its publisher.
 
@@ -93,6 +107,14 @@ def mount_dashboard(
     renders its explicit "not mounted" state. The panel's *launch* affordance is
     independent of this provider — it POSTs to the contract route
     ``POST /api/v1/backtests`` (see app.js), whose live handler is SRS-API-001's.
+
+    ``account`` / ``reservoir`` (optional — the SRS-UI-003 account-status and
+    Reservoir-ranking providers) each add a ``GET /dashboard/api/{account,reservoir}``
+    poll route and put the ``ACCOUNT_STATUS`` / ``RESERVOIR_RANKING`` channel on
+    the publisher's schedule; without them a bare SRS-UI-001 mount claims neither
+    channel and serves neither route (the panels render their explicit unavailable
+    state). Their values are honest deferred cells until SRS-EXE-006 (live IB) and
+    SRS-RESV-002 (ranking engine) land — the panels never fabricate a number.
     """
 
     runtime.register_asset_routes(load_assets())
@@ -101,7 +123,13 @@ def mount_dashboard(
         runtime.register_meta_route(STRATEGIES_SNAPSHOT_PATH, inventory.inventory_snapshot)
     if backtests is not None:
         runtime.register_meta_route(BACKTESTS_SNAPSHOT_PATH, backtests.history_snapshot)
-    return DashboardPublisher(runtime, provider, inventory=inventory)
+    if account is not None:
+        runtime.register_meta_route(ACCOUNT_SNAPSHOT_PATH, account.account_snapshot)
+    if reservoir is not None:
+        runtime.register_meta_route(RESERVOIR_SNAPSHOT_PATH, reservoir.reservoir_snapshot)
+    return DashboardPublisher(
+        runtime, provider, inventory=inventory, account=account, reservoir=reservoir
+    )
 
 
 def mount_default_dashboard(
@@ -127,7 +155,18 @@ def mount_default_dashboard(
     backtests = BacktestHistoryProvider(
         StoreCliBacktestHistorySource(results_dir=results_dir, env=env)
     )
-    return mount_dashboard(runtime, provider, backtests=backtests)
+    # The SRS-UI-003 account + Reservoir providers are pure builders (no env, no
+    # subprocess), so they are ALWAYS composed here — the production entrypoint
+    # actually serves /dashboard/api/account and /dashboard/api/reservoir and
+    # publishes the ACCOUNT_STATUS / RESERVOIR_RANKING channels, rendering honest
+    # deferred cells until their live producers (SRS-EXE-006 / SRS-RESV-002) land.
+    return mount_dashboard(
+        runtime,
+        provider,
+        backtests=backtests,
+        account=AccountStatusProvider(),
+        reservoir=ReservoirRankingProvider(),
+    )
 
 
 def serve(host: str = "127.0.0.1", port: int = 8080) -> None:

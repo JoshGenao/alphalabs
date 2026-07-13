@@ -139,13 +139,13 @@ def test_publisher_claims_only_the_owned_channels() -> None:
     try:
         for channel in OWNED_CHANNELS:
             assert runtime.is_publisher_registered(channel)
-        # Not a control channel: the dashboard never claims to publish, e.g., a
-        # kill-switch or account-mutation stream.
-        assert not runtime.is_publisher_registered("ACCOUNT_STATUS")
-        # SRS-UI-002 is composition-time OPT-IN: a bare SRS-UI-001 mount never
-        # claims the inventory channel (and serves no inventory route) — the
-        # dashboard cannot pretend an inventory feed exists that nobody mounted.
+        # SRS-UI-002 / SRS-UI-003 channels are composition-time OPT-IN: a bare
+        # SRS-UI-001 mount never claims the inventory / account / Reservoir
+        # channels (and serves none of their routes) — the dashboard cannot
+        # pretend a feed exists that nobody mounted.
         assert not runtime.is_publisher_registered("STRATEGY_STATE")
+        assert not runtime.is_publisher_registered("ACCOUNT_STATUS")
+        assert not runtime.is_publisher_registered("RESERVOIR_RANKING")
     finally:
         publisher.stop()
         runtime.stop()
@@ -241,6 +241,69 @@ def test_inventory_mount_claims_strategy_state_and_stays_honest() -> None:
         status, body = runtime.dispatch_rest("GET", "/dashboard/api/strategies", b"")
         assert status == 200
         assert body["ok"] is False and body["strategies"] == []
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
+def test_account_reservoir_mount_claims_channels_and_stays_honest() -> None:
+    # SRS-UI-003: with the account + Reservoir providers mounted the publisher
+    # claims both channels, and every field is an honest deferred cell (value
+    # None) — never a fabricated balance or ranking. The two poll routes are
+    # served and read-only (a monitoring surface is never a control plane).
+    from atp_dashboard import AccountStatusProvider, ReservoirRankingProvider
+
+    runtime = OperatorInterfaceRuntime()
+    account = AccountStatusProvider()
+    reservoir = ReservoirRankingProvider()
+    publisher = mount_dashboard(
+        runtime, ReadinessBackedProvider({}), account=account, reservoir=reservoir
+    )
+    publisher.start()
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        assert runtime.is_publisher_registered("ACCOUNT_STATUS")
+        assert runtime.is_publisher_registered("RESERVOIR_RANKING")
+
+        # No fabrication: every deferred cell in the WS events carries value None.
+        for event in account.account_status_events() + reservoir.reservoir_ranking_events():
+            for name, cell in event.items():
+                if isinstance(cell, dict) and str(cell.get("data_source", "")).startswith(DEFERRED):
+                    assert cell["value"] is None, f"{name} fabricated a deferred value"
+
+        # Routes served, read-only.
+        for path in ("/dashboard/api/account", "/dashboard/api/reservoir"):
+            assert _request(host, port, "GET", path)[0] == 200
+            for method in ("POST", "PUT", "DELETE"):
+                assert _request(host, port, method, path)[0] in (404, 405)
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
+def test_reservoir_publisher_does_not_flip_the_required_workflow() -> None:
+    # Honesty of the "leave contract.py untouched" decision: registering the
+    # all-deferred RESERVOIR_RANKING publisher counts the WS obligation
+    # (implemented_operations increments) but the required RESERVOIR_RANKING
+    # workflow stays NOT fully served — its REST ranking handler is still the
+    # SRS-RESV-002 501 deferred. Mirrors the merged HEARTBEAT precedent
+    # (test_operator_interface_runtime.py::test_websocket_obligation_keeps_a_workflow_not_fully_served).
+    from atp_dashboard import ReservoirRankingProvider
+
+    runtime = OperatorInterfaceRuntime()
+    publisher = mount_dashboard(
+        runtime, ReadinessBackedProvider({}), reservoir=ReservoirRankingProvider()
+    )
+    publisher.start()
+    try:
+        _, body = runtime.dispatch_rest("GET", "/api/v1/system/status", b"")
+        workflow = next(w for w in body["workflows"] if w["id"] == "RESERVOIR_RANKING")
+        assert workflow["fully_served"] is False
+        assert "SRS-RESV-002" in workflow["deferred_owners"]
+        # The SYS-48 REST ranking route is the contract leg — still 501 deferred.
+        status, ranking = runtime.dispatch_rest("GET", "/api/v1/reservoir/ranking", b"")
+        assert status == 501
+        assert ranking["error"]["detail"]["owner"] == "SRS-RESV-002"
     finally:
         publisher.stop()
         runtime.stop()
