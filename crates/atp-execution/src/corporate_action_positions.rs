@@ -90,6 +90,8 @@
 // types and imports nothing from atp_types — the composition root maps the data
 // layer's surfaced events onto these inputs at the (deferred) wiring seam.
 
+use std::collections::BTreeMap;
+
 /// Whether a live position is still tradeable or has been delisted. A delisted
 /// position is terminal: its quantity and basis are frozen and no further corporate
 /// action reaches it.
@@ -400,6 +402,10 @@ pub enum PositionReviewReason {
     /// A merger / symbol-change would remap a position onto a symbol another position
     /// already holds — merging the two bases is left to the runtime, not fabricated.
     SuccessorCollision { successor: String },
+    /// Two or more input positions share one canonical symbol — the live ledger's
+    /// one-position-per-symbol invariant is violated (a corrupt feed). Every colliding
+    /// record is flagged rather than silently double-processed.
+    DuplicatePosition { symbol: String },
 }
 
 impl PositionReviewReason {
@@ -414,6 +420,7 @@ impl PositionReviewReason {
             Self::CashConsiderationNotSupported { .. } => "CASH_CONSIDERATION_NOT_SUPPORTED",
             Self::InvalidSuccessor { .. } => "INVALID_SUCCESSOR",
             Self::SuccessorCollision { .. } => "SUCCESSOR_COLLISION",
+            Self::DuplicatePosition { .. } => "DUPLICATE_POSITION",
         }
     }
 }
@@ -659,6 +666,10 @@ fn review_summary(symbol: &str, reason: &PositionReviewReason) -> String {
             "position {symbol} needs review: successor '{successor}' is already held; merging the \
              two positions is a manual operation"
         ),
+        PositionReviewReason::DuplicatePosition { symbol: dup } => format!(
+            "position {symbol} needs review: duplicate position records for '{dup}' — the \
+             one-position-per-symbol invariant is violated (corrupt feed)"
+        ),
     }
 }
 
@@ -762,28 +773,57 @@ pub fn plan_position(
 /// Plan every position a corporate action can affect, one outcome per position, in
 /// deterministic canonical-symbol order.
 ///
-/// After the per-position plan, a **successor collision** is resolved: a merger /
-/// symbol-change remaps the (single, symbol-unique) matched position onto a successor;
-/// if another held position already occupies that successor symbol, the remap is
-/// downgraded to [`PositionReviewReason::SuccessorCollision`] rather than producing two
-/// positions for one canonical symbol. One corporate action is applied per call;
-/// sequencing multiple actions is the caller's responsibility.
+/// Two fail-closed guards protect the live ledger's **one-position-per-canonical-symbol**
+/// invariant, which the per-position [`plan_position`] cannot see:
+///   * **Duplicate input** — if two or more input records share a canonical symbol
+///     (a corrupt feed), every colliding record is sent to
+///     [`PositionReviewReason::DuplicatePosition`] instead of being independently
+///     adjusted / remapped (which would produce two positions for one symbol).
+///   * **Successor collision** — a merger / symbol-change that would remap a position
+///     onto a symbol another input record already holds is downgraded to
+///     [`PositionReviewReason::SuccessorCollision`] (merging two bases is the runtime's
+///     job, not this planner's).
+///
+/// One corporate action is applied per call; sequencing multiple actions is the
+/// caller's responsibility.
 pub fn plan_positions(
     positions: &[LivePosition],
     action: &PositionCorporateAction,
 ) -> Vec<PositionCorpActionOutcome> {
-    let mut outcomes: Vec<PositionCorpActionOutcome> = positions
-        .iter()
-        .map(|position| plan_position(position, action))
-        .collect();
-
-    // The canonical symbols currently held — a remap onto any OTHER held symbol
-    // collides (positions are unique per canonical symbol). Index-aligned with
-    // `outcomes` before the sort below.
+    // The canonical symbol of each input record, index-aligned with `positions` and
+    // (below) with `outcomes`.
     let held: Vec<String> = positions
         .iter()
         .map(|position| canonical_symbol(&position.symbol))
         .collect();
+
+    // Fail closed on a violated one-position-per-symbol invariant: a canonical symbol
+    // held by more than one record is corrupt input, so EVERY colliding record is
+    // flagged rather than double-processed.
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for symbol in &held {
+        *counts.entry(symbol.as_str()).or_insert(0) += 1;
+    }
+
+    let mut outcomes: Vec<PositionCorpActionOutcome> = positions
+        .iter()
+        .zip(&held)
+        .map(|(position, symbol)| {
+            if counts[symbol.as_str()] > 1 {
+                PositionCorpActionOutcome::RequiresManualReview {
+                    symbol: position.symbol.clone(),
+                    reason: PositionReviewReason::DuplicatePosition {
+                        symbol: position.symbol.clone(),
+                    },
+                }
+            } else {
+                plan_position(position, action)
+            }
+        })
+        .collect();
+
+    // A remap onto any OTHER held symbol collides (would produce two positions for one
+    // canonical symbol). Index-aligned with `outcomes` before the sort below.
     for (index, outcome) in outcomes.iter_mut().enumerate() {
         if let PositionCorpActionOutcome::Remapped { from_symbol, after } = outcome {
             let target = canonical_symbol(&after.symbol);

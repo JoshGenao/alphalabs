@@ -305,3 +305,41 @@ def test_cli_sign_inconsistent_position_fails_closed() -> None:
     )
     assert result.returncode == 2
     assert "outcome:" not in result.stdout
+
+
+def test_cli_duplicate_input_positions_are_all_flagged_for_review() -> None:
+    # Two records for one canonical symbol violate the one-position-per-symbol invariant:
+    # both must be flagged, never independently remapped into two successor positions.
+    result = _run_cli(
+        [
+            "plan",
+            "--symbol",
+            "OLD",
+            "--merger",
+            "NEW:1:1:0",
+            "--position",
+            "sym=OLD,qty=100,basis=500000",
+            "--position",
+            "sym=OLD,qty=40,basis=200000",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+    outs = _outcomes(result.stdout)
+    assert len(outs) == 2
+    assert all(o["result"] == "MANUAL_REVIEW" and o["reason"] == "DUPLICATE_POSITION" for o in outs)
+    assert all(o["symbol"] != "NEW" for o in outs), "no fabricated successor remap"
+
+
+def test_cli_symbol_with_control_character_emits_valid_json(tmp_path: Path) -> None:
+    # A symbol carrying a C0 control character (from a malformed positions file) must be
+    # `\\uXXXX`-escaped so every `outcome:` line is still parseable JSON — _outcomes()
+    # would raise json.JSONDecodeError otherwise.
+    positions_file = tmp_path / "positions.txt"
+    positions_file.write_text("sym=AA\x01BB,qty=100,basis=500000\n")
+    result = _run_cli(
+        ["plan", "--symbol", "ZZZ", "--delisting", "--positions-file", str(positions_file)]
+    )
+    assert result.returncode == 0, result.stderr
+    (pos,) = _outcomes(result.stdout)  # parses => the control char was escaped
+    assert pos["symbol"] == "AA\x01BB", "the escaped symbol round-trips through JSON"
+    assert pos["result"] == "UNAFFECTED"  # the control-char symbol != the ZZZ action

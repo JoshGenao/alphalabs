@@ -482,8 +482,27 @@ fn json_escape(value: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            // Every other C0 control character (U+0000..=U+001F) MUST be `\uXXXX`-escaped
+            // or the emitted `outcome:` line is not valid JSON — a symbol carrying one
+            // (e.g. from a malformed --positions-file record) would break downstream parsing.
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
             other => out.push(other),
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::json_escape;
+
+    #[test]
+    fn json_escape_escapes_control_characters() {
+        // A C0 control char (U+0001) becomes a valid `` escape, not a literal byte.
+        assert_eq!(json_escape("AA\u{0001}BB"), "AA\\u0001BB");
+        // The short forms are preserved; a quote/backslash still escape.
+        assert_eq!(json_escape("a\t\n\r\"\\b"), "a\\t\\n\\r\\\"\\\\b");
+        // U+001F (the last C0 control) is escaped; a normal char passes through.
+        assert_eq!(json_escape("x\u{001F}y"), "x\\u001fy");
+    }
 }

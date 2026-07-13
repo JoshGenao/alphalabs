@@ -370,6 +370,32 @@ fn srs_data_020_symbol_change_collision_is_review() {
 }
 
 // --------------------------------------------------------------------------- //
+// Duplicate-input fail-closed (the one-position-per-symbol invariant)
+// --------------------------------------------------------------------------- //
+
+#[test]
+fn srs_data_020_duplicate_input_positions_are_review_not_double_processed() {
+    // Two records for the same canonical symbol (` old ` / `OLD`) is corrupt input:
+    // without the guard both would remap to NEW, producing two successor positions.
+    // Every colliding record must be flagged, never independently processed.
+    let positions = vec![pos("OLD", 100, 500_000), pos(" old ", 40, 200_000)];
+    let outcomes = plan_positions(
+        &positions,
+        &PositionCorporateAction::merger("OLD", "NEW", 1, 1, 0),
+    );
+    assert_eq!(outcomes.len(), 2);
+    for outcome in &outcomes {
+        assert_eq!(
+            expect_review(outcome).as_str(),
+            "DUPLICATE_POSITION",
+            "every duplicate record is flagged, none is remapped: {outcome:?}"
+        );
+    }
+    // And no outcome ever names the successor NEW (no fabricated remap slipped through).
+    assert!(outcomes.iter().all(|o| o.symbol() != "NEW"));
+}
+
+// --------------------------------------------------------------------------- //
 // Delisting
 // --------------------------------------------------------------------------- //
 
