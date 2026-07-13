@@ -36,6 +36,16 @@ path = "src/bin/exe009_outbox_reconcile_cli.rs"
 name = "data019_order_lifecycle_corp_action_cli"
 path = "src/bin/data019_order_lifecycle_corp_action_cli.rs"
 
+# SRS-DATA-020 live-position corporate-action planner. Drives the real
+# atp_execution::corporate_action_positions planner over fixture positions + a fixture corporate
+# action (split/dividend/merger/symbol-change/delisting), emitting per-position adjust/remap/delist/
+# review JSON with the operator notification + strategy-callback intents. Pure planner; the live
+# position feed carrying cost basis is deferred (SRS-EXE-006/API-5). std-only; depends only on the
+# already-declared atp-execution crate.
+[[bin]]
+name = "data020_position_corp_action_cli"
+path = "src/bin/data020_position_corp_action_cli.rs"
+
 [dependencies]
 atp-strategy-engine = { path = "../atp-strategy-engine" }
 atp-types = { path = "../atp-types" }

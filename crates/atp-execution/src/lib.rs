@@ -54,6 +54,15 @@ pub use corporate_action_orders::{
     RestingOrderCorporateAction, RestingOrderOutcome,
 };
 
+pub mod corporate_action_positions;
+pub use corporate_action_positions::{
+    plan_position, plan_positions, LivePosition, LivePositionError, PositionAlertError,
+    PositionAlertFailure, PositionAlertReason, PositionChangeEvent, PositionChangeKind,
+    PositionCorpActionAlert, PositionCorpActionAlertSink, PositionCorpActionOutcome,
+    PositionCorpActionReport, PositionCorporateAction, PositionCorporateActionKind,
+    PositionReviewReason, PositionStatus,
+};
+
 /// The execution engine owns the single live-designation authority
 /// ([`LiveDesignation`]) — the source of truth for which strategy may route to
 /// IB (SRS-EXE-001, SyRS SYS-2a). It is a private field reached only through
