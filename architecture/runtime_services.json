@@ -2471,6 +2471,45 @@
     "security_doc": "SECURITY.md",
     "security_doc_marker": "SRS-SEC-003"
   },
+  "jupyter_isolation_contract": {
+    "requirement": "SRS-SEC-004",
+    "srs_refs": [
+      "SRS-SEC-004"
+    ],
+    "syrs_refs": [
+      "NFR-S6",
+      "SYS-34a",
+      "SYS-34b",
+      "SYS-34c"
+    ],
+    "strs_refs": [
+      "SN-1.18"
+    ],
+    "compose_file": "docker-compose.yml",
+    "subject_services": [
+      "phase1-jupyter"
+    ],
+    "no_secrets_anchor": "x-atp-no-secrets",
+    "env_anchor": "x-atp-env",
+    "forbidden_mount_tokens": [
+      "/var/run/docker.sock",
+      "/run/docker.sock",
+      "volumes_from"
+    ],
+    "credential_vault_mount_token": "/run/atp-secrets",
+    "sanctioned_readonly_data_volumes": [
+      "atp_ssd:/ssd:ro",
+      "atp_nas:/nas:ro"
+    ],
+    "require_internal_network": true,
+    "forbidden_network_peers": [
+      "phase1-execution-engine",
+      "phase1-ib-gateway",
+      "phase1-dashboard-api"
+    ],
+    "security_doc": "SECURITY.md",
+    "security_doc_marker": "SRS-SEC-004"
+  },
   "configuration": {
     "requirement": "SRS-ARCH-005",
     "package": "atp_config",

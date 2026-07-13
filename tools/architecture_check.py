@@ -71,6 +71,10 @@ from ingestion_validation_check import (
     IngestionValidationCheckError,
     assert_ingestion_validation_static,
 )
+from jupyter_isolation_check import (
+    JupyterIsolationCheckError,
+    assert_jupyter_isolation_static,
+)
 from kill_switch_timeout_check import (
     KillSwitchTimeoutCheckError,
     assert_kill_switch_timeout_static,
@@ -1588,6 +1592,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_container_isolation_static(config, ROOT))
     except ContainerIsolationCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_jupyter_isolation_static(config, ROOT))
+    except JupyterIsolationCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_configuration_static(config, ROOT))

@@ -265,6 +265,27 @@ services:
     volumes:
       - atp_ssd:/ssd:ro
       - atp_nas:/nas:ro
+    # SRS-SEC-004 (NFR-S6): NO direct access to the execution engine / IB Gateway
+    # and NO ability to submit live orders. Jupyter is confined to the dedicated
+    # `atp_research_net` network declared below with `internal: true`, so Docker
+    # attaches no gateway — it has NO route to the host, the LAN, the internet, or
+    # any other container. The execution engine and IB Gateway sit on the default
+    # Compose bridge and are NOT on this network, so Jupyter can open no socket to
+    # a brokerage / execution API. (Absence of `network_mode: host` alone is not
+    # enough: a container with no explicit network joins the default bridge, which
+    # both routes outbound through the host AND reaches every other default-bridge
+    # container — the internal, single-member network removes both.) Jupyter reads
+    # market data + backtest results from the read-only SSD/NAS mounts above
+    # (filesystem, via the data layer — no network), so this isolation costs it no
+    # functionality. The concrete dashboard->Jupyter proxy (IF-13 / SRS-RES-001,
+    # operator-supplied JupyterLab image) is deferred; it must preserve a one-way
+    # boundary — the live-control-bearing phase1-dashboard-api (SRS-API-001 kill
+    # switch / live designation / Hot-Swap) must NOT be placed on this network, or
+    # Jupyter would gain a path to the live-control REST. jupyter_isolation_check
+    # enforces that dashboard-api, the execution engine, and the IB Gateway are
+    # never on atp_research_net.
+    networks:
+      - atp_research_net
     ports:
       - "127.0.0.1:8888:8888"
 
@@ -367,5 +388,19 @@ networks:
   # StrategyContainerRuntime (deferred; owner SRS-ARCH-004 / SRS-ORCH-002) joins
   # the specific internal services a strategy may reach via SYS-12 onto it.
   atp_strategy_net:
+    driver: bridge
+    internal: true
+  # SRS-SEC-004 (NFR-S6): the Jupyter research environment has NO direct access to
+  # the execution engine and NO ability to submit live orders. This dedicated
+  # bridge is `internal: true` — Docker attaches no gateway, so a container
+  # confined to it reaches only other containers explicitly placed on it, never
+  # the host, the LAN, or the internet. Only `phase1-jupyter` is on it today — the
+  # execution engine, the IB Gateway, and the live-control-bearing dashboard/API
+  # (SRS-API-001) are NOT — so Jupyter can open no socket to a brokerage /
+  # execution / live-control API. The deferred dashboard->Jupyter proxy (IF-13 /
+  # SRS-RES-001) must keep that one-way boundary rather than placing
+  # `phase1-dashboard-api` on this network; jupyter_isolation_check enforces those
+  # peers are never on it.
+  atp_research_net:
     driver: bridge
     internal: true

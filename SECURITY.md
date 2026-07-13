@@ -177,3 +177,55 @@ the concrete container runtime, where it can be validated against a live strateg
 image without risking an unverifiable startup break in the template. (The dedicated
 `internal: true` strategy network is already applied — see the "no host network
 access" bullet above.)
+
+## Jupyter research-environment isolation (SRS-SEC-004)
+
+The embedded Jupyter research environment (`phase1-jupyter` in `docker-compose.yml`)
+is **isolated from live trading credentials and the execution APIs** (SyRS NFR-S6;
+StRS SN-1.18) — the two SRS-SEC-004 acceptance clauses:
+
+- **Cannot read brokerage credentials.** Jupyter's `environment` merges the
+  `x-atp-no-secrets` anchor **first** in the `<<` sequence, and YAML merge is
+  earlier-wins — so every catalogued secret (`ATP_IB_ACCOUNT`, the SMTP/SMS API keys,
+  the DataBento/Sharadar keys) and all vault-unlock material (`ATP_VAULT_FILE` /
+  `ATP_VAULT_KEY_FILE` / `ATP_VAULT_PASSPHRASE`) is blanked to `""`. Even a populated
+  plaintext `.env` cannot leak a credential into the kernel, and no catalogued secret
+  is re-set inline. The SRS-SEC-001 credential vault (`/run/atp-secrets`) is **not
+  mounted at all** — the shared `*atp-volumes` anchor is deliberately not applied — so
+  Jupyter cannot open the vault.
+- **Cannot submit live orders / no direct access to the execution engine.** Jupyter is
+  confined to the dedicated `atp_research_net` network, declared `internal: true` —
+  Docker attaches **no gateway**, so a container on it has no route to the host, the
+  LAN, or the internet, and no execution-API peer is placed on it (the execution
+  engine and the IB Gateway sit on the default bridge, off this network). So Jupyter
+  can open no socket to a brokerage / execution API and submit no live order. (Absence
+  of `network_mode: host` alone is *not* sufficient: a container with no explicit
+  network joins the default Compose bridge, which both routes outbound through the
+  host and reaches every other default-bridge container — the internal, single-member
+  network removes both.) Host / shared-namespace networking is refused for the same
+  reason, and a peer that would share Jupyter's network namespace via
+  `network_mode: service:phase1-jupyter` / `container:…` is refused too. The deferred
+  dashboard→Jupyter proxy (IF-13 / SRS-RES-001) must preserve this one-way boundary:
+  the live-control-bearing `phase1-dashboard-api` (SRS-API-001 kill switch / live
+  designation / Hot-Swap) must **not** be placed on `atp_research_net`, or Jupyter
+  would gain a path to the live-control REST — so the checker forbids the execution
+  engine, the IB Gateway, **and** the dashboard/API from sharing Jupyter's network.
+- **Read-only market-data / backtest-result access.** Jupyter mounts **only** the
+  sanctioned SSD/NAS data tiers, and only **read-only** (`atp_ssd:/ssd:ro`,
+  `atp_nas:/nas:ro`) — it reads market data and backtest results through the data
+  layer (filesystem, no network) and can write into no shared tier.
+- **Enforcement.** `tools/jupyter_isolation_check.py` (in CI, and transitively via
+  `tools/architecture_check.py`) statically inspects the compose template and fails
+  closed on any credential / vault / execution-network / read-write violation; its
+  `--fixture` self-tests prove it rejects each Compose-equivalent bypass (merge
+  order, aliased/interpolated security values, service-level merge / `extends`,
+  duplicate keys, long/flow volume syntax, `external:` networks). The L7
+  `tests/domain/test_jupyter_credential_isolation.py` asserts the same invariant, and
+  a gated L5 `tests/integration/test_jupyter_isolation_inspect.py` runs `docker
+  inspect` on a real `phase1-jupyter` container when `ATP_RUN_INTEGRATION=1`. The
+  credential-blanking + no-vault half is also asserted by
+  `tools/deployment_check.py::assert_credential_vault_wiring`. Because the concrete
+  operator-supplied JupyterLab image and the dashboard proxy are deferred (IF-13 /
+  SRS-RES-001), the compose template is the authoritative declarative source and this
+  static inspection is the primary SRS-SEC-004 "Security test" evidence — the same
+  convention SRS-ARCH-004 and SRS-SEC-003 are verified under.

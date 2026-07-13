@@ -96,6 +96,21 @@ writable root layer, read-only SSD/NAS tiers, no host Docker socket, no
 enforces this statically in CI. See `SECURITY.md` § "Least-privilege strategy
 containers (SRS-SEC-003)".
 
+**Jupyter isolation (SRS-SEC-004 / NFR-S6).** The `phase1-jupyter` research
+environment holds **no** brokerage/notification credentials (secrets blanked via
+`x-atp-no-secrets`, no credential-vault mount) and has **no direct access to the
+execution engine**: it is confined to a dedicated `internal: true`
+`atp_research_net` network with no execution-API peer (the execution engine and IB
+Gateway are on the default bridge, off this network), so it can open no socket to a
+broker and submit no live order. Its SSD/NAS data mounts are read-only. The deferred
+dashboard→Jupyter proxy (IF-13 / SRS-RES-001) must preserve a one-way boundary — the
+live-control-bearing `phase1-dashboard-api` (SRS-API-001) must **not** be placed on
+`atp_research_net`, or Jupyter would reach the operator kill-switch / Hot-Swap REST.
+`tools/jupyter_isolation_check.py` enforces statically in CI that the execution
+engine, the IB Gateway, and the dashboard/API are never on Jupyter's network (and
+that no peer shares its network namespace). See `SECURITY.md` § "Jupyter
+research-environment isolation (SRS-SEC-004)".
+
 ## Storage tiers
 
 Phase 1 storage uses the SSD-primary, NAS-archive tiering described in
