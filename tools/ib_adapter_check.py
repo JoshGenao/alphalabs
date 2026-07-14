@@ -13,12 +13,13 @@ SRS-EXE-006 adds in ``crates/atp-adapters/src/interactive_brokers.rs``:
     parallel bespoke surface, never a dropped rejection);
   * brokerage configuration FAILS CLOSED on a malformed ``ATP_IB_*`` port rather
     than silently defaulting to an unintended endpoint;
-  * the live transport scaffold (``TcpIbGateway``) fails closed via the
-    ``IB_CODE_LIVE_WIRE_PROTOCOL_PENDING`` sentinel (with an explicit connect
-    timeout) rather than fabricating a result; and
+  * the live transport (``TcpIbGateway``) keeps its explicit connect deadline and
+    the ``IB_CODE_LIVE_WIRE_PROTOCOL_PENDING`` sentinel (now only the SRS-EXE-004
+    composite wire returns it — never a fabricated result), and its TWS wire
+    encoders match the ibapi golden vectors (the fake-gateway suite is RUN here);
   * the operator-gated IB paper-account integration test exists, is ``#[ignore]``,
-    and is guarded by ``ATP_RUN_INTEGRATION`` (SyRS SYS-2e) — the gate that flips
-    SRS-EXE-006 to ``passes:true``.
+    and is guarded by ``ATP_RUN_INTEGRATION`` (SyRS SYS-2e) — the evidence behind
+    the declared ``verified`` status.
 
 Mirrors the PASS/FAIL output style of ``tools/adapter_check.py``.
 
@@ -29,7 +30,9 @@ Invoke:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -38,6 +41,46 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "architecture" / "runtime_services.json"
+
+#: Machine-checkable evidence that the operator-run IB paper-account round trip
+#: passed. Written by ``check_cargo_smoke`` under ``ATP_RUN_INTEGRATION=1`` from
+#: the ACTUAL passing run (never hand-authored), and bound to the current wire
+#: code by a digest so any change to the encodings staleness-invalidates it.
+#:
+#: Trust boundary (two modes):
+#:   * AUTHORITATIVE — ``ATP_RUN_INTEGRATION=1``: this tool EXECUTES the ignored
+#:     paper_account_round_trip against the live IB paper account and (re)writes
+#:     this artifact from the observed result. This path cannot be self-attested
+#:     — it actually connects to IB Gateway and runs the six operations.
+#:   * RECORD — no env (CI, where no gateway exists): this tool validates the
+#:     committed artifact and that its digest still matches the shipped wire
+#:     code. A committed record is, like any file, editable by someone with
+#:     commit access; its trust therefore derives from the operator having run
+#:     the authoritative path and from the ``integrate --force-complete``
+#:     operator attestation at flip time — the same human-authorization boundary
+#:     every operator-gated (SyRS SYS-2e) feature in this repo lands on.
+EVIDENCE_PATH = ROOT / "architecture" / "ib_paper_account_evidence.json"
+#: Schema version of the evidence artifact.
+EVIDENCE_SCHEMA = 1
+
+
+def _code_digest(runtime: dict, root: Path = ROOT) -> str:
+    """SHA-256 over the code whose live correctness the paper-account round trip
+    proves — the wire codec, the transport module, and the integration test.
+    A change to any of them invalidates recorded evidence until it is re-run."""
+    module = runtime["module"]
+    files = [
+        module,
+        module.replace(".rs", "/wire.rs"),
+        runtime["integration_test"]["path"],
+    ]
+    hasher = hashlib.sha256()
+    for rel in files:
+        hasher.update(rel.encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update((root / rel).read_bytes())
+        hasher.update(b"\0")
+    return hasher.hexdigest()
 
 
 class IbAdapterContractError(AssertionError):
@@ -295,17 +338,114 @@ def check_integration_test(runtime: dict) -> str:
     )
 
 
-def check_serialized_status(runtime: dict) -> str:
-    if runtime.get("status") != "serialized":
-        fail("ib_brokerage_runtime.status must be 'serialized' until the operator integration runs")
+def _load_evidence() -> dict | None:
+    """Load the paper-account evidence artifact, or None if absent/unreadable."""
+    if not EVIDENCE_PATH.exists():
+        return None
+    try:
+        return json.loads(EVIDENCE_PATH.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+
+
+def _write_evidence(runtime: dict, result_line: str, timestamp: str) -> None:
+    """Record the passing operator run as a structured, code-bound artifact.
+
+    Called ONLY from the operator path (``ATP_RUN_INTEGRATION=1``) after the
+    live round trip returned ``test result: ok`` — never hand-authored. The
+    ``code_digest`` binds the evidence to the exact wire code that produced it.
+    """
+    evidence = {
+        "schema_version": EVIDENCE_SCHEMA,
+        "test": runtime["integration_test"]["operator_gated_test"],
+        "gate_env": runtime["integration_test"]["gate_env"],
+        "paper_port": runtime["integration_test"]["paper_port"],
+        "pinned_server_version": runtime["pinned_server_version"],
+        "returncode": 0,
+        "result_line": result_line,
+        "code_digest": _code_digest(runtime),
+        "generated_at": timestamp,
+    }
+    EVIDENCE_PATH.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+
+
+def _evidence_is_valid(runtime: dict) -> tuple[bool, str]:
+    """Whether the recorded evidence artifact proves the CURRENT wire code passed
+    the operator round trip: present, well-formed, exit 0, ``test result: ok``,
+    the right test, and a ``code_digest`` matching the current wire code (so a
+    later wire change staleness-invalidates it)."""
+    evidence = _load_evidence()
+    if evidence is None:
+        return False, f"no evidence artifact at {EVIDENCE_PATH.name}"
+    if evidence.get("schema_version") != EVIDENCE_SCHEMA:
+        return False, "evidence schema_version mismatch"
+    if evidence.get("returncode") != 0:
+        return False, "evidence returncode is not 0"
+    if "test result: ok" not in str(evidence.get("result_line", "")):
+        return False, "evidence result_line does not show `test result: ok`"
+    if evidence.get("test") != runtime["integration_test"]["operator_gated_test"]:
+        return False, "evidence names a different test than the operator flip gate"
+    if evidence.get("code_digest") != _code_digest(runtime):
+        return False, (
+            "evidence code_digest does not match the current wire code — the wire "
+            "changed since the operator run; re-run under ATP_RUN_INTEGRATION=1"
+        )
+    return True, "current wire code passed the operator paper-account round trip"
+
+
+def check_verified_status(runtime: dict) -> str:
+    """The runtime's declared status must be honest in BOTH directions: 'verified'
+    only rides on the operator-run IB paper-account round trip having passed, and
+    the remaining operator-gated work (the SRS-EXE-004 composite wire, EXE-007
+    version-upgrade regression) must stay enumerated in deferred[] — a verified
+    adapter must not silently over-claim the still-pending combo/BAG wire."""
+    if runtime.get("status") != "verified":
+        fail(
+            "ib_brokerage_runtime.status must be 'verified' (the operator IB paper-account "
+            "round trip passed); anything else means the wire evidence regressed"
+        )
+    pinned = runtime.get("pinned_server_version")
+    if not pinned:
+        fail("ib_brokerage_runtime must declare pinned_server_version (the TWS wire pin)")
+    # The metadata's negotiated server protocol version must MATCH the Rust
+    # source of truth (`IB_PINNED_SERVER_VERSION`), so the public contract can
+    # never drift from the version the handshake actually pins.
+    wire = read_source(runtime["module"].replace(".rs", "/wire.rs"))
+    src = read_source(runtime["module"]) + wire
+    match = re.search(r"IB_PINNED_SERVER_VERSION: i32 = (\d+);", src)
+    if not match:
+        fail("could not find IB_PINNED_SERVER_VERSION in the adapter source")
+    if int(match.group(1)) != int(pinned):
+        fail(
+            f"pinned_server_version {pinned} in the metadata disagrees with the Rust "
+            f"IB_PINNED_SERVER_VERSION={match.group(1)} — the wire pin and the public "
+            f"contract must not drift"
+        )
+    # 'verified' must ride on a MACHINE-CHECKABLE evidence artifact bound to the
+    # current wire code — never hand-editable prose. The artifact is written by
+    # the operator run itself (ATP_RUN_INTEGRATION=1, check_cargo_smoke) and its
+    # code_digest must still match, so a later wire change forces a re-run.
+    ok, detail = _evidence_is_valid(runtime)
+    if not ok:
+        fail(
+            f"status is 'verified' but the paper-account evidence is not valid: {detail}. "
+            f"Run `ATP_RUN_INTEGRATION=1 python3 tools/ib_adapter_check.py` against the IB "
+            f"paper account (port 4002) to (re)generate {EVIDENCE_PATH.relative_to(ROOT)}"
+        )
     if not runtime.get("deferred"):
-        fail("ib_brokerage_runtime must enumerate its deferred (operator-gated) work")
+        fail("ib_brokerage_runtime must enumerate its remaining deferred (operator-gated) work")
     joined = " ".join(runtime["deferred"]).lower()
     if "operator-initiated" not in joined or "paper-account" not in joined:
         fail(
-            "deferred[] must name the operator-initiated IB paper-account integration as the flip gate"
+            "deferred[] must keep naming the remaining operator-initiated IB paper-account "
+            "work (SRS-EXE-004 composite wire, SRS-EXE-007 upgrade regression)"
         )
-    return f"status serialized; {len(runtime['deferred'])} deferred items documented"
+    if "composite" not in joined:
+        fail("deferred[] must name the still-pending SRS-EXE-004 composite (combo/BAG) wire")
+    return (
+        f"status verified (pinned server version {runtime['pinned_server_version']}); "
+        f"{detail}; {len(runtime['deferred'])} remaining deferred items documented"
+    )
 
 
 def check_cargo_smoke(runtime: dict) -> str:
@@ -364,8 +504,85 @@ def check_cargo_smoke(runtime: dict) -> str:
     )
     if build.returncode != 0:
         fail(f"cargo test --features {feature} --no-run failed:\n{build.stdout}{build.stderr}")
+    # RUN the fake-gateway wire suite (ephemeral loopback ports — parallel-safe):
+    # the golden vectors pin the encoder to the ibapi layout at the pinned server
+    # version, so wire drift fails this gate before any paper-account run.
+    wire_name = runtime["wire_tests"].split("/")[-1].removesuffix(".rs")
+    wire = subprocess.run(
+        [
+            cargo,
+            "test",
+            "-p",
+            "atp-adapters",
+            "--test",
+            wire_name,
+            "--features",
+            feature,
+            "--quiet",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if wire.returncode != 0 or "test result: ok" not in wire.stdout + wire.stderr:
+        fail(
+            f"cargo test {wire_name} (fake-gateway wire suite) failed:\n{wire.stdout}{wire.stderr}"
+        )
+    # OPERATOR MODE: when the operator env gate is set, this check RUNS the
+    # acceptance-critical paper-account round trip itself — so under
+    # ATP_RUN_INTEGRATION=1 a PASS from this tool IS the live IB evidence, not
+    # a metadata attestation. Without the env (parallel agents, CI) the live
+    # leg is skipped by design (fixed shared port 4002; SyRS SYS-2e).
+    live_note = "live paper leg SKIPPED (set ATP_RUN_INTEGRATION=1 to run it)"
+    spec = runtime["integration_test"]
+    if os.environ.get(spec["gate_env"]) == "1":
+        test_name = spec["path"].split("/")[-1].removesuffix(".rs")
+        live = subprocess.run(
+            [
+                cargo,
+                "test",
+                "-p",
+                "atp-adapters",
+                "--test",
+                test_name,
+                "--features",
+                feature,
+                "--",
+                "--ignored",
+                spec["operator_gated_test"],
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        combined_live = live.stdout + live.stderr
+        if live.returncode != 0 or "test result: ok" not in combined_live:
+            fail(
+                f"OPERATOR paper-account round trip ({spec['operator_gated_test']}) failed:\n"
+                f"{combined_live}"
+            )
+        # Record the passing run as the machine-checkable, code-bound evidence
+        # artifact check_verified_status requires (never hand-authored).
+        result_line = next(
+            (ln.strip() for ln in combined_live.splitlines() if "test result: ok" in ln),
+            "test result: ok",
+        )
+        import datetime as _dt
+
+        _write_evidence(
+            runtime,
+            result_line,
+            _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        live_note = (
+            f"OPERATOR paper-account round trip GREEN ({spec['operator_gated_test']}); "
+            f"evidence written to {EVIDENCE_PATH.relative_to(ROOT)}"
+        )
     return (
-        f"cargo test boundary suite ok + feature-gated test target compiles (--features {feature})"
+        f"cargo test boundary suite ok + feature-gated flip target compiles + "
+        f"wire golden suite ok (--features {feature}); {live_note}"
     )
 
 
@@ -377,8 +594,12 @@ CHECKS = (
     ("config fail-closed", lambda cfg, rt, src: check_config_fails_closed(rt, src)),
     ("live transport fail-closed", lambda cfg, rt, src: check_live_transport_fails_closed(rt, src)),
     ("integration harness", lambda cfg, rt, src: check_integration_test(rt)),
-    ("serialized status", lambda cfg, rt, src: check_serialized_status(rt)),
+    # cargo smoke runs BEFORE verified status: under ATP_RUN_INTEGRATION=1 it
+    # executes the live round trip and (re)writes the evidence artifact that
+    # verified status then validates. In CI (no env) it proves the fake-gateway
+    # wire suite and verified status validates the committed artifact's digest.
     ("cargo smoke", lambda cfg, rt, src: check_cargo_smoke(rt)),
+    ("verified status", lambda cfg, rt, src: check_verified_status(rt)),
 )
 
 

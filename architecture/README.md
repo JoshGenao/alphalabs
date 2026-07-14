@@ -154,8 +154,13 @@ declares the required methods on `BrokerageAdapter` (`submit_order`,
 `AdapterVersion { adapter_version, protocol_version, protocol_label }`,
 exposed by a default `AdapterBoundary::version()` method and overridden
 by `InteractiveBrokersAdapter` to document the supported IB TWS API
-version (`INTERACTIVE_BROKERS_TWS_API_VERSION = "10.45"` — the latest
-IB TWS API stable release per SRS-EXE-007 / SyRS SYS-65).
+version (`INTERACTIVE_BROKERS_TWS_API_VERSION = "10.19.4"` — the IB TWS API
+**package generation** the live wire codec is implemented and golden-tested
+against, per SRS-EXE-007 / SyRS SYS-65). This is distinct from the
+**negotiated server protocol version** the handshake pins
+(`ib_brokerage_runtime.pinned_server_version = 176`, bound to the Rust
+`IB_PINNED_SERVER_VERSION` const); the package release and the wire protocol
+version describe different things and never contradict.
 `tools/adapter_check.py` parses the Rust source for the required trait
 methods and version metadata, asserts the IB protocol-version constant
 matches the configuration block, and runs `cargo test -p atp-adapters

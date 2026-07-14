@@ -134,7 +134,15 @@ pub const ADAPTER_VERSION_NOT_APPLICABLE: AdapterVersion = AdapterVersion {
     protocol_label: "not-applicable",
 };
 
-pub const INTERACTIVE_BROKERS_TWS_API_VERSION: &str = "10.45";
+/// The IB TWS API **package generation** the wire codec is implemented and
+/// golden-tested against (the `ibapi` 10.19 line). This is distinct from the
+/// **negotiated server protocol version** the handshake pins
+/// (`interactive_brokers::IB_PINNED_SERVER_VERSION` = 176, recorded in the
+/// runtime metadata as `pinned_server_version`); the two describe different
+/// things — the package release vs the wire protocol version it speaks — so
+/// they never contradict. Bump both together (and re-run the operator
+/// paper-account evidence) when re-targeting a newer IB API line.
+pub const INTERACTIVE_BROKERS_TWS_API_VERSION: &str = "10.19.4";
 pub const INTERACTIVE_BROKERS_ADAPTER_VERSION: &str = "0.1.0";
 pub const INTERACTIVE_BROKERS_PROTOCOL_LABEL: &str = "IB TWS API";
 
@@ -761,7 +769,10 @@ mod tests {
             version.protocol_version,
             INTERACTIVE_BROKERS_TWS_API_VERSION
         );
-        assert_eq!(version.protocol_version, "10.45");
+        // The public package generation the wire is built/tested against — NOT
+        // the negotiated server protocol version (176, exposed separately in the
+        // runtime metadata as pinned_server_version), so the two never conflict.
+        assert_eq!(version.protocol_version, "10.19.4");
         assert!(!version.adapter_version.is_empty());
     }
 

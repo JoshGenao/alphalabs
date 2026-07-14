@@ -9,13 +9,16 @@
 //! market-data subscription, and historical-data retrieval *without the TWS
 //! GUI*. The IB paper account is reserved for **operator-initiated** adapter
 //! integration testing (SyRS SYS-2e / AC-10) — it binds a fixed shared port and
-//! cannot run inside the parallel agent pool. So this feature lands **serialized
-//! (`passes:false`)**: the operator runs the gated integration test
-//! (`ATP_RUN_INTEGRATION=1`, ignored by default) to flip it.
+//! cannot run inside the parallel agent pool, so `paper_account_round_trip`
+//! stays `#[ignore]` + `ATP_RUN_INTEGRATION`-gated and is run by the operator.
 //!
-//! What ships here, fully built and tested **without** a network, mirrors the
-//! established adapter pattern (`SharadarAdapter::map_fundamentals`): the
-//! deterministic half that does not need the wire.
+//! What ships here mirrors the established adapter pattern
+//! (`SharadarAdapter::map_fundamentals`): the deterministic classification /
+//! config / seam half is tested without a network, and the live TWS wire
+//! protocol (the `wire` submodule, pinned to server version
+//! [`IB_PINNED_SERVER_VERSION`]) is exercised against a scripted fake gateway
+//! in `tests/srs_exe_006_ib_wire.rs` and proven against the real paper account
+//! by the operator-run gate.
 //!
 //! * [`classify_ib_order_error`] — the load-bearing **IB-error → SyRS SYS-64
 //!   [`OrderErrorCategory`]** classification (`INVALID_SYMBOL` /
@@ -30,11 +33,12 @@
 //!   traits (SYS-52), so callers use the documented adapter interface and every
 //!   failure flows through the common [`AdapterError`] taxonomy
 //!   ([`AdapterError::Brokerage`], carrying the SyRS category) — never dropped (SYS-64).
-//! * [`TcpIbGateway`] — the live-transport scaffold: it establishes the real TCP
-//!   session to headless IB Gateway from [`IbConnectionConfig`] with an explicit
-//!   timeout, but its per-operation TWS wire encoding is completed and verified
-//!   under the operator-initiated integration test, so it currently fails
-//!   **loudly** (never a fabricated success) — see [`IB_CODE_LIVE_WIRE_PROTOCOL_PENDING`].
+//! * [`TcpIbGateway`] — the live transport: a real TCP session to headless IB
+//!   Gateway from [`IbConnectionConfig`] with explicit connect/read/write
+//!   deadlines, speaking the pinned-version TWS wire protocol (the `wire`
+//!   submodule) for all six SRS-EXE-006 operations. Only the SRS-EXE-004
+//!   composite (combo/BAG) wire remains operator-gated pending — it still fails
+//!   **loudly** via [`IB_CODE_LIVE_WIRE_PROTOCOL_PENDING`], never fabricating.
 
 use crate::{
     AdapterBoundary, AdapterCapability, AdapterError, AdapterResult, AdapterVersion,
@@ -49,7 +53,12 @@ use std::fmt;
 use std::net::TcpStream;
 use std::net::{IpAddr, SocketAddr};
 #[cfg(feature = "ib-live-transport")]
+use std::sync::Mutex;
+#[cfg(feature = "ib-live-transport")]
 use std::time::Duration;
+
+#[cfg(feature = "ib-live-transport")]
+mod wire;
 
 // --------------------------------------------------------------------------- //
 // IB TWS API error wire shape + the documented codes we map onto SYS-64
@@ -98,8 +107,25 @@ pub const IB_CODE_CONNECTIVITY_BROKEN: i32 = 2110;
 /// Adapter sentinel — **not** an IB code (negative so it can never collide with a
 /// real TWS code). A [`TcpIbGateway`] operation whose live wire encoding is the
 /// operator-gated integration deliverable returns this rather than fabricating a
-/// result, so an un-finished live transport fails closed and loud.
+/// result, so an un-finished live transport fails closed and loud. Today only the
+/// SRS-EXE-004 composite (combo/BAG) wire still returns it; the six SRS-EXE-006
+/// operations are wire-complete (see the `wire` submodule).
 pub const IB_CODE_LIVE_WIRE_PROTOCOL_PENDING: i32 = -1;
+
+/// Adapter sentinel — a bounded wire wait expired (mute or black-holed gateway).
+/// The live path FAILS with this instead of hanging; classified
+/// `CONNECTIVITY_BLOCKED` like the documented IB connectivity codes.
+pub const IB_CODE_WIRE_TIMEOUT: i32 = -2;
+
+/// Adapter sentinel — the gateway negotiated a server version other than the
+/// pinned [`IB_PINNED_SERVER_VERSION`]; the adapter fails closed rather than
+/// guessing at a different wire layout (operator remedy: upgrade IB Gateway).
+pub const IB_CODE_UNSUPPORTED_SERVER_VERSION: i32 = -3;
+
+/// Adapter sentinel — the request cannot be encoded honestly by the live wire
+/// (e.g. a non-Equity asset class, a non-`1d` historical resolution, or a
+/// non-numeric broker order id). Fails closed instead of sending a guess.
+pub const IB_CODE_UNSUPPORTED_REQUEST: i32 = -4;
 
 /// Map a documented IB TWS API error onto the SyRS SYS-64 [`OrderErrorCategory`],
 /// or `None` when the adapter does not (yet) recognise the code as a SYS-64
@@ -120,7 +146,8 @@ pub fn classify_ib_order_error(error: &IbApiError) -> Option<OrderErrorCategory>
         IB_CODE_COULD_NOT_CONNECT
         | IB_CODE_NOT_CONNECTED
         | IB_CODE_CONNECTIVITY_LOST
-        | IB_CODE_CONNECTIVITY_BROKEN => Some(OrderErrorCategory::ConnectivityBlocked),
+        | IB_CODE_CONNECTIVITY_BROKEN
+        | IB_CODE_WIRE_TIMEOUT => Some(OrderErrorCategory::ConnectivityBlocked),
         IB_CODE_ORDER_REJECTED => {
             if message_indicates_insufficient_buying_power(&error.message) {
                 Some(OrderErrorCategory::InsufficientBuyingPower)
@@ -538,21 +565,29 @@ impl<C: IbGatewayConnection> HistoricalDataAdapter for InteractiveBrokersBrokera
 // --------------------------------------------------------------------------- //
 
 /// The live IB Gateway transport: a real TCP session to headless IB Gateway
-/// (`host:port` from [`IbConnectionConfig`]). Establishing the socket is real and
-/// structurally testable; the per-operation **TWS wire encoding** is completed and
-/// verified under the operator-initiated IB paper-account integration test
-/// (SyRS SYS-2e), so each operation here fails closed with
-/// [`IB_CODE_LIVE_WIRE_PROTOCOL_PENDING`] rather than fabricating a result. This
-/// is the *only* part of the adapter that an automated paper-account test (not a
-/// parallel agent) can complete — which is why SRS-EXE-006 lands serialized.
+/// (`host:port` from [`IbConnectionConfig`]) speaking the TWS wire protocol
+/// pinned to server version [`IB_PINNED_SERVER_VERSION`] (see the `wire`
+/// submodule for framing, handshake, and per-operation encodings — golden-pinned
+/// against `ibapi` 10.19.4 by `tests/srs_exe_006_ib_wire.rs`, and proven against
+/// the real IB **paper** account by the operator-initiated `paper_account_round_trip`
+/// integration test, SyRS SYS-2e).
+///
+/// The session is established lazily on the first operation and cached behind a
+/// mutex (trait methods take `&self`); a transport-level fault drops the cached
+/// session so the next call reconnects cleanly. Only the SRS-EXE-004 composite
+/// (combo/BAG) wire remains operator-gated pending —
+/// [`submit_composite_order`](IbGatewayConnection::submit_composite_order) still
+/// fails closed with [`IB_CODE_LIVE_WIRE_PROTOCOL_PENDING`].
 ///
 /// Behind the non-default `ib-live-transport` cargo feature so the default public
-/// adapter surface never advertises this half-built live path.
+/// adapter surface never advertises a live path it cannot verify solo.
 #[cfg(feature = "ib-live-transport")]
 #[derive(Debug)]
 pub struct TcpIbGateway {
     config: IbConnectionConfig,
     account: IbAccountKind,
+    session: Mutex<Option<wire::IbSession>>,
+    op_deadline: Duration,
 }
 
 #[cfg(feature = "ib-live-transport")]
@@ -561,7 +596,24 @@ impl TcpIbGateway {
     /// always uses [`IbAccountKind::Paper`] (SyRS SYS-2e / AC-10); the live
     /// account is reserved for SRS-EXE-001.
     pub fn new(config: IbConnectionConfig, account: IbAccountKind) -> Self {
-        Self { config, account }
+        Self::with_op_deadline(config, account, IB_OP_DEADLINE)
+    }
+
+    /// Construct with a custom per-operation wire deadline. Exposed for the
+    /// fake-gateway test suite (short deadlines keep the timeout tests fast);
+    /// production callers use [`new`](Self::new) with [`IB_OP_DEADLINE`].
+    #[doc(hidden)]
+    pub fn with_op_deadline(
+        config: IbConnectionConfig,
+        account: IbAccountKind,
+        op_deadline: Duration,
+    ) -> Self {
+        Self {
+            config,
+            account,
+            session: Mutex::new(None),
+            op_deadline,
+        }
     }
 
     /// Open the TCP session to headless IB Gateway (no TWS GUI; AC-2) with an
@@ -599,25 +651,80 @@ impl TcpIbGateway {
             format!(
                 "IB TWS wire protocol for `{operation}` is completed and verified under the \
                  operator-initiated IB paper-account integration test (SyRS SYS-2e; \
-                 SRS-EXE-006 serialized)"
+                 SRS-EXE-004 composite wire still operator-gated)"
             ),
         )
+    }
+
+    /// Run one wire operation over the cached session, establishing it lazily
+    /// (connect + pinned-version handshake + `startApi`). A transport-level
+    /// fault (connect/read/write failure, wire timeout, version mismatch)
+    /// drops the cached session so the next call reconnects cleanly instead of
+    /// reusing a dead socket.
+    fn with_session<T>(
+        &self,
+        operate: impl FnOnce(&mut wire::IbSession) -> Result<T, IbApiError>,
+    ) -> Result<T, IbApiError> {
+        // SRS-EXE-001 gate: the LIVE account is reserved for the execution
+        // engine's admission path (live-strategy registry, stale-data gate,
+        // kill-switch). Until that wiring exists, the transport serves ONLY the
+        // paper account — a live-account session must fail closed here, before
+        // any socket is opened, so the adapter alone can never place a real
+        // live-account order.
+        if self.account != IbAccountKind::Paper {
+            return Err(IbApiError::new(
+                IB_CODE_UNSUPPORTED_REQUEST,
+                "the live IB account is gated on the SRS-EXE-001 execution-engine admission \
+                 (live-strategy registry, stale-data gate, kill-switch); only \
+                 IbAccountKind::Paper is served by the transport today",
+            ));
+        }
+        let mut guard = self
+            .session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.is_none() {
+            let stream = self.connect()?;
+            // `establish` re-arms the socket read timeout to its fast deadline
+            // tick, so every wire read honors `op_deadline` promptly.
+            *guard = Some(wire::IbSession::establish(
+                stream,
+                self.config.client_id,
+                self.op_deadline,
+            )?);
+        }
+        let session = guard.as_mut().expect("session established above");
+        let result = operate(session);
+        if let Err(err) = &result {
+            if wire::is_transport_fault(err.code) {
+                *guard = None;
+            }
+        }
+        result
     }
 }
 
 #[cfg(feature = "ib-live-transport")]
 impl IbGatewayConnection for TcpIbGateway {
-    fn submit_order(&self, _order: &OrderSubmission) -> Result<OrderReceipt, IbApiError> {
-        // Establish the real session (fails closed if unreachable), then defer the
-        // wire encoding to the operator-gated integration deliverable.
-        let _stream = self.connect()?;
-        Err(Self::live_wire_pending("submit_order"))
+    fn submit_order(&self, order: &OrderSubmission) -> Result<OrderReceipt, IbApiError> {
+        self.with_session(|session| session.submit_order(order))
     }
 
     fn submit_composite_order(
         &self,
         _order: &CompositeOrderSubmission,
     ) -> Result<OrderReceipt, IbApiError> {
+        // The SAME SRS-EXE-001 live-account gate as every session operation:
+        // when SRS-EXE-004 completes this wire, the admission boundary is
+        // already in place (and today a live-account composite never even
+        // opens a socket).
+        if self.account != IbAccountKind::Paper {
+            return Err(IbApiError::new(
+                IB_CODE_UNSUPPORTED_REQUEST,
+                "the live IB account is gated on the SRS-EXE-001 execution-engine admission; \
+                 only IbAccountKind::Paper is served by the transport today",
+            ));
+        }
         // The IB combo/BAG wire encoding for the composite is completed under the
         // operator-initiated IB paper-account integration test (SYS-2e; SRS-EXE-004
         // lands serialized), so this fails closed rather than fabricating a receipt.
@@ -625,41 +732,50 @@ impl IbGatewayConnection for TcpIbGateway {
         Err(Self::live_wire_pending("submit_composite_order"))
     }
 
-    fn cancel_order(&self, _broker_order_id: &str) -> Result<(), IbApiError> {
-        let _stream = self.connect()?;
-        Err(Self::live_wire_pending("cancel_order"))
+    fn cancel_order(&self, broker_order_id: &str) -> Result<(), IbApiError> {
+        self.with_session(|session| session.cancel_order(broker_order_id))
     }
 
     fn subscribe_market_data(
         &self,
-        _request: &MarketDataSubscription,
+        request: &MarketDataSubscription,
     ) -> Result<SubscriptionReceipt, IbApiError> {
-        let _stream = self.connect()?;
-        Err(Self::live_wire_pending("subscribe_market_data"))
+        self.with_session(|session| session.subscribe_market_data(request))
     }
 
     fn historical_data(
         &self,
-        _request: &HistoricalDataRequest,
+        request: &HistoricalDataRequest,
     ) -> Result<HistoricalQueryResult, IbApiError> {
-        let _stream = self.connect()?;
-        Err(Self::live_wire_pending("historical_data"))
+        self.with_session(|session| session.historical_data(request))
     }
 
     fn account_status(&self) -> Result<DataBatch, IbApiError> {
-        let _stream = self.connect()?;
-        Err(Self::live_wire_pending("account_status"))
+        self.with_session(wire::IbSession::account_status)
     }
 
     fn positions(&self) -> Result<DataBatch, IbApiError> {
-        let _stream = self.connect()?;
-        Err(Self::live_wire_pending("positions"))
+        self.with_session(wire::IbSession::positions)
     }
 }
 
 /// Default IB API connect timeout for the live transport's socket establishment.
 #[cfg(feature = "ib-live-transport")]
 pub const IB_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Default per-operation wire deadline: each live operation (submit / cancel /
+/// subscribe / historical / account / positions) must complete its request +
+/// reply exchange inside this budget or FAIL with [`IB_CODE_WIRE_TIMEOUT`] —
+/// a live-execution call never blocks unbounded (bounded-wait norm).
+#[cfg(feature = "ib-live-transport")]
+pub const IB_OP_DEADLINE: Duration = Duration::from_secs(15);
+
+/// The pinned TWS server version: the handshake offers exactly
+/// `v176..176`, so every wire layout in the `wire` submodule is deterministic
+/// (`ibapi` 10.19 line). Any other negotiated version fails closed with
+/// [`IB_CODE_UNSUPPORTED_SERVER_VERSION`].
+#[cfg(feature = "ib-live-transport")]
+pub const IB_PINNED_SERVER_VERSION: i32 = 176;
 
 #[cfg(test)]
 mod tests {

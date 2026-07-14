@@ -387,13 +387,15 @@
       "provider_struct": "InteractiveBrokersAdapter",
       "protocol_label": "IB TWS API",
       "protocol_version_constant": "INTERACTIVE_BROKERS_TWS_API_VERSION",
-      "protocol_version": "10.45",
+      "protocol_version": "10.19.4",
       "adapter_version_constant": "INTERACTIVE_BROKERS_ADAPTER_VERSION",
       "protocol_label_constant": "INTERACTIVE_BROKERS_PROTOCOL_LABEL"
     },
     "ib_brokerage_runtime": {
       "srs_ref": "SRS-EXE-006",
-      "status": "serialized",
+      "status": "verified",
+      "pinned_server_version": 176,
+      "wire_tests": "crates/atp-adapters/tests/srs_exe_006_ib_wire.rs",
       "module": "crates/atp-adapters/src/interactive_brokers.rs",
       "transport_trait": "IbGatewayConnection",
       "transport_methods": [
@@ -415,7 +417,7 @@
         "INVALID_SYMBOL": [200, 203],
         "INSUFFICIENT_BUYING_POWER": [201],
         "RATE_LIMITED": [100],
-        "CONNECTIVITY_BLOCKED": [502, 504, 1100, 2110]
+        "CONNECTIVITY_BLOCKED": [502, 504, 1100, 2110, -2]
       },
       "config_error_type": "IbConnectionConfigError",
       "config_parser_fn": "parse_port",
@@ -441,11 +443,11 @@
         "connectionless_provider_is_not_configured_by_design",
         "account_status_and_positions_are_implemented_not_notconfigured"
       ],
-      "description": "SRS-EXE-006 IB Gateway brokerage adapter. The DEFAULT build ships the fully-tested deterministic half: IB-error -> SyRS SYS-64 classification (classify_ib_order_error -> brokerage_error -> AdapterError::Brokerage, unblocking SRS-ERR-001's broker-validation categories INVALID_SYMBOL/INSUFFICIENT_BUYING_POWER/RATE_LIMITED/CONNECTIVITY_BLOCKED), the TWS transport seam, and the four AC operations exposed through the CANONICAL BrokerageAdapter/MarketDataAdapter/HistoricalDataAdapter traits (SYS-52) so failures flow through the common AdapterError taxonomy (proven solo via a FakeIbGateway). Config fails closed on malformed/non-Unicode ATP_IB_* values and non-literal-IP hosts (IbConnectionConfigError). The live socket transport (TcpIbGateway) is behind the NON-DEFAULT ib-live-transport feature so the default public surface never advertises a half-built live path. STAYS passes:false (serialized): the AC's automated IB paper-account integration test is operator-initiated (SyRS SYS-2e, fixed port 4002, --features ib-live-transport) and cannot run in the parallel agent pool.",
+      "description": "SRS-EXE-006 IB Gateway brokerage adapter. The DEFAULT build ships the fully-tested deterministic half: IB-error -> SyRS SYS-64 classification (classify_ib_order_error -> brokerage_error -> AdapterError::Brokerage, unblocking SRS-ERR-001's broker-validation categories INVALID_SYMBOL/INSUFFICIENT_BUYING_POWER/RATE_LIMITED/CONNECTIVITY_BLOCKED), the TWS transport seam, and the four AC operations exposed through the CANONICAL BrokerageAdapter/MarketDataAdapter/HistoricalDataAdapter traits (SYS-52) so failures flow through the common AdapterError taxonomy (proven solo via a FakeIbGateway). Config fails closed on malformed/non-Unicode ATP_IB_* values and non-literal-IP hosts (IbConnectionConfigError). The live socket transport (TcpIbGateway, NON-DEFAULT ib-live-transport feature) speaks the TWS wire protocol pinned to server version 176 (ibapi 10.19 line) for all six operations: golden-pinned against a scripted fake gateway (srs_exe_006_ib_wire.rs) and VERIFIED by the operator-initiated IB paper-account round trip (SyRS SYS-2e, port 4002 — submit/cancel/subscribe/historical/account/positions green). Bounded waits throughout (IB_CODE_WIRE_TIMEOUT): a mute gateway fails, never hangs. Only the SRS-EXE-004 composite (combo/BAG) wire remains operator-gated pending via IB_CODE_LIVE_WIRE_PROTOCOL_PENDING.",
       "deferred": [
-        "operator-initiated IB paper-account integration test (SyRS SYS-2e / AC-2, --features ib-live-transport): completes the TWS wire encoding in TcpIbGateway and runs submit/cancel/subscribe/historical green against port 4002 (flips passes:true)",
+        "IB composite (combo/BAG) order wire encoding for submit_composite_order — operator-initiated IB paper-account integration flip owned by SRS-EXE-004 (still fails closed via IB_CODE_LIVE_WIRE_PROTOCOL_PENDING)",
         "execution-engine wiring of the IB adapter to atp_execution::LiveBrokerageSubmit (SRS-EXE-001 / SRS-ORCH-*)",
-        "IB TWS API version-upgrade regression testing against the paper account (SRS-EXE-007 / SYS-65)"
+        "IB TWS API version-upgrade regression testing against the paper account, incl. re-pinning IB_PINNED_SERVER_VERSION (SRS-EXE-007 / SYS-65)"
       ]
     }
   },
