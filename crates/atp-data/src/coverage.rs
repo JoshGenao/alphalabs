@@ -155,8 +155,11 @@ pub enum CorporateActionEvent {
 /// application consumer holds quantities and cost bases, which prices cannot re-express.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CorporateActionFact {
-    /// An `numerator`-for-`denominator` (reverse) split effective at `effective_ts`. Retagged to the
-    /// queried symbol across a rename lineage (the instrument is one continuous entity).
+    /// An `numerator`-for-`denominator` (reverse) split effective at `effective_ts`. The symbol is
+    /// the affected lineage segment's own (AS-HELD) name — the symbol a position/order holder held
+    /// the instrument under at that instant — NOT the queried symbol: an applier's book reaches the
+    /// queried name only when the later rename fact itself is applied, so a retagged pre-rename
+    /// split would silently miss the held state.
     Split {
         symbol: String,
         effective_ts: i64,
@@ -165,7 +168,8 @@ pub enum CorporateActionFact {
     },
     /// A cash dividend of `amount_minor` per share, ex at `ex_ts`, with the last raw close strictly
     /// before the ex-date as `prev_close_minor` (the fail-closed sanity reference an applier checks
-    /// the amount against). Retagged to the queried symbol across a rename lineage.
+    /// the amount against). The symbol is the affected segment's own (AS-HELD) name, exactly like
+    /// [`Split`](Self::Split).
     Dividend {
         symbol: String,
         ex_ts: i64,
@@ -506,10 +510,14 @@ impl MarketDataStore {
     ///
     /// The basis is POINT-IN-TIME at `query.end_ts` (the `_as_of` discipline): facts effective
     /// after the window end — even inside proven coverage — have not happened yet for a consumer
-    /// applying actions as of that instant, so they are not surfaced (no lookahead). Split and
-    /// dividend facts are retagged to the queried symbol across the lineage (the same relabeling
-    /// the adjusted reads apply); the structural facts keep each segment's own symbol, exactly like
-    /// [`SplitAdjustedResult::events`]. An empty list is the common covered result, never an error.
+    /// applying actions as of that instant, so they are not surfaced (no lookahead). EVERY fact —
+    /// term and structural alike — carries its lineage segment's own (AS-HELD) symbol, NOT the
+    /// queried symbol: an application consumer's book holds state under the historical name until
+    /// the rename fact itself is applied in sequence, so the price reads' relabeling would make a
+    /// pre-rename split/dividend silently miss the held position or order (the fail-open this
+    /// surface must not have). Apply facts in the returned `effective_ts` order and the rename hop
+    /// carries the book onto the successor exactly when the lineage did. An empty list is the
+    /// common covered result, never an error.
     pub fn query_corporate_action_facts(
         &self,
         query: &UnifiedHistoricalQuery,
@@ -546,8 +554,8 @@ impl MarketDataStore {
         // through `query.end_ts`.
         let lineage = self.resolve_lineage(&query.symbol, query.end_ts)?;
         let series = self.lineage_raw_series(kind, query, &lineage)?;
-        let splits = self.lineage_split_events(query, &lineage, query.end_ts)?;
-        let dividends = self.lineage_dividend_events(query, &lineage, query.end_ts, &series)?;
+        let splits = self.lineage_split_events(None, &lineage, query.end_ts)?;
+        let dividends = self.lineage_dividend_events(None, &lineage, query.end_ts, &series)?;
 
         // (4) Window-filter the term facts (the extractors are cutoff-bounded, not start-bounded)
         // and merge with the structural in-window events.
@@ -676,7 +684,7 @@ impl MarketDataStore {
         // (6) The applied corporate actions across the lineage, bounded to the basis cutoff.
         // `split_events_for` / `dividend_events_for` re-filter by kind + symbol and fail closed on a
         // malformed event within the cutoff.
-        let splits = self.lineage_split_events(query, &lineage, adjusted_through)?;
+        let splits = self.lineage_split_events(Some(&query.symbol), &lineage, adjusted_through)?;
         let dividends = match mode {
             // Split-adjusted deliberately ignores dividend records entirely (mode semantics: the
             // SYS-29 split-adjusted basis reflects share-count changes only).
@@ -684,9 +692,12 @@ impl MarketDataStore {
             // Fully-adjusted (back-adjust) applies every dividend with ex_ts > t, so a dividend in
             // (query.end_ts, D] legitimately re-bases the in-window bars -> resolve (and validate)
             // through the frontier cutoff `adjusted_through`.
-            AdjustmentMode::Full => {
-                self.lineage_dividend_events(query, &lineage, adjusted_through, &series)?
-            }
+            AdjustmentMode::Full => self.lineage_dividend_events(
+                Some(&query.symbol),
+                &lineage,
+                adjusted_through,
+                &series,
+            )?,
             // Total-return (reinvest) applies ONLY dividends with ex_ts <= t, and every in-window bar
             // has t <= query.end_ts, so a dividend ex AFTER the query end is NEVER applied. Resolve
             // (and therefore VALIDATE) dividends only through `query.end_ts`, NOT the coverage frontier:
@@ -697,7 +708,7 @@ impl MarketDataStore {
             // (end_ts, D] with effective_ts > t IS back-adjusted into the in-window bars), which is what
             // still distinguishes query_total_return from query_total_return_as_of.
             AdjustmentMode::TotalReturn => {
-                self.lineage_dividend_events(query, &lineage, query.end_ts, &series)?
+                self.lineage_dividend_events(Some(&query.symbol), &lineage, query.end_ts, &series)?
             }
         };
 
@@ -873,9 +884,14 @@ impl MarketDataStore {
         Ok(series)
     }
 
-    /// The split events across the lineage, bounded to `effective_ts <= adjusted_through` and
-    /// retagged to the queried symbol (the instrument is one continuous entity through a rename, so a
-    /// predecessor's split applies to the relabeled series exactly like the current symbol's).
+    /// The split events across the lineage, bounded to `effective_ts <= adjusted_through`.
+    ///
+    /// `retag_to` controls the surfaced symbol: the adjusted PRICE reads pass the queried symbol
+    /// (the instrument is one continuous entity through a rename, so a predecessor's split applies
+    /// to the relabeled series exactly like the current symbol's); the corporate-action FACT read
+    /// passes `None` so each split keeps its segment's own (AS-HELD) symbol — an APPLICATION
+    /// consumer's book holds state under the historical symbol until the rename action itself is
+    /// applied, so retagging would make a pre-rename split silently miss the held position.
     ///
     /// Like [`lineage_raw_series`](Self::lineage_raw_series) does for bars, a within-cutoff split dated
     /// OUTSIDE its symbol's lineage validity window (a predecessor split on/after its rename, or a
@@ -883,7 +899,7 @@ impl MarketDataStore {
     /// rename data must never be retagged to the queried symbol and silently applied to the wrong bars.
     fn lineage_split_events(
         &self,
-        query: &UnifiedHistoricalQuery,
+        retag_to: Option<&str>,
         lineage: &[LineageSegment],
         adjusted_through: i64,
     ) -> Result<Vec<SplitEvent>, CoverageError> {
@@ -906,7 +922,9 @@ impl MarketDataStore {
                 normalization::split_events_for(&segment.symbol, &refs)?
                     .into_iter()
                     .map(|mut event| {
-                        event.symbol = query.symbol.clone();
+                        if let Some(symbol) = retag_to {
+                            event.symbol = symbol.to_string();
+                        }
                         event
                     }),
             );
@@ -914,15 +932,18 @@ impl MarketDataStore {
         Ok(splits)
     }
 
-    /// The dividend events across the lineage, bounded to `ex_ts <= adjusted_through` and retagged to
-    /// the queried symbol. Each dividend's REFERENCE CLOSE is resolved as the last raw close in the
-    /// (relabeled, full) lineage `series` strictly before its ex-date — the RAW series, never the
-    /// adjusted one, and never window-clipped. A dividend with no prior close fails the read closed, as
-    /// does a within-cutoff dividend dated outside its symbol's lineage validity window (the same
-    /// fail-closed discipline the split leg and [`lineage_raw_series`](Self::lineage_raw_series) apply).
+    /// The dividend events across the lineage, bounded to `ex_ts <= adjusted_through`, surfaced
+    /// under `retag_to` (the queried symbol, for the adjusted price reads) or each segment's own
+    /// AS-HELD symbol (`None`, for the fact read — see
+    /// [`lineage_split_events`](Self::lineage_split_events)). Each dividend's REFERENCE CLOSE is
+    /// resolved as the last raw close in the (relabeled, full) lineage `series` strictly before its
+    /// ex-date — the RAW series, never the adjusted one, and never window-clipped. A dividend with
+    /// no prior close fails the read closed, as does a within-cutoff dividend dated outside its
+    /// symbol's lineage validity window (the same fail-closed discipline the split leg and
+    /// [`lineage_raw_series`](Self::lineage_raw_series) apply).
     fn lineage_dividend_events(
         &self,
-        query: &UnifiedHistoricalQuery,
+        retag_to: Option<&str>,
         lineage: &[LineageSegment],
         adjusted_through: i64,
         series: &[MarketDataRecord],
@@ -957,7 +978,9 @@ impl MarketDataStore {
                 normalization::dividend_events_for(&segment.symbol, &refs, prev_close_of)?
                     .into_iter()
                     .map(|mut event| {
-                        event.symbol = query.symbol.clone();
+                        if let Some(symbol) = retag_to {
+                            event.symbol = symbol.to_string();
+                        }
                         event
                     }),
             );

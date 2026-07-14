@@ -208,10 +208,14 @@ fn srs_data_021_structural_facts_carry_merger_terms() {
 }
 
 #[test]
-fn srs_data_021_lineage_retags_term_facts_to_the_queried_symbol() {
-    // OLD renamed to NEW @300; OLD's split @200 must surface retagged to the
-    // queried symbol NEW (the instrument is one continuous entity), and the
-    // rename itself surfaces structurally under the predecessor's own name.
+fn srs_data_021_lineage_facts_keep_the_as_held_symbol() {
+    // OLD renamed to NEW @300; OLD's split @200 must surface under OLD — the
+    // symbol a holder actually held at that instant — NOT retagged to the
+    // queried symbol (the price reads' relabeling). An applier walking the
+    // facts in effective_ts order then hits the held OLD position with the
+    // split FIRST and is carried onto NEW by the rename fact itself; a
+    // NEW-retagged split would silently miss the book (the fail-open the
+    // adversarial review caught).
     let store = store_of([
         split_record("OLD", 200, 2, 1),
         symbol_change_record(300, "OLD", "NEW"),
@@ -224,7 +228,7 @@ fn srs_data_021_lineage_retags_term_facts_to_the_queried_symbol() {
         facts,
         vec![
             CorporateActionFact::Split {
-                symbol: "NEW".to_string(),
+                symbol: "OLD".to_string(),
                 effective_ts: 200,
                 numerator: 2,
                 denominator: 1,
@@ -236,6 +240,19 @@ fn srs_data_021_lineage_retags_term_facts_to_the_queried_symbol() {
             },
         ]
     );
+
+    // The PRICE reads are unchanged by the fact semantics: the same store's
+    // split-adjusted read still relabels the series to the queried symbol.
+    let priced = store_of([
+        daily_bar("OLD", 100, 10_000),
+        split_record("OLD", 200, 2, 1),
+        symbol_change_record(300, "OLD", "NEW"),
+        coverage_record(400, "NEW"),
+    ]);
+    let result = priced
+        .query_split_adjusted(&daily_query("NEW", 0, 400))
+        .expect("covered price read");
+    assert_eq!(result.records[0].key().symbol, "NEW", "bars relabeled");
 }
 
 #[test]

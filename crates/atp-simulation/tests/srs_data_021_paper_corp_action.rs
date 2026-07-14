@@ -193,8 +193,10 @@ fn srs_data_021_merger_remaps_with_basis_and_history_intact() {
 }
 
 #[test]
-fn srs_data_021_cash_merger_and_collision_fail_closed_to_review() {
-    // Cash leg -> review, position untouched.
+fn srs_data_021_mixed_merger_applies_the_cash_leg_additively() {
+    // A mixed stock-and-cash merger: 1-for-1 into NEW plus 250 minor per
+    // acquired share. The cash leg reduces the basis additively on the
+    // PRE-conversion count (the dividend convention): 500_000 − 250·100.
     let mut book = book_with(&[("alpha", "OLD", 100, 5_000)]);
     let mut orders = VirtualOrderBook::new();
     let report = apply_corporate_action(
@@ -203,10 +205,74 @@ fn srs_data_021_cash_merger_and_collision_fail_closed_to_review() {
         &PaperCorporateAction::merger("OLD", "NEW", 1, 1, 250),
     );
     assert!(matches!(
+        &report.position_outcomes[0].kind,
+        PaperPositionOutcomeKind::Remapped {
+            successor,
+            quantity_after: 100,
+            cost_basis_after_minor: 475_000,
+        } if successor == "NEW"
+    ));
+    let position = book.position(&strategy("alpha"), "NEW").expect("remapped");
+    assert_eq!(position.cost_basis_minor(), 475_000);
+
+    // A SHORT pays the cash consideration: basis −500_000 → −475_000.
+    let mut book = VirtualLedgerBook::new();
+    book.apply_fill(&strategy("alpha"), &fill("OLD", -100, 5_000))
+        .expect("short fill applies");
+    apply_corporate_action(
+        &mut book,
+        &mut orders,
+        &PaperCorporateAction::merger("OLD", "NEW", 1, 1, 250),
+    );
+    assert_eq!(
+        book.position(&strategy("alpha"), "NEW")
+            .expect("remapped")
+            .cost_basis_minor(),
+        -475_000,
+        "a short pays the cash leg"
+    );
+
+    // A cash leg exceeding the whole basis is a realized-gain event -> review,
+    // position untouched.
+    let mut book = book_with(&[("alpha", "OLD", 100, 5_000)]);
+    let report = apply_corporate_action(
+        &mut book,
+        &mut orders,
+        &PaperCorporateAction::merger("OLD", "NEW", 1, 1, 6_000),
+    );
+    assert!(matches!(
+        report.position_outcomes[0].kind,
+        PaperPositionOutcomeKind::RequiresManualReview {
+            reason: PaperReviewReason::CashLegCrossesBasis {
+                cash_per_share_minor: 6_000
+            }
+        }
+    ));
+    assert_eq!(
+        book.position(&strategy("alpha"), "OLD")
+            .expect("held")
+            .cost_basis_minor(),
+        500_000,
+        "untouched on review"
+    );
+}
+
+#[test]
+fn srs_data_021_pure_cash_merger_and_collision_fail_closed_to_review() {
+    // A pure-cash acquisition (no successor shares) is a full disposition ->
+    // review, position untouched.
+    let mut book = book_with(&[("alpha", "OLD", 100, 5_000)]);
+    let mut orders = VirtualOrderBook::new();
+    let report = apply_corporate_action(
+        &mut book,
+        &mut orders,
+        &PaperCorporateAction::merger("OLD", "NEW", 0, 1, 5_500),
+    );
+    assert!(matches!(
         report.position_outcomes[0].kind,
         PaperPositionOutcomeKind::RequiresManualReview {
             reason: PaperReviewReason::CashConsiderationNotSupported {
-                cash_per_share_minor: 250
+                cash_per_share_minor: 5_500
             }
         }
     ));
@@ -703,6 +769,71 @@ fn srs_data_021_store_facts_drive_the_paper_application_end_to_end() {
             .expect("held")
             .quantity(),
         10
+    );
+}
+
+#[test]
+fn srs_data_021_pre_rename_split_reaches_the_position_held_under_the_old_symbol() {
+    // The adversarial-review regression: OLD splits 2-for-1 @200, then renames
+    // to NEW @300. The paper book holds OLD. Facts queried for NEW must carry
+    // the split under its AS-HELD symbol (OLD) so that, applied in event order,
+    // the split hits the held position FIRST and the rename fact then carries
+    // the book onto NEW. (Retagging the split to NEW — the price reads'
+    // relabeling — would silently skip it and remap an unadjusted position.)
+    let mut store = MarketDataStore::new();
+    for record in [
+        atp_data::store::symbol_change_record(300, "OLD", "NEW"),
+        split_record("OLD", 200, 2, 1),
+        coverage_record(400, "NEW"),
+    ] {
+        store.upsert(record).expect("fixture upsert");
+    }
+    let mut book = book_with(&[("alpha", "OLD", 100, 5_000)]);
+    let mut orders = VirtualOrderBook::new();
+    let order = orders
+        .place(
+            &strategy("alpha"),
+            leg(
+                "OLD",
+                100,
+                OrderType::Limit {
+                    limit_price_minor: 4_000,
+                },
+            ),
+        )
+        .expect("valid order");
+
+    let facts = store
+        .query_corporate_action_facts(
+            &UnifiedHistoricalQuery::new("NEW", "1d", 0, 400)
+                .with_kind(DatasetKind::DailyEquityBar),
+        )
+        .expect("covered");
+    for action in actions_from_facts(&facts) {
+        apply_corporate_action(&mut book, &mut orders, &action);
+    }
+
+    // The split applied to the OLD-held position (100 -> 200, basis invariant),
+    // THEN the rename carried it onto NEW.
+    assert!(book.position(&strategy("alpha"), "OLD").is_none());
+    let position = book.position(&strategy("alpha"), "NEW").expect("remapped");
+    assert_eq!(
+        position.quantity(),
+        200,
+        "the pre-rename split was NOT skipped"
+    );
+    assert_eq!(position.cost_basis_minor(), 500_000);
+    // The resting order took the same journey: split-rebased, then relabeled.
+    let resting = orders.order(order).expect("recorded");
+    assert!(resting.is_open());
+    assert_eq!(resting.leg().symbol, "NEW");
+    assert_eq!(resting.leg().quantity, 200);
+    assert_eq!(
+        resting.leg().order_type,
+        OrderType::Limit {
+            limit_price_minor: 2_000
+        },
+        "limit price halved by the 2-for-1 split before the relabel"
     );
 }
 

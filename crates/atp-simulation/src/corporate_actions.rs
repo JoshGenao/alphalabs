@@ -43,13 +43,18 @@
 //!     total-dollar basis. A dividend that would drive the basis through zero
 //!     (relative to the quantity's sign) is a return-of-capital event this module
 //!     does not book — review.
-//!   * **Merger** (pure stock-for-stock): the position remaps to the successor at
-//!     `quantity · N / M` (exact) with basis, realized P&L, and the cost
-//!     decomposition carried intact; any cash leg is a partial disposition
-//!     needing a realized-P&L booking — review. A remap onto a symbol the SAME
-//!     strategy already holds a record for is a SuccessorCollision review
-//!     (merging two bases and histories is the runtime's operation, never
-//!     fabricated here).
+//!   * **Merger**: the position remaps to the successor at `quantity · N / M`
+//!     (exact) with realized P&L and the cost decomposition carried intact. A
+//!     pure stock-for-stock merger carries the basis unchanged; a MIXED
+//!     stock-and-cash consideration applies the cash leg additively on the
+//!     pre-conversion share count (`basis' = basis − cash_per_share · quantity`,
+//!     the dividend convention — exact and value-conserving; a sign-flipping
+//!     cash leg is a realized-gain event → review). A PURE-CASH acquisition
+//!     (no successor shares) is a full disposition whose realized-P&L booking
+//!     is the runtime's close operation — review, never fabricated. A remap
+//!     onto a symbol the SAME strategy already holds a record for is a
+//!     SuccessorCollision review (merging two bases and histories is the
+//!     runtime's operation).
 //!   * **Symbol change**: a pure relabel of the ledger key (all components
 //!     unchanged); the same collision guard.
 //!   * **Delisting**: the position is REPORTED frozen
@@ -146,8 +151,10 @@ impl PaperCorporateAction {
 
     /// A merger into `successor` at `numerator` successor shares per
     /// `denominator` acquired shares, with `cash_per_share_minor` cash per
-    /// acquired share (`0` for the pure stock-for-stock case, the only one a
-    /// position adjusts under; orders on the acquired symbol cancel regardless).
+    /// acquired share (`0` = pure stock-for-stock; `> 0` = mixed consideration,
+    /// whose cash leg reduces the basis additively; a pure-cash acquisition is
+    /// `numerator = 0` and goes to review. Orders on the acquired symbol cancel
+    /// regardless).
     pub fn merger(
         symbol: impl Into<String>,
         successor: impl Into<String>,
@@ -199,9 +206,11 @@ pub enum PaperCorporateActionKind {
         amount_minor: i64,
         prev_close_minor: i64,
     },
-    /// A merger into `successor`. Positions adjust only for the pure
-    /// stock-for-stock case (`cash_per_share_minor == 0`, `numerator > 0`);
-    /// orders on the acquired symbol cancel regardless of the terms.
+    /// A merger into `successor`. Positions adjust for stock-for-stock AND
+    /// mixed stock-and-cash considerations (`numerator > 0`; the cash leg
+    /// reduces the basis additively); a pure-cash acquisition
+    /// (`numerator == 0`) goes to review. Orders on the acquired symbol cancel
+    /// regardless of the terms.
     Merger {
         successor: String,
         numerator: i64,
@@ -291,9 +300,16 @@ pub enum PaperReviewReason {
         amount_minor: i64,
         prev_close_minor: i64,
     },
-    /// A merger carried a cash consideration — a disposition needing a
-    /// realized-P&L booking not derivable from the terms alone.
+    /// A merger's consideration cannot be applied as an adjustment: a PURE-CASH
+    /// acquisition (no successor shares — a full disposition whose realized-P&L
+    /// booking is the runtime's close operation) or a negative (corrupt) cash
+    /// term. A mixed stock-and-cash consideration IS applied (the cash leg
+    /// reduces the basis additively).
     CashConsiderationNotSupported { cash_per_share_minor: i64 },
+    /// A mixed merger's cash leg would drive the basis through zero relative to
+    /// the quantity's sign — a realized-gain (return-of-capital-exceeding-basis)
+    /// event this module does not book.
+    CashLegCrossesBasis { cash_per_share_minor: i64 },
     /// A merger / symbol-change successor is blank or equals the predecessor.
     InvalidSuccessor { successor: String },
     /// A merger / symbol-change would remap a position onto a symbol this
@@ -312,6 +328,7 @@ impl PaperReviewReason {
             Self::InvalidDividendTerm { .. } => "INVALID_DIVIDEND_TERM",
             Self::BasisCrossingDividend { .. } => "BASIS_CROSSING_DIVIDEND",
             Self::CashConsiderationNotSupported { .. } => "CASH_CONSIDERATION_NOT_SUPPORTED",
+            Self::CashLegCrossesBasis { .. } => "CASH_LEG_CROSSES_BASIS",
             Self::InvalidSuccessor { .. } => "INVALID_SUCCESSOR",
             Self::SuccessorCollision { .. } => "SUCCESSOR_COLLISION",
         }
@@ -701,7 +718,10 @@ fn plan_position(
             denominator,
             cash_per_share_minor,
         } => {
-            if *cash_per_share_minor != 0 || *numerator == 0 {
+            // A pure-cash acquisition (no successor shares) or a negative cash
+            // term is a full DISPOSITION / corrupt input: booking its realized
+            // P&L is the runtime's close operation, not an adjustment — review.
+            if *numerator == 0 || *cash_per_share_minor < 0 {
                 return PositionPlan::Review(PaperReviewReason::CashConsiderationNotSupported {
                     cash_per_share_minor: *cash_per_share_minor,
                 });
@@ -719,13 +739,29 @@ fn plan_position(
                         return scale_fail_review(position, *numerator, *denominator, fail)
                     }
                 };
-            plan_remap(position, positions, target, successor, quantity)
+            // A MIXED consideration's cash leg reduces the basis ADDITIVELY by
+            // the cash received on the PRE-conversion share count — the same
+            // exact, value-conserving convention as the dividend path (a long
+            // receives it, a short pays it; absolute P&L is invariant across
+            // the effective date). A cash leg that would flip the basis sign is
+            // a realized-gain event this module does not book — review.
+            let basis = match cash_adjusted_basis(position, *cash_per_share_minor) {
+                Ok(basis) => basis,
+                Err(reason) => return PositionPlan::Review(reason),
+            };
+            plan_remap(positions, target, successor, quantity, basis)
         }
         PaperCorporateActionKind::SymbolChange { successor } => {
             if canonical_symbol(successor) == target {
                 return PositionPlan::NoOp;
             }
-            plan_remap(position, positions, target, successor, position.quantity())
+            plan_remap(
+                positions,
+                target,
+                successor,
+                position.quantity(),
+                position.cost_basis_minor(),
+            )
         }
     }
 }
@@ -800,14 +836,14 @@ fn plan_dividend(
     }
 }
 
-/// Remap to `successor` at `quantity` (basis + history intact), with the
+/// Remap to `successor` at `quantity` + `basis` (history intact), with the
 /// successor validity and same-strategy collision guards.
 fn plan_remap(
-    position: &VirtualPosition,
     positions: &HashMap<String, VirtualPosition>,
     target: &str,
     successor: &str,
     quantity: i64,
+    basis: i128,
 ) -> PositionPlan {
     let successor_canonical = canonical_symbol(successor);
     if successor_canonical.is_empty() || successor_canonical == target {
@@ -826,8 +862,40 @@ fn plan_remap(
     PositionPlan::Remap {
         successor: successor_canonical,
         quantity,
-        basis: position.cost_basis_minor(),
+        basis,
     }
+}
+
+/// The basis after a corporate action's CASH receipt on the pre-conversion
+/// share count: `cost_basis − cash_per_share · quantity`, checked, failing
+/// closed on overflow or a sign-flipping (realized-gain) result — the identical
+/// convention [`plan_dividend`] applies. `cash_per_share_minor == 0` is exact
+/// pass-through.
+fn cash_adjusted_basis(
+    position: &VirtualPosition,
+    cash_per_share_minor: i64,
+) -> Result<i128, PaperReviewReason> {
+    if cash_per_share_minor == 0 {
+        return Ok(position.cost_basis_minor());
+    }
+    let cash = i128::from(cash_per_share_minor)
+        .checked_mul(i128::from(position.quantity()))
+        .ok_or(PaperReviewReason::Overflow {
+            context: "merger cash",
+        })?;
+    let basis =
+        position
+            .cost_basis_minor()
+            .checked_sub(cash)
+            .ok_or(PaperReviewReason::Overflow {
+                context: "merger basis",
+            })?;
+    if basis != 0 && basis.signum() != i128::from(position.quantity()).signum() {
+        return Err(PaperReviewReason::CashLegCrossesBasis {
+            cash_per_share_minor,
+        });
+    }
+    Ok(basis)
 }
 
 fn scale_fail_review(

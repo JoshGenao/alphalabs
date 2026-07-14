@@ -228,6 +228,40 @@ def test_merger_remaps_position_and_cancels_acquired_orders() -> None:
     assert order["kind"] == "CANCELLED"
     assert order["reason"] == "MERGER_TERMINATION"
 
+    # A MIXED stock-and-cash merger also adjusts: the cash leg reduces the
+    # basis additively on the pre-conversion count (500000 - 250*100), and a
+    # pure-cash acquisition (numerator 0) fails closed to review instead.
+    mixed = _run_cli(
+        [
+            "apply",
+            "--symbol",
+            "OLD",
+            "--merger",
+            "NEW:1:1:250",
+            "--position",
+            "strat=alpha,sym=OLD,qty=100,price=5000",
+        ]
+    )
+    assert mixed.returncode == 0, mixed.stderr
+    outcome = _lines(mixed.stdout, "position-outcome:")[0]
+    assert outcome["kind"] == "REMAPPED"
+    assert outcome["cost_basis_after_minor"] == 475000
+    pure_cash = _run_cli(
+        [
+            "apply",
+            "--symbol",
+            "OLD",
+            "--merger",
+            "NEW:0:1:5500",
+            "--position",
+            "strat=alpha,sym=OLD,qty=100,price=5000",
+        ]
+    )
+    assert pure_cash.returncode == 0, pure_cash.stderr
+    outcome = _lines(pure_cash.stdout, "position-outcome:")[0]
+    assert outcome["kind"] == "MANUAL_REVIEW"
+    assert outcome["reason"] == "CASH_CONSIDERATION_NOT_SUPPORTED"
+
 
 def test_delisting_cancels_only_the_delisted_symbols_orders() -> None:
     result = _run_cli(
