@@ -30,7 +30,9 @@ pub use crate::cold_read::{
     ColdCacheReport, ColdReadConfig, ColdReadError, TieredReadResult, TieredReader,
     DEFAULT_COLD_READ_CACHE_SHARE_PERCENT, MAX_COLD_READ_CACHE_SHARE_PERCENT,
 };
-pub use crate::coverage::{CorporateActionEvent, CoverageError, SplitAdjustedResult};
+pub use crate::coverage::{
+    CorporateActionEvent, CorporateActionFact, CoverageError, SplitAdjustedResult,
+};
 pub use crate::ingestion_validation::{
     QuarantineSummary, QuarantineSummarySink, QuarantiningIngestionOutcome, Sys77RecordValidator,
 };

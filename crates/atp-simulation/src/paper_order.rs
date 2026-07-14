@@ -199,7 +199,10 @@ impl std::error::Error for OrderError {}
 /// Validate a single leg, failing closed before the order can be routed. A bad
 /// symbol, a non-positive quantity, or a non-positive trigger/limit price is
 /// rejected so a malformed order never reaches the simulation fill path.
-fn validate_leg(leg: &OrderLeg) -> Result<(), OrderError> {
+/// Crate-internal so the SRS-DATA-021 [`crate::virtual_orders::VirtualOrderBook`]
+/// applies the SAME intake rule to a placed resting order (one validation
+/// authority, not a copy that can drift).
+pub(crate) fn validate_leg(leg: &OrderLeg) -> Result<(), OrderError> {
     if leg.symbol.trim().is_empty() {
         return Err(OrderError::EmptySymbol);
     }

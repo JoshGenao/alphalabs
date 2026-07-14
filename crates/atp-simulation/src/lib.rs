@@ -97,6 +97,36 @@ pub mod fill_model;
 /// contexts inside SRS-SIM-003's acceptance criterion.
 pub mod virtual_ledger;
 
+/// The paper engine's virtual RESTING-order store (SRS-DATA-021). The SRS-SIM-001
+/// intake path routes an order without retaining it, so until this store no
+/// accepted-but-unfilled paper order existed for a corporate action to reach (the
+/// SRS-SIM-004 snapshot reserves an always-empty slot for exactly this).
+/// [`virtual_orders::VirtualOrderBook`] holds intake-validated
+/// ([`paper_order`]'s own `validate_leg` — one authority) [`paper_order::OrderLeg`]s
+/// per [`atp_types::StrategyId`] under book-assigned ids; a cancelled order is
+/// terminal and auditable, never deleted. Wiring the fill path to consume resting
+/// orders and persisting the book into the SRS-SIM-004 reserved slot are the
+/// adjacent owners' work.
+pub mod virtual_orders;
+
+/// Corporate-action application for the paper books (SRS-DATA-021 / SyRS SYS-88;
+/// StRS SN-1.14 / SN-1.29). [`corporate_actions::apply_corporate_action`] adjusts
+/// every paper strategy's [`virtual_ledger::VirtualPosition`] quantity and cost
+/// basis for splits (exact `N/M`, basis invariant), cash dividends (additive
+/// `basis − amount · quantity`), and stock-for-stock mergers / symbol changes
+/// (remap with history intact), and cancels [`virtual_orders`] resting orders on
+/// delisted / merged securities — per-position fail-closed to a manual-review
+/// outcome (position untouched) and per-order fail-closed to a cancel, with
+/// operator paging through the fallible
+/// [`corporate_actions::PaperCorpActionAlertSink`] port.
+/// [`corporate_actions::actions_from_facts`] binds the inputs to
+/// `atp_data::MarketDataStore::query_corporate_action_facts` — the SAME
+/// coverage-gated corporate-action data source the backtest engine's adjusted
+/// reads and the live SRS-DATA-019/020 planners' composition roots consume — so
+/// paper, live, and backtest derive from one record set. The money math is kept
+/// semantically byte-stable with the SRS-DATA-020 live position planner.
+pub mod corporate_actions;
+
 /// The internal simulation engine's paper-state persistence path (SRS-SIM-004 /
 /// SyRS SYS-89). It captures three of the four SYS-89 sub-states —
 /// [`virtual_ledger::VirtualLedgerBook`], the per-strategy

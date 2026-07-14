@@ -141,6 +141,73 @@ pub enum CorporateActionEvent {
     },
 }
 
+/// One corporate-action FACT — the typed terms an APPLICATION consumer (a position/order adjuster,
+/// not a price reader) needs to transform state it owns. Surfaced ONLY by
+/// [`MarketDataStore::query_corporate_action_facts`], the coverage-gated fact read, so every fact a
+/// consumer acts on sits inside proven coverage. This is the "same corporate-action data source"
+/// seam SYS-88 / SRS-DATA-021 (paper virtual positions/orders), SRS-DATA-019 (live resting orders),
+/// and SRS-DATA-020 (live positions) share with the backtest price reads: one store, one extraction
+/// path (the same crate-internal `normalization` extractors the adjusted reads apply), no parallel
+/// parser to drift.
+///
+/// Unlike [`CorporateActionEvent`] (the structural surface on a price read), a fact carries the
+/// split and dividend TERMS — the adjusted price reads fold those into the served prices, but an
+/// application consumer holds quantities and cost bases, which prices cannot re-express.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CorporateActionFact {
+    /// An `numerator`-for-`denominator` (reverse) split effective at `effective_ts`. Retagged to the
+    /// queried symbol across a rename lineage (the instrument is one continuous entity).
+    Split {
+        symbol: String,
+        effective_ts: i64,
+        numerator: i64,
+        denominator: i64,
+    },
+    /// A cash dividend of `amount_minor` per share, ex at `ex_ts`, with the last raw close strictly
+    /// before the ex-date as `prev_close_minor` (the fail-closed sanity reference an applier checks
+    /// the amount against). Retagged to the queried symbol across a rename lineage.
+    Dividend {
+        symbol: String,
+        ex_ts: i64,
+        amount_minor: i64,
+        prev_close_minor: i64,
+    },
+    /// The symbol's series terminates at `effective_ts` (same terms as
+    /// [`CorporateActionEvent::Delisting`]; the symbol is the affected segment's own name).
+    Delisting { symbol: String, effective_ts: i64 },
+    /// The acquired `symbol` converts into `successor` at the surfaced share ratio + cash leg (same
+    /// terms as [`CorporateActionEvent::Merger`]).
+    Merger {
+        symbol: String,
+        successor: String,
+        numerator: i64,
+        denominator: i64,
+        cash_per_share_minor: i64,
+        effective_ts: i64,
+    },
+    /// The instrument was renamed `predecessor` -> `successor` at `effective_ts` (same terms as
+    /// [`CorporateActionEvent::SymbolChange`]).
+    SymbolChange {
+        predecessor: String,
+        successor: String,
+        effective_ts: i64,
+    },
+}
+
+impl CorporateActionFact {
+    /// The instant the fact takes effect (the split/merger/delisting/rename effective instant, or
+    /// the dividend ex-instant) — the ascending sort key of a fact read's result.
+    pub fn effective_ts(&self) -> i64 {
+        match self {
+            Self::Split { effective_ts, .. }
+            | Self::Delisting { effective_ts, .. }
+            | Self::Merger { effective_ts, .. }
+            | Self::SymbolChange { effective_ts, .. } => *effective_ts,
+            Self::Dividend { ex_ts, .. } => *ex_ts,
+        }
+    }
+}
+
 /// The result of a covered gated read (split-adjusted OR fully-adjusted; the name predates the
 /// fully-adjusted read and is kept for its consumers): the adjusted records (owned, in
 /// `event_ts`-ascending order) plus the proven coverage frontier `D`, the instant the series is
@@ -408,6 +475,140 @@ impl MarketDataStore {
         query: &UnifiedHistoricalQuery,
     ) -> Result<SplitAdjustedResult, CoverageError> {
         self.query_adjusted(query, AdjustmentMode::TotalReturn, AdjustmentBasis::AsOfEnd)
+    }
+
+    /// **The coverage-enforcing corporate-action FACT read (SYS-88 / SRS-DATA-021; the shared
+    /// application-consumer seam for SRS-DATA-019/020).** Returns every corporate-action fact —
+    /// split and dividend TERMS plus the structural delisting / merger / symbol-change events —
+    /// across the queried symbol's rename lineage whose effective (ex-) instant falls inside
+    /// `[query.start_ts, query.end_ts]`, in `effective_ts`-ascending order.
+    ///
+    /// This exists because the adjusted PRICE reads fold splits and dividends into the served
+    /// prices, which is exactly right for a bar consumer and exactly wrong for an APPLICATION
+    /// consumer: a paper/live position or resting order holds a quantity and a cost basis that only
+    /// the action's own terms can re-express. Surfacing the terms through this gate keeps one
+    /// extraction path (the same crate-internal `normalization` extractors and store-validated
+    /// records the price reads apply) instead of every consumer growing a parallel record parser
+    /// that can drift.
+    ///
+    /// The same fail-closed discipline as the six adjusted reads:
+    /// * [`CoverageError::UnsupportedQueryKind`] unless `query.kind` is an explicit equity-bar kind
+    ///   (the dividend reference close is resolved from that raw bar series);
+    /// * [`CoverageError::NotCovered`] unless a coverage record exists and `frontier >=
+    ///   query.end_ts` — an uncovered tail could hide an in-window action, so an application
+    ///   consumer acting on an incomplete fact list would silently miss an adjustment (the
+    ///   fail-open this gate exists to prevent);
+    /// * [`CoverageError::LineageCycle`] / [`CoverageError::AmbiguousLineage`] on inconsistent
+    ///   symbol-change data;
+    /// * [`CoverageError::Normalization`] on a malformed split/dividend record within the basis (a
+    ///   missing reference close, a non-positive factor, an invalid term) — never a silently
+    ///   dropped fact.
+    ///
+    /// The basis is POINT-IN-TIME at `query.end_ts` (the `_as_of` discipline): facts effective
+    /// after the window end — even inside proven coverage — have not happened yet for a consumer
+    /// applying actions as of that instant, so they are not surfaced (no lookahead). Split and
+    /// dividend facts are retagged to the queried symbol across the lineage (the same relabeling
+    /// the adjusted reads apply); the structural facts keep each segment's own symbol, exactly like
+    /// [`SplitAdjustedResult::events`]. An empty list is the common covered result, never an error.
+    pub fn query_corporate_action_facts(
+        &self,
+        query: &UnifiedHistoricalQuery,
+    ) -> Result<Vec<CorporateActionFact>, CoverageError> {
+        // (1) The same equity-bar kind guard as the adjusted reads: the dividend reference close is
+        // resolved from the raw bar series of this kind.
+        let kind = match query.kind {
+            Some(kind @ (DatasetKind::DailyEquityBar | DatasetKind::MinuteEquityBar)) => kind,
+            Some(other) => {
+                return Err(CoverageError::UnsupportedQueryKind {
+                    kind: other.as_str(),
+                })
+            }
+            None => {
+                return Err(CoverageError::UnsupportedQueryKind {
+                    kind: "unspecified",
+                })
+            }
+        };
+
+        // (2) The same coverage gate: facts are complete only through the proven frontier, and an
+        // application consumer must never act on a window whose tail could hide an action.
+        let frontier = self.coverage_frontier(&query.symbol);
+        if !matches!(frontier, Some(d) if d >= query.end_ts) {
+            return Err(CoverageError::NotCovered {
+                symbol: query.symbol.clone(),
+                have_through: frontier,
+                need_through: query.end_ts,
+            });
+        }
+
+        // (3) Point-in-time basis at the window end (no lookahead), the same cutoff the `_as_of`
+        // reads use: lineage, split terms, and dividend terms are resolved (and validated) only
+        // through `query.end_ts`.
+        let lineage = self.resolve_lineage(&query.symbol, query.end_ts)?;
+        let series = self.lineage_raw_series(kind, query, &lineage)?;
+        let splits = self.lineage_split_events(query, &lineage, query.end_ts)?;
+        let dividends = self.lineage_dividend_events(query, &lineage, query.end_ts, &series)?;
+
+        // (4) Window-filter the term facts (the extractors are cutoff-bounded, not start-bounded)
+        // and merge with the structural in-window events.
+        let mut facts: Vec<CorporateActionFact> = Vec::new();
+        for split in splits {
+            if split.effective_ts >= query.start_ts {
+                facts.push(CorporateActionFact::Split {
+                    symbol: split.symbol,
+                    effective_ts: split.effective_ts,
+                    numerator: split.numerator,
+                    denominator: split.denominator,
+                });
+            }
+        }
+        for dividend in dividends {
+            if dividend.ex_ts >= query.start_ts {
+                facts.push(CorporateActionFact::Dividend {
+                    symbol: dividend.symbol,
+                    ex_ts: dividend.ex_ts,
+                    amount_minor: dividend.amount_minor,
+                    prev_close_minor: dividend.prev_close_minor,
+                });
+            }
+        }
+        for event in self.corporate_events_in_window(query, &lineage) {
+            facts.push(match event {
+                CorporateActionEvent::Delisting {
+                    symbol,
+                    effective_ts,
+                } => CorporateActionFact::Delisting {
+                    symbol,
+                    effective_ts,
+                },
+                CorporateActionEvent::Merger {
+                    symbol,
+                    successor,
+                    numerator,
+                    denominator,
+                    cash_per_share_minor,
+                    effective_ts,
+                } => CorporateActionFact::Merger {
+                    symbol,
+                    successor,
+                    numerator,
+                    denominator,
+                    cash_per_share_minor,
+                    effective_ts,
+                },
+                CorporateActionEvent::SymbolChange {
+                    predecessor,
+                    successor,
+                    effective_ts,
+                } => CorporateActionFact::SymbolChange {
+                    predecessor,
+                    successor,
+                    effective_ts,
+                },
+            });
+        }
+        facts.sort_by_key(CorporateActionFact::effective_ts);
+        Ok(facts)
     }
 
     /// The single gated read core every public adjusted read delegates to — one gate, one lineage
