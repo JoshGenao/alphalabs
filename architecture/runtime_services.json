@@ -8770,6 +8770,103 @@
       "The 30-real-day operational proof run that produces the end-to-end >= 99.9% evidence (owner: NFR-R1 deployment/operator, analysis + system test) -- keeps SRS-REL-001 passes:false until run"
     ]
   },
+  "restart_recovery_contract": {
+    "requirement": "SRS-REL-002",
+    "description": "SRS-REL-002 (the software shall restore a full system restart to trade-ready state within the SyRS recovery target; SyRS NFR-R6 / SYS-76; StRS SN-2.05). SCOPE: this contract pins the offline verification/analysis MEASUREMENT SUBSTRATE in python/atp_reliability/restart.py -- NOT a core runtime service (the recovery-time (RTO) analog of the availability_measurement_contract / SRS-REL-001 substrate; permitted non-Rust by AC-16, alongside atp_readiness / atp_safety / atp_cli). The pure, clock-free engine (restart.py::compute_restart_recovery) ingests a caller-supplied restart timeline -- the ordered boot phases (proxmox_vm, os_boot, docker_daemon, atp_service_init, readiness_check) and the SYS-76 readiness outcome (gate state + the five sub-check results) -- and produces a RestartRecoveryArtifact with a three-valued verdict (PASS / FAIL / INCONCLUSIVE) against the NFR-R6 objective: trade-ready within 10 minutes (budget_ns 600000000000). It FAILS CLOSED: (1) elapsed is measured END-TO-END (readiness_check.end - proxmox_vm.start), so inter-phase GAPS count against the budget -- summing per-phase durations would hide idle/retry/crash-loop time that is real not-trade-ready wall-clock; (2) the required phase set and the SYS-76 sub-check set are derived from the enum AUTHORITIES (REQUIRED_PHASES / REQUIRED_SUBCHECKS), never a caller-supplied list -- a missing required phase or sub-check REFUSES certification (INCONCLUSIVE), so a caller cannot drop the slow phase to squeak under budget; (3) trade-ready requires the readiness gate to reach READY (a manual OVERRIDDEN of a failed check does NOT certify) with every sub-check passing (NAS DEGRADED accepted ONLY with the SYS-76(d) operator alert raised) -- a readiness check observed NOT trade-ready is a positively-observed objective FAILURE; (4) provable failure beats missing evidence -- if the observed timeline span alone breaches the 10-minute budget it is FAIL BEFORE any missing-phase/sub-check INCONCLUSIVE (the observed span is an honest lower bound on true elapsed, valid even when phases are absent); (5) the verdict gate is an exact integer-ns inequality (elapsed_ns <= budget_ns), never a lossy f64 compare at the 600 s boundary; (6) inverted/zero-duration phases, duplicate phases/sub-checks (incl. duplicate JSON keys rejected at parse time), a non-chronological phase START order, and evidence where a phase completes AFTER the readiness check (trade-ready) RAISE (refused); phases are chronological milestones that may legitimately OVERLAP/NEST (on a real boot Docker starts during userspace OS boot), so overlap is not an error and the end-to-end span is max(end)-min(start); timestamps outside [0, 2**63) are refused. A RestartRecoveryTarget labelled SRS-REL-002 is locked in __post_init__ to the canonical 10-minute budget (an explicit raise, not an assert stripped by python -O), so a relaxed configuration must use a different requirement label. The NFR-R6 'during market hours' qualifier scopes WHICH restart events the requirement applies to. It is NOT a term in the elapsed arithmetic (a raw epoch-ns subtraction, DST-irrelevant) and the pure engine pulls in NO calendar; instead an SRS-REL-002 PASS requires the market-hours scope to be proven, and that scope is DERIVED (not caller-supplied) from the ACTUAL restart-trigger timestamp (the proxmox_vm phase start) via the real DST/holiday-aware UsEquityTradingCalendar in the evidence adapter (boot_evidence.derive_during_market_hours) -- a caller-supplied boolean would be forgeable, so restart_context.during_market_hours is REJECTED (restart_context.exchange, default NYSE, selects the calendar). A trigger outside a regular US-equity session (or on a non-session day) is out of scope, so an otherwise-passing run is downgraded to INCONCLUSIVE -- a PASS certification must not claim the market-hours objective for an out-of-scope event. A provable budget breach is still FAIL regardless of scope (the scope gate never hides a real breach). Non-SRS (informational) targets do not require the scope. The evidence collector (boot_evidence.py::run_host_collection) MEASURES ONLY the OS_BOOT (/proc/stat btime + systemd-analyze) and DOCKER_DAEMON (systemctl show docker monotonic timestamps) phases from real host telemetry; it does NOT drive Docker Compose or the readiness gate. The PROXMOX_VM (hypervisor-side), ATP_SERVICE_INIT, and READINESS_CHECK intervals are EXTERNAL evidence supplied by the caller (typically absent today, since the phase1 compose services are cargo-test stubs and the SYS-76 probes are deferred to SRS-MD-006), so the collector never overstates its provenance. DEFERRED: the engine performs no measurement itself (no clock I/O; the phases and readiness outcome are supplied). Producing the REAL end-to-end evidence that proves trade-ready within 10 minutes requires a system test on the reference Proxmox/Ubuntu/Docker deployment -- which cannot run in the parallel sandbox -- AND the SYS-76 runtime readiness probes (IB connectivity/auth, IB account, SSD ingestion-freshness, NAS reachability, service-health) that are deferred to SRS-MD-006 (blocked on SRS-EXE-006); atp_readiness implements only the static-config half, and the phase1 compose services are cargo-test runners, not a running platform. So SRS-REL-002 stays passes:false in feature_list.json until the deferred owners land (see deferred[]).",
+    "srs_refs": [
+      "SRS-REL-002"
+    ],
+    "syrs_refs": [
+      "NFR-R6",
+      "SYS-76"
+    ],
+    "strs_refs": [
+      "SN-2.05"
+    ],
+    "module": "python/atp_reliability",
+    "engine_module": "python/atp_reliability/restart.py",
+    "evidence_module": "python/atp_reliability/boot_evidence.py",
+    "cli_module": "python/atp_reliability/restart_cli.py",
+    "cli_entry": "PYTHONPATH=python python -m atp_reliability.restart_cli",
+    "syrs_doc": "docs/SyRS_v0.7.md",
+    "srs_doc": "docs/SRS.md",
+    "verification_method": "System test",
+    "budget_seconds": 600,
+    "budget_ns": 600000000000,
+    "elapsed_measure": "end_to_end",
+    "elapsed_note": "elapsed_ns = readiness_check.end_ns - proxmox_vm.start_ns; inter-phase gaps count against the budget (not sum-of-phase-durations). observed_span_ns (max present end - min present start) is the provable lower bound used for the provable-breach FAIL even when an anchor phase is absent.",
+    "phases": [
+      {
+        "name": "proxmox_vm",
+        "description": "Proxmox VM availability -- the restart-trigger / t0 anchor"
+      },
+      {
+        "name": "os_boot",
+        "description": "guest OS boot"
+      },
+      {
+        "name": "docker_daemon",
+        "description": "Docker daemon startup"
+      },
+      {
+        "name": "atp_service_init",
+        "description": "ATP service (Docker Compose stack) initialization"
+      },
+      {
+        "name": "readiness_check",
+        "description": "SYS-76 readiness-check completion -- the trade-ready anchor"
+      }
+    ],
+    "subchecks": {
+      "ib_connectivity": "(a) IB Gateway connectivity established and authenticated",
+      "ib_account": "(b) IB account accessible and account data received",
+      "data_layer_ssd": "(c) data layer SSD primary tier accessible and most-recent ingestion not stale by more than one trading day",
+      "nas_archival": "(d) NAS archival tier reachable; degraded-mode operation acceptable if NAS unavailable, WITH an operator alert",
+      "system_services": "(e) all system-level services (execution engine, internal simulation engine, data layer, notification subsystem, dashboard) report healthy"
+    },
+    "nas_archival_degraded_with_alert_ok": true,
+    "subcheck_statuses": [
+      "pass",
+      "fail",
+      "degraded"
+    ],
+    "gate_state_variants": [
+      "initializing",
+      "pre_trade_blocked",
+      "ready",
+      "overridden"
+    ],
+    "gate_state_source": "atp_readiness.GateState (value parity enforced by the L3 contract test)",
+    "trade_ready_states": [
+      "ready"
+    ],
+    "overridden_is_non_certifying": "OVERRIDDEN is a valid atp_readiness.GateState (value parity retained) but is NOT a certifying trade-ready state for SRS-REL-002: it is reachable only from PRE_TRADE_BLOCKED (a SYS-76 readiness check failed and an operator manually released the hold), so it is a human bypass, not an automatic NFR-R6 recovery. A fixture with gate_state=overridden yields FAIL, never PASS.",
+    "market_hours_scope": "NFR-R6's 'during market hours' scopes which restart events the requirement applies to. An SRS-REL-002 PASS requires proven scope, DERIVED from the actual restart-trigger timestamp (proxmox_vm phase start) via the real UsEquityTradingCalendar (boot_evidence.derive_during_market_hours) -- NOT a caller-supplied boolean (forgeable), so restart_context.during_market_hours is REJECTED; restart_context.exchange (default NYSE) selects the calendar. A trigger outside a regular session (or on a non-session day) yields INCONCLUSIVE (a provable breach is still FAIL). The pure engine computes no calendar (elapsed is a raw epoch-ns subtraction, DST-irrelevant); the derivation lives in the adapter. Non-SRS informational targets do not require it.",
+    "verdicts": [
+      "PASS",
+      "FAIL",
+      "INCONCLUSIVE"
+    ],
+    "error_types": [
+      "EmptyRestartTimeline",
+      "PhaseInversionError",
+      "DuplicatePhaseError",
+      "PhaseOrderError",
+      "DuplicateSubCheckError",
+      "InvalidTimestamp"
+    ],
+    "cli_exit_codes": {
+      "PASS": 0,
+      "not_certified": 1,
+      "refused": 2
+    },
+    "deferred": [
+      "The system-test run on the reference deployment (Proxmox VM + OS boot + Docker daemon + ATP service init wall-clock evidence on the reference Ubuntu/Docker host) that produces the real end-to-end restart timeline -- a deployment/operator activity that cannot run in the parallel sandbox (owner: NFR-R6 system test)",
+      "The SYS-76 runtime readiness probes (IB connectivity/auth, IB account, SSD tier + ingestion-freshness within one trading day, NAS reachability, system-service health) that produce the real sub-check results -- deferred to SRS-MD-006 (blocked on SRS-EXE-006); atp_readiness implements only the static-config half of the gate",
+      "The atp_readiness gate transition into READY/OVERRIDDEN during a real restart, driven by the SRS-MD-006 probes -- deferred wiring",
+      "The end-to-end trade-ready-within-10-minutes proof run under reference deployment conditions (owner: NFR-R6 system test) -- keeps SRS-REL-002 passes:false until run"
+    ]
+  },
   "perf_measurement_contract": {
     "requirement": "SRS-PERF-001",
     "description": "SRS-PERF-001 (the software shall measure latency-sensitive performance metrics against a Precision Time Protocol (PTP)-disciplined system clock with documented offset bounds and shall report p50/p95/p99/p99.9 percentiles in verification artifacts; SyRS 5.1 NFR-P1 / NFR-P4 / NFR-P5 / NFR-P6 / NFR-P9 / NFR-P10 + SRS-MD-001 fan-out latency; StRS SN-1.01 / SN-2.03). SCOPE: this contract pins the vendor- and runtime-neutral MEASUREMENT SUBSTRATE in crates/atp-types/src/perf.rs -- the pure nearest-rank percentile engine (LatencyPercentiles over nanosecond samples: p50/p95/p99/p99.9, every reported value an actually-observed sample, no interpolation), the PtpClockDiscipline offset-bound model (Disciplined{max_offset_ns} vs Undisciplined), the LatencyNfr catalog binding each of the seven AC NFRs to its measurement boundary + budget(s), and the LatencyVerificationArtifact report type. The artifact constructor (from_samples) FAILS CLOSED: it rejects a non-PTP-disciplined clock (so a produced artifact always documents a max clock offset bound), an empty/inverted measurement window, and an empty sample set -- so every artifact carries the four percentiles, a documented offset, and a real window. tools/perf_measurement_check.py asserts each NFR budget + boundary phrase in the catalog matches its measurement condition in the spec docs: NFR-P1/P4/P5/P6/P9/P10 against the SyRS 5.1 performance table (docs/SyRS_v0.7.md, explicit '<'/'<=' ms budgets), and the SRS-MD-001 fan-out budget against the SRS requirement row (docs/SRS.md, the prose 'no more than 100 ms additional latency' AC) -- so 'measurement boundaries match the measurement conditions for each NFR' is enforced by inspection. NFR-P4 reuses the authoritative LIVE_CALLBACK_LATENCY_P95_MS / PAPER_CALLBACK_LATENCY_P95_MS constants and NFR-P9 reuses STRATEGY_STARTUP_DEADLINE_MS (no duplication); NFR-P6 mirrors atp_notification::event::DISPATCH_SLA_MS (a crate above dependency-free atp-types, so it cannot be imported) and both trace SyRS NFR-P6, pinned to it here. DEFERRED: this substrate performs NO measurement itself (no clock I/O; samples + the clock offset bound are supplied by the runtimes each NFR measures). Producing the REAL end-to-end verification artifacts requires those runtimes plus a PTP-disciplined host clock (a deployment/operator + hardware inspection that cannot run in the parallel sandbox), so SRS-PERF-001 stays passes:false in feature_list.json until the deferred owners land (see deferred[]).",
