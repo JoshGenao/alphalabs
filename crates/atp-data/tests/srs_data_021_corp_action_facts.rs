@@ -459,6 +459,34 @@ fn srs_data_021_successor_actions_after_an_in_window_rename_surface_too() {
 }
 
 #[test]
+fn srs_data_021_same_instant_successor_action_orders_after_the_rename() {
+    // The r6 finding: a NEW split effective at EXACTLY the OLD->NEW rename
+    // instant (300) is a valid successor action (NEW's validity begins AT the
+    // rename, inclusive) — but sorted by timestamp alone it could surface
+    // BEFORE the rename, so an applier holding OLD would no-op the split and
+    // then remap an unadjusted book. Same-instant facts order by application
+    // precedence: the rename first, the terminal delisting last.
+    let store = store_of([
+        symbol_change_record(300, "OLD", "NEW"),
+        split_record("NEW", 300, 2, 1),
+        delisting_record(300, "NEW"),
+        coverage_record(400, "OLD"),
+    ]);
+    let facts = store
+        .query_corporate_action_facts(&daily_query("OLD", 0, 400))
+        .expect("covered");
+    assert_eq!(
+        facts.iter().map(fact_kind).collect::<Vec<_>>(),
+        vec!["symbol-change", "split", "delisting"],
+        "rename first, terminal delisting last at one instant"
+    );
+    assert!(
+        facts.iter().all(|fact| fact.effective_ts() == 300),
+        "all three share the instant — the order is the precedence, not the clock"
+    );
+}
+
+#[test]
 fn srs_data_021_dividend_without_reference_close_fails_closed() {
     // A dividend with NO raw bar before its ex-date has no resolvable reference
     // close — the read fails closed (never a silently dropped or defaulted term).

@@ -484,6 +484,36 @@ def test_successor_actions_after_a_rename_reach_the_remapped_book() -> None:
     assert positions[1]["cost_basis_after_minor"] == 500000 - 100 * 100
 
 
+def test_same_instant_rename_and_successor_action_apply_in_precedence_order() -> None:
+    """Facts sharing one effective instant order by application precedence
+    (rename first), so a successor split at exactly the rename instant reaches
+    the just-remapped book instead of no-opping against the old name."""
+    result = _run_cli(
+        [
+            "apply-from-store",
+            "--facts-symbol",
+            "OLD",
+            "--facts-window",
+            "0:400",
+            "--symbol-change-record",
+            "OLD:NEW:300",
+            "--split-record",
+            "NEW:300:2:1",
+            "--coverage",
+            "OLD:400",
+            "--position",
+            "strat=alpha,sym=OLD,qty=100,price=5000",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+    facts = _lines(result.stdout, "fact:")
+    assert [f["kind"] for f in facts] == ["SYMBOL_CHANGE", "SPLIT"]
+    assert facts[0]["effective_ts"] == facts[1]["effective_ts"] == 300
+    positions = _lines(result.stdout, "position-outcome:")
+    assert positions[0]["kind"] == "REMAPPED" and positions[0]["successor"] == "NEW"
+    assert positions[1]["kind"] == "ADJUSTED" and positions[1]["quantity_after"] == 200
+
+
 def test_bad_input_fails_closed() -> None:
     # Unknown flag.
     assert _run_cli(["apply", "--symbol", "A", "--delisting", "--bogus", "x"]).returncode == 2

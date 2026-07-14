@@ -200,7 +200,7 @@ pub enum CorporateActionFact {
 
 impl CorporateActionFact {
     /// The instant the fact takes effect (the split/merger/delisting/rename effective instant, or
-    /// the dividend ex-instant) — the ascending sort key of a fact read's result.
+    /// the dividend ex-instant) — the primary ascending sort key of a fact read's result.
     pub fn effective_ts(&self) -> i64 {
         match self {
             Self::Split { effective_ts, .. }
@@ -208,6 +208,24 @@ impl CorporateActionFact {
             | Self::Merger { effective_ts, .. }
             | Self::SymbolChange { effective_ts, .. } => *effective_ts,
             Self::Dividend { ex_ts, .. } => *ex_ts,
+        }
+    }
+
+    /// The deterministic APPLICATION precedence among facts sharing one effective instant — the
+    /// secondary sort key. A symbol change orders FIRST: a successor's validity begins AT the
+    /// rename instant (inclusive), so a successor-keyed action at that same instant happens after
+    /// the rename — an applier must be carried onto the successor before the action can reach its
+    /// book (the same-instant predecessor-keyed action is already rejected by the segment checks,
+    /// and same-instant chained renames fail closed, so this ordering is unambiguous). A terminal
+    /// delisting orders LAST; splits re-express the share count the per-share dividend then
+    /// applies to.
+    fn same_instant_precedence(&self) -> u8 {
+        match self {
+            Self::SymbolChange { .. } => 0,
+            Self::Split { .. } => 1,
+            Self::Dividend { .. } => 2,
+            Self::Merger { .. } => 3,
+            Self::Delisting { .. } => 4,
         }
     }
 }
@@ -630,7 +648,10 @@ impl MarketDataStore {
                 },
             });
         }
-        facts.sort_by_key(CorporateActionFact::effective_ts);
+        // Ascending by effective instant; facts SHARING an instant order by the deterministic
+        // application precedence (rename first — a successor-keyed action at the rename instant
+        // happens after the rename that makes it reachable; delisting last).
+        facts.sort_by_key(|fact| (fact.effective_ts(), fact.same_instant_precedence()));
         Ok(facts)
     }
 

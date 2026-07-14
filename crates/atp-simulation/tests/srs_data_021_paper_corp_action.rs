@@ -916,6 +916,42 @@ fn srs_data_021_pre_rename_split_reaches_the_position_held_under_the_old_symbol(
 }
 
 #[test]
+fn srs_data_021_same_instant_rename_and_successor_split_apply_in_precedence_order() {
+    // The r6 regression at the APPLICATION layer: OLD->NEW and a NEW 2-for-1
+    // split share one effective instant (300). The fact stream orders the
+    // rename first, so the applier remaps the OLD-held book onto NEW and the
+    // split then reaches it — timestamp-only ordering would have no-opped the
+    // split against the still-OLD book.
+    let mut store = MarketDataStore::new();
+    for record in [
+        atp_data::store::symbol_change_record(300, "OLD", "NEW"),
+        split_record("NEW", 300, 2, 1),
+        coverage_record(400, "OLD"),
+    ] {
+        store.upsert(record).expect("fixture upsert");
+    }
+    let mut book = book_with(&[("alpha", "OLD", 100, 5_000)]);
+    let mut orders = VirtualOrderBook::new();
+    let facts = store
+        .query_corporate_action_facts(
+            &UnifiedHistoricalQuery::new("OLD", "1d", 0, 400)
+                .with_kind(DatasetKind::DailyEquityBar),
+        )
+        .expect("covered");
+    for action in actions_from_facts(&facts) {
+        apply_corporate_action(&mut book, &mut orders, &action);
+    }
+    assert!(book.position(&strategy("alpha"), "OLD").is_none());
+    let position = book.position(&strategy("alpha"), "NEW").expect("remapped");
+    assert_eq!(
+        position.quantity(),
+        200,
+        "the same-instant successor split reached the remapped book"
+    );
+    assert_eq!(position.cost_basis_minor(), 500_000, "basis invariant");
+}
+
+#[test]
 fn srs_data_021_uncovered_store_refuses_the_fact_read() {
     // The application path inherits the coverage gate: no coverage record, no
     // facts — a paper adjuster can never act on a window that could hide an
