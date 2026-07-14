@@ -580,7 +580,7 @@ impl MarketDataStore {
                 });
             }
         }
-        for event in self.corporate_events_in_window(query, &lineage) {
+        for event in self.corporate_events_in_window(query, &lineage)? {
             facts.push(match event {
                 CorporateActionEvent::Delisting {
                     symbol,
@@ -734,7 +734,7 @@ impl MarketDataStore {
 
         // (8) Surface the in-window STRUCTURAL events (delistings, mergers, symbol changes) across
         // the lineage -- all provably known (the gate guarantees D >= end_ts >= event.effective_ts).
-        let events = self.corporate_events_in_window(query, &lineage);
+        let events = self.corporate_events_in_window(query, &lineage)?;
 
         Ok(SplitAdjustedResult {
             records: adjusted,
@@ -991,12 +991,22 @@ impl MarketDataStore {
     /// The structural corporate-action events (delistings, mergers, symbol changes) across the
     /// lineage whose effective instant falls inside `[query.start_ts, query.end_ts]`,
     /// `effective_ts`-ascending. Merger terms are read directly off the record — store validation
-    /// (`validate_record`) guarantees their presence and sanity, so extraction is total.
+    /// (`validate_record`) guarantees their presence and sanity, so term extraction is total.
+    ///
+    /// FAIL-CLOSED on an in-window structural event dated outside its symbol's lineage validity
+    /// window (the same [`check_action_in_segment_window`] discipline the split / dividend
+    /// collectors apply): a predecessor's delisting or merger on/after its rename — or a
+    /// successor's before it — is structurally impossible rename data, and surfacing it would hand
+    /// an APPLICATION consumer (the SRS-DATA-021 fact read) an event its book can only no-op
+    /// against, silently skipping a required cancel/freeze. The one boundary exception is the
+    /// symbol-change record itself: it RETIRES its segment, so it legitimately sits exactly ON the
+    /// segment's closing boundary (`event_ts == valid_until`) — the strict check would reject
+    /// every legitimate rename.
     fn corporate_events_in_window(
         &self,
         query: &UnifiedHistoricalQuery,
         lineage: &[LineageSegment],
-    ) -> Vec<CorporateActionEvent> {
+    ) -> Result<Vec<CorporateActionEvent>, CoverageError> {
         let mut events: Vec<CorporateActionEvent> = Vec::new();
         for segment in lineage {
             for record in self.records() {
@@ -1009,12 +1019,14 @@ impl MarketDataStore {
                 }
                 match key.kind {
                     DatasetKind::CorporateActionDelisting => {
+                        check_action_in_segment_window(segment, key.event_ts)?;
                         events.push(CorporateActionEvent::Delisting {
                             symbol: key.symbol.clone(),
                             effective_ts: key.event_ts,
                         });
                     }
                     DatasetKind::CorporateActionMerger => {
+                        check_action_in_segment_window(segment, key.event_ts)?;
                         events.push(CorporateActionEvent::Merger {
                             symbol: key.symbol.clone(),
                             successor: successor_symbol(key)
@@ -1030,6 +1042,7 @@ impl MarketDataStore {
                         });
                     }
                     DatasetKind::CorporateActionSymbolChange => {
+                        check_symbol_change_in_segment_window(segment, key.event_ts)?;
                         events.push(CorporateActionEvent::SymbolChange {
                             predecessor: key.symbol.clone(),
                             successor: successor_symbol(key)
@@ -1047,7 +1060,7 @@ impl MarketDataStore {
             | CorporateActionEvent::Merger { effective_ts, .. }
             | CorporateActionEvent::SymbolChange { effective_ts, .. } => *effective_ts,
         });
-        events
+        Ok(events)
     }
 }
 
@@ -1095,6 +1108,26 @@ fn check_action_in_segment_window(
         return Err(CoverageError::AmbiguousLineage {
             symbol: segment.symbol.clone(),
             context: "a corporate action is dated outside its symbol's lineage validity window",
+        });
+    }
+    Ok(())
+}
+
+/// The validity check for a SYMBOL-CHANGE record: like [`check_action_in_segment_window`] but
+/// allowing `event_ts == valid_until` — the rename record is what RETIRES its segment, so it
+/// legitimately sits exactly on the closing boundary (a split / dividend / delisting / merger at
+/// that instant would instead be inconsistent with the rename). A rename before the segment's
+/// `valid_from`, or strictly after its `valid_until`, is inconsistent data — fail closed.
+fn check_symbol_change_in_segment_window(
+    segment: &LineageSegment,
+    event_ts: i64,
+) -> Result<(), CoverageError> {
+    if segment.valid_from.is_some_and(|from| event_ts < from)
+        || segment.valid_until.is_some_and(|until| event_ts > until)
+    {
+        return Err(CoverageError::AmbiguousLineage {
+            symbol: segment.symbol.clone(),
+            context: "a symbol change is dated outside its symbol's lineage validity window",
         });
     }
     Ok(())

@@ -256,6 +256,66 @@ fn srs_data_021_lineage_facts_keep_the_as_held_symbol() {
 }
 
 #[test]
+fn srs_data_021_structural_facts_outside_lineage_validity_fail_closed() {
+    // A predecessor's delisting dated AFTER its rename is structurally
+    // impossible rename data. Surfacing it would hand the paper applier an
+    // OLD-keyed event its book (already carried onto NEW by the earlier rename
+    // fact) can only no-op against — silently skipping a required
+    // cancel/freeze. The read fails closed instead (the same discipline the
+    // split/dividend collectors already apply).
+    let store = store_of([
+        symbol_change_record(300, "OLD", "NEW"),
+        delisting_record(350, "OLD"),
+        coverage_record(400, "NEW"),
+    ]);
+    assert!(matches!(
+        store
+            .query_corporate_action_facts(&daily_query("NEW", 0, 400))
+            .unwrap_err(),
+        CoverageError::AmbiguousLineage { .. }
+    ));
+    // The PRICE reads inherit the same fail-closed guard (one collector).
+    assert!(matches!(
+        store
+            .query_split_adjusted(&daily_query("NEW", 0, 400))
+            .unwrap_err(),
+        CoverageError::AmbiguousLineage { .. }
+    ));
+
+    // A successor's merger dated BEFORE its validity began (NEW exists only
+    // from the rename @300; the merger record says NEW converted @250) is
+    // equally impossible — fail closed.
+    let store = store_of([
+        symbol_change_record(300, "OLD", "NEW"),
+        merger_record(250, "NEW", "ACQ", 1, 1, 0),
+        coverage_record(400, "NEW"),
+    ]);
+    assert!(matches!(
+        store
+            .query_corporate_action_facts(&daily_query("NEW", 0, 400))
+            .unwrap_err(),
+        CoverageError::AmbiguousLineage { .. }
+    ));
+
+    // The rename record ITSELF legitimately sits ON its segment's closing
+    // boundary and still surfaces (a strict window check would reject every
+    // legitimate rename) — pinned by the boundary case: a delisting of the
+    // SUCCESSOR after the rename is consistent and surfaces alongside it.
+    let store = store_of([
+        symbol_change_record(300, "OLD", "NEW"),
+        delisting_record(350, "NEW"),
+        coverage_record(400, "NEW"),
+    ]);
+    let facts = store
+        .query_corporate_action_facts(&daily_query("NEW", 0, 400))
+        .expect("consistent lineage");
+    assert_eq!(
+        facts.iter().map(fact_kind).collect::<Vec<_>>(),
+        vec!["symbol-change", "delisting"],
+    );
+}
+
+#[test]
 fn srs_data_021_dividend_without_reference_close_fails_closed() {
     // A dividend with NO raw bar before its ex-date has no resolvable reference
     // close — the read fails closed (never a silently dropped or defaulted term).

@@ -364,6 +364,37 @@ def test_uncovered_store_refuses_the_fact_read() -> None:
     assert "position-outcome:" not in result.stdout, "no adjustment happened"
 
 
+def test_structurally_impossible_lineage_refuses_the_fact_read() -> None:
+    """A predecessor's delisting dated AFTER its rename is impossible rename
+    data: surfacing it would hand the applier an OLD-keyed event the book
+    (already carried onto NEW) could only no-op against — silently skipping a
+    required cancel. The gated fact read fails closed instead (exit 2) and no
+    adjustment happens."""
+    result = _run_cli(
+        [
+            "apply-from-store",
+            "--facts-symbol",
+            "NEW",
+            "--facts-window",
+            "0:400",
+            "--symbol-change-record",
+            "OLD:NEW:300",
+            "--delisting-record",
+            "OLD:350",
+            "--coverage",
+            "NEW:400",
+            "--position",
+            "strat=alpha,sym=NEW,qty=100,price=5000",
+            "--order",
+            "strat=alpha,sym=NEW,side=buy,qty=10,type=market",
+        ]
+    )
+    assert result.returncode == 2
+    assert "fact read refused" in result.stderr
+    assert "position-outcome:" not in result.stdout
+    assert "order-outcome:" not in result.stdout
+
+
 def test_bad_input_fails_closed() -> None:
     # Unknown flag.
     assert _run_cli(["apply", "--symbol", "A", "--delisting", "--bogus", "x"]).returncode == 2
