@@ -98,7 +98,8 @@
     "SRS-SDK-004"
   ],
   "SRS-DATA-021": [
-    "SRS-DATA-011"
+    "SRS-DATA-011",
+    "SRS-EXE-002"
   ],
   "SRS-ERR-001": [
     "SRS-EXE-006"
