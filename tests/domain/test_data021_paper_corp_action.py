@@ -449,6 +449,41 @@ def test_querying_a_retired_predecessor_refuses_stale_actions() -> None:
     assert positions[1]["kind"] == "REMAPPED" and positions[1]["successor"] == "NEW"
 
 
+def test_successor_actions_after_a_rename_reach_the_remapped_book() -> None:
+    """ONE query for the held predecessor covers the instrument's whole rename
+    lineage: the rename carries the book onto NEW, and NEW's LATER dividend in
+    the same window then adjusts the remapped position — the read does not stop
+    at the rename and leave the book stale."""
+    result = _run_cli(
+        [
+            "apply-from-store",
+            "--facts-symbol",
+            "OLD",
+            "--facts-window",
+            "0:400",
+            "--bar",
+            "NEW:320:4000",
+            "--symbol-change-record",
+            "OLD:NEW:300",
+            "--dividend-record",
+            "NEW:350:100",
+            "--coverage",
+            "OLD:400",
+            "--position",
+            "strat=alpha,sym=OLD,qty=100,price=5000",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+    facts = _lines(result.stdout, "fact:")
+    assert [f["kind"] for f in facts] == ["SYMBOL_CHANGE", "DIVIDEND"]
+    assert facts[1]["symbol"] == "NEW", "the successor's action, under its own name"
+    positions = _lines(result.stdout, "position-outcome:")
+    assert positions[0]["kind"] == "REMAPPED" and positions[0]["successor"] == "NEW"
+    assert positions[1]["kind"] == "ADJUSTED"
+    assert positions[1]["symbol"] == "NEW", "the dividend reached the remapped book"
+    assert positions[1]["cost_basis_after_minor"] == 500000 - 100 * 100
+
+
 def test_bad_input_fails_closed() -> None:
     # Unknown flag.
     assert _run_cli(["apply", "--symbol", "A", "--delisting", "--bogus", "x"]).returncode == 2

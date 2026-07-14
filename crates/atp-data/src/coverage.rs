@@ -515,9 +515,17 @@ impl MarketDataStore {
     /// queried symbol: an application consumer's book holds state under the historical name until
     /// the rename fact itself is applied in sequence, so the price reads' relabeling would make a
     /// pre-rename split/dividend silently miss the held position or order (the fail-open this
-    /// surface must not have). Apply facts in the returned `effective_ts` order and the rename hop
-    /// carries the book onto the successor exactly when the lineage did. An empty list is the
-    /// common covered result, never an error.
+    /// surface must not have). The lineage is walked in BOTH directions: predecessors (the price
+    /// reads' backward walk) AND the queried symbol's outgoing renames forward — an in-window
+    /// rename carries the applier's book onto the successor, so the successor's later in-window
+    /// actions are the same instrument's story and surface too. Apply facts in the returned
+    /// `effective_ts` order and the rename hops carry the book exactly as the lineage did.
+    ///
+    /// ONE query per held instrument: because the read spans the instrument's full rename lineage,
+    /// querying any of its names returns the same action story — issue one query per distinct
+    /// instrument and never a second one for another name of the same lineage (applying the
+    /// returned facts twice would double-adjust). An empty list is the common covered result,
+    /// never an error.
     pub fn query_corporate_action_facts(
         &self,
         query: &UnifiedHistoricalQuery,
@@ -551,8 +559,15 @@ impl MarketDataStore {
 
         // (3) Point-in-time basis at the window end (no lookahead), the same cutoff the `_as_of`
         // reads use: lineage, split terms, and dividend terms are resolved (and validated) only
-        // through `query.end_ts`.
-        let lineage = self.resolve_lineage(&query.symbol, query.end_ts)?;
+        // through `query.end_ts`. Unlike the price reads (which serve the QUERIED symbol's series
+        // and only look BACKWARD through its predecessors), the fact read also follows the queried
+        // symbol's outgoing renames FORWARD: an applier holding the predecessor is carried onto
+        // the successor by the rename fact itself, so the successor's later in-window actions are
+        // part of the same instrument's story and must surface too — stopping at the rename would
+        // leave the remapped book silently stale (the fail-open the adversarial review caught).
+        let mut lineage = self.resolve_lineage(&query.symbol, query.end_ts)?;
+        self.extend_lineage_forward(&mut lineage, &query.symbol, query.end_ts)?;
+        let lineage = lineage;
         let series = self.lineage_raw_series(kind, query, &lineage)?;
         let splits = self.lineage_split_events(None, &lineage, query.end_ts)?;
         let dividends = self.lineage_dividend_events(None, &lineage, query.end_ts, &series)?;
@@ -742,6 +757,104 @@ impl MarketDataStore {
             adjusted_through,
             events,
         })
+    }
+
+    /// Extend a resolved (backward) lineage FORWARD through the queried symbol's outgoing renames,
+    /// bounded to `cutoff` — the fact read's successor leg (the price reads never call this; they
+    /// serve the queried symbol's own series). Each successor gets a validity segment
+    /// `[its inbound rename, its own outgoing rename)`, so every downstream validity check applies
+    /// to successor actions exactly as it does to predecessor ones. The same fail-closed
+    /// discipline as the backward walk: a revisited symbol or a chain past the depth bound is a
+    /// [`CoverageError::LineageCycle`]; a successor with two outgoing renames, or hops out of
+    /// chronological order, is [`CoverageError::AmbiguousLineage`].
+    ///
+    /// Coverage note: the gate already proved the QUERIED symbol's frontier through the query end,
+    /// and (per the module-docs trust decision) asserting coverage for a symbol asserts knowledge
+    /// of its INSTRUMENT's corporate actions — the instrument is one continuous entity through a
+    /// rename, forward exactly as backward.
+    fn extend_lineage_forward(
+        &self,
+        lineage: &mut Vec<LineageSegment>,
+        symbol: &str,
+        cutoff: i64,
+    ) -> Result<(), CoverageError> {
+        let mut visited: BTreeSet<String> = lineage
+            .iter()
+            .map(|segment| segment.symbol.clone())
+            .collect();
+        let mut current = symbol.to_string();
+        // The head segment's own retirement instant (set by resolve_lineage when the queried
+        // symbol has an outgoing rename within the cutoff) starts the walk.
+        let mut current_retired = lineage
+            .iter()
+            .find(|segment| segment.symbol == current)
+            .and_then(|segment| segment.valid_until);
+        let mut depth = 0usize;
+        while let Some(change_ts) = current_retired {
+            depth += 1;
+            if depth >= MAX_LINEAGE_DEPTH {
+                return Err(CoverageError::LineageCycle { symbol: current });
+            }
+            // The outgoing rename record retiring `current` at `change_ts` (resolve_lineage /
+            // the previous hop proved it exists and is unique within the cutoff).
+            let successor = self
+                .records()
+                .iter()
+                .find(|record| {
+                    let key = record.key();
+                    key.kind == DatasetKind::CorporateActionSymbolChange
+                        && key.symbol == current
+                        && key.event_ts == change_ts
+                })
+                .and_then(|record| successor_symbol(record.key()))
+                .ok_or_else(|| CoverageError::AmbiguousLineage {
+                    symbol: current.clone(),
+                    context: "a symbol change record lost its successor",
+                })?
+                .to_string();
+            if !visited.insert(successor.clone()) {
+                return Err(CoverageError::LineageCycle { symbol: successor });
+            }
+            // The successor's own outgoing rename within the cutoff bounds ITS segment — the same
+            // single-rename rule as everywhere else, and it must be strictly later than the hop
+            // that created the successor.
+            let mut outgoing: Vec<i64> = self
+                .records()
+                .iter()
+                .filter(|record| {
+                    let key = record.key();
+                    key.kind == DatasetKind::CorporateActionSymbolChange
+                        && key.symbol == successor
+                        && key.event_ts <= cutoff
+                })
+                .map(|record| record.key().event_ts)
+                .collect();
+            outgoing.sort_unstable();
+            let next_retired = match outgoing.as_slice() {
+                [] => None,
+                [ts] => Some(*ts),
+                _ => {
+                    return Err(CoverageError::AmbiguousLineage {
+                        symbol: successor,
+                        context: "a predecessor has multiple renames",
+                    })
+                }
+            };
+            if next_retired.is_some_and(|ts| ts <= change_ts) {
+                return Err(CoverageError::AmbiguousLineage {
+                    symbol: successor,
+                    context: "lineage hops out of chronological order",
+                });
+            }
+            lineage.push(LineageSegment {
+                symbol: successor.clone(),
+                valid_from: Some(change_ts),
+                valid_until: next_retired,
+            });
+            current = successor;
+            current_retired = next_retired;
+        }
+        Ok(())
     }
 
     /// Resolve the queried symbol's rename LINEAGE: walk

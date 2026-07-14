@@ -376,6 +376,89 @@ fn srs_data_021_querying_a_retired_predecessor_bounds_its_own_segment() {
 }
 
 #[test]
+fn srs_data_021_successor_actions_after_an_in_window_rename_surface_too() {
+    // The r5 finding: a book holding OLD is carried onto NEW by the in-window
+    // rename, so NEW's LATER in-window actions are the same instrument's story
+    // — stopping at the rename would leave the remapped book silently stale.
+    let store = store_of([
+        split_record("OLD", 200, 2, 1),
+        symbol_change_record(300, "OLD", "NEW"),
+        split_record("NEW", 350, 3, 1),
+        delisting_record(380, "NEW"),
+        coverage_record(400, "OLD"),
+    ]);
+    let facts = store
+        .query_corporate_action_facts(&daily_query("OLD", 0, 400))
+        .expect("covered");
+    assert_eq!(
+        facts,
+        vec![
+            CorporateActionFact::Split {
+                symbol: "OLD".to_string(),
+                effective_ts: 200,
+                numerator: 2,
+                denominator: 1,
+            },
+            CorporateActionFact::SymbolChange {
+                predecessor: "OLD".to_string(),
+                successor: "NEW".to_string(),
+                effective_ts: 300,
+            },
+            CorporateActionFact::Split {
+                symbol: "NEW".to_string(),
+                effective_ts: 350,
+                numerator: 3,
+                denominator: 1,
+            },
+            CorporateActionFact::Delisting {
+                symbol: "NEW".to_string(),
+                effective_ts: 380,
+            },
+        ],
+        "the successor's actions surface under the successor's own name, in event order"
+    );
+
+    // A successor action AFTER the as-of end stays unseen (no lookahead through
+    // the forward leg either).
+    let facts = store
+        .query_corporate_action_facts(&daily_query("OLD", 0, 360))
+        .expect("covered pre-delisting window");
+    assert_eq!(
+        facts.len(),
+        3,
+        "the NEW delisting @380 is beyond the as-of end"
+    );
+
+    // A successor action outside ITS validity window fails closed exactly like
+    // a predecessor's (the same segment checks govern the forward leg): NEW's
+    // split dated BEFORE the rename that created NEW is impossible data.
+    let store = store_of([
+        symbol_change_record(300, "OLD", "NEW"),
+        split_record("NEW", 250, 3, 1),
+        coverage_record(400, "OLD"),
+    ]);
+    assert!(matches!(
+        store
+            .query_corporate_action_facts(&daily_query("OLD", 0, 400))
+            .unwrap_err(),
+        CoverageError::AmbiguousLineage { .. }
+    ));
+
+    // A rename CYCLE through the forward leg fails closed, never loops.
+    let store = store_of([
+        symbol_change_record(300, "OLD", "NEW"),
+        symbol_change_record(350, "NEW", "OLD"),
+        coverage_record(400, "OLD"),
+    ]);
+    assert!(matches!(
+        store
+            .query_corporate_action_facts(&daily_query("OLD", 0, 400))
+            .unwrap_err(),
+        CoverageError::LineageCycle { .. } | CoverageError::AmbiguousLineage { .. }
+    ));
+}
+
+#[test]
 fn srs_data_021_dividend_without_reference_close_fails_closed() {
     // A dividend with NO raw bar before its ex-date has no resolvable reference
     // close — the read fails closed (never a silently dropped or defaulted term).
