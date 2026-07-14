@@ -30,6 +30,7 @@ from .inventory import (
     StrategyInventoryProvider,
     StrategyInventorySource,
 )
+from .loadgen import LOAD_CHANNELS, LOAD_DATA_SOURCE, SyntheticStrategyLoad
 from .provider import (
     DEFERRED,
     LIVE,
@@ -69,6 +70,8 @@ __all__ = [
     "DEFERRED",
     "INVENTORY_CHANNEL",
     "LIVE",
+    "LOAD_CHANNELS",
+    "LOAD_DATA_SOURCE",
     "OWNED_CHANNELS",
     "REFRESH_BUDGET_MS",
     "RESERVOIR_CHANNEL",
@@ -88,6 +91,7 @@ __all__ = [
     "StoreCliBacktestHistorySource",
     "StrategyInventoryProvider",
     "StrategyInventorySource",
+    "SyntheticStrategyLoad",
     "cadence_for",
     "deferred_field",
     "load_assets",
