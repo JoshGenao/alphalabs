@@ -823,11 +823,43 @@ impl MarketDataStore {
             current = predecessor;
         }
 
-        // Hops -> validity segments: the queried symbol is valid from its (nearest) rename onward;
-        // each predecessor is valid from ITS rename (unbounded for the oldest) until the rename that
-        // retired it.
+        // The QUERIED symbol's own OUTGOING rename (within the cutoff) RETIRES it: after that
+        // instant the symbol no longer exists, so a later bar or corporate action keyed to it is
+        // inconsistent data. Bounding the head segment's `valid_until` here makes every downstream
+        // validity check catch it — without this, a consumer holding the PREDECESSOR name and
+        // querying it directly would be served post-retirement actions as valid facts (the
+        // application fail-open the SRS-DATA-021 adversarial review caught). An outgoing rename
+        // AFTER the cutoff does not bound the segment (as-of semantics: at the cutoff instant the
+        // rename has not happened yet). Two outgoing renames is inconsistent data — fail closed,
+        // the same rule the walk applies to every predecessor.
+        let mut outgoing_ts: Vec<i64> = self
+            .records()
+            .iter()
+            .filter(|record| {
+                let key = record.key();
+                key.kind == DatasetKind::CorporateActionSymbolChange
+                    && key.symbol == symbol
+                    && key.event_ts <= cutoff
+            })
+            .map(|record| record.key().event_ts)
+            .collect();
+        outgoing_ts.sort_unstable();
+        let head_retired_at = match outgoing_ts.as_slice() {
+            [] => None,
+            [ts] => Some(*ts),
+            _ => {
+                return Err(CoverageError::AmbiguousLineage {
+                    symbol: symbol.to_string(),
+                    context: "a predecessor has multiple renames",
+                })
+            }
+        };
+
+        // Hops -> validity segments: the queried symbol is valid from its (nearest) rename onward
+        // until its own outgoing rename (if any) retires it; each predecessor is valid from ITS
+        // rename (unbounded for the oldest) until the rename that retired it.
         let mut segments = Vec::with_capacity(hops.len() + 1);
-        let mut valid_until: Option<i64> = None;
+        let mut valid_until: Option<i64> = head_retired_at;
         let mut segment_symbol = symbol.to_string();
         for (predecessor, change_ts) in &hops {
             segments.push(LineageSegment {

@@ -30,15 +30,30 @@
 //! Like the SYS-84 [`crate::virtual_ledger::VirtualLedgerBook`] (SRS-SIM-003) —
 //! which is fed by the engine's real fill output and held by the caller — this
 //! book is CALLER-HELD state fed by the engine's real intake output: the
-//! stateless [`PaperSimulationEngine`] owns neither. The corporate-action
-//! application itself lives in [`crate::corporate_actions`]; this store offers
-//! the crate-internal mutation seams it needs
-//! ([`VirtualOrderBook::orders_mut`]). Evolving the fill path to trigger fills
-//! FROM resting orders (a limit order resting until its price crosses —
-//! today's SRS-SIM-002 path decides fills per routed order + snapshot) and
-//! persisting the book into the SRS-SIM-004 snapshot's reserved slot are those
-//! owners' evolutions, not contexts inside SRS-DATA-021's acceptance criterion
-//! ("virtual orders for delisted securities are canceled").
+//! stateless [`PaperSimulationEngine`] owns neither (that caller-held shape is
+//! the shipped, verified SRS-SIM-003 pattern, not an improvisation). The
+//! corporate-action application itself lives in [`crate::corporate_actions`];
+//! this store offers the crate-internal mutation seams it needs
+//! ([`VirtualOrderBook::orders_mut`]).
+//!
+//! ## Why `accept_order` itself does not (and must not, today) retain
+//!
+//! In the shipped paper flow NO accepted order ever rests: SRS-SIM-002 decides
+//! a fill per routed order + market snapshot immediately, and the SRS-SIM-004
+//! snapshot pins that fact (its pending-orders slot is reserved and
+//! always-empty). So there is no production call site that could "bypass" this
+//! book — an accepted-but-resting order does not exist anywhere until a
+//! runtime holds one, and the first runtime that DOES (the SRS-SIM-002
+//! fill-loop evolution that rests limit/stop orders until trigger, under the
+//! SRS-EXE-002 orchestrator / Python strategy host) must hold THIS book as its
+//! single authoritative store — that adoption is those owners' named work.
+//! Retrofitting retention into [`PaperSimulationEngine::accept_order`] itself
+//! would rewrite SRS-SIM-001's verified compile-time contract (a stateless
+//! validate-and-route surface with no storage) from an adjacent feature — the
+//! wrong place to change it. What SRS-DATA-021 guarantees is the half it owns:
+//! every order that rests HERE entered through the engine's real intake
+//! ([`VirtualOrderBook::place_accepted`]), and every rested order is reachable
+//! by the corporate-action path.
 
 use std::fmt;
 

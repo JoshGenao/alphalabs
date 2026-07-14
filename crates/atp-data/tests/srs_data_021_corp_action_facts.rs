@@ -316,6 +316,66 @@ fn srs_data_021_structural_facts_outside_lineage_validity_fail_closed() {
 }
 
 #[test]
+fn srs_data_021_querying_a_retired_predecessor_bounds_its_own_segment() {
+    // The r4 finding: a consumer can hold (and query) the PREDECESSOR symbol.
+    // OLD's own outgoing rename retires it @300, so a stale OLD action dated
+    // after the retirement must FAIL the read closed — not surface as a fact an
+    // applier would trust.
+    let store = store_of([
+        symbol_change_record(300, "OLD", "NEW"),
+        delisting_record(350, "OLD"),
+        coverage_record(400, "OLD"),
+    ]);
+    assert!(matches!(
+        store
+            .query_corporate_action_facts(&daily_query("OLD", 0, 400))
+            .unwrap_err(),
+        CoverageError::AmbiguousLineage { .. }
+    ));
+
+    // The legitimate held-predecessor journey still works: querying OLD
+    // surfaces its pre-rename split AND the rename itself (the record sits on
+    // the segment's closing boundary), in event order — exactly what a book
+    // holding OLD needs to first adjust, then be carried onto NEW.
+    let store = store_of([
+        split_record("OLD", 200, 2, 1),
+        symbol_change_record(300, "OLD", "NEW"),
+        coverage_record(400, "OLD"),
+    ]);
+    let facts = store
+        .query_corporate_action_facts(&daily_query("OLD", 0, 400))
+        .expect("consistent predecessor query");
+    assert_eq!(
+        facts,
+        vec![
+            CorporateActionFact::Split {
+                symbol: "OLD".to_string(),
+                effective_ts: 200,
+                numerator: 2,
+                denominator: 1,
+            },
+            CorporateActionFact::SymbolChange {
+                predecessor: "OLD".to_string(),
+                successor: "NEW".to_string(),
+                effective_ts: 300,
+            },
+        ]
+    );
+
+    // As-of semantics: a rename AFTER the query window's end has not happened
+    // yet at the as-of instant, so it neither bounds the segment nor surfaces —
+    // OLD's in-window actions still serve.
+    let facts = store
+        .query_corporate_action_facts(&daily_query("OLD", 0, 250))
+        .expect("covered pre-rename window");
+    assert_eq!(
+        facts.len(),
+        1,
+        "the split only; the future rename is unseen"
+    );
+}
+
+#[test]
 fn srs_data_021_dividend_without_reference_close_fails_closed() {
     // A dividend with NO raw bar before its ex-date has no resolvable reference
     // close — the read fails closed (never a silently dropped or defaulted term).

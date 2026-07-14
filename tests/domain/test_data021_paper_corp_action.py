@@ -395,6 +395,60 @@ def test_structurally_impossible_lineage_refuses_the_fact_read() -> None:
     assert "order-outcome:" not in result.stdout
 
 
+def test_querying_a_retired_predecessor_refuses_stale_actions() -> None:
+    """A book can hold (and query) the PREDECESSOR symbol directly. OLD's own
+    outgoing rename retires it, so a stale OLD action dated after the
+    retirement must refuse the whole read (exit 2) — not surface as a fact the
+    applier would trust against the retired name."""
+    result = _run_cli(
+        [
+            "apply-from-store",
+            "--facts-symbol",
+            "OLD",
+            "--facts-window",
+            "0:400",
+            "--symbol-change-record",
+            "OLD:NEW:300",
+            "--delisting-record",
+            "OLD:350",
+            "--coverage",
+            "OLD:400",
+            "--position",
+            "strat=alpha,sym=OLD,qty=100,price=5000",
+        ]
+    )
+    assert result.returncode == 2
+    assert "fact read refused" in result.stderr
+    assert "position-outcome:" not in result.stdout
+
+    # The legitimate held-predecessor journey: querying OLD surfaces its
+    # pre-rename split and the rename, and the application carries the book
+    # onto NEW with the split applied first.
+    result = _run_cli(
+        [
+            "apply-from-store",
+            "--facts-symbol",
+            "OLD",
+            "--facts-window",
+            "0:400",
+            "--split-record",
+            "OLD:200:2:1",
+            "--symbol-change-record",
+            "OLD:NEW:300",
+            "--coverage",
+            "OLD:400",
+            "--position",
+            "strat=alpha,sym=OLD,qty=100,price=5000",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+    facts = _lines(result.stdout, "fact:")
+    assert [f["kind"] for f in facts] == ["SPLIT", "SYMBOL_CHANGE"]
+    positions = _lines(result.stdout, "position-outcome:")
+    assert positions[0]["kind"] == "ADJUSTED" and positions[0]["quantity_after"] == 200
+    assert positions[1]["kind"] == "REMAPPED" and positions[1]["successor"] == "NEW"
+
+
 def test_bad_input_fails_closed() -> None:
     # Unknown flag.
     assert _run_cli(["apply", "--symbol", "A", "--delisting", "--bogus", "x"]).returncode == 2
