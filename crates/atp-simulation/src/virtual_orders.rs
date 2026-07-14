@@ -13,29 +13,39 @@
 //! [`VirtualOrderStatus::Cancelled`] with a structured
 //! [`VirtualOrderCancelReason`].
 //!
-//! Placement applies the SAME fail-closed intake validation as
-//! [`crate::paper_order`] (`validate_leg` — one authority, not a copy): an empty
-//! symbol, a non-positive quantity, or a non-positive trigger/limit price never
-//! enters the book. Symbols are matched CANONICALLY (trim + upper-case, the
-//! [`crate::virtual_ledger`] policy) at corporate-action time, but the leg is held
-//! verbatim — the same discipline as the live `OrderSubmission` path
-//! (SRS-DATA-019). A cancelled order is TERMINAL: no later corporate action or
-//! cancel reaches it, and the book never deletes it (an auditable record, not a
-//! tombstone).
+//! An order enters the book through the ENGINE'S OWN intake:
+//! [`VirtualOrderBook::place_accepted`] submits a [`PaperOrderRequest`] through
+//! the real [`PaperSimulationEngine::accept_order`] (the SRS-SIM-001 validation
+//! + internal-simulation routing every paper order takes) and rests each
+//! accepted leg — so a corporate action reaches exactly the orders the intake
+//! path accepted, never a shape constructed around it. The single-leg
+//! [`VirtualOrderBook::place`] primitive applies the same `validate_leg`
+//! authority (one rule, not a copy). Symbols are matched CANONICALLY (trim +
+//! upper-case, the [`crate::virtual_ledger`] policy) at corporate-action time,
+//! but the leg is held verbatim — the same discipline as the live
+//! `OrderSubmission` path (SRS-DATA-019). A cancelled order is TERMINAL: no
+//! later corporate action or cancel reaches it, and the book never deletes it
+//! (an auditable record, not a tombstone).
 //!
-//! The corporate-action application itself lives in
-//! [`crate::corporate_actions`]; this store only offers the crate-internal
-//! mutation seams it needs ([`VirtualOrderBook::orders_mut`]). Wiring the fill
-//! path to consume resting orders (a limit order resting until its price crosses)
-//! and persisting the book into the SRS-SIM-004 snapshot's reserved slot are the
-//! adjacent owners' work (SRS-SIM-002 / SRS-SIM-004), not part of the SRS-DATA-021
-//! acceptance criterion.
+//! Like the SYS-84 [`crate::virtual_ledger::VirtualLedgerBook`] (SRS-SIM-003) —
+//! which is fed by the engine's real fill output and held by the caller — this
+//! book is CALLER-HELD state fed by the engine's real intake output: the
+//! stateless [`PaperSimulationEngine`] owns neither. The corporate-action
+//! application itself lives in [`crate::corporate_actions`]; this store offers
+//! the crate-internal mutation seams it needs
+//! ([`VirtualOrderBook::orders_mut`]). Evolving the fill path to trigger fills
+//! FROM resting orders (a limit order resting until its price crosses —
+//! today's SRS-SIM-002 path decides fills per routed order + snapshot) and
+//! persisting the book into the SRS-SIM-004 snapshot's reserved slot are those
+//! owners' evolutions, not contexts inside SRS-DATA-021's acceptance criterion
+//! ("virtual orders for delisted securities are canceled").
 
 use std::fmt;
 
 use atp_types::StrategyId;
 
-use crate::paper_order::{validate_leg, OrderError, OrderLeg};
+use crate::paper_order::{validate_leg, OrderError, OrderLeg, OrderRouting, PaperOrderRequest};
+use crate::sim::PaperSimulationEngine;
 
 /// A book-assigned identifier for one virtual resting order — unique within its
 /// [`VirtualOrderBook`], strictly increasing in placement order (so iteration by
@@ -188,7 +198,10 @@ impl VirtualOrderBook {
     /// Place a resting order for `strategy`, applying the SAME fail-closed
     /// intake validation as the SRS-SIM-001 paper order path ([`OrderError`] on
     /// an empty symbol, non-positive quantity, or non-positive trigger/limit
-    /// price). Nothing is stored when validation fails.
+    /// price). Nothing is stored when validation fails. Prefer
+    /// [`place_accepted`](Self::place_accepted), which routes through the
+    /// engine's own intake; this is the single-leg primitive it rests each
+    /// accepted leg with.
     pub fn place(
         &mut self,
         strategy: &StrategyId,
@@ -204,6 +217,35 @@ impl VirtualOrderBook {
             status: VirtualOrderStatus::Open,
         });
         Ok(id)
+    }
+
+    /// Submit `request` through the REAL SRS-SIM-001 intake path
+    /// ([`PaperSimulationEngine::accept_order`] — the same validation and
+    /// internal-simulation routing every paper order takes) and rest every leg
+    /// of the accepted routing in this book. This is the wiring that makes an
+    /// ACCEPTED paper order reachable by the SRS-DATA-021 corporate-action
+    /// path: an order enters the book only by passing the engine's own intake,
+    /// never by construction around it. Fail-closed and atomic: a rejected
+    /// request ([`OrderError`]) rests nothing.
+    ///
+    /// The ids are returned in leg order; a multi-leg composite rests one order
+    /// per leg (each leg is independently cancellable by a corporate action on
+    /// its own symbol, exactly like the position ledger keys per symbol).
+    pub fn place_accepted(
+        &mut self,
+        strategy: &StrategyId,
+        engine: &PaperSimulationEngine,
+        request: &PaperOrderRequest,
+    ) -> Result<Vec<VirtualOrderId>, OrderError> {
+        let routing = engine.accept_order(request)?;
+        let OrderRouting::InternalSimulation { legs, .. } = routing;
+        // accept_order validated every leg, so the per-leg place() re-validation
+        // cannot fail here — the whole request rests or none of it does.
+        let ids = legs
+            .into_iter()
+            .map(|leg| self.place(strategy, leg))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ids)
     }
 
     /// The order with `id`, if it exists.

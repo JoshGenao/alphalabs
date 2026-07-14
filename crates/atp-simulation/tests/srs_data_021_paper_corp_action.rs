@@ -558,6 +558,84 @@ fn srs_data_021_dividend_leaves_orders_resting_and_symbol_change_relabels() {
 }
 
 #[test]
+fn srs_data_021_delisting_cancels_an_order_accepted_through_the_real_intake_path() {
+    // The runtime-path scenario: the order enters the book through the ENGINE'S
+    // own SRS-SIM-001 intake (`PaperSimulationEngine::accept_order` via
+    // `place_accepted`), not by fixture construction — and a delisting cancels
+    // exactly that accepted order. A rejected request rests nothing.
+    use atp_simulation::paper_order::PaperOrderRequest;
+    use atp_simulation::sim::PaperSimulationEngine;
+
+    let engine = PaperSimulationEngine::new();
+    let mut book = VirtualLedgerBook::new();
+    let mut orders = VirtualOrderBook::new();
+    let ids = orders
+        .place_accepted(
+            &strategy("alpha"),
+            &engine,
+            &PaperOrderRequest::Single(leg(
+                "DEAD",
+                10,
+                OrderType::Limit {
+                    limit_price_minor: 4_000,
+                },
+            )),
+        )
+        .expect("the engine accepts the order");
+    assert_eq!(ids.len(), 1);
+
+    // A multi-leg composite rests one order per leg, each independently
+    // reachable by a corporate action on its own symbol.
+    let composite = orders
+        .place_accepted(
+            &strategy("alpha"),
+            &engine,
+            &PaperOrderRequest::MultiLeg {
+                legs: vec![
+                    OrderLeg {
+                        symbol: "DEAD  240119C00190000".to_string(),
+                        asset_class: AssetClass::Option,
+                        side: Side::Buy,
+                        quantity: 2,
+                        order_type: OrderType::Market,
+                    },
+                    OrderLeg {
+                        symbol: "DEAD  240119P00190000".to_string(),
+                        asset_class: AssetClass::Option,
+                        side: Side::Sell,
+                        quantity: 2,
+                        order_type: OrderType::Market,
+                    },
+                ],
+            },
+        )
+        .expect("the engine accepts the composite");
+    assert_eq!(composite.len(), 2);
+
+    // A request the ENGINE rejects rests nothing.
+    assert!(orders
+        .place_accepted(
+            &strategy("alpha"),
+            &engine,
+            &PaperOrderRequest::Single(leg("DEAD", 0, OrderType::Market)),
+        )
+        .is_err());
+    assert_eq!(orders.open_count(), 3);
+
+    let report = apply_corporate_action(
+        &mut book,
+        &mut orders,
+        &PaperCorporateAction::delisting("DEAD"),
+    );
+    // Only the EQUITY order on DEAD cancels; the OCC option contracts are
+    // different canonical symbols.
+    assert_eq!(report.order_outcomes.len(), 1);
+    assert_eq!(report.order_outcomes[0].id, ids[0]);
+    assert!(!orders.order(ids[0]).expect("recorded").is_open());
+    assert_eq!(orders.open_count(), 2);
+}
+
+#[test]
 fn srs_data_021_equity_action_never_touches_an_option_order() {
     let mut book = VirtualLedgerBook::new();
     let mut orders = VirtualOrderBook::new();

@@ -34,8 +34,8 @@ use atp_simulation::corporate_actions::{
     actions_from_facts, apply_corporate_action, PaperCorpActionReport, PaperCorporateAction,
     PaperOrderOutcomeKind, PaperPositionOutcomeKind,
 };
-use atp_simulation::paper_order::{AssetClass, OrderLeg, OrderType, Side};
-use atp_simulation::sim::PaperFill;
+use atp_simulation::paper_order::{AssetClass, OrderLeg, OrderType, PaperOrderRequest, Side};
+use atp_simulation::sim::{PaperFill, PaperSimulationEngine};
 use atp_simulation::virtual_ledger::VirtualLedgerBook;
 use atp_simulation::virtual_orders::VirtualOrderBook;
 use atp_types::StrategyId;
@@ -301,7 +301,10 @@ impl ParsedArgs {
     }
 
     /// Build the fixture position book (through the REAL fill path) and order
-    /// book (through the intake-validated place path).
+    /// book (through the REAL SRS-SIM-001 intake path —
+    /// `PaperSimulationEngine::accept_order` via `place_accepted`, so every
+    /// resting order the scenario cancels was genuinely accepted by the
+    /// engine).
     fn fixture_books(&self) -> Result<(VirtualLedgerBook, VirtualOrderBook), String> {
         let mut book = VirtualLedgerBook::new();
         for spec in &self.position_specs {
@@ -322,11 +325,16 @@ impl ParsedArgs {
             book.apply_fill(&StrategyId::new(position.strategy.clone()), &fill)
                 .map_err(|err| format!("position spec '{spec}' rejected by the ledger: {err:?}"))?;
         }
+        let engine = PaperSimulationEngine::new();
         let mut orders = VirtualOrderBook::new();
         for spec in &self.order_specs {
             let (strategy, leg) = parse_order_spec(spec)?;
             orders
-                .place(&StrategyId::new(strategy), leg)
+                .place_accepted(
+                    &StrategyId::new(strategy),
+                    &engine,
+                    &PaperOrderRequest::Single(leg),
+                )
                 .map_err(|err| format!("order spec '{spec}' rejected by intake: {err}"))?;
         }
         Ok((book, orders))
