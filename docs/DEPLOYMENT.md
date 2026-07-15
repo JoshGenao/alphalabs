@@ -27,6 +27,11 @@ that a future cloud deployment is not precluded.
 cp .env.example .env
 # Edit .env to set IB account ports, SSD/NAS paths, and ATP_ENV.
 # Development: leave the catalogued secrets as the placeholder value.
+# Load .env into THIS shell (compose reads it via --env-file, but the mkdir below
+# needs it in the shell), then provision the storage-tier host directories the
+# compose stack bind-mounts — they must exist before `up`, or the volume mount fails:
+set -a; . ./.env; set +a
+mkdir -p "${ATP_SSD_DATA_DIR:?}" "${ATP_NAS_DATA_DIR:?}"
 docker compose --env-file .env --profile phase1 up
 ```
 
@@ -126,6 +131,20 @@ The Jupyter service (SRS-SEC-004) and the strategy-runtime service
 (SRS-SEC-003) mount both paths read-only; the remaining core services
 receive read-write mounts. The data layer is the only component that
 writes to NAS; other services read through the unified data interface.
+
+**Provisioning (required before `up`).** The `atp_ssd` / `atp_nas` volumes are
+bind mounts onto the host paths `${ATP_SSD_DATA_DIR}` / `${ATP_NAS_DATA_DIR}`, so
+those directories **must exist before `docker compose up`** — otherwise the
+volume mount fails with `no such file or directory` and the containers stay in
+`created` state instead of starting. Create them as part of bring-up — after
+loading `.env` into the shell (`set -a; . ./.env; set +a`), run
+`mkdir -p "$ATP_SSD_DATA_DIR" "$ATP_NAS_DATA_DIR"` (see *Bring-up commands*). On
+the Phase 1 Proxmox VM these are the local SSD and NAS mount points; a
+development host can point them at any writable directory. Because a Docker named
+volume caches its bind target on first creation, **changing** `ATP_SSD_DATA_DIR` /
+`ATP_NAS_DATA_DIR` after the `atp_ssd` / `atp_nas` volumes already exist requires
+`docker compose --profile phase1 down -v` (to drop the stale volumes) before the
+new path takes effect.
 
 ## Environment-specific configuration
 
