@@ -215,6 +215,24 @@ def test_dashboard_session_cookie_stripped_only_jupyter_cookies_forwarded(
     assert forwarded == "_xsrf=jt"
 
 
+def test_reserved_xsrf_name_is_the_documented_irreducible_edge(proxied_runtime) -> None:
+    """A cookie named EXACTLY ``_xsrf`` crosses — the documented irreducible
+    limit of same-origin cookie handling (Codex R4): a ``Cookie`` header carries
+    no issuer/path/domain metadata, so the proxy cannot distinguish Jupyter's
+    reserved ``_xsrf`` from an operator layer that reuses that reserved name.
+    SECURITY.md's OPERATOR SIGN-OFF GATE records the constraint: the operator's
+    external auth layer must not reuse ``_xsrf`` (the dashboard runtime itself
+    issues no cookies, so there is no first-party collision). Pinned here so the
+    boundary's exact edge is explicit, not a surprise."""
+
+    host, port = proxied_runtime
+    status, _, payload = _request(
+        host, port, "GET", "/research/lab", headers={"Cookie": "_xsrf=would-cross"}
+    )
+    assert status == 200
+    assert json.loads(payload)["headers"].get("cookie") == "_xsrf=would-cross"
+
+
 def test_cookie_header_dropped_when_only_operator_cookies_present(proxied_runtime) -> None:
     host, port = proxied_runtime
     status, _, payload = _request(

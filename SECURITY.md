@@ -257,8 +257,18 @@ StRS SN-1.18) — the two SRS-SEC-004 acceptance clauses:
   browser attaches to `/research/` (a `Path=/`-scoped dashboard/operator
   session cookie, or one whose name merely *resembles* a Jupyter cookie such as
   `username-…`) is dropped, so no operator auth material reaches the research
-  service; the operator's external auth layer must not reuse the reserved name
-  `_xsrf`. Mutating operator routes also remain confirmation-guarded regardless
+  service. **Reserved-name constraint (part of the sign-off gate):** a `Cookie`
+  header carries no issuer/path/domain metadata, so the proxy cannot tell
+  Jupyter's reserved `_xsrf` from an operator layer that *reuses that exact
+  name* — the one irreducible cookie edge of a same-origin embed. The dashboard
+  runtime issues no cookies of its own (so there is no first-party collision),
+  and the operator's external auth layer **must not reuse the reserved name
+  `_xsrf`** for session/auth state. A fully *enforced* (rather than
+  convention-based) boundary here would require rewriting Jupyter's XSRF cookie
+  into a proxy-owned namespace — which breaks JupyterLab's client-side XSRF
+  (its JS reads `document.cookie` for `_xsrf`) — or a separate-origin embed
+  (bending IF-13); both are the same cross-feature rework the sign-off gate
+  defers. Mutating operator routes also remain confirmation-guarded regardless
   of caller (an *unconfirmed* notebook fetch is still refused).
 - **Read-only market-data / backtest-result access.** Jupyter mounts **only** the
   sanctioned SSD/NAS data tiers, and only **read-only** (`atp_ssd:/ssd:ro`,
