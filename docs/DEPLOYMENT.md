@@ -107,14 +107,40 @@ environment holds **no** brokerage/notification credentials (secrets blanked via
 execution engine**: it is confined to a dedicated `internal: true`
 `atp_research_net` network with no execution-API peer (the execution engine and IB
 Gateway are on the default bridge, off this network), so it can open no socket to a
-broker and submit no live order. Its SSD/NAS data mounts are read-only. The deferred
-dashboard→Jupyter proxy (IF-13 / SRS-RES-001) must preserve a one-way boundary — the
-live-control-bearing `phase1-dashboard-api` (SRS-API-001) must **not** be placed on
+broker and submit no live order. Its SSD/NAS data mounts are read-only. The
+dashboard→Jupyter proxy (IF-13 / SRS-RES-001) preserves a one-way boundary — the
+live-control-bearing `phase1-dashboard-api` (SRS-API-001) is **never** placed on
 `atp_research_net`, or Jupyter would reach the operator kill-switch / Hot-Swap REST.
 `tools/jupyter_isolation_check.py` enforces statically in CI that the execution
 engine, the IB Gateway, and the dashboard/API are never on Jupyter's network (and
 that no peer shares its network namespace). See `SECURITY.md` § "Jupyter
 research-environment isolation (SRS-SEC-004)".
+
+**Embedded research environment (SRS-RES-001 / IF-13).** JupyterLab is reachable
+**from the dashboard, not directly**: the operator browser opens the dashboard at
+`http://127.0.0.1:8080/dashboard`, and the Research panel embeds JupyterLab in a
+same-origin iframe under the `/research/` prefix. The chain is
+`browser → dashboard-api (runtime reverse proxy, /research/*) →
+phase1-research-proxy (one-way L4 hop on the internal atp_research_edge_net) →
+phase1-jupyter (internal atp_research_net, base_url=/research/)`:
+
+- `phase1-dashboard-api` gets `ATP_RESEARCH_UPSTREAM=http://phase1-research-proxy:8890`
+  (declarative until that image's CMD serves `python -m atp_dashboard`; the
+  dashboard-api image CMD is still the compile-only stub owned by the deployment
+  feature). Unset, the dashboard renders an honest "not configured" research cell
+  and registers no proxy route.
+- `phase1-research-proxy` runs `python -m atp_research_proxy` — a stdlib TCP
+  forwarder whose upstream is fixed at `phase1-jupyter:8888`; it holds no secrets,
+  no volumes, no published ports.
+- `phase1-jupyter` publishes **no host port** (IF-13: not a standalone endpoint)
+  and runs JupyterLab token-less (`--IdentityProvider.token=`): the auth boundary
+  is the network path itself — only the loopback-bound dashboard reaches the
+  research proxy, and only the research proxy reaches Jupyter. Injecting a token
+  env would contradict the SRS-SEC-004 no-secrets stance the container is checked
+  against. IF-13's "proxied through dashboard HTTPS" refers to the operator's
+  documented external layer: HTTPS termination, like all external exposure, is the
+  operator-managed authenticated reverse proxy in front of the loopback bind
+  (NFR-S3 / SRS-SEC-002) — the runtime itself speaks HTTP on loopback.
 
 ## Storage tiers
 

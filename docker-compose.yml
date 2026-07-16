@@ -244,10 +244,55 @@ services:
     environment:
       <<: *atp-env
       ATP_DASHBOARD_BIND_HOST: 127.0.0.1
+      # SRS-RES-001 / IF-13: the dashboard runtime reverse-proxies the
+      # same-origin /research/ prefix to this FIXED upstream — the one-way
+      # research-proxy hop below, NEVER phase1-jupyter directly (dashboard-api
+      # must not join atp_research_net; jupyter_isolation_check enforces it).
+      # Declarative until this service's CMD serves `python -m atp_dashboard`
+      # (the dashboard-api image CMD is still the compile-only stub owned by
+      # the deployment feature).
+      ATP_RESEARCH_UPSTREAM: http://phase1-research-proxy:8890
     # SRS-SEC-002: dashboard/API binds only to loopback by default.
     ports:
       - "127.0.0.1:8080:8080"
     volumes: *atp-volumes
+    # Declaring networks removes the implicit default-bridge membership, so
+    # `default` must be EXPLICIT here (the operator browser + the other core
+    # services reach dashboard-api through it — do not "simplify" it away).
+    # atp_research_edge_net is the internal hop toward the research proxy;
+    # dashboard-api is deliberately NOT on atp_research_net (SRS-SEC-004).
+    networks:
+      - default
+      - atp_research_edge_net
+
+  # SRS-RES-001 / SRS-SEC-004: the ONE-WAY dashboard->Jupyter hop. The only
+  # member of BOTH atp_research_net (Jupyter's isolated internal network) and
+  # atp_research_edge_net (the internal network dashboard-api reaches it on).
+  # Its upstream is FIXED at phase1-jupyter (python/atp_research_proxy), so a
+  # connection initiated FROM the Jupyter container can only loop back to
+  # Jupyter itself — no forwarding path toward dashboard-api, the execution
+  # engine, or the IB Gateway (it never joins the default bridge; enforced by
+  # jupyter_isolation_check research-proxy assertions). Chain:
+  #   browser -> 127.0.0.1:8080 dashboard-api -> (edge net) research-proxy
+  #           -> (research net) phase1-jupyter
+  # No secrets (blanked first), no volumes, no published ports.
+  phase1-research-proxy:
+    profiles: ["phase1"]
+    build:
+      context: .
+      dockerfile: docker/dashboard-api.Dockerfile
+    command: ["python", "-m", "atp_research_proxy"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: [*atp-no-secrets, *atp-env]
+      ATP_RESEARCH_PROXY_PORT: "8890"
+      ATP_RESEARCH_UPSTREAM_HOST: phase1-jupyter
+      ATP_RESEARCH_UPSTREAM_PORT: "8888"
+    networks:
+      - atp_research_net
+      - atp_research_edge_net
 
   phase1-jupyter:
     profiles: ["phase1"]
@@ -277,17 +322,19 @@ services:
     # container — the internal, single-member network removes both.) Jupyter reads
     # market data + backtest results from the read-only SSD/NAS mounts above
     # (filesystem, via the data layer — no network), so this isolation costs it no
-    # functionality. The concrete dashboard->Jupyter proxy (IF-13 / SRS-RES-001,
-    # operator-supplied JupyterLab image) is deferred; it must preserve a one-way
-    # boundary — the live-control-bearing phase1-dashboard-api (SRS-API-001 kill
-    # switch / live designation / Hot-Swap) must NOT be placed on this network, or
+    # functionality. The dashboard->Jupyter proxy (IF-13 / SRS-RES-001) is the
+    # one-way phase1-research-proxy hop above: it joins this network to reach
+    # Jupyter, while the live-control-bearing phase1-dashboard-api (SRS-API-001
+    # kill switch / live designation / Hot-Swap) is NEVER placed on it, or
     # Jupyter would gain a path to the live-control REST. jupyter_isolation_check
     # enforces that dashboard-api, the execution engine, and the IB Gateway are
     # never on atp_research_net.
     networks:
       - atp_research_net
-    ports:
-      - "127.0.0.1:8888:8888"
+    # NO published ports (enforced statically): IF-13 — the research
+    # environment is "not a standalone external endpoint"; it is reached ONLY
+    # through the dashboard's same-origin /research/ proxy. (A publish here
+    # would be dead anyway — internal:true networks attach no gateway.)
 
   phase1-ib-gateway:
     profiles: ["phase1"]
@@ -397,10 +444,20 @@ networks:
   # the host, the LAN, or the internet. Only `phase1-jupyter` is on it today — the
   # execution engine, the IB Gateway, and the live-control-bearing dashboard/API
   # (SRS-API-001) are NOT — so Jupyter can open no socket to a brokerage /
-  # execution / live-control API. The deferred dashboard->Jupyter proxy (IF-13 /
-  # SRS-RES-001) must keep that one-way boundary rather than placing
-  # `phase1-dashboard-api` on this network; jupyter_isolation_check enforces those
-  # peers are never on it.
+  # execution / live-control API. Members today: `phase1-jupyter` and the
+  # one-way `phase1-research-proxy` hop (IF-13 / SRS-RES-001) — NEVER
+  # `phase1-dashboard-api`; jupyter_isolation_check enforces that dashboard-api,
+  # the execution engine, and the IB Gateway are never on it (and that the
+  # research proxy never shares a network with the execution peers).
   atp_research_net:
+    driver: bridge
+    internal: true
+  # SRS-RES-001: the internal edge hop between the dashboard/API and the
+  # research proxy. `internal: true` — no gateway; members are exactly
+  # phase1-dashboard-api and phase1-research-proxy. Keeping this as a SEPARATE
+  # network (rather than putting dashboard-api on atp_research_net) is what
+  # preserves the SRS-SEC-004 one-way boundary: Jupyter's only reachable peer
+  # is the fixed-upstream proxy, never the live-control REST.
+  atp_research_edge_net:
     driver: bridge
     internal: true

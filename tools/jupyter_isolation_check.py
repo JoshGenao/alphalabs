@@ -564,6 +564,154 @@ def _assert_no_execution_network(
             )
 
 
+def _assert_no_published_ports(contract: dict, eff_block: str, service: str) -> None:
+    """IF-13 / SRS-RES-001: the research environment publishes NO host port.
+
+    It is "not a standalone external endpoint" — reached ONLY through the
+    dashboard's same-origin ``/research/`` proxy. (A publish would be dead
+    anyway on an ``internal: true`` network, but a dead publish invites a
+    future "fix" that widens the surface; refuse it statically.)
+    """
+
+    if not contract.get("subject_must_not_publish_ports"):
+        return
+    if _service_key_count(eff_block, "ports") > 0:
+        fail(
+            f"{service} publishes ports; IF-13 / SRS-RES-001 mandates the research environment is "
+            f"reached only through the dashboard's same-origin proxy, never a standalone endpoint"
+        )
+
+
+def _assert_internal_only_networks(
+    compose_text: str, networks: list[str], service: str, requirement: str
+) -> None:
+    """Every attached network must be declared, non-external, ``internal: true``."""
+
+    for net in networks:
+        net_block = _service_block(compose_text, net)
+        if net_block is None:
+            fail(
+                f"{service} is attached to network {net!r}, which is not declared at the top "
+                f"level; {requirement} requires an internal, no-egress network"
+            )
+        eff_net = _strip_comments(net_block)
+        if _scalar_bool(_service_scalar(eff_net, "external")) is True:
+            fail(
+                f"{service} network {net!r} is `external: true`; its membership cannot be proven "
+                f"internal / execution-free, so {requirement} refuses it (fail closed)"
+            )
+        internal = _service_scalar(eff_net, "internal")
+        if _scalar_bool(internal) is not True:
+            fail(
+                f"{service} is attached to network {net!r} whose `internal:` is {internal!r}, not "
+                f"true; {requirement} requires a no-egress (internal) network"
+            )
+
+
+def _assert_research_proxy_isolation(contract: dict, compose_text: str) -> list[str]:
+    """The one-way dashboard->Jupyter hop (SRS-RES-001) must widen NO surface.
+
+    ``phase1-research-proxy`` is the only service on BOTH ``atp_research_net``
+    and the dashboard-facing edge network, so it is Jupyter's entire reachable
+    world — its pivot surface must be strictly smaller than Jupyter's own:
+    no secrets (blanking anchor merged first), NO volumes at all, no vault /
+    docker socket / ``volumes_from``, no host / shared-namespace networking,
+    no published ports, only declared ``internal: true`` networks (never the
+    default bridge), and NO network shared with an execution peer
+    (``research_proxy_forbidden_network_peers``). ``phase1-dashboard-api`` is
+    deliberately NOT in that peer list — sharing the edge network with it IS
+    the design; the one-way property comes from the hop's fixed upstream
+    (python/atp_research_proxy) plus dashboard-api never joining
+    ``atp_research_net`` (asserted independently above).
+    """
+
+    service = contract.get("research_proxy_service")
+    if not service:
+        return []
+    raw = _service_block(compose_text, service)
+    if raw is None:
+        fail(
+            f"compose is missing the one-way research proxy {service!r} "
+            f"(SRS-RES-001 / SRS-SEC-004 dashboard->Jupyter hop)"
+        )
+    eff = _strip_comments(raw)
+
+    _assert_no_unresolvable_constructs(eff, service)
+    _assert_no_duplicate_security_keys(eff, service)
+    _assert_credential_env(contract, compose_text, eff, service)
+    _assert_no_credential_access(contract, eff, service)
+    _assert_no_host_network(eff, service)
+    # Strictly less privilege than Jupyter itself: the L4 hop needs NO
+    # filesystem, so ANY volume is a widening and is refused.
+    if _service_key_count(eff, "volumes") > 0:
+        fail(
+            f"{service} declares volumes; the one-way research proxy needs no filesystem access "
+            f"(strictly less privilege than Jupyter) — SRS-SEC-004 pivot-surface rule"
+        )
+    if _service_key_count(eff, "ports") > 0:
+        fail(
+            f"{service} publishes ports; the research proxy is reachable only on its internal "
+            f"networks (IF-13 / SRS-SEC-004)"
+        )
+
+    networks = _service_networks(eff)
+    if not networks:
+        fail(
+            f"{service} declares no networks, so it joins the default Compose bridge (shared with "
+            f"the execution engine / IB Gateway); the research proxy may join only dedicated "
+            f"internal networks (SRS-SEC-004)"
+        )
+    if "default" in networks:
+        fail(
+            f"{service} attaches to the `default` bridge, which the execution engine / IB Gateway "
+            f"also join; SRS-SEC-004 forbids the research proxy sharing a network with an "
+            f"execution-API peer"
+        )
+    _assert_internal_only_networks(compose_text, networks, service, "SRS-SEC-004")
+
+    proxy_nets = set(networks)
+    for peer in contract.get("research_proxy_forbidden_network_peers", []):
+        peer_block = _service_block(compose_text, peer)
+        if peer_block is None:
+            continue
+        eff_peer = _strip_comments(peer_block)
+        peer_mode = _service_scalar(eff_peer, "network_mode")
+        if peer_mode is not None:
+            if "*" in peer_mode or "$" in peer_mode:
+                fail(
+                    f"{peer} sets `network_mode: {peer_mode}` via an alias / interpolation; "
+                    f"SRS-SEC-004 cannot prove it does not share {service}'s network namespace "
+                    f"(fail closed)"
+                )
+            if peer_mode == f"service:{service}" or peer_mode.startswith("container:"):
+                fail(
+                    f"{peer} shares a network namespace via `network_mode: {peer_mode}`; "
+                    f"SRS-SEC-004 forbids an execution-API peer sharing the research proxy's "
+                    f"network namespace"
+                )
+        peer_nets = _service_networks(eff_peer)
+        for name in peer_nets or []:
+            if "*" in name or "$" in name:
+                fail(
+                    f"{peer} attaches to network {name!r} via an alias / interpolation; "
+                    f"SRS-SEC-004 cannot prove it is not the research proxy's network (fail closed)"
+                )
+        peer_net_set = set(peer_nets) if peer_nets else {"default"}
+        shared = proxy_nets & peer_net_set
+        if shared:
+            fail(
+                f"{service} shares network(s) {sorted(shared)} with {peer!r} (an execution-API "
+                f"peer); SRS-SEC-004 forbids any network path from the research hop to the "
+                f"execution engine / IB Gateway"
+            )
+
+    return [
+        f"{service}: one-way dashboard->Jupyter hop — no secrets (blanking anchor merged first), "
+        f"no volumes, no published ports, internal-only networks, and no network shared with an "
+        f"execution-API peer (the fixed-upstream forwarder is Jupyter's entire reachable world)",
+    ]
+
+
 def _assert_service_isolation(contract: dict, compose_text: str, service: str) -> list[str]:
     raw = _service_block(compose_text, service)
     if raw is None:
@@ -577,12 +725,14 @@ def _assert_service_isolation(contract: dict, compose_text: str, service: str) -
     _assert_read_only_data(contract, eff, service)
     _assert_no_host_network(eff, service)
     _assert_no_execution_network(contract, compose_text, eff, service)
+    _assert_no_published_ports(contract, eff, service)
 
     return [
         f"{service}: brokerage/notification credentials blanked (blanking anchor merged first, no "
         f"vault mount, no inline secret), only read-only named data tiers (market data + backtest "
-        f"results), and confined to an internal network with no execution-engine / IB-Gateway peer "
-        f"(no live-order path)",
+        f"results), confined to an internal network with no execution-engine / IB-Gateway peer "
+        f"(no live-order path), and no published ports (IF-13: reached only through the "
+        f"dashboard's same-origin proxy)",
     ]
 
 
@@ -619,6 +769,7 @@ def assert_jupyter_isolation_static(config: dict, root: Path = ROOT) -> list[str
     evidence: list[str] = ["SRS-SEC-004 Jupyter credential + execution-API isolation evidence:"]
     for service in subject_services:
         evidence.extend(_assert_service_isolation(contract, compose_text, service))
+    evidence.extend(_assert_research_proxy_isolation(contract, compose_text))
     evidence.extend(_assert_security_doc(contract, root))
     return evidence
 
@@ -647,6 +798,12 @@ _FIXTURES = (
     "docker-socket",
     "writable-data-tier",
     "extra-shared-volume",
+    "jupyter-publishes-ports",
+    "research-proxy-on-default",
+    "research-proxy-shares-execution-network",
+    "research-proxy-vault-mounted",
+    "research-proxy-merge-order-reversed",
+    "dashboard-on-research-net-via-edge-rename",
 )
 
 
@@ -775,6 +932,57 @@ def make_fixture_root(fixture: str) -> tempfile.TemporaryDirectory[str]:
         text = text.replace(
             "      - atp_nas:/nas:ro\n",
             "      - atp_nas:/nas:ro\n      - research_shared:/shared\n",
+        )
+    elif fixture == "jupyter-publishes-ports":
+        # Jupyter grows a published host port again — IF-13 forbids a standalone
+        # endpoint (the research environment is reached only through the
+        # dashboard's same-origin proxy). Rejected. (Anchored on Jupyter's
+        # networks list + trailing comment, unique to the jupyter service.)
+        text = text.replace(
+            "    networks:\n      - atp_research_net\n    # NO published ports",
+            '    networks:\n      - atp_research_net\n    ports:\n'
+            '      - "127.0.0.1:8888:8888"\n    # NO published ports',
+        )
+    elif fixture == "research-proxy-on-default":
+        # The research proxy loses its explicit networks and falls back to the
+        # default bridge — shared with the execution engine / IB Gateway (a
+        # 2-hop pivot from Jupyter). Rejected.
+        text = text.replace(
+            "    networks:\n      - atp_research_net\n      - atp_research_edge_net\n",
+            "",
+        )
+    elif fixture == "research-proxy-shares-execution-network":
+        # The execution engine joins the research proxy's edge network — a
+        # network path from the research hop to the execution API. Rejected.
+        text = text.replace(
+            "        ATP_CRATE: atp-execution\n    env_file:",
+            "        ATP_CRATE: atp-execution\n    networks:\n"
+            "      - default\n      - atp_research_edge_net\n    env_file:",
+        )
+    elif fixture == "research-proxy-vault-mounted":
+        # The research proxy gains the credential-vault volumes anchor — a
+        # widening of Jupyter's entire reachable world. Rejected (no volumes
+        # at all are allowed on the hop).
+        text = text.replace(
+            '    command: ["python", "-m", "atp_research_proxy"]\n',
+            '    command: ["python", "-m", "atp_research_proxy"]\n    volumes: *atp-volumes\n',
+        )
+    elif fixture == "research-proxy-merge-order-reversed":
+        # The proxy's env merge order flips: placeholder secrets win over the
+        # blanks. Rejected. (Anchored on the proxy's unique inline env key so
+        # only the research-proxy service is mutated, not Jupyter.)
+        text = text.replace(
+            '      <<: [*atp-no-secrets, *atp-env]\n      ATP_RESEARCH_PROXY_PORT:',
+            '      <<: [*atp-env, *atp-no-secrets]\n      ATP_RESEARCH_PROXY_PORT:',
+        )
+    elif fixture == "dashboard-on-research-net-via-edge-rename":
+        # dashboard-api's edge attachment is "simplified" to atp_research_net —
+        # putting the live-control REST on Jupyter's network. The ORIGINAL
+        # SRS-SEC-004 forbidden-peer assertion must still bite in the new
+        # topology. (Anchored on dashboard-api's unique default+edge pair.)
+        text = text.replace(
+            "      - default\n      - atp_research_edge_net",
+            "      - default\n      - atp_research_net",
         )
     else:
         temp_dir.cleanup()

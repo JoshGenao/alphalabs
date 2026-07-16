@@ -204,12 +204,39 @@ StRS SN-1.18) — the two SRS-SEC-004 acceptance clauses:
   host and reaches every other default-bridge container — the internal, single-member
   network removes both.) Host / shared-namespace networking is refused for the same
   reason, and a peer that would share Jupyter's network namespace via
-  `network_mode: service:phase1-jupyter` / `container:…` is refused too. The deferred
-  dashboard→Jupyter proxy (IF-13 / SRS-RES-001) must preserve this one-way boundary:
+  `network_mode: service:phase1-jupyter` / `container:…` is refused too. The
+  dashboard→Jupyter proxy (IF-13 / SRS-RES-001) preserves this one-way boundary:
   the live-control-bearing `phase1-dashboard-api` (SRS-API-001 kill switch / live
-  designation / Hot-Swap) must **not** be placed on `atp_research_net`, or Jupyter
-  would gain a path to the live-control REST — so the checker forbids the execution
+  designation / Hot-Swap) is **never** placed on `atp_research_net`, or Jupyter
+  would gain a path to the live-control REST — the checker forbids the execution
   engine, the IB Gateway, **and** the dashboard/API from sharing Jupyter's network.
+- **The one-way dashboard→Jupyter proxy chain (SRS-RES-001).** The browser reaches
+  Jupyter **only** through the dashboard origin: `browser → 127.0.0.1:8080
+  dashboard-api → (internal atp_research_edge_net) phase1-research-proxy →
+  (internal atp_research_net) phase1-jupyter`. Two properties make the chain
+  one-way: (1) each hop's upstream is **fixed at start-up, never request-derived**
+  — the dashboard runtime's reverse proxy (`python/atp_runtime/proxy.py`) forwards
+  only to its registered upstream (validated loopback/RFC-1918, refusing chunked
+  request bodies and any prefix that could shadow `/api/v1` or `/dashboard`), and
+  the L4 hop (`python/atp_research_proxy`) pipes only toward Jupyter, so a
+  connection initiated FROM the Jupyter container can only loop back to Jupyter
+  itself; (2) `phase1-jupyter` publishes **no host port** (IF-13: not a standalone
+  endpoint) and the research proxy carries **no secrets, no volumes, no published
+  ports, internal-only networks, and no network shared with an execution peer** —
+  all enforced statically by the checker's research-proxy assertions. The Jupyter
+  container runs token-less because the network path IS the auth boundary
+  (loopback-bound dashboard → internal edge net → internal research net);
+  injecting a token env would contradict the no-secrets stance this container is
+  checked against.
+- **Residual risk (in-model, stated explicitly).** With the embed served
+  same-origin, JavaScript emitted by a notebook and *rendered in the operator's
+  own browser* shares the dashboard origin, so it could call the operator REST
+  from that browser exactly as the operator can. That is within the single-operator
+  network-locality trust model (NFR-S3): the boundary SRS-SEC-004 enforces is the
+  Jupyter **server/kernel container** — which holds no credentials and has no
+  network route to the execution engine or live-control REST — not the operator's
+  own browser session. Mutating operator routes remain confirmation-guarded
+  (UI-4 / SRS-SAFE-001) regardless of caller.
 - **Read-only market-data / backtest-result access.** Jupyter mounts **only** the
   sanctioned SSD/NAS data tiers, and only **read-only** (`atp_ssd:/ssd:ro`,
   `atp_nas:/nas:ro`) — it reads market data and backtest results through the data
@@ -224,8 +251,15 @@ StRS SN-1.18) — the two SRS-SEC-004 acceptance clauses:
   a gated L5 `tests/integration/test_jupyter_isolation_inspect.py` runs `docker
   inspect` on a real `phase1-jupyter` container when `ATP_RUN_INTEGRATION=1`. The
   credential-blanking + no-vault half is also asserted by
-  `tools/deployment_check.py::assert_credential_vault_wiring`. Because the concrete
-  operator-supplied JupyterLab image and the dashboard proxy are deferred (IF-13 /
-  SRS-RES-001), the compose template is the authoritative declarative source and this
-  static inspection is the primary SRS-SEC-004 "Security test" evidence — the same
-  convention SRS-ARCH-004 and SRS-SEC-003 are verified under.
+  `tools/deployment_check.py::assert_credential_vault_wiring`. The checker also
+  asserts the SRS-RES-001 proxy-chain shape: `phase1-jupyter` publishes no port,
+  and `phase1-research-proxy` (the one-way hop) is secret-blanked, volume-less,
+  port-less, on internal-only networks, and shares no network with an execution
+  peer — with `--fixture` self-tests for each new bypass (a re-published Jupyter
+  port, the proxy on the default bridge / sharing an execution network / gaining
+  the vault / a reversed env merge, and dashboard-api "simplified" onto
+  `atp_research_net`). The compose template remains the authoritative declarative
+  source and this static inspection the primary SRS-SEC-004 "Security test"
+  evidence — the same convention SRS-ARCH-004 and SRS-SEC-003 are verified under;
+  the live-stack demonstration of the embed itself is SRS-RES-001 acceptance
+  evidence (`tests/e2e/test_research_embed.py` plus the operator's compose run).
