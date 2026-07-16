@@ -95,6 +95,17 @@ _HOP_BY_HOP = frozenset(
 #: Request headers the proxy owns itself (rewritten or recomputed per leg).
 _PROXY_OWNED_REQUEST_HEADERS = frozenset({"host", "content-length"})
 
+#: Operator/dashboard-scoped auth material that must NEVER cross into the
+#: research upstream (SRS-SEC-004 one-way boundary): the Jupyter server is
+#: token-less and needs none, and in the operator's documented external-auth
+#: deployment (NFR-S3) an ``Authorization`` header would otherwise be delivered
+#: to the research service — widening the trust boundary. Stripped upstream.
+#: (Jupyter's OWN ``_xsrf`` cookie is ``Path=/research/``-scoped by the browser
+#: and is still forwarded so its XSRF check works; the operator's external
+#: auth proxy must not scope a session cookie to ``/research/`` — documented in
+#: SECURITY.md § "Jupyter research-environment isolation".)
+_STRIPPED_UPSTREAM_REQUEST_HEADERS = frozenset({"authorization"})
+
 #: Hard ceiling on a proxied request body. Larger than the operator REST
 #: ceiling (1 MiB) because notebook saves carry real payloads; still bounded so
 #: a hostile client cannot stream unbounded bytes through the runtime.
@@ -282,11 +293,14 @@ def filter_request_headers(
     """Filter browser→upstream headers for one proxied request.
 
     Strips hop-by-hop headers plus every token the incoming ``Connection``
-    header names, and the proxy-owned ``Host``/``Content-Length`` (recomputed
-    per leg). Rewrites ``Origin``/``Referer`` to the upstream netloc so the
-    upstream's same-origin checks (e.g. Jupyter's ``check_origin`` / XSRF) see
-    a self-consistent origin. Everything else — ``Cookie``, ``Authorization``,
-    ``X-XSRFToken``, ``Content-Type``, ``Accept-Encoding``, … — forwards as-is.
+    header names, the proxy-owned ``Host``/``Content-Length`` (recomputed per
+    leg), and operator-scoped auth material (``Authorization``) that must never
+    reach the research upstream (SRS-SEC-004 one-way boundary). Rewrites
+    ``Origin``/``Referer`` to the upstream netloc so the upstream's same-origin
+    checks (e.g. Jupyter's ``check_origin`` / XSRF) see a self-consistent
+    origin. Everything else — ``Cookie`` (Jupyter's ``Path=/research/``-scoped
+    ``_xsrf``), ``X-XSRFToken``, ``Content-Type``, ``Accept-Encoding``, … —
+    forwards as-is.
     """
 
     connection_tokens = {
@@ -294,7 +308,12 @@ def filter_request_headers(
         for token in headers.get("Connection", "").split(",")
         if token.strip()
     }
-    dropped = _HOP_BY_HOP | connection_tokens | _PROXY_OWNED_REQUEST_HEADERS
+    dropped = (
+        _HOP_BY_HOP
+        | connection_tokens
+        | _PROXY_OWNED_REQUEST_HEADERS
+        | _STRIPPED_UPSTREAM_REQUEST_HEADERS
+    )
     filtered: list[tuple[str, str]] = []
     for name, value in headers.items():
         lower = name.lower()

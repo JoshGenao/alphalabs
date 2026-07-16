@@ -228,15 +228,33 @@ StRS SN-1.18) — the two SRS-SEC-004 acceptance clauses:
   (loopback-bound dashboard → internal edge net → internal research net);
   injecting a token env would contradict the no-secrets stance this container is
   checked against.
-- **Residual risk (in-model, stated explicitly).** With the embed served
-  same-origin, JavaScript emitted by a notebook and *rendered in the operator's
-  own browser* shares the dashboard origin, so it could call the operator REST
-  from that browser exactly as the operator can. That is within the single-operator
-  network-locality trust model (NFR-S3): the boundary SRS-SEC-004 enforces is the
-  Jupyter **server/kernel container** — which holds no credentials and has no
-  network route to the execution engine or live-control REST — not the operator's
-  own browser session. Mutating operator routes remain confirmation-guarded
-  (UI-4 / SRS-SAFE-001) regardless of caller.
+- **Residual risk — OPERATOR SIGN-OFF GATE before flipping SRS-RES-001 to
+  `passes:true`.** With the embed served same-origin (IF-13 mandates the
+  research environment on the dashboard origin under `/research/`, not a
+  separate service URL), JavaScript emitted by a notebook and *rendered in the
+  operator's own browser* shares the dashboard origin, so it could `fetch` the
+  operator REST from that browser session — including a mutating route such as
+  `POST /api/v1/kill-switch?confirm=true` or a live-designation / Hot-Swap
+  route, whose confirmation guard (SRS-API-001) accepts a query flag the
+  notebook JS can mint. A **static** adversarial review (Codex) rated this a
+  critical browser-trust-boundary finding: the realistic vector is the operator
+  opening an **untrusted notebook** whose rendered output auto-runs JS. What
+  SRS-SEC-004 enforces and this feature preserves is the **server/kernel
+  container** boundary — the Jupyter container holds no credentials and has no
+  network route to the execution engine or live-control REST, so the *kernel*
+  can submit no order; the residual vector is the operator's **browser
+  session**, not the container. It is accepted only within the single-operator
+  network-locality trust model (NFR-S3, loopback bind), and **the operator must
+  consciously sign off on this vector before flipping the feature.** A
+  browser-enforced fix requires either an SRS-API-001 origin/session-bound
+  confirmation token that iframe-originated JS cannot mint, or a separate-origin
+  embed (CORS deny-by-default) that bends IF-13 — both cross-feature and out of
+  this feature's scope. Mitigations already in place: the proxy strips
+  operator-scoped `Authorization` before forwarding upstream (it never reaches
+  Jupyter), mutating operator routes remain confirmation-guarded regardless of
+  caller (an *unconfirmed* notebook fetch is still refused), and the operator's
+  external auth proxy (NFR-S3) must not scope a session cookie to `/research/`
+  (or it would be forwarded to the token-less Jupyter upstream).
 - **Read-only market-data / backtest-result access.** Jupyter mounts **only** the
   sanctioned SSD/NAS data tiers, and only **read-only** (`atp_ssd:/ssd:ro`,
   `atp_nas:/nas:ro`) — it reads market data and backtest results through the data

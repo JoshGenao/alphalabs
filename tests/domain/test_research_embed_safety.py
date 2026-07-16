@@ -50,12 +50,16 @@ _WS_MAGIC = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
 class _RecordingUpstream(BaseHTTPRequestHandler):
-    """Records every request path it receives (the would-be Jupyter side)."""
+    """Records every request path + whether operator auth crossed (the would-be
+    Jupyter side)."""
 
     seen: list[str] = []
+    saw_authorization: list[str] = []
 
     def _record(self, method: str) -> None:
         type(self).seen.append(f"{method} {self.path}")
+        if self.headers.get("Authorization") is not None:
+            type(self).saw_authorization.append(f"{method} {self.path}")
         length = int(self.headers.get("Content-Length", 0) or 0)
         if length:
             self.rfile.read(length)
@@ -79,6 +83,7 @@ class _RecordingUpstream(BaseHTTPRequestHandler):
 @pytest.fixture()
 def recording_upstream() -> Iterator[int]:
     _RecordingUpstream.seen = []
+    _RecordingUpstream.saw_authorization = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _RecordingUpstream)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -160,6 +165,44 @@ def test_dashboard_read_only_invariant_holds_with_proxy_mounted(embedded_runtime
     assert _request(host, port, "POST", "/dashboard/api/system")[0] in (404, 405)
     assert _request(host, port, "PUT", "/dashboard/api/system")[0] in (404, 405)
     assert _request(host, port, "DELETE", "/dashboard")[0] in (404, 405)
+
+
+def test_mutating_routes_still_confirmation_guarded_with_embed(embedded_runtime) -> None:
+    """The browser-side residual mitigation that DOES hold (see SECURITY.md
+    § "Residual risk — OPERATOR SIGN-OFF GATE"): with the same-origin embed
+    mounted, an UNCONFIRMED call to an operator-mutating route is still refused
+    (428). The same-origin vector — notebook JS minting ``confirm=true`` in the
+    operator's own browser — is the documented, operator-signed-off residual;
+    the enforced SEC-004 boundary is the credential-less, execution-unroutable
+    container (proven by tests/domain/test_jupyter_credential_isolation.py and
+    the static jupyter_isolation_check), not the browser session."""
+
+    host, port = embedded_runtime
+    status, body = _request(host, port, "POST", "/api/v1/kill-switch")
+    assert status == 428
+    assert body["error"]["category"] == "CONFIRMATION_REQUIRED"
+
+
+def test_operator_authorization_never_reaches_the_research_upstream(embedded_runtime) -> None:
+    """Operator-scoped ``Authorization`` is stripped before the upstream leg
+    (Codex finding #2): the token-less Jupyter service never receives dashboard
+    auth material (SRS-SEC-004 one-way boundary). The recording upstream sees
+    the request but not the header."""
+
+    host, port = embedded_runtime
+    conn = http.client.HTTPConnection(host, port, timeout=10)
+    try:
+        conn.request(
+            "GET", "/research/probe", headers={"Authorization": "Bearer operator-token"}
+        )
+        response = conn.getresponse()
+        response.read()
+        assert response.status == 200
+    finally:
+        conn.close()
+    # The upstream recorded the request but the Authorization header never crossed.
+    assert any(entry.endswith("/research/probe") for entry in _RecordingUpstream.seen)
+    assert _RecordingUpstream.saw_authorization == []
 
 
 def test_control_surface_prefixes_cannot_be_proxied() -> None:

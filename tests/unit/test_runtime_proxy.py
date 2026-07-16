@@ -166,6 +166,28 @@ def test_host_rewritten_and_hop_by_hop_stripped_request_side(
     assert "keep-alive" not in echoed_headers
 
 
+def test_authorization_stripped_but_cookie_forwarded_upstream(proxied_runtime) -> None:
+    host, port = proxied_runtime
+    status, _, payload = _request(
+        host,
+        port,
+        "GET",
+        "/research/lab",
+        headers={
+            "Authorization": "Bearer operator-session-token",
+            "Cookie": "_xsrf=jupyter-token",
+            "X-XSRFToken": "jupyter-token",
+        },
+    )
+    assert status == 200
+    echoed_headers = json.loads(payload)["headers"]
+    # Operator-scoped auth material must NEVER cross into the research upstream
+    # (SRS-SEC-004 one-way boundary); Jupyter's own XSRF cookie/header must.
+    assert "authorization" not in echoed_headers
+    assert echoed_headers["cookie"] == "_xsrf=jupyter-token"
+    assert echoed_headers["x-xsrftoken"] == "jupyter-token"
+
+
 def test_response_hop_by_hop_stripped_and_csp_passes_through(proxied_runtime) -> None:
     host, port = proxied_runtime
     _, headers, _ = _request(host, port, "GET", "/research/lab")
