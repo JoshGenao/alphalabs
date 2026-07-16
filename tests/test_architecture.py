@@ -31,7 +31,7 @@ class ArchitectureBoundaryTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn(
-            "InteractiveBrokersAdapter documents IB TWS API version 10.45",
+            "InteractiveBrokersAdapter documents IB TWS API version 10.19.4",
             result.stdout,
         )
         self.assertIn(

@@ -21,6 +21,10 @@ from concurrent_read_check import (
 )
 from config_check import ConfigCheckError, assert_configuration_static
 from connectivity_check import ConnectivityCheckError, assert_connectivity_static
+from container_isolation_check import (
+    ContainerIsolationCheckError,
+    assert_container_isolation_static,
+)
 from coverage_manifest_check import (
     CoverageManifestCheckError,
     assert_coverage_manifest_static,
@@ -32,10 +36,6 @@ from data008_tiering_check import (
 from data_provider_check import (
     DataProviderContractError,
     assert_data_provider_contract_static,
-)
-from container_isolation_check import (
-    ContainerIsolationCheckError,
-    assert_container_isolation_static,
 )
 from dependency_boundary_check import DependencyBoundaryError, assert_dependency_direction
 from deployment_check import DeploymentCheckError, assert_deployment_static

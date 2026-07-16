@@ -47,7 +47,7 @@ class AdapterContractScriptTest(unittest.TestCase):
             "AdapterVersion declares 3 fields",
             "AdapterBoundary exposes default `fn version(&self) -> AdapterVersion`",
             "InteractiveBrokersAdapter overrides `version()`",
-            "IB TWS API version 10.45",
+            "IB TWS API version 10.19.4",
         ):
             self.assertIn(needle, result.stdout)
 
@@ -96,12 +96,12 @@ class VersionedDiscoveryTest(unittest.TestCase):
     def test_interactive_brokers_documents_tws_api_version(self) -> None:
         evidence = check_interactive_brokers_version(self.config, self.source)
         self.assertIn("IB TWS API", evidence)
-        self.assertIn("10.45", evidence)
+        self.assertIn("10.19.4", evidence)
         self.assertIn("INTERACTIVE_BROKERS_TWS_API_VERSION", evidence)
 
     def test_protocol_version_constant_must_match_config(self) -> None:
         mutated = self.source.replace(
-            'pub const INTERACTIVE_BROKERS_TWS_API_VERSION: &str = "10.45"',
+            'pub const INTERACTIVE_BROKERS_TWS_API_VERSION: &str = "10.19.4"',
             'pub const INTERACTIVE_BROKERS_TWS_API_VERSION: &str = "9.99"',
         )
         with self.assertRaises(AdapterContractError) as ctx:
@@ -141,7 +141,7 @@ class ArchitectureEvidenceTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn(
-            "InteractiveBrokersAdapter documents IB TWS API version 10.45",
+            "InteractiveBrokersAdapter documents IB TWS API version 10.19.4",
             result.stdout,
         )
 

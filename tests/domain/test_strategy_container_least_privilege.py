@@ -27,10 +27,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 # tools/ is on sys.path via tests/conftest.py.
 import container_isolation_check as cic
+import pytest
 
 pytestmark = [pytest.mark.domain, pytest.mark.safety]
 
