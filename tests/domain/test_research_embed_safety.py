@@ -55,11 +55,15 @@ class _RecordingUpstream(BaseHTTPRequestHandler):
 
     seen: list[str] = []
     saw_authorization: list[str] = []
+    saw_cookies: list[str] = []
 
     def _record(self, method: str) -> None:
         type(self).seen.append(f"{method} {self.path}")
         if self.headers.get("Authorization") is not None:
             type(self).saw_authorization.append(f"{method} {self.path}")
+        cookie = self.headers.get("Cookie")
+        if cookie is not None:
+            type(self).saw_cookies.append(cookie)
         length = int(self.headers.get("Content-Length", 0) or 0)
         if length:
             self.rfile.read(length)
@@ -84,6 +88,7 @@ class _RecordingUpstream(BaseHTTPRequestHandler):
 def recording_upstream() -> Iterator[int]:
     _RecordingUpstream.seen = []
     _RecordingUpstream.saw_authorization = []
+    _RecordingUpstream.saw_cookies = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _RecordingUpstream)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -203,6 +208,41 @@ def test_operator_authorization_never_reaches_the_research_upstream(embedded_run
     # The upstream recorded the request but the Authorization header never crossed.
     assert any(entry.endswith("/research/probe") for entry in _RecordingUpstream.seen)
     assert _RecordingUpstream.saw_authorization == []
+
+
+def test_operator_session_cookie_never_reaches_the_research_upstream(embedded_runtime) -> None:
+    """A dashboard/operator session cookie is stripped before the upstream leg
+    over BOTH the HTTP and WebSocket proxy paths (they share the header filter);
+    only Jupyter-owned cookies (``_xsrf`` / ``username-*``) cross the SRS-SEC-004
+    boundary. Codex R2 finding."""
+
+    host, port = embedded_runtime
+    mixed = "operator_session=secret; _xsrf=jt"
+
+    # HTTP path
+    conn = http.client.HTTPConnection(host, port, timeout=10)
+    try:
+        conn.request("GET", "/research/probe", headers={"Cookie": mixed})
+        conn.getresponse().read()
+    finally:
+        conn.close()
+
+    # WebSocket path (reuses the same header filter)
+    client = socket.create_connection((host, port), timeout=10)
+    client.sendall(
+        b"GET /research/api/kernels/k/channels HTTP/1.1\r\nHost: x\r\n"
+        b"Upgrade: websocket\r\nConnection: Upgrade\r\n"
+        b"Sec-WebSocket-Key: " + base64.b64encode(b"0123456789abcdef") + b"\r\n"
+        b"Sec-WebSocket-Version: 13\r\nCookie: " + mixed.encode() + b"\r\n\r\n"
+    )
+    try:
+        client.recv(256)
+    finally:
+        client.close()
+
+    # Whatever cookies the upstream saw, NONE carried the operator session.
+    assert _RecordingUpstream.saw_cookies, "upstream should have seen at least the _xsrf cookie"
+    assert all("operator_session" not in cookie for cookie in _RecordingUpstream.saw_cookies)
 
 
 def test_control_surface_prefixes_cannot_be_proxied() -> None:

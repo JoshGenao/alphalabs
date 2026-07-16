@@ -100,11 +100,36 @@ _PROXY_OWNED_REQUEST_HEADERS = frozenset({"host", "content-length"})
 #: token-less and needs none, and in the operator's documented external-auth
 #: deployment (NFR-S3) an ``Authorization`` header would otherwise be delivered
 #: to the research service — widening the trust boundary. Stripped upstream.
-#: (Jupyter's OWN ``_xsrf`` cookie is ``Path=/research/``-scoped by the browser
-#: and is still forwarded so its XSRF check works; the operator's external
-#: auth proxy must not scope a session cookie to ``/research/`` — documented in
-#: SECURITY.md § "Jupyter research-environment isolation".)
 _STRIPPED_UPSTREAM_REQUEST_HEADERS = frozenset({"authorization"})
+
+
+def _is_jupyter_owned_cookie(name: str) -> bool:
+    """Whether a cookie is one Jupyter itself sets (and thus needs upstream).
+
+    Jupyter Server's own cookies: ``_xsrf`` (CSRF token, required on POST) and
+    its per-server session cookie ``username-<host>-<port>``. Everything else —
+    a dashboard/operator session cookie the browser also attaches because it is
+    ``Path=/``- or ``Path=/research/``-scoped — is operator auth material and
+    must not cross into the token-less research upstream (SRS-SEC-004).
+    """
+
+    lowered = name.strip().lower()
+    return lowered == "_xsrf" or lowered.startswith("username-")
+
+
+def _filter_cookie_header(value: str) -> str | None:
+    """Keep only Jupyter-owned cookies from a ``Cookie`` header; drop the rest.
+
+    Returns the rebuilt header value, or ``None`` when nothing survives (the
+    header is then omitted entirely rather than sent empty).
+    """
+
+    kept = [
+        pair.strip()
+        for pair in value.split(";")
+        if pair.strip() and _is_jupyter_owned_cookie(pair.split("=", 1)[0])
+    ]
+    return "; ".join(kept) if kept else None
 
 #: Hard ceiling on a proxied request body. Larger than the operator REST
 #: ceiling (1 MiB) because notebook saves carry real payloads; still bounded so
@@ -298,9 +323,10 @@ def filter_request_headers(
     reach the research upstream (SRS-SEC-004 one-way boundary). Rewrites
     ``Origin``/``Referer`` to the upstream netloc so the upstream's same-origin
     checks (e.g. Jupyter's ``check_origin`` / XSRF) see a self-consistent
-    origin. Everything else — ``Cookie`` (Jupyter's ``Path=/research/``-scoped
-    ``_xsrf``), ``X-XSRFToken``, ``Content-Type``, ``Accept-Encoding``, … —
-    forwards as-is.
+    origin. ``Cookie`` is filtered to Jupyter-owned cookies only (``_xsrf`` /
+    ``username-<host>-<port>``) so a dashboard/operator session cookie never
+    crosses the SRS-SEC-004 boundary. Everything else — ``X-XSRFToken``,
+    ``Content-Type``, ``Accept-Encoding``, … — forwards as-is.
     """
 
     connection_tokens = {
@@ -319,7 +345,12 @@ def filter_request_headers(
         lower = name.lower()
         if lower in dropped:
             continue
-        if lower == "origin":
+        if lower == "cookie":
+            filtered_cookie = _filter_cookie_header(value)
+            if filtered_cookie is None:
+                continue  # only operator/dashboard cookies present → drop entirely
+            value = filtered_cookie
+        elif lower == "origin":
             value = f"http://{upstream_netloc}"
         elif lower == "referer":
             parts = urlsplit(value)

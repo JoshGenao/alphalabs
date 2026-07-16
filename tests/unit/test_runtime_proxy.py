@@ -150,7 +150,7 @@ def test_host_rewritten_and_hop_by_hop_stripped_request_side(
         "/research/lab",
         headers={
             "X-Custom": "carried",
-            "Cookie": "sid=1",
+            "Cookie": "_xsrf=jupyter-token",
             "Origin": f"http://{host}:{port}",
             "Keep-Alive": "timeout=1",
         },
@@ -159,7 +159,7 @@ def test_host_rewritten_and_hop_by_hop_stripped_request_side(
     echoed_headers = json.loads(payload)["headers"]
     assert echoed_headers["host"] == f"127.0.0.1:{echo_upstream}"
     assert echoed_headers["x-custom"] == "carried"
-    assert echoed_headers["cookie"] == "sid=1"
+    assert echoed_headers["cookie"] == "_xsrf=jupyter-token"
     # Origin is rewritten to the upstream netloc (Jupyter check_origin sees a
     # self-consistent origin).
     assert echoed_headers["origin"] == f"http://127.0.0.1:{echo_upstream}"
@@ -186,6 +186,43 @@ def test_authorization_stripped_but_cookie_forwarded_upstream(proxied_runtime) -
     assert "authorization" not in echoed_headers
     assert echoed_headers["cookie"] == "_xsrf=jupyter-token"
     assert echoed_headers["x-xsrftoken"] == "jupyter-token"
+
+
+def test_dashboard_session_cookie_stripped_only_jupyter_cookies_forwarded(
+    proxied_runtime,
+) -> None:
+    host, port = proxied_runtime
+    status, _, payload = _request(
+        host,
+        port,
+        "GET",
+        "/research/lab",
+        headers={
+            # A dashboard/operator session cookie riding alongside Jupyter's own
+            # _xsrf / username-* cookies (browser attaches Path=/-scoped cookies
+            # to /research/ too). Only the Jupyter-owned ones may cross.
+            "Cookie": "operator_session=secret; _xsrf=jt; username-127-0-0-1-8888=sess",
+        },
+    )
+    assert status == 200
+    forwarded = json.loads(payload)["headers"].get("cookie", "")
+    assert "operator_session" not in forwarded
+    assert "_xsrf=jt" in forwarded
+    assert "username-127-0-0-1-8888=sess" in forwarded
+
+
+def test_cookie_header_dropped_when_only_operator_cookies_present(proxied_runtime) -> None:
+    host, port = proxied_runtime
+    status, _, payload = _request(
+        host,
+        port,
+        "GET",
+        "/research/lab",
+        headers={"Cookie": "operator_session=secret; other=1"},
+    )
+    assert status == 200
+    # Nothing Jupyter-owned survives → the Cookie header is omitted entirely.
+    assert "cookie" not in json.loads(payload)["headers"]
 
 
 def test_response_hop_by_hop_stripped_and_csp_passes_through(proxied_runtime) -> None:

@@ -250,11 +250,12 @@ StRS SN-1.18) — the two SRS-SEC-004 acceptance clauses:
   confirmation token that iframe-originated JS cannot mint, or a separate-origin
   embed (CORS deny-by-default) that bends IF-13 — both cross-feature and out of
   this feature's scope. Mitigations already in place: the proxy strips
-  operator-scoped `Authorization` before forwarding upstream (it never reaches
-  Jupyter), mutating operator routes remain confirmation-guarded regardless of
-  caller (an *unconfirmed* notebook fetch is still refused), and the operator's
-  external auth proxy (NFR-S3) must not scope a session cookie to `/research/`
-  (or it would be forwarded to the token-less Jupyter upstream).
+  operator-scoped `Authorization` and filters `Cookie` to Jupyter-owned cookies
+  only (`_xsrf` / `username-<host>-<port>`) before forwarding upstream — a
+  dashboard/operator session cookie never reaches the token-less Jupyter
+  service, over either the HTTP or the WebSocket proxy path — and mutating
+  operator routes remain confirmation-guarded regardless of caller (an
+  *unconfirmed* notebook fetch is still refused).
 - **Read-only market-data / backtest-result access.** Jupyter mounts **only** the
   sanctioned SSD/NAS data tiers, and only **read-only** (`atp_ssd:/ssd:ro`,
   `atp_nas:/nas:ro`) — it reads market data and backtest results through the data
