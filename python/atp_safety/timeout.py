@@ -71,6 +71,17 @@ _DISPOSITIONS_BY_EXIT = {
     3: ("PROBE_UNAVAILABLE", "PROBE_INCONSISTENT"),
 }
 
+#: Dispositions whose contract is "NO SYS-44b cleanup ran": filled (the error
+#: path never engaged) and the fail-closed probe refusals (the gate takes no
+#: automated action on an unconfirmable/inconsistent order state). A payload
+#: claiming otherwise is contradictory and must be refused, never trusted.
+_NO_CLEANUP_DISPOSITIONS = frozenset(
+    {"FILLED_BEFORE_TIMEOUT", "PROBE_UNAVAILABLE", "PROBE_INCONSISTENT"}
+)
+
+#: The three SYS-44b cleanup legs recorded on every outcome.
+_CLEANUP_LEGS = ("operator_alert", "liquidation_cancel", "ib_disconnect")
+
 
 class LiquidationTimeoutBackendError(Exception):
     """The timeout backend could not run (or could not be trusted).
@@ -202,6 +213,7 @@ class RustCliLiquidationTimeoutBackend:
                 f"disposition {disposition!r} (expected one of {allowed}) — "
                 "refusing a mismatched outcome"
             )
+        _assert_outcome_consistency(payload, disposition)
         return LiquidationTimeoutOutcome(payload=payload, exit_code=completed.returncode)
 
 
@@ -230,6 +242,61 @@ def _parse_outcome(stdout: str) -> dict[str, object]:
             f"liquidation-timeout CLI outcome is missing required keys: {missing}"
         )
     return payload
+
+
+def _assert_outcome_consistency(payload: Mapping[str, object], disposition: str) -> None:
+    """Refuse a payload whose evidence contradicts its disposition.
+
+    The exit-code/disposition pairing alone is not enough: a version-skewed
+    CLI could report a non-timeout disposition while its own evidence shows
+    the destructive SYS-44b cleanup ran — and trusting it would suppress the
+    durable ``LIQUIDATION_TIMEOUT`` record for side effects that actually
+    happened. For every ``_NO_CLEANUP_DISPOSITIONS`` outcome the payload must
+    show NO gateway calls, NO accepted pages, and every cleanup leg
+    ``NOT_ATTEMPTED``; and every non-filled disposition must carry the
+    ``unfilled_order`` details so the fail-closed refusals stay auditable.
+    """
+
+    if disposition in _NO_CLEANUP_DISPOSITIONS:
+        contradictions: list[str] = []
+        gateway_calls = payload["gateway_calls"]
+        if not isinstance(gateway_calls, list) or gateway_calls:
+            contradictions.append(f"gateway_calls={gateway_calls!r}")
+        notification = payload["notification"]
+        if not isinstance(notification, Mapping):
+            contradictions.append(f"notification={notification!r}")
+        else:
+            for channel_key in ("email_accepted", "sms_accepted"):
+                if notification.get(channel_key) != 0:
+                    contradictions.append(
+                        f"notification.{channel_key}={notification.get(channel_key)!r}"
+                    )
+        cleanup = payload["cleanup"]
+        if not isinstance(cleanup, Mapping):
+            contradictions.append(f"cleanup={cleanup!r}")
+        else:
+            for leg in _CLEANUP_LEGS:
+                side_effect = cleanup.get(leg)
+                status = side_effect.get("status") if isinstance(side_effect, Mapping) else None
+                if status != "NOT_ATTEMPTED":
+                    contradictions.append(f"cleanup.{leg}.status={status!r}")
+        if contradictions:
+            raise LiquidationTimeoutBackendError(
+                f"liquidation-timeout CLI reported disposition {disposition!r} "
+                "(no SYS-44b cleanup may have run) but its own evidence "
+                f"contradicts that: {', '.join(contradictions)} — refusing the "
+                "outcome rather than suppressing a safety record for side "
+                "effects that may have happened"
+            )
+    if disposition != "FILLED_BEFORE_TIMEOUT":
+        order = payload.get("unfilled_order")
+        order_id = str(order.get("order_id", "")).strip() if isinstance(order, Mapping) else ""
+        if not order_id:
+            raise LiquidationTimeoutBackendError(
+                f"liquidation-timeout CLI disposition {disposition!r} carries no "
+                "unfilled_order details — a refusal without the order identity "
+                "is not auditable; refusing the outcome"
+            )
 
 
 def resolve_liquidation_timeout(

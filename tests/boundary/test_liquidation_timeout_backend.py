@@ -51,6 +51,36 @@ _TIMEOUT_PAYLOAD: dict[str, object] = {
 }
 
 
+def _no_cleanup_payload(disposition: str) -> dict[str, object]:
+    """A CONSISTENT payload for a disposition whose contract is 'no SYS-44b
+    cleanup ran' — mirrors what the real CLI prints for filled / fail-closed
+    probe outcomes (empty gateway calls, zero accepted pages, every cleanup
+    leg NOT_ATTEMPTED)."""
+    payload = dict(_TIMEOUT_PAYLOAD)
+    payload["disposition"] = disposition
+    payload["manual_resolution_required"] = False
+    payload["gateway_calls"] = []
+    payload["notification"] = {"events": 0, "email_accepted": 0, "sms_accepted": 0}
+    payload["cleanup"] = {
+        "operator_alert": {"status": "NOT_ATTEMPTED"},
+        "liquidation_cancel": {"status": "NOT_ATTEMPTED"},
+        "ib_disconnect": {"status": "NOT_ATTEMPTED"},
+        "audit_recorded": False,
+    }
+    if disposition == "FILLED_BEFORE_TIMEOUT":
+        payload["category"] = None
+        payload["error_type"] = None
+        payload.pop("unfilled_order", None)
+    else:
+        payload["category"] = "KILL_SWITCH_LIQUIDATION_PROBE_UNAVAILABLE"
+        payload["error_type"] = (
+            "KillSwitchLiquidationProbeInconsistent"
+            if disposition == "PROBE_INCONSISTENT"
+            else "KillSwitchLiquidationProbeUnavailable"
+        )
+    return payload
+
+
 def _completed(returncode: int, stdout: str, stderr: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
         args=["cli"], returncode=returncode, stdout=stdout, stderr=stderr
@@ -143,16 +173,52 @@ def test_exit_1_parses_as_a_normal_timed_out_outcome() -> None:
 
 
 def test_exit_3_parses_as_a_fail_closed_probe_outcome() -> None:
-    payload = dict(_TIMEOUT_PAYLOAD)
-    payload["disposition"] = "PROBE_INCONSISTENT"
-    payload["category"] = "KILL_SWITCH_LIQUIDATION_PROBE_UNAVAILABLE"
-    payload["error_type"] = "KillSwitchLiquidationProbeInconsistent"
-    payload["manual_resolution_required"] = False
-    payload["gateway_calls"] = []
+    payload = _no_cleanup_payload("PROBE_INCONSISTENT")
     backend = _backend_with(_completed(3, f"outcome:{json.dumps(payload)}\n"))
     outcome = backend.resolve()
     assert not outcome.timed_out
     assert outcome.disposition == "PROBE_INCONSISTENT"
+
+
+def test_non_timeout_disposition_claiming_gateway_calls_is_refused() -> None:
+    # Codex r1 finding: a version-skewed CLI could report a fail-closed
+    # disposition while its own evidence shows the destructive cleanup ran —
+    # trusting it would suppress the durable safety record. Refuse.
+    payload = _no_cleanup_payload("PROBE_UNAVAILABLE")
+    payload["gateway_calls"] = ["cancel:B-0001", "disconnect"]
+    backend = _backend_with(_completed(3, f"outcome:{json.dumps(payload)}\n"))
+    with pytest.raises(LiquidationTimeoutBackendError, match="contradicts"):
+        backend.resolve()
+
+
+def test_non_timeout_disposition_claiming_cleanup_ran_is_refused() -> None:
+    payload = _no_cleanup_payload("PROBE_INCONSISTENT")
+    payload["cleanup"] = {
+        "operator_alert": {"status": "NOT_ATTEMPTED"},
+        "liquidation_cancel": {"status": "SUCCEEDED"},
+        "ib_disconnect": {"status": "NOT_ATTEMPTED"},
+        "audit_recorded": False,
+    }
+    backend = _backend_with(_completed(3, f"outcome:{json.dumps(payload)}\n"))
+    with pytest.raises(LiquidationTimeoutBackendError, match="liquidation_cancel"):
+        backend.resolve()
+
+
+def test_filled_disposition_claiming_accepted_pages_is_refused() -> None:
+    payload = _no_cleanup_payload("FILLED_BEFORE_TIMEOUT")
+    payload["notification"] = {"events": 1, "email_accepted": 1, "sms_accepted": 1}
+    backend = _backend_with(_completed(0, f"outcome:{json.dumps(payload)}\n"))
+    with pytest.raises(LiquidationTimeoutBackendError, match="email_accepted"):
+        backend.resolve()
+
+
+def test_probe_refusal_without_order_identity_is_refused() -> None:
+    # A fail-closed refusal must stay auditable: no unfilled_order → refuse.
+    payload = _no_cleanup_payload("PROBE_UNAVAILABLE")
+    payload.pop("unfilled_order")
+    backend = _backend_with(_completed(3, f"outcome:{json.dumps(payload)}\n"))
+    with pytest.raises(LiquidationTimeoutBackendError, match="not auditable"):
+        backend.resolve()
 
 
 def test_resolve_writes_the_liquidation_timeout_record_durably(tmp_path: Path) -> None:
@@ -173,12 +239,7 @@ def test_resolve_writes_the_liquidation_timeout_record_durably(tmp_path: Path) -
 
 
 def test_filled_disposition_writes_no_timeout_record(tmp_path: Path) -> None:
-    payload = dict(_TIMEOUT_PAYLOAD)
-    payload["disposition"] = "FILLED_BEFORE_TIMEOUT"
-    payload["category"] = None
-    payload["error_type"] = None
-    payload["manual_resolution_required"] = False
-    payload["gateway_calls"] = []
+    payload = _no_cleanup_payload("FILLED_BEFORE_TIMEOUT")
     backend = _backend_with(_completed(0, f"outcome:{json.dumps(payload)}\n"))
     store = JsonlLogStore(tmp_path / "system.jsonl", log_class=LogClass.SYSTEM)
 

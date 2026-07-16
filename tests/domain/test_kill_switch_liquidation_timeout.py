@@ -342,6 +342,50 @@ def test_cli_premature_timeout_drill_exits_three_as_inconsistency() -> None:
     assert outcome["gateway_calls"] == []
 
 
+def test_backend_refuses_a_contradictory_non_timeout_outcome() -> None:
+    # Safety invariant at the Python/Rust boundary (adversarial r1): a
+    # disposition whose contract is "no SYS-44b cleanup ran" (filled /
+    # fail-closed probe refusal) must be REFUSED when its own evidence shows
+    # destructive cleanup happened — trusting it would suppress the durable
+    # LIQUIDATION_TIMEOUT record for side effects that actually ran.
+    import subprocess as _subprocess
+
+    import pytest as _pytest
+    from atp_safety import LiquidationTimeoutBackendError, RustCliLiquidationTimeoutBackend
+
+    contradictory = {
+        "disposition": "PROBE_UNAVAILABLE",
+        "notification": {"events": 0, "email_accepted": 0, "sms_accepted": 0},
+        "gateway_calls": ["cancel:B-0001", "disconnect"],  # cleanup RAN
+        "probe_polls": 1,
+        "simulated_elapsed_ms": 0,
+        "category": "KILL_SWITCH_LIQUIDATION_PROBE_UNAVAILABLE",
+        "error_type": "KillSwitchLiquidationProbeUnavailable",
+        "unfilled_order": {
+            "order_id": "live-momentum/ks-liq-0001",
+            "symbol": "AAPL",
+            "side": "SELL",
+            "quantity": 250,
+        },
+        "manual_resolution_required": False,
+        "cleanup": {
+            "operator_alert": {"status": "NOT_ATTEMPTED"},
+            "liquidation_cancel": {"status": "NOT_ATTEMPTED"},
+            "ib_disconnect": {"status": "NOT_ATTEMPTED"},
+            "audit_recorded": False,
+        },
+    }
+
+    def runner(argv, *, timeout_s):  # noqa: ANN001, ANN202 - test double
+        return _subprocess.CompletedProcess(
+            args=argv, returncode=3, stdout=f"outcome:{json.dumps(contradictory)}\n", stderr=""
+        )
+
+    backend = RustCliLiquidationTimeoutBackend(runner=runner)
+    with _pytest.raises(LiquidationTimeoutBackendError, match="contradicts"):
+        backend.resolve()
+
+
 def test_cli_failed_side_effects_are_observable_and_still_exit_one() -> None:
     result = _run_cli("resolve", "--fail-email", "--fail-sms", "--fail-cancel")
     assert result.returncode == 1, f"the SYS-44b sequence still ran:\n{result.stderr}"
