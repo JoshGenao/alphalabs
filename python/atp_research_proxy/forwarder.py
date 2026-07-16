@@ -175,9 +175,7 @@ class TcpForwarder:
     def _serve_connection(self, client: socket.socket) -> None:
         try:
             try:
-                address, port = resolve_private_upstream(
-                    self._upstream_host, self._upstream_port
-                )
+                address, port = resolve_private_upstream(self._upstream_host, self._upstream_port)
                 upstream = socket.create_connection((address, port), timeout=5.0)
             except (ForwarderPolicyError, OSError):
                 client.close()

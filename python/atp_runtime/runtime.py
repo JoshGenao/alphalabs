@@ -44,13 +44,13 @@ from .contract import (
     validate_owners,
     ws_owner,
 )
+from .errors import ProxyPolicyError
 from .handlers import (
     RUNTIME_VERSION,
     ConfigHandler,
     SystemStatusHandler,
     VersionHandler,
 )
-from .errors import ProxyPolicyError
 from .proxy import ProxyUpstream, compile_proxy_route
 from .registry import HandlerRegistry, OperationKey, Surface
 from .rest_server import (

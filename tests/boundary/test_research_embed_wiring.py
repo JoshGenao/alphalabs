@@ -23,7 +23,7 @@ import json
 import socket
 import threading
 from collections.abc import Iterator
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 
 import pytest
 from atp_dashboard import (
@@ -71,8 +71,7 @@ def _ws_echo_listener() -> tuple[socket.socket, int]:
                 conn.sendall(
                     b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n"
                     b"Content-Security-Policy: frame-ancestors 'self'\r\n"
-                    b"Content-Type: text/html\r\n\r\n" % len(_LAB_HTML)
-                    + _LAB_HTML
+                    b"Content-Type: text/html\r\n\r\n" % len(_LAB_HTML) + _LAB_HTML
                 )
                 conn.close()
                 continue

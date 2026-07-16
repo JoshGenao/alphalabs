@@ -197,9 +197,7 @@ def test_operator_authorization_never_reaches_the_research_upstream(embedded_run
     host, port = embedded_runtime
     conn = http.client.HTTPConnection(host, port, timeout=10)
     try:
-        conn.request(
-            "GET", "/research/probe", headers={"Authorization": "Bearer operator-token"}
-        )
+        conn.request("GET", "/research/probe", headers={"Authorization": "Bearer operator-token"})
         response = conn.getresponse()
         response.read()
         assert response.status == 200
@@ -217,7 +215,9 @@ def test_operator_session_cookie_never_reaches_the_research_upstream(embedded_ru
     boundary. Codex R2 finding."""
 
     host, port = embedded_runtime
-    mixed = "operator_session=secret; _xsrf=jt"
+    # Includes a Jupyter-RESEMBLING name (username-operator) that a broad prefix
+    # allow-list would have leaked (Codex R3): only the exact reserved _xsrf crosses.
+    mixed = "operator_session=secret; username-operator=hijack; _xsrf=jt"
 
     # HTTP path
     conn = http.client.HTTPConnection(host, port, timeout=10)
@@ -240,9 +240,13 @@ def test_operator_session_cookie_never_reaches_the_research_upstream(embedded_ru
     finally:
         client.close()
 
-    # Whatever cookies the upstream saw, NONE carried the operator session.
+    # Whatever cookies the upstream saw, NONE carried an operator cookie — not
+    # the plain session cookie nor the Jupyter-resembling username- one.
     assert _RecordingUpstream.saw_cookies, "upstream should have seen at least the _xsrf cookie"
-    assert all("operator_session" not in cookie for cookie in _RecordingUpstream.saw_cookies)
+    for cookie in _RecordingUpstream.saw_cookies:
+        assert "operator_session" not in cookie
+        assert "username-operator" not in cookie
+        assert cookie.strip() == "_xsrf=jt"
 
 
 def test_control_surface_prefixes_cannot_be_proxied() -> None:
@@ -346,9 +350,7 @@ def test_ws_kernel_tunnel_works_with_zero_strategies() -> None:
 
     threading.Thread(target=serve, daemon=True).start()
     runtime = OperatorInterfaceRuntime()
-    runtime.register_proxy_route(
-        "/research/", f"http://127.0.0.1:{server_sock.getsockname()[1]}"
-    )
+    runtime.register_proxy_route("/research/", f"http://127.0.0.1:{server_sock.getsockname()[1]}")
     host, port = runtime.start(host="127.0.0.1", port=0)
     try:
         client = socket.create_connection((host, port), timeout=10)

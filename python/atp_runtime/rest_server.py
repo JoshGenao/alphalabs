@@ -421,9 +421,7 @@ def make_request_handler() -> type[BaseHTTPRequestHandler]:
             # nothing under it can dispatch into the operator REST surface.
             proxy_server = cast(LoopbackHTTPServer, self.server)
             if proxy_server.proxy_routes:
-                proxy_route = match_proxy_route(
-                    proxy_server.proxy_routes, urlsplit(self.path).path
-                )
+                proxy_route = match_proxy_route(proxy_server.proxy_routes, urlsplit(self.path).path)
                 if proxy_route is not None:
                     self._serve_proxy(method, proxy_route)
                     return

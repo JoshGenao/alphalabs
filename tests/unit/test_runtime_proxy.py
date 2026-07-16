@@ -122,7 +122,9 @@ def _request(
 def test_verbs_round_trip_verbatim_path_and_body(proxied_runtime, method: str) -> None:
     host, port = proxied_runtime
     body = b'{"cells": []}' if method in ("POST", "PUT", "PATCH") else None
-    status, _, payload = _request(host, port, method, "/research/api/contents/nb.ipynb?type=file", body)
+    status, _, payload = _request(
+        host, port, method, "/research/api/contents/nb.ipynb?type=file", body
+    )
     assert status == 200
     echoed = json.loads(payload)
     assert echoed["method"] == method
@@ -198,17 +200,19 @@ def test_dashboard_session_cookie_stripped_only_jupyter_cookies_forwarded(
         "GET",
         "/research/lab",
         headers={
-            # A dashboard/operator session cookie riding alongside Jupyter's own
-            # _xsrf / username-* cookies (browser attaches Path=/-scoped cookies
-            # to /research/ too). Only the Jupyter-owned ones may cross.
-            "Cookie": "operator_session=secret; _xsrf=jt; username-127-0-0-1-8888=sess",
+            # Operator cookies riding alongside Jupyter's _xsrf: a plain session
+            # cookie AND ones whose names RESEMBLE Jupyter cookies (a broad
+            # prefix allow-list would leak these — Codex R3). Only the exact
+            # reserved name _xsrf may cross.
+            "Cookie": (
+                "operator_session=secret; _xsrf=jt; "
+                "username-operator=hijack; username-127-0-0-1-8888=sess"
+            ),
         },
     )
     assert status == 200
     forwarded = json.loads(payload)["headers"].get("cookie", "")
-    assert "operator_session" not in forwarded
-    assert "_xsrf=jt" in forwarded
-    assert "username-127-0-0-1-8888=sess" in forwarded
+    assert forwarded == "_xsrf=jt"
 
 
 def test_cookie_header_dropped_when_only_operator_cookies_present(proxied_runtime) -> None:
@@ -278,10 +282,7 @@ def test_chunked_request_body_refused_400(proxied_runtime) -> None:
     host, port = proxied_runtime
     with socket.create_connection((host, port), timeout=10) as sock:
         sock.sendall(
-            b"POST /research/api/contents HTTP/1.1\r\n"
-            b"Host: x\r\n"
-            b"Transfer-Encoding: chunked\r\n"
-            b"\r\n"
+            b"POST /research/api/contents HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
         )
         head = sock.recv(4096)
     assert b" 400 " in head.split(b"\r\n", 1)[0]
@@ -358,9 +359,7 @@ def test_chunked_upstream_response_buffered_with_computed_length() -> None:
     server_sock.listen(1)
     threading.Thread(target=upstream, args=(server_sock,), daemon=True).start()
     runtime = OperatorInterfaceRuntime()
-    runtime.register_proxy_route(
-        "/research/", f"http://127.0.0.1:{server_sock.getsockname()[1]}"
-    )
+    runtime.register_proxy_route("/research/", f"http://127.0.0.1:{server_sock.getsockname()[1]}")
     host, port = runtime.start(host="127.0.0.1", port=0)
     try:
         status, headers, payload = _request(host, port, "GET", "/research/api/status")

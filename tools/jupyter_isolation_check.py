@@ -940,7 +940,7 @@ def make_fixture_root(fixture: str) -> tempfile.TemporaryDirectory[str]:
         # networks list + trailing comment, unique to the jupyter service.)
         text = text.replace(
             "    networks:\n      - atp_research_net\n    # NO published ports",
-            '    networks:\n      - atp_research_net\n    ports:\n'
+            "    networks:\n      - atp_research_net\n    ports:\n"
             '      - "127.0.0.1:8888:8888"\n    # NO published ports',
         )
     elif fixture == "research-proxy-on-default":
@@ -972,8 +972,8 @@ def make_fixture_root(fixture: str) -> tempfile.TemporaryDirectory[str]:
         # blanks. Rejected. (Anchored on the proxy's unique inline env key so
         # only the research-proxy service is mutated, not Jupyter.)
         text = text.replace(
-            '      <<: [*atp-no-secrets, *atp-env]\n      ATP_RESEARCH_PROXY_PORT:',
-            '      <<: [*atp-env, *atp-no-secrets]\n      ATP_RESEARCH_PROXY_PORT:',
+            "      <<: [*atp-no-secrets, *atp-env]\n      ATP_RESEARCH_PROXY_PORT:",
+            "      <<: [*atp-env, *atp-no-secrets]\n      ATP_RESEARCH_PROXY_PORT:",
         )
     elif fixture == "dashboard-on-research-net-via-edge-rename":
         # dashboard-api's edge attachment is "simplified" to atp_research_net —

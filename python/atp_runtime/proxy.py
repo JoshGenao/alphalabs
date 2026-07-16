@@ -103,18 +103,25 @@ _PROXY_OWNED_REQUEST_HEADERS = frozenset({"host", "content-length"})
 _STRIPPED_UPSTREAM_REQUEST_HEADERS = frozenset({"authorization"})
 
 
+#: The EXACT cookie names permitted to cross into the token-less research
+#: upstream. Deliberately a single, exact name — NOT a prefix — so no operator
+#: cookie can collide into the allow-list (Codex R3): ``_xsrf`` is Jupyter/
+#: tornado's reserved CSRF cookie, and the real Jupyter e2e
+#: (tests/e2e/test_research_embed.py) proves the API path (kernel create + WS)
+#: works with only this cookie forwarded. Jupyter's ``username-<host>-<port>``
+#: identity cookie is NOT needed in token-less/password-less anonymous mode, so
+#: it is stripped too. Any other cookie — including an operator/dashboard
+#: session cookie the browser also attaches because it is ``Path=/``-scoped, or
+#: one whose name merely resembles a Jupyter cookie — never crosses
+#: (SRS-SEC-004). The single reserved name ``_xsrf`` must not be reused by the
+#: operator's external auth layer (documented in SECURITY.md).
+_JUPYTER_ALLOWED_COOKIE_NAMES = frozenset({"_xsrf"})
+
+
 def _is_jupyter_owned_cookie(name: str) -> bool:
-    """Whether a cookie is one Jupyter itself sets (and thus needs upstream).
+    """Whether a cookie is exactly one the token-less Jupyter upstream needs."""
 
-    Jupyter Server's own cookies: ``_xsrf`` (CSRF token, required on POST) and
-    its per-server session cookie ``username-<host>-<port>``. Everything else —
-    a dashboard/operator session cookie the browser also attaches because it is
-    ``Path=/``- or ``Path=/research/``-scoped — is operator auth material and
-    must not cross into the token-less research upstream (SRS-SEC-004).
-    """
-
-    lowered = name.strip().lower()
-    return lowered == "_xsrf" or lowered.startswith("username-")
+    return name.strip().lower() in _JUPYTER_ALLOWED_COOKIE_NAMES
 
 
 def _filter_cookie_header(value: str) -> str | None:
@@ -130,6 +137,7 @@ def _filter_cookie_header(value: str) -> str | None:
         if pair.strip() and _is_jupyter_owned_cookie(pair.split("=", 1)[0])
     ]
     return "; ".join(kept) if kept else None
+
 
 #: Hard ceiling on a proxied request body. Larger than the operator REST
 #: ceiling (1 MiB) because notebook saves carry real payloads; still bounded so
@@ -210,7 +218,9 @@ def compile_proxy_route(
     """
 
     if not isinstance(prefix, str) or not prefix.startswith("/") or len(prefix.strip("/")) == 0:
-        raise ProxyPolicyError(f"proxy prefix must be a non-root path starting with '/': {prefix!r}")
+        raise ProxyPolicyError(
+            f"proxy prefix must be a non-root path starting with '/': {prefix!r}"
+        )
     if any(ch.isspace() for ch in prefix) or ".." in prefix:
         raise ProxyPolicyError(f"proxy prefix contains forbidden characters: {prefix!r}")
     normalised = _normalise_prefix(prefix)
@@ -258,9 +268,7 @@ def _is_ip_literal(host: str) -> bool:
     return True
 
 
-def match_proxy_route(
-    proxy_routes: Mapping[str, ProxyUpstream], path: str
-) -> ProxyUpstream | None:
+def match_proxy_route(proxy_routes: Mapping[str, ProxyUpstream], path: str) -> ProxyUpstream | None:
     """Longest-prefix match of a request path against the registered routes.
 
     Matches ``/research/...`` under prefix ``/research/`` and the bare
@@ -330,9 +338,7 @@ def filter_request_headers(
     """
 
     connection_tokens = {
-        token.strip().lower()
-        for token in headers.get("Connection", "").split(",")
-        if token.strip()
+        token.strip().lower() for token in headers.get("Connection", "").split(",") if token.strip()
     }
     dropped = (
         _HOP_BY_HOP
