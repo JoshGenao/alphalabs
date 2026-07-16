@@ -1264,7 +1264,7 @@
       "Step 3: Verify acceptance criteria: Backtest history lists strategy, parameters, date range, metrics, and supports drill-down into trade log, equity curve, and benchmark comparison.",
       "Step 4: Record objective evidence from demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {
