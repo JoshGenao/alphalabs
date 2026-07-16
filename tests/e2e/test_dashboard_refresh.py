@@ -14,6 +14,7 @@ load test is what flips SRS-UI-001 to ``passes:true`` via the ``verified-e2e`` l
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterator
 
 import pytest
@@ -240,6 +241,89 @@ def test_backtest_panel_renders_real_history_and_honest_deferred_launch(
                 timeout=5_000,
             )
             assert "not yet wired" in page.locator("#bt-run-status").inner_text()
+        finally:
+            browser.close()
+
+
+def test_srs_ui_004_backtest_history_lists_ac_fields_and_drills_down(
+    backtest_dashboard_url: str,
+) -> None:
+    """SRS-UI-004 acceptance criteria, clause by clause: the backtest history
+    lists strategy, parameters, date range, and metrics for each REAL persisted
+    run, and drill-down opens the trade log, equity curve, and benchmark
+    comparison — every value traced to the seeded store, never a placeholder."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.goto(backtest_dashboard_url, wait_until="domcontentloaded")
+
+            page.wait_for_function(
+                "document.querySelectorAll('#bthistory-rows tr').length === 2", timeout=5_000
+            )
+
+            # Before any row is selected the drill-down container is genuinely
+            # invisible — the panel's display:grid must not override [hidden]
+            # (regression pin for the stray-empty-box bug).
+            assert (
+                page.eval_on_selector("#backtest-detail", "e => getComputedStyle(e).display")
+                == "none"
+            )
+
+            # --- AC: "history lists strategy, parameters, date range, metrics" ---
+            row = page.locator('#bthistory-rows tr[data-run="run-momentum"]')
+            cells = row.locator("td")
+            assert cells.nth(0).inner_text() == "run-momentum"
+            assert cells.nth(1).inner_text() == "momentum"  # strategy
+            params = cells.nth(2).inner_text()  # parameters
+            assert "lookback=20" in params and "threshold=0.5" in params
+            assert cells.nth(3).inner_text() == "0–100"  # date range (run_window)
+            # metrics: Sharpe (ratio), max drawdown + annualized return (pct) —
+            # real numbers from the persisted record, never the "—" undefined cell.
+            sharpe = cells.nth(4).inner_text()
+            assert sharpe != "—"
+            assert math.isfinite(float(sharpe.replace("−", "-")))
+            for pct_cell in (cells.nth(5), cells.nth(6), cells.nth(7)):
+                text = pct_cell.inner_text()
+                assert text.endswith("%") and text != "—"
+
+            # --- AC: "drill-down into trade log, equity curve, benchmark comparison" ---
+            row.click()
+            page.wait_for_function(
+                "!document.getElementById('backtest-detail').hidden", timeout=5_000
+            )
+            # The detail header names the selected run and its provenance.
+            assert page.locator("#backtest-detail .btd__title").inner_text() == "run-momentum"
+            sub = page.locator("#backtest-detail .btd__sub").inner_text()
+            assert "momentum" in sub and "AAPL" in sub and "window 0–100" in sub
+
+            # Equity curve: a real inline-SVG polyline over the 5 persisted points.
+            line = page.locator("#backtest-detail svg.eqchart path.eqchart__line")
+            assert line.count() == 1
+            assert len(line.get_attribute("d") or "") > 0
+            assert "5 marks" in page.locator("#backtest-detail .btd__readout").inner_text()
+
+            # Benchmark comparison: the two comparison tiles render real values.
+            tiles = page.eval_on_selector_all(
+                "#backtest-detail .btstat",
+                "els => Object.fromEntries(els.map(e => ["
+                "e.querySelector('.btstat__k').textContent,"
+                "e.querySelector('.btstat__v').textContent]))",
+            )
+            assert tiles["Excess vs SPY"].endswith("%") and tiles["Excess vs SPY"] != "—"
+            assert tiles["Beta vs benchmark"] != "—"
+            float(tiles["Beta vs benchmark"].replace("−", "-"))  # parses as a number
+
+            # Trade log: both persisted fills render with real money columns.
+            assert "Trade log (2 fills)" in (
+                page.locator("#backtest-detail .bttrades .btd__section-label").text_content() or ""
+            )
+            trade_rows = page.locator("#backtest-detail .bttrades table tbody tr")
+            assert trade_rows.count() == 2
+            for i in range(2):
+                price = trade_rows.nth(i).locator("td").nth(3).inner_text()
+                assert price.startswith("$")
         finally:
             browser.close()
 
