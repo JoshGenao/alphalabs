@@ -371,7 +371,7 @@
       "Step 3: Verify acceptance criteria: The adapter passes automated IB paper-account tests for order submission, cancellation, market data subscription, and historical data retrieval without depending on the TWS GUI.",
       "Step 4: Record objective evidence from integration test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {
