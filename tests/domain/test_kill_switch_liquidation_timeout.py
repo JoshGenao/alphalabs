@@ -386,6 +386,51 @@ def test_backend_refuses_a_contradictory_non_timeout_outcome() -> None:
         backend.resolve()
 
 
+def test_backend_refuses_a_timed_out_outcome_whose_cleanup_never_ran() -> None:
+    # Safety invariant, symmetric direction (adversarial r2): a
+    # TIMED_OUT_UNFILLED whose own evidence says the SYS-44b sequence did NOT
+    # run (unattempted cleanup legs / manual_resolution_required false) must
+    # be refused — writing the durable LIQUIDATION_TIMEOUT record for it
+    # would imply the timeout was handled while the page/cancel/disconnect
+    # never fired.
+    import subprocess as _subprocess
+
+    import pytest as _pytest
+    from atp_safety import LiquidationTimeoutBackendError, RustCliLiquidationTimeoutBackend
+
+    contradictory = {
+        "disposition": "TIMED_OUT_UNFILLED",
+        "notification": {"events": 0, "email_accepted": 0, "sms_accepted": 0},
+        "gateway_calls": [],
+        "probe_polls": 61,
+        "simulated_elapsed_ms": 30000,
+        "category": "KILL_SWITCH_LIQUIDATION_TIMEOUT",
+        "error_type": "KillSwitchLiquidationTimeout",
+        "unfilled_order": {
+            "order_id": "live-momentum/ks-liq-0001",
+            "symbol": "AAPL",
+            "side": "SELL",
+            "quantity": 250,
+        },
+        "manual_resolution_required": True,
+        "cleanup": {
+            "operator_alert": {"status": "NOT_ATTEMPTED"},  # sequence never ran
+            "liquidation_cancel": {"status": "NOT_ATTEMPTED"},
+            "ib_disconnect": {"status": "NOT_ATTEMPTED"},
+            "audit_recorded": False,
+        },
+    }
+
+    def runner(argv, *, timeout_s):  # noqa: ANN001, ANN202 - test double
+        return _subprocess.CompletedProcess(
+            args=argv, returncode=1, stdout=f"outcome:{json.dumps(contradictory)}\n", stderr=""
+        )
+
+    backend = RustCliLiquidationTimeoutBackend(runner=runner)
+    with _pytest.raises(LiquidationTimeoutBackendError, match="refusing to write"):
+        backend.resolve()
+
+
 def test_cli_failed_side_effects_are_observable_and_still_exit_one() -> None:
     result = _run_cli("resolve", "--fail-email", "--fail-sms", "--fail-cancel")
     assert result.returncode == 1, f"the SYS-44b sequence still ran:\n{result.stderr}"

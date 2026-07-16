@@ -221,6 +221,47 @@ def test_probe_refusal_without_order_identity_is_refused() -> None:
         backend.resolve()
 
 
+def test_timed_out_disposition_with_unattempted_cleanup_is_refused() -> None:
+    # Codex r2 finding (the symmetric direction): a TIMED_OUT_UNFILLED whose
+    # own evidence says the SYS-44b sequence did NOT run must be refused —
+    # writing the durable record for it would imply the timeout was handled
+    # while the page/cancel/disconnect never fired.
+    payload = dict(_TIMEOUT_PAYLOAD)
+    payload["cleanup"] = {
+        "operator_alert": {"status": "SUCCEEDED"},
+        "liquidation_cancel": {"status": "NOT_ATTEMPTED"},
+        "ib_disconnect": {"status": "SUCCEEDED"},
+        "audit_recorded": True,
+    }
+    backend = _backend_with(_completed(1, f"outcome:{json.dumps(payload)}\n"))
+    with pytest.raises(LiquidationTimeoutBackendError, match="liquidation_cancel"):
+        backend.resolve()
+
+
+def test_timed_out_disposition_without_manual_resolution_flag_is_refused() -> None:
+    payload = dict(_TIMEOUT_PAYLOAD)
+    payload["manual_resolution_required"] = False
+    backend = _backend_with(_completed(1, f"outcome:{json.dumps(payload)}\n"))
+    with pytest.raises(LiquidationTimeoutBackendError, match="manual_resolution_required"):
+        backend.resolve()
+
+
+def test_timed_out_disposition_with_failed_legs_is_a_valid_outcome() -> None:
+    # A FAILED attempt is a valid, observable outcome (continue-to-safety) —
+    # only an UNATTEMPTED leg on a confirmed timeout is a contract breach.
+    payload = dict(_TIMEOUT_PAYLOAD)
+    payload["cleanup"] = {
+        "operator_alert": {"status": "FAILED", "reason": "SMS gateway down"},
+        "liquidation_cancel": {"status": "FAILED", "reason": "IB cancel unreachable"},
+        "ib_disconnect": {"status": "SUCCEEDED"},
+        "audit_recorded": True,
+    }
+    backend = _backend_with(_completed(1, f"outcome:{json.dumps(payload)}\n"))
+    outcome = backend.resolve()
+    assert outcome.timed_out
+    assert outcome.manual_resolution_required
+
+
 def test_resolve_writes_the_liquidation_timeout_record_durably(tmp_path: Path) -> None:
     backend = _backend_with(_completed(1, f"outcome:{json.dumps(_TIMEOUT_PAYLOAD)}\n"))
     store = JsonlLogStore(tmp_path / "system.jsonl", log_class=LogClass.SYSTEM)

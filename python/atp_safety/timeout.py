@@ -247,14 +247,24 @@ def _parse_outcome(stdout: str) -> dict[str, object]:
 def _assert_outcome_consistency(payload: Mapping[str, object], disposition: str) -> None:
     """Refuse a payload whose evidence contradicts its disposition.
 
-    The exit-code/disposition pairing alone is not enough: a version-skewed
-    CLI could report a non-timeout disposition while its own evidence shows
-    the destructive SYS-44b cleanup ran — and trusting it would suppress the
-    durable ``LIQUIDATION_TIMEOUT`` record for side effects that actually
-    happened. For every ``_NO_CLEANUP_DISPOSITIONS`` outcome the payload must
-    show NO gateway calls, NO accepted pages, and every cleanup leg
-    ``NOT_ATTEMPTED``; and every non-filled disposition must carry the
-    ``unfilled_order`` details so the fail-closed refusals stay auditable.
+    The exit-code/disposition pairing alone is not enough — both directions
+    of skew are refused:
+
+    * A non-timeout disposition whose evidence shows the destructive SYS-44b
+      cleanup ran (trusting it would suppress the durable
+      ``LIQUIDATION_TIMEOUT`` record for side effects that actually
+      happened): every ``_NO_CLEANUP_DISPOSITIONS`` outcome must show NO
+      gateway calls, NO accepted pages, and every cleanup leg
+      ``NOT_ATTEMPTED``.
+    * A ``TIMED_OUT_UNFILLED`` disposition whose evidence shows the SYS-44b
+      sequence did NOT run (writing the durable record for it would imply the
+      timeout was handled while the page/cancel/disconnect never fired):
+      ``manual_resolution_required`` must be true and every cleanup leg must
+      have been ATTEMPTED (``SUCCEEDED`` or ``FAILED`` — never
+      ``NOT_ATTEMPTED``; a failed attempt is a valid, observable outcome).
+
+    And every non-filled disposition must carry the ``unfilled_order``
+    details so refusals and timeouts alike stay auditable.
     """
 
     if disposition in _NO_CLEANUP_DISPOSITIONS:
@@ -287,6 +297,31 @@ def _assert_outcome_consistency(payload: Mapping[str, object], disposition: str)
                 f"contradicts that: {', '.join(contradictions)} — refusing the "
                 "outcome rather than suppressing a safety record for side "
                 "effects that may have happened"
+            )
+    if disposition == "TIMED_OUT_UNFILLED":
+        contradictions = []
+        if payload["manual_resolution_required"] is not True:
+            contradictions.append(
+                f"manual_resolution_required={payload['manual_resolution_required']!r}"
+            )
+        cleanup = payload["cleanup"]
+        if not isinstance(cleanup, Mapping):
+            contradictions.append(f"cleanup={cleanup!r}")
+        else:
+            for leg in _CLEANUP_LEGS:
+                side_effect = cleanup.get(leg)
+                status = side_effect.get("status") if isinstance(side_effect, Mapping) else None
+                # A FAILED attempt is a valid, observable outcome; an
+                # unattempted leg on a confirmed timeout is a contract breach.
+                if status not in ("SUCCEEDED", "FAILED"):
+                    contradictions.append(f"cleanup.{leg}.status={status!r}")
+        if contradictions:
+            raise LiquidationTimeoutBackendError(
+                "liquidation-timeout CLI reported TIMED_OUT_UNFILLED (the SYS-44b "
+                "sequence must have run: page + cancel + disconnect each attempted, "
+                "positions awaiting manual resolution) but its own evidence "
+                f"contradicts that: {', '.join(contradictions)} — refusing to write "
+                "a durable record implying the timeout was handled"
             )
     if disposition != "FILLED_BEFORE_TIMEOUT":
         order = payload.get("unfilled_order")
