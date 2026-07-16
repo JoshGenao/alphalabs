@@ -294,6 +294,28 @@
           </div>
         </div>
       </section>
+
+      <!-- SRS-RES-001: embedded Jupyter research environment. The iframe is
+           SAME-ORIGIN (/research/ is reverse-proxied by the runtime to the
+           fixed upstream — IF-13: no separate service URL); its src is set
+           lazily on demand so an unconfigured/down upstream never spams the
+           proxy with 502s. State below is probe-derived only, never faked. -->
+      <section class="panel panel--wide panel--research" data-panel="research" style="--i:8">
+        <div class="panel__head">
+          <h2 class="panel__title">Research — Jupyter</h2>
+          <span class="panel__meta"><span class="tag tag--chan">SRS-RES-001</span><span class="panel__cadence">poll</span></span>
+        </div>
+        <div class="panel__body" id="body-research" aria-live="polite">
+          <div class="research">
+            <div class="research__bar">
+              <span class="research__status" id="research-status">checking research environment…</span>
+              <button class="research__open" id="research-open" type="button" disabled>Open research environment</button>
+            </div>
+            <iframe class="research__frame" id="research-frame"
+                    title="Jupyter research environment (SRS-RES-001)" hidden></iframe>
+          </div>
+        </div>
+      </section>
     </main>
 
     <footer class="legend" role="contentinfo">

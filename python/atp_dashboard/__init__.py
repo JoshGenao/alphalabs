@@ -41,6 +41,7 @@ from .provider import (
     deferred_field,
 )
 from .publisher import DashboardPublisher, cadence_for
+from .research import RESEARCH_PREFIX, ResearchEnvironmentProvider
 from .reservoir import (
     ALLOWED_EVAL_WINDOWS,
     DEFAULT_EVAL_WINDOW,
@@ -51,6 +52,7 @@ from .reservoir import (
 from .server import (
     ACCOUNT_SNAPSHOT_PATH,
     BACKTESTS_SNAPSHOT_PATH,
+    RESEARCH_SNAPSHOT_PATH,
     RESERVOIR_SNAPSHOT_PATH,
     STRATEGIES_SNAPSHOT_PATH,
     SYSTEM_SNAPSHOT_PATH,
@@ -74,6 +76,8 @@ __all__ = [
     "LOAD_DATA_SOURCE",
     "OWNED_CHANNELS",
     "REFRESH_BUDGET_MS",
+    "RESEARCH_PREFIX",
+    "RESEARCH_SNAPSHOT_PATH",
     "RESERVOIR_CHANNEL",
     "RESERVOIR_FIELD_OWNERS",
     "RESERVOIR_SNAPSHOT_PATH",
@@ -86,6 +90,7 @@ __all__ = [
     "DashboardMetricsProvider",
     "DashboardPublisher",
     "ReadinessBackedProvider",
+    "ResearchEnvironmentProvider",
     "ReservoirRankingProvider",
     "RollbackSnapshotInventorySource",
     "StoreCliBacktestHistorySource",

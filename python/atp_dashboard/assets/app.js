@@ -78,7 +78,7 @@
     // Budget is a real, known constant — fill it immediately.
     setField("body-latency", "refresh_budget_ms", { value: BUDGET_MS, data_source: "live" }, "ms");
     // Per-panel freshness indicator (driven by monitorFreshness).
-    for (const panel of ["pnl", "metrics", "health", "latency", "strategies", "backtest", "account", "reservoir"]) addFreshDot(panel);
+    for (const panel of ["pnl", "metrics", "health", "latency", "strategies", "backtest", "account", "reservoir", "research"]) addFreshDot(panel);
   }
 
   function addFreshDot(panel) {
@@ -186,6 +186,9 @@
     // they stay OFF the NFR-P2 gauge — each panel's own dot reports it honestly.
     { panel: "account", ch: "ACCOUNT_STATUS", budget: 5000, gauge: false },
     { panel: "reservoir", ch: "RESERVOIR_RANKING", budget: 5000, gauge: false },
+    // SRS-RES-001 research embed: REST-poll (no WS channel), off the NFR-P2
+    // gauge; its dot tracks the /dashboard/api/research poll cadence.
+    { panel: "research", ch: "RESEARCH", budget: POLL_MS, gauge: false },
   ];
   const STALE_GRACE_MS = 1500; // tolerate normal cadence jitter; flag real stalls
   const lastChannelAt = Object.create(null); // channel -> performance.now()
@@ -590,6 +593,65 @@
       }
     } catch (_e) { /* transient; next tick retries */ }
     setTimeout(pollReservoir, POLL_MS);
+  }
+
+  // ----- SRS-RES-001 research embed (same-origin /research/ proxy) -------- //
+
+  const RESEARCH_ROUTE = "/dashboard/api/research";
+  let researchFrameLoaded = false;
+
+  function renderResearch(snap) {
+    const status = $("research-status");
+    const open = $("research-open");
+    if (!status || !open) return;
+    if (snap.configured === false) {
+      status.textContent = snap.detail || "research upstream not configured (ATP_RESEARCH_UPSTREAM)";
+      status.dataset.tone = "warn";
+      open.disabled = true;
+      return;
+    }
+    if (snap.upstream_reachable) {
+      status.textContent = "research environment reachable (HTTP " + snap.status_code + ") at " + snap.prefix;
+      status.dataset.tone = "ok";
+      open.disabled = false;
+      open.dataset.embedPath = snap.embed_path || "";
+    } else {
+      status.textContent = snap.detail || "research upstream unreachable";
+      status.dataset.tone = "err";
+      open.disabled = true;
+    }
+  }
+
+  function initResearch() {
+    const open = $("research-open");
+    const frame = $("research-frame");
+    if (!open || !frame) return;
+    open.addEventListener("click", () => {
+      const path = open.dataset.embedPath;
+      if (!path) return;
+      // Lazy same-origin load: the iframe src is only ever the probe-provided
+      // /research/… path on THIS origin — never an external URL (SEC-002).
+      if (!researchFrameLoaded || frame.getAttribute("src") !== path) {
+        frame.src = path;
+        researchFrameLoaded = true;
+      }
+      frame.hidden = false;
+      open.textContent = "Reload research environment";
+    });
+  }
+
+  async function pollResearch() {
+    try {
+      const res = await fetch(RESEARCH_ROUTE, { cache: "no-store" });
+      if (res.ok) {
+        lastChannelAt["RESEARCH"] = performance.now();
+        renderResearch(await res.json());
+      } else if (res.status === 404) {
+        const s = $("research-status");
+        if (s) { s.textContent = "research not mounted — SRS-RES-001 provider not composed on this runtime"; s.dataset.tone = "warn"; }
+      }
+    } catch (_e) { /* transient; next tick retries */ }
+    setTimeout(pollResearch, POLL_MS);
   }
 
   function setConn(state, label) {
@@ -1122,10 +1184,12 @@
   buildAll();
   initBacktest();
   initReservoir();
+  initResearch();
   connect();
   poll();
   pollStrategies();
   pollBacktests();
   pollAccount();
   pollReservoir();
+  pollResearch();
 })();

@@ -34,6 +34,7 @@ from .backtests import BacktestHistoryProvider, StoreCliBacktestHistorySource
 from .inventory import StrategyInventoryProvider
 from .provider import DashboardMetricsProvider, ReadinessBackedProvider
 from .publisher import DashboardPublisher
+from .research import RESEARCH_PREFIX, UPSTREAM_ENV_KNOB, ResearchEnvironmentProvider
 from .reservoir import ReservoirRankingProvider
 
 _ASSET_DIR = Path(__file__).resolve().parent / "assets"
@@ -69,6 +70,13 @@ ACCOUNT_SNAPSHOT_PATH = "/dashboard/api/account"
 #: (owner SRS-RESV-002), which stays a 501 deferred handler until the ranking engine lands.
 RESERVOIR_SNAPSHOT_PATH = "/dashboard/api/reservoir"
 
+#: REST path the dashboard SPA polls for the SRS-RES-001 research-embed state
+#: (served only when a research provider is mounted). The embed itself is the
+#: same-origin ``/research/`` prefix the runtime reverse-proxies to the fixed
+#: upstream — reachable from the dashboard without a separate service URL
+#: (SYS-34a / IF-13).
+RESEARCH_SNAPSHOT_PATH = "/dashboard/api/research"
+
 
 def load_assets() -> dict[str, tuple[str, bytes]]:
     """Read the dashboard's static assets once into an immutable route map."""
@@ -88,6 +96,7 @@ def mount_dashboard(
     backtests: BacktestHistoryProvider | None = None,
     account: AccountStatusProvider | None = None,
     reservoir: ReservoirRankingProvider | None = None,
+    research: ResearchEnvironmentProvider | None = None,
 ) -> DashboardPublisher:
     """Register the dashboard's routes on ``runtime`` and return its publisher.
 
@@ -115,6 +124,15 @@ def mount_dashboard(
     channel and serves neither route (the panels render their explicit unavailable
     state). Their values are honest deferred cells until SRS-EXE-006 (live IB) and
     SRS-RESV-002 (ranking engine) land — the panels never fabricate a number.
+
+    ``research`` (optional — the SRS-RES-001 research-embed provider) adds the
+    ``GET /dashboard/api/research`` poll route and, when the provider carries a
+    configured upstream, registers the same-origin ``/research/`` reverse-proxy
+    on the runtime — the embedded Jupyter environment is then reachable from
+    the dashboard without a separate service URL (SYS-34a / IF-13). It is
+    REST-served (no WS channel) and adds no publisher work; without a
+    configured upstream the panel renders the honest not-configured state and
+    NO proxy route exists.
     """
 
     runtime.register_asset_routes(load_assets())
@@ -127,6 +145,10 @@ def mount_dashboard(
         runtime.register_meta_route(ACCOUNT_SNAPSHOT_PATH, account.account_snapshot)
     if reservoir is not None:
         runtime.register_meta_route(RESERVOIR_SNAPSHOT_PATH, reservoir.reservoir_snapshot)
+    if research is not None:
+        runtime.register_meta_route(RESEARCH_SNAPSHOT_PATH, research.research_snapshot)
+        if research.upstream is not None:
+            runtime.register_proxy_route(RESEARCH_PREFIX, research.upstream)
     return DashboardPublisher(
         runtime, provider, inventory=inventory, account=account, reservoir=reservoir
     )
@@ -160,12 +182,17 @@ def mount_default_dashboard(
     # actually serves /dashboard/api/account and /dashboard/api/reservoir and
     # publishes the ACCOUNT_STATUS / RESERVOIR_RANKING channels, rendering honest
     # deferred cells until their live producers (SRS-EXE-006 / SRS-RESV-002) land.
+    # The SRS-RES-001 research provider is ALWAYS composed: the production
+    # entrypoint serves /dashboard/api/research, rendering the honest
+    # not-configured state until the operator sets ATP_RESEARCH_UPSTREAM —
+    # only a CONFIGURED upstream registers the same-origin /research/ proxy.
     return mount_dashboard(
         runtime,
         provider,
         backtests=backtests,
         account=AccountStatusProvider(),
         reservoir=ReservoirRankingProvider(),
+        research=ResearchEnvironmentProvider(env.get(UPSTREAM_ENV_KNOB) or None),
     )
 
 
