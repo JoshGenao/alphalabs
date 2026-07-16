@@ -16,6 +16,9 @@ pub use interactive_brokers::{
     classify_ib_order_error, IbAccountKind, IbApiError, IbConnectionConfig,
     IbConnectionConfigError, IbGatewayConnection, InteractiveBrokersBrokerage,
 };
+
+pub mod connection_control;
+pub use connection_control::IbConnectionControl;
 /// The live IB socket transport is behind the non-default `ib-live-transport`
 /// feature (operator-gated scaffold; see [`interactive_brokers`]).
 #[cfg(feature = "ib-live-transport")]

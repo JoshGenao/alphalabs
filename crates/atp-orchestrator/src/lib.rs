@@ -15,6 +15,7 @@ use atp_types::{
 use std::fmt;
 
 pub mod kill_switch_activation;
+pub mod kill_switch_timeout;
 
 #[derive(Debug, Default)]
 pub struct StrategyOrchestrator;
@@ -870,9 +871,10 @@ pub trait HealthCheckEventSink {
 //     notification fan-out. Fire-and-forget (mirrors `HealthCheckEventSink`):
 //     the demotion-pending decision is irreversible once the timeout fires,
 //     so an alert-dispatch failure does not roll it back. The concrete
-//     email/SMS transport is the deferred SRS-NOTIF-001 dispatcher
-//     (`atp-notification`, today a stub) — kept behind this port so
-//     `atp-orchestrator` does not depend on `atp-notification`.
+//     email/SMS transport is the deferred SRS-NOTIF-001 SMTP/SMS adapter
+//     pair — kept behind this port so the demotion gate itself never sees
+//     the dispatcher (the SRS-SAFE-002 composition in `kill_switch_timeout`
+//     is where the orchestrator binds `atp-notification`'s OperatorNotifier).
 //
 //   * `HotSwapDemotionEventSink` — the structured state-transition audit
 //     record for the dashboard/log fan-out (the deferred SRS-LOG-001 /

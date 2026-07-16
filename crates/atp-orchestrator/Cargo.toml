@@ -27,6 +27,10 @@ path = "src/bin/resv003_hot_swap_trigger_cli.rs"
 name = "safe001_kill_switch_cli"
 path = "src/bin/safe001_kill_switch_cli.rs"
 
+[[bin]]
+name = "safe002_liquidation_timeout_cli"
+path = "src/bin/safe002_liquidation_timeout_cli.rs"
+
 # SRS-ORCH-005 rollback operator CLI. Demonstrates the SYS-80 previous-version
 # retention, the exact-target rollback gate, and the NFR-S2 live-rollback
 # confirmation control (structural mirror of live promotion's). The runtime's
@@ -40,8 +44,13 @@ path = "src/bin/orch005_rollback_cli.rs"
 [dependencies]
 # The orchestrator is the composition layer (SRS-ARCH-001): it is allowed to
 # see both the execution gate and the simulation fleet, which stay
-# independent of each other (SRS-ARCH-002 dependency direction).
+# independent of each other (SRS-ARCH-002 dependency direction). The
+# SRS-SAFE-002 kill-switch-timeout composition additionally binds the
+# adapter boundary (IB cancel/disconnect) and the SRS-NOTIF-001 operator
+# notifier here — the lower crates never see each other.
+atp-adapters = { path = "../atp-adapters" }
 atp-execution = { path = "../atp-execution" }
+atp-notification = { path = "../atp-notification" }
 atp-simulation = { path = "../atp-simulation" }
 atp-types = { path = "../atp-types" }
 

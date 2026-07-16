@@ -31,6 +31,11 @@ pub use kill_switch::{
     KillSwitchActivationEventSink, KillSwitchBrokerageControl, KillSwitchClock, PaperHaltFanout,
 };
 
+pub mod kill_switch_probe;
+pub use kill_switch_probe::{
+    KillSwitchProbeClock, PollingLiquidationProbe, KILL_SWITCH_FILL_POLL_INTERVAL_MS,
+};
+
 pub mod live_state;
 pub use live_state::{
     recover, recover_from_path, AccountEquitySnapshot, FillEventRecord, LiveExecutionState,
@@ -1209,12 +1214,17 @@ impl ExecutionEngine {
     /// outcome. The SRS-SAFE-001 activation sequence itself (halt paper
     /// engines, cancel all resting orders, submit liquidation orders, always
     /// disconnect) is the sibling [`kill_switch::activate_kill_switch`]
-    /// gate (`kill_switch_activation_contract`); the 30 s async wait loop,
-    /// the real IB cancel/disconnect (SRS-EXE-006), the real email/SMS
-    /// transport (SRS-NOTIF-001), and any durable post-timeout lockout are
-    /// still the deferred runtime, enumerated in
+    /// gate (`kill_switch_activation_contract`). The concrete runtime now
+    /// exists: the 30 s wait loop is `kill_switch_probe::
+    /// PollingLiquidationProbe` (injected clock + the SRS-EXE-009
+    /// `BrokerOpenOrderSource` fill seam), and the orchestrator composition
+    /// (`atp-orchestrator::kill_switch_timeout`) binds the alert sink to the
+    /// real SRS-NOTIF-001 dispatcher and the cleanup to the adapter boundary.
+    /// What remains deferred — the LIVE IB order-status wire + disconnect
+    /// binding (SRS-EXE-006), the real SMTP/SMS transports (SRS-NOTIF-001),
+    /// and the durable post-timeout lockout (SRS-API-001) — is enumerated in
     /// `architecture/runtime_services.json` `kill_switch_timeout_contract
-    /// .deferred[]`. ERR-8 stays `passes:false` until that runtime lands.
+    /// .deferred[]`. ERR-8 stays `passes:false` until the live path exists.
     ///
     /// [`kill_switch::activate_kill_switch`]: crate::kill_switch
     // The error is boxed (`Box<StructuredKillSwitchTimeoutError>`): the SYS-44b

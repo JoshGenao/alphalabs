@@ -119,7 +119,7 @@ EVENT_TYPES_BY_SOURCE: dict[Source, tuple[str, ...]] = {
         "HEARTBEAT_STALE",
         "HEARTBEAT_RECOVERED",
     ),
-    Source.KILL_SWITCH: ("ACTIVATION", "HALTED"),
+    Source.KILL_SWITCH: ("ACTIVATION", "HALTED", "LIQUIDATION_TIMEOUT"),
     Source.HOT_SWAP: ("PROMOTION", "DEMOTION"),
     Source.RESOURCE_MONITOR: ("THRESHOLD_ALERT",),
     Source.MARKET_DATA: (
@@ -140,13 +140,17 @@ user-defined and not enforced — the AC explicitly leaves strategy event
 naming to the strategy author per SN-2.02 ("a logging API that the user
 invokes from within their Python strategies").
 
-``KILL_SWITCH`` carries two event types: ``ACTIVATION`` (the SRS-LOG-001
-"kill-switch activations" system event) and ``HALTED`` — the SRS-SAFE-001
+``KILL_SWITCH`` carries three event types: ``ACTIVATION`` (the SRS-LOG-001
+"kill-switch activations" system event), ``HALTED`` — the SRS-SAFE-001
 acceptance clause "HALTED-state transition is observable through SRS-LOG-001
 within 1 second of activation" makes the paper-engine HALTED transition a
 distinct, queryable system record rather than a detail buried inside the
 activation message (``python/atp_safety`` writes both, correlated by
-activation id).
+activation id) — and ``LIQUIDATION_TIMEOUT``, the SRS-SAFE-002 / SyRS SYS-44b
+"log the unfilled order details" record: a CRITICAL entry carrying the
+unfilled liquidation order (id, symbol, side, quantity) and each SYS-44b
+side-effect outcome (page / cancel / disconnect), written by
+``python/atp_safety.timeout`` and correlated by the domain order id.
 
 ``HEARTBEAT_STALE`` / ``HEARTBEAT_RECOVERED`` appear under BOTH
 ``MARKET_DATA`` (a consolidated market-data line's freshness) and

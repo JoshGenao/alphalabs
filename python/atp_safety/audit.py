@@ -11,6 +11,15 @@ reconstructs the event:
   simulation engines transition to the HALTED state", with the fleet counts.
   Written as its own record so the 1-second observability clause is judged
   against a first-class, queryable event.
+
+Plus the SRS-SAFE-002 / SyRS SYS-44b record:
+
+* ``LIQUIDATION_TIMEOUT`` (severity CRITICAL) — the "log the unfilled order
+  details" leg: the unfilled liquidation order (id, symbol, side, quantity)
+  and each SYS-44b side-effect outcome (operator page / cancel / disconnect),
+  correlated by the domain order id. Built from the
+  ``safe002_liquidation_timeout_cli`` outcome by
+  :func:`build_liquidation_timeout_record`.
 """
 
 from __future__ import annotations
@@ -88,6 +97,66 @@ def build_halted_record(
         event_type="HALTED",
         message=message,
         correlation_id=str(report["activation_id"]),
+        log_class=LogClass.SYSTEM,
+        strategy_id=None,
+    )
+
+
+def _cleanup_status(outcome: Mapping[str, object], leg: str) -> str:
+    cleanup = outcome.get("cleanup")
+    if not isinstance(cleanup, Mapping):
+        return "UNKNOWN"
+    side_effect = cleanup.get(leg)
+    if not isinstance(side_effect, Mapping):
+        return "UNKNOWN"
+    return str(side_effect.get("status", "UNKNOWN"))
+
+
+def build_liquidation_timeout_record(
+    outcome: Mapping[str, object], *, timestamp_ns: int | None = None
+) -> LogRecord:
+    """The ``LIQUIDATION_TIMEOUT`` system record for one SYS-44b outcome.
+
+    ``outcome`` is the parsed ``outcome:{json}`` payload of
+    ``safe002_liquidation_timeout_cli resolve`` (see
+    :class:`atp_safety.timeout.RustCliLiquidationTimeoutBackend`). The record
+    carries the SYS-44b "unfilled order details" verbatim — order id, symbol,
+    side, quantity — plus the disposition and each side-effect outcome, so
+    the durable log line alone tells the operator what happened and what
+    still needs manual resolution.
+    """
+
+    order = outcome.get("unfilled_order")
+    if not isinstance(order, Mapping):
+        raise ValueError(
+            "liquidation-timeout outcome carries no unfilled_order — refusing to "
+            "write a LIQUIDATION_TIMEOUT record without the SYS-44b order details"
+        )
+    order_id = str(order.get("order_id", "")).strip()
+    if not order_id:
+        raise ValueError(
+            "liquidation-timeout outcome has a blank unfilled_order.order_id — "
+            "the record's correlation id must be the domain order id"
+        )
+    message = (
+        "kill-switch liquidation timeout: "
+        f"disposition={outcome.get('disposition')} "
+        f"order_id={order_id} "
+        f"symbol={order.get('symbol')} "
+        f"side={order.get('side')} "
+        f"quantity={order.get('quantity')} "
+        f"operator_alert={_cleanup_status(outcome, 'operator_alert')} "
+        f"liquidation_cancel={_cleanup_status(outcome, 'liquidation_cancel')} "
+        f"ib_disconnect={_cleanup_status(outcome, 'ib_disconnect')} "
+        f"manual_resolution_required={outcome.get('manual_resolution_required')}"
+    )
+    return LogRecord(
+        timestamp_ns=timestamp_ns if timestamp_ns is not None else time.time_ns(),
+        severity=Severity.CRITICAL,
+        source=Source.KILL_SWITCH,
+        event_type="LIQUIDATION_TIMEOUT",
+        message=message,
+        correlation_id=order_id,
         log_class=LogClass.SYSTEM,
         strategy_id=None,
     )

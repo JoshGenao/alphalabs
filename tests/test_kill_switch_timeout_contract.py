@@ -33,6 +33,7 @@ from kill_switch_timeout_check import (  # noqa: E402
     check_operator_alert_sink_port,
     check_probe_error_enum,
     check_probe_inconsistent_factory,
+    check_probe_runtime,
     check_resolve_kill_switch_timeout_guard,
     check_timeout_event_sink_port,
     check_timeout_event_struct,
@@ -40,6 +41,7 @@ from kill_switch_timeout_check import (  # noqa: E402
     check_unfilled_order_struct,
     execution_source,
     load_config,
+    probe_source,
     run_checks,
     types_source,
 )
@@ -78,6 +80,7 @@ class KillSwitchTimeoutScriptTest(unittest.TestCase):
             "(ConnectivityBlocked, OrderStateUnavailable, ProbeTimeout)",
             "StructuredKillSwitchTimeoutError::probe_inconsistent with the distinct "
             "KillSwitchLiquidationProbeInconsistent discriminator",
+            "concrete probe runtime PollingLiquidationProbe",
             "err_8_kill_switch_liquidation_timeout",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
@@ -313,6 +316,58 @@ class KillSwitchProbeErrorEnumTest(unittest.TestCase):
         self.assertIn("ProbeTimeout", str(ctx.exception))
 
 
+class ProbeRuntimeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.probe_src = probe_source(self.config)
+
+    def test_probe_runtime_declares_the_wait_loop_surface(self) -> None:
+        evidence = check_probe_runtime(self.config, self.probe_src)
+        for needle in (
+            "PollingLiquidationProbe",
+            "KillSwitchProbeClock",
+            "BrokerOpenOrderSource",
+            "KILL_SWITCH_FILL_POLL_INTERVAL_MS",
+        ):
+            self.assertIn(needle, evidence)
+
+    def test_missing_probe_struct_is_caught(self) -> None:
+        mutated = self.probe_src.replace(
+            "pub struct PollingLiquidationProbe", "pub struct DroppedProbe", 1
+        )
+        with self.assertRaises(KillSwitchTimeoutCheckError) as ctx:
+            check_probe_runtime(self.config, mutated)
+        self.assertIn("PollingLiquidationProbe", str(ctx.exception))
+
+    def test_missing_clock_trait_is_caught(self) -> None:
+        mutated = self.probe_src.replace(
+            "pub trait KillSwitchProbeClock", "pub trait DroppedClock", 1
+        )
+        with self.assertRaises(KillSwitchTimeoutCheckError) as ctx:
+            check_probe_runtime(self.config, mutated)
+        self.assertIn("KillSwitchProbeClock", str(ctx.exception))
+
+    def test_missing_poll_interval_const_is_caught(self) -> None:
+        mutated = self.probe_src.replace(
+            "pub const KILL_SWITCH_FILL_POLL_INTERVAL_MS",
+            "pub const DROPPED_CADENCE",
+            1,
+        )
+        with self.assertRaises(KillSwitchTimeoutCheckError) as ctx:
+            check_probe_runtime(self.config, mutated)
+        self.assertIn("KILL_SWITCH_FILL_POLL_INTERVAL_MS", str(ctx.exception))
+
+    def test_dropped_probe_trait_impl_is_caught(self) -> None:
+        mutated = self.probe_src.replace(
+            "impl<C: KillSwitchProbeClock, S: BrokerOpenOrderSource> KillSwitchLiquidationProbe",
+            "impl<C: KillSwitchProbeClock, S: BrokerOpenOrderSource> SomethingElse",
+            1,
+        )
+        with self.assertRaises(KillSwitchTimeoutCheckError) as ctx:
+            check_probe_runtime(self.config, mutated)
+        self.assertIn("does not implement KillSwitchLiquidationProbe", str(ctx.exception))
+
+
 class ProbeInconsistentFactoryTest(unittest.TestCase):
     def setUp(self) -> None:
         self.config = load_config()
@@ -347,7 +402,7 @@ class ProbeInconsistentFactoryTest(unittest.TestCase):
         # The inconsistency rejection must carry a not_attempted() cleanup —
         # swapping in a cleanup record that claims actions ran must be caught.
         needle = (
-            "            error_type: \"KillSwitchLiquidationProbeInconsistent\".to_string(),\n"
+            '            error_type: "KillSwitchLiquidationProbeInconsistent".to_string(),\n'
             "            message,\n"
             "            original_request: request,\n"
             "            // No automated action was taken on the untrustworthy report.\n"
@@ -356,9 +411,7 @@ class ProbeInconsistentFactoryTest(unittest.TestCase):
         self.assertIn(needle, self.types_src, "factory body drifted from the pinned shape")
         mutated = self.types_src.replace(
             needle,
-            needle.replace(
-                "KillSwitchCleanupOutcome::not_attempted()", "claimed_cleanup"
-            ),
+            needle.replace("KillSwitchCleanupOutcome::not_attempted()", "claimed_cleanup"),
             1,
         )
         with self.assertRaises(KillSwitchTimeoutCheckError) as ctx:
@@ -510,15 +563,15 @@ class KillSwitchTimeoutWireStringTest(unittest.TestCase):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_fifteen_evidence_items(self) -> None:
+    def test_run_checks_emits_sixteen_evidence_items(self) -> None:
         evidence = run_checks()
-        # 14 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(evidence), 15)
+        # 15 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(evidence), 16)
 
-    def test_assert_kill_switch_timeout_static_emits_fourteen_evidence_items(self) -> None:
+    def test_assert_kill_switch_timeout_static_emits_fifteen_evidence_items(self) -> None:
         config = load_config()
         evidence = assert_kill_switch_timeout_static(config, ROOT)
-        self.assertEqual(len(evidence), 14)
+        self.assertEqual(len(evidence), 15)
 
 
 if __name__ == "__main__":

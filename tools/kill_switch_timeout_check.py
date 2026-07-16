@@ -98,6 +98,13 @@ def execution_source(config: dict, root: Path = ROOT) -> str:
     return source_path.read_text(encoding="utf-8")
 
 
+def probe_source(config: dict, root: Path = ROOT) -> str:
+    source_path = root / contract_block(config)["probe_runtime"]["path"]
+    if not source_path.exists():
+        fail(f"probe runtime source missing: {source_path.relative_to(root)}")
+    return source_path.read_text(encoding="utf-8")
+
+
 # --------------------------------------------------------------------------- #
 # Precise block-arm extractor
 # --------------------------------------------------------------------------- #
@@ -262,6 +269,43 @@ def check_probe_error_enum(config: dict, exec_src: str) -> str:
         f"{len(spec['variants'])} variant(s) ({', '.join(spec['variants'])}) — "
         "every degraded fill-confirmation path fails the gate closed with a "
         "distinct kind discriminator (no automated cancel/disconnect)"
+    )
+
+
+def check_probe_runtime(config: dict, probe_src: str) -> str:
+    spec = contract_block(config)["probe_runtime"]
+    struct_token = f"pub struct {spec['struct']}"
+    if struct_token not in probe_src:
+        fail(f"probe runtime is missing `{struct_token}` — the concrete wait loop")
+    clock_token = f"pub trait {spec['clock_trait']}"
+    if clock_token not in probe_src:
+        fail(
+            f"probe runtime is missing `{clock_token}` — the injected timing "
+            "authority (tests/CLI must never sleep a real 30 s window)"
+        )
+    for method in ("monotonic_ms", "wait_ms"):
+        if not re.search(rf"\bfn\s+{method}\b", probe_src):
+            fail(f"{spec['clock_trait']} is missing method `{method}`")
+    const_token = f"pub const {spec['poll_interval_const']}"
+    if const_token not in probe_src:
+        fail(f"probe runtime is missing `{const_token}` — the declared poll cadence")
+    source_token = spec["fill_source_trait"]
+    if source_token not in probe_src:
+        fail(
+            f"probe runtime does not consume `{source_token}` — the fill feed must "
+            "be the SRS-EXE-009 broker order-state seam (one live wire source "
+            "serves both the outbox reconcile and this probe)"
+        )
+    impl_pattern = re.compile(
+        rf"impl\s*<[^>]*>\s*KillSwitchLiquidationProbe\s+for\s+{re.escape(spec['struct'])}\b"
+    )
+    if impl_pattern.search(probe_src) is None:
+        fail(f"{spec['struct']} does not implement KillSwitchLiquidationProbe")
+    return (
+        f"atp-execution declares the concrete probe runtime {spec['struct']} "
+        f"(implements KillSwitchLiquidationProbe over {spec['clock_trait']} + "
+        f"{spec['fill_source_trait']}, cadence {spec['poll_interval_const']}) — "
+        "the 30 s wait loop runs on an injected clock and never sleeps in tests"
     )
 
 
@@ -486,6 +530,7 @@ _STATIC_CHECKS = (
     ("timeout_event", check_timeout_event_struct, "types"),
     ("liquidation_probe_port", check_liquidation_probe_port, "exec"),
     ("probe_error", check_probe_error_enum, "exec"),
+    ("probe_runtime", check_probe_runtime, "probe"),
     ("probe_inconsistent_factory", check_probe_inconsistent_factory, "types"),
     ("operator_alert_sink_port", check_operator_alert_sink_port, "exec"),
     ("ib_cleanup_port", check_ib_cleanup_port, "exec"),
@@ -494,22 +539,32 @@ _STATIC_CHECKS = (
 )
 
 
-def _run_static(config: dict, types_src: str, exec_src: str) -> list[str]:
+def _run_static(config: dict, types_src: str, exec_src: str, probe_src: str) -> list[str]:
+    sources = {"types": types_src, "exec": exec_src, "probe": probe_src}
     evidence: list[str] = []
     for _, check, scope in _STATIC_CHECKS:
-        source = types_src if scope == "types" else exec_src
-        evidence.append(check(config, source))
+        evidence.append(check(config, sources[scope]))
     return evidence
 
 
 def assert_kill_switch_timeout_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable from ``tools/architecture_check.py`` (no cargo)."""
-    return _run_static(config, types_source(config, root), execution_source(config, root))
+    return _run_static(
+        config,
+        types_source(config, root),
+        execution_source(config, root),
+        probe_source(config, root),
+    )
 
 
 def run_checks() -> list[str]:
     config = load_config()
-    evidence = _run_static(config, types_source(config), execution_source(config))
+    evidence = _run_static(
+        config,
+        types_source(config),
+        execution_source(config),
+        probe_source(config),
+    )
     evidence.append(check_cargo_test_smoke(config))
     return evidence
 

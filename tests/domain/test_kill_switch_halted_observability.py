@@ -63,7 +63,11 @@ def test_halted_is_an_ac_pinned_kill_switch_event_type() -> None:
     # The SRS-SAFE-001 AC makes the HALTED transition an observable SYSTEM
     # event in its own right, beside the SRS-LOG-001 "kill-switch
     # activations" ACTIVATION event.
-    assert EVENT_TYPES_BY_SOURCE[Source.KILL_SWITCH] == ("ACTIVATION", "HALTED")
+    assert EVENT_TYPES_BY_SOURCE[Source.KILL_SWITCH] == (
+        "ACTIVATION",
+        "HALTED",
+        "LIQUIDATION_TIMEOUT",
+    )
 
 
 def test_halted_record_dispatches_and_persists_durably(tmp_path: Path) -> None:
