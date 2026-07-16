@@ -3524,6 +3524,57 @@ impl StructuredKillSwitchTimeoutError {
             cleanup: KillSwitchCleanupOutcome::not_attempted(),
         }
     }
+
+    /// Build the rejection for an INCONSISTENT probe report: a
+    /// `TimedOutUnfilled` whose `elapsed_seconds` is still short of
+    /// `request.timeout_seconds`, or whose `timeout_seconds` does not match the
+    /// request. Trusting such a report would fire the destructive SYS-44b
+    /// cancel + disconnect EARLY on an order that may still lawfully fill, so
+    /// the gate refuses instead and takes NO automated order/session action —
+    /// the same fail-closed family as an unavailable probe (an inconsistent
+    /// fill confirmation is an untrustworthy one), hence the shared
+    /// `KillSwitchLiquidationProbeUnavailable` category with a distinct
+    /// `error_type` discriminator.
+    pub fn probe_inconsistent(
+        request: KillSwitchTimeoutRequest,
+        reported_elapsed_seconds: u64,
+        reported_timeout_seconds: u64,
+    ) -> Self {
+        let category = OrderErrorCategory::KillSwitchLiquidationProbeUnavailable;
+        debug_assert!(
+            matches!(
+                category,
+                OrderErrorCategory::KillSwitchLiquidationProbeUnavailable
+            ),
+            "probe_inconsistent must carry KillSwitchLiquidationProbeUnavailable"
+        );
+        let message = format!(
+            "SRS-SAFE-002 + SyRS SYS-44b: kill-switch liquidation probe reported \
+             an INCONSISTENT timeout for order {order} ({side} {quantity} \
+             {symbol}), live strategy {strategy} — TimedOutUnfilled with \
+             {reported_elapsed} s elapsed / {reported_timeout} s timeout against \
+             the request's {requested_timeout} s deadline; trusting it would \
+             cancel + disconnect EARLY on an order that may still lawfully \
+             fill, so no automated cancel/disconnect was taken; positions \
+             await manual resolution",
+            order = request.unfilled_order.order_id,
+            side = request.unfilled_order.side,
+            quantity = request.unfilled_order.quantity,
+            symbol = request.unfilled_order.symbol,
+            strategy = request.live_strategy_id.as_str(),
+            reported_elapsed = reported_elapsed_seconds,
+            reported_timeout = reported_timeout_seconds,
+            requested_timeout = request.timeout_seconds,
+        );
+        Self {
+            category,
+            error_type: "KillSwitchLiquidationProbeInconsistent".to_string(),
+            message,
+            original_request: request,
+            // No automated action was taken on the untrustworthy report.
+            cleanup: KillSwitchCleanupOutcome::not_attempted(),
+        }
+    }
 }
 
 impl fmt::Display for StructuredKillSwitchTimeoutError {
@@ -4055,6 +4106,42 @@ mod tests {
         assert_eq!(error.original_request, request);
         assert!(error.message.contains("IB fill-confirmation stream lost"));
         assert!(error.message.contains("no automated cancel/disconnect"));
+        assert!(error
+            .to_string()
+            .starts_with("[KILL_SWITCH_LIQUIDATION_PROBE_UNAVAILABLE]"));
+    }
+
+    #[test]
+    fn structured_kill_switch_probe_inconsistent_refuses_without_cleanup() {
+        // A TimedOutUnfilled reported BEFORE the request's deadline (or with a
+        // mismatched timeout) is an untrustworthy fill confirmation: it shares
+        // the probe-unavailable fail-closed category but carries a distinct
+        // discriminator, and it must never claim any automated cleanup ran.
+        let request = KillSwitchTimeoutRequest {
+            live_strategy_id: StrategyId::new("live-momentum"),
+            unfilled_order: UnfilledLiquidationOrder {
+                order_id: "ord-7791".to_string(),
+                symbol: "AAPL".to_string(),
+                side: "SELL".to_string(),
+                quantity: 250,
+            },
+            timeout_seconds: KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS,
+        };
+        let error = StructuredKillSwitchTimeoutError::probe_inconsistent(request.clone(), 12, 30);
+        assert_eq!(
+            error.category,
+            OrderErrorCategory::KillSwitchLiquidationProbeUnavailable
+        );
+        assert_ne!(
+            error.category,
+            OrderErrorCategory::KillSwitchLiquidationTimeout
+        );
+        assert_eq!(error.error_type, "KillSwitchLiquidationProbeInconsistent");
+        assert_eq!(error.original_request, request);
+        assert_eq!(error.cleanup, KillSwitchCleanupOutcome::not_attempted());
+        assert!(error.message.contains("INCONSISTENT"));
+        assert!(error.message.contains("no automated cancel/disconnect"));
+        assert!(error.message.contains("12"));
         assert!(error
             .to_string()
             .starts_with("[KILL_SWITCH_LIQUIDATION_PROBE_UNAVAILABLE]"));

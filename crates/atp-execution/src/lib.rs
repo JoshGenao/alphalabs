@@ -285,17 +285,15 @@ pub trait KillSwitchLiquidationProbe {
     /// timing. No mutators: the gate has no side-effecting path through it.
     ///
     /// Returns `Result` because fill confirmation is an IB-touching boundary:
-    /// the concrete probe (deferred SRS-EXE-006 runtime) can lose connectivity,
-    /// find the order state unavailable, or itself time out while awaiting
-    /// confirmation. Those degraded paths MUST surface as a typed error rather
-    /// than be misclassified as `FilledBeforeTimeout` (which would pretend a
-    /// liquidation that never confirmed succeeded) or `TimedOutUnfilled` (which
-    /// would fire the destructive cancel on an unconfirmable order state). The
-    /// gate handles the `Err` by failing closed WITHOUT any automated
-    /// order/session change — see `resolve_kill_switch_timeout`. The typed
-    /// connectivity / order-state / transport-timeout taxonomy (vs today's
-    /// reason-string `KillSwitchProbeError`) lands with the concrete probe
-    /// runtime (contract `deferred[]`).
+    /// the concrete probe (`kill_switch_probe::PollingLiquidationProbe`) can
+    /// lose connectivity, find the order state unavailable, or itself time out
+    /// while awaiting confirmation. Those degraded paths surface as the typed
+    /// [`KillSwitchProbeError`] variants rather than be misclassified as
+    /// `FilledBeforeTimeout` (which would pretend a liquidation that never
+    /// confirmed succeeded) or `TimedOutUnfilled` (which would fire the
+    /// destructive cancel on an unconfirmable order state). The gate handles
+    /// the `Err` by failing closed WITHOUT any automated order/session change
+    /// — see `resolve_kill_switch_timeout`.
     fn await_filled_or_timeout(
         &self,
         request: &KillSwitchTimeoutRequest,
@@ -370,22 +368,62 @@ impl fmt::Display for KillSwitchSideEffectError {
 impl std::error::Error for KillSwitchSideEffectError {}
 
 /// ERR-8 / SRS-SAFE-002 failure surface for the fill-confirmation probe. The
-/// concrete probe (deferred SRS-EXE-006 runtime) reaches the IB boundary to
-/// confirm liquidation fills, so it can fail (connectivity lost, order state
-/// unavailable, probe timeout). Carries a reason string for now; the typed
-/// CONNECTIVITY_BLOCKED / order-state / transport-timeout taxonomy lands with
-/// that runtime (contract `deferred[]`). When the probe returns this error the
-/// gate fails closed WITHOUT any automated order/session change (see
-/// `resolve_kill_switch_timeout`).
+/// concrete probe (`kill_switch_probe::PollingLiquidationProbe`) reaches the
+/// IB boundary to confirm liquidation fills, so it can fail. The three typed
+/// variants keep the degraded paths distinguishable on every surface:
+/// connectivity loss to the gateway, an order state the source cannot vouch
+/// for, and the probe's own transport timing out while awaiting confirmation.
+/// When the probe returns this error the gate fails closed WITHOUT any
+/// automated order/session change (see `resolve_kill_switch_timeout`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KillSwitchProbeError {
-    pub reason: String,
+pub enum KillSwitchProbeError {
+    /// The IB boundary is unreachable (SyRS SYS-64 `CONNECTIVITY_BLOCKED`
+    /// family) — no fill confirmation is possible.
+    ConnectivityBlocked { reason: String },
+    /// The order-state source answered but cannot vouch for this order's fill
+    /// state (order absent from an open-only snapshot, malformed/stale
+    /// snapshot).
+    OrderStateUnavailable { reason: String },
+    /// The probe's own confirmation transport timed out — distinct from the
+    /// LIQUIDATION timing out (that is an outcome, not an error).
+    ProbeTimeout { reason: String },
 }
 
 impl KillSwitchProbeError {
-    pub fn new(reason: impl Into<String>) -> Self {
-        Self {
+    pub fn connectivity_blocked(reason: impl Into<String>) -> Self {
+        Self::ConnectivityBlocked {
             reason: reason.into(),
+        }
+    }
+
+    pub fn order_state_unavailable(reason: impl Into<String>) -> Self {
+        Self::OrderStateUnavailable {
+            reason: reason.into(),
+        }
+    }
+
+    pub fn probe_timeout(reason: impl Into<String>) -> Self {
+        Self::ProbeTimeout {
+            reason: reason.into(),
+        }
+    }
+
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::ConnectivityBlocked { reason }
+            | Self::OrderStateUnavailable { reason }
+            | Self::ProbeTimeout { reason } => reason,
+        }
+    }
+
+    /// Stable discriminator string carried into the structured
+    /// probe-unavailable rejection so the operator can tell WHICH degraded
+    /// path blocked confirmation.
+    pub const fn kind_str(&self) -> &'static str {
+        match self {
+            Self::ConnectivityBlocked { .. } => "CONNECTIVITY_BLOCKED",
+            Self::OrderStateUnavailable { .. } => "ORDER_STATE_UNAVAILABLE",
+            Self::ProbeTimeout { .. } => "PROBE_TIMEOUT",
         }
     }
 }
@@ -394,8 +432,9 @@ impl fmt::Display for KillSwitchProbeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "SRS-SAFE-002: kill-switch liquidation fill-confirmation probe failed — {}",
-            self.reason,
+            "SRS-SAFE-002: kill-switch liquidation fill-confirmation probe failed — {}: {}",
+            self.kind_str(),
+            self.reason(),
         )
     }
 }
@@ -1151,14 +1190,14 @@ impl ExecutionEngine {
     /// disconnect. Failing closed toward *running the SYS-44b cleanup* is the
     /// safe direction. The inverse inconsistency (a `TimedOutUnfilled`
     /// reported before the deadline, or with a mismatched `timeout_seconds`)
-    /// is NOT normalised here — handling it correctly means a distinct
-    /// probe-inconsistency rejection that does not fire the premature
-    /// destructive cancel/disconnect, which is the deferred kill-switch
-    /// runtime's richer semantics. The probe's outcome-consistency (filled ⟹
-    /// within deadline; timeout ⟹ at/after the deadline with a matching
-    /// `timeout_seconds`) is its contract precondition — see
-    /// `kill_switch_timeout_contract.deferred[]`. The shipped slice has no
-    /// concrete probe, so none can violate it.
+    /// fails closed in the NON-destructive direction: it is rejected with the
+    /// distinct `StructuredKillSwitchTimeoutError::probe_inconsistent`
+    /// discriminator BEFORE the match, and the gate takes no automated
+    /// cancel/disconnect — firing the destructive cleanup early on an order
+    /// that may still lawfully fill is exactly what the rejection prevents.
+    /// The probe's outcome-consistency (filled ⟹ within deadline; timeout ⟹
+    /// at/after the deadline with a matching `timeout_seconds`) remains its
+    /// contract precondition; this gate now defends both directions.
     ///
     /// All three timeout-branch side effects are surfaced rather than
     /// swallowed: the alert / cancel / disconnect ports return `Result` and
@@ -1217,11 +1256,35 @@ impl ExecutionEngine {
                 return Err(Box::new(
                     StructuredKillSwitchTimeoutError::probe_unavailable(
                         request,
-                        probe_error.reason,
+                        format!("{}: {}", probe_error.kind_str(), probe_error.reason()),
                     ),
                 ));
             }
         };
+        // Fail-closed in the NON-destructive direction: a `TimedOutUnfilled`
+        // reported BEFORE the request's deadline (or carrying a mismatched
+        // `timeout_seconds`) is an inconsistent — untrustworthy — fill
+        // confirmation. Trusting it would fire the destructive SYS-44b
+        // cancel + disconnect EARLY on an order that may still lawfully fill,
+        // so the gate rejects it with a distinct probe-inconsistency error and
+        // takes NO automated order/session action.
+        if let KillSwitchLiquidationOutcome::TimedOutUnfilled {
+            elapsed_seconds,
+            timeout_seconds,
+        } = reported
+        {
+            if elapsed_seconds < request.timeout_seconds
+                || timeout_seconds != request.timeout_seconds
+            {
+                return Err(Box::new(
+                    StructuredKillSwitchTimeoutError::probe_inconsistent(
+                        request,
+                        elapsed_seconds,
+                        timeout_seconds,
+                    ),
+                ));
+            }
+        }
         // Defense-in-depth fail-closed: normalise a FilledBeforeTimeout whose
         // elapsed exceeds the configured timeout into a timeout BEFORE the
         // match so a mislabelled over-deadline liquidation cannot skip the

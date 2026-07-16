@@ -122,3 +122,35 @@ def test_timeout_refuses_across_many_liquidations() -> None:
         _run_cargo_test("err_8_timeout_refuses_across_many_liquidations"),
         "ERR-8 pseudo-property test",
     )
+
+
+def test_premature_timeout_report_is_rejected_without_any_automated_action() -> None:
+    # Outcome-consistency hardening (non-destructive direction): a probe
+    # reporting TimedOutUnfilled BEFORE the request's 30 s deadline is an
+    # untrustworthy fill confirmation — the gate must reject it with the
+    # distinct KillSwitchLiquidationProbeInconsistent discriminator and take
+    # NO automated cancel/disconnect (firing early on an order that may still
+    # lawfully fill is exactly what the rejection prevents).
+    _assert_passed(
+        _run_cargo_test("err_8_premature_timeout_report_is_rejected_without_any_automated_action"),
+        "ERR-8 premature-timeout inconsistency rejection test",
+    )
+
+
+def test_mismatched_timeout_report_is_rejected_without_any_automated_action() -> None:
+    # A TimedOutUnfilled carrying a different timeout_seconds than the request
+    # is version-skewed / misconfigured — same non-destructive rejection.
+    _assert_passed(
+        _run_cargo_test("err_8_mismatched_timeout_report_is_rejected_without_any_automated_action"),
+        "ERR-8 mismatched-timeout inconsistency rejection test",
+    )
+
+
+def test_boundary_timeout_at_exact_deadline_runs_the_cleanup() -> None:
+    # Boundary control pinning the hardening to strictly-premature reports:
+    # elapsed == timeout == the request's deadline is a CONSISTENT timeout and
+    # the SYS-44b cleanup must fire normally.
+    _assert_passed(
+        _run_cargo_test("err_8_boundary_timeout_at_exact_deadline_runs_the_cleanup"),
+        "ERR-8 exact-deadline boundary control test",
+    )

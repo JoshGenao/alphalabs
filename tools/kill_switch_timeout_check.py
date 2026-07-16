@@ -34,6 +34,13 @@ guarantees:
       unfilled order, disconnects from IB, records the audit event, and
       produces ``OrderErrorCategory::KillSwitchLiquidationTimeout`` (via the
       category-pinned factory) — the SYS-44b sequence.
+  (f) the fill-confirmation failure taxonomy is TYPED
+      (``KillSwitchProbeError``: ConnectivityBlocked / OrderStateUnavailable /
+      ProbeTimeout), and an INCONSISTENT probe report (a ``TimedOutUnfilled``
+      before the request's deadline, or with a mismatched ``timeout_seconds``)
+      is rejected via ``StructuredKillSwitchTimeoutError::probe_inconsistent``
+      (distinct discriminator, ``not_attempted()`` cleanup) instead of firing
+      the destructive cancel + disconnect early.
 
 Mirrors the PASS/FAIL output style of ``tools/hot_swap_demotion_check.py``.
 
@@ -241,6 +248,52 @@ def check_liquidation_probe_port(config: dict, exec_src: str) -> str:
     )
 
 
+def check_probe_error_enum(config: dict, exec_src: str) -> str:
+    spec = contract_block(config)["probe_error"]
+    try:
+        body = _enum_body(exec_src, spec["enum"])
+    except AssertionError as error:
+        fail(str(error))
+    missing = [v for v in spec["variants"] if not re.search(rf"\b{re.escape(v)}\b", body)]
+    if missing:
+        fail(f"{spec['enum']} enum is missing variants: {', '.join(missing)}")
+    return (
+        f"atp-execution declares the typed {spec['enum']} taxonomy with "
+        f"{len(spec['variants'])} variant(s) ({', '.join(spec['variants'])}) — "
+        "every degraded fill-confirmation path fails the gate closed with a "
+        "distinct kind discriminator (no automated cancel/disconnect)"
+    )
+
+
+def check_probe_inconsistent_factory(config: dict, types_src: str) -> str:
+    guard = contract_block(config)["guard"]
+    factory = guard["probe_inconsistent_factory"].rsplit("::", 1)[-1]
+    if not re.search(rf"\bpub\s+fn\s+{re.escape(factory)}\b", types_src):
+        fail(
+            f"atp-types is missing `pub fn {factory}` — the premature/mismatched "
+            "TimedOutUnfilled rejection needs its category-pinned factory"
+        )
+    try:
+        body = _fn_block(types_src, factory)
+    except AssertionError as error:
+        fail(str(error))
+    if '"KillSwitchLiquidationProbeInconsistent"' not in body:
+        fail(
+            f"`{factory}` does not pin the distinct "
+            '`"KillSwitchLiquidationProbeInconsistent"` error_type discriminator'
+        )
+    if "not_attempted()" not in body:
+        fail(
+            f"`{factory}` must construct KillSwitchCleanupOutcome::not_attempted() "
+            "— an inconsistent probe report takes NO automated order/session action"
+        )
+    return (
+        f"atp-types declares StructuredKillSwitchTimeoutError::{factory} with the "
+        "distinct KillSwitchLiquidationProbeInconsistent discriminator and a "
+        "not_attempted() cleanup record (nothing destructive ran)"
+    )
+
+
 def check_operator_alert_sink_port(config: dict, exec_src: str) -> str:
     return _check_port(
         exec_src,
@@ -289,6 +342,18 @@ def check_resolve_kill_switch_timeout_guard(config: dict, exec_src: str) -> str:
             f"{entry['method']} does not call `{probe_error_token}` — a probe "
             "failure must fail closed with the distinct probe-unavailable "
             "refusal (no automated cancel/disconnect on an unconfirmable state)"
+        )
+
+    # Outcome-consistency hardening: a TimedOutUnfilled reported BEFORE the
+    # request's deadline (or with a mismatched timeout_seconds) must be
+    # rejected via the probe-inconsistency factory, never trusted into the
+    # destructive cancel + disconnect.
+    probe_inconsistent_token = guard["probe_inconsistent_factory"] + "("
+    if probe_inconsistent_token not in body:
+        fail(
+            f"{entry['method']} does not call `{probe_inconsistent_token}` — a "
+            "premature/mismatched TimedOutUnfilled report must be rejected "
+            "without firing the destructive cleanup early"
         )
 
     enum = guard["outcome_enum"]
@@ -420,6 +485,8 @@ _STATIC_CHECKS = (
     ("side_effect_outcome", check_side_effect_outcome_enum, "types"),
     ("timeout_event", check_timeout_event_struct, "types"),
     ("liquidation_probe_port", check_liquidation_probe_port, "exec"),
+    ("probe_error", check_probe_error_enum, "exec"),
+    ("probe_inconsistent_factory", check_probe_inconsistent_factory, "types"),
     ("operator_alert_sink_port", check_operator_alert_sink_port, "exec"),
     ("ib_cleanup_port", check_ib_cleanup_port, "exec"),
     ("timeout_event_sink_port", check_timeout_event_sink_port, "exec"),

@@ -87,7 +87,7 @@ impl KillSwitchLiquidationProbe for KillSwitchLiquidationProbeFailing {
         _request: &KillSwitchTimeoutRequest,
     ) -> Result<KillSwitchLiquidationOutcome, KillSwitchProbeError> {
         self.calls.set(self.calls.get() + 1);
-        Err(KillSwitchProbeError::new(
+        Err(KillSwitchProbeError::connectivity_blocked(
             "IB fill-confirmation stream lost",
         ))
     }
@@ -469,9 +469,11 @@ fn err_8_probe_unavailable_refuses_without_any_automated_action() {
         "KILL_SWITCH_LIQUIDATION_PROBE_UNAVAILABLE"
     );
     assert_eq!(error.original_request, request);
+    // The typed probe-error kind travels into the structured message so the
+    // operator can tell WHICH degraded path blocked confirmation.
     assert!(error
         .message
-        .contains("probe error: IB fill-confirmation stream lost"));
+        .contains("probe error: CONNECTIVITY_BLOCKED: IB fill-confirmation stream lost"));
     assert_eq!(probe.calls.get(), 1);
 
     // No automated action: no event recorded (the forbidden alert/cleanup would
@@ -579,6 +581,139 @@ fn err_8_audit_sink_failure_is_best_effort_and_safety_posture_holds() {
         SideEffectOutcome::Succeeded
     );
     assert_eq!(error.cleanup.ib_disconnect, SideEffectOutcome::Succeeded);
+}
+
+#[test]
+fn err_8_premature_timeout_report_is_rejected_without_any_automated_action() {
+    // Outcome-consistency hardening: a probe reporting TimedOutUnfilled at
+    // 12 s against a 30 s deadline is INCONSISTENT — trusting it would cancel
+    // + disconnect EARLY on an order that may still lawfully fill. The gate
+    // must reject with the distinct probe-inconsistent discriminator and take
+    // NO automated action (forbidden stubs panic if touched).
+    let engine = ExecutionEngine::default();
+    let probe =
+        KillSwitchLiquidationProbeSpy::timed_out(12, KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS);
+    let alerts = OperatorAlertForbiddenSink;
+    let cleanup = IbLiquidationForbiddenCleanup;
+    let events = KillSwitchTimeoutEventSinkSpy::default();
+    let request = timeout_request(
+        "live-momentum",
+        "ord-7791",
+        KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS,
+    );
+
+    let error = engine
+        .resolve_kill_switch_timeout(
+            request.clone(),
+            &probe,
+            &alerts,
+            &cleanup,
+            &events,
+            OBSERVED_AT_SECONDS,
+        )
+        .expect_err("ERR-8: a premature timeout report must be rejected");
+
+    // Fail-closed family (untrustworthy fill confirmation), distinct
+    // discriminator.
+    assert_eq!(
+        error.category,
+        OrderErrorCategory::KillSwitchLiquidationProbeUnavailable
+    );
+    assert_eq!(error.error_type, "KillSwitchLiquidationProbeInconsistent");
+    assert_eq!(error.original_request, request);
+    assert!(error.message.contains("INCONSISTENT"));
+    assert_eq!(probe.calls.get(), 1);
+
+    // Nothing destructive ran: no event, every side effect NotAttempted.
+    assert!(events.events.borrow().is_empty());
+    assert_eq!(
+        error.cleanup.operator_alert,
+        SideEffectOutcome::NotAttempted
+    );
+    assert_eq!(
+        error.cleanup.liquidation_cancel,
+        SideEffectOutcome::NotAttempted
+    );
+    assert_eq!(error.cleanup.ib_disconnect, SideEffectOutcome::NotAttempted);
+}
+
+#[test]
+fn err_8_mismatched_timeout_report_is_rejected_without_any_automated_action() {
+    // A TimedOutUnfilled carrying a DIFFERENT timeout_seconds than the request
+    // (60 vs 30) is version-skewed / misconfigured — same non-destructive
+    // rejection as the premature report, even though elapsed exceeds the
+    // request's deadline.
+    let engine = ExecutionEngine::default();
+    let probe = KillSwitchLiquidationProbeSpy::timed_out(65, 60);
+    let alerts = OperatorAlertForbiddenSink;
+    let cleanup = IbLiquidationForbiddenCleanup;
+    let events = KillSwitchTimeoutEventSinkSpy::default();
+    let request = timeout_request(
+        "live-momentum",
+        "ord-7791",
+        KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS,
+    );
+
+    let error = engine
+        .resolve_kill_switch_timeout(
+            request.clone(),
+            &probe,
+            &alerts,
+            &cleanup,
+            &events,
+            OBSERVED_AT_SECONDS,
+        )
+        .expect_err("ERR-8: a mismatched-timeout report must be rejected");
+
+    assert_eq!(
+        error.category,
+        OrderErrorCategory::KillSwitchLiquidationProbeUnavailable
+    );
+    assert_eq!(error.error_type, "KillSwitchLiquidationProbeInconsistent");
+    assert!(events.events.borrow().is_empty());
+    assert_eq!(
+        error.cleanup,
+        atp_types::KillSwitchCleanupOutcome::not_attempted()
+    );
+}
+
+#[test]
+fn err_8_boundary_timeout_at_exact_deadline_runs_the_cleanup() {
+    // Boundary control: elapsed == timeout == the request's 30 s deadline is a
+    // CONSISTENT timeout — the SYS-44b cleanup must fire normally (this pins
+    // the hardening to strictly-premature reports only).
+    let engine = ExecutionEngine::default();
+    let probe = KillSwitchLiquidationProbeSpy::timed_out(
+        KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS,
+        KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS,
+    );
+    let alerts = KillSwitchOperatorAlertSinkSpy::default();
+    let cleanup = IbLiquidationCleanupSpy::default();
+    let events = KillSwitchTimeoutEventSinkSpy::default();
+    let request = timeout_request(
+        "live-momentum",
+        "ord-7791",
+        KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS,
+    );
+
+    let error = engine
+        .resolve_kill_switch_timeout(
+            request,
+            &probe,
+            &alerts,
+            &cleanup,
+            &events,
+            OBSERVED_AT_SECONDS,
+        )
+        .expect_err("ERR-8: an exact-deadline timeout must refuse");
+
+    assert_eq!(
+        error.category,
+        OrderErrorCategory::KillSwitchLiquidationTimeout
+    );
+    assert_eq!(alerts.alerts.borrow().len(), 1);
+    assert_eq!(cleanup.cancels.borrow().len(), 1);
+    assert_eq!(cleanup.disconnects.get(), 1);
 }
 
 #[test]
