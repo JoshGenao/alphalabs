@@ -140,3 +140,17 @@ class BindPolicyError(Exception):
     intentionally does not provide. Attempting ``0.0.0.0`` / ``::`` / a public
     address fails closed here, before any socket is opened.
     """
+
+
+class ProxyPolicyError(Exception):
+    """Raised when a reverse-proxy route violates the runtime's proxy policy.
+
+    Per ``SRS-RES-001`` / IF-13 the runtime proxies only to an upstream that is
+    FIXED at registration time and resolves exclusively to loopback/RFC 1918
+    addresses (the same set ``SRS-SEC-002`` permits for binds). A prefix that
+    would shadow an operator surface (``/api/v1``, ``/dashboard``, the
+    WebSocket path, a registered meta/asset path) or an upstream that is not
+    plain ``http`` to a private address fails closed here — at registration
+    where possible, otherwise at connect time before any request byte is
+    forwarded.
+    """

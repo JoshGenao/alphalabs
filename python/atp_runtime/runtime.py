@@ -50,8 +50,16 @@ from .handlers import (
     SystemStatusHandler,
     VersionHandler,
 )
+from .errors import ProxyPolicyError
+from .proxy import ProxyUpstream, compile_proxy_route
 from .registry import HandlerRegistry, OperationKey, Surface
-from .rest_server import Dispatcher, LoopbackHTTPServer, assert_bind_allowed, make_request_handler
+from .rest_server import (
+    Dispatcher,
+    LoopbackHTTPServer,
+    assert_bind_allowed,
+    is_allowed_bind_host,
+    make_request_handler,
+)
 from .ws_protocol import VALID_CHANNELS, WsHub
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -88,6 +96,12 @@ class OperatorInterfaceRuntime:
         # Static assets (dashboard HTML/JS/CSS) a top-layer consumer mounts via
         # register_asset_routes; threaded into the server at start() time.
         self._asset_routes: dict[str, tuple[str, bytes]] = {}
+        # Runtime-served meta GET paths (mirrors what register_meta_route adds)
+        # — kept so proxy prefixes can be refused when they would shadow one.
+        self._meta_paths: set[str] = set(meta_get)
+        # Reverse-proxy routes (SRS-RES-001 / IF-13): prefix -> compiled fixed
+        # upstream; threaded into the server at start() time.
+        self._proxy_routes: dict[str, ProxyUpstream] = {}
         self._server: LoopbackHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -264,6 +278,7 @@ class OperatorInterfaceRuntime:
         provider is an opaque ``Callable``.
         """
 
+        self._meta_paths.add(path)
         self._dispatcher.register_meta_route(path, provider)
 
     def register_asset_routes(self, routes: Mapping[str, tuple[str, bytes]]) -> None:
@@ -276,6 +291,38 @@ class OperatorInterfaceRuntime:
         """
 
         self._asset_routes.update(routes)
+
+    def register_proxy_route(self, prefix: str, upstream: str) -> None:
+        """Reverse-proxy every request under ``prefix`` to the FIXED ``upstream``.
+
+        Generic seam (``SRS-RES-001`` / IF-13) for a top-layer consumer — e.g.
+        the dashboard's embedded Jupyter research environment at ``/research/``.
+        The upstream is never derived from a request; it must be plain ``http``
+        to a loopback/RFC-1918 address (a DNS upstream is re-validated on every
+        connect, fail closed). A prefix that would shadow ``/api/``,
+        ``/dashboard/``, the WebSocket path, or a registered meta/asset path is
+        refused. Register before :meth:`start` so live handler threads never
+        read the route map mid-mutation.
+
+        Raises:
+            ProxyPolicyError: On any policy violation, or if the runtime is
+                already started.
+        """
+
+        if self._server is not None:
+            raise ProxyPolicyError("register proxy routes before start()")
+        reserved = [
+            "/api/",
+            "/dashboard/",
+            WS_PATH,
+            *self._meta_paths,
+            *self._asset_routes,
+            *self._proxy_routes,
+        ]
+        route = compile_proxy_route(
+            prefix, upstream, reserved=reserved, allow_host=is_allowed_bind_host
+        )
+        self._proxy_routes[route.prefix] = route
 
     def register_publisher(self, channel: str) -> None:
         """Claim ownership of a WebSocket channel's publisher.
@@ -319,6 +366,7 @@ class OperatorInterfaceRuntime:
             self._dispatcher,
             self._ws_hub,
             self._asset_routes,
+            self._proxy_routes,
         )
         self._thread = threading.Thread(
             target=self._server.serve_forever, name="atp-operator-interface", daemon=True

@@ -27,7 +27,7 @@ See ``python/atp_runtime/README.md`` for the operator-facing summary.
 
 from .cli_dispatch import CliDispatcher
 from .contract import RUNTIME_OWNER, cli_owner, rest_owner, validate_owners
-from .errors import BindPolicyError, ErrorCategory, InterfaceError
+from .errors import BindPolicyError, ErrorCategory, InterfaceError, ProxyPolicyError
 from .handlers import RUNTIME_VERSION, ConfigHandler, SystemStatusHandler, VersionHandler
 from .registry import (
     DeferredHandler,
@@ -56,6 +56,7 @@ __all__ = [
     "InterfaceError",
     "OperationKey",
     "OperatorInterfaceRuntime",
+    "ProxyPolicyError",
     "RUNTIME_OWNER",
     "RUNTIME_VERSION",
     "Request",

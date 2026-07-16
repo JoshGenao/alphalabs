@@ -32,6 +32,7 @@ import sys
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from http.client import HTTPException, HTTPResponse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import cast
 from urllib.parse import parse_qs, urlsplit
@@ -41,7 +42,18 @@ from atp_cli import Group, commands_by_group
 from atp_ws import WS_PATH
 
 from .contract import rest_owner
-from .errors import BindPolicyError, ErrorCategory, InterfaceError
+from .errors import BindPolicyError, ErrorCategory, InterfaceError, ProxyPolicyError
+from .proxy import (
+    MAX_BUFFERED_RESPONSE_BYTES,
+    MAX_PROXY_BODY_BYTES,
+    MAX_PROXY_WS_CONNECTIONS,
+    ProxyUpstream,
+    filter_response_headers,
+    match_proxy_route,
+    open_upstream_response,
+    open_upstream_ws,
+    pump_sockets,
+)
 from .registry import (
     DeferredHandler,
     HandlerRegistry,
@@ -342,6 +354,7 @@ class LoopbackHTTPServer(ThreadingHTTPServer):
         dispatcher: Dispatcher,
         ws_hub: WsHub,
         asset_routes: Mapping[str, tuple[str, bytes]] | None = None,
+        proxy_routes: Mapping[str, ProxyUpstream] | None = None,
     ) -> None:
         assert_bind_allowed(server_address[0])
         self.dispatcher = dispatcher
@@ -350,6 +363,12 @@ class LoopbackHTTPServer(ThreadingHTTPServer):
         # Exact-key lookup only (never open(request-path)), so there is no
         # filesystem access per request and no path-traversal surface.
         self.asset_routes: dict[str, tuple[str, bytes]] = dict(asset_routes or {})
+        # Reverse-proxy prefixes (SRS-RES-001 / IF-13): compiled at registration
+        # by OperatorInterfaceRuntime.register_proxy_route — upstreams are FIXED,
+        # never request-derived. The slot semaphore bounds concurrent WebSocket
+        # tunnels server-wide (an exceeded bound is an honest 503).
+        self.proxy_routes: dict[str, ProxyUpstream] = dict(proxy_routes or {})
+        self.proxy_ws_slots = threading.BoundedSemaphore(MAX_PROXY_WS_CONNECTIONS)
         super().__init__(server_address, handler_class)
 
     def handle_error(
@@ -395,6 +414,19 @@ def make_request_handler() -> type[BaseHTTPRequestHandler]:
                 self.close_connection = True
 
         def _dispatch(self, method: str) -> None:
+            # Reverse-proxy prefixes (SRS-RES-001) are matched FIRST — before the
+            # runtime's own WS path, the asset map, and the 1 MiB REST body
+            # ceiling (the proxy enforces its own, larger cap). Everything under
+            # a proxy prefix goes to the fixed upstream or fails closed here;
+            # nothing under it can dispatch into the operator REST surface.
+            proxy_server = cast(LoopbackHTTPServer, self.server)
+            if proxy_server.proxy_routes:
+                proxy_route = match_proxy_route(
+                    proxy_server.proxy_routes, urlsplit(self.path).path
+                )
+                if proxy_route is not None:
+                    self._serve_proxy(method, proxy_route)
+                    return
             if method == "GET" and self._is_ws_upgrade():
                 self._serve_websocket()
                 return
@@ -435,6 +467,187 @@ def make_request_handler() -> type[BaseHTTPRequestHandler]:
 
         def do_DELETE(self) -> None:  # noqa: N802
             self._dispatch("DELETE")
+
+        def do_PATCH(self) -> None:  # noqa: N802
+            # Only a proxied upstream (e.g. Jupyter's contents API) speaks
+            # PATCH; a non-proxy PATCH falls through to RouteTable.match and
+            # yields the structured 404/405 (no /api/v1 route declares PATCH).
+            self._dispatch("PATCH")
+
+        # ----- reverse proxy (SRS-RES-001 / IF-13) ----- #
+
+        def _serve_proxy(self, method: str, route: ProxyUpstream) -> None:
+            server = cast(LoopbackHTTPServer, self.server)
+            raw_path = self.path
+            if any(segment == ".." for segment in urlsplit(raw_path).path.split("/")):
+                self._write_proxy_error(400, "BAD_REQUEST", "raw '..' path segment refused")
+                return
+            if method == "GET" and self._is_proxy_ws_upgrade():
+                self._serve_proxy_websocket(server, route, raw_path)
+                return
+            # Request-smuggling hardening: refuse chunked request bodies (the
+            # stdlib handler does not dechunk; browsers/JupyterLab never send
+            # them) and validate Content-Length before reading exactly it.
+            if self.headers.get("Transfer-Encoding"):
+                self.close_connection = True
+                self._write_proxy_error(
+                    400, "BAD_REQUEST", "chunked request bodies are not proxied"
+                )
+                return
+            raw_length = self.headers.get("Content-Length")
+            length = 0
+            if raw_length is not None:
+                try:
+                    length = int(raw_length)
+                except ValueError:
+                    self.close_connection = True
+                    self._write_proxy_error(400, "BAD_REQUEST", "malformed Content-Length")
+                    return
+                if length < 0:
+                    self.close_connection = True
+                    self._write_proxy_error(400, "BAD_REQUEST", "negative Content-Length")
+                    return
+            if length > MAX_PROXY_BODY_BYTES:
+                self.close_connection = True
+                self._write_proxy_error(
+                    413,
+                    "PAYLOAD_TOO_LARGE",
+                    f"proxied body exceeds {MAX_PROXY_BODY_BYTES} byte ceiling",
+                )
+                return
+            body = self.rfile.read(length) if length else b""
+            try:
+                connection, response = open_upstream_response(
+                    route, method, raw_path, self.headers, body, is_allowed_bind_host
+                )
+            except (ProxyPolicyError, OSError, HTTPException) as exc:
+                self._write_proxy_error(
+                    502, "UPSTREAM_UNAVAILABLE", f"research upstream unavailable: {exc}"
+                )
+                return
+            try:
+                self._relay_proxy_response(response)
+            except OSError:
+                self.close_connection = True
+            finally:
+                connection.close()
+
+        def _relay_proxy_response(self, response: HTTPResponse) -> None:
+            headers_out = filter_response_headers(response.getheaders())
+            declared_length = response.getheader("Content-Length")
+            if declared_length is not None:
+                # Known length: stream through in bounded chunks.
+                self.send_response(response.status)
+                for name, value in headers_out:
+                    self.send_header(name, value)
+                self.end_headers()
+                remaining = int(declared_length)
+                while remaining > 0:
+                    chunk = response.read(min(64 << 10, remaining))
+                    if not chunk:
+                        self.close_connection = True  # upstream truncated mid-body
+                        return
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+                return
+            # Unknown length (chunked upstream): buffer bounded, re-send with a
+            # computed Content-Length (see proxy.py module docstring).
+            payload = response.read(MAX_BUFFERED_RESPONSE_BYTES + 1)
+            if len(payload) > MAX_BUFFERED_RESPONSE_BYTES:
+                self.close_connection = True
+                self._write_proxy_error(
+                    502,
+                    "UPSTREAM_UNAVAILABLE",
+                    f"unknown-length upstream response exceeded "
+                    f"{MAX_BUFFERED_RESPONSE_BYTES} byte buffer ceiling",
+                )
+                return
+            self.send_response(response.status)
+            for name, value in headers_out:
+                if name.lower() == "content-length":  # pragma: no cover - absent here
+                    continue
+                self.send_header(name, value)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            if payload:
+                self.wfile.write(payload)
+
+        def _is_proxy_ws_upgrade(self) -> bool:
+            return (
+                self.headers.get("Upgrade", "").lower() == "websocket"
+                and "upgrade" in self.headers.get("Connection", "").lower()
+                and self.headers.get("Sec-WebSocket-Key") is not None
+            )
+
+        def _serve_proxy_websocket(
+            self, server: LoopbackHTTPServer, route: ProxyUpstream, raw_path: str
+        ) -> None:
+            if not server.proxy_ws_slots.acquire(blocking=False):
+                self.close_connection = True
+                self._write_proxy_error(
+                    503,
+                    "UPSTREAM_UNAVAILABLE",
+                    f"proxy WebSocket tunnel slots exhausted "
+                    f"({MAX_PROXY_WS_CONNECTIONS} concurrent)",
+                )
+                return
+            try:
+                try:
+                    upstream_sock, head = open_upstream_ws(
+                        route, raw_path, self.headers, is_allowed_bind_host
+                    )
+                except (ProxyPolicyError, OSError) as exc:
+                    self._write_proxy_error(
+                        502, "UPSTREAM_UNAVAILABLE", f"research upstream unavailable: {exc}"
+                    )
+                    return
+                try:
+                    # Relay the upstream's verbatim 101 head (it may already
+                    # include early frames past the header terminator).
+                    self.wfile.write(head)
+                    self.wfile.flush()
+                    closed = threading.Event()
+                    downstream = threading.Thread(
+                        target=pump_sockets,
+                        args=(upstream_sock, self.connection, closed),
+                        name="atp-proxy-ws-downstream",
+                        daemon=True,
+                    )
+                    downstream.start()
+                    # Client → upstream in THIS thread, reading via rfile (any
+                    # early client frames are buffered there, not on the raw
+                    # socket). Short read timeout only polls `closed` — kernels
+                    # legitimately idle for minutes, so there is no idle kill.
+                    self.connection.settimeout(1.0)
+                    try:
+                        while not closed.is_set():
+                            try:
+                                chunk = (
+                                    self.rfile.read1(64 << 10)
+                                    if hasattr(self.rfile, "read1")
+                                    else self.rfile.read(64 << 10)
+                                )
+                            except TimeoutError:
+                                continue
+                            except OSError:
+                                break
+                            if not chunk:
+                                break
+                            try:
+                                upstream_sock.sendall(chunk)
+                            except OSError:
+                                break
+                    finally:
+                        closed.set()
+                        downstream.join(timeout=5.0)
+                finally:
+                    upstream_sock.close()
+                    self.close_connection = True
+            finally:
+                server.proxy_ws_slots.release()
+
+        def _write_proxy_error(self, status: int, category: str, message: str) -> None:
+            self._write_json(status, {"error": {"category": category, "message": message}})
 
         def _write_json(self, status: int, body: dict) -> None:
             payload = json.dumps(body, sort_keys=True).encode("utf-8")
