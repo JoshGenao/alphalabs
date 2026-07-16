@@ -34,6 +34,7 @@ from atp_runtime import OperatorInterfaceRuntime
 from atp_ws import EVENT_CHANNELS, MAX_REFRESH_SECONDS
 
 from .account import ACCOUNT_CHANNEL, AccountStatusProvider
+from .heartbeat import HEARTBEAT_CHANNEL, HeartbeatFreshnessProvider
 from .inventory import INVENTORY_CHANNEL, StrategyInventoryProvider
 from .provider import OWNED_CHANNELS, DashboardMetricsProvider
 from .reservoir import RESERVOIR_CHANNEL, ReservoirRankingProvider
@@ -75,10 +76,12 @@ class DashboardPublisher:
         inventory: StrategyInventoryProvider | None = None,
         account: AccountStatusProvider | None = None,
         reservoir: ReservoirRankingProvider | None = None,
+        heartbeat: HeartbeatFreshnessProvider | None = None,
     ) -> None:
         self._runtime = runtime
         self._provider = provider
         self._inventory = inventory
+        self._heartbeat = heartbeat
         self._channels: tuple[str, ...] = tuple(channels)
         # Opt-in single-event channels (SRS-UI-003 account + Reservoir) ride the
         # MAIN ticker: each is a pure-Python deferred builder (no subprocess, no
@@ -91,11 +94,23 @@ class DashboardPublisher:
         if reservoir is not None:
             extra[RESERVOIR_CHANNEL] = reservoir.reservoir_ranking_events
         self._extra = extra
-        self._main_channels: tuple[str, ...] = self._channels + tuple(extra)
+        # When the SRS-MD-003 freshness provider is mounted, HEARTBEAT moves
+        # OFF the main ticker onto its own isolated ticker (the inventory
+        # pattern, and for the same reason: the provider shells a bounded
+        # subprocess, and a wedged binary must delay only the HEARTBEAT
+        # channel — whose panel dot then goes stale honestly — never the 1 s
+        # PNL tick feeding the NFR-P2 gauge). Unmounted, HEARTBEAT stays on
+        # the main ticker publishing the provider's honest deferred cells.
+        main = list(self._channels) + [c for c in extra if c not in self._channels]
+        if heartbeat is not None and HEARTBEAT_CHANNEL in main:
+            main.remove(HEARTBEAT_CHANNEL)
+        self._main_channels: tuple[str, ...] = tuple(main)
         # Fail fast on a mis-declared cadence before any thread starts. The
         # inventory channel joins the schedule only when its provider is mounted
         # (SRS-UI-002 is composition-time opt-in, like the dashboard itself).
         scheduled = list(self._main_channels)
+        if heartbeat is not None:
+            scheduled.append(HEARTBEAT_CHANNEL)
         if inventory is not None:
             scheduled.append(INVENTORY_CHANNEL)
         self._scheduled: tuple[str, ...] = tuple(scheduled)
@@ -103,6 +118,7 @@ class DashboardPublisher:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._inventory_thread: threading.Thread | None = None
+        self._heartbeat_thread: threading.Thread | None = None
 
     @property
     def channels(self) -> tuple[str, ...]:
@@ -133,6 +149,11 @@ class DashboardPublisher:
                 target=self._run_inventory, name="atp-dashboard-inventory", daemon=True
             )
             self._inventory_thread.start()
+        if self._heartbeat is not None:
+            self._heartbeat_thread = threading.Thread(
+                target=self._run_heartbeat, name="atp-dashboard-heartbeat", daemon=True
+            )
+            self._heartbeat_thread.start()
 
     def stop(self) -> None:
         """Signal the tickers to exit and join them with a bounded timeout."""
@@ -144,11 +165,16 @@ class DashboardPublisher:
         if self._inventory_thread is not None:
             self._inventory_thread.join(timeout=MAX_REFRESH_SECONDS + 1)
             self._inventory_thread = None
+        if self._heartbeat_thread is not None:
+            self._heartbeat_thread.join(timeout=MAX_REFRESH_SECONDS + 1)
+            self._heartbeat_thread = None
 
     def publish_once(self) -> dict[str, int]:
         """Publish the current payload for every claimed channel once (delivery counts)."""
 
         counts = {channel: self._publish_channel(channel) for channel in self._main_channels}
+        if self._heartbeat is not None:
+            counts[HEARTBEAT_CHANNEL] = self._publish_heartbeat()
         if self._inventory is not None:
             counts[INVENTORY_CHANNEL] = self._publish_inventory()
         return counts
@@ -170,6 +196,15 @@ class DashboardPublisher:
         return sum(
             self._runtime.publish(INVENTORY_CHANNEL, event)
             for event in self._inventory.strategy_state_events()
+        )
+
+    def _publish_heartbeat(self) -> int:
+        """One HEARTBEAT tick: one event per monitored feed (SRS-MD-003)."""
+
+        assert self._heartbeat is not None  # only scheduled when mounted
+        return sum(
+            self._runtime.publish(HEARTBEAT_CHANNEL, event)
+            for event in self._heartbeat.heartbeat_events()
         )
 
     @staticmethod
@@ -210,6 +245,19 @@ class DashboardPublisher:
         while not self._stop.is_set():
             if time.monotonic() >= next_fire:
                 self._guarded(self._publish_inventory, INVENTORY_CHANNEL)
+                next_fire = time.monotonic() + cadence
+            wait = max(0.0, min(next_fire - time.monotonic(), _POLL_CEILING_S))
+            self._stop.wait(wait)
+
+    def _run_heartbeat(self) -> None:
+        # The isolated SRS-MD-003 HEARTBEAT ticker (see __init__ / start()).
+        # Immediate first tick; each tick re-evaluates freshness against the
+        # provider's wall clock, forming the AC's continuous monitoring loop.
+        cadence = self._cadences[HEARTBEAT_CHANNEL]
+        next_fire = time.monotonic()
+        while not self._stop.is_set():
+            if time.monotonic() >= next_fire:
+                self._guarded(self._publish_heartbeat, HEARTBEAT_CHANNEL)
                 next_fire = time.monotonic() + cadence
             wait = max(0.0, min(next_fire - time.monotonic(), _POLL_CEILING_S))
             self._stop.wait(wait)

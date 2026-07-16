@@ -2,10 +2,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use atp_types::{
-    MarketDataFreshness, MarketDataTick, OrderErrorCategory, RuntimeService, SecurityKey,
-    SecurityKeyError, SequenceGapEvent, StrategyId, StructuredSubscriptionError,
-    SubscriptionChange, SubscriptionChangeEvent, SubscriptionLimitEvent, SubscriptionLimitState,
-    SubscriptionRequest,
+    HeartbeatFeed, HeartbeatStalenessEvent, HeartbeatTransition, MarketDataFreshness,
+    MarketDataTick, OrderErrorCategory, RuntimeService, SecurityKey, SecurityKeyError,
+    SequenceGapEvent, StrategyId, StructuredSubscriptionError, SubscriptionChange,
+    SubscriptionChangeEvent, SubscriptionLimitEvent, SubscriptionLimitState, SubscriptionRequest,
+    HEARTBEAT_STALENESS_THRESHOLD_MS,
 };
 
 #[derive(Debug, Default)]
@@ -794,6 +795,374 @@ impl SequenceGapDetector {
     /// Whether the detector has observed at least one tick for `key`.
     pub fn is_tracked(&self, key: &SecurityKey) -> bool {
         self.securities.contains_key(key)
+    }
+}
+
+// --------------------------------------------------------------------------- //
+// Heartbeat freshness monitoring (SRS-MD-003 / SyRS SYS-39, NFR-P5)
+// --------------------------------------------------------------------------- //
+//
+// SRS-MD-003: "monitor market data and broker heartbeat freshness
+// continuously" — staleness OVER 15 seconds (NFR-P5,
+// `HEARTBEAT_STALENESS_THRESHOLD_MS`) must be detected, logged, displayed,
+// and reflected in system health. This section is the TIME-based companion
+// to SRS-MD-007's `SequenceGapDetector` (gap-based staleness): the detector
+// marks a line stale when the tick SEQUENCE skips; the monitor marks a feed
+// stale when tick / broker-heartbeat ARRIVAL goes silent. The two compose in
+// [`HeartbeatFreshnessMonitor::combined_line_freshness`] — a consolidated
+// line is stale iff it is gap-stale OR time-stale — which is the merged
+// per-line view `sequence_gap_contract.deferred[]` assigns to SRS-MD-003.
+//
+// The monitor mirrors the detector's idioms exactly:
+//
+//   * clock-free and single-threaded — every timestamp (`observed_at_ns`,
+//     `now_ns`) is injected by the caller, so each evaluation is
+//     deterministically reproducible; the async feed loop and the wall clock
+//     are the deferred runtime (see `heartbeat_freshness_contract.deferred[]`
+//     in `architecture/runtime_services.json`);
+//   * fail-closed — a feed that is watched but has NEVER been observed
+//     reports `Stale` with `staleness_ms: None` (no fabricated age), and an
+//     unwatched feed queried directly also reports `Stale`;
+//   * transition state is committed BEFORE sink publication, so a failing /
+//     dropping sink still leaves a silent feed `Stale` (never silently
+//     tradable); the publish failure is surfaced on the returned
+//     [`HeartbeatStatus`], not swallowed;
+//   * events fire on TRANSITIONS only (Fresh -> Stale, Stale -> Fresh) —
+//     the continuous dashboard snapshot is the `Vec<HeartbeatStatus>` return
+//     value, so the SRS-LOG-001 stream stays a queryable transition history
+//     rather than per-second spam.
+
+/// Failure to publish a [`HeartbeatStalenessEvent`] through a
+/// [`HeartbeatEventSink`]. Mirrors [`SequenceGapPublishError`]: the AC makes
+/// "logged" first-class, so a durable-write / transport failure must be
+/// surfaceable — but the freshness state itself is committed before
+/// publication, so the failure mode stays fail-closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeartbeatPublishError {
+    pub reason: String,
+}
+
+impl HeartbeatPublishError {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for HeartbeatPublishError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "SRS-MD-003: failed to publish heartbeat staleness event: {}",
+            self.reason
+        )
+    }
+}
+
+impl std::error::Error for HeartbeatPublishError {}
+
+/// Structured-event publication channel for SRS-MD-003 heartbeat staleness
+/// transitions. Concrete sinks (the deferred SRS-LOG-001 / dashboard runtime)
+/// route events to the persistent system log (`Source.MARKET_DATA` /
+/// `Source.IB_GATEWAY`, event types `HEARTBEAT_STALE` /
+/// `HEARTBEAT_RECOVERED`), the dashboard `HEARTBEAT` channel, and the
+/// notification dispatcher. `record` is FALLIBLE for the same reason
+/// [`SequenceGapEventSink::record`] is: lost audit evidence must be
+/// surfaceable, while the staleness state itself never depends on the sink.
+pub trait HeartbeatEventSink {
+    fn record(&self, event: HeartbeatStalenessEvent) -> Result<(), HeartbeatPublishError>;
+}
+
+/// NFR-P5 staleness boundary — THE single predicate deciding "over 15
+/// seconds", at full nanosecond precision. The acceptance criterion says
+/// staleness OVER 15 seconds is detected: an age of exactly
+/// 15 000 000 000 ns (15.000 s) is still fresh; one nanosecond more is
+/// stale. Comparing in nanoseconds (rather than floor-milliseconds) keeps
+/// the boundary exact — an age of 15.0004 s IS over 15 seconds even though
+/// it floors to a 15 000 ms display value.
+pub const fn heartbeat_age_ns_is_stale(age_ns: u64) -> bool {
+    age_ns > HEARTBEAT_STALENESS_THRESHOLD_MS.saturating_mul(1_000_000)
+}
+
+/// One monitored feed's freshness snapshot at an evaluation instant — the
+/// continuously-displayed surface (the dashboard `HEARTBEAT` channel row).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeartbeatStatus {
+    pub feed: HeartbeatFeed,
+    /// Epoch-ns of the most recent observation; `None` = never observed.
+    pub last_observation_ns: Option<i64>,
+    /// Observation age at the evaluation instant, floor-milliseconds (the
+    /// display value; the stale/fresh decision is made at ns precision).
+    /// `None` = never observed — no fabricated age.
+    pub staleness_ms: Option<u64>,
+    /// Fail-closed freshness: never-observed reports `Stale`.
+    pub freshness: MarketDataFreshness,
+    /// `Some` iff THIS evaluation crossed the threshold (in either
+    /// direction); `None` on every steady-state evaluation.
+    pub transition: Option<HeartbeatTransition>,
+    /// The sink's publish result when a transition fired; `None` when no
+    /// transition fired. An `Err` means the audit event was lost (the
+    /// runtime must alert) — the freshness state above is already committed.
+    pub published: Option<Result<(), HeartbeatPublishError>>,
+}
+
+/// Internal canonical key: market-data feeds key on the same normalized
+/// [`SecurityKey`] the subscription registry and gap detector use; the broker
+/// connection is a single well-known feed.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum HeartbeatFeedKey {
+    Market(SecurityKey),
+    Broker,
+}
+
+impl HeartbeatFeedKey {
+    fn feed(&self) -> HeartbeatFeed {
+        match self {
+            Self::Market(key) => HeartbeatFeed::MarketData {
+                symbol: key.symbol().to_string(),
+                asset_class: key.asset_class(),
+            },
+            Self::Broker => HeartbeatFeed::Broker,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HeartbeatFeedState {
+    /// Epoch-ns of the most recent observation. `None` until the first tick /
+    /// broker heartbeat arrives. Monotonic under out-of-order delivery: a
+    /// late-arriving observation older than the recorded one never regresses
+    /// the feed's recency.
+    last_observation_ns: Option<i64>,
+    /// The freshness most recently ANNOUNCED by [`evaluate`]
+    /// (`HeartbeatFreshnessMonitor::evaluate`) — the transition-detection
+    /// baseline. `None` until the first evaluation announces a state, so a
+    /// watched-but-silent feed's very first evaluation publishes its
+    /// fail-closed `BecameStale` rather than treating it as steady state.
+    announced: Option<MarketDataFreshness>,
+}
+
+impl HeartbeatFeedState {
+    fn never_observed() -> Self {
+        Self {
+            last_observation_ns: None,
+            announced: None,
+        }
+    }
+}
+
+/// SRS-MD-003 time-based heartbeat freshness monitor for market-data lines
+/// and the brokerage API connection. See the section comment above for the
+/// design contract (clock-free, fail-closed, transition events).
+#[derive(Debug, Default)]
+pub struct HeartbeatFreshnessMonitor {
+    feeds: BTreeMap<HeartbeatFeedKey, HeartbeatFeedState>,
+}
+
+impl HeartbeatFreshnessMonitor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a consolidated market-data line for monitoring WITHOUT an
+    /// observation, so its silence is detectable from the moment it is
+    /// supposed to be flowing (never-seen ⇒ `Stale`, `staleness_ms: None`).
+    /// Re-watching an already-tracked feed is a no-op (it never erases a
+    /// recorded observation).
+    pub fn watch_security(&mut self, key: SecurityKey) {
+        self.feeds
+            .entry(HeartbeatFeedKey::Market(key))
+            .or_insert_with(HeartbeatFeedState::never_observed);
+    }
+
+    /// Register the brokerage API connection for monitoring. Same semantics
+    /// as [`watch_security`](Self::watch_security).
+    pub fn watch_broker(&mut self) {
+        self.feeds
+            .entry(HeartbeatFeedKey::Broker)
+            .or_insert_with(HeartbeatFeedState::never_observed);
+    }
+
+    /// Record one delivered market-data tick as a freshness observation for
+    /// its security's consolidated line (implicitly watching the line if it
+    /// was not registered). `observed_at_ns` is the caller's injected clock
+    /// reading. Fails closed on an uncanonicalizable tick with the same
+    /// [`SubscriptionRegistryError`] the registry's `fan_out` and the gap
+    /// detector's `observe_tick` return — a tick that cannot name a security
+    /// cannot prove any feed fresh.
+    pub fn observe_tick(
+        &mut self,
+        tick: &MarketDataTick,
+        observed_at_ns: i64,
+    ) -> Result<(), SubscriptionRegistryError> {
+        let key = tick.security_key()?;
+        self.record_observation(HeartbeatFeedKey::Market(key), observed_at_ns);
+        Ok(())
+    }
+
+    /// Record one broker keepalive (concretely: an IB Gateway
+    /// `reqCurrentTime` / keepalive response, delivered by the deferred
+    /// runtime feed loop) as a freshness observation for the brokerage API
+    /// connection, implicitly watching it.
+    pub fn observe_broker_heartbeat(&mut self, observed_at_ns: i64) {
+        self.record_observation(HeartbeatFeedKey::Broker, observed_at_ns);
+    }
+
+    fn record_observation(&mut self, key: HeartbeatFeedKey, observed_at_ns: i64) {
+        let state = self
+            .feeds
+            .entry(key)
+            .or_insert_with(HeartbeatFeedState::never_observed);
+        // Monotonic recency: out-of-order (late) observations never move the
+        // feed's last-seen instant backwards.
+        state.last_observation_ns = Some(match state.last_observation_ns {
+            Some(existing) => existing.max(observed_at_ns),
+            None => observed_at_ns,
+        });
+    }
+
+    /// Observation age in nanoseconds at `now_ns`, clamped at zero for an
+    /// observation stamped ahead of the evaluation clock (clock skew must
+    /// not manufacture a bogus stale age — a future-stamped observation is
+    /// simply "just seen").
+    fn age_ns(last_ns: i64, now_ns: i64) -> u64 {
+        now_ns.saturating_sub(last_ns).max(0) as u64
+    }
+
+    fn current_freshness(state: &HeartbeatFeedState, now_ns: i64) -> MarketDataFreshness {
+        match state.last_observation_ns {
+            // Fail closed: watched but never observed ⇒ Stale.
+            None => MarketDataFreshness::Stale,
+            Some(last_ns) => {
+                if heartbeat_age_ns_is_stale(Self::age_ns(last_ns, now_ns)) {
+                    MarketDataFreshness::Stale
+                } else {
+                    MarketDataFreshness::Fresh
+                }
+            }
+        }
+    }
+
+    /// The continuous-monitoring step: evaluate every watched feed against
+    /// the injected clock, commit each Fresh <-> Stale flip BEFORE publishing
+    /// its [`HeartbeatStalenessEvent`] through `events` (fail-closed
+    /// ordering — a failing sink cannot un-stale a feed), and return the full
+    /// per-feed snapshot for display. One event per TRANSITION, never per
+    /// evaluation; the very first evaluation of a never-observed feed
+    /// announces (and publishes) its fail-closed `BecameStale`.
+    pub fn evaluate<S: HeartbeatEventSink>(
+        &mut self,
+        now_ns: i64,
+        events: &S,
+    ) -> Vec<HeartbeatStatus> {
+        let mut statuses = Vec::with_capacity(self.feeds.len());
+        for (key, state) in self.feeds.iter_mut() {
+            let current = Self::current_freshness(state, now_ns);
+            let transition = match state.announced {
+                None => current
+                    .is_stale()
+                    .then_some(HeartbeatTransition::BecameStale),
+                Some(previous) => match (previous.is_stale(), current.is_stale()) {
+                    (false, true) => Some(HeartbeatTransition::BecameStale),
+                    (true, false) => Some(HeartbeatTransition::Recovered),
+                    _ => None,
+                },
+            };
+            // Commit the announced state BEFORE publication (MD-007
+            // precedent): the sink cannot veto or roll back a staleness flip.
+            state.announced = Some(current);
+
+            let staleness_ms = state
+                .last_observation_ns
+                .map(|last_ns| Self::age_ns(last_ns, now_ns) / 1_000_000);
+            let published = transition.map(|transition| {
+                events.record(HeartbeatStalenessEvent {
+                    feed: key.feed(),
+                    transition,
+                    staleness_ms,
+                    last_observation_ns: state.last_observation_ns,
+                    evaluated_at_ns: now_ns,
+                    threshold_ms: HEARTBEAT_STALENESS_THRESHOLD_MS,
+                })
+            });
+            statuses.push(HeartbeatStatus {
+                feed: key.feed(),
+                last_observation_ns: state.last_observation_ns,
+                staleness_ms,
+                freshness: current,
+                transition,
+                published,
+            });
+        }
+        statuses
+    }
+
+    /// Fail-closed point read of one feed's TIME freshness at `now_ns`: an
+    /// unwatched, never-observed, or uncanonicalizable feed reports `Stale`.
+    /// Does not touch the transition baseline — reads never publish.
+    pub fn freshness(&self, feed: &HeartbeatFeed, now_ns: i64) -> MarketDataFreshness {
+        Self::key_for(feed)
+            .and_then(|key| self.feeds.get(&key))
+            .map_or(MarketDataFreshness::Stale, |state| {
+                Self::current_freshness(state, now_ns)
+            })
+    }
+
+    /// Observation age of one feed at `now_ns`, floor-milliseconds; `None`
+    /// for an unwatched, never-observed, or uncanonicalizable feed (no
+    /// fabricated age).
+    pub fn staleness_ms(&self, feed: &HeartbeatFeed, now_ns: i64) -> Option<u64> {
+        Self::key_for(feed)
+            .and_then(|key| self.feeds.get(&key))
+            .and_then(|state| state.last_observation_ns)
+            .map(|last_ns| Self::age_ns(last_ns, now_ns) / 1_000_000)
+    }
+
+    /// Whether the monitor is tracking `feed` (watched or observed).
+    pub fn is_watched(&self, feed: &HeartbeatFeed) -> bool {
+        Self::key_for(feed).is_some_and(|key| self.feeds.contains_key(&key))
+    }
+
+    /// The SRS-MD-003 + SRS-MD-007 merged per-line view (the merge
+    /// `sequence_gap_contract.deferred[]` assigns to this feature): a
+    /// consolidated market-data line is `Stale` iff it is gap-stale in the
+    /// [`SequenceGapDetector`] OR time-stale here. Both inputs fail closed,
+    /// so the merge does too.
+    pub fn combined_line_freshness(
+        &self,
+        gaps: &SequenceGapDetector,
+        key: &SecurityKey,
+        now_ns: i64,
+    ) -> MarketDataFreshness {
+        let time_freshness = self.freshness(
+            &HeartbeatFeed::MarketData {
+                symbol: key.symbol().to_string(),
+                asset_class: key.asset_class(),
+            },
+            now_ns,
+        );
+        if gaps.is_stale(key) || time_freshness.is_stale() {
+            MarketDataFreshness::Stale
+        } else {
+            MarketDataFreshness::Fresh
+        }
+    }
+
+    /// Canonical lookup key for a feed identity; `None` when the identity
+    /// cannot be canonicalized (empty symbol, unmodeled option contract) —
+    /// such a feed can never have been watched, so callers fall through to
+    /// the fail-closed default (`Stale` / no age / not watched).
+    fn key_for(feed: &HeartbeatFeed) -> Option<HeartbeatFeedKey> {
+        match feed {
+            HeartbeatFeed::MarketData {
+                symbol,
+                asset_class,
+            } => SecurityKey::new(symbol, *asset_class)
+                .ok()
+                .map(HeartbeatFeedKey::Market),
+            HeartbeatFeed::Broker => Some(HeartbeatFeedKey::Broker),
+        }
     }
 }
 
@@ -1919,5 +2288,78 @@ mod tests {
             }
             assert_eq!(sink.events.borrow().len(), expected_events);
         }
+    }
+
+    // ---------------------------------------------------------------- //
+    // SRS-MD-003 heartbeat freshness — boundary + clamp unit tests (the
+    // full invariant suite lives in tests/srs_md_003_heartbeat_freshness.rs)
+    // ---------------------------------------------------------------- //
+
+    #[derive(Default)]
+    struct HeartbeatSinkSpy {
+        events: RefCell<Vec<HeartbeatStalenessEvent>>,
+    }
+
+    impl HeartbeatEventSink for HeartbeatSinkSpy {
+        fn record(&self, event: HeartbeatStalenessEvent) -> Result<(), HeartbeatPublishError> {
+            self.events.borrow_mut().push(event);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn heartbeat_boundary_is_strictly_over_fifteen_seconds() {
+        // AC: staleness OVER 15 seconds — exactly 15.000 s is fresh.
+        const THRESHOLD_NS: u64 = 15_000 * 1_000_000;
+        assert!(!heartbeat_age_ns_is_stale(0));
+        assert!(!heartbeat_age_ns_is_stale(THRESHOLD_NS - 1));
+        assert!(!heartbeat_age_ns_is_stale(THRESHOLD_NS));
+        assert!(heartbeat_age_ns_is_stale(THRESHOLD_NS + 1));
+        assert!(heartbeat_age_ns_is_stale(u64::MAX));
+    }
+
+    #[test]
+    fn future_stamped_observation_clamps_to_zero_age_not_stale() {
+        // Clock skew: an observation stamped AHEAD of the evaluation clock
+        // must read as "just seen" (age 0), never as a bogus huge age.
+        let mut monitor = HeartbeatFreshnessMonitor::new();
+        monitor.observe_broker_heartbeat(2_000_000_000);
+        let sink = HeartbeatSinkSpy::default();
+        let statuses = monitor.evaluate(1_000_000_000, &sink);
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].staleness_ms, Some(0));
+        assert!(!statuses[0].freshness.is_stale());
+        assert!(
+            sink.events.borrow().is_empty(),
+            "fresh steady state: no event"
+        );
+    }
+
+    #[test]
+    fn late_observation_never_regresses_recency() {
+        let mut monitor = HeartbeatFreshnessMonitor::new();
+        monitor.observe_broker_heartbeat(5_000_000_000);
+        monitor.observe_broker_heartbeat(1_000_000_000); // late, out of order
+        assert_eq!(
+            monitor.staleness_ms(&HeartbeatFeed::Broker, 5_000_000_000),
+            Some(0),
+            "the newer observation must win"
+        );
+    }
+
+    #[test]
+    fn unwatched_feed_reads_fail_closed() {
+        let monitor = HeartbeatFreshnessMonitor::new();
+        assert!(monitor.freshness(&HeartbeatFeed::Broker, 0).is_stale());
+        assert_eq!(monitor.staleness_ms(&HeartbeatFeed::Broker, 0), None);
+        let bogus = HeartbeatFeed::MarketData {
+            symbol: String::new(),
+            asset_class: AssetClass::Equity,
+        };
+        assert!(
+            monitor.freshness(&bogus, 0).is_stale(),
+            "uncanonicalizable feed identity fails closed"
+        );
+        assert!(!monitor.is_watched(&bogus));
     }
 }

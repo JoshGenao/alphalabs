@@ -88,8 +88,14 @@ def test_system_snapshot_is_real_health_plus_deferred_latency(
 def test_readiness_snapshot_is_cached_within_ttl(provider: ReadinessBackedProvider) -> None:
     first = provider.system_snapshot()["health"]
     second = provider.system_snapshot()["health"]
-    # Same object identity => the gate was not re-evaluated on the second poll.
-    assert first is second
+    # The outer health dict is a fresh copy per poll (SRS-MD-003 augments it
+    # with the live market_data_heartbeat section, which must never mutate
+    # the cached readiness payload), so identity is asserted on the CACHED
+    # gate evaluation's own nested objects: same errors-list identity =>
+    # the gate was not re-evaluated on the second poll.
+    assert first is not second
+    assert first["errors"] is second["errors"]
+    assert first["state"] == second["state"]
 
 
 def test_health_fails_safe_when_readiness_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:

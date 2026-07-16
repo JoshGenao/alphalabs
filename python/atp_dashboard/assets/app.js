@@ -302,6 +302,42 @@
     ws.onerror = () => { try { ws.close(); } catch (_e) { /* onclose handles retry */ } };
   }
 
+  // ----- SRS-MD-003 heartbeat freshness (per-feed keyed rows) -------------- //
+  // Rendered above the health notes; a stale feed (or one with NO data — the
+  // fail-closed never-observed state) shows a red "stale" pill, a fresh feed a
+  // green "fresh" pill, with the observed staleness age alongside.
+  function upsertHeartbeatRow(data) {
+    const body = $("body-health");
+    const feedKey = data.feed;
+    let row = null;
+    for (const child of body.children) {
+      if (child.dataset && child.dataset.hbFeed === feedKey) { row = child; break; }
+    }
+    if (!row) {
+      row = el("div", "metric");
+      row.dataset.hbFeed = feedKey;
+      const l = el("span", "metric__label"); l.textContent = feedKey;
+      const right = el("span", "metric__right");
+      const v = el("span", "metric__value");
+      const pill = el("span", "pill");
+      right.append(v, pill);
+      row.append(l, right);
+      const notes = $("health-notes");
+      if (notes && notes.parentNode === body) body.insertBefore(row, notes);
+      else body.appendChild(row);
+    }
+    const v = row.querySelector(".metric__value");
+    const pill = row.querySelector(".pill");
+    const stale = data.is_stale === true;
+    const secs = data.staleness_seconds;
+    v.textContent = (secs === null || secs === undefined)
+      ? "no data"
+      : `${Number(secs).toFixed(1)} s`;
+    v.classList.toggle("is-deferred", secs === null || secs === undefined);
+    pill.textContent = stale ? "stale" : "fresh";
+    pill.className = stale ? "pill pill--bad" : "pill pill--ok";
+  }
+
   function onEvent(channel, data) {
     if (channel === "PNL") {
       applyMeta("body-pnl", data.strategy_id);
@@ -310,7 +346,15 @@
       applyMeta("body-metrics", data.strategy_id);
       for (const [k, , kind] of ROWS.metrics) setField("body-metrics", k, data[k], kind);
     } else if (channel === "HEARTBEAT") {
-      for (const [k, , kind] of ROWS.health) setField("body-health", k, data[k], kind);
+      if (data && typeof data.feed === "string") {
+        // SRS-MD-003 live monitor mounted: one event PER FEED (market-data
+        // lines + ib_gateway). Upsert a keyed row per feed so feeds never
+        // overwrite each other's cells.
+        upsertHeartbeatRow(data);
+      } else {
+        // Deferred composition (no observation source): the static cells.
+        for (const [k, , kind] of ROWS.health) setField("body-health", k, data[k], kind);
+      }
     } else if (channel === "STRATEGY_STATE") {
       onInventoryEvent(data);
     } else if (channel === "ACCOUNT_STATUS") {

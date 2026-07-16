@@ -112,11 +112,22 @@ EVENT_TYPES_BY_SOURCE: dict[Source, tuple[str, ...]] = {
         "CONTAINER_RESTART",
         "OOM_KILL",
     ),
-    Source.IB_GATEWAY: ("CONNECT", "DISCONNECT", "RECONNECT"),
+    Source.IB_GATEWAY: (
+        "CONNECT",
+        "DISCONNECT",
+        "RECONNECT",
+        "HEARTBEAT_STALE",
+        "HEARTBEAT_RECOVERED",
+    ),
     Source.KILL_SWITCH: ("ACTIVATION", "HALTED"),
     Source.HOT_SWAP: ("PROMOTION", "DEMOTION"),
     Source.RESOURCE_MONITOR: ("THRESHOLD_ALERT",),
-    Source.MARKET_DATA: ("SUBSCRIPTION_CHANGE", "SEQUENCE_GAP"),
+    Source.MARKET_DATA: (
+        "SUBSCRIPTION_CHANGE",
+        "SEQUENCE_GAP",
+        "HEARTBEAT_STALE",
+        "HEARTBEAT_RECOVERED",
+    ),
     Source.STRATEGY: (),
 }
 """AC-pinned event types per system source.
@@ -136,6 +147,17 @@ within 1 second of activation" makes the paper-engine HALTED transition a
 distinct, queryable system record rather than a detail buried inside the
 activation message (``python/atp_safety`` writes both, correlated by
 activation id).
+
+``HEARTBEAT_STALE`` / ``HEARTBEAT_RECOVERED`` appear under BOTH
+``MARKET_DATA`` (a consolidated market-data line's freshness) and
+``IB_GATEWAY`` (the broker API connection's heartbeat) — SRS-MD-003's
+acceptance criterion makes staleness over the NFR-P5 15-second threshold
+"logged" first-class for both monitored feed kinds. The records are
+TRANSITION events (Fresh -> Stale, Stale -> Fresh), published once per flip
+by the ``HeartbeatFreshnessMonitor`` evaluation loop rather than per-second
+status spam, so the log stays a queryable staleness history
+(``python/atp_dashboard/heartbeat.py`` writes them, correlated per feed and
+evaluation instant).
 """
 
 

@@ -27,10 +27,13 @@ from collections.abc import Mapping
 from pathlib import Path
 from types import FrameType
 
+from atp_logging import LogClass
+from atp_logging.persistence import JsonlLogStore
 from atp_runtime import OperatorInterfaceRuntime
 
 from .account import AccountStatusProvider
 from .backtests import BacktestHistoryProvider, StoreCliBacktestHistorySource
+from .heartbeat import CliHeartbeatSource, HeartbeatFreshnessProvider
 from .inventory import StrategyInventoryProvider
 from .provider import DashboardMetricsProvider, ReadinessBackedProvider
 from .publisher import DashboardPublisher
@@ -77,6 +80,10 @@ RESERVOIR_SNAPSHOT_PATH = "/dashboard/api/reservoir"
 #: (SYS-34a / IF-13).
 RESEARCH_SNAPSHOT_PATH = "/dashboard/api/research"
 
+#: REST path the dashboard SPA polls for the SRS-MD-003 heartbeat-freshness
+#: snapshot (served only when a heartbeat provider is mounted).
+HEARTBEAT_SNAPSHOT_PATH = "/dashboard/api/heartbeat"
+
 
 def load_assets() -> dict[str, tuple[str, bytes]]:
     """Read the dashboard's static assets once into an immutable route map."""
@@ -97,6 +104,7 @@ def mount_dashboard(
     account: AccountStatusProvider | None = None,
     reservoir: ReservoirRankingProvider | None = None,
     research: ResearchEnvironmentProvider | None = None,
+    heartbeat: HeartbeatFreshnessProvider | None = None,
 ) -> DashboardPublisher:
     """Register the dashboard's routes on ``runtime`` and return its publisher.
 
@@ -133,6 +141,13 @@ def mount_dashboard(
     REST-served (no WS channel) and adds no publisher work; without a
     configured upstream the panel renders the honest not-configured state and
     NO proxy route exists.
+
+    ``heartbeat`` (optional — the SRS-MD-003 heartbeat-freshness provider) adds
+    the ``GET /dashboard/api/heartbeat`` poll route and moves the ``HEARTBEAT``
+    channel onto its own isolated publisher ticker feeding REAL per-feed
+    staleness rows (the provider shells the ``md003_heartbeat_cli`` monitor
+    each second); without it the main ticker keeps publishing the metrics
+    provider's honest deferred HEARTBEAT cells.
     """
 
     runtime.register_asset_routes(load_assets())
@@ -149,8 +164,15 @@ def mount_dashboard(
         runtime.register_meta_route(RESEARCH_SNAPSHOT_PATH, research.research_snapshot)
         if research.upstream is not None:
             runtime.register_proxy_route(RESEARCH_PREFIX, research.upstream)
+    if heartbeat is not None:
+        runtime.register_meta_route(HEARTBEAT_SNAPSHOT_PATH, heartbeat.heartbeat_snapshot)
     return DashboardPublisher(
-        runtime, provider, inventory=inventory, account=account, reservoir=reservoir
+        runtime,
+        provider,
+        inventory=inventory,
+        account=account,
+        reservoir=reservoir,
+        heartbeat=heartbeat,
     )
 
 
@@ -168,7 +190,6 @@ def mount_default_dashboard(
     :func:`serve` as a testable seam.
     """
 
-    provider = ReadinessBackedProvider(env)
     # Drive the store location from the passed env AND hand that same mapping to the
     # source as the CLI subprocess's entire environment, so the composition is
     # deterministic w.r.t. `env` — a mapping that omits ATP_BACKTEST_RESULTS_DIR
@@ -177,6 +198,32 @@ def mount_default_dashboard(
     backtests = BacktestHistoryProvider(
         StoreCliBacktestHistorySource(results_dir=results_dir, env=env)
     )
+    # The SRS-MD-003 heartbeat-freshness provider is composed only when an
+    # observation source is configured: ATP_MD003_OBSERVATIONS names the
+    # directive script the monitor CLI replays (fixture ticks today; the
+    # deferred live feed loop will maintain it from real IB deliveries —
+    # heartbeat_freshness_contract.deferred[]). Unset, the HEARTBEAT channel
+    # keeps its honest deferred cells. When monitoring IS mounted,
+    # ATP_MD003_LOG_DIR is REQUIRED: SRS-MD-003 makes the durable
+    # HEARTBEAT_STALE/RECOVERED audit trail a first-class acceptance leg, so
+    # a composition that monitors-but-cannot-log is a configuration error
+    # that must fail closed at boot, never a silent no-audit mode (the full
+    # log-runtime wiring remains SRS-LOG-001's).
+    heartbeat: HeartbeatFreshnessProvider | None = None
+    observations = env.get("ATP_MD003_OBSERVATIONS") or None
+    if observations is not None:
+        log_dir = env.get("ATP_MD003_LOG_DIR") or None
+        if log_dir is None:
+            raise ValueError(
+                "ATP_MD003_OBSERVATIONS is set but ATP_MD003_LOG_DIR is not: "
+                "heartbeat monitoring requires the durable transition-record "
+                "sink (SRS-MD-003 'logged' acceptance leg)"
+            )
+        heartbeat = HeartbeatFreshnessProvider(
+            CliHeartbeatSource(observations),
+            log_store=JsonlLogStore(Path(log_dir) / "system.jsonl", log_class=LogClass.SYSTEM),
+        )
+    provider = ReadinessBackedProvider(env, heartbeat=heartbeat)
     # The SRS-UI-003 account + Reservoir providers are pure builders (no env, no
     # subprocess), so they are ALWAYS composed here — the production entrypoint
     # actually serves /dashboard/api/account and /dashboard/api/reservoir and
@@ -193,6 +240,7 @@ def mount_default_dashboard(
         account=AccountStatusProvider(),
         reservoir=ReservoirRankingProvider(),
         research=ResearchEnvironmentProvider(env.get(UPSTREAM_ENV_KNOB) or None),
+        heartbeat=heartbeat,
     )
 
 

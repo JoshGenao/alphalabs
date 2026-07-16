@@ -1060,6 +1060,77 @@ pub struct SequenceGapEvent {
 }
 
 // --------------------------------------------------------------------------- //
+// Heartbeat freshness feed identity and staleness-transition event
+// (SRS-MD-003, SyRS SYS-39, NFR-P5; StRS SN-2.03)
+// --------------------------------------------------------------------------- //
+//
+// SRS-MD-003 requires continuous monitoring of market data AND broker (IB
+// Gateway) heartbeat freshness: staleness over the NFR-P5 threshold
+// (`HEARTBEAT_STALENESS_THRESHOLD_MS` = 15 000 ms — strictly OVER; an age of
+// exactly 15 000 ms is still fresh) must be detected, logged, displayed, and
+// reflected in system health. `HeartbeatFeed` names the two monitored feed
+// kinds. The broker feed is vendor-neutral ("the brokerage API connection");
+// "IB Gateway" is named only at the adapter / operator-interface layer, the
+// same convention `ConnectivityState` follows.
+//
+// `HeartbeatStalenessEvent` is published on TRANSITIONS only (Fresh -> Stale,
+// Stale -> Fresh), never per evaluation — the continuous 1 s dashboard
+// snapshot is a separate read surface — so the SRS-LOG-001 record stream
+// stays a queryable transition history rather than per-second spam. Like
+// `SequenceGapEvent` / `StaleDataEvent`, it deliberately carries NO broker /
+// vendor / session / tick identifier, and it snapshots `threshold_ms` so the
+// record is self-describing if the budget constant ever changes.
+
+/// Identity of one monitored heartbeat feed (SRS-MD-003 / SyRS SYS-39).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HeartbeatFeed {
+    /// One consolidated market-data line, keyed like the subscription
+    /// registry on normalized symbol + asset class (`SecurityKey`).
+    MarketData {
+        symbol: String,
+        asset_class: AssetClass,
+    },
+    /// The brokerage API connection (concretely IB Gateway, named only at
+    /// the adapter / dashboard layer).
+    Broker,
+}
+
+/// Direction of a heartbeat freshness flip. Events are published only when a
+/// feed crosses the threshold, in either direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeartbeatTransition {
+    /// The feed's observation age exceeded the threshold (or the feed is
+    /// watched but has never been observed — fail-closed "no data").
+    BecameStale,
+    /// A fresh observation brought the feed back inside the threshold.
+    Recovered,
+}
+
+/// Structured payload published on every heartbeat freshness transition.
+///
+/// `staleness_ms: None` (with `last_observation_ns: None`) means the feed is
+/// watched but has NEVER been observed — reported stale fail-closed, with no
+/// fabricated age (REL-001 discipline: no data is not "up", and an unknown
+/// age must not be invented for display).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeartbeatStalenessEvent {
+    pub feed: HeartbeatFeed,
+    pub transition: HeartbeatTransition,
+    /// Observation age at evaluation time, milliseconds. `None` = never
+    /// observed.
+    pub staleness_ms: Option<u64>,
+    /// Epoch-ns of the feed's most recent observation. `None` = never
+    /// observed. Matches the SRS-LOG-001 `timestamp_ns` convention.
+    pub last_observation_ns: Option<i64>,
+    /// Epoch-ns of the evaluation that detected the transition (the caller's
+    /// injected clock — the monitor performs no wall-clock I/O).
+    pub evaluated_at_ns: i64,
+    /// The NFR-P5 budget the age was compared against, snapshotted so the
+    /// record is self-describing (`HEARTBEAT_STALENESS_THRESHOLD_MS`).
+    pub threshold_ms: u64,
+}
+
+// --------------------------------------------------------------------------- //
 // Ingestion record validation envelope and structured rejection
 // (SRS-DATA-013, SyRS SYS-77, StRS SN-1.26 / SN-1.27)
 // --------------------------------------------------------------------------- //

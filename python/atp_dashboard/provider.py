@@ -32,10 +32,13 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from atp_readiness import ReadinessGate
 from atp_ws import MAX_REFRESH_SECONDS, Channel
+
+if TYPE_CHECKING:  # pragma: no cover — type-only; avoids widening import weight
+    from .heartbeat import HeartbeatFreshnessProvider
 
 #: Marker for a field whose live producer is a not-yet-built feature. The value
 #: is always ``None`` when this is set — the dashboard renders it as an explicit
@@ -63,11 +66,14 @@ FIELD_OWNERS: Mapping[str, str] = {
     "beta": "SRS-BT-004",
     "max_drawdown": "SRS-BT-004",
     "benchmark_return": "SRS-BT-005",
-    # HEARTBEAT — market-data / broker staleness watcher.
-    "feed": "SRS-MD-007",
-    "last_tick_at": "SRS-MD-007",
-    "staleness_seconds": "SRS-MD-007",
-    "is_stale": "SRS-MD-007",
+    # HEARTBEAT — market-data / broker staleness watcher. The SRS-MD-003
+    # monitor + provider exist; these cells stay deferred only in a
+    # composition that mounts no observation source (the live feed loop
+    # streaming real IB observations is the deferred runtime).
+    "feed": "SRS-MD-003-runtime",
+    "last_tick_at": "SRS-MD-003-runtime",
+    "staleness_seconds": "SRS-MD-003-runtime",
+    "is_stale": "SRS-MD-003-runtime",
 }
 
 
@@ -122,11 +128,17 @@ class ReadinessBackedProvider:
         env: Mapping[str, str],
         *,
         cache_ttl_s: float = 2.0,
+        heartbeat: HeartbeatFreshnessProvider | None = None,
     ) -> None:
         self._env = dict(env)
         self._cache_ttl_s = cache_ttl_s
         self._cached_health: dict[str, object] | None = None
         self._cached_at: float = 0.0
+        # SRS-MD-003: when a heartbeat-freshness provider is mounted, the
+        # system-health payload carries its real market-data / broker
+        # staleness summary (the AC's "reflected in system health status"
+        # leg); unmounted, the section is an honest deferred cell.
+        self._heartbeat = heartbeat
 
     # ----- health (real, cached) ----- #
 
@@ -193,18 +205,31 @@ class ReadinessBackedProvider:
             for field in ("sharpe", "sortino", "alpha", "beta", "max_drawdown", "benchmark_return"):
                 payload[field] = deferred_field(field)
             return payload
-        # HEARTBEAT — market-data feed not connected until SRS-MD-007.
+        # HEARTBEAT — the honest deferred cells a composition WITHOUT a
+        # mounted SRS-MD-003 observation source publishes. With one mounted,
+        # the publisher routes this channel to the freshness provider's real
+        # per-feed rows instead (see DashboardPublisher).
         payload = {}
         for field in ("feed", "last_tick_at", "staleness_seconds", "is_stale"):
             payload[field] = deferred_field(field)
         return payload
 
     def system_snapshot(self) -> dict[str, object]:
+        # The readiness-gate health is cached (TTL); the SRS-MD-003 heartbeat
+        # section is re-evaluated per poll — staleness is a live signal whose
+        # whole point is to change within seconds. Copy before augmenting so
+        # the cached dict is never mutated.
+        health = dict(self._health())
+        health["market_data_heartbeat"] = (
+            self._heartbeat.health_summary()
+            if self._heartbeat is not None
+            else deferred_field_named("SRS-MD-003-runtime")
+        )
         return {
             "generated_at": _utc_iso(),
             "refresh_budget_ms": REFRESH_BUDGET_MS,
             "max_refresh_seconds": MAX_REFRESH_SECONDS,
-            "health": self._health(),
+            "health": health,
             "latency": self._latency(),
             "srs_ref": "SRS-UI-001",
         }

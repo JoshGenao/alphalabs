@@ -1003,6 +1003,125 @@
       }
     ]
   },
+  "heartbeat_freshness_contract": {
+    "requirement": "SRS-MD-003",
+    "description": "SRS-MD-003 (monitor market data and broker heartbeat freshness continuously; SyRS SYS-39; NFR-P5; StRS SN-2.03). The TIME-based companion to sequence_gap_contract: HeartbeatFreshnessMonitor in atp-market-data timestamps every delivered tick per canonical SecurityKey plus the broker API connection's keepalives, and each evaluation against an INJECTED clock marks any feed whose observation age is strictly over the 15 000 ms NFR-P5 budget Stale, publishing a HeartbeatStalenessEvent through a fallible sink on every Fresh<->Stale transition. Detected (monitor + CLI), logged (SRS-LOG-001 HEARTBEAT_STALE / HEARTBEAT_RECOVERED records), displayed (dashboard HEARTBEAT channel, 1 s cadence, per-feed rows), and reflected in system health (the market_data_heartbeat section of the dashboard system snapshot).",
+    "srs_refs": ["SRS-MD-003"],
+    "syrs_refs": ["SYS-39", "NFR-P5"],
+    "strs_refs": ["SN-2.03"],
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types",
+      "feed_enum": "HeartbeatFeed",
+      "feed_variants": ["MarketData", "Broker"],
+      "transition_enum": "HeartbeatTransition",
+      "transition_variants": ["BecameStale", "Recovered"],
+      "event_struct": "HeartbeatStalenessEvent",
+      "event_required_fields": [
+        "feed",
+        "transition",
+        "staleness_ms",
+        "last_observation_ns",
+        "evaluated_at_ns",
+        "threshold_ms"
+      ],
+      "event_forbidden_fields": ["broker", "ib_session_id", "vendor", "provider", "tick_id"]
+    },
+    "market_data_crate": {
+      "crate": "atp-market-data",
+      "path": "crates/atp-market-data",
+      "monitor": "HeartbeatFreshnessMonitor",
+      "monitor_methods": [
+        "watch_security",
+        "watch_broker",
+        "observe_tick",
+        "observe_broker_heartbeat",
+        "evaluate",
+        "freshness",
+        "staleness_ms",
+        "combined_line_freshness"
+      ],
+      "sink_port": "HeartbeatEventSink",
+      "publish_error": "HeartbeatPublishError",
+      "status_struct": "HeartbeatStatus",
+      "cli_bin": "md003_heartbeat_cli"
+    },
+    "threshold": {
+      "constant": "HEARTBEAT_STALENESS_THRESHOLD_MS",
+      "value_ms": 15000,
+      "boundary_predicate": "heartbeat_age_ns_is_stale",
+      "boundary": "stale iff the observation age is STRICTLY greater than 15 000 ms (compared at nanosecond precision: age_ns > 15_000 * 1_000_000); an age of exactly 15 000 ms is Fresh — the AC says staleness OVER 15 seconds"
+    },
+    "fail_closed": {
+      "never_observed": "a watched feed with no observation reports MarketDataFreshness::Stale with staleness_ms/last_observation_ns None (no fabricated age; REL-001 no-data-is-not-up discipline)",
+      "unwatched_read": "freshness() on an unwatched or uncanonicalizable feed returns Stale",
+      "sink_ordering": "each Fresh<->Stale flip is committed BEFORE HeartbeatEventSink.record is called, so a failing/dropping sink still leaves the feed Stale; the publish failure is surfaced on HeartbeatStatus.published and the transition baseline still advances (no un-stale by sink failure)",
+      "python_monitor_unavailable": "a missing binary / unreadable script / wedged CLI / kv-grammar drift is an explicit UNAVAILABLE with is_stale true on the channel row and any_stale true in health — never a green, never a crash",
+      "empty_watch_set": "an observation script that yields ZERO status rows (watches nothing) is refused as HeartbeatUnavailable — a monitor monitoring nothing must never read as healthy (SYS-39 continuous monitoring)",
+      "broker_feed_required": "an observation script that never watches the broker feed (no ib_gateway row) is refused as HeartbeatUnavailable — SYS-39 names the broker API connection as a required monitored feed",
+      "market_data_feed_required": "an observation script that watches no market-data line (broker-only) is likewise refused — SYS-39 monitors BOTH feed kinds; the deferred live feed loop owns the legitimate zero-active-subscriptions state because it watches the consolidated subscription set",
+      "log_write_flag_aggregation": "log_write_ok is true iff the pending-record queue is empty: one feed's failed transition write is never masked by another feed's success, and the flag recovers only when every queued record has landed",
+      "monotonic_evaluation_commit": "concurrent callers (WS ticker / REST poll / health poll) evaluate outside the provider lock, so completions can arrive out of order; only an observation with evaluated_at_ns strictly greater than the last committed one may advance the transition baseline, write log records, or be served to an operator surface — a slower, older evaluation applied late would fabricate flips or regress the displayed state, so late callers receive the cached committed observation instead",
+      "subprocess_budget_below_cadence": "the CLI subprocess timeout defaults below the HEARTBEAT channel's declared 1 s cadence, so even a wedged binary resolves to the fail-closed unavailable row within the tick instead of stretching it past its refresh contract",
+      "mandatory_log_sink": "the AC's 'logged' leg is not optional: HeartbeatFreshnessProvider REQUIRES a durable log store (no None default), and mount_default_dashboard refuses ATP_MD003_OBSERVATIONS without ATP_MD003_LOG_DIR at boot — a monitor that displays health while silently dropping its audit trail is unrepresentable"
+    },
+    "transition_semantics": "events publish once per Fresh<->Stale flip, never per evaluation; the continuous display surface is the per-evaluation Vec<HeartbeatStatus> snapshot. The CLI process is fresh per poll, so the cross-poll once-per-flip guarantee for LOG RECORDS lives in HeartbeatFreshnessProvider (python/atp_dashboard/heartbeat.py): the flip baseline advances on the FACT of a flip, and a record whose durable write fails is QUEUED and retried oldest-first on every subsequent poll — a transient sink failure during a brief stale incident loses neither the incident nor its recovery; the queue is bounded with dropped records counted and surfaced (dropped_log_records)",
+    "combined_freshness": "combined_line_freshness(gaps, key, now_ns): a consolidated line is Stale iff gap-stale (SequenceGapDetector, SRS-MD-007) OR time-stale (this monitor) — the merged per-line view sequence_gap_contract.deferred[] assigns to SRS-MD-003; both inputs fail closed so the merge does too",
+    "cli": {
+      "bin": "md003_heartbeat_cli",
+      "directives": [
+        "watch-security <symbol> <equity|option>",
+        "watch-broker",
+        "tick <symbol> <equity|option> <tick_seq> <observed_at_ns>",
+        "broker-heartbeat <observed_at_ns>",
+        "resync <symbol> <equity|option>",
+        "evaluate <now_ns>"
+      ],
+      "output": "space-separated key=value lines: 'status ...' per watched feed per evaluate (time_stale + gap_stale + merged stale + threshold_ms), 'event kind=HEARTBEAT_STALE|HEARTBEAT_RECOVERED ...' per transition, 'event kind=SEQUENCE_GAP ...' per MD-007 gap",
+      "fail_closed_parser": "unknown directive / wrong arity / unparseable number aborts with structured stderr and exit 2",
+      "determinism": "no wall-clock I/O in the binary; every timestamp is a script directive (the Python source appends 'evaluate <time.time_ns()>' — the single wall-clock read, at the outermost edge)"
+    },
+    "python_bridge": {
+      "module": "python/atp_dashboard/heartbeat.py",
+      "source": "CliHeartbeatSource",
+      "provider": "HeartbeatFreshnessProvider",
+      "channel": "HEARTBEAT",
+      "channel_payload_fields": ["feed", "last_tick_at", "staleness_seconds", "is_stale"],
+      "feed_tokens": "market_data:<SYMBOL> per consolidated line; ib_gateway for the broker connection (the vendor is named only at this operator surface)",
+      "publisher_isolation": "the HEARTBEAT channel moves onto its own DashboardPublisher ticker when the provider is mounted (the provider shells a bounded subprocess; a wedged binary must never starve the 1 s PNL tick), unmounted it stays on the main ticker with honest deferred cells",
+      "rest_route": "/dashboard/api/heartbeat",
+      "health_reflection": "system_snapshot().health.market_data_heartbeat = {ok, state FRESH|STALE|UNAVAILABLE, any_stale, stale_feeds, watched_feeds, threshold_ms, data_source}",
+      "composition_env": "ATP_MD003_OBSERVATIONS names the observation script (unset => not mounted => deferred cells); ATP_MD003_LOG_DIR is REQUIRED whenever observations are configured — the boot composition fails closed without the durable JsonlLogStore transition sink"
+    },
+    "log_event": {
+      "market_data_source": "market_data",
+      "broker_source": "ib_gateway",
+      "event_types": ["HEARTBEAT_STALE", "HEARTBEAT_RECOVERED"],
+      "severities": "HEARTBEAT_STALE -> WARN, HEARTBEAT_RECOVERED -> INFO",
+      "classification": "HEARTBEAT_* records classify TIME staleness only (row time_stale); a gap-only incident is SRS-MD-007 SEQUENCE_GAP audit territory and is never misfiled as heartbeat staleness — the merged stale verdict remains the display/health/MD-004 surface",
+      "correlation_id": "md003:<feed>:<evaluated_at_ns>"
+    },
+    "rust_integration_test": "srs_md_003_heartbeat_freshness",
+    "domain_test": "tests/domain/test_heartbeat_staleness.py",
+    "deferred": [
+      {
+        "feature": "SRS-MD-003-runtime / SRS-EXE-006",
+        "what": "The async live feed loop and its wall clock: call observe_tick per delivered IB tick and observe_broker_heartbeat per IB keepalive/reqCurrentTime response, and run evaluate on a periodic cadence. HeartbeatFreshnessMonitor is single-threaded and clock-free (all timestamps injected); today the operator/dashboard path replays a fixture observation script through md003_heartbeat_cli with the Python source stamping the evaluation instant — the same monitor code the live loop will drive. PRODUCER OBLIGATION: the broker heartbeat observation must come from a genuine gateway round-trip (reqCurrentTime / keepalive response), not from local liveness, or broker staleness can never be detected. IbGatewayConnection is deliberately UNCHANGED (live-verified, golden-pinned); the feed loop adds an additive seam when it lands."
+      },
+      {
+        "feature": "SRS-MD-004 runtime bridge",
+        "what": "The concrete MarketDataFreshnessProbe adapter (orchestrator layer) that reads combined_line_freshness()/staleness_ms() so submit_live_order blocks MARKET_DATA_STALE on a time-stale or gap-stale line. Owned by the SRS-MD-004 / ERR-3 port surface together with the symbol-only-vs-SecurityKey port-shape issue already recorded in sequence_gap_contract.deferred[]; atp-execution must not depend on atp-market-data (SRS-ARCH-002), so the bridge lives above both."
+      },
+      {
+        "feature": "SRS-MD-005 (scheduled restart window)",
+        "what": "Suppression of heartbeat staleness NOTIFICATIONS during the configured IB Gateway daily-restart window. The monitor stays truthful (the feed IS stale during a restart); events carry evaluated_at_ns so the notification layer can apply the window without touching the monitor."
+      },
+      {
+        "feature": "SRS-MD-006 / SRS-NOTIF-001",
+        "what": "Folding heartbeat freshness into the startup readiness gate's pre-trade evaluation, and routing HEARTBEAT_STALE transitions to the operator notification dispatcher."
+      }
+    ]
+  },
   "subscription_limit_contract": {
     "requirement": "ERR-4",
     "srs_refs": [
@@ -3764,11 +3883,22 @@
         "CONTAINER_RESTART",
         "OOM_KILL"
       ],
-      "ib_gateway": ["CONNECT", "DISCONNECT", "RECONNECT"],
+      "ib_gateway": [
+        "CONNECT",
+        "DISCONNECT",
+        "RECONNECT",
+        "HEARTBEAT_STALE",
+        "HEARTBEAT_RECOVERED"
+      ],
       "kill_switch": ["ACTIVATION", "HALTED"],
       "hot_swap": ["PROMOTION", "DEMOTION"],
       "resource_monitor": ["THRESHOLD_ALERT"],
-      "market_data": ["SUBSCRIPTION_CHANGE", "SEQUENCE_GAP"],
+      "market_data": [
+        "SUBSCRIPTION_CHANGE",
+        "SEQUENCE_GAP",
+        "HEARTBEAT_STALE",
+        "HEARTBEAT_RECOVERED"
+      ],
       "strategy": []
     },
     "required_log_record_fields": [
