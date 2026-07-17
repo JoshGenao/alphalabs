@@ -499,6 +499,22 @@ def test_cli_control_character_input_still_yields_a_parseable_durable_record(
     assert len(persisted) == 1
 
 
+def test_backend_launch_failure_is_typed_never_a_raw_oserror(tmp_path: Path) -> None:
+    # Safety-boundary invariant (adversarial r7): every way the timeout drill
+    # can fail to RUN must surface as the typed fail-closed backend error —
+    # an existing-but-non-executable binary must not leak a raw
+    # PermissionError through the operator boundary.
+    import pytest as _pytest
+    from atp_safety import LiquidationTimeoutBackendError, RustCliLiquidationTimeoutBackend
+
+    not_executable = tmp_path / "safe002_cli"
+    not_executable.write_text("#!/bin/sh\n")
+    not_executable.chmod(0o644)
+    backend = RustCliLiquidationTimeoutBackend(binary=not_executable)
+    with _pytest.raises(LiquidationTimeoutBackendError, match="could not be launched"):
+        backend.resolve()
+
+
 def test_cli_failed_side_effects_are_observable_and_still_exit_one() -> None:
     result = _run_cli("resolve", "--fail-email", "--fail-sms", "--fail-cancel")
     assert result.returncode == 1, f"the SYS-44b sequence still ran:\n{result.stderr}"

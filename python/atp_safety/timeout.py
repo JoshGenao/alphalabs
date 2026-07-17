@@ -198,6 +198,14 @@ class RustCliLiquidationTimeoutBackend:
             completed = self._runner(argv, timeout_s=self._timeout_s)
         except subprocess.TimeoutExpired as error:
             raise TimeoutError(f"liquidation-timeout drill exceeded {self._timeout_s}s") from error
+        except OSError as error:
+            # A launch failure (non-executable binary, replaced between check
+            # and exec, ENOENT under a race) must surface as the TYPED
+            # fail-closed backend error, never a raw PermissionError/OSError —
+            # the operator boundary of a safety workflow has no untyped path.
+            raise LiquidationTimeoutBackendError(
+                f"liquidation-timeout CLI could not be launched ({self._binary}): {error}"
+            ) from error
         if completed.returncode not in _DISPOSITIONS_BY_EXIT:
             raise LiquidationTimeoutBackendError(
                 "liquidation-timeout CLI could not run the drill "

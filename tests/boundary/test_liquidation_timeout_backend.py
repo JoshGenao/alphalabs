@@ -154,6 +154,30 @@ def test_disposition_exit_code_mismatch_fails_closed() -> None:
         backend.resolve()
 
 
+def test_launch_oserror_surfaces_as_the_typed_backend_error() -> None:
+    # Codex r7: a launch failure (PermissionError / ENOENT under a race) must
+    # be the TYPED fail-closed error, never a raw OSError at the operator
+    # boundary of a safety workflow.
+    def exploding_runner(argv, *, timeout_s):  # noqa: ANN001, ANN202 - test double
+        raise PermissionError(13, "Permission denied")
+
+    backend = RustCliLiquidationTimeoutBackend(runner=exploding_runner)
+    with pytest.raises(LiquidationTimeoutBackendError, match="could not be launched"):
+        backend.resolve()
+
+
+def test_existing_but_non_executable_binary_fails_closed_typed(tmp_path: Path) -> None:
+    # The real runner path: the file exists (passes the is_file() check) but
+    # is not executable — subprocess.run raises PermissionError, which must
+    # arrive as the typed backend error.
+    not_executable = tmp_path / "safe002_cli"
+    not_executable.write_text("#!/bin/sh\n")
+    not_executable.chmod(0o644)
+    backend = RustCliLiquidationTimeoutBackend(binary=not_executable)
+    with pytest.raises(LiquidationTimeoutBackendError, match="could not be launched"):
+        backend.resolve()
+
+
 def test_subprocess_timeout_surfaces_as_timeout_error() -> None:
     def hanging_runner(argv, *, timeout_s):  # noqa: ANN001, ANN202 - test double
         raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout_s)
