@@ -363,13 +363,26 @@ def _assert_outcome_consistency(payload: Mapping[str, object], disposition: str)
                 "a durable record implying the timeout was handled"
             )
     if disposition != "FILLED_BEFORE_TIMEOUT":
+        # SYS-44b requires the UNFILLED ORDER DETAILS to be logged — the full
+        # identity, not just an id. A truncated/version-skewed payload missing
+        # any of them would put None values in the durable record.
         order = payload.get("unfilled_order")
-        order_id = str(order.get("order_id", "")).strip() if isinstance(order, Mapping) else ""
-        if not order_id:
+        problems: list[str] = []
+        if not isinstance(order, Mapping):
+            problems.append(f"unfilled_order={order!r}")
+        else:
+            for field in ("order_id", "symbol", "side"):
+                if not str(order.get(field, "") or "").strip():
+                    problems.append(f"unfilled_order.{field}={order.get(field)!r}")
+            quantity = order.get("quantity")
+            if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
+                problems.append(f"unfilled_order.quantity={quantity!r}")
+        if problems:
             raise LiquidationTimeoutBackendError(
-                f"liquidation-timeout CLI disposition {disposition!r} carries no "
-                "unfilled_order details — a refusal without the order identity "
-                "is not auditable; refusing the outcome"
+                f"liquidation-timeout CLI disposition {disposition!r} carries "
+                f"incomplete unfilled_order details ({', '.join(problems)}) — an "
+                "outcome without the full order identity is not auditable; "
+                "refusing the outcome"
             )
 
 

@@ -245,6 +245,43 @@ def test_probe_refusal_without_order_identity_is_refused() -> None:
         backend.resolve()
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("order_id", ""),
+        ("symbol", ""),
+        ("symbol", None),
+        ("side", "  "),
+        ("quantity", 0),
+        ("quantity", -5),
+        ("quantity", "250"),
+        ("quantity", None),
+    ],
+)
+def test_incomplete_unfilled_order_details_are_refused(field: str, value: object) -> None:
+    # Codex r10: SYS-44b logs the unfilled ORDER DETAILS — the full identity.
+    # A truncated payload missing/blanking any of order_id/symbol/side, or a
+    # non-positive/non-integer quantity, must be refused, never logged as
+    # None.
+    payload = dict(_TIMEOUT_PAYLOAD)
+    order = dict(payload["unfilled_order"])  # type: ignore[arg-type]
+    order[field] = value
+    payload["unfilled_order"] = order
+    backend = _backend_with(_completed(1, f"outcome:{json.dumps(payload)}\n"))
+    with pytest.raises(LiquidationTimeoutBackendError, match="incomplete unfilled_order"):
+        backend.resolve()
+
+
+def test_missing_unfilled_order_field_is_refused() -> None:
+    payload = dict(_TIMEOUT_PAYLOAD)
+    order = dict(payload["unfilled_order"])  # type: ignore[arg-type]
+    order.pop("quantity")
+    payload["unfilled_order"] = order
+    backend = _backend_with(_completed(1, f"outcome:{json.dumps(payload)}\n"))
+    with pytest.raises(LiquidationTimeoutBackendError, match="incomplete unfilled_order"):
+        backend.resolve()
+
+
 def test_timed_out_disposition_with_unattempted_cleanup_is_refused() -> None:
     # Codex r2 finding (the symmetric direction): a TIMED_OUT_UNFILLED whose
     # own evidence says the SYS-44b sequence did NOT run must be refused —
