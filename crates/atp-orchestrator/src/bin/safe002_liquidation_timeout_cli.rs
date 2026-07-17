@@ -374,8 +374,14 @@ fn run_to_json(run: &FixtureTimeoutRun, disposition: &str) -> String {
         run.email_pages.len(),
         run.sms_pages.len(),
     );
+    // The outcome SELF-LABELS its transport tier: this CLI drives the REAL
+    // gate/probe/dispatcher but FIXTURE transports (mocked IB gateway,
+    // fixture email/SMS channels) — the consumer must never be able to
+    // mistake a drill outcome for live SYS-44b evidence. The live runtime
+    // (deferred SRS-EXE-006 + SRS-NOTIF-001 legs) will label itself LIVE.
     let common = format!(
-        "\"disposition\":\"{disposition}\",\"notification\":{notification},\
+        "\"disposition\":\"{disposition}\",\"transports\":\"FIXTURE\",\
+         \"notification\":{notification},\
          \"gateway_calls\":[{}],\"probe_polls\":{},\"simulated_elapsed_ms\":{}",
         gateway_calls.join(","),
         run.probe_polls,

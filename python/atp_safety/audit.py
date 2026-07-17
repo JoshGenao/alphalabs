@@ -141,6 +141,9 @@ def build_liquidation_timeout_record(
     message = (
         "kill-switch liquidation timeout: "
         f"disposition={outcome.get('disposition')} "
+        # The transport tier travels INTO the durable record so FIXTURE-drill
+        # evidence can never masquerade as live SYS-44b history.
+        f"transports={outcome.get('transports')} "
         f"order_id={order_id} "
         f"symbol={order.get('symbol')} "
         f"side={order.get('side')} "

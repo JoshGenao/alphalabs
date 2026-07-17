@@ -329,6 +329,9 @@ def test_cli_timeout_drill_runs_sys_44b_and_the_record_lands_durably(tmp_path: P
     assert result.returncode == 1, f"a timed-out drill must exit 1:\n{result.stderr}"
     outcome = _parse_outcome(result.stdout)
     assert outcome["disposition"] == "TIMED_OUT_UNFILLED"
+    # The CLI self-labels its transport tier: drill evidence can never
+    # masquerade as live SYS-44b evidence (adversarial r11).
+    assert outcome["transports"] == "FIXTURE"
     assert outcome["manual_resolution_required"] is True
     assert outcome["gateway_calls"] == ["cancel:B-0001", "disconnect"]
     assert outcome["notification"] == {"events": 1, "email_accepted": 1, "sms_accepted": 1}
@@ -342,7 +345,7 @@ def test_cli_timeout_drill_runs_sys_44b_and_the_record_lands_durably(tmp_path: P
 
     store = JsonlLogStore(tmp_path / "system.jsonl", log_class=LogClass.SYSTEM)
     backend = RustCliLiquidationTimeoutBackend(binary=binary)
-    resolved_outcome, record = resolve_liquidation_timeout(backend, store)
+    resolved_outcome, record = resolve_liquidation_timeout(backend, store, fixture_drill=True)
     assert resolved_outcome.timed_out
     assert record is not None
     # Durable-audit truth is owned by the Python persistence step (r5): the
@@ -401,6 +404,7 @@ def test_backend_refuses_a_contradictory_non_timeout_outcome() -> None:
 
     contradictory = {
         "disposition": "PROBE_UNAVAILABLE",
+        "transports": "FIXTURE",
         "notification": {"events": 0, "email_accepted": 0, "sms_accepted": 0},
         "gateway_calls": ["cancel:B-0001", "disconnect"],  # cleanup RAN
         "probe_polls": 1,
@@ -446,6 +450,7 @@ def test_backend_refuses_a_timed_out_outcome_whose_cleanup_never_ran() -> None:
 
     contradictory = {
         "disposition": "TIMED_OUT_UNFILLED",
+        "transports": "FIXTURE",
         "notification": {"events": 0, "email_accepted": 0, "sms_accepted": 0},
         "gateway_calls": [],
         "probe_polls": 61,
@@ -506,7 +511,7 @@ def test_cli_control_character_input_still_yields_a_parseable_durable_record(
     store = JsonlLogStore(tmp_path / "system.jsonl", log_class=LogClass.SYSTEM)
     backend = RustCliLiquidationTimeoutBackend(binary=binary)
     resolved_outcome, record = resolve_liquidation_timeout(
-        backend, store, scenario_args=["--symbol", hostile_symbol]
+        backend, store, scenario_args=["--symbol", hostile_symbol], fixture_drill=True
     )
     assert resolved_outcome.timed_out
     assert record is not None
@@ -526,6 +531,7 @@ def test_backend_refuses_success_claims_without_their_own_evidence() -> None:
 
     contradictory = {
         "disposition": "TIMED_OUT_UNFILLED",
+        "transports": "FIXTURE",
         "notification": {"events": 0, "email_accepted": 0, "sms_accepted": 0},
         "gateway_calls": [],
         "probe_polls": 61,
@@ -569,6 +575,7 @@ def test_backend_refuses_a_timeout_missing_the_order_details() -> None:
 
     truncated = {
         "disposition": "TIMED_OUT_UNFILLED",
+        "transports": "FIXTURE",
         "notification": {"events": 1, "email_accepted": 1, "sms_accepted": 1},
         "gateway_calls": ["cancel:B-0001", "disconnect"],
         "probe_polls": 60,

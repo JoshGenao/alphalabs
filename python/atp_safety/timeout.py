@@ -54,6 +54,7 @@ _OUTCOME_PREFIX = "outcome:"
 #: Anything missing means version skew / truncation — fail closed.
 _REQUIRED_OUTCOME_KEYS = (
     "disposition",
+    "transports",
     "notification",
     "gateway_calls",
     "probe_polls",
@@ -63,6 +64,12 @@ _REQUIRED_OUTCOME_KEYS = (
     "manual_resolution_required",
     "cleanup",
 )
+
+#: Transport tiers an outcome may declare. Today only the FIXTURE drill
+#: exists (mocked IB gateway + fixture email/SMS channels around the real
+#: gate/probe/dispatcher); the LIVE tier arrives with the deferred
+#: SRS-EXE-006 + SRS-NOTIF-001 legs. Anything else is version skew — refuse.
+_KNOWN_TRANSPORT_TIERS = frozenset({"FIXTURE", "LIVE"})
 
 #: The dispositions the CLI can print, keyed by its exit code.
 _DISPOSITIONS_BY_EXIT = {
@@ -123,6 +130,18 @@ class LiquidationTimeoutOutcome:
     @property
     def disposition(self) -> str:
         return str(self.payload["disposition"])
+
+    @property
+    def transports(self) -> str:
+        return str(self.payload["transports"])
+
+    @property
+    def is_fixture_drill(self) -> bool:
+        """True when the outcome ran over FIXTURE transports (mocked IB
+        gateway + fixture email/SMS) — drill evidence, never live SYS-44b
+        evidence."""
+
+        return self.transports == "FIXTURE"
 
     @property
     def timed_out(self) -> bool:
@@ -220,6 +239,13 @@ class RustCliLiquidationTimeoutBackend:
                 f"liquidation-timeout CLI exit {completed.returncode} reported "
                 f"disposition {disposition!r} (expected one of {allowed}) — "
                 "refusing a mismatched outcome"
+            )
+        transports = str(payload.get("transports"))
+        if transports not in _KNOWN_TRANSPORT_TIERS:
+            raise LiquidationTimeoutBackendError(
+                f"liquidation-timeout CLI declared unknown transport tier "
+                f"{transports!r} (expected one of {sorted(_KNOWN_TRANSPORT_TIERS)}) — "
+                "refusing an outcome whose evidence tier cannot be classified"
             )
         _assert_outcome_consistency(payload, disposition)
         return LiquidationTimeoutOutcome(payload=payload, exit_code=completed.returncode)
@@ -408,6 +434,7 @@ def resolve_liquidation_timeout(
     *,
     scenario_args: Sequence[str] = (),
     timestamp_ns: int | None = None,
+    fixture_drill: bool = False,
 ) -> tuple[LiquidationTimeoutOutcome, LogRecord | None]:
     """Run one SYS-44b timeout drill and durably log its outcome.
 
@@ -421,9 +448,26 @@ def resolve_liquidation_timeout(
     swallowed, never claiming a record that does not exist. Filled and
     fail-closed dispositions write no ``LIQUIDATION_TIMEOUT`` record (nothing
     timed out); the returned record is ``None``.
+
+    **Fixture-drill guard (fail-closed):** the only runnable SAFE-002 runtime
+    today is the FIXTURE drill (mocked IB gateway + fixture email/SMS around
+    the real gate/probe/dispatcher). A FIXTURE outcome is durably logged ONLY
+    when the caller explicitly passes ``fixture_drill=True`` — the record's
+    message then carries ``transports=FIXTURE`` so drill evidence can never
+    masquerade as live SYS-44b evidence. Without the explicit opt-in a
+    FIXTURE outcome raises :class:`LiquidationTimeoutBackendError` and
+    nothing is written; the LIVE tier arrives with the deferred SRS-EXE-006
+    + SRS-NOTIF-001 legs.
     """
 
     outcome = backend.resolve(scenario_args)
+    if outcome.is_fixture_drill and not fixture_drill:
+        raise LiquidationTimeoutBackendError(
+            "liquidation-timeout outcome ran over FIXTURE transports (mocked IB "
+            "gateway + fixture email/SMS) but fixture_drill=True was not passed "
+            "— refusing to durably log drill evidence as SYS-44b history; the "
+            "live runtime is the deferred SRS-EXE-006 + SRS-NOTIF-001 legs"
+        )
     if not outcome.timed_out:
         return outcome, None
     record = build_liquidation_timeout_record(outcome.payload, timestamp_ns=timestamp_ns)

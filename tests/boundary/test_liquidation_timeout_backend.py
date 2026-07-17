@@ -28,6 +28,7 @@ pytestmark = [pytest.mark.boundary]
 
 _TIMEOUT_PAYLOAD: dict[str, object] = {
     "disposition": "TIMED_OUT_UNFILLED",
+    "transports": "FIXTURE",
     "notification": {"events": 1, "email_accepted": 1, "sms_accepted": 1},
     "gateway_calls": ["cancel:B-0001", "disconnect"],
     "probe_polls": 61,
@@ -355,7 +356,7 @@ def test_resolve_writes_the_liquidation_timeout_record_durably(tmp_path: Path) -
     backend = _backend_with(_completed(1, f"outcome:{json.dumps(_TIMEOUT_PAYLOAD)}\n"))
     store = JsonlLogStore(tmp_path / "system.jsonl", log_class=LogClass.SYSTEM)
 
-    outcome, record = resolve_liquidation_timeout(backend, store)
+    outcome, record = resolve_liquidation_timeout(backend, store, fixture_drill=True)
 
     assert outcome.timed_out
     assert record is not None
@@ -370,12 +371,49 @@ def test_resolve_writes_the_liquidation_timeout_record_durably(tmp_path: Path) -
         assert needle in entry.message
 
 
+def test_fixture_outcome_without_explicit_drill_opt_in_is_refused(tmp_path: Path) -> None:
+    # Codex r11 (critical): the only runnable SAFE-002 runtime today is the
+    # FIXTURE drill — durably logging its outcome as SYS-44b history without
+    # an explicit fixture_drill=True opt-in would create false recovery
+    # evidence. Refuse, and write NOTHING.
+    backend = _backend_with(_completed(1, f"outcome:{json.dumps(_TIMEOUT_PAYLOAD)}\n"))
+    store = JsonlLogStore(tmp_path / "system.jsonl", log_class=LogClass.SYSTEM)
+
+    with pytest.raises(LiquidationTimeoutBackendError, match="fixture_drill"):
+        resolve_liquidation_timeout(backend, store)
+    assert store.read(source=Source.KILL_SWITCH) == []
+
+
+def test_unknown_transport_tier_is_refused() -> None:
+    payload = dict(_TIMEOUT_PAYLOAD)
+    payload["transports"] = "SIMULATED"
+    backend = _backend_with(_completed(1, f"outcome:{json.dumps(payload)}\n"))
+    with pytest.raises(LiquidationTimeoutBackendError, match="unknown transport tier"):
+        backend.resolve()
+
+
+def test_drill_record_carries_the_fixture_transport_label(tmp_path: Path) -> None:
+    # Drill evidence is durably logged ONLY with the explicit opt-in, and the
+    # record itself says transports=FIXTURE so it can never masquerade as
+    # live SYS-44b evidence.
+    backend = _backend_with(_completed(1, f"outcome:{json.dumps(_TIMEOUT_PAYLOAD)}\n"))
+    store = JsonlLogStore(tmp_path / "system.jsonl", log_class=LogClass.SYSTEM)
+
+    outcome, record = resolve_liquidation_timeout(backend, store, fixture_drill=True)
+
+    assert outcome.is_fixture_drill
+    assert record is not None
+    assert "transports=FIXTURE" in record.message
+    persisted = store.read(source=Source.KILL_SWITCH, event_type="LIQUIDATION_TIMEOUT")
+    assert "transports=FIXTURE" in persisted[0].message
+
+
 def test_filled_disposition_writes_no_timeout_record(tmp_path: Path) -> None:
     payload = _no_cleanup_payload("FILLED_BEFORE_TIMEOUT")
     backend = _backend_with(_completed(0, f"outcome:{json.dumps(payload)}\n"))
     store = JsonlLogStore(tmp_path / "system.jsonl", log_class=LogClass.SYSTEM)
 
-    outcome, record = resolve_liquidation_timeout(backend, store)
+    outcome, record = resolve_liquidation_timeout(backend, store, fixture_drill=True)
 
     assert not outcome.timed_out
     assert record is None
@@ -390,7 +428,7 @@ def test_failed_audit_write_surfaces_and_carries_the_outcome(tmp_path: Path) -> 
             raise OSError("disk full")
 
     with pytest.raises(LiquidationTimeoutAuditError, match="audit write failed") as excinfo:
-        resolve_liquidation_timeout(backend, RefusingStore())  # type: ignore[arg-type]
+        resolve_liquidation_timeout(backend, RefusingStore(), fixture_drill=True)  # type: ignore[arg-type]
     # The outcome is carried on the error — what happened is never lost.
     assert excinfo.value.outcome.timed_out
     # Codex r5: a failed durable write can NEVER masquerade as a recorded
