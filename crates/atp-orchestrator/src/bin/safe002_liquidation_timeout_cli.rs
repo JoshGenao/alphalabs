@@ -387,7 +387,7 @@ fn run_to_json(run: &FixtureTimeoutRun, disposition: &str) -> String {
              \"live_strategy_id\":\"{}\",\"elapsed_seconds\":{},\
              \"manual_resolution_required\":false,\
              \"cleanup\":{{\"operator_alert\":{na},\"liquidation_cancel\":{na},\
-             \"ib_disconnect\":{na},\"audit_recorded\":{}}}}}",
+             \"ib_disconnect\":{na},\"event_sink_recorded\":{}}}}}",
             json_escape(resolved.live_strategy_id.as_str()),
             resolved.elapsed_seconds,
             !run.timeout_events.is_empty(),
@@ -401,7 +401,7 @@ fn run_to_json(run: &FixtureTimeoutRun, disposition: &str) -> String {
                  \"message\":\"{}\",\"unfilled_order\":{},\
                  \"manual_resolution_required\":{manual_resolution_required},\
                  \"cleanup\":{{\"operator_alert\":{},\"liquidation_cancel\":{},\
-                 \"ib_disconnect\":{},\"audit_recorded\":{}}}}}",
+                 \"ib_disconnect\":{},\"event_sink_recorded\":{}}}}}",
                 json_escape(error.category.as_str()),
                 json_escape(&error.error_type),
                 json_escape(&error.message),

@@ -334,6 +334,22 @@ def _assert_outcome_consistency(payload: Mapping[str, object], disposition: str)
             )
 
 
+def _with_durable_audit_flag(
+    outcome: LiquidationTimeoutOutcome, recorded: bool
+) -> LiquidationTimeoutOutcome:
+    """Stamp the DURABLE-audit truth onto the outcome payload.
+
+    The CLI's ``cleanup.event_sink_recorded`` reflects only the Rust
+    in-memory event sink; whether the SYS-44b details actually reached the
+    durable SRS-LOG-001 store is decided HERE, after the write — so a failed
+    write can never masquerade as a recorded audit.
+    """
+
+    payload = dict(outcome.payload)
+    payload["durable_audit_recorded"] = recorded
+    return LiquidationTimeoutOutcome(payload=payload, exit_code=outcome.exit_code)
+
+
 def resolve_liquidation_timeout(
     backend: LiquidationTimeoutBackend,
     store: JsonlLogStore,
@@ -345,11 +361,14 @@ def resolve_liquidation_timeout(
 
     Returns ``(outcome, record)``. For a ``TIMED_OUT_UNFILLED`` disposition
     the SYS-44b ``LIQUIDATION_TIMEOUT`` record is written durably to
-    ``store`` (the "details are logged" leg) and returned; a failed write
-    raises :class:`LiquidationTimeoutAuditError` carrying the outcome — never
-    silently swallowed. Filled and fail-closed dispositions write no
-    ``LIQUIDATION_TIMEOUT`` record (nothing timed out); the returned record
-    is ``None``.
+    ``store`` (the "details are logged" leg) and the returned outcome payload
+    carries ``durable_audit_recorded: True`` — the durable truth is owned by
+    THIS step, never by the CLI's in-memory ``cleanup.event_sink_recorded``.
+    A failed write raises :class:`LiquidationTimeoutAuditError` whose carried
+    outcome is stamped ``durable_audit_recorded: False`` — never silently
+    swallowed, never claiming a record that does not exist. Filled and
+    fail-closed dispositions write no ``LIQUIDATION_TIMEOUT`` record (nothing
+    timed out); the returned record is ``None``.
     """
 
     outcome = backend.resolve(scenario_args)
@@ -361,6 +380,6 @@ def resolve_liquidation_timeout(
     except Exception as error:  # noqa: BLE001 - every write failure must surface
         raise LiquidationTimeoutAuditError(
             f"SYS-44b LIQUIDATION_TIMEOUT audit write failed: {error}",
-            outcome,
+            _with_durable_audit_flag(outcome, False),
         ) from error
-    return outcome, record
+    return _with_durable_audit_flag(outcome, True), record

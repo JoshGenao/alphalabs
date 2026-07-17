@@ -318,6 +318,9 @@ def test_cli_timeout_drill_runs_sys_44b_and_the_record_lands_durably(tmp_path: P
     resolved_outcome, record = resolve_liquidation_timeout(backend, store)
     assert resolved_outcome.timed_out
     assert record is not None
+    # Durable-audit truth is owned by the Python persistence step (r5): the
+    # flag appears only after the JsonlLogStore write succeeded.
+    assert resolved_outcome.payload["durable_audit_recorded"] is True
 
     persisted = store.read(source=Source.KILL_SWITCH, event_type="LIQUIDATION_TIMEOUT")
     assert len(persisted) == 1
@@ -388,7 +391,7 @@ def test_backend_refuses_a_contradictory_non_timeout_outcome() -> None:
             "operator_alert": {"status": "NOT_ATTEMPTED"},
             "liquidation_cancel": {"status": "NOT_ATTEMPTED"},
             "ib_disconnect": {"status": "NOT_ATTEMPTED"},
-            "audit_recorded": False,
+            "event_sink_recorded": False,
         },
     }
 
@@ -433,7 +436,7 @@ def test_backend_refuses_a_timed_out_outcome_whose_cleanup_never_ran() -> None:
             "operator_alert": {"status": "NOT_ATTEMPTED"},  # sequence never ran
             "liquidation_cancel": {"status": "NOT_ATTEMPTED"},
             "ib_disconnect": {"status": "NOT_ATTEMPTED"},
-            "audit_recorded": False,
+            "event_sink_recorded": False,
         },
     }
 

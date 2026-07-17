@@ -46,7 +46,7 @@ _TIMEOUT_PAYLOAD: dict[str, object] = {
         "operator_alert": {"status": "SUCCEEDED"},
         "liquidation_cancel": {"status": "SUCCEEDED"},
         "ib_disconnect": {"status": "SUCCEEDED"},
-        "audit_recorded": True,
+        "event_sink_recorded": True,
     },
 }
 
@@ -65,7 +65,7 @@ def _no_cleanup_payload(disposition: str) -> dict[str, object]:
         "operator_alert": {"status": "NOT_ATTEMPTED"},
         "liquidation_cancel": {"status": "NOT_ATTEMPTED"},
         "ib_disconnect": {"status": "NOT_ATTEMPTED"},
-        "audit_recorded": False,
+        "event_sink_recorded": False,
     }
     if disposition == "FILLED_BEFORE_TIMEOUT":
         payload["category"] = None
@@ -197,7 +197,7 @@ def test_non_timeout_disposition_claiming_cleanup_ran_is_refused() -> None:
         "operator_alert": {"status": "NOT_ATTEMPTED"},
         "liquidation_cancel": {"status": "SUCCEEDED"},
         "ib_disconnect": {"status": "NOT_ATTEMPTED"},
-        "audit_recorded": False,
+        "event_sink_recorded": False,
     }
     backend = _backend_with(_completed(3, f"outcome:{json.dumps(payload)}\n"))
     with pytest.raises(LiquidationTimeoutBackendError, match="liquidation_cancel"):
@@ -231,7 +231,7 @@ def test_timed_out_disposition_with_unattempted_cleanup_is_refused() -> None:
         "operator_alert": {"status": "SUCCEEDED"},
         "liquidation_cancel": {"status": "NOT_ATTEMPTED"},
         "ib_disconnect": {"status": "SUCCEEDED"},
-        "audit_recorded": True,
+        "event_sink_recorded": True,
     }
     backend = _backend_with(_completed(1, f"outcome:{json.dumps(payload)}\n"))
     with pytest.raises(LiquidationTimeoutBackendError, match="liquidation_cancel"):
@@ -254,7 +254,7 @@ def test_timed_out_disposition_with_failed_legs_is_a_valid_outcome() -> None:
         "operator_alert": {"status": "FAILED", "reason": "SMS gateway down"},
         "liquidation_cancel": {"status": "FAILED", "reason": "IB cancel unreachable"},
         "ib_disconnect": {"status": "SUCCEEDED"},
-        "audit_recorded": True,
+        "event_sink_recorded": True,
     }
     backend = _backend_with(_completed(1, f"outcome:{json.dumps(payload)}\n"))
     outcome = backend.resolve()
@@ -270,6 +270,8 @@ def test_resolve_writes_the_liquidation_timeout_record_durably(tmp_path: Path) -
 
     assert outcome.timed_out
     assert record is not None
+    # The DURABLE-audit truth is stamped by the persistence step, not the CLI.
+    assert outcome.payload["durable_audit_recorded"] is True
     persisted = store.read(source=Source.KILL_SWITCH, event_type="LIQUIDATION_TIMEOUT")
     assert len(persisted) == 1
     entry = persisted[0]
@@ -302,3 +304,9 @@ def test_failed_audit_write_surfaces_and_carries_the_outcome(tmp_path: Path) -> 
         resolve_liquidation_timeout(backend, RefusingStore())  # type: ignore[arg-type]
     # The outcome is carried on the error — what happened is never lost.
     assert excinfo.value.outcome.timed_out
+    # Codex r5: a failed durable write can NEVER masquerade as a recorded
+    # audit — the carried outcome is stamped durable_audit_recorded=False,
+    # regardless of the CLI's in-memory event_sink_recorded claim.
+    assert excinfo.value.outcome.payload["durable_audit_recorded"] is False
+    cleanup = excinfo.value.outcome.payload["cleanup"]
+    assert cleanup["event_sink_recorded"] is True  # the in-memory sink's scope only
