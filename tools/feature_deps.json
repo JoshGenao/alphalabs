@@ -216,6 +216,11 @@
   "SRS-SEC-001": [
     "SRS-LOG-001"
   ],
+  "UI-1": [
+    "SRS-NOTIF-001",
+    "SRS-UI-002",
+    "SRS-UI-003"
+  ],
   "UI-3": [
     "SRS-API-001"
   ]
