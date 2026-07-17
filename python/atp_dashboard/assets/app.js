@@ -807,8 +807,18 @@
       if (res.ok) {
         renderAlerts(await res.json());
       } else if (res.status === 404) {
+        // Route disappearance fails closed like every other degraded branch:
+        // stale rows / a stale clear-or-alarm beacon must never outlive the
+        // provider that produced them.
         const s = $("alerts-summary");
         if (s) { s.textContent = "alerts pane not mounted — UI-1 provider not composed on this runtime"; s.dataset.tone = "warn"; }
+        const table = $("alerts-table");
+        if (table) table.hidden = true;
+        const rows = $("alerts-rows");
+        if (rows) rows.textContent = "";
+        const beacon = $("alerts-beacon");
+        if (beacon) beacon.dataset.state = "deferred";
+        setAlertsDot("wait", "alerts route not mounted");
       } else {
         // A failing endpoint must never leave a stale "clear"/alert-count on a
         // safety-critical pane — render the explicit unavailable state.

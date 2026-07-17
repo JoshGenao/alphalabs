@@ -660,10 +660,27 @@ def test_ui_1_alerts_pane_reports_endpoint_failure_never_stale_state(
             # The dot flags the failing endpoint too — never a healthy read.
             assert page.eval_on_selector("#fresh-alerts", "e => e.dataset.state") == "stale"
 
+            # Route DISAPPEARANCE fails closed too: a 404 (provider no longer
+            # composed) clears the table/beacon/dot instead of leaving stale
+            # safety state under a "not mounted" caption.
+            page.unroute("**/dashboard/api/alerts")
+            page.route(
+                "**/dashboard/api/alerts",
+                lambda route: route.fulfill(status=404, body="not found"),
+            )
+            page.wait_for_function(
+                "document.getElementById('alerts-summary').textContent.includes('not mounted')",
+                timeout=7_000,
+            )
+            assert page.eval_on_selector("#alerts-table", "e => e.hidden") is True
+            assert page.eval_on_selector("#alerts-beacon", "e => e.dataset.state") == "deferred"
+            assert page.eval_on_selector("#fresh-alerts", "e => e.dataset.state") == "wait"
+
             # Heal the endpoint: the pane recovers to the honest awaiting state.
             page.unroute("**/dashboard/api/alerts")
             page.wait_for_function(
-                "document.getElementById('alerts-summary').dataset.tone === 'warn'",
+                "document.getElementById('alerts-summary').dataset.tone === 'warn'"
+                " && document.getElementById('alerts-summary').textContent.includes('SRS-NOTIF-001')",
                 timeout=7_000,
             )
         finally:
