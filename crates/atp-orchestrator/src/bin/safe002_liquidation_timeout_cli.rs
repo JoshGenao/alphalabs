@@ -314,6 +314,13 @@ fn disposition(run: &FixtureTimeoutRun) -> (&'static str, u8) {
     }
 }
 
+/// JSON string escaping covering the FULL set RFC 8259 requires: quote,
+/// backslash, and EVERY C0 control character (U+0000..U+001F). The outcome
+/// line is the durable-audit input — an unescaped control byte smuggled in
+/// through a symbol / order id / failure reason would make the line
+/// unparseable AFTER the SYS-44b side effects already ran, suppressing the
+/// LIQUIDATION_TIMEOUT record. Escaping must therefore be total, not
+/// best-effort.
 fn json_escape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -323,6 +330,9 @@ fn json_escape(value: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            control if (control as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", control as u32));
+            }
             other => out.push(other),
         }
     }
@@ -402,5 +412,29 @@ fn run_to_json(run: &FixtureTimeoutRun, disposition: &str) -> String {
                 error.cleanup.audit_recorded,
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::json_escape;
+
+    #[test]
+    fn json_escape_covers_every_c0_control_character() {
+        // RFC 8259: an unescaped control byte would make the outcome line
+        // unparseable AFTER the SYS-44b side effects ran — escaping is total.
+        for code in 0u32..0x20 {
+            let ch = char::from_u32(code).expect("C0 is valid");
+            let escaped = json_escape(&ch.to_string());
+            assert!(
+                !escaped.chars().any(|c| (c as u32) < 0x20),
+                "U+{code:04X} leaked through unescaped: {escaped:?}"
+            );
+        }
+        assert_eq!(json_escape("\u{0001}"), "\\u0001");
+        assert_eq!(json_escape("\n"), "\\n");
+        assert_eq!(json_escape("\""), "\\\"");
+        assert_eq!(json_escape("\\"), "\\\\");
+        assert_eq!(json_escape("AA\u{0001}PL"), "AA\\u0001PL");
     }
 }

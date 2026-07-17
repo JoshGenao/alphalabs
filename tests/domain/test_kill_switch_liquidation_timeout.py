@@ -447,6 +447,43 @@ def test_backend_refuses_a_timed_out_outcome_whose_cleanup_never_ran() -> None:
         backend.resolve()
 
 
+def test_cli_control_character_input_still_yields_a_parseable_durable_record(
+    tmp_path: Path,
+) -> None:
+    # Adversarial r4: a C0 control byte smuggled through a symbol (or any
+    # string that lands in the outcome JSON) must not corrupt the outcome
+    # line AFTER the SYS-44b side effects ran — the CLI escapes the full
+    # RFC 8259 set, the Python backend parses it, and the durable
+    # LIQUIDATION_TIMEOUT record still lands.
+    binary = _cli_binary()
+    hostile_symbol = "AA\x01PL"
+    result = subprocess.run(
+        [str(binary), "resolve", "--symbol", hostile_symbol],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 1, f"the drill still times out:\n{result.stderr}"
+    outcome = _parse_outcome(result.stdout)  # json.loads validates the escaping
+    assert outcome["unfilled_order"]["symbol"] == hostile_symbol
+
+    from atp_logging import LogClass, Source
+    from atp_logging.persistence import JsonlLogStore
+    from atp_safety import RustCliLiquidationTimeoutBackend, resolve_liquidation_timeout
+
+    store = JsonlLogStore(tmp_path / "system.jsonl", log_class=LogClass.SYSTEM)
+    backend = RustCliLiquidationTimeoutBackend(binary=binary)
+    resolved_outcome, record = resolve_liquidation_timeout(
+        backend, store, scenario_args=["--symbol", hostile_symbol]
+    )
+    assert resolved_outcome.timed_out
+    assert record is not None
+    persisted = store.read(source=Source.KILL_SWITCH, event_type="LIQUIDATION_TIMEOUT")
+    assert len(persisted) == 1
+
+
 def test_cli_failed_side_effects_are_observable_and_still_exit_one() -> None:
     result = _run_cli("resolve", "--fail-email", "--fail-sms", "--fail-cancel")
     assert result.returncode == 1, f"the SYS-44b sequence still ran:\n{result.stderr}"
