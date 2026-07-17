@@ -270,6 +270,34 @@ def test_timed_out_disposition_without_manual_resolution_flag_is_refused() -> No
         backend.resolve()
 
 
+def test_timed_out_success_claims_without_evidence_are_refused() -> None:
+    # Codex r8: SUCCEEDED statuses must be backed by the payload's own
+    # evidence — all-SUCCEEDED with zero accepted pages and no broker calls
+    # would put a false "handled" record in the durable audit log.
+    payload = dict(_TIMEOUT_PAYLOAD)
+    payload["notification"] = {"events": 0, "email_accepted": 0, "sms_accepted": 0}
+    payload["gateway_calls"] = []
+    backend = _backend_with(_completed(1, f"outcome:{json.dumps(payload)}\n"))
+    with pytest.raises(LiquidationTimeoutBackendError, match="without"):
+        backend.resolve()
+
+
+def test_timed_out_succeeded_disconnect_without_gateway_call_is_refused() -> None:
+    payload = dict(_TIMEOUT_PAYLOAD)
+    payload["gateway_calls"] = ["cancel:B-0001"]  # disconnect claim unbacked
+    backend = _backend_with(_completed(1, f"outcome:{json.dumps(payload)}\n"))
+    with pytest.raises(LiquidationTimeoutBackendError, match="ib_disconnect=SUCCEEDED without"):
+        backend.resolve()
+
+
+def test_timed_out_succeeded_page_without_accepted_channels_is_refused() -> None:
+    payload = dict(_TIMEOUT_PAYLOAD)
+    payload["notification"] = {"events": 1, "email_accepted": 1, "sms_accepted": 0}
+    backend = _backend_with(_completed(1, f"outcome:{json.dumps(payload)}\n"))
+    with pytest.raises(LiquidationTimeoutBackendError, match="operator_alert=SUCCEEDED without"):
+        backend.resolve()
+
+
 def test_timed_out_disposition_with_failed_legs_is_a_valid_outcome() -> None:
     # A FAILED attempt is a valid, observable outcome (continue-to-safety) —
     # only an UNATTEMPTED leg on a confirmed timeout is a contract breach.

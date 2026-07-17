@@ -499,6 +499,49 @@ def test_cli_control_character_input_still_yields_a_parseable_durable_record(
     assert len(persisted) == 1
 
 
+def test_backend_refuses_success_claims_without_their_own_evidence() -> None:
+    # Safety invariant (adversarial r8): a TIMED_OUT_UNFILLED claiming every
+    # SYS-44b leg SUCCEEDED while its own evidence shows zero accepted pages
+    # and no broker calls must be refused — the durable record would tell the
+    # operator the timeout was handled when nothing actually ran.
+    import subprocess as _subprocess
+
+    import pytest as _pytest
+    from atp_safety import LiquidationTimeoutBackendError, RustCliLiquidationTimeoutBackend
+
+    contradictory = {
+        "disposition": "TIMED_OUT_UNFILLED",
+        "notification": {"events": 0, "email_accepted": 0, "sms_accepted": 0},
+        "gateway_calls": [],
+        "probe_polls": 61,
+        "simulated_elapsed_ms": 30000,
+        "category": "KILL_SWITCH_LIQUIDATION_TIMEOUT",
+        "error_type": "KillSwitchLiquidationTimeout",
+        "unfilled_order": {
+            "order_id": "live-momentum/ks-liq-0001",
+            "symbol": "AAPL",
+            "side": "SELL",
+            "quantity": 250,
+        },
+        "manual_resolution_required": True,
+        "cleanup": {
+            "operator_alert": {"status": "SUCCEEDED"},  # unbacked claims
+            "liquidation_cancel": {"status": "SUCCEEDED"},
+            "ib_disconnect": {"status": "SUCCEEDED"},
+            "event_sink_recorded": True,
+        },
+    }
+
+    def runner(argv, *, timeout_s):  # noqa: ANN001, ANN202 - test double
+        return _subprocess.CompletedProcess(
+            args=argv, returncode=1, stdout=f"outcome:{json.dumps(contradictory)}\n", stderr=""
+        )
+
+    backend = RustCliLiquidationTimeoutBackend(runner=runner)
+    with _pytest.raises(LiquidationTimeoutBackendError, match="refusing to write"):
+        backend.resolve()
+
+
 def test_backend_launch_failure_is_typed_never_a_raw_oserror(tmp_path: Path) -> None:
     # Safety-boundary invariant (adversarial r7): every way the timeout drill
     # can fail to RUN must surface as the typed fail-closed backend error —

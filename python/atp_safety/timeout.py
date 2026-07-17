@@ -312,17 +312,48 @@ def _assert_outcome_consistency(payload: Mapping[str, object], disposition: str)
             contradictions.append(
                 f"manual_resolution_required={payload['manual_resolution_required']!r}"
             )
+        gateway_calls = payload["gateway_calls"]
+        calls = [str(call) for call in gateway_calls] if isinstance(gateway_calls, list) else []
+        notification = payload["notification"]
+        accepted: dict[str, object] = (
+            dict(notification) if isinstance(notification, Mapping) else {}
+        )
         cleanup = payload["cleanup"]
         if not isinstance(cleanup, Mapping):
             contradictions.append(f"cleanup={cleanup!r}")
         else:
+            statuses: dict[str, object] = {}
             for leg in _CLEANUP_LEGS:
                 side_effect = cleanup.get(leg)
                 status = side_effect.get("status") if isinstance(side_effect, Mapping) else None
+                statuses[leg] = status
                 # A FAILED attempt is a valid, observable outcome; an
                 # unattempted leg on a confirmed timeout is a contract breach.
                 if status not in ("SUCCEEDED", "FAILED"):
                     contradictions.append(f"cleanup.{leg}.status={status!r}")
+            # A SUCCEEDED status must be backed by the payload's own evidence
+            # counters — a claim of success with zero accepted pages / no
+            # broker calls would put a false "handled" record in the durable
+            # audit log.
+            if statuses.get("operator_alert") == "SUCCEEDED" and not (
+                accepted.get("email_accepted") == 1 and accepted.get("sms_accepted") == 1
+            ):
+                contradictions.append(
+                    "cleanup.operator_alert=SUCCEEDED without one accepted page on "
+                    f"each required channel (notification={notification!r})"
+                )
+            if statuses.get("liquidation_cancel") == "SUCCEEDED" and not any(
+                call.startswith("cancel:") for call in calls
+            ):
+                contradictions.append(
+                    "cleanup.liquidation_cancel=SUCCEEDED without a broker cancel "
+                    f"call (gateway_calls={gateway_calls!r})"
+                )
+            if statuses.get("ib_disconnect") == "SUCCEEDED" and "disconnect" not in calls:
+                contradictions.append(
+                    "cleanup.ib_disconnect=SUCCEEDED without a broker disconnect "
+                    f"call (gateway_calls={gateway_calls!r})"
+                )
         if contradictions:
             raise LiquidationTimeoutBackendError(
                 "liquidation-timeout CLI reported TIMED_OUT_UNFILLED (the SYS-44b "
