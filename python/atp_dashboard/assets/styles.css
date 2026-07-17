@@ -609,6 +609,8 @@ body {
 .research__frame {
   width: 100%; height: 640px; border: 1px solid var(--line-strong); border-radius: 12px;
   background: var(--panel-2);
+}
+
 /* =========================================================================
    UI-1 — Critical-alerts pane (SYS-46 + SYS-58).
    Scoped to .alerts so the SRS-UI-001/002/003/UI-3 panels do not regress.

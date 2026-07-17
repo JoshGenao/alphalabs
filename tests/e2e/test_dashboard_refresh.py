@@ -622,5 +622,17 @@ def test_ui_1_primary_operations_view_covers_every_ac_surface(
                 "document.getElementById('fresh-alerts').dataset.state === 'fresh'",
                 timeout=7_000,
             )
+
+            # The stylesheet actually APPLIES (a malformed rule earlier in the
+            # sheet would silently drop these): the deferred beacon renders its
+            # dashed frame, and the 64-hex deployed-version hash wraps instead
+            # of overflowing the strategy-inventory panel sideways.
+            assert (
+                page.eval_on_selector("#alerts-beacon", "e => getComputedStyle(e).borderTopStyle")
+                == "dashed"
+            )
+            assert page.eval_on_selector(
+                '[data-panel="strategies"]', "e => e.scrollWidth <= e.clientWidth"
+            )
         finally:
             browser.close()
