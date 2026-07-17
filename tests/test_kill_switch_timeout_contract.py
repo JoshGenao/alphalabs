@@ -516,6 +516,20 @@ class ResolveKillSwitchTimeoutGuardTest(unittest.TestCase):
             check_resolve_kill_switch_timeout_guard(self.config, mutated)
         self.assertIn("cleanup.disconnect", str(ctx.exception))
 
+    def test_page_ordered_before_the_broker_actions_is_caught(self) -> None:
+        # Ordering is safety-load-bearing (adversarial r6): a page dispatched
+        # before the cancel/disconnect could sit behind tens of seconds of
+        # synchronous email/SMS latency while the order stays live.
+        mutated = self.exec_src.replace(
+            "                let liquidation_cancel =",
+            "                let _premature_page = alerts.dispatch(unreachable_event);\n"
+            "                let liquidation_cancel =",
+            1,
+        )
+        with self.assertRaises(KillSwitchTimeoutCheckError) as ctx:
+            check_resolve_kill_switch_timeout_guard(self.config, mutated)
+        self.assertIn("cancel → disconnect → page", str(ctx.exception))
+
     def test_dropped_page_in_timeout_arm_is_caught(self) -> None:
         mutated = self.exec_src.replace(
             "alerts.dispatch(KillSwitchAlertEvent {", "noop_dispatch(KillSwitchAlertEvent {", 1

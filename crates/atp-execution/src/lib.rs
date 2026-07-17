@@ -307,12 +307,15 @@ pub trait KillSwitchLiquidationProbe {
 
 pub trait KillSwitchOperatorAlertSink {
     /// SYS-44b email/SMS operator page. Called ONLY on the `TimedOutUnfilled`
-    /// branch. Returns `Result` so a transport failure (email/SMS
-    /// unreachable) is surfaced rather than silently dropped — a missed page
-    /// on a liquidation timeout is itself a safety event. The gate does NOT
-    /// abort on failure; it records the outcome on
-    /// `KillSwitchTimeoutEvent::operator_alert`. The concrete email/SMS
-    /// transport is the deferred SRS-NOTIF-001 dispatcher.
+    /// branch, AFTER the broker-side cancel + disconnect — the concrete
+    /// SRS-NOTIF-001 dispatcher sends synchronously with per-channel
+    /// deadlines, and a slow notification transport must never delay killing
+    /// the live order or severing the session. Returns `Result` so a
+    /// transport failure (email/SMS unreachable) is surfaced rather than
+    /// silently dropped — a missed page on a liquidation timeout is itself a
+    /// safety event. The gate does NOT abort on failure; it records the
+    /// outcome on `KillSwitchTimeoutEvent::operator_alert`. The concrete
+    /// SMTP/SMS transports are the deferred SRS-NOTIF-001 leg.
     fn dispatch(&self, event: KillSwitchAlertEvent) -> Result<(), KillSwitchSideEffectError>;
 }
 
@@ -330,10 +333,12 @@ pub trait IbLiquidationCleanup {
     ) -> Result<(), KillSwitchSideEffectError>;
 
     /// SYS-44b "disconnect from IB". Called ONLY on the `TimedOutUnfilled`
-    /// branch, after the cancel — the final safety action when a liquidation
-    /// will not fill. The concrete impl routes to the IB adapter's disconnect
-    /// (deferred SRS-EXE-006). Returns `Result` so a disconnect failure (IB
-    /// session wedged) is surfaced; the gate records the outcome on
+    /// branch, after the cancel (a severed session cannot cancel anything)
+    /// and BEFORE the operator page — the final broker-side safety action
+    /// when a liquidation will not fill; only the notification follows. The
+    /// concrete impl routes to the adapter boundary's connection-control
+    /// seam. Returns `Result` so a disconnect failure (IB session wedged) is
+    /// surfaced; the gate records the outcome on
     /// `KillSwitchTimeoutEvent::ib_disconnect`. Distinct from
     /// `BrokerageConnectivity::request_reconnect` (the opposite direction).
     fn disconnect(&self) -> Result<(), KillSwitchSideEffectError>;
@@ -1337,13 +1342,24 @@ impl ExecutionEngine {
                 elapsed_seconds,
                 timeout_seconds,
             } => {
-                // SRS-SAFE-002 / SyRS SYS-44b timeout branch: notify the
-                // operator by email AND SMS, cancel the unfilled liquidation
-                // order, and disconnect from IB. ALL THREE are attempted
-                // unconditionally (a failed cancel must not suppress the page
-                // or the disconnect) and each outcome is recorded on the event
-                // so a missed page / failed cancel / failed disconnect is
-                // observable rather than indistinguishable from success.
+                // SRS-SAFE-002 / SyRS SYS-44b timeout branch: cancel the
+                // unfilled liquidation order, disconnect from IB, and notify
+                // the operator by email AND SMS. ALL THREE are attempted
+                // unconditionally (a failed cancel must not suppress the
+                // disconnect or the page) and each outcome is recorded on the
+                // event so a missed page / failed cancel / failed disconnect
+                // is observable rather than indistinguishable from success.
+                //
+                // ORDERING is safety-load-bearing: the destructive broker
+                // actions run FIRST (cancel, then disconnect — a severed
+                // session cannot cancel anything), and the operator page runs
+                // AFTER them — the concrete SRS-NOTIF-001 dispatcher sends
+                // email/SMS synchronously with per-channel deadlines (tens of
+                // seconds worst-case), and a slow notification transport must
+                // never delay killing the live order or severing the session.
+                let liquidation_cancel =
+                    into_outcome(cleanup.cancel_unfilled_liquidation_order(&request));
+                let ib_disconnect = into_outcome(cleanup.disconnect());
                 let operator_alert = into_outcome(alerts.dispatch(KillSwitchAlertEvent {
                     live_strategy_id: request.live_strategy_id.clone(),
                     unfilled_order: request.unfilled_order.clone(),
@@ -1352,9 +1368,6 @@ impl ExecutionEngine {
                     timeout_seconds,
                     observed_at_seconds,
                 }));
-                let liquidation_cancel =
-                    into_outcome(cleanup.cancel_unfilled_liquidation_order(&request));
-                let ib_disconnect = into_outcome(cleanup.disconnect());
                 // Best-effort audit emission: the logged unfilled-order details
                 // + each side-effect outcome. A sink failure does not roll back
                 // the side effects above or change the refusal below — but it

@@ -30,9 +30,11 @@ guarantees:
       on ``liquidation.await_filled_or_timeout(...)``; the FilledBeforeTimeout
       arm is the only construction site of ``KillSwitchLiquidationResolved {``
       and dispatches NO alert, cancels NOTHING, and disconnects NOTHING; the
-      TimedOutUnfilled arm pages the operator over email + SMS, cancels the
-      unfilled order, disconnects from IB, records the audit event, and
-      produces ``OrderErrorCategory::KillSwitchLiquidationTimeout`` (via the
+      TimedOutUnfilled arm cancels the unfilled order, disconnects from IB,
+      pages the operator over email + SMS — in THAT order (the broker-side
+      safety actions must never wait behind a synchronous notification
+      transport) — records the audit event, and produces
+      ``OrderErrorCategory::KillSwitchLiquidationTimeout`` (via the
       category-pinned factory) — the SYS-44b sequence.
   (f) the fill-confirmation failure taxonomy is TYPED
       (``KillSwitchProbeError``: ConnectivityBlocked / OrderStateUnavailable /
@@ -448,6 +450,22 @@ def check_resolve_kill_switch_timeout_guard(config: dict, exec_src: str) -> str:
                 f"call `{required}` (SYS-44b: log the unfilled order, notify by "
                 "email and SMS, cancel the unfilled order, disconnect from IB)"
             )
+
+    # Cross-port ordering is safety-load-bearing: the destructive broker-side
+    # actions (cancel, then disconnect — a severed session cannot cancel
+    # anything) run BEFORE the operator page, whose concrete SRS-NOTIF-001
+    # transport sends synchronously with per-channel deadlines and must never
+    # delay killing the live order or severing the session.
+    cancel_at = timeout_arm.find(cancel_token)
+    disconnect_at = timeout_arm.find(disconnect_token)
+    alert_at = timeout_arm.find(alert_token)
+    if not cancel_at < disconnect_at < alert_at:
+        fail(
+            f"{entry['method']} {timeout_token} arm must run the SYS-44b legs in "
+            f"the order cancel → disconnect → page (found offsets cancel={cancel_at}, "
+            f"disconnect={disconnect_at}, alert={alert_at}) — a synchronous "
+            "notification transport must never delay the broker-side safety actions"
+        )
     for channel in guard["alert_channels"]:
         if channel not in timeout_arm:
             fail(
@@ -474,8 +492,9 @@ def check_resolve_kill_switch_timeout_guard(config: dict, exec_src: str) -> str:
         f"`{guard['accepted_struct']}` site (no page, no cancel, no disconnect); "
         f"the {timeout_token} arm pages via `{guard['alert_call']}` over email + "
         f"SMS, cancels via `{guard['cancel_call']}`, disconnects via "
-        f"`{guard['disconnect_call']}`, records via `{guard['event_call']}`, and "
-        f"emits OrderErrorCategory::{block['rejection_category']} (ERR-8)"
+        f"`{guard['disconnect_call']}` — in the safety order cancel → disconnect "
+        f"→ page — records via `{guard['event_call']}`, and emits "
+        f"OrderErrorCategory::{block['rejection_category']} (ERR-8)"
     )
 
 

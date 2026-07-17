@@ -159,6 +159,18 @@ def test_mismatched_timeout_report_is_rejected_without_any_automated_action() ->
     )
 
 
+def test_broker_safety_actions_run_before_the_operator_page() -> None:
+    # Ordering is safety-load-bearing (adversarial r6): cancel → disconnect →
+    # page. The concrete SRS-NOTIF-001 dispatcher sends email/SMS
+    # synchronously with per-channel deadlines (tens of seconds worst-case),
+    # so a page dispatched first could delay killing the live order and
+    # severing the session well past the 30 s deadline.
+    _assert_passed(
+        _run_cargo_test("err_8_broker_safety_actions_run_before_the_operator_page"),
+        "ERR-8 cross-port ordering test (cancel → disconnect → page)",
+    )
+
+
 def test_boundary_timeout_at_exact_deadline_runs_the_cleanup() -> None:
     # Boundary control pinning the hardening to strictly-premature reports:
     # elapsed == timeout == the request's deadline is a CONSISTENT timeout and

@@ -716,6 +716,75 @@ fn err_8_boundary_timeout_at_exact_deadline_runs_the_cleanup() {
     assert_eq!(cleanup.disconnects.get(), 1);
 }
 
+/// Alert sink + cleanup sharing one call log, so the CROSS-PORT ordering of
+/// the timeout branch is observable: the destructive broker-side safety
+/// actions (cancel, then disconnect) must run BEFORE the operator page — the
+/// concrete SRS-NOTIF-001 dispatcher sends email/SMS synchronously with
+/// per-channel deadlines, and a slow notification transport must never delay
+/// killing the live order or severing the session.
+struct OrderedAlertSink<'a> {
+    log: &'a RefCell<Vec<&'static str>>,
+}
+
+impl KillSwitchOperatorAlertSink for OrderedAlertSink<'_> {
+    fn dispatch(&self, _event: KillSwitchAlertEvent) -> Result<(), KillSwitchSideEffectError> {
+        self.log.borrow_mut().push("alert");
+        Ok(())
+    }
+}
+
+struct OrderedCleanup<'a> {
+    log: &'a RefCell<Vec<&'static str>>,
+}
+
+impl IbLiquidationCleanup for OrderedCleanup<'_> {
+    fn cancel_unfilled_liquidation_order(
+        &self,
+        _request: &KillSwitchTimeoutRequest,
+    ) -> Result<(), KillSwitchSideEffectError> {
+        self.log.borrow_mut().push("cancel");
+        Ok(())
+    }
+
+    fn disconnect(&self) -> Result<(), KillSwitchSideEffectError> {
+        self.log.borrow_mut().push("disconnect");
+        Ok(())
+    }
+}
+
+#[test]
+fn err_8_broker_safety_actions_run_before_the_operator_page() {
+    // Ordering is safety-load-bearing: cancel → disconnect → alert. A page
+    // dispatched first could sit behind tens of seconds of synchronous
+    // email/SMS transport latency while the unfilled liquidation order stays
+    // live on a connected session.
+    let engine = ExecutionEngine::default();
+    let probe =
+        KillSwitchLiquidationProbeSpy::timed_out(41, KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS);
+    let log = RefCell::new(Vec::new());
+    let alerts = OrderedAlertSink { log: &log };
+    let cleanup = OrderedCleanup { log: &log };
+    let events = KillSwitchTimeoutEventSinkSpy::default();
+    let request = timeout_request(
+        "live-momentum",
+        "ord-7791",
+        KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS,
+    );
+
+    engine
+        .resolve_kill_switch_timeout(
+            request,
+            &probe,
+            &alerts,
+            &cleanup,
+            &events,
+            OBSERVED_AT_SECONDS,
+        )
+        .expect_err("ERR-8: the timeout refuses");
+
+    assert_eq!(*log.borrow(), vec!["cancel", "disconnect", "alert"]);
+}
+
 #[test]
 fn err_8_timeout_refuses_across_many_liquidations() {
     // Pseudo-property sweep: every timeout outcome refuses and emits exactly
