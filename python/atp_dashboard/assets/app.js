@@ -648,7 +648,13 @@
       return;
     }
     // Real feed (renders when SRS-NOTIF-001 lands): one row per alert event.
-    const rows = Array.isArray(snap.alerts) ? snap.alerts : [];
+    // A live feed cell whose alert list is missing/malformed must fail closed
+    // to the unavailable state — coercing to [] would render a false all-clear.
+    if (!Array.isArray(snap.alerts)) {
+      renderAlerts({ ok: false, error: "malformed alert feed (alerts is not a list)" });
+      return;
+    }
+    const rows = snap.alerts;
     const body = $("alerts-rows");
     if (body) {
       body.textContent = "";

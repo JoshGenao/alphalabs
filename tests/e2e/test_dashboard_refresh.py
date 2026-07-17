@@ -737,3 +737,36 @@ def test_ui_1_alerts_real_feed_counts_string_false_ack_as_active(
             assert page.eval_on_selector("#fresh-alerts", "e => e.dataset.state") == "fresh"
         finally:
             browser.close()
+
+
+def test_ui_1_alerts_malformed_live_feed_fails_closed(operations_view_url: str) -> None:
+    """UI-1: a live feed cell whose alert list is missing/malformed (version
+    skew, partial rollout) must render the explicit unavailable state — never
+    a coerced "0 active critical alerts" all-clear."""
+
+    malformed = (
+        '{"generated_at": "2026-07-16T00:00:00Z", "ok": true, "srs_ref": "UI-1",'
+        ' "feed": {"value": "live", "data_source": "live"}, "alerts": "oops"}'
+    )
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.route(
+                "**/dashboard/api/alerts",
+                lambda route: route.fulfill(
+                    status=200, content_type="application/json", body=malformed
+                ),
+            )
+            page.goto(operations_view_url, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.getElementById('alerts-summary').dataset.tone === 'error'",
+                timeout=7_000,
+            )
+            summary = page.locator("#alerts-summary").inner_text()
+            assert "unavailable" in summary and "malformed" in summary
+            assert "active critical alert" not in summary
+            assert page.eval_on_selector("#alerts-beacon", "e => e.dataset.state") == "error"
+            assert page.eval_on_selector("#alerts-table", "e => e.hidden") is True
+        finally:
+            browser.close()
