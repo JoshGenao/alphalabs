@@ -44,10 +44,11 @@ fn unfilled_liquidation_runs_the_full_sys_44b_sequence_at_thirty_seconds() {
     assert_eq!(error.category.as_str(), "KILL_SWITCH_LIQUIDATION_TIMEOUT");
 
     // The REAL probe polled the mocked IB for the FULL 30 s window on the
-    // simulated clock (61 polls at the 500 ms cadence) — the timeout fired at
-    // the deadline, not before.
+    // simulated clock (60 polls at the 500 ms cadence; the deadline check
+    // precedes polling, so the timeout fired at exactly 30 s without another
+    // poll) — never before the deadline.
     assert_eq!(run.simulated_elapsed_ms, 30_000);
-    assert_eq!(run.probe_polls, 61);
+    assert_eq!(run.probe_polls, 60);
 
     // "email and SMS are sent": the REAL dispatcher produced ONE notification
     // event whose required channels BOTH delivered, and each fixture transport

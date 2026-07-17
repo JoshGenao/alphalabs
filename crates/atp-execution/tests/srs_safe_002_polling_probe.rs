@@ -187,18 +187,95 @@ fn probe_polls_to_the_exact_deadline_then_reports_a_consistent_timeout() {
             elapsed_seconds,
             timeout_seconds,
         } => {
-            // The loop's final poll lands exactly at the 30 000 ms deadline:
-            // the outcome is consistent (elapsed >= timeout, timeout echoes
-            // the request) so the gate's hardening accepts it.
+            // The deadline check precedes polling, so the loop times out the
+            // moment the 30 000 ms deadline is reached — the outcome is
+            // consistent (elapsed >= timeout, timeout echoes the request) so
+            // the gate's hardening accepts it.
             assert_eq!(elapsed_seconds, KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS);
             assert_eq!(timeout_seconds, request.timeout_seconds);
             assert!(elapsed_seconds >= timeout_seconds);
         }
         other => panic!("expected TimedOutUnfilled, got {other:?}"),
     }
-    // 30 000 ms / 500 ms cadence → polls at 0, 500, …, 30 000 = 61 polls.
-    assert_eq!(feed.polls.get(), 61);
+    // 30 000 ms / 500 ms cadence → polls at 0, 500, …, 29 500 = 60 polls; at
+    // 30 000 ms the deadline fires WITHOUT another poll (a fill first seen at
+    // the deadline was not confirmed within the window).
+    assert_eq!(feed.polls.get(), 60);
     assert_eq!(clock.monotonic_ms(), 30_000);
+}
+
+#[test]
+fn probe_never_accepts_a_fill_first_observed_after_an_overshot_deadline() {
+    // Real clocks sleep-overshoot under scheduler jitter. A fill that only
+    // becomes visible AFTER the (overshot) deadline was NOT confirmed within
+    // the SYS-44b window — the probe must report the timeout, never a
+    // truncation-masked FilledBeforeTimeout that would skip the cleanup.
+    struct OvershootingClock {
+        now_ms: Cell<u64>,
+    }
+
+    impl KillSwitchProbeClock for OvershootingClock {
+        fn monotonic_ms(&self) -> u64 {
+            self.now_ms.get()
+        }
+
+        fn wait_ms(&self, ms: u64) {
+            // Every wait oversleeps by 700 ms — worse than any lawful jitter.
+            self.now_ms.set(self.now_ms.get() + ms + 700);
+        }
+    }
+
+    let clock = OvershootingClock {
+        now_ms: Cell::new(0),
+    };
+    // Scripted fill at 30 050 ms: inside the raw overshoot horizon but after
+    // the 30 000 ms deadline.
+    struct LateFillFeed<'a> {
+        clock: &'a OvershootingClock,
+        polls: Cell<u32>,
+    }
+
+    impl BrokerOpenOrderSource for LateFillFeed<'_> {
+        fn open_orders(&self) -> Result<BrokerOpenOrderSnapshot, BrokerReconcileError> {
+            self.polls.set(self.polls.get() + 1);
+            let filled = self.clock.monotonic_ms() >= 30_050;
+            let state = if filled {
+                OrderState::Filled
+            } else {
+                OrderState::Acked
+            };
+            Ok(BrokerOpenOrderSnapshot::new(
+                vec![BrokerOpenOrder {
+                    key: liquidation_key(),
+                    broker_order_id: "B-0001".to_string(),
+                    state,
+                }],
+                SnapshotCoverage::OpenAndRecentlyCompleted,
+            ))
+        }
+    }
+
+    let feed = LateFillFeed {
+        clock: &clock,
+        polls: Cell::new(0),
+    };
+    let probe = PollingLiquidationProbe::new(&clock, &feed);
+    let request = timeout_request();
+
+    let outcome = probe
+        .await_filled_or_timeout(&request)
+        .expect("a late fill is not an error");
+
+    match outcome {
+        KillSwitchLiquidationOutcome::TimedOutUnfilled {
+            elapsed_seconds,
+            timeout_seconds,
+        } => {
+            assert!(elapsed_seconds >= timeout_seconds);
+            assert_eq!(timeout_seconds, request.timeout_seconds);
+        }
+        other => panic!("a post-deadline fill must not be accepted, got {other:?}"),
+    }
 }
 
 type ExpectedProbeError = fn(&KillSwitchProbeError) -> bool;
@@ -282,7 +359,7 @@ fn probe_keeps_polling_when_absent_from_a_complete_snapshot_then_times_out() {
         outcome,
         KillSwitchLiquidationOutcome::TimedOutUnfilled { .. }
     ));
-    assert_eq!(feed.polls.get(), 61);
+    assert_eq!(feed.polls.get(), 60);
 }
 
 #[test]
@@ -315,8 +392,8 @@ fn probe_never_reports_a_timeout_early_for_a_broker_cancelled_order() {
 #[test]
 fn probe_final_wait_is_clamped_to_the_remaining_window() {
     // A custom cadence that does not divide the window evenly: the last wait
-    // is min(interval, remaining) so the deadline poll lands exactly at
-    // 30 000 ms — never past it by a full interval.
+    // is min(interval, remaining) so the loop reaches exactly 30 000 ms —
+    // never past it by a full interval — and the deadline fires there.
     let clock = SimulatedClock::default();
     let feed = ScriptedFillFeed::never_filling(&clock);
     let probe = PollingLiquidationProbe::with_poll_interval(&clock, &feed, 7_000);
@@ -334,9 +411,9 @@ fn probe_final_wait_is_clamped_to_the_remaining_window() {
         }
     ));
     // Polls at 0, 7 000, 14 000, 21 000, 28 000, then a clamped 2 000 ms wait
-    // → the final poll at exactly 30 000 ms.
+    // → the deadline fires at exactly 30 000 ms without another poll.
     assert_eq!(clock.monotonic_ms(), 30_000);
-    assert_eq!(feed.polls.get(), 6);
+    assert_eq!(feed.polls.get(), 5);
 }
 
 #[test]

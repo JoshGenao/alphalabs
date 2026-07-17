@@ -204,6 +204,21 @@ def test_scenario_unfilled_liquidation_runs_the_full_sys_44b_sequence() -> None:
     )
 
 
+def test_probe_never_accepts_a_post_deadline_fill_under_clock_overshoot() -> None:
+    # Adversarial r9: the deadline is enforced BEFORE polling — a fill first
+    # observed after a real clock's final sleep overshot the 30 s deadline
+    # was NOT confirmed within the SYS-44b window and must report the
+    # timeout, never a truncation-masked FilledBeforeTimeout that would skip
+    # the page/cancel/disconnect.
+    _assert_passed(
+        _run_cargo_test(
+            "probe_never_accepts_a_fill_first_observed_after_an_overshot_deadline",
+            suite="srs_safe_002_polling_probe",
+        ),
+        "SRS-SAFE-002 clock-overshoot regression test",
+    )
+
+
 def test_scenario_probe_fault_and_lying_probe_fail_closed() -> None:
     # Fault injection: every probe fault kind → fail closed (no destructive
     # action); a premature lying probe → the inconsistency rejection.

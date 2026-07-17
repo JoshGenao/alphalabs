@@ -28,10 +28,14 @@
 //!   a broker-confirmed `Filled` is a fill, and the probe NEVER reports
 //!   `TimedOutUnfilled` before the deadline — the gate's outcome-consistency
 //!   hardening would reject that as a probe inconsistency.
-//! * The deadline is `request.timeout_seconds`, converted to milliseconds; the
-//!   loop waits `min(poll_interval, remaining)` between polls so the final
-//!   poll lands exactly at the deadline and `elapsed_seconds >=
-//!   timeout_seconds` always holds on the timeout outcome.
+//! * The deadline is `request.timeout_seconds`, converted to milliseconds,
+//!   and it is enforced BEFORE each poll: a fill is only ever accepted when
+//!   observed strictly inside the window, so a real clock's final sleep
+//!   overshooting under scheduler jitter can never smuggle a post-deadline
+//!   fill through second-truncation. The loop waits
+//!   `min(poll_interval, remaining)` between polls, and
+//!   `elapsed_seconds >= timeout_seconds` always holds on the timeout
+//!   outcome.
 
 use atp_types::{KillSwitchLiquidationOutcome, KillSwitchTimeoutRequest, OrderState};
 
@@ -136,23 +140,29 @@ impl<C: KillSwitchProbeClock, S: BrokerOpenOrderSource> KillSwitchLiquidationPro
         let deadline_ms = request.timeout_seconds.saturating_mul(1_000);
         loop {
             let elapsed_ms = self.clock.monotonic_ms().saturating_sub(started_ms);
-            if self.poll_filled(request)? {
-                return Ok(KillSwitchLiquidationOutcome::FilledBeforeTimeout {
-                    // Integer division truncates toward zero, so a fill
-                    // observed inside the window always reports
-                    // elapsed_seconds <= timeout_seconds (the gate's
-                    // over-deadline normalisation stays a dead-man's defense).
-                    elapsed_seconds: elapsed_ms / 1_000,
-                });
-            }
+            // The deadline is enforced BEFORE polling: SYS-44b asks whether a
+            // fill confirmation was received WITHIN the window, so once the
+            // deadline has passed — including via a real clock's final sleep
+            // overshooting under scheduler jitter — a fill first observed now
+            // must NOT be accepted. (Accepting it would also defeat the
+            // gate's over-deadline normalisation: second-truncation could
+            // report a 30.4 s fill as elapsed_seconds == 30.)
             if elapsed_ms >= deadline_ms {
-                // Loop-condition guarantee: elapsed_ms >= timeout_seconds *
-                // 1000, so the truncated division reports elapsed_seconds >=
+                // Guarantee: elapsed_ms >= timeout_seconds * 1000, so the
+                // truncated division reports elapsed_seconds >=
                 // timeout_seconds and the outcome always passes the gate's
                 // outcome-consistency hardening.
                 return Ok(KillSwitchLiquidationOutcome::TimedOutUnfilled {
                     elapsed_seconds: elapsed_ms / 1_000,
                     timeout_seconds: request.timeout_seconds,
+                });
+            }
+            if self.poll_filled(request)? {
+                return Ok(KillSwitchLiquidationOutcome::FilledBeforeTimeout {
+                    // elapsed_ms < deadline_ms here, so the truncated
+                    // division always reports an in-window
+                    // elapsed_seconds <= timeout_seconds.
+                    elapsed_seconds: elapsed_ms / 1_000,
                 });
             }
             let remaining_ms = deadline_ms - elapsed_ms;
