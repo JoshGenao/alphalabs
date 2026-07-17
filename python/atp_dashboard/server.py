@@ -32,6 +32,7 @@ from atp_logging.persistence import JsonlLogStore
 from atp_runtime import OperatorInterfaceRuntime
 
 from .account import AccountStatusProvider
+from .alerts import CriticalAlertsProvider
 from .backtests import BacktestHistoryProvider, StoreCliBacktestHistorySource
 from .heartbeat import CliHeartbeatSource, HeartbeatFreshnessProvider
 from .inventory import StrategyInventoryProvider
@@ -84,6 +85,12 @@ RESEARCH_SNAPSHOT_PATH = "/dashboard/api/research"
 #: snapshot (served only when a heartbeat provider is mounted).
 HEARTBEAT_SNAPSHOT_PATH = "/dashboard/api/heartbeat"
 
+#: REST path the dashboard SPA polls for the UI-1 critical-alerts pane (served
+#: only when an alerts provider is mounted). This is a dashboard-namespaced
+#: first-paint poll, NOT the contract route ``GET /api/v1/alerts`` (owner
+#: SRS-NOTIF-001), which stays a 501 deferred handler until the notifier lands.
+ALERTS_SNAPSHOT_PATH = "/dashboard/api/alerts"
+
 
 def load_assets() -> dict[str, tuple[str, bytes]]:
     """Read the dashboard's static assets once into an immutable route map."""
@@ -105,6 +112,7 @@ def mount_dashboard(
     reservoir: ReservoirRankingProvider | None = None,
     research: ResearchEnvironmentProvider | None = None,
     heartbeat: HeartbeatFreshnessProvider | None = None,
+    alerts: CriticalAlertsProvider | None = None,
 ) -> DashboardPublisher:
     """Register the dashboard's routes on ``runtime`` and return its publisher.
 
@@ -148,6 +156,13 @@ def mount_dashboard(
     staleness rows (the provider shells the ``md003_heartbeat_cli`` monitor
     each second); without it the main ticker keeps publishing the metrics
     provider's honest deferred HEARTBEAT cells.
+    ``alerts`` (optional — the UI-1 critical-alerts provider) adds the
+    ``GET /dashboard/api/alerts`` poll route the alerts pane reads. It is
+    REST-served (the event-driven ``ALERTS`` WS channel stays unpublished until
+    its SRS-NOTIF-001 producer lands — deferred non-events would drift that
+    contract), so it adds no publisher channel; without it the pane renders its
+    explicit "not mounted" state. The feed is an honest deferred cell — the pane
+    never renders "0 active alerts" while detection is unwired.
     """
 
     runtime.register_asset_routes(load_assets())
@@ -166,6 +181,8 @@ def mount_dashboard(
             runtime.register_proxy_route(RESEARCH_PREFIX, research.upstream)
     if heartbeat is not None:
         runtime.register_meta_route(HEARTBEAT_SNAPSHOT_PATH, heartbeat.heartbeat_snapshot)
+    if alerts is not None:
+        runtime.register_meta_route(ALERTS_SNAPSHOT_PATH, alerts.alerts_snapshot)
     return DashboardPublisher(
         runtime,
         provider,
@@ -224,11 +241,12 @@ def mount_default_dashboard(
             log_store=JsonlLogStore(Path(log_dir) / "system.jsonl", log_class=LogClass.SYSTEM),
         )
     provider = ReadinessBackedProvider(env, heartbeat=heartbeat)
-    # The SRS-UI-003 account + Reservoir providers are pure builders (no env, no
-    # subprocess), so they are ALWAYS composed here — the production entrypoint
-    # actually serves /dashboard/api/account and /dashboard/api/reservoir and
+    # The SRS-UI-003 account + Reservoir + UI-1 alerts providers are pure builders
+    # (no env, no subprocess), so they are ALWAYS composed here — the production
+    # entrypoint actually serves /dashboard/api/{account,reservoir,alerts} and
     # publishes the ACCOUNT_STATUS / RESERVOIR_RANKING channels, rendering honest
-    # deferred cells until their live producers (SRS-EXE-006 / SRS-RESV-002) land.
+    # deferred cells until their live producers (SRS-EXE-006 / SRS-RESV-002 /
+    # SRS-NOTIF-001) land.
     # The SRS-RES-001 research provider is ALWAYS composed: the production
     # entrypoint serves /dashboard/api/research, rendering the honest
     # not-configured state until the operator sets ATP_RESEARCH_UPSTREAM —
@@ -241,6 +259,7 @@ def mount_default_dashboard(
         reservoir=ReservoirRankingProvider(),
         research=ResearchEnvironmentProvider(env.get(UPSTREAM_ENV_KNOB) or None),
         heartbeat=heartbeat,
+        alerts=CriticalAlertsProvider(),
     )
 
 

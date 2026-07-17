@@ -316,13 +316,61 @@
           </div>
         </div>
       </section>
+
+      <!-- UI-1 / SyRS SYS-46 + SYS-58: active critical alerts. The alert
+           vocabulary is the ALERTS channel / GET /api/v1/alerts contract
+           (alert_id, raised_at, severity, channel, delivery_status,
+           acknowledged). The FEED is produced by the SRS-NOTIF-001 operator
+           notifier (detection wiring + notification-event store + email/SMS
+           delivery), which is not yet delivered — the pane renders an explicit
+           awaiting state, NEVER "0 active alerts" (detection unwired is not
+           the same as nothing failing). No alert is fabricated. -->
+      <section class="panel panel--wide panel--alerts" data-panel="alerts" style="--i:9">
+        <div class="panel__head">
+          <h2 class="panel__title">Critical Alerts</h2>
+          <span class="panel__meta"><span class="tag tag--chan">ALERTS</span><span class="panel__cadence">poll</span></span>
+        </div>
+        <div class="panel__body" id="body-alerts" aria-live="polite">
+          <div class="alerts">
+            <div class="alerts__bar">
+              <span class="alerts__beacon" id="alerts-beacon" data-state="deferred" role="img" aria-label="Alert feed state">
+                <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+                  <path d="M12 2 L20 6 V11 C20 16.5 16.6 20.6 12 22 C7.4 20.6 4 16.5 4 11 V6 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                  <path d="M12 8 V13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                  <circle cx="12" cy="16.2" r="1.15" fill="currentColor"/>
+                </svg>
+              </span>
+              <span class="alerts__summary" id="alerts-summary">awaiting alert feed…</span>
+              <span class="alerts__legend" aria-hidden="true">
+                <span class="alerts__sev" data-sev="CRITICAL">critical_failure</span>
+                <span class="alerts__sev" data-sev="ERROR">ib_connectivity_loss</span>
+              </span>
+            </div>
+            <div class="alerts__scroll">
+              <table class="alerts__table" id="alerts-table" hidden>
+                <thead>
+                  <tr>
+                    <th scope="col">Alert</th>
+                    <th scope="col">Raised</th>
+                    <th scope="col">Severity</th>
+                    <th scope="col">Channel</th>
+                    <th scope="col">Delivery</th>
+                    <th scope="col">Ack</th>
+                  </tr>
+                </thead>
+                <tbody id="alerts-rows"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
     </main>
 
     <footer class="legend" role="contentinfo">
       <span class="legend__item"><span class="swatch swatch--live"></span>live</span>
       <span class="legend__item"><span class="swatch swatch--deferred"></span>deferred — awaiting producer feature</span>
       <span class="legend__spacer"></span>
-      <span class="legend__note">Metric values are honest placeholders until <code>SRS-BT-004</code> / <code>SRS-BT-005</code> / <code>SRS-PERF-001</code> / <code>SRS-MD-006/007</code> land. Account values await <code>SRS-EXE-006</code> (live IB); Reservoir rankings await <code>SRS-RESV-002</code>. No values are fabricated.</span>
+      <span class="legend__note">Metric values are honest placeholders until <code>SRS-BT-004</code> / <code>SRS-BT-005</code> / <code>SRS-PERF-001</code> / <code>SRS-MD-006/007</code> land. Account values await <code>SRS-EXE-006</code> (live IB); Reservoir rankings await <code>SRS-RESV-002</code>; critical alerts await <code>SRS-NOTIF-001</code>. No values are fabricated.</span>
       <span class="legend__stamp" id="last-update">awaiting first frame…</span>
     </footer>
   </div>

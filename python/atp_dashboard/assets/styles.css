@@ -609,4 +609,68 @@ body {
 .research__frame {
   width: 100%; height: 640px; border: 1px solid var(--line-strong); border-radius: 12px;
   background: var(--panel-2);
+/* =========================================================================
+   UI-1 — Critical-alerts pane (SYS-46 + SYS-58).
+   Scoped to .alerts so the SRS-UI-001/002/003/UI-3 panels do not regress.
+   The feed is an honest deferred cell until SRS-NOTIF-001 lands; the pane
+   never renders "0 active alerts" while detection is unwired.
+   ========================================================================= */
+.alerts { display: flex; flex-direction: column; gap: 12px; }
+.alerts__bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; }
+
+.alerts__beacon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line); background: var(--panel-2);
+  color: var(--deferred); transition: color 200ms var(--ease), border-color 200ms var(--ease);
+}
+.alerts__beacon[data-state="deferred"] { border-style: dashed; }
+.alerts__beacon[data-state="clear"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.alerts__beacon[data-state="error"] { color: var(--bad); }
+.alerts__beacon[data-state="alarm"] {
+  color: var(--bad); border-color: color-mix(in srgb, var(--bad) 55%, transparent);
+  animation: alertping 1.4s var(--ease) infinite;
+}
+@keyframes alertping {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--bad) 45%, transparent); }
+  70%, 100% { box-shadow: 0 0 0 9px transparent; }
+}
+
+.alerts__summary { font-size: 12.5px; color: var(--ink-dim); flex: 1 1 240px; min-width: 200px; }
+.alerts__summary[data-tone="ok"] { color: var(--ink); }
+.alerts__summary[data-tone="warn"] { color: var(--warn); }
+.alerts__summary[data-tone="error"] { color: var(--bad); font-weight: 600; }
+
+.alerts__legend { display: inline-flex; gap: 6px; }
+.alerts__sev {
+  font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; padding: 3px 9px; border-radius: 999px;
+  color: var(--ink-dim); background: color-mix(in srgb, var(--ink-faint) 16%, transparent);
+  border: 1px solid var(--line);
+}
+.alerts__sev[data-sev="CRITICAL"] { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.alerts__sev[data-sev="ERROR"] { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+
+.alerts__scroll { overflow-x: auto; }
+.alerts__table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.alerts__table th {
+  text-align: left; padding: 6px 12px 6px 0; font-size: 10.5px; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-dim);
+  border-bottom: 1px solid var(--line-strong); white-space: nowrap;
+}
+.alerts__table td {
+  padding: 8px 12px 8px 0; border-bottom: 1px solid var(--line);
+  font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-dim);
+}
+.alerts__table tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.alert-id { color: var(--ink); }
+.alert-ack { letter-spacing: 0.08em; text-transform: uppercase; }
+
+/* UI-1 polish: a 64-hex deployed-version hash (5th column) must wrap inside
+   its cell instead of overflowing the strategy-inventory panel sideways —
+   auto-layout table columns ignore overflow-wrap alone, so break-all it. The
+   DOM text is untouched (SRS-UI-002 asserts the full identifier renders). */
+.inventory td:nth-child(5) .metric__value {
+  white-space: normal; word-break: break-all;
+  font-size: 0.78rem; line-height: 1.5;
 }

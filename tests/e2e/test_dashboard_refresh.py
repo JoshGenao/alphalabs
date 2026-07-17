@@ -445,3 +445,182 @@ def test_account_and_reservoir_panels_render_honest_deferred(
                 )
         finally:
             browser.close()
+
+
+@pytest.fixture()
+def operations_view_url(tmp_path) -> Iterator[str]:
+    """UI-1: the FULL primary operations view — every provider mounted on one
+    runtime (readiness metrics + a REAL seeded strategy inventory + a REAL
+    seeded backtest store + the honest-deferred account / Reservoir / alerts
+    providers), the composition an operator actually runs."""
+
+    import subprocess
+    from pathlib import Path
+
+    from atp_dashboard import (
+        AccountStatusProvider,
+        BacktestHistoryProvider,
+        CriticalAlertsProvider,
+        ReservoirRankingProvider,
+        RollbackSnapshotInventorySource,
+        StoreCliBacktestHistorySource,
+        StrategyInventoryProvider,
+    )
+
+    root = Path(__file__).resolve().parents[2]
+
+    def _built(package: str, name: str) -> Path:
+        binary = root / "target" / "debug" / name
+        if not binary.exists():
+            build = subprocess.run(
+                ["cargo", "build", "-q", "-p", package, "--bin", name],
+                cwd=root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if build.returncode != 0:
+                pytest.skip(f"cannot build {name}: {build.stderr}")
+        return binary
+
+    rollback = _built("atp-orchestrator", "orch005_rollback_cli")
+    state = tmp_path / "deploy.state"
+    subprocess.run(
+        [
+            str(rollback),
+            "record",
+            "--state",
+            str(state),
+            "--strategy",
+            "alpha-1",
+            "--hash",
+            "sha256:" + "1" * 64,
+            "--observed-at",
+            "100",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    bt009 = _built("atp-simulation", "bt009_store_cli")
+    results = tmp_path / "results"
+    results.mkdir()
+    subprocess.run(
+        [str(bt009), "persist", "--init", "--dir", str(results)],
+        check=True,
+        capture_output=True,
+    )
+
+    runtime = OperatorInterfaceRuntime()
+    publisher = mount_dashboard(
+        runtime,
+        ReadinessBackedProvider({}),
+        inventory=StrategyInventoryProvider(
+            RollbackSnapshotInventorySource(state_path=state, binary=rollback)
+        ),
+        backtests=BacktestHistoryProvider(
+            StoreCliBacktestHistorySource(results_dir=results, binary=bt009)
+        ),
+        account=AccountStatusProvider(),
+        reservoir=ReservoirRankingProvider(),
+        alerts=CriticalAlertsProvider(),
+    )
+    publisher.start()
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        yield f"http://{host}:{port}/dashboard"
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
+def test_ui_1_primary_operations_view_covers_every_ac_surface(
+    operations_view_url: str,
+) -> None:
+    """UI-1 acceptance criteria, surface by surface, in ONE browser view over
+    HTTP only (no SSH): live strategy status, IB account equity / buying power /
+    margin, Reservoir rankings, heartbeat state, and active critical alerts.
+    Producer-deferred surfaces render explicit awaiting states naming their
+    owner features — never a fabricated value, never "0 active alerts"."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.goto(operations_view_url, wait_until="domcontentloaded")
+
+            # One primary view: all nine panels present.
+            for panel in (
+                "pnl",
+                "metrics",
+                "health",
+                "latency",
+                "strategies",
+                "backtest",
+                "account",
+                "reservoir",
+                "alerts",
+            ):
+                assert page.locator(f'[data-panel="{panel}"]').count() == 1
+
+            # System health: the WS link and heartbeat state go live.
+            page.wait_for_function(
+                "document.getElementById('conn').dataset.state === 'open'", timeout=5_000
+            )
+            page.wait_for_function(
+                "document.getElementById('fresh-health').dataset.state === 'fresh'",
+                timeout=7_000,
+            )
+            # The readiness findings are operator-READABLE (ERR-9: the failure
+            # is inspectable from the dashboard) — structured records render as
+            # "key — reason", never String(object).
+            page.wait_for_function(
+                "document.querySelectorAll('#health-notes li').length > 0", timeout=5_000
+            )
+            notes_text = page.locator("#health-notes").inner_text()
+            assert "[object Object]" not in notes_text
+            assert "ATP_ENV" in notes_text  # the real finding, readable
+
+            # Live strategy status: the REAL recorded deployment renders.
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 1", timeout=5_000
+            )
+            assert (
+                "sha256:" + "1" * 64
+                in page.locator('#inventory-rows tr[data-strategy="alpha-1"]').inner_text()
+            )
+
+            # IB account equity / buying power / margin: cells present, honest
+            # deferred (value "—", producer SRS-EXE-006 named), never a number.
+            account_text = page.locator('[data-panel="account"]').inner_text()
+            assert "SRS-EXE-006" in account_text and "—" in account_text
+            for field in ("equity", "buying_power", "margin_usage"):
+                assert page.locator(f'[data-panel="account"] [data-field="{field}"]').count() == 1
+
+            # Reservoir rankings: honest awaiting state naming SRS-RESV-002,
+            # with the REAL SYS-48 evaluation-window control.
+            page.wait_for_function(
+                "document.getElementById('reservoir-table').hidden === true", timeout=5_000
+            )
+            assert "SRS-RESV-002" in page.locator("#reservoir-summary").inner_text()
+            assert page.eval_on_selector("#resv-window", "e => e.value") == "30"
+
+            # Active critical alerts: the pane reaches its explicit awaiting
+            # state naming SRS-NOTIF-001 — and never claims "0 active alerts"
+            # while the detection feed is unwired.
+            page.wait_for_function(
+                "document.getElementById('alerts-summary').dataset.tone === 'warn'",
+                timeout=5_000,
+            )
+            alerts_summary = page.locator("#alerts-summary").inner_text()
+            assert "SRS-NOTIF-001" in alerts_summary
+            assert "active critical alert" not in alerts_summary
+            assert page.eval_on_selector("#alerts-table", "e => e.hidden") is True
+            assert page.eval_on_selector("#alerts-beacon", "e => e.dataset.state") == "deferred"
+            # The alerts pane's freshness dot reaches fresh (the poll is live).
+            page.wait_for_function(
+                "document.getElementById('fresh-alerts').dataset.state === 'fresh'",
+                timeout=7_000,
+            )
+        finally:
+            browser.close()

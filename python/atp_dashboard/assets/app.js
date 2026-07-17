@@ -78,7 +78,7 @@
     // Budget is a real, known constant — fill it immediately.
     setField("body-latency", "refresh_budget_ms", { value: BUDGET_MS, data_source: "live" }, "ms");
     // Per-panel freshness indicator (driven by monitorFreshness).
-    for (const panel of ["pnl", "metrics", "health", "latency", "strategies", "backtest", "account", "reservoir", "research"]) addFreshDot(panel);
+    for (const panel of ["pnl", "metrics", "health", "latency", "strategies", "backtest", "account", "reservoir", "research", "alerts"]) addFreshDot(panel);
   }
 
   function addFreshDot(panel) {
@@ -189,6 +189,10 @@
     // SRS-RES-001 research embed: REST-poll (no WS channel), off the NFR-P2
     // gauge; its dot tracks the /dashboard/api/research poll cadence.
     { panel: "research", ch: "RESEARCH", budget: POLL_MS, gauge: false },
+    // UI-1 critical alerts: REST-poll only (the event-driven ALERTS WS channel
+    // stays unpublished until its SRS-NOTIF-001 producer lands), likewise off
+    // the gauge; its dot tracks the /dashboard/api/alerts poll cadence.
+    { panel: "alerts", ch: "ALERTS", budget: POLL_MS, gauge: false },
   ];
   const STALE_GRACE_MS = 1500; // tolerate normal cadence jitter; flag real stalls
   const lastChannelAt = Object.create(null); // channel -> performance.now()
@@ -605,8 +609,81 @@
     return span;
   }
 
+  // ----- UI-1 critical alerts (REST poll; feed deferred to SRS-NOTIF-001) - //
+  // The alert vocabulary is the ALERTS channel / GET /api/v1/alerts contract.
+  // While the feed cell is deferred the pane renders an honest awaiting state —
+  // NEVER "0 active alerts": with detection unwired, "no alerts observed" is
+  // not "no alerts occurring".
+  function renderAlerts(snap) {
+    const summary = $("alerts-summary");
+    const table = $("alerts-table");
+    const beacon = $("alerts-beacon");
+    if (snap && snap.ok === false) {
+      if (summary) { summary.textContent = "alert feed unavailable: " + String(snap.error || "unknown"); summary.dataset.tone = "error"; }
+      if (beacon) beacon.dataset.state = "error";
+      if (table) table.hidden = true;
+      return;
+    }
+    const feed = cellValue(snap && snap.feed);
+    if (feed === null || feed === undefined) {
+      if (summary) {
+        const owner = shortSource((snap && snap.feed && snap.feed.data_source) || "deferred:SRS-NOTIF-001");
+        summary.textContent = "alert feed awaiting " + owner +
+          " (operator notifier) — IB connectivity loss and critical failures will surface here";
+        summary.dataset.tone = "warn";
+      }
+      if (beacon) beacon.dataset.state = "deferred";
+      if (table) table.hidden = true;
+      return;
+    }
+    // Real feed (renders when SRS-NOTIF-001 lands): one row per alert event.
+    const rows = Array.isArray(snap.alerts) ? snap.alerts : [];
+    const body = $("alerts-rows");
+    if (body) {
+      body.textContent = "";
+      for (const alert of rows) renderAlertRow(alert);
+    }
+    const active = rows.filter((a) => !cellValue(a.acknowledged)).length;
+    if (summary) {
+      summary.textContent = active + " active critical alert" + (active === 1 ? "" : "s") +
+        " · " + rows.length + " recorded";
+      summary.dataset.tone = active ? "error" : "ok";
+    }
+    if (beacon) beacon.dataset.state = active ? "alarm" : "clear";
+    if (table) table.hidden = rows.length === 0;
+  }
+
+  function renderAlertRow(alert) {
+    const body = $("alerts-rows");
+    if (!body) return;
+    const tr = el("tr");
+    const idTd = el("td", "alert-id");
+    idTd.textContent = String(cellValue(alert.alert_id) || "—");
+    tr.appendChild(idTd);
+    const raisedTd = el("td");
+    raisedTd.textContent = String(cellValue(alert.raised_at) || "—");
+    tr.appendChild(raisedTd);
+    const sevTd = el("td");
+    const sev = el("span", "alerts__sev");
+    sev.dataset.sev = String(cellValue(alert.severity) || "");
+    sev.textContent = String(cellValue(alert.severity) || "—");
+    sevTd.appendChild(sev);
+    tr.appendChild(sevTd);
+    const chanTd = el("td");
+    chanTd.textContent = String(cellValue(alert.channel) || "—");
+    tr.appendChild(chanTd);
+    const delivTd = el("td");
+    delivTd.textContent = String(cellValue(alert.delivery_status) || "—");
+    tr.appendChild(delivTd);
+    const ackTd = el("td", "alert-ack");
+    ackTd.textContent = cellValue(alert.acknowledged) ? "YES" : "no";
+    tr.appendChild(ackTd);
+    body.appendChild(tr);
+  }
+
   const ACCOUNT_ROUTE = "/dashboard/api/account";
   const RESERVOIR_ROUTE = "/dashboard/api/reservoir";
+  const ALERTS_ROUTE = "/dashboard/api/alerts";
 
   // First paint + honest "not mounted" fallback for the SRS-UI-003 panels; the
   // WS ACCOUNT_STATUS / RESERVOIR_RANKING events drive live refresh thereafter.
@@ -698,6 +775,20 @@
     setTimeout(pollResearch, POLL_MS);
   }
 
+  async function pollAlerts() {
+    try {
+      const res = await fetch(ALERTS_ROUTE, { cache: "no-store" });
+      if (res.ok) {
+        lastChannelAt["ALERTS"] = performance.now();
+        renderAlerts(await res.json());
+      } else if (res.status === 404) {
+        const s = $("alerts-summary");
+        if (s) { s.textContent = "alerts pane not mounted — UI-1 provider not composed on this runtime"; s.dataset.tone = "warn"; }
+      }
+    } catch (_e) { /* transient; next tick retries */ }
+    setTimeout(pollAlerts, POLL_MS);
+  }
+
   function setConn(state, label) {
     const c = $("conn"); c.dataset.state = state; $("conn-label").textContent = label;
   }
@@ -769,9 +860,23 @@
     notes.textContent = "";
     const items = errs.map((e) => ["err", e]).concat(warns.map((w) => ["warn", w]));
     if (!items.length && ok) items.push(["ok", "all readiness checks nominal"]);
-    for (const [, text] of items.slice(0, 4)) {
-      const li = document.createElement("li"); li.textContent = String(text); notes.appendChild(li);
+    for (const [, note] of items.slice(0, 4)) {
+      const li = document.createElement("li"); li.textContent = noteText(note); notes.appendChild(li);
     }
+  }
+
+  // A readiness finding is a structured record ({key, reason, ...}) — render it
+  // operator-readable (ERR-9: the failure must be inspectable from the
+  // dashboard), never String(object) ("[object Object]").
+  function noteText(note) {
+    if (note && typeof note === "object") {
+      const key = note.key || note.category || "";
+      const reason = note.reason || note.message || "";
+      if (key && reason) return key + " — " + reason;
+      if (key || reason) return String(key || reason);
+      return JSON.stringify(note);
+    }
+    return String(note);
   }
 
   // ----- kill switch (SRS-SAFE-001 minimal affordance; rich control = UI-4) //
@@ -1236,4 +1341,5 @@
   pollAccount();
   pollReservoir();
   pollResearch();
+  pollAlerts();
 })();

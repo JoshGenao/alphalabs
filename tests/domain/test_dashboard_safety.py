@@ -307,3 +307,35 @@ def test_reservoir_publisher_does_not_flip_the_required_workflow() -> None:
     finally:
         publisher.stop()
         runtime.stop()
+
+
+def test_alerts_mount_is_read_only_and_never_fabricates_an_alert() -> None:
+    # UI-1 critical alerts: a monitoring pane over the operator-notification
+    # domain must never invent an alert (a fabricated "all clear" or a phantom
+    # CRITICAL both mislead the operator) and must never mutate. With the feed
+    # deferred (SRS-NOTIF-001 unbuilt) the snapshot carries the feed as an
+    # explicit value-None cell, an EMPTY alerts list, and the pane's poll route
+    # rejects every mutating verb. The event-driven ALERTS WS channel stays
+    # UNPUBLISHED — deferred non-events on the contract channel would be
+    # fabrication at the transport layer.
+    from atp_dashboard import CriticalAlertsProvider
+
+    runtime = OperatorInterfaceRuntime()
+    publisher = mount_dashboard(
+        runtime, ReadinessBackedProvider({}), alerts=CriticalAlertsProvider()
+    )
+    publisher.start()
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        # The ALERTS channel has no publisher until SRS-NOTIF-001 lands.
+        assert not runtime.is_publisher_registered("ALERTS")
+
+        status, snap = _request(host, port, "GET", "/dashboard/api/alerts")
+        assert status == 200
+        assert snap["feed"] == {"value": None, "data_source": "deferred:SRS-NOTIF-001"}
+        assert snap["alerts"] == []  # no fabricated alert rows, ever
+        for method in ("POST", "PUT", "DELETE"):
+            assert _request(host, port, method, "/dashboard/api/alerts")[0] in (404, 405)
+    finally:
+        publisher.stop()
+        runtime.stop()
