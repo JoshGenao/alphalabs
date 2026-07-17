@@ -605,11 +605,11 @@ def test_ui_1_primary_operations_view_covers_every_ac_surface(
             assert "active critical alert" not in alerts_summary
             assert page.eval_on_selector("#alerts-table", "e => e.hidden") is True
             assert page.eval_on_selector("#alerts-beacon", "e => e.dataset.state") == "deferred"
-            # The alerts pane's freshness dot reaches fresh (the poll is live).
-            page.wait_for_function(
-                "document.getElementById('fresh-alerts').dataset.state === 'fresh'",
-                timeout=7_000,
-            )
+            # The alerts dot must NOT read "fresh" while the producer is
+            # deferred — placeholder-poll health is not alert-monitoring
+            # health. It holds the honest awaiting state naming the owner.
+            assert page.eval_on_selector("#fresh-alerts", "e => e.dataset.state") == "wait"
+            assert "SRS-NOTIF-001" in (page.eval_on_selector("#fresh-alerts", "e => e.title") or "")
 
             # The stylesheet actually APPLIES (a malformed rule earlier in the
             # sheet would silently drop these): the deferred beacon renders its
@@ -657,6 +657,8 @@ def test_ui_1_alerts_pane_reports_endpoint_failure_never_stale_state(
             assert "unavailable" in summary and "503" in summary
             assert page.eval_on_selector("#alerts-beacon", "e => e.dataset.state") == "error"
             assert page.eval_on_selector("#alerts-table", "e => e.hidden") is True
+            # The dot flags the failing endpoint too — never a healthy read.
+            assert page.eval_on_selector("#fresh-alerts", "e => e.dataset.state") == "stale"
 
             # Heal the endpoint: the pane recovers to the honest awaiting state.
             page.unroute("**/dashboard/api/alerts")

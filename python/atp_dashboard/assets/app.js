@@ -189,10 +189,11 @@
     // SRS-RES-001 research embed: REST-poll (no WS channel), off the NFR-P2
     // gauge; its dot tracks the /dashboard/api/research poll cadence.
     { panel: "research", ch: "RESEARCH", budget: POLL_MS, gauge: false },
-    // UI-1 critical alerts: REST-poll only (the event-driven ALERTS WS channel
-    // stays unpublished until its SRS-NOTIF-001 producer lands), likewise off
-    // the gauge; its dot tracks the /dashboard/api/alerts poll cadence.
-    { panel: "alerts", ch: "ALERTS", budget: POLL_MS, gauge: false },
+    // UI-1 critical alerts: NOT tracked here at all. While the SRS-NOTIF-001
+    // producer is deferred, poll-cadence freshness would read as "alert
+    // monitoring healthy" when only the placeholder route is healthy — so
+    // renderAlerts() drives the pane's dot directly (wait/deferred, stale on
+    // endpoint failure). Re-enter ALERTS here when the real feed lands.
   ];
   const STALE_GRACE_MS = 1500; // tolerate normal cadence jitter; flag real stalls
   const lastChannelAt = Object.create(null); // channel -> performance.now()
@@ -614,6 +615,14 @@
   // While the feed cell is deferred the pane renders an honest awaiting state —
   // NEVER "0 active alerts": with detection unwired, "no alerts observed" is
   // not "no alerts occurring".
+  // The alerts pane's freshness dot is driven HERE, not by monitorFreshness:
+  // while the SRS-NOTIF-001 producer is deferred, a poll-cadence "fresh" would
+  // overstate alert-monitoring health (only the placeholder route is healthy).
+  function setAlertsDot(state, title) {
+    const dot = $("fresh-alerts");
+    if (dot) { dot.dataset.state = state; dot.title = title; }
+  }
+
   function renderAlerts(snap) {
     const summary = $("alerts-summary");
     const table = $("alerts-table");
@@ -622,6 +631,7 @@
       if (summary) { summary.textContent = "alert feed unavailable: " + String(snap.error || "unknown"); summary.dataset.tone = "error"; }
       if (beacon) beacon.dataset.state = "error";
       if (table) table.hidden = true;
+      setAlertsDot("stale", "alert endpoint failing");
       return;
     }
     const feed = cellValue(snap && snap.feed);
@@ -634,6 +644,7 @@
       }
       if (beacon) beacon.dataset.state = "deferred";
       if (table) table.hidden = true;
+      setAlertsDot("wait", "alert feed deferred — awaiting SRS-NOTIF-001");
       return;
     }
     // Real feed (renders when SRS-NOTIF-001 lands): one row per alert event.
@@ -651,6 +662,7 @@
     }
     if (beacon) beacon.dataset.state = active ? "alarm" : "clear";
     if (table) table.hidden = rows.length === 0;
+    setAlertsDot("fresh", "alert feed live");
   }
 
   function renderAlertRow(alert) {
@@ -779,7 +791,6 @@
     try {
       const res = await fetch(ALERTS_ROUTE, { cache: "no-store" });
       if (res.ok) {
-        lastChannelAt["ALERTS"] = performance.now();
         renderAlerts(await res.json());
       } else if (res.status === 404) {
         const s = $("alerts-summary");
