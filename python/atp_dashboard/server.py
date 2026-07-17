@@ -35,7 +35,7 @@ from .account import AccountStatusProvider
 from .alerts import CriticalAlertsProvider
 from .backtests import BacktestHistoryProvider, StoreCliBacktestHistorySource
 from .heartbeat import CliHeartbeatSource, HeartbeatFreshnessProvider
-from .inventory import StrategyInventoryProvider
+from .inventory import RollbackSnapshotInventorySource, StrategyInventoryProvider
 from .provider import DashboardMetricsProvider, ReadinessBackedProvider
 from .publisher import DashboardPublisher
 from .research import RESEARCH_PREFIX, UPSTREAM_ENV_KNOB, ResearchEnvironmentProvider
@@ -241,6 +241,18 @@ def mount_default_dashboard(
             log_store=JsonlLogStore(Path(log_dir) / "system.jsonl", log_class=LogClass.SYSTEM),
         )
     provider = ReadinessBackedProvider(env, heartbeat=heartbeat)
+    # The SRS-UI-002 strategy inventory (UI-1's "live strategy status" leg) is
+    # composed whenever the ORCH-005 deployment snapshot is configured:
+    # ATP_DEPLOYMENT_STATE names the rollback state file orch005_rollback_cli
+    # maintains, and the CLI stays the single snapshot-format owner. Unset, the
+    # inventory route is not registered and the panel renders its explicit
+    # "not mounted" state — never a fabricated inventory.
+    inventory: StrategyInventoryProvider | None = None
+    deployment_state = env.get("ATP_DEPLOYMENT_STATE") or None
+    if deployment_state is not None:
+        inventory = StrategyInventoryProvider(
+            RollbackSnapshotInventorySource(state_path=deployment_state)
+        )
     # The SRS-UI-003 account + Reservoir + UI-1 alerts providers are pure builders
     # (no env, no subprocess), so they are ALWAYS composed here — the production
     # entrypoint actually serves /dashboard/api/{account,reservoir,alerts} and
@@ -254,6 +266,7 @@ def mount_default_dashboard(
     return mount_dashboard(
         runtime,
         provider,
+        inventory=inventory,
         backtests=backtests,
         account=AccountStatusProvider(),
         reservoir=ReservoirRankingProvider(),

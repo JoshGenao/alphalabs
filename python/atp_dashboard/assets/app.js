@@ -784,8 +784,14 @@
       } else if (res.status === 404) {
         const s = $("alerts-summary");
         if (s) { s.textContent = "alerts pane not mounted — UI-1 provider not composed on this runtime"; s.dataset.tone = "warn"; }
+      } else {
+        // A failing endpoint must never leave a stale "clear"/alert-count on a
+        // safety-critical pane — render the explicit unavailable state.
+        renderAlerts({ ok: false, error: "HTTP " + res.status });
       }
-    } catch (_e) { /* transient; next tick retries */ }
+    } catch (_e) {
+      renderAlerts({ ok: false, error: "endpoint unreachable" });
+    }
     setTimeout(pollAlerts, POLL_MS);
   }
 

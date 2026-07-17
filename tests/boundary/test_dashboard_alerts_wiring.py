@@ -99,3 +99,54 @@ def test_default_composition_serves_the_route() -> None:
     status, snap = runtime.dispatch_rest("GET", "/dashboard/api/alerts")
     assert status == 200
     assert snap["feed"] == {"value": None, "data_source": "deferred:SRS-NOTIF-001"}
+
+
+def test_default_composition_serves_live_strategy_status_when_configured(tmp_path) -> None:
+    """UI-1: the PRODUCTION composition (``python -m atp_dashboard``) exposes
+    live strategy status when the ORCH-005 deployment snapshot is configured
+    (ATP_DEPLOYMENT_STATE), and honestly serves NO inventory route when it is
+    not — never a fabricated inventory."""
+
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    binary = root / "target" / "debug" / "orch005_rollback_cli"
+    if not binary.exists():
+        build = subprocess.run(
+            ["cargo", "build", "-q", "-p", "atp-orchestrator", "--bin", "orch005_rollback_cli"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if build.returncode != 0:
+            pytest.skip(f"cannot build orch005_rollback_cli: {build.stderr}")
+    state = tmp_path / "deploy.state"
+    subprocess.run(
+        [
+            str(binary),
+            "record",
+            "--state",
+            str(state),
+            "--strategy",
+            "alpha-1",
+            "--hash",
+            "sha256:" + "1" * 64,
+            "--observed-at",
+            "100",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    configured = OperatorInterfaceRuntime()
+    mount_default_dashboard(configured, {"ATP_DEPLOYMENT_STATE": str(state)})
+    status, snap = configured.dispatch_rest("GET", "/dashboard/api/strategies")
+    assert status == 200
+    assert snap["ok"] is True
+    assert any(s.get("strategy_id") == "alpha-1" for s in snap["strategies"])
+
+    bare = OperatorInterfaceRuntime()
+    mount_default_dashboard(bare, {})
+    assert bare.dispatch_rest("GET", "/dashboard/api/strategies")[0] == 404

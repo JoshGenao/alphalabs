@@ -449,23 +449,16 @@ def test_account_and_reservoir_panels_render_honest_deferred(
 
 @pytest.fixture()
 def operations_view_url(tmp_path) -> Iterator[str]:
-    """UI-1: the FULL primary operations view — every provider mounted on one
-    runtime (readiness metrics + a REAL seeded strategy inventory + a REAL
-    seeded backtest store + the honest-deferred account / Reservoir / alerts
-    providers), the composition an operator actually runs."""
+    """UI-1: the FULL primary operations view through the PRODUCTION
+    composition — ``mount_default_dashboard`` (what ``python -m atp_dashboard``
+    runs) over a REAL seeded deployment snapshot (ATP_DEPLOYMENT_STATE) and a
+    REAL seeded backtest store (ATP_BACKTEST_RESULTS_DIR); account / Reservoir /
+    alerts are the honest-deferred providers the entrypoint always composes."""
 
     import subprocess
     from pathlib import Path
 
-    from atp_dashboard import (
-        AccountStatusProvider,
-        BacktestHistoryProvider,
-        CriticalAlertsProvider,
-        ReservoirRankingProvider,
-        RollbackSnapshotInventorySource,
-        StoreCliBacktestHistorySource,
-        StrategyInventoryProvider,
-    )
+    from atp_dashboard import mount_default_dashboard
 
     root = Path(__file__).resolve().parents[2]
 
@@ -512,18 +505,12 @@ def operations_view_url(tmp_path) -> Iterator[str]:
     )
 
     runtime = OperatorInterfaceRuntime()
-    publisher = mount_dashboard(
+    publisher = mount_default_dashboard(
         runtime,
-        ReadinessBackedProvider({}),
-        inventory=StrategyInventoryProvider(
-            RollbackSnapshotInventorySource(state_path=state, binary=rollback)
-        ),
-        backtests=BacktestHistoryProvider(
-            StoreCliBacktestHistorySource(results_dir=results, binary=bt009)
-        ),
-        account=AccountStatusProvider(),
-        reservoir=ReservoirRankingProvider(),
-        alerts=CriticalAlertsProvider(),
+        {
+            "ATP_DEPLOYMENT_STATE": str(state),
+            "ATP_BACKTEST_RESULTS_DIR": str(results),
+        },
     )
     publisher.start()
     host, port = runtime.start(host="127.0.0.1", port=0)
@@ -549,7 +536,7 @@ def test_ui_1_primary_operations_view_covers_every_ac_surface(
             page = browser.new_page()
             page.goto(operations_view_url, wait_until="domcontentloaded")
 
-            # One primary view: all nine panels present.
+            # One primary view: all ten panels present.
             for panel in (
                 "pnl",
                 "metrics",
@@ -559,6 +546,7 @@ def test_ui_1_primary_operations_view_covers_every_ac_surface(
                 "backtest",
                 "account",
                 "reservoir",
+                "research",
                 "alerts",
             ):
                 assert page.locator(f'[data-panel="{panel}"]').count() == 1
@@ -633,6 +621,48 @@ def test_ui_1_primary_operations_view_covers_every_ac_surface(
             )
             assert page.eval_on_selector(
                 '[data-panel="strategies"]', "e => e.scrollWidth <= e.clientWidth"
+            )
+        finally:
+            browser.close()
+
+
+def test_ui_1_alerts_pane_reports_endpoint_failure_never_stale_state(
+    operations_view_url: str,
+) -> None:
+    """UI-1 degraded path: when the alerts endpoint fails (5xx), the pane must
+    render its explicit unavailable state — never leave a stale summary/beacon
+    on a safety-critical pane — and recover once the endpoint is healthy."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.goto(operations_view_url, wait_until="domcontentloaded")
+            # Healthy first: the deferred awaiting state renders.
+            page.wait_for_function(
+                "document.getElementById('alerts-summary').dataset.tone === 'warn'",
+                timeout=5_000,
+            )
+
+            # Break the endpoint: every poll now returns 503.
+            page.route(
+                "**/dashboard/api/alerts",
+                lambda route: route.fulfill(status=503, body="upstream down"),
+            )
+            page.wait_for_function(
+                "document.getElementById('alerts-summary').dataset.tone === 'error'",
+                timeout=7_000,
+            )
+            summary = page.locator("#alerts-summary").inner_text()
+            assert "unavailable" in summary and "503" in summary
+            assert page.eval_on_selector("#alerts-beacon", "e => e.dataset.state") == "error"
+            assert page.eval_on_selector("#alerts-table", "e => e.hidden") is True
+
+            # Heal the endpoint: the pane recovers to the honest awaiting state.
+            page.unroute("**/dashboard/api/alerts")
+            page.wait_for_function(
+                "document.getElementById('alerts-summary').dataset.tone === 'warn'",
+                timeout=7_000,
             )
         finally:
             browser.close()
