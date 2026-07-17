@@ -53,9 +53,23 @@ What I tested (per step):
     pre-existing, owner = toolchain-pin PR).
 
 Critic verdicts:
-  deterministic: APPROVE — no findings.
-  judgment (adversarial_review.py origin/main, reviewer=codex): APPROVE r1 —
-    no findings.
+  deterministic: APPROVE — no findings (every commit).
+  judgment (adversarial_review.py origin/main, reviewer=codex): 7 rounds,
+    APPROVE r7. Pre-rebase r1 approve; the SRS-RES-001/SRS-MD-003 rebase then
+    triggered r2-r6 BLOCKs, every finding real and fixed:
+    r2a lost `}` in styles.css conflict resolution (voided all later rules;
+      restored + computed-style e2e assertions);
+    r2b production mount_default_dashboard omitted the inventory (added
+      ATP_DEPLOYMENT_STATE knob; umbrella e2e now exercises the PRODUCTION
+      composition; boundary pins configured->rows / unset->404);
+    r3 poll-cadence freshness dot read "fresh" while the producer is deferred
+      (dot now renderAlerts-driven: wait/deferred, stale on failure);
+    r4a deferred payload was all-clear-shaped (alerts: null, never []);
+    r4b truthiness ack ("false" string read as acknowledged; fail-closed
+      isAcknowledged); r4c stalled endpoint (AbortSignal.timeout(POLL_MS));
+    r5 404 branch left stale rows/beacon/dot (fails closed like 5xx);
+    r6 malformed live feed (alerts not a list) coerced to all-clear (fails
+      closed to unavailable). All pinned by e2e (9 tests green).
 
 Resume / next (what flips UI-1 passes:true):
   1. SRS-UI-002 + SRS-UI-003 flips (their producers: SRS-EXE-006 account feed
