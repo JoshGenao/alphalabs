@@ -324,6 +324,57 @@ fn probe_maps_each_reconcile_error_kind_to_its_typed_variant_and_fails_fast() {
 }
 
 #[test]
+fn probe_fails_closed_on_duplicate_broker_rows_for_the_liquidation_order() {
+    // Adversarial: a snapshot carrying BOTH a Filled (stale/duplicate) row
+    // and a still-live row for the SAME order key cannot vouch for the fill —
+    // trusting the first match could suppress the entire SYS-44b cleanup.
+    struct DuplicateRowFeed {
+        polls: Cell<u32>,
+    }
+
+    impl BrokerOpenOrderSource for DuplicateRowFeed {
+        fn open_orders(&self) -> Result<BrokerOpenOrderSnapshot, BrokerReconcileError> {
+            self.polls.set(self.polls.get() + 1);
+            Ok(BrokerOpenOrderSnapshot::new(
+                vec![
+                    BrokerOpenOrder {
+                        key: liquidation_key(),
+                        broker_order_id: "B-0001".to_string(),
+                        state: OrderState::Filled,
+                    },
+                    BrokerOpenOrder {
+                        key: liquidation_key(),
+                        broker_order_id: "B-0002".to_string(),
+                        state: OrderState::Acked,
+                    },
+                ],
+                SnapshotCoverage::OpenAndRecentlyCompleted,
+            ))
+        }
+    }
+
+    let clock = SimulatedClock::default();
+    let feed = DuplicateRowFeed {
+        polls: Cell::new(0),
+    };
+    let probe = PollingLiquidationProbe::new(&clock, &feed);
+
+    let probe_error = probe
+        .await_filled_or_timeout(&timeout_request())
+        .expect_err("a duplicate/conflicting broker view must fail the probe closed");
+
+    assert!(matches!(
+        probe_error,
+        KillSwitchProbeError::OrderStateUnavailable { .. }
+    ));
+    assert!(probe_error.reason().contains("appears 2 times"));
+    assert!(probe_error.reason().contains("FILLED"));
+    // Fail-fast: one poll, no retry on an unresolvable view.
+    assert_eq!(feed.polls.get(), 1);
+    assert_eq!(clock.monotonic_ms(), 0);
+}
+
+#[test]
 fn probe_treats_absence_from_an_open_only_snapshot_as_unconfirmable() {
     let clock = SimulatedClock::default();
     let feed = ScriptedFillFeed::absent(&clock, SnapshotCoverage::OpenOnly);

@@ -18,6 +18,11 @@
 //!   `probe_timeout`, `StaleData` / `MalformedSnapshot` / `Unavailable` →
 //!   `order_state_unavailable`. No retry: the gate must fail closed on an
 //!   unconfirmable order state, not guess.
+//! * DUPLICATE broker rows for the liquidation order's key fail closed
+//!   (`order_state_unavailable`): the outbox reconciliation treats a
+//!   duplicate as an unresolved duplicate-live-order hazard, and a snapshot
+//!   carrying both a Filled and a live row for the same key cannot vouch for
+//!   the fill.
 //! * An order ABSENT from a [`SnapshotCoverage::OpenOnly`] snapshot is
 //!   ambiguous (it may have filled or been purged) → `order_state_unavailable`.
 //!   Absent under `OpenAndRecentlyCompleted` is a complete-enough view that
@@ -106,11 +111,27 @@ impl<'a, C: KillSwitchProbeClock, S: BrokerOpenOrderSource> PollingLiquidationPr
             }
         })?;
         let order_id = request.unfilled_order.order_id.as_str();
-        let order = snapshot
+        let matches: Vec<_> = snapshot
             .orders()
             .iter()
-            .find(|order| order.key.to_string() == order_id);
-        match order {
+            .filter(|order| order.key.to_string() == order_id)
+            .collect();
+        if matches.len() > 1 {
+            // The outbox reconciliation treats duplicate broker rows for one
+            // key as an unresolved duplicate-live-order hazard; the probe
+            // honours the same invariant. A snapshot carrying both a Filled
+            // (stale/duplicate) row and a live row for the SAME liquidation
+            // order cannot vouch for the fill — trusting the first match
+            // could suppress the entire SYS-44b cleanup. Fail closed.
+            let states: Vec<&str> = matches.iter().map(|order| order.state.as_str()).collect();
+            return Err(KillSwitchProbeError::order_state_unavailable(format!(
+                "liquidation order {order_id} appears {} times in the broker snapshot \
+                 (states: {}) — a duplicate/conflicting broker view cannot confirm the fill",
+                matches.len(),
+                states.join(", "),
+            )));
+        }
+        match matches.first() {
             Some(order) => Ok(order.state == OrderState::Filled),
             None => match snapshot.coverage() {
                 // An open-only view cannot distinguish "filled" from

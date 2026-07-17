@@ -204,6 +204,20 @@ def test_scenario_unfilled_liquidation_runs_the_full_sys_44b_sequence() -> None:
     )
 
 
+def test_probe_fails_closed_on_a_duplicate_broker_view() -> None:
+    # Adversarial r12: duplicate broker rows for the liquidation order's key
+    # (one Filled, one still live) cannot vouch for the fill — the probe must
+    # fail closed rather than let a stale/duplicate Filled row suppress the
+    # SYS-44b cleanup.
+    _assert_passed(
+        _run_cargo_test(
+            "probe_fails_closed_on_duplicate_broker_rows_for_the_liquidation_order",
+            suite="srs_safe_002_polling_probe",
+        ),
+        "SRS-SAFE-002 duplicate-broker-row fail-closed test",
+    )
+
+
 def test_probe_never_accepts_a_post_deadline_fill_under_clock_overshoot() -> None:
     # Adversarial r9: the deadline is enforced BEFORE polling — a fill first
     # observed after a real clock's final sleep overshot the 30 s deadline
