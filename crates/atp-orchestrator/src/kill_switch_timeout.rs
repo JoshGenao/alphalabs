@@ -41,8 +41,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use atp_adapters::{
-    DataBatch, HistoricalDataRequest, HistoricalQueryResult, IbApiError, IbConnectionControl,
-    IbGatewayConnection, MarketDataSubscription, SubscriptionReceipt,
+    classify_ib_order_error, AdapterError, AdapterResult, DataBatch, HistoricalDataRequest,
+    HistoricalQueryResult, IbApiError, IbConnectionControl, IbGatewayConnection,
+    MarketDataSubscription, SubscriptionReceipt,
 };
 use atp_execution::{
     BrokerOpenOrder, BrokerOpenOrderSnapshot, BrokerOpenOrderSource, BrokerReconcileError,
@@ -58,9 +59,10 @@ use atp_notification::{
 };
 use atp_types::{
     ClientCorrelationId, CompositeOrderSubmission, KillSwitchAlertEvent,
-    KillSwitchLiquidationOutcome, KillSwitchTimeoutEvent, KillSwitchTimeoutRequest, OrderKey,
-    OrderReceipt, OrderState, OrderSubmission, StrategyId, StructuredKillSwitchTimeoutError,
-    UnfilledLiquidationOrder, KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS,
+    KillSwitchLiquidationOutcome, KillSwitchTimeoutEvent, KillSwitchTimeoutRequest,
+    OrderErrorCategory, OrderKey, OrderReceipt, OrderState, OrderSubmission, StrategyId,
+    StructuredKillSwitchTimeoutError, UnfilledLiquidationOrder,
+    KILL_SWITCH_LIQUIDATION_TIMEOUT_SECONDS,
 };
 
 // --------------------------------------------------------------------------- //
@@ -271,13 +273,18 @@ impl IbGatewayConnection for FixtureIbGateway {
 }
 
 impl IbConnectionControl for FixtureIbGateway {
-    fn disconnect(&self) -> Result<(), IbApiError> {
+    fn disconnect(&self) -> AdapterResult<()> {
         self.calls.borrow_mut().push("disconnect".to_string());
         match &self.fail_disconnect {
-            Some(reason) => Err(IbApiError::new(
-                FIXTURE_UNSUPPORTED,
-                format!("fixture: injected disconnect failure — {reason}"),
-            )),
+            // The seam's contract: failures cross the adapter boundary as the
+            // canonical AdapterError taxonomy with the SYS-64 classification
+            // (a wedged/unreachable session is the connectivity family).
+            Some(reason) => Err(AdapterError::Brokerage {
+                adapter: "fixture_gateway",
+                category: Some(OrderErrorCategory::ConnectivityBlocked),
+                code: FIXTURE_UNSUPPORTED,
+                message: format!("fixture: injected disconnect failure — {reason}"),
+            }),
             None => Ok(()),
         }
     }
@@ -309,12 +316,21 @@ impl<C: IbGatewayConnection + IbConnectionControl> IbGatewayLiquidationCleanup<C
         &self.gateway
     }
 
-    fn side_effect_error(context: &str, error: &IbApiError) -> KillSwitchSideEffectError {
-        KillSwitchSideEffectError::new(format!(
-            "{context}: IB error {code}: {message}",
-            code = error.code,
-            message = error.message
-        ))
+    /// Map a raw wire-seam failure onto the canonical adapter taxonomy first
+    /// (`classify_ib_order_error` → `AdapterError::Brokerage`), THEN reduce to
+    /// the gate's side-effect reason — so the SYS-64 classification (e.g.
+    /// `CONNECTIVITY_BLOCKED`) survives onto the safety event instead of being
+    /// laundered into an unclassified string.
+    fn cancel_side_effect_error(error: IbApiError) -> KillSwitchSideEffectError {
+        let classified = AdapterError::Brokerage {
+            // Vendor-neutral composition label — the vendor identity lives in
+            // the adapter crate, not this core path.
+            adapter: "liquidation_cleanup_gateway",
+            category: classify_ib_order_error(&error),
+            code: error.code,
+            message: error.message,
+        };
+        KillSwitchSideEffectError::new(format!("IB cancel_order failed: {classified}"))
     }
 }
 
@@ -335,13 +351,15 @@ impl<C: IbGatewayConnection + IbConnectionControl> IbLiquidationCleanup
         })?;
         self.gateway
             .cancel_order(broker_order_id)
-            .map_err(|error| Self::side_effect_error("IB cancel_order failed", &error))
+            .map_err(Self::cancel_side_effect_error)
     }
 
     fn disconnect(&self) -> Result<(), KillSwitchSideEffectError> {
-        self.gateway
-            .disconnect()
-            .map_err(|error| Self::side_effect_error("IB disconnect failed", &error))
+        // The IbConnectionControl seam already speaks the canonical
+        // AdapterError taxonomy — its Display carries the SYS-64 category.
+        self.gateway.disconnect().map_err(|error| {
+            KillSwitchSideEffectError::new(format!("IB disconnect failed: {error}"))
+        })
     }
 }
 

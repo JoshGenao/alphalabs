@@ -231,6 +231,22 @@ def test_scenario_continue_to_safety_under_side_effect_failures() -> None:
         )
 
 
+def test_scenario_cleanup_failures_carry_the_canonical_classification() -> None:
+    # Adversarial r3: the IbConnectionControl seam speaks the canonical
+    # AdapterError taxonomy and the cancel leg's raw wire error is classified
+    # (classify_ib_order_error → AdapterError::Brokerage) BEFORE reaching the
+    # safety event — the SYS-64 category (e.g. CONNECTIVITY_BLOCKED) must
+    # survive onto the recorded reason, never be laundered into a bare string.
+    _assert_passed(
+        _run_cargo_test(
+            "failed_cancel_reason_carries_the_canonical_classification",
+            package="atp-orchestrator",
+            suite="safe_002_liquidation_timeout_scenario",
+        ),
+        "SRS-SAFE-002 canonical-classification scenario (cancel leg)",
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Operator CLI (safe002_liquidation_timeout_cli) drills — shelled exactly as
 # the python/atp_safety timeout backend shells it — plus the SRS-LOG-001

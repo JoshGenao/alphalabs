@@ -258,6 +258,43 @@ fn failed_disconnect_is_observable_and_still_refuses() {
         run.timeout_events[0].liquidation_cancel,
         SideEffectOutcome::Succeeded
     );
+    // The IbConnectionControl seam speaks the canonical AdapterError taxonomy,
+    // so the SYS-64 classification survives onto the recorded safety event.
+    match &run.timeout_events[0].ib_disconnect {
+        SideEffectOutcome::Failed { reason } => {
+            assert!(
+                reason.contains("CONNECTIVITY_BLOCKED"),
+                "disconnect failure must carry the SYS-64 classification: {reason}"
+            );
+        }
+        other => panic!("expected Failed disconnect, got {other:?}"),
+    }
+}
+
+#[test]
+fn failed_cancel_reason_carries_the_canonical_classification() {
+    // The cancel leg's raw wire error is mapped through the canonical adapter
+    // taxonomy (classify_ib_order_error → AdapterError::Brokerage) before it
+    // reaches the safety event — a fixture code the classifier does not map
+    // still surfaces as a recognised-but-unmapped brokerage failure with the
+    // vendor code + message, never a laundered bare string.
+    let scenario = TimeoutScenario {
+        fail_cancel: true,
+        ..TimeoutScenario::reference_unfilled()
+    };
+    let run = run_fixture_timeout(&scenario).expect("failed-cancel scenario runs");
+
+    let error = run.result.expect_err("the timeout still refuses");
+    match &error.cleanup.liquidation_cancel {
+        SideEffectOutcome::Failed { reason } => {
+            assert!(
+                reason.contains("brokerage operation failed"),
+                "cancel failure must cross the canonical adapter taxonomy: {reason}"
+            );
+            assert!(reason.contains("fixture cancel fault"), "{reason}");
+        }
+        other => panic!("expected Failed cancel, got {other:?}"),
+    }
 }
 
 #[test]

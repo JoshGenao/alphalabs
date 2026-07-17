@@ -19,7 +19,7 @@
 //!   scenario drives this seam through the deterministic fixture gateway in
 //!   `atp-orchestrator::kill_switch_timeout`.
 
-use crate::IbApiError;
+use crate::AdapterResult;
 
 /// The "disconnect from IB" control-plane capability.
 pub trait IbConnectionControl {
@@ -27,5 +27,14 @@ pub trait IbConnectionControl {
     /// gateway is `Ok` (the desired state already holds). An `Err` means the
     /// session could not be provably torn down — the kill-switch gate records
     /// it as a `Failed` side effect rather than assuming safety.
-    fn disconnect(&self) -> Result<(), IbApiError>;
+    ///
+    /// Failures cross the adapter boundary as the canonical
+    /// [`AdapterError`](crate::AdapterError) taxonomy (never a raw vendor
+    /// error): an implementor maps its vendor failure through
+    /// `AdapterError::Brokerage` — carrying the SyRS SYS-64
+    /// `OrderErrorCategory` classification (e.g. `CONNECTIVITY_BLOCKED`) via
+    /// [`classify_ib_order_error`](crate::classify_ib_order_error) plus the
+    /// raw vendor code + message — so the kill-switch cleanup records a
+    /// classified, operator-actionable reason on the safety event.
+    fn disconnect(&self) -> AdapterResult<()>;
 }
