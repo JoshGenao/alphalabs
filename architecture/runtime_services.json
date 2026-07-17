@@ -3561,9 +3561,109 @@
       "Concrete log sink that consumes as_log_records is owned by SRS-LOG-001. The SDK pins the JSON-line field set (timestamp_ns, severity, key, category, reason, srs_trace) so the persistent log surface can ingest without renegotiation when it lands; the sink itself, retention, and rotation policy belong to SRS-LOG-001.",
       "Dashboard rendering of as_dashboard_payload (operations view + readiness pane) is owned by SRS-UI-001 / UI-1. The SDK pins the document field set (state, ok, errors, warnings, evidence, overrides) so the dashboard backend can render without renegotiation when it lands.",
       "Live REST/WebSocket endpoint serving as_dashboard_payload (e.g., GET /api/v1/system/readiness) is owned by SRS-API-001 / API-2. The endpoint declaration in python/atp_api/routes.py already references readiness as a future capability; the body schema will be the dataclass-serialised dashboard payload defined here.",
-      "Runtime readiness probes for IB connectivity, IB account authentication, SSD data layer access, ingestion freshness within one trading day, system service health, and NAS reachability are owned by SRS-MD-006. The SDK contract here is the gate state machine those probes will write into; today the gate is seeded only by the SRS-ARCH-005 static-config half. SRS-MD-006 will extend reevaluate (or add a sibling assert_runtime_ready_or_hold) to fold the runtime-probe outcomes into the same state machine. ERR-9 cannot flip passes:true until both halves are wired.",
+      "Runtime readiness probes for IB connectivity, IB account authentication, SSD data layer access, ingestion freshness within one trading day, system service health, and NAS reachability are owned by SRS-MD-006 and LANDED under startup_readiness_runtime_contract: the sibling gate method assert_runtime_ready_or_hold folds the probe outcomes (built by atp_readiness.runtime.build_runtime_report over the atp_reliability.restart SubCheck vocabulary) into this same state machine, and the readiness-wait CLI operation consumes it. What remains for SRS-MD-006 passes:true (and for ERR-9) is the runtime contract deferred[] set: the real IB Gateway round-trip demonstration (ATP_RUN_INTEGRATION) and the orchestrator launch-path consultation.",
       "Persistent operator-override audit log + SRS-NOTIF-001 alert dispatch on override issuance are owned by SRS-LOG-001 + SRS-NOTIF-001. The OperatorOverride dataclass + the four-field audit-trail contract are pinned here; the durable record keeping + the audit-event fan-out are downstream consumers.",
       "Manual-override-mode escalation (e.g., dashboard banner indicating the system is running on an active operator override, time-to-live on overrides) is intentionally not part of the SDK contract. The gate exposes the override audit list so a future SRS-UI-001 / SRS-NOTIF-001 follow-up can implement the banner without renegotiation."
+    ]
+  },
+  "startup_readiness_runtime_contract": {
+    "requirement": "SRS-MD-006",
+    "description": "SRS-MD-006 (execute a startup readiness check before enabling live trading; SyRS SYS-76; NFR-R6; StRS SN-2.04/SN-2.05). The RUNTIME half of the pre-trade gate: atp_readiness.runtime folds the five SYS-76 sub-check outcomes into an atp_config.ReadinessReport that ReadinessGate.assert_runtime_ready_or_hold drives through the SAME pinned state machine as the static-config half; atp_readiness.probes holds the I/O edge (tier/coverage CLI bridges, IB fixture/evidence probes, service/paper fixtures, the trading-calendar adapter, alert sinks); atp_readiness.wiring registers the readiness-wait CLI operation — the ADVISORY blocking launch surface landed here: a launch orchestration composes it as `readiness wait && strategy start --live ...`, and the SYS-76 clause 'the live strategy container shall not be started until the readiness check passes' is fully ENFORCED only once the deferred orchestrator/live-designation consultation (SRS-ORCH-004/SRS-EXE-001) consumes the gate in-process; until then a launch path that skips readiness-wait is not blocked by this feature.",
+    "srs_refs": ["SRS-MD-006"],
+    "syrs_refs": ["SYS-76", "NFR-R6"],
+    "strs_refs": ["SN-2.04", "SN-2.05", "BG-6"],
+    "package": "atp_readiness",
+    "module_paths": [
+      "python/atp_readiness/runtime.py",
+      "python/atp_readiness/probes.py",
+      "python/atp_readiness/handlers.py",
+      "python/atp_readiness/wiring.py",
+      "python/atp_readiness/runtime_cli.py"
+    ],
+    "runtime_gate_method": "assert_runtime_ready_or_hold",
+    "subcheck_source": "atp_reliability.restart",
+    "subchecks": [
+      "ib_connectivity",
+      "ib_account",
+      "data_layer_ssd",
+      "nas_archival",
+      "system_services"
+    ],
+    "pass_rule": "atp_reliability.restart.is_subcheck_satisfied — the single source: PASS passes; NAS DEGRADED passes ONLY with alert_raised; everything else fails. build_runtime_report derives the required set from REQUIRED_SUBCHECKS (a missing sub-check is an error-severity failure, a duplicate raises) and dispatches an operator alert for every failure AND for accepted NAS degraded-mode.",
+    "required_services": [
+      "execution_engine",
+      "internal_simulation_engine",
+      "data_layer",
+      "notification_subsystem",
+      "dashboard"
+    ],
+    "service_fold": "fold_service_health: all five ReadinessService entries healthy => PASS; an absent or unhealthy service => FAIL (unknown is never healthy); keys outside the enum are refused",
+    "paper_prerequisites": ["market_data_subscription_manager", "internal_simulation_engine"],
+    "paper_gate": "assert_paper_ready_or_hold: BOTH prerequisites present and available or PaperStartHoldError (missing key = unavailable, fail closed); a hold dispatches a PAPER_PREREQUISITE_FAILURE alert",
+    "freshness_boundary": "ingestion_is_fresh: fresh iff the ingestion frontier reaches the close of the most recent COMPLETED trading session at or before the injected now_ns (exactly at the session close is fresh; one nanosecond earlier is stale) — 'the most recent ingestion date is not stale by more than one trading day'; a None frontier (no ingestion evidence) is STALE; the trading calendar is an injected port and a calendar failure raises (never default-fresh)",
+    "subcheck_category_map": {
+      "ib_connectivity": "ib_account",
+      "ib_account": "ib_account",
+      "data_layer_ssd": "storage_paths",
+      "nas_archival": "storage_paths",
+      "system_services": "resource_limits"
+    },
+    "alert_port": {
+      "protocol": "AlertSink",
+      "method": "dispatch",
+      "mandatory": "alert_sink is a REQUIRED keyword-only argument of build_runtime_report / assert_paper_ready_or_hold / release_hold_with_override (no default) and dispatch failures PROPAGATE — SYS-76 alerts are first-class and cannot be silently dropped",
+      "alert_kinds": [
+        "subcheck_failure",
+        "nas_degraded_mode",
+        "operator_override",
+        "paper_prerequisite_failure"
+      ],
+      "degraded_alert_binding": "TierCliStorageProbe binds NAS alert_raised to the dispatch actually succeeding at probe time — degraded-mode can never pass on an undelivered alert",
+      "override_ordering": "release_hold_with_override delivers the mandatory OPERATOR_OVERRIDE alert FIRST, then commits the audited gate transition — a sink failure leaves the pre-trade hold IN PLACE (a released hold must never exist without its operator alert); a subsequently-refused transition leaves the delivered alert as the audit artifact of the attempt"
+    },
+    "probe_bridges": {
+      "storage": "data008_tier_cli report (nas_reachable:true|false; strict k:v parse; run/parse failure => both storage checks FAIL)",
+      "ingestion_frontier": "data011_coverage_cli show-coverage per watchlist symbol (frontier:<i64|none>; the freshness gate is only as fresh as its stalest symbol; empty watchlist refused)",
+      "ib_fixture": "FixtureIbProbe (provider-mock JSON {connectivity, account_data}; unreadable => FAIL)",
+      "ib_evidence": "EvidenceFileIbProbe over architecture/ib_paper_account_evidence.json — passes ONLY on schema_version 1 + paper_account_round_trip + returncode 0 + strict passing result line (exact test-result-ok prefix AND zero failed; not-ok/FAILED refused) AND a generated_at within EVIDENCE_MAX_AGE_NS (15 min) of the probe clock: stale evidence proves a past session, not current connectivity, and fails closed; the live in-process IB probe is the deferred runtime producer",
+      "calendar": "UsEquityCalendarAdapter over atp_strategy.calendar.UsEquityTradingCalendar — the atp_strategy import is FUNCTION-LOCAL at this edge module only (the package's core modules stay free of upstream imports)"
+    },
+    "launch_consumer": {
+      "operation": "readiness wait",
+      "handler": "ReadinessWaitHandler",
+      "wiring": "wire_readiness(runtime, *, gate, env, collect_results, alert_sink, now_ns) — all REQUIRED keyword-only, no fixture fallback (uncovered capability => no public surface); every poll re-runs BOTH halves (gate.reevaluate + assert_runtime_ready_or_hold) so a stale static PASS can never wipe a runtime failure; ADVISORY surface: enforcement inside the strategy-container launch path itself is the deferred SRS-ORCH-004/SRS-EXE-001 consultation",
+      "override_lifetime": "an audited OVERRIDDEN gate survives runtime re-evaluation (persisting or new runtime failures keep dispatching their alerts but do not demote the override — SYS-76 holds 'until resolved or manually overridden'); a STATIC configuration regression still demotes it; a fully clean evaluation promotes to READY, ending the override tenure",
+      "timeout": "HTTP 504 on deadline => the command's documented TIMEOUT exit code, with the full held-gate payload attached"
+    },
+    "cli_entry": "python -m atp_readiness.runtime_cli",
+    "cli_exit_codes": "0 ready/overridden; 1 pre_trade_blocked; 2 refused input (fail-closed allowlist parser)",
+    "check_tool": "tools/startup_readiness_runtime_check.py",
+    "domain_test": "tests/domain/test_startup_readiness_runtime.py",
+    "deferred": [
+      {
+        "feature": "SRS-MD-006 live verification / SRS-EXE-006",
+        "what": "The REAL IB Gateway round-trip for SYS-76(a)+(b): the ATP_RUN_INTEGRATION-gated integration test (tests/integration/test_srs_md_006_ib_round_trip.py, paper port 4002, single-live invariant) feeds the two IB sub-checks from a genuine gateway session. Solo runs use the fixture probe or the committed evidence document; SRS-MD-006 stays passes:false until the live leg is demonstrated."
+      },
+      {
+        "feature": "default runtime composition",
+        "what": "The shipped `python -m atp_runtime` serves the structured deferred 501 for `readiness wait` until a composer calls wire_readiness (uncovered capability => no public surface: the probes need operator-configured stores/watchlist/IB source/alert sink, and a partially-configured readiness surface must not exist). Landed compositions: the domain/boundary tests and the operator runtime_cli. Wiring a default composition from operator env into the runtime entrypoint rides with the SRS-ORCH-004/SRS-EXE-001 launch integration below."
+      },
+      {
+        "feature": "SRS-ORCH-004 / SRS-EXE-001 (launch-path consultation)",
+        "what": "Direct in-process consultation of the gate by the strategy-container orchestrator and the live-designation path (strategy start --live refusing while held), beyond the readiness-wait CLI consumer landed here. The orchestrator owns its launch sequence; this contract pins the gate method and the wait operation it must consult."
+      },
+      {
+        "feature": "SRS-NOTIF-001",
+        "what": "Real email+SMS fan-out behind AlertSink (the atp-notification Email+Sms required channel set). Landed sinks are the recording sink (tests/CLI) and the durable JSON-lines sink (persisted-output inspection)."
+      },
+      {
+        "feature": "per-service liveness substrate",
+        "what": "Live per-service health probing for SYS-76(e) (execution engine, simulation engine, data layer, notification subsystem, dashboard). No liveness endpoint substrate exists for the Rust services yet; today the service map is an operator fixture and an absent service fails closed. The dashboard's own liveness is observable via the operator runtime, and folding it in is part of this deferred item."
+      },
+      {
+        "feature": "SRS-LOG-001 / SRS-UI-001 / SRS-API-001",
+        "what": "Routing readiness alerts and gate transitions into the persistent log runtime, the dashboard readiness panel, and the declared REST readiness endpoint — the same downstream owners the SDK gate contract already names."
+      }
     ]
   },
   "operator_workflow_surface_contract": {

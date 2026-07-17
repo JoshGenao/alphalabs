@@ -74,6 +74,7 @@ for check in \
     jupyter_isolation_check \
     config_check \
     startup_readiness_gate_check \
+    startup_readiness_runtime_check \
     rest_api_check \
     websocket_api_check \
     cli_check \

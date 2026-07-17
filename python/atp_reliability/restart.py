@@ -394,11 +394,16 @@ def _is_valid_ns(value: object) -> bool:
     return 0 <= value <= _MAX_NS
 
 
-def _subcheck_passes(result: SubCheckResult) -> bool:
+def is_subcheck_satisfied(result: SubCheckResult) -> bool:
     """True iff a present sub-check result satisfies SYS-76.
 
     ``PASS`` always passes; NAS ``DEGRADED`` passes only with ``alert_raised`` (SYS-76(d)); every
     other status (``FAIL``; ``DEGRADED`` on a non-NAS check; NAS ``DEGRADED`` without alert) fails.
+
+    Public: this is the SINGLE source of the SYS-76 pass rule, shared by this
+    engine and the SRS-MD-006 runtime readiness probes
+    (``atp_readiness.runtime``) so the degraded-with-alert semantics cannot
+    fork.
     """
 
     if result.status is SubCheckStatus.PASS:
@@ -410,6 +415,10 @@ def _subcheck_passes(result: SubCheckResult) -> bool:
     ):
         return True
     return False
+
+
+#: Backwards-compatible private alias (the engine's original internal name).
+_subcheck_passes = is_subcheck_satisfied
 
 
 # --------------------------------------------------------------------------- #
@@ -671,4 +680,5 @@ __all__ = [
     "TRADE_READY_STATES",
     "Verdict",
     "compute_restart_recovery",
+    "is_subcheck_satisfied",
 ]

@@ -45,6 +45,7 @@ from .errors import (
     GateTransitionError,
     OverrideAuditError,
     PreTradeHoldError,
+    ReadinessGateError,
 )
 from .override import OperatorOverride
 
@@ -110,6 +111,11 @@ class ReadinessGate:
     def __init__(self) -> None:
         self._state: GateState = GateState.INITIALIZING
         self._report: ReadinessReport | None = None
+        # The STATIC (SRS-ARCH-005) half of the most recent evaluation, kept
+        # separately from the merged report so a runtime fold never feeds a
+        # previous fold's failures back into the next merge (runtime failures
+        # must clear when their probes recover).
+        self._static_report: ReadinessReport | None = None
         self._overrides: list[OperatorOverride] = []
 
     # ------------------------------------------------------------------ #
@@ -133,6 +139,7 @@ class ReadinessGate:
         _assert_env_is_mapping(env)
         gate = cls()
         gate._apply_report(_load_report(env, atp_env))
+        gate._static_report = gate._report
         return gate
 
     # ------------------------------------------------------------------ #
@@ -181,6 +188,7 @@ class ReadinessGate:
             )
         _assert_env_is_mapping(env)
         self._apply_report(_load_report(env, atp_env))
+        self._static_report = self._report
 
     def operator_override(self, override: OperatorOverride) -> None:
         """Release the pre-trade hold with a fully-audited operator override.
@@ -218,6 +226,43 @@ class ReadinessGate:
             )
         if self._state is GateState.PRE_TRADE_BLOCKED:
             raise PreTradeHoldError(self.report)
+
+    def assert_runtime_ready_or_hold(self, runtime_report: ReadinessReport) -> None:
+        """Fold a RUNTIME readiness report into the gate, then assert ready.
+
+        SRS-MD-006 / SyRS SYS-76: the runtime readiness probes
+        (:mod:`atp_readiness.runtime` builds their ``ReadinessReport``; the
+        probe adapters live outside this SDK module by contract) share the
+        SAME pre-trade state machine as the static configuration half. The
+        current static report and ``runtime_report`` are merged — failures
+        and evidence concatenated — and applied through the pinned
+        transition table, so an error-severity runtime failure holds the
+        gate exactly as a static one does, and an override remains durable
+        across re-evaluations. Requires a seeded gate.
+
+        Raises:
+            GateTransitionError: the gate is still ``INITIALIZING``.
+            PreTradeHoldError: the merged report carries error-severity
+                failures — the system holds in the pre-trade state.
+        """
+
+        if self._state is GateState.INITIALIZING:
+            raise GateTransitionError(
+                "assert_runtime_ready_or_hold requires a seeded gate; call "
+                "ReadinessGate.from_env first"
+            )
+        if not isinstance(runtime_report, ReadinessReport):
+            raise ReadinessGateError(
+                "assert_runtime_ready_or_hold requires a ReadinessReport; got "
+                f"{type(runtime_report).__name__}"
+            )
+        static_report = self._static_report if self._static_report is not None else self.report
+        combined = ReadinessReport(
+            failures=list(static_report.failures) + list(runtime_report.failures),
+            evidence=list(static_report.evidence) + list(runtime_report.evidence),
+        )
+        self._apply_report(combined)
+        self.assert_ready_or_hold()
 
     # ------------------------------------------------------------------ #
     # Structured payload renderers
