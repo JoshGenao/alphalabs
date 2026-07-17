@@ -654,7 +654,7 @@
       body.textContent = "";
       for (const alert of rows) renderAlertRow(alert);
     }
-    const active = rows.filter((a) => !cellValue(a.acknowledged)).length;
+    const active = rows.filter((a) => !isAcknowledged(a.acknowledged)).length;
     if (summary) {
       summary.textContent = active + " active critical alert" + (active === 1 ? "" : "s") +
         " · " + rows.length + " recorded";
@@ -663,6 +663,14 @@
     if (beacon) beacon.dataset.state = active ? "alarm" : "clear";
     if (table) table.hidden = rows.length === 0;
     setAlertsDot("fresh", "alert feed live");
+  }
+
+  // FAIL-CLOSED acknowledgement parse: the contract fields are strings, so a
+  // truthiness check would read `"false"` as acknowledged and under-count
+  // active alerts. Anything but an explicit boolean/string true stays ACTIVE.
+  function isAcknowledged(raw) {
+    const value = cellValue(raw);
+    return value === true || (typeof value === "string" && value.toLowerCase() === "true");
   }
 
   function renderAlertRow(alert) {
@@ -688,7 +696,7 @@
     delivTd.textContent = String(cellValue(alert.delivery_status) || "—");
     tr.appendChild(delivTd);
     const ackTd = el("td", "alert-ack");
-    ackTd.textContent = cellValue(alert.acknowledged) ? "YES" : "no";
+    ackTd.textContent = isAcknowledged(alert.acknowledged) ? "YES" : "no";
     tr.appendChild(ackTd);
     body.appendChild(tr);
   }
@@ -789,7 +797,13 @@
 
   async function pollAlerts() {
     try {
-      const res = await fetch(ALERTS_ROUTE, { cache: "no-store" });
+      // Bounded fetch: a STALLED endpoint (never resolving) must not leave the
+      // previous safety state on screen indefinitely — abort to the explicit
+      // unavailable branch within one poll budget.
+      const res = await fetch(ALERTS_ROUTE, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(POLL_MS),
+      });
       if (res.ok) {
         renderAlerts(await res.json());
       } else if (res.status === 404) {

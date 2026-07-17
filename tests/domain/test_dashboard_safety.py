@@ -333,7 +333,9 @@ def test_alerts_mount_is_read_only_and_never_fabricates_an_alert() -> None:
         status, snap = _request(host, port, "GET", "/dashboard/api/alerts")
         assert status == 200
         assert snap["feed"] == {"value": None, "data_source": "deferred:SRS-NOTIF-001"}
-        assert snap["alerts"] == []  # no fabricated alert rows, ever
+        # No fabricated alert rows, ever — and unknown state is None, not an
+        # all-clear-shaped empty list.
+        assert snap["alerts"] is None
         for method in ("POST", "PUT", "DELETE"):
             assert _request(host, port, method, "/dashboard/api/alerts")[0] in (404, 405)
     finally:

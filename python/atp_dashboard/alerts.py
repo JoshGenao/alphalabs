@@ -90,11 +90,13 @@ class CriticalAlertsProvider:
         """The REST poll body served at ``GET /dashboard/api/alerts``.
 
         Always ``ok: True`` — the builder cannot fail — with the alert *feed*
-        carried as one explicit deferred cell naming its producer. ``alerts`` is
-        the (necessarily empty) event list and must only be trusted when
-        ``feed.value`` is not ``None``; the pane renders the deferred state, not
-        "0 active alerts". ``alert_fields`` pins the per-alert schema the real
-        feed will use, so the rendered columns cannot drift from the contract.
+        carried as one explicit deferred cell naming its producer. ``alerts``
+        is ``None`` (unknown), NOT ``[]``: an empty list at the JSON boundary
+        would be all-clear-shaped, and a caller keying off ``ok`` + ``alerts``
+        would read unknown alert state as "zero active alerts". Only a live
+        SRS-NOTIF-001 feed may emit a list here. ``alert_fields`` pins the
+        per-alert schema the real feed will use, so the rendered columns cannot
+        drift from the contract.
         """
 
         return {
@@ -102,7 +104,7 @@ class CriticalAlertsProvider:
             "ok": True,
             "srs_ref": "UI-1",
             "feed": deferred_field_named(ALERT_FEED_OWNER),
-            "alerts": [],
+            "alerts": None,
             "alert_fields": list(ALERT_FIELDS),
             "severities": list(ALERT_SEVERITIES),
         }

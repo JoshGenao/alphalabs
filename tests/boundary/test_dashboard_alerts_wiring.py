@@ -63,7 +63,9 @@ def test_alerts_route_serves_an_honest_deferred_snapshot(running_dashboard) -> N
     snap = json.loads(body)
     assert snap["ok"] is True and snap["srs_ref"] == "UI-1"
     assert snap["feed"] == {"value": None, "data_source": "deferred:SRS-NOTIF-001"}
-    assert snap["alerts"] == []  # nothing fabricated
+    # Unknown alert state must NOT be all-clear-shaped at the JSON boundary:
+    # a caller keying off ok+alerts would read [] as "zero active alerts".
+    assert snap["alerts"] is None
     assert tuple(snap["alert_fields"]) == ALERT_FIELDS
 
 

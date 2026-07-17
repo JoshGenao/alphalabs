@@ -28,8 +28,9 @@ def test_snapshot_is_honest_and_well_formed() -> None:
     # The feed is one explicit deferred cell naming its producer feature.
     assert snap["feed"] == {"value": None, "data_source": f"deferred:{ALERT_FEED_OWNER}"}
     assert ALERT_FEED_OWNER == "SRS-NOTIF-001"
-    # No alert events exist (and none may be fabricated) while the feed is deferred.
-    assert snap["alerts"] == []
+    # Unknown alert state is None, NOT an empty list — an all-clear-shaped
+    # payload at the JSON boundary would read as "zero active alerts".
+    assert snap["alerts"] is None
 
 
 def test_alert_fields_pin_the_ws_channel_contract() -> None:

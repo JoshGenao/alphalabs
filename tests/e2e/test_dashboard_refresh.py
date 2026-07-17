@@ -668,3 +668,55 @@ def test_ui_1_alerts_pane_reports_endpoint_failure_never_stale_state(
             )
         finally:
             browser.close()
+
+
+def test_ui_1_alerts_real_feed_counts_string_false_ack_as_active(
+    operations_view_url: str,
+) -> None:
+    """UI-1 real-feed semantics (pinned ahead of the SRS-NOTIF-001 provider
+    swap): the contract types alert fields as strings, so acknowledgement must
+    be parsed FAIL-CLOSED — ``"false"`` (and any unknown shape) counts as an
+    ACTIVE alert; only an explicit true acknowledges. A truthiness check would
+    render a false all-clear over an unacknowledged CRITICAL alert."""
+
+    feed_body = (
+        '{"generated_at": "2026-07-16T00:00:00Z", "ok": true, "srs_ref": "UI-1",'
+        ' "feed": {"value": "live", "data_source": "live"},'
+        ' "alerts": ['
+        '{"alert_id": "alert-1", "raised_at": "2026-07-16T00:00:01Z",'
+        ' "severity": "CRITICAL", "channel": "EMAIL",'
+        ' "delivery_status": "SENT", "acknowledged": "false"},'
+        '{"alert_id": "alert-2", "raised_at": "2026-07-16T00:00:02Z",'
+        ' "severity": "ERROR", "channel": "SMS",'
+        ' "delivery_status": "SENT", "acknowledged": "true"}'
+        "]}"
+    )
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.route(
+                "**/dashboard/api/alerts",
+                lambda route: route.fulfill(
+                    status=200, content_type="application/json", body=feed_body
+                ),
+            )
+            page.goto(operations_view_url, wait_until="domcontentloaded")
+
+            page.wait_for_function(
+                "document.querySelectorAll('#alerts-rows tr').length === 2", timeout=7_000
+            )
+            summary = page.locator("#alerts-summary").inner_text()
+            # "false" (string) is NOT acknowledged: exactly one ACTIVE alert.
+            assert "1 active critical alert" in summary
+            assert page.eval_on_selector("#alerts-beacon", "e => e.dataset.state") == "alarm"
+            # The rows render the ack column fail-closed: no / YES.
+            acks = page.eval_on_selector_all(
+                "#alerts-rows .alert-ack", "els => els.map(e => e.textContent)"
+            )
+            assert acks == ["no", "YES"]
+            # With a LIVE feed the dot may honestly read fresh.
+            assert page.eval_on_selector("#fresh-alerts", "e => e.dataset.state") == "fresh"
+        finally:
+            browser.close()
