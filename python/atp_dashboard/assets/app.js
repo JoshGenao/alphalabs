@@ -428,6 +428,16 @@
   function renderInventoryRow(data) {
     const rows = $("inventory-rows");
     if (!rows) return;
+    // Rows are truth only inside an OPEN healthy summary generation: with no
+    // open generation (unavailable / never summarized) a delayed or stray row
+    // frame is dropped, and a row beyond the declared count means the burst
+    // contradicts its own summary — unknown truth, fail closed. Either way a
+    // stale frame must never resurrect an actionable PROMOTE LIVE row.
+    if (inventoryExpected === null) return;
+    if (inventorySeen >= inventoryExpected) {
+      inventoryUnavailable("inventory unavailable: more rows than the summary declared");
+      return;
+    }
     const key = String(data.strategy_id);
     // A data refresh voids any staged confirmation for this row — an armed
     // button must never survive a row rebuild and fire against renewed data —
@@ -509,6 +519,7 @@
   }
   let promoteArmedId = null;
   let promoteArmTimer = null;
+  let promoteInFlight = false; // one designation request at a time (AC-15)
 
   function designationStatus(text, tone) {
     const wrap = $("designation-state"), cap = $("designation-status");
@@ -548,6 +559,7 @@
 
   async function firePromote(btn, id) {
     disarmPromote(false);
+    promoteInFlight = true; // every promote control is inert until this settles
     btn.disabled = true;
     designationStatus("requesting live designation: " + id + "…", "pending");
     try {
@@ -584,6 +596,7 @@
     } catch (error) {
       designationStatus("FAILED: " + String(error) + " — designation outcome unknown", "error");
     }
+    promoteInFlight = false;
     btn.disabled = false;
   }
 
@@ -591,6 +604,11 @@
     const rows = $("inventory-rows");
     if (!rows) return;
     rows.addEventListener("click", (event) => {
+      // Serialize at the UI boundary: while one designation request is in
+      // flight EVERY promote control is inert — competing live-designation
+      // requests whose responses race would break the one-live invariant's
+      // operator story (AC-15 / NFR-S2).
+      if (promoteInFlight) return;
       const btn = event.target.closest(".manage__btn");
       if (!btn || btn.disabled) return;
       const id = String(btn.dataset.strategy || "");

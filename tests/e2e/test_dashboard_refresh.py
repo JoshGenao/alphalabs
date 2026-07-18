@@ -1377,3 +1377,70 @@ def test_ui_2_malformed_ws_summary_clears_promote_controls(
             assert page.eval_on_selector("#designation-state", "e => e.dataset.state") == "deferred"
         finally:
             browser.close()
+
+
+def test_ui_2_promote_live_requests_are_serialized(
+    poll_only_inventory_dashboard: str,
+) -> None:
+    """UI-2 / AC-15: one designation request at a time. While a confirmed
+    promote-live POST is pending, every other PROMOTE LIVE control is inert —
+    arming a second strategy is ignored, no competing POST leaves the page —
+    and once the pending request settles the controls come back."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            posts: list[str] = []
+            page.on(
+                "request",
+                lambda req: posts.append(req.url) if req.method == "POST" else None,
+            )
+            held_routes: list = []
+            # Hold the promote route open: the fetch stays pending until the
+            # test settles it, pinning the in-flight window deterministically.
+            page.route(
+                "**/api/v1/strategies/*/promote-live*",
+                lambda route: held_routes.append(route),
+            )
+            page.goto(poll_only_inventory_dashboard, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 2", timeout=7_000
+            )
+
+            # Confirm alpha-1 → its POST is now pending (held by the route).
+            _confirm_promote(page)
+            page.wait_for_function(
+                "document.getElementById('designation-state').dataset.state === 'pending'",
+                timeout=7_000,
+            )
+            assert len([u for u in posts if "promote-live" in u]) == 1
+
+            # While pending, the OTHER strategy's control is inert: clicking it
+            # neither arms nor fires.
+            beta = page.locator('#inventory-rows tr[data-strategy="beta-9"] .manage__btn')
+            beta.click()
+            page.wait_for_timeout(400)
+            assert page.locator('.manage__btn[data-armed="true"]').count() == 0
+            assert page.eval_on_selector("#designation-state", "e => e.dataset.state") == "pending"
+            assert len([u for u in posts if "promote-live" in u]) == 1
+
+            # Settle the pending request (501 from the deferred handler): the
+            # refusal renders and the controls come back to life.
+            assert held_routes, "the promote POST never reached the route"
+            held_routes[0].fulfill(
+                status=501,
+                content_type="application/json",
+                body='{"error": {"type": "HANDLER_DEFERRED", "detail": {"owner": "SRS-EXE-001"}}}',
+            )
+            page.wait_for_function(
+                "document.getElementById('designation-state').dataset.state === 'error'",
+                timeout=7_000,
+            )
+            assert "REFUSED 501" in page.locator("#designation-status").inner_text()
+
+            # Guard released: arming works again.
+            _arm_promote(page, beta)
+            assert page.locator('.manage__btn[data-armed="true"]').count() == 1
+        finally:
+            browser.close()
