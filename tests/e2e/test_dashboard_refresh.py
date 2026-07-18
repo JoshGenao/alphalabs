@@ -1444,3 +1444,73 @@ def test_ui_2_promote_live_requests_are_serialized(
             assert page.locator('.manage__btn[data-armed="true"]').count() == 1
         finally:
             browser.close()
+
+
+def test_ui_2_cross_source_interleaving_never_clears_healthy_rows(
+    poll_only_inventory_dashboard: str,
+) -> None:
+    """UI-2 burst-source independence: the WS feed and the REST poll are
+    separate burst sources over the same truth. A WS summary, a full REST
+    snapshot, and then a DELAYED WS row interleaved across them must leave the
+    healthy rows (and their PROMOTE LIVE controls) intact — a frame from one
+    source must never read as corruption of the other's burst."""
+
+    import json as _json
+
+    mock_ws = []
+
+    def _ws_frame(data: dict) -> str:
+        return _json.dumps({"type": "EVENT", "channel": "STRATEGY_STATE", "data": data})
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.route_web_socket("**/ws/v1", lambda ws: mock_ws.append(ws))
+            page.goto(poll_only_inventory_dashboard, wait_until="domcontentloaded")
+            # REST poll paints the truth (its own burst source).
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 2", timeout=7_000
+            )
+            assert mock_ws, "the dashboard never opened its WebSocket"
+
+            # WS opens its own burst: summary, then ONE of its two rows...
+            mock_ws[0].send(
+                _ws_frame({"event": "inventory-summary", "ok": True, "strategy_count": 2})
+            )
+            mock_ws[0].send(
+                _ws_frame(
+                    {
+                        "strategy_id": "alpha-1",
+                        "name": "alpha-1",
+                        "version_identifier": "sha256:" + "1" * 64 + "@100",
+                    }
+                )
+            )
+            # ...a full REST poll cycle lands in between (natural, ≤4 s)...
+            page.wait_for_timeout(4_500)
+            # ...and only then the DELAYED second WS row arrives.
+            mock_ws[0].send(
+                _ws_frame(
+                    {
+                        "strategy_id": "beta-9",
+                        "name": "beta-9",
+                        "version_identifier": "sha256:" + "3" * 64 + "@300",
+                    }
+                )
+            )
+            page.wait_for_timeout(600)
+
+            # The healthy dashboard is untouched: both rows and both controls
+            # remain, and the summary never flipped to unavailable.
+            assert page.locator("#inventory-rows tr").count() == 2
+            assert page.locator(".manage__btn").count() == 2
+            assert page.eval_on_selector("#inventory-summary", "e => e.dataset.tone") == "ok"
+            assert "unavailable" not in page.locator("#inventory-summary").inner_text()
+
+            # And it stays healthy across the next full poll cycle too.
+            page.wait_for_timeout(4_500)
+            assert page.locator("#inventory-rows tr").count() == 2
+            assert page.eval_on_selector("#inventory-summary", "e => e.dataset.tone") == "ok"
+        finally:
+            browser.close()

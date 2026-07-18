@@ -400,20 +400,28 @@
   // must not keep an actionable PROMOTE LIVE row. Zero-strategy and
   // unavailable summaries clear the table immediately (fail-closed: unknown
   // truth never keeps stale actionable rows).
-  let inventoryGen = 0;
-  let inventoryExpected = null;
-  let inventorySeen = 0;
+  // The WS STRATEGY_STATE feed and the REST poll are TWO independent burst
+  // sources over the same truth: each keeps its own open-summary state (so a
+  // delayed frame from one source can never read as corruption of the other's
+  // burst — only a source contradicting its OWN summary is malformed), while
+  // rows are stamped with one GLOBAL monotonic generation so completed bursts
+  // sweep only rows older than themselves.
+  let inventoryGen = 0; // global, monotonic across both sources
+  const inventorySources = {
+    ws: { gen: 0, expected: null, seen: 0 },
+    rest: { gen: 0, expected: null, seen: 0 },
+  };
 
   function removeInventoryRow(tr) {
     if (promoteArmedId === tr.dataset.strategy) disarmPromote(true);
     tr.remove();
   }
 
-  function sweepStaleInventoryRows() {
+  function sweepStaleInventoryRows(minGen) {
     const rows = $("inventory-rows");
     if (!rows) return;
     rows.querySelectorAll("tr").forEach((tr) => {
-      if (tr.dataset.gen !== String(inventoryGen)) removeInventoryRow(tr);
+      if (Number(tr.dataset.gen) < minGen) removeInventoryRow(tr);
     });
     if (!rows.children.length) $("inventory-table").hidden = true;
   }
@@ -425,16 +433,17 @@
     $("inventory-table").hidden = true;
   }
 
-  function renderInventoryRow(data) {
+  function renderInventoryRow(data, sourceKey) {
     const rows = $("inventory-rows");
     if (!rows) return;
-    // Rows are truth only inside an OPEN healthy summary generation: with no
-    // open generation (unavailable / never summarized) a delayed or stray row
-    // frame is dropped, and a row beyond the declared count means the burst
-    // contradicts its own summary — unknown truth, fail closed. Either way a
-    // stale frame must never resurrect an actionable PROMOTE LIVE row.
-    if (inventoryExpected === null) return;
-    if (inventorySeen >= inventoryExpected) {
+    const src = inventorySources[sourceKey || "ws"];
+    // Rows are truth only inside THIS source's open healthy summary: with no
+    // open summary (unavailable / never summarized) a delayed or stray frame
+    // is dropped, and a row beyond the source's own declared count means the
+    // burst contradicts its own summary — unknown truth, fail closed. Either
+    // way a stale frame must never resurrect an actionable PROMOTE LIVE row.
+    if (src.expected === null) return;
+    if (src.seen >= src.expected) {
       inventoryUnavailable("inventory unavailable: more rows than the summary declared");
       return;
     }
@@ -464,16 +473,25 @@
     const cd = el("span", "manage__cd"); cd.setAttribute("aria-hidden", "true");
     manage.append(btn, cd);
     tr.appendChild(manage);
-    tr.dataset.gen = String(inventoryGen);
+    tr.dataset.gen = String(src.gen);
     $("inventory-table").hidden = false;
-    inventorySeen += 1;
-    if (inventoryExpected !== null && inventorySeen >= inventoryExpected) {
-      sweepStaleInventoryRows();
+    src.seen += 1;
+    if (src.seen >= src.expected) {
+      // This source's burst is complete: rows older than it are no longer in
+      // the inventory. Rows stamped by a NEWER burst (the other source
+      // superseded this one mid-flight) are left alone.
+      sweepStaleInventoryRows(src.gen);
     }
   }
 
-  function onInventoryEvent(data) {
+  function closeInventorySources() {
+    inventorySources.ws.expected = null;
+    inventorySources.rest.expected = null;
+  }
+
+  function onInventoryEvent(data, sourceKey) {
     const summary = $("inventory-summary");
+    const src = inventorySources[sourceKey || "ws"];
     if (data.event === "inventory-summary") {
       if (!summary) return;
       const n = Number(data.strategy_count);
@@ -483,14 +501,15 @@
         // a non-negative integer) both fail closed: clear the rows too; stale
         // actionable PROMOTE LIVE rows must not survive an error caption.
         clearInventoryRows();
-        inventoryExpected = null;
+        closeInventorySources();
         summary.textContent = "inventory unavailable: " +
           (data.ok === false ? String(data.error || "unknown") : "malformed summary");
         summary.dataset.tone = "error";
       } else {
         inventoryGen += 1;
-        inventoryExpected = n;
-        inventorySeen = 0;
+        src.gen = inventoryGen;
+        src.expected = n;
+        src.seen = 0;
         if (n === 0) clearInventoryRows();
         summary.textContent = n === 0
           ? "no strategies deployed"
@@ -499,7 +518,7 @@
       }
       return;
     }
-    if (data.strategy_id) renderInventoryRow(data);
+    if (data.strategy_id) renderInventoryRow(data, sourceKey || "ws");
   }
 
   // ----- UI-2 promote-live control (SYS-2c / NFR-S2 / AC-15) -------------- //
@@ -1048,7 +1067,7 @@
   // "no strategies deployed".
   function inventoryUnavailable(reason) {
     clearInventoryRows();
-    inventoryExpected = null;
+    closeInventorySources();
     const summary = $("inventory-summary");
     if (summary) {
       summary.textContent = reason;
@@ -1069,10 +1088,10 @@
             event: "inventory-summary",
             ok: true,
             strategy_count: snap.strategies.length,
-          });
-          for (const row of snap.strategies) renderInventoryRow(row);
+          }, "rest");
+          for (const row of snap.strategies) renderInventoryRow(row, "rest");
         } else if (snap.ok === false) {
-          onInventoryEvent({ event: "inventory-summary", ok: false, error: snap.error });
+          onInventoryEvent({ event: "inventory-summary", ok: false, error: snap.error }, "rest");
         } else {
           inventoryUnavailable("inventory unavailable: malformed snapshot");
         }
@@ -1080,7 +1099,7 @@
         // Route disappearance: the provider is no longer composed on this
         // runtime — the caption alone is not enough, the rows go too.
         clearInventoryRows();
-        inventoryExpected = null;
+        closeInventorySources();
         const summary = $("inventory-summary");
         if (summary) {
           summary.textContent = "inventory not mounted — SRS-UI-002 provider not composed on this runtime";
