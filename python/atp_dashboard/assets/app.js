@@ -561,11 +561,16 @@
       try { body = await res.json(); } catch (error) { body = null; }
       if (res.ok) {
         // A 200 renders the runtime's OWN response fields — and only an
-        // explicit boolean true reads as designated (fail-closed parse; a
-        // missing or stringy is_live must never read as live).
-        if (body && body.is_live === true) {
+        // explicit boolean true FOR THE CONFIRMED STRATEGY reads as
+        // designated (fail-closed parse; a missing or stringy is_live, or a
+        // response naming a different strategy_id, must never read as live —
+        // the NFR-S2 confirmation is bound to one exact strategy).
+        if (body && body.is_live === true && String(body.strategy_id) === id) {
           designationStatus("runtime confirmed live designation: " + String(body.strategy_id) +
             " @ " + String(body.promoted_at), "live");
+        } else if (body && body.is_live === true) {
+          designationStatus("runtime answered " + res.status + " for strategy_id " +
+            String(body.strategy_id) + " ≠ confirmed " + id + " — NOT designated", "error");
         } else {
           designationStatus("runtime answered " + res.status + " without is_live=true — " +
             id + " NOT designated", "error");

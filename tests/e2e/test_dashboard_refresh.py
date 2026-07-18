@@ -1021,6 +1021,28 @@ def test_ui_2_promote_live_renders_refusals_and_success_honestly(
             not_designated = page.locator("#designation-status").inner_text()
             assert "NOT designated" in not_designated and "is_live" in not_designated
 
+            # A 200 naming a DIFFERENT strategy_id is NOT a designation either —
+            # the NFR-S2 confirmation is bound to one exact strategy, so a
+            # misrouted/stale success for another strategy renders as an error.
+            page.unroute("**/api/v1/strategies/*/promote-live*")
+            page.route(
+                "**/api/v1/strategies/*/promote-live*",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body='{"strategy_id": "other-9", "is_live": true,'
+                    ' "promoted_at": "2026-07-17T00:00:00Z"}',
+                ),
+            )
+            _confirm_promote(page)
+            page.wait_for_function(
+                "document.getElementById('designation-state').dataset.state === 'error'",
+                timeout=7_000,
+            )
+            mismatched = page.locator("#designation-status").inner_text()
+            assert "NOT designated" in mismatched
+            assert "other-9" in mismatched and "alpha-1" in mismatched
+
             # A real 200 with boolean is_live renders the runtime's own fields.
             page.unroute("**/api/v1/strategies/*/promote-live*")
             page.route(
