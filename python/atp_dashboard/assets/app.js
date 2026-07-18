@@ -466,17 +466,20 @@
     const summary = $("inventory-summary");
     if (data.event === "inventory-summary") {
       if (!summary) return;
-      if (data.ok === false) {
-        // Unknown truth: clear the rows too — an unreadable inventory must
-        // not keep stale actionable PROMOTE LIVE rows under an error caption.
+      const n = Number(data.strategy_count);
+      if (data.ok === false || data.ok !== true || !Number.isInteger(n) || n < 0) {
+        // Unknown truth — an unreadable source (ok:false) and a malformed or
+        // version-skewed summary (ok not exactly true, or a count that is not
+        // a non-negative integer) both fail closed: clear the rows too; stale
+        // actionable PROMOTE LIVE rows must not survive an error caption.
         clearInventoryRows();
         inventoryExpected = null;
-        summary.textContent = "inventory unavailable: " + String(data.error || "unknown");
+        summary.textContent = "inventory unavailable: " +
+          (data.ok === false ? String(data.error || "unknown") : "malformed summary");
         summary.dataset.tone = "error";
       } else {
-        const n = Number(data.strategy_count);
         inventoryGen += 1;
-        inventoryExpected = Number.isFinite(n) ? n : null;
+        inventoryExpected = n;
         inventorySeen = 0;
         if (n === 0) clearInventoryRows();
         summary.textContent = n === 0

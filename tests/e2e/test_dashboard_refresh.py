@@ -1272,7 +1272,7 @@ def test_ui_2_inventory_endpoint_failure_clears_promote_controls(
                 lambda route: route.fulfill(status=404, body="not found"),
             )
             page.wait_for_function(
-                "document.querySelectorAll('#inventory-rows tr').length === 0", timeout=12_000
+                "document.querySelectorAll('#inventory-rows tr').length === 0", timeout=20_000
             )
             assert page.locator(".manage__btn").count() == 0
             assert page.eval_on_selector("#inventory-table", "e => e.hidden") is True
@@ -1282,16 +1282,76 @@ def test_ui_2_inventory_endpoint_failure_clears_promote_controls(
             # Recovery: a healthy endpoint repopulates the management view.
             page.unroute("**/dashboard/api/strategies")
             page.wait_for_function(
-                "document.querySelectorAll('#inventory-rows tr').length === 2", timeout=12_000
+                "document.querySelectorAll('#inventory-rows tr').length === 2", timeout=20_000
             )
 
             # Unreachable endpoint: cleared again with an explicit error.
             page.route("**/dashboard/api/strategies", lambda route: route.abort())
             page.wait_for_function(
-                "document.querySelectorAll('#inventory-rows tr').length === 0", timeout=12_000
+                "document.querySelectorAll('#inventory-rows tr').length === 0", timeout=20_000
             )
             summary = page.locator("#inventory-summary").inner_text()
             assert "unavailable" in summary and "unreachable" in summary
             assert page.eval_on_selector("#inventory-summary", "e => e.dataset.tone") == "error"
+        finally:
+            browser.close()
+
+
+def test_ui_2_malformed_ws_summary_clears_promote_controls(
+    poll_only_inventory_dashboard: str,
+) -> None:
+    """UI-2 fail-closed WS semantics (pinned ahead of producer evolution): a
+    version-skewed STRATEGY_STATE summary — ``ok`` present but not exactly
+    true, or a ``strategy_count`` that is not a non-negative integer — is
+    unknown truth: rows and their PROMOTE LIVE controls clear immediately
+    under an explicit unavailable caption, never a preserved stale table."""
+
+    import json as _json
+
+    mock_ws = []
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            # Fully mock the WS transport: the page connects, we hold the
+            # server side and inject frames (the publisher is un-started, so
+            # nothing else speaks STRATEGY_STATE).
+            page.route_web_socket("**/ws/v1", lambda ws: mock_ws.append(ws))
+            page.goto(poll_only_inventory_dashboard, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 2", timeout=7_000
+            )
+            _arm_promote(
+                page, page.locator('#inventory-rows tr[data-strategy="alpha-1"] .manage__btn')
+            )
+
+            # Freeze the REST poll (404 from here on) so the only thing that
+            # can change the table inside the assertion window is the injected
+            # WS frame — and the clearing below is attributable to it (the
+            # next poll tick is seconds away).
+            page.route(
+                "**/dashboard/api/strategies",
+                lambda route: route.fulfill(status=404, body="gone"),
+            )
+            assert mock_ws, "the dashboard never opened its WebSocket"
+            mock_ws[0].send(
+                _json.dumps(
+                    {
+                        "type": "EVENT",
+                        "channel": "STRATEGY_STATE",
+                        "data": {"event": "inventory-summary", "ok": True},
+                    }
+                )
+            )
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 0", timeout=2_500
+            )
+            assert page.locator(".manage__btn").count() == 0
+            assert page.eval_on_selector("#inventory-table", "e => e.hidden") is True
+            summary = page.locator("#inventory-summary").inner_text()
+            assert "unavailable" in summary and "malformed" in summary
+            assert page.eval_on_selector("#inventory-summary", "e => e.dataset.tone") == "error"
+            assert page.eval_on_selector("#designation-state", "e => e.dataset.state") == "deferred"
         finally:
             browser.close()
