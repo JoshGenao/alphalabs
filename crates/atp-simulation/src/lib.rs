@@ -233,6 +233,25 @@ pub mod backtest_store;
 /// `passes:false`.
 pub mod determinism;
 
+/// Grid search and multidimensional parameter sweeps (SRS-BT-007 / SyRS SYS-19; StRS
+/// SN-1.16). A validated [`sweep::ParameterSpace`] (named axes, deterministic Cartesian
+/// product, `checked_mul` cardinality cap enforced before any run) is evaluated point by
+/// point through the SAME shipped chain a single backtest uses —
+/// [`backtest::BacktestEngine`] then [`benchmark::compare`] — with each point's
+/// [`backtest_store::StrategyParameters`] turned into a configured strategy by the
+/// fail-closed [`sweep::SweepStrategyFactory`] seam. Results are ranked best-first by
+/// the selected [`sweep::ObjectiveFunction`] (any of the eight SYS-16 metrics ×
+/// max/min; SYS-19 names maximize-Sharpe and minimize-max-drawdown) via
+/// `f64::total_cmp` with canonical-parameter tie-breaks; a point whose objective is
+/// mathematically undefined is reported unranked (never a fabricated 0, never ranked
+/// last, never dropped — [`sweep::SweepReport::total_points`] proves the accounting),
+/// and any per-point failure aborts the sweep naming the point. The `bt007_sweep_cli`
+/// binary is the operator surface over fixtures; the real Python-strategy factory
+/// (deferred host), the REST/dashboard sweep surface (SRS-API-001 / SRS-UI), and the
+/// SRS-BT-008 walk-forward consumer (which reuses [`sweep::SweepRunner::run`] per
+/// in-sample window) are the deferred owners.
+pub mod sweep;
+
 #[derive(Debug, Default)]
 pub struct InternalSimulationEngine;
 

@@ -35,6 +35,16 @@ path = "src/bin/bt009_store_cli.rs"
 name = "bt010_repro_cli"
 path = "src/bin/bt010_repro_cli.rs"
 
+# SRS-BT-007 grid-search / parameter-sweep operator CLI. Defines a parameter space from repeatable
+# --axis flags, evaluates every combination through the real BacktestEngine + benchmark::compare
+# chain over fixture bars with a genuinely parameterized fixture strategy, and prints ranked results
+# by the selected objective function — the SRS-BT-007 acceptance demonstrated end to end. A thin
+# binary over the public sweep API (the real Python-strategy factory, REST/dashboard sweep surface,
+# and SRS-BT-008 walk-forward consumer are deferred; no Python<->Rust runtime bridge).
+[[bin]]
+name = "bt007_sweep_cli"
+path = "src/bin/bt007_sweep_cli.rs"
+
 # SRS-BT-002 configurable transaction-cost operator CLI. Builds a per-run CostConfig from flags and
 # applies it to the SAME fixture strategy, demonstrating "defaults match SyRS values" and "override
 # without changing strategy code" (SYS-15d). A thin binary over the public cost + backtest API — the

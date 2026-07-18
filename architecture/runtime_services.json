@@ -7185,6 +7185,184 @@
       "config_key": "ATP_BACKTEST_RESULTS_DIR"
     }
   },
+  "sim_parameter_sweep_contract": {
+    "description": "SRS-BT-007 (grid search and multidimensional parameter sweeps for backtests; SyRS SYS-19; StRS SN-1.16). The sweep surface lives in crates/atp-simulation (module `sweep`) and maps each noun of the acceptance criterion -- 'a parameter space definition produces ranked backtest results by the selected objective function' -- to a named artifact. ParameterSpace is the parameter space definition: validated ParameterAxis dimensions (fail-closed on zero axes, an empty/whitespace axis name, a duplicate axis name, an empty value list, an empty/whitespace value token, or a duplicate value within an axis -- identical enumerated points would make ranking ambiguous), held sorted by name so declaration order never changes enumeration; points() materializes the deterministic Cartesian product (axes name-ordered, values declared-ordered, last axis fastest) as canonical StrategyParameters -- the SRS-BT-009 parameter-set identity, so every sweep point is queryable in backtest history by exactly the axis that produced it. Cardinality is bounded: point_count() computes the axis-size product with checked_mul in u128 (saturating to u128::MAX on overflow) and points() fails closed with TooManyPoints against the runner's cap (MAX_SWEEP_POINTS = 10_000 default; with_max_points is the test seam) BEFORE materializing a single point or running a single backtest. ObjectiveFunction is the selected objective function: an ObjectiveMetric (allowlist parse over the full eight-metric SRS-BT-004 / SYS-16 family -- SYS-19 names maximize-Sharpe and minimize-max-drawdown as examples, realized as the maximize_sharpe / minimize_max_drawdown conveniences) plus a Direction (max|min; no per-metric default direction -- guessing one could silently invert a ranking). SweepStrategyFactory is the bridge from one StrategyParameters point to a configured BacktestStrategy -- the seam the deferred Python strategy host implements and SRS-BT-008 walk-forward reuses per in-sample window; build() MUST fail closed on a missing / unknown / unparseable parameter (MissingParameter, UnknownParameter, InvalidParameterValue) rather than silently run a default whose ranked row would misattribute performance to the labeled point. SweepRunner::run evaluates every point strictly sequentially in enumeration order through the SAME shipped chain a single backtest uses -- BacktestEngine::run then benchmark::compare -- with no parallelism, RNG, or clock read, so identical inputs produce an identical SweepReport (SRS-BT-010). SweepReport is the ranked backtest results: ranked rows best-first ordered by f64::total_cmp on the objective value (descending for Maximize, ascending for Minimize) with ties broken by the points' canonical StrategyParameters::entries (a strict total order because points are pairwise distinct; lexicographic -- documented as determinism, not numeric intuition), 1-based positional rank fields, and bounded per-point payloads (metrics + comparison + final_equity_minor + trade_count summaries, never the full trade log / equity curve, so a cap-sized report stays small -- a point's full artifacts are recoverable by re-running that single point, deterministic per SRS-BT-010). Fail-closed semantics: a point whose objective metric is mathematically undefined (None -- the SRS-BT-004 'undefined is never fabricated' contract) is reported in unranked with UnrankedReason::ObjectiveUndefined -- never ranked last (a fabricated ordering claim), never a fabricated 0, never dropped (total_points == ranked + unranked proves the accounting); any per-point failure (factory rejection, BacktestError, BenchmarkError) aborts the WHOLE sweep with PointFailed naming the offending point, because a partial ranking could silently mis-rank and BT-008 in-sample optimization needs all-or-error reproducibility; a non-finite extracted objective fails closed (NonFiniteObjective -- defense-in-depth over compare()'s own finiteness guarantee). Persistence is deliberately NOT in the runner: the report carries parameters + metrics + comparison per point, so a caller composes BacktestRecord::from_result with the SRS-BT-009 store itself -- the sweep stays a pure function and BT-008 in-sample loops cannot flood history. The bt007_sweep_cli binary is the operator surface (repeatable --axis name=v1,v2,... flags; --objective + --direction with an explicit-objective-requires-explicit-direction rule; human and kv formats, the kv grammar count-prefixed and contiguously indexed with control-character fail-closed emission) over fixture bars, a fixture benchmark source, and a genuinely parameterized fixture strategy, exactly as the verification step specifies. sweep adds no broker/adapter dependency and carries no vendor SDK token; lib.rs re-exports `pub mod sweep;`.",
+    "requirement": "SRS-BT-007",
+    "srs_refs": [
+      "SRS-BT-007"
+    ],
+    "syrs_refs": [
+      "SYS-19"
+    ],
+    "strs_refs": [
+      "SN-1.16"
+    ],
+    "ac_traces": [
+      "SRS-BT-007",
+      "SYS-19"
+    ],
+    "simulation_crate": {
+      "crate": "atp-simulation",
+      "path": "crates/atp-simulation"
+    },
+    "sweep_module": "sweep",
+    "space_types": {
+      "axis_struct": "ParameterAxis",
+      "space_struct": "ParameterSpace",
+      "points_fn": "pub fn points",
+      "point_count_fn": "pub fn point_count",
+      "point_identity_import_token": "use crate::backtest_store::StrategyParameters"
+    },
+    "space_validation": {
+      "empty_space_variant": "EmptySpace",
+      "empty_axis_name_variant": "EmptyAxisName",
+      "duplicate_axis_variant": "DuplicateAxis",
+      "empty_axis_values_variant": "EmptyAxisValues",
+      "empty_axis_value_variant": "EmptyAxisValue",
+      "duplicate_axis_value_variant": "DuplicateAxisValue"
+    },
+    "point_cap": {
+      "cap_const": "pub const MAX_SWEEP_POINTS",
+      "checked_mul_token": "checked_mul",
+      "cap_error_variant": "TooManyPoints",
+      "cap_before_materialize_token": "return Err(SweepError::TooManyPoints"
+    },
+    "objective": {
+      "metric_enum": "ObjectiveMetric",
+      "direction_enum": "Direction",
+      "function_struct": "ObjectiveFunction",
+      "metric_allowlist_fn": "pub fn parse",
+      "unknown_metric_variant": "UnknownMetric",
+      "unknown_direction_variant": "UnknownDirection",
+      "syrs_named_conveniences": [
+        "pub fn maximize_sharpe",
+        "pub fn minimize_max_drawdown"
+      ],
+      "metric_tokens": [
+        "sharpe_ratio",
+        "sortino_ratio",
+        "alpha",
+        "beta",
+        "max_drawdown",
+        "annualized_return",
+        "annualized_volatility",
+        "win_rate"
+      ]
+    },
+    "factory_seam": {
+      "trait": "SweepStrategyFactory",
+      "build_fn": "fn build",
+      "fail_closed_variants": [
+        "MissingParameter",
+        "UnknownParameter",
+        "InvalidParameterValue"
+      ]
+    },
+    "runner": {
+      "runner_struct": "SweepRunner",
+      "run_fn": "pub fn run",
+      "request_struct": "SweepRequest",
+      "evaluation_struct": "SweepEvaluation",
+      "engine_reuse_token": "BacktestEngine",
+      "compare_reuse_token": "use crate::benchmark::{compare",
+      "test_seam_fn": "pub fn with_max_points"
+    },
+    "ranking": {
+      "report_struct": "SweepReport",
+      "ranked_struct": "RankedPoint",
+      "unranked_struct": "UnrankedPoint",
+      "total_order_token": "total_cmp",
+      "direction_match_token": "Direction::Maximize => b.1.total_cmp(&a.1)",
+      "tie_break_token": "a.0.entries().cmp(b.0.entries())",
+      "accounting_field": "total_points"
+    },
+    "none_fail_closed": {
+      "unranked_reason_variant": "ObjectiveUndefined",
+      "unranked_route_token": "None => unranked.push(UnrankedPoint",
+      "non_finite_variant": "NonFiniteObjective"
+    },
+    "point_failure": {
+      "variant": "PointFailed",
+      "names_point_token": "parameters: parameters.clone()"
+    },
+    "error_enum": {
+      "enum": "SweepError",
+      "variants": [
+        "EmptySpace",
+        "EmptyAxisName",
+        "DuplicateAxis",
+        "EmptyAxisValues",
+        "EmptyAxisValue",
+        "DuplicateAxisValue",
+        "TooManyPoints",
+        "UnknownMetric",
+        "UnknownDirection",
+        "MissingParameter",
+        "UnknownParameter",
+        "InvalidParameterValue",
+        "PointFailed",
+        "NonFiniteObjective",
+        "InvalidPoint"
+      ]
+    },
+    "determinism": {
+      "forbidden_tokens": [
+        "par_iter",
+        "rayon",
+        "thread::spawn",
+        "rand::",
+        "SystemTime",
+        "Instant::now"
+      ]
+    },
+    "module_reexport": {
+      "lib_reexport_token": "pub mod sweep;"
+    },
+    "no_broker_dependency": {
+      "cargo_toml": "Cargo.toml",
+      "forbidden_dep_tokens": [
+        "atp-adapters",
+        "atp-execution"
+      ]
+    },
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "cli": {
+      "bin": "bt007_sweep_cli",
+      "cargo_bin_token": "name = \"bt007_sweep_cli\"",
+      "explicit_direction_token": "--objective requires --direction",
+      "kv_control_char_guard": "fn kv_field"
+    },
+    "rust_integration_test": "srs_bt_007_parameter_sweep",
+    "rust_cli_test": "srs_bt_007_cli",
+    "deferred": [
+      {
+        "feature": "Real Python-strategy factory",
+        "what": "SweepStrategyFactory is the bridge seam from a StrategyParameters point to a configured strategy, realized here by fixture factories (the CLI's ParamRoundTripFactory and the test factories). The REAL factory -- the deferred Python strategy host, which knows a strategy's declared parameters and instantiates user strategy code per point -- is the SRS-BT-001-runtime / orchestrator owner. The seam ships; the production implementor is deferred."
+      },
+      {
+        "feature": "REST / dashboard sweep surface",
+        "what": "Defining a parameter space, selecting an objective, and viewing ranked results from the web dashboard / REST API is the SRS-API-001 / SRS-UI owner consuming the sweep API (the same boundary as every other backtest surface). The bt007_sweep_cli operator binary is the shipped CLI workflow; the web surface is deferred."
+      },
+      {
+        "feature": "Real stored-data benchmark resolver",
+        "what": "Each point's evaluation reuses benchmark::compare through a BenchmarkSource; the CLI and tests supply a fixture source. Resolving the benchmark's actual historical levels from stored data is the same deferred SRS-BT-005 resolver boundary every benchmark consumer shares."
+      },
+      {
+        "feature": "Walk-forward consumer",
+        "what": "SRS-BT-008 walk-forward analysis optimizes each in-sample window by running this sweep (SweepRunner::run per window) and evaluating out-of-sample -- it is the named downstream consumer of this optimizer core, not part of SRS-BT-007's acceptance. Not built."
+      },
+      {
+        "feature": "Persisting sweep points to backtest history",
+        "what": "The runner deliberately returns bounded per-point summaries and does not write the SRS-BT-009 store; a caller that wants sweep points in history composes BacktestRecord::from_result per point. An operator-facing 'persist this sweep' workflow (and its provenance stamping) is the SRS-BT-009-consumer / orchestrator boundary."
+      }
+    ]
+  },
   "ingestion_idempotency_contract": {
     "description": "SRS-DATA-016 (make ingestion jobs idempotent; SyRS NFR-R4; StRS SN-1.26 / SN-1.27). The acceptance: 'Re-running Databento, IB, option-chain, or Sharadar ingestion for an already ingested date creates no duplicate records and does not corrupt existing data.' This is the data-layer STORAGE SUBSTRATE -- the canonical market-data record, a local keyed store, and an idempotent validating write path -- the missing spine the rest of the SRS-DATA family composes (no canonical record / store / catalog existed before: atp-data shipped only the read-only ERR-5 validation + ERR-6 pacing gates, and the atp-adapters provider traits return record COUNTS, not records). It lives in crates/atp-data (module `store`). Every record carries a vendor-neutral NaturalKey = (DatasetKind, symbol, resolution, event_ts, option_contract) -- the dedup identity; the record's canonically-ordered MarketField value set (integer minor units) is its content. DatasetKind is the VENDOR-NEUTRAL taxonomy the four sources the acceptance names map onto (the core never names a vendor; the adapter layer maps provider -> kind, SRS-ARCH-003): DailyEquityBar <= Databento daily (SRS-DATA-001), MinuteEquityBar <= IB minute (SRS-DATA-002), OptionChainSnapshot <= IB option-chain (SRS-DATA-004), Fundamental <= Sharadar (SRS-DATA-005). MarketDataStore::upsert is the idempotency core: a fresh key INSERTS; an already-present key with IDENTICAL content is a silent no-op (UpsertOutcome::UnchangedDuplicate -- no duplicate row, the store stays byte-identical); an already-present key with DIFFERENT content fails closed (StoreError::ConflictingContent) leaving the existing record exactly as found (the 'corrupts existing data' guard). Records are held in one canonical natural-key order (binary_search_by), so the serialized form is byte-identical for the same record set regardless of ingest order -- which makes 'no duplicate / no corruption' inspectable on disk. DataLayer::ingest_market_record is the idempotent entry point: it COMPOSES the UNCHANGED ERR-5 validation gate (self.ingest_record -- so an invalid record is still quarantined read-only before any write) and only on a Valid classification applies the record via the idempotent store.upsert; the store mutator lives here / in store.rs, NEVER inside ingest_record (whose quarantine arm stays statically read-only per ingestion_validation_check.py forbidden_mutations). VALIDATION IS BOUND TO THE PERSISTED RECORD: the ERR-5 envelope is DERIVED from the record (record.ingestion_submission(): source = the dataset-kind tag, record_hash = the content fingerprint) rather than supplied independently, so the gate is always applied to exactly the record that will be written -- a caller cannot validate one payload and store another (there is no separate submission to forge). serialize/restore is a deterministic, dependency-free text codec (MAGIC header + FNV-1a integrity checksum over the body verified BEFORE building any state, length-prefixed strings, canonical-order records, untrusted counts grown incrementally not pre-allocated, single bulk sort on restore) that fails closed on a corrupt / truncated / checksum-mismatching / duplicate-key blob (StoreError::CorruptRecord / ChecksumMismatch / UnknownSchemaVersion / DuplicateKey) yielding no partial store. The durable FILE layer (save_to_path / load_from_path) mirrors the SRS-BT-009 backtest_store pattern: a per-call-unique scratch file, fsync, atomic fs::rename publish, parent-directory fsync; load fails closed on a missing/unmounted directory (!dir.is_dir() -> StoreError::Io, never a silent empty catalog) and restores an empty store only for a missing FILE in a provisioned directory. All value fields stay integer minor units (i64, i128 codec intermediates) -- no f64 in the core; the work is deterministic (no parallelism / RNG / wall-clock read); store carries no broker/adapter dependency and no lowercase vendor SDK token. The operator surface is the data016_ingest_cli binary (ingest / reingest / inspect over a fixture dir): reingest proves inserted:0 + bytes_identical:true across all four kinds. The Rust integration test srs_data_016_idempotent_ingest drives ingest -> persist -> reload -> re-ingest -> assert no duplicate + byte-identical file + conflicting-content fail-closed + quarantined-record-not-written, per kind. SRS-DATA-016 flips passes:true: the idempotency property is a self-contained runtime property (verification: Test) demonstrated end to end with fixture sources + persisted-file inspection, exactly as the step permits. DEFERRED (named owners, none load-bearing for idempotency): the REAL Databento/IB/Sharadar/option-chain network adapters (SRS-DATA-001/003/005/006, the atp-adapters provider traits stay stubs); unified query read consumers -- strategy code, notebooks (SRS-DATA-007); SSD-primary / NAS-archival TIERING, eviction, cold-read failover of the store directory (SRS-DATA-008/009/010); the validator rule logic + quarantine dashboard/notification alert surface (SRS-DATA-013 / SRS-NOTIF-001).",
     "requirement": "SRS-DATA-016",
