@@ -1014,29 +1014,58 @@
   // ----- strategy-inventory poll (SRS-UI-002 first paint + fallback) ------ //
   // The WS STRATEGY_STATE events drive live updates; this poll gives the table
   // its first paint and reports an UN-mounted inventory honestly (the route is
-  // registered only when a composer mounts the SRS-UI-002 provider).
+  // registered only when a composer mounts the SRS-UI-002 provider). EVERY
+  // degraded branch fails closed by clearing the rows (which disarms any
+  // staged PROMOTE LIVE): the WS transport shares this same server, so a sick
+  // or unreachable endpoint means no transport is authoritative — stale rows
+  // must not stay actionable, and a malformed snapshot is unknown truth, never
+  // "no strategies deployed".
+  function inventoryUnavailable(reason) {
+    clearInventoryRows();
+    inventoryExpected = null;
+    const summary = $("inventory-summary");
+    if (summary) {
+      summary.textContent = reason;
+      summary.dataset.tone = "error";
+    }
+  }
+
   async function pollStrategies() {
     try {
-      const res = await fetch("/dashboard/api/strategies", { cache: "no-store" });
+      const res = await fetch("/dashboard/api/strategies", {
+        cache: "no-store",
+        signal: AbortSignal.timeout(POLL_MS),
+      });
       if (res.ok) {
         const snap = await res.json();
-        onInventoryEvent({
-          event: "inventory-summary",
-          ok: snap.ok,
-          error: snap.error,
-          strategy_count: Array.isArray(snap.strategies) ? snap.strategies.length : null,
-        });
-        if (snap.ok && Array.isArray(snap.strategies)) {
+        if (snap.ok === true && Array.isArray(snap.strategies)) {
+          onInventoryEvent({
+            event: "inventory-summary",
+            ok: true,
+            strategy_count: snap.strategies.length,
+          });
           for (const row of snap.strategies) renderInventoryRow(row);
+        } else if (snap.ok === false) {
+          onInventoryEvent({ event: "inventory-summary", ok: false, error: snap.error });
+        } else {
+          inventoryUnavailable("inventory unavailable: malformed snapshot");
         }
       } else if (res.status === 404) {
+        // Route disappearance: the provider is no longer composed on this
+        // runtime — the caption alone is not enough, the rows go too.
+        clearInventoryRows();
+        inventoryExpected = null;
         const summary = $("inventory-summary");
         if (summary) {
           summary.textContent = "inventory not mounted — SRS-UI-002 provider not composed on this runtime";
           summary.dataset.tone = "warn";
         }
+      } else {
+        inventoryUnavailable("inventory unavailable: endpoint " + res.status);
       }
-    } catch (_e) { /* transient; next tick retries */ }
+    } catch (_e) {
+      inventoryUnavailable("inventory unavailable: endpoint unreachable");
+    }
     setTimeout(pollStrategies, POLL_MS);
   }
 

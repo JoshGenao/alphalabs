@@ -1188,3 +1188,110 @@ def test_ui_2_removed_strategy_loses_its_promote_control(
             assert "unavailable" in page.locator("#inventory-summary").inner_text()
         finally:
             browser.close()
+
+
+@pytest.fixture()
+def poll_only_inventory_dashboard(tmp_path) -> Iterator[str]:
+    """UI-2 degraded-path harness: the inventory dashboard with the WS
+    publisher deliberately NOT started, so the REST poll is the only inventory
+    transport and endpoint failures are deterministic to observe."""
+
+    import subprocess
+    from pathlib import Path
+
+    from atp_dashboard import RollbackSnapshotInventorySource, StrategyInventoryProvider
+
+    root = Path(__file__).resolve().parents[2]
+    binary = root / "target" / "debug" / "orch005_rollback_cli"
+    if not binary.exists():
+        build = subprocess.run(
+            ["cargo", "build", "-q", "-p", "atp-orchestrator", "--bin", "orch005_rollback_cli"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if build.returncode != 0:
+            pytest.skip(f"cannot build orch005_rollback_cli: {build.stderr}")
+    state = tmp_path / "deploy.state"
+    for sid, digit, ts in (("alpha-1", "1", "100"), ("beta-9", "3", "300")):
+        subprocess.run(
+            [
+                str(binary),
+                "record",
+                "--state",
+                str(state),
+                "--strategy",
+                sid,
+                "--hash",
+                "sha256:" + digit * 64,
+                "--observed-at",
+                ts,
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    runtime = OperatorInterfaceRuntime()
+    inventory = StrategyInventoryProvider(
+        RollbackSnapshotInventorySource(state_path=state, binary=binary)
+    )
+    publisher = mount_dashboard(runtime, ReadinessBackedProvider({}), inventory=inventory)
+    # publisher deliberately NOT started — REST poll only.
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        yield f"http://{host}:{port}/dashboard"
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
+def test_ui_2_inventory_endpoint_failure_clears_promote_controls(
+    poll_only_inventory_dashboard: str,
+) -> None:
+    """UI-2 degraded paths fail closed: after rows (and an armed PROMOTE LIVE)
+    render, a 404 (provider no longer composed) clears every actionable row —
+    not just the caption; an unreachable endpoint clears them too with an
+    explicit error; and a healthy endpoint repopulates the view."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.goto(poll_only_inventory_dashboard, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 2", timeout=7_000
+            )
+            _arm_promote(
+                page, page.locator('#inventory-rows tr[data-strategy="beta-9"] .manage__btn')
+            )
+
+            # Route disappearance: rows AND the armed control go, honestly.
+            page.route(
+                "**/dashboard/api/strategies",
+                lambda route: route.fulfill(status=404, body="not found"),
+            )
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 0", timeout=12_000
+            )
+            assert page.locator(".manage__btn").count() == 0
+            assert page.eval_on_selector("#inventory-table", "e => e.hidden") is True
+            assert "not mounted" in page.locator("#inventory-summary").inner_text()
+            assert page.eval_on_selector("#designation-state", "e => e.dataset.state") == "deferred"
+
+            # Recovery: a healthy endpoint repopulates the management view.
+            page.unroute("**/dashboard/api/strategies")
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 2", timeout=12_000
+            )
+
+            # Unreachable endpoint: cleared again with an explicit error.
+            page.route("**/dashboard/api/strategies", lambda route: route.abort())
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 0", timeout=12_000
+            )
+            summary = page.locator("#inventory-summary").inner_text()
+            assert "unavailable" in summary and "unreachable" in summary
+            assert page.eval_on_selector("#inventory-summary", "e => e.dataset.tone") == "error"
+        finally:
+            browser.close()
