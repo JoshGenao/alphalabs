@@ -16,6 +16,7 @@ use std::fmt;
 
 pub mod kill_switch_activation;
 pub mod kill_switch_timeout;
+pub mod order_routing_wiring;
 
 #[derive(Debug, Default)]
 pub struct StrategyOrchestrator;

@@ -42,8 +42,9 @@
 //! fills are SRS-SIM-002 (built, `passes:true`); the full SYS-84 virtual ledger is
 //! SRS-SIM-003 (built, `passes:true`); paper-state persistence (SYS-89) is
 //! SRS-SIM-004; the orchestrator routing of *all* non-live strategies into this
-//! engine is SRS-EXE-002; and the Python strategy runtime that actually submits
-//! these orders end to end is the shared SRS-SDK deferral.
+//! engine is SRS-EXE-002 (built: `atp-orchestrator::order_routing_wiring`); and
+//! the Python strategy runtime that actually submits these orders end to end is
+//! the shared SRS-SDK deferral.
 //!
 //! # Money math
 //!

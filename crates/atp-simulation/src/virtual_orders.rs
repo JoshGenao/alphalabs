@@ -43,10 +43,12 @@
 //! snapshot pins that fact (its pending-orders slot is reserved and
 //! always-empty). So there is no production call site that could "bypass" this
 //! book — an accepted-but-resting order does not exist anywhere until a
-//! runtime holds one, and the first runtime that DOES (the SRS-SIM-002
-//! fill-loop evolution that rests limit/stop orders until trigger, under the
-//! SRS-EXE-002 orchestrator / Python strategy host) must hold THIS book as its
-//! single authoritative store — that adoption is those owners' named work.
+//! runtime holds one. The SRS-EXE-002 orchestrator wiring
+//! (`atp-orchestrator::order_routing_wiring::WiredPaperSimulation`) is that
+//! runtime: it holds THIS book and routes every accepted paper order through
+//! [`VirtualOrderBook::place_accepted`], so nothing enters around the intake.
+//! The SRS-SIM-002 fill-loop evolution that rests limit/stop orders until
+//! trigger (and consumes them from this book) remains that owner's named work.
 //! Retrofitting retention into [`PaperSimulationEngine::accept_order`] itself
 //! would rewrite SRS-SIM-001's verified compile-time contract (a stateless
 //! validate-and-route surface with no storage) from an adjacent feature — the

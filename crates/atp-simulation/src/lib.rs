@@ -57,8 +57,9 @@ pub mod sim;
 /// [`sim::PaperFill`] and returns [`halt::HaltError::Halted`] — so no fill exists to drive an
 /// `on_fill` callback (the domain-level realization, there is no callback runtime yet). The bare
 /// [`sim::PaperSimulationEngine`] stays a public fill primitive, so this seals a HELD gate, not the
-/// whole system; routing every non-live strategy onto a halt-aware engine is the deferred
-/// SRS-EXE-002 orchestrator's job. This is ONE
+/// whole system; the SRS-EXE-002 orchestrator wiring routes every non-live strategy's INTAKE (it
+/// drives no fills), so composing halt-aware engines into the fill runtime stays the SRS-SIM-002
+/// fill-loop / SRS-SAFE-001 activation runtime's job. This is ONE
 /// named sub-component: the full kill-switch sequence (IB cancel/disconnect = SRS-EXE-006;
 /// orchestrated activation + 5s NFR-P3 = SRS-EXE-002 / SAFE-001 runtime; SRS-LOG-001 1s HALTED
 /// observability; email/SMS = SRS-NOTIF-001; dashboard/CLI/REST trigger = SRS-API-001 / SRS-UI) is
@@ -92,9 +93,10 @@ pub mod fill_model;
 /// `sim003_ledger_cli` operator binary makes that isolation operator-demonstrable,
 /// so SRS-SIM-003 is `passes:true`. The remaining items (the SYS-70 live feed,
 /// SYS-88 corporate actions / SRS-DATA-021, SYS-89 persistence / SRS-SIM-004,
-/// SYS-85 paper metrics, SRS-EXE-002 orchestrator routing, and the Python
-/// runtime) are genuinely ADJACENT features -- separate requirements, NOT
-/// contexts inside SRS-SIM-003's acceptance criterion.
+/// SYS-85 paper metrics, SRS-EXE-002 orchestrator routing (since built:
+/// `atp-orchestrator::order_routing_wiring`), and the Python runtime) are
+/// genuinely ADJACENT features -- separate requirements, NOT contexts inside
+/// SRS-SIM-003's acceptance criterion.
 pub mod virtual_ledger;
 
 /// The paper engine's virtual RESTING-order store (SRS-DATA-021). The SRS-SIM-001

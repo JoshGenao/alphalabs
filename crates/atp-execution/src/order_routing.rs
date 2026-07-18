@@ -53,20 +53,28 @@
 //!
 //! [`LiveBrokerageSubmit`]: crate::LiveBrokerageSubmit
 //!
-//! ## Scope (SRS-EXE-002 stays `passes:false`)
+//! ## Scope
 //!
-//! This is the routing-authority / SDK-surface half. The end-to-end AC
-//! ("paper strategy orders never create IB orders" exercised through real
-//! workflows; "the IB paper account is available only through
-//! operator-initiated adapter integration tests") needs the deferred halves
-//! enumerated in `architecture/runtime_services.json`
-//! `order_routing_contract.deferred[]`: the orchestrator wiring the real
-//! `PaperSimulationEngine::accept_order` to [`InternalSimulationSubmit`]
-//! (incl. the `OrderSubmission` → `PaperOrderRequest`/`OrderLeg` enrichment,
-//! SRS-ORCH-* / SRS-SIM-001 seam); the end-to-end Python strategy runtime
-//! (SRS-SDK); live multi-leg composites (SRS-EXE-004); simulated
-//! fill/ledger/persistence (SRS-SIM-002/003/004); and the operator-initiated
-//! IB-paper-account adapter-test surface (SRS-API-001 / SRS-EXE-006).
+//! This module is the routing-authority half: the source-neutral destination
+//! decision + the two ports. The COMPOSITION half lives in
+//! `atp-orchestrator::order_routing_wiring` (SRS-ARCH-002 keeps this crate
+//! independent of `atp-simulation`/`atp-adapters`): the real
+//! `PaperSimulationEngine::accept_order` behind [`InternalSimulationSubmit`]
+//! (with the `OrderSubmission` → `OrderLeg` mapping and the `VirtualOrderBook`
+//! single order store), the real SRS-EXE-006 adapter behind
+//! [`LiveBrokerageSubmit`], and the `exe002_order_routing_cli` operator
+//! verification workflow (the deployed strategy-runtime order path — real
+//! strategy containers submitting through `dispatch_order` — stays deferred
+//! to the SRS-SDK strategy host / SRS-ORCH-* runtime). The IB paper account
+//! stays reachable only through the
+//! operator-initiated SRS-EXE-006 adapter integration test. Still deferred
+//! with named owners (`architecture/runtime_services.json`
+//! `order_routing_contract.deferred[]`): the Python strategy host (SRS-SDK);
+//! live multi-leg composites (SRS-EXE-004); the simulated fill loop behind the
+//! port (SRS-SIM-002/003/004); the correlation-id idempotency key
+//! (SRS-EXE-008); and the simulated-order stale-data gate (SRS-MD-004).
+//!
+//! [`LiveBrokerageSubmit`]: crate::LiveBrokerageSubmit
 
 use atp_types::{
     OrderErrorCategory, OrderReceipt, OrderSubmission, StrategyId, StructuredOrderError,
@@ -124,7 +132,8 @@ pub enum OrderRoutingReceipt {
 /// `atp-execution` stays independent of `atp-simulation` (SRS-ARCH-002
 /// dependency direction: simulation is a sibling crate, not an upstream dep).
 /// The orchestrator wires the real `PaperSimulationEngine` to this port
-/// (deferred; see the module-level scope note).
+/// (`atp-orchestrator::order_routing_wiring::WiredPaperSimulation`, which also
+/// rests every accepted order in the `VirtualOrderBook` single order store).
 ///
 /// The port carries the same [`OrderSubmission`] envelope the live path uses
 /// (see [`LiveBrokerageSubmit`]) — keeping the live and paper intake
@@ -132,12 +141,13 @@ pub enum OrderRoutingReceipt {
 /// identical). As of SRS-EXE-003 `OrderSubmission` carries full execution
 /// intent (`asset_class` / `side` / `order_type` + prices) shared with the
 /// simulation engine's `OrderLeg`, plus `OrderSubmission::validate` (the
-/// price-positivity rule both paths apply). What is still deferred on this
-/// envelope: the SRS-EXE-008 [`ClientCorrelationId`] idempotency key (owner
-/// SRS-EXE-008) and the `OrderSubmission` → `PaperOrderRequest`/`OrderLeg`
-/// enrichment that the real `PaperSimulationEngine::accept_order` needs (owner
-/// SRS-ORCH-* / SRS-SIM-001 seam) — both must land for the **live and paper
-/// paths together** to keep the symmetry (see `order_type_contract.deferred[]`).
+/// price-positivity rule both paths apply). The `OrderSubmission` →
+/// `PaperOrderRequest`/`OrderLeg` mapping the real
+/// `PaperSimulationEngine::accept_order` needs is field-for-field in the
+/// orchestrator wiring. What is still deferred on this envelope: the
+/// SRS-EXE-008 [`ClientCorrelationId`] idempotency key (owner SRS-EXE-008) —
+/// it must land for the **live and paper paths together** to keep the
+/// symmetry (see `order_type_contract.deferred[]`).
 ///
 /// [`LiveBrokerageSubmit`]: crate::LiveBrokerageSubmit
 /// [`ClientCorrelationId`]: atp_types::ClientCorrelationId
@@ -186,8 +196,10 @@ impl ExecutionEngine {
     /// gate this slice deliberately does **not** forbid on the paper path — but
     /// it also does not yet implement it; that is SRS-MD-004's deliverable
     /// (deferred; `dispatch_order` already receives the `freshness` port for
-    /// when MD-004 adds the check). `dispatch_order` has no production caller
-    /// yet, so there is no live stale-data bypass today.
+    /// when MD-004 adds the check). `dispatch_order`'s only caller today is
+    /// the operator fixture-verification CLI (`exe002_order_routing_cli`)
+    /// over always-fresh fixture probes — the deployed strategy-runtime order
+    /// path is still unwired — so there is no live stale-data bypass today.
     #[allow(clippy::too_many_arguments)]
     pub fn dispatch_order<B, C, E, F, S, P>(
         &self,

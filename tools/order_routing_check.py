@@ -478,15 +478,27 @@ def main(argv: list[str] | None = None) -> int:
         print(f"SRS-EXE-002 FAIL: {error}", file=sys.stderr)
         return 1
 
-    # Scope honestly: this is the routing-authority / SDK-surface half (the
-    # source-neutral OrderRoute decision + the InternalSimulationSubmit port).
-    # It does NOT wire the real simulation engine, run the Python strategy
-    # runtime end to end, or exercise the operator IB-paper-account workflow —
-    # all deferred. This is NOT a full SRS-EXE-002 requirement pass.
-    print("SRS-EXE-002 SDK-SURFACE PASS (contract evidence only; not a full requirement pass)")
+    # Scope honestly: this script pins the routing-authority half (the
+    # source-neutral OrderRoute decision + the InternalSimulationSubmit port in
+    # atp-execution). The orchestrator wiring half — the real
+    # PaperSimulationEngine + VirtualOrderBook behind the port, the real
+    # InteractiveBrokersBrokerage behind the live port, and the
+    # exe002_order_routing_cli operator verification workflow — is proven by
+    # crates/atp-orchestrator/tests/{srs_exe_002_routing_wiring,
+    # exe002_cli_fail_closed}.rs + tests/domain/test_order_routing_wiring.py
+    # (see order_routing_contract.wiring).
+    print("SRS-EXE-002 ROUTING-AUTHORITY PASS (structural contract evidence)")
     for item in evidence:
         print(f"- {item}")
-    print("Deferred end-to-end evidence (SRS-EXE-002 stays passes:false until these land):")
+    wiring = contract_block(config).get("wiring", {})
+    if wiring:
+        print(
+            "Wiring half (proven by the orchestrator tests, not this script): "
+            f"{wiring.get('module', '?')} + {wiring.get('cli_bin', '?')} "
+            f"(tests: {wiring.get('integration_test', '?')}, "
+            f"{wiring.get('cli_fail_closed_test', '?')}, {wiring.get('domain_test', '?')})"
+        )
+    print("Deferred with named owners (adjacent features; see order_routing_contract.deferred):")
     for owner in contract_block(config).get("deferred", []):
         print(f"  * {owner}")
     return 0

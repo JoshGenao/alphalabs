@@ -51,7 +51,7 @@ class OrderRoutingScriptTest(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("SRS-EXE-002 SDK-SURFACE PASS", result.stdout)
+        self.assertIn("SRS-EXE-002 ROUTING-AUTHORITY PASS", result.stdout)
         for needle in (
             "OrderRoute with EXACTLY 2 destinations (LiveBrokerage, InternalSimulation)",
             "SimulatedOrderReceipt with `sim_order_id` and NOT `broker_order_id`",
@@ -64,7 +64,9 @@ class OrderRoutingScriptTest(unittest.TestCase):
             "does NOT depend on `atp-simulation`",
             "cargo test -p atp-execution --lib order_routing",
             "srs_exe_002_order_routing",
-            "SRS-EXE-002 stays passes:false",
+            "srs_exe_002_routing_wiring",
+            "exe002_order_routing_cli",
+            "Deferred with named owners",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
 

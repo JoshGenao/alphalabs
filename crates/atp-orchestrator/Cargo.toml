@@ -31,6 +31,19 @@ path = "src/bin/safe001_kill_switch_cli.rs"
 name = "safe002_liquidation_timeout_cli"
 path = "src/bin/safe002_liquidation_timeout_cli.rs"
 
+# SRS-EXE-002 order-routing operator CLI. The fixture-verification workflow:
+# drives N paper (+ optionally the one designated live) strategy orders through
+# the REAL ExecutionEngine::dispatch_order over the wired real
+# PaperSimulationEngine (InternalSimulationSubmit port) and real
+# InteractiveBrokersBrokerage (LiveBrokerageSubmit port) with the deterministic
+# mocked-IB recording transport — the AC-10 evidence that paper strategy orders
+# never create IB orders. NOT the deployed strategy-runtime order path (that is
+# the deferred SRS-SDK / SRS-ORCH-* leg). The IB paper account stays reachable
+# ONLY via the operator-initiated SRS-EXE-006 adapter integration test.
+[[bin]]
+name = "exe002_order_routing_cli"
+path = "src/bin/exe002_order_routing_cli.rs"
+
 # SRS-ORCH-005 rollback operator CLI. Demonstrates the SYS-80 previous-version
 # retention, the exact-target rollback gate, and the NFR-S2 live-rollback
 # confirmation control (structural mirror of live promotion's). The runtime's
