@@ -397,6 +397,11 @@
     const rows = $("inventory-rows");
     if (!rows) return;
     const key = String(data.strategy_id);
+    // A data refresh voids any staged confirmation for this row — an armed
+    // button must never survive a row rebuild and fire against renewed data —
+    // and the designation readout returns to resting (a stale "armed" caption
+    // with nothing staged would misstate the control's state).
+    if (promoteArmedId === key) disarmPromote(true);
     let tr = rows.querySelector('[data-strategy="' + CSS.escape(key) + '"]');
     if (!tr) { tr = el("tr"); tr.dataset.strategy = key; rows.appendChild(tr); }
     tr.textContent = "";
@@ -408,6 +413,15 @@
     tr.appendChild(inventoryCell(data.version_identifier || data.deployment_version_hash));
     tr.appendChild(inventoryCell(data.pnl));
     tr.appendChild(inventoryCell(data.position_count));
+    const manage = el("td", "inventory__manage");
+    const btn = el("button", "manage__btn");
+    btn.type = "button";
+    btn.dataset.armed = "false";
+    btn.dataset.strategy = key;
+    btn.textContent = "PROMOTE LIVE";
+    const cd = el("span", "manage__cd"); cd.setAttribute("aria-hidden", "true");
+    manage.append(btn, cd);
+    tr.appendChild(manage);
     $("inventory-table").hidden = false;
   }
 
@@ -429,6 +443,109 @@
     }
     if (data.strategy_id) renderInventoryRow(data);
   }
+
+  // ----- UI-2 promote-live control (SYS-2c / NFR-S2 / AC-15) -------------- //
+  // Two-step arm-then-confirm against the CONTRACT route on this same runtime
+  // (never a /dashboard path): the arm click stages exactly one candidate, the
+  // confirm click POSTs, and the rendered outcome is the runtime's own
+  // response, verbatim. While the SRS-EXE-001 designation handler is deferred
+  // the runtime answers 501 HANDLER_DEFERRED and that is exactly what the
+  // operator sees — a refusal is never dressed as success, and no POST outcome
+  // ever marks a row or Mode cell "live" (that cell's producer is the durable
+  // designation state, not this control).
+  const PROMOTE_ARM_WINDOW_MS = 5000;
+  const PROMOTE_FETCH_TIMEOUT_MS = 15000;
+  const PROMOTE_LIVE_RESTING = "live designation state — awaits SRS-EXE-001";
+  function promoteLiveRoute(id) {
+    return "/api/v1/strategies/" + encodeURIComponent(id) + "/promote-live?confirm=true";
+  }
+  let promoteArmedId = null;
+  let promoteArmTimer = null;
+
+  function designationStatus(text, tone) {
+    const wrap = $("designation-state"), cap = $("designation-status");
+    if (!wrap || !cap) return;
+    cap.textContent = text;
+    wrap.dataset.state = tone;
+  }
+
+  function disarmPromote(restoreResting) {
+    if (promoteArmTimer) { clearTimeout(promoteArmTimer); promoteArmTimer = null; }
+    promoteArmedId = null;
+    const table = $("inventory-table");
+    if (table) table.classList.remove("manage-staging");
+    const rows = $("inventory-rows");
+    if (rows) {
+      rows.querySelectorAll("tr.manage-armed").forEach((tr) => tr.classList.remove("manage-armed"));
+      rows.querySelectorAll('.manage__btn[data-armed="true"]').forEach((armed) => {
+        armed.dataset.armed = "false";
+        armed.textContent = "PROMOTE LIVE";
+      });
+    }
+    if (restoreResting) designationStatus(PROMOTE_LIVE_RESTING, "deferred");
+  }
+
+  function armPromote(btn, id) {
+    disarmPromote(false); // exactly one staged candidate at a time
+    promoteArmedId = id;
+    btn.dataset.armed = "true";
+    btn.textContent = "CONFIRM LIVE: " + id + "?";
+    const tr = btn.closest("tr");
+    if (tr) tr.classList.add("manage-armed");
+    const table = $("inventory-table");
+    if (table) table.classList.add("manage-staging");
+    designationStatus("armed: " + id + " — confirm within 5s to request live designation", "armed");
+    promoteArmTimer = setTimeout(() => { disarmPromote(true); }, PROMOTE_ARM_WINDOW_MS);
+  }
+
+  async function firePromote(btn, id) {
+    disarmPromote(false);
+    btn.disabled = true;
+    designationStatus("requesting live designation: " + id + "…", "pending");
+    try {
+      const res = await fetch(promoteLiveRoute(id), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+        signal: AbortSignal.timeout(PROMOTE_FETCH_TIMEOUT_MS),
+      });
+      let body = null;
+      try { body = await res.json(); } catch (error) { body = null; }
+      if (res.ok) {
+        // A 200 renders the runtime's OWN response fields — and only an
+        // explicit boolean true reads as designated (fail-closed parse; a
+        // missing or stringy is_live must never read as live).
+        if (body && body.is_live === true) {
+          designationStatus("runtime confirmed live designation: " + String(body.strategy_id) +
+            " @ " + String(body.promoted_at), "live");
+        } else {
+          designationStatus("runtime answered " + res.status + " without is_live=true — " +
+            id + " NOT designated", "error");
+        }
+      } else {
+        const err = body && body.error ? body.error : {};
+        const type = String(err.type || err.category || "UNKNOWN");
+        const owner = err.detail && err.detail.owner ? " (owner " + String(err.detail.owner) + ")" : "";
+        designationStatus("REFUSED " + res.status + " " + type + owner + ": " + id + " not designated", "error");
+      }
+    } catch (error) {
+      designationStatus("FAILED: " + String(error) + " — designation outcome unknown", "error");
+    }
+    btn.disabled = false;
+  }
+
+  (function bindPromoteControls() {
+    const rows = $("inventory-rows");
+    if (!rows) return;
+    rows.addEventListener("click", (event) => {
+      const btn = event.target.closest(".manage__btn");
+      if (!btn || btn.disabled) return;
+      const id = String(btn.dataset.strategy || "");
+      if (!id) return;
+      if (btn.dataset.armed !== "true") { armPromote(btn, id); return; }
+      firePromote(btn, id);
+    });
+  })();
 
   function applyMeta(bodyId, strategyId) {
     const row = $(bodyId).querySelector('[data-meta="strategy"] .metric__value');

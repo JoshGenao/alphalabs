@@ -98,32 +98,45 @@
         <div class="panel__body" id="body-latency" aria-live="polite"></div>
       </section>
 
-      <!-- SRS-UI-002 / SyRS SYS-41: active strategy inventory. The deployed
-           code version is REAL (SYS-79, from the orchestrator's deployment
-           record via STRATEGY_STATE); mode / asset class / container status /
-           P&L / positions render as honest deferred cells until their
-           producer features land. -->
+      <!-- UI-2 / SRS-UI-002 / SyRS SYS-41: strategy management view. The
+           deployed code version is REAL (SYS-79, from the orchestrator's
+           deployment record via STRATEGY_STATE); mode / asset class /
+           container status / P&L / positions render as honest deferred cells
+           until their producer features land. The per-row PROMOTE LIVE control
+           (SYS-2c / NFR-S2) is a two-step arm-then-confirm affordance that
+           POSTs only to the CONTRACT route on this same runtime and renders
+           the runtime's own response verbatim — while the SRS-EXE-001 handler
+           is deferred, the runtime's 501 refusal is shown as exactly that. -->
       <section class="panel panel--wide" data-panel="strategies" style="--i:4">
         <div class="panel__head">
-          <h2 class="panel__title">Strategy Inventory</h2>
+          <h2 class="panel__title">Strategy Management</h2>
           <span class="panel__meta"><span class="tag tag--chan">STRATEGY_STATE</span><span class="panel__cadence">5s</span></span>
         </div>
-        <div class="panel__body" id="body-strategies" aria-live="polite">
-          <div class="inventory__summary" id="inventory-summary">awaiting inventory…</div>
-          <table class="inventory" id="inventory-table" hidden>
-            <thead>
-              <tr>
-                <th scope="col">Name</th>
-                <th scope="col">Mode</th>
-                <th scope="col">Asset</th>
-                <th scope="col">Container</th>
-                <th scope="col">Deployed version</th>
-                <th scope="col">P&amp;L</th>
-                <th scope="col">Positions</th>
-              </tr>
-            </thead>
-            <tbody id="inventory-rows"></tbody>
-          </table>
+        <div class="panel__body panel__body--manage" id="body-strategies" aria-live="polite">
+          <div class="manage__deck">
+            <div class="inventory__summary" id="inventory-summary">awaiting inventory…</div>
+            <div class="manage__designation" id="designation-state" data-state="deferred">
+              <span class="manage__beacon" id="designation-beacon" aria-hidden="true"></span>
+              <span class="manage__caption" id="designation-status" aria-live="assertive">live designation state — awaits SRS-EXE-001</span>
+            </div>
+          </div>
+          <div class="manage__scroll">
+            <table class="inventory" id="inventory-table" hidden>
+              <thead>
+                <tr>
+                  <th scope="col">Name</th>
+                  <th scope="col">Mode</th>
+                  <th scope="col">Asset</th>
+                  <th scope="col">Container</th>
+                  <th scope="col">Deployed version</th>
+                  <th scope="col">P&amp;L</th>
+                  <th scope="col">Positions</th>
+                  <th scope="col" class="inventory__th-manage">Manage</th>
+                </tr>
+              </thead>
+              <tbody id="inventory-rows"></tbody>
+            </table>
+          </div>
         </div>
       </section>
 

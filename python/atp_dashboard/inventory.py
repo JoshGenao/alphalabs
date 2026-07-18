@@ -19,18 +19,31 @@ Every other AC field's live producer is a not-yet-built feature and is carried
 as an explicit ``{"value": None, "data_source": "deferred:<owner>"}`` cell —
 never a fabricated number:
 
-* ``mode`` / ``lifecycle_state`` — the ORCH-004 lifecycle dispatcher / live
-  designation state (``SRS-ORCH-004`` / ``SRS-EXE-001``);
+* ``mode`` — live vs paper follows the durable live-designation state; the
+  real designation handlers are ``SRS-EXE-001``'s
+  (``live_designation_contract.deferred``);
+* ``lifecycle_state`` — no persisted lifecycle state exists yet; the deployment
+  lifecycle/rollback snapshot owner is ``SRS-ORCH-005``;
 * ``asset_class`` — a per-security property today (``AssetClass`` lives on
-  orders/ticks, not the deployment record); a strategy-level asset class needs
-  the strategy registry (``SRS-ORCH-004``);
-* ``container_status`` — the concrete container runtime / WorkloadRegistry
-  (``SRS-ORCH-001`` / ``SRS-ARCH-004``);
+  orders/ticks, not the deployment record); the operator strategy-listing
+  surface that will carry the strategy manifest is ``SRS-API-001``'s
+  (``GET /api/v1/strategies``);
+* ``container_status`` — the concrete Docker-backed
+  ``StrategyContainerRuntime`` is still deferred
+  (``orchestrator_lifecycle_contract.deferred``, recorded owner
+  ``SRS-ORCH-002``);
 * ``pnl`` — the SYS-70-fed metrics accumulator (``SRS-BT-004``; P&L rides the
   per-strategy ``PNL`` channel per the atp_ws contract — ``STRATEGY_STATE``
   deliberately carries no pnl field);
-* ``position_count`` — the live virtual-ledger wiring (``SRS-SIM-003`` /
-  ``SRS-EXE-005`` runtime feed).
+* ``position_count`` — a cross-process-readable paper position store is
+  ``SRS-SIM-004``'s persisted simulation state (the ``SRS-SIM-003`` ledger is
+  in-memory with no queryable read surface).
+
+The owner tags above are kept honest by
+``tests/unit/test_dashboard_inventory.py``: every owner must either be
+``passes: false`` in ``feature_list.json`` or still be named inside a
+``deferred`` entry of ``architecture/runtime_services.json`` — so a producer
+flip forces the corresponding cell swap instead of leaving a stale tag.
 
 A missing or unreadable snapshot is reported as an explicit unavailable
 inventory (``ok: false`` + the reason) — a monitoring surface must not crash,
@@ -78,12 +91,16 @@ _DEFAULT_BINARY = Path(__file__).resolve().parents[2] / "target" / "debug" / "or
 _DEFAULT_TIMEOUT_S = 10.0
 
 #: The feature that owns each still-deferred inventory field's live producer.
+#: Every owner is either still ``passes: false`` or still carries the relevant
+#: ``deferred`` leg in ``architecture/runtime_services.json`` (guarded by
+#: ``tests/unit/test_dashboard_inventory.py``) — a tag must never point the
+#: operator at a feature whose remaining work is already done.
 INVENTORY_FIELD_OWNERS: dict[str, str] = {
-    "mode": "SRS-ORCH-004",
-    "asset_class": "SRS-ORCH-004",
-    "container_status": "SRS-ORCH-001",
-    "lifecycle_state": "SRS-ORCH-004",
-    "position_count": "SRS-SIM-003",
+    "mode": "SRS-EXE-001",
+    "asset_class": "SRS-API-001",
+    "container_status": "SRS-ORCH-002",
+    "lifecycle_state": "SRS-ORCH-005",
+    "position_count": "SRS-SIM-004",
     "pnl": "SRS-BT-004",
 }
 

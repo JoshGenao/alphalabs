@@ -86,6 +86,25 @@ def test_system_snapshot_returns_the_four_metric_groups(running_dashboard) -> No
     assert snap["srs_ref"] == "SRS-UI-001"
 
 
+def test_served_assets_carry_the_strategy_management_affordance(running_dashboard) -> None:
+    # UI-2: the served view is the strategy MANAGEMENT view — the inventory
+    # table carries the per-row PROMOTE LIVE control column, the designation
+    # readout defaults to its honest deferred copy (never all-clear-shaped),
+    # and the client targets only the contract promote-live route.
+    host, port, _ = running_dashboard
+    _, _, index = _get(host, port, "/dashboard")
+    assert b"Strategy Management" in index
+    assert b'class="inventory__th-manage"' in index
+    assert b'id="designation-status"' in index
+    assert b"live designation state" in index and b"SRS-EXE-001" in index
+    assert b"no live strategy" not in index.lower()
+    _, _, app_js = _get(host, port, "/dashboard/app.js")
+    assert (
+        b'"/api/v1/strategies/" + encodeURIComponent(id) + "/promote-live?confirm=true"' in app_js
+    )
+    assert b"PROMOTE LIVE" in app_js and b"CONFIRM LIVE: " in app_js
+
+
 def test_healthz_still_served_after_mounting_the_dashboard(running_dashboard) -> None:
     host, port, _ = running_dashboard
     status, _, body = _get(host, port, "/healthz")

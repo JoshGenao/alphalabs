@@ -770,3 +770,305 @@ def test_ui_1_alerts_malformed_live_feed_fails_closed(operations_view_url: str) 
             assert page.eval_on_selector("#alerts-table", "e => e.hidden") is True
         finally:
             browser.close()
+
+
+def test_ui_2_strategy_management_view_covers_every_ac_surface(
+    operations_view_url: str,
+) -> None:
+    """UI-2 acceptance criteria over the PRODUCTION composition: the strategy
+    management view lists the recorded strategy with its REAL deployed code
+    version; mode, asset class, container status, and the key metrics render as
+    explicit deferred cells naming their owner features; the per-row PROMOTE
+    LIVE control is present; and the designation readout holds its honest
+    deferred state — never an all-clear-shaped "no live strategy"."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.goto(operations_view_url, wait_until="domcontentloaded")
+
+            # (inner_text reflects the CSS-uppercased rendering.)
+            assert (
+                "strategy management"
+                in page.locator('[data-panel="strategies"] .panel__title').inner_text().lower()
+            )
+
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 1", timeout=5_000
+            )
+            row = page.locator('#inventory-rows tr[data-strategy="alpha-1"]')
+            row_text = row.inner_text()
+            # Deployed code version: REAL.
+            assert "sha256:" + "1" * 64 in row_text
+            # Mode / asset / container / P&L / positions: explicit deferred
+            # cells, each srctag naming an owner whose work is still deferred.
+            owners = page.eval_on_selector_all(
+                '#inventory-rows tr[data-strategy="alpha-1"] .srctag',
+                "els => els.map(e => e.textContent)",
+            )
+            for owner in (
+                "SRS-EXE-001",
+                "SRS-API-001",
+                "SRS-ORCH-002",
+                "SRS-BT-004",
+                "SRS-SIM-004",
+            ):
+                assert owner in owners, (owner, owners)
+            assert "—" in row_text
+
+            # The management affordance: one PROMOTE LIVE control on the row.
+            btn = row.locator(".manage__btn")
+            assert btn.count() == 1
+            assert btn.inner_text().strip().upper() == "PROMOTE LIVE"
+            assert (
+                page.eval_on_selector("#inventory-rows .manage__btn", "e => e.dataset.armed")
+                == "false"
+            )
+
+            # The designation readout: honest deferred copy naming the owner,
+            # dashed awaiting-producer frame, and never "no live strategy".
+            designation = page.locator("#designation-status").inner_text()
+            assert "SRS-EXE-001" in designation
+            assert "no live strategy" not in designation.lower()
+            assert page.eval_on_selector("#designation-state", "e => e.dataset.state") == "deferred"
+            assert (
+                page.eval_on_selector(
+                    "#designation-state", "e => getComputedStyle(e).borderTopStyle"
+                )
+                == "dashed"
+            )
+            # The management additions keep the panel inside its box.
+            assert page.eval_on_selector(
+                '[data-panel="strategies"]', "e => e.scrollWidth <= e.clientWidth"
+            )
+        finally:
+            browser.close()
+
+
+def _arm_promote(page, btn) -> None:
+    """Click PROMOTE LIVE until the armed state sticks. A 5 s STRATEGY_STATE
+    tick may rebuild the row between click and assertion (disarm-on-upsert is
+    deliberate UI-2 behavior), so arming retries instead of flaking."""
+    for _ in range(4):
+        btn.click()
+        try:
+            page.wait_for_function(
+                "document.querySelector('#inventory-rows .manage__btn').dataset.armed === 'true'",
+                timeout=1_000,
+            )
+            return
+        except Exception:  # noqa: BLE001 — a tick disarmed us; try again
+            continue
+    raise AssertionError("PROMOTE LIVE could not be armed")
+
+
+def _confirm_promote(page) -> None:
+    """Arm-then-confirm, retrying if an inventory tick voids the staged arm
+    between the two clicks (in which case no POST fires, by design)."""
+    btn = page.locator('#inventory-rows tr[data-strategy="alpha-1"] .manage__btn')
+    for _ in range(4):
+        _arm_promote(page, btn)
+        btn.click()
+        try:
+            page.wait_for_function(
+                "document.querySelector('#inventory-rows .manage__btn').dataset.armed === 'false'",
+                timeout=2_000,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        if page.eval_on_selector("#designation-state", "e => e.dataset.state") != "deferred":
+            return  # the confirm click fired (pending/error/live — not resting)
+    raise AssertionError("PROMOTE LIVE confirm click never fired")
+
+
+def test_ui_2_promote_live_requires_explicit_confirmation(
+    operations_view_url: str,
+) -> None:
+    """UI-2 / NFR-S2 / SYS-2c: live designation is a two-step arm-then-confirm
+    flow. A single click stages the candidate (naming the exact strategy id)
+    and fires NO network request; the arm window auto-disarms; the confirmed
+    click POSTs once to the CONTRACT route with the confirmation token, and the
+    un-wired runtime's 501 HANDLER_DEFERRED (owner SRS-EXE-001) renders as an
+    explicit refusal — the row is never marked live."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            posts: list[str] = []
+            page.on(
+                "request",
+                lambda req: posts.append(req.url) if req.method == "POST" else None,
+            )
+            page.goto(operations_view_url, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 1", timeout=5_000
+            )
+
+            # Click 1: arm — no POST leaves the page. (One atomic read of the
+            # armed facts so a 5 s inventory tick can't race the assertions.)
+            btn = page.locator('#inventory-rows tr[data-strategy="alpha-1"] .manage__btn')
+            _arm_promote(page, btn)
+            armed = page.evaluate(
+                "() => {"
+                " const b = document.querySelector('#inventory-rows .manage__btn');"
+                " return {"
+                "  armed: b.dataset.armed,"
+                "  label: b.textContent,"
+                "  state: document.getElementById('designation-state').dataset.state,"
+                "  status: document.getElementById('designation-status').textContent,"
+                "  rowStaged: b.closest('tr').classList.contains('manage-armed'),"
+                " };"
+                "}"
+            )
+            assert armed["armed"] == "true"
+            assert "CONFIRM LIVE: alpha-1?" in armed["label"]
+            assert "alpha-1" in armed["status"] and "confirm" in armed["status"]
+            assert armed["state"] == "armed"
+            # The staged row locks focus (armed choreography applied).
+            assert armed["rowStaged"] is True
+            assert not [u for u in posts if "promote-live" in u]
+
+            # The arm window auto-disarms back to the honest deferred state.
+            page.wait_for_function(
+                "document.querySelector('#inventory-rows .manage__btn').dataset.armed === 'false'",
+                timeout=7_000,
+            )
+            assert page.eval_on_selector("#designation-state", "e => e.dataset.state") == "deferred"
+            assert not [u for u in posts if "promote-live" in u]
+
+            # Arm-then-confirm within the window: exactly ONE POST to the
+            # contract route with the confirmation token — answered 501 by
+            # THIS runtime.
+            _confirm_promote(page)
+            page.wait_for_function(
+                "document.getElementById('designation-state').dataset.state === 'error'",
+                timeout=7_000,
+            )
+            promote_posts = [u for u in posts if "promote-live" in u]
+            assert len(promote_posts) == 1
+            assert promote_posts[0].endswith("/api/v1/strategies/alpha-1/promote-live?confirm=true")
+            refusal = page.locator("#designation-status").inner_text()
+            assert "REFUSED 501" in refusal and "HANDLER_DEFERRED" in refusal
+            assert "SRS-EXE-001" in refusal
+            # The refusal is never dressed as success: no live marking anywhere.
+            row_text = page.locator('#inventory-rows tr[data-strategy="alpha-1"]').inner_text()
+            assert "live" not in row_text.split("sha256:")[0].lower()
+            assert (
+                page.eval_on_selector("#inventory-rows .manage__btn", "e => e.dataset.armed")
+                == "false"
+            )
+        finally:
+            browser.close()
+
+
+def test_ui_2_promote_live_renders_refusals_and_success_honestly(
+    operations_view_url: str,
+) -> None:
+    """UI-2 response semantics (pinned ahead of the SRS-EXE-001 handler): a 428
+    renders as a refusal; a 200 renders ONLY the runtime's own fields and only
+    an explicit ``is_live: true`` reads as designated (a 200 without it renders
+    as NOT designated — fail-closed); a transport failure renders FAILED with
+    the outcome marked unknown; and no branch ever flips the deferred Mode
+    cell — the POST outcome is not the mode producer."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.goto(operations_view_url, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 1", timeout=5_000
+            )
+
+            # 428 (transport confirmation guard) renders as a refusal.
+            page.route(
+                "**/api/v1/strategies/*/promote-live*",
+                lambda route: route.fulfill(
+                    status=428,
+                    content_type="application/json",
+                    body='{"error": {"category": "CONFIRMATION_REQUIRED",'
+                    ' "type": "CONFIRMATION_REQUIRED"}}',
+                ),
+            )
+            _confirm_promote(page)
+            page.wait_for_function(
+                "document.getElementById('designation-state').dataset.state === 'error'",
+                timeout=7_000,
+            )
+            assert "REFUSED 428" in page.locator("#designation-status").inner_text()
+
+            # A 200 WITHOUT an explicit is_live=true is NOT a designation.
+            page.unroute("**/api/v1/strategies/*/promote-live*")
+            page.route(
+                "**/api/v1/strategies/*/promote-live*",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body='{"strategy_id": "alpha-1", "is_live": "true",'
+                    ' "promoted_at": "2026-07-17T00:00:00Z"}',
+                ),
+            )
+            _confirm_promote(page)
+            page.wait_for_function(
+                "document.getElementById('designation-state').dataset.state === 'error'",
+                timeout=7_000,
+            )
+            not_designated = page.locator("#designation-status").inner_text()
+            assert "NOT designated" in not_designated and "is_live" in not_designated
+
+            # A real 200 with boolean is_live renders the runtime's own fields.
+            page.unroute("**/api/v1/strategies/*/promote-live*")
+            page.route(
+                "**/api/v1/strategies/*/promote-live*",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body='{"strategy_id": "alpha-1", "is_live": true,'
+                    ' "promoted_at": "2026-07-17T00:00:00Z"}',
+                ),
+            )
+            _confirm_promote(page)
+            page.wait_for_function(
+                "document.getElementById('designation-state').dataset.state === 'live'",
+                timeout=7_000,
+            )
+            confirmed = page.locator("#designation-status").inner_text()
+            assert "alpha-1" in confirmed and "2026-07-17T00:00:00Z" in confirmed
+            # Even a confirmed response never flips the deferred Mode cell —
+            # its producer is the durable designation state, not this control.
+            mode_owner = page.eval_on_selector(
+                '#inventory-rows tr[data-strategy="alpha-1"] td:nth-child(2) .srctag',
+                "e => e.textContent",
+            )
+            assert mode_owner == "SRS-EXE-001"
+            assert (
+                page.eval_on_selector(
+                    '#inventory-rows tr[data-strategy="alpha-1"] td:nth-child(2) .metric__value',
+                    "e => e.textContent",
+                ).strip()
+                == "—"
+            )
+
+            # Transport failure: FAILED with the outcome marked unknown, and
+            # the control recovers (no stale armed state, button re-enabled).
+            page.unroute("**/api/v1/strategies/*/promote-live*")
+            page.route(
+                "**/api/v1/strategies/*/promote-live*",
+                lambda route: route.abort("connectionrefused"),
+            )
+            _confirm_promote(page)
+            page.wait_for_function(
+                "document.getElementById('designation-state').dataset.state === 'error'",
+                timeout=7_000,
+            )
+            failed = page.locator("#designation-status").inner_text()
+            assert "FAILED" in failed and "unknown" in failed
+            assert page.eval_on_selector("#inventory-rows .manage__btn", "e => e.disabled") is False
+            assert (
+                page.eval_on_selector("#inventory-rows .manage__btn", "e => e.dataset.armed")
+                == "false"
+            )
+        finally:
+            browser.close()

@@ -676,3 +676,109 @@ body {
   white-space: normal; word-break: break-all;
   font-size: 0.78rem; line-height: 1.5;
 }
+
+/* --- UI-2 strategy management view (SYS-2c / NFR-S2) -------------------- */
+/* The console's command deck: the inventory table becomes an instrument
+   readout with a per-row two-stage PROMOTE LIVE control. Arming stages
+   exactly one candidate — the rest of the table recedes, the staged row
+   carries an accent inset, and a countdown bar renders the 5 s confirm
+   window honestly (same constant the JS auto-disarm uses). The designation
+   readout keeps the dashed awaiting-producer framing while SRS-EXE-001's
+   handler is deferred — it must never read as an all-clear. */
+.panel__body--manage { gap: 0; }
+.manage__deck {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 8px 18px; margin-bottom: 12px;
+}
+.manage__deck .inventory__summary { margin-bottom: 0; flex: 1 1 240px; }
+.manage__designation {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 5px 12px; border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.02em;
+  color: var(--deferred); background: color-mix(in srgb, var(--panel-2) 70%, transparent);
+}
+.manage__designation[data-state="deferred"] { border-style: dashed; }
+.manage__designation[data-state="armed"] {
+  color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.manage__designation[data-state="pending"] { color: var(--ink-dim); border-style: solid; }
+.manage__designation[data-state="live"] {
+  color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--accent-soft);
+}
+.manage__designation[data-state="error"] {
+  color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+  background: color-mix(in srgb, var(--bad) 10%, transparent);
+}
+.manage__beacon {
+  width: 8px; height: 8px; border-radius: 50%; flex: none;
+  background: currentColor; opacity: 0.85;
+}
+.manage__designation[data-state="armed"] .manage__beacon,
+.manage__designation[data-state="live"] .manage__beacon {
+  animation: ping 1.6s var(--ease) infinite;
+}
+.manage__scroll {
+  overflow-x: auto;
+  background:
+    repeating-linear-gradient(to bottom, transparent 0 34px, var(--line) 34px 35px);
+  border-radius: var(--radius-sm);
+}
+.inventory__th-manage { text-align: right; padding-right: 2px; }
+.inventory__name { white-space: nowrap; }
+.inventory__manage { text-align: right; white-space: nowrap; position: relative; padding-right: 2px; }
+.inventory tbody tr { transition: filter 0.3s var(--ease), background-color 0.3s var(--ease); }
+.inventory tbody tr:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+/* Staggered first-paint reveal: new rows rise in; a 5 s upsert rebuilds cells
+   only (the <tr> node persists), so the animation runs once per row. */
+.inventory tbody tr { opacity: 0; transform: translateY(4px); animation: rise 0.5s var(--ease) forwards; }
+.inventory tbody tr:nth-child(2) { animation-delay: 60ms; }
+.inventory tbody tr:nth-child(3) { animation-delay: 120ms; }
+.inventory tbody tr:nth-child(4) { animation-delay: 180ms; }
+.inventory tbody tr:nth-child(5) { animation-delay: 240ms; }
+.inventory tbody tr:nth-child(n + 6) { animation-delay: 300ms; }
+/* Arming choreography: the staged row locks focus, siblings recede.
+   (filter, not opacity — the rise animation's forwards fill owns opacity.) */
+.inventory.manage-staging tbody tr:not(.manage-armed) { filter: grayscale(0.5) opacity(0.4); }
+.inventory tbody tr.manage-armed {
+  background: color-mix(in srgb, var(--warn) 7%, transparent);
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+.manage__btn {
+  font: 600 0.7rem var(--mono); letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-dim); background: transparent;
+  border: 1px solid var(--line-strong); border-radius: 999px;
+  padding: 5px 12px; cursor: pointer;
+  transition: color 0.2s var(--ease), border-color 0.2s var(--ease),
+    background-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+.manage__btn:hover {
+  color: var(--ink); border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.manage__btn[data-armed="true"] {
+  color: #fff; background: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 70%, #fff 8%);
+  animation: manage-armed-ring 0.9s ease-in-out infinite alternate;
+}
+.manage__btn:disabled { opacity: 0.55; cursor: wait; }
+@keyframes manage-armed-ring {
+  from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 55%, transparent); }
+  to { box-shadow: 0 0 0 6px color-mix(in srgb, var(--bad) 30%, transparent); }
+}
+/* The confirm-window countdown: scaleX honest to PROMOTE_ARM_WINDOW_MS. */
+.manage__cd {
+  position: absolute; left: 0; right: 2px; bottom: 2px; height: 2px;
+  border-radius: 1px; background: var(--warn);
+  transform: scaleX(0); transform-origin: left;
+}
+.manage-armed .manage__cd { animation: manage-cd 5s linear forwards; }
+@keyframes manage-cd { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .inventory tbody tr { animation-duration: 0.01ms; animation-delay: 0ms; }
+  .manage__btn[data-armed="true"],
+  .manage__designation .manage__beacon,
+  .manage-armed .manage__cd { animation: none; }
+}

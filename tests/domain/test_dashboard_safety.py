@@ -106,6 +106,50 @@ def test_kill_switch_affordance_uses_only_the_contract_route(mounted_runtime) ->
     assert body["error"]["detail"]["owner"] == "SRS-SAFE-001"
 
 
+def test_promote_live_confirmation_guard_is_unchanged(mounted_runtime) -> None:
+    # UI-2 / NFR-S2: mounting the dashboard must not weaken the SYS-2c live
+    # designation confirmation guard — a POST without the confirmation token
+    # never reaches a handler.
+    _, host, port = mounted_runtime
+    status, body = _request(host, port, "POST", "/api/v1/strategies/alpha/promote-live")
+    assert status == 428
+    assert body["error"]["category"] == "CONFIRMATION_REQUIRED"
+
+
+def test_promote_live_affordance_uses_only_the_contract_route(mounted_runtime) -> None:
+    # UI-2 / SYS-2c: the strategy-management PROMOTE LIVE affordance POSTs to
+    # the CONTRACT route on this same runtime — it introduces NO
+    # dashboard-namespaced mutation and no second designation path, and the
+    # client control cannot bypass the server-side guard: an unwired runtime
+    # still refuses its POST target (501 deferred owner SRS-EXE-001, never a
+    # silent success). The client sends the confirmation token only after its
+    # own arm-then-confirm step (the NFR-S2 explicit confirmation).
+    _, host, port = mounted_runtime
+    from pathlib import Path
+
+    app_js = (Path(__file__).resolve().parents[2] / "python/atp_dashboard/assets/app.js").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        'return "/api/v1/strategies/" + encodeURIComponent(id) + "/promote-live?confirm=true";'
+        in app_js
+    ), (
+        "the affordance must target exactly the contract route (encoded strategy "
+        "id) with the confirmation token the transport guard requires"
+    )
+    # No promote path other than the single route helper, and never under
+    # the read-only /dashboard namespace:
+    assert app_js.count("/promote-live") == 1
+    assert "/dashboard/api/strategies/promote" not in app_js
+    # The affordance's target on THIS (un-wired) runtime stays fail-closed:
+    status, body = _request(
+        host, port, "POST", "/api/v1/strategies/alpha/promote-live?confirm=true"
+    )
+    assert status == 501
+    assert body["error"]["type"] == "HANDLER_DEFERRED"
+    assert body["error"]["detail"]["owner"] == "SRS-EXE-001"
+
+
 def test_dashboard_bind_is_loopback_or_rfc1918_only() -> None:
     # SRS-SEC-002: loopback / RFC 1918 accepted; all-interfaces + public refused.
     for allowed in ("127.0.0.1", "10.1.2.3", "192.168.1.9"):

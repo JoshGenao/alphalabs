@@ -92,6 +92,42 @@ def test_every_unbuilt_ac_field_is_an_explicit_deferred_cell() -> None:
         assert row[field] == {"value": None, "data_source": f"deferred:{owner}"}, field
 
 
+def test_every_deferred_owner_names_work_that_is_actually_still_deferred() -> None:
+    # UI-2 honesty guard (de-churn): a deferred cell's owner tag points the
+    # operator at the feature whose remaining work will produce the value. The
+    # tag is a lie the moment that work is done — so every owner must either
+    # still be ``passes: false`` in feature_list.json, or still be named inside
+    # a ``deferred`` leg of architecture/runtime_services.json. When a producer
+    # flip trips this test, swap the provider cell to the live value (the
+    # SRS-UI-002 extension contract) instead of retagging.
+    import json
+
+    passes = {f["id"]: f["passes"] for f in json.loads((ROOT / "feature_list.json").read_text())}
+    services = json.loads((ROOT / "architecture" / "runtime_services.json").read_text())
+
+    def deferred_legs(node: object) -> list[str]:
+        legs: list[str] = []
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "deferred":
+                    legs.append(json.dumps(value))
+                else:
+                    legs.extend(deferred_legs(value))
+        elif isinstance(node, list):
+            for item in node:
+                legs.extend(deferred_legs(item))
+        return legs
+
+    deferred_text = "\n".join(deferred_legs(services))
+    for field, owner in INVENTORY_FIELD_OWNERS.items():
+        assert owner in passes, f"{field}: owner {owner} is not a feature_list.json id"
+        assert passes[owner] is False or owner in deferred_text, (
+            f"{field}: owner {owner} is passes:true and appears in no "
+            "runtime_services.json deferred leg — its remaining work is done, "
+            "so swap this cell to the live producer instead of keeping the tag"
+        )
+
+
 def test_events_cover_the_strategy_state_contract_fields() -> None:
     events = _provider(_FakeRunner()).strategy_state_events()
     # Summary first (freshness ticks even with zero strategies), then one per strategy.
