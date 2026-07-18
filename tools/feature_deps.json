@@ -36,6 +36,9 @@
     "SRS-API-001",
     "SRS-UI-001"
   ],
+  "SRS-BT-007": [
+    "SRS-BT-001"
+  ],
   "SRS-DATA-001": [
     "SRS-DATA-008",
     "SRS-DATA-013"
