@@ -112,7 +112,8 @@
     "SRS-PERF-001"
   ],
   "SRS-EXE-002": [
-    "SRS-EXE-006"
+    "SRS-EXE-006",
+    "SRS-SDK-004"
   ],
   "SRS-EXE-003": [
     "SRS-EXE-004",
