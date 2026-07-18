@@ -853,8 +853,11 @@ def _arm_promote(page, btn) -> None:
     for _ in range(4):
         btn.click()
         try:
+            # One-armed-at-a-time is an invariant, so "any armed button" is
+            # exactly the one just clicked — and this stays correct when the
+            # clicked row is not the table's first.
             page.wait_for_function(
-                "document.querySelector('#inventory-rows .manage__btn').dataset.armed === 'true'",
+                "document.querySelector('.manage__btn[data-armed=\"true\"]') !== null",
                 timeout=1_000,
             )
             return
@@ -1070,5 +1073,118 @@ def test_ui_2_promote_live_renders_refusals_and_success_honestly(
                 page.eval_on_selector("#inventory-rows .manage__btn", "e => e.dataset.armed")
                 == "false"
             )
+        finally:
+            browser.close()
+
+
+@pytest.fixture()
+def shrinking_inventory_dashboard(tmp_path) -> Iterator[tuple]:
+    """UI-2 row lifecycle: a dashboard over a REAL deployment snapshot whose
+    state file the test can rewrite mid-run, so the next real 5 s tick shrinks
+    (or breaks) the inventory the panel renders."""
+
+    import subprocess
+    from pathlib import Path
+
+    from atp_dashboard import RollbackSnapshotInventorySource, StrategyInventoryProvider
+
+    root = Path(__file__).resolve().parents[2]
+    binary = root / "target" / "debug" / "orch005_rollback_cli"
+    if not binary.exists():
+        build = subprocess.run(
+            ["cargo", "build", "-q", "-p", "atp-orchestrator", "--bin", "orch005_rollback_cli"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if build.returncode != 0:
+            pytest.skip(f"cannot build orch005_rollback_cli: {build.stderr}")
+
+    def _seed(path, strategies) -> None:
+        for sid, digit, ts in strategies:
+            subprocess.run(
+                [
+                    str(binary),
+                    "record",
+                    "--state",
+                    str(path),
+                    "--strategy",
+                    sid,
+                    "--hash",
+                    "sha256:" + digit * 64,
+                    "--observed-at",
+                    ts,
+                ],
+                check=True,
+                capture_output=True,
+            )
+
+    state = tmp_path / "deploy.state"
+    _seed(state, (("alpha-1", "1", "100"), ("beta-9", "3", "300")))
+    shrunk = tmp_path / "shrunk.state"
+    _seed(shrunk, (("alpha-1", "1", "100"),))
+
+    runtime = OperatorInterfaceRuntime()
+    inventory = StrategyInventoryProvider(
+        RollbackSnapshotInventorySource(state_path=state, binary=binary)
+    )
+    publisher = mount_dashboard(runtime, ReadinessBackedProvider({}), inventory=inventory)
+    publisher.start()
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        yield f"http://{host}:{port}/dashboard", state, shrunk
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
+def test_ui_2_removed_strategy_loses_its_promote_control(
+    shrinking_inventory_dashboard,
+) -> None:
+    """UI-2 row lifecycle (fail-closed): a strategy that leaves the ACTIVE
+    inventory loses its row — an armed PROMOTE LIVE control must not survive on
+    a strategy the current inventory no longer contains — and an UNREADABLE
+    inventory clears every actionable row rather than keeping stale ones under
+    an error caption."""
+
+    url, state, shrunk = shrinking_inventory_dashboard
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.goto(url, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 2", timeout=7_000
+            )
+
+            # Arm the strategy that is about to disappear.
+            _arm_promote(
+                page, page.locator('#inventory-rows tr[data-strategy="beta-9"] .manage__btn')
+            )
+
+            # The REAL snapshot shrinks: the next 5 s tick drops beta-9.
+            state.write_bytes(shrunk.read_bytes())
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 1", timeout=12_000
+            )
+            assert page.locator('#inventory-rows tr[data-strategy="beta-9"]').count() == 0
+            assert page.locator('#inventory-rows tr[data-strategy="alpha-1"]').count() == 1
+            # No armed control survives anywhere; the readout is back to resting.
+            assert page.locator('.manage__btn[data-armed="true"]').count() == 0
+            assert page.eval_on_selector("#designation-state", "e => e.dataset.state") == "deferred"
+            summary = page.locator("#inventory-summary").inner_text()
+            assert "1 strategy" in summary
+
+            # The snapshot becomes UNREADABLE: rows clear, table hides — never
+            # stale actionable rows under an error caption.
+            state.write_text("corrupted\n", encoding="utf-8")
+            page.wait_for_function(
+                "document.getElementById('inventory-summary').dataset.tone === 'error'",
+                timeout=12_000,
+            )
+            assert page.locator("#inventory-rows tr").count() == 0
+            assert page.eval_on_selector("#inventory-table", "e => e.hidden") is True
+            assert "unavailable" in page.locator("#inventory-summary").inner_text()
         finally:
             browser.close()

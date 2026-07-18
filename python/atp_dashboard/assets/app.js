@@ -393,6 +393,38 @@
     return td;
   }
 
+  // Row lifecycle: every summary event starts a new inventory generation and
+  // every rendered row is stamped with it. Once the generation's expected row
+  // events have all arrived, rows the current inventory no longer contains are
+  // REMOVED (armed state disarmed first) — a strategy that left the inventory
+  // must not keep an actionable PROMOTE LIVE row. Zero-strategy and
+  // unavailable summaries clear the table immediately (fail-closed: unknown
+  // truth never keeps stale actionable rows).
+  let inventoryGen = 0;
+  let inventoryExpected = null;
+  let inventorySeen = 0;
+
+  function removeInventoryRow(tr) {
+    if (promoteArmedId === tr.dataset.strategy) disarmPromote(true);
+    tr.remove();
+  }
+
+  function sweepStaleInventoryRows() {
+    const rows = $("inventory-rows");
+    if (!rows) return;
+    rows.querySelectorAll("tr").forEach((tr) => {
+      if (tr.dataset.gen !== String(inventoryGen)) removeInventoryRow(tr);
+    });
+    if (!rows.children.length) $("inventory-table").hidden = true;
+  }
+
+  function clearInventoryRows() {
+    const rows = $("inventory-rows");
+    if (!rows) return;
+    rows.querySelectorAll("tr").forEach(removeInventoryRow);
+    $("inventory-table").hidden = true;
+  }
+
   function renderInventoryRow(data) {
     const rows = $("inventory-rows");
     if (!rows) return;
@@ -422,7 +454,12 @@
     const cd = el("span", "manage__cd"); cd.setAttribute("aria-hidden", "true");
     manage.append(btn, cd);
     tr.appendChild(manage);
+    tr.dataset.gen = String(inventoryGen);
     $("inventory-table").hidden = false;
+    inventorySeen += 1;
+    if (inventoryExpected !== null && inventorySeen >= inventoryExpected) {
+      sweepStaleInventoryRows();
+    }
   }
 
   function onInventoryEvent(data) {
@@ -430,10 +467,18 @@
     if (data.event === "inventory-summary") {
       if (!summary) return;
       if (data.ok === false) {
+        // Unknown truth: clear the rows too — an unreadable inventory must
+        // not keep stale actionable PROMOTE LIVE rows under an error caption.
+        clearInventoryRows();
+        inventoryExpected = null;
         summary.textContent = "inventory unavailable: " + String(data.error || "unknown");
         summary.dataset.tone = "error";
       } else {
         const n = Number(data.strategy_count);
+        inventoryGen += 1;
+        inventoryExpected = Number.isFinite(n) ? n : null;
+        inventorySeen = 0;
+        if (n === 0) clearInventoryRows();
         summary.textContent = n === 0
           ? "no strategies deployed"
           : n + " strateg" + (n === 1 ? "y" : "ies") + " · deployed version live · other cells await their producer features";
