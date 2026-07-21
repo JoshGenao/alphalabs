@@ -171,7 +171,9 @@ fn srs_exe_002_port_side_rejection_maps_to_structured_error_and_rests_nothing() 
     let err = simulation
         .submit_simulated(submission)
         .expect_err("a non-positive quantity must fail closed");
-    assert_eq!(err.category, OrderErrorCategory::InvalidSymbol);
+    // SRS-ERR-001: a non-positive quantity is an invalid-order-parameters
+    // rejection, not an invalid symbol.
+    assert_eq!(err.category, OrderErrorCategory::OrderParametersInvalid);
     assert_eq!(err.error_type, "NonPositiveQuantity");
     assert_eq!(
         simulation.open_resting_orders(),
@@ -212,7 +214,10 @@ fn srs_exe_002_malformed_dispatch_fails_closed_before_both_ports() {
             &simulation,
         )
         .expect_err("a blank symbol must fail closed at the shared entry");
-    assert_eq!(err.category, OrderErrorCategory::InvalidSymbol);
+    // SRS-ERR-001: a blank symbol is a malformed order parameter — the broker was
+    // never asked, so INVALID_SYMBOL (which means "the broker says this symbol
+    // does not exist") would be a fabricated claim.
+    assert_eq!(err.category, OrderErrorCategory::OrderParametersInvalid);
     assert_eq!(brokerage.gateway().orders_created(), 0);
     assert_eq!(simulation.open_resting_orders(), 0);
 }

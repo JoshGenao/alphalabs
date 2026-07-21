@@ -53,7 +53,9 @@ class ArchitectureBoundaryTest(unittest.TestCase):
             "atp-execution rejects non-live submissions synchronously",
             result.stdout,
         )
-        self.assertIn("9 SyRS SYS-64 categories", result.stdout)
+        # 11 since SRS-ERR-001 added ORDER_PARAMETERS_INVALID / BROKER_REJECTED so a failure never
+        # has to borrow a SyRS category that does not apply to it.
+        self.assertIn("11 SyRS SYS-64 categories", result.stdout)
         self.assertIn(
             "gating `broker.submit_order` on StrategyMode::Live",
             result.stdout,

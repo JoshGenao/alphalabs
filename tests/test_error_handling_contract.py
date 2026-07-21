@@ -23,6 +23,8 @@ if str(TOOLS_ROOT) not in sys.path:
 from error_handling_check import (  # noqa: E402
     ErrorHandlingCheckError,
     assert_error_handling_static,
+    broker_cli_source,
+    check_broker_envelope_cli,
     check_error_category_enum,
     check_error_cli,
     check_strategy_mode_enum,
@@ -51,7 +53,7 @@ class ErrorHandlingCheckScriptTest(unittest.TestCase):
         for needle in (
             "StrategyMode with 2 variants (Live, Paper)",
             "SRS-EXE-001 / SyRS AC-15",
-            "OrderErrorCategory with 9 SyRS SYS-64 categories",
+            "OrderErrorCategory with 11 SyRS SYS-64 categories",
             "NonLiveStrategySubmission",
             "upper-snake wire string",
             "StructuredOrderError with the 4 SRS-ERR-001 fields",
@@ -66,6 +68,16 @@ class ErrorHandlingCheckScriptTest(unittest.TestCase):
             "all-categories-mapped:true, envelope-complete:true, no-ib-side-effect:true, "
             "authority-enforced:true",
             "srs_err_001_error_envelope_cli",
+            # The SyRS SYS-64 broker-validation half — the gap that kept SRS-ERR-001 at
+            # passes:false until the SRS-EXE-006 adapter landed.
+            "operator binary err001_broker_envelope_cli is Cargo-registered",
+            "drives the REAL execution engine + IB adapter",
+            "INVALID_SYMBOL, INSUFFICIENT_BUYING_POWER, RATE_LIMITED",
+            "non-fabricated BROKER_REJECTED fallback",
+            "broker-envelope-complete:true, unmapped-surfaced-not-fabricated:true, "
+            "live-paper-parity:true",
+            "srs_err_001_broker_envelope_cli",
+            "operator-gated live rejection test srs_err_001_broker_envelope_live",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
 
@@ -228,16 +240,74 @@ class ErrorCliTest(unittest.TestCase):
         self.assertIn("fail closed", str(ctx.exception))
 
 
-class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_seven_evidence_items(self) -> None:
-        evidence = run_checks()
-        # 6 static (incl. the operator CLI) + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(evidence), 7)
+class BrokerEnvelopeCliTest(unittest.TestCase):
+    """The SyRS SYS-64 broker-validation half (SRS-ERR-001's former blocking gap)."""
 
-    def test_assert_error_handling_static_emits_six_evidence_items(self) -> None:
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.cli_src = broker_cli_source(self.config)
+
+    def test_broker_cli_drives_the_real_adapter_and_prints_proofs(self) -> None:
+        evidence = check_broker_envelope_cli(self.config, self.cli_src)
+        self.assertIn("err001_broker_envelope_cli", evidence)
+        self.assertIn("REAL execution engine + IB adapter", evidence)
+        self.assertIn("srs_err_001_broker_envelope_cli", evidence)
+        self.assertIn("srs_err_001_broker_envelope_live", evidence)
+
+    def test_missing_adapter_token_is_caught(self) -> None:
+        # A stubbed classifier would let the binary agree with itself about the SYS-64 mapping.
+        mutated = self.cli_src.replace("InteractiveBrokersBrokerage", "StubBrokerage")
+        with self.assertRaises(ErrorHandlingCheckError) as ctx:
+            check_broker_envelope_cli(self.config, mutated)
+        self.assertIn("real IB adapter", str(ctx.exception))
+
+    def test_missing_bridge_token_is_caught(self) -> None:
+        mutated = self.cli_src.replace("IbBrokerageBridge", "FakeBridge")
+        with self.assertRaises(ErrorHandlingCheckError) as ctx:
+            check_broker_envelope_cli(self.config, mutated)
+        self.assertIn("real IB adapter", str(ctx.exception))
+
+    def test_missing_proof_headline_is_caught(self) -> None:
+        mutated = self.cli_src.replace("broker-envelope-complete:true", "renamed:true")
+        with self.assertRaises(ErrorHandlingCheckError) as ctx:
+            check_broker_envelope_cli(self.config, mutated)
+        self.assertIn("proof headline", str(ctx.exception))
+
+    def test_missing_fail_closed_path_is_caught(self) -> None:
+        mutated = self.cli_src.replace("inject=accepted", "inject=allowed")
+        with self.assertRaises(ErrorHandlingCheckError) as ctx:
+            check_broker_envelope_cli(self.config, mutated)
+        self.assertIn("fail closed", str(ctx.exception))
+
+    def test_dropping_a_mapped_vendor_code_is_caught(self) -> None:
+        # The contract advertises code 100 -> RATE_LIMITED; dropping the path that drives it must
+        # not leave the advertised coverage unexercised.
+        mutated = self.cli_src.replace("code: 100,", "code: 999,")
+        with self.assertRaises(ErrorHandlingCheckError) as ctx:
+            check_broker_envelope_cli(self.config, mutated)
+        self.assertIn("100", str(ctx.exception))
+
+    def test_dropping_the_unmapped_category_is_caught(self) -> None:
+        # Removing BROKER_REJECTED is exactly the regression that would reinstate the
+        # "unmapped rejection reported as INVALID_SYMBOL" fabrication.
+        mutated = self.cli_src.replace("BrokerRejected", "InvalidSymbol").replace(
+            "BROKER_REJECTED", "INVALID_SYMBOL"
+        )
+        with self.assertRaises(ErrorHandlingCheckError) as ctx:
+            check_broker_envelope_cli(self.config, mutated)
+        self.assertIn("when applicable", str(ctx.exception))
+
+
+class AggregateEvidenceTest(unittest.TestCase):
+    def test_run_checks_emits_eight_evidence_items(self) -> None:
+        evidence = run_checks()
+        # 7 static (incl. both operator CLIs) + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(evidence), 8)
+
+    def test_assert_error_handling_static_emits_seven_evidence_items(self) -> None:
         config = load_config()
         evidence = assert_error_handling_static(config, ROOT)
-        self.assertEqual(len(evidence), 6)
+        self.assertEqual(len(evidence), 7)
 
 
 if __name__ == "__main__":

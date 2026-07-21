@@ -86,13 +86,15 @@ type Outcome = (
 
 /// Every SyRS SYS-64 category, in a fixed order. Kept in lock-step with [`OrderErrorCategory`]; the
 /// `categories` subcommand proves the vocabulary is total + stable over exactly this set.
-const ALL_CATEGORIES: [OrderErrorCategory; 17] = [
+const ALL_CATEGORIES: [OrderErrorCategory; 19] = [
     OrderErrorCategory::InvalidSymbol,
     OrderErrorCategory::InsufficientBuyingPower,
     OrderErrorCategory::ConnectivityBlocked,
     OrderErrorCategory::RateLimited,
     OrderErrorCategory::MarketDataStale,
     OrderErrorCategory::SubscriptionLimitReached,
+    OrderErrorCategory::OrderParametersInvalid,
+    OrderErrorCategory::BrokerRejected,
     OrderErrorCategory::NonLiveStrategySubmission,
     OrderErrorCategory::IngestionRecordValidationFailed,
     OrderErrorCategory::IngestionPacingBudgetExceeded,

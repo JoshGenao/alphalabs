@@ -259,6 +259,20 @@ impl StrategyMode {
 // SyRS SYS-64 names the error categories every submission failure must
 // classify itself under. Each variant maps 1:1 to the SyRS string so the
 // wire form stays stable across Rust, Python, REST, and WebSocket surfaces.
+//
+// SYS-64 introduces its list with "e.g.", so the taxonomy is extensible: the
+// variants below the SyRS-named ones are repo-defined buckets for failures the
+// SyRS list does not name. Two of them exist so no failure has to borrow a
+// category that does not apply to it (the SRS-ERR-001 acceptance criterion
+// requires a SyRS category only "when applicable"):
+//
+// * `OrderParametersInvalid` — a local, fail-closed `validate()` rejection.
+// * `BrokerRejected` — the broker rejected the order but the vendor error maps
+//   to no applicable SyRS category.
+//
+// Both replace an earlier `InvalidSymbol` fallback that reported, for example,
+// a non-positive quantity as an invalid symbol. `INVALID_SYMBOL` now means
+// exactly one thing: the broker says the symbol does not exist.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OrderErrorCategory {
@@ -268,6 +282,8 @@ pub enum OrderErrorCategory {
     RateLimited,
     MarketDataStale,
     SubscriptionLimitReached,
+    OrderParametersInvalid,
+    BrokerRejected,
     NonLiveStrategySubmission,
     IngestionRecordValidationFailed,
     IngestionPacingBudgetExceeded,
@@ -290,6 +306,8 @@ impl OrderErrorCategory {
             Self::RateLimited => "RATE_LIMITED",
             Self::MarketDataStale => "MARKET_DATA_STALE",
             Self::SubscriptionLimitReached => "SUBSCRIPTION_LIMIT_REACHED",
+            Self::OrderParametersInvalid => "ORDER_PARAMETERS_INVALID",
+            Self::BrokerRejected => "BROKER_REJECTED",
             Self::NonLiveStrategySubmission => "NON_LIVE_STRATEGY_SUBMISSION",
             Self::IngestionRecordValidationFailed => "INGESTION_RECORD_VALIDATION_FAILED",
             Self::IngestionPacingBudgetExceeded => "INGESTION_PACING_BUDGET_EXCEEDED",
@@ -3918,6 +3936,16 @@ mod tests {
         assert_eq!(
             OrderErrorCategory::SubscriptionLimitReached.as_str(),
             "SUBSCRIPTION_LIMIT_REACHED"
+        );
+        // The two repo-defined buckets that keep a failure from borrowing a
+        // SyRS category that does not apply to it (SRS-ERR-001 "when applicable").
+        assert_eq!(
+            OrderErrorCategory::OrderParametersInvalid.as_str(),
+            "ORDER_PARAMETERS_INVALID"
+        );
+        assert_eq!(
+            OrderErrorCategory::BrokerRejected.as_str(),
+            "BROKER_REJECTED"
         );
         assert_eq!(
             OrderErrorCategory::NonLiveStrategySubmission.as_str(),

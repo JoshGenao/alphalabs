@@ -222,14 +222,15 @@ impl ExecutionEngine {
         // SRS-EXE-003 — validate the order at the SHARED entry, BEFORE routing,
         // so both the live and the internal-simulation arms are held to the same
         // well-formedness (non-blank symbol, positive quantity, positive prices)
-        // and the simulation port cannot receive a malformed order. (The SyRS
-        // OrderErrorCategory taxonomy has no dedicated invalid-order-parameters
-        // bucket; InvalidSymbol is the order-rejection category and the precise
-        // reason is carried in error_type — a dedicated category is a
-        // cross-cutting SRS-ERR-001 taxonomy change, deferred.)
+        // and the simulation port cannot receive a malformed order. The rejection
+        // carries ORDER_PARAMETERS_INVALID — the dedicated invalid-order-parameters
+        // category SRS-ERR-001 added — with the precise reason in error_type. SyRS
+        // SYS-64 requires the error contract be IDENTICAL for live and paper, and
+        // this shared entry is what makes it so: both arms are rejected here, with
+        // the same category, before either destination is chosen.
         if let Err(err) = submission.validate() {
             return Err(StructuredOrderError {
-                category: OrderErrorCategory::InvalidSymbol,
+                category: OrderErrorCategory::OrderParametersInvalid,
                 error_type: err.error_type().to_string(),
                 message: err.to_string(),
                 original_order: submission,

@@ -586,11 +586,12 @@ impl ExecutionEngine {
                     // symbol / non-positive quantity / non-positive price) can
                     // never reach the live broker even when a caller enters via
                     // `submit_live_order` / `route_order` directly (the adapter
-                    // validation is defense-in-depth, not the only guard). The SyRS
-                    // taxonomy has no dedicated invalid-order-parameters category;
-                    // InvalidSymbol is the order-rejection bucket and the precise
-                    // reason is in error_type (a dedicated category is a
-                    // cross-cutting SRS-ERR-001 taxonomy change, deferred).
+                    // validation is defense-in-depth, not the only guard). The
+                    // rejection carries ORDER_PARAMETERS_INVALID — the dedicated
+                    // invalid-order-parameters category SRS-ERR-001 added — and the
+                    // precise reason in error_type. It is deliberately NOT
+                    // INVALID_SYMBOL: that category means the broker says the symbol
+                    // does not exist, which a non-positive quantity is not.
                     // SRS-EXE-009: the durable-submit path already exists as
                     // [`Self::route_order_durably`] (authority-gated: commit +
                     // persist to the OUTBOX BEFORE the broker, bind the ack, mark a
@@ -605,7 +606,7 @@ impl ExecutionEngine {
                     MarketDataFreshness::Fresh => match submission.validate() {
                         Ok(()) => broker.submit_order(submission),
                         Err(err) => Err(StructuredOrderError {
-                            category: OrderErrorCategory::InvalidSymbol,
+                            category: OrderErrorCategory::OrderParametersInvalid,
                             error_type: err.error_type().to_string(),
                             message: err.to_string(),
                             original_order: submission,
@@ -826,7 +827,7 @@ impl ExecutionEngine {
         //    moves the check ahead of the durable commit for the durable path.
         if let Err(err) = submission.validate() {
             return Err(DurableSubmitError::Rejected(StructuredOrderError {
-                category: OrderErrorCategory::InvalidSymbol,
+                category: OrderErrorCategory::OrderParametersInvalid,
                 error_type: err.error_type().to_string(),
                 message: err.to_string(),
                 original_order: submission,
@@ -989,9 +990,9 @@ impl ExecutionEngine {
     /// composite is blocked); then composite well-formedness
     /// ([`CompositeOrderSubmission::validate`]) immediately before the broker port,
     /// so a malformed composite never reaches the live broker even when a caller
-    /// enters here directly. As with the single-leg path, InvalidSymbol is the
-    /// order-rejection bucket for a shape failure and the precise reason is in
-    /// error_type (no new SYS-64 category).
+    /// enters here directly. As with the single-leg path, a shape failure carries
+    /// ORDER_PARAMETERS_INVALID (the dedicated invalid-order-parameters category
+    /// SRS-ERR-001 added) and the precise reason is in error_type.
     ///
     /// **Freshness keys by the full option contract identity, not the underlying**
     /// ([`OptionContractIdentity::canonical_key`]): a composite bundles several
@@ -1078,7 +1079,7 @@ impl ExecutionEngine {
                     match submission.validate() {
                         Ok(()) => broker.submit_composite_order(submission),
                         Err(err) => Err(StructuredCompositeOrderError {
-                            category: OrderErrorCategory::InvalidSymbol,
+                            category: OrderErrorCategory::OrderParametersInvalid,
                             error_type: err.error_type().to_string(),
                             message: err.to_string(),
                             original_order: submission,
@@ -2167,7 +2168,9 @@ mod tests {
                 &stale_events,
             )
             .expect_err("a single-leg composite must fail closed");
-        assert_eq!(err.category, OrderErrorCategory::InvalidSymbol);
+        // A malformed composite is an invalid-order-parameters rejection, NOT an
+        // invalid symbol (SRS-ERR-001 taxonomy fix).
+        assert_eq!(err.category, OrderErrorCategory::OrderParametersInvalid);
         assert_eq!(err.error_type, "SingleLegComposite");
     }
 

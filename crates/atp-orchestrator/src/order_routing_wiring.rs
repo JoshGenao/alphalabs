@@ -26,6 +26,11 @@
 //!   wire-level count of ZERO. The REAL socket transport stays the
 //!   operator-gated SRS-EXE-006 `TcpIbGateway` (`ib-live-transport` feature +
 //!   `ATP_RUN_INTEGRATION=1` + `--ignored`); nothing in this module dials it.
+//! * [`ScriptedIbGateway`] — the SRS-ERR-001 counterpart: a transport that
+//!   returns a PROGRAMMED vendor error, making the broker-side reject paths
+//!   reachable so the SyRS SYS-64 categories can be proven to arrive inside a
+//!   `StructuredOrderError`. It supplies only `code` + `message`; the REAL
+//!   adapter classifier and the REAL bridge do the classification.
 //! * [`run_routing_scenario`] — the operator VERIFICATION entry the
 //!   `exe002_order_routing_cli` binary drives: N paper strategies
 //!   (+ optionally the one designated live strategy) submitted through the
@@ -172,10 +177,11 @@ impl InternalSimulationSubmit for WiredPaperSimulation {
 }
 
 /// Map the simulation intake's fail-closed [`OrderError`] onto the shared
-/// SRS-ERR-001 envelope. `InvalidSymbol` is the SyRS order-rejection category
-/// (the taxonomy has no dedicated invalid-order-parameters bucket — same
-/// precedent as the `dispatch_order` shared-entry validation); the precise
-/// reason is the stable `error_type` discriminator.
+/// SRS-ERR-001 envelope. Every variant is a malformed-order-parameters failure,
+/// so the category is `OrderParametersInvalid` — the same category the live arm
+/// uses for the same class of failure, which is what makes the SyRS SYS-64
+/// "identical for live and paper execution modes" contract true rather than
+/// merely intended. The precise reason is the stable `error_type` discriminator.
 fn paper_intake_error(err: OrderError, submission: OrderSubmission) -> StructuredOrderError {
     let error_type = match err {
         OrderError::EmptySymbol => "EmptySymbol",
@@ -187,7 +193,7 @@ fn paper_intake_error(err: OrderError, submission: OrderSubmission) -> Structure
         OrderError::NonOptionCompositeLeg => "NonOptionCompositeLeg",
     };
     StructuredOrderError {
-        category: OrderErrorCategory::InvalidSymbol,
+        category: OrderErrorCategory::OrderParametersInvalid,
         error_type: error_type.to_string(),
         message: err.to_string(),
         original_order: submission,
@@ -237,9 +243,16 @@ impl<C: IbGatewayConnection> LiveBrokerageSubmit for IbBrokerageBridge<C> {
 
 /// Map the adapter-boundary [`AdapterError`] taxonomy onto the shared
 /// SRS-ERR-001 envelope, preserving the SyRS SYS-64 classification when the
-/// vendor error carries one. An unclassified rejection stays fail-closed under
-/// `InvalidSymbol` (the SyRS order-rejection category) with the vendor detail
-/// in `message` — a recognised-but-unmapped failure is surfaced, never dropped.
+/// vendor error carries one (the SRS-EXE-006 `classify_ib_order_error` decides
+/// that; this function never re-classifies a vendor code).
+///
+/// A rejection the classifier does **not** map carries `BrokerRejected`, with
+/// the vendor code and text in `message`: it is surfaced, never dropped — and,
+/// equally important, never *mislabelled*. It previously fell back to
+/// `InvalidSymbol`, which reported an arbitrary broker rejection as a symbol
+/// that does not exist. The SRS-ERR-001 acceptance criterion requires a SyRS
+/// category only "when applicable", so borrowing an inapplicable one is a false
+/// claim about the failure, not a conservative default.
 fn adapter_error_to_structured(
     err: AdapterError,
     submission: OrderSubmission,
@@ -250,18 +263,19 @@ fn adapter_error_to_structured(
             ..
         } => (*category, "IbBrokerageRejection"),
         AdapterError::Brokerage { category: None, .. } => (
-            OrderErrorCategory::InvalidSymbol,
+            OrderErrorCategory::BrokerRejected,
             "IbUnmappedBrokerageRejection",
         ),
-        AdapterError::InvalidOrder { .. } => {
-            (OrderErrorCategory::InvalidSymbol, "OrderValidationFailed")
-        }
+        AdapterError::InvalidOrder { .. } => (
+            OrderErrorCategory::OrderParametersInvalid,
+            "OrderValidationFailed",
+        ),
         AdapterError::NotConfigured { .. } => (
             OrderErrorCategory::ConnectivityBlocked,
             "AdapterNotConfigured",
         ),
         AdapterError::InvalidProviderData { .. } => {
-            (OrderErrorCategory::InvalidSymbol, "InvalidProviderData")
+            (OrderErrorCategory::BrokerRejected, "InvalidProviderData")
         }
     };
     StructuredOrderError {
@@ -369,6 +383,92 @@ impl IbGatewayConnection for RecordingIbGateway {
 
     fn positions(&self) -> Result<DataBatch, IbApiError> {
         Err(self.unsupported("positions"))
+    }
+}
+
+// --------------------------------------------------------------------------- //
+// Deterministic REJECTING mocked-IB transport double (SRS-ERR-001 evidence)
+// --------------------------------------------------------------------------- //
+
+/// Deterministic mocked-IB gateway that returns a PROGRAMMED vendor error from
+/// `submit_order`, so the SRS-ERR-001 broker-side reject paths are reachable
+/// without a live gateway.
+///
+/// This is the transport half of the ERR-001 evidence: the classification it
+/// drives is NOT this double's — the programmed [`IbApiError`] is handed to the
+/// REAL `InteractiveBrokersBrokerage`, whose REAL `classify_ib_order_error`
+/// decides the SyRS SYS-64 category, and the REAL [`IbBrokerageBridge`] builds
+/// the envelope. The double supplies only what a socket would have carried
+/// (`code` + `message`), which is exactly the SRS-EXE-006 seam
+/// (`IbApiError` never crosses the canonical trait boundary).
+///
+/// Kept separate from [`RecordingIbGateway`] on purpose: that double carries
+/// SRS-EXE-002's AC-10 "how many IB orders did this scenario create" evidence,
+/// and teaching it to reject would blur what a zero count there means.
+#[derive(Debug)]
+pub struct ScriptedIbGateway {
+    error: IbApiError,
+    attempts: Cell<u32>,
+}
+
+impl ScriptedIbGateway {
+    /// Program the vendor error the next `submit_order` will fail with.
+    pub fn rejecting(code: i32, message: impl Into<String>) -> Self {
+        Self {
+            error: IbApiError::new(code, message.into()),
+            attempts: Cell::new(0),
+        }
+    }
+
+    /// How many order-creating wire submissions reached this gateway. A rejected
+    /// submission still ATTEMPTED the wire, so this is deliberately not an
+    /// "orders created" count — no receipt is ever minted here.
+    pub fn attempts(&self) -> u32 {
+        self.attempts.get()
+    }
+
+    fn reject<T>(&self) -> Result<T, IbApiError> {
+        self.attempts.set(self.attempts.get() + 1);
+        Err(self.error.clone())
+    }
+}
+
+impl IbGatewayConnection for ScriptedIbGateway {
+    fn submit_order(&self, _order: &OrderSubmission) -> Result<OrderReceipt, IbApiError> {
+        self.reject()
+    }
+
+    fn submit_composite_order(
+        &self,
+        _order: &CompositeOrderSubmission,
+    ) -> Result<OrderReceipt, IbApiError> {
+        self.reject()
+    }
+
+    fn cancel_order(&self, _broker_order_id: &str) -> Result<(), IbApiError> {
+        Err(self.error.clone())
+    }
+
+    fn subscribe_market_data(
+        &self,
+        _request: &MarketDataSubscription,
+    ) -> Result<SubscriptionReceipt, IbApiError> {
+        Err(self.error.clone())
+    }
+
+    fn historical_data(
+        &self,
+        _request: &HistoricalDataRequest,
+    ) -> Result<HistoricalQueryResult, IbApiError> {
+        Err(self.error.clone())
+    }
+
+    fn account_status(&self) -> Result<DataBatch, IbApiError> {
+        Err(self.error.clone())
+    }
+
+    fn positions(&self) -> Result<DataBatch, IbApiError> {
+        Err(self.error.clone())
     }
 }
 

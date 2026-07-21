@@ -684,6 +684,8 @@
         "RateLimited",
         "MarketDataStale",
         "SubscriptionLimitReached",
+        "OrderParametersInvalid",
+        "BrokerRejected",
         "NonLiveStrategySubmission",
         "IngestionRecordValidationFailed",
         "IngestionPacingBudgetExceeded"
@@ -695,6 +697,8 @@
         "RATE_LIMITED",
         "MARKET_DATA_STALE",
         "SUBSCRIPTION_LIMIT_REACHED",
+        "ORDER_PARAMETERS_INVALID",
+        "BROKER_REJECTED",
         "NON_LIVE_STRATEGY_SUBMISSION",
         "INGESTION_RECORD_VALIDATION_FAILED",
         "INGESTION_PACING_BUDGET_EXCEEDED"
@@ -748,15 +752,65 @@
       "fail_closed_token": "inject=authorized",
       "l5_test": "srs_err_001_error_envelope_cli"
     },
-    "description": "The structured order-error envelope (StructuredOrderError: category + error_type + message + original_order) and the SyRS SYS-64 OrderErrorCategory vocabulary are built in atp-types. The err001_error_envelope_cli operator binary (the cli sub-block) is a Phase-1 surface that drives EVERY currently-implemented production StructuredOrderError construction site for failed order submissions: the single-live authority gate (ExecutionEngine::route_order, NotDesignated), the inner mode/connectivity/freshness gate (ExecutionEngine::submit_live_order — paper non-live, IB unreachable, scheduled-restart, stale market data), and the idempotency ledger (OrderLedger::submit — duplicate client correlation id, the SRS-EXE-008 rejection specified 'per SRS-ERR-001'). categories proves the SyRS SYS-64 vocabulary is total + stable; envelope proves every implemented reject path returns a complete category + type + message + unchanged-original-order envelope; no-broker proves a rejected order reaches no brokerage; authority drives route_order through the engine-owned live-designation registry to prove a non-designated strategy is rejected (no broker) while the single designated live strategy is authorized (SRS-EXE-001 single-live invariant). SRS-ERR-001 stays passes:false: SYS-64 (docs/SyRS_v0.7.md) names broker-side order-validation error types — INVALID_SYMBOL, INSUFFICIENT_BUYING_POWER, RATE_LIMITED — that are vocabulary-only today (no production construction site) and require the deferred IB adapter (SRS-EXE-006) to be produced and contract-tested before SRS-ERR-001 can flip to passes:true.",
+    "orchestrator_crate": {
+      "crate": "atp-orchestrator",
+      "path": "crates/atp-orchestrator"
+    },
+    "broker_cli": {
+      "bin_name": "err001_broker_envelope_cli",
+      "bin_path": "src/bin/err001_broker_envelope_cli.rs",
+      "subcommands": [
+        "broker-categories",
+        "unmapped",
+        "parity"
+      ],
+      "engine_tokens": [
+        "ExecutionEngine",
+        "route_order",
+        "designate",
+        "LiveDesignationConfirmation",
+        "dispatch_order",
+        "IbBrokerageBridge",
+        "InteractiveBrokersBrokerage",
+        "ScriptedIbGateway"
+      ],
+      "proof_tokens": [
+        "broker-envelope-complete:true",
+        "unmapped-surfaced-not-fabricated:true",
+        "live-paper-parity:true"
+      ],
+      "fail_closed_token": "inject=accepted",
+      "l5_test": "srs_err_001_broker_envelope_cli",
+      "live_gate_test": "srs_err_001_broker_envelope_live",
+      "live_gate_env": "ATP_RUN_INTEGRATION",
+      "live_gate_feature": "ib-live-transport",
+      "mapped_vendor_codes": {
+        "INVALID_SYMBOL": [
+          200,
+          203
+        ],
+        "INSUFFICIENT_BUYING_POWER": [
+          201
+        ],
+        "RATE_LIMITED": [
+          100
+        ]
+      },
+      "unmapped_category": "BROKER_REJECTED"
+    },
+    "description": "The structured order-error envelope (StructuredOrderError: category + error_type + message + original_order) and the SyRS SYS-64 OrderErrorCategory vocabulary are built in atp-types. TWO operator binaries make the SRS-ERR-001 acceptance criterion demonstrable, split by the SRS-ARCH-002 dependency direction (atp-execution must not see atp-adapters). (1) The cli sub-block, err001_error_envelope_cli (atp-execution), drives every production StructuredOrderError construction site reachable at the EXECUTION boundary: the single-live authority gate (ExecutionEngine::route_order, NotDesignated), the inner mode/connectivity/freshness gate (ExecutionEngine::submit_live_order — paper non-live, IB unreachable, scheduled-restart, stale market data), and the idempotency ledger (OrderLedger::submit — duplicate client correlation id, the SRS-EXE-008 rejection specified 'per SRS-ERR-001'). categories proves the SyRS SYS-64 vocabulary is total + stable; envelope proves every reject path returns a complete category + type + message + unchanged-original-order envelope; no-broker proves a rejected order reaches no brokerage; authority proves the SRS-EXE-001 single-live invariant produces the envelope on the real submission boundary. (2) The broker_cli sub-block, err001_broker_envelope_cli (atp-orchestrator, the one layer allowed to see both sides), closes what SESSION 65 recorded as the blocking gap: the SyRS SYS-64 BROKER-VALIDATION categories INVALID_SYMBOL / INSUFFICIENT_BUYING_POWER / RATE_LIMITED now have a production construction site and are proven to arrive inside a StructuredOrderError. It drives the REAL chain ExecutionEngine::submit_live_order -> IbBrokerageBridge -> InteractiveBrokersBrokerage -> classify_ib_order_error (SRS-EXE-006, passes:true); the only fixture is the transport (ScriptedIbGateway supplies a vendor code + message, exactly what a socket carries and exactly the seam where IbApiError stops). broker-categories proves each mapped vendor code yields the applicable category with the vendor text retained; unmapped proves a rejection the classifier does NOT map is surfaced under BROKER_REJECTED rather than fabricated as INVALID_SYMBOL (the AC requires a SyRS category only 'when applicable'); parity proves the live and paper arms reject an identical malformed order with identical envelope fields, which is SyRS SYS-64's 'the error contract shall be identical for live and paper execution modes'. This release also completed the cross-cutting taxonomy fix the codebase had explicitly deferred TO SRS-ERR-001: eight production sites previously reported a validate()-failure or an unmapped broker rejection as INVALID_SYMBOL, and now carry ORDER_PARAMETERS_INVALID or BROKER_REJECTED, so INVALID_SYMBOL means exactly one thing — the broker says the symbol does not exist — and is producible only by classify_ib_order_error. SRS-ERR-001 stays passes:false pending ONE operator-gated leg: no test has yet observed a REAL IB gateway emit a rejection that becomes a StructuredOrderError (SRS-EXE-006's attested paper-account evidence covers an ACCEPTED round trip). crates/atp-orchestrator/tests/srs_err_001_broker_envelope_live.rs is that gate — ATP_RUN_INTEGRATION=1 + the ib-live-transport feature + --ignored, against the headless paper account — and flipping it green is what flips SRS-ERR-001 to passes:true.",
     "deferred": [
       {
-        "feature": "SRS-EXE-006",
-        "what": "INVALID_SYMBOL / INSUFFICIENT_BUYING_POWER / RATE_LIMITED broker-side order-validation envelopes (deferred IB adapter) — the blocking deferral keeping SRS-ERR-001 passes:false"
+        "feature": "SRS-ERR-001",
+        "what": "observation of a REAL IB gateway rejection becoming a StructuredOrderError — the operator-gated srs_err_001_broker_envelope_live test (ATP_RUN_INTEGRATION=1, ib-live-transport, --ignored, fixed port 4002 so it cannot run in the parallel agent pool). The classification and envelope are proven over the REAL SRS-EXE-006 adapter with a scripted transport; this is the blocking deferral keeping SRS-ERR-001 passes:false"
       },
       {
         "feature": "SRS-MD-002",
-        "what": "SUBSCRIPTION_LIMIT_REACHED rejections carry the same envelope but are raised by the market-data subscription manager"
+        "what": "SUBSCRIPTION_LIMIT_REACHED rejections carry the same envelope but are raised by the market-data subscription manager, and a subscription is not an order submission"
+      },
+      {
+        "feature": "SRS-EXE-004",
+        "what": "the live COMPOSITE (combo/BAG) broker rejection envelope — submit_composite_order still fails closed with IB_CODE_LIVE_WIRE_PROTOCOL_PENDING until the composite wire encoding lands"
       },
       {
         "feature": "SRS-DATA-013",

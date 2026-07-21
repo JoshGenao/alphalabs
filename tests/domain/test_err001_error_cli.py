@@ -24,11 +24,17 @@ three angles:
      `:true` proof headline, and carries a fail-closed path -- each guard shown non-vacuous by a
      mutation that must be caught.
 
-  3. Scope honesty -- it pins that the contract names the CLI surface as REALIZED, states the feature
-     is now passes:true, and names the genuinely ADJACENT category owners (the data layer, the
-     market-data subscription manager, the orchestrator/kill-switch gates) as SEPARATE requirements
-     NOT part of SRS-ERR-001's acceptance criterion -- so a later edit cannot silently re-inflate or
-     deflate the scope.
+  3. Scope honesty -- it pins that the contract names BOTH operator surfaces, still states the
+     feature stays passes:false for the ONE remaining reason (no REAL IB gateway rejection has been
+     observed becoming a StructuredOrderError; that is the operator-gated
+     srs_err_001_broker_envelope_live test), no longer advertises the now-closed SRS-EXE-006 as
+     blocking, and names the genuinely ADJACENT category owners (the data layer, the market-data
+     subscription manager, the orchestrator/kill-switch gates) as SEPARATE requirements NOT part of
+     SRS-ERR-001's acceptance criterion -- so a later edit cannot silently re-inflate or deflate the
+     scope.
+
+The broker-side half of SYS-64 (INVALID_SYMBOL / INSUFFICIENT_BUYING_POWER / RATE_LIMITED) is proven
+by the sibling L7 ``tests/domain/test_err001_broker_envelope.py``.
 """
 
 from __future__ import annotations
@@ -185,24 +191,47 @@ def test_cli_fail_closed_path_is_real() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Scope honesty -- the contract names the Phase-1 surface and the deferred blocking owner
+# Scope honesty -- the contract names both surfaces and the ONE remaining blocking owner
 # --------------------------------------------------------------------------- #
 
 
-def test_scope_names_the_phase1_surface_and_deferred_owner() -> None:
-    # An operator must read an HONEST scope: the CLI surface (err001_error_envelope_cli) is a Phase-1
-    # surface that proves every IMPLEMENTED order-submission reject path, but SRS-ERR-001 STAYS
-    # passes:false because SYS-64 also names broker-side order-validation error types (INVALID_SYMBOL /
-    # INSUFFICIENT_BUYING_POWER / RATE_LIMITED) that require the deferred IB adapter (SRS-EXE-006). The
-    # contract must (1) name the binary, (2) state the feature stays passes:false, and (3) name the
-    # blocking deferred owner so a later edit cannot silently re-inflate the scope.
+def test_scope_names_both_surfaces_and_the_remaining_blocking_owner() -> None:
+    # An operator must read an HONEST scope. SESSION 65 recorded the blocking gap as "the SyRS SYS-64
+    # broker-validation categories are vocabulary-only, pending the deferred IB adapter
+    # (SRS-EXE-006)". SRS-EXE-006 is now passes:true and err001_broker_envelope_cli gives those
+    # categories a production construction site, so that deferral is REALIZED and must no longer be
+    # advertised as blocking. What remains is strictly narrower: no test has observed a REAL IB
+    # gateway rejection become a StructuredOrderError.
+    #
+    # The contract must therefore (1) name BOTH operator binaries, (2) still state the feature stays
+    # passes:false -- with the honest reason -- and (3) name the operator-gated live test as the ONE
+    # blocking deferral, so a later edit can neither re-inflate the scope back onto SRS-EXE-006 nor
+    # quietly drop the remaining gap.
     config = load_config()
     block = config["error_handling_contract"]
     description = block["description"]
     assert "err001_error_envelope_cli" in description
+    assert "err001_broker_envelope_cli" in description
     assert "stays passes:false" in description
-    assert "SRS-EXE-006" in description
-    assert "INVALID_SYMBOL" in description
-    deferred = " ".join(entry["feature"] + " " + entry["what"] for entry in block["deferred"])
-    for owner in ("SRS-EXE-006", "SRS-MD-002"):
+    # The realized categories are named as realized, not as pending vocabulary.
+    for category in ("INVALID_SYMBOL", "INSUFFICIENT_BUYING_POWER", "RATE_LIMITED"):
+        assert category in description, category
+    assert "srs_err_001_broker_envelope_live" in description
+    assert "vocabulary-only" not in description, (
+        "the SyRS SYS-64 broker-validation categories now have a production construction site; "
+        "describing them as vocabulary-only understates what shipped"
+    )
+
+    deferred = {entry["feature"]: entry["what"] for entry in block["deferred"]}
+    # The blocking deferral is now SRS-ERR-001's own live leg, NOT the (closed) IB adapter.
+    assert "SRS-ERR-001" in deferred, "the remaining live-observation gap must be named"
+    assert "passes:false" in deferred["SRS-ERR-001"]
+    assert "ATP_RUN_INTEGRATION" in deferred["SRS-ERR-001"]
+    assert "SRS-EXE-006" not in deferred, (
+        "SRS-EXE-006 is passes:true and its broker-validation envelopes are realized; "
+        "keeping it in deferred[] would misreport a closed dependency as blocking"
+    )
+    # The genuinely ADJACENT owners stay deferred -- they are separate requirements, not part of
+    # SRS-ERR-001's acceptance criterion.
+    for owner in ("SRS-MD-002", "SRS-DATA-013"):
         assert owner in deferred, owner

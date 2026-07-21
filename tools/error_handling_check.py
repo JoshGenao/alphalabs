@@ -90,6 +90,30 @@ def cli_source(config: dict, root: Path = ROOT) -> str:
     return source_path.read_text(encoding="utf-8")
 
 
+def orchestrator_crate(config: dict) -> dict:
+    block = err_block(config)
+    if "orchestrator_crate" not in block:
+        fail("error_handling_contract is missing the orchestrator_crate block")
+    return block["orchestrator_crate"]
+
+
+def orchestrator_cargo_source(config: dict, root: Path = ROOT) -> str:
+    cargo_path = root / orchestrator_crate(config)["path"] / "Cargo.toml"
+    if not cargo_path.exists():
+        fail(f"orchestrator crate Cargo.toml missing: {cargo_path.relative_to(root)}")
+    return cargo_path.read_text(encoding="utf-8")
+
+
+def broker_cli_source(config: dict, root: Path = ROOT) -> str:
+    block = err_block(config)
+    if "broker_cli" not in block:
+        fail("error_handling_contract is missing the broker_cli sub-block")
+    source_path = root / orchestrator_crate(config)["path"] / block["broker_cli"]["bin_path"]
+    if not source_path.exists():
+        fail(f"broker-envelope CLI source missing: {source_path.relative_to(root)}")
+    return source_path.read_text(encoding="utf-8")
+
+
 # --------------------------------------------------------------------------- #
 # Per-check evidence collectors
 # --------------------------------------------------------------------------- #
@@ -272,9 +296,26 @@ def check_cargo_test_smoke(config: dict) -> str:
     )
     if cli.returncode != 0:
         fail(f"cargo test -p {crate} --test {cli_l5} failed:\n{cli.stdout}\n{cli.stderr}")
+    # And the broker-side L5 (the err001_broker_envelope_cli surface), which lives in the
+    # orchestrator crate because atp-execution must not depend on atp-adapters (SRS-ARCH-002).
+    broker_crate = orchestrator_crate(config)["crate"]
+    broker_l5 = block["broker_cli"]["l5_test"]
+    broker = subprocess.run(
+        [cargo, "test", "-p", broker_crate, "--test", broker_l5, "--quiet"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if broker.returncode != 0:
+        fail(
+            f"cargo test -p {broker_crate} --test {broker_l5} failed:\n"
+            f"{broker.stdout}\n{broker.stderr}"
+        )
     return (
-        f"cargo test -p {crate} --lib + err_1_no_ib_side_effect + {cli_l5}: PASS "
-        "(synchronous rejection + zero broker side effect + operator-CLI envelope proofs verified)"
+        f"cargo test -p {crate} --lib + err_1_no_ib_side_effect + {cli_l5} and -p {broker_crate} "
+        f"--test {broker_l5}: PASS (synchronous rejection + zero broker side effect + "
+        "operator-CLI envelope proofs + SyRS SYS-64 broker-validation envelope proofs verified)"
     )
 
 
@@ -341,6 +382,121 @@ def check_error_cli(config: dict, cli_src: str, root: Path = ROOT) -> str:
     )
 
 
+def check_broker_envelope_cli(config: dict, cli_src: str, root: Path = ROOT) -> str:
+    """The operator binary that proves the SyRS SYS-64 BROKER-VALIDATION half of SRS-ERR-001.
+
+    SESSION 65 left SRS-ERR-001 ``passes:false`` because INVALID_SYMBOL /
+    INSUFFICIENT_BUYING_POWER / RATE_LIMITED were vocabulary-only — named by SYS-64 but with no
+    production construction site. This binary is the surface that closes that gap, so the check
+    verifies it is Cargo-registered, exposes its subcommands, drives the REAL chain (execution
+    engine -> bridge -> IB adapter, not a hand-rolled classifier that could agree with itself),
+    prints each ``:true`` proof headline, carries the fail-closed ``--inject`` non-vacuity path, and
+    is backed by BOTH the L5 fixture test and the operator-gated live-rejection test.
+    """
+    block = err_block(config)
+    if "broker_cli" not in block:
+        fail("error_handling_contract is missing the broker_cli sub-block")
+    spec = block["broker_cli"]
+
+    # Cargo-registered (without the [[bin]], the operator surface does not build).
+    cargo = orchestrator_cargo_source(config, root)
+    if f'name = "{spec["bin_name"]}"' not in cargo:
+        fail(
+            f"Cargo.toml must register the operator binary `{spec['bin_name']}` — without it the "
+            "SRS-ERR-001 broker-side error-envelope operator surface does not build"
+        )
+
+    missing_cmds = [c for c in spec["subcommands"] if f'"{c}"' not in cli_src]
+    if missing_cmds:
+        fail(f"{spec['bin_name']} is missing subcommand(s): {', '.join(missing_cmds)}")
+
+    # The proofs are only meaningful if the REAL adapter chain produces them. A stubbed classifier
+    # would let the binary assert whatever it likes about its own output.
+    missing_engine = [t for t in spec["engine_tokens"] if t not in cli_src]
+    if missing_engine:
+        fail(
+            f"{spec['bin_name']} must drive the real execution engine and the real IB adapter "
+            f"(missing {', '.join(missing_engine)}) so the SyRS SYS-64 classification proofs are "
+            "genuine (SRS-ERR-001)"
+        )
+
+    missing_proofs = [t for t in spec["proof_tokens"] if t not in cli_src]
+    if missing_proofs:
+        fail(
+            f"{spec['bin_name']} must print every proof headline (missing "
+            f"{', '.join(missing_proofs)}) — the broker-category / unmapped / live-paper-parity "
+            "acceptance halves"
+        )
+
+    if spec["fail_closed_token"] not in cli_src:
+        fail(
+            f"{spec['bin_name']} must fail closed on an injected fault "
+            f"(`{spec['fail_closed_token']}`) so an ACCEPTED submission never produces a reject proof"
+        )
+
+    # Every vendor code the contract claims is mapped must actually be driven by the binary, and the
+    # category it maps onto must be asserted there. Otherwise the contract could advertise coverage
+    # the operator surface never exercises.
+    for category, codes in spec["mapped_vendor_codes"].items():
+        if category not in cli_src:
+            fail(
+                f"{spec['bin_name']} must drive the SyRS SYS-64 category {category} — the contract "
+                "lists it as mapped but the operator surface never asserts it"
+            )
+        for code in codes:
+            if f"code: {code}," not in cli_src:
+                fail(
+                    f"{spec['bin_name']} must drive IB vendor code {code} (mapped to {category} by "
+                    "the SRS-EXE-006 classifier) — an advertised mapping with no operator evidence"
+                )
+
+    if spec["unmapped_category"] not in cli_src:
+        fail(
+            f"{spec['bin_name']} must prove an unmapped broker rejection carries "
+            f"{spec['unmapped_category']} — the AC requires a SyRS category only 'when applicable', "
+            "so an unmapped rejection must not borrow one"
+        )
+
+    tests_dir = root / orchestrator_crate(config)["path"] / "tests"
+    l5_path = tests_dir / f"{spec['l5_test']}.rs"
+    if not l5_path.exists():
+        fail(f"missing L5 integration test {l5_path.relative_to(root)}")
+
+    # The operator-gated live leg must exist AND fail closed without its env gate, so a run that
+    # never touched IB can never look like it did.
+    live_path = tests_dir / f"{spec['live_gate_test']}.rs"
+    if not live_path.exists():
+        fail(f"missing operator-gated live test {live_path.relative_to(root)}")
+    live_src = live_path.read_text(encoding="utf-8")
+    for needle, detail in (
+        ("#[ignore", "must be #[ignore] so it never runs in the parallel agent pool"),
+        (
+            spec["live_gate_env"],
+            f"must gate on {spec['live_gate_env']} rather than running unconditionally",
+        ),
+        (
+            f'feature = "{spec["live_gate_feature"]}"',
+            f"must be behind the {spec['live_gate_feature']} feature",
+        ),
+        (
+            "assert_eq!",
+            "must ASSERT its env gate (fail closed), not return early on a missing gate",
+        ),
+    ):
+        if needle not in live_src:
+            fail(f"{spec['live_gate_test']} {detail}")
+
+    return (
+        f"operator binary {spec['bin_name']} is Cargo-registered, exposes "
+        f"{', '.join(spec['subcommands'])}, drives the REAL execution engine + IB adapter "
+        f"({', '.join(spec['engine_tokens'])}), proves the SyRS SYS-64 broker-validation categories "
+        f"{', '.join(spec['mapped_vendor_codes'])} and the non-fabricated "
+        f"{spec['unmapped_category']} fallback, prints {', '.join(spec['proof_tokens'])}, fails "
+        f"closed on an injected fault, is driven in fresh processes by the L5 {spec['l5_test']}, and "
+        f"carries the operator-gated live rejection test {spec['live_gate_test']}"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Coverage and entry point
 # --------------------------------------------------------------------------- #
@@ -353,16 +509,23 @@ _STATIC_CHECKS = (
     ("entry_point", check_submit_live_order_signature, "execution"),
     ("synchronous_rejection", check_synchronous_rejection_has_no_broker_side_effect, "execution"),
     ("error_cli", check_error_cli, "cli"),
+    ("broker_envelope_cli", check_broker_envelope_cli, "broker_cli"),
 )
+
+
+def _sources(config: dict, root: Path = ROOT) -> dict[str, str]:
+    """The Rust sources each static check reads, keyed by its ``_STATIC_CHECKS`` scope."""
+    return {
+        "types": types_source(config, root),
+        "execution": execution_source(config, root),
+        "cli": cli_source(config, root),
+        "broker_cli": broker_cli_source(config, root),
+    }
 
 
 def run_checks() -> list[str]:
     config = load_config()
-    sources = {
-        "types": types_source(config),
-        "execution": execution_source(config),
-        "cli": cli_source(config),
-    }
+    sources = _sources(config)
     evidence: list[str] = []
     for _, check, scope in _STATIC_CHECKS:
         evidence.append(check(config, sources[scope]))
@@ -372,11 +535,7 @@ def run_checks() -> list[str]:
 
 def assert_error_handling_static(config: dict, root: Path = ROOT) -> list[str]:
     """Static checks usable from ``tools/architecture_check.py`` (no cargo)."""
-    sources = {
-        "types": types_source(config, root),
-        "execution": execution_source(config, root),
-        "cli": cli_source(config, root),
-    }
+    sources = _sources(config, root)
     evidence: list[str] = []
     for _, check, scope in _STATIC_CHECKS:
         evidence.append(check(config, sources[scope]))

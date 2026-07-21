@@ -274,12 +274,35 @@ reuses:
 - `StrategyMode { Live, Paper }` types the single-live-strategy
   designation. Exactly one strategy may be `Live`; everything else is
   `Paper` and must never route to IB (AC-15).
-- `OrderErrorCategory` carries the seven SyRS SYS-64 categories —
+- `OrderErrorCategory` carries the six SyRS SYS-64 categories —
   `InvalidSymbol`, `InsufficientBuyingPower`, `ConnectivityBlocked`,
-  `RateLimited`, `MarketDataStale`, `SubscriptionLimitReached`, and
-  `NonLiveStrategySubmission` — each mapped to its upper-snake wire
-  string via `as_str()` so the form is identical across Rust, Python,
-  REST, and WebSocket surfaces.
+  `RateLimited`, `MarketDataStale`, `SubscriptionLimitReached` — each
+  mapped to its upper-snake wire string via `as_str()` so the form is
+  identical across Rust, Python, REST, and WebSocket surfaces.
+
+  SYS-64 introduces its list with "e.g.", so the taxonomy is
+  extensible, and the enum adds repo-defined categories for failures
+  SYS-64 does not name (`NonLiveStrategySubmission`, the ingestion and
+  orchestrator/kill-switch buckets, `DuplicateClientCorrelationId`).
+  Two of them exist specifically so no failure has to borrow a category
+  that does not apply to it — the SRS-ERR-001 acceptance criterion
+  requires a SyRS category only *when applicable*:
+
+  - `OrderParametersInvalid` (`ORDER_PARAMETERS_INVALID`) — a local,
+    fail-closed `OrderSubmission::validate` rejection (blank symbol,
+    non-positive quantity or price, malformed composite). The order
+    never reached a broker, so nothing is known about its symbol.
+  - `BrokerRejected` (`BROKER_REJECTED`) — the broker rejected the
+    order but the vendor error maps to no applicable SyRS category. The
+    vendor code and text are retained in `message`: surfaced, never
+    dropped, and never relabelled.
+
+  Both replaced an earlier `InvalidSymbol` fallback across eight
+  production sites. `INVALID_SYMBOL` now means exactly one thing — the
+  broker reports no security definition for the symbol — and is
+  producible only by the adapter's `classify_ib_order_error` (IB codes
+  200 / 203). `tests/domain/test_err001_broker_envelope.py` enforces
+  that: no `validate()`-failure site may construct it.
 - `StructuredOrderError { category, error_type, message,
   original_order }` is the SRS-ERR-001 envelope — exactly four fields,
   with the check refusing any `broker`, `ib_order_id`, `vendor`, or
