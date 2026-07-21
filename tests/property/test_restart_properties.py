@@ -91,7 +91,9 @@ def test_later_trade_ready_never_lowers_elapsed(
     phases, elapsed = data
     ready_phase = phases[-1]
     extended = phases[:-1] + [
-        ObservedPhase(RestartPhase.READINESS_CHECK, ready_phase.start_ns, ready_phase.end_ns + extra_s * S)
+        ObservedPhase(
+            RestartPhase.READINESS_CHECK, ready_phase.start_ns, ready_phase.end_ns + extra_s * S
+        )
     ]
     art0 = compute_restart_recovery(phases=phases, readiness=_full_ready())
     art1 = compute_restart_recovery(phases=extended, readiness=_full_ready())
@@ -101,14 +103,10 @@ def test_later_trade_ready_never_lowers_elapsed(
 @given(st.sets(st.sampled_from(list(SubCheck)), min_size=1))
 def test_pass_impossible_with_any_subcheck_absent(dropped: set[SubCheck]) -> None:
     # A complete, fast, ready timeline — but drop >=1 sub-check → never PASS.
-    subs = tuple(
-        SubCheckResult(sc, SubCheckStatus.PASS) for sc in SubCheck if sc not in dropped
-    )
+    subs = tuple(SubCheckResult(sc, SubCheckStatus.PASS) for sc in SubCheck if sc not in dropped)
     readiness = ReadinessOutcome(gate_state=GateOutcome.READY, subchecks=subs)
     # A fixed compliant timeline isolates the sub-check completeness invariant.
-    fixed = [
-        ObservedPhase(p, i * 10 * S, i * 10 * S + 5 * S) for i, p in enumerate(RestartPhase)
-    ]
+    fixed = [ObservedPhase(p, i * 10 * S, i * 10 * S + 5 * S) for i, p in enumerate(RestartPhase)]
     art = compute_restart_recovery(phases=fixed, readiness=readiness)
     assert art.verdict is not Verdict.PASS
 
@@ -118,9 +116,7 @@ def test_pass_impossible_with_any_phase_absent(present: set[RestartPhase]) -> No
     # Fewer than all 5 phases can never certify (unless a provable breach makes it FAIL — still not
     # PASS). Build a small in-budget timeline over just the present phases (canonical order).
     ordered = [p for p in RestartPhase if p in present]
-    phases = [
-        ObservedPhase(p, i * 10 * S, i * 10 * S + 5 * S) for i, p in enumerate(ordered)
-    ]
+    phases = [ObservedPhase(p, i * 10 * S, i * 10 * S + 5 * S) for i, p in enumerate(ordered)]
     art = compute_restart_recovery(phases=phases, readiness=_full_ready())
     assert art.verdict is not Verdict.PASS
 
@@ -145,6 +141,12 @@ def test_relaxed_budget_gate_is_exact(budget_s: int) -> None:
         ObservedPhase(RestartPhase.ATP_SERVICE_INIT, 3, 4),
         ObservedPhase(RestartPhase.READINESS_CHECK, 4, budget_s * S),
     ]
-    assert compute_restart_recovery(phases=at, readiness=_full_ready(), target=target).verdict is Verdict.PASS
+    assert (
+        compute_restart_recovery(phases=at, readiness=_full_ready(), target=target).verdict
+        is Verdict.PASS
+    )
     over = at[:-1] + [ObservedPhase(RestartPhase.READINESS_CHECK, 4, budget_s * S + 1)]
-    assert compute_restart_recovery(phases=over, readiness=_full_ready(), target=target).verdict is Verdict.FAIL
+    assert (
+        compute_restart_recovery(phases=over, readiness=_full_ready(), target=target).verdict
+        is Verdict.FAIL
+    )

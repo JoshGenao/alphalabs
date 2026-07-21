@@ -82,9 +82,7 @@ def fail(message: str) -> None:
 
 
 def load_config(root: Path = ROOT) -> dict:
-    return json.loads(
-        (root / "architecture" / "runtime_services.json").read_text(encoding="utf-8")
-    )
+    return json.loads((root / "architecture" / "runtime_services.json").read_text(encoding="utf-8"))
 
 
 def isolation_contract(config: dict) -> dict:
@@ -250,7 +248,13 @@ def _parse_volume_entry(entry: str) -> dict:
     else "" (short named-volume form).
     """
 
-    out = {"raw": " ".join(entry.split()), "kind": "", "source": "", "target": "", "read_only": False}
+    out = {
+        "raw": " ".join(entry.split()),
+        "kind": "",
+        "source": "",
+        "target": "",
+        "read_only": False,
+    }
     lines = entry.splitlines()
     first = lines[0].strip()
     if first.startswith("- "):
@@ -326,9 +330,7 @@ def _volume_mounts(block: str) -> list[dict] | None:
 # --------------------------------------------------------------------------- #
 
 
-def _assert_service_least_privilege(
-    contract: dict, compose_text: str, service: str
-) -> list[str]:
+def _assert_service_least_privilege(contract: dict, compose_text: str, service: str) -> list[str]:
     raw = _service_block(compose_text, service)
     if raw is None:
         fail(f"compose is missing the strategy-container service {service!r} (SRS-SEC-003)")
@@ -391,7 +393,9 @@ def _assert_service_least_privilege(
             f"{service} must declare `privileged: false` (got {privileged!r}); "
             f"SRS-SEC-003 forbids privileged mode"
         )
-    security_opt = [opt.replace(" ", "").lower() for opt in (_yaml_list_items(eff, "security_opt") or [])]
+    security_opt = [
+        opt.replace(" ", "").lower() for opt in (_yaml_list_items(eff, "security_opt") or [])
+    ]
     if "no-new-privileges:true" not in security_opt:
         fail(
             f"{service} must set `security_opt: [no-new-privileges:true]` "
@@ -509,9 +513,7 @@ def _assert_service_least_privilege(
     present = {(m["source"], m["target"]) for m in mounts if m["read_only"]}
     for source, target in allowed:
         if (source, target) not in present:
-            fail(
-                f"{service} must mount the read-only data tier {source}:{target} (SRS-SEC-003)"
-            )
+            fail(f"{service} must mount the read-only data tier {source}:{target} (SRS-SEC-003)")
 
     return [
         f"{service}: no privileged mode (privileged:false + no-new-privileges), all Linux "
@@ -528,9 +530,13 @@ def _assert_repo_wide_no_host_namespace(contract: dict, effective_all: str) -> l
         "network_mode: 'host'",
     ):
         if token in effective_all:
-            fail(f"no compose service may use host networking, found {token!r} (SRS-SEC-003 NFR-S5)")
+            fail(
+                f"no compose service may use host networking, found {token!r} (SRS-SEC-003 NFR-S5)"
+            )
     if "privileged: true" in effective_all:
-        fail("no compose service may run privileged (found 'privileged: true') (SRS-SEC-003 NFR-S5)")
+        fail(
+            "no compose service may run privileged (found 'privileged: true') (SRS-SEC-003 NFR-S5)"
+        )
     return ["repo-wide: no compose service uses host networking or privileged mode"]
 
 
@@ -559,7 +565,9 @@ def assert_container_isolation_static(config: dict, root: Path = ROOT) -> list[s
 
     subject_services = contract["subject_services"]
     if not subject_services:
-        fail("container_isolation_contract names no subject_services (SRS-SEC-003 would be vacuous)")
+        fail(
+            "container_isolation_contract names no subject_services (SRS-SEC-003 would be vacuous)"
+        )
 
     evidence: list[str] = ["SRS-SEC-003 least-privilege strategy-container evidence:"]
     for service in subject_services:

@@ -71,7 +71,9 @@ def test_no_privileged_mode(strategy_blocks) -> None:
         # privileged is declared exactly once and normalizes to boolean false.
         assert cic._service_key_count(block, "privileged") == 1
         assert cic._scalar_bool(cic._service_scalar(block, "privileged")) is False
-        security_opt = [o.replace(" ", "").lower() for o in (cic._yaml_list_items(block, "security_opt") or [])]
+        security_opt = [
+            o.replace(" ", "").lower() for o in (cic._yaml_list_items(block, "security_opt") or [])
+        ]
         assert "no-new-privileges:true" in security_opt
         dropped = cic._yaml_list_items(block, "cap_drop")
         assert dropped is not None and "ALL" in {c.upper() for c in dropped}

@@ -43,6 +43,7 @@ def compute_restart_recovery(*, during_market_hours: bool | None = True, **kwarg
 
     return _compute_raw(during_market_hours=during_market_hours, **kwargs)  # type: ignore[arg-type]
 
+
 # A default contiguous timeline: trigger→ready in 130 s, well under the 600 s budget.
 _DEFAULT_BOUNDS: dict[RestartPhase, tuple[int, int]] = {
     RestartPhase.PROXMOX_VM: (0, 10),
@@ -116,9 +117,9 @@ def test_exact_600s_boundary_is_pass() -> None:
 
 
 def test_one_ns_over_budget_is_fail() -> None:
-    over = [
-        p for p in phases() if p.phase is not RestartPhase.READINESS_CHECK
-    ] + [ObservedPhase(RestartPhase.READINESS_CHECK, 120 * S, 600 * S + 1)]
+    over = [p for p in phases() if p.phase is not RestartPhase.READINESS_CHECK] + [
+        ObservedPhase(RestartPhase.READINESS_CHECK, 120 * S, 600 * S + 1)
+    ]
     art = compute_restart_recovery(phases=over, readiness=ready())
     assert art.observed_span_ns == 600 * S + 1
     assert art.verdict is Verdict.FAIL
@@ -140,9 +141,7 @@ def test_missing_readiness_phase_is_inconclusive_not_pass() -> None:
 
 
 def test_missing_subcheck_is_inconclusive_not_pass() -> None:
-    art = compute_restart_recovery(
-        phases=phases(), readiness=ready(drop={SubCheck.NAS_ARCHIVAL})
-    )
+    art = compute_restart_recovery(phases=phases(), readiness=ready(drop={SubCheck.NAS_ARCHIVAL}))
     assert art.verdict is Verdict.INCONCLUSIVE
     assert art.missing_subchecks == ("nas_archival",)
     assert art.readiness_trade_ready is False
@@ -338,7 +337,9 @@ def test_phase_completing_after_readiness_raises() -> None:
         compute_restart_recovery(
             phases=[
                 ObservedPhase(RestartPhase.PROXMOX_VM, 0, 5 * S),
-                ObservedPhase(RestartPhase.ATP_SERVICE_INIT, 10 * S, 700 * S),  # ends after readiness
+                ObservedPhase(
+                    RestartPhase.ATP_SERVICE_INIT, 10 * S, 700 * S
+                ),  # ends after readiness
                 ObservedPhase(RestartPhase.READINESS_CHECK, 20 * S, 30 * S),
             ],
             readiness=ready(),
@@ -402,7 +403,9 @@ def test_relaxed_label_can_fail_a_short_budget() -> None:
 def test_srs_pass_requires_market_hours_scope() -> None:
     # NFR-R6 applies to market-hours restarts: an SRS-REL-002 PASS requires proven scope.
     assert (
-        compute_restart_recovery(phases=phases(), readiness=ready(), during_market_hours=True).verdict
+        compute_restart_recovery(
+            phases=phases(), readiness=ready(), during_market_hours=True
+        ).verdict
         is Verdict.PASS
     )
     unknown = compute_restart_recovery(phases=phases(), readiness=ready(), during_market_hours=None)
@@ -416,9 +419,9 @@ def test_srs_pass_requires_market_hours_scope() -> None:
 
 def test_provable_breach_beats_missing_scope() -> None:
     # An over-budget restart is FAIL even with unknown scope — the scope gate never hides a breach.
-    over = [
-        p for p in phases() if p.phase is not RestartPhase.READINESS_CHECK
-    ] + [ObservedPhase(RestartPhase.READINESS_CHECK, 120 * S, 700 * S)]
+    over = [p for p in phases() if p.phase is not RestartPhase.READINESS_CHECK] + [
+        ObservedPhase(RestartPhase.READINESS_CHECK, 120 * S, 700 * S)
+    ]
     assert (
         compute_restart_recovery(phases=over, readiness=ready(), during_market_hours=None).verdict
         is Verdict.FAIL
@@ -453,6 +456,8 @@ def test_engine_reads_no_wall_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     # a compute still succeeds (no clock read → no clock-skew fabrication).
     import time as _time
 
-    monkeypatch.setattr(_time, "time_ns", lambda: (_ for _ in ()).throw(AssertionError("clock read")))
+    monkeypatch.setattr(
+        _time, "time_ns", lambda: (_ for _ in ()).throw(AssertionError("clock read"))
+    )
     art = compute_restart_recovery(phases=phases(), readiness=ready())
     assert art.verdict is Verdict.PASS

@@ -244,7 +244,9 @@ def assert_credential_vault_wiring(config: dict, root: Path = ROOT) -> list[str]
         if token not in compose_text:
             fail(f"compose does not pass {token} to services (SRS-SEC-001 vault delivery)")
     if f"{_MOUNT_TOKEN}:ro" not in compose_text:
-        fail(f"compose does not mount the credential vault read-only at {_MOUNT_TOKEN} (SRS-SEC-001)")
+        fail(
+            f"compose does not mount the credential vault read-only at {_MOUNT_TOKEN} (SRS-SEC-001)"
+        )
 
     # The *atp-no-secrets anchor must blank EVERY catalogued secret + all
     # vault-unlock material (key file AND passphrase) so an isolated service
@@ -263,7 +265,9 @@ def assert_credential_vault_wiring(config: dict, root: Path = ROOT) -> list[str]
         if block is None:
             fail(f"compose is missing credential-consuming service {service}")
         if not _service_has_vault_mount(block):
-            fail(f"{service} consumes credentials but does not mount the vault (volumes: *atp-volumes)")
+            fail(
+                f"{service} consumes credentials but does not mount the vault (volumes: *atp-volumes)"
+            )
         if "*atp-no-secrets" in block:
             fail(f"{service} consumes credentials but blanks them via *atp-no-secrets")
 

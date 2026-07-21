@@ -143,7 +143,9 @@ def parse_proc_stat_btime(text: str) -> int:
             try:
                 value = int(parts[1])
             except ValueError as exc:
-                raise BootEvidenceError(f"/proc/stat btime is not an integer: {parts[1]!r}") from exc
+                raise BootEvidenceError(
+                    f"/proc/stat btime is not an integer: {parts[1]!r}"
+                ) from exc
             if value <= 0:
                 raise BootEvidenceError(f"/proc/stat btime must be positive; got {value}")
             return value
@@ -310,9 +312,7 @@ def assemble_fixture(
     when no readiness evidence was supplied.
     """
 
-    phases_obj: dict[str, list[int]] = {
-        p.phase.value: [p.start_ns, p.end_ns] for p in phases
-    }
+    phases_obj: dict[str, list[int]] = {p.phase.value: [p.start_ns, p.end_ns] for p in phases}
     fixture: dict[str, object] = {"phases": phases_obj}
     if gate_state is not None:
         # No 'subchecks' key: every SYS-76 sub-check is absent (honest — deferred to SRS-MD-006).
@@ -330,7 +330,9 @@ def infra_only_report(phases: Sequence[ObservedPhase]) -> RestartRecoveryArtifac
     VM-start → OS-boot/Docker-up), which the artifact reports regardless of verdict.
     """
 
-    target = RestartRecoveryTarget(requirement=INFRA_ONLY_REQUIREMENT, budget_ns=DEFAULT_INFRA_BUDGET_NS)
+    target = RestartRecoveryTarget(
+        requirement=INFRA_ONLY_REQUIREMENT, budget_ns=DEFAULT_INFRA_BUDGET_NS
+    )
     return compute_restart_recovery(phases=list(phases), readiness=None, target=target)
 
 

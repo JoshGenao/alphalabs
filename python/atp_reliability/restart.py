@@ -526,13 +526,17 @@ def compute_restart_recovery(
     # 4. Readiness evaluation.
     gate_state: str | None = None
     subcheck_status: dict[str, str] = {}
-    missing_subchecks: tuple[str, ...] = tuple(sc.value for sc in _sorted_subchecks(REQUIRED_SUBCHECKS))
+    missing_subchecks: tuple[str, ...] = tuple(
+        sc.value for sc in _sorted_subchecks(REQUIRED_SUBCHECKS)
+    )
     readiness_present = readiness is not None
     readiness_gate_ready = False
     any_subcheck_failing = False
     if readiness is not None:
         if not isinstance(readiness.gate_state, GateOutcome):
-            raise RestartError(f"readiness gate_state must be a GateOutcome; got {readiness.gate_state!r}")
+            raise RestartError(
+                f"readiness gate_state must be a GateOutcome; got {readiness.gate_state!r}"
+            )
         gate_state = readiness.gate_state.value
         readiness_gate_ready = readiness.gate_state in TRADE_READY_STATES
         seen: dict[SubCheck, SubCheckResult] = {}

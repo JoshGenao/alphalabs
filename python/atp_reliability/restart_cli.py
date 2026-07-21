@@ -272,7 +272,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="atp_reliability.restart_cli",
         description="SRS-REL-002 full-system-restart RTO (trade-ready within 10 min) verification.",
     )
-    parser.add_argument("--fixture", metavar="PATH", required=True, help="JSON evidence fixture path")
+    parser.add_argument(
+        "--fixture", metavar="PATH", required=True, help="JSON evidence fixture path"
+    )
     parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     return parser
 
@@ -299,9 +301,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         print(f"error: measurement refused: {exc}", file=sys.stderr)
         return EXIT_REFUSED
 
-    elapsed = (
-        "n/a" if artifact.elapsed_ns is None else f"{artifact.elapsed_ns / NS_PER_SECOND:.3f}"
-    )
+    elapsed = "n/a" if artifact.elapsed_ns is None else f"{artifact.elapsed_ns / NS_PER_SECOND:.3f}"
     span = f"{artifact.observed_span_ns / NS_PER_SECOND:.3f}"
     summary = (
         f"restart_recovery verdict:{artifact.verdict.value} "
