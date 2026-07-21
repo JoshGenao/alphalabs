@@ -45,12 +45,26 @@ def test_live_ib_round_trip_feeds_the_readiness_fold() -> None:
             "test",
             "-p",
             "atp-adapters",
+            # REQUIRED: srs_exe_006_ib_diagnostic.rs carries a crate-level
+            # `#![cfg(feature = "ib-live-transport")]`, and that feature is OFF by
+            # default (crates/atp-adapters/Cargo.toml). Without it the test binary
+            # compiles EMPTY -- cargo reports "0 passed" with exit status 0, so the
+            # `"1 passed" in combined` guard below fails closed and this gate could
+            # never go green no matter how healthy the gateway is.
+            "--features",
+            "ib-live-transport",
             "--test",
             "srs_exe_006_ib_diagnostic",
             "paper_account_per_operation_diagnostic",
             "--",
             "--exact",
             "--ignored",
+            # REQUIRED: libtest CAPTURES stdout of a PASSING test, and this
+            # diagnostic always passes. Without --nocapture its per-operation
+            # report and the `N/6 operations succeeded` tally never reach our
+            # stdout, so the all_ops_ok check below could never see them and the
+            # gate would be permanently (and misleadingly) red.
+            "--nocapture",
         ],
         cwd=REPO_ROOT,
         capture_output=True,
@@ -59,7 +73,18 @@ def test_live_ib_round_trip_feeds_the_readiness_fold() -> None:
         timeout=600,
     )
     combined = result.stdout + result.stderr
-    live_ok = result.returncode == 0 and "1 passed" in combined
+    # FAIL CLOSED on three independent conditions. `paper_account_per_operation_
+    # diagnostic` is a DIAGNOSTIC, not an assertion: it prints a per-operation
+    # report and exits `ok` even when every operation failed. So `returncode == 0`
+    # and `"1 passed"` together prove only that the binary RAN -- observed
+    # 2026-07-21 reporting "0/6 operations succeeded" while this gate went green,
+    # which would have flipped SRS-MD-006 against a dead broker connection.
+    # SYS-76(a)+(b) require the round trip to actually WORK, so assert on the
+    # diagnostic's own tally (`=== {ok}/6 operations succeeded ===`, emitted at
+    # srs_exe_006_ib_diagnostic.rs:124).
+    ran = result.returncode == 0 and "1 passed" in combined  # not compiled-empty
+    all_ops_ok = "=== 6/6 operations succeeded ===" in combined
+    live_ok = ran and all_ops_ok
     status = SubCheckStatus.PASS if live_ok else SubCheckStatus.FAIL
 
     results = [
