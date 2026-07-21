@@ -147,12 +147,18 @@ def test_dropping_a_phase_or_subcheck_refuses_certification() -> None:
 
 
 def test_nas_degraded_requires_operator_alert() -> None:
-    assert compute_restart_recovery(
-        phases=_phases(), readiness=_ready(nas_degraded=True, nas_alert=True)
-    ).verdict is Verdict.PASS
-    assert compute_restart_recovery(
-        phases=_phases(), readiness=_ready(nas_degraded=True, nas_alert=False)
-    ).verdict is Verdict.FAIL
+    assert (
+        compute_restart_recovery(
+            phases=_phases(), readiness=_ready(nas_degraded=True, nas_alert=True)
+        ).verdict
+        is Verdict.PASS
+    )
+    assert (
+        compute_restart_recovery(
+            phases=_phases(), readiness=_ready(nas_degraded=True, nas_alert=False)
+        ).verdict
+        is Verdict.FAIL
+    )
 
 
 def test_srs_label_locks_the_ten_minute_budget() -> None:

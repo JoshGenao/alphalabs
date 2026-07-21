@@ -135,7 +135,10 @@ def test_nfr_r6_phrases_present_in_syrs() -> None:
 
 def test_srs_ac_phrase_present() -> None:
     srs = (ROOT / _CONTRACT["srs_doc"]).read_text()
-    assert "Proxmox VM, Docker daemon, ATP services, and readiness checks complete within 10 minutes" in srs
+    assert (
+        "Proxmox VM, Docker daemon, ATP services, and readiness checks complete within 10 minutes"
+        in srs
+    )
 
 
 def test_deferred_names_the_system_test_and_md006() -> None:
@@ -274,7 +277,10 @@ def test_unscopeable_trigger_over_budget_still_fails(tmp_path: Path) -> None:
     # a refusal — a provable budget breach is never hidden behind scope-derivation failure.
     b = _et_epoch_ns(2050, 6, 1, 10, 0)
     fixture = _fixture_from_trigger(b)
-    fixture["phases"]["readiness_check"] = [b + 120 * S, b + 700 * S]  # elapsed 700 s > 600 s budget
+    fixture["phases"]["readiness_check"] = [
+        b + 120 * S,
+        b + 700 * S,
+    ]  # elapsed 700 s > 600 s budget
     fpath = tmp_path / "unscopeable_breach.json"
     fpath.write_text(json.dumps(fixture))
     result = _run_cli(fpath)

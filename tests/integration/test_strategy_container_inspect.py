@@ -118,7 +118,9 @@ def created_strategy_container():
 def test_strategy_container_is_not_privileged(created_strategy_container) -> None:
     host_config = created_strategy_container["HostConfig"]
     assert host_config["Privileged"] is False, "strategy container must not be privileged"
-    assert "ALL" in (host_config.get("CapDrop") or []), "strategy container must drop ALL capabilities"
+    assert "ALL" in (host_config.get("CapDrop") or []), (
+        "strategy container must drop ALL capabilities"
+    )
     security_opt = host_config.get("SecurityOpt") or []
     assert any("no-new-privileges" in opt for opt in security_opt), (
         "strategy container must set no-new-privileges"

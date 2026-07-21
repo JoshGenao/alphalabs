@@ -81,9 +81,7 @@ def _assert_all_passed(result: subprocess.CompletedProcess[str], label: str) -> 
 
 
 def test_rust_fact_read_suite_passes() -> None:
-    _assert_all_passed(
-        _run_cargo_test("atp-data", "srs_data_021_corp_action_facts"), "fact-read"
-    )
+    _assert_all_passed(_run_cargo_test("atp-data", "srs_data_021_corp_action_facts"), "fact-read")
 
 
 def test_rust_paper_application_suite_passes() -> None:
@@ -125,9 +123,7 @@ def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 def _lines(stdout: str, prefix: str) -> list[dict]:
     return [
-        json.loads(line[len(prefix) :])
-        for line in stdout.splitlines()
-        if line.startswith(prefix)
+        json.loads(line[len(prefix) :]) for line in stdout.splitlines() if line.startswith(prefix)
     ]
 
 
@@ -518,12 +514,7 @@ def test_bad_input_fails_closed() -> None:
     # Unknown flag.
     assert _run_cli(["apply", "--symbol", "A", "--delisting", "--bogus", "x"]).returncode == 2
     # Two action flags.
-    assert (
-        _run_cli(
-            ["apply", "--symbol", "A", "--delisting", "--split", "2:1"]
-        ).returncode
-        == 2
-    )
+    assert _run_cli(["apply", "--symbol", "A", "--delisting", "--split", "2:1"]).returncode == 2
     # Malformed position spec (ledger rejects a zero-quantity fill).
     assert (
         _run_cli(

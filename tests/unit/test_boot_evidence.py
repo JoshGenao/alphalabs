@@ -89,7 +89,9 @@ def test_parse_systemd_analyze_full() -> None:
 
 
 def test_parse_systemd_analyze_vm_no_firmware_and_min_units() -> None:
-    d = parse_systemd_analyze("Startup finished in 4.500s (kernel) + 1min 5.250s (userspace) = 1min 9.750s")
+    d = parse_systemd_analyze(
+        "Startup finished in 4.500s (kernel) + 1min 5.250s (userspace) = 1min 9.750s"
+    )
     assert d.firmware_ns == 0
     assert d.userspace_ns == 65_250_000_000
     assert d.total_ns == 69_750_000_000
@@ -115,7 +117,9 @@ def test_os_boot_excludes_pre_btime_firmware_and_loader() -> None:
     )
     assert d.total_ns == 17_500_000_000
     osb = os_boot_phase(1752393600, d)
-    assert osb.end_ns - osb.start_ns == 14_500_000_000  # excludes the 3.0s pre-btime firmware/loader
+    assert (
+        osb.end_ns - osb.start_ns == 14_500_000_000
+    )  # excludes the 3.0s pre-btime firmware/loader
 
 
 def test_parse_systemd_analyze_with_initrd_and_trailing_line() -> None:
@@ -137,7 +141,9 @@ def test_parse_systemd_analyze_with_initrd_and_trailing_line() -> None:
 
 def test_os_boot_and_docker_phases() -> None:
     bt = 1752393600
-    durations = parse_systemd_analyze("Startup finished in 4.5s (kernel) + 10.0s (userspace) = 14.5s")
+    durations = parse_systemd_analyze(
+        "Startup finished in 4.5s (kernel) + 10.0s (userspace) = 14.5s"
+    )
     osb = os_boot_phase(bt, durations)
     assert osb.phase is RestartPhase.OS_BOOT
     assert osb.start_ns == bt * S
@@ -223,7 +229,9 @@ def test_docker_starting_during_os_boot_is_accepted() -> None:
     base = bt * S
     # os_boot = [base, base+14.5s]; docker InactiveExit=8s / ActiveEnter=9s => [base+8s, base+9s],
     # fully nested inside os_boot.
-    docker_nested = "InactiveExitTimestampMonotonic=8000000\nActiveEnterTimestampMonotonic=9000000\n"
+    docker_nested = (
+        "InactiveExitTimestampMonotonic=8000000\nActiveEnterTimestampMonotonic=9000000\n"
+    )
     phases = collect_infra_phases(
         proc_stat="btime 1752393600\n",
         systemd_analyze="Startup finished in 4.5s (kernel) + 10.0s (userspace) = 14.5s",
@@ -267,7 +275,10 @@ def test_run_host_collection_with_injected_runner() -> None:
     # An injected runner makes the host-collection assembly testable off-host.
     outputs = {
         ("cat", "/proc/stat"): "btime 1752393600\n",
-        ("systemd-analyze", "time"): "Startup finished in 4.5s (kernel) + 10.0s (userspace) = 14.5s",
+        (
+            "systemd-analyze",
+            "time",
+        ): "Startup finished in 4.5s (kernel) + 10.0s (userspace) = 14.5s",
         ("systemctl", "show", "docker", "--no-pager"): _DOCKER_SHOW,
     }
 
