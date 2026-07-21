@@ -14,6 +14,7 @@ load test is what flips SRS-UI-001 to ``passes:true`` via the ``verified-e2e`` l
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Iterator
 
@@ -1512,5 +1513,647 @@ def test_ui_2_cross_source_interleaving_never_clears_healthy_rows(
             page.wait_for_timeout(4_500)
             assert page.locator("#inventory-rows tr").count() == 2
             assert page.eval_on_selector("#inventory-summary", "e => e.dataset.tone") == "ok"
+        finally:
+            browser.close()
+
+
+# --------------------------------------------------------------------------- #
+# UI-4 — kill-switch control + Liquidate-Sequence status feedback
+# (SyRS SYS-44a / SYS-44b; traces SRS-SAFE-001 + SRS-SAFE-002)
+#
+# The AC is "user can activate kill switch and see cancellation, liquidation
+# submission, timeout, notification, and disconnect status". These exercise both
+# halves in a real browser: the two-step control against the CONTRACT route, and
+# the status rail — including every way the rail must FAIL CLOSED. A pane that
+# leaves one stale green leg on screen after its feed dies tells an operator that
+# live positions are closed when they may not be.
+# --------------------------------------------------------------------------- #
+
+
+def _seed_kill_switch_state(tmp_path):
+    """A durable last-activation record + a SYS-44b timeout record, written
+    through the SAME writers the runtime uses (never hand-rolled JSON), so the
+    pane is exercised against real artefacts."""
+
+    from atp_logging import LogClass
+    from atp_logging.persistence import JsonlLogStore
+    from atp_safety.audit import build_liquidation_timeout_record
+    from atp_safety.state import persist_last_activation
+
+    state_dir = tmp_path / "ks-state"
+    state_dir.mkdir()
+    report = {
+        "activation_id": "act-e2e-01",
+        "live_strategy_id": "alpha-1",
+        "activated_at_epoch_ms": 1_700_000_000_000,
+        "paper_halt": {"status": "SUCCEEDED"},
+        "paper_halt_summary": {"engines_total": 4, "transitioned": 3, "already_halted": 1},
+        "resting_order_cancels": [
+            {
+                "order_id": "o-1",
+                "symbol": "SPY",
+                "broker_order_id": "b-1",
+                "outcome": {"status": "SUCCEEDED"},
+            },
+            {
+                "order_id": "o-2",
+                "symbol": "QQQ",
+                "broker_order_id": "b-2",
+                "outcome": {"status": "SUCCEEDED"},
+            },
+        ],
+        "liquidations": [
+            {"symbol": "SPY", "side": "SELL", "quantity": 120, "outcome": {"status": "SUCCEEDED"}},
+            {
+                "symbol": "QQQ",
+                "side": "BUY",
+                "quantity": 40,
+                "outcome": {"status": "FAILED", "reason": "no route"},
+            },
+        ],
+        "ib_disconnect": {"status": "SUCCEEDED"},
+        "timings": {
+            "halt_completed_ms": 12,
+            "cancels_completed_ms": 210,
+            "liquidations_submitted_ms": 1842,
+            "disconnect_completed_ms": 1900,
+        },
+        "fully_clean": False,
+        "within_nfr_p3": True,
+        "all_engines_halted": True,
+        "events_recorded": 2,
+    }
+    persist_last_activation(
+        state_dir,
+        {
+            "activation_id": "act-e2e-01",
+            "response": {
+                "activation_id": "act-e2e-01",
+                "activated_at": "2023-11-14T22:13:20.000+00:00",
+                "cancelled_orders": report["resting_order_cancels"],
+                "liquidation_orders": report["liquidations"],
+                "paper_engines_halted": 4,
+                "ib_gateway_disconnected": True,
+            },
+            "report": report,
+            "ran_clean": False,
+            "audit_recorded": True,
+            "halted_log_latency_ms": 412.0,
+            "persisted_at_ns": 1,
+        },
+    )
+    JsonlLogStore(tmp_path / "system.jsonl", log_class=LogClass.SYSTEM).write(
+        build_liquidation_timeout_record(
+            {
+                "disposition": "TIMED_OUT_UNFILLED",
+                "transports": "FIXTURE",
+                "unfilled_order": {
+                    "order_id": "o-2",
+                    "symbol": "QQQ",
+                    "side": "BUY",
+                    "quantity": 40,
+                },
+                "cleanup": {
+                    "operator_alert": {"status": "SUCCEEDED"},
+                    "liquidation_cancel": {"status": "SUCCEEDED"},
+                    "ib_disconnect": {"status": "SUCCEEDED"},
+                },
+                "manual_resolution_required": False,
+            }
+        )
+    )
+    return state_dir
+
+
+@pytest.fixture()
+def kill_switch_dashboard(tmp_path) -> Iterator[str]:
+    """The PRODUCTION composition over a seeded kill-switch state directory."""
+
+    from atp_dashboard import mount_default_dashboard
+
+    state_dir = _seed_kill_switch_state(tmp_path)
+    runtime = OperatorInterfaceRuntime()
+    publisher = mount_default_dashboard(
+        runtime,
+        {
+            "ATP_KILL_SWITCH_STATE": str(state_dir),
+            "ATP_KILL_SWITCH_LOG_DIR": str(tmp_path),
+        },
+    )
+    publisher.start()
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        yield f"http://{host}:{port}/dashboard"
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
+@pytest.fixture()
+def bare_kill_switch_dashboard() -> Iterator[str]:
+    """The production composition with NO kill-switch state configured — the
+    pane must render UNKNOWN rather than an all-clear."""
+
+    from atp_dashboard import mount_default_dashboard
+
+    runtime = OperatorInterfaceRuntime()
+    publisher = mount_default_dashboard(runtime, {})
+    publisher.start()
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        yield f"http://{host}:{port}/dashboard"
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
+def _rung_status(page, phase: str) -> str:
+    return page.eval_on_selector(f'.ks__rung[data-phase="{phase}"]', "e => e.dataset.status")
+
+
+def _every_rung_unknown(page) -> bool:
+    return page.eval_on_selector_all(
+        ".ks__rung", "els => els.length === 6 && els.every(e => e.dataset.status === 'UNKNOWN')"
+    )
+
+
+def _arm_kill_switch(page) -> None:
+    page.click("#ks-btn")
+    page.wait_for_function(
+        "document.getElementById('ks-btn').dataset.armed === 'true'", timeout=2_000
+    )
+
+
+def test_ui_4_kill_switch_control_covers_every_ac_surface(kill_switch_dashboard: str) -> None:
+    """Every leg the AC names, rendered from real durable artefacts in one
+    browser view: cancellation, liquidation submission, timeout, notification
+    and disconnect — plus the confirmation-guarded control itself."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            page.goto(kill_switch_dashboard, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('.ks__rung').length === 6", timeout=8_000
+            )
+            page.wait_for_function(
+                "document.querySelector('.ks__rung[data-phase=\"cancellation\"]')"
+                ".dataset.status === 'SUCCEEDED'",
+                timeout=8_000,
+            )
+
+            # --- the five AC legs, each with an observed status ------------ #
+            assert _rung_status(page, "cancellation") == "SUCCEEDED"
+            # One of two liquidations FAILED — the phase must say so, loudly.
+            assert _rung_status(page, "liquidation") == "FAILED"
+            assert _rung_status(page, "disconnect") == "SUCCEEDED"
+            assert _rung_status(page, "halt") == "SUCCEEDED"
+            # The SYS-44b legs show the record's CONTENT but stay UNKNOWN: the
+            # timeout record is order-correlated, so it cannot be proven to
+            # belong to this activation.
+            assert _rung_status(page, "timeout") == "UNKNOWN"
+            assert _rung_status(page, "notification") == "UNKNOWN"
+
+            rail = page.locator("#ks-rail").inner_text()
+            assert "1842 ms / 5000 ms" in rail  # NFR-P3 evidence
+            assert "4 / 4 engines HALTED" in rail
+            assert "o-2" in rail  # the unfilled order id
+            assert "TIMED_OUT_UNFILLED" in rail  # the timeout evidence
+            assert "operator page SUCCEEDED" in rail  # the notification evidence
+            assert "NOT correlated" in rail  # ...honestly labelled
+
+            # --- the receipt ---------------------------------------------- #
+            assert page.locator("#ks-activation-id").inner_text() == "act-e2e-01"
+            assert page.locator("#ks-nfr").inner_text() == "WITHIN 5s"
+            assert page.locator("#ks-ran-clean").inner_text() == "WITH FAILURES"
+            assert "412 ms / 1000 ms" in page.locator("#ks-halt-latency").inner_text()
+
+            # --- fixture-drill evidence is labelled as such ---------------- #
+            assert page.eval_on_selector("#ks-tier", "e => e.dataset.tier") == "FIXTURE"
+            assert "FIXTURE DRILL" in page.locator("#ks-tier").inner_text()
+
+            # --- the per-order table --------------------------------------- #
+            assert page.locator("#ks-orders tr").count() == 4
+            orders = page.locator("#ks-orders").inner_text()
+            assert "CANCEL" in orders and "LIQUIDATION" in orders
+
+            # --- the control is present and confirmation-guarded ----------- #
+            assert page.eval_on_selector("#ks-btn", "e => e.dataset.armed") == "false"
+            _arm_kill_switch(page)
+            assert page.eval_on_selector("#ks", "e => e.dataset.state") == "armed"
+        finally:
+            browser.close()
+
+
+def test_ui_4_unconfigured_pane_never_reads_as_all_clear(
+    bare_kill_switch_dashboard: str,
+) -> None:
+    """With no state configured, every leg is UNKNOWN and the pane does NOT
+    claim the kill switch was never activated — it cannot know."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            page.goto(bare_kill_switch_dashboard, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('.ks__rung').length === 6", timeout=8_000
+            )
+            assert _every_rung_unknown(page)
+            assert page.locator("#ks-activation-id").inner_text() == "UNKNOWN"
+            assert page.locator("#ks-orders-table").is_hidden()
+            assert page.eval_on_selector("#ks-tier", "e => e.dataset.tier") == "unknown"
+            note = page.locator("#ks-note").inner_text()
+            assert "UNKNOWN" in note or "not configured" in note or "ATP_KILL_SWITCH_STATE" in note
+        finally:
+            browser.close()
+
+
+def test_ui_4_activation_requires_explicit_confirmation(kill_switch_dashboard: str) -> None:
+    """SYS-44a: no POST leaves the browser on the first click. Only the second,
+    inside the arm window, fires — and it goes to the CONTRACT route."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            page.goto(kill_switch_dashboard, wait_until="domcontentloaded")
+            page.wait_for_selector("#ks-btn")
+
+            page.click("#ks-btn")  # arm only
+            page.wait_for_timeout(600)
+            assert posts == [], "arming must not fire the liquidate sequence"
+            assert page.eval_on_selector("#ks-btn", "e => e.dataset.armed") == "true"
+            assert "ARMED" in page.locator("#ks-status").inner_text()
+
+            page.click("#ks-btn")  # confirm
+            page.wait_for_timeout(1_200)
+            assert len(posts) == 1
+            assert posts[0].endswith("/api/v1/kill-switch?confirm=true")
+        finally:
+            browser.close()
+
+
+def test_ui_4_arm_window_expires_back_to_the_resting_caption(
+    kill_switch_dashboard: str,
+) -> None:
+    """A staged confirmation that is not confirmed must disarm AND restore the
+    resting caption — a leftover 'ARMED' readout with nothing staged is stale
+    state an operator would act on."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            page.goto(kill_switch_dashboard, wait_until="domcontentloaded")
+            page.wait_for_selector("#ks-btn")
+            _arm_kill_switch(page)
+
+            page.wait_for_function(
+                "document.getElementById('ks-btn').dataset.armed === 'false'", timeout=9_000
+            )
+            assert posts == []
+            assert "ARMED" not in page.locator("#ks-status").inner_text()
+            assert page.eval_on_selector("#ks", "e => e.dataset.state") != "armed"
+        finally:
+            browser.close()
+
+
+def test_ui_4_renders_refusals_honestly(kill_switch_dashboard: str) -> None:
+    """A refusal is rendered as its error type and owner — never dressed as a
+    completed liquidation."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            page.route(
+                "**/api/v1/kill-switch*",
+                lambda route: route.fulfill(
+                    status=501,
+                    content_type="application/json",
+                    body='{"error":{"type":"HANDLER_DEFERRED","category":"NOT_IMPLEMENTED",'
+                    '"detail":{"owner":"SRS-SAFE-001"}}}',
+                ),
+            )
+            page.goto(kill_switch_dashboard, wait_until="domcontentloaded")
+            page.wait_for_selector("#ks-btn")
+            _arm_kill_switch(page)
+            page.click("#ks-btn")
+
+            page.wait_for_function(
+                "document.getElementById('ks-status').dataset.tone === 'error'", timeout=5_000
+            )
+            status = page.locator("#ks-status").inner_text()
+            assert "REFUSED 501" in status
+            assert "HANDLER_DEFERRED" in status
+            assert "SRS-SAFE-001" in status
+            # The topbar affordance tells the same story — one control, one truth.
+            assert "REFUSED 501" in page.locator("#killswitch-status").inner_text()
+        finally:
+            browser.close()
+
+
+def test_ui_4_partial_failure_is_never_dressed_as_success(
+    kill_switch_dashboard: str,
+) -> None:
+    """A 200 means the sequence RAN, not that every phase succeeded."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            page.route(
+                "**/api/v1/kill-switch*",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps(
+                        {
+                            "activation_id": "act-partial",
+                            "activated_at": "2026-07-21T00:00:00Z",
+                            "cancelled_orders": [
+                                {
+                                    "order_id": "o-1",
+                                    "symbol": "SPY",
+                                    "outcome": {"status": "FAILED", "reason": "rejected"},
+                                }
+                            ],
+                            "liquidation_orders": [],
+                            "paper_engines_halted": 2,
+                            "ib_gateway_disconnected": False,
+                        }
+                    ),
+                ),
+            )
+            page.goto(kill_switch_dashboard, wait_until="domcontentloaded")
+            page.wait_for_selector("#ks-btn")
+            _arm_kill_switch(page)
+            page.click("#ks-btn")
+
+            page.wait_for_function(
+                "document.getElementById('ks-status').dataset.tone === 'error'", timeout=5_000
+            )
+            status = page.locator("#ks-status").inner_text()
+            assert "WITH FAILURES" in status
+            assert "IB NOT disconnected" in status
+        finally:
+            browser.close()
+
+
+def test_ui_4_a_success_without_an_activation_id_is_refused(
+    kill_switch_dashboard: str,
+) -> None:
+    """Identity binding: a success-shaped body that names no activation proves
+    nothing about what ran, so it is never rendered as an activation."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            page.route(
+                "**/api/v1/kill-switch*",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body='{"paper_engines_halted":3,"ib_gateway_disconnected":true}',
+                ),
+            )
+            page.goto(kill_switch_dashboard, wait_until="domcontentloaded")
+            page.wait_for_selector("#ks-btn")
+            _arm_kill_switch(page)
+            page.click("#ks-btn")
+
+            page.wait_for_function(
+                "document.getElementById('ks-status').dataset.tone === 'error'", timeout=5_000
+            )
+            status = page.locator("#ks-status").inner_text()
+            assert "no activation_id" in status
+            assert "activated" not in status.split("REFUSED")[0]
+        finally:
+            browser.close()
+
+
+def test_ui_4_degraded_status_route_clears_every_leg(kill_switch_dashboard: str) -> None:
+    """The false-all-clear class: once the status feed dies, the previously
+    green sequence must NOT stay on screen."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            page.goto(kill_switch_dashboard, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelector('.ks__rung[data-phase=\"disconnect\"]')"
+                ".dataset.status === 'SUCCEEDED'",
+                timeout=8_000,
+            )
+
+            # Kill the feed mid-flight.
+            page.route("**/dashboard/api/kill-switch", lambda route: route.abort())
+            page.wait_for_function(
+                "Array.from(document.querySelectorAll('.ks__rung'))"
+                ".every(e => e.dataset.status === 'UNKNOWN')",
+                timeout=9_000,
+            )
+
+            assert _every_rung_unknown(page)
+            assert page.locator("#ks-orders-table").is_hidden()
+            assert page.locator("#ks-activation-id").inner_text() == "UNKNOWN"
+            assert page.eval_on_selector("#ks-tier", "e => e.dataset.tier") == "unknown"
+            assert page.eval_on_selector("#ks-note", "e => e.dataset.tone") == "error"
+        finally:
+            browser.close()
+
+
+def test_ui_4_a_route_that_disappears_clears_every_leg(kill_switch_dashboard: str) -> None:
+    """404 fails closed exactly like every other degraded branch."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            page.goto(kill_switch_dashboard, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelector('.ks__rung[data-phase=\"disconnect\"]')"
+                ".dataset.status === 'SUCCEEDED'",
+                timeout=8_000,
+            )
+            page.route(
+                "**/dashboard/api/kill-switch",
+                lambda route: route.fulfill(status=404, content_type="application/json", body="{}"),
+            )
+            page.wait_for_function(
+                "Array.from(document.querySelectorAll('.ks__rung'))"
+                ".every(e => e.dataset.status === 'UNKNOWN')",
+                timeout=9_000,
+            )
+            assert "not mounted" in page.locator("#ks-note").inner_text()
+        finally:
+            browser.close()
+
+
+def test_ui_4_a_shape_drifted_payload_is_refused_wholesale(
+    kill_switch_dashboard: str,
+) -> None:
+    """A payload claiming green legs in an unknown shape must not render: the
+    client refuses the WHOLE sequence rather than draw a partial one."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            page.goto(kill_switch_dashboard, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelector('.ks__rung[data-phase=\"disconnect\"]')"
+                ".dataset.status === 'SUCCEEDED'",
+                timeout=8_000,
+            )
+            # Green statuses, wrong contract: two legs instead of six.
+            page.route(
+                "**/dashboard/api/kill-switch",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps(
+                        {
+                            "ok": True,
+                            "activated": True,
+                            "activation_id": "act-lies",
+                            "sequence": [
+                                {
+                                    "phase": "cancellation",
+                                    "status": "SUCCEEDED",
+                                    "value": "SUCCEEDED",
+                                    "detail": "all good",
+                                },
+                                {
+                                    "phase": "disconnect",
+                                    "status": "SUCCEEDED",
+                                    "value": "SUCCEEDED",
+                                    "detail": "all good",
+                                },
+                            ],
+                            "orders": [],
+                            "tier": "LIVE",
+                        }
+                    ),
+                ),
+            )
+            page.wait_for_function(
+                "Array.from(document.querySelectorAll('.ks__rung'))"
+                ".every(e => e.dataset.status === 'UNKNOWN')",
+                timeout=9_000,
+            )
+            assert _every_rung_unknown(page)
+            assert page.eval_on_selector("#ks-tier", "e => e.dataset.tier") == "unknown"
+        finally:
+            browser.close()
+
+
+def test_ui_4_a_deferred_cell_never_draws_a_resolved_rung(
+    kill_switch_dashboard: str,
+) -> None:
+    """A leg whose value is null renders UNKNOWN even when its status claims
+    otherwise — the server cannot talk the client into a green rung."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            page.goto(kill_switch_dashboard, wait_until="domcontentloaded")
+            page.wait_for_selector(".ks__rung")
+            phases = [
+                "halt",
+                "cancellation",
+                "liquidation",
+                "timeout",
+                "notification",
+                "disconnect",
+            ]
+            page.route(
+                "**/dashboard/api/kill-switch",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps(
+                        {
+                            "ok": True,
+                            "activated": True,
+                            "activation_id": "act-x",
+                            "sequence": [
+                                {
+                                    "phase": ph,
+                                    "label": ph.upper(),
+                                    "branch": False,
+                                    "order": i + 1,
+                                    "owner": "SRS-SAFE-001",
+                                    "status": "SUCCEEDED",
+                                    "detail": "claimed clean",
+                                    "value": None,
+                                    "data_source": "deferred:SRS-SAFE-001",
+                                }
+                                for i, ph in enumerate(phases)
+                            ],
+                            "orders": None,
+                            "tier": None,
+                        }
+                    ),
+                ),
+            )
+            page.wait_for_function(
+                "Array.from(document.querySelectorAll('.ks__rung'))"
+                ".every(e => e.dataset.status === 'UNKNOWN')",
+                timeout=9_000,
+            )
+            assert _every_rung_unknown(page)
+        finally:
+            browser.close()
+
+
+def test_ui_4_activations_are_serialized(kill_switch_dashboard: str) -> None:
+    """One liquidate sequence in flight at a time: while a POST is settling,
+    BOTH triggers are inert — no second arm, no second POST."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        held: list = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            page.route("**/api/v1/kill-switch*", lambda route: held.append(route))
+            page.goto(kill_switch_dashboard, wait_until="domcontentloaded")
+            page.wait_for_selector("#ks-btn")
+
+            _arm_kill_switch(page)
+            page.click("#ks-btn")  # fires; the route is HELD open
+            page.wait_for_function(
+                "document.getElementById('ks-btn').disabled === true", timeout=5_000
+            )
+
+            # Hammer BOTH triggers while the first request is in flight.
+            for _ in range(3):
+                page.click("#ks-btn", force=True)
+                page.click("#killswitch-btn", force=True)
+                page.wait_for_timeout(120)
+            assert len(posts) == 1, f"activation was not serialized: {posts}"
+            assert page.eval_on_selector("#ks-btn", "e => e.dataset.armed") == "false"
+
+            # Release: the control returns to service, still exactly one POST.
+            held[0].fulfill(
+                status=501,
+                content_type="application/json",
+                body='{"error":{"type":"HANDLER_DEFERRED","detail":{"owner":"SRS-SAFE-001"}}}',
+            )
+            page.wait_for_function(
+                "document.getElementById('ks-btn').disabled === false", timeout=5_000
+            )
+            assert len(posts) == 1
         finally:
             browser.close()

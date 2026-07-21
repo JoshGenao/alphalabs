@@ -782,3 +782,241 @@ body {
   .manage__designation .manage__beacon,
   .manage-armed .manage__cd { animation: none; }
 }
+
+/* ============================================================================
+   UI-4 · Kill Switch — Liquidate Sequence (SYS-44a / SYS-44b)
+   ----------------------------------------------------------------------------
+   The console at its most severe: this is the one panel where the lime
+   signature is deliberately absent and hazard red owns the frame. Built only
+   from the existing custom properties, so the light theme and the global
+   prefers-reduced-motion block apply unchanged, and nothing is loaded from off
+   the machine (SEC-002 posture).
+
+   The load-bearing idea is the SEQUENCE RAIL: the five AC legs are the REAL
+   activation phase order, and the rail segment between two rungs CARRIES THE
+   STATE — solid when the phase resolved, hatched when it is unknown. Hatching
+   is the dashboard's established "deferred/unknown" idiom (.swatch--deferred),
+   which makes an unobservable leg impossible to misread as an all-clear. The
+   fail-closed rule, enforced in pixels.
+   ========================================================================== */
+
+.panel--killswitch { --ks-hazard: var(--bad); }
+.panel--killswitch::before {
+  background: linear-gradient(90deg, transparent, var(--ks-hazard), transparent);
+  opacity: 0.55;
+}
+
+.ks { position: relative; display: flex; flex-direction: column; gap: 16px; }
+
+/* Hazard rail: dormant at rest, drawn on when the control is armed or firing.
+   In flow directly above the command bar — it must not cross the panel title. */
+.ks__hazard {
+  height: 4px; border-radius: 2px; flex: none;
+  background: repeating-linear-gradient(
+    45deg, var(--ks-hazard) 0 7px, transparent 7px 14px
+  );
+  opacity: 0; transition: opacity 220ms var(--ease);
+  pointer-events: none;
+}
+.ks[data-state="armed"] .ks__hazard,
+.ks[data-state="firing"] .ks__hazard { opacity: 0.85; }
+.ks[data-state="armed"] .ks__hazard { animation: ks-hazard-crawl 900ms linear infinite; }
+@keyframes ks-hazard-crawl { to { background-position: 28px 0; } }
+
+/* ------------------------------------------------------------ command bar */
+.ks__cmd {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 14px 16px; border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--ks-hazard) 6%, transparent), transparent),
+    var(--panel-2);
+  transition: border-color 220ms var(--ease), box-shadow 220ms var(--ease);
+}
+.ks[data-state="armed"] .ks__cmd {
+  border-color: color-mix(in srgb, var(--ks-hazard) 60%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ks-hazard) 22%, transparent),
+              0 16px 40px -28px var(--ks-hazard);
+}
+.ks[data-state="fired"] .ks__cmd { border-color: color-mix(in srgb, var(--ks-hazard) 45%, transparent); }
+
+/* The trigger: the countdown stroke traces the pill itself (the .pulse ring
+   motif, reshaped to the control) rather than sitting behind it. */
+.ks__trigger { position: relative; width: 188px; height: 48px; flex: none; }
+.ks__ring { position: absolute; inset: 0; pointer-events: none; }
+.ks__ring-track { fill: none; stroke: var(--line-strong); stroke-width: 1.5; opacity: 0.5; }
+.ks__ring-arc {
+  fill: none; stroke: var(--ks-hazard); stroke-width: 2.5; stroke-linecap: round;
+  /* Rounded-rect perimeter for w=184 h=44 r=22: 2·(184−44) + 2πr ≈ 418.2 —
+     the full outline is the full arm window. */
+  stroke-dasharray: 418.2; stroke-dashoffset: 418.2;
+}
+.ks[data-state="armed"] .ks__ring-arc { animation: ks-countdown 5s linear forwards; }
+@keyframes ks-countdown { from { stroke-dashoffset: 0; } to { stroke-dashoffset: 418.2; } }
+
+.ks__btn {
+  position: absolute; inset: 6px; z-index: 1;
+  font-family: var(--mono); font-weight: 700; font-size: 10px; letter-spacing: 0.1em;
+  color: var(--ink); background: color-mix(in srgb, var(--ks-hazard) 14%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--ks-hazard) 55%, transparent);
+  border-radius: 999px; padding: 0 14px; cursor: pointer; white-space: nowrap;
+  transition: background 160ms var(--ease), color 160ms var(--ease), transform 120ms var(--ease);
+}
+.ks__btn:hover { background: color-mix(in srgb, var(--ks-hazard) 26%, var(--panel)); }
+.ks__btn:active { transform: translateY(1px); }
+.ks__btn[data-armed="true"] {
+  color: #fff; background: var(--ks-hazard);
+  border-color: var(--ks-hazard);
+  box-shadow: 0 0 22px -6px var(--ks-hazard);
+}
+.ks__btn:disabled { opacity: 0.55; cursor: wait; transform: none; }
+
+.ks__cmdtext { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 240px; }
+.ks__status { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); overflow-wrap: anywhere; }
+.ks__status[data-tone="armed"] { color: var(--warn); font-weight: 600; }
+.ks__status[data-tone="pending"] { color: var(--cyan); }
+.ks__status[data-tone="fired"] { color: var(--ks-hazard); font-weight: 700; }
+.ks__status[data-tone="error"] { color: var(--ks-hazard); font-weight: 600; }
+.ks__route { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); letter-spacing: 0.03em; overflow-wrap: anywhere; }
+.ks__route code { color: var(--ink-dim); }
+
+/* Transport tier. FIXTURE is hazard-striped so drill evidence can never be
+   mistaken for live SYS-44b history; unknown stays deliberately colourless. */
+.ks__tier {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.12em;
+  padding: 5px 10px; border-radius: 999px; white-space: nowrap; flex: none;
+  border: 1px solid var(--line-strong); color: var(--ink-faint);
+}
+.ks__tier[data-tier="FIXTURE"] {
+  color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+  background: repeating-linear-gradient(
+    45deg, color-mix(in srgb, var(--warn) 16%, transparent) 0 5px, transparent 5px 10px
+  );
+}
+.ks__tier[data-tier="LIVE"] {
+  color: #fff; background: var(--ks-hazard); border-color: var(--ks-hazard);
+}
+
+/* ------------------------------------------------------------------- grid */
+.ks__grid { display: grid; gap: 18px; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); align-items: start; }
+.ks__subhead {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 600; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--ink-faint); margin-bottom: 10px;
+}
+
+/* ------------------------------------------------------------ sequence rail */
+.ks__rail { list-style: none; display: flex; flex-direction: column; margin: 0; padding: 0; }
+.ks__rung {
+  position: relative; display: grid; grid-template-columns: 26px minmax(0, 1fr);
+  gap: 12px; padding: 0 0 16px 0; align-items: start;
+}
+.ks__rung:last-child { padding-bottom: 0; }
+
+/* The connector BELOW each rung carries the phase's state. */
+.ks__rung::before {
+  content: ""; position: absolute; left: 12px; top: 20px; bottom: -2px; width: 2px;
+  background: var(--line-strong); border-radius: 2px;
+}
+.ks__rung:last-child::before { display: none; }
+.ks__rung[data-status="SUCCEEDED"]::before { background: var(--ok); }
+.ks__rung[data-status="FAILED"]::before { background: var(--ks-hazard); }
+.ks__rung[data-status="MIXED"]::before { background: var(--warn); }
+.ks__rung[data-status="NOT_ATTEMPTED"]::before { background: var(--ink-faint); }
+/* UNKNOWN — the hatch. Not a colour an operator can read as "fine". */
+.ks__rung[data-status="UNKNOWN"]::before {
+  background: repeating-linear-gradient(
+    45deg, var(--deferred) 0 3px, transparent 3px 6px
+  );
+}
+/* The SYS-44b escalation hangs off the sequence on a dashed connector. */
+.ks__rung[data-branch="true"]::before { opacity: 0.55; }
+.ks__rung[data-branch="true"] .ks__node { transform: rotate(45deg) scale(0.78); }
+.ks__rung[data-branch="true"] .ks__label { color: var(--ink-dim); }
+
+/* Diamond node — deliberately not the .chip__dot circle: this is a sequence. */
+.ks__node {
+  width: 14px; height: 14px; margin: 4px 0 0 5px;
+  transform: rotate(45deg);
+  border: 2px solid var(--line-strong); background: var(--panel);
+  display: grid; place-items: center; flex: none;
+}
+.ks__rung[data-status="SUCCEEDED"] .ks__node { border-color: var(--ok); background: var(--ok); }
+.ks__rung[data-status="FAILED"] .ks__node { border-color: var(--ks-hazard); background: var(--ks-hazard); }
+.ks__rung[data-status="MIXED"] .ks__node { border-color: var(--warn); background: var(--warn); }
+.ks__rung[data-status="NOT_ATTEMPTED"] .ks__node { border-color: var(--ink-faint); background: transparent; }
+.ks__rung[data-status="UNKNOWN"] .ks__node {
+  border-color: var(--deferred);
+  background: repeating-linear-gradient(45deg, var(--deferred) 0 2px, transparent 2px 4px);
+}
+
+.ks__body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ks__labelrow { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.ks__ord {
+  font-family: var(--mono); font-size: 10px; color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+.ks__label {
+  font-family: var(--mono); font-size: 11.5px; font-weight: 600; letter-spacing: 0.09em;
+  color: var(--ink);
+}
+.ks__badge {
+  font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.09em;
+  padding: 2px 7px; border-radius: 999px; white-space: nowrap;
+}
+.ks__badge[data-status="SUCCEEDED"] { color: var(--ok); background: color-mix(in srgb, var(--ok) 15%, transparent); }
+.ks__badge[data-status="FAILED"] { color: var(--ks-hazard); background: color-mix(in srgb, var(--ks-hazard) 17%, transparent); }
+.ks__badge[data-status="MIXED"] { color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.ks__badge[data-status="NOT_ATTEMPTED"] { color: var(--ink-dim); background: color-mix(in srgb, var(--ink-faint) 18%, transparent); }
+.ks__badge[data-status="UNKNOWN"] {
+  color: var(--deferred);
+  border: 1px solid var(--line-strong);
+  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--deferred) 22%, transparent) 0 3px, transparent 3px 6px);
+}
+.ks__detail { font-size: 11px; color: var(--ink-dim); overflow-wrap: anywhere; }
+.ks__owner { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); }
+
+.ks__note { font-size: 11px; color: var(--ink-faint); margin-top: 12px; overflow-wrap: anywhere; }
+.ks__note[data-tone="warn"] { color: var(--warn); }
+.ks__note[data-tone="error"] { color: var(--ks-hazard); }
+
+/* --------------------------------------------------------------- receipt */
+.ks__receipt {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(164px, 1fr)); gap: 12px 16px;
+  padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+.ks__rcell { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ks__rcell dt {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.ks__rcell dd {
+  font-family: var(--mono); font-size: 12px; color: var(--ink); margin: 0;
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+.ks__rcell dd[data-tone="ok"] { color: var(--ok); }
+.ks__rcell dd[data-tone="bad"] { color: var(--ks-hazard); font-weight: 700; }
+.ks__rcell dd[data-tone="unknown"] { color: var(--deferred); }
+/* The receipt's display element: the activation id, set large and tabular. */
+.ks__id { font-size: 13.5px !important; font-weight: 700; letter-spacing: 0.04em; }
+.ks[data-state="fired"] .ks__id { color: var(--ks-hazard); }
+
+.ks__scroll { margin-top: 14px; max-height: 260px; overflow: auto; }
+.ks__orders td[data-status="FAILED"] { color: var(--ks-hazard); font-weight: 600; }
+.ks__orders td[data-status="SUCCEEDED"] { color: var(--ok); }
+.ks__orders td[data-status="NOT_ATTEMPTED"] { color: var(--ink-dim); }
+.ks__kind {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em; padding: 2px 6px;
+  border-radius: 5px; border: 1px solid var(--line-strong); color: var(--ink-dim);
+}
+
+@media (max-width: 760px) {
+  .ks__grid { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ks[data-state="armed"] .ks__hazard,
+  .ks[data-state="armed"] .ks__ring-arc { animation: none; }
+  /* Reduced motion must not remove the ARMED signal: hold the ring drawn. */
+  .ks[data-state="armed"] .ks__ring-arc { stroke-dashoffset: 0; }
+}

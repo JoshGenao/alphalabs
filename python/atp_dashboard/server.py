@@ -36,6 +36,7 @@ from .alerts import CriticalAlertsProvider
 from .backtests import BacktestHistoryProvider, StoreCliBacktestHistorySource
 from .heartbeat import CliHeartbeatSource, HeartbeatFreshnessProvider
 from .inventory import RollbackSnapshotInventorySource, StrategyInventoryProvider
+from .killswitch import DurableKillSwitchStatusSource, KillSwitchStatusProvider
 from .provider import DashboardMetricsProvider, ReadinessBackedProvider
 from .publisher import DashboardPublisher
 from .research import RESEARCH_PREFIX, UPSTREAM_ENV_KNOB, ResearchEnvironmentProvider
@@ -91,6 +92,13 @@ HEARTBEAT_SNAPSHOT_PATH = "/dashboard/api/heartbeat"
 #: SRS-NOTIF-001), which stays a 501 deferred handler until the notifier lands.
 ALERTS_SNAPSHOT_PATH = "/dashboard/api/alerts"
 
+#: REST path the dashboard SPA polls for the UI-4 kill-switch status pane
+#: (served only when a kill-switch status provider is mounted). READ-ONLY and
+#: dashboard-namespaced: the *activation* control POSTs to the contract route
+#: ``POST /api/v1/kill-switch`` (owner SRS-SAFE-001) on this same runtime —
+#: there is deliberately no second kill path under ``/dashboard``.
+KILL_SWITCH_SNAPSHOT_PATH = "/dashboard/api/kill-switch"
+
 
 def load_assets() -> dict[str, tuple[str, bytes]]:
     """Read the dashboard's static assets once into an immutable route map."""
@@ -113,6 +121,7 @@ def mount_dashboard(
     research: ResearchEnvironmentProvider | None = None,
     heartbeat: HeartbeatFreshnessProvider | None = None,
     alerts: CriticalAlertsProvider | None = None,
+    kill_switch: KillSwitchStatusProvider | None = None,
 ) -> DashboardPublisher:
     """Register the dashboard's routes on ``runtime`` and return its publisher.
 
@@ -163,6 +172,15 @@ def mount_dashboard(
     contract), so it adds no publisher channel; without it the pane renders its
     explicit "not mounted" state. The feed is an honest deferred cell — the pane
     never renders "0 active alerts" while detection is unwired.
+
+    ``kill_switch`` (optional — the UI-4 kill-switch status provider) adds the
+    ``GET /dashboard/api/kill-switch`` poll route the Liquidate-Sequence panel
+    reads. It is REST-served (there is no kill-switch WS channel to publish on),
+    so it adds no publisher channel, and it is strictly a READ: the panel's
+    activation control POSTs to the contract route ``POST /api/v1/kill-switch``
+    (see app.js), whose live handler is SRS-SAFE-001's. Every leg is an honest
+    deferred cell until an activation record exists — the pane never renders an
+    all-clear for a sequence it cannot observe.
     """
 
     runtime.register_asset_routes(load_assets())
@@ -183,6 +201,8 @@ def mount_dashboard(
         runtime.register_meta_route(HEARTBEAT_SNAPSHOT_PATH, heartbeat.heartbeat_snapshot)
     if alerts is not None:
         runtime.register_meta_route(ALERTS_SNAPSHOT_PATH, alerts.alerts_snapshot)
+    if kill_switch is not None:
+        runtime.register_meta_route(KILL_SWITCH_SNAPSHOT_PATH, kill_switch.kill_switch_snapshot)
     return DashboardPublisher(
         runtime,
         provider,
@@ -263,6 +283,24 @@ def mount_default_dashboard(
     # entrypoint serves /dashboard/api/research, rendering the honest
     # not-configured state until the operator sets ATP_RESEARCH_UPSTREAM —
     # only a CONFIGURED upstream registers the same-origin /research/ proxy.
+    #
+    # The UI-4 kill-switch status provider is ALWAYS composed too, but its
+    # SOURCE is opt-in: ATP_KILL_SWITCH_STATE names the directory
+    # atp_safety.persist_last_activation writes the last-activation record into,
+    # and ATP_KILL_SWITCH_LOG_DIR the SRS-LOG-001 system log holding the SYS-44b
+    # LIQUIDATION_TIMEOUT record. Unset, the provider carries NO source and the
+    # pane renders every leg UNKNOWN with `activated: null` — an unconfigured
+    # dashboard must never state that the kill switch has not been activated,
+    # because it cannot know (SYS-44a status feedback fails closed).
+    kill_switch_state = env.get("ATP_KILL_SWITCH_STATE") or None
+    kill_switch = KillSwitchStatusProvider(
+        DurableKillSwitchStatusSource(
+            state_dir=kill_switch_state,
+            log_dir=env.get("ATP_KILL_SWITCH_LOG_DIR") or None,
+        )
+        if kill_switch_state is not None
+        else None
+    )
     return mount_dashboard(
         runtime,
         provider,
@@ -273,6 +311,7 @@ def mount_default_dashboard(
         research=ResearchEnvironmentProvider(env.get(UPSTREAM_ENV_KNOB) or None),
         heartbeat=heartbeat,
         alerts=CriticalAlertsProvider(),
+        kill_switch=kill_switch,
     )
 
 

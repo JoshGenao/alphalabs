@@ -377,6 +377,82 @@
           </div>
         </div>
       </section>
+
+      <!-- UI-4 kill-switch control + status feedback (SyRS SYS-44a / SYS-44b;
+           traces SRS-SAFE-001 + SRS-SAFE-002). The five AC legs — cancellation,
+           liquidation submission, timeout, notification, disconnect — are
+           rendered as the REAL activation phase order down a sequence rail,
+           with the SYS-44b escalation branching off it. The ARM/CONFIRM control
+           POSTs to the CONTRACT route on this same runtime (never a /dashboard
+           path); the pane itself is a read of the durable last-activation
+           record + the SRS-LOG-001 timeout record. Unknown is rendered HATCHED
+           and labelled UNKNOWN — a leg the dashboard cannot observe must never
+           look resolved, because a false "IB DISCONNECTED" is a lie about
+           whether a liquidation completed. -->
+      <section class="panel panel--wide panel--killswitch" data-panel="killswitch" style="--i:10">
+        <div class="panel__head">
+          <h2 class="panel__title">Kill Switch — Liquidate Sequence</h2>
+          <span class="panel__meta"><span class="tag tag--chan">SYS-44a</span><span class="panel__cadence">poll</span></span>
+        </div>
+        <div class="panel__body" id="body-killswitch">
+          <div class="ks" id="ks" data-state="resting">
+            <div class="ks__hazard" aria-hidden="true"></div>
+
+            <div class="ks__cmd">
+              <div class="ks__trigger">
+                <!-- The confirm window, drawn as a pill tracing the trigger: the
+                     stroke drains over exactly KILL_ARM_WINDOW_MS so the
+                     operator SEES how long the staged confirmation has left. -->
+                <svg class="ks__ring" viewBox="0 0 188 48" width="188" height="48" aria-hidden="true">
+                  <rect class="ks__ring-track" x="2" y="2" width="184" height="44" rx="22" />
+                  <rect class="ks__ring-arc" id="ks-ring-arc" x="2" y="2" width="184" height="44" rx="22" />
+                </svg>
+                <button class="ks__btn" id="ks-btn" type="button" data-armed="false"
+                        aria-describedby="ks-status">ARM&nbsp;KILL&nbsp;SWITCH</button>
+              </div>
+              <div class="ks__cmdtext">
+                <span class="ks__status" id="ks-status" role="status" aria-live="assertive">two-step confirmation required</span>
+                <span class="ks__route">POST <code>/api/v1/kill-switch?confirm=true</code> · SRS-SAFE-001</span>
+              </div>
+              <span class="ks__tier" id="ks-tier" data-tier="unknown">TIER UNKNOWN</span>
+            </div>
+
+            <div class="ks__grid">
+              <div class="ks__railwrap">
+                <h3 class="ks__subhead">Sequence</h3>
+                <ol class="ks__rail" id="ks-rail" aria-live="polite"></ol>
+                <p class="ks__note" id="ks-note">awaiting kill-switch status…</p>
+              </div>
+
+              <div class="ks__side">
+                <h3 class="ks__subhead">Last activation</h3>
+                <dl class="ks__receipt">
+                  <div class="ks__rcell"><dt>activation id</dt><dd class="ks__id" id="ks-activation-id">—</dd></div>
+                  <div class="ks__rcell"><dt>activated at</dt><dd id="ks-activated-at">—</dd></div>
+                  <div class="ks__rcell"><dt>ran clean</dt><dd id="ks-ran-clean">—</dd></div>
+                  <div class="ks__rcell"><dt>NFR-P3 (5 s)</dt><dd id="ks-nfr">—</dd></div>
+                  <div class="ks__rcell"><dt>HALTED logged (1 s)</dt><dd id="ks-halt-latency">—</dd></div>
+                  <div class="ks__rcell"><dt>audit recorded</dt><dd id="ks-audit">—</dd></div>
+                </dl>
+                <div class="ks__scroll">
+                  <table class="inventory ks__orders" id="ks-orders-table" hidden>
+                    <thead>
+                      <tr>
+                        <th scope="col">Phase</th>
+                        <th scope="col">Symbol</th>
+                        <th scope="col">Order</th>
+                        <th scope="col">Qty</th>
+                        <th scope="col">Outcome</th>
+                      </tr>
+                    </thead>
+                    <tbody id="ks-orders"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
     </main>
 
     <footer class="legend" role="contentinfo">

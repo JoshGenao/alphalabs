@@ -24,6 +24,7 @@ Plus the SRS-SAFE-002 / SyRS SYS-44b record:
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Mapping
 
@@ -163,3 +164,92 @@ def build_liquidation_timeout_record(
         log_class=LogClass.SYSTEM,
         strategy_id=None,
     )
+
+
+#: The ordered field vocabulary :func:`build_liquidation_timeout_record` writes
+#: into its message, and :func:`parse_liquidation_timeout_message` reads back.
+#: One tuple, so writer and reader cannot drift apart silently.
+LIQUIDATION_TIMEOUT_FIELDS: tuple[str, ...] = (
+    "disposition",
+    "transports",
+    "order_id",
+    "symbol",
+    "side",
+    "quantity",
+    "operator_alert",
+    "liquidation_cancel",
+    "ib_disconnect",
+    "manual_resolution_required",
+)
+
+#: Anchored, in-order, whole-string inverse of the writer's message. Every
+#: value is a single NON-SPACE token, because every value the writer emits is
+#: one: a space inside a value would make the message ambiguous, and the final
+#: field is anchored to end-of-string so a drifted or appended message cannot
+#: be read as a valid record with a trailing tail (``manual_resolution_required
+#: =True trailing`` must NOT parse — the caller compares that field exactly, so
+#: a sloppy match there would silently suppress the operator's MANUAL
+#: RESOLUTION REQUIRED warning).
+_LIQUIDATION_TIMEOUT_RE = re.compile(
+    "^kill-switch liquidation timeout: "
+    + " ".join(f"{field}=(?P<{field}>[^ ]+)" for field in LIQUIDATION_TIMEOUT_FIELDS)
+    + "$"
+)
+
+#: Closed vocabularies for the fields whose MEANING the pane keys off. A value
+#: outside them is drift, and drift must not be silently downgraded into a
+#: reassuring reading (an unrecognised ``manual_resolution_required`` would
+#: otherwise compare unequal to "True" and read as "no manual resolution
+#: needed"). ``disposition``/``symbol``/``order_id`` stay open — they are
+#: rendered verbatim and resolve nothing on their own.
+_LIQUIDATION_TIMEOUT_VOCABULARY: dict[str, frozenset[str]] = {
+    "transports": frozenset({"FIXTURE", "LIVE"}),
+    "side": frozenset({"BUY", "SELL"}),
+    "operator_alert": frozenset({"SUCCEEDED", "FAILED", "NOT_ATTEMPTED", "UNKNOWN"}),
+    "liquidation_cancel": frozenset({"SUCCEEDED", "FAILED", "NOT_ATTEMPTED", "UNKNOWN"}),
+    "ib_disconnect": frozenset({"SUCCEEDED", "FAILED", "NOT_ATTEMPTED", "UNKNOWN"}),
+    "manual_resolution_required": frozenset({"True", "False"}),
+}
+
+
+def parse_liquidation_timeout_message(message: str) -> dict[str, str] | None:
+    """Read a ``LIQUIDATION_TIMEOUT`` record's message back into its fields.
+
+    The strict inverse of :func:`build_liquidation_timeout_record`'s message —
+    kept in this module, beside its writer, because a reader that drifts from
+    its writer is exactly how a display surface starts inventing facts. A
+    consumer (the UI-4 status pane) renders the SYS-44b timeout / notification
+    legs from this, so the contract is all-or-nothing:
+
+    * returns every field of :data:`LIQUIDATION_TIMEOUT_FIELDS` verbatim, or
+    * returns ``None`` — **never** a partial dict. A message this module did
+      not write (format drift, truncation, an appended tail, a foreign
+      producer, a value outside its declared vocabulary) is UNKNOWN, and the
+      caller must render it as unknown. Silently dropping or mis-splitting one
+      field would let a missing ``ib_disconnect`` read as "nothing to report",
+      or a drifted ``manual_resolution_required`` compare unequal to ``True``
+      and suppress the operator's MANUAL RESOLUTION REQUIRED warning.
+    """
+
+    match = _LIQUIDATION_TIMEOUT_RE.fullmatch(message)
+    if match is None:
+        return None
+    parsed = match.groupdict()
+    # Ambiguity check. The message is space-separated ``k=v``, so a value that
+    # itself carries a ``<known field>=`` token (an instrument symbol is not
+    # this module's data — it originates at the broker/strategy boundary) would
+    # shift every LATER field's capture: a crafted symbol could otherwise make
+    # this reader hand the pane an ``operator_alert=SUCCEEDED`` nobody wrote.
+    # An ambiguous message is not a message this module can read back: UNKNOWN.
+    if any(
+        f"{field}=" in value for value in parsed.values() for field in LIQUIDATION_TIMEOUT_FIELDS
+    ):
+        return None
+    # Vocabulary check on the fields the pane reasons about. Drift here fails
+    # closed rather than reading as the reassuring branch.
+    for field, allowed in _LIQUIDATION_TIMEOUT_VOCABULARY.items():
+        if parsed[field] not in allowed:
+            return None
+    if not parsed["quantity"].lstrip("-").isdigit():
+        return None
+    return {field: parsed[field] for field in LIQUIDATION_TIMEOUT_FIELDS}

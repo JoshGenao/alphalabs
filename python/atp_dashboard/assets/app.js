@@ -1162,84 +1162,431 @@
     return String(note);
   }
 
-  // ----- kill switch (SRS-SAFE-001 minimal affordance; rich control = UI-4) //
-  // Two-step arm-then-fire against the CONTRACT route on this same runtime.
-  // The rendered outcome is the runtime's own response, verbatim — a refusal
-  // (428/500/501/504) is shown as its error type, never dressed as success.
+  // ----- UI-4 kill switch: control + Liquidate-Sequence status feedback -- //
+  // CONTROL: two-step arm-then-fire against the CONTRACT route on this same
+  // runtime (never a /dashboard path). One in-flight request at a time, one
+  // staged confirmation at a time, and BOTH triggers (the topbar affordance and
+  // the panel's) drive this single state machine — a mutation that liquidates
+  // every live position must not be racing itself.
+  //
+  // FEEDBACK: the panel renders the six sequence legs the AC names
+  // (cancellation, liquidation submission, timeout, notification, disconnect —
+  // plus the paper-engine halt the sequence starts with) from the READ route
+  // /dashboard/api/kill-switch, which reads the durable last-activation record
+  // and the SRS-LOG-001 SYS-44b timeout record.
+  //
+  // FAIL CLOSED, everywhere. A leg renders as resolved ONLY when the payload
+  // carries a live value that agrees with its status; every other case — a
+  // deferred cell, a missing/unknown status, a malformed payload, a non-OK
+  // response, a 404, an unreachable or stalled endpoint — renders UNKNOWN and
+  // clears the receipt. A dashboard that cannot observe the liquidate sequence
+  // must SAY so: a stale or invented "IB DISCONNECTED" is a lie about whether
+  // the position is still live.
   const KILL_SWITCH_ROUTE = "/api/v1/kill-switch?confirm=true";
+  const KILL_SWITCH_STATUS_ROUTE = "/dashboard/api/kill-switch";
   const KILL_ARM_WINDOW_MS = 5000;
+  const KILL_FETCH_TIMEOUT_MS = 20000;
+  const KILL_RESTING_CAPTION = "two-step confirmation required";
+  // The rail the pane shows before (and instead of) any observed status. Order
+  // and labels mirror atp_dashboard.killswitch.KILL_SWITCH_SEQUENCE; a payload
+  // that disagrees is drift and is rejected wholesale.
+  const KS_PHASES = [
+    ["halt", "PAPER ENGINES HALTED", false],
+    ["cancellation", "CANCELLATION", false],
+    ["liquidation", "LIQUIDATION SUBMISSION", false],
+    ["timeout", "UNFILLED TIMEOUT", true],
+    ["notification", "OPERATOR NOTIFICATION", true],
+    ["disconnect", "IB DISCONNECT", false],
+  ];
   let killArmTimer = null;
+  let killInFlight = false;
+  // The activation id a 2xx designated. The status pane must agree with it;
+  // a snapshot naming a DIFFERENT activation is surfaced, never silently shown.
+  let killConfirmedId = null;
 
   function killStatus(text, tone) {
-    const el = $("killswitch-status");
-    el.textContent = text;
-    el.dataset.tone = tone;
+    // Both readouts carry the same words — the topbar chip and the panel are
+    // two views of one control, never two stories.
+    const top = $("killswitch-status");
+    if (top) { top.textContent = text; top.dataset.tone = tone || ""; }
+    const panel = $("ks-status");
+    if (panel) { panel.textContent = text; panel.dataset.tone = tone || ""; }
   }
 
-  function disarmKillSwitch() {
-    const btn = $("killswitch-btn");
-    btn.dataset.armed = "false";
-    btn.textContent = "KILL SWITCH";
+  function ksState(state) {
+    const root = $("ks");
+    if (root) root.dataset.state = state;
+  }
+
+  function killButtons() {
+    return [$("killswitch-btn"), $("ks-btn")].filter(Boolean);
+  }
+
+  function disarmKillSwitch(restoreResting) {
     if (killArmTimer) { clearTimeout(killArmTimer); killArmTimer = null; }
+    const top = $("killswitch-btn");
+    if (top) { top.dataset.armed = "false"; top.textContent = "KILL SWITCH"; }
+    const panel = $("ks-btn");
+    if (panel) { panel.dataset.armed = "false"; panel.textContent = "ARM KILL SWITCH"; }
+    ksState(killConfirmedId ? "fired" : "resting");
+    // A leftover "armed — confirm within 5s" caption with nothing staged is
+    // stale state: restore the RESTING caption, never leave the operator
+    // believing a confirmation is still pending.
+    if (restoreResting) killStatus(KILL_RESTING_CAPTION, "");
+  }
+
+  function armKillSwitch() {
+    const top = $("killswitch-btn");
+    if (top) { top.dataset.armed = "true"; top.textContent = "CONFIRM LIQUIDATE?"; }
+    const panel = $("ks-btn");
+    if (panel) { panel.dataset.armed = "true"; panel.textContent = "CONFIRM LIQUIDATE"; }
+    ksState("armed");
+    killStatus("ARMED — confirm within 5s to cancel, liquidate and disconnect", "armed");
+    if (killArmTimer) clearTimeout(killArmTimer);
+    killArmTimer = setTimeout(() => disarmKillSwitch(true), KILL_ARM_WINDOW_MS);
+  }
+
+  function killArmed() {
+    const panel = $("ks-btn");
+    if (panel) return panel.dataset.armed === "true";
+    const top = $("killswitch-btn");
+    return !!top && top.dataset.armed === "true";
   }
 
   async function fireKillSwitch() {
-    const btn = $("killswitch-btn");
-    btn.disabled = true;
+    if (killInFlight) return;
+    killInFlight = true;
+    if (killArmTimer) { clearTimeout(killArmTimer); killArmTimer = null; }
+    const buttons = killButtons();
+    // The staged confirmation is CONSUMED the moment it fires: clear the armed
+    // state immediately (a control still reading "CONFIRM LIQUIDATE" while its
+    // request is in flight is stale state), and disable every trigger until the
+    // request settles.
+    buttons.forEach((b) => { b.disabled = true; b.dataset.armed = "false"; });
+    const topFiring = $("killswitch-btn");
+    if (topFiring) topFiring.textContent = "ACTIVATING…";
+    const panelFiring = $("ks-btn");
+    if (panelFiring) panelFiring.textContent = "ACTIVATING…";
+    ksState("firing");
     killStatus("activating…", "pending");
     try {
       const res = await fetch(KILL_SWITCH_ROUTE, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: "{}",
+        // A STALLED runtime must not leave the control wedged "activating…"
+        // forever with every sibling trigger inert.
+        signal: AbortSignal.timeout(KILL_FETCH_TIMEOUT_MS),
       });
-      const body = await res.json();
+      const body = await res.json().catch(() => null);
       if (res.ok) {
-        // A 200 means the sequence RAN — not that every phase succeeded.
-        // Count FAILED per-order outcomes so a partial failure is loudly
-        // distinguishable from a clean liquidation (the rich per-phase
-        // status control is UI-4; this affordance must still never dress a
-        // failure as success).
-        const countFailed = (entries) => Array.isArray(entries)
-          ? entries.filter((e) => e && e.outcome && e.outcome.status === "FAILED").length
-          : 0;
-        const failed = countFailed(body.liquidation_orders) + countFailed(body.cancelled_orders);
-        const disconnected = body.ib_gateway_disconnected === true;
-        const summary =
-          "activated " + String(body.activation_id) +
-          ": engines_halted=" + String(body.paper_engines_halted) +
-          " liquidations=" + (Array.isArray(body.liquidation_orders) ? body.liquidation_orders.length : "?") +
-          " cancels=" + (Array.isArray(body.cancelled_orders) ? body.cancelled_orders.length : "?") +
-          " ib_disconnected=" + String(body.ib_gateway_disconnected);
-        if (failed > 0 || !disconnected) {
-          killStatus(summary + " — WITH FAILURES: " + failed + " order phase(s) FAILED" +
-            (!disconnected ? ", IB NOT disconnected" : "") + " — inspect kill-switch status", "error");
+        // Identity binding: a 2xx designates an activation only when the
+        // runtime echoes a concrete activation id. A success-shaped body
+        // without one proves nothing about what ran.
+        const id = body && typeof body.activation_id === "string" ? body.activation_id.trim() : "";
+        if (!id) {
+          killStatus("REFUSED: activation response carries no activation_id — " +
+            "cannot confirm what ran; inspect kill-switch status", "error");
         } else {
-          killStatus(summary, "fired");
+          killConfirmedId = id;
+          // A 200 means the sequence RAN — not that every phase succeeded.
+          // Count FAILED per-order outcomes so a partial failure is loudly
+          // distinguishable from a clean liquidation.
+          const countFailed = (entries) => Array.isArray(entries)
+            ? entries.filter((e) => e && e.outcome && e.outcome.status === "FAILED").length
+            : 0;
+          const failed = countFailed(body.liquidation_orders) + countFailed(body.cancelled_orders);
+          const disconnected = body.ib_gateway_disconnected === true;
+          const summary =
+            "activated " + id +
+            ": engines_halted=" + String(body.paper_engines_halted) +
+            " liquidations=" + (Array.isArray(body.liquidation_orders) ? body.liquidation_orders.length : "?") +
+            " cancels=" + (Array.isArray(body.cancelled_orders) ? body.cancelled_orders.length : "?") +
+            " ib_disconnected=" + String(body.ib_gateway_disconnected);
+          if (failed > 0 || !disconnected) {
+            killStatus(summary + " — WITH FAILURES: " + failed + " order phase(s) FAILED" +
+              (!disconnected ? ", IB NOT disconnected" : "") + " — inspect the sequence below", "error");
+          } else {
+            killStatus(summary, "fired");
+          }
         }
       } else {
         const err = body && body.error ? body.error : {};
-        killStatus("REFUSED " + res.status + " " + String(err.type || "UNKNOWN"), "error");
-        btn.disabled = false;
+        const owner = err.detail && err.detail.owner ? " · owner " + String(err.detail.owner) : "";
+        killStatus("REFUSED " + res.status + " " + String(err.type || err.category || "UNKNOWN") + owner, "error");
       }
     } catch (error) {
       killStatus("FAILED: " + String(error), "error");
-      btn.disabled = false;
     }
-    disarmKillSwitch();
+    buttons.forEach((b) => { b.disabled = false; });
+    killInFlight = false;
+    disarmKillSwitch(false);
+    // Re-read the durable status immediately: the receipt below must reflect
+    // what actually landed, not what the POST said.
+    pollKillSwitchOnce();
   }
 
-  $("killswitch-btn").addEventListener("click", () => {
-    const btn = $("killswitch-btn");
-    if (btn.dataset.armed !== "true") {
-      btn.dataset.armed = "true";
-      btn.textContent = "CONFIRM LIQUIDATE?";
-      killStatus("armed — click again within 5s to liquidate", "armed");
-      killArmTimer = setTimeout(() => { disarmKillSwitch(); killStatus("", ""); }, KILL_ARM_WINDOW_MS);
+  function onKillTrigger() {
+    // The in-flight guard comes FIRST: while one activation is settling, every
+    // sibling trigger is inert (no second arm, no second POST).
+    if (killInFlight) return;
+    if (!killArmed()) { armKillSwitch(); return; }
+    fireKillSwitch();
+  }
+
+  // ----- UI-4 status pane rendering (fail-closed) ------------------------ //
+
+  function ksRung(phase, label, branch, status, detail, owner) {
+    const li = document.createElement("li");
+    li.className = "ks__rung";
+    li.dataset.phase = phase;
+    li.dataset.branch = branch ? "true" : "false";
+    li.dataset.status = status;
+    const node = document.createElement("span");
+    node.className = "ks__node";
+    node.setAttribute("aria-hidden", "true");
+    const bodyEl = document.createElement("div");
+    bodyEl.className = "ks__body";
+    const row = document.createElement("div");
+    row.className = "ks__labelrow";
+    const ord = document.createElement("span");
+    ord.className = "ks__ord";
+    ord.textContent = String(KS_PHASES.findIndex((p) => p[0] === phase) + 1).padStart(2, "0");
+    const name = document.createElement("span");
+    name.className = "ks__label";
+    name.textContent = label;
+    const badge = document.createElement("span");
+    badge.className = "ks__badge";
+    badge.dataset.status = status;
+    badge.textContent = status;
+    row.appendChild(ord); row.appendChild(name); row.appendChild(badge);
+    const det = document.createElement("span");
+    det.className = "ks__detail";
+    det.textContent = detail;
+    bodyEl.appendChild(row); bodyEl.appendChild(det);
+    if (owner) {
+      const own = document.createElement("span");
+      own.className = "ks__owner";
+      own.textContent = "awaiting " + owner;
+      bodyEl.appendChild(own);
+    }
+    li.appendChild(node); li.appendChild(bodyEl);
+    return li;
+  }
+
+  function ksReceipt(cells) {
+    const set = (id, text, tone) => {
+      const el = $(id);
+      if (!el) return;
+      el.textContent = text;
+      el.dataset.tone = tone || "";
+    };
+    set("ks-activation-id", cells.id, cells.idTone);
+    set("ks-activated-at", cells.at, "");
+    set("ks-ran-clean", cells.ranClean, cells.ranCleanTone);
+    set("ks-nfr", cells.nfr, cells.nfrTone);
+    set("ks-halt-latency", cells.latency, cells.latencyTone);
+    set("ks-audit", cells.audit, cells.auditTone);
+  }
+
+  // The single fail-closed clear: every leg UNKNOWN, receipt blank, orders
+  // hidden, tier unknown. Used by EVERY degraded branch — a partial clear that
+  // leaves one green rung on screen is exactly the bug this guards against.
+  function ksUnknown(reason, tone) {
+    const rail = $("ks-rail");
+    if (rail) {
+      rail.textContent = "";
+      for (const [phase, label, branch] of KS_PHASES) {
+        rail.appendChild(ksRung(phase, label, branch, "UNKNOWN", "not observed", null));
+      }
+    }
+    ksReceipt({
+      // The identity reads UNKNOWN, not "—": a blank dash invites "nothing
+      // happened", which is exactly the reading this clear exists to prevent.
+      id: "UNKNOWN", idTone: "unknown", at: "—",
+      ranClean: "UNKNOWN", ranCleanTone: "unknown",
+      nfr: "UNKNOWN", nfrTone: "unknown",
+      latency: "UNKNOWN", latencyTone: "unknown",
+      audit: "UNKNOWN", auditTone: "unknown",
+    });
+    const table = $("ks-orders-table");
+    if (table) table.hidden = true;
+    const rows = $("ks-orders");
+    if (rows) rows.textContent = "";
+    const tier = $("ks-tier");
+    if (tier) { tier.dataset.tier = "unknown"; tier.textContent = "TIER UNKNOWN"; }
+    const note = $("ks-note");
+    if (note) { note.textContent = reason; note.dataset.tone = tone || "warn"; }
+    if (!killInFlight) ksState(killConfirmedId ? "fired" : "resting");
+  }
+
+  function ksTriBool(value, okText, badText) {
+    if (value === true) return [okText, "ok"];
+    if (value === false) return [badText, "bad"];
+    return ["UNKNOWN", "unknown"];
+  }
+
+  function renderKillSwitch(snap) {
+    if (!snap || typeof snap !== "object") {
+      ksUnknown("kill-switch status payload malformed — treating every leg as UNKNOWN", "error");
       return;
     }
-    fireKillSwitch();
-  });
+    const seq = snap.sequence;
+    // Schema drift is not a rendering problem, it is an honesty problem: if the
+    // rail does not match the phase order this client knows, refuse the whole
+    // payload rather than render a partial sequence.
+    const shaped = Array.isArray(seq) && seq.length === KS_PHASES.length &&
+      seq.every((leg, i) => leg && typeof leg === "object" &&
+        leg.phase === KS_PHASES[i][0] && typeof leg.status === "string");
+    if (!shaped) {
+      ksUnknown("kill-switch status payload does not match the known sequence contract — " +
+        "treating every leg as UNKNOWN", "error");
+      return;
+    }
+    const rail = $("ks-rail");
+    if (rail) {
+      rail.textContent = "";
+      seq.forEach((leg, i) => {
+        // A rung is resolved ONLY when the payload carries a live value that
+        // AGREES with the status. A deferred cell (value null) or any
+        // disagreement renders UNKNOWN — the server cannot talk this client
+        // into drawing a green leg it did not substantiate.
+        const resolved = typeof leg.value === "string" && leg.value === leg.status &&
+          leg.status !== "UNKNOWN";
+        const status = resolved ? leg.status : "UNKNOWN";
+        const detail = typeof leg.detail === "string" && leg.detail ? leg.detail : "not observed";
+        const owner = resolved ? null : (typeof leg.owner === "string" ? leg.owner : null);
+        rail.appendChild(ksRung(KS_PHASES[i][0], KS_PHASES[i][1], KS_PHASES[i][2], status, detail, owner));
+      });
+    }
+
+    const activated = snap.activated === true ? true : (snap.activated === false ? false : null);
+    const id = typeof snap.activation_id === "string" && snap.activation_id ? snap.activation_id : null;
+    const [ranClean, ranCleanTone] = ksTriBool(snap.ran_clean, "CLEAN", "WITH FAILURES");
+    const [nfr, nfrTone] = ksTriBool(snap.within_nfr_p3, "WITHIN 5s", "BREACHED");
+    const [audit, auditTone] = ksTriBool(snap.audit_recorded, "RECORDED", "NOT RECORDED");
+    const latencyMs = typeof snap.halted_log_latency_ms === "number" && isFinite(snap.halted_log_latency_ms)
+      ? snap.halted_log_latency_ms : null;
+    const budget = typeof snap.halt_observability_budget_ms === "number"
+      ? snap.halt_observability_budget_ms : 1000;
+    ksReceipt({
+      id: id || (activated === false ? "no activation recorded" : "UNKNOWN"),
+      idTone: id ? "" : (activated === false ? "" : "unknown"),
+      at: typeof snap.activated_at === "string" && snap.activated_at ? snap.activated_at : "—",
+      ranClean: ranClean, ranCleanTone: ranCleanTone,
+      nfr: nfr, nfrTone: nfrTone,
+      latency: latencyMs === null ? "UNKNOWN" : Math.round(latencyMs) + " ms / " + budget + " ms",
+      latencyTone: latencyMs === null ? "unknown" : (latencyMs <= budget ? "ok" : "bad"),
+      audit: audit, auditTone: auditTone,
+    });
+
+    // Orders: null means UNKNOWN, and an unknown order set must not render as
+    // an empty (all-clear-shaped) table.
+    const rows = $("ks-orders");
+    const table = $("ks-orders-table");
+    const orders = Array.isArray(snap.orders) ? snap.orders : null;
+    if (rows) rows.textContent = "";
+    if (table) table.hidden = !orders || !orders.length;
+    if (rows && orders) {
+      for (const order of orders) {
+        if (!order || typeof order !== "object") continue;
+        const tr = document.createElement("tr");
+        const cells = [
+          [String(order.kind || "—"), "kind"],
+          [String(order.symbol || "—"), ""],
+          [String(order.broker_order_id || order.order_id || "—"), ""],
+          [order.quantity === null || order.quantity === undefined ? "—" : String(order.quantity), ""],
+          [String(order.status || "UNKNOWN"), "status"],
+        ];
+        for (const [text, kind] of cells) {
+          const td = document.createElement("td");
+          if (kind === "kind") {
+            const span = document.createElement("span");
+            span.className = "ks__kind";
+            span.textContent = text;
+            td.appendChild(span);
+          } else {
+            td.textContent = text;
+            if (kind === "status") td.dataset.status = text;
+          }
+          tr.appendChild(td);
+        }
+        rows.appendChild(tr);
+      }
+    }
+
+    // Transport tier: only the two declared tiers are ever shown as such.
+    const tier = $("ks-tier");
+    if (tier) {
+      const t = snap.tier === "FIXTURE" || snap.tier === "LIVE" ? snap.tier : null;
+      tier.dataset.tier = t || "unknown";
+      tier.textContent = t === "FIXTURE" ? "FIXTURE DRILL" : (t === "LIVE" ? "LIVE" : "TIER UNKNOWN");
+    }
+
+    const note = $("ks-note");
+    if (note) {
+      const errors = Array.isArray(snap.errors) ? snap.errors.filter((e) => typeof e === "string") : [];
+      if (killConfirmedId && id && id !== killConfirmedId) {
+        // The pane is describing a DIFFERENT activation than the one this
+        // client confirmed. Name both ids rather than let the operator read
+        // someone else's receipt as their own.
+        note.textContent = "MISMATCH: this browser confirmed " + killConfirmedId +
+          " but the recorded activation is " + id + " — verify before acting";
+        note.dataset.tone = "error";
+      } else if (errors.length) {
+        note.textContent = errors.join(" · ");
+        note.dataset.tone = "error";
+      } else if (activated === null) {
+        note.textContent = "activation status UNKNOWN — the dashboard cannot observe this kill switch";
+        note.dataset.tone = "warn";
+      } else if (activated === false) {
+        note.textContent = "no activation recorded in the configured state directory";
+        note.dataset.tone = "";
+      } else {
+        note.textContent = "sequence read from the durable activation record" +
+          (snap.timeout_correlated === false
+            ? " · SYS-44b legs show the latest timeout record, which carries no key linking it to this activation (SRS-SAFE-002)"
+            : "");
+        note.dataset.tone = "";
+      }
+    }
+    if (!killInFlight) ksState(activated === true ? "fired" : (killConfirmedId ? "fired" : "resting"));
+  }
+
+  async function pollKillSwitchOnce() {
+    try {
+      // Bounded: a stalled endpoint must not leave the previous safety state on
+      // screen indefinitely.
+      const res = await fetch(KILL_SWITCH_STATUS_ROUTE, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(POLL_MS),
+      });
+      if (res.ok) {
+        let body = null;
+        try { body = await res.json(); } catch (_e) { body = null; }
+        renderKillSwitch(body);
+      } else if (res.status === 404) {
+        ksUnknown("kill-switch status not mounted — UI-4 provider not composed on this runtime", "warn");
+      } else {
+        ksUnknown("kill-switch status unavailable (HTTP " + res.status + ") — every leg UNKNOWN", "error");
+      }
+    } catch (_e) {
+      ksUnknown("kill-switch status endpoint unreachable — every leg UNKNOWN", "error");
+    }
+  }
+
+  async function pollKillSwitch() {
+    await pollKillSwitchOnce();
+    setTimeout(pollKillSwitch, POLL_MS);
+  }
+
+  function initKillSwitch() {
+    // Paint the fail-closed rail before the first poll resolves: an empty pane
+    // must never be the first thing an operator reads as "nothing wrong".
+    ksUnknown("awaiting kill-switch status…", "warn");
+    killStatus(KILL_RESTING_CAPTION, "");
+    for (const btn of killButtons()) btn.addEventListener("click", onKillTrigger);
+  }
 
   // ----- UI-3 backtest controls + result history (SRS-UI-004 / SYS-42/43a) //
   // CONTROLS: the launch form POSTs to the CONTRACT route on this same runtime
@@ -1617,6 +1964,7 @@
   initBacktest();
   initReservoir();
   initResearch();
+  initKillSwitch();
   connect();
   poll();
   pollStrategies();
@@ -1625,4 +1973,5 @@
   pollReservoir();
   pollResearch();
   pollAlerts();
+  pollKillSwitch();
 })();

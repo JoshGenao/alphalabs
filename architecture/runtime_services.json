@@ -6315,8 +6315,8 @@
         "what": "Kill-switch activation email/SMS and the 30-second unfilled-liquidation timeout escalation (SYS-44b) are SRS-NOTIF-001 + the SRS-SAFE-002 timeout gate's live runtime; this activation slice dispatches no notification."
       },
       {
-        "feature": "Rich dashboard kill-switch control (UI-4)",
-        "what": "The dashboard ships a minimal confirm-then-POST activation control rendering the returned report verbatim; the full control with cancellation / liquidation-submission / timeout / notification / disconnect status feedback is UI-4."
+        "feature": "UI-4 status pane: live evidence + SYS-44b leg correlation",
+        "what": "The UI-4 control and the four SRS-SAFE-001 legs of its Liquidate-Sequence pane have LANDED: a two-step arm-then-confirm activation control (one in-flight request at a time, bounded, and a 2xx designates an activation only when the runtime echoes a concrete activation_id) plus the read-only GET /dashboard/api/kill-switch pane rendering the halt / cancellation / liquidation-submission / disconnect legs from the durable last-activation record. TWO THINGS REMAIN DEFERRED. (1) EVIDENCE for those four legs: no composition wires the activate handler onto a live runtime (the SRS-EXE-006 / SRS-EXE-001 / SRS-EXE-002 deferrals above), so every leg renders an explicit UNKNOWN until a real activation exists. (2) The UI-4 TIMEOUT and NOTIFICATION legs cannot be RESOLVED at all yet, by construction: build_liquidation_timeout_record correlates by the domain ORDER id and the activation report carries no id for the liquidation orders it submitted, so no key links a SYS-44b record to an activation. The pane therefore shows the newest LIQUIDATION_TIMEOUT record verbatim, explicitly labelled NOT correlated to this activation, and leaves those two rungs UNKNOWN — resolving them requires SRS-SAFE-002 to carry an activation id into the record (and SRS-NOTIF-001 for live transports). UI-4 stays passes:false on both counts, pending that correlation and operator browser sign-off over a wired runtime."
       },
       {
         "feature": "Durable cross-process activation lockout",
