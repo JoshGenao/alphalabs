@@ -214,7 +214,10 @@ def check_no_source_binds_all_interfaces() -> str:
         tree = ast.parse(path.read_text("utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if node.value in ("0.0.0.0", "::"):
+                # nosec B104: these literals are the FORBIDDEN bind targets this
+                # checker scans product source for and fails on — this line is the
+                # SRS-SEC-002 enforcement, not a bind.
+                if node.value in ("0.0.0.0", "::"):  # nosec B104
                     offenders.append(f"{path.relative_to(PYTHON_ROOT)}:{node.lineno}")
     if offenders:
         fail(
@@ -235,8 +238,9 @@ def check_bind_policy_refuses_public(is_allowed, assert_allowed, BindPolicyError
         "192.168.1.10",
     )
     # Public, unspecified, link-local, CGNAT, and the ranges just outside RFC 1918.
+    # nosec B104: fixture data asserting the bind policy REFUSES all-interfaces.
     refused = (
-        "0.0.0.0",
+        "0.0.0.0",  # nosec B104
         "::",
         "8.8.8.8",
         "1.2.3.4",
