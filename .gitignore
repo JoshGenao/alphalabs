@@ -21,6 +21,10 @@ data/
 *.key
 *.pem
 secrets.toml
+# Credential vault + key material (SRS-SEC-001). ./secrets is the operator's
+# vault directory per .env.example; *.key alone did not cover the sealed vault
+# file or anything else dropped in here.
+secrets/
 
 # Build / coverage artifacts
 htmlcov/
