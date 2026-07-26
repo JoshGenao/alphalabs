@@ -7417,6 +7417,176 @@
       }
     ]
   },
+  "sim_walk_forward_contract": {
+    "description": "SRS-BT-008 (support walk-forward analysis; SyRS SYS-20; StRS SN-1.17). The walk-forward surface lives in crates/atp-simulation (module `walk_forward`) and is the named downstream consumer of the SRS-BT-007 sweep core -- it optimizes each in-sample window by running SweepRunner::run over it and evaluates the winning parameter set out-of-sample through the SAME sweep + BacktestEngine::run + benchmark::compare chain, so a walk-forward number is exactly what a standalone sweep/backtest of that point would report (no parallel engine). Each noun of the acceptance criterion -- 'in-sample windows are optimized, out-of-sample windows are evaluated, and outputs preserve the parameter set and metrics per window' -- maps to a named artifact. WalkForwardWindow pairs an in-sample DateRange with an out-of-sample DateRange and validate() enforces the walk-forward NO-LOOKAHEAD invariant: the out-of-sample window must lie strictly after the in-sample window (in_sample.end < out_of_sample.start), else LookaheadWindow -- an out-of-sample measurement that overlaps or precedes the in-sample optimization window would report data the optimizer already saw (a fabricated out-of-sample edge an operator could size capital on); an inverted sub-range fails closed with InvalidWindow. WalkForwardSchedule::new holds only validated windows and fails closed on an empty schedule (EmptySchedule), any invalid/lookahead window, non-advancing folds (NonMonotonicFolds -- a fold whose in-sample start does not strictly advance past the previous fold's), or overlapping out-of-sample windows (OverlappingFolds -- walk-forward tiles the out-of-sample period forward without double-counting a bar across folds). WalkForwardSchedule::rolling is the canonical generator: fold_count folds of in-sample length in_sample_len beginning at start + fold*step, each immediately followed by an out_of_sample_len window, with ALL boundary arithmetic overflow-checked (checked_add/checked_mul -> ScheduleOverflow), a zero length/step/fold_count failing closed (ZeroLength/ZeroStep/ZeroFolds), and an oversized fold_count failing closed (TooManyFolds against MAX_WALK_FORWARD_FOLDS) BEFORE any window is allocated -- so an unbounded operator-supplied count can never trigger a Vec::with_capacity panic or a huge allocation; the generated windows funnel through new() (Self::new(windows)), which applies the same fold cap and rejects a config that would produce overlapping out-of-sample windows (step < out_of_sample_len) by the one rule set. WalkForwardRunner owns a private SweepRunner (with_max_points is the test seam) and run() drives every fold through it: the in-sample phase runs a full grid search over the in-sample window and takes report.ranked.first() (the rank-1 optimum -- an empty ranking means every point's objective was undefined, so NoOptimum fails closed rather than reaching into the unranked bucket); the out-of-sample phase rebuilds a SINGLE-point ParameterSpace from the winner's canonical entries (singleton_space -- one ParameterAxis per entry) and runs it through the SAME SweepRunner over the out-of-sample window, so there is no re-implementation of the BacktestEngine + benchmark::compare chain (the module names neither BacktestEngine::new nor benchmark::compare). WalkForwardFold preserves, per window, the selected_parameters (the SRS-BT-009 StrategyParameters identity), the in_sample_objective + in_sample_metrics + in_sample_comparison, and the out_of_sample_metrics + out_of_sample_comparison; the out_of_sample_objective is honestly Option<f64> -- Some when the metric is defined on the out-of-sample window (the singleton point ranked), None when undefined (the singleton point routed to unranked) -- NEVER a fabricated stand-in (no unwrap_or(0.0) / unwrap_or_default() fallback). WalkForwardReport carries total_folds == folds.len(), so every scheduled fold is provably accounted for; any per-fold sweep failure aborts the WHOLE analysis naming the offending window (InSampleSweepFailed / OutOfSampleEvalFailed, each carrying window: *window), because a partial report could mis-rank a configuration and the analysis needs all-or-error reproducibility. The work is deterministic: it reuses the sweep's sequential, no-parallelism / no-RNG / no-clock evaluation, so identical inputs produce an identical report (SRS-BT-010). The bt008_walk_forward_cli binary is the operator surface (explicit --fold IS:IE:OS:OE ranges or a rolling --rolling START:IS_LEN:OOS_LEN:STEP:COUNT generator; repeatable --axis name=v1,v2,... flags; --objective + --direction with an explicit-objective-requires-explicit-direction rule; human and kv formats, the kv grammar count-prefixed and contiguously indexed with control-character fail-closed emission) over fixture bars, a fixture benchmark source, and the SAME genuinely parameterized fixture strategy BT-007 uses, exactly as the verification step specifies. walk_forward adds no broker/adapter dependency and carries no vendor SDK token; lib.rs re-exports `pub mod walk_forward;`.",
+    "requirement": "SRS-BT-008",
+    "srs_refs": [
+      "SRS-BT-008"
+    ],
+    "syrs_refs": [
+      "SYS-20"
+    ],
+    "strs_refs": [
+      "SN-1.17"
+    ],
+    "ac_traces": [
+      "SRS-BT-008",
+      "SYS-20"
+    ],
+    "simulation_crate": {
+      "crate": "atp-simulation",
+      "path": "crates/atp-simulation"
+    },
+    "walk_forward_module": "walk_forward",
+    "window_types": {
+      "window_struct": "WalkForwardWindow",
+      "schedule_struct": "WalkForwardSchedule",
+      "validate_fn": "pub fn validate",
+      "windows_fn": "pub fn windows",
+      "date_range_import_token": "use crate::backtest::{BacktestRequest, BarSource, DateRange}"
+    },
+    "no_lookahead": {
+      "variant": "LookaheadWindow",
+      "guard_token": "if self.in_sample.end >= self.out_of_sample.start",
+      "raised_token": "return Err(WalkForwardError::LookaheadWindow"
+    },
+    "schedule_validation": {
+      "empty_variant": "EmptySchedule",
+      "invalid_window_variant": "InvalidWindow",
+      "non_monotonic_variant": "NonMonotonicFolds",
+      "overlapping_variant": "OverlappingFolds"
+    },
+    "rolling_generator": {
+      "rolling_fn": "pub fn rolling",
+      "checked_add_token": "checked_add",
+      "checked_mul_token": "checked_mul",
+      "overflow_variant": "ScheduleOverflow",
+      "zero_variants": [
+        "ZeroLength",
+        "ZeroStep",
+        "ZeroFolds"
+      ],
+      "fold_cap_const": "pub const MAX_WALK_FORWARD_FOLDS",
+      "fold_cap_variant": "TooManyFolds",
+      "fold_cap_before_alloc_token": "return Err(WalkForwardError::TooManyFolds",
+      "alloc_token": "Vec::with_capacity(fold_count)",
+      "funnels_through_new_token": "Self::new(windows)"
+    },
+    "runner_reuse": {
+      "runner_struct": "WalkForwardRunner",
+      "run_fn": "pub fn run",
+      "request_struct": "WalkForwardRequest",
+      "sweep_field_token": "sweep: SweepRunner",
+      "sweep_run_token": "self.sweep.run(",
+      "test_seam_fn": "pub fn with_max_points",
+      "forbidden_reimpl_tokens": [
+        "BacktestEngine::new",
+        "benchmark::compare",
+        "use crate::benchmark::{compare"
+      ]
+    },
+    "in_sample_optimization": {
+      "rank_one_token": "in_report.ranked.first()",
+      "no_optimum_variant": "NoOptimum"
+    },
+    "out_of_sample_evaluation": {
+      "singleton_fn": "fn singleton_space",
+      "option_objective_field": "out_of_sample_objective: Option<f64>",
+      "unranked_route_token": "oos_report.unranked.first()"
+    },
+    "preservation": {
+      "fold_struct": "WalkForwardFold",
+      "report_struct": "WalkForwardReport",
+      "selected_params_field": "selected_parameters",
+      "in_sample_metrics_field": "in_sample_metrics",
+      "out_of_sample_metrics_field": "out_of_sample_metrics",
+      "accounting_field": "total_folds"
+    },
+    "no_fabrication": {
+      "forbidden_fallback_tokens": [
+        "unwrap_or(0.0)",
+        "unwrap_or_default()"
+      ]
+    },
+    "point_failure": {
+      "in_sample_variant": "InSampleSweepFailed",
+      "out_of_sample_variant": "OutOfSampleEvalFailed",
+      "names_window_token": "window: *window"
+    },
+    "error_enum": {
+      "enum": "WalkForwardError",
+      "variants": [
+        "EmptySchedule",
+        "InvalidWindow",
+        "LookaheadWindow",
+        "NonMonotonicFolds",
+        "OverlappingFolds",
+        "ScheduleOverflow",
+        "ZeroLength",
+        "ZeroStep",
+        "ZeroFolds",
+        "TooManyFolds",
+        "NoOptimum",
+        "InSampleSweepFailed",
+        "OutOfSampleEvalFailed",
+        "SingletonRebuild"
+      ]
+    },
+    "determinism": {
+      "forbidden_tokens": [
+        "par_iter",
+        "rayon",
+        "thread::spawn",
+        "rand::",
+        "SystemTime",
+        "Instant::now"
+      ]
+    },
+    "module_reexport": {
+      "lib_reexport_token": "pub mod walk_forward;"
+    },
+    "no_broker_dependency": {
+      "cargo_toml": "Cargo.toml",
+      "forbidden_dep_tokens": [
+        "atp-adapters",
+        "atp-execution"
+      ]
+    },
+    "vendor_forbidden_tokens": [
+      "interactive_brokers",
+      "ib_insync",
+      "ibapi",
+      "databento",
+      "sharadar"
+    ],
+    "cli": {
+      "bin": "bt008_walk_forward_cli",
+      "cargo_bin_token": "name = \"bt008_walk_forward_cli\"",
+      "explicit_direction_token": "--objective requires --direction",
+      "no_lookahead_surface_token": "strictly after the in-sample range",
+      "kv_control_char_guard": "fn kv_field"
+    },
+    "rust_integration_test": "srs_bt_008_walk_forward",
+    "rust_cli_test": "srs_bt_008_cli",
+    "deferred": [
+      {
+        "feature": "Real Python-strategy factory",
+        "what": "Walk-forward reuses the SRS-BT-007 SweepStrategyFactory seam to build a strategy per point; fixture factories realize it solo. The REAL factory -- the deferred Python strategy host that instantiates user strategy code per point -- is the SRS-BT-001-runtime / orchestrator owner, so walk-forward over a real user strategy is deferred and SRS-BT-008 stays passes:false."
+      },
+      {
+        "feature": "REST / dashboard walk-forward surface",
+        "what": "Defining a schedule + space + objective and viewing per-fold in-sample/out-of-sample results from the web dashboard / REST API is the SRS-API-001 / SRS-UI owner consuming the walk_forward API. The bt008_walk_forward_cli operator binary is the shipped CLI workflow; the web surface is deferred."
+      },
+      {
+        "feature": "Real stored-data benchmark resolver",
+        "what": "Each window's evaluation reuses benchmark::compare (through SweepRunner) via a BenchmarkSource; the CLI and tests supply a fixture source. Resolving the benchmark's actual historical levels from stored data is the same deferred SRS-BT-005 resolver boundary every benchmark consumer shares."
+      },
+      {
+        "feature": "Persisting walk-forward folds to backtest history",
+        "what": "The runner deliberately returns bounded per-fold summaries and does not write the SRS-BT-009 store; a caller that wants folds in history composes BacktestRecord::from_result per window. An operator-facing 'persist this walk-forward' workflow (and its provenance stamping) is the SRS-BT-009-consumer / orchestrator boundary."
+      }
+    ]
+  },
   "ingestion_idempotency_contract": {
     "description": "SRS-DATA-016 (make ingestion jobs idempotent; SyRS NFR-R4; StRS SN-1.26 / SN-1.27). The acceptance: 'Re-running Databento, IB, option-chain, or Sharadar ingestion for an already ingested date creates no duplicate records and does not corrupt existing data.' This is the data-layer STORAGE SUBSTRATE -- the canonical market-data record, a local keyed store, and an idempotent validating write path -- the missing spine the rest of the SRS-DATA family composes (no canonical record / store / catalog existed before: atp-data shipped only the read-only ERR-5 validation + ERR-6 pacing gates, and the atp-adapters provider traits return record COUNTS, not records). It lives in crates/atp-data (module `store`). Every record carries a vendor-neutral NaturalKey = (DatasetKind, symbol, resolution, event_ts, option_contract) -- the dedup identity; the record's canonically-ordered MarketField value set (integer minor units) is its content. DatasetKind is the VENDOR-NEUTRAL taxonomy the four sources the acceptance names map onto (the core never names a vendor; the adapter layer maps provider -> kind, SRS-ARCH-003): DailyEquityBar <= Databento daily (SRS-DATA-001), MinuteEquityBar <= IB minute (SRS-DATA-002), OptionChainSnapshot <= IB option-chain (SRS-DATA-004), Fundamental <= Sharadar (SRS-DATA-005). MarketDataStore::upsert is the idempotency core: a fresh key INSERTS; an already-present key with IDENTICAL content is a silent no-op (UpsertOutcome::UnchangedDuplicate -- no duplicate row, the store stays byte-identical); an already-present key with DIFFERENT content fails closed (StoreError::ConflictingContent) leaving the existing record exactly as found (the 'corrupts existing data' guard). Records are held in one canonical natural-key order (binary_search_by), so the serialized form is byte-identical for the same record set regardless of ingest order -- which makes 'no duplicate / no corruption' inspectable on disk. DataLayer::ingest_market_record is the idempotent entry point: it COMPOSES the UNCHANGED ERR-5 validation gate (self.ingest_record -- so an invalid record is still quarantined read-only before any write) and only on a Valid classification applies the record via the idempotent store.upsert; the store mutator lives here / in store.rs, NEVER inside ingest_record (whose quarantine arm stays statically read-only per ingestion_validation_check.py forbidden_mutations). VALIDATION IS BOUND TO THE PERSISTED RECORD: the ERR-5 envelope is DERIVED from the record (record.ingestion_submission(): source = the dataset-kind tag, record_hash = the content fingerprint) rather than supplied independently, so the gate is always applied to exactly the record that will be written -- a caller cannot validate one payload and store another (there is no separate submission to forge). serialize/restore is a deterministic, dependency-free text codec (MAGIC header + FNV-1a integrity checksum over the body verified BEFORE building any state, length-prefixed strings, canonical-order records, untrusted counts grown incrementally not pre-allocated, single bulk sort on restore) that fails closed on a corrupt / truncated / checksum-mismatching / duplicate-key blob (StoreError::CorruptRecord / ChecksumMismatch / UnknownSchemaVersion / DuplicateKey) yielding no partial store. The durable FILE layer (save_to_path / load_from_path) mirrors the SRS-BT-009 backtest_store pattern: a per-call-unique scratch file, fsync, atomic fs::rename publish, parent-directory fsync; load fails closed on a missing/unmounted directory (!dir.is_dir() -> StoreError::Io, never a silent empty catalog) and restores an empty store only for a missing FILE in a provisioned directory. All value fields stay integer minor units (i64, i128 codec intermediates) -- no f64 in the core; the work is deterministic (no parallelism / RNG / wall-clock read); store carries no broker/adapter dependency and no lowercase vendor SDK token. The operator surface is the data016_ingest_cli binary (ingest / reingest / inspect over a fixture dir): reingest proves inserted:0 + bytes_identical:true across all four kinds. The Rust integration test srs_data_016_idempotent_ingest drives ingest -> persist -> reload -> re-ingest -> assert no duplicate + byte-identical file + conflicting-content fail-closed + quarantined-record-not-written, per kind. SRS-DATA-016 flips passes:true: the idempotency property is a self-contained runtime property (verification: Test) demonstrated end to end with fixture sources + persisted-file inspection, exactly as the step permits. DEFERRED (named owners, none load-bearing for idempotency): the REAL Databento/IB/Sharadar/option-chain network adapters (SRS-DATA-001/003/005/006, the atp-adapters provider traits stay stubs); unified query read consumers -- strategy code, notebooks (SRS-DATA-007); SSD-primary / NAS-archival TIERING, eviction, cold-read failover of the store directory (SRS-DATA-008/009/010); the validator rule logic + quarantine dashboard/notification alert surface (SRS-DATA-013 / SRS-NOTIF-001).",
     "requirement": "SRS-DATA-016",

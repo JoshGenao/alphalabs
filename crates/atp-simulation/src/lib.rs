@@ -254,6 +254,23 @@ pub mod determinism;
 /// in-sample window) are the deferred owners.
 pub mod sweep;
 
+/// Walk-forward analysis (SRS-BT-008 / SyRS SYS-20). The named downstream consumer of
+/// the [`sweep`] optimizer: for each fold it optimizes an in-sample window by running
+/// [`sweep::SweepRunner::run`] over it and taking the rank-1 point, then evaluates that
+/// winning point out-of-sample through the SAME sweep chain over the immediately-following
+/// window — so a walk-forward number is exactly what a standalone sweep/backtest of that
+/// point would report (no parallel engine). Its safety core is the no-lookahead invariant:
+/// [`walk_forward::WalkForwardSchedule`] requires every out-of-sample window to lie strictly
+/// after its in-sample window ([`walk_forward::WalkForwardError::LookaheadWindow`]), so an
+/// out-of-sample measurement can never include data the optimizer already saw. The
+/// out-of-sample objective is honestly `Option` (undefined is never fabricated), each fold
+/// preserves the selected parameter set and both windows' metrics, and any per-fold failure
+/// aborts the whole analysis naming the window. The `bt008_walk_forward_cli` binary is the
+/// operator surface over fixtures; the real Python-strategy factory (deferred host), the
+/// REST/dashboard surface (SRS-API-001 / SRS-UI), and fold persistence (SRS-BT-009) are the
+/// deferred owners, so SRS-BT-008 stays `passes:false`.
+pub mod walk_forward;
+
 #[derive(Debug, Default)]
 pub struct InternalSimulationEngine;
 
