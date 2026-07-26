@@ -2157,3 +2157,1032 @@ def test_ui_4_activations_are_serialized(kill_switch_dashboard: str) -> None:
             assert len(posts) == 1
         finally:
             browser.close()
+
+
+# ============================ UI-5 Hot-Swap console ========================= #
+# The manual-promotion control + Changeover-Console status pane. Every live fact
+# is deferred to its SRS-RESV producer, so these drive the fail-closed rendering
+# and the arm-then-confirm control via route-interception BEFORE the producer
+# exists — the operator re-runs them (with the real producers wired) to flip UI-5.
+
+
+@pytest.fixture()
+def hot_swap_dashboard() -> Iterator[str]:
+    """The production composition — all Hot-Swap facts deferred (no producer)."""
+
+    from atp_dashboard import mount_default_dashboard
+
+    runtime = OperatorInterfaceRuntime()
+    publisher = mount_default_dashboard(runtime, {})
+    publisher.start()
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        yield f"http://{host}:{port}/dashboard"
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
+def _hs_cell(value):
+    return {"value": value, "data_source": "hot_swap_state"}
+
+
+def _hs_deferred(owner):
+    return {"value": None, "data_source": f"deferred:{owner}"}
+
+
+def _hot_swap_payload(
+    *, candidate="meanrev-v7", live="momentum-v3", cooldown_active=False, rungs=None
+):
+    # cooldown_active: True (in cool-down), False (known not in cool-down —
+    # armable), or None (unknown/deferred — not actionable).
+    specs = [
+        ("demote_signals", "STOP NEW SIGNALS", "demote", False),
+        ("demote_cancel", "CANCEL RESTING ORDERS", "demote", False),
+        ("demote_liquidate", "LIQUIDATE TO FLAT", "demote", False),
+        ("demotion_pending", "DEMOTION-PENDING (TIMEOUT)", "demote", True),
+        ("promote", "PROMOTE CANDIDATE LIVE", "promote", False),
+    ]
+    statuses = rungs or {}
+    seq = []
+    for phase, label, stage, branch in specs:
+        cell = {
+            "phase": phase,
+            "label": label,
+            "stage": stage,
+            "branch": branch,
+            "owner": "SRS-RESV-004",
+        }
+        st = statuses.get(phase)
+        if st:
+            cell.update(
+                {"status": st, "detail": "observed", "value": st, "data_source": "hot_swap_state"}
+            )
+        else:
+            cell.update(
+                {
+                    "status": "UNKNOWN",
+                    "detail": "",
+                    "value": None,
+                    "data_source": "deferred:SRS-RESV-004",
+                }
+            )
+        seq.append(cell)
+    return {
+        "generated_at": "2026-07-26T00:00:00Z",
+        "srs_ref": "UI-5",
+        "ok": True,
+        "errors": None,
+        "trigger_catalog": {"automatic_default": "disabled"},
+        "cooldown_days_default": 7,
+        "demotion_timeout_seconds_default": 60,
+        "current_live_strategy_id": _hs_cell(live) if live else _hs_deferred("SRS-RESV-005"),
+        "promotion_candidate": _hs_cell(candidate) if candidate else _hs_deferred("SRS-RESV-002"),
+        # Explicit not-pending by default (the armable state once producers land);
+        # tests override this to True (blocked) or deferred (unknown/outage).
+        "demotion_pending": _hs_cell(False),
+        "demotion_detail": _hs_deferred("SRS-RESV-004"),
+        "cooldown": {
+            "in_effect": _hs_cell(cooldown_active)
+            if cooldown_active is not None
+            else _hs_deferred("SRS-RESV-006"),
+            "started_at": _hs_deferred("SRS-RESV-006"),
+            "expires_at": _hs_cell("2030-01-01T00:00:00Z")
+            if cooldown_active
+            else _hs_deferred("SRS-RESV-006"),
+        },
+        "auto_triggers_enabled": _hs_deferred("SRS-RESV-003"),
+        "auto_triggers_live": [
+            {"kind": "drawdown_demotion", "enabled": _hs_cell(True)},
+            {"kind": "top_ranked_promotion", "enabled": _hs_deferred("SRS-RESV-003")},
+            {"kind": "highest_momentum_promotion", "enabled": _hs_deferred("SRS-RESV-003")},
+        ],
+        "changeover_sequence": seq,
+    }
+
+
+def _route_hot_swap_status(page, payload):
+    page.route(
+        "**/dashboard/api/hot-swap",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(payload)
+        ),
+    )
+
+
+def _hs_rung_status(page, phase):
+    return page.eval_on_selector(f'.hs__rung[data-phase="{phase}"]', "e => e.dataset.status")
+
+
+def _hs_every_rung_unknown(page):
+    return page.eval_on_selector_all(
+        ".hs__rung", "els => els.length === 5 && els.every(e => e.dataset.status === 'UNKNOWN')"
+    )
+
+
+def _arm_hot_swap(page):
+    page.wait_for_function("document.getElementById('hs-btn').disabled === false", timeout=8_000)
+    page.click("#hs-btn")
+    page.wait_for_function(
+        "document.getElementById('hs-btn').dataset.armed === 'true'", timeout=2_000
+    )
+
+
+def test_ui_5_pane_covers_every_ac_surface(hot_swap_dashboard: str) -> None:
+    """The four AC facts in one browser view: manual promotion control, the
+    changeover (demotion) state, the cool-down expiry, and the automatic-trigger
+    configuration — all from a routed live payload."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            _route_hot_swap_status(
+                page,
+                _hot_swap_payload(
+                    cooldown_active=True,
+                    rungs={
+                        "demote_signals": "DONE",
+                        "demote_cancel": "DONE",
+                        "demote_liquidate": "PENDING",
+                        "promote": "BLOCKED",
+                    },
+                ),
+            )
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelector('.hs__rung[data-phase=\"demote_signals\"]')"
+                ".dataset.status === 'DONE'",
+                timeout=9_000,
+            )
+            # Cool-down expiry (SYS-49e): the dial is active with a real countdown.
+            assert page.eval_on_selector("#hs-dial", "e => e.dataset.state") == "active"
+            assert page.locator("#hs-cooldown-value").inner_text().strip() != "— —"
+            # Demotion state (SYS-49b/d) down the changeover track.
+            assert _hs_rung_status(page, "demote_cancel") == "DONE"
+            assert _hs_rung_status(page, "demote_liquidate") == "PENDING"
+            assert _hs_rung_status(page, "promote") == "BLOCKED"
+            assert _hs_rung_status(page, "demotion_pending") == "UNKNOWN"
+            # Automatic-trigger configuration (SYS-49a): the enabled trigger shows on.
+            assert (
+                page.eval_on_selector(
+                    '.hs__chip[data-kind="drawdown_demotion"]', "e => e.dataset.state"
+                )
+                == "on"
+            )
+            # Live + candidate slots.
+            assert page.locator("#hs-live").inner_text() == "momentum-v3"
+            assert page.locator("#hs-candidate").inner_text() == "meanrev-v7"
+            # Manual promotion control (SYS-49a): with a changeover already
+            # PENDING/BLOCKED, the control is held INERT even though a candidate
+            # exists (demote-before-promote / single-live).
+            assert page.eval_on_selector("#hs-btn", "e => e.disabled") is True
+            assert "changeover in progress" in page.locator("#hs-status").inner_text().lower()
+        finally:
+            browser.close()
+
+
+def test_ui_5_an_active_changeover_blocks_and_disarms_the_control(hot_swap_dashboard: str) -> None:
+    """A demote→promote changeover already in progress/stuck (any resolved rung
+    PENDING/BLOCKED/FAILED) holds the promote control inert — arming while the
+    changeover is clear then observing a PENDING rung disarms it, with no POST."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            # Arm while the changeover is clear (all rungs UNKNOWN, demotion false).
+            _route_hot_swap_status(page, _hot_swap_payload(candidate="cand-A"))
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            _arm_hot_swap(page)
+
+            # A poll now shows a changeover in progress -> disarm + inert.
+            page.unroute("**/dashboard/api/hot-swap")
+            _route_hot_swap_status(
+                page,
+                _hot_swap_payload(
+                    candidate="cand-A", rungs={"demote_liquidate": "PENDING", "promote": "BLOCKED"}
+                ),
+            )
+            page.wait_for_function(
+                "document.getElementById('hs-btn').dataset.armed === 'false' && "
+                "document.getElementById('hs-btn').disabled === true",
+                timeout=9_000,
+            )
+            page.click("#hs-btn", force=True)
+            page.wait_for_timeout(400)
+            assert posts == [], f"a swap fired during an active changeover: {posts}"
+        finally:
+            browser.close()
+
+
+def test_ui_5_is_inert_without_a_candidate(hot_swap_dashboard: str) -> None:
+    """No promotion candidate (Reservoir ranking deferred) => the control is
+    inert: disabled, and clicking never arms or POSTs."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            page.wait_for_selector("#hs-btn")
+            page.wait_for_function(
+                "document.getElementById('hs-btn').disabled === true", timeout=8_000
+            )
+            page.click("#hs-btn", force=True)
+            page.wait_for_timeout(500)
+            assert posts == []
+            assert page.eval_on_selector("#hs-btn", "e => e.dataset.armed") == "false"
+            assert "no promotion candidate" in page.locator("#hs-status").inner_text()
+        finally:
+            browser.close()
+
+
+def test_ui_5_promotion_requires_explicit_confirmation(hot_swap_dashboard: str) -> None:
+    """No POST on the first click; only the second, inside the arm window, fires
+    — and it targets the CONTRACT route with the confirmation token."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            _route_hot_swap_status(page, _hot_swap_payload())
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            _arm_hot_swap(page)
+            page.wait_for_timeout(400)
+            assert posts == [], "arming must not fire a swap"
+
+            page.click("#hs-btn")  # confirm
+            page.wait_for_timeout(1_200)
+            assert len(posts) == 1
+            assert posts[0].endswith("/api/v1/hot-swap?confirm=true")
+        finally:
+            browser.close()
+
+
+def test_ui_5_renders_refusals_honestly(hot_swap_dashboard: str) -> None:
+    """A 501 deferred refusal is rendered as its type + owner, never as a promotion."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            _route_hot_swap_status(page, _hot_swap_payload())
+            page.route(
+                "**/api/v1/hot-swap*",
+                lambda route: route.fulfill(
+                    status=501,
+                    content_type="application/json",
+                    body='{"error":{"type":"HANDLER_DEFERRED","category":"NOT_IMPLEMENTED",'
+                    '"detail":{"owner":"SRS-RESV-003"}}}',
+                ),
+            )
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            _arm_hot_swap(page)
+            page.click("#hs-btn")
+            page.wait_for_function(
+                "document.getElementById('hs-status').dataset.tone === 'error'", timeout=5_000
+            )
+            status = page.locator("#hs-status").inner_text()
+            assert "REFUSED 501" in status
+            assert "HANDLER_DEFERRED" in status
+            assert "SRS-RESV-003" in status
+        finally:
+            browser.close()
+
+
+def test_ui_5_a_success_without_a_swap_id_is_refused(hot_swap_dashboard: str) -> None:
+    """Identity binding: a 200 without a concrete swap_id proves nothing promoted —
+    it is never a success and it holds the control inert (an accepted-but-
+    unidentified swap must not be actionable again)."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            _route_hot_swap_status(page, _hot_swap_payload())
+            page.route(
+                "**/api/v1/hot-swap*",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body='{"promotion_state":"PROMOTED"}',  # no swap_id
+                ),
+            )
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            _arm_hot_swap(page)
+            page.click("#hs-btn")
+            # Held inert: never "promoted live", and no repeat swap.
+            page.wait_for_function(
+                "document.getElementById('hs-status').textContent.includes('awaiting durable')",
+                timeout=6_000,
+            )
+            status = page.locator("#hs-status").inner_text().lower()
+            assert "swap_id" in status
+            assert "promoted cand" not in status
+            assert page.eval_on_selector("#hs-btn", "e => e.disabled") is True
+            page.click("#hs-btn", force=True)
+            page.wait_for_timeout(400)
+            assert len(posts) == 1, f"a repeat swap fired after an unidentified 2xx: {posts}"
+        finally:
+            browser.close()
+
+
+def test_ui_5_a_200_that_did_not_promote_is_not_a_success(hot_swap_dashboard: str) -> None:
+    """A 200 whose promotion_state is not PROMOTED (demote-before-promote pending
+    or blocked, SYS-49b) is never dressed as a completed promotion — AND, since a
+    later status read may lag, the control is held inert until the durable state
+    confirms the block; a stale clear snapshot must not re-enable a repeat swap
+    (SRS-RESV-004)."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            # The status stays "clear" (demotion false, no changeover) even after the
+            # BLOCKED response — a stale snapshot that has not yet reflected the block.
+            _route_hot_swap_status(page, _hot_swap_payload())
+            page.route(
+                "**/api/v1/hot-swap*",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body='{"swap_id":"sw-1","demotion_state":"DEMOTION_PENDING",'
+                    '"promotion_state":"BLOCKED"}',
+                ),
+            )
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            _arm_hot_swap(page)
+            page.click("#hs-btn")
+            page.wait_for_function(
+                "document.getElementById('hs-status').textContent.includes('did NOT promote')",
+                timeout=6_000,
+            )
+            status = page.locator("#hs-status").inner_text()
+            assert "promoted cand" not in status.lower()  # never a false success
+            # Held inert against the stale clear snapshot — no repeat swap.
+            assert page.eval_on_selector("#hs-btn", "e => e.disabled") is True
+            page.click("#hs-btn", force=True)
+            page.wait_for_timeout(400)
+            assert len(posts) == 1, f"a repeat swap fired after a BLOCKED response: {posts}"
+        finally:
+            browser.close()
+
+
+def test_ui_5_a_route_that_disappears_clears_every_fact(hot_swap_dashboard: str) -> None:
+    """A 404 route-disappearance clears every changeover rung to UNKNOWN and
+    disarms the control — no stale swap state left on screen."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            _route_hot_swap_status(page, _hot_swap_payload(rungs={"demote_signals": "DONE"}))
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelector('.hs__rung[data-phase=\"demote_signals\"]')"
+                ".dataset.status === 'DONE'",
+                timeout=9_000,
+            )
+            page.unroute("**/dashboard/api/hot-swap")
+            page.route(
+                "**/dashboard/api/hot-swap",
+                lambda route: route.fulfill(status=404, body="not mounted"),
+            )
+            page.wait_for_function(
+                "Array.from(document.querySelectorAll('.hs__rung'))"
+                ".every(e => e.dataset.status === 'UNKNOWN')",
+                timeout=9_000,
+            )
+            assert _hs_every_rung_unknown(page)
+            assert page.eval_on_selector("#hs-btn", "e => e.disabled") is True
+        finally:
+            browser.close()
+
+
+def test_ui_5_a_degraded_status_drops_a_staged_confirmation(hot_swap_dashboard: str) -> None:
+    """A staged confirmation must not survive a degraded interval: arm -> a 404
+    status -> a healthy SAME-candidate status must return the control to an
+    UNARMED 'PROMOTE CANDIDATE' state that requires a fresh arm (no CONFIRM
+    PROMOTE carried across an interval where Hot-Swap state was unknown)."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        held: list = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        page.route("**/dashboard/api/hot-swap", lambda route: held.append(route))
+        healthy = json.dumps(_hot_swap_payload(candidate="cand-A"))
+        try:
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            # 1) healthy -> arm-able; arm.
+            _wait_held(page, held, 1)
+            held[0].fulfill(status=200, content_type="application/json", body=healthy)
+            _arm_hot_swap(page)
+
+            # 2) a degraded (404) poll must DROP the staged confirmation.
+            _wait_held(page, held, 2)
+            held[1].fulfill(status=404, body="not mounted")
+            page.wait_for_function(
+                "document.getElementById('hs-btn').dataset.armed === 'false'", timeout=6_000
+            )
+
+            # 3) a healthy same-candidate poll must NOT re-arm — a fresh arm is required.
+            _wait_held(page, held, 3)
+            held[2].fulfill(status=200, content_type="application/json", body=healthy)
+            page.wait_for_function(
+                "document.getElementById('hs-btn').disabled === false", timeout=6_000
+            )
+            assert page.eval_on_selector("#hs-btn", "e => e.dataset.armed") == "false"
+            assert "CONFIRM" not in page.locator("#hs-btn").inner_text()
+            assert posts == [], f"no POST should have fired across the degraded interval: {posts}"
+            # A single click only RE-ARMS (it does not fire) — fresh confirmation required.
+            page.click("#hs-btn")
+            page.wait_for_timeout(300)
+            assert posts == []
+        finally:
+            browser.close()
+
+
+def test_ui_5_a_shape_drifted_payload_is_refused_wholesale(hot_swap_dashboard: str) -> None:
+    """A payload whose changeover sequence does not match the known contract is
+    refused wholesale — every rung UNKNOWN, not a partial changeover."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            _route_hot_swap_status(page, _hot_swap_payload(rungs={"demote_signals": "DONE"}))
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelector('.hs__rung[data-phase=\"demote_signals\"]')"
+                ".dataset.status === 'DONE'",
+                timeout=9_000,
+            )
+            page.unroute("**/dashboard/api/hot-swap")
+            page.route(
+                "**/dashboard/api/hot-swap",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps(
+                        {
+                            "ok": True,
+                            "changeover_sequence": [
+                                {"phase": "demote_signals", "status": "DONE", "value": "DONE"},
+                                {"phase": "promote", "status": "DONE", "value": "DONE"},
+                            ],
+                        }
+                    ),
+                ),
+            )
+            page.wait_for_function(
+                "Array.from(document.querySelectorAll('.hs__rung'))"
+                ".every(e => e.dataset.status === 'UNKNOWN')",
+                timeout=9_000,
+            )
+            assert _hs_every_rung_unknown(page)
+        finally:
+            browser.close()
+
+
+def test_ui_5_a_deferred_cell_never_draws_a_resolved_rung(hot_swap_dashboard: str) -> None:
+    """A rung whose value is null renders UNKNOWN even when its status claims
+    DONE — the server cannot talk the client into a resolved changeover leg."""
+
+    specs = ["demote_signals", "demote_cancel", "demote_liquidate", "demotion_pending", "promote"]
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            page.route(
+                "**/dashboard/api/hot-swap",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps(
+                        {
+                            "ok": True,
+                            "changeover_sequence": [
+                                {
+                                    "phase": ph,
+                                    "label": ph.upper(),
+                                    "stage": "demote",
+                                    "branch": False,
+                                    "owner": "SRS-RESV-004",
+                                    "status": "DONE",
+                                    "detail": "claimed",
+                                    "value": None,
+                                    "data_source": "deferred:SRS-RESV-004",
+                                }
+                                for ph in specs
+                            ],
+                            "cooldown": {},
+                            "auto_triggers_live": [],
+                            "promotion_candidate": {
+                                "value": None,
+                                "data_source": "deferred:SRS-RESV-002",
+                            },
+                            "current_live_strategy_id": {
+                                "value": None,
+                                "data_source": "deferred:SRS-RESV-005",
+                            },
+                        }
+                    ),
+                ),
+            )
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('.hs__rung').length === 5", timeout=9_000
+            )
+            page.wait_for_function(
+                "Array.from(document.querySelectorAll('.hs__rung'))"
+                ".every(e => e.dataset.status === 'UNKNOWN')",
+                timeout=9_000,
+            )
+            assert _hs_every_rung_unknown(page)
+        finally:
+            browser.close()
+
+
+def test_ui_5_a_candidate_change_disarms_a_staged_promotion(hot_swap_dashboard: str) -> None:
+    """Disarm-on-upsert: if the Reservoir candidate changes while the promote
+    control is armed, the staged confirmation is DROPPED — an operator who armed
+    for candidate A can never confirm a swap for candidate B without a fresh arm
+    (a stale-truth-left-ACTIONABLE bug that would demote live + promote the wrong
+    strategy)."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        bodies: list[str] = []
+
+        def _capture(req):
+            if req.method == "POST":
+                posts.append(req.url)
+                bodies.append(req.post_data or "")
+
+        page.on("request", _capture)
+        try:
+            # Arm for candidate A.
+            _route_hot_swap_status(page, _hot_swap_payload(candidate="cand-A"))
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            _arm_hot_swap(page)
+            assert "cand-A" in page.locator("#hs-status").inner_text()
+
+            # The Reservoir candidate changes to B under the armed control; a poll
+            # (< the arm window) must disarm the staged confirmation.
+            page.unroute("**/dashboard/api/hot-swap")
+            _route_hot_swap_status(page, _hot_swap_payload(candidate="cand-B"))
+            page.wait_for_function(
+                "document.getElementById('hs-btn').dataset.armed === 'false'", timeout=9_000
+            )
+            assert posts == [], f"a staged promotion fired across a candidate change: {posts}"
+
+            # Confirming now only RE-ARMS for B — a single click never fires B.
+            page.click("#hs-btn")
+            page.wait_for_timeout(400)
+            assert posts == [], f"a candidate change left a promotion actionable: {posts}"
+        finally:
+            browser.close()
+
+
+def _wait_held(page, held, n, timeout_ms=12_000):
+    """Yield to the browser event loop until at least ``n`` status polls (held,
+    Python-side) have arrived — so route handlers can fire between checks."""
+    waited = 0
+    while len(held) < n and waited < timeout_ms:
+        page.wait_for_timeout(100)
+        waited += 100
+    assert len(held) >= n, f"expected >= {n} status polls, got {len(held)}"
+
+
+def _route_post_then_flip_status(page, *, post_body, live, candidate=None, cooldown_active=None):
+    """Fulfill the swap POST and, on that same call, flip the durable status route
+    to the post-swap end state — so the AWAITED re-read observes it."""
+
+    def _handler(route):
+        page.unroute("**/dashboard/api/hot-swap")
+        _route_hot_swap_status(
+            page, _hot_swap_payload(candidate=candidate, live=live, cooldown_active=cooldown_active)
+        )
+        route.fulfill(status=200, content_type="application/json", body=post_body)
+
+    page.route("**/api/v1/hot-swap*", _handler)
+
+
+def test_ui_5_success_is_confirmed_by_the_durable_live_strategy(hot_swap_dashboard: str) -> None:
+    """A 200 'PROMOTED' is asserted as success ONLY after the durable status read
+    shows the live strategy IS the armed candidate (end-state proof, not a
+    per-call claim)."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            _route_hot_swap_status(page, _hot_swap_payload(candidate="cand-A", live="old-live"))
+            _route_post_then_flip_status(
+                page,
+                post_body='{"swap_id":"sw-1","promotion_state":"PROMOTED","demotion_state":"DEMOTED"}',
+                live="cand-A",  # the swap made cand-A live
+                candidate=None,
+            )
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            _arm_hot_swap(page)
+            page.click("#hs-btn")  # confirm
+            page.wait_for_function(
+                "document.getElementById('hs-status').dataset.tone === 'fired'", timeout=6_000
+            )
+            assert "promoted cand-A live" in page.locator("#hs-status").inner_text()
+        finally:
+            browser.close()
+
+
+def test_ui_5_a_promotion_to_a_different_live_strategy_is_a_mismatch(
+    hot_swap_dashboard: str,
+) -> None:
+    """A 200 'PROMOTED' whose durable live strategy is a DIFFERENT strategy is a
+    wrong-live-strategy MISMATCH, never rendered as 'promoted {candidate} live'."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        try:
+            _route_hot_swap_status(page, _hot_swap_payload(candidate="cand-A", live="old-live"))
+            _route_post_then_flip_status(
+                page,
+                post_body='{"swap_id":"sw-1","promotion_state":"PROMOTED","demotion_state":"DEMOTED"}',
+                live="other-B",  # a DIFFERENT strategy went live
+                candidate=None,
+            )
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            _arm_hot_swap(page)
+            page.click("#hs-btn")
+            page.wait_for_function(
+                "document.getElementById('hs-status').dataset.tone === 'error'", timeout=6_000
+            )
+            status = page.locator("#hs-status").inner_text()
+            assert "MISMATCH" in status
+            assert "cand-A" in status and "other-B" in status
+            assert "promoted cand-A live" not in status
+        finally:
+            browser.close()
+
+
+def test_ui_5_a_stale_post_swap_snapshot_keeps_the_control_inert(hot_swap_dashboard: str) -> None:
+    """After a reported PROMOTED, a stale PRE-swap snapshot (live still the
+    strategy that was live at swap time) is 'not yet reflected': it must NOT
+    confirm, NOT be declared a mismatch, and NOT re-enable the control — the
+    promotion stays pending and the control inert until a correlated snapshot."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            # The status route consistently returns the PRE-swap state (live still
+            # old-live, cand-A still a candidate) — a durable state that has not yet
+            # reflected the swap even after the POST reports PROMOTED.
+            _route_hot_swap_status(page, _hot_swap_payload(candidate="cand-A", live="old-live"))
+            page.route(
+                "**/api/v1/hot-swap*",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body='{"swap_id":"sw-1","promotion_state":"PROMOTED","demotion_state":"DEMOTED"}',
+                ),
+            )
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            _arm_hot_swap(page)
+            page.click("#hs-btn")  # fire
+            page.wait_for_function(
+                "document.getElementById('hs-status').textContent"
+                ".includes('awaiting durable confirmation')",
+                timeout=6_000,
+            )
+            status = page.locator("#hs-status").inner_text()
+            assert "MISMATCH" not in status
+            assert "promoted cand-A live" not in status
+            # The control is inert while the promotion is pending — no repeat swap.
+            assert page.eval_on_selector("#hs-btn", "e => e.disabled") is True
+            page.click("#hs-btn", force=True)
+            page.wait_for_timeout(400)
+            assert len(posts) == 1, f"a repeat swap fired against a stale snapshot: {posts}"
+        finally:
+            browser.close()
+
+
+def test_ui_5_is_inert_after_a_swap_until_status_reread(hot_swap_dashboard: str) -> None:
+    """After a swap, the pre-swap candidate + cool-down are stale: the control
+    stays inert (disabled) — an operator cannot immediately fire a second swap
+    against stale candidate/cool-down state (fail-closed on rapid repeat)."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            _route_hot_swap_status(
+                page, _hot_swap_payload(candidate="cand-A", cooldown_active=True)
+            )
+            _route_post_then_flip_status(
+                page,
+                post_body='{"swap_id":"sw-1","promotion_state":"PROMOTED","demotion_state":"DEMOTED"}',
+                live="cand-A",
+                candidate=None,  # promoted -> no longer a candidate
+                cooldown_active=True,
+            )
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            _arm_hot_swap(page)
+            page.click("#hs-btn")  # fire
+            page.wait_for_function(
+                "document.getElementById('hs-btn').disabled === true", timeout=6_000
+            )
+            # No candidate after the swap -> the control is inert; a click fires nothing.
+            page.click("#hs-btn", force=True)
+            page.wait_for_timeout(400)
+            assert len(posts) == 1, f"a second swap fired against stale state: {posts}"
+        finally:
+            browser.close()
+
+
+def test_ui_5_an_out_of_order_status_poll_cannot_resurrect_a_stale_candidate(
+    hot_swap_dashboard: str,
+) -> None:
+    """A slow PRE-swap status poll that resolves AFTER the post-swap re-read must
+    be discarded (monotonic generation) — it cannot resurrect the stale candidate
+    and re-enable the promote control against pre-swap state."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        held: list = []  # every status poll, fulfilled manually in a set order
+        page.route("**/dashboard/api/hot-swap", lambda route: held.append(route))
+        page.route(
+            "**/api/v1/hot-swap*",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"swap_id":"sw-1","promotion_state":"PROMOTED","demotion_state":"DEMOTED"}',
+            ),
+        )
+        payload_a = json.dumps(_hot_swap_payload(candidate="cand-A"))
+        payload_post = json.dumps(_hot_swap_payload(candidate=None, live="cand-A"))
+        try:
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+
+            # 1) initial poll -> candidate A; the control becomes arm-able.
+            _wait_held(page, held, 1)
+            held[0].fulfill(status=200, content_type="application/json", body=payload_a)
+            page.wait_for_function(
+                "document.getElementById('hs-btn').disabled === false", timeout=6_000
+            )
+
+            # 2) the next periodic poll fires (pre-swap) — hold it as the STALE poll.
+            _wait_held(page, held, 2)
+            stale = held[1]
+
+            # 3) arm + fire; fireHotSwap's post-swap re-read is held[2]. Fulfil it
+            #    with the post-swap state (no candidate) -> the control goes inert.
+            _arm_hot_swap(page)
+            page.click("#hs-btn")
+            _wait_held(page, held, 3)
+            held[2].fulfill(status=200, content_type="application/json", body=payload_post)
+            page.wait_for_function(
+                "document.getElementById('hs-btn').disabled === true", timeout=6_000
+            )
+
+            # 4) the STALE pre-swap poll finally resolves (candidate A) — it must be
+            #    discarded; the control stays inert, the stale candidate never returns.
+            stale.fulfill(status=200, content_type="application/json", body=payload_a)
+            page.wait_for_timeout(700)
+            assert page.eval_on_selector("#hs-btn", "e => e.disabled") is True
+            assert page.locator("#hs-candidate").inner_text() == "—"
+        finally:
+            browser.close()
+
+
+def test_ui_5_a_partial_source_outage_holds_the_control_inert(hot_swap_dashboard: str) -> None:
+    """Sources fail independently: a readable candidate but an unreadable
+    live/demotion source (ok:false, demotion UNKNOWN) must NOT enable promotion —
+    the UI cannot prove there is no demotion-pending timeout (SRS-RESV-004)."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            payload = _hot_swap_payload(candidate="cand-A")
+            payload["ok"] = False
+            payload["errors"] = ["hot-swap live/demotion state unreadable (fixture)"]
+            payload["demotion_pending"] = {"value": None, "data_source": "deferred:SRS-RESV-004"}
+            _route_hot_swap_status(page, payload)
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            # Despite a resolved candidate, the control stays inert (disabled).
+            page.wait_for_function(
+                "document.getElementById('hs-btn').disabled === true", timeout=9_000
+            )
+            page.wait_for_timeout(300)
+            assert page.eval_on_selector("#hs-btn", "e => e.disabled") is True
+            page.click("#hs-btn", force=True)
+            page.wait_for_timeout(300)
+            assert posts == [], f"a promotion fired during a partial source outage: {posts}"
+        finally:
+            browser.close()
+
+
+def test_ui_5_is_inert_when_the_cooldown_state_is_unknown(hot_swap_dashboard: str) -> None:
+    """SRS-RESV-006: a manual swap during cool-down needs a confirmation warning.
+    A payload with a candidate + live + demotion:false but a DEFERRED cool-down
+    must NOT enable promotion — the UI cannot know whether the cool-down is
+    active, so it cannot show the right warning."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            _route_hot_swap_status(
+                page, _hot_swap_payload(candidate="cand-A", cooldown_active=None)
+            )
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.getElementById('hs-btn').disabled === true", timeout=9_000
+            )
+            page.wait_for_timeout(300)
+            assert page.eval_on_selector("#hs-btn", "e => e.disabled") is True
+            page.click("#hs-btn", force=True)
+            page.wait_for_timeout(300)
+            assert posts == [], f"a promotion fired with an unknown cool-down: {posts}"
+        finally:
+            browser.close()
+
+
+def test_ui_5_is_inert_when_the_current_live_strategy_is_unknown(hot_swap_dashboard: str) -> None:
+    """SRS-RESV-004: promotion demotes the current live strategy first. A payload
+    with a candidate + demotion_pending:false but a DEFERRED current live strategy
+    must NOT enable promotion — the operator cannot request a swap without knowing
+    what live strategy is being demoted."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            # candidate resolved, demotion false, but the current live strategy is deferred.
+            _route_hot_swap_status(page, _hot_swap_payload(candidate="cand-A", live=None))
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.getElementById('hs-btn').disabled === true", timeout=9_000
+            )
+            page.wait_for_timeout(300)
+            assert page.eval_on_selector("#hs-btn", "e => e.disabled") is True
+            assert "live strategy unknown" in page.locator("#hs-status").inner_text().lower()
+            page.click("#hs-btn", force=True)
+            page.wait_for_timeout(300)
+            assert posts == [], f"a promotion fired with an unknown live strategy: {posts}"
+        finally:
+            browser.close()
+
+
+def test_ui_5_a_demotion_pending_state_blocks_the_promote_control(hot_swap_dashboard: str) -> None:
+    """SRS-RESV-004: a KNOWN demotion-pending state blocks promotion until manual
+    resolution. An armed control disarms when a poll reveals it, and the control
+    is then inert (disabled) even though a candidate is present — no POST."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            # Arm while the demotion state is UNKNOWN (deferred) — not blocking.
+            _route_hot_swap_status(page, _hot_swap_payload(candidate="cand-A"))
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            _arm_hot_swap(page)
+
+            # A poll now reveals demotion-pending — the staged confirm must disarm
+            # and the control must go inert.
+            blocked = _hot_swap_payload(candidate="cand-A")
+            blocked["demotion_pending"] = {"value": True, "data_source": "hot_swap_state"}
+            page.unroute("**/dashboard/api/hot-swap")
+            _route_hot_swap_status(page, blocked)
+            page.wait_for_function(
+                "document.getElementById('hs-btn').dataset.armed === 'false' && "
+                "document.getElementById('hs-btn').disabled === true",
+                timeout=9_000,
+            )
+            assert "blocked" in page.locator("#hs-status").inner_text().lower()
+            page.click("#hs-btn", force=True)
+            page.wait_for_timeout(400)
+            assert posts == [], f"a promotion fired while demotion was pending: {posts}"
+        finally:
+            browser.close()
+
+
+def test_ui_5_a_timed_out_swap_holds_the_control_inert(hot_swap_dashboard: str) -> None:
+    """A POST timeout/failure is AMBIGUOUS — the demote-before-promote may still
+    be running server-side (up to the 60s SYS-49b window). The control must stay
+    inert until durable status proves a terminal state; a stale-clear status must
+    not re-enable a second swap while the first may be in flight (SRS-RESV-004)."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            # Status stays clear throughout; the POST fails (simulating a timeout).
+            _route_hot_swap_status(page, _hot_swap_payload(candidate="cand-A"))
+            page.route("**/api/v1/hot-swap*", lambda route: route.abort())
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            _arm_hot_swap(page)
+            page.click("#hs-btn")  # fire -> aborts -> ambiguous pending guard
+            page.wait_for_function(
+                "document.getElementById('hs-status').textContent.includes('awaiting durable')",
+                timeout=6_000,
+            )
+            # Held inert against the stale-clear status — no repeat swap.
+            assert page.eval_on_selector("#hs-btn", "e => e.disabled") is True
+            page.click("#hs-btn", force=True)
+            page.wait_for_timeout(400)
+            assert len(posts) == 1, f"a repeat swap fired after an ambiguous timeout: {posts}"
+        finally:
+            browser.close()
+
+
+def test_ui_5_promotions_are_serialized(hot_swap_dashboard: str) -> None:
+    """One swap in flight at a time: while a POST is settling, the control is
+    inert — no second arm, no second POST."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        held: list = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            _route_hot_swap_status(page, _hot_swap_payload())
+            page.route("**/api/v1/hot-swap*", lambda route: held.append(route))
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            _arm_hot_swap(page)
+            page.click("#hs-btn")  # fires; the route is HELD open
+            page.wait_for_function(
+                "document.getElementById('hs-btn').disabled === true", timeout=5_000
+            )
+            for _ in range(3):
+                page.click("#hs-btn", force=True)
+                page.wait_for_timeout(120)
+            assert len(posts) == 1, f"promotion was not serialized: {posts}"
+
+            held[0].fulfill(
+                status=501,
+                content_type="application/json",
+                body='{"error":{"type":"HANDLER_DEFERRED","detail":{"owner":"SRS-RESV-003"}}}',
+            )
+            page.wait_for_function(
+                "document.getElementById('hs-btn').disabled === false", timeout=5_000
+            )
+            assert len(posts) == 1
+        finally:
+            browser.close()
+
+
+def test_ui_5_arm_window_expires_back_to_the_resting_caption(hot_swap_dashboard: str) -> None:
+    """A staged confirmation that is not confirmed disarms and restores a resting
+    caption — a leftover ARMED readout with nothing staged is stale state."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        posts: list[str] = []
+        page.on("request", lambda req: posts.append(req.url) if req.method == "POST" else None)
+        try:
+            _route_hot_swap_status(page, _hot_swap_payload())
+            page.goto(hot_swap_dashboard, wait_until="domcontentloaded")
+            _arm_hot_swap(page)
+            page.wait_for_function(
+                "document.getElementById('hs-btn').dataset.armed === 'false'", timeout=9_000
+            )
+            assert posts == []
+            assert "ARMED" not in page.locator("#hs-status").inner_text()
+            assert page.eval_on_selector("#hs", "e => e.dataset.state") != "armed"
+        finally:
+            browser.close()

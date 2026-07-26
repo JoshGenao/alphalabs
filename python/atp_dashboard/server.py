@@ -35,6 +35,7 @@ from .account import AccountStatusProvider
 from .alerts import CriticalAlertsProvider
 from .backtests import BacktestHistoryProvider, StoreCliBacktestHistorySource
 from .heartbeat import CliHeartbeatSource, HeartbeatFreshnessProvider
+from .hotswap import HotSwapStatusProvider
 from .inventory import RollbackSnapshotInventorySource, StrategyInventoryProvider
 from .killswitch import DurableKillSwitchStatusSource, KillSwitchStatusProvider
 from .provider import DashboardMetricsProvider, ReadinessBackedProvider
@@ -51,6 +52,7 @@ _ASSET_SPEC: tuple[tuple[str, str, str], ...] = (
     ("/dashboard/", "index.html", "text/html; charset=utf-8"),
     ("/dashboard/styles.css", "styles.css", "text/css; charset=utf-8"),
     ("/dashboard/freshness.js", "freshness.js", "application/javascript; charset=utf-8"),
+    ("/dashboard/hotswap.js", "hotswap.js", "application/javascript; charset=utf-8"),
     ("/dashboard/app.js", "app.js", "application/javascript; charset=utf-8"),
 )
 
@@ -99,6 +101,13 @@ ALERTS_SNAPSHOT_PATH = "/dashboard/api/alerts"
 #: there is deliberately no second kill path under ``/dashboard``.
 KILL_SWITCH_SNAPSHOT_PATH = "/dashboard/api/kill-switch"
 
+#: REST path the dashboard SPA polls for the UI-5 Hot-Swap status pane (served
+#: only when a Hot-Swap status provider is mounted). READ-ONLY and
+#: dashboard-namespaced: the *manual promotion* control POSTs to the contract
+#: route ``POST /api/v1/hot-swap`` (owner SRS-RESV-003) on this same runtime —
+#: there is deliberately no second swap path under ``/dashboard``.
+HOT_SWAP_SNAPSHOT_PATH = "/dashboard/api/hot-swap"
+
 
 def load_assets() -> dict[str, tuple[str, bytes]]:
     """Read the dashboard's static assets once into an immutable route map."""
@@ -122,6 +131,7 @@ def mount_dashboard(
     heartbeat: HeartbeatFreshnessProvider | None = None,
     alerts: CriticalAlertsProvider | None = None,
     kill_switch: KillSwitchStatusProvider | None = None,
+    hot_swap: HotSwapStatusProvider | None = None,
 ) -> DashboardPublisher:
     """Register the dashboard's routes on ``runtime`` and return its publisher.
 
@@ -181,6 +191,17 @@ def mount_dashboard(
     (see app.js), whose live handler is SRS-SAFE-001's. Every leg is an honest
     deferred cell until an activation record exists — the pane never renders an
     all-clear for a sequence it cannot observe.
+
+    ``hot_swap`` (optional — the UI-5 Hot-Swap status provider) adds the
+    ``GET /dashboard/api/hot-swap`` poll route the Changeover Console panel
+    reads. It is REST-served (there is no Hot-Swap WS channel to publish on), so
+    it adds no publisher channel, and it is strictly a READ: the panel's manual
+    promotion control POSTs to the contract route ``POST /api/v1/hot-swap`` (see
+    app.js), whose live handler is SRS-RESV-003's. Every live fact (current live
+    strategy, demotion-pending, cool-down expiry, per-trigger enabled-state) is
+    an honest deferred cell until the SRS-RESV-002..006 producers land — the
+    pane never fabricates a swap state, and with no promotion candidate the
+    promote control is inert.
     """
 
     runtime.register_asset_routes(load_assets())
@@ -203,6 +224,8 @@ def mount_dashboard(
         runtime.register_meta_route(ALERTS_SNAPSHOT_PATH, alerts.alerts_snapshot)
     if kill_switch is not None:
         runtime.register_meta_route(KILL_SWITCH_SNAPSHOT_PATH, kill_switch.kill_switch_snapshot)
+    if hot_swap is not None:
+        runtime.register_meta_route(HOT_SWAP_SNAPSHOT_PATH, hot_swap.hot_swap_snapshot)
     return DashboardPublisher(
         runtime,
         provider,
@@ -301,6 +324,14 @@ def mount_default_dashboard(
         if kill_switch_state is not None
         else None
     )
+    # The UI-5 Hot-Swap status provider is a pure builder, ALWAYS composed (the
+    # production entrypoint serves /dashboard/api/hot-swap) with NO source: no
+    # SRS-RESV-002..006 producer persists a queryable Hot-Swap fact yet, so
+    # every live cell (current live strategy, demotion-pending, cool-down,
+    # per-trigger enabled-state, promotion candidate) renders as an honest
+    # deferred placeholder. The HotSwapStatusSource protocol is the flip seam:
+    # when those producers land, a concrete source is passed here and the cells
+    # swap in place. An unconfigured dashboard must never fabricate a swap state.
     return mount_dashboard(
         runtime,
         provider,
@@ -312,6 +343,7 @@ def mount_default_dashboard(
         heartbeat=heartbeat,
         alerts=CriticalAlertsProvider(),
         kill_switch=kill_switch,
+        hot_swap=HotSwapStatusProvider(),
     )
 
 

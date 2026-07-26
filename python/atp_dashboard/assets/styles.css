@@ -1020,3 +1020,260 @@ body {
   /* Reduced motion must not remove the ARMED signal: hold the ring drawn. */
   .ks[data-state="armed"] .ks__ring-arc { stroke-dashoffset: 0; }
 }
+
+/* ==========================================================================
+   UI-5 Hot-Swap — the Changeover Console (SyRS SYS-49a..e; SRS-RESV-003..006).
+   The signature instrument is the cool-down dial; the changeover track carries
+   the demote→promote flow with the SYS-49b timeout fork. Every UNKNOWN state
+   wears the 45° --deferred hatch — the fail-closed rule, enforced in pixels.
+   Scoped to .panel--hotswap; shared tokens/idioms reused, nothing global added.
+   ========================================================================== */
+
+.panel--hotswap::before {
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0.5;
+}
+
+.hs { position: relative; display: flex; flex-direction: column; gap: 16px; }
+
+/* Hazard bar: dormant at rest, drawn on when the promote control is armed. */
+.hs__hazard {
+  height: 4px; border-radius: 2px; flex: none;
+  background: repeating-linear-gradient(45deg, var(--accent) 0 7px, transparent 7px 14px);
+  opacity: 0; transition: opacity 220ms var(--ease); pointer-events: none;
+}
+.hs[data-state="armed"] .hs__hazard,
+.hs[data-state="firing"] .hs__hazard { opacity: 0.7; }
+.hs[data-state="armed"] .hs__hazard { animation: hs-hazard-crawl 900ms linear infinite; }
+@keyframes hs-hazard-crawl { to { background-position: 28px 0; } }
+
+/* ---------------------------------------------------------------- top zone */
+.hs__top { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 24px; align-items: center; }
+
+/* ------------------------------------------- cool-down dial (the signature) */
+.hs__dial {
+  position: relative; width: 196px; height: 196px; flex: none;
+  display: grid; place-items: center;
+  animation: hs-dial-in 0.7s var(--ease) both;
+  animation-delay: calc(var(--i) * 90ms + 280ms);
+}
+@keyframes hs-dial-in { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: none; } }
+.hs__dial-svg { position: absolute; inset: 0; }
+.hs__dial-track { fill: none; stroke: var(--line-strong); stroke-width: 9; opacity: 0.5; }
+.hs__dial-guide { fill: none; stroke: var(--line); stroke-width: 1.5; }
+.hs__dial-arc {
+  fill: none; stroke: var(--warn); stroke-width: 9; stroke-linecap: round;
+  stroke-dasharray: 502.65; stroke-dashoffset: 502.65;
+  transform: rotate(-90deg); transform-origin: 100px 100px;
+  transition: stroke-dashoffset 0.6s var(--ease), stroke 0.4s var(--ease);
+}
+.hs__dial[data-state="active"] .hs__dial-arc {
+  stroke: var(--warn);
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--warn) 55%, transparent));
+}
+.hs__dial[data-state="expired"] .hs__dial-arc { stroke: var(--ok); }
+/* DEFERRED — the ring becomes a dashed hatch; no colour reads as "known". */
+.hs__dial[data-state="deferred"] .hs__dial-arc {
+  stroke: var(--deferred); stroke-width: 7; stroke-dasharray: 3 9; opacity: 0.6; filter: none;
+}
+.hs__tick { stroke: var(--line-strong); stroke-width: 2; }
+.hs__dial[data-state="active"] .hs__tick { stroke: var(--warn); opacity: 0.75; }
+.hs__dial[data-state="expired"] .hs__tick { stroke: var(--ok); opacity: 0.7; }
+.hs__dial[data-state="deferred"] .hs__tick { stroke: var(--deferred); opacity: 0.4; }
+.hs__dial-readout { position: relative; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.hs__dial-cap {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.2em; color: var(--ink-faint);
+}
+.hs__dial-value {
+  font-family: var(--mono); font-weight: 700; line-height: 1;
+  font-size: clamp(1.6rem, 3vw, 2.1rem); font-variant-numeric: tabular-nums; color: var(--ink);
+}
+.hs__dial[data-state="deferred"] .hs__dial-value { color: var(--deferred); letter-spacing: 0.12em; }
+.hs__dial[data-state="expired"] .hs__dial-value { color: var(--ok); }
+.hs__dial-sub {
+  font-family: var(--mono); font-size: 9px; color: var(--ink-faint);
+  max-width: 152px; text-align: center; line-height: 1.3; overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------------------- control column */
+.hs__control { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+.hs__slots { display: flex; align-items: stretch; gap: 12px; flex-wrap: wrap; }
+.hs__slot {
+  flex: 1 1 180px; display: flex; flex-direction: column; gap: 4px; min-width: 0;
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+.hs__slot[data-role="live"] { border-left: 2px solid color-mix(in srgb, var(--bad) 45%, transparent); }
+.hs__slot[data-role="candidate"] { border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+.hs__slot-k {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.13em; text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.hs__slot-v {
+  font-family: var(--mono); font-size: 15px; font-weight: 700; color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.hs__slot-v[data-state="deferred"] { color: var(--deferred); }
+.hs__slot-v[data-state="live"] { color: var(--accent); }
+.hs__arrow { align-self: center; font-family: var(--mono); font-size: 20px; color: var(--ink-faint); flex: none; }
+
+/* ------------------------------------------------ automatic-trigger chips */
+.hs__triggers { display: flex; flex-wrap: wrap; gap: 10px; }
+.hs__chip {
+  display: inline-flex; align-items: center; gap: 9px; min-width: 0;
+  padding: 8px 12px; border-radius: 999px; border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.02);
+}
+.hs__chip[data-state="manual"] { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+/* Hardware-toggle switch — the live enable state; hatched when deferred. */
+.hs__chip-sw {
+  position: relative; width: 26px; height: 14px; border-radius: 999px; flex: none;
+  background: var(--line-strong); transition: background 0.2s var(--ease);
+}
+.hs__chip-sw::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px;
+  border-radius: 50%; background: var(--ink-faint);
+  transition: transform 0.2s var(--ease), background 0.2s var(--ease);
+}
+.hs__chip[data-state="on"] .hs__chip-sw,
+.hs__chip[data-state="manual"] .hs__chip-sw { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+.hs__chip[data-state="on"] .hs__chip-sw::after,
+.hs__chip[data-state="manual"] .hs__chip-sw::after { transform: translateX(12px); background: var(--accent); }
+.hs__chip[data-state="deferred"] .hs__chip-sw {
+  background: repeating-linear-gradient(45deg, var(--deferred) 0 2px, transparent 2px 4px);
+}
+.hs__chip[data-state="deferred"] .hs__chip-sw::after { background: var(--deferred); transform: translateX(6px); }
+.hs__chip-label {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em;
+  color: var(--ink); white-space: nowrap;
+}
+.hs__chip-meta {
+  font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.05em; color: var(--ink-faint);
+  white-space: nowrap;
+}
+.hs__chip[data-state="on"] .hs__chip-meta { color: var(--accent); }
+
+/* --------------------------------------------------------- command bar */
+.hs__cmd {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 14px 16px; border-radius: var(--radius-sm); border: 1px solid var(--line-strong);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, transparent), transparent), var(--panel-2);
+  transition: border-color 220ms var(--ease), box-shadow 220ms var(--ease);
+}
+.hs[data-state="armed"] .hs__cmd {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
+              0 16px 40px -28px var(--accent);
+}
+.hs__trigger-wrap { position: relative; width: 220px; height: 48px; flex: none; }
+.hs__ring { position: absolute; inset: 0; pointer-events: none; }
+.hs__ring-track { fill: none; stroke: var(--line-strong); stroke-width: 1.5; opacity: 0.5; }
+.hs__ring-arc {
+  fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round;
+  /* Rounded-rect perimeter for w=216 h=44 r=22: 2·(216−44) + 2πr ≈ 482.2. */
+  stroke-dasharray: 482.2; stroke-dashoffset: 482.2;
+}
+.hs[data-state="armed"] .hs__ring-arc { animation: hs-countdown 5s linear forwards; }
+@keyframes hs-countdown { from { stroke-dashoffset: 0; } to { stroke-dashoffset: 482.2; } }
+.hs__btn {
+  position: absolute; inset: 6px; z-index: 1;
+  font-family: var(--mono); font-weight: 700; font-size: 10px; letter-spacing: 0.1em;
+  color: var(--ink); background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  border-radius: 999px; padding: 0 14px; cursor: pointer; white-space: nowrap;
+  transition: background 160ms var(--ease), color 160ms var(--ease), transform 120ms var(--ease);
+}
+.hs__btn:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 24%, var(--panel)); }
+.hs__btn:active:not(:disabled) { transform: translateY(1px); }
+.hs__btn[data-armed="true"] {
+  color: var(--bg); background: var(--accent); border-color: var(--accent);
+  box-shadow: 0 0 22px -6px var(--accent);
+}
+.hs__btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.hs__cmdtext { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 240px; }
+.hs__status { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); overflow-wrap: anywhere; }
+.hs__status[data-tone="armed"] { color: var(--warn); font-weight: 600; }
+.hs__status[data-tone="pending"] { color: var(--cyan); }
+.hs__status[data-tone="fired"] { color: var(--accent); font-weight: 700; }
+.hs__status[data-tone="error"] { color: var(--bad); font-weight: 600; }
+.hs__route { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); letter-spacing: 0.03em; overflow-wrap: anywhere; }
+.hs__route code { color: var(--ink-dim); }
+
+/* -------------------------------------------- changeover track (horizontal) */
+.hs__trackwrap { display: flex; flex-direction: column; }
+.hs__subhead {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 600; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--ink-faint); margin-bottom: 16px;
+}
+.hs__track { list-style: none; display: flex; align-items: flex-start; padding: 0; margin: 0; overflow-x: auto; }
+.hs__rung {
+  position: relative; flex: 1 1 0; min-width: 128px;
+  display: flex; flex-direction: column; align-items: center; text-align: center; padding: 0 8px;
+}
+/* The connector LEADING OUT of each rung (rightward) carries its phase state. */
+.hs__rung::before {
+  content: ""; position: absolute; top: 8px; left: 50%; width: 100%; height: 2px;
+  background: var(--line-strong); z-index: 0;
+}
+.hs__rung:last-child::before { display: none; }
+.hs__rung[data-status="DONE"]::before { background: var(--ok); }
+.hs__rung[data-status="PENDING"]::before { background: var(--warn); }
+.hs__rung[data-status="BLOCKED"]::before,
+.hs__rung[data-status="FAILED"]::before { background: var(--bad); }
+.hs__rung[data-status="UNKNOWN"]::before {
+  background: repeating-linear-gradient(to right, var(--deferred) 0 3px, transparent 3px 6px);
+}
+.hs__rung[data-branch="true"]::before { opacity: 0.55; }
+/* Diamond node — a sequence marker, not a status dot. */
+.hs__node {
+  position: relative; z-index: 1; width: 16px; height: 16px; margin-bottom: 12px; flex: none;
+  transform: rotate(45deg); border: 2px solid var(--line-strong); background: var(--panel);
+}
+.hs__rung[data-status="DONE"] .hs__node { border-color: var(--ok); background: var(--ok); }
+.hs__rung[data-status="PENDING"] .hs__node { border-color: var(--warn); background: var(--warn); }
+.hs__rung[data-status="BLOCKED"] .hs__node,
+.hs__rung[data-status="FAILED"] .hs__node { border-color: var(--bad); background: var(--bad); }
+.hs__rung[data-status="UNKNOWN"] .hs__node {
+  border-color: var(--deferred);
+  background: repeating-linear-gradient(45deg, var(--deferred) 0 2px, transparent 2px 4px);
+}
+.hs__rung[data-branch="true"] .hs__node { transform: rotate(45deg) scale(0.78); }
+/* Promote nodes are subtly squared so the DEMOTE→PROMOTE split reads at a glance. */
+.hs__rung[data-stage="promote"] .hs__node { border-radius: 3px; }
+.hs__rbody { display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 0; }
+.hs__rrow { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.hs__rlabel {
+  font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.07em; color: var(--ink);
+}
+.hs__rung[data-branch="true"] .hs__rlabel { color: var(--ink-dim); }
+.hs__rbadge {
+  font-family: var(--mono); font-size: 8px; font-weight: 700; letter-spacing: 0.08em;
+  padding: 2px 7px; border-radius: 999px; white-space: nowrap;
+}
+.hs__rbadge[data-status="DONE"] { color: var(--ok); background: color-mix(in srgb, var(--ok) 15%, transparent); }
+.hs__rbadge[data-status="PENDING"] { color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.hs__rbadge[data-status="BLOCKED"],
+.hs__rbadge[data-status="FAILED"] { color: var(--bad); background: color-mix(in srgb, var(--bad) 16%, transparent); }
+.hs__rbadge[data-status="UNKNOWN"] {
+  color: var(--deferred); border: 1px solid var(--line-strong);
+  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--deferred) 22%, transparent) 0 3px, transparent 3px 6px);
+}
+.hs__rdetail { font-size: 9.5px; color: var(--ink-dim); overflow-wrap: anywhere; }
+.hs__rowner { font-family: var(--mono); font-size: 8.5px; color: var(--ink-faint); }
+
+.hs__note { font-size: 11px; color: var(--ink-faint); margin-top: 14px; overflow-wrap: anywhere; }
+.hs__note[data-tone="warn"] { color: var(--warn); }
+.hs__note[data-tone="error"] { color: var(--bad); }
+
+@media (max-width: 760px) {
+  .hs__top { grid-template-columns: 1fr; justify-items: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hs[data-state="armed"] .hs__hazard,
+  .hs[data-state="armed"] .hs__ring-arc { animation: none; }
+  /* Reduced motion must not remove the ARMED signal: hold the ring drawn. */
+  .hs[data-state="armed"] .hs__ring-arc { stroke-dashoffset: 0; }
+  .hs__dial { animation: none; opacity: 1; transform: none; }
+}

@@ -453,6 +453,93 @@
           </div>
         </div>
       </section>
+
+      <!-- UI-5 Hot-Swap controls + status — the Changeover Console (SyRS
+           SYS-49a..e; traces SRS-RESV-003 through SRS-RESV-006). A cool-down
+           dial (SYS-49e), a demote→promote changeover track (SYS-49b/d with the
+           demotion-pending timeout fork), automatic-trigger chips (SYS-49a,
+           default disabled), and the manual-promotion command bar. The PROMOTE
+           control is a two-step arm-then-confirm affordance that POSTs ONLY to
+           the CONTRACT route on this same runtime (never a /dashboard path) and
+           renders the runtime's response verbatim — while the SRS-RESV-003
+           handler is deferred, its 501 refusal is shown as exactly that. The
+           pane reads the durable Hot-Swap state via GET /dashboard/api/hot-swap;
+           every live fact is DEFERRED to its SRS-RESV producer and drawn
+           HATCHED. A swap moves REAL money, so an unobservable fact must never
+           look resolved, and with no promotion candidate the control is inert. -->
+      <section class="panel panel--wide panel--hotswap" data-panel="hotswap" style="--i:11">
+        <div class="panel__head">
+          <h2 class="panel__title">Hot-Swap — Changeover Console</h2>
+          <span class="panel__meta"><span class="tag tag--chan">SYS-49a</span><span class="panel__cadence">poll</span></span>
+        </div>
+        <div class="panel__body" id="body-hotswap">
+          <div class="hs" id="hs" data-state="resting">
+            <div class="hs__hazard" aria-hidden="true"></div>
+
+            <div class="hs__top">
+              <!-- Cool-down dial (SYS-49e): the signature instrument. Arc depletes
+                   toward expiry; deferred wears the hatch-dashed ring + dashed readout. -->
+              <div class="hs__dial" id="hs-dial" data-state="deferred" role="img"
+                   aria-label="Hot-Swap cool-down window (SYS-49e)">
+                <svg class="hs__dial-svg" viewBox="0 0 200 200" width="196" height="196" aria-hidden="true">
+                  <g class="hs__ticks" id="hs-dial-ticks"></g>
+                  <circle class="hs__dial-track" cx="100" cy="100" r="80" />
+                  <circle class="hs__dial-arc" id="hs-dial-arc" cx="100" cy="100" r="80" />
+                  <circle class="hs__dial-guide" cx="100" cy="100" r="62" />
+                </svg>
+                <div class="hs__dial-readout">
+                  <span class="hs__dial-cap">COOL-DOWN</span>
+                  <span class="hs__dial-value" id="hs-cooldown-value">— —</span>
+                  <span class="hs__dial-sub" id="hs-cooldown-sub">cool-down — awaiting SRS-RESV-006</span>
+                </div>
+              </div>
+
+              <!-- Control strip: live/candidate slots, trigger chips, command bar. -->
+              <div class="hs__control">
+                <div class="hs__slots">
+                  <div class="hs__slot" data-role="live">
+                    <span class="hs__slot-k">DEMOTE — LIVE STRATEGY</span>
+                    <span class="hs__slot-v" id="hs-live" data-state="deferred">—</span>
+                    <span class="srctag" id="hs-live-src">…</span>
+                  </div>
+                  <span class="hs__arrow" aria-hidden="true">→</span>
+                  <div class="hs__slot" data-role="candidate">
+                    <span class="hs__slot-k">PROMOTE — CANDIDATE</span>
+                    <span class="hs__slot-v" id="hs-candidate" data-state="deferred">—</span>
+                    <span class="srctag" id="hs-candidate-src">…</span>
+                  </div>
+                </div>
+
+                <div class="hs__triggers" id="hs-triggers"
+                     aria-label="Hot-Swap triggers (SYS-49a; automatic default disabled)"></div>
+
+                <div class="hs__cmd">
+                  <div class="hs__trigger-wrap">
+                    <svg class="hs__ring" viewBox="0 0 220 48" width="220" height="48" aria-hidden="true">
+                      <rect class="hs__ring-track" x="2" y="2" width="216" height="44" rx="22" />
+                      <rect class="hs__ring-arc" id="hs-ring-arc" x="2" y="2" width="216" height="44" rx="22" />
+                    </svg>
+                    <button class="hs__btn" id="hs-btn" type="button" data-armed="false"
+                            aria-describedby="hs-status" disabled>PROMOTE&nbsp;CANDIDATE</button>
+                  </div>
+                  <div class="hs__cmdtext">
+                    <span class="hs__status" id="hs-status" role="status" aria-live="assertive">awaiting hot-swap status…</span>
+                    <span class="hs__route">POST <code>/api/v1/hot-swap?confirm=true</code> · SRS-RESV-003</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Changeover track: DEMOTE → PROMOTE (SYS-49b demote-before-promote,
+                 SYS-49d flat-start promotion), with the SYS-49b timeout fork. -->
+            <div class="hs__trackwrap">
+              <h3 class="hs__subhead">Changeover — demote before promote (SYS-49b/d)</h3>
+              <ol class="hs__track" id="hs-track" aria-live="polite"></ol>
+              <p class="hs__note" id="hs-note">awaiting hot-swap status…</p>
+            </div>
+          </div>
+        </div>
+      </section>
     </main>
 
     <footer class="legend" role="contentinfo">
@@ -465,6 +552,7 @@
   </div>
 
   <script src="/dashboard/freshness.js" defer></script>
+  <script src="/dashboard/hotswap.js" defer></script>
   <script src="/dashboard/app.js" defer></script>
 </body>
 </html>

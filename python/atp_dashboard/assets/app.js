@@ -1959,12 +1959,605 @@
     });
   }
 
+  // ----- UI-5 Hot-Swap: manual-promotion control + Changeover-Console status //
+  // CONTROL: two-step arm-then-confirm against the CONTRACT route on this same
+  // runtime (never a /dashboard path). One in-flight request at a time; the
+  // control is INERT unless a promotion candidate exists — a swap moves real
+  // money and there must be nothing to promote before it can arm.
+  //
+  // FEEDBACK: the panel renders the four AC facts (manual promotion, the
+  // demotion-pending state, the cool-down expiry, and the automatic-trigger
+  // configuration) from the READ route /dashboard/api/hot-swap. Every live fact
+  // is DEFERRED to its SRS-RESV producer today, so the pane draws each hatched
+  // and never fabricates a swap state.
+  //
+  // FAIL CLOSED, everywhere. A changeover rung is resolved ONLY when the payload
+  // carries a live value that agrees with its status; a deferred cell, a
+  // missing/unknown status, a malformed payload, a non-OK response, a 404, an
+  // unreachable/stalled endpoint — each renders UNKNOWN and disarms the control.
+  const HOT_SWAP_ROUTE = "/api/v1/hot-swap?confirm=true";
+  const HOT_SWAP_STATUS_ROUTE = "/dashboard/api/hot-swap";
+  const HOT_ARM_WINDOW_MS = 5000;
+  // A demote-before-promote swap can legitimately run for the SYS-49b demotion
+  // timeout (60s default) before the server responds, so the client must not
+  // abort inside that window and orphan an in-flight real-money mutation. 90s
+  // comfortably exceeds it; a genuine abort is still treated as ambiguous below.
+  const HOT_FETCH_TIMEOUT_MS = 90000;
+  const HS_DIAL_CIRC = 2 * Math.PI * 80;   // cool-down dial arc (r=80)
+  // The changeover ladder the pane shows before (and instead of) any observed
+  // status. Order + phases mirror atp_dashboard.hotswap.CHANGEOVER_SEQUENCE; a
+  // payload that disagrees is drift and is refused wholesale.
+  const HS_PHASES = [
+    ["demote_signals", "STOP NEW SIGNALS", "demote", false],
+    ["demote_cancel", "CANCEL RESTING ORDERS", "demote", false],
+    ["demote_liquidate", "LIQUIDATE TO FLAT", "demote", false],
+    ["demotion_pending", "DEMOTION-PENDING (TIMEOUT)", "demote", true],
+    ["promote", "PROMOTE CANDIDATE LIVE", "promote", false],
+  ];
+  const HS_MANUAL_LABEL = "Manual promotion";
+  const HS_AUTO_KINDS = [
+    ["drawdown_demotion", "Drawdown demotion"],
+    ["top_ranked_promotion", "Top-ranked promotion"],
+    ["highest_momentum_promotion", "Highest-momentum promotion"],
+  ];
+  let hotArmTimer = null;
+  let hotInFlight = false;
+  // The candidate id the control would promote — null means the control is INERT
+  // (no candidate; the Reservoir ranking that names one is deferred).
+  let hotCandidate = null;
+  // The swap_id a 2xx designated; the pane must agree with it.
+  let hotConfirmedSwapId = null;
+  // Tri-state cool-down (true/false/null) from the last render — drives the
+  // manual-during-cool-down confirmation warning (SYS-49e).
+  let hotCooldownActive = null;
+  // True while a fire RESULT (success or refusal) is showing, so a subsequent
+  // poll's resting-caption refresh does not stomp it — a refusal the operator
+  // must read cannot be overwritten by "candidate ready". Cleared on re-arm.
+  let hotShowingResult = false;
+  // The candidate id bound at ARM time. fireHotSwap posts THIS, never the
+  // latest-polled hotCandidate: an operator who armed for A must never confirm a
+  // swap for B if the Reservoir candidate changes inside the 5s arm window. The
+  // disarm-on-upsert in renderHotSwap is the primary guard; posting the armed id
+  // (not the live one) is the belt-and-suspenders identity bind.
+  let hotArmedCandidate = null;
+  // An ACCEPTED (2xx) swap awaiting durable confirmation, or null:
+  //   {swapId, candidate, priorLive, promoted}. The contract response carries no
+  // strategy id, so the outcome is asserted ONLY from a durable status read:
+  //   promoted   -> live strategy IS this candidate (else MISMATCH);
+  //   not promoted -> the blocked/demotion-pending state is observed.
+  // While set, the control is INERT — a per-call outcome is not proof of the end
+  // state, and a stale "clear" read must never re-enable a repeat swap.
+  let hotPendingSwap = null;
+  // Monotonic status-read generation. Every status poll captures the current
+  // value and applies its response ONLY if still the latest; a mutation bumps it
+  // too. This makes out-of-order polls harmless: a slow PRE-swap poll resolving
+  // after the post-swap re-read cannot resurrect the stale candidate/cool-down.
+  let hotPollSeq = 0;
+  // Tri-state demotion-pending (true/false/null) from the last render. Promotion
+  // is enabled ONLY on an EXPLICIT `false` (SRS-RESV-004 fail-closed): `true`
+  // blocks (pending resolution) and `null` (unknown — deferred, or a partial
+  // source outage) also blocks, because the UI cannot prove there is no pending
+  // demotion timeout.
+  let hotDemotionPending = null;
+  // Whether the last status snapshot was fully readable (`ok === true`). Source
+  // legs fail independently, so a readable candidate with an unreadable
+  // live/demotion leg (ok:false) must NOT be actionable.
+  let hotStatusOk = false;
+  // Whether an observed changeover is in progress or stuck: any resolved rung is
+  // PENDING / BLOCKED / FAILED. A swap must not be startable while a prior
+  // demote→promote changeover is incomplete (demote-before-promote / single-live).
+  let hotChangeoverActive = false;
+  // The resolved current live strategy id, or null when unknown. Promotion must
+  // DEMOTE the current live strategy first (SRS-RESV-004), so the control is
+  // inert until we know what will be demoted — an unknown live slot is not
+  // actionable.
+  let hotLiveStrategy = null;
+
+  function hsBtn() { return $("hs-btn"); }
+  function hsStatus(text, tone) {
+    const s = $("hs-status");
+    if (s) { s.textContent = text; s.dataset.tone = tone || ""; }
+  }
+  function hsState(state) {
+    const root = $("hs");
+    if (root) root.dataset.state = state;
+  }
+  function hotArmed() {
+    const b = hsBtn();
+    return !!b && b.dataset.armed === "true";
+  }
+  function hsRestingCaption() {
+    if (hotDemotionPending === true) {
+      return "DEMOTION-PENDING — promotion blocked until manual resolution (SRS-RESV-004)";
+    }
+    if (!hotCandidate) {
+      return "no promotion candidate — Reservoir ranking deferred (SRS-RESV-002)";
+    }
+    if (hotChangeoverActive) {
+      // A demote→promote changeover is already in progress or stuck.
+      return "changeover in progress — promotion held (SRS-RESV-004/005)";
+    }
+    if (!hotLiveStrategy) {
+      // Promotion demotes the current live strategy first (SRS-RESV-004) — hold
+      // the control until we know what will be demoted.
+      return "promotion held — current live strategy unknown (SRS-RESV-005)";
+    }
+    if (hotDemotionPending !== false || hotCooldownActive === null || !hotStatusOk) {
+      // A candidate exists but some swap-safety state cannot be proven clear (an
+      // unverified demotion-pending state, an unknown cool-down (SRS-RESV-006), or
+      // a partial source outage) — hold rather than promote against unknown truth.
+      return "promotion held — swap-safety state unverified (SRS-RESV-004/006)";
+    }
+    return "candidate " + hotCandidate + " ready — arm to promote";
+  }
+
+  // The control is actionable ONLY when the FULL swap-safety picture is known and
+  // clear: a candidate to promote, a KNOWN current live strategy to demote
+  // (SRS-RESV-004), nothing in flight, a fully readable status, an EXPLICIT
+  // not-pending demotion state, a KNOWN cool-down state (SRS-RESV-006), and no
+  // changeover already in progress/blocked (demote-before-promote / single-live).
+  function hotActionable() {
+    return (
+      !!hotCandidate &&
+      !!hotLiveStrategy &&
+      !hotInFlight &&
+      !hotPendingSwap && // an accepted swap awaiting durable confirmation blocks a repeat
+      hotStatusOk &&
+      hotDemotionPending === false &&
+      hotCooldownActive !== null &&
+      !hotChangeoverActive
+    );
+  }
+
+  // The control's actionable state, recomputed on every render: inert unless a
+  // candidate exists and no request is in flight. Only touches the caption while
+  // at rest — never stomps an armed / firing / result caption.
+  function updateHotButton() {
+    const b = hsBtn();
+    if (!b) return;
+    b.disabled = !hotActionable();
+    if (!hotArmed() && !hotInFlight && !hotConfirmedSwapId && !hotShowingResult) {
+      hsStatus(hsRestingCaption(), "");
+    }
+  }
+
+  function disarmHotSwap(restoreResting) {
+    if (hotArmTimer) { clearTimeout(hotArmTimer); hotArmTimer = null; }
+    hotArmedCandidate = null;   // the staged target is released
+    const b = hsBtn();
+    if (b) { b.dataset.armed = "false"; b.textContent = "PROMOTE CANDIDATE"; }
+    hsState(hotConfirmedSwapId ? "fired" : "resting");
+    if (restoreResting) hsStatus(hsRestingCaption(), "");
+  }
+
+  function armHotSwap() {
+    hotShowingResult = false;   // operator re-engaged; the arm caption takes over
+    hotPendingSwap = null; // a fresh arm supersedes any awaiting confirmation
+    hotArmedCandidate = hotCandidate;   // bind the target id at arm time
+    const b = hsBtn();
+    if (b) { b.dataset.armed = "true"; b.textContent = "CONFIRM PROMOTE"; }
+    hsState("armed");
+    // Fail closed on the cool-down warning: an UNKNOWN cool-down does NOT
+    // suppress the confirmation (SYS-49e). Only a KNOWN-active cool-down escalates.
+    const warn = hotCooldownActive === true
+      ? " · COOL-DOWN ACTIVE — manual swap during cool-down (SYS-49e)"
+      : (hotCooldownActive === null ? " · cool-down state unknown (SRS-RESV-006)" : "");
+    hsStatus("ARMED — confirm within 5s to demote live and promote " + hotCandidate + warn, "armed");
+    if (hotArmTimer) clearTimeout(hotArmTimer);
+    hotArmTimer = setTimeout(() => disarmHotSwap(true), HOT_ARM_WINDOW_MS);
+  }
+
+  async function fireHotSwap() {
+    // Fire the candidate bound at ARM time, never the latest-polled one — a
+    // candidate that changed under an armed control is disarmed by
+    // renderHotSwap, so reaching here with a stale target should be impossible;
+    // posting the armed id (not hotCandidate) makes that guarantee local too.
+    const candidate = hotArmedCandidate;
+    if (hotInFlight || !candidate) return;
+    hotInFlight = true;
+    // A mutation invalidates any status read issued before it: bump the poll
+    // generation so a pre-swap poll still in flight cannot apply post-swap.
+    hotPollSeq++;
+    if (hotArmTimer) { clearTimeout(hotArmTimer); hotArmTimer = null; }
+    const b = hsBtn();
+    if (b) { b.disabled = true; b.dataset.armed = "false"; b.textContent = "PROMOTING…"; }
+    hsState("firing");
+    hsStatus("requesting hot-swap for " + candidate + "…", "pending");
+    try {
+      const res = await fetch(HOT_SWAP_ROUTE, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ candidate_strategy_id: candidate, confirm: true }),
+        signal: AbortSignal.timeout(HOT_FETCH_TIMEOUT_MS),
+      });
+      const body = await res.json().catch(() => null);
+      if (res.ok) {
+        // Any 2xx means the swap was ACCEPTED, so state may have mutated. Capture
+        // the live strategy AT swap time and hold the control inert (hotPendingSwap)
+        // until the durable status is causally correlated with the outcome — a
+        // stale "clear" read must never re-enable a repeat swap.
+        const swapId = body && typeof body.swap_id === "string" ? body.swap_id.trim() : "";
+        const promotion = body && typeof body.promotion_state === "string" ? body.promotion_state : "UNKNOWN";
+        const demotion = body && typeof body.demotion_state === "string" ? body.demotion_state : "UNKNOWN";
+        const promoted = !!swapId && promotion === "PROMOTED";
+        if (swapId) hotConfirmedSwapId = swapId;
+        hotPendingSwap = {
+          swapId: swapId || null,
+          candidate: candidate,
+          priorLive: hotLiveStrategy,
+          promoted: promoted,
+        };
+        if (promoted) {
+          hsStatus("swap " + swapId + " reported PROMOTED — verifying live strategy is " +
+            candidate + "…", "pending");
+        } else if (swapId) {
+          // Demote-before-promote may be pending or blocked (SYS-49b). Never a success.
+          hsStatus("swap " + swapId + ": demotion " + demotion + ", promotion " + promotion +
+            " — NOT promoted; awaiting durable confirmation of the block (SRS-RESV-004)", "pending");
+        } else {
+          hsStatus("swap accepted but carries no swap_id — cannot confirm what ran; " +
+            "awaiting durable status (SRS-RESV-004)", "pending");
+        }
+      } else {
+        // A refusal (non-2xx) mutated nothing — no pending guard; retry is allowed.
+        const err = body && body.error ? body.error : {};
+        const owner = err.detail && err.detail.owner ? " · owner " + String(err.detail.owner) : "";
+        hsStatus("REFUSED " + res.status + " " + String(err.type || err.category || "UNKNOWN") + owner, "error");
+      }
+    } catch (error) {
+      // A timeout / network error is AMBIGUOUS: the swap may still be in flight
+      // on the server (a demotion can run for the SYS-49b timeout). Treat it as an
+      // accepted-unknown swap and hold the control inert until durable status
+      // proves a terminal state — never re-enable a second swap on a stale-clear
+      // read while the first demotion may still be running.
+      hotPendingSwap = {
+        swapId: null,
+        candidate: candidate,
+        priorLive: hotLiveStrategy,
+        promoted: false,
+        ambiguous: true,
+      };
+      hsStatus("hot-swap request did not complete (" + String(error) + ") — the swap MAY be " +
+        "in flight; awaiting durable confirmation before another swap (SRS-RESV-004)", "error");
+    }
+    // The result caption (success or refusal) is now the operator's to read; the
+    // re-read below must not stomp it with the resting caption.
+    hotShowingResult = true;
+    hotInFlight = false;
+    // Fail closed against a rapid repeat: the pre-swap candidate + cool-down are
+    // now STALE (a swap changes the live strategy, starts the cool-down, and
+    // moves the candidate). Clear them and keep the control DISABLED — it is not
+    // actionable again until the AWAITED durable re-read re-derives a current
+    // candidate + cool-down. The button stays disabled from the fire above; do
+    // NOT re-enable it here.
+    hotCandidate = null;
+    hotCooldownActive = null;
+    disarmHotSwap(false);
+    await pollHotSwapOnce();
+  }
+
+  function onHotTrigger() {
+    // In-flight guard first; then the candidate gate; then arm-then-fire.
+    if (hotInFlight) return;
+    if (!hotCandidate) return;
+    if (!hotArmed()) { armHotSwap(); return; }
+    fireHotSwap();
+  }
+
+  // ----- UI-5 status pane rendering (fail-closed) ------------------------- //
+
+  function hsBuildDialTicks() {
+    const g = $("hs-dial-ticks");
+    if (!g) return;
+    g.textContent = "";
+    const NS = "http://www.w3.org/2000/svg";
+    for (let i = 0; i < 7; i++) {   // SYS-49e: 7-day cool-down, one tick per day
+      const a = (i / 7) * 2 * Math.PI - Math.PI / 2;
+      const line = document.createElementNS(NS, "line");
+      line.setAttribute("x1", String(100 + 88 * Math.cos(a)));
+      line.setAttribute("y1", String(100 + 88 * Math.sin(a)));
+      line.setAttribute("x2", String(100 + 95 * Math.cos(a)));
+      line.setAttribute("y2", String(100 + 95 * Math.sin(a)));
+      line.setAttribute("class", "hs__tick");
+      g.appendChild(line);
+    }
+  }
+
+  function hsChip(kind, label, enabled, defaultEnabled, isManual) {
+    const chip = el("span", "hs__chip");
+    chip.dataset.kind = kind;
+    chip.dataset.manual = isManual ? "true" : "false";
+    chip.dataset.state = isManual ? "manual" : (enabled === true ? "on" : (enabled === false ? "off" : "deferred"));
+    const sw = el("span", "hs__chip-sw"); sw.setAttribute("aria-hidden", "true");
+    const name = el("span", "hs__chip-label"); name.textContent = label;
+    const meta = el("span", "hs__chip-meta");
+    meta.textContent = isManual ? "always available"
+      : (enabled === true ? "ENABLED"
+        : enabled === false ? "disabled"
+        : "default " + (defaultEnabled ? "on" : "off") + " · SRS-RESV-003");
+    chip.append(sw, name, meta);
+    return chip;
+  }
+
+  function renderTriggers(snap) {
+    const wrap = $("hs-triggers");
+    if (!wrap) return;
+    wrap.textContent = "";
+    wrap.appendChild(hsChip("manual", HS_MANUAL_LABEL, null, true, true));
+    const live = snap && Array.isArray(snap.auto_triggers_live) ? snap.auto_triggers_live : [];
+    const byKind = {};
+    for (const t of live) { if (t && typeof t === "object") byKind[t.kind] = t; }
+    for (const [kind, label] of HS_AUTO_KINDS) {
+      const lt = byKind[kind];
+      const enabled = lt ? hotSwapCellBool(lt.enabled) : null;
+      wrap.appendChild(hsChip(kind, label, enabled, false, false));
+    }
+  }
+
+  function hsSlot(valId, srcId, value, owner) {
+    const v = $(valId);
+    if (v) {
+      const present = typeof value === "string" && value;
+      v.textContent = present ? value : "—";
+      v.dataset.state = present ? "live" : "deferred";
+    }
+    const s = $(srcId);
+    if (s) s.textContent = (typeof value === "string" && value) ? "live" : ("awaiting " + owner);
+  }
+
+  function renderCooldown(snap) {
+    const dial = $("hs-dial");
+    const arc = $("hs-dial-arc");
+    const valueEl = $("hs-cooldown-value");
+    const subEl = $("hs-cooldown-sub");
+    const cd = snap && typeof snap.cooldown === "object" && snap.cooldown ? snap.cooldown : {};
+    const expires = hotSwapCellValue(cd.expires_at);
+    const started = hotSwapCellValue(cd.started_at);
+    const inEffect = hotSwapCellBool(cd.in_effect);
+    const days = typeof snap.cooldown_days_default === "number" ? snap.cooldown_days_default : 7;
+    const c = hotSwapCooldown(typeof expires === "string" ? expires : null, Date.now(), days);
+    // The dial keys off the KNOWN cool-down flag first: an explicit not-in-effect
+    // is READY (no active cool-down), not a hatched "unknown". Only an unknown
+    // (null) in_effect renders deferred.
+    let dialState = c.state;
+    if (c.state === "deferred" && inEffect === false) dialState = "expired";
+    if (dial) dial.dataset.state = dialState;
+    if (arc) arc.style.strokeDashoffset = String(dialState === "active" ? HS_DIAL_CIRC * (1 - c.fraction) : 0);
+    if (valueEl) valueEl.textContent = dialState === "active" ? c.label : dialState === "expired" ? "READY" : c.label;
+    if (subEl) {
+      subEl.textContent = dialState === "deferred"
+        ? "cool-down state — awaiting SRS-RESV-006"
+        : dialState === "expired"
+          ? "no active cool-down — automatic triggers may fire"
+          : (typeof started === "string" && started ? "since " + started + " · " : "") + "expires " + expires;
+    }
+    return inEffect;
+  }
+
+  function hsRung(phase, label, stage, branch, status, detail, owner) {
+    const li = el("li", "hs__rung");
+    li.dataset.phase = phase;
+    li.dataset.stage = stage;
+    li.dataset.branch = branch ? "true" : "false";
+    li.dataset.status = status;
+    const node = el("span", "hs__node"); node.setAttribute("aria-hidden", "true");
+    const body = el("div", "hs__rbody");
+    const row = el("div", "hs__rrow");
+    const name = el("span", "hs__rlabel"); name.textContent = label;
+    const badge = el("span", "hs__rbadge"); badge.dataset.status = status; badge.textContent = status;
+    row.append(name, badge);
+    const det = el("span", "hs__rdetail"); det.textContent = detail;
+    body.append(row, det);
+    if (owner) { const own = el("span", "hs__rowner"); own.textContent = "awaiting " + owner; body.appendChild(own); }
+    li.append(node, body);
+    return li;
+  }
+
+  function hsTrackClear(status, detail) {
+    const track = $("hs-track");
+    if (!track) return;
+    track.textContent = "";
+    for (const [phase, label, stage, branch] of HS_PHASES) {
+      track.appendChild(hsRung(phase, label, stage, branch, status, detail, null));
+    }
+  }
+
+  // The single fail-closed clear: dial deferred, slots deferred, every chip's
+  // live state deferred, every rung UNKNOWN, control INERT. Used by every
+  // degraded branch — a partial clear that leaves one resolved fact on screen is
+  // exactly the bug this guards against.
+  function hsUnknown(reason, tone) {
+    hsTrackClear("UNKNOWN", "not observed");
+    const dial = $("hs-dial");
+    if (dial) dial.dataset.state = "deferred";
+    const arc = $("hs-dial-arc"); if (arc) arc.style.strokeDashoffset = "0";
+    const cv = $("hs-cooldown-value"); if (cv) cv.textContent = "— —";
+    const cs = $("hs-cooldown-sub"); if (cs) cs.textContent = "cool-down — awaiting SRS-RESV-006";
+    hsSlot("hs-live", "hs-live-src", null, "SRS-RESV-005");
+    hsSlot("hs-candidate", "hs-candidate-src", null, "SRS-RESV-002");
+    renderTriggers({});
+    hotCandidate = null;
+    hotCooldownActive = null;
+    hotDemotionPending = null;   // unknown demotion state is NOT actionable
+    hotStatusOk = false;         // a degraded/unreadable status is never actionable
+    hotChangeoverActive = false; // no observed changeover in a cleared pane
+    hotLiveStrategy = null;      // unknown live strategy is NOT actionable
+    // A degraded status is an interval where Hot-Swap state is UNKNOWN: any staged
+    // confirmation must be dropped, not merely disabled — otherwise a recovery
+    // within the 5s arm window would re-enable CONFIRM PROMOTE without a fresh arm.
+    disarmHotSwap(false);
+    updateHotButton();
+    const note = $("hs-note");
+    if (note) { note.textContent = reason; note.dataset.tone = tone || "warn"; }
+    if (!hotInFlight) hsState(hotConfirmedSwapId ? "fired" : "resting");
+  }
+
+  function renderHotSwap(snap) {
+    if (!snap || typeof snap !== "object") {
+      hsUnknown("hot-swap status payload malformed — treating every fact as UNKNOWN", "error");
+      return;
+    }
+    const seq = snap.changeover_sequence;
+    // Schema drift is an honesty problem: if the ladder does not match the phase
+    // order this client knows, refuse the whole payload rather than render a
+    // partial changeover.
+    const shaped = Array.isArray(seq) && seq.length === HS_PHASES.length &&
+      seq.every((leg, i) => leg && typeof leg === "object" &&
+        leg.phase === HS_PHASES[i][0] && typeof leg.status === "string");
+    if (!shaped) {
+      hsUnknown("hot-swap status payload does not match the known changeover contract — treating every fact as UNKNOWN", "error");
+      return;
+    }
+    // An observed changeover is in progress/stuck if any RESOLVED rung is
+    // PENDING / BLOCKED / FAILED — the control must be inert while one is
+    // incomplete (demote-before-promote / single-live). Deferred (UNKNOWN) rungs
+    // do not count; a fully-DONE changeover is complete, not active.
+    hotChangeoverActive = seq.some((leg) => {
+      const resolved =
+        typeof leg.value === "string" && leg.value === leg.status && leg.status !== "UNKNOWN";
+      return resolved && (leg.status === "PENDING" || leg.status === "BLOCKED" || leg.status === "FAILED");
+    });
+    const track = $("hs-track");
+    if (track) {
+      track.textContent = "";
+      seq.forEach((leg, i) => {
+        // A rung is resolved ONLY when the payload carries a live value that
+        // AGREES with the status. A deferred cell (value null) or any
+        // disagreement renders UNKNOWN.
+        const resolved = typeof leg.value === "string" && leg.value === leg.status && leg.status !== "UNKNOWN";
+        const status = resolved ? leg.status : "UNKNOWN";
+        const detail = typeof leg.detail === "string" && leg.detail ? leg.detail : "not observed";
+        const owner = resolved ? null : (typeof leg.owner === "string" ? leg.owner : null);
+        track.appendChild(hsRung(HS_PHASES[i][0], HS_PHASES[i][1], HS_PHASES[i][2], HS_PHASES[i][3], status, detail, owner));
+      });
+    }
+
+    hotCooldownActive = renderCooldown(snap);
+    const liveStrategy = hotSwapCellValue(snap.current_live_strategy_id);
+    hotLiveStrategy = (typeof liveStrategy === "string" && liveStrategy) ? liveStrategy : null;
+    hsSlot("hs-live", "hs-live-src", liveStrategy, "SRS-RESV-005");
+    const candidate = hotSwapCellValue(snap.promotion_candidate);
+    hotCandidate = (typeof candidate === "string" && candidate) ? candidate : null;
+    hotDemotionPending = hotSwapCellBool(snap.demotion_pending);
+    hotStatusOk = snap.ok === true;
+    hsSlot("hs-candidate", "hs-candidate-src", hotCandidate, "SRS-RESV-002");
+    // Disarm any staged confirmation that has become unsafe: the candidate
+    // changed/was removed under an armed control (a staged confirm would demote
+    // live and promote the WRONG strategy), or the control is no longer
+    // actionable (a KNOWN demotion-pending state, an unknown demotion state, or a
+    // partial source outage — SRS-RESV-004 fail-closed). Stale truth left
+    // ACTIONABLE is the class this pane must not have.
+    if (hotArmed() && (hotArmedCandidate !== hotCandidate || !hotActionable())) {
+      disarmHotSwap(true);
+    }
+    // Resolve an accepted swap against the DURABLE end state BEFORE deciding the
+    // button state. The live strategy captured at swap time separates "not yet
+    // reflected" (a stale/uncorrelated pre-swap snapshot) from a real outcome — a
+    // stale read must neither confirm, declare a mismatch, nor re-enable the
+    // control. While hotPendingSwap is set, hotActionable() holds it inert.
+    if (hotPendingSwap) {
+      const sw = hotPendingSwap.swapId || "(no swap_id)";
+      const want = hotPendingSwap.candidate;
+      const prior = hotPendingSwap.priorLive;
+      if (hotLiveStrategy === want) {
+        // The candidate IS live now — the swap promoted, whatever the response said
+        // (covers an ambiguous timeout whose swap actually completed).
+        hsStatus("promoted " + want + " live · swap " + sw, "fired");
+        hotPendingSwap = null;
+      } else if (hotDemotionPending === true || hotChangeoverActive) {
+        // A blocked / demotion-pending state is now observed — a terminal outcome.
+        // The demotion/changeover gates keep the control inert past this.
+        hsStatus("swap " + sw + ": promotion blocked — resolve the demotion-pending " +
+          "changeover before another swap (SRS-RESV-004)", "error");
+        hotPendingSwap = null;
+      } else if (hotPendingSwap.promoted && hotLiveStrategy && hotLiveStrategy !== prior) {
+        // The response explicitly claimed to promote `want`, but a DIFFERENT
+        // strategy is live — a wrong-live-strategy mismatch.
+        hsStatus("MISMATCH: swap " + sw + " reported PROMOTED for " + want +
+          " but the live strategy is " + hotLiveStrategy + " — verify before acting", "error");
+        hotPendingSwap = null;
+      } else {
+        // Not yet reflected (live still prior / unknown, no block observed). Hold
+        // inert; a stale "clear" read must not clear the guard.
+        const caption = hotPendingSwap.ambiguous
+          ? "swap outcome unknown (request did not complete) — awaiting durable confirmation " +
+            "before another swap (SRS-RESV-004)"
+          : hotPendingSwap.promoted
+            ? "swap " + sw + " reported PROMOTED — awaiting durable confirmation that " +
+              want + " is live (SRS-RESV-005)"
+            : "swap " + sw + " did NOT promote — awaiting durable confirmation of the " +
+              "blocked changeover (SRS-RESV-004)";
+        hsStatus(caption, "pending");
+      }
+    }
+    renderTriggers(snap);
+    updateHotButton();
+
+    const note = $("hs-note");
+    if (note) {
+      const errors = Array.isArray(snap.errors) ? snap.errors.filter((e) => typeof e === "string") : [];
+      const demotionPending = hotSwapCellBool(snap.demotion_pending);
+      if (errors.length) {
+        note.textContent = errors.join(" · ");
+        note.dataset.tone = "error";
+      } else if (demotionPending === true) {
+        note.textContent = "DEMOTION-PENDING — a swap timed out before flat; promotion is blocked until manual resolution (SRS-RESV-004)";
+        note.dataset.tone = "error";
+      } else {
+        note.textContent = "every live Hot-Swap fact is deferred to its SRS-RESV producer; the control POSTs to the contract route and renders the runtime's response verbatim";
+        note.dataset.tone = "warn";
+      }
+    }
+    if (!hotInFlight) hsState(hotConfirmedSwapId ? "fired" : "resting");
+  }
+
+  async function pollHotSwapOnce() {
+    const seq = ++hotPollSeq;   // this read's generation
+    // Discard a response that a newer read (or a mutation) has superseded — an
+    // out-of-order slow poll must never resurrect stale candidate/cool-down state.
+    const superseded = () => seq !== hotPollSeq;
+    try {
+      const res = await fetch(HOT_SWAP_STATUS_ROUTE, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(POLL_MS),
+      });
+      if (superseded()) return;
+      if (res.ok) {
+        let body = null;
+        try { body = await res.json(); } catch (_e) { body = null; }
+        if (superseded()) return;
+        renderHotSwap(body);
+      } else if (res.status === 404) {
+        hsUnknown("hot-swap status not mounted — UI-5 provider not composed on this runtime", "warn");
+      } else {
+        hsUnknown("hot-swap status unavailable (HTTP " + res.status + ") — every fact UNKNOWN", "error");
+      }
+    } catch (_e) {
+      if (superseded()) return;
+      hsUnknown("hot-swap status endpoint unreachable — every fact UNKNOWN", "error");
+    }
+  }
+
+  async function pollHotSwap() {
+    await pollHotSwapOnce();
+    setTimeout(pollHotSwap, POLL_MS);
+  }
+
+  function initHotSwap() {
+    hsBuildDialTicks();
+    // Paint the fail-closed pane before the first poll resolves.
+    hsUnknown("awaiting hot-swap status…", "warn");
+    const b = hsBtn();
+    if (b) b.addEventListener("click", onHotTrigger);
+  }
+
   // ----- boot ------------------------------------------------------------ //
   buildAll();
   initBacktest();
   initReservoir();
   initResearch();
   initKillSwitch();
+  initHotSwap();
   connect();
   poll();
   pollStrategies();
@@ -1974,4 +2567,5 @@
   pollResearch();
   pollAlerts();
   pollKillSwitch();
+  pollHotSwap();
 })();
