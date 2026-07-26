@@ -59,6 +59,7 @@
 
 use atp_data::query::UnifiedHistoricalQuery;
 use atp_data::store::{DatasetKind, MarketDataRecord, MarketDataStore};
+use atp_data::{AccessRecorder, JobRef};
 use atp_types::SecurityKey;
 
 use crate::factor_job::{
@@ -514,6 +515,34 @@ pub fn assemble_factor_inputs(
     Ok(rows)
 }
 
+/// **SRS-DATA-010 access-recording variant** of [`assemble_factor_inputs`]: assembles the exact same
+/// cross-section (delegating to [`assemble_factor_inputs`] **unchanged**), then records each accessed
+/// security's symbol into an injected [`AccessRecorder`] so the SRS-DATA-010 eviction policy can protect
+/// data a running factor-pipeline job is using (the SYS-69 recency window).
+///
+/// The returned rows are byte-identical to [`assemble_factor_inputs`] for the same inputs — recording
+/// is a pure side effect that never changes the result and never fails the assembly (recording fails
+/// open). Accesses are recorded only after a successful assembly (a fail-closed assembly aborts the job,
+/// leaving nothing to protect). `access_ts` is the job's run instant, **injected** so the loader stays
+/// wall-clock-free and deterministic. Every security in `securities` is attributed to `job`.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_factor_inputs_recorded<R: AccessRecorder>(
+    store: &MarketDataStore,
+    securities: &[SecurityKey],
+    start_ts: i64,
+    end_ts: i64,
+    basis: MarketInputBasis,
+    recorder: &R,
+    job: &JobRef,
+    access_ts: i64,
+) -> Result<Vec<SecurityFactorInputs>, FactorInputError> {
+    let rows = assemble_factor_inputs(store, securities, start_ts, end_ts, basis)?;
+    for security in securities {
+        recorder.record(job, security.symbol(), access_ts);
+    }
+    Ok(rows)
+}
+
 /// A fail-closed error running a scheduled factor job over the unified store: either assembling the
 /// inputs failed ([`FactorInputError`]) or the job itself failed ([`FactorJobError`]).
 #[derive(Debug, Clone, PartialEq)]
@@ -615,6 +644,74 @@ where
     .map_err(StoreFactorJobError::Job)
 }
 
+/// **SRS-DATA-010 recency-recording variant** of [`run_scheduled_factor_job_over_store`]: the SAME
+/// scheduled full-universe factor job (identical schedule gate, DERIVED point-in-time as-of, scored
+/// core), but its store assembly goes through [`assemble_factor_inputs_recorded`] so each accessed
+/// security is written to the injected [`AccessRecorder`]. This is the canonical scheduled factor path
+/// made recency-recording, so the SRS-DATA-010 eviction policy protects data a *running* factor job is
+/// using — not only the bare [`assemble_factor_inputs_recorded`] helper.
+///
+/// The access instant recorded is the run's DERIVED `as_of_ts` (the same point-in-time the data window
+/// is bound to), so recording stays wall-clock-free and deterministic. The scored outcome is identical
+/// to [`run_scheduled_factor_job_over_store`] for the same inputs (recording is a pure side effect).
+/// `job` attributes the accesses to the running factor job (the running-job registry that supplies it
+/// — the atp-orchestrator workload registry — is the deferred SRS-DATA-010 owner; a caller passes a
+/// [`JobRef`] today).
+#[allow(clippy::too_many_arguments)]
+pub fn run_scheduled_factor_job_over_store_recorded<C, M, K, R>(
+    store: &MarketDataStore,
+    securities: &[SecurityKey],
+    market_lookback_seconds: i64,
+    basis: MarketInputBasis,
+    schedule: &FactorJobSchedule,
+    calendar: &C,
+    config: &FactorJobConfig,
+    model: &M,
+    clock: &K,
+    recorder: &R,
+    job: &JobRef,
+) -> Result<FactorJobOutcome, StoreFactorJobError>
+where
+    C: TradingCalendar,
+    M: FactorModel,
+    K: Clock,
+    R: AccessRecorder,
+{
+    let (started, deadline_instant) = match preflight_schedule(schedule, calendar, config, clock)
+        .map_err(StoreFactorJobError::Job)?
+    {
+        StartGate::Proceed { started, deadline } => (started, deadline),
+        StartGate::LateStart(outcome) => return Ok(outcome),
+    };
+    let as_of_ts = calendar
+        .session_as_of_ts(schedule.session)
+        .ok_or(StoreFactorJobError::Job(FactorJobError::NotASession {
+            session: schedule.session,
+        }))?;
+    let market_lookback_start_ts = as_of_ts.saturating_sub(market_lookback_seconds.max(0));
+    let universe = assemble_factor_inputs_recorded(
+        store,
+        securities,
+        market_lookback_start_ts,
+        as_of_ts,
+        basis,
+        recorder,
+        job,
+        as_of_ts,
+    )
+    .map_err(StoreFactorJobError::Input)?;
+    run_factor_job_gated(
+        schedule.session,
+        started,
+        deadline_instant,
+        config,
+        model,
+        clock,
+        &universe,
+    )
+    .map_err(StoreFactorJobError::Job)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -678,5 +775,57 @@ mod tests {
                 market_value_minor: 0,
             }
         );
+    }
+
+    #[test]
+    fn recorded_assembly_matches_bare_and_writes_the_journal() {
+        use atp_data::{AccessJournal, JobId, JobKind, NoopRecorder};
+        use atp_types::AssetClass;
+
+        let store = MarketDataStore::new();
+        let secs = vec![
+            SecurityKey::new("AAPL", AssetClass::Equity).unwrap(),
+            SecurityKey::new("MSFT", AssetClass::Equity).unwrap(),
+        ];
+
+        // The recording variant (with a no-op recorder) returns byte-identical rows to the bare fn.
+        let bare = assemble_factor_inputs(&store, &secs, 0, 1_000, MarketInputBasis::Raw).unwrap();
+        let noop = NoopRecorder;
+        let recorded = assemble_factor_inputs_recorded(
+            &store,
+            &secs,
+            0,
+            1_000,
+            MarketInputBasis::Raw,
+            &noop,
+            &JobRef::new(JobKind::FactorPipeline, JobId::new("fp-1").unwrap()),
+            7_000,
+        )
+        .unwrap();
+        assert_eq!(
+            bare, recorded,
+            "recording must not change the assembled inputs"
+        );
+
+        // With a real journal, every accessed security is recorded at the job's access instant.
+        let tmp =
+            std::env::temp_dir().join(format!("atp-recfac-{}-{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let journal = AccessJournal::under_ssd(&tmp);
+        assemble_factor_inputs_recorded(
+            &store,
+            &secs,
+            0,
+            1_000,
+            MarketInputBasis::Raw,
+            &journal,
+            &JobRef::new(JobKind::FactorPipeline, JobId::new("fp-2").unwrap()),
+            7_000,
+        )
+        .unwrap();
+        let recent = journal.recent(10_000, 8_000, None).unwrap();
+        assert_eq!(recent.get("AAPL"), Some(&7_000));
+        assert_eq!(recent.get("MSFT"), Some(&7_000));
     }
 }

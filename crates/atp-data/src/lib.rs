@@ -17,8 +17,10 @@ use atp_types::{
 // completeness-through-date frontier `>= query.end_ts`) before it reaches this crate-internal math
 // -- so there is no public path to raw-as-adjusted. The `coverage` module is a sibling in the same
 // crate, so it can call the crate-internal `normalization` functions while no external caller can.
+pub mod access_journal;
 pub mod cold_read;
 pub mod coverage;
+pub mod eviction;
 pub mod fundamentals;
 pub mod ingestion_validation;
 mod normalization;
@@ -26,12 +28,21 @@ pub mod query;
 pub mod store;
 pub mod tiering;
 
+pub use crate::access_journal::{
+    AccessJournal, AccessJournalError, AccessRecorder, JobId, JobKind, JobRef, NoopRecorder,
+    ACCESS_JOURNAL_FILENAME, ACCESS_JOURNAL_SUBDIR,
+};
 pub use crate::cold_read::{
     ColdCacheReport, ColdReadConfig, ColdReadError, TieredReadResult, TieredReader,
     DEFAULT_COLD_READ_CACHE_SHARE_PERCENT, MAX_COLD_READ_CACHE_SHARE_PERCENT,
 };
 pub use crate::coverage::{
     CorporateActionEvent, CorporateActionFact, CoverageError, SplitAdjustedResult,
+};
+pub use crate::eviction::{
+    plan_eviction, EvictionCandidate, EvictionEngine, EvictionError, EvictionOutcome, EvictionPlan,
+    PinReason, PlannedEviction, ProtectionInputs, StoragePolicy, Tier, DEFAULT_HIGH_WATER_PERCENT,
+    DEFAULT_RECENCY_WINDOW_SECS, MAX_HIGH_WATER_PERCENT,
 };
 pub use crate::ingestion_validation::{
     QuarantineSummary, QuarantineSummarySink, QuarantiningIngestionOutcome, Sys77RecordValidator,

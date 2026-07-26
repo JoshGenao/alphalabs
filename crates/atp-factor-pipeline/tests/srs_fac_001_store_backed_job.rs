@@ -16,6 +16,7 @@
 //! in, exactly as the verification step permits.
 
 use atp_data::store::{DatasetKind, MarketDataRecord, MarketDataStore, MarketField, NaturalKey};
+use atp_data::{AccessJournal, JobId, JobKind, JobRef};
 use atp_factor_pipeline::factor_job::{
     Clock, FactorJobConfig, FactorJobError, FactorJobOutcome, FactorJobSchedule, FactorModel,
     FundamentalFactorInput, Instant, MarketFactorInput, MinutesOfDay, SessionOrdinal,
@@ -23,7 +24,8 @@ use atp_factor_pipeline::factor_job::{
 };
 use atp_factor_pipeline::store_inputs::{
     assemble_factor_inputs, load_fundamental_input, run_scheduled_factor_job_over_store,
-    FactorInputError, MarketInputBasis, StoreFactorJobError, FUNDAMENTAL_RATIOS_RESOLUTION,
+    run_scheduled_factor_job_over_store_recorded, FactorInputError, MarketInputBasis,
+    StoreFactorJobError, FUNDAMENTAL_RATIOS_RESOLUTION,
 };
 use atp_types::{AssetClass, SecurityKey};
 
@@ -723,5 +725,80 @@ fn store_assembly_failure_propagates_as_a_fail_closed_job_error() {
             assert_eq!(field, "book_equity_minor");
         }
         other => panic!("expected a fail-closed input error, got {other:?}"),
+    }
+}
+
+// ---- SRS-DATA-010: the scheduled factor path records recency accesses --------------------------
+
+/// A unique scratch dir for a journal (no `tempfile` dependency in this crate).
+fn journal_dir() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let base =
+        std::env::temp_dir().join(format!("atp-fac-recording-{}-{}", std::process::id(), seq));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    base
+}
+
+#[test]
+fn recorded_scheduled_factor_job_writes_recency_entries_and_matches_the_bare_run() {
+    // The CANONICAL scheduled factor path, made recency-recording: a running factor job must leave
+    // recency evidence so the SRS-DATA-010 eviction policy protects the data it is using. The job
+    // enforces the SRS-FAC-001 full-universe floor (8,000), so the run is over the full universe.
+    let store = build_store(8_000);
+    let securities: Vec<SecurityKey> = (0..8_000).map(|i| equity(&sym(i))).collect();
+
+    let bare = run_scheduled_factor_job_over_store(
+        &store,
+        &securities,
+        100,
+        MarketInputBasis::Raw,
+        &schedule(100),
+        &BusinessWeekCalendar,
+        &config(),
+        &ValueMomentumFactor,
+        &clock(),
+    )
+    .expect("bare scheduled job runs");
+
+    let dir = journal_dir();
+    let journal = AccessJournal::new(dir.join("access_journal"));
+    let job = JobRef::new(JobKind::FactorPipeline, JobId::new("fp-nightly").unwrap());
+    let recorded = run_scheduled_factor_job_over_store_recorded(
+        &store,
+        &securities,
+        100,
+        MarketInputBasis::Raw,
+        &schedule(100),
+        &BusinessWeekCalendar,
+        &config(),
+        &ValueMomentumFactor,
+        &clock(),
+        &journal,
+        &job,
+    )
+    .expect("recorded scheduled job runs");
+
+    // Recording is a pure side effect: the scored outcome is identical to the bare run.
+    assert_eq!(
+        bare, recorded,
+        "recording must not change the factor outcome"
+    );
+
+    // Every accessed security is in the journal at the run's DERIVED as-of instant (session 100 → 100),
+    // scoped to the running job — so eviction with a matching running-job set protects them.
+    let mut running = std::collections::BTreeSet::new();
+    running.insert(JobId::new("fp-nightly").unwrap());
+    let recent = journal.recent(1_000, 100, Some(&running)).unwrap();
+    assert_eq!(recent.len(), 8_000, "every accessed security recorded once");
+    for i in [0usize, 1, 4_000, 7_999] {
+        assert_eq!(
+            recent.get(&sym(i)),
+            Some(&100),
+            "the running factor job must record recency for {}",
+            sym(i)
+        );
     }
 }

@@ -46,6 +46,7 @@
 
 use atp_data::query::UnifiedHistoricalQuery;
 use atp_data::store::{DatasetKind, MarketDataRecord, MarketDataStore};
+use atp_data::{AccessRecorder, JobRef};
 
 use crate::backtest::{BacktestBar, BacktestDataSource, BacktestError, BarSource, DateRange};
 
@@ -199,5 +200,194 @@ impl BarSource for StoreBarSource<'_> {
                 self.map_records(symbol, result.records.iter(), count)
             }
         }
+    }
+}
+
+/// **SRS-DATA-010 access-recording wrapper** over a [`StoreBarSource`]: a [`BarSource`] that delegates
+/// every read to an inner [`StoreBarSource`] **unchanged** and records the accessed symbol into an
+/// injected [`AccessRecorder`], so the SRS-DATA-010 eviction policy can protect data a running backtest
+/// is using (the SYS-69 recency window).
+///
+/// It is a pure decorator: `source()` and `bars()` return exactly what the inner source returns — the
+/// recording is a side effect that never changes the bars, never fails the read (recording fails open),
+/// and adds no provider awareness. So wrapping a backtest source in this changes no observable read
+/// behaviour; a backtest run WITHOUT the wrapper (or with a [`atp_data::NoopRecorder`]) is byte-identical.
+///
+/// `access_ts` is the instant the job accessed the data (its run time), **injected** so the reader
+/// stays wall-clock-free and deterministic — the same discipline as the rest of the data layer.
+#[derive(Debug)]
+pub struct RecordingBarSource<'a, 'r, R: AccessRecorder> {
+    inner: StoreBarSource<'a>,
+    recorder: &'r R,
+    job: JobRef,
+    access_ts: i64,
+}
+
+impl<'a, 'r, R: AccessRecorder> RecordingBarSource<'a, 'r, R> {
+    /// Wrap an inner [`StoreBarSource`], attributing each recorded access to `job` at `access_ts`.
+    pub fn new(inner: StoreBarSource<'a>, recorder: &'r R, job: JobRef, access_ts: i64) -> Self {
+        Self {
+            inner,
+            recorder,
+            job,
+            access_ts,
+        }
+    }
+}
+
+impl<R: AccessRecorder> BarSource for RecordingBarSource<'_, '_, R> {
+    fn source(&self) -> BacktestDataSource {
+        self.inner.source()
+    }
+
+    fn bars(
+        &self,
+        symbol: &str,
+        range: &DateRange,
+        max_bars: usize,
+    ) -> Result<Vec<BacktestBar>, BacktestError> {
+        // Record the access BEFORE delegating: recording fails open (never surfaces an error), so it
+        // cannot break the read, and recording first captures the access even if the read then fails
+        // closed (e.g. an oversized window or an uncovered adjusted basis). The symbol is what the
+        // eviction policy protects; the inner read result is returned verbatim.
+        self.recorder.record(&self.job, symbol, self.access_ts);
+        self.inner.bars(symbol, range, max_bars)
+    }
+}
+
+#[cfg(test)]
+mod recording_tests {
+    use super::*;
+    use atp_data::store::{MarketDataRecord as Rec, MarketField, NaturalKey};
+    use atp_data::{AccessJournal, JobId, JobKind, NoopRecorder};
+
+    fn daily_record(symbol: &str, event_ts: i64, close: i64) -> Rec {
+        Rec::new(
+            NaturalKey {
+                kind: DatasetKind::DailyEquityBar,
+                symbol: symbol.to_string(),
+                resolution: "1d".to_string(),
+                event_ts,
+                option_contract: None,
+            },
+            [MarketField {
+                name: "close".to_string(),
+                value_minor: close,
+            }],
+        )
+        .unwrap()
+    }
+
+    fn store_with(symbol: &str) -> MarketDataStore {
+        let mut store = MarketDataStore::new();
+        store.upsert(daily_record(symbol, 1_000, 100)).unwrap();
+        store.upsert(daily_record(symbol, 2_000, 110)).unwrap();
+        store
+    }
+
+    #[test]
+    fn recording_wrapper_returns_identical_bars_to_the_bare_source() {
+        let store = store_with("AAPL");
+        let bare = StoreBarSource::daily(&store, Normalization::Raw);
+        let bare_bars = bare
+            .bars(
+                "AAPL",
+                &DateRange {
+                    start: 0,
+                    end: 9_999,
+                },
+                100,
+            )
+            .unwrap();
+
+        let store2 = store_with("AAPL");
+        let inner = StoreBarSource::daily(&store2, Normalization::Raw);
+        let noop = NoopRecorder;
+        let wrapped = RecordingBarSource::new(
+            inner,
+            &noop,
+            JobRef::new(JobKind::Backtest, JobId::new("bt-1").unwrap()),
+            5_000,
+        );
+        let wrapped_bars = wrapped
+            .bars(
+                "AAPL",
+                &DateRange {
+                    start: 0,
+                    end: 9_999,
+                },
+                100,
+            )
+            .unwrap();
+
+        assert_eq!(bare_bars, wrapped_bars, "wrapper must not change the bars");
+    }
+
+    #[test]
+    fn recording_wrapper_writes_the_accessed_symbol_to_the_journal() {
+        let tmp =
+            std::env::temp_dir().join(format!("atp-recbar-{}-{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let store = store_with("AAPL");
+        let inner = StoreBarSource::daily(&store, Normalization::Raw);
+        let journal = AccessJournal::under_ssd(&tmp);
+        let wrapped = RecordingBarSource::new(
+            inner,
+            &journal,
+            JobRef::new(JobKind::Backtest, JobId::new("bt-42").unwrap()),
+            5_000,
+        );
+        wrapped
+            .bars(
+                "aapl",
+                &DateRange {
+                    start: 0,
+                    end: 9_999,
+                },
+                100,
+            )
+            .unwrap();
+
+        // The eviction policy would see AAPL protected at access_ts 5_000 (within a wide window).
+        let recent = journal.recent(10_000, 6_000, None).unwrap();
+        assert_eq!(recent.get("AAPL"), Some(&5_000));
+    }
+
+    #[test]
+    fn recording_is_fail_open_even_when_the_read_fails() {
+        // An oversized window fails closed with TooManyBars; the access is still recorded (recorded
+        // before the delegate call) and the read error is surfaced unchanged.
+        let tmp = std::env::temp_dir().join(format!(
+            "atp-recbar-failopen-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let store = store_with("MSFT");
+        let inner = StoreBarSource::daily(&store, Normalization::Raw);
+        let journal = AccessJournal::under_ssd(&tmp);
+        let wrapped = RecordingBarSource::new(
+            inner,
+            &journal,
+            JobRef::new(JobKind::Backtest, JobId::new("bt-x").unwrap()),
+            5_000,
+        );
+        let err = wrapped
+            .bars(
+                "MSFT",
+                &DateRange {
+                    start: 0,
+                    end: 9_999,
+                },
+                1,
+            )
+            .unwrap_err();
+        assert!(matches!(err, BacktestError::TooManyBars { .. }));
+        let recent = journal.recent(10_000, 6_000, None).unwrap();
+        assert_eq!(recent.get("MSFT"), Some(&5_000));
     }
 }

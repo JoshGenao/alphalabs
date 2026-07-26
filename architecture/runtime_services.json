@@ -9817,5 +9817,118 @@
       "Real Databento / IB / Sharadar / option-chain NETWORK adapters that feed records into the tier (owner: SRS-DATA-001 / SRS-DATA-003 / SRS-DATA-005 / SRS-DATA-006; the tier is provider-agnostic -- fixture sources stand in, as the SRS-DATA-009 step permits)",
       "Real 1 TB SSD / 20 TB NAS CAPACITY provisioning + a real network NAS mount (owner: NFR-SC2 deployment / SRS-ARCH-004; the cache cap is modeled in the store's record unit -- the deterministic fixture-testable proxy -- and the real byte capacity is the NFR-SC2 concern; growth estimates documented in SRS Section 12.1)"
     ]
+  },
+  "storage_eviction_contract":   {
+    "description": "SRS-DATA-010 (SSD storage eviction policy; SyRS SYS-69; StRS C-5 / BG-6). Acceptance: 'At the default 80 percent high-water mark, eviction prioritizes old inactive data; data for securities with the currently running live strategy is never evicted; data accessed within the configurable recency window defaulting to 24 hours by a running backtest or factor pipeline job is not evicted.' SYS-68 adds: cold-read cache entries are evicted BEFORE any hot runtime data. This is the POLICY brain over the SRS-DATA-008 tier + SRS-DATA-009 cold-read primitives. The `eviction` module in crates/atp-data adds: (1) StoragePolicy (high-water default 80%, recency window default 24h/86400s), target = floor(ssd_capacity_records * high_water / 100) in INTEGER arithmetic (no float); fail-closed on a 0/>100 high-water or a negative recency. (2) plan_eviction -- a PURE planner over the whole SSD inventory (cold-read cache Tier::Cold + SSD-primary Tier::Hot). A candidate is PINNED (never in the plan) if live (AC-2), accessed within the recency window by a running job (AC-3), or a hot record inside the DATA-008 90-day retention floor. Evictable candidates are ordered most-removable-first: Cold before Hot (SYS-68, via the derived Tier Ord), then not-on-active/watchlist before listed (SYS-69), then oldest event_ts first (SYS-69 'by age'), then natural key; the first (usage - target) are selected, and if pinned data blocks the mark the plan reports reached_target=false rather than ever evicting pinned data (fail-safe). (3) EvictionEngine::enforce -- physically evicts ONLY the cold-read cache store (rewrites cold_cache_dir under the single-writer StoreLock); it never opens the SSD primary for writing, so live/recent/hot data is STRUCTURALLY un-evictable (mirroring the DATA-009 evict_cold_cache_to guarantee). Hot-tier plan entries are reported as hot_pressure_deferred, never physically removed (physical hot-pressure eviction is the deferred 'full hot-pressure' scope). The `access_journal` module is the real AC-3 producer: a durable append-only journal (AccessRecorder trait, NoopRecorder default) written by the instrumented backtest (RecordingBarSource over StoreBarSource) and factor (assemble_factor_inputs_recorded) read paths; writes FAIL OPEN (never break a read), reads FAIL CLOSED (a corrupt line -> AccessJournalError::Corrupt so eviction refuses; a torn tail is tolerated). The operator CLI data010_eviction_cli (report / plan / enforce) exercises it end to end, refuses a destructive enforce without an explicit protection source (--protection-inputs / --use-journal / --assume-unprotected), and exits NON-ZERO when the high-water mark cannot be met without evicting pinned or hot data. Determinism: caller-supplied now_ts (no wall-clock), integer target (no float), no serde/vendor SDK.",
+    "requirement": "The software shall evict SSD cache data according to the configured storage policy.",
+    "srs_refs": [
+      "SRS-DATA-010"
+    ],
+    "syrs_refs": [
+      "SYS-69"
+    ],
+    "strs_refs": [
+      "C-5",
+      "BG-6"
+    ],
+    "data_crate": {
+      "crate": "atp-data",
+      "path": "crates/atp-data"
+    },
+    "eviction_module": "eviction",
+    "access_journal_module": "access_journal",
+    "cli_bin": "data010_eviction_cli",
+    "module_reexport": {
+      "eviction_token": "pub mod eviction;",
+      "access_journal_token": "pub mod access_journal;"
+    },
+    "policy_type": {
+      "struct": "StoragePolicy",
+      "target_fn": "pub fn target_records",
+      "default_high_water_const": "pub const DEFAULT_HIGH_WATER_PERCENT: u32 = 80;",
+      "default_recency_const": "pub const DEFAULT_RECENCY_WINDOW_SECS: i64 = 86_400;",
+      "max_high_water_const": "pub const MAX_HIGH_WATER_PERCENT: u32 = 100;",
+      "invalid_high_water_variant": "InvalidHighWater",
+      "invalid_recency_variant": "InvalidRecencyWindow"
+    },
+    "planner": {
+      "description": "plan_eviction is a pure fn; pinned candidates never enter the evictable set; cold-before-hot ordering falls out of the derived Tier Ord (Cold before Hot).",
+      "fn": "pub fn plan_eviction",
+      "pin_reason_fn": "fn pin_reason",
+      "tier_enum_token": "pub enum Tier",
+      "cold_before_hot_token": "a.tier.cmp(&b.tier)",
+      "pinned_excluded_token": "None => evictable.push",
+      "engine_type": "EvictionEngine"
+    },
+    "enforce_never_touches_hot": {
+      "description": "The physical eviction path rewrites only the cold-read cache; it references cold_cache_dir and never the SSD primary ssd_dir.",
+      "evict_fn": "fn evict_cache_keys",
+      "cache_dir_token": "cold_cache_dir",
+      "save_token": "save_to_path",
+      "forbidden_ssd_primary_token": "ssd_dir"
+    },
+    "access_journal": {
+      "description": "Durable append-only recency journal: writes fail open (record delegates to append and discards), reads fail closed on a corrupt complete line, torn tail tolerated.",
+      "recorder_trait": "trait AccessRecorder",
+      "noop_recorder": "struct NoopRecorder",
+      "journal_struct": "struct AccessJournal",
+      "recent_fn": "pub fn recent",
+      "append_fn": "pub fn append",
+      "corrupt_variant": "Corrupt",
+      "torn_tail_fn": "fn complete_lines",
+      "fail_open_token": "let _ = self.append",
+      "health_fn": "pub fn ensure_usable"
+    },
+    "instrumentation": {
+      "description": "Additive, behavior-preserving: the existing read fns are unchanged; new recording wrappers delegate to them and record accesses. The CANONICAL scheduled factor path has a recording-capable entry point too (run_scheduled_factor_job_over_store_recorded), so a running factor job leaves recency evidence, not only the bare assembler helper.",
+      "bar_source_file": "crates/atp-simulation/src/store_bar_source.rs",
+      "bar_source_existing_daily": "pub fn daily",
+      "bar_source_existing_minute": "pub fn minute",
+      "bar_source_wrapper": "struct RecordingBarSource",
+      "bar_source_delegate_token": "self.inner.bars",
+      "factor_file": "crates/atp-factor-pipeline/src/store_inputs.rs",
+      "factor_existing_fn": "pub fn assemble_factor_inputs(",
+      "factor_recorded_fn": "pub fn assemble_factor_inputs_recorded",
+      "factor_delegate_token": "assemble_factor_inputs(store, securities, start_ts, end_ts, basis)",
+      "factor_scheduled_existing_fn": "pub fn run_scheduled_factor_job_over_store<",
+      "factor_scheduled_recorded_fn": "pub fn run_scheduled_factor_job_over_store_recorded"
+    },
+    "cli": {
+      "description": "report/plan/enforce; enforce fails closed without a protection source and exits non-zero when the mark cannot be met without pinned/hot data; --use-journal fails closed on an unusable journal.",
+      "report_subcommand": "\"report\" => cmd_report",
+      "plan_subcommand": "\"plan\" => cmd_plan",
+      "enforce_subcommand": "\"enforce\" => cmd_enforce",
+      "fail_closed_gate_token": "!has_source && !parsed.assume_unprotected",
+      "nonzero_on_breach_token": "if !outcome.reached_target",
+      "journal_health_token": ".ensure_usable()"
+    },
+    "numeric_boundary": {
+      "integer_tokens": [
+        "saturating_mul",
+        "high_water_percent as u64"
+      ],
+      "forbidden_tokens": [
+        "f32",
+        "f64"
+      ]
+    },
+    "determinism": {
+      "now_param_token": "now_ts",
+      "forbidden_tokens": [
+        "SystemTime",
+        "Instant::now",
+        "std::time",
+        "rand::",
+        "thread::spawn"
+      ]
+    },
+    "deferred_owners": [
+      "AC-2 the real live-strategy-symbols feed (which securities the running live strategy container trades) -- deferred to SRS-EXE-001 / SRS-RESV-*; today only a --live <id> demonstration stub exists and LiveStrategyState carries no symbols. The policy consumes an injected live-symbol set (the seam); the CLI sources it from --protection-inputs.",
+      "AC-3 the running-job REGISTRY (which backtest/factor jobs are still running) -- the authoritative source is the atp-orchestrator WorkloadRegistry (WorkloadPriority::Backtest/FactorPipeline); today it is an injected --running-jobs seam and, absent it, the journal read over-protects every in-window access (fail-closed). The access JOURNAL producer itself is BUILT (this slice) and wired into the backtest + factor read paths.",
+      "physical hot-tier pressure-eviction (archive-then-remove in-retention-window hot data under pressure) -- the declined 'full hot-pressure' scope; enforce reports hot_pressure_deferred and the operator resolves SSD-hot pressure via the DATA-008 archive_cold retention path.",
+      "persistent journal WRITE-FAILURE supervision: the journal WRITE fails open (a running backtest/factor read must never break on a journal-write error), and eviction fails closed on a statically-unusable journal (ensure_usable) + on a corrupt read; but a TRANSIENT write loss while the journal is otherwise healthy (a momentary full disk in the recording process) is undetectable at eviction time. Surfacing a running job's persistent recording failures to the operator so eviction can be told to distrust the recency signal is the deferred owner (the atp-orchestrator WorkloadRegistry + SRS-NOTIF-001). Also deferred: routing the PRODUCTION scheduled/backtest run paths through the recording entry points (run_scheduled_factor_job_over_store_recorded / RecordingBarSource) once the running-job registry supplies the JobRef + running-set.",
+      "real SSD capacity + byte accounting (NFR-SC2; the cap/usage are counted in the store's record unit, the deterministic DATA-009 fixture proxy for byte capacity; the real 1 TB SSD is the deployment concern).",
+      "CLOSE STATUS: this slice ships the eviction POLICY + CLI + durable access journal + read-path instrumentation, all provable solo with fixtures (verification method: Test). It integrates --mode serialized (passes stays false); end-to-end AC-2/AC-3 need a real live strategy + real running jobs (integration/live)."
+    ]
   }
 }
