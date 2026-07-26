@@ -69,6 +69,20 @@ path = "src/bin/orch005_rollback_cli.rs"
 name = "err001_broker_envelope_cli"
 path = "src/bin/err001_broker_envelope_cli.rs"
 
+# SRS-SAFE-003 connectivity-block operator CLI. Fault-injects the IB-unreachable /
+# scheduled-restart connectivity states through the REAL ExecutionEngine::
+# dispatch_order -> route_order -> submit_live_order authority chain over the wired
+# real InteractiveBrokersBrokerage (LiveBrokerageSubmit port) + deterministic
+# mocked-IB recording transport, proving a live submission is refused with
+# CONNECTIVITY_BLOCKED, creates ZERO IB orders, requests one reconnect, and
+# publishes one ConnectivityEvent — while Connected still routes through and a
+# non-designated paper order never touches IB. FIXTURE transports only; the real
+# IB-disconnect -> Unreachable producer + readiness wiring are the deferred
+# SRS-EXE-006 / SRS-MD-005 / SRS-EXE-001 leg (SRS-SAFE-003 stays passes:false).
+[[bin]]
+name = "safe003_connectivity_block_cli"
+path = "src/bin/safe003_connectivity_block_cli.rs"
+
 [dependencies]
 # The orchestrator is the composition layer (SRS-ARCH-001): it is allowed to
 # see both the execution gate and the simulation fleet, which stay

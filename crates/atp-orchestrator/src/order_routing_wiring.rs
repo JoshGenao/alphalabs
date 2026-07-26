@@ -516,6 +516,13 @@ impl CollectingConnectivitySink {
     pub fn recorded(&self) -> usize {
         self.events.borrow().len()
     }
+
+    /// A snapshot of the recorded connectivity events (SRS-SAFE-003 evidence:
+    /// the `scheduled_restart` suppression flag and the submitting strategy on
+    /// each blocked submission). `ConnectivityEvent` is `Clone`.
+    pub fn events(&self) -> Vec<ConnectivityEvent> {
+        self.events.borrow().clone()
+    }
 }
 
 impl ConnectivityEventSink for CollectingConnectivitySink {
@@ -759,5 +766,247 @@ pub fn run_routing_scenario(scenario: &RoutingScenario) -> Result<RoutingEvidenc
         simulated_orders_accepted,
         resting_orders: simulation.open_resting_orders(),
         designated: designated.map(|live| live.as_str().to_string()),
+    })
+}
+
+// --------------------------------------------------------------------------- //
+// SRS-SAFE-003 — IB-unreachable connectivity-block fault injection (ERR-2)
+// --------------------------------------------------------------------------- //
+
+/// Fault-injection connectivity fixture for SRS-SAFE-003 scenario verification:
+/// returns a CONFIGURED [`ConnectivityState`] and counts `request_reconnect()`
+/// calls, so a scenario can prove the ERR-2 / SRS-SAFE-003 gate fires under a
+/// blocked state — and, under `Connected`, does NOT fire — purely as a function
+/// of the injected transport state.
+///
+/// Contrast with [`HealthyConnectivityFixture`], which is pinned to `Connected`.
+/// The REAL producer that maps an IB disconnect (IB 1100 / 2110 / socket loss)
+/// onto [`ConnectivityState::Unreachable`], and reconnection + startup readiness
+/// back onto `Connected`, is the deferred SRS-EXE-006 / SRS-MD-005 / SRS-EXE-001
+/// connectivity-runtime leg — no runtime code produces a `ConnectivityState`
+/// today. This fixture stands in for that producer so the GATE can be proven
+/// end-to-end through the production authority chain now; SRS-SAFE-003 stays
+/// `passes:false` until the real producer + readiness wiring + a live
+/// fault-injection e2e land.
+#[derive(Debug)]
+pub struct InjectableConnectivity {
+    state: ConnectivityState,
+    reconnects: Cell<u32>,
+}
+
+impl InjectableConnectivity {
+    /// Bind a connectivity fixture that reports `state` on every probe.
+    pub fn in_state(state: ConnectivityState) -> Self {
+        Self {
+            state,
+            reconnects: Cell::new(0),
+        }
+    }
+
+    /// How many reconnect requests the engine made against this fixture (the
+    /// SRS-SAFE-003 "attempt a reconnect while blocked" witness).
+    pub fn reconnects(&self) -> u32 {
+        self.reconnects.get()
+    }
+}
+
+impl BrokerageConnectivity for InjectableConnectivity {
+    fn state(&self) -> ConnectivityState {
+        self.state
+    }
+
+    fn request_reconnect(&self) {
+        self.reconnects.set(self.reconnects.get() + 1);
+    }
+}
+
+/// The non-designated paper strategy the connectivity-block scenario routes as a
+/// contrast: it must reach the internal simulation engine and never touch IB, in
+/// EVERY connectivity state (a paper order is never subject to the live
+/// connectivity gate).
+pub const SCENARIO_PAPER_CONTRAST_STRATEGY: &str = "paper-contrast";
+
+/// The disposition of the DESIGNATED-LIVE order under an injected connectivity
+/// state: either refused at the ERR-2 / SRS-SAFE-003 connectivity gate (no
+/// broker contact), or routed through to the broker (the `Connected` control).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LiveConnectivityOutcome {
+    /// Refused at the connectivity gate with the structured envelope's fields.
+    Blocked {
+        category: String,
+        error_type: String,
+        message: String,
+    },
+    /// Routed through to the broker (minted a broker order id).
+    RoutedThrough { broker_order_id: String },
+}
+
+/// Aggregate SRS-SAFE-003 fault-injection evidence for one scenario run over the
+/// REAL `dispatch_order → route_order → submit_live_order` authority chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectivityBlockEvidence {
+    /// The connectivity state injected for this run.
+    pub injected_state: ConnectivityState,
+    /// The strategy designated live (the only one that can reach the live gate).
+    pub designated: String,
+    /// What happened to the designated-live order.
+    pub live_outcome: LiveConnectivityOutcome,
+    /// Order-creating IB wire operations across the WHOLE run (live order +
+    /// paper contrast), from [`RecordingIbGateway::orders_created`]. `0` when
+    /// blocked, `1` when `Connected` routes the live order through. The witness
+    /// that a blocked submission created NO IB order (not merely "no receipt").
+    pub ib_orders_created: u32,
+    /// `request_reconnect()` calls: `1` per blocked live submission, `0` when
+    /// `Connected`. (The paper arm never consults connectivity.)
+    pub reconnects: u32,
+    /// `ConnectivityEvent`s published for dashboard alerting: `1` when blocked,
+    /// `0` when `Connected`.
+    pub events_recorded: usize,
+    /// The recorded event's `scheduled_restart` flag: `Some(false)` for
+    /// `Unreachable`, `Some(true)` for `ScheduledRestartWindow`, `None` when no
+    /// event fired (the `Connected` control).
+    pub event_scheduled_restart: Option<bool>,
+    /// The submitting strategy on the recorded event — must be the designated
+    /// live strategy (proves the event came from the live order, not the paper).
+    pub event_strategy: Option<String>,
+    /// The non-designated paper contrast's simulation receipt id (a `paper-*`
+    /// book id) — proving a paper order routes to simulation and never touches
+    /// IB, regardless of connectivity state.
+    pub non_designated_sim_receipt: String,
+}
+
+/// Run a deterministic SRS-SAFE-003 fault-injection scenario over the REAL
+/// components: real [`ExecutionEngine`] (real `LiveDesignation` authority), real
+/// `InteractiveBrokersBrokerage` behind the live port with the deterministic
+/// [`RecordingIbGateway`] transport, real `PaperSimulationEngine` behind the
+/// simulation port — with the connectivity state fault-injected via
+/// [`InjectableConnectivity`].
+///
+/// The designated-live order enters through the PRODUCTION authority boundary
+/// `ExecutionEngine::dispatch_order` (→ `route_destination` → `route_order` →
+/// `submit_live_order`), so the block is proven through the single-live
+/// designation gate rather than by handing `submit_live_order` a
+/// caller-supplied `StrategyMode::Live`. Under a blocked state
+/// (`Unreachable` / `ScheduledRestartWindow`) the submission is refused with
+/// `CONNECTIVITY_BLOCKED`, the broker is NEVER called (`ib_orders_created == 0`),
+/// a reconnect is requested, and one `ConnectivityEvent` is published; under
+/// `Connected` the same order routes through to the broker. A non-designated
+/// paper order is routed through the same fixtures as a contrast — it must reach
+/// the simulation engine in every state.
+///
+/// This is deterministic fixture verification of the GATE; observing a REAL IB
+/// gateway go unreachable is the deferred operator-gated leg (the real
+/// `ConnectivityState` producer + a live fault injection).
+pub fn run_connectivity_block_scenario(
+    state: ConnectivityState,
+) -> Result<ConnectivityBlockEvidence, String> {
+    let mut engine = ExecutionEngine::default();
+    let live = StrategyId::new(SCENARIO_LIVE_STRATEGY);
+    let confirmation = LiveDesignationConfirmation::from_operator(
+        live.clone(),
+        format!("operator confirms {SCENARIO_LIVE_STRATEGY} live (SRS-SAFE-003 scenario)"),
+    )
+    .map_err(|err| format!("live designation confirmation rejected: {err:?}"))?;
+    engine
+        .designate(live.clone(), confirmation)
+        .map_err(|err| format!("live designation rejected: {err:?}"))?;
+
+    let simulation = WiredPaperSimulation::new();
+    let brokerage = IbBrokerageBridge::new(RecordingIbGateway::new());
+    let connectivity = InjectableConnectivity::in_state(state);
+    let connectivity_events = CollectingConnectivitySink::default();
+    let freshness = FreshMarketDataFixture;
+    let stale_events = CollectingStaleDataSink::default();
+
+    // (1) The DESIGNATED-LIVE order through the REAL authority chain. On a
+    //     blocked state this is refused at the connectivity gate (no broker
+    //     contact); on `Connected` it routes through to the broker.
+    let live_result = engine.dispatch_order(
+        OrderSubmission::new(
+            live.clone(),
+            "LIVE001",
+            10,
+            AssetClass::Equity,
+            OrderSide::Buy,
+            OrderType::Market,
+        ),
+        &brokerage,
+        &connectivity,
+        &connectivity_events,
+        &freshness,
+        &stale_events,
+        &simulation,
+    );
+    let live_outcome = match live_result {
+        Err(err) => LiveConnectivityOutcome::Blocked {
+            category: err.category.as_str().to_string(),
+            error_type: err.error_type,
+            message: err.message,
+        },
+        Ok(OrderRoutingReceipt::Live(receipt)) => LiveConnectivityOutcome::RoutedThrough {
+            broker_order_id: receipt.broker_order_id,
+        },
+        Ok(OrderRoutingReceipt::Simulated(sim)) => {
+            return Err(format!(
+                "SRS-SAFE-003 violation: the designated live strategy `{}` was dispatched to the \
+                 simulation engine (sim order id {})",
+                live.as_str(),
+                sim.sim_order_id
+            ));
+        }
+    };
+
+    // (2) A NON-DESIGNATED paper order through the SAME fixtures — it must route
+    //     to the simulation engine and touch neither IB nor the connectivity
+    //     gate, in EVERY state.
+    let paper = StrategyId::new(SCENARIO_PAPER_CONTRAST_STRATEGY);
+    let paper_receipt = engine
+        .dispatch_order(
+            OrderSubmission::new(
+                paper.clone(),
+                "SIM001",
+                10,
+                AssetClass::Equity,
+                OrderSide::Buy,
+                OrderType::Market,
+            ),
+            &brokerage,
+            &connectivity,
+            &connectivity_events,
+            &freshness,
+            &stale_events,
+            &simulation,
+        )
+        .map_err(|err| {
+            format!(
+                "SRS-SAFE-003: the non-designated paper contrast `{}` unexpectedly rejected: {err}",
+                paper.as_str()
+            )
+        })?;
+    let non_designated_sim_receipt = match paper_receipt {
+        OrderRoutingReceipt::Simulated(sim) => sim.sim_order_id,
+        OrderRoutingReceipt::Live(receipt) => {
+            return Err(format!(
+                "SRS-SAFE-003 violation: a non-designated paper strategy `{}` routed to the live \
+                 brokerage (broker order id {})",
+                paper.as_str(),
+                receipt.broker_order_id
+            ));
+        }
+    };
+
+    let events = connectivity_events.events();
+    Ok(ConnectivityBlockEvidence {
+        injected_state: state,
+        designated: live.as_str().to_string(),
+        live_outcome,
+        ib_orders_created: brokerage.gateway().orders_created(),
+        reconnects: connectivity.reconnects(),
+        events_recorded: events.len(),
+        event_scheduled_restart: events.first().map(|event| event.scheduled_restart),
+        event_strategy: events
+            .first()
+            .map(|event| event.strategy_id.as_str().to_string()),
+        non_designated_sim_receipt,
     })
 }
