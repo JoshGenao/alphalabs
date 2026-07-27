@@ -1,9 +1,11 @@
 === SESSION SRS-SAFE-003 ===
-Date: 2026-07-26
+Date: 2026-07-26 (session 1 — build); 2026-07-27 (session 2 — de-churn, see the last section)
 Feature: SRS-SAFE-003 — block live order submission when IB Gateway is unreachable
          (docs/SRS.md:246 SRS-5.9; ERR-2 row docs/SRS.md:291; SyRS SYS-45/SYS-64/NFR-R2; StRS SN-2.04)
 Outcome: serialized (passes stays false — real ConnectivityState producer + readiness wiring + a
          live IB fault-injection e2e are deferred; see "Resume / next")
+Blocked-on (recorded 2026-07-27): SRS-EXE-001, ERR-9, SRS-MD-005 — do NOT claim this feature to
+         "build" it again; the code is on main. See "Session 2".
 
 ## Context — what already existed vs. the gap this session closed
 
@@ -99,3 +101,87 @@ Critic verdicts:
      resumes. Operator-gated (real IB, single-live invariant) — cannot run alongside siblings.
   Where to continue: run_connectivity_block_scenario + safe003_connectivity_block_cli are the shape
   the live leg reuses; swap InjectableConnectivity for the real producer from (a).
+
+=== SESSION 2 — 2026-07-27 (de-churn; NO code change) ===
+Outcome: partial(blocked-on SRS-EXE-001, ERR-9, SRS-MD-005) — the feature stays serialized.
+
+## Why this session exists — the scheduler re-offered a feature that is already built
+
+`agent_pool.py claim` handed SRS-SAFE-003 to a fresh session even though session 1's code is on
+main (fa8b837 / 7ceaf8b / d8a0a2f). Root cause: `serialized_notes()` (tools/agent_pool.py:460)
+decides which serialized features to stop offering by reading **ROOT**/progress.d/session-<id>.md.
+ROOT (/Users/joshgenao/Documents/Programming/Python/alphalabs) was at 4c123a8 on branch
+`chore/mypy-python-clean` — four sibling integrations behind origin/main — so it did not contain
+this note and the scheduler could not see `Outcome: serialized`. SRS-SAFE-003 also had ZERO edges
+in tools/feature_deps.json, so nothing else stopped the re-offer. This is the known LOG-001
+de-churn pattern (dep-less flip-blocked feature → infinite churn).
+
+OPERATOR ACTION (not performed here — it is your repo/branch): sync ROOT to origin/main, e.g.
+`git -C <ROOT> fetch origin` then checkout/pull main once the chore/mypy-python-clean work is
+safe. Until then every newly-serialized feature (UI-5, SRS-BT-008, …) will churn the same way.
+
+## What I did
+
+Recorded the honest blocking owners so the board is accurate even when ROOT lags:
+  `python3 tools/agent_pool.py block SRS-SAFE-003 --on SRS-EXE-001 ERR-9 SRS-MD-005`
+  → ✓ blocked-on ['ERR-9', 'SRS-EXE-001', 'SRS-MD-005'] (no cycles — nothing depends on SAFE-003).
+
+WHERE THAT EDGE LIVES — read this before believing any claim above. State it exactly:
+
+  * IN EFFECT NOW, in the scheduler's runtime state only: `block` wrote the edge under the pool lock
+    to `DEPS_FILE = ROOT/tools/feature_deps.json` (tools/agent_pool.py:159) — the file `load_deps()`
+    reads when `claim` runs. That is local scheduler state on this machine, and it is the thing that
+    actually stops the re-offer. It is NOT observable from this branch diff, and a reader who has
+    only the diff cannot confirm it.
+  * NOT YET ON origin/main at the time this commit was reviewed. `git show
+    origin/main:tools/feature_deps.json` still has no SRS-SAFE-003 key until the integrator runs.
+  * WHY THE BRANCH CANNOT CARRY IT: an agent commit touching tools/feature_deps.json is rejected by
+    `shared_state_violations` (agent_pool.py:905-920) and aborts integrate with exit 6 — only the
+    integrator may write that file. It reaches main in the integrator's marker commit, which calls
+    `_sync_deps_into(wt)` (agent_pool.py:1021, partial and complete alike) and then stages the
+    INTEGRATE_ALLOWLIST. So a note-only branch diff is the ONLY shape this change can take; the
+    reviewer's alternative (commit the graph here) is unimplementable, it fails integrate.
+  * TO CONFIRM AFTER integrate (expected, not yet observed when this was written):
+    `git show origin/main:tools/feature_deps.json | python3 -c "import json,sys;print(json.load(sys.stdin)['SRS-SAFE-003'])"`
+    should print ['ERR-9', 'SRS-EXE-001', 'SRS-MD-005']. If it does not, the de-churn did NOT land
+    and this feature will be re-offered again — re-run the `block` command above.
+Each edge maps to a named half of the AC, not a dodge:
+  * SRS-EXE-001 — the live execution runtime that must BIND a real ConnectivityState producer into
+    route_order. Verified this session: every `impl BrokerageConnectivity` in the repo is a
+    fixture/test (order_routing_wiring.rs:484 HealthyConnectivityFixture, :813 InjectableConnectivity,
+    + test-local stubs). No runtime producer exists.
+  * ERR-9 — "Hold system in pre-trade state and expose readiness failure" (docs/SRS.md ERR-9 →
+    SRS-ARCH-005, SRS-MD-006) is the owner of the AC's second half, "until reconnection AND
+    readiness checks pass". Verified: python/atp_readiness/ (ReadinessGate.assert_ready_or_hold,
+    the MD-006 SYS-76 runtime fold) exists and is green, but NO order path consults it — its only
+    consumers are atp_dashboard/provider.py, atp_reliability restart evidence, and check tools.
+  * SRS-MD-005 — owns the scheduled IB Gateway restart + reconnection semantics ("until
+    reconnection", and the ScheduledRestartWindow state this gate already refuses on).
+
+## What I deliberately did NOT build (scope honesty)
+
+  * A Rust TCP-reachability BrokerageConnectivity producer. It would fork the connectivity
+    observation vocabulary MD-003's heartbeat watchdog already owns in Python (MD-003 is built and
+    awaiting its live feed loop), and it still could not flip passes:true.
+  * A readiness precondition on submit_live_order / route_order. That is ERR-9's named scope, and it
+    would change the pinned ERR-1/2/3 gate signature across 21 `.submit_live_order(` + 14
+    `.route_order(` call sites, including closed-green SRS-EXE-001 / SRS-ERR-001 / SRS-EXE-009 tests.
+
+## What I tested (per feature step)
+
+Step 1 (init.sh → "Environment ready"): PASS — re-run this session.
+Steps 2-4: unchanged from session 1 — no code changed, so session 1's evidence stands verbatim.
+Gate re-run on the notes/deps diff: see "Critic verdicts" below.
+
+Critic verdicts (session 2):
+  deterministic (critic_check.py --staged): APPROVE — no tests/domain/ pairing required: this diff
+    touches only progress.d/session-SRS-SAFE-003.md (carved out at critic_check.py:355-358) and
+    tools/feature_deps.json (no SAFETY_PATH_RE match). No test weakened or removed.
+  judgment (adversarial_review.py origin/main): see the commit trailer for reviewer + verdict.
+
+## Resume / next — UNCHANGED from session 1, plus:
+  Do not re-claim SRS-SAFE-003 to build it. When SRS-EXE-001 + ERR-9 + SRS-MD-005 are green, the
+  remaining work is (1) bind the real producer into route_order in place of InjectableConnectivity,
+  (2) enforce the readiness hold on the live path, (3) the operator live-IB fault-injection e2e
+  (kill the gateway → CONNECTIVITY_BLOCKED → reconnect + readiness → submission resumes), then
+  `integrate --force-complete` / the verified-e2e label.
