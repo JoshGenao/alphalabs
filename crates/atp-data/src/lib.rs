@@ -18,6 +18,7 @@ use atp_types::{
 // -- so there is no public path to raw-as-adjusted. The `coverage` module is a sibling in the same
 // crate, so it can call the crate-internal `normalization` functions while no external caller can.
 pub mod access_journal;
+pub mod backup;
 pub mod cold_read;
 pub mod coverage;
 pub mod eviction;
@@ -31,6 +32,13 @@ pub mod tiering;
 pub use crate::access_journal::{
     AccessJournal, AccessJournalError, AccessRecorder, JobId, JobKind, JobRef, NoopRecorder,
     ACCESS_JOURNAL_FILENAME, ACCESS_JOURNAL_SUBDIR,
+};
+pub use crate::backup::{
+    discover_unit_names, due, restore, rpo_report, run_backup, run_backup_locked, verify_archive,
+    BackupConfig, BackupError, BackupLedger, BackupReport, BackupVerdict, DiscoveredUnit,
+    ForeignCodecValidator, LedgerEntry, RestoreReport, RpoReport, TargetStatus, UnitKind,
+    UnitReport, VerificationDepth, BACKTEST_STORE_FILENAME, BACKTEST_STORE_MAGIC,
+    BACKUP_LEDGER_FILENAME, DEFAULT_CADENCE_DAYS, RPO_MAX_DAYS,
 };
 pub use crate::cold_read::{
     ColdCacheReport, ColdReadConfig, ColdReadError, TieredReadResult, TieredReader,

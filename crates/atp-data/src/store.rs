@@ -1076,7 +1076,11 @@ fn decode_opt_str(
 /// fabricated records. It is NOT a security MAC — defending against a deliberate tamperer who
 /// recomputes the checksum needs a keyed MAC and key management, out of scope for the single-user,
 /// local-only release baseline. Deterministic, dependency-free, integer-only.
-fn checksum(bytes: &[u8]) -> u64 {
+///
+/// `pub(crate)` so the SRS-DATA-018 backup verifier can re-check an *exported* blob's envelope with
+/// the very same function that wrote it, instead of keeping a second copy of the constants that
+/// could silently drift out of agreement with this one.
+pub(crate) fn checksum(bytes: &[u8]) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf29ce484222325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = OFFSET_BASIS;
