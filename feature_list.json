@@ -746,7 +746,7 @@
       "Step 3: Verify acceptance criteria: Each persisted entity records a schema version; data written under older schema versions remains queryable after schema updates without bulk migration.",
       "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {
