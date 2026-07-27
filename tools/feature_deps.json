@@ -196,6 +196,9 @@
   "SRS-RES-002": [
     "SRS-RES-001"
   ],
+  "SRS-RES-003": [
+    "SRS-RES-001"
+  ],
   "SRS-RESV-001": [
     "SRS-EXE-001",
     "SRS-PERF-001",
