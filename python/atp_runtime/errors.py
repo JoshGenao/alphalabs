@@ -26,6 +26,7 @@ transport layer; ``BIND_POLICY`` enforces ``SRS-SEC-002``.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 
 class ErrorCategory(StrEnum):
@@ -95,7 +96,7 @@ class InterfaceError(Exception):
         message: str,
         *,
         type: str | None = None,
-        detail: dict | None = None,
+        detail: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.category = category
@@ -109,7 +110,7 @@ class InterfaceError(Exception):
 
         return STATUS_FOR_CATEGORY[self.category]
 
-    def to_body(self) -> dict:
+    def to_body(self) -> dict[str, Any]:
         """Render the stable ``{"error": {...}}`` JSON body.
 
         Example:

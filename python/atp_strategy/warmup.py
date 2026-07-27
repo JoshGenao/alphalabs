@@ -55,7 +55,7 @@ from typing import TYPE_CHECKING
 from .api import WarmupNotComplete
 
 if TYPE_CHECKING:
-    from .api import HistoricalData, Strategy, StrategyContext
+    from .api import AssetClass, HistoricalData, Strategy, StrategyContext
 
 
 class WarmupState(StrEnum):
@@ -117,7 +117,7 @@ class WarmupController:
         strategy: Strategy,
         context: StrategyContext,
         history: HistoricalData,
-        subscriptions: Iterable[tuple[str, object]],
+        subscriptions: Iterable[tuple[str, AssetClass]],
         warmup_bars: int | None = None,
         frequency: str = "1m",
     ) -> None:
@@ -135,7 +135,7 @@ class WarmupController:
         self._strategy = strategy
         self._context = context
         self._history = history
-        self._subscriptions: tuple[tuple[str, object], ...] = tuple(subscriptions)
+        self._subscriptions: tuple[tuple[str, AssetClass], ...] = tuple(subscriptions)
         self._warmup_bars = warmup_bars
         self._frequency = frequency
         self._state: WarmupState = WarmupState.PENDING

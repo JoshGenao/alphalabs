@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, MutableMapping
+from typing import Any
 
 from .channels import (
     AUTH_MODEL,
@@ -51,7 +52,7 @@ _PLACEHOLDER_DESCRIPTION = (
 )
 
 
-def _placeholder_object_schema(field_names: Iterable[str]) -> dict:
+def _placeholder_object_schema(field_names: Iterable[str]) -> dict[str, Any]:
     properties = {name: {"type": "string"} for name in field_names}
     return {
         "type": "object",
@@ -64,7 +65,7 @@ def _channel_path(name: Channel) -> str:
     return f"{WS_PATH}/{name.value.lower()}"
 
 
-def _event_message(channel: EventChannel) -> dict:
+def _event_message(channel: EventChannel) -> dict[str, Any]:
     return {
         "name": f"{channel.name.value}_event",
         "title": channel.summary,
@@ -87,7 +88,7 @@ def _event_message(channel: EventChannel) -> dict:
     }
 
 
-def _command_message(command: ClientCommand) -> dict:
+def _command_message(command: ClientCommand) -> dict[str, Any]:
     return {
         "name": f"{command.type.value}_command",
         "title": command.summary,
@@ -109,7 +110,7 @@ def _command_message(command: ClientCommand) -> dict:
     }
 
 
-def _build_event_channel(channel: EventChannel) -> dict:
+def _build_event_channel(channel: EventChannel) -> dict[str, Any]:
     description_parts = [
         channel.summary,
         f"SRS trace: {', '.join(channel.srs_refs)}.",
@@ -136,7 +137,7 @@ def _build_event_channel(channel: EventChannel) -> dict:
     }
 
 
-def _build_control_channel(commands: tuple[ClientCommand, ...]) -> dict:
+def _build_control_channel(commands: tuple[ClientCommand, ...]) -> dict[str, Any]:
     return {
         "description": (
             "Multiplexed client-to-server control plane: SUBSCRIBE, "
@@ -157,7 +158,7 @@ def _build_control_channel(commands: tuple[ClientCommand, ...]) -> dict:
 def build_asyncapi(
     channels: Iterable[EventChannel] = EVENT_CHANNELS,
     commands: Iterable[ClientCommand] = CLIENT_COMMANDS,
-) -> dict:
+) -> dict[str, Any]:
     """Build a deterministic AsyncAPI 2.6 document for the WebSocket API.
 
     Output is stable across runs: channels are emitted in declaration
@@ -175,7 +176,7 @@ def build_asyncapi(
     channels_tuple = tuple(channels)
     commands_tuple = tuple(commands)
 
-    channel_map: MutableMapping[str, dict] = {}
+    channel_map: MutableMapping[str, dict[str, Any]] = {}
     tags_seen: set[str] = set()
 
     for channel in channels_tuple:
@@ -186,7 +187,7 @@ def build_asyncapi(
     for command in commands_tuple:
         tags_seen.add(command.type.value)
 
-    document: dict = {
+    document: dict[str, Any] = {
         "asyncapi": ASYNCAPI_SPEC,
         "info": {
             "title": ASYNCAPI_TITLE,

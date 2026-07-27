@@ -24,6 +24,7 @@ redaction), ``SRS-SEC-002`` (bind host / auth model surfaced honestly).
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from .registry import HandlerResult, Request
 
@@ -40,7 +41,7 @@ class SystemStatusHandler:
     importing the assembly module.
     """
 
-    def __init__(self, status_fn: Callable[[], dict]) -> None:
+    def __init__(self, status_fn: Callable[[], dict[str, Any]]) -> None:
         self._status_fn = status_fn
 
     def handle(self, request: Request) -> HandlerResult:
@@ -76,7 +77,7 @@ class ConfigHandler:
 
     REDACTION_MARKER = "***REDACTED***"
 
-    def __init__(self, key_catalogue: list[dict]) -> None:
+    def __init__(self, key_catalogue: list[dict[str, Any]]) -> None:
         self._key_catalogue = key_catalogue
 
     def handle(self, request: Request) -> HandlerResult:

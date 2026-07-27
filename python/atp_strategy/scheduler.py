@@ -21,7 +21,7 @@ from __future__ import annotations
 import datetime as _dt
 import itertools
 from dataclasses import dataclass, field
-from typing import Final
+from typing import Final, cast
 
 from .api import (
     CalendarHorizonExceeded,
@@ -29,7 +29,7 @@ from .api import (
     TradingCalendar,
 )
 from .api import (
-    Scheduler as _SchedulerProtocol,  # type: ignore  # noqa: F401
+    Scheduler as _SchedulerProtocol,  # noqa: F401
 )
 from .calendar import EASTERN
 
@@ -129,7 +129,10 @@ class _CronAdapter:
 
     def next_datetime(self) -> _dt.datetime:
         """Return the next fire time as a tz-aware (zoneinfo) ``datetime``."""
-        value = self._iter.get_next(_dt.datetime)
+        # croniter is stub-less (no typed API surface), so mypy sees
+        # get_next(...) as returning Any; the runtime type is known to be
+        # datetime because we pass _dt.datetime as the ret_type argument.
+        value = cast(_dt.datetime, self._iter.get_next(_dt.datetime))
         if value.tzinfo is None:  # defensive — croniter preserves input tz
             value = value.replace(tzinfo=EASTERN)
         return value.astimezone(EASTERN)
@@ -157,7 +160,7 @@ class InMemoryScheduler:
 
     calendar: TradingCalendar
     _entries: dict[int, _Entry] = field(default_factory=dict)
-    _counter: itertools.count = field(default_factory=lambda: itertools.count(1))
+    _counter: itertools.count[int] = field(default_factory=lambda: itertools.count(1))
 
     # -- Scheduler Protocol methods -------------------------------------- #
 

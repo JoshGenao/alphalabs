@@ -29,6 +29,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 from atp_api import ROUTES, Capability, build_openapi, routes_by_capability
 from atp_cli import COMMANDS, Group, commands_by_group
@@ -125,8 +126,8 @@ class OperatorInterfaceRuntime:
     def _contract_revision(self) -> str:
         return f"operator-workflow-surface@{RUNTIME_VERSION}"
 
-    def _config_catalogue(self) -> list[dict]:
-        catalogue: list[dict] = []
+    def _config_catalogue(self) -> list[dict[str, Any]]:
+        catalogue: list[dict[str, Any]] = []
         for spec in REQUIRED_KEYS:
             catalogue.append(
                 {
@@ -139,7 +140,7 @@ class OperatorInterfaceRuntime:
             )
         return catalogue
 
-    def _workflow_status(self) -> list[dict]:
+    def _workflow_status(self) -> list[dict[str, Any]]:
         """Per-AC-workflow implemented/deferred map for the status report.
 
         A workflow is ``fully_served`` only when **every** one of its REST and
@@ -149,7 +150,7 @@ class OperatorInterfaceRuntime:
         exactly who must land for the workflow to complete.
         """
 
-        rows: list[dict] = []
+        rows: list[dict[str, Any]] = []
         for workflow in self._contract["ac_workflows"]:
             rest_caps = workflow.get("rest_capabilities", [])
             cli_groups = workflow.get("cli_groups", [])
@@ -198,7 +199,7 @@ class OperatorInterfaceRuntime:
             )
         return rows
 
-    def status_snapshot(self) -> dict:
+    def status_snapshot(self) -> dict[str, Any]:
         """Build the runtime's own status report (never overstates readiness)."""
 
         workflows = self._workflow_status()
@@ -226,7 +227,7 @@ class OperatorInterfaceRuntime:
             "srs_ref": "SRS-API-001",
         }
 
-    def _discovery_index(self) -> dict:
+    def _discovery_index(self) -> dict[str, Any]:
         return {
             "service": "atp-operator-interface-runtime",
             "auth_model": self._contract["expected_auth_model"],
@@ -259,7 +260,7 @@ class OperatorInterfaceRuntime:
 
     def dispatch_rest(
         self, method: str, raw_path: str, body_bytes: bytes = b""
-    ) -> tuple[int, dict]:
+    ) -> tuple[int, dict[str, Any]]:
         """In-process REST dispatch (used by tests and the live server alike)."""
 
         return self._dispatcher.dispatch_rest(method, raw_path, body_bytes)

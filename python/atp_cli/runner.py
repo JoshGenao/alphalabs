@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from typing import Any
 
 from .commands import (
     ACCESS_MODEL,
@@ -50,7 +51,7 @@ def _add_argument(parser: argparse.ArgumentParser, argument: Argument) -> None:
         )
         return
 
-    kwargs: dict = {"help": argument.summary}
+    kwargs: dict[str, Any] = {"help": argument.summary}
     if argument.default is not None:
         kwargs["default"] = argument.default
 

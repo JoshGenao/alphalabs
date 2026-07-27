@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, MutableMapping
+from typing import Any
 
 from .routes import AUTH_MODEL, BIND_HOST, ROUTES, Method, Route
 
@@ -53,11 +54,11 @@ def _path_parameters(path: str) -> tuple[str, ...]:
     return tuple(parts)
 
 
-def _string_schema() -> dict:
+def _string_schema() -> dict[str, Any]:
     return {"type": "string"}
 
 
-def _placeholder_object_schema(field_names: Iterable[str]) -> dict:
+def _placeholder_object_schema(field_names: Iterable[str]) -> dict[str, Any]:
     properties = {name: _string_schema() for name in field_names}
     return {
         "type": "object",
@@ -66,8 +67,8 @@ def _placeholder_object_schema(field_names: Iterable[str]) -> dict:
     }
 
 
-def _build_parameters(route: Route) -> list[dict]:
-    parameters: list[dict] = []
+def _build_parameters(route: Route) -> list[dict[str, Any]]:
+    parameters: list[dict[str, Any]] = []
     path_params = set(_path_parameters(route.path))
 
     for name in path_params:
@@ -107,7 +108,7 @@ def _build_parameters(route: Route) -> list[dict]:
     return parameters
 
 
-def _build_request_body(route: Route) -> dict | None:
+def _build_request_body(route: Route) -> dict[str, Any] | None:
     if route.method in (Method.POST, Method.PUT):
         body_fields = tuple(
             name
@@ -133,12 +134,12 @@ def _operation_description(route: Route) -> str:
     return " ".join(parts)
 
 
-def _build_operation(route: Route) -> dict:
+def _build_operation(route: Route) -> dict[str, Any]:
     operation_id_segments = [
         segment.strip("{}") for segment in route.path.strip("/").split("/") if segment
     ]
     operation_id = f"{route.method.value.lower()}_" + "_".join(operation_id_segments)
-    operation: dict = {
+    operation: dict[str, Any] = {
         "operationId": operation_id,
         "summary": route.summary,
         "description": _operation_description(route),
@@ -166,7 +167,7 @@ def _build_operation(route: Route) -> dict:
     return operation
 
 
-def build_openapi(routes: Iterable[Route] = ROUTES) -> dict:
+def build_openapi(routes: Iterable[Route] = ROUTES) -> dict[str, Any]:
     """Build a deterministic OpenAPI 3.1 document for the given routes.
 
     Output is stable across runs: paths are emitted in route declaration
@@ -181,7 +182,7 @@ def build_openapi(routes: Iterable[Route] = ROUTES) -> dict:
         True
     """
 
-    paths: MutableMapping[str, dict] = {}
+    paths: MutableMapping[str, dict[str, Any]] = {}
     tags_seen: set[str] = set()
 
     for route in routes:
@@ -189,7 +190,7 @@ def build_openapi(routes: Iterable[Route] = ROUTES) -> dict:
         bucket[route.method.value.lower()] = _build_operation(route)
         tags_seen.add(route.capability.value)
 
-    document: dict = {
+    document: dict[str, Any] = {
         "openapi": OPENAPI_SPEC,
         "info": {
             "title": OPENAPI_TITLE,

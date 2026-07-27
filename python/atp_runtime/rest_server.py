@@ -34,7 +34,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from http.client import HTTPException, HTTPResponse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import cast
+from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
 from atp_api import ROUTES, Route
@@ -238,7 +238,7 @@ class Dispatcher:
     """
 
     def __init__(
-        self, registry: HandlerRegistry, meta_get: Mapping[str, Callable[[], dict]]
+        self, registry: HandlerRegistry, meta_get: Mapping[str, Callable[[], dict[str, Any]]]
     ) -> None:
         self._registry = registry
         self._routes = RouteTable()
@@ -258,7 +258,9 @@ class Dispatcher:
 
         self._meta_get[path] = provider
 
-    def dispatch_rest(self, method: str, raw_path: str, body_bytes: bytes) -> tuple[int, dict]:
+    def dispatch_rest(
+        self, method: str, raw_path: str, body_bytes: bytes
+    ) -> tuple[int, dict[str, Any]]:
         """Dispatch one REST request to a ``(status, body)`` pair."""
 
         try:
@@ -329,7 +331,7 @@ class Dispatcher:
             return error.status, error.to_body()
 
     @staticmethod
-    def _parse_body(method: str, body_bytes: bytes) -> dict:
+    def _parse_body(method: str, body_bytes: bytes) -> dict[str, Any]:
         if method not in ("POST", "PUT") or not body_bytes:
             return {}
         try:
@@ -516,7 +518,12 @@ def make_request_handler() -> type[BaseHTTPRequestHandler]:
             body = self.rfile.read(length) if length else b""
             try:
                 connection, response = open_upstream_response(
-                    route, method, raw_path, self.headers, body, is_allowed_bind_host
+                    route,
+                    method,
+                    raw_path,
+                    dict(self.headers.items()),
+                    body,
+                    is_allowed_bind_host,
                 )
             except (ProxyPolicyError, OSError, HTTPException) as exc:
                 self._write_proxy_error(
@@ -592,7 +599,7 @@ def make_request_handler() -> type[BaseHTTPRequestHandler]:
             try:
                 try:
                     upstream_sock, head = open_upstream_ws(
-                        route, raw_path, self.headers, is_allowed_bind_host
+                        route, raw_path, dict(self.headers.items()), is_allowed_bind_host
                     )
                 except (ProxyPolicyError, OSError) as exc:
                     self._write_proxy_error(
@@ -647,7 +654,7 @@ def make_request_handler() -> type[BaseHTTPRequestHandler]:
         def _write_proxy_error(self, status: int, category: str, message: str) -> None:
             self._write_json(status, {"error": {"category": category, "message": message}})
 
-        def _write_json(self, status: int, body: dict) -> None:
+        def _write_json(self, status: int, body: dict[str, Any]) -> None:
             payload = json.dumps(body, sort_keys=True).encode("utf-8")
             self._write_raw(status, "application/json", payload)
 
@@ -683,7 +690,7 @@ def make_request_handler() -> type[BaseHTTPRequestHandler]:
             # socket write deadline. So `send` (called by the protocol under the
             # session lock, and by the publisher thread) only ever enqueues —
             # never blocks — and a slow consumer cannot stall fan-out to others.
-            outbox: queue.Queue = queue.Queue(maxsize=_WS_OUTBOX_MAXSIZE)
+            outbox: queue.Queue[bytes] = queue.Queue(maxsize=_WS_OUTBOX_MAXSIZE)
             closed = threading.Event()
 
             def send(frame: bytes) -> None:

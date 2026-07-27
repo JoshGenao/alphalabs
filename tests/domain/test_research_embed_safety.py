@@ -37,12 +37,14 @@ import json
 import socket
 import threading
 from collections.abc import Iterator
+from http.client import HTTPMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 from atp_dashboard import ReadinessBackedProvider, mount_dashboard
 from atp_runtime import OperatorInterfaceRuntime, ProxyPolicyError
 from atp_runtime.errors import BindPolicyError
+from atp_runtime.proxy import filter_request_headers
 
 pytestmark = [pytest.mark.domain, pytest.mark.safety]
 
@@ -377,3 +379,52 @@ def test_ws_kernel_tunnel_works_with_zero_strategies() -> None:
     finally:
         runtime.stop()
         server_sock.close()
+
+
+def test_request_header_filter_holds_through_the_message_to_dict_conversion() -> None:
+    """The SEC-004 request filter must survive the rest_server header conversion.
+
+    ``rest_server`` sources the browser request headers from
+    ``BaseHTTPRequestHandler.headers`` — an ``http.client.HTTPMessage`` (an
+    ``email.message.Message`` subclass, not a ``Mapping``) — and forwards them to
+    the proxy via ``dict(self.headers.items())``. This pins that the one-way
+    boundary filtering (strip ``Authorization``; keep only Jupyter-owned cookies;
+    rewrite ``Origin``) is identical whether the filter is fed that
+    ``Message``-derived dict or an equivalent plain dict, so the conversion can
+    never silently widen what crosses to the research upstream.
+    """
+    message = HTTPMessage()
+    message["Authorization"] = "Bearer operator-token"  # must never reach upstream
+    message["Cookie"] = "_xsrf=jupytertok; atp_session=operator; username-h-p=x"
+    message["Origin"] = "http://dashboard.local"
+    message["X-XSRFToken"] = "jupytertok"  # forwards as-is
+    message["Accept-Encoding"] = "gzip"
+
+    # The exact conversion rest_server performs at the proxy call sites.
+    converted = dict(message.items())
+    plain = {
+        "Authorization": "Bearer operator-token",
+        "Cookie": "_xsrf=jupytertok; atp_session=operator; username-h-p=x",
+        "Origin": "http://dashboard.local",
+        "X-XSRFToken": "jupytertok",
+        "Accept-Encoding": "gzip",
+    }
+
+    upstream = "jupyter.internal:8888"
+    filtered = filter_request_headers(converted, upstream)
+
+    # Conversion is behavior-neutral: identical to filtering a plain dict.
+    assert filtered == filter_request_headers(plain, upstream)
+
+    names = {name.lower() for name, _ in filtered}
+    values = {name.lower(): value for name, value in filtered}
+
+    # Operator auth is stripped (SRS-SEC-004 one-way boundary).
+    assert "authorization" not in names
+    # Only the Jupyter-owned _xsrf cookie crosses; operator/session cookies drop.
+    assert values["cookie"] == "_xsrf=jupytertok"
+    # Origin is rewritten to the upstream so Jupyter's same-origin checks pass.
+    assert values["origin"] == f"http://{upstream}"
+    # Non-sensitive headers forward unchanged.
+    assert values["x-xsrftoken"] == "jupytertok"
+    assert values["accept-encoding"] == "gzip"
