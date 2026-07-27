@@ -135,3 +135,191 @@ Implement a concrete HotSwapStatusSource (the Protocol seam), pass it to
 HotSwapStatusProvider in mount_default_dashboard (add an ATP_HOT_SWAP_STATE knob), then
 re-run the 11 UI-5 e2es in tests/e2e/test_dashboard_refresh.py with the operator witnessing
 and flip via the verified-e2e label. Do NOT rebuild the pane — swap the provider cells.
+
+---
+
+# === SESSION UI-5 (2) — de-churn, 2026-07-27 ===
+Session-2 outcome: partial(blocked-on SRS-API-001 + SRS-RESV-002..006). No code changed.
+Still serialized; `passes` stays FALSE. The first `Outcome:` line above is unchanged on
+purpose — `serialized_notes()` reads only that one.
+
+## Why this session existed: UI-5 was re-offered, but nothing was left to build
+
+The scheduler handed UI-5 to a fresh session even though the panel above had already
+integrated onto main. Verified this session (not taken on faith from the note): the tree is
+clean, HEAD == origin/main == d3201aa, and every artefact is present — hotswap.py,
+assets/hotswap.js, the panel in index.html/app.js/styles.css, the /dashboard/api/hot-swap
+route in server.py, and the unit/boundary/domain tests. So this was churn, not work.
+
+**Two independent root causes, and UI-5 hit both:**
+
+1. **ROOT lags origin/main.** `serialized_notes()` (tools/agent_pool.py:459) reads
+   `ROOT/progress.d`, i.e. the primary checkout at
+   /Users/joshgenao/Documents/Programming/Python/alphalabs — NOT the worktree and NOT
+   origin/main. ROOT sits on branch `chore/mypy-python-clean` at 4c123a8, **12 commits
+   behind origin/main**, with an uncommitted mypy cleanup in flight. This very note —
+   which does say `Outcome: serialized` — was therefore invisible to the scheduler, so
+   UI-5 never entered the awaiting-verification bucket. The same blind spot covers the
+   other three notes integrated since 4c123a8: SRS-BT-008, SRS-DATA-010, SRS-SAFE-003.
+2. **No recorded dependency edges.** tools/feature_deps.json had *no* UI-5 entry, unlike
+   every sibling panel (UI-1 → NOTIF-001/UI-002/UI-003; UI-2 → BT-004/EXE-001;
+   UI-3 → API-001; UI-4 → SAFE-001/SAFE-002). A dep-less, flip-blocked feature returns to
+   the ready frontier every cycle — the known churn loop.
+
+Cause 2 is fixed below and is branch-independent. Cause 1 is the operator's to fix
+(see "Operator action" — this session deliberately did not touch ROOT's working tree).
+
+## What I did
+
+Recorded the real blocking edges, derived from the code rather than from prose. hotswap.py
+names each deferred cell's owner as a constant (lines 95-108), and each is a real
+passes:false feature:
+
+  SRS-RESV-002  HOT_SWAP_CANDIDATE_OWNER   promotion_candidate            → arms the promote control
+  SRS-RESV-003  HOT_SWAP_TRIGGER_OWNER     auto_triggers_enabled/_live    → auto-trigger config AC
+  SRS-RESV-004  HOT_SWAP_DEMOTION_OWNER    demotion_pending               → demotion-pending AC
+  SRS-RESV-005  HOT_SWAP_PROMOTION_OWNER   current_live_strategy_id       → what is being demoted
+  SRS-RESV-006  HOT_SWAP_COOLDOWN_OWNER    cooldown.{in_effect,started_at,expires_at} → cool-down AC
+
+plus SRS-API-001, because /api/v1/hot-swap resolves to a DeferredHandler → 501
+HANDLER_DEFERRED today, so the manual-promotion AC cannot be exercised at all until
+API-001 binds the handler.
+
+  python3 tools/agent_pool.py block UI-5 --on SRS-API-001 SRS-RESV-002 SRS-RESV-003 \
+      SRS-RESV-004 SRS-RESV-005 SRS-RESV-006 --reason "<see plan-UI-5.md>"
+
+**Where that edge lives, and why it is NOT in this branch's diff.** `block` writes the
+*canonical* deps file, `DEPS_FILE = ROOT/tools/feature_deps.json` (agent_pool.py:159) — the
+primary checkout's copy, which is the only one the scheduler reads. This worktree's
+`tools/feature_deps.json` is a stale snapshot of origin/main and still reads `UI-5 -> None`;
+that is correct and deliberate. A branch commit touching `tools/feature_deps.json` is
+rejected outright by `shared_state_violations` (agent_pool.py:905, integrate exit 6) —
+only the integrator may write it. The path onto main is `integrate`'s own
+`_sync_deps_into(wt)` (agent_pool.py:828), which copies ROOT's canonical file into the
+worktree *after* the violation check and stages it into the `[agent-integrate]` marker
+commit. So: the scheduler is protected the moment `block` returned; main records it at
+integrate. Reviewing this branch's tree alone cannot see the edge — check ROOT, or check
+main after the marker commit.
+
+SRS-LOG-001 was deliberately EXCLUDED. It appears at step 6 of the flip path above (HOT_SWAP
+records back the durable state), but no AC fact depends on it — over-blocking is as
+dishonest as under-blocking, and it would gate UI-5 on a feature its acceptance criteria
+never mention.
+
+**Explicitly NOT done: any rebuild or redesign of the pane.** Nothing in UI-5's steps[] is
+solo-verifiable that the prior session did not already do; steps 2-3 need an
+operator-witnessed browser walkthrough over producers that do not exist. Re-implementing the
+panel would have been pure churn on top of churn. The operator was asked whether to run a
+/frontend-design pass over the existing Changeover Console this session and chose not to —
+the panel already shipped design-approved, and its producers are still deferred.
+
+## What I tested (per UI-5 step)
+- Step 1 (./init.sh + dashboard in browser automation): PASS previously (session 1); not
+  re-run — no code changed this session, so there was nothing to re-prove.
+- Steps 2/3 (workflow walkthrough; the four AC facts): UNCHANGED — still operator-witnessed,
+  still gated on the six producers above. This is why passes stays FALSE.
+- Step 4 (trace to SRS-RESV-003..006, leave passes false): PASS — the trace is now recorded
+  as machine-readable dependency edges in the canonical ROOT deps file (not just prose), so
+  the scheduler enforces it. It reaches main via the integrator's marker commit, never via
+  this branch — see "Where that edge lives" above.
+- Regression evidence that the landed code is still green on current main:
+  `.venv/bin/pytest tests/unit/test_dashboard_hot_swap.py
+   tests/boundary/test_dashboard_hot_swap_wiring.py
+   tests/domain/test_dashboard_hot_swap_status.py -q` → **19 passed in 6.20s**.
+- Verified the edge landed in the canonical file: reading
+  /Users/joshgenao/Documents/Programming/Python/alphalabs/tools/feature_deps.json (ROOT, the
+  copy the scheduler reads) gives
+  UI-5 -> ['SRS-API-001','SRS-RESV-002','SRS-RESV-003','SRS-RESV-004','SRS-RESV-005','SRS-RESV-006'],
+  and `block` reported no skipped cycles. This worktree's copy still reads UI-5 -> None by
+  design; do not "fix" that by staging it.
+- Post-integrate confirmation to run: `agent_pool.py status --no-fetch` must list UI-5 under
+  **blocked**, not on the ready frontier.
+
+Full gate (session 2), run with `.venv` active — run_ci_locally.sh dies on system python3
+(ModuleNotFoundError: numpy) because it shells the ambient interpreter, so `source
+.venv/bin/activate` first:
+  ruff check .                              PASS
+  ruff format --check .                     1 PRE-EXISTING failure, NOT mine (see below);
+                                            428/429 formatted, and re-running with that one
+                                            file excluded is clean
+  cargo fmt --check                         PASS
+  cargo clippy --workspace -- -D warnings   PASS (exit 0)
+  pytest -m "not integration and not e2e"   4168 passed, 4 skipped, 129 subtests (3:14).
+                                            The 4 skips are pre-existing; note that
+                                            tests/domain/test_single_live_invariant.py skips
+                                            "pending Hot-Swap per SRS-RESV-001..006" — the
+                                            same producers UI-5 is now blocked on.
+  cargo test --workspace                    exit 0, zero failing results (the
+                                            "data008_tier_cli: NAS archival sync FAILED"
+                                            string in the log is asserted-on test OUTPUT of a
+                                            failure-path test, not a failing test)
+  critic_check.py --range origin/main..HEAD APPROVE
+  architecture / contract checks            exit 0
+
+**Pre-existing red on main, owner SRS-SAFE-003 (not this session's to fix):**
+`ruff format --check` wants to reformat `tests/domain/test_safe003_connectivity_block_cli.py`,
+which arrived on main in fa8b837 (feat(SRS-SAFE-003)). Proven not mine: this branch's entire
+diff vs origin/main is progress.d/plan-UI-5.md + progress.d/session-UI-5.md — two markdown
+files a Python formatter does not read. Deliberately NOT fixed here: the SRS-SAFE-003 agent
+still held a live lease while this ran, so reformatting its file would collide with in-flight
+work, and formatting a sibling's file inside a feature branch is the known
+CI-red-behind-format-gates anti-pattern. Owner should run
+`ruff format tests/domain/test_safe003_connectivity_block_cli.py` in the SAFE-003 branch.
+
+## Critic verdicts (session 2; diff is this note only)
+  deterministic (critic_check.py --staged): APPROVE — no findings.
+  Note: progress.d/ is carved out of the SAFETY_PATH_RE paired-domain-test rule
+  (tools/critic_check.py:358), so a notes-only chore does not demand a tests/domain diff.
+
+  judgment (adversarial_review.py origin/main, reviewer=codex): APPROVE at r2.
+    r1 BLOCK — "False scheduler dependency handoff" (high, 0.98): the note asserted the
+      dependency fix had landed, but `tools/feature_deps.json` in the reviewed tree ends at
+      UI-4 with no UI-5 entry, so a reader diffing this branch would conclude the de-churn
+      protection was fabricated. The observation was factually correct about the branch tree.
+      Root cause was MY PROSE, not the fix: `block` writes the canonical
+      ROOT/tools/feature_deps.json, which is genuinely populated, while the branch copy stays
+      stale by design. Codex's literal recommendation — "stage the actual
+      tools/feature_deps.json update" — must NOT be followed: staging it makes
+      `shared_state_violations` reject the integrate (exit 6), because only the integrator
+      may write that file. Fixed by taking the other branch of the same recommendation:
+      re-scoped the note to say exactly where the edge lives, why it is absent from this
+      diff, and how `_sync_deps_into` carries it to main. Same lesson as UI-4's evidence
+      attribution round — when a reviewer calls a claim unsupported, correct the claim's
+      scope rather than the artefact it points at.
+    r2 APPROVE.
+
+## Tooling gap found the hard way: a tracked plan-<id>.md is IMMUTABLE
+
+`progress.d/plan-UI-5.md` is tracked — session 1 left it untracked and the integrator's
+`git add -A -- progress.d` swept it into marker commit d3201aa. Once tracked, **no later
+session can update it**, because both exits are closed:
+  - committing it on the branch → `shared_state_violations` rejects the integrate (exit 6);
+    only `progress.d/session-<fid>.md` may come from a branch commit;
+  - leaving it dirty for the integrator to sweep → `git rebase` refuses outright
+    ("cannot rebase: You have unstaged changes"), and integrate reports that as
+    "rebase onto origin/main conflicted", which reads like a content conflict but is not.
+    Verified empirically: even a **no-op** rebase (branch already on top of origin/main)
+    still refuses with an unstaged tracked file.
+So this session's plan lives only in the approved-plan record and in this note, and
+progress.d/plan-UI-5.md was restored to its session-1 content untouched. Next session: do
+not try to edit a tracked plan-*.md — put the plan in the session note, or the integrate
+will fail in a way whose error message points at the wrong thing.
+
+## Operator action (I could not do this — ROOT holds your uncommitted work)
+
+To close cause 1 generally, ROOT's progress.d/ needs to reach origin/main:
+
+    cd /Users/joshgenao/Documents/Programming/Python/alphalabs
+    # commit or stash the in-flight chore/mypy-python-clean changes FIRST, then bring
+    # progress.d/ up to origin/main so serialized_notes() can see the newest notes.
+
+Until then the scheduler stays blind to the session notes for UI-5, SRS-BT-008,
+SRS-DATA-010 and SRS-SAFE-003. UI-5 specifically is now safe either way — the dependency
+edges block it independently of the note.
+
+## Resume / next
+The flip path in the section above is unchanged and still correct. UI-5 is now
+`blocked-on SRS-API-001, SRS-RESV-002..006` and will not be re-offered until those pass.
+When they do: implement a concrete HotSwapStatusSource against the Protocol seam, pass it
+to HotSwapStatusProvider in mount_default_dashboard, re-run the UI-5 e2es with the operator
+witnessing, and flip via the verified-e2e label. Do NOT rebuild the pane.
