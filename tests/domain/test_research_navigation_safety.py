@@ -34,6 +34,7 @@ from __future__ import annotations
 import contextlib
 import http.client
 import json
+import re
 import socket
 import threading
 from collections.abc import Iterator
@@ -64,11 +65,38 @@ _SERVED_PATHS = (
     RESEARCH_SNAPSHOT_PATH,
 )
 
-#: The state-bearing routes. The bare-port assertion is confined to these
-#: because a five-digit ephemeral port could coincidentally occur inside a
-#: 120 KB asset (a flaky test, not a leak); the authority form below is
-#: unambiguous and IS asserted against every served path.
+#: The state-bearing routes — small, fully controlled bodies, so the bare port
+#: number can be asserted against them without ambiguity.
 _STATE_PATHS = (NAVIGATION_SNAPSHOT_PATH, RESEARCH_SNAPSHOT_PATH)
+
+#: Absolute URLs in served bytes. Matching URL SHAPE rather than a bare port
+#: number is what makes the assets assertable: a five-digit ephemeral port can
+#: coincidentally occur inside a 120 KB asset (that would be a flaky test, not
+#: a leak), but a URL pointing at the research service cannot.
+_URL_RE = re.compile(rb"(?i)https?://[^\s\"'<>)\\]+")
+
+#: Any authority spelling that would name a locally-hosted research service.
+#: The assets legitimately contain exactly one absolute URL — the W3C SVG
+#: namespace — and no loopback reference at all, so this is assertable as an
+#: absolute rule rather than an allow-list of exceptions.
+_LOOPBACK_HOSTS = (b"127.0.0.1", b"localhost", b"[::1]", b"0.0.0.0", b"::1")
+
+
+def _assert_no_service_url(body: bytes, upstream_port: int, path: str) -> None:
+    """No byte of ``body`` may hand the operator a direct research service URL.
+
+    Covers the host variants an upstream could be spelled with, not just the
+    one this fixture happens to use (Codex R2): an absolute URL naming any
+    loopback authority, or carrying the upstream's port, is a leak whichever
+    hostname it wears.
+    """
+
+    for url in _URL_RE.findall(body):
+        assert str(upstream_port).encode() not in url, (path, url)
+        for host in _LOOPBACK_HOSTS:
+            assert host not in url, (path, url)
+    for host in _LOOPBACK_HOSTS:
+        assert host + b":" + str(upstream_port).encode() not in body, (path, host)
 
 
 class _Upstream(BaseHTTPRequestHandler):
@@ -135,11 +163,10 @@ def test_no_served_byte_carries_the_upstream_when_reachable(
     reachable_upstream: int,
 ) -> None:
     with _mounted(f"http://127.0.0.1:{reachable_upstream}") as (host, port):
-        authority = f"127.0.0.1:{reachable_upstream}".encode()
         for path in _SERVED_PATHS:
             status, body = _request(host, port, path)
             assert status == 200, path
-            assert authority not in body, path
+            _assert_no_service_url(body, reachable_upstream, path)
         for path in _STATE_PATHS:
             assert str(reachable_upstream).encode() not in _request(host, port, path)[1], path
 
@@ -158,7 +185,7 @@ def test_no_served_byte_carries_the_upstream_when_it_is_DOWN() -> None:
         snapshot = json.loads(body)
         assert snapshot["upstream_reachable"] is False  # genuinely down
         for path in _SERVED_PATHS:
-            assert f"127.0.0.1:{dead}".encode() not in _request(host, port, path)[1], path
+            _assert_no_service_url(_request(host, port, path)[1], dead, path)
         for path in _STATE_PATHS:
             assert str(dead).encode() not in _request(host, port, path)[1], path
 

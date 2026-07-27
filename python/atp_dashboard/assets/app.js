@@ -1078,7 +1078,10 @@
   const RESEARCH_LIVE_STALE_MS = POLL_MS * 3;   // liveness budget for the probe
 
   let navEntry = null;          // fail-closed projection of the nav model
-  let navReason = "checking…";
+  // The caption is width-bounded, so the short form is what the operator reads
+  // at a glance and the long form is the title — neither is allowed to be more
+  // optimistic than the other.
+  let navReason = { short: "checking…", detail: "checking navigation model…" };
   let researchLive = null;      // {reachable, detail} from the RES-001 probe
   let researchLiveAt = 0;
   let deepLinkPending = false;
@@ -1162,8 +1165,8 @@
 
     if (navEntry === null) {
       state = "deferred";
-      short = navReason;
-      detail = navReason;
+      short = navReason.short;
+      detail = navReason.detail;
     } else if (!navEntry.routable) {
       state = "deferred";
       short = "not configured";
@@ -1247,19 +1250,31 @@
       });
       if (res.ok) {
         navEntry = researchNavEntry(await res.json());
-        navReason = navEntry === null
-          ? "navigation model unreadable"
-          : (navEntry.detail || "");
+        if (navEntry === null) {
+          navReason = {
+            short: "model unreadable",
+            detail: "navigation model unreadable — malformed response",
+          };
+        }
       } else if (res.status === 404) {
         navEntry = null;
-        navReason = "not mounted — SRS-RES-001 embed not composed on this runtime";
+        navReason = {
+          short: "not mounted",
+          detail: "not mounted — SRS-RES-001 embed not composed on this runtime",
+        };
       } else {
         navEntry = null;
-        navReason = "navigation route HTTP " + res.status;
+        navReason = {
+          short: "route HTTP " + res.status,
+          detail: "navigation route answered HTTP " + res.status,
+        };
       }
     } catch (_e) {
       navEntry = null;
-      navReason = "navigation route unreachable";
+      navReason = {
+        short: "route unreachable",
+        detail: "navigation route unreachable or timed out",
+      };
     }
     renderNav();
     setTimeout(pollNavigation, POLL_MS);
