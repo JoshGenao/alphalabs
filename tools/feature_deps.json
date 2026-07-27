@@ -255,5 +255,9 @@
     "SRS-RESV-004",
     "SRS-RESV-005",
     "SRS-RESV-006"
+  ],
+  "UI-6": [
+    "SRS-RES-001",
+    "SRS-RES-003"
   ]
 }
