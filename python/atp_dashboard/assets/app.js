@@ -996,6 +996,24 @@
     return true;
   }
 
+  // Every degraded probe branch funnels here. A control that can no longer be
+  // backed by a fresh reachability answer must not stay armed on EITHER surface:
+  // disarming only the topbar entry would still leave the panel button holding a
+  // stale embed path, so one click could open an environment last seen alive
+  // several polls ago. Both are cleared together, or neither is honest.
+  function disarmResearchControls(reason) {
+    const open = $("research-open");
+    if (open) {
+      open.disabled = true;
+      delete open.dataset.embedPath;
+    }
+    const status = $("research-status");
+    if (status) {
+      status.textContent = reason;
+      status.dataset.tone = "warn";
+    }
+  }
+
   function initResearch() {
     const open = $("research-open");
     const frame = $("research-frame");
@@ -1019,14 +1037,22 @@
         renderResearch(snap);
         setResearchLive(snap);
       } else if (res.status === 404) {
-        const s = $("research-status");
-        if (s) { s.textContent = "research not mounted — SRS-RES-001 provider not composed on this runtime"; s.dataset.tone = "warn"; }
+        disarmResearchControls(
+          "research not mounted — SRS-RES-001 provider not composed on this runtime"
+        );
         setResearchLive(null);
       } else {
+        disarmResearchControls(
+          "research state unavailable — probe endpoint answered HTTP " + res.status
+        );
         setResearchLive(null);
       }
     } catch (_e) {
-      setResearchLive(null);   // transient; next tick retries — but nothing stays armed
+      // Transient; the next tick retries — but nothing stays armed meanwhile.
+      disarmResearchControls(
+        "research state unavailable — probe endpoint unreachable or timed out"
+      );
+      setResearchLive(null);
     }
     renderNav();
     setTimeout(pollResearch, POLL_MS);

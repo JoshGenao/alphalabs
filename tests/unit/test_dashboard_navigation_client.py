@@ -183,6 +183,85 @@ def test_a_well_formed_routable_feed_projects_the_same_origin_target() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Post-success degradation: neither surface may reopen off stale truth
+# --------------------------------------------------------------------------- #
+
+_DOM_STUB = """
+let researchFrameLoaded = false;
+const els = {
+  "research-open": {dataset: {}, disabled: true, textContent: "Open"},
+  "research-status": {dataset: {}, textContent: ""},
+  "research-frame": {
+    src: null, hidden: true,
+    getAttribute(name) { return name === "src" ? this.src : null; },
+  },
+};
+function $(id) { return els[id]; }
+"""
+
+
+def test_a_degraded_probe_disarms_the_panel_button_not_just_the_nav() -> None:
+    """The exact sequence a stale-truth guard must survive.
+
+    Probe succeeds (button armed, embed opened) -> probe then fails -> the
+    operator clicks. Disarming only the topbar entry would leave the PANEL
+    button holding the old embed path, so the click would still open an
+    environment last seen alive several polls ago.
+    """
+
+    script = (
+        _DOM_STUB
+        + _extract("isSameOriginPath")
+        + "\n"
+        + _extract("openResearchEmbed")
+        + "\n"
+        + _extract("disarmResearchControls")
+        + "\n"
+        + _extract("renderResearch")
+        + """
+// 1. A healthy probe arms the panel control.
+renderResearch({configured: true, upstream_reachable: true, status_code: 200,
+                prefix: "/research/", embed_path: "/research/lab"});
+const armed = {disabled: els["research-open"].disabled,
+               path: els["research-open"].dataset.embedPath};
+// 2. The operator opens it — this is the state that becomes stale.
+openResearchEmbed(els["research-open"].dataset.embedPath);
+const opened = els["research-frame"].src;
+// 3. The probe then fails (HTTP error / timeout / 404 all land here).
+disarmResearchControls("probe endpoint unreachable");
+// 4. The operator clicks the panel button anyway.
+const reopened = openResearchEmbed(els["research-open"].dataset.embedPath);
+console.log(JSON.stringify({
+  armed: armed,
+  opened: opened,
+  afterDisarm: {disabled: els["research-open"].disabled,
+                path: els["research-open"].dataset.embedPath ?? null},
+  reopened: reopened,
+}));
+"""
+    )
+    result = _run_node(script)
+    assert result["armed"] == {"disabled": False, "path": "/research/lab"}
+    assert result["opened"] == "/research/lab"
+    # Both halves of the guard: the control is disabled AND holds no target.
+    assert result["afterDisarm"] == {"disabled": True, "path": None}
+    # And a click cannot reopen off the stale path.
+    assert result["reopened"] is False
+
+
+def test_every_degraded_research_branch_disarms_both_surfaces() -> None:
+    """404, HTTP error and a stalled fetch each clear the panel control too."""
+
+    poll = _APP_JS[_APP_JS.index("async function pollResearch()") :]
+    poll = poll[: poll.index("\n  }\n") + 4]
+    assert poll.count("disarmResearchControls(") == 3
+    assert poll.count("setResearchLive(null);") == 3
+    disarm = _extract("disarmResearchControls")
+    assert "open.disabled = true;" in disarm
+    assert "delete open.dataset.embedPath;" in disarm
+
+
+# --------------------------------------------------------------------------- #
 # Static invariants (hold with or without node)
 # --------------------------------------------------------------------------- #
 

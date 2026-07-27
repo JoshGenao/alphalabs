@@ -64,6 +64,12 @@ _SERVED_PATHS = (
     RESEARCH_SNAPSHOT_PATH,
 )
 
+#: The state-bearing routes. The bare-port assertion is confined to these
+#: because a five-digit ephemeral port could coincidentally occur inside a
+#: 120 KB asset (a flaky test, not a leak); the authority form below is
+#: unambiguous and IS asserted against every served path.
+_STATE_PATHS = (NAVIGATION_SNAPSHOT_PATH, RESEARCH_SNAPSHOT_PATH)
+
 
 class _Upstream(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
@@ -134,7 +140,8 @@ def test_no_served_byte_carries_the_upstream_when_reachable(
             status, body = _request(host, port, path)
             assert status == 200, path
             assert authority not in body, path
-            assert str(reachable_upstream).encode() not in body, path
+        for path in _STATE_PATHS:
+            assert str(reachable_upstream).encode() not in _request(host, port, path)[1], path
 
 
 def test_no_served_byte_carries_the_upstream_when_it_is_DOWN() -> None:
@@ -151,9 +158,9 @@ def test_no_served_byte_carries_the_upstream_when_it_is_DOWN() -> None:
         snapshot = json.loads(body)
         assert snapshot["upstream_reachable"] is False  # genuinely down
         for path in _SERVED_PATHS:
-            _, served = _request(host, port, path)
-            assert str(dead).encode() not in served, path
-            assert f"127.0.0.1:{dead}".encode() not in served, path
+            assert f"127.0.0.1:{dead}".encode() not in _request(host, port, path)[1], path
+        for path in _STATE_PATHS:
+            assert str(dead).encode() not in _request(host, port, path)[1], path
 
 
 def test_navigation_target_is_served_by_this_origin_not_another(
