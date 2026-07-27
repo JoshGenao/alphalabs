@@ -166,9 +166,13 @@ def test_scenario_drives_dispatch_order_through_the_authority_chain() -> None:
     # The scenario designates a single live strategy and routes through dispatch_order (not a direct
     # submit_live_order), so the block is proven through the production authority chain.
     body = src.split("fn run_connectivity_block_scenario", 1)[1]
-    assert ".designate(" in body, "the scenario must designate a live strategy (SRS-EXE-001 authority)"
+    assert ".designate(" in body, (
+        "the scenario must designate a live strategy (SRS-EXE-001 authority)"
+    )
     assert ".dispatch_order(" in body, "the scenario must route through dispatch_order"
-    assert "InjectableConnectivity::in_state" in body, "the scenario must inject the connectivity state"
+    assert "InjectableConnectivity::in_state" in body, (
+        "the scenario must inject the connectivity state"
+    )
 
 
 def test_cli_self_labels_fixture_transports() -> None:
