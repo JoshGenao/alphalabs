@@ -348,12 +348,34 @@ def _load_evidence() -> dict | None:
         return None
 
 
+#: The IB TWS API package generation the adapter declares support for. Read at
+#: evidence-write time so the artifact records WHICH API version the paper account
+#: actually exercised — SRS-EXE-007's gate compares it against the declared
+#: constant, so a version bump cannot ride on a run that predates it.
+DECLARED_TWS_API_VERSION_RE = re.compile(
+    r'pub const INTERACTIVE_BROKERS_TWS_API_VERSION: &str = "([^"]*)";'
+)
+
+
+def _declared_tws_api_version() -> str:
+    match = DECLARED_TWS_API_VERSION_RE.search(read_source("crates/atp-adapters/src/lib.rs"))
+    if not match:
+        fail(
+            "could not find INTERACTIVE_BROKERS_TWS_API_VERSION in "
+            "crates/atp-adapters/src/lib.rs — cannot record which IB TWS API version "
+            "the paper-account run exercised (SRS-EXE-007)"
+        )
+    return match.group(1)
+
+
 def _write_evidence(runtime: dict, result_line: str, timestamp: str) -> None:
     """Record the passing operator run as a structured, code-bound artifact.
 
     Called ONLY from the operator path (``ATP_RUN_INTEGRATION=1``) after the
     live round trip returned ``test result: ok`` — never hand-authored. The
-    ``code_digest`` binds the evidence to the exact wire code that produced it.
+    ``code_digest`` binds the evidence to the exact wire code that produced it,
+    and ``tws_api_version`` binds it to the IB TWS API generation that was
+    declared when the round trip ran (SRS-EXE-007 / SyRS SYS-65).
     """
     evidence = {
         "schema_version": EVIDENCE_SCHEMA,
@@ -361,6 +383,7 @@ def _write_evidence(runtime: dict, result_line: str, timestamp: str) -> None:
         "gate_env": runtime["integration_test"]["gate_env"],
         "paper_port": runtime["integration_test"]["paper_port"],
         "pinned_server_version": runtime["pinned_server_version"],
+        "tws_api_version": _declared_tws_api_version(),
         "returncode": 0,
         "result_line": result_line,
         "code_digest": _code_digest(runtime),

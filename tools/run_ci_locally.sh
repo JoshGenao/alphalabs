@@ -86,6 +86,7 @@ for check in \
     log_persistence_check \
     adapter_check \
     ib_adapter_check \
+    ib_api_version_check \
     data_provider_check \
     historical_data_check \
     strategy_api_check; do

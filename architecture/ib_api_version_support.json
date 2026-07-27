@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "srs_ref": "SRS-EXE-007",
+  "supported_tws_api_version": "10.19.4",
+  "negotiated_server_version": 176,
+  "validated_against_paper_account": {
+    "evidence_ref": "architecture/ib_paper_account_evidence.json",
+    "evidence_code_digest": "a7591ba7cf16dc65a8429e128895d38433c436400f70165c8172372185ae5bcb",
+    "evidence_generated_at": "2026-07-16T03:11:09Z",
+    "provenance": "seeded 2026-07-27 from the operator-run SRS-EXE-006 IB paper-account round trip (ATP_RUN_INTEGRATION=1, port 4002) recorded in evidence_ref; the digest and timestamp are copied from that artifact and are re-verified against it on every check run"
+  }
+}

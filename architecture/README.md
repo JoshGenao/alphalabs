@@ -170,11 +170,41 @@ matches the configuration block, and runs `cargo test -p atp-adapters
 python3 tools/adapter_check.py
 ```
 
-To bump the documented IB TWS API version, change
-`INTERACTIVE_BROKERS_TWS_API_VERSION` in `crates/atp-adapters/src/lib.rs`
-and the matching `interactive_brokers.protocol_version` value in
-`architecture/runtime_services.json`; the contract check refuses to pass
-unless the two agree.
+**Upgrading the IB TWS API version (SRS-EXE-007 / SyRS SYS-65).** The declared
+version is not merely documentation — SRS-EXE-007 requires that *"API version
+upgrades are tested against the IB paper trading account before deployment to
+live trading"*. `tools/ib_api_version_check.py` enforces that, and it is wired
+into both CI paths (`.github/workflows/ci.yml` and `tools/run_ci_locally.sh`).
+It binds the declared version to a validation record,
+`architecture/ib_api_version_support.json`, which is in turn bound to the
+operator paper-account evidence artifact
+(`architecture/ib_paper_account_evidence.json`) by that artifact's `code_digest`
+and `generated_at`. Only an operator paper run regenerates the evidence, so
+declaring a version is not enough to deploy it. The ordered procedure is:
+
+1. Bump `INTERACTIVE_BROKERS_TWS_API_VERSION` in
+   `crates/atp-adapters/src/lib.rs` and the matching
+   `interactive_brokers.protocol_version` value in
+   `architecture/runtime_services.json` (`tools/adapter_check.py` refuses unless
+   the two agree). If the new API line negotiates a different wire protocol
+   version, `IB_PINNED_SERVER_VERSION` and
+   `ib_brokerage_runtime.pinned_server_version` move together too.
+2. At this point CI is **red on purpose**:
+   `tools/ib_api_version_check.py` reports that the declared version is not
+   validated. That is the gate doing its job — do not deploy live.
+3. Re-run the round trip against the IB **paper** account (port 4002), which
+   regenerates the evidence artifact:
+   `ATP_RUN_INTEGRATION=1 python3 tools/ib_adapter_check.py`
+   The regenerated artifact records `tws_api_version` — the version that was
+   *declared when the run happened* — so a run performed at the old version can
+   never validate the new one, however the surrounding documents are edited.
+   Run this step **after** step 1, never before.
+4. Record that run: `python3 tools/ib_api_version_check.py --sync`. It refuses
+   when the evidence artifact still carries the `generated_at` the support record
+   already cites — re-syncing an old run cannot validate a new version.
+5. Re-run `python3 tools/ib_api_version_check.py` (green) and commit the bumped
+   constants together with the regenerated evidence + support record. Only then
+   is the upgrade eligible for live deployment.
 
 The contract is parallel to API-2/API-3/API-4; concrete brokerage
 behaviour lands with downstream features (EXE-1 live order routing,
