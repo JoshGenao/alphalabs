@@ -909,3 +909,25 @@ fn srs_data_015_version_supported_is_a_claim_about_the_version_only() {
         );
     }
 }
+
+#[test]
+fn srs_data_015_a_backup_export_is_still_the_source_entity() {
+    // The SRS-DATA-018 backup writer is allow-listed as a NON-entity writer, on the grounds that an
+    // export is a byte-for-byte copy of an already-registered entity rather than a second format.
+    // That is a claim about bytes, so it is checked here rather than trusted: an exported blob must
+    // identify as its source entity and report the source's version. If a future change gave the
+    // backup its own header, this fails and the allow-list entry becomes wrong — which is the point.
+    let dir = scratch("backup-export");
+    let exported = dir.join("market_data.store.backup");
+    // An export is the source blob verbatim; the fixture stands in for one.
+    fs::copy(corpus().join("market_store_v4.store"), &exported).unwrap();
+
+    let (ok, stdout, stderr) = run_cli(&["inspect", "--file", exported.to_str().unwrap()]);
+    assert!(ok, "an exported backup must inspect cleanly: {stderr}");
+    assert!(
+        stdout.contains("entity:market-data-store"),
+        "a backup export must identify as its SOURCE entity, not as an unknown format: {stdout}"
+    );
+    assert!(stdout.contains("declared_version:4"), "{stdout}");
+    assert!(stdout.contains("version_supported:yes"), "{stdout}");
+}

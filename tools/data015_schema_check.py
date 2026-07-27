@@ -56,6 +56,15 @@ NON_ENTITY_WRITERS: dict[str, str] = {
         "reader fails closed. It defines no format of its own — the bytes it damages belong to "
         "paper-state-snapshot, which is registered."
     ),
+    "crates/atp-data/src/backup.rs": (
+        "SRS-DATA-018 export: writes a byte-for-byte copy of an ALREADY-REGISTERED entity's blob "
+        "(market-data-store or backtest-record-store) and re-verifies it through that entity's own "
+        "codec. Its `envelope` framing is `<magic>\\n<checksum>\\n<body>` — the store layout itself, "
+        "not a second format — so an exported backup identifies and version-reports exactly like the "
+        "source, which `srs_data_015_a_backup_export_is_still_the_source_entity` proves rather than "
+        "assumes. A backup that invented its own header would be a new persisted entity and would "
+        "belong in the registry instead."
+    ),
 }
 
 
