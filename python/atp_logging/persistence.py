@@ -69,7 +69,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 
 from .dispatcher import RoutedLogDispatcher, validate_log_record
@@ -81,10 +81,34 @@ __all__ = [
     "JsonlLogStore",
     "LogStoreCorruptionError",
     "LogStoreError",
+    "MIN_SUPPORTED_SEGMENT_SCHEMA_VERSION",
+    "SCHEMA_VERSION_KEY",
+    "SEGMENT_SCHEMA_VERSION",
     "build_separated_log_dispatcher",
     "query",
     "read_records",
 ]
+
+#: The segment line-envelope layout this build WRITES (SRS-DATA-015 / SyRS
+#: SYS-66). **Version history:** v1 = one ``LogRecord.as_dict()`` object per
+#: line, plus this version key.
+#:
+#: The version travels per LINE because a segment is an append-only file that
+#: rotates: a file-level header would have to be re-established on every
+#: rotation and could not describe lines appended by a build newer than the
+#: header. A self-describing line survives rotation, concatenation, and a torn
+#: tail.
+SEGMENT_SCHEMA_VERSION = 1
+
+#: The oldest line envelope this build still READS. A line with no
+#: ``schema_version`` key predates SRS-DATA-015 and is read at this floor, in
+#: place — an existing audit trail is never rewritten to remain queryable
+#: (rewriting an audit log to read it would destroy the very property it
+#: exists to provide).
+MIN_SUPPORTED_SEGMENT_SCHEMA_VERSION = 1
+
+#: The key the envelope version travels under.
+SCHEMA_VERSION_KEY = "schema_version"
 
 
 class LogStoreError(LogRecordError):
@@ -258,8 +282,18 @@ class JsonlLogStore:
         # correlation_id stay non-empty).
         record = self._redactor.redact_record(record)
 
+        # SRS-DATA-015: the persisted ENVELOPE carries the segment's schema
+        # version. It is added here, by the format owner, rather than inside
+        # ``LogRecord.as_dict()`` — that dict is the SRS-LOG-001 SDK record
+        # schema shared with the API/UI sinks, and a storage concern must not
+        # widen it. ``as_dict()`` therefore stays byte-identical.
         line = (
-            json.dumps(record.as_dict(), ensure_ascii=False, separators=(",", ":")) + "\n"
+            json.dumps(
+                {**record.as_dict(), SCHEMA_VERSION_KEY: SEGMENT_SCHEMA_VERSION},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n"
         ).encode("utf-8")
 
         with self._lock:
@@ -385,6 +419,55 @@ class JsonlLogStore:
 # ---------------------------------------------------------------------- #
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """``json`` ``object_pairs_hook`` that refuses a duplicated key.
+
+    Python's default is last-value-wins, which silently resolves an ambiguity
+    that must not be resolved: a record declaring both ``"schema_version":99``
+    and ``"schema_version":1`` would be read as v1 and served, when what it
+    actually says is that this build cannot trust it. Mirrors the Rust
+    ``atp_types::json_scan`` gate, so the two languages agree about which
+    persisted records are readable.
+    """
+
+    seen: dict[str, object] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        seen[key] = value
+    return seen
+
+
+def _check_segment_schema_version(payload: Mapping[str, object], *, where: str) -> None:
+    """Fail closed unless this build can read ``payload``'s declared envelope.
+
+    Absent key → a pre-SRS-DATA-015 line, read at
+    :data:`MIN_SUPPORTED_SEGMENT_SCHEMA_VERSION` (the AC's "older schema
+    versions remain queryable without bulk migration"). Present → must be a
+    real ``int`` (``bool`` is an ``int`` subclass and is rejected) inside the
+    supported range.
+
+    A line from a NEWER build is corruption *for this reader*: its fields may
+    mean something else, and the read surface (``GET /api/v1/logs``, the
+    SYS-44b timeout lookup) must never serve an audit record it cannot
+    actually parse.
+    """
+
+    if SCHEMA_VERSION_KEY not in payload:
+        return
+    version = payload[SCHEMA_VERSION_KEY]
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise LogStoreCorruptionError(
+            f"{where}: stored line declares a non-integer {SCHEMA_VERSION_KEY} ({version!r})"
+        )
+    if not (MIN_SUPPORTED_SEGMENT_SCHEMA_VERSION <= version <= SEGMENT_SCHEMA_VERSION):
+        raise LogStoreCorruptionError(
+            f"{where}: stored line declares {SCHEMA_VERSION_KEY} {version}, outside the "
+            f"supported range [{MIN_SUPPORTED_SEGMENT_SCHEMA_VERSION}, "
+            f"{SEGMENT_SCHEMA_VERSION}] — refusing to serve a record this build cannot parse"
+        )
+
+
 def _record_from_mapping(payload: object, *, where: str) -> LogRecord:
     """Reconstruct a :class:`LogRecord` from a decoded JSON mapping.
 
@@ -398,6 +481,7 @@ def _record_from_mapping(payload: object, *, where: str) -> LogRecord:
 
     if not isinstance(payload, dict):
         raise LogStoreCorruptionError(f"{where}: stored line is not a JSON object")
+    _check_segment_schema_version(payload, where=where)
     try:
         severity = Severity(payload["severity"])
         source = Source(payload["source"])
@@ -475,8 +559,8 @@ def _read_segment(path: Path, *, tolerate_torn_tail: bool) -> list[LogRecord]:
             if not line:
                 continue
             try:
-                payload = json.loads(line)
-            except json.JSONDecodeError as exc:
+                payload = json.loads(line, object_pairs_hook=_reject_duplicate_keys)
+            except (json.JSONDecodeError, ValueError) as exc:
                 raise LogStoreCorruptionError(
                     f"{path}:{lineno}: complete line is not valid JSON: {exc}"
                 ) from exc

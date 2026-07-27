@@ -15,10 +15,11 @@ use atp_orchestrator::{
     HotSwapSideEffectError, HotSwapTriggerLog, LiveStrategyProbe, ReservoirRankingSource,
     StrategyOrchestrator,
 };
+use atp_types::json_scan::{json_string_value, parse_strict_i64, top_level_json_field};
 use atp_types::{
     DrawdownDemotionTrigger, DrawdownThresholdBps, HotSwapTriggerConfig, HotSwapTriggerEvent,
-    LiveStrategyState, RankedStrategy, RankingPromotionTrigger, ReservoirRankingSnapshot,
-    StrategyId, TriggerRationale,
+    HotSwapTriggerKind, LiveStrategyState, RankedStrategy, RankingPromotionTrigger,
+    ReservoirRankingSnapshot, StrategyId, TriggerRationale,
 };
 use std::env;
 use std::fs::OpenOptions;
@@ -29,6 +30,20 @@ use std::process::ExitCode;
 /// Fixed demonstration observation timestamp (wall-clock time is intentionally
 /// not read — the tool is deterministic).
 const OBSERVED_AT_SECONDS: u64 = 1_715_000_000;
+
+/// The trigger-event line layout this build WRITES (SRS-DATA-015 / SyRS SYS-66).
+/// **Version history:** v1 = `{schema_version, kind, demoting_strategy_id,
+/// candidate_strategy_id, rationale, observed_at_seconds}`.
+///
+/// The version travels per LINE, not in a file header: the log is append-only
+/// and `O_APPEND`, so no writer owns "the start of the file" and a header would
+/// race. A line written before SRS-DATA-015 carries no `schema_version` key and
+/// is read at [`MIN_SUPPORTED_TRIGGER_LOG_SCHEMA_VERSION`] — an existing log
+/// stays readable exactly where it lies, with no rewrite.
+const TRIGGER_LOG_SCHEMA_VERSION: u64 = 1;
+
+/// The oldest trigger-event line layout this build still READS.
+const MIN_SUPPORTED_TRIGGER_LOG_SCHEMA_VERSION: u64 = 1;
 
 const USAGE: &str = "\
 resv003_hot_swap_trigger_cli — SRS-RESV-003 Hot-Swap trigger configuration + logging
@@ -501,6 +516,14 @@ fn rationale_to_string(rationale: &TriggerRationale) -> String {
     }
 }
 
+/// Escape a string for a JSON value, covering **every** C0 control character.
+///
+/// The named escapes alone are not enough. `StrategyId::new` accepts arbitrary text, so an operator
+/// id carrying a backspace or form feed would previously be written raw — producing a line that this
+/// build's own reader (which refuses raw control characters inside a JSON string, as JSON requires)
+/// then rejects as unreadable. That is a poisoned audit log: a record written by this build that
+/// this build cannot read, which is precisely what SRS-DATA-015 exists to prevent. Anything below
+/// U+0020 without a named escape is emitted as `\u00XX`.
 fn json_escape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -510,6 +533,11 @@ fn json_escape(value: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            control if control < '\u{20}' => {
+                out.push_str(&format!("\\u{:04x}", control as u32));
+            }
             other => out.push(other),
         }
     }
@@ -518,7 +546,8 @@ fn json_escape(value: &str) -> String {
 
 fn event_to_json(event: &HotSwapTriggerEvent) -> String {
     format!(
-        "{{\"kind\":\"{}\",\"demoting_strategy_id\":\"{}\",\"candidate_strategy_id\":\"{}\",\"rationale\":\"{}\",\"observed_at_seconds\":{}}}",
+        "{{\"schema_version\":{},\"kind\":\"{}\",\"demoting_strategy_id\":\"{}\",\"candidate_strategy_id\":\"{}\",\"rationale\":\"{}\",\"observed_at_seconds\":{}}}",
+        TRIGGER_LOG_SCHEMA_VERSION,
         event.kind.as_str(),
         json_escape(event.demoting_strategy_id.as_str()),
         json_escape(event.candidate_strategy_id.as_str()),
@@ -554,10 +583,118 @@ fn count_log_records(path: &Path) -> Result<usize, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(error) => return Err(format!("cannot read log file {}: {error}", path.display())),
     };
-    Ok(content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count())
+    let mut counted = 0usize;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // SRS-DATA-015: a line this build cannot parse must not be counted as
+        // proof that the trigger was logged. The count is the evidence the
+        // caller's fail-closed check reads, so counting an unreadable line
+        // would manufacture that evidence. A supported schema version is
+        // necessary but NOT sufficient — a record this build cannot reconstruct
+        // a trigger event from is not evidence of a trigger either.
+        validate_trigger_log_line(line).map_err(|reason| {
+            format!(
+                "log file {} holds a line this build cannot read ({reason})",
+                path.display()
+            )
+        })?;
+        counted += 1;
+    }
+    Ok(counted)
+}
+
+/// Every trigger kind, so the wire-tag allow-list below is DERIVED from the enum rather than
+/// duplicated as literals that could drift from it.
+const ALL_TRIGGER_KINDS: [HotSwapTriggerKind; 4] = [
+    HotSwapTriggerKind::ManualPromotion,
+    HotSwapTriggerKind::DrawdownDemotion,
+    HotSwapTriggerKind::TopRankedPromotion,
+    HotSwapTriggerKind::HighestMomentumPromotion,
+];
+
+/// Accept a persisted trigger-log line ONLY if this build could reconstruct the trigger event it
+/// claims to record.
+///
+/// A supported schema version says the reader understands the record's *layout*; it says nothing
+/// about whether the record's fields are actually there. `{"schema_version":1}` declares a layout
+/// this build knows and carries no trigger at all — counting it would let an empty object stand in
+/// for durable proof that a Hot-Swap trigger was logged, which is the claim
+/// [`count_log_records`] backs. So the whole v1 record shape is required: the four value fields the
+/// writer emits, with their types and the `kind` enum checked.
+///
+/// Legacy (pre-SRS-DATA-015) lines carry the same fields minus `schema_version`, so the body
+/// requirements are identical for both — only the version field is optional.
+fn validate_trigger_log_line(line: &str) -> Result<(), String> {
+    // Layout first: an unsupported or malformed version means the field meanings below are not
+    // this build's to assume.
+    let _version = line_schema_version(line)?;
+
+    let field = |key: &str| -> Result<&str, String> {
+        top_level_json_field(line, key)
+            .map_err(|_| "line is not a well-formed JSON object".to_string())?
+            .ok_or_else(|| format!("record is missing required field '{key}'"))
+    };
+    let non_empty_string = |key: &str| -> Result<(), String> {
+        let raw = field(key)?;
+        let value =
+            json_string_value(raw).ok_or_else(|| format!("field '{key}' is not a JSON string"))?;
+        if value.trim().is_empty() {
+            return Err(format!("field '{key}' is empty"));
+        }
+        Ok(())
+    };
+
+    let kind_raw = field("kind")?;
+    let kind = json_string_value(kind_raw).ok_or("field 'kind' is not a JSON string")?;
+    if !ALL_TRIGGER_KINDS.iter().any(|known| known.as_str() == kind) {
+        return Err(format!("field 'kind' has unknown trigger kind {kind:?}"));
+    }
+
+    non_empty_string("demoting_strategy_id")?;
+    non_empty_string("candidate_strategy_id")?;
+    non_empty_string("rationale")?;
+
+    let observed_raw = field("observed_at_seconds")?;
+    let observed = parse_strict_i64(observed_raw)
+        .ok_or_else(|| "field 'observed_at_seconds' is not a JSON integer".to_string())?;
+    if observed < 0 {
+        return Err("field 'observed_at_seconds' is negative".to_string());
+    }
+    Ok(())
+}
+
+/// The schema version a persisted trigger-event line declares.
+///
+/// Only a line that genuinely carries NO `schema_version` key reads as legacy
+/// ([`MIN_SUPPORTED_TRIGGER_LOG_SCHEMA_VERSION`]). A key that is present but
+/// unparseable — a float, a quoted number, a version outside the supported range
+/// — is an ERROR, never quietly downgraded to "legacy": that downgrade would let
+/// a record written by a newer build be counted as valid audit evidence by a
+/// reader that cannot actually parse its fields.
+///
+/// The object is scanned STRUCTURALLY rather than by a leading-prefix match, so
+/// the key is found wherever a writer placed it, while a `"schema_version"`
+/// occurring inside the operator-supplied `rationale` string can never spoof one.
+fn line_schema_version(line: &str) -> Result<u64, String> {
+    let raw = match top_level_json_field(line, "schema_version") {
+        Err(_) => return Err("line is not a well-formed JSON object".to_string()),
+        Ok(None) => return Ok(MIN_SUPPORTED_TRIGGER_LOG_SCHEMA_VERSION),
+        Ok(Some(raw)) => raw,
+    };
+    let parsed = parse_strict_i64(raw)
+        .ok_or_else(|| format!("schema_version {raw} is not a JSON integer"))?;
+    let version =
+        u64::try_from(parsed).map_err(|_| format!("schema_version {parsed} is negative"))?;
+    if !(MIN_SUPPORTED_TRIGGER_LOG_SCHEMA_VERSION..=TRIGGER_LOG_SCHEMA_VERSION).contains(&version) {
+        return Err(format!(
+            "schema_version {version} is outside the supported range \
+             [{MIN_SUPPORTED_TRIGGER_LOG_SCHEMA_VERSION}, {TRIGGER_LOG_SCHEMA_VERSION}]"
+        ));
+    }
+    Ok(version)
 }
 
 // --------------------------------------------------------------------------- //

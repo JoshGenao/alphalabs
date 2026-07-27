@@ -28,6 +28,9 @@ pub use composite_order::{
     OptionContractError, OptionContractIdentity, OptionRight,
 };
 
+pub mod json_scan;
+pub use json_scan::{json_string_value, parse_strict_i64, top_level_json_field, JsonScanError};
+
 pub mod perf;
 pub use perf::{
     nearest_rank_percentile_ns, LatencyNfr, LatencyPercentiles, LatencyThreshold,

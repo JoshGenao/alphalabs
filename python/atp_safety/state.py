@@ -17,6 +17,15 @@ the guard exists to stop. A genuinely missing file (never activated) returns
 Honest scope: this guards replays through THIS operator layer's state
 directory. A cross-process lockout below the operator layer is deferred
 (``kill_switch_activation_contract.deferred[]``).
+
+Schema evolution (SRS-DATA-015 / SyRS SYS-66): the record carries a
+``schema_version`` key so a reader can tell which layout it is looking at.
+A record written *before* that key existed is read as
+:data:`MIN_SUPPORTED_STATE_SCHEMA_VERSION` and stays usable exactly where
+it lies — no migration pass, no rewrite, because rewriting a replay guard
+to read it would itself be a write to the artefact whose integrity the
+guard depends on. A record from a NEWER build fails closed: an activation
+this build cannot parse is not an activation it may report as absent.
 """
 
 from __future__ import annotations
@@ -27,6 +36,19 @@ from pathlib import Path
 from typing import Mapping
 
 _STATE_FILENAME = "kill_switch_last_activation.json"
+
+#: The record layout this build WRITES. **Version history:** v1 = the
+#: ``activation_id`` / ``report`` / ``response`` record.
+STATE_SCHEMA_VERSION = 1
+
+#: The oldest record layout this build still READS. A record with no
+#: ``schema_version`` key predates SRS-DATA-015 and is read at this floor.
+MIN_SUPPORTED_STATE_SCHEMA_VERSION = 1
+
+#: The key the version travels under, inside the record object itself (the
+#: record is one JSON object, so there is nowhere else to put it that would
+#: survive the atomic replace as one unit).
+SCHEMA_VERSION_KEY = "schema_version"
 
 
 class LastActivationCorruptError(Exception):
@@ -43,6 +65,10 @@ def persist_last_activation(state_dir: Path, payload: Mapping[str, object]) -> P
     The state directory must already exist — a missing directory is a
     misconfigured composition and fails closed rather than being silently
     created somewhere unintended.
+
+    The writer owns the format, so it stamps :data:`STATE_SCHEMA_VERSION`
+    onto the record (overriding any ``schema_version`` a caller supplied —
+    a caller cannot declare a layout it does not control).
     """
 
     state_dir = Path(state_dir)
@@ -50,7 +76,8 @@ def persist_last_activation(state_dir: Path, payload: Mapping[str, object]) -> P
         raise FileNotFoundError(f"kill-switch state directory does not exist: {state_dir}")
     final_path = _state_path(state_dir)
     scratch_path = final_path.with_name(f".{final_path.name}.tmp.{os.getpid()}")
-    encoded = json.dumps(dict(payload), sort_keys=True).encode("utf-8")
+    versioned = {**dict(payload), SCHEMA_VERSION_KEY: STATE_SCHEMA_VERSION}
+    encoded = json.dumps(versioned, sort_keys=True).encode("utf-8")
     file_descriptor = os.open(scratch_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(file_descriptor, "wb") as handle:
@@ -75,6 +102,11 @@ def load_last_activation(state_dir: Path) -> dict[str, object] | None:
     A present-but-unreadable record fails CLOSED
     (:class:`LastActivationCorruptError`): treating corruption as "never
     activated" would let a repeat activation re-run the liquidate sequence.
+    That includes a record whose declared ``schema_version`` this build does
+    not support — an unparseable activation is still an activation.
+
+    A record with **no** ``schema_version`` predates SRS-DATA-015 and is
+    read at :data:`MIN_SUPPORTED_STATE_SCHEMA_VERSION`, unchanged on disk.
     """
 
     path = _state_path(Path(state_dir))
@@ -83,8 +115,8 @@ def load_last_activation(state_dir: Path) -> dict[str, object] | None:
     except FileNotFoundError:
         return None
     try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as error:
+        payload = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+    except (json.JSONDecodeError, ValueError) as error:
         raise LastActivationCorruptError(
             f"last-activation record at {path} is not valid JSON: {error}"
         ) from error
@@ -92,4 +124,51 @@ def load_last_activation(state_dir: Path) -> dict[str, object] | None:
         raise LastActivationCorruptError(
             f"last-activation record at {path} must be a JSON object; got {type(payload).__name__}"
         )
+    _check_schema_version(payload, path)
     return payload
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """``json`` ``object_pairs_hook`` that refuses a duplicated key.
+
+    Python's default is last-value-wins, which silently resolves an ambiguity
+    that must not be resolved: a record declaring both ``"schema_version":99``
+    and ``"schema_version":1`` would be read as v1 and served, when what it
+    actually says is that this build cannot trust it. Mirrors the Rust
+    ``atp_types::json_scan`` gate, so the two languages agree about which
+    persisted records are readable.
+    """
+
+    seen: dict[str, object] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        seen[key] = value
+    return seen
+
+
+def _check_schema_version(payload: Mapping[str, object], path: Path) -> None:
+    """Fail closed unless this build can read ``payload``'s declared layout.
+
+    Absent key → a pre-SRS-DATA-015 record, read at the supported floor.
+    Present → must be a real ``int`` (``bool`` is an ``int`` subclass in
+    Python and is rejected, as is a numeric string: a version that arrived
+    as the wrong type means the record is not the shape it claims) within
+    ``[MIN_SUPPORTED_STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION]``.
+    """
+
+    if SCHEMA_VERSION_KEY not in payload:
+        return
+    version = payload[SCHEMA_VERSION_KEY]
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise LastActivationCorruptError(
+            f"last-activation record at {path} declares a non-integer "
+            f"{SCHEMA_VERSION_KEY} ({version!r}) — refusing to guess its layout"
+        )
+    if not (MIN_SUPPORTED_STATE_SCHEMA_VERSION <= version <= STATE_SCHEMA_VERSION):
+        raise LastActivationCorruptError(
+            f"last-activation record at {path} declares {SCHEMA_VERSION_KEY} "
+            f"{version}, outside the supported range "
+            f"[{MIN_SUPPORTED_STATE_SCHEMA_VERSION}, {STATE_SCHEMA_VERSION}] — refusing to "
+            "read it as never-activated"
+        )

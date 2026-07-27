@@ -38,9 +38,31 @@ use std::process::ExitCode;
 /// multi-invocation walk can keep an ordered audit trail.
 const OBSERVED_AT_SECONDS: u64 = 1_715_000_000;
 
+/// The state-snapshot layout this build WRITES (SRS-DATA-015 / SyRS SYS-66).
+/// **Version history:** v1 = the `<strategy> <current-hash> <current-ts>
+/// <previous-hash> <previous-ts>` line form under [`STATE_MAGIC`].
+///
+/// This format records its version **inside the magic header** rather than in a
+/// separate field, and [`STATE_MAGIC`] is compared for exact equality on load.
+/// That makes the version gate and the foreign-file gate the same check: a
+/// future v2 snapshot carries a different magic and is refused by a v1 reader
+/// cleanly, before any field is parsed. The constant exists so the coupling is
+/// checked (see the `magic` assertion below) instead of living only in a string
+/// literal — the persisted bytes are unchanged.
+const ROLLBACK_STATE_SCHEMA_VERSION: u64 = 1;
+
 /// Magic header of the state snapshot, so a foreign / truncated file is
 /// rejected before any field is parsed (fail closed, never an empty registry).
+/// Embeds [`ROLLBACK_STATE_SCHEMA_VERSION`].
 const STATE_MAGIC: &str = "ORCH005-ROLLBACK-STATE v1";
+
+// The magic MUST name the schema version it encodes; a bump that changed one
+// without the other would let a reader accept bytes it cannot parse. Checked at
+// COMPILE time so the two can never drift apart in a shipped binary.
+const _: () = {
+    assert!(ROLLBACK_STATE_SCHEMA_VERSION == 1);
+    assert!(matches!(STATE_MAGIC.as_bytes().last(), Some(b'1')));
+};
 
 const USAGE: &str = "\
 orch005_rollback_cli — SRS-ORCH-005 rollback to the previous deployed strategy version

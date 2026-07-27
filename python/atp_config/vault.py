@@ -78,6 +78,11 @@ class VaultDecryptError(VaultError):
 # --------------------------------------------------------------------------- #
 
 _ENVELOPE_VERSION = 1
+#: The oldest envelope layout this build still OPENS (SRS-DATA-015). Equal to
+#: :data:`_ENVELOPE_VERSION` because the format has not evolved: the reader
+#: accepts exactly what it writes and refuses anything else, rather than
+#: guessing at a layout it has never seen.
+_MIN_SUPPORTED_ENVELOPE_VERSION = 1
 _KDF_RAW = "raw"
 _KDF_SCRYPT = "scrypt"
 
@@ -237,6 +242,7 @@ class CredentialVault:
         """
 
         envelope = self._read_envelope()
+        _check_envelope_version(envelope, self._path)
         token = envelope.get("token")
         if not isinstance(token, str) or not token:
             raise VaultFormatError(f"vault {self._path} envelope is missing a string 'token'")
@@ -281,8 +287,8 @@ class CredentialVault:
         except FileNotFoundError as error:
             raise VaultFormatError(f"vault file does not exist: {self._path}") from error
         try:
-            envelope = json.loads(raw)
-        except json.JSONDecodeError as error:
+            envelope = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        except (json.JSONDecodeError, ValueError) as error:
             raise VaultFormatError(f"vault {self._path} is not valid JSON: {error}") from error
         if not isinstance(envelope, dict):
             raise VaultFormatError(f"vault {self._path} envelope must be a JSON object")
@@ -377,6 +383,52 @@ def _validate_secrets(secrets: Mapping[str, str]) -> dict[str, str]:
             raise VaultError(f"secret {name!r} value must be a string; got {type(value).__name__}")
         out[name] = value
     return out
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """``json`` ``object_pairs_hook`` that refuses a duplicated key.
+
+    Python's default is last-value-wins, which silently resolves an ambiguity
+    that must not be resolved: an envelope declaring both an unsupported
+    future ``version`` and a later current one would be opened as current,
+    when what it actually says is that this build cannot trust it. Matches the
+    other persisted readers and the Rust ``atp_types::json_scan`` gate, so
+    every format in the system answers "is this readable?" the same way.
+    """
+
+    seen: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        seen[key] = value
+    return seen
+
+
+def _check_envelope_version(envelope: Mapping[str, Any], path: Path) -> None:
+    """Fail closed unless this build can read ``envelope``'s declared layout.
+
+    SRS-DATA-015 / SyRS SYS-66. The sealer has always stamped ``version``
+    (:data:`_ENVELOPE_VERSION`); this is the matching read gate, so a vault
+    sealed by a NEWER build is refused with a format error rather than
+    silently parsed with this build's field expectations — which, for an
+    envelope whose ``kdf``/``scrypt`` parameters decide how the key is
+    derived, would surface as a misleading "wrong key" decrypt failure.
+
+    A missing ``version`` is a malformed envelope, not a legacy one: every
+    vault this project has ever written carries the key.
+    """
+
+    version = envelope.get("version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise VaultFormatError(
+            f"vault {path} envelope declares a non-integer 'version' ({version!r})"
+        )
+    if not (_MIN_SUPPORTED_ENVELOPE_VERSION <= version <= _ENVELOPE_VERSION):
+        raise VaultFormatError(
+            f"vault {path} envelope declares version {version}, outside the supported "
+            f"range [{_MIN_SUPPORTED_ENVELOPE_VERSION}, {_ENVELOPE_VERSION}] — refusing "
+            "to open a vault sealed by a newer build"
+        )
 
 
 def _decode_salt(envelope: Mapping[str, Any], path: Path) -> bytes:

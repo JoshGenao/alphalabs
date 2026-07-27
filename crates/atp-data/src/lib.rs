@@ -26,6 +26,7 @@ pub mod fundamentals;
 pub mod ingestion_validation;
 mod normalization;
 pub mod query;
+pub mod schema_registry;
 pub mod store;
 pub mod tiering;
 
@@ -56,6 +57,10 @@ pub use crate::ingestion_validation::{
     QuarantineSummary, QuarantineSummarySink, QuarantiningIngestionOutcome, Sys77RecordValidator,
 };
 pub use crate::query::{UnifiedHistoricalQuery, UnifiedHistoricalResult};
+pub use crate::schema_registry::{
+    descriptor, entity_ids, supports_version, validate_registry, EvolutionPosture, RegistryError,
+    SchemaDescriptor, PERSISTED_ENTITIES,
+};
 pub use crate::tiering::{
     ArchiveOutcome, NasSyncStatus, RetentionReport, RetentionVerdict, TierConfig, TierError,
     TierIngestOutcome, TieredStore, DEFAULT_HOT_RETENTION_DAYS, MIN_HOT_RETENTION_DAYS,

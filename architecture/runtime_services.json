@@ -4154,6 +4154,9 @@
       "JsonlLogStore",
       "LogStoreCorruptionError",
       "LogStoreError",
+      "MIN_SUPPORTED_SEGMENT_SCHEMA_VERSION",
+      "SCHEMA_VERSION_KEY",
+      "SEGMENT_SCHEMA_VERSION",
       "build_separated_log_dispatcher",
       "query",
       "read_records"
@@ -9987,6 +9990,56 @@
       "Real Databento / IB / Sharadar / option-chain NETWORK adapters that feed records into the tier (owner: SRS-DATA-001 / SRS-DATA-003 / SRS-DATA-005 / SRS-DATA-006; the tier is provider-agnostic -- fixture sources stand in, as the SRS-DATA-009 step permits)",
       "Real 1 TB SSD / 20 TB NAS CAPACITY provisioning + a real network NAS mount (owner: NFR-SC2 deployment / SRS-ARCH-004; the cache cap is modeled in the store's record unit -- the deterministic fixture-testable proxy -- and the real byte capacity is the NFR-SC2 concern; growth estimates documented in SRS Section 12.1)"
     ]
+  },
+  "schema_evolution_contract": {
+    "description": "SRS-DATA-015 (schema evolution for stored data entities; SyRS SYS-66; StRS SN-1.26 / SN-1.27 / C-5). Acceptance: 'Each persisted entity records a schema version; data written under older schema versions remains queryable after schema updates without bulk migration.' Clause 1 quantifies over EVERY persisted entity, so it is only as strong as its enumeration: crates/atp-data/src/schema_registry.rs holds one SchemaDescriptor per persisted entity (entity_id, owner_srs, writer_path, marker, magic, current_version, min_supported_version, posture, legacy_unversioned) as PURE DATA -- &'static str and i64 only, no cross-crate imports, so the data layer does not invert the one-way dependency direction by naming entities in execution/simulation/orchestration. EvolutionPosture: Ranged (every version in [min, current] read as written -- the market-data store v1..v4, where a later version only ADDS dataset kinds), MigrateOnRead (older payloads read and upgraded IN MEMORY, bytes on disk untouched -- the paper-state v1->v2 split and every retrofitted format), Pinned (exactly current_version accepted, anything else refused -- a format that has never evolved fails closed rather than guessing). SRS-DATA-015 retrofitted a version onto five formats that recorded none: the DATA-010 access journal (per-LINE 'v<N>' tag), the SAFE-001 kill-switch last-activation record, the LOG-001 JSONL segment envelope, the RESV-003 hot-swap trigger log, and the MD-006 readiness alert sink. All five version per RECORD, not per file: each is an append-only O_APPEND log or an atomically-replaced object, so no writer owns 'the start of the file' and a header would race; a per-record tag also lets one file legitimately mix pre- and post-upgrade lines. Uniform read semantics: a payload with NO version field is read at min_supported_version (that IS 'queryable without bulk migration' -- files already on disk are read where they lie and never rewritten), and an unknown FUTURE version ALWAYS fails closed (a reader that cannot prove it understands the bytes must refuse, never guess). The LOG-001 SDK record schema (LogRecord.as_dict()) is deliberately NOT widened: the version lives in the persisted envelope the store composes, so the API/UI sinks see a byte-identical record. tools/data015_schema_check.py binds the registry to reality: it parses the Rust table (no build dependency), checks its structural invariants, confirms every registered writer really defines its version marker at the claimed value and contains its declared magic, and SCANS every crates/*/src and python/ file for a durable-persistence write surface -- failing when one is neither a registered entity nor an explicitly-justified NON_ENTITY_WRITERS entry. That scan is the clause-1 guarantee: a new persisted format cannot enter the repo unversioned and unnoticed (it is how the readiness alert sink was found). tests/fixtures/schema_evolution/ is a byte-frozen golden corpus -- real v1/v2/v3/v4 market stores emitted by the actual writer, plus a legacy payload for every retrofitted entity -- read by today's readers with the bytes asserted UNCHANGED afterwards, which is the operational meaning of 'no bulk migration'. data015_schema_cli (report / inspect) is the operator inspection surface the 'Test, inspection' verification method names: report prints the whole registry; inspect identifies persisted files BY MAGIC, reports the version each file declares, admits 'unidentified' rather than guessing at a magic-less format, is strictly read-only, and exits NON-ZERO on a file this build cannot read (so it works as a pre-upgrade gate).",
+    "requirement": "The software shall support schema evolution for stored data entities.",
+    "srs_refs": [
+      "SRS-DATA-015"
+    ],
+    "syrs_refs": [
+      "SYS-66"
+    ],
+    "strs_refs": [
+      "SN-1.26",
+      "SN-1.27",
+      "C-5"
+    ],
+    "registry_module": "crates/atp-data/src/schema_registry.rs",
+    "check_script": "tools/data015_schema_check.py",
+    "cli": "crates/atp-data/src/bin/data015_schema_cli.rs",
+    "golden_corpus": "tests/fixtures/schema_evolution",
+    "entity_count": 15,
+    "postures": [
+      "Ranged",
+      "MigrateOnRead",
+      "Pinned"
+    ],
+    "retrofitted_entities": [
+      "access-journal",
+      "kill-switch-last-activation",
+      "system-log-segment",
+      "hot-swap-trigger-log",
+      "readiness-alert-sink"
+    ],
+    "read_semantics": {
+      "version_less_payload": "read at min_supported_version, in place, never rewritten",
+      "unknown_future_version": "fail closed — refuse, never guess at an unseen layout",
+      "corpus_invariant": "fixtures are read with the current readers and asserted byte-unchanged"
+    },
+    "inspection_scope": {
+      "asserts": "version_supported = this build supports the SCHEMA VERSION the file declares",
+      "does_not_assert": "that every record BODY satisfies its owning feature's invariants",
+      "why": "validating bodies in data015_schema_cli would re-implement four other features' record schemas inside the data layer — three of them in Python and one in atp-orchestrator, which atp-data must not depend on (one-way dependency direction). Those copies could not be compiled against their originals, so they would rot silently as their owners evolved, and a stale copy of someone else's invariants inside a GATE is worse than no copy at all.",
+      "body_validation_owners": [
+        "SRS-RESV-003 — resv003_hot_swap_trigger_cli::validate_trigger_log_line",
+        "SRS-LOG-001 — atp_logging.persistence._record_from_mapping",
+        "SRS-MD-006 — atp_readiness.probes.JsonlAlertSink.read",
+        "SRS-SAFE-001 — atp_safety.state.load_last_activation"
+      ],
+      "self_owned_exception": "the access journal's record shape IS validated by the CLI, because atp-data owns that reader"
+    },
+    "pass_line": "SRS-DATA-015 SCHEMA-EVOLUTION PASS"
   },
   "storage_eviction_contract":   {
     "description": "SRS-DATA-010 (SSD storage eviction policy; SyRS SYS-69; StRS C-5 / BG-6). Acceptance: 'At the default 80 percent high-water mark, eviction prioritizes old inactive data; data for securities with the currently running live strategy is never evicted; data accessed within the configurable recency window defaulting to 24 hours by a running backtest or factor pipeline job is not evicted.' SYS-68 adds: cold-read cache entries are evicted BEFORE any hot runtime data. This is the POLICY brain over the SRS-DATA-008 tier + SRS-DATA-009 cold-read primitives. The `eviction` module in crates/atp-data adds: (1) StoragePolicy (high-water default 80%, recency window default 24h/86400s), target = floor(ssd_capacity_records * high_water / 100) in INTEGER arithmetic (no float); fail-closed on a 0/>100 high-water or a negative recency. (2) plan_eviction -- a PURE planner over the whole SSD inventory (cold-read cache Tier::Cold + SSD-primary Tier::Hot). A candidate is PINNED (never in the plan) if live (AC-2), accessed within the recency window by a running job (AC-3), or a hot record inside the DATA-008 90-day retention floor. Evictable candidates are ordered most-removable-first: Cold before Hot (SYS-68, via the derived Tier Ord), then not-on-active/watchlist before listed (SYS-69), then oldest event_ts first (SYS-69 'by age'), then natural key; the first (usage - target) are selected, and if pinned data blocks the mark the plan reports reached_target=false rather than ever evicting pinned data (fail-safe). (3) EvictionEngine::enforce -- physically evicts ONLY the cold-read cache store (rewrites cold_cache_dir under the single-writer StoreLock); it never opens the SSD primary for writing, so live/recent/hot data is STRUCTURALLY un-evictable (mirroring the DATA-009 evict_cold_cache_to guarantee). Hot-tier plan entries are reported as hot_pressure_deferred, never physically removed (physical hot-pressure eviction is the deferred 'full hot-pressure' scope). The `access_journal` module is the real AC-3 producer: a durable append-only journal (AccessRecorder trait, NoopRecorder default) written by the instrumented backtest (RecordingBarSource over StoreBarSource) and factor (assemble_factor_inputs_recorded) read paths; writes FAIL OPEN (never break a read), reads FAIL CLOSED (a corrupt line -> AccessJournalError::Corrupt so eviction refuses; a torn tail is tolerated). The operator CLI data010_eviction_cli (report / plan / enforce) exercises it end to end, refuses a destructive enforce without an explicit protection source (--protection-inputs / --use-journal / --assume-unprotected), and exits NON-ZERO when the high-water mark cannot be met without evicting pinned or hot data. Determinism: caller-supplied now_ts (no wall-clock), integer target (no float), no serde/vendor SDK.",

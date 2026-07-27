@@ -84,6 +84,7 @@ for check in \
     network_binding_check \
     log_record_check \
     log_persistence_check \
+    data015_schema_check \
     adapter_check \
     ib_adapter_check \
     ib_api_version_check \

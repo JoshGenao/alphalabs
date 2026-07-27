@@ -73,6 +73,67 @@ __all__ = [
     "UsEquityCalendarAdapter",
 ]
 
+#: The alert-line layout :class:`JsonlAlertSink` WRITES (SRS-DATA-015 / SyRS
+#: SYS-66). **Version history:** v1 = the ``ReadinessAlert`` fields plus
+#: ``kind`` / ``srs_trace`` / this key.
+#:
+#: Per LINE, not per file: the sink is append-only across runs, so no writer
+#: owns the start of the file and a header would race.
+ALERT_SINK_SCHEMA_VERSION = 1
+
+#: The oldest alert line this build still READS. A line with no
+#: ``schema_version`` predates SRS-DATA-015 and is read at this floor, in
+#: place — an existing alert trail is evidence and is never rewritten.
+MIN_SUPPORTED_ALERT_SINK_SCHEMA_VERSION = 1
+
+#: The key the alert-line version travels under.
+SCHEMA_VERSION_KEY = "schema_version"
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """``json`` ``object_pairs_hook`` that refuses a duplicated key.
+
+    Python's default is last-value-wins, which silently resolves an ambiguity
+    that must not be resolved: a record declaring both ``"schema_version":99``
+    and ``"schema_version":1`` would be read as v1 and served, when what it
+    actually says is that this build cannot trust it. Mirrors the Rust
+    ``atp_types::json_scan`` gate, so the two languages agree about which
+    persisted records are readable.
+    """
+
+    seen: dict[str, object] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        seen[key] = value
+    return seen
+
+
+def _check_alert_schema_version(record: object, *, where: str) -> None:
+    """Fail closed unless this build can read ``record``'s declared layout.
+
+    A readiness alert is degraded-mode evidence, so a line this build cannot
+    parse must surface as an error rather than be handed back with fields
+    that may mean something else in the layout that wrote it.
+    """
+
+    if not isinstance(record, dict):
+        raise AlertSinkSchemaError(f"{where}: stored alert line is not a JSON object")
+    if SCHEMA_VERSION_KEY not in record:
+        return
+    version = record[SCHEMA_VERSION_KEY]
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise AlertSinkSchemaError(
+            f"{where}: stored alert line declares a non-integer {SCHEMA_VERSION_KEY} ({version!r})"
+        )
+    if not (MIN_SUPPORTED_ALERT_SINK_SCHEMA_VERSION <= version <= ALERT_SINK_SCHEMA_VERSION):
+        raise AlertSinkSchemaError(
+            f"{where}: stored alert line declares {SCHEMA_VERSION_KEY} {version}, outside "
+            f"the supported range [{MIN_SUPPORTED_ALERT_SINK_SCHEMA_VERSION}, "
+            f"{ALERT_SINK_SCHEMA_VERSION}]"
+        )
+
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TIER_CLI = _REPO_ROOT / "target" / "debug" / "data008_tier_cli"
 _COVERAGE_CLI = _REPO_ROOT / "target" / "debug" / "data011_coverage_cli"
@@ -461,6 +522,10 @@ class RecordingAlertSink:
         self.alerts.append(alert)
 
 
+class AlertSinkSchemaError(ValueError):
+    """A persisted alert line declares a layout this build cannot read."""
+
+
 class JsonlAlertSink:
     """Durable JSON-lines alert sink (persisted-output inspection context).
 
@@ -469,6 +534,13 @@ class JsonlAlertSink:
     SRS-NOTIF-001's; this sink makes the alert trail INSPECTABLE today.
     Write failures propagate (a readiness alert that cannot be recorded is
     a failed dispatch — degraded-mode must not pass on it).
+
+    Schema evolution (SRS-DATA-015 / SyRS SYS-66): every appended line
+    records :data:`ALERT_SINK_SCHEMA_VERSION`. A line written before that
+    key existed is read at :data:`MIN_SUPPORTED_ALERT_SINK_SCHEMA_VERSION`
+    and stays readable in place; a line from a NEWER build raises
+    :class:`AlertSinkSchemaError` rather than being returned with fields
+    this build may be misreading.
     """
 
     def __init__(self, path: str | Path) -> None:
@@ -479,6 +551,7 @@ class JsonlAlertSink:
         record = asdict(alert)
         record["kind"] = alert.kind.value
         record["srs_trace"] = list(alert.srs_trace)
+        record[SCHEMA_VERSION_KEY] = ALERT_SINK_SCHEMA_VERSION
         line = json.dumps(record, sort_keys=True)
         with open(self._path, "a", encoding="utf-8") as handle:
             handle.write(line + "\n")
@@ -487,11 +560,19 @@ class JsonlAlertSink:
     def read(self) -> list[dict[str, object]]:
         if not self._path.exists():
             return []
-        return [
-            json.loads(line)
-            for line in self._path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        records: list[dict[str, object]] = []
+        for lineno, line in enumerate(self._path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line, object_pairs_hook=_reject_duplicate_keys)
+            except ValueError as error:
+                raise AlertSinkSchemaError(
+                    f"{self._path}:{lineno}: stored alert line is not valid JSON: {error}"
+                ) from error
+            _check_alert_schema_version(record, where=f"{self._path}:{lineno}")
+            records.append(record)
+        return records
 
 
 def now_ns() -> int:

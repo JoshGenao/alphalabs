@@ -48,6 +48,24 @@ pub const ACCESS_JOURNAL_SUBDIR: &str = "access_journal";
 /// The append-only log filename inside [`ACCESS_JOURNAL_SUBDIR`].
 pub const ACCESS_JOURNAL_FILENAME: &str = "access_journal.log";
 
+/// The journal line-schema version this build WRITES (SRS-DATA-015 / SyRS SYS-66). **Version
+/// history:** v1 = `v1\t<access_ts>\t<job_kind>\t<job_id>\t<SYMBOL>`.
+///
+/// The version travels on **every line**, not in a file header. An access journal is an append-only
+/// `O_APPEND` log written by any number of concurrent readers-of-data, so there is no moment at which
+/// a single writer owns "the start of the file" — a header would race, and two racing headers would
+/// land mid-file and read as corruption. A per-line tag has no such moment: a file may legitimately
+/// mix pre-SRS-DATA-015 (untagged) lines with tagged ones, and each line is self-describing.
+pub const ACCESS_JOURNAL_SCHEMA_VERSION: i64 = 1;
+
+/// The oldest journal line-schema version this build still READS.
+pub const MIN_SUPPORTED_ACCESS_JOURNAL_SCHEMA_VERSION: i64 = 1;
+
+/// Prefix marking a line's version field, e.g. `v1`. A **legacy** (pre-SRS-DATA-015) line begins with
+/// its bare integer `access_ts`, which can never start with this prefix, so the two forms are
+/// unambiguous and no probing heuristic is needed.
+const VERSION_TAG_PREFIX: char = 'v';
+
 /// The kind of running job that accessed a datum — the SYS-69 "running backtest or factor pipeline
 /// job". Mirrors the orchestrator `WorkloadPriority::{Backtest, FactorPipeline}` running-workload
 /// vocabulary (the documented running-job registry seam) without depending on the orchestrator crate.
@@ -174,6 +192,15 @@ pub enum AccessJournalError {
         /// The operation that failed.
         context: &'static str,
     },
+    /// A complete line declared a line-schema version outside
+    /// `[MIN_SUPPORTED_ACCESS_JOURNAL_SCHEMA_VERSION, ACCESS_JOURNAL_SCHEMA_VERSION]` — written by a
+    /// NEWER build than this one (SRS-DATA-015). Fails closed: a reader that cannot prove it
+    /// understands the line's layout must not guess at its fields, because mis-reading an access
+    /// record silently under-protects data a running job is using.
+    UnsupportedVersion {
+        /// The version the line declared.
+        found: i64,
+    },
 }
 
 impl fmt::Display for AccessJournalError {
@@ -182,6 +209,11 @@ impl fmt::Display for AccessJournalError {
             Self::InvalidField { context } => write!(f, "invalid access-journal field: {context}"),
             Self::Corrupt { reason } => write!(f, "corrupt access-journal line: {reason}"),
             Self::Io { context } => write!(f, "access-journal I/O error: {context}"),
+            Self::UnsupportedVersion { found } => write!(
+                f,
+                "access-journal line declares schema version {found}, outside the supported range \
+                 [{MIN_SUPPORTED_ACCESS_JOURNAL_SCHEMA_VERSION}, {ACCESS_JOURNAL_SCHEMA_VERSION}]"
+            ),
         }
     }
 }
@@ -192,8 +224,11 @@ impl Error for AccessJournalError {}
 ///
 /// Stateless beyond its directory (the on-disk log is the state), so two handles to the same directory
 /// are interchangeable. Each recorded access is one tab-delimited line
-/// `<access_ts>\t<job_kind>\t<job_id>\t<SYMBOL>\n`; the log is append-only so a running job's accesses
-/// accumulate and the newest wins per symbol at read time.
+/// `v<schema_version>\t<access_ts>\t<job_kind>\t<job_id>\t<SYMBOL>\n`; the log is append-only so a
+/// running job's accesses accumulate and the newest wins per symbol at read time. A line written
+/// before SRS-DATA-015 carries no `v<N>` field and is read as
+/// [`MIN_SUPPORTED_ACCESS_JOURNAL_SCHEMA_VERSION`], so an existing journal stays queryable in place
+/// with no migration.
 #[derive(Debug, Clone)]
 pub struct AccessJournal {
     dir: PathBuf,
@@ -228,6 +263,9 @@ impl AccessJournal {
     /// unrecorded rather than breaking the caller's read. Uses `O_APPEND` so concurrent short-line
     /// appends do not interleave.
     ///
+    /// Every appended line is stamped with [`ACCESS_JOURNAL_SCHEMA_VERSION`] (SRS-DATA-015), so each
+    /// persisted record is self-describing.
+    ///
     /// Returns `true` if a line was durably written, `false` if the access was skipped or an I/O error
     /// was swallowed — the boolean is for tests/inspection, never an error the caller must handle.
     pub fn append(&self, job: &JobRef, symbol: &str, access_ts: i64) -> bool {
@@ -242,7 +280,9 @@ impl AccessJournal {
             return false;
         }
         let line = format!(
-            "{}\t{}\t{}\t{}\n",
+            "{}{}\t{}\t{}\t{}\t{}\n",
+            VERSION_TAG_PREFIX,
+            ACCESS_JOURNAL_SCHEMA_VERSION,
             access_ts,
             job.kind.as_str(),
             job.id.as_str(),
@@ -378,9 +418,45 @@ fn complete_lines(contents: &str) -> impl Iterator<Item = &str> {
     contents[..end].lines().filter(|l| !l.is_empty())
 }
 
-/// Parse one complete line `<access_ts>\t<job_kind>\t<job_id>\t<SYMBOL>`, failing closed on any
-/// structural defect (a corrupt complete line makes the whole recency read fail closed).
+/// Parse one complete line, failing closed on any structural defect (a corrupt complete line makes the
+/// whole recency read fail closed).
+///
+/// Two forms are accepted (SRS-DATA-015 / SyRS SYS-66):
+/// - **versioned** `v<N>\t<access_ts>\t<job_kind>\t<job_id>\t<SYMBOL>` — the form this build writes;
+/// - **legacy** `<access_ts>\t<job_kind>\t<job_id>\t<SYMBOL>` — written before the version field
+///   existed, read as [`MIN_SUPPORTED_ACCESS_JOURNAL_SCHEMA_VERSION`]. This is what keeps an existing
+///   journal queryable **in place**, with no rewrite and no bulk migration.
+///
+/// The two are told apart by the `v` prefix alone: a legacy line's first field is a bare decimal
+/// timestamp, which never begins with `v`. A version outside the supported range fails closed with
+/// [`AccessJournalError::UnsupportedVersion`] — never a best-effort parse of a layout this build has
+/// not seen.
 fn parse_line(line: &str) -> Result<ParsedAccess, AccessJournalError> {
+    let (line, declared_version) = match line.strip_prefix(VERSION_TAG_PREFIX) {
+        // A `v`-prefixed first field: the line is self-describing.
+        Some(rest) => {
+            let (version_str, remainder) =
+                rest.split_once('\t')
+                    .ok_or_else(|| AccessJournalError::Corrupt {
+                        reason: "version-tagged line has no fields after its version".to_string(),
+                    })?;
+            let version: i64 = version_str
+                .parse()
+                .map_err(|_| AccessJournalError::Corrupt {
+                    reason: "non-integer line schema version".to_string(),
+                })?;
+            (remainder, version)
+        }
+        // No version field: a pre-SRS-DATA-015 line, read at the supported floor.
+        None => (line, MIN_SUPPORTED_ACCESS_JOURNAL_SCHEMA_VERSION),
+    };
+    if !(MIN_SUPPORTED_ACCESS_JOURNAL_SCHEMA_VERSION..=ACCESS_JOURNAL_SCHEMA_VERSION)
+        .contains(&declared_version)
+    {
+        return Err(AccessJournalError::UnsupportedVersion {
+            found: declared_version,
+        });
+    }
     let mut parts = line.split('\t');
     let ts_str = parts.next();
     let kind_str = parts.next();
@@ -569,6 +645,162 @@ mod tests {
         assert!(!j.append(&job(JobKind::Backtest, "bt-1"), "aapl", 0));
         let recent = j.recent(10_000, 2_000, None).unwrap();
         assert!(recent.is_empty());
+    }
+
+    // -- SRS-DATA-015 line-schema versioning ------------------------------------------------ //
+
+    #[test]
+    fn every_appended_line_records_its_schema_version() {
+        // AC clause 1: each persisted entity records a schema version. For an append-only log the
+        // persisted unit is the LINE, so every line must be self-describing.
+        let tmp = tempdir();
+        let j = journal(&tmp);
+        assert!(j.append(&job(JobKind::Backtest, "bt-1"), "aapl", 1_000));
+        assert!(j.append(&job(JobKind::FactorPipeline, "fp-1"), "msft", 1_100));
+        let contents = fs::read_to_string(j.log_path()).unwrap();
+        for line in contents.lines() {
+            assert!(
+                line.starts_with(&format!(
+                    "{VERSION_TAG_PREFIX}{ACCESS_JOURNAL_SCHEMA_VERSION}\t"
+                )),
+                "every written line carries its version: {line}"
+            );
+        }
+        // ...and the versioned line round-trips through the reader.
+        let recent = j.recent(1_000, 1_500, None).unwrap();
+        assert_eq!(recent.get("AAPL"), Some(&1_000));
+        assert_eq!(recent.get("MSFT"), Some(&1_100));
+    }
+
+    #[test]
+    fn a_legacy_version_less_line_stays_queryable_in_place() {
+        // AC clause 2: data written under an older schema remains queryable WITHOUT bulk migration.
+        // A journal written before SRS-DATA-015 has no version field; it must read exactly as before,
+        // and the file must not be rewritten to get there.
+        let tmp = tempdir();
+        let j = journal(&tmp);
+        fs::create_dir_all(j.dir()).unwrap();
+        let legacy = b"1000\tbacktest\tbt-legacy\tAAPL\n1100\tfactor-pipeline\tfp-legacy\tMSFT\n";
+        fs::write(j.log_path(), legacy).unwrap();
+
+        let recent = j.recent(1_000, 1_500, None).unwrap();
+        assert_eq!(recent.get("AAPL"), Some(&1_000));
+        assert_eq!(recent.get("MSFT"), Some(&1_100));
+
+        let after = fs::read(j.log_path()).unwrap();
+        assert_eq!(
+            after, legacy,
+            "reading a legacy journal must not rewrite it — no bulk migration"
+        );
+    }
+
+    #[test]
+    fn a_journal_mixing_legacy_and_versioned_lines_reads_both() {
+        // The realistic upgrade state: an existing journal that a post-upgrade job appends to. An
+        // append-only log cannot be partitioned by version, so both forms must coexist per file.
+        let tmp = tempdir();
+        let j = journal(&tmp);
+        fs::create_dir_all(j.dir()).unwrap();
+        fs::write(j.log_path(), b"1000\tbacktest\tbt-legacy\tAAPL\n").unwrap();
+        assert!(j.append(&job(JobKind::FactorPipeline, "fp-new"), "msft", 1_100));
+
+        let recent = j.recent(1_000, 1_500, None).unwrap();
+        assert_eq!(recent.get("AAPL"), Some(&1_000), "legacy line still read");
+        assert_eq!(recent.get("MSFT"), Some(&1_100), "versioned line read");
+    }
+
+    #[test]
+    fn an_unknown_future_line_version_fails_closed() {
+        // A line written by a NEWER build may have a layout this one cannot parse. Guessing at its
+        // fields would silently mis-attribute an access and under-protect live data, so the read
+        // fails closed exactly like corruption does.
+        let tmp = tempdir();
+        let j = journal(&tmp);
+        fs::create_dir_all(j.dir()).unwrap();
+        let future = ACCESS_JOURNAL_SCHEMA_VERSION + 1;
+        fs::write(
+            j.log_path(),
+            format!("v{future}\t1000\tbacktest\tbt-1\tAAPL\textra-field\n").as_bytes(),
+        )
+        .unwrap();
+        let err = j.recent(1_000, 1_500, None).unwrap_err();
+        assert_eq!(
+            err,
+            AccessJournalError::UnsupportedVersion { found: future }
+        );
+    }
+
+    #[test]
+    fn a_malformed_version_tag_is_corruption() {
+        let tmp = tempdir();
+        let j = journal(&tmp);
+        fs::create_dir_all(j.dir()).unwrap();
+        for bad in [
+            "vX\t1000\tbacktest\tbt-1\tAAPL\n", // non-integer version
+            "v1\n",                             // version with no fields after it
+        ] {
+            fs::write(j.log_path(), bad.as_bytes()).unwrap();
+            let err = j.recent(1_000, 1_500, None).unwrap_err();
+            assert!(
+                matches!(err, AccessJournalError::Corrupt { .. }),
+                "{bad:?} must be corruption, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_or_negative_line_version_fails_closed() {
+        // Defensive: a version below the supported floor is as unreadable as one above the ceiling.
+        let tmp = tempdir();
+        let j = journal(&tmp);
+        fs::create_dir_all(j.dir()).unwrap();
+        for bad in [0_i64, -1] {
+            fs::write(
+                j.log_path(),
+                format!("v{bad}\t1000\tbacktest\tbt-1\tAAPL\n").as_bytes(),
+            )
+            .unwrap();
+            let err = j.recent(1_000, 1_500, None).unwrap_err();
+            assert_eq!(err, AccessJournalError::UnsupportedVersion { found: bad });
+        }
+    }
+
+    #[test]
+    fn a_versioned_line_with_a_bad_body_is_still_corruption() {
+        // The version gate must not become an escape hatch: a correctly-versioned line whose body is
+        // malformed fails closed on the body, exactly as a legacy line does.
+        let tmp = tempdir();
+        let j = journal(&tmp);
+        fs::create_dir_all(j.dir()).unwrap();
+        fs::write(
+            j.log_path(),
+            format!("v{ACCESS_JOURNAL_SCHEMA_VERSION}\tnot-a-ts\tbacktest\tbt-1\tAAPL\n")
+                .as_bytes(),
+        )
+        .unwrap();
+        let err = j.recent(1_000, 1_500, None).unwrap_err();
+        assert!(matches!(err, AccessJournalError::Corrupt { .. }));
+    }
+
+    #[test]
+    fn a_versioned_torn_tail_is_still_tolerated() {
+        let tmp = tempdir();
+        let j = journal(&tmp);
+        j.append(&job(JobKind::Backtest, "bt-1"), "aapl", 1_000);
+        {
+            let mut f = fs::OpenOptions::new()
+                .append(true)
+                .open(j.log_path())
+                .unwrap();
+            // A crash mid-append leaves a versioned line with no terminating newline.
+            f.write_all(
+                format!("v{ACCESS_JOURNAL_SCHEMA_VERSION}\t1400\tbacktest\tbt-2\tMS").as_bytes(),
+            )
+            .unwrap();
+        }
+        let recent = j.recent(1_000, 1_500, None).unwrap();
+        assert_eq!(recent.get("AAPL"), Some(&1_000));
+        assert!(!recent.contains_key("MS"));
     }
 
     #[test]

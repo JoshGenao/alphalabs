@@ -1,0 +1,2 @@
+{"timestamp_ns":1600000000000000000,"severity":"INFO","source":"ib_gateway","event_type":"CONNECT","message":"legacy line one","correlation_id":"corr-1","log_class":"system","strategy_id":null}
+{"timestamp_ns":1600000001000000000,"severity":"WARN","source":"kill_switch","event_type":"LIQUIDATION_TIMEOUT","message":"legacy line two","correlation_id":"corr-2","log_class":"system","strategy_id":null}
