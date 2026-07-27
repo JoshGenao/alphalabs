@@ -38,6 +38,7 @@ from .heartbeat import CliHeartbeatSource, HeartbeatFreshnessProvider
 from .hotswap import HotSwapStatusProvider
 from .inventory import RollbackSnapshotInventorySource, StrategyInventoryProvider
 from .killswitch import DurableKillSwitchStatusSource, KillSwitchStatusProvider
+from .navigation import PrimaryNavigationProvider
 from .provider import DashboardMetricsProvider, ReadinessBackedProvider
 from .publisher import DashboardPublisher
 from .research import RESEARCH_PREFIX, UPSTREAM_ENV_KNOB, ResearchEnvironmentProvider
@@ -83,6 +84,13 @@ RESERVOIR_SNAPSHOT_PATH = "/dashboard/api/reservoir"
 #: upstream — reachable from the dashboard without a separate service URL
 #: (SYS-34a / IF-13).
 RESEARCH_SNAPSHOT_PATH = "/dashboard/api/research"
+
+#: REST path the dashboard SPA polls for the SRS-RES-003 primary-workflow
+#: navigation model (served alongside the research embed — navigating to an
+#: unmounted embed would be navigation to nothing). Probe-free: it reports
+#: whether the same-origin research prefix is REGISTERED on this runtime, while
+#: live reachability stays RESEARCH_SNAPSHOT_PATH's probe to answer (SYS-43).
+NAVIGATION_SNAPSHOT_PATH = "/dashboard/api/navigation"
 
 #: REST path the dashboard SPA polls for the SRS-MD-003 heartbeat-freshness
 #: snapshot (served only when a heartbeat provider is mounted).
@@ -167,7 +175,14 @@ def mount_dashboard(
     the dashboard without a separate service URL (SYS-34a / IF-13). It is
     REST-served (no WS channel) and adds no publisher work; without a
     configured upstream the panel renders the honest not-configured state and
-    NO proxy route exists.
+    NO proxy route exists. It additionally adds the SRS-RES-003 (SyRS SYS-43)
+    ``GET /dashboard/api/navigation`` route behind the topbar's primary
+    Research entry — the operator's direct navigation to the embed from the
+    primary workflow, carrying a same-origin path only (never a service URL)
+    and probe-free, so the live-reachability answer stays the research
+    snapshot's alone. A bare SRS-UI-001 mount serves no navigation route (there
+    is no embed to navigate to) and the SPA renders the entry's not-mounted
+    state.
 
     ``heartbeat`` (optional — the SRS-MD-003 heartbeat-freshness provider) adds
     the ``GET /dashboard/api/heartbeat`` poll route and moves the ``HEARTBEAT``
@@ -216,6 +231,15 @@ def mount_dashboard(
         runtime.register_meta_route(RESERVOIR_SNAPSHOT_PATH, reservoir.reservoir_snapshot)
     if research is not None:
         runtime.register_meta_route(RESEARCH_SNAPSHOT_PATH, research.research_snapshot)
+        # SRS-RES-003: the primary-workflow navigation model rides with the
+        # embed it navigates to. Registered BEFORE the proxy so the proxy's
+        # meta-path shadow guard sees every dashboard route already claimed.
+        runtime.register_meta_route(
+            NAVIGATION_SNAPSHOT_PATH,
+            PrimaryNavigationProvider.for_research(
+                research, state_route=RESEARCH_SNAPSHOT_PATH
+            ).navigation_snapshot,
+        )
         if research.upstream is not None:
             runtime.register_proxy_route(RESEARCH_PREFIX, research.upstream)
     if heartbeat is not None:

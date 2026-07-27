@@ -35,6 +35,17 @@ ReadinessBackedProvider ──payloads──▶ DashboardPublisher ──runtime
   position count render as honest deferred cells until their producer features land
   (`SRS-ORCH-001/004`, `SRS-SIM-003`, `SRS-BT-004`). Composition-time opt-in: a bare
   SRS-UI-001 mount claims no inventory channel and serves no inventory route.
+* **`navigation.py`** (`SRS-RES-003` / SyRS SYS-43) — the primary-workflow
+  navigation model behind the topbar's **Research** entry, served at
+  `GET /dashboard/api/navigation` and mounted alongside `research=` (navigating to
+  an embed that is not mounted would be navigation to nothing). It reports one
+  fact — is the same-origin `/research/` prefix **registered** on this runtime —
+  and is deliberately **probe-free**, so composition can never masquerade as
+  liveness: reachability stays `GET /dashboard/api/research`'s answer, and the SPA
+  arms the control only when both hold and both are fresh. `same_origin_target()`
+  is a fail-closed allow-list, so a navigation target is structurally incapable of
+  carrying a direct service URL (the SYS-43 acceptance criterion); a rejected
+  target is never echoed back.
 
 ## Run
 

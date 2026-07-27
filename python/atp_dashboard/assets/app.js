@@ -962,6 +962,7 @@
       status.textContent = snap.detail || "research upstream not configured (ATP_RESEARCH_UPSTREAM)";
       status.dataset.tone = "warn";
       open.disabled = true;
+      delete open.dataset.embedPath;   // leave nothing stale for a click to find
       return;
     }
     if (snap.upstream_reachable) {
@@ -973,39 +974,269 @@
       status.textContent = snap.detail || "research upstream unreachable";
       status.dataset.tone = "err";
       open.disabled = true;
+      delete open.dataset.embedPath;
     }
+  }
+
+  // The ONE place an embed is ever opened — the panel button and the SRS-RES-003
+  // topbar navigation both funnel through it, so the same-origin check cannot be
+  // bypassed by adding a caller (SEC-002 / SYS-43 "no direct service URL").
+  function openResearchEmbed(path) {
+    const frame = $("research-frame");
+    if (!frame || !isSameOriginPath(path)) return false;
+    // Lazy same-origin load: the iframe src is only ever the probe-provided
+    // /research/… path on THIS origin — never an external URL (SEC-002).
+    if (!researchFrameLoaded || frame.getAttribute("src") !== path) {
+      frame.src = path;
+      researchFrameLoaded = true;
+    }
+    frame.hidden = false;
+    const open = $("research-open");
+    if (open) open.textContent = "Reload research environment";
+    return true;
   }
 
   function initResearch() {
     const open = $("research-open");
     const frame = $("research-frame");
     if (!open || !frame) return;
-    open.addEventListener("click", () => {
-      const path = open.dataset.embedPath;
-      if (!path) return;
-      // Lazy same-origin load: the iframe src is only ever the probe-provided
-      // /research/… path on THIS origin — never an external URL (SEC-002).
-      if (!researchFrameLoaded || frame.getAttribute("src") !== path) {
-        frame.src = path;
-        researchFrameLoaded = true;
-      }
-      frame.hidden = false;
-      open.textContent = "Reload research environment";
-    });
+    open.addEventListener("click", () => { openResearchEmbed(open.dataset.embedPath); });
   }
 
   async function pollResearch() {
     try {
-      const res = await fetch(RESEARCH_ROUTE, { cache: "no-store" });
+      // Bounded like every other poll: a STALLED probe endpoint must reach a
+      // degraded branch within one budget, so the SRS-RES-003 navigation
+      // control can never stay actionable on a liveness answer that stopped
+      // arriving.
+      const res = await fetch(RESEARCH_ROUTE, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(POLL_MS),
+      });
       if (res.ok) {
         lastChannelAt["RESEARCH"] = performance.now();
-        renderResearch(await res.json());
+        const snap = await res.json();
+        renderResearch(snap);
+        setResearchLive(snap);
       } else if (res.status === 404) {
         const s = $("research-status");
         if (s) { s.textContent = "research not mounted — SRS-RES-001 provider not composed on this runtime"; s.dataset.tone = "warn"; }
+        setResearchLive(null);
+      } else {
+        setResearchLive(null);
       }
-    } catch (_e) { /* transient; next tick retries */ }
+    } catch (_e) {
+      setResearchLive(null);   // transient; next tick retries — but nothing stays armed
+    }
+    renderNav();
     setTimeout(pollResearch, POLL_MS);
+  }
+
+  // ----- SRS-RES-003 primary research navigation (SyRS SYS-43) ----------- //
+  //
+  // "The operator can open the embedded Jupyter environment from the primary
+  // dashboard workflow without using a direct service URL."
+  //
+  // The control gates on TWO independent facts, and neither may stand in for
+  // the other:
+  //   routable  — composition: is the same-origin /research/ prefix registered
+  //               on THIS runtime? (GET /dashboard/api/navigation, probe-free)
+  //   reachable — liveness: is the upstream answering right now?
+  //               (GET /dashboard/api/research, the SRS-RES-001 probe)
+  // Both must be present AND fresh. Every degraded branch — route 404, HTTP
+  // error, stalled fetch, malformed body, a probe answer that aged out — clears
+  // its own side and disarms the control, because a navigation affordance left
+  // actionable on stale truth is a false promise, not a convenience.
+
+  const NAVIGATION_ROUTE = "/dashboard/api/navigation";
+  const RESEARCH_LIVE_STALE_MS = POLL_MS * 3;   // liveness budget for the probe
+
+  let navEntry = null;          // fail-closed projection of the nav model
+  let navReason = "checking…";
+  let researchLive = null;      // {reachable, detail} from the RES-001 probe
+  let researchLiveAt = 0;
+  let deepLinkPending = false;
+  let deepLinkDeadline = 0;
+
+  // Mirrors atp_dashboard/navigation.py::same_origin_target — a target must be
+  // a root-relative path on THIS origin. Defence in depth: the server already
+  // refuses anything else, and the browser refuses it again before it can
+  // become an iframe src.
+  function isSameOriginPath(value) {
+    if (typeof value !== "string" || value === "") return false;
+    if (!value.startsWith("/") || value.startsWith("//")) return false;
+    if (/[\s\u0000-\u0020\u007f:\\@]/.test(value)) return false;
+    return value.split("/").indexOf("..") === -1;
+  }
+
+  // Guard the shape BEFORE reading fields — a malformed feed must fail closed,
+  // never throw its way past the disarm.
+  function plainObject(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  }
+
+  function researchNavEntry(snap) {
+    const body = plainObject(snap);
+    if (!body || !Array.isArray(body.entries)) return null;
+    for (const raw of body.entries) {
+      const entry = plainObject(raw);
+      if (!entry || entry.id !== "research") continue;
+      // Strict === true: a truthy string must never arm the control.
+      const routable = entry.routable === true && isSameOriginPath(entry.target);
+      return {
+        routable: routable,
+        target: routable ? entry.target : null,
+        detail: typeof entry.detail === "string" ? entry.detail : "",
+      };
+    }
+    return null;
+  }
+
+  function setResearchLive(snap) {
+    const body = plainObject(snap);
+    if (!body || body.configured !== true) {
+      researchLive = null;
+      researchLiveAt = 0;
+      return;
+    }
+    researchLive = {
+      reachable: body.upstream_reachable === true,
+      detail: typeof body.detail === "string" ? body.detail : "",
+      embedPath: isSameOriginPath(body.embed_path) ? body.embed_path : null,
+    };
+    researchLiveAt = performance.now();
+  }
+
+  function researchLiveFresh() {
+    return researchLive !== null && researchLiveAt > 0
+      && (performance.now() - researchLiveAt) <= RESEARCH_LIVE_STALE_MS;
+  }
+
+  function revealResearchPanel() {
+    const panel = document.querySelector(".panel--research");
+    if (!panel) return;
+    const reduced = window.matchMedia
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    panel.scrollIntoView({ block: "start", behavior: reduced ? "auto" : "smooth" });
+    panel.dataset.navFocus = "true";
+    setTimeout(() => { delete panel.dataset.navFocus; }, 2000);
+  }
+
+  // Single render fn: every state the control can show is computed here from
+  // the two facts, so no code path can leave a tone/label/target out of sync.
+  function renderNav() {
+    const link = $("nav-research");
+    const caption = $("nav-research-state");
+    if (!link || !caption) return;
+
+    let state = "deferred";
+    let short = navReason;
+    let detail = navReason;
+    let embedPath = null;
+
+    if (navEntry === null) {
+      state = "deferred";
+      short = navReason;
+      detail = navReason;
+    } else if (!navEntry.routable) {
+      state = "deferred";
+      short = "not configured";
+      detail = navEntry.detail || "research environment not configured";
+    } else if (!researchLiveFresh()) {
+      state = "degraded";
+      short = "probe state stale";
+      detail = "research reachability unknown — the " + RESEARCH_ROUTE
+        + " probe has not reported within its budget";
+    } else if (!researchLive.reachable) {
+      state = "down";
+      short = "upstream unreachable";
+      detail = researchLive.detail || "research upstream unreachable";
+    } else {
+      // The ONLY armed state: routable, fresh, and reachable. The path opened
+      // is the probe's same-origin embed_path when present, else the prefix.
+      state = "ready";
+      short = "open embedded Jupyter";
+      embedPath = researchLive.embedPath || navEntry.target;
+      detail = "open the embedded Jupyter environment at " + embedPath
+        + " (same-origin — no direct service URL)";
+    }
+
+    link.dataset.state = state;
+    caption.textContent = short;
+    link.title = detail;
+    if (state === "ready" && isSameOriginPath(embedPath)) {
+      link.dataset.embedPath = embedPath;
+    } else {
+      delete link.dataset.embedPath;   // nothing stale left for a click to find
+    }
+    maybeConsumeDeepLink(link);
+  }
+
+  // /dashboard#research — addressable navigation. The intent is ONE-SHOT and
+  // bounded: it opens only off a completed poll that proves the environment
+  // reachable, and is dropped once the budget passes. It never acts on assumed
+  // state, and it never retries forever.
+  function armDeepLink() {
+    if (window.location.hash !== "#research") return;
+    deepLinkPending = true;
+    deepLinkDeadline = performance.now() + POLL_MS * 3;
+    revealResearchPanel();
+  }
+
+  function maybeConsumeDeepLink(link) {
+    if (!deepLinkPending) return;
+    if (link.dataset.state === "ready") {
+      deepLinkPending = false;
+      openResearchEmbed(link.dataset.embedPath);
+    } else if (performance.now() > deepLinkDeadline) {
+      deepLinkPending = false;   // gives up honestly rather than opening blind
+    }
+  }
+
+  function initNavigation() {
+    const link = $("nav-research");
+    if (!link) return;
+    link.addEventListener("click", (event) => {
+      // The href is this origin's own #research anchor (it already works with
+      // JS off). We take over to ALSO open the embed — but only when the
+      // control is genuinely armed. When it is not, the operator still lands on
+      // the panel, which carries the probe-derived reason: navigation always
+      // tells the truth, and never fabricates an open.
+      event.preventDefault();
+      if (window.location.hash !== "#research") {
+        window.history.replaceState(null, "", "#research");
+      }
+      revealResearchPanel();
+      if (link.dataset.state === "ready") openResearchEmbed(link.dataset.embedPath);
+    });
+    window.addEventListener("hashchange", armDeepLink);
+    armDeepLink();
+  }
+
+  async function pollNavigation() {
+    try {
+      const res = await fetch(NAVIGATION_ROUTE, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(POLL_MS),
+      });
+      if (res.ok) {
+        navEntry = researchNavEntry(await res.json());
+        navReason = navEntry === null
+          ? "navigation model unreadable"
+          : (navEntry.detail || "");
+      } else if (res.status === 404) {
+        navEntry = null;
+        navReason = "not mounted — SRS-RES-001 embed not composed on this runtime";
+      } else {
+        navEntry = null;
+        navReason = "navigation route HTTP " + res.status;
+      }
+    } catch (_e) {
+      navEntry = null;
+      navReason = "navigation route unreachable";
+    }
+    renderNav();
+    setTimeout(pollNavigation, POLL_MS);
   }
 
   async function pollAlerts() {
@@ -2556,6 +2787,7 @@
   initBacktest();
   initReservoir();
   initResearch();
+  initNavigation();
   initKillSwitch();
   initHotSwap();
   connect();
@@ -2565,6 +2797,7 @@
   pollAccount();
   pollReservoir();
   pollResearch();
+  pollNavigation();
   pollAlerts();
   pollKillSwitch();
   pollHotSwap();

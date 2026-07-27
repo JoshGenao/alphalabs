@@ -61,6 +61,14 @@ from .killswitch import (
     KillSwitchStatusUnavailable,
 )
 from .loadgen import LOAD_CHANNELS, LOAD_DATA_SOURCE, SyntheticStrategyLoad
+from .navigation import (
+    NAVIGATION_SRS_REF,
+    RESEARCH_ENTRY_ID,
+    RESEARCH_ENTRY_LABEL,
+    RESEARCH_PANEL_ANCHOR,
+    PrimaryNavigationProvider,
+    same_origin_target,
+)
 from .provider import (
     DEFERRED,
     LIVE,
@@ -85,6 +93,7 @@ from .server import (
     BACKTESTS_SNAPSHOT_PATH,
     HOT_SWAP_SNAPSHOT_PATH,
     KILL_SWITCH_SNAPSHOT_PATH,
+    NAVIGATION_SNAPSHOT_PATH,
     RESEARCH_SNAPSHOT_PATH,
     RESERVOIR_SNAPSHOT_PATH,
     STRATEGIES_SNAPSHOT_PATH,
@@ -133,8 +142,13 @@ __all__ = [
     "LIVE",
     "LOAD_CHANNELS",
     "LOAD_DATA_SOURCE",
+    "NAVIGATION_SNAPSHOT_PATH",
+    "NAVIGATION_SRS_REF",
     "OWNED_CHANNELS",
     "REFRESH_BUDGET_MS",
+    "RESEARCH_ENTRY_ID",
+    "RESEARCH_ENTRY_LABEL",
+    "RESEARCH_PANEL_ANCHOR",
     "RESEARCH_PREFIX",
     "RESEARCH_SNAPSHOT_PATH",
     "RESERVOIR_CHANNEL",
@@ -149,6 +163,7 @@ __all__ = [
     "CriticalAlertsProvider",
     "DashboardMetricsProvider",
     "DashboardPublisher",
+    "PrimaryNavigationProvider",
     "ReadinessBackedProvider",
     "ResearchEnvironmentProvider",
     "ReservoirRankingProvider",
@@ -162,5 +177,6 @@ __all__ = [
     "load_assets",
     "mount_dashboard",
     "mount_default_dashboard",
+    "same_origin_target",
     "serve",
 ]

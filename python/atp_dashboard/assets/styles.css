@@ -103,7 +103,7 @@ body {
 /* ------------------------------------------------------------------ topbar */
 .topbar {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto auto auto;
   align-items: center;
   gap: clamp(14px, 2.4vw, 30px);
   padding: 18px 22px;
@@ -126,6 +126,70 @@ body {
   font-size: 11px; letter-spacing: 0.03em; color: var(--ink-dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* SRS-RES-003 / SYS-43 — primary navigation to the embedded research
+   environment. Reads as an ACTIONABLE launch key (targeting-reticle corners,
+   lab-flask glyph, travelling caret) so it is never mistaken for the passive
+   read-only status chips beside it. Tone is state-driven: the accent + caret
+   appear only when the environment is genuinely routable AND reachable —
+   every other state is an explicit, quieter truth. */
+.nav { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.nav__link {
+  position: relative;
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0));
+  color: var(--ink-dim); text-decoration: none;
+  transition: color 0.28s var(--ease), border-color 0.28s var(--ease),
+    box-shadow 0.28s var(--ease), transform 0.28s var(--ease);
+}
+.nav__link:hover { transform: translateY(-1px); }
+.nav__link:active { transform: translateY(0); }
+.nav__link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.nav__glyph { display: grid; place-items: center; flex: none; }
+.nav__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; line-height: 1.1; }
+.nav__label {
+  font-family: var(--mono); font-size: 11px; font-weight: 700;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink);
+}
+.nav__state {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.03em;
+  color: var(--ink-faint); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; max-width: 22ch;
+}
+.nav__caret { display: grid; place-items: center; flex: none; opacity: 0; transform: translateX(-4px);
+  transition: opacity 0.28s var(--ease), transform 0.28s var(--ease); }
+
+/* Targeting-reticle corners: drawn only for the state that can actually act. */
+.nav__link::before, .nav__link::after {
+  content: ""; position: absolute; width: 9px; height: 9px;
+  border: 1px solid currentColor; opacity: 0; pointer-events: none;
+  transition: opacity 0.28s var(--ease);
+}
+.nav__link::before { top: -4px; left: -4px; border-right: 0; border-bottom: 0; }
+.nav__link::after { bottom: -4px; right: -4px; border-left: 0; border-top: 0; }
+
+.nav__link[data-state="ready"] {
+  color: var(--accent);
+  border-color: var(--accent-soft);
+  box-shadow: 0 12px 28px -20px var(--accent), inset 0 0 0 1px var(--accent-soft);
+}
+.nav__link[data-state="ready"] .nav__state { color: var(--accent); }
+.nav__link[data-state="ready"] .nav__caret { opacity: 0.85; transform: translateX(0); }
+.nav__link[data-state="ready"]:hover .nav__caret { transform: translateX(3px); }
+.nav__link[data-state="ready"]:hover::before,
+.nav__link[data-state="ready"]:hover::after,
+.nav__link[data-state="ready"]:focus-visible::before,
+.nav__link[data-state="ready"]:focus-visible::after { opacity: 0.9; }
+
+.nav__link[data-state="degraded"] { color: var(--warn); }
+.nav__link[data-state="degraded"] .nav__state { color: var(--warn); }
+.nav__link[data-state="down"] { color: var(--bad); }
+.nav__link[data-state="down"] .nav__state { color: var(--bad); }
+.nav__link[data-state="deferred"] { color: var(--deferred); }
+.nav__link[data-state="deferred"] .nav__label { color: var(--ink-dim); }
 
 .statuscluster { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
 
@@ -278,6 +342,7 @@ body {
 /* -------------------------------------------------------------- responsive */
 @media (max-width: 760px) {
   .topbar { grid-template-columns: 1fr; justify-items: start; }
+  .nav { justify-content: flex-start; }
   .statuscluster { justify-content: flex-start; }
   .pulse { align-self: flex-start; }
   .grid { grid-template-columns: 1fr; }
@@ -610,6 +675,9 @@ body {
   width: 100%; height: 640px; border: 1px solid var(--line-strong); border-radius: 12px;
   background: var(--panel-2);
 }
+/* SRS-RES-003: the #research deep-link / topbar-nav landing target. */
+.panel--research { scroll-margin-top: 18px; }
+.panel--research[data-nav-focus="true"] { box-shadow: var(--shadow), 0 0 0 1px var(--accent-soft); }
 
 /* =========================================================================
    UI-1 — Critical-alerts pane (SYS-46 + SYS-58).
