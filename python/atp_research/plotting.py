@@ -25,7 +25,7 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
-import pandas as pd  # type: ignore[import-untyped]
+import pandas as pd
 from atp_strategy.api import Bar
 from matplotlib.figure import Figure
 

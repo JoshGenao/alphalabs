@@ -383,7 +383,23 @@ class BollingerBands:
         if len(self._closes) < self.period:
             return None
         ser = pd.Series(self._closes, dtype=_FLOAT64)
-        out = pandas_ta.bbands(ser, length=self.period, std=self.num_std)
+        # FLAGGED (mypy-cleanup pass, not fixed here — see report): the installed
+        # pandas_ta (0.4.71b0) bbands() signature is
+        # bbands(close, length, lower_std, upper_std, ddof, mamode, talib, offset,
+        # **kwargs: DictLike) — there is no `std` parameter. This `std=` kwarg is
+        # silently absorbed by **kwargs (typed DictLike = dict | None, which is what
+        # mypy is flagging here) and is never read by bbands' body, so `self.num_std`
+        # is NOT actually forwarded — pandas-ta always falls back to its own
+        # lower_std/upper_std default of 2.0 regardless of configured num_std. Every
+        # caller in this repo (production and tests) currently uses num_std=2.0, the
+        # same as pandas-ta's own default, so this is unobserved in current behavior.
+        # Left unfixed to avoid a behavior change during a typing-only pass; the
+        # ignore below is scoped to the exact kwarg mypy caught as a symptom of this.
+        out = pandas_ta.bbands(
+            ser,
+            length=self.period,
+            std=self.num_std,  # type: ignore[arg-type]
+        )
         if out is None:
             return None
         cols = list(out.columns)

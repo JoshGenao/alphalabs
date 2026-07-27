@@ -43,3 +43,13 @@ exclude = ["target/", ".venv/", "data/"]
 [[tool.mypy.overrides]]
 module = ["tests.*", "tools.*"]
 ignore_missing_imports = true
+
+# Third-party runtime deps that ship no type stubs / py.typed marker. We ignore
+# their missing imports rather than vendoring stub packages: pandas-stubs in
+# particular would surface a large, separate frontier of new errors across the
+# indicator code, which is out of scope for keeping python/ strict-clean. This
+# only silences "module has no stubs" — our own code that uses them is still
+# strictly checked.
+[[tool.mypy.overrides]]
+module = ["pandas", "pandas.*", "exchange_calendars", "exchange_calendars.*", "croniter", "pytz"]
+ignore_missing_imports = true

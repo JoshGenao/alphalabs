@@ -25,6 +25,8 @@ Run it locally::
 
 from __future__ import annotations
 
+from typing import cast
+
 from atp_strategy import (
     SMA,
     AssetClass,
@@ -84,8 +86,17 @@ class SmaCrossoverStrategy(Strategy):
             return
         if not (self._fast.is_ready and self._slow.is_ready):
             return
-        position = int(ctx.get_state("position", default=0) or 0)
-        if self._fast.value > self._slow.value and position == 0:
+        # SMA.value is float | None at the type level, but SMA only ever
+        # flips is_ready True once it has computed a real (non-NaN) value,
+        # and never resets _value to None afterwards (see indicators.py
+        # SMA.update / _IndicatorBase). The is_ready guard above already
+        # makes None unreachable here at runtime; assert narrows the type
+        # to match that existing invariant rather than changing behavior.
+        fast_value = self._fast.value
+        slow_value = self._slow.value
+        assert fast_value is not None and slow_value is not None
+        position = int(cast(int, ctx.get_state("position", default=0)) or 0)
+        if fast_value > slow_value and position == 0:
             handle = ctx.order(
                 OrderRequest(
                     symbol=bar.symbol,
@@ -98,7 +109,7 @@ class SmaCrossoverStrategy(Strategy):
             self._working_order = handle
             ctx.set_state("position", 10)
             ctx.log(f"BUY signal at close={bar.close}")
-        elif self._fast.value < self._slow.value and position > 0:
+        elif fast_value < slow_value and position > 0:
             handle = ctx.order(
                 OrderRequest(
                     symbol=bar.symbol,
@@ -131,7 +142,7 @@ class SmaCrossoverStrategy(Strategy):
         if self._working_order is not None:
             ctx.cancel(self._working_order)
             self._working_order = None
-        position = int(ctx.get_state("position", default=0) or 0)
+        position = int(cast(int, ctx.get_state("position", default=0)) or 0)
         if position > 0:
             ctx.order(
                 OrderRequest(

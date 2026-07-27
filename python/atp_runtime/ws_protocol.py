@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Callable, Iterable
+from typing import Any
 
 from atp_ws import EVENT_CHANNELS, MessageType
 
@@ -159,7 +160,7 @@ class WsSession:
             return None
         return channels
 
-    def _emit(self, message: dict) -> None:
+    def _emit(self, message: dict[str, Any]) -> None:
         self._send(encode_text_frame(json.dumps(message, sort_keys=True)))
 
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, MutableMapping
+from typing import Any
 
 from .commands import (
     ACCESS_MODEL,
@@ -49,8 +50,8 @@ _PLACEHOLDER_DESCRIPTION = (
 )
 
 
-def _argument_dict(argument: Argument) -> dict:
-    payload: dict = {
+def _argument_dict(argument: Argument) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "name": argument.name,
         "summary": argument.summary,
         "required": argument.required,
@@ -61,7 +62,7 @@ def _argument_dict(argument: Argument) -> dict:
     return payload
 
 
-def _command_dict(command: Command) -> dict:
+def _command_dict(command: Command) -> dict[str, Any]:
     description_parts = [
         command.summary,
         f"SRS trace: {', '.join(command.srs_refs)}.",
@@ -82,7 +83,7 @@ def _command_dict(command: Command) -> dict:
     }
 
 
-def _group_dict(group: Group, commands: Iterable[Command]) -> dict:
+def _group_dict(group: Group, commands: Iterable[Command]) -> dict[str, Any]:
     command_list = [_command_dict(command) for command in commands]
     return {
         "name": group.value,
@@ -111,7 +112,7 @@ _GROUP_TRACES: dict[Group, tuple[str, ...]] = {
 }
 
 
-def build_manual(commands: Iterable[Command] = COMMANDS) -> dict:
+def build_manual(commands: Iterable[Command] = COMMANDS) -> dict[str, Any]:
     """Build a deterministic JSON manual document for the CLI.
 
     Output is stable across runs: groups are emitted in :class:`Group`
@@ -130,7 +131,7 @@ def build_manual(commands: Iterable[Command] = COMMANDS) -> dict:
     for command in commands:
         by_group[command.group].append(command)
 
-    document: dict = {
+    document: dict[str, Any] = {
         "manual": MANUAL_SPEC,
         "info": {
             "title": MANUAL_TITLE,

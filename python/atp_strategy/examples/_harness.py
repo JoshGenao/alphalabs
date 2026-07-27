@@ -21,6 +21,7 @@ for inspection.
 
 from __future__ import annotations
 
+import datetime as _dt
 import itertools
 from dataclasses import dataclass, field
 from typing import Any
@@ -29,19 +30,64 @@ from atp_strategy import (
     AssetClass,
     AssetClassViolation,
     Bar,
+    HistoricalData,
     InMemoryScheduler,
     NormalizationMode,
     OrderEvent,
     OrderEventType,
     OrderHandle,
     OrderRequest,
+    Scheduler,
     StaticTradingCalendar,
     Strategy,
     StrategyConfig,
+    TradingCalendar,
     WarmupController,
     WarmupState,
     assert_warmup_complete,
 )
+
+
+class _HarnessCalendar:
+    """``TradingCalendar``-conformant wrapper exposing a settable ``name``.
+
+    ``atp_strategy.StaticTradingCalendar`` is a frozen dataclass, so mypy's
+    structural Protocol check treats its ``name`` field as a read-only
+    attribute — it conflicts with ``TradingCalendar.name: str``, which the
+    Protocol declares as a plain settable member (``api.py`` ``TradingCalendar``
+    / ``StaticTradingCalendar``). The production class stays frozen
+    intentionally (calendar instances are shared and immutable at runtime);
+    this harness-local wrapper delegates every method to a private
+    ``StaticTradingCalendar`` instance — byte-identical behavior — while
+    holding ``name`` as an ordinary mutable instance attribute so the
+    concrete type the harness constructs structurally satisfies the
+    ``TradingCalendar`` Protocol.
+    """
+
+    def __init__(self, inner: StaticTradingCalendar | None = None) -> None:
+        self._inner = inner if inner is not None else StaticTradingCalendar()
+        self.name = self._inner.name
+
+    def is_session(self, date: _dt.date) -> bool:
+        return self._inner.is_session(date)
+
+    def session_open(self, date: _dt.date) -> _dt.datetime:
+        return self._inner.session_open(date)
+
+    def session_close(self, date: _dt.date) -> _dt.datetime:
+        return self._inner.session_close(date)
+
+    def is_early_close(self, date: _dt.date) -> bool:
+        return self._inner.is_early_close(date)
+
+    def premarket_open(self, date: _dt.date) -> _dt.datetime:
+        return self._inner.premarket_open(date)
+
+    def afterhours_close(self, date: _dt.date) -> _dt.datetime:
+        return self._inner.afterhours_close(date)
+
+    def next_session(self, after: _dt.date) -> _dt.date:
+        return self._inner.next_session(after)
 
 
 @dataclass
@@ -80,16 +126,16 @@ class _HarnessContext:
     """Minimal ``StrategyContext`` implementation backed by in-memory state."""
 
     config: StrategyConfig
-    schedule: InMemoryScheduler
-    calendar: StaticTradingCalendar
-    history: _StubHistory
+    schedule: Scheduler
+    calendar: TradingCalendar
+    history: HistoricalData
     subscriptions: list[tuple[str, AssetClass]] = field(default_factory=list)
     orders: list[OrderRequest] = field(default_factory=list)
     cancellations: list[OrderHandle] = field(default_factory=list)
     log_lines: list[str] = field(default_factory=list)
     state: dict[str, Any] = field(default_factory=dict)
     _warmup_state: WarmupState = WarmupState.PENDING
-    _order_counter: itertools.count = field(default_factory=lambda: itertools.count(1))
+    _order_counter: itertools.count[int] = field(default_factory=lambda: itertools.count(1))
 
     @property
     def warmup_state(self) -> WarmupState:
@@ -144,7 +190,7 @@ def build_context(
     history_bars: int = 250,
 ) -> _HarnessContext:
     """Construct a fresh harness context with sensible defaults."""
-    calendar = StaticTradingCalendar()
+    calendar = _HarnessCalendar()
     return _HarnessContext(
         config=StrategyConfig(
             strategy_id=strategy_id,

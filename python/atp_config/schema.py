@@ -11,7 +11,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _RUNTIME_SERVICES_PATH = _PACKAGE_DIR.parents[1] / "architecture" / "runtime_services.json"
@@ -132,13 +132,13 @@ def load_catalogue(path: Path | None = None) -> dict[str, Any]:
     """Read the ``configuration`` block from runtime_services.json."""
 
     config_path = path or _RUNTIME_SERVICES_PATH
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    raw: dict[str, Any] = json.loads(config_path.read_text(encoding="utf-8"))
     if "configuration" not in raw:
         raise RuntimeError(
             f"runtime_services.json at {config_path} is missing the "
             "'configuration' block (SRS-ARCH-005)"
         )
-    return raw["configuration"]
+    return cast(dict[str, Any], raw["configuration"])
 
 
 def _build_required_keys() -> tuple[KeySpec, ...]:
