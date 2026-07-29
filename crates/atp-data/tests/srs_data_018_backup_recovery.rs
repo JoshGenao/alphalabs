@@ -1573,3 +1573,80 @@ fn restoring_an_empty_archive_is_unverified_not_a_silent_success() {
     assert_eq!(report.verdict(), BackupVerdict::Unverified);
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_unit_missing_from_the_archive_is_reported_under_its_own_codec() {
+    // A unit that is expected but absent is known only by its id — there is no discovered file to
+    // read a kind from. Defaulting those to market-data told the operator a missing
+    // `backtest_results.store` was a market-data unit, i.e. named the wrong codec for the very
+    // thing that is not there, and rendered the envelope-only unit exactly like a record-level one.
+    let root = scratch("absent-unit-kind");
+    let nas = root.join("nas");
+    let target = root.join("usb");
+    seed_market_data(&nas.join("equities"), &["AAPL"]);
+    seed_backtest_results(&nas.join("backtests"), "run-momentum\n");
+    fs::create_dir_all(&target).unwrap(); // mounted, but nothing has ever been exported to it
+
+    let expected = discover_unit_names(&nas).unwrap();
+    let report = verify_archive(&target, &expected, Some(&backtest_validator())).unwrap();
+
+    let backtest = report
+        .units
+        .iter()
+        .find(|u| u.unit.ends_with(BACKTEST_STORE_FILENAME))
+        .expect("the absent backtest unit is reported");
+    assert_eq!(backtest.kind, UnitKind::BacktestResults);
+    let market = report
+        .units
+        .iter()
+        .find(|u| u.unit.ends_with(STORE_FILENAME))
+        .expect("the absent market-data unit is reported");
+    assert_eq!(market.kind, UnitKind::MarketData);
+
+    // The safety verdict is unchanged by the fix: absent is still Unverified, never a pass.
+    assert!(report
+        .units
+        .iter()
+        .all(|u| u.verdict == BackupVerdict::Unverified));
+    assert_eq!(report.verdict(), BackupVerdict::Unverified);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_successful_export_to_ordinary_local_media_reports_a_full_sync_barrier() {
+    // The durability axis is reported SEPARATELY from the verdict, and on a normal filesystem it
+    // must read `full-sync` — otherwise the barrier-less path below would not be distinguishable
+    // from the ordinary one, and the warning would be noise an operator learns to ignore.
+    let root = scratch("durability-fullsync");
+    let nas = root.join("nas");
+    let target = root.join("usb");
+    seed_market_data(&nas.join("equities"), &["AAPL"]);
+    fs::create_dir_all(&target).unwrap();
+
+    let config = BackupConfig::new(&nas, &target, DEFAULT_CADENCE_DAYS).unwrap();
+    let report = run_backup(&config, NOW).unwrap();
+
+    assert_eq!(report.verdict(), BackupVerdict::Verified);
+    assert_eq!(report.durability, Some(atp_data::SyncDurability::FullSync));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_run_that_writes_nothing_reports_no_durability_at_all() {
+    // `None` is a third state on purpose: an absent mount attempted no barrier, and rendering that
+    // as either `full-sync` or `unsupported-by-target` would invent an observation never made.
+    let root = scratch("durability-none");
+    let nas = root.join("nas");
+    seed_market_data(&nas.join("equities"), &["AAPL"]);
+    let target = root.join("usb"); // never created: the external mount is absent
+
+    let config = BackupConfig::new(&nas, &target, DEFAULT_CADENCE_DAYS).unwrap();
+    let report = run_backup(&config, NOW).unwrap();
+
+    assert_eq!(report.verdict(), BackupVerdict::Unverified);
+    assert_eq!(report.durability, None);
+
+    let _ = fs::remove_dir_all(&root);
+}

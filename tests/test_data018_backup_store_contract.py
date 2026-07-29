@@ -92,6 +92,37 @@ class Data018BackupStoreContractTest(unittest.TestCase):
             "directly instead of keeping duplicated literals",
         )
 
+    def test_an_unflushed_export_is_still_reported_to_the_operator(self) -> None:
+        """The barrier warning cannot be exercised by any test on this machine — provoking it needs
+        a filesystem with no sync barrier (SMB/NFS/cloud), which no fixture can mount. So it is
+        guarded statically instead.
+
+        Deleting the ``TargetUnsupported`` arm would not fail a single Rust test: exports would keep
+        succeeding and keep printing ``verified``, and the operator would simply stop being told
+        that their archive was never flushed. A verified-but-unflushed archive rendering exactly
+        like a verified-and-flushed one is the same false-green class this file already guards."""
+        cli = (
+            ROOT / "crates" / "atp-simulation" / "src" / "bin" / "data018_backup_cli.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "SyncDurability::TargetUnsupported",
+            cli,
+            "the backup CLI no longer renders the unsupported-sync-barrier case: a verified "
+            "export on an SMB/NFS/cloud target would read as a flushed one",
+        )
+        self.assertIn(
+            "unsupported-by-target",
+            cli,
+            "the operator-visible label for a missing sync barrier is gone from the backup CLI",
+        )
+        backup_rs = BACKUP_RS.read_text(encoding="utf-8")
+        self.assertIn(
+            "fn sync_barrier_is_unavailable",
+            backup_rs,
+            "the sync-barrier classifier is gone: an ENOTSUP from a network target would once "
+            "again abort the whole backup instead of degrading honestly",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

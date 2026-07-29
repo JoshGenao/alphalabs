@@ -34,8 +34,8 @@ use atp_simulation::backtest_store::BacktestResultStore;
 
 use atp_data::backup::{
     discover_unit_names, due, restore, rpo_report, run_backup_locked, verify_archive, BackupConfig,
-    BackupLedger, BackupReport, BackupVerdict, ForeignCodecValidator, RestoreReport, UnitKind,
-    UnitReport, DEFAULT_CADENCE_DAYS, RPO_MAX_DAYS,
+    BackupLedger, BackupReport, BackupVerdict, ForeignCodecValidator, RestoreReport,
+    SyncDurability, UnitKind, UnitReport, DEFAULT_CADENCE_DAYS, RPO_MAX_DAYS,
 };
 
 /// The real backtest-results decoder, injected into `atp_data::backup` so a `backtest_results.store`
@@ -439,6 +439,21 @@ fn print_verdict(label: &str, verdict: BackupVerdict, report: &BackupReport) {
         report.verified_units().len(),
         report.units.len()
     );
+    // Report the sync barrier SEPARATELY from the verdict, and only when a write happened. The two
+    // are different guarantees: the verdict says the exported bytes were read back and matched the
+    // source, which no `fsync` return value can tell you; the barrier says the filesystem promised
+    // to have flushed them. A target that cannot offer the barrier still yields a real, verified
+    // archive — but the operator must be told, because it is their power-loss risk to carry.
+    match report.durability {
+        Some(SyncDurability::FullSync) => println!("{label} sync    : full-sync"),
+        Some(SyncDurability::TargetUnsupported) => println!(
+            "{label} sync    : unsupported-by-target — this filesystem implements no sync \
+             barrier (typical of SMB/NFS/cloud mounts), so the exported bytes were verified by \
+             re-reading them but never explicitly flushed; an OS or power failure during the run \
+             could still lose them"
+        ),
+        None => {}
+    }
 }
 
 fn resolve_dir(explicit: Option<&str>, env_key: &str, flag: &str) -> Result<PathBuf, String> {

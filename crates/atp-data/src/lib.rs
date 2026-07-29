@@ -37,8 +37,8 @@ pub use crate::access_journal::{
 pub use crate::backup::{
     discover_unit_names, due, restore, rpo_report, run_backup, run_backup_locked, verify_archive,
     BackupConfig, BackupError, BackupLedger, BackupReport, BackupVerdict, DiscoveredUnit,
-    ForeignCodecValidator, LedgerEntry, RestoreReport, RpoReport, TargetStatus, UnitKind,
-    UnitReport, VerificationDepth, BACKTEST_STORE_FILENAME, BACKTEST_STORE_MAGIC,
+    ForeignCodecValidator, LedgerEntry, RestoreReport, RpoReport, SyncDurability, TargetStatus,
+    UnitKind, UnitReport, VerificationDepth, BACKTEST_STORE_FILENAME, BACKTEST_STORE_MAGIC,
     BACKUP_LEDGER_FILENAME, DEFAULT_CADENCE_DAYS, RPO_MAX_DAYS,
 };
 pub use crate::cold_read::{
