@@ -791,7 +791,7 @@
       "Step 3: Verify acceptance criteria: Weekly default backups can export NAS data to an external target; backup completion validates integrity; documented RPO is no more than 7 days.",
       "Step 4: Record objective evidence from demonstration, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {
