@@ -126,6 +126,14 @@ pub enum BackupError {
     Io {
         /// What was being attempted.
         context: &'static str,
+        /// The OS error number behind the failure, when the failure came from a syscall.
+        ///
+        /// Kept as a raw `i32` rather than an [`io::Error`] so `BackupError` stays `Clone + Eq`.
+        /// Recording it is not cosmetic: an export that dies on `write export scratch file` with
+        /// the cause discarded is indistinguishable, to the operator holding the failing media,
+        /// from a full disk, a permissions problem, or a filesystem that does not implement the
+        /// sync barrier at all — three faults with three different remedies.
+        errno: Option<i32>,
     },
     /// A store-codec failure surfaced from the underlying blob.
     Store(StoreError),
@@ -161,7 +169,11 @@ impl fmt::Display for BackupError {
                 target.display(),
                 source.display()
             ),
-            Self::Io { context } => write!(f, "backup I/O failure: {context}"),
+            Self::Io {
+                context,
+                errno: Some(code),
+            } => write!(f, "backup I/O failure: {context} (os error {code})"),
+            Self::Io { context, .. } => write!(f, "backup I/O failure: {context}"),
             Self::Store(err) => write!(f, "backup store failure: {err}"),
         }
     }
@@ -176,7 +188,96 @@ impl From<StoreError> for BackupError {
 }
 
 fn io_error(context: &'static str) -> BackupError {
-    BackupError::Io { context }
+    BackupError::Io {
+        context,
+        errno: None,
+    }
+}
+
+/// An I/O error that carries the OS error number behind it, so the operator sees the cause.
+fn os_error(context: &'static str, err: &io::Error) -> BackupError {
+    BackupError::Io {
+        context,
+        errno: err.raw_os_error(),
+    }
+}
+
+/// Whether the target filesystem can commit a write with the platform's sync barrier.
+///
+/// This is a property of the *media*, not of the data: it is recorded and reported separately from
+/// a unit's [`BackupVerdict`], because the two answer different questions and collapsing them would
+/// let one overstate the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncDurability {
+    /// The write was flushed to stable storage with the platform's full sync barrier.
+    FullSync,
+    /// The target filesystem does not implement the barrier, so the bytes were written and read
+    /// back but never explicitly flushed. See [`sync_to_stable_storage`].
+    TargetUnsupported,
+}
+
+impl SyncDurability {
+    /// A stable lowercase label for CLI/report rendering.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FullSync => "full-sync",
+            Self::TargetUnsupported => "unsupported-by-target",
+        }
+    }
+
+    /// The weaker of two observations — used to fold a whole run down to one honest answer.
+    pub fn weakest(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::FullSync, Self::FullSync) => Self::FullSync,
+            _ => Self::TargetUnsupported,
+        }
+    }
+}
+
+/// Errno values that mean *"this filesystem does not implement the sync barrier"* rather than
+/// *"the sync was attempted and failed"*.
+///
+/// Spelled out numerically per platform because the workspace forbids `unsafe` and takes no
+/// external dependencies, so `libc`'s constants are out of reach. POSIX assigns `EINVAL` to
+/// "the fildes argument does not refer to a file on which this operation is possible", which is
+/// exactly this condition; a genuine fault (`EIO`, `ENOSPC`, `EBADF`) is not in this set and stays
+/// fatal.
+#[cfg(target_os = "macos")]
+const SYNC_UNSUPPORTED_ERRNOS: &[i32] = &[45, 22, 25, 78]; // ENOTSUP, EINVAL, ENOTTY, ENOSYS
+#[cfg(target_os = "linux")]
+const SYNC_UNSUPPORTED_ERRNOS: &[i32] = &[95, 22, 25, 38]; // EOPNOTSUPP, EINVAL, ENOTTY, ENOSYS
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+const SYNC_UNSUPPORTED_ERRNOS: &[i32] = &[22, 25]; // EINVAL, ENOTTY
+
+/// Flush `file` to stable storage, distinguishing *"the barrier failed"* from *"this filesystem
+/// has no barrier to offer"*.
+///
+/// [`fs::File::sync_all`] issues `fcntl(F_FULLFSYNC)` on macOS and `fsync` on Linux. The external
+/// storage targets SYS-59 names — "USB drive, secondary NAS, or cloud archival bucket" — include
+/// network and FUSE-backed mounts that answer `ENOTSUP`: smbfs returns it for `F_FULLFSYNC`
+/// unconditionally, so an SMB-mounted secondary NAS could not be backed up **at all** while this
+/// was treated as a fatal I/O error. The call being unavailable is not a write failure, and
+/// refusing the whole backup over it protects nothing.
+///
+/// What is deliberately NOT done here is to quietly proceed. The outcome is returned, folded to
+/// the weakest observation across the run, and rendered by the operator surface, so a `verified`
+/// export on a barrier-less target can never be read as a flushed one. The integrity guarantee is
+/// unaffected either way: SYS-60 validation re-reads the exported bytes through the owning codec,
+/// which proves the bytes are on the media far more directly than an `fsync` return value does.
+fn sync_to_stable_storage(file: &fs::File) -> Result<SyncDurability, io::Error> {
+    match file.sync_all() {
+        Ok(()) => Ok(SyncDurability::FullSync),
+        Err(err) if sync_barrier_is_unavailable(&err) => Ok(SyncDurability::TargetUnsupported),
+        Err(err) => Err(err),
+    }
+}
+
+/// Whether `err` means the sync barrier does not exist on this filesystem, rather than that it was
+/// attempted and failed. Split out from [`sync_to_stable_storage`] so the classification can be
+/// tested directly — no test can mount a barrier-less filesystem to provoke the real thing.
+fn sync_barrier_is_unavailable(err: &io::Error) -> bool {
+    err.raw_os_error()
+        .is_some_and(|code| SYNC_UNSUPPORTED_ERRNOS.contains(&code))
 }
 
 /// Resolve as much of `path` as currently exists, re-appending the components that do not.
@@ -448,6 +549,21 @@ impl UnitKind {
             Self::BacktestResults => "backtest-results",
         }
     }
+
+    /// Recover the kind from a unit id, which always ends in the owning store's filename (see
+    /// [`DiscoveredUnit::id`]).
+    ///
+    /// Needed where a unit is known only by name — an expected unit that is **absent** from the
+    /// archive was never discovered there, so there is no [`DiscoveredUnit`] to read the kind from.
+    /// Defaulting those to [`UnitKind::MarketData`] made a missing `backtest_results.store` render
+    /// as a market-data unit, which is exactly the "weaker check rendered as the stronger one"
+    /// confusion [`VerificationDepth`] exists to prevent.
+    pub fn from_unit_id(id: &str) -> Option<Self> {
+        let name = id.rsplit('/').next().unwrap_or(id);
+        [Self::MarketData, Self::BacktestResults]
+            .into_iter()
+            .find(|kind| kind.filename() == name)
+    }
 }
 
 /// **How strong** the evidence behind a [`BackupVerdict::Verified`] actually is.
@@ -509,6 +625,11 @@ pub struct BackupReport {
     pub ran_at: i64,
     /// Per-unit outcomes, ordered by relative path.
     pub units: Vec<UnitReport>,
+    /// Whether this target's filesystem could commit the run's writes with a sync barrier, folded
+    /// to the **weakest** observation across every unit written. `None` when the run wrote nothing
+    /// (an absent target root, or no units to export), because no barrier was ever attempted —
+    /// which must not render as either a success or a failure.
+    pub durability: Option<SyncDurability>,
 }
 
 impl BackupReport {
@@ -664,7 +785,7 @@ fn stage_export(
     required_root: Option<&Path>,
     path: &Path,
     bytes: &[u8],
-) -> Result<PathBuf, BackupError> {
+) -> Result<(PathBuf, SyncDurability), BackupError> {
     // `create_dir_all` creates INTERMEDIATE directories, so on a mount that vanished after the
     // run-start guard it would happily recreate the external target root itself on local disk —
     // and the export would then verify against a copy sitting inside the source's failure domain.
@@ -688,15 +809,19 @@ fn stage_export(
             .unwrap_or_else(|| "export".to_string()),
         std::process::id()
     ));
-    let mut scratch = fs::File::create(&tmp).map_err(|_| io_error("create export scratch file"))?;
-    if scratch
-        .write_all(bytes)
-        .and_then(|()| scratch.sync_all())
-        .is_err()
-    {
+    let mut scratch =
+        fs::File::create(&tmp).map_err(|err| os_error("create export scratch file", &err))?;
+    if let Err(err) = scratch.write_all(bytes) {
         let _ = fs::remove_file(&tmp);
-        return Err(io_error("write export scratch file"));
+        return Err(os_error("write export scratch file", &err));
     }
+    let durability = match sync_to_stable_storage(&scratch) {
+        Ok(durability) => durability,
+        Err(err) => {
+            let _ = fs::remove_file(&tmp);
+            return Err(os_error("sync export scratch file", &err));
+        }
+    };
     // Re-check after the write: if the mount disappeared mid-operation, `create_dir_all` above may
     // have recreated the tree locally. Tear the staged file down rather than publish it.
     if let Some(root) = required_root {
@@ -707,21 +832,18 @@ fn stage_export(
             ));
         }
     }
-    Ok(tmp)
+    Ok((tmp, durability))
 }
 
 /// Atomically publish a staged file over `final_path`, then fsync the directory so the rename
-/// itself is durable.
-fn publish_staged(staged: &Path, final_path: &Path) -> Result<(), BackupError> {
-    fs::rename(staged, final_path).map_err(|_| io_error("publish export file"))?;
+/// itself is durable. Returns whether that directory sync was actually available on this target.
+fn publish_staged(staged: &Path, final_path: &Path) -> Result<SyncDurability, BackupError> {
+    fs::rename(staged, final_path).map_err(|err| os_error("publish export file", &err))?;
     let dir = final_path
         .parent()
         .ok_or_else(|| io_error("export path has no parent directory"))?;
-    let handle = fs::File::open(dir).map_err(|_| io_error("open export directory"))?;
-    handle
-        .sync_all()
-        .map_err(|_| io_error("sync export directory"))?;
-    Ok(())
+    let handle = fs::File::open(dir).map_err(|err| os_error("open export directory", &err))?;
+    sync_to_stable_storage(&handle).map_err(|err| os_error("sync export directory", &err))
 }
 
 /// Durably publish `bytes` to `path`: stage, fsync, atomic rename, fsync parent. Used where there
@@ -730,13 +852,15 @@ fn durable_write(
     required_root: Option<&Path>,
     path: &Path,
     bytes: &[u8],
-) -> Result<(), BackupError> {
-    let staged = stage_export(required_root, path, bytes)?;
-    if let Err(err) = publish_staged(&staged, path) {
-        let _ = fs::remove_file(&staged);
-        return Err(err);
+) -> Result<SyncDurability, BackupError> {
+    let (staged, staged_durability) = stage_export(required_root, path, bytes)?;
+    match publish_staged(&staged, path) {
+        Ok(published_durability) => Ok(staged_durability.weakest(published_durability)),
+        Err(err) => {
+            let _ = fs::remove_file(&staged);
+            Err(err)
+        }
     }
-    Ok(())
 }
 
 /// Export every NAS backup unit to the external target and **verify each exported copy**.
@@ -778,6 +902,8 @@ pub fn run_backup(config: &BackupConfig, now: i64) -> Result<BackupReport, Backu
     if !config.target_dir().is_dir() {
         return Ok(BackupReport {
             ran_at: now,
+            // Nothing was written, so no sync barrier was attempted: `None`, never `FullSync`.
+            durability: None,
             units: units
                 .into_iter()
                 .map(|unit| UnitReport {
@@ -798,19 +924,32 @@ pub fn run_backup(config: &BackupConfig, now: i64) -> Result<BackupReport, Backu
     }
 
     let mut reports = Vec::with_capacity(units.len());
+    let mut durability: Option<SyncDurability> = None;
     for unit in units {
-        reports.push(export_unit(config, &unit));
+        let (report, observed) = export_unit(config, &unit);
+        // Fold to the weakest observation: one unit that could not be flushed makes the whole run
+        // no better than that, and a later full-sync unit must not paper over it.
+        if let Some(observed) = observed {
+            durability = Some(match durability {
+                Some(current) => current.weakest(observed),
+                None => observed,
+            });
+        }
+        reports.push(report);
     }
     Ok(BackupReport {
         ran_at: now,
         units: reports,
+        durability,
     })
 }
 
 /// Export and verify one unit, never panicking and never propagating — every failure is folded
 /// into the unit's own report entry so the run continues.
-/// Export and verify one unit, never panicking and never propagating — every failure is folded
-/// into the unit's own report entry so the run continues.
+///
+/// Returns the unit's report plus the sync-barrier observation from **published** writes only: a
+/// staged copy that failed verification is deleted rather than archived, so its write says nothing
+/// about the durability of the archive the operator ends up holding.
 ///
 /// ## Publish ordering: the previous good archive is never destroyed by a failed run
 ///
@@ -821,7 +960,10 @@ pub fn run_backup(config: &BackupConfig, now: i64) -> Result<BackupReport, Backu
 /// perfectly good previous backup with a corrupt one and merely *report* the failure. Validating
 /// before publishing means the worst case of a failed export is that the archive keeps its previous
 /// verified copy, which is exactly what a backup is for.
-fn export_unit(config: &BackupConfig, unit: &DiscoveredUnit) -> UnitReport {
+fn export_unit(
+    config: &BackupConfig,
+    unit: &DiscoveredUnit,
+) -> (UnitReport, Option<SyncDurability>) {
     let kind = unit.kind;
     let source_file = config.nas_dir().join(&unit.dir).join(kind.filename());
     let target_file = config.target_dir().join(&unit.dir).join(kind.filename());
@@ -841,11 +983,14 @@ fn export_unit(config: &BackupConfig, unit: &DiscoveredUnit) -> UnitReport {
     let source_text = match fs::read_to_string(&source_file) {
         Ok(text) => text,
         Err(err) => {
-            return UnitReport {
-                verdict: BackupVerdict::Unverified,
-                detail: format!("source unit could not be read: {err}"),
-                ..blank
-            }
+            return (
+                UnitReport {
+                    verdict: BackupVerdict::Unverified,
+                    detail: format!("source unit could not be read: {err}"),
+                    ..blank
+                },
+                None,
+            )
         }
     };
 
@@ -855,14 +1000,17 @@ fn export_unit(config: &BackupConfig, unit: &DiscoveredUnit) -> UnitReport {
     let validator = config.backtest_validator();
     let source_check = check_blob(&source_text, kind, blank.clone(), validator);
     if !source_check.verdict.is_verified() {
-        return UnitReport {
-            status: TargetStatus::Failed,
-            detail: format!(
-                "source unit is corrupt, refusing to export it: {}",
-                source_check.detail
-            ),
-            ..source_check
-        };
+        return (
+            UnitReport {
+                status: TargetStatus::Failed,
+                detail: format!(
+                    "source unit is corrupt, refusing to export it: {}",
+                    source_check.detail
+                ),
+                ..source_check
+            },
+            None,
+        );
     }
 
     // The root-level failure-domain guard is not enough: a per-unit target subdirectory can itself
@@ -877,43 +1025,49 @@ fn export_unit(config: &BackupConfig, unit: &DiscoveredUnit) -> UnitReport {
         let under_target = resolved == target_root || is_nested_within(&resolved, &target_root);
         let in_source = resolved == nas_root || is_nested_within(&resolved, &nas_root);
         if !under_target || in_source {
-            return UnitReport {
-                status: TargetStatus::Failed,
-                verdict: BackupVerdict::Unverified,
-                detail: format!(
-                    "target path for this unit resolves to {} — outside the backup target root or \
-                     inside the NAS source; refusing to write (a symlinked unit directory would \
-                     publish the backup into the source tree)",
-                    resolved.display()
-                ),
-                ..blank
-            };
+            return (
+                UnitReport {
+                    status: TargetStatus::Failed,
+                    verdict: BackupVerdict::Unverified,
+                    detail: format!(
+                        "target path for this unit resolves to {} — outside the backup target root \
+                         or inside the NAS source; refusing to write (a symlinked unit directory \
+                         would publish the backup into the source tree)",
+                        resolved.display()
+                    ),
+                    ..blank
+                },
+                None,
+            );
         }
     }
 
     // Stage the replacement beside the live file; nothing is published yet.
-    let staged = match stage_export(
+    let (staged, staged_durability) = match stage_export(
         Some(config.target_dir()),
         &target_file,
         source_text.as_bytes(),
     ) {
-        Ok(path) => path,
+        Ok(staged) => staged,
         Err(err) => {
             // Classify ONLY — never create. Calling `create_dir_all` here would materialise a
             // vanished external mount on local disk mid-run, after which later units in this same
             // loop would export and verify inside the source's failure domain and be recorded as
             // genuine backups.
             let reachable = config.target_dir().is_dir();
-            return UnitReport {
-                status: if reachable {
-                    TargetStatus::Failed
-                } else {
-                    TargetStatus::Degraded
+            return (
+                UnitReport {
+                    status: if reachable {
+                        TargetStatus::Failed
+                    } else {
+                        TargetStatus::Degraded
+                    },
+                    verdict: BackupVerdict::Unverified,
+                    detail: format!("export did not complete: {err}"),
+                    ..blank
                 },
-                verdict: BackupVerdict::Unverified,
-                detail: format!("export did not complete: {err}"),
-                ..blank
-            };
+                None,
+            );
         }
     };
 
@@ -922,20 +1076,29 @@ fn export_unit(config: &BackupConfig, unit: &DiscoveredUnit) -> UnitReport {
     let outcome = verify_staged(&staged, &source_text, kind, blank.clone(), validator);
     if !outcome.verdict.is_verified() {
         let _ = fs::remove_file(&staged);
-        return outcome;
+        return (outcome, None);
     }
 
     // Only now publish, atomically.
-    if let Err(err) = publish_staged(&staged, &target_file) {
-        let _ = fs::remove_file(&staged);
-        return UnitReport {
-            status: TargetStatus::Failed,
-            verdict: BackupVerdict::Unverified,
-            detail: format!("verified export could not be published: {err}"),
-            ..blank
-        };
-    }
-    outcome
+    let published_durability = match publish_staged(&staged, &target_file) {
+        Ok(durability) => durability,
+        Err(err) => {
+            let _ = fs::remove_file(&staged);
+            return (
+                UnitReport {
+                    status: TargetStatus::Failed,
+                    verdict: BackupVerdict::Unverified,
+                    detail: format!("verified export could not be published: {err}"),
+                    ..blank
+                },
+                None,
+            );
+        }
+    };
+    (
+        outcome,
+        Some(staged_durability.weakest(published_durability)),
+    )
 }
 
 /// Read back and fully check a staged export against its source.
@@ -1186,7 +1349,10 @@ impl BackupLedger {
         let path = target_dir.join(BACKUP_LEDGER_FILENAME);
         let scratch_hint = target_dir.join(BACKUP_LEDGER_TMP_FILENAME);
         debug_assert_ne!(path, scratch_hint);
-        durable_write(Some(target_dir), &path, self.serialize().as_bytes())
+        // The ledger's own sync-barrier outcome is deliberately dropped rather than surfaced: it
+        // lives on the same target as the units whose durability the run already reports, so a
+        // second copy of the same fact could only ever agree — or drift and contradict it.
+        durable_write(Some(target_dir), &path, self.serialize().as_bytes()).map(|_| ())
     }
 }
 
@@ -1297,6 +1463,8 @@ impl RestoreReport {
         BackupReport {
             ran_at: 0,
             units: self.units.clone(),
+            // A restore/verify writes nothing to the archive, so there is no barrier to report.
+            durability: None,
         }
         .verdict()
     }
@@ -1346,7 +1514,10 @@ pub fn verify_archive(
     for unit in &to_check {
         let base = UnitReport {
             unit: unit.clone(),
-            kind: UnitKind::MarketData,
+            // Derived from the id, not defaulted: an absent unit has no `DiscoveredUnit` to read
+            // the kind from, and naming the wrong codec in the operator's report is a lie about
+            // what is missing. A present unit overwrites this from `found.kind` below.
+            kind: UnitKind::from_unit_id(unit).unwrap_or(UnitKind::MarketData),
             status: TargetStatus::Failed,
             verdict: BackupVerdict::Corrupt,
             records: None,
@@ -1556,9 +1727,11 @@ pub fn restore(
             continue;
         }
 
-        // Stage into the destination, verify what landed, and only then publish.
+        // Stage into the destination, verify what landed, and only then publish. The sync-barrier
+        // outcome is not reported here: it would describe the RECOVERY destination, not the
+        // archive, and a restore proves its own bytes by re-reading them below regardless.
         let staged = match stage_export(None, &restored, archived_text.as_bytes()) {
-            Ok(path) => path,
+            Ok((path, _durability)) => path,
             Err(err) => {
                 reports.push(UnitReport {
                     verdict: BackupVerdict::Unverified,
@@ -1625,7 +1798,11 @@ mod tests {
     }
 
     fn report(units: Vec<UnitReport>) -> BackupReport {
-        BackupReport { ran_at: 0, units }
+        BackupReport {
+            ran_at: 0,
+            units,
+            durability: None,
+        }
     }
 
     // ----------------------------------------------------------------- //
@@ -1988,6 +2165,84 @@ mod tests {
         assert_ne!(
             UnitKind::MarketData.magic(),
             UnitKind::BacktestResults.magic()
+        );
+    }
+
+    #[test]
+    fn a_unit_kind_is_recoverable_from_its_id_alone() {
+        // An expected-but-absent unit is known only by id, so this is the only way to name its
+        // codec honestly. Both the bare and the nested form must resolve.
+        assert_eq!(
+            UnitKind::from_unit_id(STORE_FILENAME),
+            Some(UnitKind::MarketData)
+        );
+        assert_eq!(
+            UnitKind::from_unit_id(BACKTEST_STORE_FILENAME),
+            Some(UnitKind::BacktestResults)
+        );
+        assert_eq!(
+            UnitKind::from_unit_id(&format!("equities/{STORE_FILENAME}")),
+            Some(UnitKind::MarketData)
+        );
+        assert_eq!(
+            UnitKind::from_unit_id(&format!("backtests/{BACKTEST_STORE_FILENAME}")),
+            Some(UnitKind::BacktestResults)
+        );
+        assert_eq!(UnitKind::from_unit_id("equities/notes.txt"), None);
+        assert_eq!(UnitKind::from_unit_id(""), None);
+    }
+
+    #[test]
+    fn a_missing_sync_barrier_is_classified_apart_from_a_failed_one() {
+        // The whole point of the split: "this filesystem has no barrier" must not read like
+        // "the flush failed", or an SMB/NFS/cloud target can never be backed up at all.
+        for code in SYNC_UNSUPPORTED_ERRNOS {
+            assert!(
+                sync_barrier_is_unavailable(&io::Error::from_raw_os_error(*code)),
+                "errno {code} should classify as an absent barrier"
+            );
+        }
+        // Real faults stay fatal. EIO (5) and ENOSPC (28/28) are genuine write failures on both
+        // supported platforms, and EBADF (9) means we handed the syscall a broken descriptor.
+        for code in [5, 9, 28] {
+            assert!(
+                !sync_barrier_is_unavailable(&io::Error::from_raw_os_error(code)),
+                "errno {code} is a real fault and must stay fatal"
+            );
+        }
+        // An error with no OS number behind it cannot be a "this filesystem lacks the call" answer.
+        assert!(!sync_barrier_is_unavailable(&io::Error::other("synthetic")));
+    }
+
+    #[test]
+    fn durability_folds_to_the_weakest_observation() {
+        use SyncDurability::{FullSync, TargetUnsupported};
+        assert_eq!(FullSync.weakest(FullSync), FullSync);
+        // One unflushed unit makes the whole run unflushed; order must not change the answer.
+        assert_eq!(FullSync.weakest(TargetUnsupported), TargetUnsupported);
+        assert_eq!(TargetUnsupported.weakest(FullSync), TargetUnsupported);
+        assert_eq!(
+            TargetUnsupported.weakest(TargetUnsupported),
+            TargetUnsupported
+        );
+        assert_eq!(FullSync.label(), "full-sync");
+        assert_eq!(TargetUnsupported.label(), "unsupported-by-target");
+    }
+
+    #[test]
+    fn an_io_error_reports_the_os_cause_when_it_has_one() {
+        let with_cause = os_error(
+            "write export scratch file",
+            &io::Error::from_raw_os_error(45),
+        );
+        assert_eq!(
+            with_cause.to_string(),
+            "backup I/O failure: write export scratch file (os error 45)"
+        );
+        // A context-only error must not grow a misleading "(os error …)" tail.
+        assert_eq!(
+            io_error("read backup ledger").to_string(),
+            "backup I/O failure: read backup ledger"
         );
     }
 }
