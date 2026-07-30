@@ -1,3 +1,273 @@
+=== SESSION 91 ===
+Date: 2026-07-27
+Feature: SRS-EXE-007 — manage IB TWS API version compatibility for the brokerage adapter
+         (docs/SRS.md:151 SRS-5.3; SyRS SYS-65 docs/SyRS_v0.7.md:355; StRS C-2, SN-3.02; API-5)
+Outcome: serialized on 2026-07-27 (passes stayed false — clause 2's *demonstrated* paper-account
+         upgrade run is operator-gated: ATP_RUN_INTEGRATION=1 against port 4002, which cannot run
+         beside siblings). SUPERSEDED 2026-07-30: the operator run was performed against the live
+         IBKR paper Gateway and clause 2's enforcement was demonstrated with two negative controls;
+         the feature is now passes:true. See "OPERATOR VERIFICATION 2026-07-30" at the end.
+
+## Context — what already existed vs. the hole this session closed
+
+Clause 1 ("the adapter documents the supported IB TWS API version") was ALREADY satisfied by
+SRS-EXE-006's contract surface: `INTERACTIVE_BROKERS_TWS_API_VERSION = "10.19.4"`
+(crates/atp-adapters/src/lib.rs:148) exposed via `AdapterVersion`, mirrored by
+`adapter_contract.interactive_brokers.protocol_version` in architecture/runtime_services.json,
+prose in architecture/README.md, and cross-checked by tools/adapter_check.py. The distinct
+negotiated wire pin (`IB_PINNED_SERVER_VERSION = 176`) is checked by tools/ib_adapter_check.py.
+
+Clause 2 — "API version upgrades are tested against the IB paper trading account BEFORE deployment
+to live trading" — had NO enforcement, and it was a fail-open hole:
+
+  The operator paper-account evidence artifact (architecture/ib_paper_account_evidence.json) is
+  bound by `code_digest` to the WIRE SOURCES ONLY (interactive_brokers.rs + wire.rs + the EXE-006
+  integration test). The declared TWS API version string was bound to nothing a paper run produces.
+  So editing the constant from "10.19.4" to any other value + the matching metadata value passed
+  adapter_check.py, ib_adapter_check.py and the whole CI mirror — an unvalidated API-version
+  upgrade shipped green. tools/ib_adapter_check.py already named this as owed work ("SRS-EXE-007
+  version-upgrade regression" must stay enumerated in deferred[]).
+
+## What I did
+
+1. **Validation record — architecture/ib_api_version_support.json (new).** Declares the supported
+   TWS API version + negotiated server version and cites the paper-account evidence by
+   `evidence_code_digest` + `evidence_generated_at`. Seeded at today's ALREADY-VERIFIED state
+   (10.19.4 / server 176, evidence of 2026-07-16T03:11:09Z from the operator-run EXE-006 round
+   trip); `provenance` names that origin explicitly rather than implying a run happened here.
+2. **The gate — tools/ib_api_version_check.py (new).** Pure inspection (no network, no subprocess,
+   no IB), fail-closed on every unreadable shape (missing / unparseable / duplicate-keyed /
+   schema-drifted / unknown-key / degenerate-value). Refuses when: the declared constant ≠ the
+   validated version (THE upgrade gate); the runtime metadata disagrees; the wire pin disagrees
+   across source/metadata/record; the cited digest ≠ the evidence artifact's current `code_digest`
+   (a hand-edited citation is not validation); `generated_at` drifts; the evidence records a failed
+   run; or the evidence is stale vs the current wire (digest recomputed by REUSING
+   `ib_adapter_check._code_digest`, never a forked definition).
+3. **Operator path — `--sync`.** Records a NEW paper run into the support record. It refuses when
+   the evidence still carries the `generated_at` the record already cites, so bumping the version
+   and re-syncing cannot launder an unvalidated upgrade: with no new run there is nothing to sync.
+4. **CI wiring (both paths, per the project rule).** `ib_api_version` added to the check loop in
+   .github/workflows/ci.yml and `ib_api_version_check` to tools/run_ci_locally.sh.
+5. **Docs — architecture/README.md.** Replaced the old "change these two constants" paragraph
+   (which described a bump with no validation step) with the ordered upgrade procedure: bump →
+   CI is red ON PURPOSE → re-run the paper round trip → `--sync` → green → only then deploy live.
+6. **The version↔run binding (added after adversarial round 1).** The operator path
+   (`ib_adapter_check._write_evidence`) now records `tws_api_version` — read from the DECLARED
+   constant at run time — into the evidence artifact, and the gate requires
+   `evidence.tws_api_version == supported_tws_api_version` in both `run` and `--sync`. Without it
+   the gate could be defeated: bump the constant + metadata + support record, re-run the paper
+   round trip (which the version string does not affect), `--sync`, green — with no run ever
+   having exercised the new API version. Codex r1 caught exactly this; it is now the primary
+   binding, with the digest/timestamp citation as the secondary one.
+   * The existing artifact was backfilled with `"tws_api_version": "10.19.4"`. That is a
+     GIT-VERIFIABLE fact, not a hand-authored claim: commit e6f903a (2026-07-14) introduced both
+     the constant at "10.19.4" and the evidence artifact, `git log -S` shows no later change to
+     that constant, and the recorded run is dated 2026-07-16T03:11:09Z — so the run provably
+     happened while 10.19.4 was declared. Every FUTURE artifact gets the field from the operator
+     path, never by hand.
+   * Verified that this does not flip closed-green SRS-EXE-006 red: `_evidence_is_valid` reads
+     per-field with `.get()` (no strict key-set), and `tools/ib_adapter_check.py` still passes.
+7. **Operator-run shape, in BOTH paths (added after adversarial round 2).** `--sync` was checking
+   less than `run` did, which made it the weak way in. Both now call ONE shared
+   `check_operator_run_shape(evidence, runtime)` requiring every field the operator writer stamps:
+   the writer's `schema_version` (read from `ib_adapter_check.EVIDENCE_SCHEMA`, not re-declared),
+   the operator-gated test name, the gate env var, the paper port (all compared against
+   runtime_services.json), and a `result_line` carrying cargo's "test result: ok". A domain test
+   asserts the shared checker is called from both paths so they cannot drift apart.
+
+## Trust boundary — stated, not papered over (adversarial round 2 residual)
+
+Codex r2 correctly observed that the evidence artifact is a repo file: the checks above defeat a
+partial, careless or accidental edit, but they are integrity checks, NOT a cryptographic
+attestation that a paper-account run occurred. Someone who edits the JSON carefully enough can
+still satisfy them. What r2 recommended (a nonce/signature that ordinary edits cannot recreate)
+cannot be built inside this feature honestly: any key committed to the repo is forgeable by
+definition, and an operator-held signing key + a verification path that works without the private
+key is a key-management design, not a version gate.
+
+Scope + owner of the residual: this is the REPO-WIDE operator-evidence convention, not something
+this feature introduced — SRS-EXE-006 (`ib_adapter_check.check_verified_status`), SRS-MD-006
+(`EvidenceFileIbProbe` over the same artifact), SRS-REL-001 and SRS-DATA-017 all treat a committed
+artifact as proof of an operator run, and my change strictly NARROWS what this one can bless
+(three new required agreements). Designing signed/attested operator evidence spans all of them and
+needs operator authorization on the key-management approach. Recorded here rather than silently
+accepted; it is NOT claimed as solved.
+
+## What I tested (per feature step)
+
+Step 1 (init.sh → "Environment ready"): PASS — `./init.sh` → "✓ Environment ready".
+  Env fix landed en route: the fresh worktree venv had no pytest (init.sh does not install
+  requirements-dev.txt); installed it into .venv before testing.
+Step 2 (exercise via fault-injection workflow with mocked services + CLI + logs): PASS — driven
+  against a hermetic copy of the artifact tree (no IB, no ports):
+  [1] baseline mock tree → `python3 tools/ib_api_version_check.py` → exit 0, GATE PASS.
+  [2] inject the fault — bump the declared version 10.19.4 → 10.30.1 with no new paper run →
+      exit 1, "IB TWS API version upgrade is NOT validated: the adapter declares '10.30.1' … but
+      the support record validates '10.19.4'. Re-run the operator paper-account round trip …".
+  [3] try to launder it — `--sync` with no new run → exit 1, "nothing to sync: … still records the
+      run of 2026-07-16T03:11:09Z that … already cites".
+  [4] forge ALL the paperwork — bump lib.rs + runtime metadata + the support record together,
+      evidence untouched → exit 1, "the paper-account run recorded in … exercised '10.19.4', but
+      … claims '10.30.1' is validated. Only a paper-account round trip run AT the declared
+      version validates it".
+  [5] a genuinely NEW run but performed at the OLD version (new `generated_at`, tws_api_version
+      still 10.19.4) → `--sync` exit 1, "refusing to record an unvalidated upgrade: the
+      paper-account run of 2026-08-01T12:00:00Z exercised IB TWS API '10.19.4', but the adapter
+      now declares '10.30.1'".
+  [6] the honest path — the operator re-runs WITH 10.30.1 declared (the writer records it) →
+      `--sync` exit 0, "IB TWS API 10.30.1 recorded as validated … by the run of
+      2026-08-01T12:00:00Z" → gate exit 0.
+Step 3 (AC): clause 1 PASS (L3 contract test pins constant ↔ metadata ↔ record ↔ evidence, plus the
+  documented procedure); clause 2 PARTIAL/serialized — the *policy* is now enforced and proven by
+  fault injection, but the AC's literal demonstration ("upgrades ARE tested against the IB paper
+  trading account") needs an operator ATP_RUN_INTEGRATION run on port 4002. Not runnable beside
+  siblings, and no real API upgrade is pending. So passes stays false.
+Step 4 (record evidence, leave passes false): DONE — evidence above; serialized.
+
+Tests added: tests/unit/test_ib_api_version_gate.py (44 cases — every refusal branch, degenerate
+  values, duplicate keys, --sync laundering); tests/test_ib_api_version_contract.py (L3, 8 cases —
+  live-artifact agreement + CI wiring + documented procedure); tests/domain/
+  test_exe007_ib_api_version_gate.py (L7, 8 cases — behavioral / structural non-vacuity / scope
+  honesty, mirroring the SRS-EXE-006 domain-test shape). 60 passed.
+
+Gate: tools/run_ci_locally.sh, cargo test --workspace, pytest -m "not integration and not e2e" —
+  see the commit trailer for the recorded results.
+
+Critic verdicts:
+  deterministic (critic_check.py --staged): APPROVE — no findings.
+  judgment (adversarial_review.py origin/main, reviewer=codex): r1 BLOCK → fixed (bound the
+    evidence artifact to the declared TWS API version; see item 6). r2 BLOCK → fixed (`--sync` was
+    checking less than `run`; both now share check_operator_run_shape; see item 7). r3 BLOCK →
+    NOT fixed, OPERATOR-AUTHORIZED override, recorded honestly rather than re-run until green:
+
+    r3's finding: the paper-account evidence is committed JSON, so a sufficiently careful
+    hand-edit can still bless an upgrade without a real IB paper run. It is a true statement about
+    the repo's operator-evidence convention, but (a) it is NOT introduced here — SRS-EXE-006,
+    SRS-MD-006's EvidenceFileIbProbe, SRS-REL-001 and SRS-DATA-017 all trust the same class of
+    committed artifact; (b) this change strictly NARROWS what the artifact can bless (three new
+    required agreements); and (c) the remedy codex asks for — a signed/attested run artifact — is
+    key-management design spanning every one of those features, not a version gate.
+
+    OPERATOR AUTHORIZATION (2026-07-27): the operator was shown r3 verbatim with the four options
+    (authorize + integrate serialized / build attestation first / land partial + park / drop) and
+    chose to authorize the documented residual and integrate serialized. The verdict is recorded
+    as BLOCK; it is NOT restated as an approval anywhere. `passes` stays false regardless.
+    Named follow-up owner: whoever takes signed operator-evidence attestation (touches
+    ib_adapter_check + MD-006 probes + REL-001 + DATA-017 together, plus SRS-SEC-001's vault for
+    key custody).
+
+## Do NOT touch
+  crates/atp-adapters/src/interactive_brokers.rs, interactive_brokers/wire.rs and
+  crates/atp-adapters/tests/srs_exe_006_ib_adapter.rs are SHA-256 pinned by tools/ib_adapter_check.py
+  (editing them flips closed-green SRS-EXE-006 RED). This session READS them (version/digest) and
+  writes none of them; ib_adapter_check passes.
+
+## Resume / next (to flip passes:true)
+  a. On the next real IB TWS API upgrade (or a deliberate rehearsal), follow architecture/README.md:
+     bump the constant + metadata → `ATP_RUN_INTEGRATION=1 python3 tools/ib_adapter_check.py`
+     against the paper account (port 4002) → `python3 tools/ib_api_version_check.py --sync` →
+     `python3 tools/ib_api_version_check.py` green. That operator run IS the clause-2 evidence;
+     record it and close with `integrate --force-complete` / the verified-e2e label.
+  b. DONE in this session (was going to be deferred; codex r1 blocked on it and was right): the
+     evidence artifact now carries `tws_api_version` and the gate requires it to match the declared
+     constant. Nothing further is owed on the binding itself.
+
+=== OPERATOR VERIFICATION 2026-07-30 (passes:true — verified end to end) ===
+Outcome: COMPLETE. Both AC clauses are now proven against the live IBKR paper Gateway, and clause 2
+was demonstrated by OBSERVING the gate block an unvalidated upgrade — not by inspecting that it
+would.
+
+## How the live leg was actually reached (record this — it is not obvious)
+
+The VM has **no Rust toolchain and no repo clone** (`python3` only), so `ib_adapter_check.py` cannot
+run there — it fails closed without cargo, by design. And the Gateway trusts loopback only
+(`~/Jts/jts.ini` `TrustedIPs=127.0.0.1`; IBC `TrustedTwsApiClientIPs=` empty,
+`AcceptIncomingConnectionAction=manual`), so a direct connection from the Mac (192.168.2.44) is
+refused or waits on a GUI prompt nobody clicks.
+
+An **SSH local port-forward** satisfies both at once, with zero config loosening:
+
+    ssh -N -L 4002:127.0.0.1:4002 <vm>          # from the dev Mac
+    ATP_IB_HOST=127.0.0.1 ATP_IB_PAPER_PORT=4002 ATP_RUN_INTEGRATION=1 \
+      python3 tools/ib_adapter_check.py
+
+cargo runs where the repo is; the Gateway sees a loopback client. `ATP_IB_HOST` stays a literal IP,
+which the config layer requires (no DNS). This is how SRS-ERR-001 was verified "against
+127.0.0.1:4002" despite the same toolchain gap.
+
+## The restart-after-login gotcha is real — it cost the first run
+
+Gateway freshly started (`sudo systemctl start ibgateway`; IBC, `TradingMode=paper`). First run
+FAILED partway: `submit_order` succeeded, then `cancel_order` timed out —
+`ConnectivityBlocked, code -2, "IB Gateway did not answer cancelOrder within the operation
+deadline"` (15 s `IB_OP_DEADLINE`). Ruled out a code defect first: `submit_order` returns the same
+`order_id` it sent and `cancel_order` filters on that id, and the cancel waits for the correct
+terminal signals (`orderStatus` Cancelled/ApiCancelled, or errMsg 202). After
+`sudo systemctl restart ibgateway` the identical command passed. **A first session after login is
+not API-ready even though port 4002 is already listening** — the same lesson as SRS-ERR-001.
+
+**Consequence worth knowing:** that failed run submitted a 1-share AAPL market order whose cancel was
+never confirmed, so its state was UNKNOWN — and the adapter has no open-orders operation to ask with
+(deferred `BrokerOpenOrderSource`, SRS-SAFE-002). Each round-trip run submits a fresh order; there is
+no way to exercise the cancel path without one. Operator was asked to clear any resting order.
+
+**Cheap readiness probe that costs no order:** run the SRS-ERR-001 live test first —
+`ATP_RUN_INTEGRATION=1 cargo test -p atp-orchestrator --test srs_err_001_broker_envelope_live
+--features ib-live-transport -- --ignored`. It proves handshake + error path via a rejected
+nonexistent symbol and creates nothing restable. It passed in 0.16 s, which is how I knew the wire
+was healthy before spending an order.
+
+## Clause 2 demonstrated, not asserted
+
+The paper run alone validates the CURRENT declared version; it does not by itself show that an
+*upgrade* would be blocked. Two negative controls closed that gap — metadata-only, reverted after,
+no orders, no Rust edits:
+
+1. Bumped `supported_tws_api_version` 10.19.4 → 10.20.0 with no new run. Gate **exit 1**: "the
+   adapter declares '10.19.4' … but the support record validates '10.20.0'. Re-run the operator
+   paper-account round trip … BEFORE deploying live."
+2. Tried to launder it with `--sync`. **exit 1**: "nothing to sync: evidence still records the run
+   of 2026-07-30T04:11:04Z that the support record already cites — re-syncing an old run does not
+   validate a new version." It also did NOT mutate the record as a side effect.
+
+Reverted the version string only (NOT `git checkout`, which would have discarded the legitimate
+sync); gate back to exit 0.
+
+## What changed on disk
+
+Only two artifacts, and only their provenance:
+- `architecture/ib_paper_account_evidence.json` — `generated_at` 2026-07-16 → 2026-07-30,
+  `result_line` from the new run. `code_digest` UNCHANGED (a7591ba7cf16…), i.e. the wire code is
+  identical and still bound.
+- `architecture/ib_api_version_support.json` — provenance changes from **"seeded 2026-07-27 …
+  copied from that artifact"** to **"recorded by --sync from the operator round trip of
+  2026-07-30T04:11:04Z"**. Replacing that seeded provenance with a genuine run is the substance of
+  this close.
+
+No source file was touched, so the SRS-EXE-006 code digest is intact and that closed green is
+undisturbed — verified by re-running its gate.
+
+## Per-step evidence
+
+- **Step 1** (`./init.sh` reports Environment ready): PASS — re-run on this branch, "✓ Environment ready".
+- **Step 2** (integration workflow + CLI + logs): PASS — live paper round trip (order → cancel →
+  market-data subscription → historical bars) through `TcpIbGateway` against the real Gateway, plus
+  the two CLI negative controls above.
+- **Step 3** (AC): PASS both clauses. Clause 1 — version documented consistently across
+  `crates/atp-adapters/src/lib.rs`, `runtime_services.json`, `ib_api_version_support.json`. Clause 2
+  — the declared version is validated by a genuine paper run bound to the current wire by digest,
+  AND an unvalidated bump was observed to fail before live deployment.
+- **Step 4** (record evidence): PASS — this note.
+
+Gate: `ib_api_version_check.py` 4/4 PASS exit 0; `ib_adapter_check.py` 9/9 PASS exit 0 (includes the
+live leg GREEN); `adapter_check.py` exit 0; `architecture_check.py` exit 0; SRS-ERR-001 live test
+1 PASS.
+
+Residual (unchanged by this close): the r3 trust-boundary residual stays operator-authorized — the
+committed artifact is editable by anyone with commit access, so its trust derives from the operator
+having run the authoritative path, which is what happened here.
+
+
 === SESSION 90 ===
 Date: 2026-07-27
 Feature: SRS-DATA-018 — scheduled backup and validated recovery support for NAS-stored data
