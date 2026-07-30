@@ -228,8 +228,38 @@ StRS SN-1.18) — the two SRS-SEC-004 acceptance clauses:
   (loopback-bound dashboard → internal edge net → internal research net);
   injecting a token env would contradict the no-secrets stance this container is
   checked against.
-- **Residual risk — OPERATOR SIGN-OFF GATE before flipping SRS-RES-001 to
-  `passes:true`.** With the embed served same-origin (IF-13 mandates the
+- **OPERATOR SIGN-OFF RECORDED — 2026-07-30 (JoshGenao).** The operator was
+  shown the full vector below and the alternatives, and **accepted the residual**
+  within the single-operator, loopback-bound trust model (NFR-S3), on the stated
+  basis that only notebooks they would trust with the kill switch are opened in
+  this environment. `SRS-RES-001` was flipped to `passes:true` on that sign-off.
+  What was verified at sign-off time, so a later reader can re-check the premises
+  rather than re-litigate the decision:
+  - the embed iframe (`python/atp_dashboard/assets/index.html`) carries **no
+    `sandbox` attribute** and its `src` is a same-origin `/research/…` path, so
+    notebook-rendered JS runs with the dashboard's origin;
+  - the dashboard runtime emits **no `Content-Security-Policy` of its own**, so
+    nothing restricts `connect-src` for that JS;
+  - **six** mutating operator routes exist (kill-switch, hot-swap, promote-live,
+    strategy lifecycle, backtests, watchlist) and the route-level confirmation
+    guard (`atp_runtime/rest_server.py`) is satisfied by a `confirm` query flag
+    that same-origin JS can mint itself;
+  - exploitation requires the operator to *run* a cell from an untrusted
+    notebook (JupyterLab sanitizes untrusted output and will not execute its
+    scripts until the notebook is trusted) — it is not triggered by opening a
+    file alone;
+  - the kernel/container boundary is **unaffected**: the Jupyter container holds
+    no credentials, is on an `internal: true` network with no route to the
+    execution engine, and mounts data read-only, so the *kernel* can place no
+    order. The exposure is the operator's browser session only.
+  - `sandbox="allow-scripts"` (without `allow-same-origin`) would close the
+    vector outright but breaks JupyterLab, which requires same-origin to read
+    `document.cookie` for `_xsrf`, use `localStorage`, and open cookie-bearing
+    WebSockets; specifying both tokens together restores the origin and so
+    provides no protection. This is why the frame is unsandboxed, and it is a
+    deliberate trade, not an oversight.
+- **Residual risk — the vector the sign-off above covers.** With the embed
+  served same-origin (IF-13 mandates the
   research environment on the dashboard origin under `/research/`, not a
   separate service URL), JavaScript emitted by a notebook and *rendered in the
   operator's own browser* shares the dashboard origin, so it could `fetch` the
