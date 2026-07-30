@@ -1021,7 +1021,7 @@
       "Step 3: Verify acceptance criteria: Jupyter is reachable from the dashboard without navigating to a separate service URL and runs independently of live strategies, paper strategies, and backtests.",
       "Step 4: Record objective evidence from demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {
