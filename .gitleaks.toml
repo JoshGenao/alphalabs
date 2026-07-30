@@ -24,9 +24,33 @@ useDefault = true
 # is a function argument (Shannon entropy 3.73, well below a real key's ~4.5–6),
 # not a credential. The regex is deliberately the exact benign substring so this
 # allowlist cannot mask a real secret.
-[allowlist]
+[[allowlists]]
 description = "Python kwarg warmup_bars=canonical (function argument, not an API key)"
 regexTarget = "match"
 regexes = [
   '''warmup_bars=canonical''',
+]
+
+# gitleaks' generic-api-key rule also fires on PROSE COMMENTS that mention "API"
+# followed by a quoted identifier. In docker-compose.yml the SRS-SEC-004 comment
+#
+#   # execution / live-control API. Members today: `phase1-jupyter` and the …
+#
+# yields Match = "API. Members today: `phase1-jupyter`" with the *service name*
+# captured as the secret (entropy 3.52 — well under a real key's ~4.5–6).
+#
+# Only the full-history scan trips it, so the NIGHTLY `security` workflow failed on
+# every scheduled run while every PR looked green (push/PR scans cover the diff
+# only) — a permanently-red signal nobody could act on.
+#
+# Scoped to this project's compose service names, which are all `phase1-*` and can
+# never be credentials; the sibling comments name several, so anchoring to just one
+# would let the same false positive return under a different service. The anchors
+# keep it from masking a real secret: no credential is a lowercase hyphenated
+# `phase1-…` identifier.
+[[allowlists]]
+description = "Compose service names quoted in prose comments (phase1-*, not API keys)"
+regexTarget = "secret"
+regexes = [
+  '''^phase1-[a-z0-9-]+$''',
 ]

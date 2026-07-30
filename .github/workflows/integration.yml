@@ -69,16 +69,44 @@ jobs:
           pip install -r requirements-dev.txt
           python -m playwright install --with-deps chromium
 
+      # Every service in docker-compose.yml sits behind `profiles: ["phase1"]`, so a
+      # bare `docker compose up -d` selects NOTHING and Compose exits 1 with "no
+      # service selected" — which is why this job had never once got as far as running
+      # a test. The profile is required, not optional.
+      #
+      # The SSD/NAS tiers are bind-mounted from ATP_SSD_DATA_DIR / ATP_NAS_DATA_DIR,
+      # whose compose defaults (/var/lib/atp/{ssd,nas}) do not exist on a runner — and
+      # note they disagree with init.sh, which defaults to <repo>/data/{ssd,nas}. Point
+      # both at the workspace and create them, or the volume mount fails.
       - name: Bring up Docker Compose stack
-        run: docker compose up -d
-        # docker-compose.yml exists at repo root per existing deployment_check
-
-      - name: Wait for services
         run: |
+          set -euo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/data/ssd" "${GITHUB_WORKSPACE}/data/nas"
+          echo "ATP_SSD_DATA_DIR=${GITHUB_WORKSPACE}/data/ssd" >> "$GITHUB_ENV"
+          echo "ATP_NAS_DATA_DIR=${GITHUB_WORKSPACE}/data/nas" >> "$GITHUB_ENV"
+          ATP_SSD_DATA_DIR="${GITHUB_WORKSPACE}/data/ssd" \
+          ATP_NAS_DATA_DIR="${GITHUB_WORKSPACE}/data/nas" \
+            docker compose --profile phase1 up -d
+
+      # FAIL CLOSED. The previous version polled http://localhost:3000/ — a port the
+      # stack never publishes (3000 is ATP_DEV_PORT; the dashboard publishes 8080) —
+      # and, because the loop had no failure branch, it simply ran out of iterations
+      # and reported success over a stack that was never up. A readiness wait that
+      # cannot fail is worse than no wait: it makes a dead stack look healthy.
+      - name: Wait for the dashboard to serve
+        run: |
+          set -euo pipefail
           for _ in $(seq 1 60); do
-            if curl -sf http://localhost:3000/ >/dev/null 2>&1; then break; fi
+            if curl -sf http://127.0.0.1:8080/dashboard >/dev/null 2>&1; then
+              echo "dashboard is serving"
+              exit 0
+            fi
             sleep 2
           done
+          echo "::error::dashboard never served on 127.0.0.1:8080 within 120s"
+          docker compose --profile phase1 ps
+          docker compose --profile phase1 logs --tail=50
+          exit 1
 
       - name: Run L5 integration tests
         env:
@@ -96,7 +124,7 @@ jobs:
 
       - name: Tear down Docker Compose stack
         if: always()
-        run: docker compose down -v
+        run: docker compose --profile phase1 down -v
 
       - name: Upload reports
         if: always()
