@@ -1,3 +1,225 @@
+=== SESSION 92 ===
+Date: 2026-07-16
+Feature: SRS-RES-001 — embed the Jupyter research environment in the dashboard workflow
+Outcome: serialized on 2026-07-16 (code on main, passes:false; operator finishes the
+         deployed-stack demonstration AND signs off on the documented browser-vector
+         residual before flip). SUPERSEDED 2026-07-30: the operator signed off on the
+         residual and the deployed-stack demonstration was run against real containers —
+         which exposed THREE defects that had kept the phase1 research chain from ever
+         starting. passes:true. See "OPERATOR VERIFICATION 2026-07-30" at the end.
+
+What I built (3 feats + 1 harden, all on branch, rebased onto origin/main):
+1. atp_runtime reverse-proxy seam (python/atp_runtime/proxy.py + rest_server + runtime):
+   runtime.register_proxy_route(prefix, upstream) — generic, consumer-agnostic. Upstream
+   FIXED at registration (never request-derived); plain-http loopback/RFC1918 only (DNS
+   resolve-then-validate per connect, TOCTOU closed); prefixes that shadow /api/, /dashboard/,
+   WS path, or a meta/asset path are structurally unregistrable; hop-by-hop header hygiene both
+   ways + Origin/Referer rewrite; chunked-request refusal + exact Content-Length reads
+   (smuggling); bounded body/buffer/timeouts (honest 502/413/400/503, never a hang); raw
+   byte-pump WebSocket tunnel for kernel channels (slot-bounded 32, no idle kill). do_PATCH
+   added (proxy-only). Operator Authorization stripped upstream (Codex R1 #2).
+2. Dashboard research panel (python/atp_dashboard/research.py + server + assets):
+   ResearchEnvironmentProvider — probe-derived state only (not-configured / unreachable+reason /
+   reachable+status), embed_path only after a live probe, never a fabricated "connected".
+   mount_dashboard(research=...) serves GET /dashboard/api/research and, iff ATP_RESEARCH_UPSTREAM
+   is set, registers the same-origin /research/ proxy. SPA panel with a lazy same-origin iframe.
+3. Deployment leg (docker/jupyter.Dockerfile + docker-compose.yml + python/atp_research_proxy +
+   jupyter_isolation_check + runtime_services.json + docs): concrete JupyterLab 4.6.1
+   (base_url=/research/, non-root, token-less — network path is the auth boundary); NEW
+   phase1-research-proxy one-way L4 hop (python -m atp_research_proxy) — the only member of both
+   atp_research_net and the NEW internal atp_research_edge_net; dashboard-api joins default+edge,
+   NEVER atp_research_net; jupyter's dead port publish removed (IF-13). Checker gains research-proxy
+   isolation + no-published-ports assertions + 6 negative fixtures (25 total, all reject).
+4. harden: closed the two Codex findings (see Critic verdicts).
+
+Design (the one-way chain):
+  browser -> 127.0.0.1:8080 dashboard-api (runtime serves SPA + /research/* proxy)
+          -> [atp_research_edge_net, internal] phase1-research-proxy (fixed-upstream L4 hop)
+          -> [atp_research_net, internal]       phase1-jupyter (JupyterLab base_url=/research/)
+dashboard-api NEVER joins atp_research_net (SEC-004 invariant intact); the hop's fixed upstream
+means a connection FROM jupyter only loops back to jupyter.
+
+What I tested (per step):
+  Step 1 (./init.sh): PASS — "✓ Environment ready".
+  Step 2 (browser automation + REST/WS): PASS solo — ATP_RUN_E2E=1 pytest tests/e2e/
+    test_research_embed.py: REAL JupyterLab 4.6.1 reverse-proxied at /research/; Playwright
+    headless chromium renders the panel, probe flips reachable, click loads the same-origin
+    iframe, iframe inner document is JupyterLab (frame-ancestors 'self' admits it); REST
+    POST /research/api/kernels -> 201 through the DASHBOARD port (XSRF cookie dance through the
+    proxy); raw WS kernel_info_request -> kernel_info_reply through the tunnel. 2 passed.
+  Step 3 (AC — reachable from dashboard w/o separate URL + independent of live/paper/backtest):
+    PASS solo for the code path — same-origin /research/ (no separate URL); e2e + domain test run
+    with ZERO strategy/backtest handlers (POST /api/v1/backtests still 501 deferred) = SYS-34c
+    independence. The DEPLOYED-STACK demonstration (real compose chain, operator HTTPS, dashboard-api
+    CMD actually serving `python -m atp_dashboard` rather than its compile-only stub) is operator-gated.
+  Step 4 (evidence + leave passes false): DONE — serialized.
+  Solo gate: pytest -m "not integration and not e2e" — 3685 passed / 3 skipped after rebase onto
+    origin/main c316c76 (the 5 earlier failures were the SRS-EXE-006 red baseline, fixed on main,
+    not mine). cargo test --workspace: PASS. Static: jupyter_isolation (positive + 25 fixtures
+    reject) / container_isolation / deployment / network_binding / operator_interface_runtime /
+    dependency_boundary / architecture — all PASS. ruff check .: PASS.
+  KNOWN pre-existing main-red: `ruff format --check .` flags 13 files that are NOT mine
+    (atp_reliability/restart* from SRS-REL-002, test_data021_*, container_isolation/deployment
+    checkers) — the documented "main red behind format gates" condition (siblings REL-002/UI-004
+    integrated through it). ALL 373 other files incl. every file in this feature are format-clean.
+    Did NOT whole-repo-format (forbidden in a feature PR); the format-pin PR owns those 13.
+
+Critic verdicts:
+  deterministic (critic_check.py --staged): APPROVE — no findings (every commit).
+  judgment (codex_review.sh): FOUR rounds, each re-reviewed by its OWN follow-up diff
+    (per the review-the-fix-not-the-whole-feature rule so authorized scope doesn't re-block).
+    R1 (base origin/main) needs-attention, 2 findings:
+      - HIGH (FIXED): proxy forwarded operator Authorization to token-less Jupyter -> stripped
+        upstream (_xsrf still forwarded); test proves the upstream never sees Authorization.
+      - CRITICAL (operator-authorized serialized): same-origin embed (IF-13) means notebook-
+        rendered JS in the OPERATOR'S browser could mint POST /api/v1/kill-switch?confirm=true
+        (SRS-API-001 confirm guard is a mintable query flag). The ENFORCED SEC-004 boundary is
+        the credential-less, execution-unroutable CONTAINER; the browser-session vector is a
+        cross-feature tension (IF-13 same-origin vs API-001 confirm contract). Operator chose
+        (AskUserQuestion) "serialized + documented risk"; SECURITY.md carries an explicit
+        OPERATOR SIGN-OFF GATE. A browser-enforced fix needs an SRS-API-001 origin-bound confirm
+        token OR a separate-origin embed bending IF-13 — both cross-feature, out of scope.
+    R2 (base de84f0d) HIGH (FIXED): Cookie still forwarded as-is -> filter to Jupyter-owned only.
+    R3 (base 034152f) HIGH (FIXED): username-* prefix too broad -> tightened to exact name _xsrf
+      (the only cookie the real e2e proves the token-less API path needs; e2e re-verified green).
+    R4 (base 186c6f1) HIGH (CONVERGED / documented residual): a Cookie header has no issuer
+      metadata, so exact-name _xsrf can't be told from an operator layer reusing that name. This
+      is the IRREDUCIBLE limit of same-origin cookie handling — the only enforced fix (rewrite
+      _xsrf into a proxy-owned namespace) breaks JupyterLab's client-side XSRF; a separate-origin
+      embed bends IF-13. Scoped, not faked: runtime issues no cookies of its own; SECURITY.md
+      reserved-name constraint (external auth must not reuse _xsrf) folded into the sign-off gate;
+      regression test pins the edge. This is a strictly NARROWER instance of the R1 same-origin
+      browser vector the operator already authorized as serialized — so within existing sign-off.
+    Loop stopped at R4 by design (per the adversarial-non-convergence rule: fix in-scope bugs,
+    then scope the irreducible residual with docs + human authorization; never fake an APPROVE).
+    Integrated --mode serialized: passes stays false; NOT claiming a verified green.
+
+Resume / next (for the operator to flip passes:true):
+  1. Sign off on the browser-vector residual (SECURITY.md § "OPERATOR SIGN-OFF GATE"), OR
+     require the SRS-API-001 origin-bound confirm token first.
+  2. Build the phase1 stack (`docker compose --profile phase1 build`) — dashboard-api's CMD must
+     serve `python -m atp_dashboard` (owned by the deployment feature) so ATP_RESEARCH_UPSTREAM is live.
+  3. `docker compose --profile phase1 up`, open http://127.0.0.1:8080/dashboard behind the
+     operator's authenticated HTTPS reverse proxy (NFR-S3), open the Research panel, confirm
+     JupyterLab renders embedded and a kernel runs — with no live/paper strategy and no backtest
+     running (SYS-34c). Gated L5 tests/integration/test_jupyter_isolation_inspect.py (ATP_RUN_INTEGRATION=1)
+     is the container-config proof.
+  Then flip via `close_feature.py --verified` / the verified-e2e label.
+  NOTE: JupyterLab is a CONTAINER dependency (docker/jupyter.Dockerfile), deliberately NOT pinned in
+  requirements*.txt; the e2e installs it ad hoc in the worktree venv.
+
+=== OPERATOR VERIFICATION 2026-07-30 (passes:true — verified end to end) ===
+Outcome: COMPLETE. Operator sign-off recorded in SECURITY.md, and the deployed-stack
+demonstration ran against real containers. The demonstration was NOT a formality — the
+phase1 research chain had never actually started, and three separate defects had to be
+fixed before anything served.
+
+## The three defects the container run exposed
+
+The prior note said the only gap was "dashboard-api's CMD must serve `python -m
+atp_dashboard`". That was one of three, and the other two were invisible to every static
+check because nothing had ever run the image.
+
+1. **The image had no `architecture/`.** `atp_runtime.contract` reads
+   `<workdir>/architecture/runtime_services.json` at import time (`atp_runtime.ROOT` is
+   `parents[2]` of the package = the WORKDIR), and the Dockerfile copied only `python/`.
+   Both services built from this image died on FileNotFoundError — so
+   **`phase1-research-proxy` had never run in a container either**, not just dashboard-api.
+   Fixed by `COPY architecture ./architecture`.
+2. **`python -m atp_dashboard` is NOT stdlib-only.** Importing any provider pulls
+   `atp_readiness` → `atp_config.vault` → `cryptography` (Fernet, SRS-SEC-001), and the
+   image ran no `pip install`. Fixed by installing ONLY that requirement, and taking it
+   FROM requirements.txt (`grep -E '^cryptography'`) rather than repeating a version — its
+   floor is security-driven (>=48.0.1 clears four advisories) and a second copy of the pin
+   would silently drift below it. pandas/pandas-ta/TA-Lib/matplotlib are deliberately NOT
+   installed: nothing the dashboard imports needs them, and TA-Lib would drag in a C
+   library this image has no reason to carry.
+3. **The bind was wrong in a way that looked HEALTHY** — the subtle one, worth remembering.
+   A process bound to the CONTAINER's loopback is unreachable through a published port, so
+   the declared `ATP_DASHBOARD_BIND_HOST: 127.0.0.1` serves nothing to the operator's
+   browser. `0.0.0.0` is refused outright by the SRS-SEC-002 policy
+   (`assert_bind_allowed` permits loopback + RFC 1918 only), and that policy must NOT be
+   loosened. Docker assigns an RFC 1918 address, which the policy DOES permit — but this
+   container is MULTI-HOMED (`default` for the operator browser,
+   `atp_research_edge_net` for the one-way hop to the proxy), and
+   `gethostbyname(gethostname())` returned `172.19.0.2` = the research-edge address, where
+   the published port does not forward. The dashboard came up, logged "serving on
+   http://172.19.0.2:8080/dashboard", and was unreachable from the host: a green log and a
+   dead surface. Fixed by binding the source address of the DEFAULT ROUTE
+   (`socket.socket(AF_INET, SOCK_DGRAM).connect(('10.255.255.255',1))` → `getsockname()`),
+   which is the operator-facing network BY CONSTRUCTION — `atp_research_edge_net` is
+   `internal: true`, so Docker attaches no gateway and it can never carry that route. No
+   packet is sent. Also added `python -u`: buffered stdout was hiding the startup line
+   from `docker logs` entirely, which is how the wrong bind stayed invisible.
+
+The `__main__` default stays `127.0.0.1` — `network_binding_check.py:300` pins that literal
+— so the fix is a per-service compose `command`, exactly the override
+`phase1-research-proxy` already uses over the same image. The image CMD stays the
+compile-only stub.
+
+Also needed at run time, and NOT a code defect: the compose volumes bind
+`${ATP_SSD_DATA_DIR:-/var/lib/atp/ssd}` / `${ATP_NAS_DATA_DIR:-/var/lib/atp/nas}`, which do
+not exist on a dev Mac (init.sh defaults to `<repo>/data/{ssd,nas}` instead — the two
+defaults disagree). Export both to the repo dirs before `up`, or the mount fails.
+
+## Evidence (deployed containers, not fixtures)
+
+| Check | Result |
+|---|---|
+| `./init.sh` | ✓ Environment ready |
+| `GET /dashboard` via the published loopback port | HTTP 200, 33 410 bytes (the SPA) |
+| `GET /research/` → `/research/lab` | 302 → 200; Location rewritten to a same-origin path |
+| `GET /dashboard/api/research` probe | `configured:true, ok:true, upstream_reachable:true, embed_path:/research/lab` |
+| kernel start via proxy REST | `python3`, reached `idle` |
+| **code executed in the kernel over the WS proxy** | `6*7` → `42`, `execute_reply status=ok` |
+| cookie filtering | only `_xsrf` reached upstream (the one reserved name) |
+| gated L5 `test_jupyter_isolation_inspect.py` | 5 PASS (real `docker inspect`) |
+| project e2e `test_research_embed.py` | 2 PASS (iframe render + kernel round trip) |
+| deployed-stack browser check | JupyterLab shell renders in-panel; kernel indicator `Python 3 (ipykernel)`; `nas`/`ssd` visible read-only |
+
+SYS-34c holds: only jupyter + research-proxy + dashboard-api were up — no live/paper
+strategy, no backtest running.
+
+Two corrections to my own verification, recorded because both were nearly false results:
+the first browser check reported "JupyterLab did not render" against a page that HAD
+rendered — a raw playwright `Frame` handle goes stale across the 302 to `/research/lab`;
+`frame_locator` is the fix. And the kernel assertion initially passed against an indicator
+reading `"No Kernel"` (an idle Lab with nothing open) — asserting the indicator merely
+EXISTS is a false green, so it now opens a notebook and requires a named kernel.
+
+## Sign-off
+
+Recorded in SECURITY.md under "OPERATOR SIGN-OFF RECORDED — 2026-07-30", with the five
+premises verified at sign-off time (unsandboxed iframe, no dashboard CSP, six mutating
+routes, the mintable `confirm` query flag, and the run-a-cell precondition) plus why
+`sandbox="allow-scripts"` is not available (JupyterLab requires same-origin for `_xsrf`,
+`localStorage` and cookie-bearing WebSockets). A later reader can re-check the premises
+instead of re-litigating the decision. The kernel/container boundary is unaffected — the
+exposure is the operator's browser session only.
+
+## Adjacent finding — NOT this feature, NOT fixed here
+
+`tests/integration/test_research_data_access.py::test_notebook_reads_real_store_computes_indicator_and_plots`
+(SRS-RES-002) FAILS, and it is pre-existing: `ar.compute_series(ar.SMA(period=1), bars)`
+raises `ValueError: Length of values (0) does not match length of index (1)` for EVERY bar
+count (1/2/3/5 all fail) while `period=2` returns correctly — so `pandas_ta`'s SMA at
+`length=1` yields an empty series and the wrapper assigns it to a non-empty index. Ruled
+out as mine: my diff touches no `python/`; numpy 2.2.6 / pandas 2.3.3 match the pins
+exactly and `pip check` is clean; the test is self-contained (`TemporaryDirectory` +
+`--init`, so it never reads the seeded tiers); it fails in isolation, so it is not an
+ordering effect; and `NUMBA_DISABLE_JIT=1` does not change it. Owner: the SRS-SDK-006
+indicator wrapper (or RES-002's choice of `period=1`). RES-002 is blocked-on RES-001, so
+this does not gate the flip.
+
+Gate: `./init.sh` ✓ · full `pytest -q` 4406 passed / 91 skipped / 129 subtests · `ruff
+check .` clean · `jupyter_isolation_check` / `deployment_check` / `network_binding_check` /
+`container_isolation_check` / `architecture_check` all exit 0.
+
+Housekeeping: JupyterLab was pip-installed into `.venv` ad hoc to run the browser e2e (it
+is deliberately a CONTAINER dependency, not in requirements*.txt — the prior note says so).
+The phase1 containers were left running.
+
+
 === SESSION 91 ===
 Date: 2026-07-27
 Feature: SRS-EXE-007 — manage IB TWS API version compatibility for the brokerage adapter
