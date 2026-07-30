@@ -241,18 +241,50 @@ services:
     env_file:
       - path: .env
         required: false
+    # SRS-RES-001 deploy leg: actually SERVE the dashboard, so the same-origin
+    # /research/ reverse proxy below is live rather than declarative. The image
+    # CMD stays the compile-only stub (phase1-research-proxy shares this image
+    # and overrides `command` the same way), so this is a per-service override.
+    #
+    # Why the bind host is resolved at start instead of taken from the env: a
+    # process bound to the CONTAINER's loopback is unreachable through a
+    # published port, so `ATP_DASHBOARD_BIND_HOST: 127.0.0.1` would serve
+    # nothing to the operator's browser. `0.0.0.0` is refused outright by the
+    # SRS-SEC-002 bind policy (`assert_bind_allowed` permits loopback and
+    # RFC 1918 only). Docker assigns this container an RFC 1918 address, which
+    # the policy DOES permit — so bind that, and let the loopback-only port
+    # publish below be what confines exposure to the operator's host. The
+    # `__main__` default stays 127.0.0.1 (pinned by network_binding_check).
+    #
+    # WHICH RFC 1918 address matters: this container is multi-homed (`default`
+    # for the operator browser, `atp_research_edge_net` for the one-way hop to
+    # the research proxy). `gethostbyname(gethostname())` picks whichever
+    # /etc/hosts lists first — observed to be the research-edge address, where
+    # the published port does NOT forward, so the dashboard came up healthy and
+    # unreachable. The UDP-connect idiom below instead yields the source address
+    # of the DEFAULT ROUTE, which is the operator-facing `default` network by
+    # construction: `atp_research_edge_net` is `internal: true`, so Docker
+    # attaches no gateway to it and it can never carry that route. No packet is
+    # sent — a UDP connect only fixes the local endpoint.
+    command:
+      - sh
+      - -c
+      - >-
+        export ATP_DASHBOARD_BIND_HOST="$$(python -c "import socket;
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM);
+        s.connect(('10.255.255.255', 1));
+        print(s.getsockname()[0])")";
+        exec python -u -m atp_dashboard
     environment:
       <<: *atp-env
-      ATP_DASHBOARD_BIND_HOST: 127.0.0.1
       # SRS-RES-001 / IF-13: the dashboard runtime reverse-proxies the
       # same-origin /research/ prefix to this FIXED upstream — the one-way
       # research-proxy hop below, NEVER phase1-jupyter directly (dashboard-api
       # must not join atp_research_net; jupyter_isolation_check enforces it).
-      # Declarative until this service's CMD serves `python -m atp_dashboard`
-      # (the dashboard-api image CMD is still the compile-only stub owned by
-      # the deployment feature).
       ATP_RESEARCH_UPSTREAM: http://phase1-research-proxy:8890
-    # SRS-SEC-002: dashboard/API binds only to loopback by default.
+    # SRS-SEC-002: the dashboard is published to the operator's LOOPBACK only,
+    # which is what keeps it off the LAN now that the in-container bind is the
+    # container's own RFC 1918 address (see `command` above).
     ports:
       - "127.0.0.1:8080:8080"
     volumes: *atp-volumes
