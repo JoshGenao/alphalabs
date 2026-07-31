@@ -15,7 +15,7 @@ document is contract evidence only; runtime handlers are out of scope here.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, MutableMapping
+from collections.abc import Iterable, Mapping, MutableMapping
 from typing import Any
 
 from .routes import AUTH_MODEL, BIND_HOST, ROUTES, Method, Route
@@ -58,8 +58,20 @@ def _string_schema() -> dict[str, Any]:
     return {"type": "string"}
 
 
-def _placeholder_object_schema(field_names: Iterable[str]) -> dict[str, Any]:
-    properties = {name: _string_schema() for name in field_names}
+def _placeholder_object_schema(
+    field_names: Iterable[str], field_types: Mapping[str, str] | None = None
+) -> dict[str, Any]:
+    """An object schema over ``field_names``.
+
+    Fields default to ``string`` — the offline contract's placeholder for a route whose
+    handler has not landed. A route that HAS a handler declares real types via
+    ``Route.field_types``, because a placeholder that contradicts a live handler is worse
+    than no schema: a generated client would send a contract-valid payload the handler
+    rejects, and misparse the response it returns.
+    """
+
+    types = field_types or {}
+    properties = {name: {"type": types.get(name, "string")} for name in field_names}
     return {
         "type": "object",
         "properties": properties,
@@ -141,7 +153,11 @@ def _build_request_body(route: Route) -> dict[str, Any] | None:
             return None
         return {
             "required": True,
-            "content": {"application/json": {"schema": _placeholder_object_schema(body_fields)}},
+            "content": {
+                "application/json": {
+                    "schema": _placeholder_object_schema(body_fields, dict(route.field_types))
+                }
+            },
         }
     return None
 
@@ -180,7 +196,9 @@ def _build_operation(route: Route) -> dict[str, Any]:
                 "description": "Success",
                 "content": {
                     "application/json": {
-                        "schema": _placeholder_object_schema(route.response_fields)
+                        "schema": _placeholder_object_schema(
+                            route.response_fields, dict(route.field_types)
+                        )
                     }
                 },
             }

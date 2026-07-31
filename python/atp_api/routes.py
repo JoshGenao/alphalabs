@@ -147,6 +147,19 @@ class Route:
     response_fields: tuple[str, ...] = field(default_factory=tuple)
     requires_confirmation: bool = False
     confirmation_actions: tuple[str, ...] = field(default_factory=tuple)
+    #: JSON types for fields whose route has a REAL handler, as ``(field, type)``
+    #: pairs. Fields left out keep the placeholder ``string`` schema.
+    #:
+    #: The contract is offline, so an unimplemented route documents its fields as
+    #: bare strings and nothing can contradict that. The moment a concrete handler
+    #: lands, the placeholder becomes a false statement about the wire: a generated
+    #: client would send ``"true"`` where the handler demands a JSON boolean and
+    #: reject the object the handler returns. Declaring types here is what the
+    #: module docstring means by "concrete schemas arrive with the downstream
+    #: feature that implements the handler", and
+    #: ``tests/boundary/test_hot_swap_trigger_surface.py`` checks the documented
+    #: types against what the handlers actually accept and return.
+    field_types: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
 
 # --------------------------------------------------------------------------- #
@@ -261,6 +274,15 @@ ROUTES: tuple[Route, ...] = (
             "any_automatic_enabled",
             "default_disabled",
         ),
+        field_types=(
+            ("drawdown_demotion_enabled", "boolean"),
+            ("drawdown_demotion_threshold_bps", "integer"),
+            ("top_ranked_promotion_enabled", "boolean"),
+            ("highest_momentum_promotion_enabled", "boolean"),
+            ("any_automatic_enabled", "boolean"),
+            ("default_disabled", "boolean"),
+            ("manual_promotion_available", "boolean"),
+        ),
     ),
     Route(
         method=Method.PUT,
@@ -289,6 +311,14 @@ ROUTES: tuple[Route, ...] = (
         # breach demotes the live strategy on its own. It takes the same explicit
         # confirmation as the irreversible actions on this workflow.
         requires_confirmation=True,
+        field_types=(
+            ("drawdown_demotion_enabled", "boolean"),
+            ("drawdown_demotion_threshold_bps", "integer"),
+            ("top_ranked_promotion_enabled", "boolean"),
+            ("highest_momentum_promotion_enabled", "boolean"),
+            ("any_automatic_enabled", "boolean"),
+            ("default_disabled", "boolean"),
+        ),
     ),
     Route(
         method=Method.POST,
@@ -310,6 +340,10 @@ ROUTES: tuple[Route, ...] = (
             "execution",
         ),
         requires_confirmation=True,
+        field_types=(
+            ("logged", "boolean"),
+            ("execution", "object"),
+        ),
     ),
     # ----- Backtest launch  [SRS-BT-001, SYS-14, SYS-43a]
     Route(

@@ -641,3 +641,54 @@ def test_a_held_log_lock_refuses_a_manual_fire(tmp_path: Path) -> None:
         assert not log.exists() or log.read_text() == ""
     finally:
         held.unlink()
+
+
+def test_both_operator_surfaces_share_one_unavailable_exception(tmp_path: Path) -> None:
+    # Not a naming quibble. The pane degrades on `HotSwapStatusUnavailable`; if the client
+    # raises a same-named class from a different module, the provider's except-clause misses
+    # it entirely and an unreadable configuration 500s the whole snapshot route instead of
+    # rendering its honest error state. That defect shipped once already, which is why the
+    # class now lives in the neutral atp_hotswap package and both surfaces re-export it.
+    import atp_hotswap
+    from atp_dashboard.hotswap import HotSwapStatusProvider, HotSwapStatusUnavailable
+    from atp_orchestration import HotSwapStatusUnavailable as RestUnavailable
+
+    assert HotSwapStatusUnavailable is atp_hotswap.HotSwapStatusUnavailable
+    assert RestUnavailable is atp_hotswap.HotSwapStatusUnavailable
+
+    # And the behaviour that identity buys: a torn configuration degrades, never raises out.
+    state = tmp_path / "triggers.json"
+    _cli("config", "--state", str(state), "--set-top-ranked", "on")
+    state.write_text('{"magic":"ATP-HOT-SWAP-TRIGGER-CONFIG","schema_version":1,"top_')
+    snapshot = HotSwapStatusProvider(
+        atp_hotswap.CliHotSwapTriggerSource(state, binary=_trigger_cli())
+    ).hot_swap_snapshot()
+    assert snapshot["ok"] is False, snapshot
+    assert snapshot["auto_triggers_enabled"]["value"] is None, snapshot
+
+
+def test_neither_operator_surface_imports_the_other(tmp_path: Path) -> None:
+    # The dependency direction the runtime documents: surfaces compose onto atp_runtime from
+    # above and never onto each other. The shared client is what made this tempting to
+    # break, so the rule is asserted rather than trusted to review.
+    import ast
+
+    root = REPO_ROOT / "python"
+    offenders: list[str] = []
+    for package, forbidden in (
+        ("atp_orchestration", "atp_dashboard"),
+        ("atp_dashboard", "atp_orchestration"),
+        ("atp_hotswap", "atp_dashboard"),
+        ("atp_hotswap", "atp_orchestration"),
+    ):
+        for source in (root / package).rglob("*.py"):
+            tree = ast.parse(source.read_text())
+            for node in ast.walk(tree):
+                names: list[str] = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    names = [node.module]
+                if any(name == forbidden or name.startswith(f"{forbidden}.") for name in names):
+                    offenders.append(f"{source.relative_to(root)} imports {forbidden}")
+    assert not offenders, offenders

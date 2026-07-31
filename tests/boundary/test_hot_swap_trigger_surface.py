@@ -490,3 +490,74 @@ def test_an_unreadable_config_does_not_blank_the_pane_wholesale(fake_cli: _FakeC
     assert snapshot["ok"] is False, snapshot
     assert any("unreadable" in str(error) for error in snapshot.get("errors", [])), snapshot
     assert snapshot["auto_triggers_enabled"]["value"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Contract ↔ handler agreement
+#
+# The offline contract documents an unimplemented route's fields as bare strings. Once a
+# REAL handler answers, that placeholder stops being a harmless stub and becomes a false
+# statement about the wire: a generated client would send `"true"` where the handler demands
+# a JSON boolean, and misparse the object it returns.
+# --------------------------------------------------------------------------- #
+
+
+_JSON_TYPE_OF = {bool: "boolean", int: "integer", str: "string", dict: "object"}
+
+
+def _documented_types(path: str, method: str, section: str) -> dict[str, str]:
+    import json as _json
+    from pathlib import Path as _Path
+
+    snapshot = _json.loads(
+        (_Path(__file__).resolve().parents[2] / "python/atp_api/openapi.json").read_text()
+    )
+    operation = snapshot["paths"][path][method]
+    if section == "request":
+        schema = operation["requestBody"]["content"]["application/json"]["schema"]
+    else:
+        schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+    return {name: spec["type"] for name, spec in schema["properties"].items()}
+
+
+def test_the_documented_get_response_matches_what_the_handler_returns(
+    mounted: tuple[str, int], fake_cli: _FakeCli
+) -> None:
+    fake_cli.queue(stdout=_config_stdout(drawdown=True, threshold=250, top_ranked=True))
+    _status, body = _request(mounted, "GET", "/api/v1/hot-swap/triggers")
+    documented = _documented_types("/api/v1/hot-swap/triggers", "get", "response")
+    for name, value in body.items():
+        if value is None:  # a nullable field states no type of its own
+            continue
+        assert documented.get(name) == _JSON_TYPE_OF[type(value)], (name, value, documented)
+
+
+def test_the_documented_manual_response_matches_what_the_handler_returns(
+    mounted: tuple[str, int], fake_cli: _FakeCli
+) -> None:
+    fake_cli.queue(stdout=_MANUAL_STDOUT)
+    _status, body = _request(
+        mounted, "POST", "/api/v1/hot-swap/triggers/manual?confirm=yes", _MANUAL_BODY
+    )
+    documented = _documented_types("/api/v1/hot-swap/triggers/manual", "post", "response")
+    for name, value in body.items():
+        assert documented.get(name) == _JSON_TYPE_OF[type(value)], (name, value, documented)
+
+
+def test_a_contract_valid_put_body_is_accepted_by_the_handler(
+    mounted: tuple[str, int], fake_cli: _FakeCli
+) -> None:
+    # The other direction: a payload built to the DOCUMENTED types must not be refused.
+    documented = _documented_types("/api/v1/hot-swap/triggers", "put", "request")
+    assert documented["drawdown_demotion_enabled"] == "boolean", documented
+    assert documented["drawdown_demotion_threshold_bps"] == "integer", documented
+
+    fake_cli.queue(stdout=_config_stdout(drawdown=True, threshold=250))
+    fake_cli.queue(stdout=_config_stdout(drawdown=True, threshold=250))
+    status, body = _request(
+        mounted,
+        "PUT",
+        "/api/v1/hot-swap/triggers?confirm=yes",
+        {"drawdown_demotion_enabled": True, "drawdown_demotion_threshold_bps": 250},
+    )
+    assert status == 200, body

@@ -339,28 +339,28 @@
                   "additionalProperties": true,
                   "properties": {
                     "any_automatic_enabled": {
-                      "type": "string"
+                      "type": "boolean"
                     },
                     "config_source": {
                       "type": "string"
                     },
                     "default_disabled": {
-                      "type": "string"
+                      "type": "boolean"
                     },
                     "drawdown_demotion_enabled": {
-                      "type": "string"
+                      "type": "boolean"
                     },
                     "drawdown_demotion_threshold_bps": {
-                      "type": "string"
+                      "type": "integer"
                     },
                     "highest_momentum_promotion_enabled": {
-                      "type": "string"
+                      "type": "boolean"
                     },
                     "manual_promotion_available": {
-                      "type": "string"
+                      "type": "boolean"
                     },
                     "top_ranked_promotion_enabled": {
-                      "type": "string"
+                      "type": "boolean"
                     }
                   },
                   "type": "object"
@@ -402,16 +402,16 @@
                 "additionalProperties": true,
                 "properties": {
                   "drawdown_demotion_enabled": {
-                    "type": "string"
+                    "type": "boolean"
                   },
                   "drawdown_demotion_threshold_bps": {
-                    "type": "string"
+                    "type": "integer"
                   },
                   "highest_momentum_promotion_enabled": {
-                    "type": "string"
+                    "type": "boolean"
                   },
                   "top_ranked_promotion_enabled": {
-                    "type": "string"
+                    "type": "boolean"
                   }
                 },
                 "type": "object"
@@ -428,25 +428,25 @@
                   "additionalProperties": true,
                   "properties": {
                     "any_automatic_enabled": {
-                      "type": "string"
+                      "type": "boolean"
                     },
                     "config_source": {
                       "type": "string"
                     },
                     "default_disabled": {
-                      "type": "string"
+                      "type": "boolean"
                     },
                     "drawdown_demotion_enabled": {
-                      "type": "string"
+                      "type": "boolean"
                     },
                     "drawdown_demotion_threshold_bps": {
-                      "type": "string"
+                      "type": "integer"
                     },
                     "highest_momentum_promotion_enabled": {
-                      "type": "string"
+                      "type": "boolean"
                     },
                     "top_ranked_promotion_enabled": {
-                      "type": "string"
+                      "type": "boolean"
                     }
                   },
                   "type": "object"
@@ -516,10 +516,10 @@
                       "type": "string"
                     },
                     "execution": {
-                      "type": "string"
+                      "type": "object"
                     },
                     "logged": {
-                      "type": "string"
+                      "type": "boolean"
                     },
                     "rationale": {
                       "type": "string"

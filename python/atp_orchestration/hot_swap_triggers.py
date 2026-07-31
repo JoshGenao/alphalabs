@@ -1,16 +1,21 @@
 """``SRS-RESV-003`` / SyRS SYS-49a — the Hot-Swap TRIGGER surface (REST + dashboard).
 
-SYS-49a names three operator arms — "via the dashboard, CLI, or REST API". The CLI arm is
-``resv003_hot_swap_trigger_cli``; this module is the **REST** arm. The dashboard arm is
-``atp_dashboard.hotswap.CliHotSwapTriggerSource``, which lives beside the
-``HotSwapStatusSource`` protocol it implements (and which this module imports, so both arms
-read one configuration through one code path and cannot disagree about it).
+SYS-49a names three operator arms — "via the dashboard, CLI, or REST API" — and this module
+is the **REST** one. The CLI arm is ``resv003_hot_swap_trigger_cli``. Both drive the same
+client, :mod:`atp_hotswap`, which shells that same cargo-built binary, so the trigger
+decision, the fail-closed logging rule, and the durable configuration format keep exactly
+one implementation.
 
-Both shell the same cargo-built binary — the repo's only cross-language boundary pattern:
-subprocess → Rust binary → parse ``key:value`` stdout, see
-``python/atp_orchestration/rollback_handler.py`` and ``python/atp_strategy/store_history.py``
-— so the trigger decision, the fail-closed logging rule, and the durable configuration
-format have exactly one implementation.
+What the DASHBOARD arm covers, precisely
+----------------------------------------
+The dashboard renders the trigger *configuration* — the UI-5 pane's automatic-trigger chips
+resolve from the same durable file this module serves, through the same
+:mod:`atp_hotswap` client. It does **not** carry a manual-trigger button. UI-5's
+promote-live control targets ``POST /api/v1/hot-swap``, the swap EXECUTION route, which is
+owned by the unbuilt ``SRS-RESV-004``/``005`` and correctly still answers a structured 501;
+repointing that button here would tell an operator they had promoted a strategy when all
+that happened was a proposal being written to a log. Firing a manual trigger is therefore a
+CLI or REST action, which is what SYS-49a's "dashboard, CLI, **or** REST API" asks for.
 
 What this surface does, and what it emphatically does not
 ---------------------------------------------------------
@@ -47,7 +52,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from atp_dashboard.hotswap import (
+from atp_hotswap import (
     CliHotSwapTriggerSource,
     HotSwapStatusUnavailable,
     HotSwapTriggerCliRunner,
