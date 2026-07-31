@@ -846,3 +846,39 @@ def test_a_misspelled_rest_trigger_field_never_persists_a_partial_change(
     assert not state.exists(), state.read_text()
     after = _kv(_cli("config", "--state", str(state)).stdout)
     assert after["any-automatic-enabled"] == "false", after
+
+
+@pytest.mark.parametrize("bad_id", ["", "   ", "\t\n"], ids=["empty", "spaces", "blank"])
+def test_the_cli_never_writes_a_record_its_own_reader_would_refuse(
+    tmp_path: Path, bad_id: str
+) -> None:
+    # Self-poisoning: validate_trigger_log_line refuses a record whose strategy ids are
+    # empty or blank, so writing one would leave a line THIS build cannot read back. Every
+    # later count or fire against that log then fails on a record we wrote ourselves, while
+    # the fire that produced it reported success.
+    #
+    # Scoped to emptiness on purpose: an id with an INTERIOR control character round-trips
+    # fine (the writer escapes it), and resv_3_control_characters_in_an_id_do_not_poison_
+    # the_log pins that, so refusing it here would delete a working guarantee.
+    log = tmp_path / "triggers.jsonl"
+    result = _cli("manual", "--demoting", "alpha", "--candidate", bad_id, "--log", str(log))
+
+    assert result.returncode != 0, result.stdout
+    assert not log.exists(), log.read_text()
+
+    # Non-vacuous: a healthy id still fires and the log stays readable afterwards.
+    ok = _cli("manual", "--demoting", "alpha", "--candidate", "beta", "--log", str(log))
+    assert ok.returncode == 0, ok.stderr
+    assert _kv(ok.stdout)["trigger-record-ordinal"] == "1", ok.stdout
+
+
+def test_evaluation_inputs_obey_the_same_id_rule(tmp_path: Path) -> None:
+    # Every writer into the trigger log obeys the reader's invariant, not just the manual
+    # one: --live and --rank ids reach the same records through the automatic path.
+    log = tmp_path / "triggers.jsonl"
+    blank_live = _cli("evaluate", "--live", "   ", "--log", str(log))
+    assert blank_live.returncode != 0, blank_live.stdout
+
+    blank_rank = _cli("evaluate", "--live", "alpha", "--rank", ":1:2.0:0.5", "--log", str(log))
+    assert blank_rank.returncode != 0, blank_rank.stdout
+    assert not log.exists(), log.read_text()

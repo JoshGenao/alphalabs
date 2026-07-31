@@ -481,7 +481,7 @@ fn cmd_evaluate(rest: &[String]) -> Result<(), String> {
 
     let live = FixedLiveProbe {
         state: Some(LiveStrategyState {
-            strategy_id: StrategyId::new(&live_id),
+            strategy_id: parse_strategy_id(&live_id, "--live")?,
             drawdown_bps: live_drawdown_bps,
         }),
     };
@@ -639,6 +639,10 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
 
     let demoting = demoting.ok_or_else(|| format!("--demoting <id> is required\n\n{USAGE}"))?;
     let candidate = candidate.ok_or_else(|| format!("--candidate <id> is required\n\n{USAGE}"))?;
+    // Validated BEFORE the guard and the append: a record this build's own reader would
+    // refuse must never reach the log.
+    let demoting_id = parse_strategy_id(&demoting, "--demoting")?;
+    let candidate_id = parse_strategy_id(&candidate, "--candidate")?;
 
     // The append is atomic on its own (`O_APPEND`), but the ordinal reported below
     // is the log's record COUNT taken afterwards — a separate read. A concurrent
@@ -667,8 +671,8 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
 
     let log = CollectingTriggerLog::new(log_path.as_deref().map(PathBuf::from));
     let outcome = StrategyOrchestrator.request_manual_promotion(
-        StrategyId::new(&demoting),
-        StrategyId::new(&candidate),
+        demoting_id,
+        candidate_id,
         &log,
         OBSERVED_AT_SECONDS,
     );
@@ -759,6 +763,30 @@ fn take_value<'a>(
 
 /// Parse a `--rank <id>:<rank>:<score>:<momentum>` ranking row. Non-finite
 /// scores are rejected at the input boundary (fail closed).
+/// Validate a strategy id before it can reach a durable trigger record.
+///
+/// The reader this binary ships with ([`validate_trigger_log_line`]) refuses a record whose
+/// strategy ids are empty or blank. Writing one anyway would poison the log with a line
+/// this very build cannot read back — every later count or fire against that log then fails
+/// on a record we wrote ourselves, while the fire that produced it reported success.
+///
+/// Only emptiness is refused here, deliberately. An id carrying an interior control
+/// character (a newline, a quote, a backslash) round-trips correctly — the writer escapes it
+/// and `resv_3_control_characters_in_an_id_do_not_poison_the_log` pins that — so rejecting
+/// it would remove a working guarantee rather than add one. The stricter no-whitespace rule
+/// belongs to the REST arm, which is the layer that correlates a response back to its record
+/// through the space-delimited `fired:` line and therefore needs ids to survive that trip.
+fn parse_strategy_id(value: &str, flag: &str) -> Result<StrategyId, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!(
+            "{flag} must name a strategy (got {value:?}); a blank id would write an audit \
+             record this build's own reader refuses\n\n{USAGE}"
+        ));
+    }
+    Ok(StrategyId::new(trimmed))
+}
+
 fn parse_rank_row(spec: &str) -> Result<RankedStrategy, String> {
     let parts: Vec<&str> = spec.split(':').collect();
     if parts.len() != 4 {
@@ -766,10 +794,7 @@ fn parse_rank_row(spec: &str) -> Result<RankedStrategy, String> {
             "--rank expects '<id>:<rank>:<score>:<momentum>' (got '{spec}')\n\n{USAGE}"
         ));
     }
-    let id = parts[0];
-    if id.is_empty() {
-        return Err(format!("--rank id must be non-empty (got '{spec}')"));
-    }
+    let strategy_id = parse_strategy_id(parts[0], "--rank id")?;
     let rank: u32 = parts[1]
         .parse()
         .map_err(|_| format!("--rank rank must be a u32 (got '{}')", parts[1]))?;
@@ -785,7 +810,7 @@ fn parse_rank_row(spec: &str) -> Result<RankedStrategy, String> {
         ));
     }
     Ok(RankedStrategy {
-        strategy_id: StrategyId::new(id),
+        strategy_id,
         rank,
         risk_adjusted_score: score,
         momentum_score: momentum,
