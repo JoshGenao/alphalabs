@@ -29,7 +29,7 @@ from types import FrameType
 
 from atp_logging import LogClass
 from atp_logging.persistence import JsonlLogStore
-from atp_orchestration import mount_rollback
+from atp_orchestration import REST_LIFECYCLE_OPERATION, mount_rollback
 from atp_runtime import OperatorInterfaceRuntime
 
 from .account import AccountStatusProvider
@@ -223,6 +223,20 @@ def mount_dashboard(
     runtime.register_asset_routes(load_assets())
     runtime.register_meta_route(SYSTEM_SNAPSHOT_PATH, provider.system_snapshot)
     if inventory is not None:
+        # SRS-ORCH-005 capability probe. A retained previous version in the data
+        # says nothing about whether THIS runtime serves the rollback route: an
+        # inventory can be composed here on a runtime with no rollback handler.
+        # Bind the probe to the live registry (evaluated per request, so
+        # composition ORDER does not matter) so the panel gates its control on
+        # what the server actually serves rather than on what the rows imply.
+        # Duck-typed: the inventory parameter is a structural provider (test
+        # doubles supply their own payloads), so bind only where the hook
+        # exists. A provider that cannot be bound simply keeps whatever
+        # capability it reports — and the real provider's default is FALSE.
+        if getattr(inventory, "bind_rollback_probe", None) is not None:
+            inventory.bind_rollback_probe(
+                lambda: runtime.registry.is_registered(REST_LIFECYCLE_OPERATION)
+            )
         runtime.register_meta_route(STRATEGIES_SNAPSHOT_PATH, inventory.inventory_snapshot)
     if backtests is not None:
         runtime.register_meta_route(BACKTESTS_SNAPSHOT_PATH, backtests.history_snapshot)

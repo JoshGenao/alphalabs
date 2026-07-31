@@ -199,6 +199,28 @@ class DashboardArmTest(_Fixture):
         with self.assertRaises(RollbackCheckError):
             self._check(app=mutated)
 
+    def test_dropped_capability_probe_is_caught(self) -> None:
+        # Without the probe only mount_default_dashboard would report the truth;
+        # the public mount_dashboard(..., inventory=...) path could serve rows
+        # with retained previous versions and no handler, rendering an
+        # actionable control that posts into the bare runtime's 501.
+        mutated = self._mutate(
+            "dashboard_server_source", "inventory.bind_rollback_probe(", "_unused = ("
+        )
+        with self.assertRaises(RollbackCheckError):
+            self._check(server=mutated)
+
+    def test_capability_inferred_from_row_data_is_caught(self) -> None:
+        # A retained previous version says nothing about whether the route is
+        # served; inferring the capability from the data is the fail-open.
+        mutated = self._mutate(
+            "dashboard_app_source",
+            'rollbackAvailable === true && targetHash !== ""',
+            'targetHash !== ""',
+        )
+        with self.assertRaises(RollbackCheckError):
+            self._check(app=mutated)
+
     def test_dropped_inert_state_is_caught(self) -> None:
         # SYS-80 is inert before a second deployment: a strategy with no
         # retained previous version must not present an actionable rollback.

@@ -6,6 +6,7 @@ Top-layer consumer package (like ``atp_dashboard``): it composes onto an
 """
 
 from .rollback_handler import (
+    REST_LIFECYCLE_OPERATION,
     LifecycleActionHandler,
     RollbackCliRunner,
     RollbackHandler,
@@ -13,6 +14,7 @@ from .rollback_handler import (
 )
 
 __all__ = [
+    "REST_LIFECYCLE_OPERATION",
     "LifecycleActionHandler",
     "RollbackCliRunner",
     "RollbackHandler",

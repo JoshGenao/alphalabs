@@ -35,7 +35,17 @@ proves it fires):
       onto the runtime registry, re-checks `request.confirmed` (defense in depth
       under the transport guard), transcribes the operator's confirm act into
       the strategy- and surface-naming acknowledgement, and delegates every
-      non-rollback lifecycle action to the honest 501 naming SRS-ORCH-004.
+      non-rollback lifecycle action to the honest 501 naming SRS-ORCH-004;
+  (f) the dashboard arm — the third surface the AC names. `mount_default_dashboard`
+      composes `mount_rollback` under the same `ATP_DEPLOYMENT_STATE` knob that
+      builds the inventory, and EVERY composition binds a capability probe read
+      from the live registry, so a dashboard mounted without the handler reports
+      `rollback_available: false` and renders the control inert instead of
+      posting into the bare runtime's 501. The control itself is the SAME
+      arm-then-confirm affordance as live promotion (mutual exclusion, the
+      `confirm` token on the contract route, a target that is the retained
+      previous version, and fail-closed success rendering — an unevidenced 2xx
+      is never shown as a rollback that happened).
 
 Plus a cargo smoke (default; ``--skip-cargo`` for harnesses that already run
 cargo): the crate's orch_5 rollback-contract + CLI fail-closed test suites.
@@ -282,8 +292,16 @@ def check_dashboard_arm(config: dict, server_src: str, app_src: str) -> str:
             "the production dashboard composes the ORCH-005 handler on its own runtime",
         ),
         (
-            "from atp_orchestration import mount_rollback",
-            "...and imports it from the owning package rather than reimplementing it",
+            "from atp_orchestration import REST_LIFECYCLE_OPERATION, mount_rollback",
+            "...and imports both from the owning package rather than reimplementing them",
+        ),
+        (
+            "inventory.bind_rollback_probe(",
+            "EVERY composition reports its real rollback capability, not just the default one",
+        ),
+        (
+            "runtime.registry.is_registered(REST_LIFECYCLE_OPERATION)",
+            "the capability is read from the live registry, so composition order cannot fake it",
         ),
     ):
         if token not in server_src:
@@ -296,6 +314,14 @@ def check_dashboard_arm(config: dict, server_src: str, app_src: str) -> str:
         (
             "previous_version_identifier",
             "the target is read from the inventory's retained previous version",
+        ),
+        (
+            'rollbackAvailable === true && targetHash !== ""',
+            "an actionable rollback needs BOTH a served route AND a retained previous version",
+        ),
+        (
+            "rollbackAvailable = data.rollback_available === true",
+            "the capability comes from the server's own report, never inferred from row data",
         ),
         ("rb.disabled = true", "a strategy with no previous version presents an INERT control"),
         (
@@ -320,9 +346,11 @@ def check_dashboard_arm(config: dict, server_src: str, app_src: str) -> str:
 
     return (
         "dashboard arm: mount_default_dashboard composes mount_rollback under "
-        "ATP_DEPLOYMENT_STATE, and the per-row ROLLBACK control is the same "
-        "arm-then-confirm affordance as promote-live (mutually exclusive, inert without "
-        "a retained previous version, fail-closed success rendering)"
+        "ATP_DEPLOYMENT_STATE and EVERY composition reports its real capability from the "
+        "live registry, so a dashboard without the handler renders the control inert; the "
+        "per-row ROLLBACK control is the same arm-then-confirm affordance as promote-live "
+        "(mutually exclusive, inert without a retained previous version, fail-closed "
+        "success rendering)"
     )
 
 

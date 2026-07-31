@@ -3412,9 +3412,7 @@ def test_orch_005_rollback_requires_the_same_confirmation_control_as_promotion(
             lifecycle_posts = [u for u in posts if "lifecycle" in u]
             assert len(lifecycle_posts) == 1
             # The confirm token rides in the same place promote-live puts it.
-            assert lifecycle_posts[0].endswith(
-                "/api/v1/strategies/alpha-1/lifecycle?confirm=true"
-            )
+            assert lifecycle_posts[0].endswith("/api/v1/strategies/alpha-1/lifecycle?confirm=true")
 
             status = page.locator("#rollback-status").inner_text()
             assert page.eval_on_selector("#rollback-state", "e => e.dataset.state") == "live", (
@@ -3569,5 +3567,113 @@ def test_orch_005_rollback_and_promotion_are_mutually_exclusive(
             )
             assert both["promote"] == 1
             assert both["rollback"] == 0, "arming promote must disarm rollback"
+        finally:
+            browser.close()
+
+
+@pytest.fixture()
+def uncomposed_rollback_dashboard(tmp_path) -> Iterator[str]:
+    """The PUBLIC ``mount_dashboard(..., inventory=...)`` composition — an
+    inventory whose rows carry retained previous versions, on a runtime with NO
+    rollback handler mounted. This is the half-composed shape a caller can build
+    today; the panel must render the control INERT rather than posting into the
+    bare runtime's 501."""
+
+    import subprocess
+    from pathlib import Path
+
+    from atp_dashboard import RollbackSnapshotInventorySource, StrategyInventoryProvider
+
+    root = Path(__file__).resolve().parents[2]
+    binary = root / "target" / "debug" / "orch005_rollback_cli"
+    if not binary.exists():
+        build = subprocess.run(
+            ["cargo", "build", "-q", "-p", "atp-orchestrator", "--bin", "orch005_rollback_cli"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if build.returncode != 0:
+            pytest.skip(f"cannot build orch005_rollback_cli: {build.stderr}")
+
+    state = tmp_path / "deploy.state"
+    for digit, ts in (("1", "100"), ("2", "200")):
+        subprocess.run(
+            [
+                str(binary),
+                "record",
+                "--state",
+                str(state),
+                "--strategy",
+                "alpha-1",
+                "--hash",
+                "sha256:" + digit * 64,
+                "--observed-at",
+                ts,
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    runtime = OperatorInterfaceRuntime()
+    inventory = StrategyInventoryProvider(
+        RollbackSnapshotInventorySource(state_path=state, binary=binary)
+    )
+    # NOTE: no mount_rollback here — that is the whole point of this fixture.
+    publisher = mount_dashboard(runtime, ReadinessBackedProvider({}), inventory=inventory)
+    publisher.start()
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        yield f"http://{host}:{port}/dashboard"
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
+def test_orch_005_rollback_is_inert_when_the_handler_is_not_composed(
+    uncomposed_rollback_dashboard: str,
+) -> None:
+    """Fail-closed capability gate: a retained previous version in the DATA must
+    never by itself make the control actionable. On a runtime that does not
+    serve the rollback route the button is disabled and names why, and clicking
+    it posts nothing — a dashboard must not offer an operator a live-state
+    control it cannot perform."""
+
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            posts: list[str] = []
+            page.on(
+                "request",
+                lambda req: posts.append(req.url) if req.method == "POST" else None,
+            )
+            page.goto(uncomposed_rollback_dashboard, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 1", timeout=5_000
+            )
+
+            # The row genuinely HAS a retained previous version...
+            row = page.locator('#inventory-rows tr[data-strategy="alpha-1"]')
+            assert "sha256:" + "2" * 64 in row.inner_text()
+
+            # ...yet the control is inert, because the route is not served.
+            btn = _rollback_btn(page, "alpha-1")
+            assert btn.count() == 1
+            assert btn.is_disabled()
+            assert "not composed" in (btn.get_attribute("title") or "")
+            # No staged target: nothing to fire even if the guard were bypassed.
+            assert btn.get_attribute("data-target") == ""
+
+            btn.click(force=True)
+            assert page.eval_on_selector("#rollback-state", "e => e.dataset.state") == "resting"
+            assert posts == []
+
+            # The server told the truth about its own capability.
+            snapshot = page.evaluate(
+                "async () => (await fetch('/dashboard/api/strategies').then(r => r.json()))"
+            )
+            assert snapshot["rollback_available"] is False
         finally:
             browser.close()

@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -219,8 +220,39 @@ class StrategyInventoryProvider:
     :class:`StrategyInventorySource` (fail-safe: an unreadable source becomes an
     explicit unavailable inventory, never a crash or an empty masquerade)."""
 
-    def __init__(self, source: StrategyInventorySource) -> None:
+    def __init__(
+        self,
+        source: StrategyInventorySource,
+        rollback_available: Callable[[], bool] | None = None,
+    ) -> None:
+        """``rollback_available`` reports whether THIS runtime actually serves
+        the SRS-ORCH-005 lifecycle rollback route. The inventory can be composed
+        (``mount_dashboard(..., inventory=...)``) on a runtime that has no
+        rollback handler, and a row's retained previous version says nothing
+        about whether the route exists — so the panel must not infer an
+        actionable rollback from the data alone. Absent a probe this reports
+        FALSE: an unproven capability never presents an actionable live-state
+        control (SYS-80 / NFR-S2 fail-closed)."""
+
         self._source = source
+        self._rollback_available = rollback_available
+
+    def bind_rollback_probe(self, probe: Callable[[], bool]) -> None:
+        """Bind the capability probe at mount time (``mount_dashboard`` knows
+        the runtime; the caller constructing the provider usually does not).
+        An explicit probe passed to ``__init__`` wins — a composer that already
+        stated the capability is not overridden."""
+
+        if self._rollback_available is None:
+            self._rollback_available = probe
+
+    def _rollback_capability(self) -> bool:
+        if self._rollback_available is None:
+            return False
+        try:
+            return self._rollback_available() is True
+        except Exception:  # noqa: BLE001 — an unprovable capability is not a capability
+            return False
 
     def inventory_snapshot(self) -> dict[str, object]:
         """The REST poll body served at ``GET /dashboard/api/strategies``."""
@@ -233,10 +265,12 @@ class StrategyInventoryProvider:
                 "ok": False,
                 "error": str(unavailable),
                 "strategies": [],
+                "rollback_available": self._rollback_capability(),
                 "srs_ref": "SRS-UI-002",
             }
         return {
             "generated_at": _utc_iso(),
+            "rollback_available": self._rollback_capability(),
             "ok": True,
             "strategies": [self._strategy_payload(row) for row in rows],
             "srs_ref": "SRS-UI-002",
@@ -252,6 +286,11 @@ class StrategyInventoryProvider:
             "strategy_id": None,
             "as_of": _utc_iso(),
             "event": "inventory-summary",
+            # Whether this runtime serves the rollback route at all (see
+            # __init__): the panel gates its ROLLBACK control on this, so a
+            # dashboard composed without the SRS-ORCH-005 handler renders the
+            # control inert instead of posting into a 501.
+            "rollback_available": self._rollback_capability(),
         }
         try:
             rows = self._source.rows()

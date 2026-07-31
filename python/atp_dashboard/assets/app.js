@@ -411,6 +411,12 @@
     ws: { gen: 0, expected: null, seen: 0 },
     rest: { gen: 0, expected: null, seen: 0 },
   };
+  // SRS-ORCH-005 capability, reported by the server on every inventory summary:
+  // whether THIS runtime serves the lifecycle rollback route. Starts FALSE and
+  // only an explicit boolean true from a summary sets it — an absent, stringy,
+  // or version-skewed field leaves the control inert (an unproven capability is
+  // not a capability). Never inferred from the row data.
+  let rollbackAvailable = false;
 
   function removeInventoryRow(tr) {
     if (promoteArmedId === tr.dataset.strategy) disarmPromote(true);
@@ -484,9 +490,17 @@
     // deployment, so the control is disabled rather than posting a request the
     // gate would refuse NO_PREVIOUS_VERSION. A row whose previous version is
     // unknown never presents an actionable rollback.
+    // TWO independent conditions must BOTH hold for an actionable rollback:
+    // (1) this runtime actually serves the rollback route (rollbackAvailable,
+    // reported by the server — a retained previous version in the data says
+    // nothing about whether the handler is mounted), and (2) the strategy has a
+    // retained previous version to roll back TO. Either one missing renders the
+    // control inert, so a dashboard composed without the SRS-ORCH-005 handler
+    // never presents a control that would post into a 501.
     const previous = cellValue(data.previous_version_identifier);
     const targetHash = previous === null || previous === undefined
       ? "" : String(previous).split("@", 1)[0];
+    const actionable = rollbackAvailable === true && targetHash !== "";
     // Deliberately NOT .manage__btn: that class is the promote control's
     // identity in the UI-2 selectors/tests. The two controls share every style
     // rule (see styles.css — NFR-S2 parity is about the affordance, not the
@@ -495,11 +509,13 @@
     rb.type = "button";
     rb.dataset.armed = "false";
     rb.dataset.strategy = key;
-    rb.dataset.target = targetHash;
+    rb.dataset.target = actionable ? targetHash : "";
     rb.textContent = "ROLLBACK";
-    if (!targetHash) {
+    if (!actionable) {
       rb.disabled = true;
-      rb.title = "no retained previous version — nothing to roll back to";
+      rb.title = rollbackAvailable !== true
+        ? "rollback route not served by this dashboard — SRS-ORCH-005 handler not composed"
+        : "no retained previous version — nothing to roll back to";
     }
     const cd = el("span", "manage__cd"); cd.setAttribute("aria-hidden", "true");
     manage.append(btn, rb, cd);
@@ -533,10 +549,14 @@
         // actionable PROMOTE LIVE rows must not survive an error caption.
         clearInventoryRows();
         closeInventorySources();
+        // An unreadable/malformed source cannot substantiate the capability
+        // either — drop it so no stale actionable rollback survives the error.
+        rollbackAvailable = false;
         summary.textContent = "inventory unavailable: " +
           (data.ok === false ? String(data.error || "unknown") : "malformed summary");
         summary.dataset.tone = "error";
       } else {
+        rollbackAvailable = data.rollback_available === true;
         inventoryGen += 1;
         src.gen = inventoryGen;
         src.expected = n;
@@ -1535,6 +1555,10 @@
             event: "inventory-summary",
             ok: true,
             strategy_count: snap.strategies.length,
+            // Thread the server's capability report through this synthesized
+            // summary — omitting it would silently fail the rollback control
+            // closed on every REST tick even where the route IS served.
+            rollback_available: snap.rollback_available,
           }, "rest");
           for (const row of snap.strategies) renderInventoryRow(row, "rest");
         } else if (snap.ok === false) {
