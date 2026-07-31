@@ -667,31 +667,73 @@ def test_both_operator_surfaces_share_one_unavailable_exception(tmp_path: Path) 
     assert snapshot["auto_triggers_enabled"]["value"] is None, snapshot
 
 
-def test_neither_operator_surface_imports_the_other(tmp_path: Path) -> None:
-    # The dependency direction the runtime documents: surfaces compose onto atp_runtime from
-    # above and never onto each other. The shared client is what made this tempting to
-    # break, so the rule is asserted rather than trusted to review.
+def test_no_operator_surface_depends_on_another_at_module_level(tmp_path: Path) -> None:
+    """The coupling rule, stated precisely enough to survive composition.
+
+    What must not happen is one operator surface DEPENDING on another: importing it at module
+    level makes the importer unusable without the importee and drags a peer's implementation
+    into its own load. That is the rule here.
+
+    Composition is the deliberate exception. Something has to register both surfaces onto one
+    runtime for the shipped process, and a composition root reaching for both AT CALL TIME is
+    what composition is — Python's local import states exactly that scope. So the exception is
+    allowed, but pinned: exactly one, in the function that owns it, so it cannot quietly
+    spread into the surfaces themselves.
+    """
+
     import ast
 
     root = REPO_ROOT / "python"
-    offenders: list[str] = []
-    for package, forbidden in (
-        ("atp_orchestration", "atp_dashboard"),
-        ("atp_dashboard", "atp_orchestration"),
-        ("atp_hotswap", "atp_dashboard"),
-        ("atp_hotswap", "atp_orchestration"),
-    ):
+    # SURFACES are peers and must not depend on each other. atp_hotswap is deliberately NOT
+    # one: it is the neutral client both of them import downward, which is what let the REST
+    # arm stop importing the dashboard in the first place. It is checked in the other
+    # direction instead — it must import neither surface, or it would not be neutral.
+    surfaces = ("atp_dashboard", "atp_orchestration")
+    packages = (*surfaces, "atp_hotswap")
+    module_level: list[str] = []
+    local_imports: list[tuple[str, str, str]] = []
+
+    for package in packages:
+        peers = frozenset(
+            peer for peer in (surfaces if package == "atp_hotswap" else surfaces) if peer != package
+        )
         for source in (root / package).rglob("*.py"):
             tree = ast.parse(source.read_text())
-            for node in ast.walk(tree):
+
+            def _peer(node: ast.AST, peers: frozenset[str] = frozenset(peers)) -> str | None:
                 names: list[str] = []
                 if isinstance(node, ast.Import):
                     names = [alias.name for alias in node.names]
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     names = [node.module]
-                if any(name == forbidden or name.startswith(f"{forbidden}.") for name in names):
-                    offenders.append(f"{source.relative_to(root)} imports {forbidden}")
-    assert not offenders, offenders
+                for name in names:
+                    for peer in peers:
+                        if name == peer or name.startswith(f"{peer}."):
+                            return peer
+                return None
+
+            # Module level = every import not nested inside a function/class body.
+            nested: set[int] = set()
+            for parent in ast.walk(tree):
+                if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for child in ast.walk(parent):
+                        nested.add(id(child))
+                        if _peer(child):
+                            local_imports.append(
+                                (f"{source.relative_to(root)}", parent.name, _peer(child) or "")
+                            )
+            for node in ast.walk(tree):
+                if id(node) in nested:
+                    continue
+                peer = _peer(node)
+                if peer:
+                    module_level.append(f"{source.relative_to(root)} imports {peer}")
+
+    assert not module_level, module_level
+    # The one sanctioned composition-root reach, and nothing else.
+    assert local_imports == [
+        ("atp_dashboard/server.py", "_mount_hot_swap_trigger_arm", "atp_orchestration")
+    ], local_imports
 
 
 def test_a_self_swap_is_refused_by_the_domain_layer_not_just_the_rest_wrapper(

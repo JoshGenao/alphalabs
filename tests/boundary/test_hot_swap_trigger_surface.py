@@ -713,3 +713,71 @@ def test_the_documented_put_response_matches_what_the_handler_returns(
         declared = documented[name]
         allowed = declared if isinstance(declared, list) else [declared]
         assert expected in allowed, (name, value, declared)
+
+
+# --------------------------------------------------------------------------- #
+# The SHIPPED composition
+# --------------------------------------------------------------------------- #
+
+
+def test_the_production_composition_serves_the_trigger_routes(tmp_path) -> None:
+    # Implementing the handlers is not shipping them. `serve()` composes through this helper,
+    # so if it does not register them the documented routes answer 501 in production while
+    # the tests — which mounted them by hand — pass.
+    from atp_dashboard import mount_default_dashboard
+    from atp_dashboard.server import _mount_hot_swap_trigger_arm
+
+    env = {
+        "ATP_HOT_SWAP_TRIGGER_STATE": str(tmp_path / "triggers.json"),
+        "ATP_HOT_SWAP_TRIGGER_LOG": str(tmp_path / "triggers.jsonl"),
+    }
+    runtime = OperatorInterfaceRuntime()
+    publisher = mount_default_dashboard(
+        runtime, env, hot_swap_source=_mount_hot_swap_trigger_arm(runtime, env)
+    )
+    publisher.start()
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        status, body = _request((host, port), "GET", "/api/v1/hot-swap/triggers")
+        assert status == 200, body
+        assert body["config_source"] == "default", body
+        # And swap EXECUTION still is not shipped, because nothing can execute one.
+        status, body = _request(
+            (host, port), "POST", "/api/v1/hot-swap?confirm=yes", {"candidate_strategy_id": "b"}
+        )
+        assert status == 501, body
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
+def test_the_bare_composition_leaves_the_trigger_routes_deferred() -> None:
+    # Unset knobs mean no trigger surface at all — not a half-mounted one.
+    from atp_dashboard import mount_default_dashboard
+    from atp_dashboard.server import _mount_hot_swap_trigger_arm
+
+    runtime = OperatorInterfaceRuntime()
+    publisher = mount_default_dashboard(
+        runtime, {}, hot_swap_source=_mount_hot_swap_trigger_arm(runtime, {})
+    )
+    publisher.start()
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        status, body = _request((host, port), "GET", "/api/v1/hot-swap/triggers")
+        assert status == 501, body
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
+def test_a_trigger_surface_that_cannot_log_refuses_to_start(tmp_path) -> None:
+    # "All swap triggers are logged" is an acceptance clause, not a nicety. A surface able to
+    # fire a trigger it cannot record must not come up at all — the SRS-MD-003 rule for its
+    # audit sink, applied here.
+    from atp_dashboard.server import _mount_hot_swap_trigger_arm
+
+    runtime = OperatorInterfaceRuntime()
+    with pytest.raises(ValueError, match="ATP_HOT_SWAP_TRIGGER_LOG"):
+        _mount_hot_swap_trigger_arm(
+            runtime, {"ATP_HOT_SWAP_TRIGGER_STATE": str(tmp_path / "triggers.json")}
+        )

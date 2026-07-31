@@ -276,7 +276,10 @@ def mount_dashboard(
 
 
 def mount_default_dashboard(
-    runtime: OperatorInterfaceRuntime, env: Mapping[str, str]
+    runtime: OperatorInterfaceRuntime,
+    env: Mapping[str, str],
+    *,
+    hot_swap_source: CliHotSwapTriggerSource | None = None,
 ) -> DashboardPublisher:
     """The default composition used by ``python -m atp_dashboard``: the SRS-UI-001
     metrics surface plus the SRS-UI-004 backtest history.
@@ -406,12 +409,18 @@ def mount_default_dashboard(
     # source returns None for them rather than inventing one, and the three
     # protocol legs fail independently so an unreadable trigger configuration
     # cannot blank a live state that a later producer does resolve.
-    hot_swap_trigger_state = env.get("ATP_HOT_SWAP_TRIGGER_STATE") or None
-    hot_swap_source = (
-        CliHotSwapTriggerSource(hot_swap_trigger_state)
-        if hot_swap_trigger_state is not None
-        else None
-    )
+    # The REST arm (mount_hot_swap_triggers) builds this source and hands it here, so the
+    # pane and the routes read ONE configuration through one client. When no source is
+    # supplied — a bare dashboard, or a caller that mounted no trigger surface — the knob
+    # still composes a read-only one, so the pane resolves its chips without the REST
+    # handlers being registered.
+    if hot_swap_source is None:
+        hot_swap_trigger_state = env.get("ATP_HOT_SWAP_TRIGGER_STATE") or None
+        hot_swap_source = (
+            CliHotSwapTriggerSource(hot_swap_trigger_state)
+            if hot_swap_trigger_state is not None
+            else None
+        )
     return mount_dashboard(
         runtime,
         provider,
@@ -427,11 +436,50 @@ def mount_default_dashboard(
     )
 
 
+def _mount_hot_swap_trigger_arm(
+    runtime: OperatorInterfaceRuntime, env: Mapping[str, str]
+) -> CliHotSwapTriggerSource | None:
+    """Register the SRS-RESV-003 trigger REST routes when the operator has configured them.
+
+    Opt-in on ``ATP_HOT_SWAP_TRIGGER_STATE``; unset, the routes keep the structured 501 the
+    frozen contract gives every unbound operation and the pane renders its deferred cells.
+
+    ``ATP_HOT_SWAP_TRIGGER_LOG`` is REQUIRED alongside it, and a missing one is a boot
+    failure rather than a degraded mode: "all swap triggers are logged" is a first-class
+    acceptance clause, so a surface that could fire a trigger it cannot record must not come
+    up at all. Same rule the SRS-MD-003 heartbeat composition applies to its audit sink.
+    """
+
+    # Local import: atp_orchestration is a sibling operator surface, not a layer beneath the
+    # dashboard, so only this composition root reaches for it (the `.loadgen` precedent).
+    from atp_orchestration import mount_hot_swap_triggers
+
+    state_path = env.get("ATP_HOT_SWAP_TRIGGER_STATE") or None
+    if state_path is None:
+        return None
+    log_path = env.get("ATP_HOT_SWAP_TRIGGER_LOG") or None
+    if log_path is None:
+        raise ValueError(
+            "ATP_HOT_SWAP_TRIGGER_STATE is set but ATP_HOT_SWAP_TRIGGER_LOG is not: the "
+            "Hot-Swap trigger surface makes the durable audit record load-bearing "
+            "(SRS-RESV-003 'all swap triggers are logged'), so it must not start without "
+            "somewhere to write one"
+        )
+    return mount_hot_swap_triggers(runtime, state_path=state_path, log_path=log_path)
+
+
 def serve(host: str = "127.0.0.1", port: int = 8080) -> None:
     """Run the dashboard until interrupted (blocking; SIGINT/SIGTERM shut down)."""
 
     runtime = OperatorInterfaceRuntime()
-    publisher = mount_default_dashboard(runtime, dict(os.environ))
+    env = dict(os.environ)
+    # THE process entrypoint is where the operator surfaces are composed together, so it is
+    # the one place entitled to know both packages — and the only place that can make the
+    # SRS-RESV-003 REST arm actually ship. Registering the handlers only in tests would mean
+    # the documented routes answered 501 in production while the e2e proved otherwise.
+    publisher = mount_default_dashboard(
+        runtime, env, hot_swap_source=_mount_hot_swap_trigger_arm(runtime, env)
+    )
     publisher.start()
     bound_host, bound_port = runtime.start(host=host, port=port)
     print(  # noqa: T201 - operator-facing startup line

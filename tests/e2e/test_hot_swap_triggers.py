@@ -33,7 +33,7 @@ import pytest
 sync_api = pytest.importorskip("playwright.sync_api")
 
 from atp_dashboard import mount_default_dashboard  # noqa: E402
-from atp_orchestration import mount_hot_swap_triggers  # noqa: E402
+from atp_dashboard.server import _mount_hot_swap_trigger_arm  # noqa: E402
 from atp_runtime import OperatorInterfaceRuntime  # noqa: E402
 
 pytestmark = pytest.mark.e2e
@@ -66,16 +66,25 @@ def live_dashboard(
 ) -> Iterator[tuple[str, tuple[str, int], Path, Path]]:
     """The PRODUCTION composition, reading a real durable trigger configuration.
 
-    Yields ``(dashboard_url, (host, port), state_path, log_path)``. The trigger REST arm is
-    mounted on the same runtime, so the browser and the REST caller observe one
-    configuration through one code path.
+    Yields ``(dashboard_url, (host, port), state_path, log_path)``.
+
+    This goes through the SAME entrypoint helper ``serve()`` uses, rather than mounting the
+    REST arm by hand. Mounting it manually is what let the routes pass an e2e while
+    answering 501 in production: the fixture proved its own composition, not the shipped
+    one. Here the env knobs are the only wiring, so the browser and the REST caller observe
+    one configuration exactly as an operator's process would.
     """
 
     state = tmp_path / "triggers.json"
     log = tmp_path / "triggers.jsonl"
+    env = {
+        "ATP_HOT_SWAP_TRIGGER_STATE": str(state),
+        "ATP_HOT_SWAP_TRIGGER_LOG": str(log),
+    }
     runtime = OperatorInterfaceRuntime()
-    publisher = mount_default_dashboard(runtime, {"ATP_HOT_SWAP_TRIGGER_STATE": str(state)})
-    mount_hot_swap_triggers(runtime, state_path=state, log_path=log, binary=trigger_binary)
+    publisher = mount_default_dashboard(
+        runtime, env, hot_swap_source=_mount_hot_swap_trigger_arm(runtime, env)
+    )
     publisher.start()
     host, port = runtime.start(host="127.0.0.1", port=0)
     try:
