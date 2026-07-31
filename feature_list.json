@@ -146,7 +146,7 @@
       "Step 3: Verify acceptance criteria: Rollback is available through dashboard, CLI, and REST API; rollback of the live strategy requires the same confirmation control as live promotion.",
       "Step 4: Record objective evidence from demonstration, test and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {
