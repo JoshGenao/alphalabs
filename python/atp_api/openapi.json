@@ -378,6 +378,7 @@
           "HOT_SWAP"
         ],
         "x-capability": "HOT_SWAP",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": false,
         "x-srs-refs": [
           "SRS-RESV-003",
@@ -473,6 +474,7 @@
           "HOT_SWAP"
         ],
         "x-capability": "HOT_SWAP",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": true,
         "x-srs-refs": [
           "SRS-RESV-003",
@@ -559,6 +561,7 @@
           "HOT_SWAP"
         ],
         "x-capability": "HOT_SWAP",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": true,
         "x-srs-refs": [
           "SRS-RESV-003",

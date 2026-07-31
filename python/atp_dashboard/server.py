@@ -29,7 +29,14 @@ from types import FrameType
 
 from atp_logging import LogClass
 from atp_logging.persistence import JsonlLogStore
+
+# NOTE: keep the next line EXACTLY as written — one line, this order.
+# tools/orchestrator_rollback_check.py greps for it as a literal to prove the dashboard
+# imports the rollback surface from its owning package rather than reimplementing it, so
+# reflowing or reordering it fails that gate. The trigger arm is imported from the SUBMODULE
+# below precisely so isort has no second `from atp_orchestration import` to merge into it.
 from atp_orchestration import REST_LIFECYCLE_OPERATION, mount_rollback, rollback_is_served
+from atp_orchestration.hot_swap_triggers import mount_hot_swap_triggers
 from atp_runtime import OperatorInterfaceRuntime
 
 from .account import AccountStatusProvider
@@ -449,10 +456,6 @@ def _mount_hot_swap_trigger_arm(
     acceptance clause, so a surface that could fire a trigger it cannot record must not come
     up at all. Same rule the SRS-MD-003 heartbeat composition applies to its audit sink.
     """
-
-    # Local import: atp_orchestration is a sibling operator surface, not a layer beneath the
-    # dashboard, so only this composition root reaches for it (the `.loadgen` precedent).
-    from atp_orchestration import mount_hot_swap_triggers
 
     state_path = env.get("ATP_HOT_SWAP_TRIGGER_STATE") or None
     if state_path is None:
