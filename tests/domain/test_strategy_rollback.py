@@ -236,9 +236,10 @@ def test_rollback_contract_is_registered() -> None:
     config = load_config()
     block = contract_block(config)
     assert block["requirement"] == "SRS-ORCH-005"
-    # Six static guards — the fifth (surface wiring) covers the CLI/REST arms,
-    # the sixth (dashboard arm) covers SYS-80's third surface.
-    assert len(assert_rollback_static(config, ROOT)) == 6
+    # Seven static guards — the fifth (surface wiring) covers the CLI/REST arms,
+    # the sixth (dashboard arm) covers SYS-80's third surface, the seventh pins
+    # the mounting runtime as the capability authority.
+    assert len(assert_rollback_static(config, ROOT)) == 7
 
 
 def test_production_dashboard_composition_serves_the_rollback_surface(tmp_path: Path) -> None:
@@ -389,3 +390,50 @@ def test_rollback_capability_is_action_level_not_route_level(tmp_path: Path) -> 
     assert rollback_is_served(served) is True
     status, body = served.dispatch_rest("GET", "/dashboard/api/strategies", b"")
     assert body["rollback_available"] is True
+
+
+def test_a_composer_cannot_claim_a_rollback_capability_the_runtime_lacks(
+    tmp_path: Path,
+) -> None:
+    """Fail-closed authority: the MOUNTING RUNTIME answers the capability
+    question, not the caller. A composer that constructs the inventory provider
+    asserting ``rollback_available=lambda: True`` and mounts it on a runtime
+    with no rollback handler must still get ``rollback_available: false`` — a
+    capability is not something the caller gets to claim, and an actionable
+    control here would post into the bare lifecycle route's 501.
+    """
+
+    cargo = _cargo()
+    if cargo is None:
+        pytest.skip("cargo not on PATH")
+    binary = _build_bin(cargo)
+    state = tmp_path / "claimed.state"
+    _seed(binary, state)
+
+    from atp_dashboard import (
+        ReadinessBackedProvider,
+        RollbackSnapshotInventorySource,
+        StrategyInventoryProvider,
+        mount_dashboard,
+    )
+    from atp_runtime import OperatorInterfaceRuntime
+
+    runtime = OperatorInterfaceRuntime()
+    provider = StrategyInventoryProvider(
+        RollbackSnapshotInventorySource(state_path=state, binary=binary),
+        rollback_available=lambda: True,  # the caller's (false) claim
+    )
+    # Un-mounted, the provider honours its constructor default...
+    assert provider.inventory_snapshot()["rollback_available"] is True
+    # ...but mounting binds the runtime's own answer, which overrides it.
+    mount_dashboard(runtime, ReadinessBackedProvider({}), inventory=provider)
+    status, body = runtime.dispatch_rest("GET", "/dashboard/api/strategies", b"")
+    assert status == 200, body
+    assert body["rollback_available"] is False, (
+        "the mounting runtime must be authoritative over a composer's claim"
+    )
+
+    # The WS summary carries the same corrected answer (both feeds agree).
+    summary = provider.strategy_state_events()[0]
+    assert summary["event"] == "inventory-summary"
+    assert summary["rollback_available"] is False

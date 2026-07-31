@@ -24,6 +24,7 @@ from orchestrator_rollback_check import (  # noqa: E402
     assert_rollback_static,
     check_confirmation_parity,
     check_dashboard_arm,
+    check_dashboard_capability_authority,
     check_handler_surface,
     check_retention_port,
     check_rollback_cli,
@@ -231,10 +232,10 @@ class DashboardArmTest(_Fixture):
 
 class AggregateEvidenceTest(_Fixture):
     def test_static_check_count_is_pinned(self) -> None:
-        # Six static guards (retention port, gate order, confirmation parity, operator bin,
-        # surface wiring, dashboard arm). A dropped or silently-added guard changes this
-        # count — pin it.
-        self.assertEqual(len(assert_rollback_static(self.config, ROOT)), 6)
+        # Seven static guards (retention port, gate order, confirmation parity, operator
+        # bin, surface wiring, dashboard arm, capability authority). A dropped or
+        # silently-added guard changes this count — pin it.
+        self.assertEqual(len(assert_rollback_static(self.config, ROOT)), 7)
 
     def test_block_names_the_deferred_owners(self) -> None:
         block = contract_block(self.config)
@@ -246,3 +247,18 @@ class AggregateEvidenceTest(_Fixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DashboardCapabilityAuthorityTest(_Fixture):
+    def test_caller_supplied_capability_surviving_the_bind_is_caught(self) -> None:
+        # If a constructor-supplied callback could survive bind_rollback_probe, a
+        # composer could assert the capability on a runtime with no rollback
+        # handler and hand the operator a control that posts into a 501.
+        mutated = self._mutate(
+            "dashboard_inventory_source",
+            "        self._rollback_available = probe",
+            "        if self._rollback_available is None:\n            "
+            "self._rollback_available = probe",
+        )
+        with self.assertRaises(RollbackCheckError):
+            check_dashboard_capability_authority(self.config, mutated)

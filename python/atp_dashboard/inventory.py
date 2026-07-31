@@ -225,14 +225,19 @@ class StrategyInventoryProvider:
         source: StrategyInventorySource,
         rollback_available: Callable[[], bool] | None = None,
     ) -> None:
-        """``rollback_available`` reports whether THIS runtime actually serves
-        the SRS-ORCH-005 lifecycle rollback route. The inventory can be composed
+        """``rollback_available`` reports whether the runtime actually serves the
+        SRS-ORCH-005 rollback ACTION. The inventory can be composed
         (``mount_dashboard(..., inventory=...)``) on a runtime that has no
         rollback handler, and a row's retained previous version says nothing
-        about whether the route exists — so the panel must not infer an
+        about whether the action is served — so the panel must not infer an
         actionable rollback from the data alone. Absent a probe this reports
         FALSE: an unproven capability never presents an actionable live-state
-        control (SYS-80 / NFR-S2 fail-closed)."""
+        control (SYS-80 / NFR-S2 fail-closed).
+
+        This constructor argument is only a default for providers used OUTSIDE
+        ``mount_dashboard``; mounting replaces it with the runtime's own answer
+        (see :meth:`bind_rollback_probe`), so it can never be used to claim a
+        capability the mounting runtime does not have."""
 
         self._source = source
         self._rollback_available = rollback_available
@@ -240,11 +245,17 @@ class StrategyInventoryProvider:
     def bind_rollback_probe(self, probe: Callable[[], bool]) -> None:
         """Bind the capability probe at mount time (``mount_dashboard`` knows
         the runtime; the caller constructing the provider usually does not).
-        An explicit probe passed to ``__init__`` wins — a composer that already
-        stated the capability is not overridden."""
 
-        if self._rollback_available is None:
-            self._rollback_available = probe
+        The mounting runtime is AUTHORITATIVE and always wins: it is the only
+        party that can actually answer "is rollback served here?". A
+        constructor-supplied callback is a default for providers used outside
+        ``mount_dashboard`` — letting it survive the bind would let a composer
+        assert `rollback_available: True` on a runtime with no rollback handler
+        and hand the operator an actionable control that posts into a 501. A
+        capability is not something the caller gets to claim.
+        """
+
+        self._rollback_available = probe
 
     def _rollback_capability(self) -> bool:
         if self._rollback_available is None:

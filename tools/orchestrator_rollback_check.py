@@ -284,6 +284,55 @@ def check_handler_surface(config: dict, handler_src: str) -> str:
     )
 
 
+def _py_def_block(src: str, name: str) -> str:
+    """The body of a Python ``def name(...)`` — from the def line to the next
+    line at the same or lower indentation. (`_fn_block` is the Rust parser; the
+    dashboard sources are Python.)"""
+
+    marker = f"def {name}("
+    start = src.find(marker)
+    if start < 0:
+        return ""
+    line_start = src.rfind("\n", 0, start) + 1
+    indent = len(src[line_start:start])
+    lines = src[line_start:].splitlines()
+    body = [lines[0]]
+    for line in lines[1:]:
+        if line.strip() and (len(line) - len(line.lstrip())) <= indent:
+            break
+        body.append(line)
+    return "\n".join(body)
+
+
+def check_dashboard_capability_authority(config: dict, inventory_src: str) -> str:
+    """The mounting runtime — not the caller — answers "is rollback served?".
+
+    ``bind_rollback_probe`` must assign UNCONDITIONALLY. If a constructor-
+    supplied callback could survive the bind, a composer could assert the
+    capability on a runtime with no rollback handler and hand the operator an
+    actionable control that posts into the bare lifecycle route's 501.
+    """
+
+    body = _py_def_block(inventory_src, "bind_rollback_probe")
+    if not body:
+        fail("StrategyInventoryProvider.bind_rollback_probe missing (the capability seam)")
+    if "if self._rollback_available is None" in body:
+        fail(
+            "bind_rollback_probe must not let a constructor-supplied callback survive the "
+            "bind — the mounting runtime is authoritative; a caller must not be able to "
+            "claim a rollback capability the runtime does not have"
+        )
+    if "self._rollback_available = probe" not in body:
+        fail("bind_rollback_probe must assign the runtime's probe")
+    if "return False" not in _py_def_block(inventory_src, "_rollback_capability"):
+        fail("_rollback_capability must fail closed (no probe / raising probe -> False)")
+    return (
+        "capability authority: bind_rollback_probe assigns unconditionally (the mounting "
+        "runtime overrides any caller-supplied claim) and the capability fails closed "
+        "without a working probe"
+    )
+
+
 def check_dashboard_arm(config: dict, server_src: str, app_src: str) -> str:
     """SYS-80 names THREE surfaces — dashboard, CLI, REST. The CLI and REST arms
     are pinned above; this pins the dashboard arm so it cannot silently regress
@@ -371,6 +420,11 @@ CHECKS = (
     ("rollback_cli", check_rollback_cli, ("bin",)),
     ("handler_surface", check_handler_surface, ("handler",)),
     ("dashboard_arm", check_dashboard_arm, ("dashboard_server", "dashboard_app")),
+    (
+        "dashboard_capability_authority",
+        check_dashboard_capability_authority,
+        ("dashboard_inventory",),
+    ),
 )
 
 
@@ -382,6 +436,7 @@ def _sources(config: dict, root: Path) -> dict[str, str]:
         "handler": _read(config, "handler_source", root),
         "dashboard_server": _read(config, "dashboard_server_source", root),
         "dashboard_app": _read(config, "dashboard_app_source", root),
+        "dashboard_inventory": _read(config, "dashboard_inventory_source", root),
     }
 
 

@@ -2457,6 +2457,7 @@
     "handler_source": "python/atp_orchestration/rollback_handler.py",
     "dashboard_server_source": "python/atp_dashboard/server.py",
     "dashboard_app_source": "python/atp_dashboard/assets/app.js",
+    "dashboard_inventory_source": "python/atp_dashboard/inventory.py",
     "cli_bin": "orch005_rollback_cli",
     "retention_port": {
       "trait": "RetainedDeployedVersionRegistry",
