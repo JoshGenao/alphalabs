@@ -3677,3 +3677,93 @@ def test_orch_005_rollback_is_inert_when_the_handler_is_not_composed(
             assert snapshot["rollback_available"] is False
         finally:
             browser.close()
+
+
+def test_orch_005_rollback_success_must_restore_the_confirmed_target(
+    rollback_dashboard,
+) -> None:
+    """Target binding: a 200 that names the right strategy and says
+    "rolled-back" but reports a DIFFERENT restored version is not the rollback
+    the operator confirmed. Rendering it as success would defeat the whole point
+    of a target-specific rollback, so it renders UNRESOLVED."""
+
+    url, v1, v2 = rollback_dashboard
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.goto(url, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 2", timeout=5_000
+            )
+            # The armed target is v1; the handler claims it restored v2.
+            page.route(
+                "**/api/v1/strategies/*/lifecycle*",
+                lambda route: route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body='{"strategy_id": "alpha-1", "lifecycle_state": "rolled-back",'
+                    ' "deployment_version_hash": "' + v2 + '"}',
+                ),
+            )
+            _confirm_rollback(page)
+            page.wait_for_function(
+                "document.getElementById('rollback-status').textContent.includes('UNRESOLVED')",
+                timeout=10_000,
+            )
+            status = page.locator("#rollback-status").inner_text()
+            assert page.eval_on_selector("#rollback-state", "e => e.dataset.state") == "error"
+            assert v2 in status and v1 in status
+            assert "confirmed rollback" not in status
+        finally:
+            browser.close()
+
+
+def test_orch_005_an_unknown_rollback_outcome_holds_every_control_inert(
+    rollback_dashboard,
+) -> None:
+    """Ambiguity is not failure: aborting the browser fetch does NOT cancel the
+    server's handler, so an irreversible rollback may still be completing. The
+    control must not re-arm on its own — it stays inert until a healthy
+    inventory summary re-reads the deployed version and resolves the outcome."""
+
+    url, _v1, _v2 = rollback_dashboard
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.goto(url, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 2", timeout=5_000
+            )
+            # Kill the request mid-flight: the outcome is genuinely unknown.
+            page.route("**/api/v1/strategies/*/lifecycle*", lambda route: route.abort())
+            _confirm_rollback(page)
+            page.wait_for_function(
+                "document.getElementById('rollback-status').textContent.includes('UNKNOWN')",
+                timeout=10_000,
+            )
+            held = page.locator("#rollback-status").inner_text()
+            assert "may still be completing" in held
+            # Inert: a further click cannot fire a second irreversible request.
+            posts: list[str] = []
+            page.on(
+                "request",
+                lambda req: posts.append(req.url) if req.method == "POST" else None,
+            )
+            _rollback_btn(page, "alpha-1").click(force=True)
+            assert posts == []
+
+            # The next healthy inventory tick resolves it and releases the hold.
+            page.unroute("**/api/v1/strategies/*/lifecycle*")
+            page.wait_for_function(
+                "document.getElementById('rollback-state').dataset.state === 'resting'",
+                timeout=10_000,
+            )
+            page.wait_for_function(
+                "document.querySelector('#inventory-rows"
+                ' tr[data-strategy="alpha-1"] .rollback__btn\').disabled === false',
+                timeout=10_000,
+            )
+        finally:
+            browser.close()

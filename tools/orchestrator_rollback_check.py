@@ -389,6 +389,19 @@ def check_dashboard_arm(config: dict, server_src: str, app_src: str) -> str:
         ),
         ("rb.disabled = true", "a strategy with no previous version presents an INERT control"),
         (
+            "restored === target",
+            "success is bound to the EXACT target the operator armed, not any restored hash",
+        ),
+        (
+            "rollbackAmbiguous = true",
+            "an unknown outcome holds controls inert (the server may still be completing an "
+            "irreversible rollback; aborting the fetch does not cancel it)",
+        ),
+        (
+            "const ROLLBACK_FETCH_TIMEOUT_MS = 35000",
+            "the client deadline must EXCEED the server's 30 s rollback subprocess budget",
+        ),
+        (
             'body.lifecycle_state === "rolled-back"',
             "fail-closed success: an unevidenced 2xx is never rendered as a rollback",
         ),

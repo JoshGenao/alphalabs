@@ -557,6 +557,14 @@
         summary.dataset.tone = "error";
       } else {
         rollbackAvailable = data.rollback_available === true;
+        // A healthy summary means the snapshot has been re-read, so the rows
+        // about to render carry the REAL deployed version — that resolves any
+        // ambiguous in-flight rollback and releases the control hold.
+        if (rollbackAmbiguous) {
+          rollbackAmbiguous = false;
+          rollbackInFlight = false;
+          rollbackStatus(ROLLBACK_RESTING, "resting");
+        }
         inventoryGen += 1;
         src.gen = inventoryGen;
         src.expected = n;
@@ -688,7 +696,12 @@
   // every control is inert. Two staged live-state mutations at once would leave
   // the operator unable to say which one a response belongs to.
   const ROLLBACK_ARM_WINDOW_MS = 5000;
-  const ROLLBACK_FETCH_TIMEOUT_MS = 15000;
+  // MUST exceed the server's rollback deadline (atp_orchestration's
+  // _DEFAULT_TIMEOUT_S = 30 s for the CLI subprocess). Aborting the browser
+  // fetch does NOT cancel the handler, so a client timeout shorter than the
+  // server's would report "outcome unknown" and re-arm the control while an
+  // IRREVERSIBLE rollback was still completing server-side.
+  const ROLLBACK_FETCH_TIMEOUT_MS = 35000;
   const ROLLBACK_RESTING = "rollback — none requested this session";
   // NFR-S2 parity is literal: the operator's confirm act rides in the SAME
   // place promote-live puts it — the `confirm` token on the contract route.
@@ -700,9 +713,14 @@
   let rollbackArmedId = null;
   let rollbackArmTimer = null;
   let rollbackInFlight = false;
+  // Set when a rollback request's outcome is UNKNOWN (timeout / transport
+  // failure). The server may still be completing an irreversible action, so
+  // every control stays inert until a healthy inventory summary re-reads the
+  // deployed version and resolves it. Never cleared by a retry.
+  let rollbackAmbiguous = false;
 
   // One shared gate for both live-state controls (see mutual exclusion above).
-  function controlsBusy() { return promoteInFlight || rollbackInFlight; }
+  function controlsBusy() { return promoteInFlight || rollbackInFlight || rollbackAmbiguous; }
 
   function rollbackStatus(text, tone) {
     const wrap = $("rollback-state"), cap = $("rollback-status");
@@ -775,12 +793,21 @@
         const named = body ? String(body.strategy_id) : "";
         const restored = body && body.deployment_version_hash
           ? String(body.deployment_version_hash) : "";
-        if (body && named === id && restored && body.lifecycle_state === "rolled-back") {
+        // The restored version must be EXACTLY the target the operator armed
+        // against. A response naming the right strategy but a different hash is
+        // not the rollback that was confirmed — rendering it as success would
+        // defeat the whole point of a target-specific rollback.
+        if (body && named === id && restored === target
+            && body.lifecycle_state === "rolled-back") {
           rollbackStatus("runtime confirmed rollback: " + named + " restored to " + restored +
             (body.was_live === true ? " (was LIVE — confirmed)" : ""), "live");
         } else if (body && named && named !== id) {
           rollbackStatus("runtime answered " + res.status + " for strategy_id " + named +
             " ≠ confirmed " + id + " — " + id + " NOT rolled back", "error");
+        } else if (body && named === id && restored && restored !== target) {
+          rollbackStatus("runtime answered " + res.status + " restoring " + restored +
+            " ≠ confirmed target " + target + " — " + id +
+            " rollback UNRESOLVED", "error");
         } else {
           rollbackStatus("runtime answered " + res.status +
             " without an evidenced rolled-back version — " + id +
@@ -794,7 +821,18 @@
           " not rolled back", "error");
       }
     } catch (error) {
-      rollbackStatus("FAILED: " + String(error) + " — rollback outcome unknown", "error");
+      // AMBIGUOUS: aborting the fetch does not cancel the server's handler, so
+      // the irreversible rollback may still be completing. Do NOT re-arm — hold
+      // every control inert until a fresh inventory summary re-reads the real
+      // deployed version from the snapshot and resolves what actually happened.
+      // (If the inventory feed is also down, the control stays inert — the
+      // fail-closed direction.)
+      rollbackAmbiguous = true;
+      rollbackStatus("FAILED: " + String(error) + " — rollback outcome UNKNOWN; the request " +
+        "may still be completing. Controls held until the inventory refresh resolves " +
+        "the deployed version.", "error");
+      btn.disabled = true;
+      return; // leaves rollbackInFlight true; cleared by the next healthy summary
     }
     rollbackInFlight = false;
     btn.disabled = false;
