@@ -68,14 +68,17 @@ contract does not declare would be fabrication at the transport layer.
 
 from __future__ import annotations
 
+import subprocess
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from .provider import DEFERRED
 
 __all__ = [
     "CHANGEOVER_SEQUENCE",
+    "CliHotSwapTriggerSource",
     "COOLDOWN_DAYS_DEFAULT",
     "DEMOTION_TIMEOUT_SECONDS_DEFAULT",
     "HOT_SWAP_CANDIDATE_OWNER",
@@ -87,6 +90,10 @@ __all__ = [
     "HotSwapStatusProvider",
     "HotSwapStatusSource",
     "HotSwapStatusUnavailable",
+    "HotSwapTriggerCliRunner",
+    "HotSwapTriggerOutputUnreadable",
+    "parse_trigger_cli_output",
+    "strict_trigger_bool",
 ]
 
 #: Owner of the automatic-trigger enabled-state (the SYS-49a trigger DECISION +
@@ -438,3 +445,209 @@ class HotSwapStatusProvider:
         else:
             cell.update(_deferred(owner))
         return cell
+
+
+# --------------------------------------------------------------------------- #
+# The concrete SRS-RESV-003 trigger-configuration source
+#
+# Lives here, beside the Protocol it implements, for the reason the earlier draft of it
+# found the hard way: the pane degrades on `HotSwapStatusUnavailable`, so a source that
+# raises a same-named class from another module sails straight past
+# `HotSwapStatusProvider`'s except-clause and 500s the whole snapshot route instead of
+# rendering the honest error state. Same placement as `CliHeartbeatSource`
+# (`.heartbeat`) and `RollbackSnapshotInventorySource` (`.inventory`): the dashboard owns
+# its sources and shells the operator binaries itself, and the dependency runs one way
+# (atp_orchestration imports this for the REST arm; nothing here imports it back).
+# --------------------------------------------------------------------------- #
+
+
+class HotSwapTriggerOutputUnreadable(HotSwapStatusUnavailable):
+    """The trigger CLI answered, but not in a shape this reader can trust.
+
+    A subclass so the pane's blanket `except HotSwapStatusUnavailable` still degrades
+    honestly, while the REST arm can tell an unparseable answer apart from an unreadable
+    file and name the right cause.
+    """
+
+
+#: Default location of the cargo-built operator binary, relative to the repo root
+#: (python/atp_dashboard/hotswap.py -> parents[2] == repo root). Build it with
+#: ``cargo build -p atp-orchestrator --bin resv003_hot_swap_trigger_cli``.
+_DEFAULT_BINARY = (
+    Path(__file__).resolve().parents[2] / "target" / "debug" / "resv003_hot_swap_trigger_cli"
+)
+
+#: Per-invocation subprocess budget (seconds): a wedged binary surfaces an explicit
+#: unavailable state, never an indefinite hang of the operator surface.
+_DEFAULT_TIMEOUT_S = 30.0
+
+
+class HotSwapTriggerCliRunner(Protocol):
+    """The subprocess surface this module depends on (injectable for tests)."""
+
+    def __call__(self, argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]: ...
+
+
+def _default_runner(argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+    """Run the trigger CLI with ``argv`` as a list (``shell=False``)."""
+
+    if not Path(argv[0]).exists():
+        raise FileNotFoundError(
+            f"hot-swap trigger binary not found at {argv[0]}; build it with "
+            "`cargo build -p atp-orchestrator --bin resv003_hot_swap_trigger_cli`"
+        )
+    return subprocess.run(argv, check=False, capture_output=True, text=True, timeout=timeout)
+
+
+def parse_trigger_cli_output(stdout: str) -> dict[str, str]:
+    """Parse the bin's deterministic ``key:value`` proof lines."""
+
+    values: dict[str, str] = {}
+    for line in stdout.splitlines():
+        key, sep, value = line.partition(":")
+        if sep:
+            values[key] = value
+    return values
+
+
+def strict_trigger_bool(values: dict[str, str], key: str) -> bool:
+    """Read a boolean proof line, refusing anything that is not literally ``true``/``false``.
+
+    A missing or misspelled key must not read as ``False``: every flag here answers "may an
+    automatic Hot-Swap fire", and the absent-means-off reading is precisely the false
+    all-clear this surface exists to avoid.
+    """
+
+    raw = values.get(key)
+    if raw == "true":
+        return True
+    if raw == "false":
+        return False
+    raise HotSwapTriggerOutputUnreadable(
+        f"resv003_hot_swap_trigger_cli emitted no readable {key!r} line "
+        f"(got {raw!r}); refusing to report a trigger configuration that cannot be evidenced"
+    )
+
+
+class CliHotSwapTriggerSource:
+    """A concrete ``atp_dashboard.hotswap.HotSwapStatusSource`` backed by the real binary.
+
+    Implements the protocol structurally (duck-typed, like every other provider source here),
+    so the module that declares it never has to name an implementation.
+
+    Only :meth:`trigger_config` resolves. :meth:`live_state` and :meth:`promotion_candidate`
+    return ``None`` — no ``SRS-RESV-002``/``004``/``005``/``006`` producer persists a
+    queryable fact yet, and inventing one would be exactly the fabrication the pane's
+    deferred cells exist to prevent. The three legs fail INDEPENDENTLY, as the protocol
+    requires: an unreadable trigger configuration must not blank an otherwise readable live
+    state, so each raises on its own rather than through a shared cached read.
+    """
+
+    def __init__(
+        self,
+        state_path: str | Path,
+        *,
+        binary: str | Path | None = None,
+        runner: HotSwapTriggerCliRunner | None = None,
+        timeout: float | None = None,
+        log_path: str | Path | None = None,
+    ) -> None:
+        self._state_path = str(state_path)
+        self._binary = Path(binary) if binary is not None else _DEFAULT_BINARY
+        self._runner = runner if runner is not None else _default_runner
+        self._timeout = float(timeout) if timeout is not None else _DEFAULT_TIMEOUT_S
+        self._log_path = str(log_path) if log_path is not None else None
+
+    # ------------------------------------------------------------------ #
+    # HotSwapStatusSource
+    # ------------------------------------------------------------------ #
+
+    def trigger_config(self) -> dict[str, object] | None:
+        """The persisted automatic-trigger enabled-state (``SRS-RESV-003``).
+
+        ``None`` when nothing has ever been configured (no file) — the pane may then state
+        the all-disabled default truthfully. Raises :class:`HotSwapStatusUnavailable` when
+        the configuration exists but cannot be read.
+        """
+
+        completed = self._invoke(["config", "--state", self._state_path])
+        if completed.returncode != 0:
+            raise HotSwapStatusUnavailable(
+                f"hot-swap trigger configuration unreadable: {completed.stderr.strip()}"
+            )
+        values = parse_trigger_cli_output(completed.stdout)
+        source = values.get("config-source")
+        if source == "default":
+            # Genuinely never configured. `None` is the protocol's "no fact yet", which the
+            # pane renders as the honest default rather than as an operator choice.
+            return None
+        if source != "persisted":
+            raise HotSwapStatusUnavailable(
+                f"hot-swap trigger configuration reported an unknown source {source!r}"
+            )
+        return self._config_payload(values)
+
+    def live_state(self) -> dict[str, object] | None:
+        """No producer persists a queryable live-swap state (owner ``SRS-RESV-004``/``005``/
+        ``006``), so there is no fact to report and none is invented."""
+
+        return None
+
+    def promotion_candidate(self) -> dict[str, object] | None:
+        """No ranking engine names a candidate yet (owner ``SRS-RESV-002``)."""
+
+        return None
+
+    # ------------------------------------------------------------------ #
+    # Internals
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _config_payload(values: dict[str, str]) -> dict[str, object]:
+        """The shape ``HotSwapStatusProvider`` reads.
+
+        The per-trigger detail is NESTED under each ``kind`` because that is how the pane
+        looks it up (``triggers[kind]["enabled"]`` — ``atp_dashboard.hotswap``'s
+        ``auto_triggers_live`` comprehension). A flat ``<kind>_enabled`` key parses fine and
+        resolves nothing: every chip silently keeps rendering its deferred placeholder while
+        the aggregate above it goes live, which reads as "configured, but no trigger is" —
+        worse than an honest deferral because it looks resolved.
+        """
+
+        drawdown_enabled = strict_trigger_bool(values, "drawdown-demotion-enabled")
+        drawdown: dict[str, object] = {"enabled": drawdown_enabled}
+        if drawdown_enabled:
+            raw = values.get("drawdown-demotion-threshold-bps")
+            if raw is None or not raw.isdigit():
+                raise HotSwapStatusUnavailable(
+                    "hot-swap drawdown trigger reports enabled with no readable threshold "
+                    f"(got {raw!r})"
+                )
+            drawdown["threshold_bps"] = int(raw)
+        return {
+            "any_enabled": strict_trigger_bool(values, "any-automatic-enabled"),
+            "manual_promotion_available": strict_trigger_bool(values, "manual-promotion-available"),
+            "default_disabled": strict_trigger_bool(values, "default-disabled"),
+            "drawdown_demotion": drawdown,
+            "top_ranked_promotion": {
+                "enabled": strict_trigger_bool(values, "top-ranked-promotion-enabled")
+            },
+            "highest_momentum_promotion": {
+                "enabled": strict_trigger_bool(values, "highest-momentum-promotion-enabled")
+            },
+        }
+
+    def _invoke(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        argv = [str(self._binary), *args]
+        try:
+            return self._runner(argv, timeout=self._timeout)
+        except subprocess.TimeoutExpired as expired:
+            raise HotSwapStatusUnavailable(
+                f"resv003_hot_swap_trigger_cli timed out after {self._timeout}s"
+            ) from expired
+        except OSError as launch_error:
+            raise HotSwapStatusUnavailable(
+                "resv003_hot_swap_trigger_cli could not be launched (is it built? "
+                "`cargo build -p atp-orchestrator --bin resv003_hot_swap_trigger_cli`): "
+                f"{launch_error}"
+            ) from launch_error

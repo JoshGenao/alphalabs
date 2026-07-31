@@ -36,7 +36,7 @@ from .account import AccountStatusProvider
 from .alerts import CriticalAlertsProvider
 from .backtests import BacktestHistoryProvider, StoreCliBacktestHistorySource
 from .heartbeat import CliHeartbeatSource, HeartbeatFreshnessProvider
-from .hotswap import HotSwapStatusProvider
+from .hotswap import CliHotSwapTriggerSource, HotSwapStatusProvider
 from .inventory import RollbackSnapshotInventorySource, StrategyInventoryProvider
 from .killswitch import DurableKillSwitchStatusSource, KillSwitchStatusProvider
 from .navigation import PrimaryNavigationProvider
@@ -391,14 +391,27 @@ def mount_default_dashboard(
         if kill_switch_state is not None
         else None
     )
-    # The UI-5 Hot-Swap status provider is a pure builder, ALWAYS composed (the
-    # production entrypoint serves /dashboard/api/hot-swap) with NO source: no
-    # SRS-RESV-002..006 producer persists a queryable Hot-Swap fact yet, so
-    # every live cell (current live strategy, demotion-pending, cool-down,
-    # per-trigger enabled-state, promotion candidate) renders as an honest
-    # deferred placeholder. The HotSwapStatusSource protocol is the flip seam:
-    # when those producers land, a concrete source is passed here and the cells
-    # swap in place. An unconfigured dashboard must never fabricate a swap state.
+    # The UI-5 Hot-Swap status provider is ALWAYS composed (the production
+    # entrypoint serves /dashboard/api/hot-swap), but its SOURCE is opt-in:
+    # ATP_HOT_SWAP_TRIGGER_STATE names the durable SRS-RESV-003 trigger
+    # configuration that resv003_hot_swap_trigger_cli maintains, and the CLI
+    # stays the single format owner. Unset, the provider carries NO source and
+    # every live cell renders its honest deferred placeholder — an unconfigured
+    # dashboard must never fabricate a swap state.
+    #
+    # The knob is named for the TRIGGER leg specifically because that is the
+    # only one this source can answer. The pane's other cells (current live
+    # strategy, demotion-pending, cool-down, promotion candidate) stay deferred
+    # to SRS-RESV-002/004/005/006, which persist no queryable fact yet; the
+    # source returns None for them rather than inventing one, and the three
+    # protocol legs fail independently so an unreadable trigger configuration
+    # cannot blank a live state that a later producer does resolve.
+    hot_swap_trigger_state = env.get("ATP_HOT_SWAP_TRIGGER_STATE") or None
+    hot_swap_source = (
+        CliHotSwapTriggerSource(hot_swap_trigger_state)
+        if hot_swap_trigger_state is not None
+        else None
+    )
     return mount_dashboard(
         runtime,
         provider,
@@ -410,7 +423,7 @@ def mount_default_dashboard(
         heartbeat=heartbeat,
         alerts=CriticalAlertsProvider(),
         kill_switch=kill_switch,
-        hot_swap=HotSwapStatusProvider(),
+        hot_swap=HotSwapStatusProvider(hot_swap_source),
     )
 
 

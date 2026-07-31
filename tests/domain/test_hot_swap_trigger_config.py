@@ -378,3 +378,105 @@ def test_an_unlogged_manual_trigger_reports_no_ordinal(tmp_path: Path) -> None:
     result = _cli("manual", "--demoting", "alpha", "--candidate", "beta")
     assert result.returncode != 0, result.stdout
     assert "trigger-record-ordinal" not in result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# The OPERATOR SURFACES over the durable configuration (dashboard pane + REST)
+#
+# Driven through the REAL binary and the REAL provider — no fakes. The safety claim is
+# that neither surface can tell an operator "no automatic Hot-Swap can fire" unless that
+# is actually known, and that neither reports a swap that did not happen.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_pane_never_renders_an_unreadable_config_as_disabled(tmp_path: Path) -> None:
+    from atp_dashboard.hotswap import CliHotSwapTriggerSource, HotSwapStatusProvider
+
+    binary = _trigger_cli()
+    state = tmp_path / "triggers.json"
+    assert _cli("config", "--state", str(state), "--set-drawdown-threshold", "250").returncode == 0
+
+    def snapshot() -> dict:
+        return HotSwapStatusProvider(
+            CliHotSwapTriggerSource(state, binary=binary)
+        ).hot_swap_snapshot()
+
+    # Configured and readable: the RESV-003 cells carry the operator's real choices.
+    live = snapshot()
+    assert live["ok"] is True, live
+    assert live["auto_triggers_enabled"]["value"] is True
+    chips = {chip["kind"]: chip["enabled"]["value"] for chip in live["auto_triggers_live"]}
+    assert chips["drawdown_demotion"] is True, live
+
+    # Now the file is torn. The pane must say it does not know — a confident "disabled"
+    # here is a false all-clear about whether an automatic demotion can fire, which is the
+    # exact question an operator opens this pane to answer.
+    state.write_text('{"magic":"ATP-HOT-SWAP-TRIGGER-CONFIG","schema_version":1,"draw')
+    degraded = snapshot()
+    assert degraded["ok"] is False, degraded
+    assert degraded["auto_triggers_enabled"]["value"] is None, degraded
+    for chip in degraded["auto_triggers_live"]:
+        assert chip["enabled"]["value"] is None, chip
+    assert any("unreadable" in str(reason) for reason in degraded.get("errors", [])), degraded
+
+
+def test_resolving_the_trigger_leg_never_fabricates_the_other_owners_cells(
+    tmp_path: Path,
+) -> None:
+    # RESV-004/005/006 and RESV-002 persist no queryable fact. A source that answered for
+    # them would put invented swap state on the pane.
+    from atp_dashboard.hotswap import CliHotSwapTriggerSource, HotSwapStatusProvider
+
+    state = tmp_path / "triggers.json"
+    _cli("config", "--state", str(state), "--set-top-ranked", "on")
+    snapshot = HotSwapStatusProvider(
+        CliHotSwapTriggerSource(state, binary=_trigger_cli())
+    ).hot_swap_snapshot()
+
+    assert snapshot["auto_triggers_enabled"]["value"] is True
+    assert snapshot["current_live_strategy_id"]["value"] is None
+    assert snapshot["current_live_strategy_id"]["data_source"] == "deferred:SRS-RESV-005"
+    assert snapshot["demotion_pending"]["data_source"] == "deferred:SRS-RESV-004"
+    assert snapshot["cooldown"]["in_effect"]["data_source"] == "deferred:SRS-RESV-006"
+    assert snapshot["promotion_candidate"]["data_source"] == "deferred:SRS-RESV-002"
+
+
+def test_the_rest_manual_trigger_never_reports_a_swap_it_did_not_perform(
+    tmp_path: Path,
+) -> None:
+    # RESV-003 decides and logs; RESV-004/005 execute, and are unbuilt. A 200 here means a
+    # trigger was RECORDED, and the payload has to say so in itself — otherwise an operator
+    # (or an automation) reads a logged proposal as a completed changeover.
+    from atp_orchestration import mount_hot_swap_triggers
+    from atp_runtime import OperatorInterfaceRuntime
+    from atp_runtime.registry import OperationKey, Request, Surface
+
+    runtime = OperatorInterfaceRuntime()
+    log = tmp_path / "triggers.jsonl"
+    mount_hot_swap_triggers(
+        runtime,
+        state_path=tmp_path / "triggers.json",
+        log_path=log,
+        binary=_trigger_cli(),
+    )
+    key = OperationKey(Surface.REST, "POST /api/v1/hot-swap/triggers/manual")
+    handler = runtime.registry.resolve(key, deferred=None)  # type: ignore[arg-type]
+    result = handler.handle(
+        Request(
+            surface=Surface.REST,
+            operation=key,
+            method="POST",
+            body={"demoting_strategy_id": "alpha", "candidate_strategy_id": "beta"},
+            confirmed=True,
+        )
+    )
+
+    assert result.status_code == 200, result.body
+    assert result.body["logged"] is True
+    assert result.body["execution"]["state"] == "DEFERRED"
+    assert result.body["execution"]["owner"] == "SRS-RESV-004"
+    # The reported id addresses the record that was actually written.
+    ordinal = int(result.body["trigger_id"])
+    line = log.read_text().splitlines()[ordinal - 1]
+    assert '"kind":"MANUAL_PROMOTION"' in line, line
+    assert '"candidate_strategy_id":"beta"' in line, line

@@ -254,7 +254,10 @@ def test_put_disables_a_trigger(mounted: tuple[str, int], fake_cli: _FakeCli) ->
     fake_cli.queue(stdout=_config_stdout())
     fake_cli.queue(stdout=_config_stdout())
     status, body = _request(
-        mounted, "PUT", "/api/v1/hot-swap/triggers?confirm=yes", {"top_ranked_promotion_enabled": False}
+        mounted,
+        "PUT",
+        "/api/v1/hot-swap/triggers?confirm=yes",
+        {"top_ranked_promotion_enabled": False},
     )
     assert status == 200, body
     assert ["--set-top-ranked", "off"] == fake_cli.calls[0][-2:]
@@ -283,7 +286,10 @@ def test_put_refuses_a_coerced_boolean(mounted: tuple[str, int]) -> None:
     # "true" is a string. Arming an automatic Hot-Swap off a coercion is exactly the
     # ambiguity the durable format refuses, and the wire must refuse it too.
     status, body = _request(
-        mounted, "PUT", "/api/v1/hot-swap/triggers?confirm=yes", {"top_ranked_promotion_enabled": "true"}
+        mounted,
+        "PUT",
+        "/api/v1/hot-swap/triggers?confirm=yes",
+        {"top_ranked_promotion_enabled": "true"},
     )
     assert status == 400, body
     assert body.get("error", {}).get("type") == "NON_BOOLEAN_TRIGGER_FLAG", body
@@ -324,7 +330,10 @@ def test_a_refused_write_is_not_reported_as_applied(
 ) -> None:
     fake_cli.queue(returncode=1, stderr="trigger configuration ... is unreadable")
     status, body = _request(
-        mounted, "PUT", "/api/v1/hot-swap/triggers?confirm=yes", {"top_ranked_promotion_enabled": True}
+        mounted,
+        "PUT",
+        "/api/v1/hot-swap/triggers?confirm=yes",
+        {"top_ranked_promotion_enabled": True},
     )
     assert status == 400, body
     assert body.get("error", {}).get("type") == "TRIGGER_CONFIG_REFUSED", body
@@ -419,3 +428,65 @@ def test_manual_trigger_requires_both_strategies(mounted: tuple[str, int], missi
     )
     assert status == 400, body
     assert body.get("error", {}).get("type") == "MISSING_STRATEGY_ID", body
+
+
+# --------------------------------------------------------------------------- #
+# The pane cell-swap: source payload shape vs what UI-5 actually reads
+# --------------------------------------------------------------------------- #
+
+
+def test_the_source_payload_resolves_the_panes_per_trigger_chips(fake_cli: _FakeCli) -> None:
+    """The shape contract between this source and ``atp_dashboard.hotswap``.
+
+    The pane reads per-trigger detail as ``triggers[kind]["enabled"]``. A flat
+    ``<kind>_enabled`` payload parses without error and resolves nothing: the aggregate
+    chip goes live while every per-trigger chip keeps rendering its deferred placeholder,
+    which reads as "configured, but no trigger is" — worse than an honest deferral because
+    it looks resolved. That mismatch is invisible to both modules' own tests, so it is
+    pinned here, across the seam.
+    """
+
+    from atp_dashboard.hotswap import CliHotSwapTriggerSource, HotSwapStatusProvider
+
+    fake_cli.queue(stdout=_config_stdout(drawdown=True, threshold=250, top_ranked=True))
+    source = CliHotSwapTriggerSource("/tmp/triggers.json", binary="/tmp/fake", runner=fake_cli)
+    snapshot = HotSwapStatusProvider(source).hot_swap_snapshot()
+
+    assert snapshot["ok"] is True
+    assert snapshot["auto_triggers_enabled"]["value"] is True
+    chips = {chip["kind"]: chip["enabled"] for chip in snapshot["auto_triggers_live"]}
+    assert chips["drawdown_demotion"]["value"] is True
+    assert chips["top_ranked_promotion"]["value"] is True
+    assert chips["highest_momentum_promotion"]["value"] is False
+    # Every RESV-003 chip is now sourced, none left deferred.
+    for kind, cell in chips.items():
+        assert cell["data_source"] != "deferred:SRS-RESV-003", (kind, cell)
+
+
+def test_the_other_owners_cells_stay_deferred(fake_cli: _FakeCli) -> None:
+    # Resolving the trigger leg must not fabricate the legs RESV-002/004/005/006 own. A
+    # source that answered those too would put invented facts on the pane.
+    from atp_dashboard.hotswap import CliHotSwapTriggerSource, HotSwapStatusProvider
+
+    fake_cli.queue(stdout=_config_stdout(drawdown=True, threshold=250))
+    source = CliHotSwapTriggerSource("/tmp/triggers.json", binary="/tmp/fake", runner=fake_cli)
+    snapshot = HotSwapStatusProvider(source).hot_swap_snapshot()
+
+    assert snapshot["current_live_strategy_id"]["data_source"] == "deferred:SRS-RESV-005"
+    assert snapshot["demotion_pending"]["data_source"] == "deferred:SRS-RESV-004"
+    assert snapshot["cooldown"]["in_effect"]["data_source"] == "deferred:SRS-RESV-006"
+
+
+def test_an_unreadable_config_does_not_blank_the_pane_wholesale(fake_cli: _FakeCli) -> None:
+    # The protocol requires the three legs to fail INDEPENDENTLY. An unreadable trigger
+    # configuration must surface as an explicit error on the snapshot, not as a clean
+    # all-deferred pane that looks like "nothing configured yet".
+    from atp_dashboard.hotswap import CliHotSwapTriggerSource, HotSwapStatusProvider
+
+    fake_cli.queue(returncode=1, stderr="trigger configuration is unreadable (torn line)")
+    source = CliHotSwapTriggerSource("/tmp/triggers.json", binary="/tmp/fake", runner=fake_cli)
+    snapshot = HotSwapStatusProvider(source).hot_swap_snapshot()
+
+    assert snapshot["ok"] is False, snapshot
+    assert any("unreadable" in str(error) for error in snapshot.get("errors", [])), snapshot
+    assert snapshot["auto_triggers_enabled"]["value"] is None
