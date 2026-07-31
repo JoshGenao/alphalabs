@@ -19,6 +19,7 @@ import http.client
 import json
 import subprocess
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from atp_orchestration import mount_hot_swap_triggers
@@ -824,3 +825,30 @@ def test_a_wedged_binary_is_reported_as_unavailable_not_as_a_corrupt_config(
     status, body = _request(mounted, "GET", "/api/v1/hot-swap/triggers")
     assert status == 504, body
     assert body.get("error", {}).get("type") == "TRIGGER_CLI_UNAVAILABLE", body
+
+
+def test_contradictory_proof_lines_are_refused_not_resolved(
+    mounted: tuple[str, int], fake_cli: _FakeCli
+) -> None:
+    # A version-skewed or wrong binary emitting two different values for the same key has
+    # not said which is true. Last-one-wins would let the handler accept whichever came
+    # second as durable evidence that a trigger fired.
+    fake_cli.queue(stdout=_MANUAL_STDOUT + "trigger-record-ordinal:99\n")
+    status, body = _request(
+        mounted, "POST", "/api/v1/hot-swap/triggers/manual?confirm=yes", _MANUAL_BODY
+    )
+    assert status >= 500, body
+    assert "trigger_id" not in body
+
+
+def test_the_operator_binary_path_is_configurable(monkeypatch) -> None:
+    # target/debug is a DEVELOPMENT layout. Without an override the surface would look
+    # mounted and then fail on first use in a deployed image.
+    from atp_hotswap import BINARY_ENV_KNOB, default_binary
+
+    assert default_binary({}).name == "resv003_hot_swap_trigger_cli"
+    assert default_binary({BINARY_ENV_KNOB: "/opt/atp/bin/triggers"}) == Path(
+        "/opt/atp/bin/triggers"
+    )
+    monkeypatch.setenv(BINARY_ENV_KNOB, "/opt/atp/bin/from-env")
+    assert default_binary() == Path("/opt/atp/bin/from-env")

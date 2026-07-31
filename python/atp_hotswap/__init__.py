@@ -28,6 +28,7 @@ single implementation in Rust.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 
@@ -37,16 +38,37 @@ __all__ = [
     "HotSwapTriggerCliRunner",
     "HotSwapTriggerCliUnavailable",
     "HotSwapTriggerOutputUnreadable",
+    "BINARY_ENV_KNOB",
+    "default_binary",
     "parse_trigger_cli_output",
     "strict_trigger_bool",
 ]
 
-#: Default location of the cargo-built operator binary, relative to the repo root
+#: Environment override for the operator binary's location.
+#:
+#: The fallback below is a DEVELOPMENT path — `cargo build` output inside the checkout — and
+#: a deployed image has no reason to keep that layout. Without a knob the surface would look
+#: mounted and then fail on first use in production, so the path is configurable and the
+#: fallback is only the convenience default for a working tree.
+BINARY_ENV_KNOB = "ATP_HOT_SWAP_TRIGGER_BINARY"
+
+#: Fallback location of the cargo-built operator binary, relative to the repo root
 #: (python/atp_hotswap/__init__.py -> parents[2] == repo root). Build it with
 #: ``cargo build -p atp-orchestrator --bin resv003_hot_swap_trigger_cli``.
 _DEFAULT_BINARY = (
     Path(__file__).resolve().parents[2] / "target" / "debug" / "resv003_hot_swap_trigger_cli"
 )
+
+
+def default_binary(env: "Mapping[str, str] | None" = None) -> Path:
+    """The operator binary's path: the env override when set, else the dev-tree fallback."""
+
+    import os
+
+    source = os.environ if env is None else env
+    override = source.get(BINARY_ENV_KNOB)
+    return Path(override) if override else _DEFAULT_BINARY
+
 
 #: Per-invocation subprocess budget (seconds): a wedged binary surfaces an explicit
 #: unavailable state, never an indefinite hang of the operator surface.
@@ -115,8 +137,20 @@ def parse_trigger_cli_output(stdout: str) -> dict[str, str]:
     values: dict[str, str] = {}
     for line in stdout.splitlines():
         key, sep, value = line.partition(":")
-        if sep:
-            values[key] = value
+        if not sep:
+            continue
+        if key in values and values[key] != value:
+            # Ambiguity is refused, not resolved — the rule json_scan already applies to a
+            # persisted record, applied to the proof stream that stands in for one. A
+            # version-skewed or wrong binary emitting two different `manual-logged` or
+            # `trigger-record-ordinal` lines has not said which is true, and last-one-wins
+            # would let the handler accept whichever happened to come second as durable
+            # evidence.
+            raise HotSwapTriggerOutputUnreadable(
+                f"resv003_hot_swap_trigger_cli emitted contradictory {key!r} lines "
+                f"({values[key]!r} then {value!r}); the proof stream is ambiguous"
+            )
+        values[key] = value
     return values
 
 
@@ -163,7 +197,7 @@ class CliHotSwapTriggerSource:
         log_path: str | Path | None = None,
     ) -> None:
         self._state_path = str(state_path)
-        self._binary = Path(binary) if binary is not None else _DEFAULT_BINARY
+        self._binary = Path(binary) if binary is not None else default_binary()
         self._runner = runner if runner is not None else _default_runner
         self._timeout = float(timeout) if timeout is not None else _DEFAULT_TIMEOUT_S
         self._log_path = str(log_path) if log_path is not None else None

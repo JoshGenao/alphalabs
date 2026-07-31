@@ -1010,3 +1010,25 @@ def test_a_wedged_binary_stays_distinguishable_from_a_corrupt_configuration(
     snapshot = HotSwapStatusProvider(source).hot_swap_snapshot()
     assert snapshot["ok"] is False, snapshot
     assert snapshot["auto_triggers_enabled"]["value"] is None, snapshot
+
+
+def test_contradictory_proof_lines_never_evidence_a_fired_trigger(tmp_path: Path) -> None:
+    # Ambiguity is refused, not resolved — the rule json_scan already applies to a persisted
+    # record, applied to the proof stream that stands in for one when REST decides whether a
+    # trigger fired.
+    from atp_hotswap import HotSwapTriggerOutputUnreadable, parse_trigger_cli_output
+
+    with pytest.raises(HotSwapTriggerOutputUnreadable):
+        parse_trigger_cli_output("manual-logged:true\nmanual-logged:false\n")
+    with pytest.raises(HotSwapTriggerOutputUnreadable):
+        parse_trigger_cli_output("trigger-record-ordinal:1\ntrigger-record-ordinal:99\n")
+
+    # A repeated line with the SAME value is not a contradiction.
+    assert parse_trigger_cli_output("manual-logged:true\nmanual-logged:true\n") == {
+        "manual-logged": "true"
+    }
+    # And the real binary's output still parses cleanly, so the rule is not vacuous.
+    log = tmp_path / "t.jsonl"
+    fired = _cli("manual", "--demoting", "alpha", "--candidate", "beta", "--log", str(log))
+    assert fired.returncode == 0, fired.stderr
+    assert parse_trigger_cli_output(fired.stdout)["manual-logged"] == "true"
