@@ -1159,7 +1159,7 @@
       "Step 3: Verify acceptance criteria: Manual promotion, drawdown-triggered demotion, top-ranked promotion, and highest-momentum promotion are configurable; automatic triggers default to disabled; all swap triggers are logged.",
       "Step 4: Record objective evidence from test, demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {
