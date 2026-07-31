@@ -437,3 +437,46 @@ def test_a_composer_cannot_claim_a_rollback_capability_the_runtime_lacks(
     summary = provider.strategy_state_events()[0]
     assert summary["event"] == "inventory-summary"
     assert summary["rollback_available"] is False
+
+
+def test_dashboard_composition_never_raises_on_an_already_bound_lifecycle_route(
+    tmp_path: Path,
+) -> None:
+    """The lifecycle route is SHARED and the registry rejects a duplicate
+    binding. If a composer already registered a lifecycle handler (SRS-ORCH-004's
+    start/stop/restart, when it lands), mounting the dashboard must not raise and
+    take the whole surface down at startup — it must degrade honestly: skip the
+    rollback mount, report the capability as false, and render the control inert
+    rather than offering an action the runtime would refuse.
+
+    Per-action co-registration of BOTH handlers needs a multiplexer on the frozen
+    SRS-API-001 surface; that is deferred to SRS-ORCH-004 / SRS-API-001 (see
+    rollback_contract.deferred[]). This test pins the containment.
+    """
+
+    cargo = _cargo()
+    if cargo is None:
+        pytest.skip("cargo not on PATH")
+    binary = _build_bin(cargo)
+    state = tmp_path / "shared.state"
+    _seed(binary, state)
+
+    from atp_dashboard import mount_default_dashboard
+    from atp_orchestration import REST_LIFECYCLE_OPERATION
+    from atp_runtime import OperatorInterfaceRuntime
+
+    class Ui004LifecycleHandler:
+        def handle(self, request):  # noqa: ANN001, ANN201 - structural handler
+            raise AssertionError("not reached")
+
+    runtime = OperatorInterfaceRuntime()
+    runtime.registry.register(REST_LIFECYCLE_OPERATION, Ui004LifecycleHandler())
+
+    # Must NOT raise, even though ATP_DEPLOYMENT_STATE asks for the rollback arm.
+    mount_default_dashboard(runtime, {"ATP_DEPLOYMENT_STATE": str(state)})
+
+    # The inventory still serves (the READ arm is unaffected)...
+    status, body = runtime.dispatch_rest("GET", "/dashboard/api/strategies", b"")
+    assert status == 200, body
+    # ...but the control is honestly inert: the bound handler does not serve rollback.
+    assert body["rollback_available"] is False

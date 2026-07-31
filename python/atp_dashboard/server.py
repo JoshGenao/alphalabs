@@ -29,7 +29,7 @@ from types import FrameType
 
 from atp_logging import LogClass
 from atp_logging.persistence import JsonlLogStore
-from atp_orchestration import mount_rollback, rollback_is_served
+from atp_orchestration import REST_LIFECYCLE_OPERATION, mount_rollback, rollback_is_served
 from atp_runtime import OperatorInterfaceRuntime
 
 from .account import AccountStatusProvider
@@ -349,7 +349,20 @@ def mount_default_dashboard(
         # Unset ATP_DEPLOYMENT_STATE composes NEITHER arm: no inventory route and
         # no rollback handler, so the operation keeps its honest 501 rather than
         # a control that posts into a snapshot that does not exist.
-        mount_rollback(runtime, state_path=deployment_state)
+        #
+        # DEFENSIVE: the lifecycle route is SHARED and the registry rejects a
+        # duplicate binding, so a composer that already registered a lifecycle
+        # handler (SRS-ORCH-004's start/stop/restart, when it lands) would make
+        # this raise and take the whole dashboard down at startup. Mounting the
+        # dashboard must never do that. Skip instead — the capability probe then
+        # reports the truth (that handler does not serve rollback), so the
+        # control renders inert and no operator is offered an action the runtime
+        # will refuse. Co-registering BOTH on the shared route needs a
+        # per-action multiplexer on the frozen SRS-API-001 surface; that belongs
+        # to SRS-ORCH-004 / SRS-API-001 and is recorded in
+        # rollback_contract.deferred[].
+        if not runtime.registry.is_registered(REST_LIFECYCLE_OPERATION):
+            mount_rollback(runtime, state_path=deployment_state)
     # The SRS-UI-003 account + Reservoir + UI-1 alerts providers are pure builders
     # (no env, no subprocess), so they are ALWAYS composed here — the production
     # entrypoint actually serves /dashboard/api/{account,reservoir,alerts} and

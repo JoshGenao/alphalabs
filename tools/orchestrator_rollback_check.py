@@ -350,12 +350,17 @@ def check_dashboard_arm(config: dict, server_src: str, app_src: str) -> str:
             "the production dashboard composes the ORCH-005 handler on its own runtime",
         ),
         (
-            "from atp_orchestration import mount_rollback, rollback_is_served",
+            "from atp_orchestration import REST_LIFECYCLE_OPERATION, mount_rollback, rollback_is_served",
             "...and imports both from the owning package rather than reimplementing them",
         ),
         (
             "inventory.bind_rollback_probe(",
             "EVERY composition reports its real rollback capability, not just the default one",
+        ),
+        (
+            "if not runtime.registry.is_registered(REST_LIFECYCLE_OPERATION):",
+            "mounting the dashboard never raises on a already-composed lifecycle route; it "
+            "skips and lets the capability probe report the truth",
         ),
         (
             "rollback_is_served(runtime)",
