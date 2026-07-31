@@ -250,6 +250,15 @@ def check_handler_surface(config: dict, handler_src: str) -> str:
             'OperationKey(\n    Surface.REST, "POST /api/v1/strategies/{strategy_id}/lifecycle"\n)',
             "the REST lifecycle operation the rollback action rides on",
         ),
+        (
+            "serves_rollback = True",
+            "the ACTION-level capability marker a consumer surface probes (registration on "
+            "the lifecycle route is shared with SRS-ORCH-004 and proves nothing about rollback)",
+        ),
+        (
+            'getattr(handler, "serves_rollback", False) is True',
+            "the capability probe fails closed: an unmarked or non-True handler is not one",
+        ),
         ("if not request.confirmed:", "defense-in-depth confirmation re-check"),
         (
             "operator confirmed rollback of {strategy_id} via {request.surface.value}",
@@ -292,7 +301,7 @@ def check_dashboard_arm(config: dict, server_src: str, app_src: str) -> str:
             "the production dashboard composes the ORCH-005 handler on its own runtime",
         ),
         (
-            "from atp_orchestration import REST_LIFECYCLE_OPERATION, mount_rollback",
+            "from atp_orchestration import mount_rollback, rollback_is_served",
             "...and imports both from the owning package rather than reimplementing them",
         ),
         (
@@ -300,8 +309,9 @@ def check_dashboard_arm(config: dict, server_src: str, app_src: str) -> str:
             "EVERY composition reports its real rollback capability, not just the default one",
         ),
         (
-            "runtime.registry.is_registered(REST_LIFECYCLE_OPERATION)",
-            "the capability is read from the live registry, so composition order cannot fake it",
+            "rollback_is_served(runtime)",
+            "the capability is the rollback ACTION, not registration on the SHARED lifecycle "
+            "route that SRS-ORCH-004's start/stop/restart also binds",
         ),
     ):
         if token not in server_src:

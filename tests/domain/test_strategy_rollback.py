@@ -316,3 +316,76 @@ def test_production_dashboard_composition_serves_the_rollback_surface(tmp_path: 
     )
     assert status == 501
     assert body["error"]["detail"]["owner"] == "SRS-ORCH-004"
+
+
+def test_rollback_capability_is_action_level_not_route_level(tmp_path: Path) -> None:
+    """The REST lifecycle route is SHARED (start/stop/restart/rollback). A
+    surface that treats mere registration on it as "rollback is available"
+    would enable an operator's rollback control against a runtime whose
+    lifecycle handler does not serve rollback at all — e.g. SRS-ORCH-004's
+    start/stop/restart wiring when it lands. The capability must therefore be
+    ACTION-level and fail closed.
+    """
+
+    from atp_dashboard import mount_default_dashboard
+    from atp_orchestration import REST_LIFECYCLE_OPERATION, rollback_is_served
+    from atp_runtime import OperatorInterfaceRuntime
+
+    # (1) Nothing registered at all -> not served.
+    bare = OperatorInterfaceRuntime()
+    assert rollback_is_served(bare) is False
+
+    # (2) A NON-rollback lifecycle handler registered on the very same route ->
+    # still not served. This is the case route-level registration gets wrong.
+    class Ui004LifecycleHandler:
+        """Stand-in for a future SRS-ORCH-004 start/stop/restart handler: a real
+        handler on the shared route that does not serve the rollback action."""
+
+        def handle(self, request):  # noqa: ANN001, ANN201 - structural handler
+            raise AssertionError("not reached")
+
+    other = OperatorInterfaceRuntime()
+    other.registry.register(REST_LIFECYCLE_OPERATION, Ui004LifecycleHandler())
+    assert other.registry.is_registered(REST_LIFECYCLE_OPERATION) is True
+    assert rollback_is_served(other) is False, (
+        "route registration must not be mistaken for rollback support"
+    )
+
+    # ...and a dashboard mounted over that runtime reports the capability as
+    # false, so its control renders inert. (mount_dashboard, not the default
+    # composition: the registry rejects a duplicate binding, so a runtime that
+    # already has a foreign lifecycle handler cannot also mount_rollback — the
+    # half-composed shape is exactly this one.)
+    inventory_state = tmp_path / "other.state"
+    cargo = _cargo()
+    if cargo is None:
+        pytest.skip("cargo not on PATH")
+    binary = _build_bin(cargo)
+    _seed(binary, inventory_state)
+
+    from atp_dashboard import (
+        ReadinessBackedProvider,
+        RollbackSnapshotInventorySource,
+        StrategyInventoryProvider,
+        mount_dashboard,
+    )
+
+    dash = OperatorInterfaceRuntime()
+    dash.registry.register(REST_LIFECYCLE_OPERATION, Ui004LifecycleHandler())
+    mount_dashboard(
+        dash,
+        ReadinessBackedProvider({}),
+        inventory=StrategyInventoryProvider(
+            RollbackSnapshotInventorySource(state_path=inventory_state, binary=binary)
+        ),
+    )
+    status, body = dash.dispatch_rest("GET", "/dashboard/api/strategies", b"")
+    assert status == 200, body
+    assert body["rollback_available"] is False
+
+    # (3) The real composition DOES serve it.
+    served = OperatorInterfaceRuntime()
+    mount_default_dashboard(served, {"ATP_DEPLOYMENT_STATE": str(inventory_state)})
+    assert rollback_is_served(served) is True
+    status, body = served.dispatch_rest("GET", "/dashboard/api/strategies", b"")
+    assert body["rollback_available"] is True

@@ -11,12 +11,18 @@ from .rollback_handler import (
     RollbackCliRunner,
     RollbackHandler,
     mount_rollback,
+    rollback_is_served,
 )
 
 __all__ = [
+    # The SHARED lifecycle route key (start/stop/restart/rollback). Exported for
+    # composers/tests that need to reason about the route itself — but note that
+    # registration on it does NOT mean rollback is served: ask
+    # `rollback_is_served` for that.
     "REST_LIFECYCLE_OPERATION",
     "LifecycleActionHandler",
     "RollbackCliRunner",
     "RollbackHandler",
     "mount_rollback",
+    "rollback_is_served",
 ]

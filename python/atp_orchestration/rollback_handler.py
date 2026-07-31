@@ -65,6 +65,7 @@ __all__ = [
     "RollbackCliRunner",
     "RollbackHandler",
     "mount_rollback",
+    "rollback_is_served",
 ]
 
 # Default location of the cargo-built operator binary, relative to the repo root
@@ -306,6 +307,14 @@ class LifecycleActionHandler:
     structured 501 naming its owner (SRS-ORCH-004's start/stop/restart wiring),
     so registering this handler never over-claims the rest of the route."""
 
+    #: Capability marker. ``REST_LIFECYCLE_OPERATION`` is the SHARED lifecycle
+    #: route (start/stop/restart/rollback), so mere registration on that key
+    #: proves nothing about rollback — a future SRS-ORCH-004 handler will
+    #: register there without serving rollback at all. A surface asking "is
+    #: rollback actually served here?" must check this ACTION-level marker, not
+    #: the route. Read it through :func:`rollback_is_served`.
+    serves_rollback = True
+
     def __init__(self, rollback: RollbackHandler) -> None:
         self._rollback = rollback
         self._deferred = DeferredHandler(
@@ -345,6 +354,28 @@ def mount_rollback(
     runtime.registry.register(CLI_ROLLBACK_OPERATION, handler)
     runtime.registry.register(REST_LIFECYCLE_OPERATION, LifecycleActionHandler(handler))
     return handler
+
+
+def rollback_is_served(runtime: OperatorInterfaceRuntime) -> bool:
+    """Whether ``runtime`` actually serves the SRS-ORCH-005 rollback ACTION.
+
+    The capability question belongs to this package: a consumer surface (the
+    dashboard's ROLLBACK control) must not have to know that
+    ``REST_LIFECYCLE_OPERATION`` is shared with SRS-ORCH-004's start/stop/restart
+    wiring, nor guess which handler types serve which actions. Registration on
+    the lifecycle route is NOT the answer — only a handler that declares
+    ``serves_rollback`` is.
+
+    Fail-closed: an unregistered route, a handler that does not declare the
+    marker, or a marker that is not exactly ``True`` all report False. An
+    unproven capability is not a capability.
+    """
+
+    handler = runtime.registry.resolve(
+        REST_LIFECYCLE_OPERATION,
+        deferred=DeferredHandler(owner="SRS-ORCH-005", summary="rollback capability probe"),
+    )
+    return getattr(handler, "serves_rollback", False) is True
 
 
 def _parse_key_values(stdout: str) -> dict[str, str]:
