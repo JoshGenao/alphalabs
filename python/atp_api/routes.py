@@ -307,6 +307,7 @@ ROUTES: tuple[Route, ...] = (
         ),
         response_fields=(
             "config_source",
+            "manual_promotion_available",
             "drawdown_demotion_enabled",
             "drawdown_demotion_threshold_bps",
             "top_ranked_promotion_enabled",
@@ -326,6 +327,7 @@ ROUTES: tuple[Route, ...] = (
             ("highest_momentum_promotion_enabled", "boolean"),
             ("any_automatic_enabled", "boolean"),
             ("default_disabled", "boolean"),
+            ("manual_promotion_available", "boolean"),
         ),
         # The handler refuses any unrecognised key — a misspelled trigger flag must not
         # return 200 having armed nothing — so the contract must not advertise otherwise.

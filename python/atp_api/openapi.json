@@ -454,6 +454,9 @@
                     "highest_momentum_promotion_enabled": {
                       "type": "boolean"
                     },
+                    "manual_promotion_available": {
+                      "type": "boolean"
+                    },
                     "top_ranked_promotion_enabled": {
                       "type": "boolean"
                     }

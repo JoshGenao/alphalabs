@@ -690,3 +690,26 @@ def test_the_strict_handler_and_the_published_schema_agree_on_unknown_fields(
     )
     assert status == 400
     assert fake_cli.calls == []
+
+
+def test_the_documented_put_response_matches_what_the_handler_returns(
+    mounted: tuple[str, int], fake_cli: _FakeCli
+) -> None:
+    # PUT returns the same re-read body as GET, so its documented response has to carry the
+    # same fields. Checking GET and the manual route but not this one is how a field the
+    # handler returns went undocumented on a live route.
+    fake_cli.queue(stdout=_config_stdout(drawdown=True, threshold=250))
+    fake_cli.queue(stdout=_config_stdout(drawdown=True, threshold=250))
+    _status, body = _request(
+        mounted,
+        "PUT",
+        "/api/v1/hot-swap/triggers?confirm=yes",
+        {"drawdown_demotion_enabled": True, "drawdown_demotion_threshold_bps": 250},
+    )
+    documented = _documented_types("/api/v1/hot-swap/triggers", "put", "response")
+    assert set(body) == set(documented), (sorted(body), sorted(documented))
+    for name, value in body.items():
+        expected = "null" if value is None else _JSON_TYPE_OF[type(value)]
+        declared = documented[name]
+        allowed = declared if isinstance(declared, list) else [declared]
+        assert expected in allowed, (name, value, declared)
