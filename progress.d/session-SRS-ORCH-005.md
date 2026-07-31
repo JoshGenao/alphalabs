@@ -108,9 +108,10 @@ query string, otherwise the interception silently never fired and the real handl
 
 ## Critic verdicts
   deterministic: APPROVE — no findings (every commit)
-  judgment (adversarial_review.py, reviewer=codex): APPROVE after 3 blocking rounds.
-    Both code findings were REAL and are fixed; neither was reachable by the
-    deterministic critic or by any test I had written.
+  judgment (adversarial_review.py, reviewer=codex): 10 rounds. Every IN-SCOPE finding is
+    fixed; round 10 is an operator-authorized scoped deferral (see below). None of these
+    were reachable by the deterministic critic or by any test I had written — the browser
+    tests passed at every round.
 
   R1 [high] "Rollback button is actionable without proving the handler is mounted."
     The control was rendered actionable from `previous_version_identifier` alone. But
@@ -139,9 +140,61 @@ query string, otherwise the interception silently never fired and the real handl
     FIX: dropped from this branch (`rebase --onto origin/main`) and the full suite re-verified
     WITHOUT it. The fixture remains uncommitted in the primary checkout for its own session.
 
+  R4 [high] "Lifecycle rollback confirmation is missing from OpenAPI."
+    The dashboard calls the route with ?confirm=true, but the published spec exposed no
+    `confirm` parameter and set x-requires-confirmation:false — a generated client had no
+    documented way to satisfy the guard. The route cannot be route-level gated (that would
+    demand a token for a restart). FIX: `Route.confirmation_actions`, documented in the
+    generator + regenerated snapshot + README, and rest_api_check.py now pins the declared
+    set EQUAL to the transport's enforced set so spec and server cannot drift.
+
+  R5 [high] "Rollback capability override bypasses runtime probe."
+    My own "explicit probe wins" precedence was a fail-open: a composer could pass
+    `rollback_available=lambda: True` and mount on a runtime with no handler. FIX:
+    bind_rollback_probe assigns UNCONDITIONALLY — the mounting runtime is authoritative; a
+    capability is not something the caller gets to claim.
+
+  R6 [high] "Rollback handler owns the whole shared lifecycle route."
+    Route ownership is pre-existing on main; what THIS branch introduced was a new failure
+    mode — the dashboard composing mount_rollback would RAISE on an already-bound route and
+    take the surface down at startup. FIX (the half this branch caused): skip the mount when
+    the route is bound; the capability probe then reports false and the control renders inert.
+    Per-action co-registration needs a multiplexer on the frozen SRS-API-001 surface —
+    scoped to SRS-ORCH-004 / SRS-API-001 in rollback_contract.deferred[].
+
+  R7 [high+medium] "Success not bound to the confirmed target" + "client timeout < server
+    deadline." Success accepted ANY restored hash, and the 15 s client deadline was shorter
+    than the handler's 30 s subprocess budget — aborting a fetch does not cancel the handler,
+    so the UI could re-arm mid-rollback. FIX: success requires `restored === target`; the
+    client deadline is 35 s; an unknown outcome becomes an AMBIGUOUS hold, not a failure.
+
+  R8 [high] "Unevidenced 2xx releases controls before state is re-read."
+    The hold only covered the timeout path. A 2xx is the server saying it DID something — if
+    it cannot be correlated it is exactly as ambiguous. FIX: every non-proving 2xx holds, and
+    refusals are split by an ALLOW-LIST of types the gate raises strictly BEFORE its single
+    write (an unknown refusal type holds rather than re-arming).
+
+  R9 [high+medium] "Ambiguous hold clears on summary only" + README drift.
+    A poll landing mid-handler reports the pre-rollback version and would masquerade as proof
+    of a terminal state. FIX: release also requires the refresh to arrive after the server's
+    own 30 s deadline. Found while fixing it: the 5 s row rebuild visually re-armed the button
+    mid-hold (the click guard still blocked the POST, but the control LOOKED actionable) —
+    row rendering now respects the hold. README updated for action-level confirmation.
+
+  R10 [high] "Rollback requests are only serialized in browser memory." — OPERATOR-AUTHORIZED
+    SCOPED DEFERRAL (AskUserQuestion 2026-07-31), not a fix. RollbackHandler spawns the CLI
+    with no cross-process lock, so a second tab / direct REST call / concurrent CLI can race
+    the dashboard. Verified pre-existing: this branch does not touch the invoke path. Outside
+    the AC (which names surface availability and confirmation parity only), and a real fix
+    locks the DURABLE store — an in-process lock would not cover the CLI — so it belongs with
+    the already-deferred durable registry. Recorded in rollback_contract.deferred[] with
+    owners SRS-API-001 + the durable registry. NOT faked as an APPROVE.
+
 ## Resume / next
-SRS-ORCH-005's AC is met on all three surfaces; the feature closes. Two items stay honestly
-deferred in `rollback_contract.deferred[]` and NEITHER is required by this AC:
+SRS-ORCH-005's AC is met on all three surfaces; the feature closes. FIVE items stay honestly
+deferred in `rollback_contract.deferred[]` and NONE is required by this AC — the first two
+predate this session, the last three were surfaced by adversarial review and scoped with
+named owners:
   1. The REAL live-designation probe (SRS-EXE-001 / SRS-RESV-001..006). Until it lands the
      handler's default `live_strategy_provider` reports no live strategy — but the transport
      guard 428s EVERY unconfirmed rollback, which is strictly STRONGER than the AC's live-only
@@ -149,4 +202,14 @@ deferred in `rollback_contract.deferred[]` and NEITHER is required by this AC:
      gate/bin tests. When EXE-001 lands, inject the real provider — do NOT rebuild the control.
   2. The durable deployed-version registry store (`RetainingVersionRegistry` is in-memory; the
      bin's fsync'd magic-headed snapshot is its demonstration port).
-Composition of `mount_rollback` into runtime mains other than the dashboard remains SRS-API-001's.
+  3. SERVER-SIDE single-writer serialization of the rollback write (R10 above) — owner
+     SRS-API-001 + the durable registry. The dashboard's hold is per-document and ADVISORY;
+     a cross-process lock on the durable store is the real fix.
+  4. PER-ACTION co-registration on the shared lifecycle route (R6 above) — owner
+     SRS-ORCH-004 / SRS-API-001. Contained today: the dashboard skips the mount when the
+     route is bound and the capability probe reports the truth.
+  5. Composition of `mount_rollback` into runtime mains other than the dashboard — SRS-API-001.
+
+Items 3 and 4 are the two places a future session should look first: both are about the
+SHARED lifecycle route and the not-yet-durable registry, and both would be resolved naturally
+by the SRS-API-001 operator-runtime main plus a durable store with a write lock.
