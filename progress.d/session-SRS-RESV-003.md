@@ -1,7 +1,11 @@
 === SESSION SRS-RESV-003 ===
 Date: 2026-07-03
 Feature: SRS-RESV-003 — support manual and configurable automatic Hot-Swap triggers
-Outcome: serialized (code on main, passes:false; operator finishes dashboard/REST e2e)
+Outcome: serialized on 2026-07-03 (code on main, passes:false; operator finishes
+         dashboard/REST e2e). SUPERSEDED 2026-07-31: the REST + dashboard arms were
+         built, adversarially reviewed over 14 Codex rounds, and verified e2e in a real
+         browser against the shipped composition. passes:true. See "SESSION 2 —
+         2026-07-31" at the end.
 
 CONTEXT: SRS-RESV-003 is the keystone of the Hot-Swap cluster (RESV-004/005/006 all
 depend on it; it is a direct dep of SRS-API-001). AC (SyRS SYS-49a; StRS SN-1.25/1.30):
@@ -127,3 +131,48 @@ Critics: deterministic APPROVE (no findings); judgment APPROVE (reviewer=claude-
 rate-limited at re-review time — the designed Codex→Claude failover; earlier rounds 1-5 were real
 Codex BLOCKs that drove these fixes). Still SERIALIZED (passes:false) — Step 2 dashboard/REST e2e
 unchanged.
+
+
+# === SESSION SRS-RESV-003 (2) — the REST + dashboard arms, 2026-07-31 ===
+Outcome: CLOSED green. Operator accepted CLI+REST as SYS-49a's manual arm.
+
+WHAT WAS MISSING (verified in code, not read off the note):
+1. No durable trigger config — the CLI rebuilt HotSwapTriggerConfig from flags every
+   invocation, so UI-5's HotSwapStatusSource.trigger_config() seam had no producer.
+2. No Python surface — HotSwapStatusSource had zero implementors.
+3. No browser/REST evidence — only the CLI arm had ever been demonstrated.
+
+WHAT SHIPPED:
+- crates/atp-orchestrator/src/trigger_config_store.rs: versioned, magic-marked JSON written
+  scratch->fsync->rename->parent-fsync. THREE-state read (absent / readable / unreadable);
+  an unreadable config is never folded into "disabled". Unknown keys fail the read.
+  Registered as SRS-DATA-015 entity `hot-swap-trigger-config` (Pinned).
+- ExclusiveGuard (O_EXCL lockfile) held across read-modify-write and across append+count, in
+  the BINARY so all three arms serialise across threads and processes.
+- python/atp_hotswap: the surface-NEUTRAL client both operator surfaces import downward.
+  HotSwapStatusUnavailable is declared there and re-exported by atp_dashboard.hotswap so the
+  class the pane catches and the client raises are ONE object.
+- python/atp_orchestration/hot_swap_triggers.py: GET/PUT /api/v1/hot-swap/triggers and
+  POST /api/v1/hot-swap/triggers/manual. POST /api/v1/hot-swap (EXECUTION) is deliberately
+  NOT bound and keeps its 501.
+- atp_dashboard: ATP_HOT_SWAP_TRIGGER_STATE resolves the UI-5 auto-trigger chips;
+  ATP_HOT_SWAP_TRIGGER_LOG is required alongside it (fail at boot, not a no-audit mode).
+  serve() composes the REST arm, so it actually ships.
+
+EVIDENCE: tests/e2e/test_hot_swap_triggers.py (3 cases) through the SHIPPED composition —
+default-disabled proven non-vacuously in the browser, each automatic trigger configured ON
+and back OFF with the pane reflecting it, manual fired+logged with its ordinal addressing the
+record written, and a corrupted config degrading to unknown rather than "disabled".
+Plus 53 boundary + 44 domain tests. cargo 2034 / python 4508 / 0 failures.
+
+WHAT IS NOT DONE, and why it is a refusal rather than a gap:
+- No dashboard button FIRES a manual trigger. UI-5's promote-live control targets
+  POST /api/v1/hot-swap (EXECUTION, owner RESV-004/005, still 501); repointing it at the
+  trigger route would tell an operator they promoted a strategy when a proposal was written
+  to a log. Owners: UI-5 + SRS-RESV-004/005. SYS-49a asks for "dashboard, CLI, OR REST".
+- request_manual_promotion takes the demoting id from its caller; the LiveStrategyProbe
+  producer is the deferred RESV-001/002 runtime. A logged manual proposal is a REQUEST to
+  swap — the RESV-004 gate MUST revalidate the live strategy at execution time.
+
+Resume / next: RESV-004/005/006 consume HotSwapDemotionRequest from these proposals; when
+they can execute a swap, UI-5 gains an honest dashboard manual control.
