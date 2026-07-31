@@ -3281,6 +3281,22 @@ def _arm_rollback(page, btn) -> None:
     raise AssertionError("ROLLBACK could not be armed")
 
 
+def _wait_for_rollback_release(page) -> None:
+    """Wait for an ambiguous-outcome hold to clear. It is released only by a
+    healthy inventory summary re-reading the deployed version (5 s cadence), so
+    this is the honest way to reach the next scenario — not a UI reset."""
+
+    page.wait_for_function(
+        'document.querySelector(\'#inventory-rows tr[data-strategy="alpha-1"]'
+        " .rollback__btn').disabled === false",
+        timeout=15_000,
+    )
+    page.wait_for_function(
+        "document.getElementById('rollback-state').dataset.state === 'resting'",
+        timeout=15_000,
+    )
+
+
 def _confirm_rollback(page, strategy: str = "alpha-1") -> None:
     btn = _rollback_btn(page, strategy)
     for _ in range(4):
@@ -3485,42 +3501,64 @@ def test_orch_005_rollback_renders_refusals_and_unevidenced_success_honestly(
             )
             assert "LIVE_STATUS_UNAVAILABLE" in page.locator("#rollback-status").inner_text()
 
-            # A 200 with NO evidenced restored version is UNRESOLVED, not success.
-            _answer(200, '{"strategy_id": "alpha-1", "lifecycle_state": "rolled-back"}')
-            _confirm_rollback(page)
-            page.wait_for_function(
-                "document.getElementById('rollback-status').textContent.includes('UNRESOLVED')",
-                timeout=10_000,
-            )
-            unresolved = page.locator("#rollback-status").inner_text()
-            assert page.eval_on_selector("#rollback-state", "e => e.dataset.state") == "error"
-            assert "confirmed rollback" not in unresolved
-
-            # A 200 whose lifecycle_state is not "rolled-back" is UNRESOLVED too.
+            # An UNKNOWN refusal type is not a known pre-write gate refusal, so
+            # the binary may have run and written: it must HOLD, not re-arm.
             _answer(
-                200,
-                '{"strategy_id": "alpha-1", "lifecycle_state": "launched",'
-                ' "deployment_version_hash": "sha256:' + "1" * 64 + '"}',
+                503,
+                '{"error": {"category": "INTERNAL_ERROR", "type": "SOMETHING_NEW"}}',
             )
             _confirm_rollback(page)
             page.wait_for_function(
-                "document.getElementById('rollback-status').textContent.includes('UNRESOLVED')",
+                "document.getElementById('rollback-status').textContent.includes('UNVERIFIED')",
                 timeout=10_000,
             )
+            unknown = page.locator("#rollback-status").inner_text()
+            assert "not a known pre-write refusal" in unknown
+            assert "controls held" in unknown
+            _wait_for_rollback_release(page)
 
-            # A 200 naming a DIFFERENT strategy is refused.
-            _answer(
-                200,
-                '{"strategy_id": "other-9", "lifecycle_state": "rolled-back",'
-                ' "deployment_version_hash": "sha256:' + "1" * 64 + '"}',
+            # Each unevidenced 2xx shape: never success, and each HOLDS the
+            # controls (a 2xx means the server did something it cannot correlate,
+            # so the durable version is unverified until the inventory refresh).
+            # One listener, reused across iterations (a per-iteration lambda
+            # would accumulate listeners all appending to the last list).
+            held_posts: list[str] = []
+            page.on(
+                "request",
+                lambda req: held_posts.append(req.url) if req.method == "POST" else None,
             )
-            _confirm_rollback(page)
-            page.wait_for_function(
-                "document.getElementById('rollback-status').textContent.includes('NOT rolled back')",
-                timeout=10_000,
-            )
-            mismatched = page.locator("#rollback-status").inner_text()
-            assert "other-9" in mismatched and "alpha-1" in mismatched
+            for body_json, why in (
+                (
+                    '{"strategy_id": "alpha-1", "lifecycle_state": "rolled-back"}',
+                    "no evidenced restored version",
+                ),
+                (
+                    '{"strategy_id": "alpha-1", "lifecycle_state": "launched",'
+                    ' "deployment_version_hash": "sha256:' + "1" * 64 + '"}',
+                    "lifecycle_state is not rolled-back",
+                ),
+                (
+                    '{"strategy_id": "other-9", "lifecycle_state": "rolled-back",'
+                    ' "deployment_version_hash": "sha256:' + "1" * 64 + '"}',
+                    "names a different strategy",
+                ),
+            ):
+                _answer(200, body_json)
+                _confirm_rollback(page)
+                page.wait_for_function(
+                    "document.getElementById('rollback-status').textContent.includes('UNVERIFIED')",
+                    timeout=10_000,
+                )
+                text = page.locator("#rollback-status").inner_text()
+                assert "confirmed rollback" not in text, why
+                assert "controls held" in text, why
+                assert page.eval_on_selector("#rollback-state", "e => e.dataset.state") == "error"
+                # Inert while held: a further click cannot fire a second
+                # irreversible rollback before the state is re-read.
+                held_posts.clear()
+                _rollback_btn(page, "alpha-1").click(force=True)
+                assert held_posts == [], why
+                _wait_for_rollback_release(page)
         finally:
             browser.close()
 
@@ -3708,13 +3746,16 @@ def test_orch_005_rollback_success_must_restore_the_confirmed_target(
             )
             _confirm_rollback(page)
             page.wait_for_function(
-                "document.getElementById('rollback-status').textContent.includes('UNRESOLVED')",
+                "document.getElementById('rollback-status').textContent.includes('UNVERIFIED')",
                 timeout=10_000,
             )
             status = page.locator("#rollback-status").inner_text()
             assert page.eval_on_selector("#rollback-state", "e => e.dataset.state") == "error"
             assert v2 in status and v1 in status
             assert "confirmed rollback" not in status
+            # A 2xx the dashboard cannot correlate is as ambiguous as a timeout:
+            # the server may have rolled back to something. Controls hold.
+            assert "controls held" in status
         finally:
             browser.close()
 
@@ -3740,11 +3781,12 @@ def test_orch_005_an_unknown_rollback_outcome_holds_every_control_inert(
             page.route("**/api/v1/strategies/*/lifecycle*", lambda route: route.abort())
             _confirm_rollback(page)
             page.wait_for_function(
-                "document.getElementById('rollback-status').textContent.includes('UNKNOWN')",
+                "document.getElementById('rollback-status').textContent.includes('UNVERIFIED')",
                 timeout=10_000,
             )
             held = page.locator("#rollback-status").inner_text()
             assert "may still be completing" in held
+            assert "controls held" in held
             # Inert: a further click cannot fire a second irreversible request.
             posts: list[str] = []
             page.on(

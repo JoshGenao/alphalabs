@@ -718,6 +718,30 @@
   // every control stays inert until a healthy inventory summary re-reads the
   // deployed version and resolves it. Never cleared by a retry.
   let rollbackAmbiguous = false;
+  // Refusal types the GATE raises strictly BEFORE its single registry write, so
+  // the deployed state is provably untouched and the control may safely re-arm.
+  // Everything else — an unevidenced 2xx, a subprocess timeout, unparseable
+  // output, an unknown/absent type — leaves the durable outcome UNKNOWN and
+  // must hold. Allow-list, not deny-list: a refusal type this dashboard has
+  // never heard of is treated as ambiguous, not as safe.
+  const ROLLBACK_PRE_WRITE_REFUSALS = new Set([
+    "LIVE_ROLLBACK_UNCONFIRMED", "CONFIRMATION_REQUIRED",
+    "NEVER_DEPLOYED", "NO_PREVIOUS_VERSION",
+    "TARGET_MISMATCH", "TARGET_HASH_INVALID",
+    "CONFIRMATION_STRATEGY_MISMATCH", "LIVE_STATUS_UNAVAILABLE",
+    "MISSING_STRATEGY_ID", "MISSING_TARGET_VERSION_HASH",
+    "ROLLBACK_CLI_LAUNCH_FAILED", // never launched -> nothing was written
+    "HANDLER_DEFERRED",           // 501: no handler ran at all
+  ]);
+
+  function holdRollbackAmbiguous(message) {
+    // The durable outcome is unknown: the server may have completed an
+    // irreversible rollback. Hold every control until a healthy inventory
+    // summary re-reads the deployed version and resolves it.
+    rollbackAmbiguous = true;
+    rollbackStatus(message + " — the deployed version is UNVERIFIED; controls held " +
+      "until the inventory refresh resolves it.", "error");
+  }
 
   // One shared gate for both live-state controls (see mutual exclusion above).
   function controlsBusy() { return promoteInFlight || rollbackInFlight || rollbackAmbiguous; }
@@ -802,21 +826,36 @@
           rollbackStatus("runtime confirmed rollback: " + named + " restored to " + restored +
             (body.was_live === true ? " (was LIVE — confirmed)" : ""), "live");
         } else if (body && named && named !== id) {
-          rollbackStatus("runtime answered " + res.status + " for strategy_id " + named +
-            " ≠ confirmed " + id + " — " + id + " NOT rolled back", "error");
+          // A 2xx is the server saying it DID something. If it cannot be
+          // correlated to what the operator confirmed, the durable state is
+          // unknown — exactly as ambiguous as a timeout, and it must hold.
+          holdRollbackAmbiguous("runtime answered " + res.status + " for strategy_id " +
+            named + " ≠ confirmed " + id);
+          btn.disabled = true;
+          return;
         } else if (body && named === id && restored && restored !== target) {
-          rollbackStatus("runtime answered " + res.status + " restoring " + restored +
-            " ≠ confirmed target " + target + " — " + id +
-            " rollback UNRESOLVED", "error");
+          holdRollbackAmbiguous("runtime answered " + res.status + " restoring " + restored +
+            " ≠ confirmed target " + target);
+          btn.disabled = true;
+          return;
         } else {
-          rollbackStatus("runtime answered " + res.status +
-            " without an evidenced rolled-back version — " + id +
-            " rollback UNRESOLVED", "error");
+          holdRollbackAmbiguous("runtime answered " + res.status +
+            " without an evidenced rolled-back version for " + id);
+          btn.disabled = true;
+          return;
         }
       } else {
         const err = body && body.error ? body.error : {};
         const type = String(err.type || err.category || "UNKNOWN");
         const reason = err.detail && err.detail.reason ? " [" + String(err.detail.reason) + "]" : "";
+        if (!ROLLBACK_PRE_WRITE_REFUSALS.has(type)) {
+          // Not a known pre-write gate refusal (a CLI timeout, unparseable
+          // output, an unknown type…): the binary may have run and written.
+          holdRollbackAmbiguous("runtime answered " + res.status + " " + type + reason +
+            " for " + id + ", which is not a known pre-write refusal");
+          btn.disabled = true;
+          return;
+        }
         rollbackStatus("REFUSED " + res.status + " " + type + reason + ": " + id +
           " not rolled back", "error");
       }
@@ -827,10 +866,8 @@
       // deployed version from the snapshot and resolves what actually happened.
       // (If the inventory feed is also down, the control stays inert — the
       // fail-closed direction.)
-      rollbackAmbiguous = true;
-      rollbackStatus("FAILED: " + String(error) + " — rollback outcome UNKNOWN; the request " +
-        "may still be completing. Controls held until the inventory refresh resolves " +
-        "the deployed version.", "error");
+      holdRollbackAmbiguous("FAILED: " + String(error) + " — the request may still be " +
+        "completing server-side");
       btn.disabled = true;
       return; // leaves rollbackInFlight true; cleared by the next healthy summary
     }
