@@ -6,6 +6,7 @@ version = 3
 name = "atp-adapters"
 version = "0.1.0"
 dependencies = [
+ "atp-notification",
  "atp-types",
 ]
 

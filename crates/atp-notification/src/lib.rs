@@ -13,9 +13,9 @@
 //!   stored record), [`ChannelDelivery`] (the per-channel outcome — opaque, so a
 //!   delivery status cannot be fabricated without a real send).
 //! * [`channel`] — the [`NotificationChannelClient`] transport port + the typed
-//!   [`ChannelError`] failure taxonomy. Concrete SMTP / SMS gateway adapters
-//!   live in `atp-adapters` (deferred with the real end-to-end integration); the
-//!   core names no vendor and holds no credential (NFR-S4).
+//!   [`ChannelError`] failure taxonomy. The concrete SMTP (IF-10) / SMS gateway
+//!   (IF-11) adapters live in `atp-adapters::notification`; the core names no
+//!   vendor and holds no credential (NFR-S4).
 //! * [`dispatcher`] — [`OperatorNotifier`], the detection→dispatch→record
 //!   authority. Injected clock (deterministic latency), reversed-timestamp
 //!   rejection, required email+SMS fan-out, and the SYS-75 fail-safe that a
@@ -34,9 +34,13 @@
 //! and durably stored. What is **deferred** (and why SRS-NOTIF-001 stays
 //! `passes:false` until an operator finishes the integration):
 //!
-//!   * the concrete SMTP email adapter (IF-10) and SMS gateway adapter (IF-11),
-//!     reading `ATP_SMTP_API_KEY` / `ATP_SMS_API_KEY` — they live in
-//!     `atp-adapters` and require a real provider to verify end to end;
+//!   * a REAL provider behind the transports. The SMTP (IF-10) and SMS gateway
+//!     (IF-11) adapters now exist in `atp-adapters::notification` and are
+//!     verified over real sockets against scripted relays — but they submit to
+//!     the `phase1-notification-egress` sidecar, which owns the TLS session to
+//!     the actual provider, and neither that sidecar nor a provider account has
+//!     been stood up. Until an alert lands in a real inbox and on a real phone,
+//!     "email and SMS are sent" is proven to the relay, not to the operator;
 //!   * the real detection wiring: the execution engine's connectivity gate
 //!     (ERR-2 / SRS-SAFE-003) → [`NotificationTrigger::connectivity_loss`], and
 //!     `CRITICAL`-severity system events (SYS-46 / SYS-61) →

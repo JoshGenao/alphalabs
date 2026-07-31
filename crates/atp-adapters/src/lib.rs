@@ -19,10 +19,18 @@ pub use interactive_brokers::{
 
 pub mod connection_control;
 pub use connection_control::IbConnectionControl;
+
+/// SRS-NOTIF-001 — the concrete operator-notification transports (IF-10 email
+/// over SMTP submission, IF-11 SMS over the gateway relay) behind
+/// [`atp_notification::NotificationChannelClient`].
+pub mod notification;
 /// The live IB socket transport is behind the non-default `ib-live-transport`
 /// feature (operator-gated scaffold; see [`interactive_brokers`]).
 #[cfg(feature = "ib-live-transport")]
 pub use interactive_brokers::{TcpIbGateway, IB_CONNECT_TIMEOUT};
+pub use notification::{
+    EgressEndpoint, SmsGatewayChannel, SmsGatewayConfig, SmtpEmailChannel, SmtpRelayConfig,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AdapterCapability {

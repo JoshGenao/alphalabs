@@ -165,8 +165,22 @@ pub type ChannelSendResult = Result<ChannelReceipt, ChannelError>;
 /// case — an adapter that ignores the `deadline` and blocks forever — cannot be
 /// force-cancelled in synchronous, zero-dependency std; full hang-proofing would
 /// require an async/cancellable transport runtime, which is out of the release
-/// baseline. That residual is verified at the deferred SMTP/SMS adapter
-/// integration (one reason SRS-NOTIF-001 lands `serialized`).
+/// baseline.
+///
+/// The two shipped adapters (the `notification` module of `atp-adapters`)
+/// discharge that
+/// residual, and the way they do it is the contract any future adapter must also
+/// meet — a socket timeout alone is NOT enough:
+///
+/// * the deadline is spent as ONE budget across the whole conversation, not
+///   re-armed per operation, so an eight-round-trip SMTP exchange cannot consume
+///   eight deadlines; and
+/// * the remaining budget is re-checked between consecutive socket reads, so a
+///   relay that dribbles bytes without ever idling long enough to trip a timeout
+///   is still cut off.
+///
+/// Both properties are pinned by mutation-checked boundary tests in
+/// `crates/atp-adapters/tests/srs_notif_001_transports.rs`.
 pub trait NotificationChannelClient {
     /// Which channel this client delivers to. Used by the dispatcher to label
     /// the delivery record and to detect a mismatched client set.

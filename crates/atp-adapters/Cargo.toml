@@ -21,6 +21,12 @@ path = "src/lib.rs"
 ib-live-transport = []
 
 [dependencies]
+# SRS-NOTIF-001: the IF-10 / IF-11 transports implement
+# `atp_notification::NotificationChannelClient`, so the adapter crate depends on
+# the crate that owns that port (the standard hexagonal direction). The reverse
+# edge stays statically impossible — atp-notification is in
+# `lower_layer_scan_crates` with the `atp_adapters` token forbidden.
+atp-notification = { path = "../atp-notification" }
 atp-types = { path = "../atp-types" }
 
 [lints]
