@@ -89,6 +89,27 @@ _PUT_TRIGGER_FIELDS = frozenset(
     }
 )
 
+
+def _invoke_or_fail(source: CliHotSwapTriggerSource, args: list[str], *, what: str):
+    """Run the trigger binary, mapping an unreachable one to a structured error.
+
+    The client raises :class:`HotSwapStatusUnavailable` when the subprocess times out or
+    cannot be launched at all. On the READ path the provider catches that and degrades the
+    pane; on the WRITE paths there is no provider, so an uncaught one leaves the runtime to
+    render whatever an unhandled exception becomes — an operator asking to arm or fire a
+    trigger deserves to be told the binary could not be run, not handed a bare 500.
+    """
+
+    try:
+        return source._invoke(args)  # noqa: SLF001 — same-module collaborator
+    except HotSwapStatusUnavailable as unavailable:
+        raise InterfaceError(
+            ErrorCategory.GATEWAY_TIMEOUT,
+            f"{what}: {unavailable}",
+            type="TRIGGER_CLI_UNAVAILABLE",
+        ) from unavailable
+
+
 # The operations this feature owns on the frozen SRS-API-001 contract.
 REST_TRIGGER_CONFIG_GET = OperationKey(Surface.REST, "GET /api/v1/hot-swap/triggers")
 REST_TRIGGER_CONFIG_PUT = OperationKey(Surface.REST, "PUT /api/v1/hot-swap/triggers")
@@ -212,7 +233,9 @@ class TriggerConfigHandler:
                 type="EMPTY_TRIGGER_CONFIG_REQUEST",
             )
 
-        completed = self._source._invoke(args)  # noqa: SLF001 — same-module collaborator
+        completed = _invoke_or_fail(
+            self._source, args, what="the Hot-Swap trigger configuration could not be changed"
+        )
         if completed.returncode != 0:
             raise InterfaceError(
                 ErrorCategory.BAD_REQUEST,
@@ -262,7 +285,8 @@ class ManualTriggerHandler:
                 detail={"srs_refs": ["SRS-RESV-003", "SYS-49a"]},
             )
 
-        completed = self._source._invoke(  # noqa: SLF001 — same-module collaborator
+        completed = _invoke_or_fail(
+            self._source,
             [
                 "manual",
                 "--demoting",
@@ -271,7 +295,8 @@ class ManualTriggerHandler:
                 candidate,
                 "--log",
                 self._log_path,
-            ]
+            ],
+            what=f"the manual Hot-Swap trigger for {candidate!r} could not be fired",
         )
         if completed.returncode != 0:
             # The binary exits nonzero when the required audit record was REJECTED. That is

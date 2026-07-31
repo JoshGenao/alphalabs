@@ -1869,7 +1869,20 @@ impl StrategyOrchestrator {
     /// is ALWAYS available — it is not gated by `HotSwapTriggerConfig` and fires
     /// regardless of the automatic-trigger posture. The operator names the
     /// demoting (current live) strategy and the candidate; the trigger fires and
-    /// is recorded through `log`. Returns `Ok(proposal)` when the record was
+    /// is recorded through `log`.
+    ///
+    /// **The demoting side is the CALLER's claim, not a resolved fact.** Unlike
+    /// `evaluate_automatic_triggers`, which reads the current live strategy from
+    /// `LiveStrategyProbe`, this path takes `demoting_strategy_id` as given and only checks
+    /// that it differs from the candidate. It cannot do better yet: the probe's real
+    /// producer is the deferred SRS-RESV-001 reservoir / SRS-RESV-002 ranking runtime, so
+    /// there is no authoritative live-strategy fact to check against — inventing one would
+    /// be worse than naming the gap. A proposal is therefore a REQUEST to swap, and the
+    /// SRS-RESV-004 gate must revalidate the live strategy at execution time rather than
+    /// trusting the demoting id recorded here. Tracked in
+    /// `hot_swap_trigger_contract.deferred[]`.
+    ///
+    /// Returns `Ok(proposal)` when the record was
     /// accepted (safe to hand to the SRS-RESV-004 gate) and
     /// `Err(UnloggedHotSwapTrigger)` when the sink rejected it — fail closed, so a
     /// caller never acts on an unlogged manual swap. The cool-down confirmation

@@ -880,6 +880,11 @@ fn event_to_json(event: &HotSwapTriggerEvent) -> String {
 /// triggers are logged" clause; the durable, queryable, dashboard-viewable SYS-61
 /// system-log store is the deferred SRS-LOG-001 sink.
 fn append_event_line(path: &Path, event: &HotSwapTriggerEvent) -> Result<(), String> {
+    // Whether this append CREATES the file decides whether the directory entry also has to
+    // be made durable: fsyncing the file's contents does not persist the entry that names
+    // it, so a crash right after the first fire could erase a log the caller was already
+    // told holds its record (`logged:true` plus an ordinal addressing it).
+    let newly_created = !path.exists();
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -890,7 +895,19 @@ fn append_event_line(path: &Path, event: &HotSwapTriggerEvent) -> Result<(), Str
     file.write_all(line.as_bytes())
         .and_then(|()| file.flush())
         .and_then(|()| file.sync_all())
-        .map_err(|error| format!("cannot append to log file {}: {error}", path.display()))
+        .map_err(|error| format!("cannot append to log file {}: {error}", path.display()))?;
+    if newly_created {
+        let dir = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+            _ => std::path::PathBuf::from("."),
+        };
+        let handle = std::fs::File::open(&dir)
+            .map_err(|error| format!("cannot open log directory {}: {error}", dir.display()))?;
+        handle
+            .sync_all()
+            .map_err(|error| format!("cannot sync log directory {}: {error}", dir.display()))?;
+    }
+    Ok(())
 }
 
 fn count_log_records(path: &Path) -> Result<usize, String> {

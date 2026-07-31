@@ -491,12 +491,16 @@ pub fn load(path: &Path) -> Result<Option<HotSwapTriggerConfig>, TriggerConfigSt
 /// silently reverted to its previous value after a power loss would leave an automatic trigger armed
 /// that the operator believes they disabled.
 pub fn save(path: &Path, config: &HotSwapTriggerConfig) -> Result<(), TriggerConfigStoreError> {
-    let dir = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty());
-    if let Some(dir) = dir {
-        fs::create_dir_all(dir).map_err(|error| io_error("create directory for", path, &error))?;
-    }
+    // A relative `triggers.json` has an EMPTY parent, not an absent one. Filtering it away
+    // meant the scratch file was placed correctly but the final directory fsync was skipped,
+    // so the rename that publishes a just-confirmed configuration was not itself crash-
+    // durable — the very guarantee this function's contract states. `.` is that directory.
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let dir = dir.as_path();
+    fs::create_dir_all(dir).map_err(|error| io_error("create directory for", path, &error))?;
     let seq = SCRATCH_SEQ.fetch_add(1, Ordering::Relaxed);
     let scratch_name = format!(
         "{}.{}.{seq}.{SCRATCH_SUFFIX}",
@@ -505,10 +509,7 @@ pub fn save(path: &Path, config: &HotSwapTriggerConfig) -> Result<(), TriggerCon
             .unwrap_or("hot-swap-trigger-config"),
         std::process::id()
     );
-    let scratch_path = match dir {
-        Some(dir) => dir.join(scratch_name),
-        None => PathBuf::from(scratch_name),
-    };
+    let scratch_path = dir.join(scratch_name);
 
     let mut payload = serialize(config);
     payload.push('\n');
@@ -531,13 +532,11 @@ pub fn save(path: &Path, config: &HotSwapTriggerConfig) -> Result<(), TriggerCon
     })?;
 
     // fsync the directory so the rename (a directory-entry change) is itself durable.
-    if let Some(dir) = dir {
-        let handle =
-            fs::File::open(dir).map_err(|error| io_error("open directory of", path, &error))?;
-        handle
-            .sync_all()
-            .map_err(|error| io_error("sync directory of", path, &error))?;
-    }
+    let handle =
+        fs::File::open(dir).map_err(|error| io_error("open directory of", path, &error))?;
+    handle
+        .sync_all()
+        .map_err(|error| io_error("sync directory of", path, &error))?;
     Ok(())
 }
 

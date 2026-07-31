@@ -882,3 +882,50 @@ def test_evaluation_inputs_obey_the_same_id_rule(tmp_path: Path) -> None:
     blank_rank = _cli("evaluate", "--live", "alpha", "--rank", ":1:2.0:0.5", "--log", str(log))
     assert blank_rank.returncode != 0, blank_rank.stdout
     assert not log.exists(), log.read_text()
+
+
+def test_a_relative_state_path_is_still_durably_published(tmp_path: Path) -> None:
+    # A relative `--state triggers.json` has an EMPTY parent, not an absent one. Filtering it
+    # away skipped the directory fsync that makes the publishing rename crash-durable — so a
+    # just-confirmed configuration could revert, leaving an automatic trigger armed that the
+    # operator believes they disabled. The observable half here is that a relative path still
+    # round-trips correctly from the directory it was written in.
+    binary = _trigger_cli()
+    written = subprocess.run(
+        [str(binary), "config", "--state", "triggers.json", "--set-drawdown-threshold", "250"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert written.returncode == 0, written.stderr
+    assert (tmp_path / "triggers.json").is_file()
+    # No scratch or lock residue left beside it.
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["triggers.json"], list(tmp_path.iterdir())
+
+    reread = subprocess.run(
+        [str(binary), "config", "--state", "triggers.json"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    values = _kv(reread.stdout)
+    assert values["config-source"] == "persisted", reread.stdout
+    assert values["drawdown-demotion-threshold-bps"] == "250", reread.stdout
+
+
+def test_a_relative_log_path_still_fires_and_reads_back(tmp_path: Path) -> None:
+    # Same shape on the audit path: a newly created log's DIRECTORY ENTRY also has to be made
+    # durable, or the first fire reports logged:true with an ordinal a crash would erase.
+    binary = _trigger_cli()
+    fired = subprocess.run(
+        [str(binary), "manual", "--demoting", "alpha", "--candidate", "beta", "--log", "t.jsonl"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert fired.returncode == 0, fired.stderr
+    assert _kv(fired.stdout)["trigger-record-ordinal"] == "1", fired.stdout
+    assert '"candidate_strategy_id":"beta"' in (tmp_path / "t.jsonl").read_text()
