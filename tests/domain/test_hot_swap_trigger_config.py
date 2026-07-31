@@ -505,3 +505,139 @@ def test_a_mounted_producer_reports_the_default_posture_as_known_off(tmp_path: P
     # A KNOWN false, not an unknown — the two must stay distinguishable, because the
     # unreadable case still has to render as unknown (asserted above).
     assert state.exists() is False, "reading a configuration must not create one"
+
+
+# --------------------------------------------------------------------------- #
+# Concurrency: two operator actions at once must not lose a change or misattribute
+# an audit record. Both surfaces (CLI and the threaded REST server) funnel through
+# the same binary, so the guard lives there and these drive it directly.
+# --------------------------------------------------------------------------- #
+
+
+def test_concurrent_trigger_changes_never_lose_a_confirmed_change(tmp_path: Path) -> None:
+    # Each --set-* is a read-modify-write over the WHOLE configuration. Unserialised, two
+    # changes to DIFFERENT triggers both read the old state and both write a full
+    # replacement, so the second silently discards the first while both callers are told
+    # they succeeded — an operator sees a success for a change that is not on disk.
+    import concurrent.futures
+
+    state = tmp_path / "triggers.json"
+    binary = _trigger_cli()
+    changes = [
+        ["--set-drawdown-threshold", "250"],
+        ["--set-top-ranked", "on"],
+        ["--set-highest-momentum", "on"],
+    ]
+
+    def apply(args: list[str]) -> int:
+        return subprocess.run(
+            [str(binary), "config", "--state", str(state), *args],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        ).returncode
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(changes)) as pool:
+        codes = list(pool.map(apply, changes))
+    assert all(code == 0 for code in codes), codes
+
+    # Every confirmed change survived; none was overwritten by a concurrent sibling.
+    final = _kv(_cli("config", "--state", str(state)).stdout)
+    assert final["drawdown-demotion-enabled"] == "true", final
+    assert final["drawdown-demotion-threshold-bps"] == "250", final
+    assert final["top-ranked-promotion-enabled"] == "true", final
+    assert final["highest-momentum-promotion-enabled"] == "true", final
+
+
+def test_concurrent_manual_fires_each_get_their_own_record(tmp_path: Path) -> None:
+    # The ordinal is the log's record count taken AFTER the append. Unserialised, a
+    # concurrent fire lands between the two and the ordinal then addresses somebody else's
+    # record — and that ordinal is the identity the REST surface hands back for the
+    # trigger, so the audit trail would attribute a fire to the wrong request.
+    import concurrent.futures
+
+    log = tmp_path / "triggers.jsonl"
+    binary = _trigger_cli()
+    candidates = [f"cand-{index}" for index in range(6)]
+
+    def fire(candidate: str) -> tuple[str, str]:
+        result = subprocess.run(
+            [
+                str(binary),
+                "manual",
+                "--demoting",
+                "alpha",
+                "--candidate",
+                candidate,
+                "--log",
+                str(log),
+            ],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return candidate, _kv(result.stdout)["trigger-record-ordinal"]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(candidates)) as pool:
+        reported = list(pool.map(fire, candidates))
+
+    ordinals = [ordinal for _candidate, ordinal in reported]
+    assert sorted(int(o) for o in ordinals) == list(range(1, len(candidates) + 1)), ordinals
+
+    # And each reported ordinal addresses the record for ITS OWN candidate.
+    lines = log.read_text().splitlines()
+    assert len(lines) == len(candidates), lines
+    for candidate, ordinal in reported:
+        assert f'"candidate_strategy_id":"{candidate}"' in lines[int(ordinal) - 1], (
+            candidate,
+            ordinal,
+        )
+
+
+def test_a_held_lock_refuses_the_write_rather_than_interleaving(tmp_path: Path) -> None:
+    # Proves the guard is genuinely ON the write path (not merely present in the source):
+    # with the lock held, a --set must refuse. Refusing is recoverable; two writers
+    # interleaving over a read-modify-write is not.
+    state = tmp_path / "triggers.json"
+    assert _cli("config", "--state", str(state), "--set-top-ranked", "on").returncode == 0
+
+    held = tmp_path / "triggers.json.lock"
+    held.write_text("")  # stand in for another operation holding it
+    try:
+        refused = _cli("config", "--state", str(state), "--set-highest-momentum", "on")
+        assert refused.returncode != 0, refused.stdout
+        assert "another Hot-Swap trigger operation holds" in refused.stderr, refused.stderr
+    finally:
+        held.unlink()
+
+    # The refused change was not applied, and the earlier one is intact.
+    after = _kv(_cli("config", "--state", str(state)).stdout)
+    assert after["highest-momentum-promotion-enabled"] == "false", after
+    assert after["top-ranked-promotion-enabled"] == "true", after
+
+    # A crashed holder is never silently stolen from — but once the file is gone the
+    # next operation proceeds normally.
+    assert _cli("config", "--state", str(state), "--set-highest-momentum", "on").returncode == 0
+    assert (
+        _kv(_cli("config", "--state", str(state)).stdout)["highest-momentum-promotion-enabled"]
+        == "true"
+    )
+
+
+def test_a_held_log_lock_refuses_a_manual_fire(tmp_path: Path) -> None:
+    # Same proof on the audit path: with the log lock held, the fire is refused rather
+    # than appending and then reporting an ordinal that could address another record.
+    log = tmp_path / "triggers.jsonl"
+    held = tmp_path / "triggers.jsonl.lock"
+    held.write_text("")
+    try:
+        refused = _cli("manual", "--demoting", "a", "--candidate", "b", "--log", str(log))
+        assert refused.returncode != 0, refused.stdout
+        assert "another Hot-Swap trigger operation holds" in refused.stderr, refused.stderr
+        # Nothing was written: a refused fire leaves no audit record behind.
+        assert not log.exists() or log.read_text() == ""
+    finally:
+        held.unlink()

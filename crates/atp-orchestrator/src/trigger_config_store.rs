@@ -43,6 +43,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 /// Magic marker every persisted trigger configuration carries, so a foreign JSON file pointed at
 /// this reader by a misconfiguration is refused before any flag is believed.
@@ -93,6 +94,128 @@ const SCRATCH_SUFFIX: &str = "hot-swap-trigger-config.tmp";
 /// reproducible.
 static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// How long [`ExclusiveGuard::acquire`] waits for a contended lock before failing closed.
+const LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long to wait between attempts while a lock is held by someone else.
+const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// A cross-process mutual-exclusion guard over one path, released on drop.
+///
+/// ## Why this exists
+///
+/// Two operations here are read-modify-write, and neither is safe to interleave:
+///
+/// * **Changing one trigger** loads the whole configuration, edits one field, and saves the whole
+///   thing back. Two concurrent changes to *different* triggers both read the old configuration and
+///   both write a full replacement, so the second silently discards the first — and both callers are
+///   told they succeeded. An operator who armed drawdown demotion would be shown a success for a
+///   change that no longer exists on disk.
+/// * **Firing a trigger** appends one audit record and then counts the log to learn which position
+///   it landed at. The append is atomic (`O_APPEND`), but the count is not part of it: a concurrent
+///   append lands between the two, and the reported ordinal then addresses somebody else's record.
+///   That ordinal is what the REST surface hands back as the trigger's identity, so the audit trail
+///   would attribute a fired trigger to the wrong request.
+///
+/// Both funnel through this binary — the CLI, the REST arm, and the dashboard all shell it — so
+/// serialising here covers every arm at once, across threads *and* processes. A `std::sync::Mutex`
+/// would not: the threaded REST server and a concurrent operator CLI are different processes.
+///
+/// ## Mechanism
+///
+/// A `<path>.lock` sibling created with `create_new` (`O_EXCL`), which the OS makes atomic: exactly
+/// one creator wins. Contenders retry until [`LOCK_TIMEOUT`], then fail closed with an explicit
+/// error rather than proceeding unserialised — refusing an operation is recoverable, corrupting the
+/// configuration or the audit trail is not.
+///
+/// A crashed holder leaves the lock file behind, and this guard deliberately does NOT break a lock
+/// it finds: silently stealing one would reintroduce exactly the race it exists to prevent. The
+/// error names the file so an operator can remove it deliberately.
+#[derive(Debug)]
+pub struct ExclusiveGuard {
+    lock_path: PathBuf,
+}
+
+impl ExclusiveGuard {
+    /// Take the lock for `path`, creating its parent directory if absent.
+    ///
+    /// For the CONFIGURATION path, where [`save`] creates the directory anyway — the guard must
+    /// not turn a first-ever write into a failure.
+    pub fn acquire_creating(path: &Path) -> Result<Self, TriggerConfigStoreError> {
+        let lock_path = lock_path_for(path);
+        if let Some(parent) = lock_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)
+                .map_err(|error| io_error("create directory for", path, &error))?;
+        }
+        Self::acquire_at(path, lock_path)
+    }
+
+    /// Take the lock for `path`, or `Ok(None)` when its parent directory does not exist.
+    ///
+    /// For the AUDIT-LOG path, and the absent-parent case is deliberately not an error here. This
+    /// guard must not bring a directory into being: a `--log` pointed at a mistyped path has to
+    /// keep failing at the append, with the sink's own concrete cause, exactly as it did before
+    /// locking existed. (An earlier draft called `create_dir_all` unconditionally and quietly
+    /// turned three fail-closed tests green by manufacturing the very directory whose absence
+    /// they relied on.)
+    ///
+    /// Skipping the lock is safe precisely in that case: with no parent directory there is no log
+    /// file, so no concurrent writer can hold one and there is nothing to serialise — and the
+    /// append that follows will fail regardless.
+    pub fn acquire_if_parent_exists(path: &Path) -> Result<Option<Self>, TriggerConfigStoreError> {
+        let lock_path = lock_path_for(path);
+        let parent_missing = lock_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .is_some_and(|parent| !parent.is_dir());
+        if parent_missing {
+            return Ok(None);
+        }
+        Self::acquire_at(path, lock_path).map(Some)
+    }
+
+    fn acquire_at(path: &Path, lock_path: PathBuf) -> Result<Self, TriggerConfigStoreError> {
+        let deadline = Instant::now() + LOCK_TIMEOUT;
+        loop {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
+                Ok(_) => return Ok(Self { lock_path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if Instant::now() >= deadline {
+                        return Err(TriggerConfigStoreError::Locked {
+                            lock_path,
+                            waited: LOCK_TIMEOUT,
+                        });
+                    }
+                    std::thread::sleep(LOCK_POLL_INTERVAL);
+                }
+                Err(error) => return Err(io_error("lock", path, &error)),
+            }
+        }
+    }
+}
+
+impl Drop for ExclusiveGuard {
+    fn drop(&mut self) {
+        // Best-effort: a failure to unlink leaves the lock held, which the next operator sees as an
+        // explicit refusal naming the file — never as a silently unserialised write.
+        let _ = fs::remove_file(&self.lock_path);
+    }
+}
+
+/// The lock sibling for `path` (`<path>.lock`).
+fn lock_path_for(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".lock");
+    match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(parent) => parent.join(name),
+        None => PathBuf::from(name),
+    }
+}
+
 /// Why a persisted trigger configuration could not be read or written.
 ///
 /// [`Malformed`](Self::Malformed) and [`UnsupportedVersion`](Self::UnsupportedVersion) are kept
@@ -123,6 +246,13 @@ pub enum TriggerConfigStoreError {
         /// The version the payload declared.
         declared: i64,
     },
+    /// Another operation holds the exclusive lock and did not release it in time.
+    Locked {
+        /// The lock file that is held.
+        lock_path: PathBuf,
+        /// How long this attempt waited before giving up.
+        waited: Duration,
+    },
 }
 
 impl fmt::Display for TriggerConfigStoreError {
@@ -148,6 +278,14 @@ impl fmt::Display for TriggerConfigStoreError {
                  outside the supported range [{MIN_SUPPORTED_TRIGGER_CONFIG_SCHEMA_VERSION}, \
                  {TRIGGER_CONFIG_SCHEMA_VERSION}]",
                 path.display()
+            ),
+            Self::Locked { lock_path, waited } => write!(
+                formatter,
+                "SRS-RESV-003: another Hot-Swap trigger operation holds {} (waited {:.1}s). \
+                 Retry; if no operation is running, a previous one crashed — remove the file \
+                 deliberately rather than letting two writers interleave",
+                lock_path.display(),
+                waited.as_secs_f64()
             ),
         }
     }

@@ -215,11 +215,26 @@ fn cmd_config(rest: &[String]) -> Result<(), String> {
         return Ok(());
     };
 
-    // Read first, ALWAYS — including on the write path. A `--set-*` is a
-    // read-modify-write on one field of a shared configuration, so starting from
-    // the default when the existing file cannot be read would silently discard
-    // the operator's other triggers (and could disarm one they believe is on).
-    // An unreadable file fails the command instead.
+    // A `--set-*` is a read-modify-write over the WHOLE configuration, so two of
+    // them running at once (two operator shells, or two threads of the REST
+    // server) would both read the old state and both write a full replacement:
+    // the second silently discards the first while both callers are told they
+    // succeeded. Hold the exclusive guard across read+modify+write so that
+    // cannot interleave. Reads take no lock — a save publishes by atomic rename,
+    // so a reader sees the old or the new file, never a torn one.
+    let _guard = if mutating {
+        Some(
+            trigger_config_store::ExclusiveGuard::acquire_creating(path)
+                .map_err(|e| e.to_string())?,
+        )
+    } else {
+        None
+    };
+
+    // Read first, ALWAYS — including on the write path. Starting from the default
+    // when the existing file cannot be read would silently discard the operator's
+    // other triggers (and could disarm one they believe is on). An unreadable file
+    // fails the command instead.
     let persisted = trigger_config_store::load(path).map_err(|error| error.to_string())?;
     let mut config = persisted.unwrap_or_default();
 
@@ -476,6 +491,17 @@ fn cmd_evaluate(rest: &[String]) -> Result<(), String> {
             ranked,
         },
     };
+    // Same append-then-count hazard as the manual path, and worse here: one pass can
+    // append several records, so a concurrent writer interleaving would make the
+    // reported log-file-records describe a mixture of two passes.
+    let _guard = match &log_path {
+        Some(path) => {
+            trigger_config_store::ExclusiveGuard::acquire_if_parent_exists(Path::new(path))
+                .map_err(|error| error.to_string())?
+        }
+        None => None,
+    };
+
     let log = CollectingTriggerLog::new(log_path.as_deref().map(PathBuf::from));
 
     let evaluation = StrategyOrchestrator.evaluate_automatic_triggers(
@@ -603,6 +629,20 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
     let demoting = demoting.ok_or_else(|| format!("--demoting <id> is required\n\n{USAGE}"))?;
     let candidate = candidate.ok_or_else(|| format!("--candidate <id> is required\n\n{USAGE}"))?;
 
+    // The append is atomic on its own (`O_APPEND`), but the ordinal reported below
+    // is the log's record COUNT taken afterwards — a separate read. A concurrent
+    // fire landing between the two would make this invocation report an ordinal
+    // that addresses somebody else's record, and that ordinal is the identity the
+    // REST surface hands back for the trigger. Holding the guard across
+    // append+count is what makes it address the record this call actually wrote.
+    let _guard = match &log_path {
+        Some(path) => {
+            trigger_config_store::ExclusiveGuard::acquire_if_parent_exists(Path::new(path))
+                .map_err(|error| error.to_string())?
+        }
+        None => None,
+    };
+
     let log = CollectingTriggerLog::new(log_path.as_deref().map(PathBuf::from));
     let outcome = StrategyOrchestrator.request_manual_promotion(
         StrategyId::new(&demoting),
@@ -636,9 +676,9 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
         // only identity a fired manual trigger has: a caller can go to that
         // ordinal and read back the very record it caused, so a surface can bind
         // "the trigger fired" to a durable artefact rather than to an exit code.
-        // Single-logical-writer scope, like every other store here — a concurrent
-        // writer would make the ordinal ambiguous, which is why the operator
-        // surface serialises manual fires.
+        // The append and this count are both inside the exclusive guard taken
+        // above, so no concurrent fire can land between them and leave this
+        // ordinal addressing somebody else's record.
         if logged {
             println!("trigger-record-ordinal:{persisted}");
         }
