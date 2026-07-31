@@ -56,6 +56,7 @@ from atp_hotswap import (
     CliHotSwapTriggerSource,
     HotSwapStatusUnavailable,
     HotSwapTriggerCliRunner,
+    HotSwapTriggerCliUnavailable,
     HotSwapTriggerOutputUnreadable,
     parse_trigger_cli_output,
     strict_trigger_bool,
@@ -102,7 +103,7 @@ def _invoke_or_fail(source: CliHotSwapTriggerSource, args: list[str], *, what: s
 
     try:
         return source._invoke(args)  # noqa: SLF001 — same-module collaborator
-    except HotSwapStatusUnavailable as unavailable:
+    except HotSwapTriggerCliUnavailable as unavailable:
         raise InterfaceError(
             ErrorCategory.GATEWAY_TIMEOUT,
             f"{what}: {unavailable}",
@@ -140,6 +141,16 @@ class TriggerConfigHandler:
     def _get(self) -> HandlerResult:
         try:
             config = self._source.trigger_config()
+        except HotSwapTriggerCliUnavailable as unavailable:
+            # A wedged or missing BINARY is a different operator problem from a corrupt
+            # FILE — restart/repair the dependency versus repair the configuration — and the
+            # write paths already say so. Reporting one as the other sends the operator to
+            # the wrong place.
+            raise InterfaceError(
+                ErrorCategory.GATEWAY_TIMEOUT,
+                str(unavailable),
+                type="TRIGGER_CLI_UNAVAILABLE",
+            ) from unavailable
         except HotSwapTriggerOutputUnreadable as unreadable:
             raise InterfaceError(
                 ErrorCategory.INTERNAL_ERROR,

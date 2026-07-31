@@ -168,6 +168,11 @@ class Route:
     #: would reject, so it stays permissive; a strict handler that did not say so would
     #: promise callers an acceptance the live surface refuses.
     strict_request_body: bool = False
+    #: Body fields the route's handler REQUIRES, published as the schema's ``required``
+    #: array. Only meaningful once a handler exists — an unimplemented route cannot say
+    #: what it would demand, but a live one that rejects a missing field while the schema
+    #: calls it optional is drift a generated client walks straight into.
+    required_request_fields: tuple[str, ...] = field(default_factory=tuple)
 
 
 # --------------------------------------------------------------------------- #
@@ -343,6 +348,7 @@ ROUTES: tuple[Route, ...] = (
         ),
         srs_refs=("SRS-RESV-003", "SYS-49a"),
         request_fields=("demoting_strategy_id", "candidate_strategy_id", "confirm"),
+        required_request_fields=("demoting_strategy_id", "candidate_strategy_id"),
         response_fields=(
             "trigger_kind",
             "trigger_id",

@@ -38,12 +38,16 @@ class _FakeCli:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
         self.script: list[tuple[int, str, str]] = []
+        #: Set to raise instead of returning — a wedged or unlaunchable binary.
+        self.raises: BaseException | None = None
 
     def queue(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
         self.script.append((returncode, stdout, stderr))
 
     def __call__(self, argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         self.calls.append(argv)
+        if self.raises is not None:
+            raise self.raises
         if not self.script:
             raise AssertionError(f"unscripted CLI call: {argv}")
         returncode, stdout, stderr = self.script.pop(0)
@@ -781,3 +785,42 @@ def test_a_trigger_surface_that_cannot_log_refuses_to_start(tmp_path) -> None:
         _mount_hot_swap_trigger_arm(
             runtime, {"ATP_HOT_SWAP_TRIGGER_STATE": str(tmp_path / "triggers.json")}
         )
+
+
+def test_the_manual_schema_requires_the_ids_the_handler_requires(
+    mounted: tuple[str, int], fake_cli: _FakeCli
+) -> None:
+    # The handler rejects a body missing either id. A schema that lists them as merely
+    # optional lets a generated client build a valid request the shipped surface 400s.
+    import json as _json
+    from pathlib import Path as _Path
+
+    snapshot = _json.loads(
+        (_Path(__file__).resolve().parents[2] / "python/atp_api/openapi.json").read_text()
+    )
+    schema = snapshot["paths"]["/api/v1/hot-swap/triggers/manual"]["post"]["requestBody"][
+        "content"
+    ]["application/json"]["schema"]
+    assert set(schema.get("required", [])) == {
+        "demoting_strategy_id",
+        "candidate_strategy_id",
+    }, schema
+
+    # Behaviour matches the declaration in both directions.
+    for missing in ("demoting_strategy_id", "candidate_strategy_id"):
+        body_in = {k: v for k, v in _MANUAL_BODY.items() if k != missing}
+        status, _body = _request(
+            mounted, "POST", "/api/v1/hot-swap/triggers/manual?confirm=yes", body_in
+        )
+        assert status == 400, missing
+    assert fake_cli.calls == []
+
+
+def test_a_wedged_binary_is_reported_as_unavailable_not_as_a_corrupt_config(
+    mounted: tuple[str, int], fake_cli: _FakeCli
+) -> None:
+    # Restart/repair the dependency versus repair the file are different operator actions.
+    fake_cli.raises = subprocess.TimeoutExpired(["resv003_hot_swap_trigger_cli"], 30.0)
+    status, body = _request(mounted, "GET", "/api/v1/hot-swap/triggers")
+    assert status == 504, body
+    assert body.get("error", {}).get("type") == "TRIGGER_CLI_UNAVAILABLE", body

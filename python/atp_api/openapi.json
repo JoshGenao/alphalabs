@@ -508,6 +508,10 @@
                     "type": "string"
                   }
                 },
+                "required": [
+                  "demoting_strategy_id",
+                  "candidate_strategy_id"
+                ],
                 "type": "object"
               }
             }

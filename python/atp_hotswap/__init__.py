@@ -35,6 +35,7 @@ __all__ = [
     "CliHotSwapTriggerSource",
     "HotSwapStatusUnavailable",
     "HotSwapTriggerCliRunner",
+    "HotSwapTriggerCliUnavailable",
     "HotSwapTriggerOutputUnreadable",
     "parse_trigger_cli_output",
     "strict_trigger_bool",
@@ -57,6 +58,16 @@ class HotSwapStatusUnavailable(Exception):
 
     Reported to the operator verbatim — never swallowed into a clean-looking
     snapshot, and never treated as "no swap in progress".
+    """
+
+
+class HotSwapTriggerCliUnavailable(HotSwapStatusUnavailable):
+    """The trigger binary could not be RUN — it timed out, or could not be launched.
+
+    A subclass so the pane still degrades on the base class, while the REST arm can tell a
+    wedged or missing dependency apart from a configuration it read but could not parse.
+    Those need different operator responses (restart/repair the binary versus repair the
+    file), and reporting one as the other sends the operator to the wrong place.
     """
 
 
@@ -247,11 +258,11 @@ class CliHotSwapTriggerSource:
         try:
             return self._runner(argv, timeout=self._timeout)
         except subprocess.TimeoutExpired as expired:
-            raise HotSwapStatusUnavailable(
+            raise HotSwapTriggerCliUnavailable(
                 f"resv003_hot_swap_trigger_cli timed out after {self._timeout}s"
             ) from expired
         except OSError as launch_error:
-            raise HotSwapStatusUnavailable(
+            raise HotSwapTriggerCliUnavailable(
                 "resv003_hot_swap_trigger_cli could not be launched (is it built? "
                 "`cargo build -p atp-orchestrator --bin resv003_hot_swap_trigger_cli`): "
                 f"{launch_error}"

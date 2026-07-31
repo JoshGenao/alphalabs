@@ -971,3 +971,42 @@ def test_a_relative_log_path_still_fires_and_reads_back(tmp_path: Path) -> None:
     assert fired.returncode == 0, fired.stderr
     assert _kv(fired.stdout)["trigger-record-ordinal"] == "1", fired.stdout
     assert '"candidate_strategy_id":"beta"' in (tmp_path / "t.jsonl").read_text()
+
+
+def test_a_wedged_binary_stays_distinguishable_from_a_corrupt_configuration(
+    tmp_path: Path,
+) -> None:
+    # Two failures that demand opposite operator responses — restart or repair the binary,
+    # versus repair the file — must not arrive as the same error. Both remain subclasses of
+    # the pane's HotSwapStatusUnavailable, so the dashboard still degrades either way.
+    import subprocess as _subprocess
+
+    from atp_dashboard.hotswap import HotSwapStatusProvider
+    from atp_hotswap import (
+        CliHotSwapTriggerSource,
+        HotSwapStatusUnavailable,
+        HotSwapTriggerCliUnavailable,
+    )
+
+    assert issubclass(HotSwapTriggerCliUnavailable, HotSwapStatusUnavailable)
+
+    def wedged(argv: list[str], *, timeout: float):
+        raise _subprocess.TimeoutExpired(argv, timeout)
+
+    source = CliHotSwapTriggerSource(tmp_path / "triggers.json", runner=wedged)
+    with pytest.raises(HotSwapTriggerCliUnavailable):
+        source.trigger_config()
+
+    # A corrupt FILE is the other class: read fine, parsed badly.
+    state = tmp_path / "corrupt.json"
+    _cli("config", "--state", str(state), "--set-top-ranked", "on")
+    state.write_text('{"magic":"ATP-HOT-SWAP-TRIGGER-CONFIG","schema_version":1,"top_')
+    corrupt = CliHotSwapTriggerSource(state, binary=_trigger_cli())
+    with pytest.raises(HotSwapStatusUnavailable) as raised:
+        corrupt.trigger_config()
+    assert not isinstance(raised.value, HotSwapTriggerCliUnavailable), raised.value
+
+    # And the pane degrades honestly on the wedged case too — never to "disabled".
+    snapshot = HotSwapStatusProvider(source).hot_swap_snapshot()
+    assert snapshot["ok"] is False, snapshot
+    assert snapshot["auto_triggers_enabled"]["value"] is None, snapshot

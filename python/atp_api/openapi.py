@@ -63,6 +63,7 @@ def _placeholder_object_schema(
     field_types: Mapping[str, str] | None = None,
     *,
     strict: bool = False,
+    required: Iterable[str] = (),
 ) -> dict[str, Any]:
     """An object schema over ``field_names``.
 
@@ -82,7 +83,7 @@ def _placeholder_object_schema(
         # is the DEFAULT state — must say so, or the commonest valid response is documented
         # as schema-invalid.
         properties[name] = {"type": declared.split("|")} if "|" in declared else {"type": declared}
-    return {
+    schema: dict[str, Any] = {
         "type": "object",
         "properties": properties,
         # An unimplemented route cannot say what it would reject, so its placeholder stays
@@ -90,6 +91,10 @@ def _placeholder_object_schema(
         # contract promises an acceptance the live surface refuses.
         "additionalProperties": not strict,
     }
+    required_fields = [name for name in required if name in properties]
+    if required_fields:
+        schema["required"] = required_fields
+    return schema
 
 
 def _build_parameters(route: Route) -> list[dict[str, Any]]:
@@ -169,7 +174,10 @@ def _build_request_body(route: Route) -> dict[str, Any] | None:
             "content": {
                 "application/json": {
                     "schema": _placeholder_object_schema(
-                        body_fields, dict(route.field_types), strict=route.strict_request_body
+                        body_fields,
+                        dict(route.field_types),
+                        strict=route.strict_request_body,
+                        required=route.required_request_fields,
                     )
                 }
             },
