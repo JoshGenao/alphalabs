@@ -804,3 +804,45 @@ def test_a_non_string_strategy_id_never_reaches_the_audit_log(tmp_path: Path) ->
                 )
             )
     assert not log.exists(), log.read_text()
+
+
+def test_a_misspelled_rest_trigger_field_never_persists_a_partial_change(
+    tmp_path: Path,
+) -> None:
+    # End to end against the REAL binary: a typo'd flag must not quietly apply its correctly
+    # spelled sibling and report success. The operator would leave believing both triggers
+    # are armed, and the durable file would disagree.
+    from atp_orchestration import mount_hot_swap_triggers
+    from atp_runtime import OperatorInterfaceRuntime
+    from atp_runtime.errors import InterfaceError
+    from atp_runtime.registry import OperationKey, Request, Surface
+
+    state = tmp_path / "triggers.json"
+    runtime = OperatorInterfaceRuntime()
+    mount_hot_swap_triggers(
+        runtime,
+        state_path=state,
+        log_path=tmp_path / "triggers.jsonl",
+        binary=_trigger_cli(),
+    )
+    key = OperationKey(Surface.REST, "PUT /api/v1/hot-swap/triggers")
+    handler = runtime.registry.resolve(key, deferred=None)  # type: ignore[arg-type]
+
+    with pytest.raises(InterfaceError):
+        handler.handle(
+            Request(
+                surface=Surface.REST,
+                operation=key,
+                method="PUT",
+                body={
+                    "drawdown_demotion_enabledd": True,
+                    "top_ranked_promotion_enabled": True,
+                },
+                confirmed=True,
+            )
+        )
+
+    # Nothing persisted at all: not the typo, and not its correctly spelled sibling.
+    assert not state.exists(), state.read_text()
+    after = _kv(_cli("config", "--state", str(state)).stdout)
+    assert after["any-automatic-enabled"] == "false", after

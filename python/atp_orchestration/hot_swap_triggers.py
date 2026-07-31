@@ -77,6 +77,18 @@ __all__ = [
 #: caller is told, in the payload itself, that nothing was demoted or promoted.
 EXECUTION_OWNER = "SRS-RESV-004"
 
+#: The exact set of body keys ``PUT /api/v1/hot-swap/triggers`` accepts. `confirm` is the
+#: transport's confirmation token, which arrives in the body on some clients.
+_PUT_TRIGGER_FIELDS = frozenset(
+    {
+        "drawdown_demotion_enabled",
+        "drawdown_demotion_threshold_bps",
+        "top_ranked_promotion_enabled",
+        "highest_momentum_promotion_enabled",
+        "confirm",
+    }
+)
+
 # The operations this feature owns on the frozen SRS-API-001 contract.
 REST_TRIGGER_CONFIG_GET = OperationKey(Surface.REST, "GET /api/v1/hot-swap/triggers")
 REST_TRIGGER_CONFIG_PUT = OperationKey(Surface.REST, "PUT /api/v1/hot-swap/triggers")
@@ -138,6 +150,21 @@ class TriggerConfigHandler:
             )
         args = ["config", "--state", self._state_path]
         body = request.body
+
+        # Reading only the keys it expects would make this handler blind to the ones it does
+        # not: `{"drawdown_demotion_enabledd": true}` would return 200 having armed nothing,
+        # leaving the operator believing a trigger is on. Same rule the durable format
+        # already enforces on the file — a request is no less load-bearing than the bytes it
+        # produces, so the allowlist applies at both ends.
+        unknown = sorted(set(body) - _PUT_TRIGGER_FIELDS)
+        if unknown:
+            raise InterfaceError(
+                ErrorCategory.BAD_REQUEST,
+                f"unknown trigger configuration field(s): {', '.join(unknown)}. Accepted: "
+                f"{', '.join(sorted(_PUT_TRIGGER_FIELDS))}",
+                type="UNKNOWN_TRIGGER_CONFIG_FIELD",
+                detail={"unknown": unknown},
+            )
 
         drawdown = _optional_bool(body, "drawdown_demotion_enabled")
         threshold = body.get("drawdown_demotion_threshold_bps")

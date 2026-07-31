@@ -645,3 +645,21 @@ def test_a_trigger_that_does_not_match_the_request_is_not_reported_as_success(
     assert status >= 500, body
     assert body.get("error", {}).get("type") == "MANUAL_TRIGGER_MISATTRIBUTED", body
     assert "trigger_id" not in body
+
+
+def test_a_misspelled_trigger_field_is_refused_not_silently_dropped(
+    mounted: tuple[str, int], fake_cli: _FakeCli
+) -> None:
+    # The same fail-open the durable format already refuses, arriving one layer earlier:
+    # reading only expected keys means a typo returns 200 having armed nothing, and the
+    # operator walks away believing the trigger is on.
+    status, body = _request(
+        mounted,
+        "PUT",
+        "/api/v1/hot-swap/triggers?confirm=yes",
+        {"drawdown_demotion_enabledd": True, "top_ranked_promotion_enabled": True},
+    )
+    assert status == 400, body
+    assert body.get("error", {}).get("type") == "UNKNOWN_TRIGGER_CONFIG_FIELD", body
+    # Nothing was applied — not even the recognised sibling field.
+    assert fake_cli.calls == [], fake_cli.calls
