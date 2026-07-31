@@ -2991,9 +2991,33 @@ pub struct ReservoirRankingSnapshot {
 }
 
 impl ReservoirRankingSnapshot {
+    /// Whether the ranking is well formed enough to select from at all.
+    ///
+    /// `rank` is 1-based, and a rank must identify exactly one row. A `0` means the producer
+    /// did not actually rank that strategy, and a duplicate means the ranking does not say
+    /// which of two strategies is ahead — in both cases "the top-ranked strategy" is not a
+    /// question the data can answer. Selecting anyway would let a corrupt or skewed
+    /// SRS-RESV-002 feed promote an unranked or ambiguously ranked strategy into the single
+    /// live slot, so the accessors below fail closed on it exactly as they already do for an
+    /// empty ranking or a non-finite score.
+    fn ranks_are_well_formed(&self) -> bool {
+        let mut seen: Vec<u32> = Vec::with_capacity(self.ranked.len());
+        for row in &self.ranked {
+            if row.rank == 0 || seen.contains(&row.rank) {
+                return false;
+            }
+            seen.push(row.rank);
+        }
+        true
+    }
+
     /// The top-ranked strategy (lowest `rank`), or `None` if the ranking is
-    /// empty or the selected row has non-finite scores (fail closed).
+    /// empty, carries a malformed rank (0 or duplicated), or the selected row
+    /// has non-finite scores (fail closed).
     pub fn top_by_rank(&self) -> Option<&RankedStrategy> {
+        if !self.ranks_are_well_formed() {
+            return None;
+        }
         let best = self.ranked.iter().min_by_key(|row| row.rank)?;
         if best.scores_finite() {
             Some(best)
@@ -3007,6 +3031,11 @@ impl ReservoirRankingSnapshot {
     /// or lose a `partial_cmp`). Ties break deterministically toward the lower
     /// `rank`.
     pub fn top_by_momentum(&self) -> Option<&RankedStrategy> {
+        // Malformed ranks disqualify this selector too: it breaks momentum ties BY rank, so
+        // a duplicated or zero rank makes the tie-break arbitrary rather than deterministic.
+        if !self.ranks_are_well_formed() {
+            return None;
+        }
         if self.ranked.iter().any(|row| !row.scores_finite()) {
             return None;
         }

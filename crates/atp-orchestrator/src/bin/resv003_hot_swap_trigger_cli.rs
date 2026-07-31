@@ -502,6 +502,13 @@ fn cmd_evaluate(rest: &[String]) -> Result<(), String> {
         None => None,
     };
 
+    // Same ordering rule as the manual path: validate the existing log before appending to
+    // it, so an unreadable log refuses the pass rather than being discovered afterwards.
+    let pre_count = match &log_path {
+        Some(path) => count_log_records(Path::new(path))?,
+        None => 0,
+    };
+
     let log = CollectingTriggerLog::new(log_path.as_deref().map(PathBuf::from));
 
     let evaluation = StrategyOrchestrator.evaluate_automatic_triggers(
@@ -553,7 +560,11 @@ fn cmd_evaluate(rest: &[String]) -> Result<(), String> {
     );
 
     if let Some(path) = &log_path {
-        let persisted = count_log_records(Path::new(path))?;
+        // Derived from the pre-count plus what this pass wrote, not from a fresh read: the
+        // Derived from the pre-count plus what this pass wrote, not from a fresh read: the
+        // guard is still held, so this is exact — and it cannot fail after the bytes are
+        // already durable.
+        let persisted = pre_count + logged;
         println!("log-persisted:{path}");
         println!("log-file-records:{persisted}");
     }
@@ -643,6 +654,17 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
         None => None,
     };
 
+    // Read the existing log BEFORE firing. Counting afterwards meant a malformed prior line
+    // failed the command *after* the new record had been appended and fsynced: the caller
+    // was told the trigger did not fire while the durable log said it did — the exact
+    // audit/actionability contradiction this layer exists to prevent. Every fallible read
+    // now happens ahead of the append, under the same guard, so a log this build cannot
+    // read refuses the fire instead of joining it.
+    let pre_count = match &log_path {
+        Some(path) => count_log_records(Path::new(path))?,
+        None => 0,
+    };
+
     let log = CollectingTriggerLog::new(log_path.as_deref().map(PathBuf::from));
     let outcome = StrategyOrchestrator.request_manual_promotion(
         StrategyId::new(&demoting),
@@ -676,7 +698,10 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
     println!("manual-logged:{logged}");
 
     if let Some(path) = &log_path {
-        let persisted = count_log_records(Path::new(path))?;
+        // Derived from the pre-count plus what this pass wrote, not from a fresh read: the
+        // guard is still held and exactly one record was appended, so this is exact — and
+        // it cannot fail after the bytes are already durable.
+        let persisted = pre_count + usize::from(logged);
         println!("log-persisted:{path}");
         println!("log-file-records:{persisted}");
         // The 1-based position of the record THIS invocation appended, which is

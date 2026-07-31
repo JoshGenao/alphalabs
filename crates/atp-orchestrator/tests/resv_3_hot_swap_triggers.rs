@@ -782,3 +782,63 @@ fn resv_3_manual_promotion_refuses_a_self_swap_and_logs_nothing() {
     };
     assert_eq!(strategy_id.as_str(), "live-a");
 }
+
+/// SRS-RESV-003: a malformed ranking must not yield a promotion candidate.
+///
+/// `rank` is 1-based and must identify exactly one row. A `0` says the producer did not rank
+/// that strategy; a duplicate says the ranking cannot state which of two is ahead. Neither
+/// answers "the top-ranked strategy", so an automatic promotion trigger must fire nothing
+/// rather than promote an unranked or ambiguously ranked strategy into the single live slot.
+#[test]
+fn resv_3_malformed_ranks_fail_closed_no_promotion() {
+    let zero_rank = ReservoirRankingSnapshot {
+        evaluation_window_days: 30,
+        ranked: vec![RankedStrategy {
+            strategy_id: StrategyId::new("cand-a"),
+            rank: 0,
+            risk_adjusted_score: 2.5,
+            momentum_score: 0.9,
+        }],
+    };
+    assert!(zero_rank.top_by_rank().is_none());
+    assert!(zero_rank.top_by_momentum().is_none());
+
+    let duplicate_rank = ReservoirRankingSnapshot {
+        evaluation_window_days: 30,
+        ranked: vec![
+            RankedStrategy {
+                strategy_id: StrategyId::new("cand-a"),
+                rank: 1,
+                risk_adjusted_score: 2.5,
+                momentum_score: 0.9,
+            },
+            RankedStrategy {
+                strategy_id: StrategyId::new("cand-b"),
+                rank: 1,
+                risk_adjusted_score: 2.4,
+                momentum_score: 0.8,
+            },
+        ],
+    };
+    assert!(duplicate_rank.top_by_rank().is_none());
+    assert!(duplicate_rank.top_by_momentum().is_none());
+
+    // Positive control: a well-formed ranking still selects, so the guard is not vacuous.
+    let healthy = ReservoirRankingSnapshot {
+        evaluation_window_days: 30,
+        ranked: vec![RankedStrategy {
+            strategy_id: StrategyId::new("cand-a"),
+            rank: 1,
+            risk_adjusted_score: 2.5,
+            momentum_score: 0.9,
+        }],
+    };
+    assert_eq!(
+        healthy.top_by_rank().unwrap().strategy_id.as_str(),
+        "cand-a"
+    );
+    assert_eq!(
+        healthy.top_by_momentum().unwrap().strategy_id.as_str(),
+        "cand-a"
+    );
+}

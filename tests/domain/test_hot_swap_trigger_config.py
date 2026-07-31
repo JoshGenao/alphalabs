@@ -712,3 +712,21 @@ def test_a_self_swap_is_refused_by_the_domain_layer_not_just_the_rest_wrapper(
     assert "manual-refused:SAME_STRATEGY" in result.stdout, result.stdout
     # ...and no audit record exists for a swap that was never proposed.
     assert not log.exists() or log.read_text() == "", log.read_text()
+
+
+def test_an_unreadable_log_refuses_the_fire_instead_of_joining_it(tmp_path: Path) -> None:
+    # The contradiction this ordering prevents: counting the log AFTER appending meant a
+    # malformed prior line failed the command once the new record was already fsynced. The
+    # caller was told the trigger did not fire while the durable log said it did — and the
+    # REST wrapper turns that nonzero exit into exactly that claim.
+    log = tmp_path / "triggers.jsonl"
+    log.write_text('{"kind":"MANUAL_PROMOTION","candidate_strategy_id":\n')  # torn prior line
+    before = log.read_text()
+
+    result = _cli("manual", "--demoting", "alpha", "--candidate", "beta", "--log", str(log))
+
+    assert result.returncode != 0, result.stdout
+    # Refused BEFORE writing: the log is byte-identical, so the failure report and the
+    # durable record agree that nothing fired.
+    assert log.read_text() == before, log.read_text()
+    assert "MANUAL_PROMOTION" not in result.stdout or "beta" not in log.read_text()
