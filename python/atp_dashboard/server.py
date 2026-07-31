@@ -29,6 +29,7 @@ from types import FrameType
 
 from atp_logging import LogClass
 from atp_logging.persistence import JsonlLogStore
+from atp_orchestration import mount_rollback
 from atp_runtime import OperatorInterfaceRuntime
 
 from .account import AccountStatusProvider
@@ -320,6 +321,21 @@ def mount_default_dashboard(
         inventory = StrategyInventoryProvider(
             RollbackSnapshotInventorySource(state_path=deployment_state)
         )
+        # SRS-ORCH-005 'via the dashboard' leg: the SAME snapshot that feeds the
+        # inventory READ also backs the rollback WRITE, so the per-row ROLLBACK
+        # control POSTs same-origin to a real handler instead of the bare
+        # runtime's honest 501. Composing here (rather than leaving it to
+        # SRS-API-001) is what makes rollback genuinely "available through the
+        # dashboard" in the shipped `python -m atp_dashboard` entrypoint — one
+        # env knob, one snapshot file, one runtime. The handler keeps every
+        # guard it enforces on the CLI/REST surfaces: an unconfirmed rollback is
+        # refused 428 before it can reach the binary, so mounting the control
+        # never weakens the NFR-S2 confirmation parity.
+        #
+        # Unset ATP_DEPLOYMENT_STATE composes NEITHER arm: no inventory route and
+        # no rollback handler, so the operation keeps its honest 501 rather than
+        # a control that posts into a snapshot that does not exist.
+        mount_rollback(runtime, state_path=deployment_state)
     # The SRS-UI-003 account + Reservoir + UI-1 alerts providers are pure builders
     # (no env, no subprocess), so they are ALWAYS composed here — the production
     # entrypoint actually serves /dashboard/api/{account,reservoir,alerts} and

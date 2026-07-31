@@ -2455,6 +2455,8 @@
     "designation_source": "crates/atp-execution/src/designation.rs",
     "cli_bin_source": "crates/atp-orchestrator/src/bin/orch005_rollback_cli.rs",
     "handler_source": "python/atp_orchestration/rollback_handler.py",
+    "dashboard_server_source": "python/atp_dashboard/server.py",
+    "dashboard_app_source": "python/atp_dashboard/assets/app.js",
     "cli_bin": "orch005_rollback_cli",
     "retention_port": {
       "trait": "RetainedDeployedVersionRegistry",
@@ -2501,11 +2503,11 @@
       ]
     },
     "deferred": [
-      "The DASHBOARD rollback control (a confirm-modal POSTing the confirmed lifecycle rollback route this feature serves) \u2014 the dashboard is a read-only surface by tested design and is owned by SRS-UI-001; mount_rollback puts the confirmed endpoint on the same server the dashboard is mounted on (owner: SRS-UI-001 / UI-2)",
       "The REAL live-designation probe feeding the gate's live check \u2014 the runtime handler's default live_strategy_provider reports no live strategy until the live-designation state runtime lands, so on that path the transport confirmation guard (which 428s EVERY unconfirmed rollback) remains the enforced control; the domain-level live guard is proven by the gate/bin tests (owner: SRS-EXE-001 / SRS-RESV-001..006)",
       "The DURABLE deployed-version registry store \u2014 RetainingVersionRegistry is in-memory; the bin's state snapshot is its demonstration port (owner: the durable registry named in deployment_version_contract.deferred)",
-      "Process-composition of mount_rollback into a shipped runtime main (owner: SRS-API-001)"
-    ]
+      "Process-composition of mount_rollback into runtime mains OTHER than the dashboard \u2014 the SRS-UI-001 dashboard entrypoint composes it (see dashboard_control); a general operator-runtime main that composes every domain handler remains SRS-API-001's"
+    ],
+    "dashboard_control": "LANDED (SRS-ORCH-005 'via the dashboard' leg): python/atp_dashboard/server.py mount_default_dashboard composes atp_orchestration.mount_rollback under the SAME ATP_DEPLOYMENT_STATE knob that builds the SRS-UI-002 inventory, so the snapshot the panel READS is the snapshot the control WRITES and the surface can never be half-composed. The per-row ROLLBACK button in assets/app.js is the SAME two-step arm-then-confirm affordance as UI-2's promote-live (NFR-S2 confirmation parity is literal: same 5 s arm window, same in-flight serialization, and the operator's confirm act rides on the same `confirm` token on the contract route) and the two are MUTUALLY EXCLUSIVE \u2014 arming either disarms the other, and while either request is in flight every control is inert. The rollback TARGET is the retained previous version read from the inventory's previous_version_identifier; a strategy with none renders a DISABLED control (SYS-80 is inert before a second deployment) rather than posting a request the gate would refuse. Rendering is fail-closed: a rollback reads as done only when the runtime's own response names the confirmed strategy AND carries lifecycle_state 'rolled-back' AND an evidenced deployment_version_hash \u2014 a bare 2xx, a differently-named strategy, or a missing hash all render UNRESOLVED, never success. Unset ATP_DEPLOYMENT_STATE composes NEITHER arm (the operation keeps its honest 501). Evidence: tests/e2e/test_dashboard_refresh.py::test_orch_005_* (browser) + tests/domain/test_strategy_rollback.py::test_production_dashboard_composition_serves_the_rollback_surface (composition guard)."
   },
   "strategy_api_parity_contract": {
     "requirement": "SRS-SDK-001",
@@ -3945,7 +3947,7 @@
       },
       {
         "feature": "SRS-ORCH-005",
-        "what": "Rollback semantics LANDED (SYS-80 retention + the exact-target rollback gate + the NFR-S2 domain-level strategy-bound confirmation, served via python/atp_orchestration.mount_rollback over orch005_rollback_cli \u2014 see rollback_contract). Remaining on this surface: composition of mount_rollback into a shipped runtime main (the bare runtime keeps `strategy rollback` and the lifecycle rollback action at their honest 501), the real live-designation probe (SRS-EXE-001/SRS-RESV-*), and the dashboard rollback control (SRS-UI-001)."
+        "what": "Rollback LANDED across all three AC surfaces (SYS-80 retention + the exact-target rollback gate + the NFR-S2 domain-level strategy-bound confirmation, served via python/atp_orchestration.mount_rollback over orch005_rollback_cli \u2014 see rollback_contract): CLI `strategy rollback`, the REST lifecycle rollback action, and the DASHBOARD control (rollback_contract.dashboard_control \u2014 mount_default_dashboard composes mount_rollback under ATP_DEPLOYMENT_STATE, and the per-row ROLLBACK button is the same arm-then-confirm affordance as promote-live). Remaining on this surface (neither blocks the SRS-ORCH-005 AC): composition of mount_rollback into runtime mains other than the dashboard (SRS-API-001), and the real live-designation probe (SRS-EXE-001/SRS-RESV-*) \u2014 until it lands the transport confirmation guard 428s EVERY unconfirmed rollback, which is strictly stronger than the AC's live-only requirement."
       },
       {
         "feature": "SRS-RESV-003",
@@ -3977,7 +3979,7 @@
       },
       {
         "feature": "SRS-UI-001",
-        "what": "Dashboard binding to the WebSocket channels (PNL, METRICS, ACCOUNT_STATUS, HEARTBEAT, STRATEGY_STATE, RESERVOIR_RANKING) and the REST surface. The SDK pins the channel set and refresh ceilings (NFR-P2 \u22645 s); the dashboard rendering belongs to SRS-UI-001. Also owns the dashboard ROLLBACK control \u2014 a button + UI-4-style confirm modal POSTing the confirmed lifecycle rollback route mount_rollback serves (SRS-ORCH-005 / SYS-80 'via the dashboard' leg)."
+        "what": "Dashboard binding to the WebSocket channels (PNL, METRICS, ACCOUNT_STATUS, HEARTBEAT, STRATEGY_STATE, RESERVOIR_RANKING) and the REST surface. The SDK pins the channel set and refresh ceilings (NFR-P2 \u22645 s); the dashboard rendering belongs to SRS-UI-001. The dashboard ROLLBACK control it used to own is LANDED and now owned by SRS-ORCH-005 (see rollback_contract.dashboard_control) \u2014 do not rebuild it."
       },
       {
         "feature": "operator-interface-runtime",

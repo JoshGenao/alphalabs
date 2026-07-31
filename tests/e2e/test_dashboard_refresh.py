@@ -3186,3 +3186,388 @@ def test_ui_5_arm_window_expires_back_to_the_resting_caption(hot_swap_dashboard:
             assert page.eval_on_selector("#hs", "e => e.dataset.state") != "armed"
         finally:
             browser.close()
+
+
+# --------------------------------------------------------------------------- #
+# SRS-ORCH-005 — rollback "via the dashboard" (SyRS SYS-80 / NFR-S2)
+#
+# The AC names three surfaces (dashboard, CLI, REST) and requires rollback of
+# the LIVE strategy to use "the same confirmation control as live promotion".
+# These tests cover the dashboard arm over the PRODUCTION composition
+# (mount_default_dashboard, which now also mounts the ORCH-005 handler on the
+# same runtime when ATP_DEPLOYMENT_STATE is set) — so the control POSTs to a
+# REAL handler, not a stub, and the CLI/REST arms are the same code path.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture()
+def rollback_dashboard(tmp_path) -> Iterator[tuple]:
+    """A production-composed dashboard over a snapshot where alpha-1 has been
+    deployed TWICE — so a retained previous version exists and rollback is
+    actionable — while beta-9 has been deployed once and must stay inert."""
+
+    import subprocess
+    from pathlib import Path
+
+    from atp_dashboard import mount_default_dashboard
+
+    root = Path(__file__).resolve().parents[2]
+    binary = root / "target" / "debug" / "orch005_rollback_cli"
+    if not binary.exists():
+        build = subprocess.run(
+            ["cargo", "build", "-q", "-p", "atp-orchestrator", "--bin", "orch005_rollback_cli"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if build.returncode != 0:
+            pytest.skip(f"cannot build orch005_rollback_cli: {build.stderr}")
+
+    state = tmp_path / "deploy.state"
+
+    def _record(sid: str, digit: str, ts: str) -> None:
+        subprocess.run(
+            [
+                str(binary),
+                "record",
+                "--state",
+                str(state),
+                "--strategy",
+                sid,
+                "--hash",
+                "sha256:" + digit * 64,
+                "--observed-at",
+                ts,
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    # alpha-1: v1 then v2 -> previous = v1 (the rollback target).
+    _record("alpha-1", "1", "100")
+    _record("alpha-1", "2", "200")
+    # beta-9: a single deployment -> no previous version, rollback stays inert.
+    _record("beta-9", "9", "300")
+
+    runtime = OperatorInterfaceRuntime()
+    publisher = mount_default_dashboard(runtime, {"ATP_DEPLOYMENT_STATE": str(state)})
+    publisher.start()
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        yield f"http://{host}:{port}/dashboard", "sha256:" + "1" * 64, "sha256:" + "2" * 64
+    finally:
+        publisher.stop()
+        runtime.stop()
+
+
+def _rollback_btn(page, strategy: str):
+    return page.locator(f'#inventory-rows tr[data-strategy="{strategy}"] .rollback__btn')
+
+
+def _arm_rollback(page, btn) -> None:
+    """Click until the control is actually armed — a 5 s inventory tick can
+    void a staged arm between clicks, which is by design."""
+    for _ in range(6):
+        btn.click()
+        try:
+            page.wait_for_function(
+                "document.querySelector('.rollback__btn[data-armed=\"true\"]') !== null",
+                timeout=1_000,
+            )
+            return
+        except Exception:  # noqa: BLE001 — a tick disarmed us; try again
+            continue
+    raise AssertionError("ROLLBACK could not be armed")
+
+
+def _confirm_rollback(page, strategy: str = "alpha-1") -> None:
+    btn = _rollback_btn(page, strategy)
+    for _ in range(4):
+        _arm_rollback(page, btn)
+        btn.click()
+        try:
+            page.wait_for_function(
+                "document.querySelector('.rollback__btn').dataset.armed === 'false'",
+                timeout=2_000,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        if page.eval_on_selector("#rollback-state", "e => e.dataset.state") != "resting":
+            return  # the confirm click fired
+    raise AssertionError("ROLLBACK confirm click never fired")
+
+
+def test_orch_005_rollback_is_inert_without_a_retained_previous_version(
+    rollback_dashboard,
+) -> None:
+    """SYS-80 is INERT before a second deployment: a strategy with no retained
+    previous version presents a DISABLED rollback control (never a hidden one —
+    the operator must be able to see there is nothing to roll back to), and
+    clicking it fires no request. The re-deployed strategy's control IS live."""
+
+    url, _v1, _v2 = rollback_dashboard
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            posts: list[str] = []
+            page.on(
+                "request",
+                lambda req: posts.append(req.url) if req.method == "POST" else None,
+            )
+            page.goto(url, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 2", timeout=5_000
+            )
+
+            # beta-9 was deployed once -> nothing to roll back to.
+            beta = _rollback_btn(page, "beta-9")
+            assert beta.count() == 1
+            assert beta.is_disabled()
+            assert "nothing to roll back to" in (beta.get_attribute("title") or "")
+
+            # alpha-1 was re-deployed -> the control is actionable.
+            alpha = _rollback_btn(page, "alpha-1")
+            assert alpha.count() == 1
+            assert alpha.is_enabled()
+            assert alpha.inner_text().strip().upper() == "ROLLBACK"
+
+            # A click on the inert control stages nothing and posts nothing.
+            beta.click(force=True)
+            assert page.eval_on_selector("#rollback-state", "e => e.dataset.state") == "resting"
+            assert posts == []
+        finally:
+            browser.close()
+
+
+def test_orch_005_rollback_requires_the_same_confirmation_control_as_promotion(
+    rollback_dashboard,
+) -> None:
+    """NFR-S2 confirmation parity: rollback is the SAME two-step
+    arm-then-confirm affordance as live promotion. One click stages the target
+    (naming the exact strategy AND the retained previous hash) and fires NO
+    request; the window auto-disarms; the confirmed click POSTs exactly once to
+    the lifecycle contract route and the REAL handler restores the previous
+    version, evidenced by the hash in the runtime's own response."""
+
+    url, v1, v2 = rollback_dashboard
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            posts: list[str] = []
+            page.on(
+                "request",
+                lambda req: posts.append(req.url) if req.method == "POST" else None,
+            )
+            page.goto(url, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 2", timeout=5_000
+            )
+
+            # Click 1: arm. No POST leaves the page.
+            _arm_rollback(page, _rollback_btn(page, "alpha-1"))
+            armed = page.evaluate(
+                "() => {"
+                " const b = document.querySelector('#inventory-rows"
+                ' tr[data-strategy="alpha-1"] .rollback__btn\');'
+                " return {"
+                "  armed: b.dataset.armed,"
+                "  label: b.textContent,"
+                "  target: b.dataset.target,"
+                "  state: document.getElementById('rollback-state').dataset.state,"
+                "  status: document.getElementById('rollback-status').textContent,"
+                "  rowStaged: b.closest('tr').classList.contains('rollback-armed'),"
+                " };"
+                "}"
+            )
+            assert armed["armed"] == "true"
+            assert "CONFIRM ROLLBACK: alpha-1?" in armed["label"]
+            # The staged target is the RETAINED PREVIOUS version, not the current.
+            assert armed["target"] == v1
+            assert armed["target"] != v2
+            assert "alpha-1" in armed["status"] and v1 in armed["status"]
+            assert armed["state"] == "armed"
+            assert armed["rowStaged"] is True
+            assert not [u for u in posts if "lifecycle" in u]
+
+            # The arm window auto-disarms back to resting — no request fired.
+            page.wait_for_function(
+                "document.querySelector('#inventory-rows"
+                " tr[data-strategy=\"alpha-1\"] .rollback__btn').dataset.armed === 'false'",
+                timeout=7_000,
+            )
+            assert page.eval_on_selector("#rollback-state", "e => e.dataset.state") == "resting"
+            assert not [u for u in posts if "lifecycle" in u]
+
+            # Arm-then-confirm: exactly ONE POST to the contract lifecycle route,
+            # answered by the REAL composed handler.
+            _confirm_rollback(page)
+            page.wait_for_function(
+                "['live','error'].includes("
+                "document.getElementById('rollback-state').dataset.state)",
+                timeout=10_000,
+            )
+            lifecycle_posts = [u for u in posts if "lifecycle" in u]
+            assert len(lifecycle_posts) == 1
+            # The confirm token rides in the same place promote-live puts it.
+            assert lifecycle_posts[0].endswith(
+                "/api/v1/strategies/alpha-1/lifecycle?confirm=true"
+            )
+
+            status = page.locator("#rollback-status").inner_text()
+            assert page.eval_on_selector("#rollback-state", "e => e.dataset.state") == "live", (
+                status
+            )
+            # The evidence is the RESTORED version hash, from the runtime itself.
+            assert "confirmed rollback" in status and "alpha-1" in status
+            assert v1 in status
+        finally:
+            browser.close()
+
+
+def test_orch_005_rollback_renders_refusals_and_unevidenced_success_honestly(
+    rollback_dashboard,
+) -> None:
+    """Fail-closed rendering: every refusal in the gate's taxonomy renders as a
+    refusal naming its machine reason, and a 2xx the runtime cannot evidence is
+    rendered UNRESOLVED — never as a rollback that happened. A success naming a
+    different strategy than the one confirmed is refused too (the NFR-S2
+    confirmation is bound to one exact strategy)."""
+
+    url, _v1, _v2 = rollback_dashboard
+    # Trailing * so the glob absorbs the ?confirm=true token the control sends.
+    route_glob = "**/api/v1/strategies/*/lifecycle*"
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.goto(url, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 2", timeout=5_000
+            )
+
+            def _answer(status: int, body: str) -> None:
+                page.unroute(route_glob)
+                page.route(
+                    route_glob,
+                    lambda route: route.fulfill(
+                        status=status, content_type="application/json", body=body
+                    ),
+                )
+
+            # 428 — the transport confirmation guard.
+            _answer(
+                428,
+                '{"error": {"category": "CONFIRMATION_REQUIRED",'
+                ' "type": "LIVE_ROLLBACK_UNCONFIRMED",'
+                ' "detail": {"reason": "LIVE_ROLLBACK_UNCONFIRMED"}}}',
+            )
+            _confirm_rollback(page)
+            page.wait_for_function(
+                "document.getElementById('rollback-state').dataset.state === 'error'",
+                timeout=10_000,
+            )
+            refused = page.locator("#rollback-status").inner_text()
+            assert "REFUSED 428" in refused and "LIVE_ROLLBACK_UNCONFIRMED" in refused
+            assert "not rolled back" in refused
+
+            # 500 — an unprovable live status never waives NFR-S2 (fail closed).
+            _answer(
+                500,
+                '{"error": {"category": "INTERNAL_ERROR",'
+                ' "type": "LIVE_STATUS_UNAVAILABLE",'
+                ' "detail": {"reason": "LIVE_STATUS_UNAVAILABLE"}}}',
+            )
+            _confirm_rollback(page)
+            page.wait_for_function(
+                "document.getElementById('rollback-status').textContent.includes('500')",
+                timeout=10_000,
+            )
+            assert "LIVE_STATUS_UNAVAILABLE" in page.locator("#rollback-status").inner_text()
+
+            # A 200 with NO evidenced restored version is UNRESOLVED, not success.
+            _answer(200, '{"strategy_id": "alpha-1", "lifecycle_state": "rolled-back"}')
+            _confirm_rollback(page)
+            page.wait_for_function(
+                "document.getElementById('rollback-status').textContent.includes('UNRESOLVED')",
+                timeout=10_000,
+            )
+            unresolved = page.locator("#rollback-status").inner_text()
+            assert page.eval_on_selector("#rollback-state", "e => e.dataset.state") == "error"
+            assert "confirmed rollback" not in unresolved
+
+            # A 200 whose lifecycle_state is not "rolled-back" is UNRESOLVED too.
+            _answer(
+                200,
+                '{"strategy_id": "alpha-1", "lifecycle_state": "launched",'
+                ' "deployment_version_hash": "sha256:' + "1" * 64 + '"}',
+            )
+            _confirm_rollback(page)
+            page.wait_for_function(
+                "document.getElementById('rollback-status').textContent.includes('UNRESOLVED')",
+                timeout=10_000,
+            )
+
+            # A 200 naming a DIFFERENT strategy is refused.
+            _answer(
+                200,
+                '{"strategy_id": "other-9", "lifecycle_state": "rolled-back",'
+                ' "deployment_version_hash": "sha256:' + "1" * 64 + '"}',
+            )
+            _confirm_rollback(page)
+            page.wait_for_function(
+                "document.getElementById('rollback-status').textContent.includes('NOT rolled back')",
+                timeout=10_000,
+            )
+            mismatched = page.locator("#rollback-status").inner_text()
+            assert "other-9" in mismatched and "alpha-1" in mismatched
+        finally:
+            browser.close()
+
+
+def test_orch_005_rollback_and_promotion_are_mutually_exclusive(
+    rollback_dashboard,
+) -> None:
+    """Both controls stage a LIVE-state mutation, so only one may be armed at a
+    time: arming either disarms the other in both directions. Two staged
+    mutations at once would leave the operator unable to say which control a
+    response belongs to."""
+
+    url, _v1, _v2 = rollback_dashboard
+    with sync_api.sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.goto(url, wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 2", timeout=5_000
+            )
+
+            promote = page.locator('#inventory-rows tr[data-strategy="alpha-1"] .manage__btn')
+
+            # Arm promote, then arm rollback -> promote is disarmed.
+            _arm_promote(page, promote)
+            _arm_rollback(page, _rollback_btn(page, "alpha-1"))
+            both = page.evaluate(
+                "() => ({"
+                " promote: document.querySelectorAll('.manage__btn[data-armed=\"true\"]').length,"
+                " rollback: document.querySelectorAll('.rollback__btn[data-armed=\"true\"]').length,"
+                "})"
+            )
+            assert both["rollback"] == 1
+            assert both["promote"] == 0, "arming rollback must disarm promote"
+
+            # ...and the other direction.
+            _arm_promote(page, promote)
+            both = page.evaluate(
+                "() => ({"
+                " promote: document.querySelectorAll('.manage__btn[data-armed=\"true\"]').length,"
+                " rollback: document.querySelectorAll('.rollback__btn[data-armed=\"true\"]').length,"
+                "})"
+            )
+            assert both["promote"] == 1
+            assert both["rollback"] == 0, "arming promote must disarm rollback"
+        finally:
+            browser.close()

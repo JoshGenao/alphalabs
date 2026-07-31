@@ -35,10 +35,12 @@ Scope / honesty
   every operation deferred (a structured 501 naming its owner). Wiring
   ``mount_rollback`` into a shipped process main is the deferred SRS-API-001
   composition leg.
-* The dashboard arm of SYS-80's "dashboard, CLI, or REST API" is the deferred
-  SRS-UI-001 control (a confirm-modal POSTing this same confirmed lifecycle
-  route); this module puts the confirmed endpoint on the very server the
-  dashboard is mounted on.
+* The dashboard arm of SYS-80's "dashboard, CLI, or REST API" is LANDED: this
+  module puts the confirmed endpoint on the very server the dashboard is
+  mounted on, and ``atp_dashboard.mount_default_dashboard`` composes
+  :func:`mount_rollback` under ``ATP_DEPLOYMENT_STATE`` so the per-row ROLLBACK
+  control POSTs this same confirmed lifecycle route (see
+  ``rollback_contract.dashboard_control``).
 """
 
 from __future__ import annotations

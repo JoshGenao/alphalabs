@@ -265,12 +265,74 @@ def check_handler_surface(config: dict, handler_src: str) -> str:
     )
 
 
+def check_dashboard_arm(config: dict, server_src: str, app_src: str) -> str:
+    """SYS-80 names THREE surfaces — dashboard, CLI, REST. The CLI and REST arms
+    are pinned above; this pins the dashboard arm so it cannot silently regress
+    to the read-only surface it used to be.
+
+    Two halves, both required: the production composition must mount the handler
+    on the dashboard's own runtime (else the control POSTs into a 501), and the
+    control must carry the SAME confirmation affordance live promotion uses
+    (NFR-S2 parity) with fail-closed success rendering.
+    """
+
+    for token, why in (
+        (
+            "mount_rollback(runtime, state_path=deployment_state)",
+            "the production dashboard composes the ORCH-005 handler on its own runtime",
+        ),
+        (
+            "from atp_orchestration import mount_rollback",
+            "...and imports it from the owning package rather than reimplementing it",
+        ),
+    ):
+        if token not in server_src:
+            fail(f"atp_dashboard server: `{token}` missing — {why}")
+
+    for token, why in (
+        ('"/lifecycle?confirm=true"', "the operator's confirm act rides the contract route"),
+        ('action: "rollback"', "the lifecycle action the handler dispatches on"),
+        ("target_version_hash: target", "the rollback names the retained previous version"),
+        (
+            "previous_version_identifier",
+            "the target is read from the inventory's retained previous version",
+        ),
+        ("rb.disabled = true", "a strategy with no previous version presents an INERT control"),
+        (
+            'body.lifecycle_state === "rolled-back"',
+            "fail-closed success: an unevidenced 2xx is never rendered as a rollback",
+        ),
+        (
+            "controlsBusy()",
+            "promote and rollback are serialized against each other (one live-state mutation)",
+        ),
+        (
+            "disarmRollback(rollbackArmedId !== null)",
+            "arming promote disarms a staged rollback",
+        ),
+        (
+            "disarmPromote(promoteArmedId !== null)",
+            "...and arming rollback disarms a staged promote",
+        ),
+    ):
+        if token not in app_src:
+            fail(f"dashboard rollback control: `{token}` missing — {why}")
+
+    return (
+        "dashboard arm: mount_default_dashboard composes mount_rollback under "
+        "ATP_DEPLOYMENT_STATE, and the per-row ROLLBACK control is the same "
+        "arm-then-confirm affordance as promote-live (mutually exclusive, inert without "
+        "a retained previous version, fail-closed success rendering)"
+    )
+
+
 CHECKS = (
     ("retention_port", check_retention_port, ("orch",)),
     ("rollback_gate_order", check_rollback_gate_order, ("orch",)),
     ("confirmation_parity", check_confirmation_parity, ("orch", "designation")),
     ("rollback_cli", check_rollback_cli, ("bin",)),
     ("handler_surface", check_handler_surface, ("handler",)),
+    ("dashboard_arm", check_dashboard_arm, ("dashboard_server", "dashboard_app")),
 )
 
 
@@ -280,6 +342,8 @@ def _sources(config: dict, root: Path) -> dict[str, str]:
         "designation": _read(config, "designation_source", root),
         "bin": _read(config, "cli_bin_source", root),
         "handler": _read(config, "handler_source", root),
+        "dashboard_server": _read(config, "dashboard_server_source", root),
+        "dashboard_app": _read(config, "dashboard_app_source", root),
     }
 
 

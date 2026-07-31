@@ -141,7 +141,15 @@
            (SYS-2c / NFR-S2) is a two-step arm-then-confirm affordance that
            POSTs only to the CONTRACT route on this same runtime and renders
            the runtime's own response verbatim — while the SRS-EXE-001 handler
-           is deferred, the runtime's 501 refusal is shown as exactly that. -->
+           is deferred, the runtime's 501 refusal is shown as exactly that.
+           The per-row ROLLBACK control (SRS-ORCH-005 / SYS-80 'via the
+           dashboard') is the SAME arm-then-confirm affordance — NFR-S2 requires
+           rollback of the live strategy to use the same confirmation control as
+           live promotion, so the two share one state machine and are mutually
+           exclusive: arming either disarms the other, and while one request is
+           in flight EVERY control is inert. A rollback reads as done only when
+           the runtime's own response names the confirmed strategy AND carries
+           the restored version — a bare 2xx is rendered unresolved. -->
       <section class="panel panel--wide" data-panel="strategies" style="--i:4">
         <div class="panel__head">
           <h2 class="panel__title">Strategy Management</h2>
@@ -153,6 +161,10 @@
             <div class="manage__designation" id="designation-state" data-state="deferred">
               <span class="manage__beacon" id="designation-beacon" aria-hidden="true"></span>
               <span class="manage__caption" id="designation-status" aria-live="assertive">live designation state — awaits SRS-EXE-001</span>
+            </div>
+            <div class="manage__designation" id="rollback-state" data-state="resting">
+              <span class="manage__beacon" id="rollback-beacon" aria-hidden="true"></span>
+              <span class="manage__caption" id="rollback-status" aria-live="assertive">rollback — none requested this session</span>
             </div>
           </div>
           <div class="manage__scroll">

@@ -236,4 +236,83 @@ def test_rollback_contract_is_registered() -> None:
     config = load_config()
     block = contract_block(config)
     assert block["requirement"] == "SRS-ORCH-005"
-    assert len(assert_rollback_static(config, ROOT)) == 5
+    # Six static guards — the fifth (surface wiring) covers the CLI/REST arms,
+    # the sixth (dashboard arm) covers SYS-80's third surface.
+    assert len(assert_rollback_static(config, ROOT)) == 6
+
+
+def test_production_dashboard_composition_serves_the_rollback_surface(tmp_path: Path) -> None:
+    """SRS-ORCH-005 'via the dashboard' (SyRS SYS-80): the PRODUCTION dashboard
+    composition — what ``python -m atp_dashboard`` runs — must serve a REAL
+    rollback route, not the bare runtime's 501, so the panel's control has a
+    handler to POST to. ``ATP_DEPLOYMENT_STATE`` is the single knob: it names
+    the snapshot the inventory READS and the rollback WRITES, so the surface
+    can never be half-composed (a readable inventory with an inert control, or
+    a live control over a snapshot nothing displays).
+
+    This is the domain-level guard for the dashboard arm; the browser evidence
+    is tests/e2e/test_dashboard_refresh.py::test_orch_005_*.
+    """
+
+    cargo = _cargo()
+    if cargo is None:
+        pytest.skip("cargo not on PATH")
+    binary = _build_bin(cargo)
+    state = tmp_path / "rollback.state"
+    _seed(binary, state)
+
+    from atp_dashboard import mount_default_dashboard
+    from atp_runtime import OperatorInterfaceRuntime
+
+    lifecycle_path = "/api/v1/strategies/alpha-1/lifecycle"
+
+    # (1) WITHOUT the knob the rollback operation keeps its honest 501 — an
+    # unconfigured dashboard must never present a rollback it cannot perform.
+    bare = OperatorInterfaceRuntime()
+    mount_default_dashboard(bare, {})
+    status, body = bare.dispatch_rest(
+        "POST",
+        lifecycle_path + "?confirm=true",
+        json.dumps({"action": "rollback", "target_version_hash": HASH_V1}).encode(),
+    )
+    assert status == 501, body
+
+    # (2) WITH the knob the production composition serves both arms off the one
+    # snapshot: the inventory route renders the recorded strategy...
+    runtime = OperatorInterfaceRuntime()
+    mount_default_dashboard(runtime, {"ATP_DEPLOYMENT_STATE": str(state)})
+    inventory_status, inventory_body = runtime.dispatch_rest(
+        "GET", "/dashboard/api/strategies", b""
+    )
+    assert inventory_status == 200, inventory_body
+
+    # ...and the SAME confirmation control the CLI/REST arms enforce still
+    # gates it: unconfirmed is refused 428 before the binary is ever reached.
+    status, body = runtime.dispatch_rest(
+        "POST",
+        lifecycle_path,
+        json.dumps({"action": "rollback", "target_version_hash": HASH_V1}).encode(),
+    )
+    assert status == 428, body
+    assert body["error"]["category"] == "CONFIRMATION_REQUIRED"
+
+    # (3) The confirmed rollback the dashboard control sends — confirm token on
+    # the route, action + retained target hash in the body — restores the
+    # previous version through the real binary.
+    status, body = runtime.dispatch_rest(
+        "POST",
+        lifecycle_path + "?confirm=true",
+        json.dumps({"action": "rollback", "target_version_hash": HASH_V1}).encode(),
+    )
+    assert status == 200, body
+    assert body["lifecycle_state"] == "rolled-back"
+    assert body["deployment_version_hash"] == HASH_V1
+    assert body["rolled_back_from"] == HASH_V2
+
+    # (4) Composing the control never widens the route: sibling lifecycle
+    # actions still 501 naming SRS-ORCH-004.
+    status, body = runtime.dispatch_rest(
+        "POST", lifecycle_path, json.dumps({"action": "restart", "confirm": True}).encode()
+    )
+    assert status == 501
+    assert body["error"]["detail"]["owner"] == "SRS-ORCH-004"

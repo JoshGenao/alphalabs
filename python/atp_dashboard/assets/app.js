@@ -414,6 +414,10 @@
 
   function removeInventoryRow(tr) {
     if (promoteArmedId === tr.dataset.strategy) disarmPromote(true);
+    // A strategy that left the inventory must not keep an actionable ROLLBACK
+    // either — the staged target hash it was armed against is no longer
+    // substantiated by any row.
+    if (rollbackArmedId === tr.dataset.strategy) disarmRollback(true);
     tr.remove();
   }
 
@@ -453,6 +457,10 @@
     // and the designation readout returns to resting (a stale "armed" caption
     // with nothing staged would misstate the control's state).
     if (promoteArmedId === key) disarmPromote(true);
+    // Same for rollback: the retained previous version is re-read on every
+    // refresh, so an armed control must never survive a rebuild and fire
+    // against a target hash the new data no longer reports.
+    if (rollbackArmedId === key) disarmRollback(true);
     let tr = rows.querySelector('[data-strategy="' + CSS.escape(key) + '"]');
     if (!tr) { tr = el("tr"); tr.dataset.strategy = key; rows.appendChild(tr); }
     tr.textContent = "";
@@ -470,8 +478,31 @@
     btn.dataset.armed = "false";
     btn.dataset.strategy = key;
     btn.textContent = "PROMOTE LIVE";
+    // SRS-ORCH-005: the rollback TARGET is the retained PREVIOUS version, not
+    // the current one. The snapshot reports it as null when the strategy has
+    // never been redeployed — SYS-80 rollback is INERT before a second
+    // deployment, so the control is disabled rather than posting a request the
+    // gate would refuse NO_PREVIOUS_VERSION. A row whose previous version is
+    // unknown never presents an actionable rollback.
+    const previous = cellValue(data.previous_version_identifier);
+    const targetHash = previous === null || previous === undefined
+      ? "" : String(previous).split("@", 1)[0];
+    // Deliberately NOT .manage__btn: that class is the promote control's
+    // identity in the UI-2 selectors/tests. The two controls share every style
+    // rule (see styles.css — NFR-S2 parity is about the affordance, not the
+    // class name) while staying independently addressable.
+    const rb = el("button", "rollback__btn");
+    rb.type = "button";
+    rb.dataset.armed = "false";
+    rb.dataset.strategy = key;
+    rb.dataset.target = targetHash;
+    rb.textContent = "ROLLBACK";
+    if (!targetHash) {
+      rb.disabled = true;
+      rb.title = "no retained previous version — nothing to roll back to";
+    }
     const cd = el("span", "manage__cd"); cd.setAttribute("aria-hidden", "true");
-    manage.append(btn, cd);
+    manage.append(btn, rb, cd);
     tr.appendChild(manage);
     tr.dataset.gen = String(src.gen);
     $("inventory-table").hidden = false;
@@ -565,6 +596,12 @@
 
   function armPromote(btn, id) {
     disarmPromote(false); // exactly one staged candidate at a time
+    // ...and never a staged rollback alongside it. Restore the rollback caption
+    // to resting ONLY if something was actually staged there: a prior REFUSED /
+    // confirmed outcome is still true and must not be wiped by arming a
+    // different control, but a stale "armed:" caption with nothing staged would
+    // misstate the control's state.
+    disarmRollback(rollbackArmedId !== null);
     promoteArmedId = id;
     btn.dataset.armed = "true";
     btn.textContent = "CONFIRM LIVE: " + id + "?";
@@ -619,19 +656,150 @@
     btn.disabled = false;
   }
 
+  // ----- SRS-ORCH-005 rollback control (SYS-80 / NFR-S2) ------------------ //
+  // The AC requires rollback of the live strategy to use "the same confirmation
+  // control as live promotion", so this is deliberately the SAME two-step
+  // arm-then-confirm affordance above — same window, same in-flight
+  // serialization, same fail-closed rendering — pointed at the CONTRACT
+  // lifecycle route mount_rollback serves on this same runtime.
+  //
+  // The two controls are MUTUALLY EXCLUSIVE: both mutate live deployment state,
+  // so arming either disarms the other and while EITHER request is in flight
+  // every control is inert. Two staged live-state mutations at once would leave
+  // the operator unable to say which one a response belongs to.
+  const ROLLBACK_ARM_WINDOW_MS = 5000;
+  const ROLLBACK_FETCH_TIMEOUT_MS = 15000;
+  const ROLLBACK_RESTING = "rollback — none requested this session";
+  // NFR-S2 parity is literal: the operator's confirm act rides in the SAME
+  // place promote-live puts it — the `confirm` token on the contract route.
+  // (The runtime's action-level guard 428s a `rollback` action without it, and
+  // the handler re-checks request.confirmed behind that.)
+  function rollbackRoute(id) {
+    return "/api/v1/strategies/" + encodeURIComponent(id) + "/lifecycle?confirm=true";
+  }
+  let rollbackArmedId = null;
+  let rollbackArmTimer = null;
+  let rollbackInFlight = false;
+
+  // One shared gate for both live-state controls (see mutual exclusion above).
+  function controlsBusy() { return promoteInFlight || rollbackInFlight; }
+
+  function rollbackStatus(text, tone) {
+    const wrap = $("rollback-state"), cap = $("rollback-status");
+    if (!wrap || !cap) return;
+    cap.textContent = text;
+    wrap.dataset.state = tone;
+  }
+
+  function disarmRollback(restoreResting) {
+    if (rollbackArmTimer) { clearTimeout(rollbackArmTimer); rollbackArmTimer = null; }
+    rollbackArmedId = null;
+    const table = $("inventory-table");
+    if (table) table.classList.remove("manage-staging");
+    const rows = $("inventory-rows");
+    if (rows) {
+      rows.querySelectorAll("tr.rollback-armed").forEach((tr) => tr.classList.remove("rollback-armed"));
+      rows.querySelectorAll('.rollback__btn[data-armed="true"]').forEach((armed) => {
+        armed.dataset.armed = "false";
+        armed.textContent = "ROLLBACK";
+      });
+    }
+    if (restoreResting) rollbackStatus(ROLLBACK_RESTING, "resting");
+  }
+
+  function armRollback(btn, id, target) {
+    disarmRollback(false);
+    // Exactly one staged live-state mutation at a time. Same asymmetry as
+    // armPromote: only a genuinely-armed promote gets its caption reset.
+    disarmPromote(promoteArmedId !== null);
+    rollbackArmedId = id;
+    btn.dataset.armed = "true";
+    btn.textContent = "CONFIRM ROLLBACK: " + id + "?";
+    const tr = btn.closest("tr");
+    if (tr) tr.classList.add("rollback-armed");
+    const table = $("inventory-table");
+    if (table) table.classList.add("manage-staging");
+    rollbackStatus("armed: " + id + " → " + target +
+      " — confirm within 5s to roll back to the retained previous version", "armed");
+    rollbackArmTimer = setTimeout(() => { disarmRollback(true); }, ROLLBACK_ARM_WINDOW_MS);
+  }
+
+  async function fireRollback(btn, id, target) {
+    disarmRollback(false);
+    rollbackInFlight = true; // every control is inert until this settles
+    btn.disabled = true;
+    rollbackStatus("requesting rollback: " + id + " → " + target + "…", "pending");
+    try {
+      const res = await fetch(rollbackRoute(id), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        // The rollback TARGET is the retained previous version: the gate
+        // refuses any other hash (TARGET_MISMATCH), so naming it here is what
+        // makes the request specific rather than "roll back to whatever".
+        body: JSON.stringify({
+          action: "rollback",
+          target_version_hash: target,
+        }),
+        signal: AbortSignal.timeout(ROLLBACK_FETCH_TIMEOUT_MS),
+      });
+      let body = null;
+      try { body = await res.json(); } catch (error) { body = null; }
+      if (res.ok) {
+        // Fail-closed parse, exactly as the promote control does: a 2xx alone
+        // proves nothing rolled back. The response must name the strategy the
+        // operator confirmed AND carry the restored version hash — a body
+        // naming a different strategy_id, a missing/blank
+        // deployment_version_hash, or a lifecycle_state that is not
+        // "rolled-back" all render UNRESOLVED, never success. A rollback the
+        // runtime cannot evidence must never read as one that happened.
+        const named = body ? String(body.strategy_id) : "";
+        const restored = body && body.deployment_version_hash
+          ? String(body.deployment_version_hash) : "";
+        if (body && named === id && restored && body.lifecycle_state === "rolled-back") {
+          rollbackStatus("runtime confirmed rollback: " + named + " restored to " + restored +
+            (body.was_live === true ? " (was LIVE — confirmed)" : ""), "live");
+        } else if (body && named && named !== id) {
+          rollbackStatus("runtime answered " + res.status + " for strategy_id " + named +
+            " ≠ confirmed " + id + " — " + id + " NOT rolled back", "error");
+        } else {
+          rollbackStatus("runtime answered " + res.status +
+            " without an evidenced rolled-back version — " + id +
+            " rollback UNRESOLVED", "error");
+        }
+      } else {
+        const err = body && body.error ? body.error : {};
+        const type = String(err.type || err.category || "UNKNOWN");
+        const reason = err.detail && err.detail.reason ? " [" + String(err.detail.reason) + "]" : "";
+        rollbackStatus("REFUSED " + res.status + " " + type + reason + ": " + id +
+          " not rolled back", "error");
+      }
+    } catch (error) {
+      rollbackStatus("FAILED: " + String(error) + " — rollback outcome unknown", "error");
+    }
+    rollbackInFlight = false;
+    btn.disabled = false;
+  }
+
   (function bindPromoteControls() {
     const rows = $("inventory-rows");
     if (!rows) return;
     rows.addEventListener("click", (event) => {
-      // Serialize at the UI boundary: while one designation request is in
-      // flight EVERY promote control is inert — competing live-designation
+      // Serialize at the UI boundary: while one live-state request is in
+      // flight EVERY control (promote AND rollback) is inert — competing
       // requests whose responses race would break the one-live invariant's
-      // operator story (AC-15 / NFR-S2).
-      if (promoteInFlight) return;
-      const btn = event.target.closest(".manage__btn");
+      // operator story (AC-15 / NFR-S2 / SYS-80).
+      if (controlsBusy()) return;
+      const btn = event.target.closest(".manage__btn, .rollback__btn");
       if (!btn || btn.disabled) return;
       const id = String(btn.dataset.strategy || "");
       if (!id) return;
+      if (btn.classList.contains("rollback__btn")) {
+        const target = String(btn.dataset.target || "");
+        if (!target) return; // inert without a retained previous version
+        if (btn.dataset.armed !== "true") { armRollback(btn, id, target); return; }
+        fireRollback(btn, id, target);
+        return;
+      }
       if (btn.dataset.armed !== "true") { armPromote(btn, id); return; }
       firePromote(btn, id);
     });

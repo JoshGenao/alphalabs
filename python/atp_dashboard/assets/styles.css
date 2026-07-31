@@ -809,12 +809,18 @@ body {
 .inventory tbody tr:nth-child(n + 6) { animation-delay: 300ms; }
 /* Arming choreography: the staged row locks focus, siblings recede.
    (filter, not opacity — the rise animation's forwards fill owns opacity.) */
-.inventory.manage-staging tbody tr:not(.manage-armed) { filter: grayscale(0.5) opacity(0.4); }
-.inventory tbody tr.manage-armed {
+.inventory.manage-staging tbody tr:not(.manage-armed):not(.rollback-armed) { filter: grayscale(0.5) opacity(0.4); }
+.inventory tbody tr.manage-armed,
+.inventory tbody tr.rollback-armed {
   background: color-mix(in srgb, var(--warn) 7%, transparent);
   box-shadow: inset 3px 0 0 var(--warn);
 }
-.manage__btn {
+.manage__designation[data-state="resting"] { border-style: dashed; }
+/* SRS-ORCH-005 confirmation parity (NFR-S2): the rollback control is the SAME
+   affordance as promote-live, so it shares every rule here. It carries its own
+   class only so the two stay independently addressable in the UI-2 selectors
+   and tests — parity is in the behaviour and the styling, not the class name. */
+.manage__btn, .rollback__btn {
   font: 600 0.7rem var(--mono); letter-spacing: 0.06em; text-transform: uppercase;
   color: var(--ink-dim); background: transparent;
   border: 1px solid var(--line-strong); border-radius: 999px;
@@ -822,16 +828,21 @@ body {
   transition: color 0.2s var(--ease), border-color 0.2s var(--ease),
     background-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
 }
-.manage__btn:hover {
+.manage__btn:hover, .rollback__btn:hover {
   color: var(--ink); border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
-.manage__btn[data-armed="true"] {
+.manage__btn[data-armed="true"], .rollback__btn[data-armed="true"] {
   color: #fff; background: var(--bad);
   border-color: color-mix(in srgb, var(--bad) 70%, #fff 8%);
   animation: manage-armed-ring 0.9s ease-in-out infinite alternate;
 }
 .manage__btn:disabled { opacity: 0.55; cursor: wait; }
+/* A rollback with no retained previous version is INERT, not hidden — the
+   column stays legible and the operator can see there is nothing to roll
+   back to (SYS-80 is inert before a second deployment). */
+.rollback__btn { border-style: dashed; }
+.rollback__btn:disabled { opacity: 0.35; cursor: not-allowed; }
 @keyframes manage-armed-ring {
   from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 55%, transparent); }
   to { box-shadow: 0 0 0 6px color-mix(in srgb, var(--bad) 30%, transparent); }
@@ -842,13 +853,15 @@ body {
   border-radius: 1px; background: var(--warn);
   transform: scaleX(0); transform-origin: left;
 }
-.manage-armed .manage__cd { animation: manage-cd 5s linear forwards; }
+.manage-armed .manage__cd,
+.rollback-armed .manage__cd { animation: manage-cd 5s linear forwards; }
 @keyframes manage-cd { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 @media (prefers-reduced-motion: reduce) {
   .inventory tbody tr { animation-duration: 0.01ms; animation-delay: 0ms; }
   .manage__btn[data-armed="true"],
   .manage__designation .manage__beacon,
-  .manage-armed .manage__cd { animation: none; }
+  .manage-armed .manage__cd,
+  .rollback-armed .manage__cd { animation: none; }
 }
 
 /* ============================================================================

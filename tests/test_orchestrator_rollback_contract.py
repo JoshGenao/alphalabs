@@ -23,6 +23,7 @@ from orchestrator_rollback_check import (  # noqa: E402
     _read,
     assert_rollback_static,
     check_confirmation_parity,
+    check_dashboard_arm,
     check_handler_surface,
     check_retention_port,
     check_rollback_cli,
@@ -49,6 +50,7 @@ class ScriptRunTest(unittest.TestCase):
             "NFR-S2 parity",
             "operator bin",
             "surface wiring",
+            "dashboard arm",
         ):
             self.assertIn(needle, result.stdout, f"missing evidence needle: {needle!r}")
 
@@ -152,11 +154,65 @@ class HandlerSurfaceTest(_Fixture):
             check_handler_surface(self.config, mutated)
 
 
+class DashboardArmTest(_Fixture):
+    """SYS-80's third surface. Each mutation is a way the dashboard arm could
+    regress to the read-only surface it used to be, or to an actionable control
+    that overstates what the runtime actually confirmed."""
+
+    def _check(self, server: str | None = None, app: str | None = None) -> str:
+        return check_dashboard_arm(
+            self.config,
+            server if server is not None else self._src("dashboard_server_source"),
+            app if app is not None else self._src("dashboard_app_source"),
+        )
+
+    def test_dropped_composition_is_caught(self) -> None:
+        # Without the composition the control POSTs into the bare runtime's 501:
+        # a dashboard that presents a rollback it cannot perform.
+        mutated = self._mutate(
+            "dashboard_server_source",
+            "mount_rollback(runtime, state_path=deployment_state)",
+            "pass  # composition dropped",
+        )
+        with self.assertRaises(RollbackCheckError):
+            self._check(server=mutated)
+
+    def test_dropped_confirm_token_is_caught(self) -> None:
+        # Dropping the confirm token would make every dashboard rollback 428 —
+        # and, worse, invites "fixing" it by weakening the guard instead.
+        mutated = self._mutate("dashboard_app_source", '"/lifecycle?confirm=true"', '"/lifecycle"')
+        with self.assertRaises(RollbackCheckError):
+            self._check(app=mutated)
+
+    def test_unevidenced_success_rendering_is_caught(self) -> None:
+        # A bare 2xx must never read as a rollback that happened.
+        mutated = self._mutate(
+            "dashboard_app_source", 'body.lifecycle_state === "rolled-back"', "true"
+        )
+        with self.assertRaises(RollbackCheckError):
+            self._check(app=mutated)
+
+    def test_dropped_mutual_exclusion_is_caught(self) -> None:
+        # Two staged live-state mutations at once leaves the operator unable to
+        # say which control a response belongs to.
+        mutated = self._mutate("dashboard_app_source", "controlsBusy()", "promoteInFlight")
+        with self.assertRaises(RollbackCheckError):
+            self._check(app=mutated)
+
+    def test_dropped_inert_state_is_caught(self) -> None:
+        # SYS-80 is inert before a second deployment: a strategy with no
+        # retained previous version must not present an actionable rollback.
+        mutated = self._mutate("dashboard_app_source", "rb.disabled = true", "rb.disabled = false")
+        with self.assertRaises(RollbackCheckError):
+            self._check(app=mutated)
+
+
 class AggregateEvidenceTest(_Fixture):
     def test_static_check_count_is_pinned(self) -> None:
-        # Five static guards (retention port, gate order, confirmation parity, operator bin,
-        # surface wiring). A dropped or silently-added guard changes this count — pin it.
-        self.assertEqual(len(assert_rollback_static(self.config, ROOT)), 5)
+        # Six static guards (retention port, gate order, confirmation parity, operator bin,
+        # surface wiring, dashboard arm). A dropped or silently-added guard changes this
+        # count — pin it.
+        self.assertEqual(len(assert_rollback_static(self.config, ROOT)), 6)
 
     def test_block_names_the_deferred_owners(self) -> None:
         block = contract_block(self.config)
