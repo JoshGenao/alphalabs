@@ -327,6 +327,229 @@
         ]
       }
     },
+    "/api/v1/hot-swap/triggers": {
+      "get": {
+        "description": "Return the durable Hot-Swap trigger configuration (SYS-49a). SRS trace: SRS-RESV-003, SYS-49a. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "operationId": "get_api_v1_hot-swap_triggers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "any_automatic_enabled": {
+                      "type": "string"
+                    },
+                    "config_source": {
+                      "type": "string"
+                    },
+                    "default_disabled": {
+                      "type": "string"
+                    },
+                    "drawdown_demotion_enabled": {
+                      "type": "string"
+                    },
+                    "drawdown_demotion_threshold_bps": {
+                      "type": "string"
+                    },
+                    "highest_momentum_promotion_enabled": {
+                      "type": "string"
+                    },
+                    "manual_promotion_available": {
+                      "type": "string"
+                    },
+                    "top_ranked_promotion_enabled": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "Return the durable Hot-Swap trigger configuration (SYS-49a).",
+        "tags": [
+          "HOT_SWAP"
+        ],
+        "x-capability": "HOT_SWAP",
+        "x-requires-confirmation": false,
+        "x-srs-refs": [
+          "SRS-RESV-003",
+          "SYS-49a"
+        ]
+      },
+      "put": {
+        "description": "Durably configure the automatic Hot-Swap triggers (SYS-49a). SRS trace: SRS-RESV-003, SYS-49a. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1). Requires UI-4 confirmation; pass ``confirm`` query param.",
+        "operationId": "put_api_v1_hot-swap_triggers",
+        "parameters": [
+          {
+            "description": "Confirmation token (UI-4 two-step modal).",
+            "in": "query",
+            "name": "confirm",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "drawdown_demotion_enabled": {
+                    "type": "string"
+                  },
+                  "drawdown_demotion_threshold_bps": {
+                    "type": "string"
+                  },
+                  "highest_momentum_promotion_enabled": {
+                    "type": "string"
+                  },
+                  "top_ranked_promotion_enabled": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "any_automatic_enabled": {
+                      "type": "string"
+                    },
+                    "config_source": {
+                      "type": "string"
+                    },
+                    "default_disabled": {
+                      "type": "string"
+                    },
+                    "drawdown_demotion_enabled": {
+                      "type": "string"
+                    },
+                    "drawdown_demotion_threshold_bps": {
+                      "type": "string"
+                    },
+                    "highest_momentum_promotion_enabled": {
+                      "type": "string"
+                    },
+                    "top_ranked_promotion_enabled": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "Durably configure the automatic Hot-Swap triggers (SYS-49a).",
+        "tags": [
+          "HOT_SWAP"
+        ],
+        "x-capability": "HOT_SWAP",
+        "x-requires-confirmation": true,
+        "x-srs-refs": [
+          "SRS-RESV-003",
+          "SYS-49a"
+        ]
+      }
+    },
+    "/api/v1/hot-swap/triggers/manual": {
+      "post": {
+        "description": "Fire the always-available manual promotion TRIGGER, producing a logged proposal (SYS-49a(a)). Does not execute the swap. SRS trace: SRS-RESV-003, SYS-49a. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1). Requires UI-4 confirmation; pass ``confirm`` query param.",
+        "operationId": "post_api_v1_hot-swap_triggers_manual",
+        "parameters": [
+          {
+            "description": "Confirmation token (UI-4 two-step modal).",
+            "in": "query",
+            "name": "confirm",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "candidate_strategy_id": {
+                    "type": "string"
+                  },
+                  "demoting_strategy_id": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "candidate_strategy_id": {
+                      "type": "string"
+                    },
+                    "demoting_strategy_id": {
+                      "type": "string"
+                    },
+                    "execution": {
+                      "type": "string"
+                    },
+                    "logged": {
+                      "type": "string"
+                    },
+                    "rationale": {
+                      "type": "string"
+                    },
+                    "trigger_id": {
+                      "type": "string"
+                    },
+                    "trigger_kind": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          }
+        },
+        "summary": "Fire the always-available manual promotion TRIGGER, producing a logged proposal (SYS-49a(a)). Does not execute the swap.",
+        "tags": [
+          "HOT_SWAP"
+        ],
+        "x-capability": "HOT_SWAP",
+        "x-requires-confirmation": true,
+        "x-srs-refs": [
+          "SRS-RESV-003",
+          "SYS-49a"
+        ]
+      }
+    },
     "/api/v1/kill-switch": {
       "post": {
         "description": "Activate the QuantConnect Liquidate sequence (cancel, liquidate, halt, disconnect). SRS trace: SRS-SAFE-001, SYS-44a, SYS-44b, NFR-P3. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1). Requires UI-4 confirmation; pass ``confirm`` query param.",

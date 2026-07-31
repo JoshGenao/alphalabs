@@ -354,3 +354,27 @@ def test_manual_promotion_stays_available_with_every_automatic_trigger_off(
     assert values["manual-always-available"] == "true"
     assert values["manual-logged"] == "true"
     assert values["log-file-records"] == "1"
+
+
+def test_the_manual_trigger_ordinal_addresses_the_record_it_wrote(tmp_path: Path) -> None:
+    # The REST surface binds "the trigger fired" to this ordinal rather than to an exit
+    # code, so the ordinal has to actually address the record this invocation caused. Fire
+    # three times into one log and check each reported ordinal resolves to its own record.
+    log = tmp_path / "triggers.jsonl"
+    for index, candidate in enumerate(("beta", "gamma", "delta"), start=1):
+        result = _cli("manual", "--demoting", "alpha", "--candidate", candidate, "--log", str(log))
+        assert result.returncode == 0, result.stderr
+        ordinal = _kv(result.stdout)["trigger-record-ordinal"]
+        assert ordinal == str(index), result.stdout
+        # 1-based into the durable log, and it is this fire's own record.
+        line = log.read_text().splitlines()[int(ordinal) - 1]
+        assert f'"candidate_strategy_id":"{candidate}"' in line, line
+
+
+def test_an_unlogged_manual_trigger_reports_no_ordinal(tmp_path: Path) -> None:
+    # Fail closed: with no --log sink the record is REJECTED, so the command exits nonzero
+    # and must not print an ordinal — there is no durable record for one to address, and a
+    # surface that saw one would report an unlogged trigger as fired.
+    result = _cli("manual", "--demoting", "alpha", "--candidate", "beta")
+    assert result.returncode != 0, result.stdout
+    assert "trigger-record-ordinal" not in result.stdout

@@ -238,6 +238,79 @@ ROUTES: tuple[Route, ...] = (
             "auto_triggers_enabled",
         ),
     ),
+    # The SRS-RESV-003 TRIGGER layer: configure which triggers may fire, and fire
+    # the always-available manual one. Deliberately distinct from the swap
+    # EXECUTION route above — this layer decides and logs, it does not demote or
+    # promote anything (SRS-RESV-004/005 own that, and are unbuilt). Keeping them
+    # on separate paths is what stops a fired trigger from reading as a completed
+    # swap on a surface that cannot tell the difference.
+    Route(
+        method=Method.GET,
+        path="/api/v1/hot-swap/triggers",
+        capability=Capability.HOT_SWAP,
+        summary="Return the durable Hot-Swap trigger configuration (SYS-49a).",
+        srs_refs=("SRS-RESV-003", "SYS-49a"),
+        request_fields=(),
+        response_fields=(
+            "config_source",
+            "manual_promotion_available",
+            "drawdown_demotion_enabled",
+            "drawdown_demotion_threshold_bps",
+            "top_ranked_promotion_enabled",
+            "highest_momentum_promotion_enabled",
+            "any_automatic_enabled",
+            "default_disabled",
+        ),
+    ),
+    Route(
+        method=Method.PUT,
+        path="/api/v1/hot-swap/triggers",
+        capability=Capability.HOT_SWAP,
+        summary="Durably configure the automatic Hot-Swap triggers (SYS-49a).",
+        srs_refs=("SRS-RESV-003", "SYS-49a"),
+        request_fields=(
+            "drawdown_demotion_enabled",
+            "drawdown_demotion_threshold_bps",
+            "top_ranked_promotion_enabled",
+            "highest_momentum_promotion_enabled",
+            "confirm",
+        ),
+        response_fields=(
+            "config_source",
+            "drawdown_demotion_enabled",
+            "drawdown_demotion_threshold_bps",
+            "top_ranked_promotion_enabled",
+            "highest_momentum_promotion_enabled",
+            "any_automatic_enabled",
+            "default_disabled",
+        ),
+        # Arming an automatic trigger is consequential precisely because nothing
+        # further is asked of the operator afterwards: once enabled, a drawdown
+        # breach demotes the live strategy on its own. It takes the same explicit
+        # confirmation as the irreversible actions on this workflow.
+        requires_confirmation=True,
+    ),
+    Route(
+        method=Method.POST,
+        path="/api/v1/hot-swap/triggers/manual",
+        capability=Capability.HOT_SWAP,
+        summary=(
+            "Fire the always-available manual promotion TRIGGER, producing a logged "
+            "proposal (SYS-49a(a)). Does not execute the swap."
+        ),
+        srs_refs=("SRS-RESV-003", "SYS-49a"),
+        request_fields=("demoting_strategy_id", "candidate_strategy_id", "confirm"),
+        response_fields=(
+            "trigger_kind",
+            "trigger_id",
+            "logged",
+            "demoting_strategy_id",
+            "candidate_strategy_id",
+            "rationale",
+            "execution",
+        ),
+        requires_confirmation=True,
+    ),
     # ----- Backtest launch  [SRS-BT-001, SYS-14, SYS-43a]
     Route(
         method=Method.POST,

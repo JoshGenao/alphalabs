@@ -631,6 +631,17 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
         let persisted = count_log_records(Path::new(path))?;
         println!("log-persisted:{path}");
         println!("log-file-records:{persisted}");
+        // The 1-based position of the record THIS invocation appended, which is
+        // the durable-log count after an append of exactly one record. It is the
+        // only identity a fired manual trigger has: a caller can go to that
+        // ordinal and read back the very record it caused, so a surface can bind
+        // "the trigger fired" to a durable artefact rather than to an exit code.
+        // Single-logical-writer scope, like every other store here — a concurrent
+        // writer would make the ordinal ambiguous, which is why the operator
+        // surface serialises manual fires.
+        if logged {
+            println!("trigger-record-ordinal:{persisted}");
+        }
     }
 
     // Fail closed at the PROCESS level: a rejected audit-log record must make the

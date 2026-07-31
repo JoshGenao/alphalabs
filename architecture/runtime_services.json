@@ -4654,8 +4654,43 @@
       {
         "method": "request_manual_promotion",
         "type": "StrategyOrchestrator"
+      },
+      {
+        "surface": "REST",
+        "route": "GET /api/v1/hot-swap/triggers",
+        "handler": "python/atp_orchestration/hot_swap_triggers.py::TriggerConfigHandler"
+      },
+      {
+        "surface": "REST",
+        "route": "PUT /api/v1/hot-swap/triggers",
+        "handler": "python/atp_orchestration/hot_swap_triggers.py::TriggerConfigHandler",
+        "requires_confirmation": true
+      },
+      {
+        "surface": "REST",
+        "route": "POST /api/v1/hot-swap/triggers/manual",
+        "handler": "python/atp_orchestration/hot_swap_triggers.py::ManualTriggerHandler",
+        "requires_confirmation": true
+      },
+      {
+        "surface": "dashboard",
+        "route": "GET /dashboard/api/hot-swap",
+        "handler": "python/atp_orchestration/hot_swap_triggers.py::CliHotSwapTriggerSource"
       }
     ],
+    "trigger_config_store": {
+      "module": "crates/atp-orchestrator/src/trigger_config_store.rs",
+      "schema_entity_id": "hot-swap-trigger-config",
+      "magic": "ATP-HOT-SWAP-TRIGGER-CONFIG",
+      "marker": "TRIGGER_CONFIG_SCHEMA_VERSION",
+      "durability": "scratch -> fsync -> rename -> parent fsync (the SRS-BT-009 backtest_store discipline), so a configuration cannot silently revert after a power loss and leave an automatic trigger armed that the operator believes they disabled.",
+      "read_states": [
+        "absent -> Ok(None): never configured, so the all-disabled default applies and a surface may state it truthfully",
+        "readable -> Ok(Some(config))",
+        "unreadable -> Err: NEVER folded into the default. Collapsing this into the first would render a corrupt config as a confident 'automatic triggers: disabled' — a false all-clear about whether an automatic demotion can fire."
+      ],
+      "unknown_fields": "refused. A reader that looks up only the keys it expects is structurally blind to the ones it does not: a misspelled flag reads as 'not enabled' and a flag a newer build made meaningful is dropped while the rest still parses."
+    },
     "trigger_evaluation": {
       "struct": "TriggerEvaluation",
       "required_fields": [
@@ -4695,7 +4730,7 @@
       "RICHER typed error taxonomy on the injected LiveStrategyProbe / ReservoirRankingSource ports: the ports ALREADY return Result (Err = degraded), and evaluation fails closed while surfacing the reason string in TriggerEvaluation.degraded_inputs — so a degraded dependency is NOT silently collapsed into a healthy empty state. Replacing the single reason-string HotSwapSideEffectError with a structured CONNECTIVITY_BLOCKED / STALE_DATA / SOURCE_UNAVAILABLE taxonomy (and any retry/backoff policy) is deferred to the concrete probes (same reason-string-now / typed-later precedent as the demotion contract's IB-cancel error taxonomy) (owner: SRS-RESV-001 / SRS-RESV-002).",
       "Swap EXECUTION: the demote-before-promote sequence + liquidation-timeout gate is SRS-RESV-004 (resolve_demotion, already built); flat-start promotion is SRS-RESV-005; cool-down enforcement (default 7 days, manual-swap confirmation during cool-down per SYS-49e) is SRS-RESV-006. This trigger layer only decides + logs, and hands a selected proposal to resolve_demotion via to_demotion_request (owner: SRS-RESV-004 / SRS-RESV-005 / SRS-RESV-006).",
       "Durable, queryable, dashboard-viewable SYS-61 system-log store consuming HotSwapTriggerEvent (the Hot-Swap trigger log class) — the SRS-LOG-001 sink. This slice records every fired trigger through the HotSwapTriggerLog port (a REJECTED record fails closed — kept out of selected / manual returns Err; see trigger_log_port.note) and demonstrates durable JSONL persistence in the resv003_hot_swap_trigger_cli --log flag; the shared durable store, which must persist an ACCEPTED record, is deferred (owner: SRS-LOG-001).",
-      "SRS-API-001 /api/v1/hot-swap REST handler + hot-swap trigger CLI body and the SRS-UI-001 / UI-5 dashboard Hot-Swap controls that drive evaluate_automatic_triggers / request_manual_promotion and surface trigger configuration + status to the operator. The CLI arm ships here as resv003_hot_swap_trigger_cli; the dashboard/REST arms are deferred (owner: SRS-API-001 / SRS-UI-001 / UI-5)."
+      "SRS-API-001 composition of these handlers into a shipped process main. mount_hot_swap_triggers is opt-in, exactly like mount_rollback / mount_dashboard, so a bare runtime still resolves every trigger operation to its structured 501. All three SYS-49a operator arms of the TRIGGER layer now ship: CLI (resv003_hot_swap_trigger_cli), REST (GET/PUT /api/v1/hot-swap/triggers, POST /api/v1/hot-swap/triggers/manual), and dashboard (CliHotSwapTriggerSource resolving the UI-5 pane's auto-trigger cells). POST /api/v1/hot-swap — swap EXECUTION — is deliberately NOT bound and keeps its structured 501: this feature decides and logs, it does not demote or promote, and a surface that cannot execute a swap must not answer on the endpoint whose success means one happened (owner: SRS-RESV-004 / SRS-RESV-005 for execution, SRS-API-001 for the shipped composition)."
     ]
   },
   "kill_switch_timeout_contract": {
