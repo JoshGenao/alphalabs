@@ -53,12 +53,17 @@ use std::fmt;
 use std::net::TcpStream;
 use std::net::{IpAddr, SocketAddr};
 #[cfg(feature = "ib-live-transport")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 #[cfg(feature = "ib-live-transport")]
 use std::time::Duration;
 
 #[cfg(feature = "ib-live-transport")]
 mod wire;
+
+/// The SRS-MD-003 freshness evidence a live market-data poll yields.
+#[cfg(feature = "ib-live-transport")]
+pub use wire::DeliveredTick;
 
 // --------------------------------------------------------------------------- //
 // IB TWS API error wire shape + the documented codes we map onto SYS-64
@@ -588,6 +593,15 @@ pub struct TcpIbGateway {
     account: IbAccountKind,
     session: Mutex<Option<wire::IbSession>>,
     op_deadline: Duration,
+    /// Incremented every time a session is established.
+    ///
+    /// A dropped session is rebuilt transparently on the next call, which is
+    /// right for request/reply work but NOT for anything holding server-side
+    /// state: `reqMktData` subscriptions live in the session that opened them,
+    /// so a reconnect silently leaves a subscriber polling ticker ids that no
+    /// longer exist. Callers that hold such state watch this counter to learn
+    /// they must re-establish it.
+    session_generation: AtomicU64,
 }
 
 #[cfg(feature = "ib-live-transport")]
@@ -613,6 +627,7 @@ impl TcpIbGateway {
             account,
             session: Mutex::new(None),
             op_deadline,
+            session_generation: AtomicU64::new(0),
         }
     }
 
@@ -692,6 +707,7 @@ impl TcpIbGateway {
                 self.config.client_id,
                 self.op_deadline,
             )?);
+            self.session_generation.fetch_add(1, Ordering::SeqCst);
         }
         let session = guard.as_mut().expect("session established above");
         let result = operate(session);
@@ -701,6 +717,48 @@ impl TcpIbGateway {
             }
         }
         result
+    }
+
+    /// One brokerage-line heartbeat: `reqCurrentTime` → `currentTime`,
+    /// answering with the gateway's own epoch-seconds reading (SRS-MD-003
+    /// SYS-39, NFR-P5).
+    ///
+    /// This is deliberately NOT on [`IbGatewayConnection`]. That trait is the
+    /// request/reply broker contract every implementor must serve; the
+    /// SRS-MD-003 freshness producer is a streaming concern layered on the live
+    /// transport, and widening the trait would force a heartbeat implementation
+    /// onto fixtures that have no wire to heartbeat over.
+    ///
+    /// A completed round trip — never a successful send — is what may be passed
+    /// to `HeartbeatFreshnessMonitor::observe_broker_heartbeat`.
+    pub fn broker_heartbeat_round_trip(&self) -> Result<i64, IbApiError> {
+        self.with_session(wire::IbSession::current_time_round_trip)
+    }
+
+    /// Drain up to `budget` worth of delivered market-data ticks for the given
+    /// `reqMktData` ticker ids (SRS-MD-003 market-data-line freshness).
+    ///
+    /// An empty return is the ordinary quiet-line case, not a failure — deciding
+    /// what silence MEANS is the freshness monitor's job, not the transport's.
+    ///
+    /// Run this on a session dedicated to market data (its own IB client id).
+    /// Sharing one session with the execution path would let a tick arriving
+    /// mid-`submit_order` be consumed and discarded by that operation's frame
+    /// loop, silently starving the line this feeds.
+    /// How many sessions this transport has established.
+    ///
+    /// A change means the previous session — and every `reqMktData`
+    /// subscription opened on it — is gone.
+    pub fn session_generation(&self) -> u64 {
+        self.session_generation.load(Ordering::SeqCst)
+    }
+
+    pub fn poll_market_data(
+        &self,
+        active_tickers: &[i64],
+        budget: Duration,
+    ) -> Result<Vec<wire::DeliveredTick>, IbApiError> {
+        self.with_session(|session| session.poll_market_data(active_tickers, budget))
     }
 }
 

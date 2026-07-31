@@ -27,7 +27,7 @@ pub mod notification;
 /// The live IB socket transport is behind the non-default `ib-live-transport`
 /// feature (operator-gated scaffold; see [`interactive_brokers`]).
 #[cfg(feature = "ib-live-transport")]
-pub use interactive_brokers::{TcpIbGateway, IB_CONNECT_TIMEOUT};
+pub use interactive_brokers::{DeliveredTick, TcpIbGateway, IB_CONNECT_TIMEOUT};
 pub use notification::{
     EgressEndpoint, SmsGatewayChannel, SmsGatewayConfig, SmtpEmailChannel, SmtpRelayConfig,
 };

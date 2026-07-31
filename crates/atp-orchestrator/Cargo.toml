@@ -102,6 +102,11 @@ path = "src/bin/safe003_connectivity_block_cli.rs"
 # notifier here — the lower crates never see each other.
 atp-adapters = { path = "../atp-adapters" }
 atp-execution = { path = "../atp-execution" }
+# SRS-MD-003: the live feed loop lives in atp-market-data and the IB transport in
+# atp-adapters, and neither may see the other (the adapter would gain a core
+# dependency; the market-data core would gain vendor logic). Binding them is
+# exactly this composition layer's job.
+atp-market-data = { path = "../atp-market-data" }
 atp-notification = { path = "../atp-notification" }
 atp-simulation = { path = "../atp-simulation" }
 atp-types = { path = "../atp-types" }

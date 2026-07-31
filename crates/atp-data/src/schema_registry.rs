@@ -279,6 +279,20 @@ pub const PERSISTED_ENTITIES: &[SchemaDescriptor] = &[
         posture: EvolutionPosture::Pinned,
         legacy_unversioned: false,
     },
+    SchemaDescriptor {
+        entity_id: "md003-heartbeat-snapshot",
+        owner_srs: "SRS-MD-003",
+        writer_path: "crates/atp-market-data/src/live_feed.rs",
+        marker: "SNAPSHOT_SCHEMA_VERSION",
+        magic: Some("atp-md003-snapshot"),
+        current_version: 1,
+        min_supported_version: 1,
+        // Never shipped in a version-less form: the header line has carried the
+        // magic and the version since the first byte written, so a reader can
+        // fail closed on anything else instead of guessing a layout.
+        posture: EvolutionPosture::Pinned,
+        legacy_unversioned: false,
+    },
 ];
 
 /// A structural defect in [`PERSISTED_ENTITIES`] itself.

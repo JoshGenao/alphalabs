@@ -54,6 +54,7 @@ version = "0.1.0"
 dependencies = [
  "atp-adapters",
  "atp-execution",
+ "atp-market-data",
  "atp-notification",
  "atp-simulation",
  "atp-types",

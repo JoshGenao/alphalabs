@@ -20,6 +20,9 @@ use std::fmt;
 pub mod connectivity_notification;
 pub mod kill_switch_activation;
 pub mod kill_switch_timeout;
+/// SRS-MD-003 — composition of the IB transport with the live freshness feed
+/// loop (operator-gated `ib-live-transport`).
+pub mod live_market_data;
 pub mod order_routing_wiring;
 pub mod trigger_config_store;
 

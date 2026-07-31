@@ -79,6 +79,37 @@ const IN_POSITION_END: &str = "62";
 const IN_ACCOUNT_SUMMARY: &str = "63";
 const IN_ACCOUNT_SUMMARY_END: &str = "64";
 const IN_TICK_REQ_PARAMS: &str = "81";
+const IN_CURRENT_TIME: &str = "49";
+
+/// One market-data tick the gateway actually delivered, decoded down to the
+/// identity SRS-MD-003 needs: WHICH subscribed line it arrived on.
+///
+/// Deliberately carries no price or size. This type is freshness evidence —
+/// "the line is flowing" — and the monitor keyed off it only asks which
+/// security line was fed. It also carries no sequence number, because the TWS
+/// tick stream has none to give: see the `poll_market_data` note on
+/// `MarketDataTick::tick_seq` and SRS-MD-007.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeliveredTick {
+    /// The `reqMktData` ticker id this tick answers — the caller maps it back
+    /// to the security whose subscription it opened.
+    pub ticker_id: i64,
+    /// IB's tick type (`tickPrice`/`tickSize` field 3), kept for diagnostics.
+    pub tick_type: i64,
+}
+
+/// Decode a `tickPrice(1)` / `tickSize(2)` frame into a [`DeliveredTick`].
+///
+/// Returns `None` for a frame whose ticker id or tick type is missing or
+/// unparseable: an undecodable frame is NOT evidence that any particular line
+/// is fresh, and guessing which line it belonged to would fabricate freshness
+/// for a security that may be silent.
+fn decode_delivered_tick(frame: &[String]) -> Option<DeliveredTick> {
+    Some(DeliveredTick {
+        ticker_id: frame.get(2)?.parse().ok()?,
+        tick_type: frame.get(3)?.parse().ok()?,
+    })
+}
 
 /// `ibapi` 10.19.4 `EClient.placeOrder` at server version 176 — 115 fields.
 /// Parameterized slots (1=orderId, 3=symbol, 16=action, 17=quantity,
@@ -280,9 +311,30 @@ fn read_exact_deadline(
     deadline: Instant,
     operation: &str,
 ) -> Result<(), IbApiError> {
+    let mut progressed = false;
+    read_exact_deadline_tracked(stream, buf, deadline, operation, &mut progressed)
+}
+
+/// As [`read_exact_deadline`], but reports whether the deadline expired AFTER
+/// some bytes had already been taken off the socket.
+///
+/// That distinction is the difference between an idle line and a corrupted one.
+/// Bytes consumed here are gone from the socket forever, so a timeout partway
+/// through a frame leaves the remainder of that frame at the head of the stream,
+/// where the next read would parse it as if it were a new frame. Callers with a
+/// short budget (the SRS-MD-003 tick drain re-arms every few hundred ms) must
+/// treat that case as a transport fault and let the session be rebuilt.
+fn read_exact_deadline_tracked(
+    stream: &mut TcpStream,
+    buf: &mut [u8],
+    deadline: Instant,
+    operation: &str,
+    progressed: &mut bool,
+) -> Result<(), IbApiError> {
     let mut filled = 0;
     while filled < buf.len() {
         if Instant::now() >= deadline {
+            *progressed = filled > 0;
             return Err(timeout_error(operation));
         }
         match stream.read(&mut buf[filled..]) {
@@ -313,8 +365,28 @@ fn read_frame(
     deadline: Instant,
     operation: &str,
 ) -> Result<Vec<String>, IbApiError> {
+    let mut mid_frame = false;
+    read_frame_tracked(stream, deadline, operation, &mut mid_frame)
+}
+
+/// As [`read_frame`], additionally reporting whether a deadline expiry left the
+/// stream positioned INSIDE a frame (see [`read_exact_deadline_tracked`]).
+fn read_frame_tracked(
+    stream: &mut TcpStream,
+    deadline: Instant,
+    operation: &str,
+    mid_frame: &mut bool,
+) -> Result<Vec<String>, IbApiError> {
     let mut header = [0u8; 4];
-    read_exact_deadline(stream, &mut header, deadline, operation)?;
+    let mut progressed = false;
+    if let Err(err) =
+        read_exact_deadline_tracked(stream, &mut header, deadline, operation, &mut progressed)
+    {
+        // A partially-read HEADER desynchronizes the stream just as badly as a
+        // partial payload; only an expiry that took no bytes at all is clean.
+        *mid_frame = progressed;
+        return Err(err);
+    }
     let length = u32::from_be_bytes(header) as usize;
     if length > MAX_FRAME {
         // Fail closed BEFORE allocating: a corrupt length must not OOM the
@@ -324,7 +396,12 @@ fn read_frame(
         )));
     }
     let mut payload = vec![0u8; length];
-    read_exact_deadline(stream, &mut payload, deadline, operation)?;
+    if let Err(err) = read_exact_deadline(stream, &mut payload, deadline, operation) {
+        // The header is already consumed, so the stream is mid-frame however
+        // few payload bytes arrived.
+        *mid_frame = true;
+        return Err(err);
+    }
     // ibapi framing: every field is NUL-terminated, so the payload splits into
     // fields plus one trailing empty chunk (dropped).
     let mut fields: Vec<String> = payload
@@ -484,7 +561,25 @@ pub struct IbSession {
     next_req_id: i64,
     market_data_type_sent: bool,
     op_deadline: Duration,
+    /// Market-data ticks that arrived while another operation on THIS session
+    /// was waiting for its own reply, held for the next
+    /// [`poll_market_data`](Self::poll_market_data).
+    ///
+    /// The session is one socket carrying every frame the gateway sends, so a
+    /// tick can land in the middle of any request/reply exchange. Discarding it
+    /// there would destroy freshness evidence for a line that IS flowing, and
+    /// SRS-MD-003 would then age that line toward a staleness alarm that the
+    /// market never justified. Bounded (see [`MAX_PENDING_TICKS`]) because
+    /// nothing outside the feed loop is obliged to come back and drain it.
+    pending_ticks: Vec<DeliveredTick>,
 }
+
+/// Ceiling on ticks buffered between operations. The feed loop drains on every
+/// step, so this stays near-empty in practice; the cap exists so a session
+/// driven by some OTHER caller (which never polls) cannot grow it without
+/// bound. On overflow the OLDEST are dropped: freshness asks how recently a
+/// line delivered, so the newest evidence is the evidence worth keeping.
+const MAX_PENDING_TICKS: usize = 1_024;
 
 impl IbSession {
     /// Perform the v100+ handshake + `startApi` on a connected socket and wait
@@ -539,6 +634,7 @@ impl IbSession {
             next_req_id: 9_000,
             market_data_type_sent: false,
             op_deadline,
+            pending_ticks: Vec::new(),
         };
         // startApi (71), version 2, client id, empty optionalCapabilities.
         session.send(&["71", "2", &client_id.to_string(), ""])?;
@@ -594,6 +690,15 @@ impl IbSession {
 
     fn recv(&mut self, deadline: Instant, operation: &str) -> Result<Vec<String>, IbApiError> {
         read_frame(&mut self.stream, deadline, operation)
+    }
+
+    fn recv_tracked(
+        &mut self,
+        deadline: Instant,
+        operation: &str,
+        mid_frame: &mut bool,
+    ) -> Result<Vec<String>, IbApiError> {
+        read_frame_tracked(&mut self.stream, deadline, operation, mid_frame)
     }
 
     fn deadline(&self) -> Instant {
@@ -806,7 +911,17 @@ impl IbSession {
             match frame.first().map(String::as_str) {
                 Some(IN_MARKET_DATA_TYPE) if frame.get(2) == Some(&id_field) => break,
                 Some(IN_TICK_REQ_PARAMS) if frame.get(1) == Some(&id_field) => break,
-                Some(IN_TICK_PRICE | IN_TICK_SIZE) if frame.get(2) == Some(&id_field) => break,
+                Some(IN_TICK_PRICE | IN_TICK_SIZE) if frame.get(2) == Some(&id_field) => {
+                    // This frame both confirms the subscription AND is a real
+                    // delivered tick. The live feed loop subscribes before it
+                    // polls, so dropping it here would let an illiquid line
+                    // read never-observed — stale — while IB had in fact
+                    // already delivered data for it.
+                    if let Some(tick) = decode_delivered_tick(&frame) {
+                        self.buffer_tick(tick);
+                    }
+                    break;
+                }
                 Some(IN_ERR_MSG) => {
                     let err = parse_err_frame(&frame)?;
                     if is_informational_notice(&err) {
@@ -827,6 +942,120 @@ impl IbSession {
         Ok(SubscriptionReceipt {
             subscription_id: format!("ib-md-{ticker_id}"),
         })
+    }
+
+    /// `reqCurrentTime(49)` → `currentTime(49)`, returning the gateway's own
+    /// epoch-seconds clock reading (SRS-MD-003's brokerage-line heartbeat).
+    ///
+    /// The REPLY is the evidence, and nothing else is: a half-open TCP socket
+    /// stays writable long after the peer is gone, so a successful `send` — or
+    /// any other purely local liveness signal — proves only that *we* are
+    /// alive. `HeartbeatFreshnessMonitor::observe_broker_heartbeat` may only be
+    /// called for a round trip that completed here.
+    pub fn current_time_round_trip(&mut self) -> Result<i64, IbApiError> {
+        self.send(&["49", "1"])?;
+        let deadline = self.deadline();
+        loop {
+            let frame = self.recv(deadline, "reqCurrentTime")?;
+            match frame.first().map(String::as_str) {
+                Some(IN_CURRENT_TIME) => {
+                    return frame
+                        .get(2)
+                        .and_then(|field| field.parse::<i64>().ok())
+                        .ok_or_else(|| {
+                            transport_error(
+                                "IB Gateway sent a currentTime frame without a parseable time",
+                            )
+                        });
+                }
+                // A tick that lands mid-round-trip is still proof its line is
+                // flowing. Hold it for the next poll instead of dropping it:
+                // this session serves both operations, so discarding here would
+                // age a live line toward a staleness alarm the market never
+                // justified.
+                Some(IN_TICK_PRICE | IN_TICK_SIZE) => {
+                    if let Some(tick) = decode_delivered_tick(&frame) {
+                        self.buffer_tick(tick);
+                    }
+                }
+                // `reqCurrentTime` carries no request id, so only a
+                // session-level error (req id −1) can belong to it.
+                Some(IN_ERR_MSG) => self.check_err_frame(&frame, -1)?,
+                _ => {}
+            }
+        }
+    }
+
+    /// Hold one interleaved tick for the next poll, oldest-first on overflow.
+    fn buffer_tick(&mut self, tick: DeliveredTick) {
+        if self.pending_ticks.len() >= MAX_PENDING_TICKS {
+            self.pending_ticks.remove(0);
+        }
+        self.pending_ticks.push(tick);
+    }
+
+    /// Drain inbound market-data frames for up to `budget`, returning one
+    /// [`DeliveredTick`] per `tickPrice(1)` / `tickSize(2)` frame the gateway
+    /// delivered — the SRS-MD-003 market-data-line freshness producer.
+    ///
+    /// Budget expiry is the NORMAL termination: it returns the ticks collected
+    /// so far (usually none — a quiet line is not an error, it is exactly the
+    /// silence the freshness monitor is built to notice). Only a real
+    /// transport/protocol failure returns `Err`.
+    ///
+    /// A non-informational error frame naming one of `active_tickers` fails the
+    /// poll closed rather than being skipped: IB withholding a stream (e.g.
+    /// 10197 during a competing live session) must surface as a fault, not as
+    /// an indefinitely quiet line.
+    pub fn poll_market_data(
+        &mut self,
+        active_tickers: &[i64],
+        budget: Duration,
+    ) -> Result<Vec<DeliveredTick>, IbApiError> {
+        let deadline = Instant::now() + budget;
+        // Ticks that arrived while another operation on this session held the
+        // socket come first — they are older than anything still to be read,
+        // and they are evidence the caller has not seen yet.
+        let mut delivered = std::mem::take(&mut self.pending_ticks);
+        loop {
+            let mut mid_frame = false;
+            match self.recv_tracked(deadline, "marketData", &mut mid_frame) {
+                Ok(frame) => match frame.first().map(String::as_str) {
+                    Some(IN_TICK_PRICE | IN_TICK_SIZE) => {
+                        if let Some(tick) = decode_delivered_tick(&frame) {
+                            delivered.push(tick);
+                        }
+                    }
+                    Some(IN_ERR_MSG) => {
+                        let err = parse_err_frame(&frame)?;
+                        if !is_informational_notice(&err)
+                            && (err.req_id == -1 || active_tickers.contains(&err.req_id))
+                        {
+                            return Err(IbApiError::new(err.code, err.message));
+                        }
+                    }
+                    _ => {}
+                },
+                // Budget exhausted between frames — hand back what arrived.
+                // The caller's freshness evaluation, not this drain, decides
+                // what silence means.
+                Err(err) if err.code == IB_CODE_WIRE_TIMEOUT && !mid_frame => return Ok(delivered),
+                // Budget exhausted INSIDE a frame. Its leading bytes are gone
+                // from the socket, so the remainder would be read as a new
+                // frame and every subsequent tick on this session would be
+                // garbage. Report a transport fault so the owning transport
+                // drops the session and the next poll starts on a clean one —
+                // a short poll budget must not silently corrupt the stream.
+                Err(err) if err.code == IB_CODE_WIRE_TIMEOUT => {
+                    return Err(transport_error(format!(
+                        "the market-data poll budget expired midway through an inbound frame \
+                         ({}); dropping the session so the stream resynchronizes",
+                        err.message
+                    )))
+                }
+                Err(err) => return Err(err),
+            }
+        }
     }
 
     /// `reqHistoricalData(20)` for daily TRADES bars over the request's

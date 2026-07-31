@@ -1,6 +1,11 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+/// SRS-MD-003 — the live feed loop that drives [`HeartbeatFreshnessMonitor`]
+/// from a real broker connection (the producer this crate's monitor was built
+/// to receive).
+pub mod live_feed;
+
 use atp_types::{
     HeartbeatFeed, HeartbeatStalenessEvent, HeartbeatTransition, MarketDataFreshness,
     MarketDataTick, OrderErrorCategory, RuntimeService, SecurityKey, SecurityKeyError,
@@ -999,6 +1004,25 @@ impl HeartbeatFreshnessMonitor {
         let key = tick.security_key()?;
         self.record_observation(HeartbeatFeedKey::Market(key), observed_at_ns);
         Ok(())
+    }
+
+    /// Record one delivered tick as a freshness observation for an ALREADY
+    /// CANONICALIZED security line, implicitly watching it.
+    ///
+    /// This is the live feed loop's entry point, and it exists so that loop
+    /// never has to invent a [`MarketDataTick`]. The IB tick stream carries no
+    /// upstream sequence number, so a live producer calling
+    /// [`observe_tick`](Self::observe_tick) would have to put SOMETHING in
+    /// `MarketDataTick::tick_seq` — and that field's producer contract
+    /// (SRS-MD-007) says a re-numbered delivery counter there is "gap-free by
+    /// construction and would silently defeat gap detection". Freshness only
+    /// needs to know WHICH line was fed, so the live path says exactly that
+    /// and fabricates nothing.
+    ///
+    /// Callers holding a real tick keep using `observe_tick`: it canonicalizes
+    /// the tick (and fails closed if it cannot) before landing here.
+    pub fn observe_security(&mut self, key: SecurityKey, observed_at_ns: i64) {
+        self.record_observation(HeartbeatFeedKey::Market(key), observed_at_ns);
     }
 
     /// Record one broker keepalive (concretely: an IB Gateway

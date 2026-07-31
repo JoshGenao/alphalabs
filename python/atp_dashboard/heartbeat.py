@@ -79,6 +79,7 @@ __all__ = [
     "HeartbeatCliRunner",
     "HeartbeatFreshnessProvider",
     "HeartbeatUnavailable",
+    "SnapshotHeartbeatSource",
     "THRESHOLD_MS",
 ]
 
@@ -105,11 +106,29 @@ _DEFAULT_TIMEOUT_S = 0.9
 
 _TRANSITION_EVENT_TYPES = frozenset({"HEARTBEAT_STALE", "HEARTBEAT_RECOVERED"})
 
+# Identity of the live feed daemon's durable snapshot, mirroring the Rust
+# authority ``atp_market_data::live_feed`` (SNAPSHOT_MAGIC /
+# SNAPSHOT_SCHEMA_VERSION) and its SRS-DATA-015 registry entity
+# `md003-heartbeat-snapshot`. Pinned to the Rust side by the contract test.
+_SNAPSHOT_MAGIC = "atp-md003-snapshot"
+_SNAPSHOT_SCHEMA_VERSION = 1
+
+# How far ahead of the reader's clock a snapshot's evaluation instant may sit
+# before it is refused. Small but non-zero: the writer and reader may be
+# different processes whose clocks differ by a hair, and refusing on a single
+# nanosecond of skew would make the dashboard flap.
+_FUTURE_SNAPSHOT_TOLERANCE_MS = 1_000
+
 # Ceiling on transition records queued for retry while the durable sink is
 # down. Beyond it the OLDEST records are dropped and counted (surfaced on the
 # snapshot as ``dropped_log_records``) — bounded memory with honest loss
 # accounting under a sustained multi-hour sink outage.
 _MAX_PENDING_LOG_RECORDS = 4096
+
+# Transition keys remembered for de-duplication. Comfortably larger than the
+# producer's own journal window, so a key can never be forgotten while the
+# snapshot is still offering it.
+_MAX_LOGGED_TRANSITIONS = 512
 
 
 class HeartbeatUnavailable(Exception):
@@ -237,6 +256,207 @@ def _feed_token(fields: dict[str, str], line: str) -> str:
     raise HeartbeatUnavailable(f"unknown feed kind {kind!r} in line {line!r}")
 
 
+def _status_row(line: str, evaluated_at_ns: int) -> StatusRow:
+    """One ``status`` line as a display row, for whichever source produced it.
+
+    The kv grammar is shared by the fixture CLI and the live feed daemon's
+    snapshot, so it is parsed in exactly one place: a second copy would be free
+    to drift, and a row that parses differently in two readers is a row nobody
+    can trust.
+    """
+
+    fields = _parse_kv_line(line)
+    row_evaluated_at = _parse_int(fields, "evaluated_at_ns", line)
+    if row_evaluated_at != evaluated_at_ns:
+        # A status row from an embedded `evaluate` directive inside the
+        # observation script is a historical replay, not THIS poll's
+        # verdict; only the appended final evaluation may be displayed
+        # as current.
+        raise HeartbeatUnavailable(
+            f"status row for a foreign evaluation instant ({row_evaluated_at} != "
+            f"{evaluated_at_ns}): observation scripts must not contain their own "
+            "`evaluate` directives"
+        )
+    return {
+        "feed": _feed_token(fields, line),
+        "last_observation_ns": _parse_optional_int(fields, "last_observation_ns", line),
+        "staleness_ms": _parse_optional_int(fields, "staleness_ms", line),
+        "never_observed": _parse_bool(fields, "never_observed", line),
+        "time_stale": _parse_bool(fields, "time_stale", line),
+        "gap_stale": _parse_bool(fields, "gap_stale", line),
+        "stale": _parse_bool(fields, "stale", line),
+        "threshold_ms": _parse_int(fields, "threshold_ms", line),
+    }
+
+
+def _event_row(line: str) -> dict[str, object]:
+    """One ``event`` line as a transition record (see :func:`_status_row`)."""
+
+    fields = _parse_kv_line(line)
+    kind = fields.get("kind")
+    if kind is None:
+        raise HeartbeatUnavailable(f"event line without kind: {line!r}")
+    if kind == "SEQUENCE_GAP":
+        # MD-007's event; carried through for visibility but logged by
+        # MD-007's own seam, not this provider.
+        return {"kind": kind, "symbol": fields.get("symbol", "")}
+    if kind not in _TRANSITION_EVENT_TYPES:
+        raise HeartbeatUnavailable(f"unknown event kind {kind!r} in line {line!r}")
+    return {
+        "kind": kind,
+        "feed": _feed_token(fields, line),
+        "staleness_ms": _parse_optional_int(fields, "staleness_ms", line),
+        "last_observation_ns": _parse_optional_int(fields, "last_observation_ns", line),
+        "evaluated_at_ns": _parse_int(fields, "evaluated_at_ns", line),
+        "threshold_ms": _parse_int(fields, "threshold_ms", line),
+    }
+
+
+def _event_instant(event: dict[str, object]) -> int:
+    """A transition event's evaluation instant, or 0 when it carries none.
+
+    Events reach here as ``dict[str, object]`` (the parser's shape), so the
+    narrowing lives in one place rather than at every use.
+    """
+
+    raw = event.get("evaluated_at_ns")
+    return int(raw) if isinstance(raw, int) else 0
+
+
+def _require_monitored_feeds(statuses: list[StatusRow], origin: str) -> None:
+    """SYS-39's three fail-closed invariants on any source's row set.
+
+    A monitor that is monitoring nothing — or only half of what SYS-39 names —
+    must never read as healthy, whichever source produced the rows.
+    """
+
+    if not statuses:
+        raise HeartbeatUnavailable(f"{origin} reports no feeds — the monitor is monitoring nothing")
+    if not any(row["feed"] == "ib_gateway" for row in statuses):
+        raise HeartbeatUnavailable(
+            f"{origin} does not monitor the broker heartbeat — SYS-39 requires the broker API "
+            "connection to be monitored"
+        )
+    if not any(row["feed"].startswith("market_data:") for row in statuses):
+        raise HeartbeatUnavailable(
+            f"{origin} monitors no market-data line — SYS-39 requires market-data feed freshness "
+            "to be monitored"
+        )
+
+
+class SnapshotHeartbeatSource:
+    """Reads freshness from the live feed daemon's durable snapshot.
+
+    The drop-in live counterpart to :class:`CliHeartbeatSource`: same
+    ``observe()`` contract, same kv grammar, so every downstream surface (the
+    HEARTBEAT channel, ``/dashboard/api/heartbeat``, system health, the
+    transition log records) is unchanged. What differs is the producer —
+    ``md003_live_feed_cli`` maintaining a real IB session — and therefore the
+    failure modes below.
+
+    **A stale snapshot is never a fresh verdict.** The daemon rewrites the file
+    every step; if it dies, the file it leaves behind still says whatever was
+    true at the moment it stopped. Serving those rows would turn a dead monitor
+    into a healthy-looking one — the exact false all-clear this feature exists
+    to prevent. So a snapshot older than ``max_age_ms`` is refused, and the
+    provider renders its honest ``UNAVAILABLE`` / ``any_stale: true`` state.
+
+    The returned ``evaluated_at_ns`` is the SNAPSHOT's instant, not the reader's
+    clock. That feeds the provider's monotonic-evaluation guard correctly: re-
+    reading an unchanged snapshot cannot advance the transition baseline, so a
+    stalled daemon stops re-logging instead of repeating its last verdict.
+    """
+
+    #: Reported as the health payload's ``data_source``.
+    data_source = "md003_live_feed_cli"
+
+    def __init__(
+        self,
+        snapshot_path: str | Path,
+        *,
+        max_age_ms: int = THRESHOLD_MS,
+        now_ns: Callable[[], int] = time.time_ns,
+    ) -> None:
+        self._snapshot_path = Path(snapshot_path)
+        self._max_age_ms = max_age_ms
+        self._now_ns = now_ns
+
+    def observe(self) -> Observation:
+        """One evaluation, read from the snapshot the daemon last wrote.
+
+        Raises:
+            HeartbeatUnavailable: the snapshot is missing, unreadable, not this
+                format, written by an unsupported schema version, older than
+                ``max_age_ms``, or its rows drift from the kv grammar.
+        """
+
+        try:
+            text = self._snapshot_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise HeartbeatUnavailable(
+                f"heartbeat snapshot unreadable at {self._snapshot_path}: {exc}"
+            ) from exc
+
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            raise HeartbeatUnavailable(f"heartbeat snapshot at {self._snapshot_path} is empty")
+
+        evaluated_at_ns = self._parse_header(lines[0])
+        age_ms = (int(self._now_ns()) - evaluated_at_ns) // 1_000_000
+        if age_ms > self._max_age_ms:
+            raise HeartbeatUnavailable(
+                f"heartbeat snapshot at {self._snapshot_path} is {age_ms} ms old (limit "
+                f"{self._max_age_ms} ms) — the live feed is not writing, so its last verdict "
+                "proves nothing about now"
+            )
+        if -age_ms > _FUTURE_SNAPSHOT_TOLERANCE_MS:
+            # A future-dated snapshot fails CLOSED, and the age test alone would
+            # not catch it: a negative age is trivially "not older than the
+            # limit", so a stale file stamped ahead of this clock would pin a
+            # fresh verdict indefinitely. Worse, once served, its evaluation
+            # instant poisons the provider's monotonic guard — every genuine
+            # snapshot afterwards looks OLDER and is discarded as late, so real
+            # staleness stays invisible until wall time catches up.
+            raise HeartbeatUnavailable(
+                f"heartbeat snapshot at {self._snapshot_path} is dated {-age_ms} ms in the FUTURE "
+                f"(tolerance {_FUTURE_SNAPSHOT_TOLERANCE_MS} ms) — a verdict from ahead of this "
+                "clock cannot describe now"
+            )
+
+        statuses: list[StatusRow] = []
+        events: list[dict[str, object]] = []
+        for line in lines[1:]:
+            if line.startswith("status "):
+                statuses.append(_status_row(line, evaluated_at_ns))
+            elif line.startswith("event "):
+                events.append(_event_row(line))
+            else:
+                raise HeartbeatUnavailable(f"unrecognized snapshot line {line!r}")
+        _require_monitored_feeds(statuses, f"heartbeat snapshot at {self._snapshot_path}")
+        return {"statuses": statuses, "events": events, "evaluated_at_ns": evaluated_at_ns}
+
+    def _parse_header(self, line: str) -> int:
+        """The header's evaluation instant, after proving the file IS this format.
+
+        Magic and version are checked before any row is read: a file that is not
+        this format, or is a version this reader does not know, is refused whole
+        rather than parsed into a partial (and therefore wrong) feed set.
+        """
+
+        if not line.startswith(f"{_SNAPSHOT_MAGIC} "):
+            raise HeartbeatUnavailable(
+                f"{self._snapshot_path} is not an {_SNAPSHOT_MAGIC} file (header {line[:40]!r})"
+            )
+        fields = _parse_kv_line(line)
+        version = _parse_int(fields, "schema_version", line)
+        if version != _SNAPSHOT_SCHEMA_VERSION:
+            raise HeartbeatUnavailable(
+                f"{self._snapshot_path} declares schema_version={version}; this reader supports "
+                f"{_SNAPSHOT_SCHEMA_VERSION} only"
+            )
+        return _parse_int(fields, "evaluated_at_ns", line)
+
+
 class CliHeartbeatSource:
     """Reads freshness by replaying an observation script through the CLI.
 
@@ -245,6 +465,9 @@ class CliHeartbeatSource:
     evaluation instant). Each :meth:`observe` call appends
     ``evaluate <now_ns()>`` and parses the resulting snapshot.
     """
+
+    #: Reported as the health payload's ``data_source``.
+    data_source = "md003_heartbeat_cli"
 
     def __init__(
         self,
@@ -335,48 +558,10 @@ class CliHeartbeatSource:
         return {"statuses": statuses, "events": events, "evaluated_at_ns": evaluated_at_ns}
 
     def _parse_status(self, line: str, evaluated_at_ns: int) -> StatusRow:
-        fields = _parse_kv_line(line)
-        row_evaluated_at = _parse_int(fields, "evaluated_at_ns", line)
-        if row_evaluated_at != evaluated_at_ns:
-            # A status row from an embedded `evaluate` directive inside the
-            # observation script is a historical replay, not THIS poll's
-            # verdict; only the appended final evaluation may be displayed
-            # as current.
-            raise HeartbeatUnavailable(
-                f"status row for a foreign evaluation instant ({row_evaluated_at} != "
-                f"{evaluated_at_ns}): observation scripts must not contain their own "
-                "`evaluate` directives"
-            )
-        return {
-            "feed": _feed_token(fields, line),
-            "last_observation_ns": _parse_optional_int(fields, "last_observation_ns", line),
-            "staleness_ms": _parse_optional_int(fields, "staleness_ms", line),
-            "never_observed": _parse_bool(fields, "never_observed", line),
-            "time_stale": _parse_bool(fields, "time_stale", line),
-            "gap_stale": _parse_bool(fields, "gap_stale", line),
-            "stale": _parse_bool(fields, "stale", line),
-            "threshold_ms": _parse_int(fields, "threshold_ms", line),
-        }
+        return _status_row(line, evaluated_at_ns)
 
     def _parse_event(self, line: str) -> dict[str, object]:
-        fields = _parse_kv_line(line)
-        kind = fields.get("kind")
-        if kind is None:
-            raise HeartbeatUnavailable(f"event line without kind: {line!r}")
-        if kind == "SEQUENCE_GAP":
-            # MD-007's event; carried through for visibility but logged by
-            # MD-007's own seam, not this provider.
-            return {"kind": kind, "symbol": fields.get("symbol", "")}
-        if kind not in _TRANSITION_EVENT_TYPES:
-            raise HeartbeatUnavailable(f"unknown event kind {kind!r} in line {line!r}")
-        return {
-            "kind": kind,
-            "feed": _feed_token(fields, line),
-            "staleness_ms": _parse_optional_int(fields, "staleness_ms", line),
-            "last_observation_ns": _parse_optional_int(fields, "last_observation_ns", line),
-            "evaluated_at_ns": _parse_int(fields, "evaluated_at_ns", line),
-            "threshold_ms": _parse_int(fields, "threshold_ms", line),
-        }
+        return _event_row(line)
 
 
 class HeartbeatFreshnessProvider:
@@ -399,6 +584,11 @@ class HeartbeatFreshnessProvider:
                 "SRS-MD-003's 'logged' acceptance leg is mandatory"
             )
         self._source = source
+        # Which producer is actually behind the verdicts, reported on the health
+        # payload. Naming the fixture CLI while a live feed daemon is mounted
+        # would misattribute real evidence to a fixture (and vice versa); the
+        # default keeps a source that predates the attribute honest.
+        self._data_source = str(getattr(source, "data_source", "md003_heartbeat_cli"))
         self._log_store = log_store
         self._log_write_ok = True
         # feed -> the merged staleness verdict this provider last LOGGED (or,
@@ -417,6 +607,12 @@ class HeartbeatFreshnessProvider:
         # Records dropped from an overflowing pending queue under SUSTAINED
         # sink failure — honest loss accounting, surfaced on the snapshot.
         self._dropped_log_records = 0
+        # Journal transitions already written, so re-reading a snapshot that
+        # still carries them cannot duplicate an audit record. Bounded, with the
+        # oldest keys evicted first — the journal itself is bounded, so a key
+        # older than every entry in it can never be offered again.
+        self._logged_transitions: set[tuple[str, str, int]] = set()
+        self._transition_order: list[tuple[str, str, int]] = []
         # The evaluation instant and full observation most recently
         # COMMITTED. The CLI runs outside the lock (a REST poll must not
         # stall behind the WS ticker's subprocess), so a slower, OLDER
@@ -473,7 +669,7 @@ class HeartbeatFreshnessProvider:
                     "time_stale": row["time_stale"],
                     "gap_stale": row["gap_stale"],
                     "threshold_seconds": row["threshold_ms"] / 1000,
-                    "data_source": "md003_heartbeat_cli",
+                    "data_source": self._data_source,
                 }
             )
         return events
@@ -531,7 +727,7 @@ class HeartbeatFreshnessProvider:
                 "stale_feeds": [],
                 "threshold_ms": THRESHOLD_MS,
                 "reason": str(exc),
-                "data_source": "md003_heartbeat_cli",
+                "data_source": self._data_source,
             }
         statuses = observation["statuses"]
         stale_feeds = sorted(str(row["feed"]) for row in statuses if row["stale"])
@@ -542,7 +738,7 @@ class HeartbeatFreshnessProvider:
             "stale_feeds": stale_feeds,
             "watched_feeds": len(statuses),
             "threshold_ms": THRESHOLD_MS,
-            "data_source": "md003_heartbeat_cli",
+            "data_source": self._data_source,
         }
 
     # ----- logging (the "logged" leg) ----- #
@@ -570,6 +766,51 @@ class HeartbeatFreshnessProvider:
             # so the audit stream stays chronological across sink outages.
             still_pending = [r for r in self._pending_records if not self._try_write(r)]
             self._pending_records = still_pending
+            # Transitions the ROWS cannot show. A live producer evaluates far
+            # more often than the dashboard polls, so a feed can go stale and
+            # recover entirely between two polls — every row this provider ever
+            # sees would read fresh, and a real incident would vanish from the
+            # audit trail. The live snapshot therefore carries a journal of past
+            # flips; each is logged exactly once, in order, before the current
+            # rows are considered. Transitions stamped at THIS evaluation are
+            # left to the row loop below, which is where the fixture CLI path
+            # has always handled them.
+            for event in sorted(observation["events"], key=_event_instant):
+                kind = str(event.get("kind", ""))
+                if kind not in _TRANSITION_EVENT_TYPES:
+                    continue  # SEQUENCE_GAP belongs to SRS-MD-007's seam
+                event_ns = _event_instant(event)
+                if event_ns >= evaluated_at_ns:
+                    continue
+                feed = str(event["feed"])
+                key = (kind, feed, event_ns)
+                if key in self._logged_transitions:
+                    continue
+                self._remember_transition(key)
+                stale = kind == "HEARTBEAT_STALE"
+                self._logged_stale[feed] = stale
+                staleness = event.get("staleness_ms")
+                last_seen = event.get("last_observation_ns")
+                threshold = event.get("threshold_ms")
+                record = self._build_log_record(
+                    {
+                        "feed": feed,
+                        "staleness_ms": staleness if isinstance(staleness, int) else None,
+                        "last_observation_ns": last_seen if isinstance(last_seen, int) else None,
+                        "never_observed": last_seen is None,
+                        "time_stale": stale,
+                        # The journal carries TIME transitions only; gap
+                        # staleness is SRS-MD-007's audit class and is never
+                        # misfiled as a heartbeat record.
+                        "gap_stale": False,
+                        "stale": stale,
+                        "threshold_ms": threshold if isinstance(threshold, int) else THRESHOLD_MS,
+                    },
+                    stale,
+                    event_ns,
+                )
+                if not self._try_write(record):
+                    self._enqueue_pending(record)
             for row in observation["statuses"]:
                 feed = str(row["feed"])
                 # HEARTBEAT_STALE/RECOVERED records classify TIME staleness
@@ -602,6 +843,12 @@ class HeartbeatFreshnessProvider:
             # and the flag recovers only when every queued record has landed.
             self._log_write_ok = not self._pending_records
         return observation
+
+    def _remember_transition(self, key: tuple[str, str, int]) -> None:
+        self._logged_transitions.add(key)
+        self._transition_order.append(key)
+        if len(self._transition_order) > _MAX_LOGGED_TRANSITIONS:
+            self._logged_transitions.discard(self._transition_order.pop(0))
 
     def _build_log_record(self, row: StatusRow, stale: bool, evaluated_at_ns: int) -> LogRecord:
         feed = str(row["feed"])
