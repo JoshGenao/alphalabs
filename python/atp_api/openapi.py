@@ -103,6 +103,26 @@ def _build_parameters(route: Route) -> list[dict[str, Any]]:
                 "description": "Confirmation token (UI-4 two-step modal).",
             }
         )
+    elif route.confirmation_actions and "confirm" in route.request_fields:
+        # A SHARED action route: the token is required only for the listed
+        # actions, so it is documented as optional-at-the-route but mandatory
+        # for those actions. Without this a generated client has no documented
+        # way to satisfy the transport's action-level guard.
+        actions = ", ".join(sorted(route.confirmation_actions))
+        parameters.append(
+            {
+                "name": "confirm",
+                "in": "query",
+                "required": False,
+                "schema": _string_schema(),
+                "description": (
+                    "Confirmation token (UI-4 two-step modal). REQUIRED for the "
+                    f"irreversible action(s): {actions}. Requests carrying one of those "
+                    "actions without it are refused 428 CONFIRMATION_REQUIRED. May also "
+                    "be supplied as a boolean/string ``confirm`` field in the body."
+                ),
+            }
+        )
 
     parameters.sort(key=lambda parameter: (parameter["in"], parameter["name"]))
     return parameters
@@ -131,6 +151,13 @@ def _operation_description(route: Route) -> str:
     parts = [route.summary, f"SRS trace: {refs}.", _PLACEHOLDER_DESCRIPTION]
     if route.requires_confirmation:
         parts.append("Requires UI-4 confirmation; pass ``confirm`` query param.")
+    elif route.confirmation_actions:
+        actions = ", ".join(sorted(route.confirmation_actions))
+        parts.append(
+            f"Action-level confirmation: the action(s) {actions} require the ``confirm`` "
+            "token (query param or body field) and are refused 428 CONFIRMATION_REQUIRED "
+            "without it; other actions on this route do not."
+        )
     return " ".join(parts)
 
 
@@ -147,6 +174,7 @@ def _build_operation(route: Route) -> dict[str, Any]:
         "x-srs-refs": list(route.srs_refs),
         "x-capability": route.capability.value,
         "x-requires-confirmation": route.requires_confirmation,
+        "x-confirmation-actions": list(route.confirmation_actions),
         "responses": {
             "200": {
                 "description": "Success",

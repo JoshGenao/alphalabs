@@ -87,7 +87,46 @@ def check_api_001_lifecycle(module) -> str:
     _expect_method(routes, "GET")
     _expect_method(routes, "POST")
     _expect_srs_refs(routes, ("SRS-ORCH-004", "SRS-ORCH-005", "SYS-2c"))
-    return _summary("STRATEGY_LIFECYCLE (SRS-ORCH-004/005, SYS-2c)", routes)
+
+    # SYS-80: rollback is irreversible and must carry the same confirmation
+    # control as live promotion — but on a SHARED action route, so the
+    # requirement is action-level, not route-level (gating the whole route
+    # would wrongly demand a token for a restart).
+    #
+    # The declared contract and the transport's enforced set must be the SAME
+    # set. They are derived independently (the contract here; the runtime's
+    # from the CLI's confirmation-required commands), so without this pin a
+    # published spec could promise a guard the server does not enforce — or,
+    # worse, the server could enforce one no client is told about.
+    declared: set[str] = set()
+    for route in routes:
+        if route.method.value == "POST" and route.path.endswith("/lifecycle"):
+            declared = set(route.confirmation_actions)
+            if route.requires_confirmation:
+                fail(
+                    "the shared lifecycle route must NOT be route-level "
+                    "confirmation-gated (start/stop/restart would wrongly demand a token); "
+                    "declare the irreversible actions in confirmation_actions instead"
+                )
+            if "confirm" not in route.request_fields:
+                fail("the lifecycle route declares confirmation_actions but no `confirm` field")
+    if "rollback" not in declared:
+        fail("the lifecycle route must declare `rollback` in confirmation_actions (SYS-80)")
+
+    from atp_runtime.rest_server import _ACTION_CONFIRM_REQUIRED
+
+    enforced = set(_ACTION_CONFIRM_REQUIRED)
+    if declared != enforced:
+        fail(
+            "action-level confirmation drift between the published contract and the "
+            f"transport guard: contract declares {sorted(declared)}, "
+            f"atp_runtime enforces {sorted(enforced)}"
+        )
+    return _summary(
+        "STRATEGY_LIFECYCLE (SRS-ORCH-004/005, SYS-2c; action-level confirmation "
+        f"{sorted(declared)} matches the enforced transport guard)",
+        routes,
+    )
 
 
 def check_api_002_live_designation(module) -> str:

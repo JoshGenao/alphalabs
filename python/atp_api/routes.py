@@ -111,9 +111,19 @@ class Route:
             body for POST/PUT). Empty tuple is allowed for parameter-less
             endpoints.
         response_fields: Field names returned in the success response body.
-        requires_confirmation: Mark routes that perform irreversible actions
-            and need a UI two-step confirmation token (modeled here as a
-            ``confirm`` query parameter, see ``UI-4``).
+        requires_confirmation: Mark routes where EVERY call performs an
+            irreversible action and needs a UI two-step confirmation token
+            (modeled here as a ``confirm`` query parameter, see ``UI-4``).
+        confirmation_actions: For SHARED action routes where only SOME actions
+            are irreversible, the action values that require the same token.
+            ``POST /strategies/{id}/lifecycle`` carries start/stop/restart AND
+            rollback: gating the whole route would wrongly demand confirmation
+            for a restart, while gating none would leave SYS-80's rollback
+            undocumented — so the requirement is declared per action here and
+            enforced at the transport by the same set
+            (``atp_runtime.rest_server._ACTION_CONFIRM_REQUIRED``, derived from
+            the CLI's confirmation-required commands). The two are pinned
+            together by tools/rest_api_check.py so they cannot drift.
 
     Example:
         >>> Route(
@@ -136,6 +146,7 @@ class Route:
     request_fields: tuple[str, ...] = field(default_factory=tuple)
     response_fields: tuple[str, ...] = field(default_factory=tuple)
     requires_confirmation: bool = False
+    confirmation_actions: tuple[str, ...] = field(default_factory=tuple)
 
 
 # --------------------------------------------------------------------------- #
@@ -168,6 +179,10 @@ ROUTES: tuple[Route, ...] = (
         srs_refs=("SRS-ORCH-004", "SRS-ORCH-005", "SYS-2c", "SYS-80"),
         request_fields=("action", "target_version_hash", "confirm"),
         response_fields=("strategy_id", "lifecycle_state", "deployment_version_hash"),
+        # SYS-80: rollback is irreversible and carries the same confirmation
+        # control as live promotion; start/stop/restart on this shared route do
+        # not, so the requirement is action-level (see Route.confirmation_actions).
+        confirmation_actions=("rollback",),
     ),
     # ----- Live designation  [SYS-2c, SYS-2d, SRS-API-001]
     Route(

@@ -66,6 +66,7 @@
           "ALERTS"
         ],
         "x-capability": "ALERTS",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": false,
         "x-srs-refs": [
           "SRS-NOTIF-001",
@@ -135,6 +136,7 @@
           "BACKTEST_LAUNCH"
         ],
         "x-capability": "BACKTEST_LAUNCH",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": false,
         "x-srs-refs": [
           "SRS-BT-001",
@@ -201,6 +203,7 @@
           "BACKTEST_QUERY"
         ],
         "x-capability": "BACKTEST_QUERY",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": false,
         "x-srs-refs": [
           "SRS-BT-009",
@@ -269,6 +272,7 @@
           "HOT_SWAP"
         ],
         "x-capability": "HOT_SWAP",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": true,
         "x-srs-refs": [
           "SRS-RESV-003",
@@ -313,6 +317,7 @@
           "HOT_SWAP"
         ],
         "x-capability": "HOT_SWAP",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": false,
         "x-srs-refs": [
           "SRS-RESV-005",
@@ -387,6 +392,7 @@
           "KILL_SWITCH"
         ],
         "x-capability": "KILL_SWITCH",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": true,
         "x-srs-refs": [
           "SRS-SAFE-001",
@@ -499,6 +505,7 @@
           "LOGS"
         ],
         "x-capability": "LOGS",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": false,
         "x-srs-refs": [
           "SRS-LOG-001",
@@ -556,6 +563,7 @@
           "RESERVOIR_RANKING"
         ],
         "x-capability": "RESERVOIR_RANKING",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": false,
         "x-srs-refs": [
           "SRS-RESV-002",
@@ -612,6 +620,7 @@
           "STRATEGY_LIFECYCLE"
         ],
         "x-capability": "STRATEGY_LIFECYCLE",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": false,
         "x-srs-refs": [
           "SRS-API-001",
@@ -622,13 +631,22 @@
     },
     "/api/v1/strategies/{strategy_id}/lifecycle": {
       "post": {
-        "description": "Transition a strategy lifecycle (start, stop, restart, rollback). SRS trace: SRS-ORCH-004, SRS-ORCH-005, SYS-2c, SYS-80. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "description": "Transition a strategy lifecycle (start, stop, restart, rollback). SRS trace: SRS-ORCH-004, SRS-ORCH-005, SYS-2c, SYS-80. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1). Action-level confirmation: the action(s) rollback require the ``confirm`` token (query param or body field) and are refused 428 CONFIRMATION_REQUIRED without it; other actions on this route do not.",
         "operationId": "post_api_v1_strategies_strategy_id_lifecycle",
         "parameters": [
           {
             "in": "path",
             "name": "strategy_id",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Confirmation token (UI-4 two-step modal). REQUIRED for the irreversible action(s): rollback. Requests carrying one of those actions without it are refused 428 CONFIRMATION_REQUIRED. May also be supplied as a boolean/string ``confirm`` field in the body.",
+            "in": "query",
+            "name": "confirm",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -682,6 +700,9 @@
           "STRATEGY_LIFECYCLE"
         ],
         "x-capability": "STRATEGY_LIFECYCLE",
+        "x-confirmation-actions": [
+          "rollback"
+        ],
         "x-requires-confirmation": false,
         "x-srs-refs": [
           "SRS-ORCH-004",
@@ -755,6 +776,7 @@
           "LIVE_DESIGNATION"
         ],
         "x-capability": "LIVE_DESIGNATION",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": true,
         "x-srs-refs": [
           "SRS-API-001",
@@ -808,6 +830,7 @@
           "SYSTEM_STATUS"
         ],
         "x-capability": "SYSTEM_STATUS",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": false,
         "x-srs-refs": [
           "SYS-76",
@@ -846,6 +869,7 @@
           "WATCHLIST_CONFIG"
         ],
         "x-capability": "WATCHLIST_CONFIG",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": false,
         "x-srs-refs": [
           "SRS-DATA-002",
@@ -897,6 +921,7 @@
           "WATCHLIST_CONFIG"
         ],
         "x-capability": "WATCHLIST_CONFIG",
+        "x-confirmation-actions": [],
         "x-requires-confirmation": false,
         "x-srs-refs": [
           "SRS-DATA-002",
