@@ -10074,7 +10074,7 @@
     "check_script": "tools/data015_schema_check.py",
     "cli": "crates/atp-data/src/bin/data015_schema_cli.rs",
     "golden_corpus": "tests/fixtures/schema_evolution",
-    "entity_count": 16,
+    "entity_count": 17,
     "postures": [
       "Ranged",
       "MigrateOnRead",
