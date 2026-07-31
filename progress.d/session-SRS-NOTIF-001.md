@@ -113,3 +113,125 @@ Resume / next:
   NotificationEventStore + append_durably) is what those consumers plug into.
   Downstream unblock when NOTIF-001 flips: ERR-7, ERR-8 (both blocked-on
   SRS-NOTIF-001).
+
+=== SESSION 2026-07-31 (operator-directed: build the transports) ===
+Outcome: still serialized (passes:false). The two missing transports now EXIST and are
+verified over real sockets; what remains is a real provider behind them, the detection
+wiring, and a dispatcher process. Steps 3-5 of the agreed 6-step plan are NOT done.
+
+Context for this session: the operator asked which awaiting-verification features need
+only a verified-e2e label, and chose SRS-NOTIF-001 off that audit — not because it is
+closest to green (it is not; it needed an ordinary build) but because it is the highest
+-impact blocker on a deadlocked board (ERR-7, ERR-8, MD-005, PERF-001, DATA-010/019/020,
+UI-1 all wait on it).
+
+## What I built
+
+1. prep (7d464fe): `atp-adapters` may now depend on `atp-notification` in
+   runtime_services.json's dependency_direction allowlist. Standard hexagonal direction
+   (the adapter depends on the crate owning the port). No cycle: atp-notification stays
+   in lower_layer_scan_crates with the `atp_adapters` token forbidden, so the reverse
+   edge is statically impossible. GOTCHA: that scan is a raw SUBSTRING match over source
+   lines, so writing `atp_adapters::notification` in an atp-notification DOC COMMENT
+   fails the check. Spell it `atp-adapters` (hyphen) in that crate.
+
+2. feat (f8e69f9): crates/atp-adapters/src/notification{.rs,/smtp.rs,/sms.rs}.
+   NEW FILES ONLY — interactive_brokers.rs + wire.rs are SHA-256 digest-pinned by
+   tools/ib_adapter_check.py and editing them would flip closed-green EXE-006 red.
+
+### The architectural decision that shapes everything else
+The workspace has ZERO external crates → no TLS available to a std-only adapter. Rather
+than break that invariant tree-wide, the TLS boundary became a DEPLOYMENT component:
+`phase1-notification-egress` owns the authenticated TLS session to the provider; the
+adapters speak plaintext to it on an internal network. Enforced, not just documented:
+  * EgressEndpoint re-resolves PER CONNECT and refuses any host not resolving to
+    loopback/RFC1918, validating EVERY resolved address (a [private, public] round-robin
+    would otherwise pass on the first) and unwrapping IPv4-mapped IPv6.
+  * Each adapter authenticates with its catalogued secret, and the email transport
+    REFUSES a relay that does not advertise AUTH — an open relay means any container that
+    can route to it can forge operator alerts.
+
+### The deadline residual is now discharged (this was the real work)
+channel.rs had documented "the adapter honours the deadline via cancellable I/O" as
+verified-at-the-deferred-integration. Two ways that is silently wrong, both now pinned:
+  * PER-OPERATION vs TOTAL budget. A socket timeout is per-op; arming `deadline` on each
+    of SMTP's ~8 round trips licenses 8x the budget, making the dispatcher's
+    MAX_CHANNEL_DEADLINE = DISPATCH_SLA_MS/2 arithmetic meaningless. SendBudget is created
+    once per send; every op is armed from what is LEFT.
+  * BETWEEN-READ re-checking. Arming once and calling read_line/read_to_end is NOT enough:
+    the timeout countdown restarts on every read syscall, so a relay dribbling one byte
+    per interval never trips one and holds an operator alert forever while every timeout
+    looks correctly armed. Both paths drive fill_buf with the budget re-checked between
+    reads (read_line_budgeted / read_to_end_budgeted). std's read_line/read_to_end are
+    UNUSABLE on a deadline path for this reason — don't "simplify" them back in.
+  * METHOD NOTE: I verified both tests discriminate by temporarily writing each bug in.
+    Each is caught by EXACTLY ONE test and no other. A test that cannot fail is not
+    evidence — worth doing for any property whose wrong implementation still passes
+    everything else.
+
+Also: multiline SMTP replies incl. a code changing mid-reply (else a 550 reads as the
+following 250); dot-stuffing; 4xx/5xx as distinct remediations; CR/LF folded out of
+interpolated protocol lines, but envelope addresses / HTTP path / credential REFUSED
+(a subject can be repaired, an address cannot); hand-rolled base64 + JSON escaping;
+bounded lines/response/SMS body; character-boundary truncation (byte-slicing a non-ASCII
+alert body would panic the notification path); hand-written Debug redacting both configs.
+
+Deleted a `command_redacted` wrapper I had written that was byte-identical to `command` —
+security theater. Replaced with the real guarantee: errors interpolate `stage` and the
+relay's own reply, never the command line, pinned by
+a_refused_credential_never_appears_in_the_error_detail.
+
+## What I tested
+  17 L4 boundary (crates/atp-adapters/tests/srs_notif_001_transports.rs) over REAL
+  loopback sockets against scripted SMTP/HTTP relays; 26 L1 unit; 7 L7 domain
+  (tests/domain/test_notification_transports.py — "notification" is NOT a SAFETY_PATH_RE
+  token so the critic does not demand the pairing, but this is the connectivity/
+  critical-failure path, so it is written anyway).
+  Gate: cargo test --workspace 2060 passed/0 failed; pytest -m "not integration and not
+  e2e" 4415 passed/3 pre-existing skips; clippy -D warnings clean; cargo fmt clean
+  (formatted with `cargo fmt -p atp-adapters` — NEVER whole-workspace); dependency_boundary
+  / architecture / adapter_isolation / ib_adapter / kill_switch_timeout /
+  credential_security / config / deployment all PASS. Deterministic critic APPROVE.
+  NOT YET RUN: the judgment critic (tools/adversarial_review.py) — next session must run it
+  before this is integrated.
+
+## Doc-drift swept
+  atp-notification lib.rs + channel.rs and kill_switch_timeout_contract.deferred[3] all
+  claimed these adapters do not exist. Rewritten to state what is genuinely left.
+
+## Resume / next — the remaining 3 build steps, then the flip
+  3. phase1-notification-egress sidecar (compose): terminates TLS to the providers, maps
+     ATP_SMTP_API_KEY -> the real provider credential, exposes plaintext SMTP on 1025 and
+     POST /sms on 8025 to the internal network only. Must AUTH its clients (the email
+     adapter refuses it otherwise). Provider choice (operator, 2026-07-31): Brevo free
+     SMTP relay (300/day, no card) for IF-10 — the operator also asked about Gmail, which
+     works as either the relay login or the destination inbox. NO SMS PROVIDER CHOSEN YET;
+     recommended Twilio trial ($15 credit, verified-number-only is fine since the operator
+     is the sole recipient; note trial messages carry a "Sent from your Twilio trial
+     account" prefix that WILL appear in the flip evidence). Two email providers cannot
+     close this: REQUIRED_CHANNELS is Email AND Sms, enforced fail-closed, so a missing
+     SMS channel raises MissingRequiredChannel and nothing sends at all.
+  4. Detection wiring at the composition root: atp-execution records a ConnectivityEvent
+     {Unreachable | ScheduledRestartWindow} through ConnectivityEventSink at
+     crates/atp-execution/src/lib.rs:640 (the ERR-2/SRS-SAFE-003 gate). Bind that sink to
+     OperatorNotifier::connectivity_loss. ScheduledRestartWindow IS the SYS-75 suppression
+     decision, decidable right there. atp-orchestrator already deps both crates and
+     already binds NotifierAlertSink -> OperatorNotifier for SAFE-002
+     (kill_switch_timeout.rs) — follow that composition, do NOT make atp-execution depend
+     on atp-notification.
+  5. A real dispatcher process: phase1-notification-dispatcher currently runs
+     core-runtime.Dockerfile's CMD, which is `cargo test --locked --workspace --lib`.
+  6. Flip: on the Proxmox host stop the IB Gateway to force a genuine Unreachable, confirm
+     a real email + real SMS inside 60s and that the stored NotificationEvent records both
+     deliveries, then close_feature.py SRS-NOTIF-001 --verified.
+
+## Branch hazard discovered (read before integrating)
+  A CONCURRENT agent session was committing into this same working directory while I
+  worked. Two commits I did not author landed on agent/SRS-NOTIF-001: ef66a72 (app.js
+  RES-003 fix) and ed2c60f (a close_feature chore that flips passes:true in
+  feature_list.json — a SHARED-STATE mutation `integrate` rejects from a branch). Both
+  also exist on origin/main under different hashes (60579d0, dc230d9), so a rebase onto
+  origin/main should drop them as duplicate patches — VERIFY that before integrating, and
+  confirm 0 deletions vs origin/main. Branch also carries 9bc2b9d (someone else's conftest
+  test-isolation fix) which is NOT yet on origin/main. See
+  [[feedback_primary_worktree_may_be_on_agent_branch]].
