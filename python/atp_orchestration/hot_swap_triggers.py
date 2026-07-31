@@ -279,16 +279,41 @@ class ManualTriggerHandler:
                 type="MANUAL_TRIGGER_UNEVIDENCED",
             )
 
+        # Correlation, not just outcome. A clean exit and a logged ordinal say SOMETHING was
+        # recorded; they do not say it was the trigger this request asked for. Under a wrong
+        # binary path, a version skew, or malformed stdout, reporting the REQUEST's own values
+        # back with an ordinal pointing at a different record would attribute a fired trigger
+        # to the wrong strategies — in the durable audit trail, where it matters most.
         fired = values.get("fired", "")
+        proof = _parse_fired_line(fired)
+        expected = {
+            "kind": "MANUAL_PROMOTION",
+            "demoting": demoting,
+            "candidate": candidate,
+        }
+        mismatched = {
+            field: (expected[field], proof.get(field))
+            for field in expected
+            if proof.get(field) != expected[field]
+        }
+        if mismatched:
+            raise InterfaceError(
+                ErrorCategory.INTERNAL_ERROR,
+                f"resv003_hot_swap_trigger_cli reported a different trigger than requested "
+                f"({mismatched}); refusing to attribute its durable record to this request",
+                type="MANUAL_TRIGGER_MISATTRIBUTED",
+                detail={"expected": expected, "reported": proof},
+            )
+
         return HandlerResult(
             200,
             {
-                "trigger_kind": fired.split(" ", 1)[0] if fired else "",
+                "trigger_kind": proof["kind"],
                 "trigger_id": ordinal,
                 "logged": True,
                 "demoting_strategy_id": demoting,
                 "candidate_strategy_id": candidate,
-                "rationale": _rationale_of(fired),
+                "rationale": proof.get("rationale", ""),
                 # The load-bearing honesty field: a fired trigger is a logged PROPOSAL.
                 "execution": {
                     "state": "DEFERRED",
@@ -409,20 +434,74 @@ def _positive_int(value: object) -> str:
 
 
 def _required_id(request: Request, key: str) -> str:
-    raw = request.body.get(key) or request.query.get(key) or ""
-    value = str(raw).strip()
+    """A strategy id from the request, refusing anything that is not actually a string.
+
+    ``str(raw)`` on an arbitrary JSON value is a coercion, not a read: ``true`` becomes
+    ``"True"`` and ``{"x": 1}`` becomes ``"{'x': 1}"``, either of which would go on to name a
+    strategy in a DURABLE audit record. The published schema says these fields are strings,
+    so a non-string is a malformed request and fails closed rather than being reinterpreted.
+
+    Whitespace is refused for a second reason: the binary reports what it fired on a
+    space-delimited ``fired:`` proof line, so an id containing a space could not be read back
+    unambiguously — and this handler's success depends on reading it back.
+    """
+
+    raw = request.body.get(key, request.query.get(key))
+    if raw is None or raw == "":
+        raise InterfaceError(
+            ErrorCategory.BAD_REQUEST,
+            f"a manual Hot-Swap trigger requires {key}",
+            type="MISSING_STRATEGY_ID",
+        )
+    if not isinstance(raw, str):
+        raise InterfaceError(
+            ErrorCategory.BAD_REQUEST,
+            f"{key} must be a string (got {type(raw).__name__}); refusing to coerce a "
+            "non-string into a strategy id that would name a durable audit record",
+            type="NON_STRING_STRATEGY_ID",
+        )
+    value = raw.strip()
     if not value:
         raise InterfaceError(
             ErrorCategory.BAD_REQUEST,
             f"a manual Hot-Swap trigger requires {key}",
             type="MISSING_STRATEGY_ID",
         )
+    if any(character.isspace() for character in value):
+        raise InterfaceError(
+            ErrorCategory.BAD_REQUEST,
+            f"{key} must not contain whitespace ({value!r}): the trigger binary reports what "
+            "it fired on a space-delimited proof line, and this handler verifies success by "
+            "reading that line back",
+            type="MALFORMED_STRATEGY_ID",
+        )
     return value
 
 
-def _rationale_of(fired: str) -> str:
-    """Pull the ``rationale:`` field out of the bin's single ``fired:`` proof line."""
+def _parse_fired_line(fired: str) -> dict[str, str]:
+    """Split the bin's single ``fired:`` proof line into its fields.
 
-    marker = "rationale:"
+    ``fired`` is the VALUE of the bin's ``fired:`` line — the generic kv parser has already
+    taken the prefix off — so its shape is ``<KIND> demoting:<id> candidate:<id>
+    rationale:<text>``. The rationale is free text and runs to the end; the tokens before it
+    are single words, which is why ids reaching the binary are refused if they contain
+    whitespace.
+    """
+
+    if not fired:
+        return {}
+    rationale = ""
+    marker = " rationale:"
     index = fired.find(marker)
-    return fired[index + len(marker) :].strip() if index >= 0 else ""
+    if index >= 0:
+        rationale = fired[index + len(marker) :].strip()
+        fired = fired[:index]
+    tokens = fired.split()
+    if not tokens:
+        return {}
+    parsed: dict[str, str] = {"rationale": rationale, "kind": tokens[0]}
+    for token in tokens[1:]:
+        key, separator, value = token.partition(":")
+        if separator:
+            parsed[key] = value
+    return parsed

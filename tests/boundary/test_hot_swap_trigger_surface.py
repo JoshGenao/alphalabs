@@ -576,3 +576,72 @@ def test_the_default_disabled_response_is_valid_against_the_published_schema(
     assert body["drawdown_demotion_threshold_bps"] is None, body
     documented = _documented_types("/api/v1/hot-swap/triggers", "get", "response")
     assert "null" in documented["drawdown_demotion_threshold_bps"], documented
+
+
+# --------------------------------------------------------------------------- #
+# Manual trigger: request validation and evidence attribution
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "bad_id", [True, 42, {"x": 1}, ["a"], 3.5], ids=["bool", "int", "object", "list", "float"]
+)
+def test_a_non_string_strategy_id_is_refused_not_coerced(
+    mounted: tuple[str, int], fake_cli: _FakeCli, bad_id: object
+) -> None:
+    # `str(raw)` is a coercion, not a read: True would become "True" and {"x": 1} would
+    # become "{'x': 1}", either of which would go on to name a strategy in a DURABLE audit
+    # record. The published schema says these are strings.
+    status, body = _request(
+        mounted,
+        "POST",
+        "/api/v1/hot-swap/triggers/manual?confirm=yes",
+        {"demoting_strategy_id": "alpha", "candidate_strategy_id": bad_id},
+    )
+    assert status == 400, body
+    assert body.get("error", {}).get("type") == "NON_STRING_STRATEGY_ID", body
+    assert fake_cli.calls == [], "a malformed id must never reach the binary"
+
+
+def test_a_whitespace_bearing_id_is_refused(mounted: tuple[str, int], fake_cli: _FakeCli) -> None:
+    # The binary reports what it fired on a space-delimited proof line, and this handler
+    # verifies success by reading that line back — an id with a space could not be read back
+    # unambiguously.
+    status, body = _request(
+        mounted,
+        "POST",
+        "/api/v1/hot-swap/triggers/manual?confirm=yes",
+        {"demoting_strategy_id": "alpha", "candidate_strategy_id": "cand beta"},
+    )
+    assert status == 400, body
+    assert body.get("error", {}).get("type") == "MALFORMED_STRATEGY_ID", body
+    assert fake_cli.calls == []
+
+
+@pytest.mark.parametrize(
+    "proof",
+    [
+        "fired:MANUAL_PROMOTION demoting:alpha candidate:SOMEONE_ELSE rationale:x",
+        "fired:MANUAL_PROMOTION demoting:SOMEONE_ELSE candidate:beta rationale:x",
+        "fired:DRAWDOWN_DEMOTION demoting:alpha candidate:beta rationale:x",
+        "fired:",
+    ],
+    ids=["wrong-candidate", "wrong-demoting", "wrong-kind", "no-proof"],
+)
+def test_a_trigger_that_does_not_match_the_request_is_not_reported_as_success(
+    mounted: tuple[str, int], fake_cli: _FakeCli, proof: str
+) -> None:
+    # A clean exit and a logged ordinal say SOMETHING was recorded; they do not say it was
+    # the trigger this request asked for. Reporting the REQUEST's own values back with an
+    # ordinal pointing at a different record would misattribute a fired trigger in the
+    # durable audit trail — the place it matters most.
+    stdout = "\n".join(
+        line for line in _MANUAL_STDOUT.splitlines() if not line.startswith("fired:")
+    )
+    fake_cli.queue(stdout=stdout + "\n" + proof + "\n")
+    status, body = _request(
+        mounted, "POST", "/api/v1/hot-swap/triggers/manual?confirm=yes", _MANUAL_BODY
+    )
+    assert status >= 500, body
+    assert body.get("error", {}).get("type") == "MANUAL_TRIGGER_MISATTRIBUTED", body
+    assert "trigger_id" not in body

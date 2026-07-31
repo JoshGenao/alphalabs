@@ -730,3 +730,77 @@ def test_an_unreadable_log_refuses_the_fire_instead_of_joining_it(tmp_path: Path
     # durable record agree that nothing fired.
     assert log.read_text() == before, log.read_text()
     assert "MANUAL_PROMOTION" not in result.stdout or "beta" not in log.read_text()
+
+
+def test_the_rest_success_is_correlated_to_the_record_the_binary_wrote(tmp_path: Path) -> None:
+    # Three-way agreement against the REAL binary: the kind, the demoting id and the
+    # candidate id the CLI reports firing must all match what was requested before any
+    # success is reported — and the response then carries the PROOF's values, not the
+    # request's, so a 200 can never describe a trigger other than the one on disk.
+    from atp_orchestration import mount_hot_swap_triggers
+    from atp_runtime import OperatorInterfaceRuntime
+    from atp_runtime.registry import OperationKey, Request, Surface
+
+    runtime = OperatorInterfaceRuntime()
+    log = tmp_path / "triggers.jsonl"
+    mount_hot_swap_triggers(
+        runtime,
+        state_path=tmp_path / "triggers.json",
+        log_path=log,
+        binary=_trigger_cli(),
+    )
+    key = OperationKey(Surface.REST, "POST /api/v1/hot-swap/triggers/manual")
+    handler = runtime.registry.resolve(key, deferred=None)  # type: ignore[arg-type]
+
+    result = handler.handle(
+        Request(
+            surface=Surface.REST,
+            operation=key,
+            method="POST",
+            body={"demoting_strategy_id": "momentum-v3", "candidate_strategy_id": "meanrev-v7"},
+            confirmed=True,
+        )
+    )
+    assert result.status_code == 200, result.body
+    assert result.body["trigger_kind"] == "MANUAL_PROMOTION", result.body
+    assert result.body["demoting_strategy_id"] == "momentum-v3", result.body
+    assert result.body["candidate_strategy_id"] == "meanrev-v7", result.body
+
+    # The record at the reported ordinal names exactly those strategies.
+    record = log.read_text().splitlines()[int(result.body["trigger_id"]) - 1]
+    assert '"demoting_strategy_id":"momentum-v3"' in record, record
+    assert '"candidate_strategy_id":"meanrev-v7"' in record, record
+
+
+def test_a_non_string_strategy_id_never_reaches_the_audit_log(tmp_path: Path) -> None:
+    # str() over an arbitrary JSON value is a coercion, not a read: `True` would become the
+    # strategy "True" in a durable audit record. Refused before the binary is invoked, so no
+    # record can exist for it.
+    from atp_orchestration import mount_hot_swap_triggers
+    from atp_runtime import OperatorInterfaceRuntime
+    from atp_runtime.errors import InterfaceError
+    from atp_runtime.registry import OperationKey, Request, Surface
+
+    runtime = OperatorInterfaceRuntime()
+    log = tmp_path / "triggers.jsonl"
+    mount_hot_swap_triggers(
+        runtime,
+        state_path=tmp_path / "triggers.json",
+        log_path=log,
+        binary=_trigger_cli(),
+    )
+    key = OperationKey(Surface.REST, "POST /api/v1/hot-swap/triggers/manual")
+    handler = runtime.registry.resolve(key, deferred=None)  # type: ignore[arg-type]
+
+    for bad in (True, 42, {"x": 1}, ["a"]):
+        with pytest.raises(InterfaceError):
+            handler.handle(
+                Request(
+                    surface=Surface.REST,
+                    operation=key,
+                    method="POST",
+                    body={"demoting_strategy_id": "alpha", "candidate_strategy_id": bad},
+                    confirmed=True,
+                )
+            )
+    assert not log.exists(), log.read_text()
