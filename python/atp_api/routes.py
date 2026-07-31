@@ -160,6 +160,14 @@ class Route:
     #: ``tests/boundary/test_hot_swap_trigger_surface.py`` checks the documented
     #: types against what the handlers actually accept and return.
     field_types: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    #: ``True`` when the route's handler rejects any body key outside
+    #: :attr:`request_fields`, which the schema then publishes as
+    #: ``additionalProperties: false``.
+    #:
+    #: Only meaningful once a handler exists. An unimplemented route cannot say what it
+    #: would reject, so it stays permissive; a strict handler that did not say so would
+    #: promise callers an acceptance the live surface refuses.
+    strict_request_body: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -319,6 +327,9 @@ ROUTES: tuple[Route, ...] = (
             ("any_automatic_enabled", "boolean"),
             ("default_disabled", "boolean"),
         ),
+        # The handler refuses any unrecognised key — a misspelled trigger flag must not
+        # return 200 having armed nothing — so the contract must not advertise otherwise.
+        strict_request_body=True,
     ),
     Route(
         method=Method.POST,

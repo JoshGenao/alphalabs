@@ -59,7 +59,10 @@ def _string_schema() -> dict[str, Any]:
 
 
 def _placeholder_object_schema(
-    field_names: Iterable[str], field_types: Mapping[str, str] | None = None
+    field_names: Iterable[str],
+    field_types: Mapping[str, str] | None = None,
+    *,
+    strict: bool = False,
 ) -> dict[str, Any]:
     """An object schema over ``field_names``.
 
@@ -82,7 +85,10 @@ def _placeholder_object_schema(
     return {
         "type": "object",
         "properties": properties,
-        "additionalProperties": True,
+        # An unimplemented route cannot say what it would reject, so its placeholder stays
+        # permissive. A route whose handler enforces an exact allowlist must say so, or the
+        # contract promises an acceptance the live surface refuses.
+        "additionalProperties": not strict,
     }
 
 
@@ -162,7 +168,9 @@ def _build_request_body(route: Route) -> dict[str, Any] | None:
             "required": True,
             "content": {
                 "application/json": {
-                    "schema": _placeholder_object_schema(body_fields, dict(route.field_types))
+                    "schema": _placeholder_object_schema(
+                        body_fields, dict(route.field_types), strict=route.strict_request_body
+                    )
                 }
             },
         }

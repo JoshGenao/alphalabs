@@ -663,3 +663,30 @@ def test_a_misspelled_trigger_field_is_refused_not_silently_dropped(
     assert body.get("error", {}).get("type") == "UNKNOWN_TRIGGER_CONFIG_FIELD", body
     # Nothing was applied — not even the recognised sibling field.
     assert fake_cli.calls == [], fake_cli.calls
+
+
+def test_the_strict_handler_and_the_published_schema_agree_on_unknown_fields(
+    mounted: tuple[str, int], fake_cli: _FakeCli
+) -> None:
+    # The handler refuses unknown keys; the schema has to say so, or a generated client can
+    # build a schema-valid request the live surface rejects.
+    import json as _json
+    from pathlib import Path as _Path
+
+    snapshot = _json.loads(
+        (_Path(__file__).resolve().parents[2] / "python/atp_api/openapi.json").read_text()
+    )
+    schema = snapshot["paths"]["/api/v1/hot-swap/triggers"]["put"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"]
+    assert schema["additionalProperties"] is False, schema
+
+    # And the two agree in behaviour, not just in wording.
+    status, _body = _request(
+        mounted,
+        "PUT",
+        "/api/v1/hot-swap/triggers?confirm=yes",
+        {"top_ranked_promotion_enabled": True, "not_a_field": 1},
+    )
+    assert status == 400
+    assert fake_cli.calls == []
