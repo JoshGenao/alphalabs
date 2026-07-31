@@ -106,6 +106,7 @@
         "crate": "atp-adapters",
         "path": "crates/atp-adapters",
         "allowed_dependencies": [
+          "atp-notification",
           "atp-types"
         ]
       }
