@@ -171,3 +171,186 @@ def test_ranking_non_finite_and_empty_fail_closed_no_fire() -> None:
     # so no automatic trigger fires (no fabricated pick, no panic).
     result = _run_cargo_test("resv_3_ranking_non_finite_and_empty_fail_closed_no_fire")
     _assert_single_pass(result, "RESV-003 fail-closed-ranking")
+
+
+# --------------------------------------------------------------------------- #
+# The DURABLE trigger configuration (SYS-49a "configurable", across a restart)
+#
+# These drive the real `resv003_hot_swap_trigger_cli` binary against a real file,
+# because the property under test is what a LATER process reads back — which an
+# in-process test cannot observe. The safety claim is narrow and specific: what
+# fires is decided by the persisted configuration, and a configuration this build
+# cannot read never reads as "disabled".
+# --------------------------------------------------------------------------- #
+
+
+def _trigger_cli() -> Path:
+    """Build (once) and return the real trigger CLI binary."""
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip(reason="cargo not on PATH; cannot build the trigger CLI")
+    build = subprocess.run(
+        [cargo, "build", "-q", "-p", "atp-orchestrator", "--bin", "resv003_hot_swap_trigger_cli"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, f"cargo build failed:\n{build.stdout}\n{build.stderr}"
+    return REPO_ROOT / "target" / "debug" / "resv003_hot_swap_trigger_cli"
+
+
+def _cli(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(_trigger_cli()), *args],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _kv(stdout: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in stdout.splitlines():
+        key, sep, value = line.partition(":")
+        if sep:
+            values[key] = value
+    return values
+
+
+# The conditions every automatic trigger would fire on, if it were enabled: a
+# total-loss drawdown on the live strategy and an excellent ranked candidate.
+_FIRING_INPUTS = ("--live", "alpha", "--live-drawdown", "5000", "--rank", "beta:1:2.5:0.9")
+
+
+def test_persisted_disabled_config_fires_nothing_when_conditions_are_met(
+    tmp_path: Path,
+) -> None:
+    # The default-disabled clause, proven NON-VACUOUSLY through the durable store:
+    # the inputs would fire every automatic trigger, and none fires because nothing
+    # has been configured. An absent file is the "never configured" state, which is
+    # the one case where reporting "disabled" is truthful.
+    state = tmp_path / "triggers.json"
+    result = _cli("evaluate", *_FIRING_INPUTS, "--state", str(state), "--log", str(tmp_path / "l"))
+    assert result.returncode == 0, result.stderr
+    values = _kv(result.stdout)
+    assert values["fired-count"] == "0", result.stdout
+    assert values["all-triggers-logged"] == "true", result.stdout
+
+
+def test_persisted_enabled_config_survives_the_process_that_set_it(tmp_path: Path) -> None:
+    # "Configurable" across a restart: one process persists the trigger, a SEPARATE
+    # process reads it back and fires on it. Same inputs as the test above — the
+    # only difference is the durable configuration, which is what makes it the
+    # decision authority rather than a display artefact.
+    state = tmp_path / "triggers.json"
+    written = _cli("config", "--state", str(state), "--set-drawdown-threshold", "250")
+    assert written.returncode == 0, written.stderr
+    assert _kv(written.stdout)["config-persisted"] == "true"
+
+    reread = _cli("config", "--state", str(state))
+    assert _kv(reread.stdout)["config-source"] == "persisted"
+    assert _kv(reread.stdout)["drawdown-demotion-threshold-bps"] == "250"
+
+    fired = _cli("evaluate", *_FIRING_INPUTS, "--state", str(state), "--log", str(tmp_path / "l"))
+    assert fired.returncode == 0, fired.stderr
+    values = _kv(fired.stdout)
+    assert values["fired-count"] == "1", fired.stdout
+    # All swap triggers are logged: the fired count and the durably persisted
+    # record count agree.
+    assert values["logged-count"] == "1", fired.stdout
+    assert values["log-file-records"] == "1", fired.stdout
+
+
+def test_each_automatic_trigger_is_independently_configurable(tmp_path: Path) -> None:
+    # SYS-49a names four triggers; the three automatic ones must be separately
+    # enable/disable-able rather than one shared switch.
+    state = tmp_path / "triggers.json"
+    _cli("config", "--state", str(state), "--set-top-ranked", "on")
+    values = _kv(_cli("config", "--state", str(state)).stdout)
+    assert values["top-ranked-promotion-enabled"] == "true"
+    assert values["drawdown-demotion-enabled"] == "false"
+    assert values["highest-momentum-promotion-enabled"] == "false"
+
+    # A read-modify-write on one trigger preserves the others.
+    _cli("config", "--state", str(state), "--set-highest-momentum", "on")
+    values = _kv(_cli("config", "--state", str(state)).stdout)
+    assert values["top-ranked-promotion-enabled"] == "true"
+    assert values["highest-momentum-promotion-enabled"] == "true"
+
+    # And disabling is reachable again, or "configurable" is one-way.
+    _cli("config", "--state", str(state), "--set-top-ranked", "off")
+    values = _kv(_cli("config", "--state", str(state)).stdout)
+    assert values["top-ranked-promotion-enabled"] == "false"
+    assert values["highest-momentum-promotion-enabled"] == "true"
+
+
+def test_an_unreadable_config_never_reads_as_disabled(tmp_path: Path) -> None:
+    # THE false-all-clear this guards. A corrupt configuration must fail the
+    # command, never degrade into the all-disabled default: "we could not read it"
+    # and "no automatic trigger is armed" are different facts, and reporting the
+    # second for the first tells an operator a Hot-Swap cannot fire when nobody
+    # knows whether it can.
+    state = tmp_path / "triggers.json"
+    state.write_text('{"magic":"ATP-HOT-SWAP-TRIGGER-CONFIG","schema_version":1,"drawdown_')
+
+    shown = _cli("config", "--state", str(state))
+    assert shown.returncode != 0, shown.stdout
+    assert "unreadable" in shown.stderr, shown.stderr
+    assert "drawdown-demotion-enabled:false" not in shown.stdout
+
+    # And the evaluation path fails closed the same way — it must not report
+    # "nothing fired" about a configuration it could not read.
+    evaluated = _cli(
+        "evaluate", *_FIRING_INPUTS, "--state", str(state), "--log", str(tmp_path / "l")
+    )
+    assert evaluated.returncode != 0, evaluated.stdout
+    assert "fired-count:0" not in evaluated.stdout
+
+
+def test_a_set_against_an_unreadable_config_does_not_overwrite_it(tmp_path: Path) -> None:
+    # A --set-* is a read-modify-write. Starting from the default when the existing
+    # file cannot be read would silently discard the operator's other triggers —
+    # including disarming one they believe is armed — and destroy the evidence of
+    # what went wrong. The command fails and the bytes are left exactly as found.
+    state = tmp_path / "triggers.json"
+    corrupt = '{"magic":"ATP-HOT-SWAP-TRIGGER-CONFIG","schema_version":1,"drawdown_'
+    state.write_text(corrupt)
+
+    result = _cli("config", "--state", str(state), "--set-top-ranked", "on")
+    assert result.returncode != 0, result.stdout
+    assert state.read_text() == corrupt
+
+
+def test_an_unknown_configuration_field_is_refused_not_ignored(tmp_path: Path) -> None:
+    # A reader that looks up only the keys it expects is blind to the ones it does
+    # not, so a renamed or newly-meaningful flag is dropped while the rest parses
+    # cleanly. The whole payload is refused instead.
+    state = tmp_path / "triggers.json"
+    state.write_text(
+        '{"magic":"ATP-HOT-SWAP-TRIGGER-CONFIG","schema_version":1,'
+        '"drawdown_demotion_enabled":false,"top_ranked_promotion_enabled":false,'
+        '"highest_momentum_promotion_enabled":false,"manual_promotion_enabled":true}'
+    )
+    result = _cli("config", "--state", str(state))
+    assert result.returncode != 0, result.stdout
+    assert "unknown field" in result.stderr, result.stderr
+
+
+def test_manual_promotion_stays_available_with_every_automatic_trigger_off(
+    tmp_path: Path,
+) -> None:
+    # SYS-49a(a): manual selection is always available and is NOT gated by the
+    # automatic configuration — including when the durable config disables
+    # everything.
+    state = tmp_path / "triggers.json"
+    log = tmp_path / "manual.jsonl"
+    assert _kv(_cli("config", "--state", str(state)).stdout)["any-automatic-enabled"] == "false"
+
+    result = _cli("manual", "--demoting", "alpha", "--candidate", "beta", "--log", str(log))
+    assert result.returncode == 0, result.stderr
+    values = _kv(result.stdout)
+    assert values["manual-always-available"] == "true"
+    assert values["manual-logged"] == "true"
+    assert values["log-file-records"] == "1"

@@ -29,7 +29,10 @@ pub use composite_order::{
 };
 
 pub mod json_scan;
-pub use json_scan::{json_string_value, parse_strict_i64, top_level_json_field, JsonScanError};
+pub use json_scan::{
+    json_string_value, parse_strict_bool, parse_strict_i64, top_level_json_field,
+    top_level_json_keys, JsonScanError,
+};
 
 pub mod perf;
 pub use perf::{

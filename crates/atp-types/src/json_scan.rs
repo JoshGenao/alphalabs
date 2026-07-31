@@ -6,11 +6,17 @@
 //! *what schema version does this record declare?* — before deciding whether they may interpret the
 //! rest of it.
 //!
-//! This module answers only that question, for two callers that must answer it identically: the
+//! This module answers that question for the callers that must answer it identically: the
 //! SRS-DATA-015 inspection CLI (`data015_schema_cli`) and the SRS-RESV-003 trigger-log reader
 //! (`resv003_hot_swap_trigger_cli`). It lives in `atp-types` — a leaf crate both already depend on —
 //! because the same parser drifting apart in two places is how the two of them disagreed about which
 //! records were readable in the first place.
+//!
+//! It also answers the two adjacent questions a *fail-closed* reader of a persisted record needs,
+//! under the identical rules: **which keys does this object declare** ([`top_level_json_keys`]) and
+//! **is this value a real JSON boolean** ([`parse_strict_bool`]). Both exist for the SRS-RESV-003
+//! durable trigger configuration, where a key the reader does not recognise, or a flag it coerced
+//! rather than read, would decide whether an automatic Hot-Swap may fire.
 //!
 //! ## Why hand-written
 //! The workspace carries no `serde`, and pulling a JSON dependency into the core runtime for a
@@ -111,6 +117,74 @@ pub fn top_level_json_field<'a>(
         return Err(JsonScanError);
     }
     Ok(found)
+}
+
+/// Every top-level key the JSON object `line` declares, in the order written.
+///
+/// The companion to [`top_level_json_field`] for readers that must reject an *unknown* key rather
+/// than ignore it. Looking fields up one at a time can only ever confirm what a reader expected to
+/// find; it is structurally blind to a key the writer added, misspelled, or renamed. For a record
+/// whose fields are load-bearing (a safety configuration, say) that blindness is a fail-open: a
+/// `drawdown_demotion_enabld` typo reads as "the operator did not enable it", and a field a newer
+/// build made meaningful is silently dropped by an older reader that still parses the rest cleanly.
+///
+/// Same guarantees as [`top_level_json_field`]: the entire object is walked before any key is
+/// returned, a duplicate key is [`JsonScanError`] rather than a resolved last-one-wins, and a key
+/// occurring inside a string value or a nested object is never mistaken for a top-level one.
+pub fn top_level_json_keys(line: &str) -> Result<Vec<&str>, JsonScanError> {
+    let bytes = line.as_bytes();
+    let mut i = skip_ws(bytes, 0);
+    if bytes.get(i) != Some(&b'{') {
+        return Err(JsonScanError);
+    }
+    i = skip_ws(bytes, i + 1);
+
+    let mut keys: Vec<&str> = Vec::new();
+    if bytes.get(i) == Some(&b'}') {
+        i += 1;
+    } else {
+        loop {
+            i = skip_ws(bytes, i);
+            let (name, after_key) = read_json_string(line, i)?;
+            i = skip_ws(bytes, after_key);
+            if bytes.get(i) != Some(&b':') {
+                return Err(JsonScanError);
+            }
+            i = skip_ws(bytes, i + 1);
+            i = skip_json_value(line, i)?;
+            if keys.contains(&name) {
+                // Ambiguity is refused, not resolved — the same rule `top_level_json_field`
+                // applies. An object that declares a key twice has not stated its layout.
+                return Err(JsonScanError);
+            }
+            keys.push(name);
+            i = skip_ws(bytes, i);
+            match bytes.get(i) {
+                Some(b',') => i += 1,
+                Some(b'}') => {
+                    i += 1;
+                    break;
+                }
+                _ => return Err(JsonScanError),
+            }
+        }
+    }
+
+    if skip_ws(bytes, i) != bytes.len() {
+        return Err(JsonScanError);
+    }
+    Ok(keys)
+}
+
+/// A JSON boolean, and nothing else: rejects `"true"` (a quoted string), `1`, `null`, and any
+/// trailing junk. A configuration flag that decides whether an automatic action may fire must come
+/// from a literal the writer actually wrote, never from a coercion the reader invented.
+pub fn parse_strict_bool(raw: &str) -> Option<bool> {
+    match raw.trim() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
 }
 
 /// A JSON integer, and nothing else: rejects floats (`1.5`), quoted numbers (`"1"`), `true`/`null`,

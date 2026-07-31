@@ -223,6 +223,19 @@ pub const PERSISTED_ENTITIES: &[SchemaDescriptor] = &[
         legacy_unversioned: true,
     },
     SchemaDescriptor {
+        entity_id: "hot-swap-trigger-config",
+        owner_srs: "SRS-RESV-003",
+        writer_path: "crates/atp-orchestrator/src/trigger_config_store.rs",
+        marker: "TRIGGER_CONFIG_SCHEMA_VERSION",
+        magic: Some("ATP-HOT-SWAP-TRIGGER-CONFIG"),
+        current_version: 1,
+        min_supported_version: 1,
+        posture: EvolutionPosture::Pinned,
+        // Unlike its sibling trigger LOG, this format has carried a version since its first byte —
+        // no unversioned configuration was ever written, so there is none to keep readable.
+        legacy_unversioned: false,
+    },
+    SchemaDescriptor {
         entity_id: "kill-switch-last-activation",
         owner_srs: "SRS-SAFE-001",
         writer_path: "python/atp_safety/state.py",

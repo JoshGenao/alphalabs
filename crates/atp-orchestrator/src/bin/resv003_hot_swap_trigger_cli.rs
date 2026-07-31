@@ -12,8 +12,8 @@
 //! the swap (that is the SRS-RESV-004 gate).
 
 use atp_orchestrator::{
-    HotSwapSideEffectError, HotSwapTriggerLog, LiveStrategyProbe, ReservoirRankingSource,
-    StrategyOrchestrator,
+    trigger_config_store, HotSwapSideEffectError, HotSwapTriggerLog, LiveStrategyProbe,
+    ReservoirRankingSource, StrategyOrchestrator,
 };
 use atp_types::json_scan::{json_string_value, parse_strict_i64, top_level_json_field};
 use atp_types::{
@@ -52,18 +52,37 @@ USAGE:
     resv003_hot_swap_trigger_cli <SUBCOMMAND> [FLAGS]
 
 SUBCOMMANDS:
-    config      Print the default trigger configuration (proves automatic
-                triggers default to disabled; manual is always available).
+    config      Show the trigger configuration — the built-in default, or the
+                DURABLE one at --state. With --set-* flags, change it durably.
     evaluate    Evaluate the automatic triggers against fixture inputs and print
                 which fired + the logged records.
     manual      Fire the always-available manual promotion and print its log record.
     help        Print this help.
+
+config FLAGS:
+    --state <path>               read the DURABLE trigger configuration at <path>
+                                 (no file => the all-disabled default; an
+                                 unreadable file is an error, never a silent
+                                 fallback to 'disabled'). Omit to print the
+                                 built-in default without touching disk.
+    --set-drawdown-threshold <bps>   ENABLE drawdown-demotion at <bps> (1..=10000), persist
+    --set-no-drawdown                DISABLE drawdown-demotion, persist
+    --set-top-ranked <on|off>        set top-ranked promotion, persist
+    --set-highest-momentum <on|off>  set highest-momentum promotion, persist
+                                 Every --set-* requires --state and is a
+                                 read-modify-write: the other triggers are
+                                 preserved, and the result is re-read from disk
+                                 before it is reported.
 
 evaluate FLAGS:
     --live <id>                  the current live strategy id (required)
     --live-drawdown <bps>        the live strategy's observed drawdown in bps (default 0)
     --rank <id>:<rank>:<score>:<momentum>   add one reservoir ranking row (repeatable)
     --eval-window <days>         evaluation window in days (default 30)
+    --state <path>               take the config from the DURABLE store at <path>
+                                 instead of the enable flags below (mutually
+                                 exclusive with them — two sources of the same
+                                 fact cannot both be authoritative)
     --drawdown-threshold <bps>   ENABLE drawdown-demotion at this threshold (1..=10000)
     --top-ranked                 ENABLE top-ranked promotion
     --highest-momentum           ENABLE highest-momentum promotion
@@ -114,24 +133,170 @@ fn wants_help(args: &[String]) -> bool {
         .any(|arg| matches!(arg.as_str(), "help" | "--help" | "-h"))
 }
 
-/// Print the default (all-automatic-disabled) configuration. Demonstrates the
-/// SYS-49a "automatic triggers shall default to disabled" clause and that manual
-/// promotion is always available.
+/// Show — and with `--set-*`, durably change — the trigger configuration.
+///
+/// With no `--state <path>` this reads nothing and prints the built-in default,
+/// demonstrating the SYS-49a "automatic triggers shall default to disabled"
+/// clause and that manual promotion is always available.
+///
+/// With `--state <path>` it reports the DURABLE configuration
+/// ([`trigger_config_store`]), which is what makes "configurable" survive a
+/// restart. The three read states stay distinct in the output: no file at all
+/// reports `config-source:default` (nothing has been configured, so the default
+/// genuinely applies), a readable file reports `config-source:persisted`, and an
+/// unreadable one is an ERROR — never a quiet fallback to the default, which
+/// would report an unknown configuration as a confident "disabled".
 fn cmd_config(rest: &[String]) -> Result<(), String> {
     if wants_help(rest) {
         print!("{USAGE}");
         return Ok(());
     }
-    if let Some(flag) = rest.first() {
-        return Err(format!("unknown flag '{flag}'\n\n{USAGE}"));
+
+    let mut state_path: Option<String> = None;
+    let mut set_threshold: Option<u32> = None;
+    let mut set_no_drawdown = false;
+    let mut set_top_ranked: Option<bool> = None;
+    let mut set_highest_momentum: Option<bool> = None;
+
+    let mut iter = rest.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--state" => {
+                if state_path.is_some() {
+                    return Err(dup(flag));
+                }
+                state_path = Some(take_value(&mut iter, flag)?);
+            }
+            "--set-drawdown-threshold" => {
+                if set_threshold.is_some() {
+                    return Err(dup(flag));
+                }
+                set_threshold = Some(parse_u32(&take_value(&mut iter, flag)?, flag)?);
+            }
+            "--set-no-drawdown" => {
+                if set_no_drawdown {
+                    return Err(dup(flag));
+                }
+                set_no_drawdown = true;
+            }
+            "--set-top-ranked" => {
+                if set_top_ranked.is_some() {
+                    return Err(dup(flag));
+                }
+                set_top_ranked = Some(parse_on_off(&take_value(&mut iter, flag)?, flag)?);
+            }
+            "--set-highest-momentum" => {
+                if set_highest_momentum.is_some() {
+                    return Err(dup(flag));
+                }
+                set_highest_momentum = Some(parse_on_off(&take_value(&mut iter, flag)?, flag)?);
+            }
+            other => return Err(format!("unknown flag '{other}'\n\n{USAGE}")),
+        }
     }
 
-    let config = HotSwapTriggerConfig::default();
+    if set_threshold.is_some() && set_no_drawdown {
+        return Err(format!(
+            "--set-drawdown-threshold and --set-no-drawdown contradict each other\n\n{USAGE}"
+        ));
+    }
+    let mutating = set_threshold.is_some()
+        || set_no_drawdown
+        || set_top_ranked.is_some()
+        || set_highest_momentum.is_some();
+
+    let Some(path) = state_path.as_deref().map(Path::new) else {
+        if mutating {
+            return Err(format!(
+                "--set-* requires --state <path>: there is nowhere to persist the change\n\n{USAGE}"
+            ));
+        }
+        print_config(&HotSwapTriggerConfig::default(), None, "default", false);
+        return Ok(());
+    };
+
+    // Read first, ALWAYS — including on the write path. A `--set-*` is a
+    // read-modify-write on one field of a shared configuration, so starting from
+    // the default when the existing file cannot be read would silently discard
+    // the operator's other triggers (and could disarm one they believe is on).
+    // An unreadable file fails the command instead.
+    let persisted = trigger_config_store::load(path).map_err(|error| error.to_string())?;
+    let mut config = persisted.unwrap_or_default();
+
+    if let Some(bps) = set_threshold {
+        let threshold = DrawdownThresholdBps::new(bps)
+            .map_err(|error| format!("invalid --set-drawdown-threshold: {error}"))?;
+        config.drawdown_demotion = DrawdownDemotionTrigger::Enabled { threshold };
+    }
+    if set_no_drawdown {
+        config.drawdown_demotion = DrawdownDemotionTrigger::Disabled;
+    }
+    if let Some(enabled) = set_top_ranked {
+        config.top_ranked_promotion = enable_flag(enabled);
+    }
+    if let Some(enabled) = set_highest_momentum {
+        config.highest_momentum_promotion = enable_flag(enabled);
+    }
+
+    if mutating {
+        trigger_config_store::save(path, &config).map_err(|error| error.to_string())?;
+        // Read the configuration BACK from disk and report that, not the value
+        // just held in memory: the operator's proof is what a later reader will
+        // see, and a write that did not land must not print as if it had.
+        let reread = trigger_config_store::load(path)
+            .map_err(|error| format!("configuration written but unreadable afterwards: {error}"))?
+            .ok_or_else(|| {
+                format!(
+                    "configuration written to {} but the file is absent on re-read",
+                    path.display()
+                )
+            })?;
+        if reread != config {
+            return Err(format!(
+                "configuration written to {} does not read back as written",
+                path.display()
+            ));
+        }
+        print_config(&reread, Some(path), "persisted", true);
+        return Ok(());
+    }
+
+    let source = if persisted.is_some() {
+        "persisted"
+    } else {
+        "default"
+    };
+    print_config(&config, Some(path), source, false);
+    Ok(())
+}
+
+/// The `config` subcommand's deterministic proof lines.
+///
+/// `default-disabled` reports a CONSTANT fact — that
+/// `HotSwapTriggerConfig::default()` has every automatic trigger off — because
+/// that is the SYS-49a clause it exists to prove. It deliberately does not track
+/// the displayed configuration: once a configuration can be persisted, an
+/// operator who enabled a trigger must not see the line that proves the default
+/// posture flip to `false` and read it as "the default changed".
+/// `any-automatic-enabled` is the one that describes what is displayed.
+fn print_config(
+    config: &HotSwapTriggerConfig,
+    path: Option<&Path>,
+    source: &str,
+    persisted_now: bool,
+) {
+    if let Some(path) = path {
+        println!("config-path:{}", path.display());
+    }
+    println!("config-source:{source}");
     println!("manual-promotion-available:true");
     println!(
         "drawdown-demotion-enabled:{}",
         config.drawdown_demotion.is_enabled()
     );
+    if let Some(threshold) = config.drawdown_demotion.threshold() {
+        println!("drawdown-demotion-threshold-bps:{}", threshold.get());
+    }
     println!(
         "top-ranked-promotion-enabled:{}",
         config.top_ranked_promotion.is_enabled()
@@ -141,8 +306,24 @@ fn cmd_config(rest: &[String]) -> Result<(), String> {
         config.highest_momentum_promotion.is_enabled()
     );
     println!("any-automatic-enabled:{}", config.any_automatic_enabled());
-    println!("default-disabled:{}", !config.any_automatic_enabled());
-    Ok(())
+    println!(
+        "default-disabled:{}",
+        !HotSwapTriggerConfig::default().any_automatic_enabled()
+    );
+    println!("config-persisted:{persisted_now}");
+}
+
+/// Parse an explicit `on`/`off` value. A flag that decides whether an automatic
+/// swap may fire takes an explicit word, never a bare presence that could be
+/// mistyped into the opposite meaning.
+fn parse_on_off(value: &str, flag: &str) -> Result<bool, String> {
+    match value {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        other => Err(format!(
+            "{flag} expects 'on' or 'off' (got '{other}')\n\n{USAGE}"
+        )),
+    }
 }
 
 /// Evaluate the automatic triggers against fixture inputs and print which fired
@@ -165,6 +346,7 @@ fn cmd_evaluate(rest: &[String]) -> Result<(), String> {
     let mut highest_momentum = false;
     let mut inject_disabled = false;
     let mut log_path: Option<String> = None;
+    let mut state_path: Option<String> = None;
     let mut ranked: Vec<RankedStrategy> = Vec::new();
 
     let mut iter = rest.iter();
@@ -226,6 +408,12 @@ fn cmd_evaluate(rest: &[String]) -> Result<(), String> {
                 }
                 log_path = Some(take_value(&mut iter, flag)?);
             }
+            "--state" => {
+                if state_path.is_some() {
+                    return Err(dup(flag));
+                }
+                state_path = Some(take_value(&mut iter, flag)?);
+            }
             "--rank" => {
                 ranked.push(parse_rank_row(&take_value(&mut iter, flag)?)?);
             }
@@ -235,10 +423,32 @@ fn cmd_evaluate(rest: &[String]) -> Result<(), String> {
 
     let live_id = live_id.ok_or_else(|| format!("--live <id> is required\n\n{USAGE}"))?;
 
-    // Build the config from the enable flags — unless `--inject disabled` forces
-    // the default (all-automatic-disabled) posture to prove it fires nothing.
+    // Two authoritative sources for one fact is a bug waiting to be argued about
+    // in an incident review: refuse the combination rather than silently ranking
+    // one above the other.
+    if state_path.is_some() && (drawdown_threshold.is_some() || top_ranked || highest_momentum) {
+        return Err(format!(
+            "--state and the inline enable flags (--drawdown-threshold / --top-ranked / \
+             --highest-momentum) are mutually exclusive\n\n{USAGE}"
+        ));
+    }
+
+    // Build the config — unless `--inject disabled` forces the default
+    // (all-automatic-disabled) posture to prove it fires nothing.
+    //
+    // `--inject disabled` deliberately outranks `--state`: it is the non-vacuity
+    // control, and it must be able to prove that a config which WOULD fire fires
+    // nothing when the default posture is restored.
     let config = if inject_disabled {
         HotSwapTriggerConfig::default()
+    } else if let Some(path) = state_path.as_deref().map(Path::new) {
+        // The durable configuration drives the real decision, not just the
+        // display: an unreadable one must stop the evaluation, because a pass
+        // that silently fell back to the default would report "nothing fired"
+        // about a configuration nobody could read.
+        trigger_config_store::load(path)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default()
     } else {
         let drawdown_demotion = match drawdown_threshold {
             Some(bps) => DrawdownDemotionTrigger::Enabled {
