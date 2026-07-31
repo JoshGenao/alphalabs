@@ -971,7 +971,14 @@
       open.disabled = false;
       open.dataset.embedPath = snap.embed_path || "";
     } else {
-      status.textContent = snap.detail || "research upstream unreachable";
+      // State FIRST, then the probe's reason — symmetric with the reachable
+      // branch above, which names its state before its evidence. Delegating the
+      // whole line to `detail` left the operator reading a bare socket error
+      // ("upstream probe failed: [Errno 61] Connection refused") with the tone
+      // colour as the only state signal, and colour alone is not a state.
+      status.textContent = snap.detail
+        ? "research environment unreachable — " + snap.detail
+        : "research environment unreachable";
       status.dataset.tone = "err";
       open.disabled = true;
       delete open.dataset.embedPath;
