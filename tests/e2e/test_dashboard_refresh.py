@@ -3282,18 +3282,22 @@ def _arm_rollback(page, btn) -> None:
 
 
 def _wait_for_rollback_release(page) -> None:
-    """Wait for an ambiguous-outcome hold to clear. It is released only by a
-    healthy inventory summary re-reading the deployed version (5 s cadence), so
-    this is the honest way to reach the next scenario — not a UI reset."""
+    """Wait for an ambiguous-outcome hold to clear.
+
+    Release requires an inventory refresh that could NOT have raced the request:
+    one arriving after the server's own 30 s deadline for the operation. With
+    the 5 s inventory cadence on top, allow 45 s. This is the honest wait — the
+    hold is real elapsed evidence, not a UI reset.
+    """
 
     page.wait_for_function(
         'document.querySelector(\'#inventory-rows tr[data-strategy="alpha-1"]'
         " .rollback__btn').disabled === false",
-        timeout=15_000,
+        timeout=45_000,
     )
     page.wait_for_function(
         "document.getElementById('rollback-state').dataset.state === 'resting'",
-        timeout=15_000,
+        timeout=45_000,
     )
 
 
@@ -3515,7 +3519,10 @@ def test_orch_005_rollback_renders_refusals_and_unevidenced_success_honestly(
             unknown = page.locator("#rollback-status").inner_text()
             assert "not a known pre-write refusal" in unknown
             assert "controls held" in unknown
-            _wait_for_rollback_release(page)
+            page.reload(wait_until="domcontentloaded")
+            page.wait_for_function(
+                "document.querySelectorAll('#inventory-rows tr').length === 2", timeout=5_000
+            )
 
             # Each unevidenced 2xx shape: never success, and each HOLDS the
             # controls (a 2xx means the server did something it cannot correlate,
@@ -3558,7 +3565,15 @@ def test_orch_005_rollback_renders_refusals_and_unevidenced_success_honestly(
                 held_posts.clear()
                 _rollback_btn(page, "alpha-1").click(force=True)
                 assert held_posts == [], why
-                _wait_for_rollback_release(page)
+                # Releasing the hold legitimately takes the server deadline
+                # (30 s); a fresh page is the cheap way to reach the next
+                # independent scenario. The release path itself is proven by
+                # test_orch_005_an_unknown_rollback_outcome_holds_every_control_inert.
+                page.reload(wait_until="domcontentloaded")
+                page.wait_for_function(
+                    "document.querySelectorAll('#inventory-rows tr').length === 2",
+                    timeout=5_000,
+                )
         finally:
             browser.close()
 
@@ -3796,16 +3811,19 @@ def test_orch_005_an_unknown_rollback_outcome_holds_every_control_inert(
             _rollback_btn(page, "alpha-1").click(force=True)
             assert posts == []
 
-            # The next healthy inventory tick resolves it and releases the hold.
+            # A healthy inventory tick alone does NOT release the hold: a poll
+            # landing while the handler is still running would report the
+            # pre-rollback version and masquerade as proof of a terminal state.
+            # Several 5 s ticks pass here — the control must still be held.
             page.unroute("**/api/v1/strategies/*/lifecycle*")
-            page.wait_for_function(
-                "document.getElementById('rollback-state').dataset.state === 'resting'",
-                timeout=10_000,
+            page.wait_for_timeout(12_000)
+            assert page.eval_on_selector("#rollback-state", "e => e.dataset.state") == "error"
+            assert _rollback_btn(page, "alpha-1").is_disabled(), (
+                "a refresh that could have raced the request must not release the hold"
             )
-            page.wait_for_function(
-                "document.querySelector('#inventory-rows"
-                ' tr[data-strategy="alpha-1"] .rollback__btn\').disabled === false',
-                timeout=10_000,
-            )
+            assert "controls held" in page.locator("#rollback-status").inner_text()
+
+            # Only a refresh arriving after the server's own deadline releases it.
+            _wait_for_rollback_release(page)
         finally:
             browser.close()

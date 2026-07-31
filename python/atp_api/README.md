@@ -36,12 +36,33 @@ is rendered to a frozen OpenAPI 3.1 snapshot at
 
 ## Confirmation routes
 
-Routes that perform irreversible actions carry `requires_confirmation=True`
-and accept a `confirm` query parameter. The two-step UX (modal + token) is
-defined by ``UI-4`` and lands with the dashboard feature.
+Routes where EVERY call is irreversible carry `requires_confirmation=True` and
+accept a `confirm` query parameter. The two-step UX (modal + token) is defined
+by ``UI-4``.
 
 * `POST /api/v1/strategies/{id}/promote-live` — SYS-2d
 * `POST /api/v1/kill-switch` — SRS-SAFE-001, SYS-44a, NFR-P3
+
+### Action-level confirmation
+
+A route can also carry the requirement for only SOME of its actions, declared as
+`confirmation_actions` and published as `x-confirmation-actions`:
+
+* `POST /api/v1/strategies/{id}/lifecycle` — `confirmation_actions=("rollback",)`
+  — SRS-ORCH-005, SYS-80
+
+That route is shared by `start`, `stop`, `restart` and `rollback`. Only
+`rollback` is irreversible, so gating the whole route would wrongly demand a
+token for a restart, and `requires_confirmation` stays `False`. A request whose
+`action` is `rollback` must carry the token — as `?confirm=true` or a `confirm`
+field in the body — or it is refused **428 CONFIRMATION_REQUIRED** before the
+handler is reached. This is the same confirmation control live promotion uses
+(NFR-S2).
+
+The declared set is pinned EQUAL to the set the transport actually enforces
+(`atp_runtime.rest_server._ACTION_CONFIRM_REQUIRED`, itself derived from the
+CLI's confirmation-required commands) by `tools/rest_api_check.py`, so this
+document, `routes.py`, `openapi.json` and the server cannot drift apart.
 
 ## Sample requests
 

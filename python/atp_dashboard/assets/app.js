@@ -500,7 +500,13 @@
     const previous = cellValue(data.previous_version_identifier);
     const targetHash = previous === null || previous === undefined
       ? "" : String(previous).split("@", 1)[0];
-    const actionable = rollbackAvailable === true && targetHash !== "";
+    // ...and never while an ambiguous outcome is held: rows re-render every 5 s,
+    // so without this the rebuild would visually re-arm the control mid-hold.
+    // (The click guard already blocks the POST, but a button that LOOKS
+    // actionable while the deployed version is unverified is exactly the
+    // stale-truth-left-actionable failure this control is guarding against.)
+    const actionable =
+      rollbackAvailable === true && targetHash !== "" && !rollbackAmbiguous;
     // Deliberately NOT .manage__btn: that class is the promote control's
     // identity in the UI-2 selectors/tests. The two controls share every style
     // rule (see styles.css — NFR-S2 parity is about the affordance, not the
@@ -513,9 +519,11 @@
     rb.textContent = "ROLLBACK";
     if (!actionable) {
       rb.disabled = true;
-      rb.title = rollbackAvailable !== true
-        ? "rollback route not served by this dashboard — SRS-ORCH-005 handler not composed"
-        : "no retained previous version — nothing to roll back to";
+      rb.title = rollbackAmbiguous
+        ? "a previous rollback's outcome is unverified — held until the refresh resolves it"
+        : rollbackAvailable !== true
+          ? "rollback route not served by this dashboard — SRS-ORCH-005 handler not composed"
+          : "no retained previous version — nothing to roll back to";
     }
     const cd = el("span", "manage__cd"); cd.setAttribute("aria-hidden", "true");
     manage.append(btn, rb, cd);
@@ -557,12 +565,14 @@
         summary.dataset.tone = "error";
       } else {
         rollbackAvailable = data.rollback_available === true;
-        // A healthy summary means the snapshot has been re-read, so the rows
-        // about to render carry the REAL deployed version — that resolves any
-        // ambiguous in-flight rollback and releases the control hold.
-        if (rollbackAmbiguous) {
+        // Release an ambiguous hold ONLY on a refresh that could not have raced
+        // the request: one arriving after the server's own deadline for the
+        // operation. A poll that lands mid-handler would report the
+        // pre-rollback version and masquerade as proof of a terminal state.
+        if (rollbackAmbiguous && Date.now() >= rollbackHoldUntilMs) {
           rollbackAmbiguous = false;
           rollbackInFlight = false;
+          rollbackHoldUntilMs = 0;
           rollbackStatus(ROLLBACK_RESTING, "resting");
         }
         inventoryGen += 1;
@@ -718,6 +728,11 @@
   // every control stays inert until a healthy inventory summary re-reads the
   // deployed version and resolves it. Never cleared by a retry.
   let rollbackAmbiguous = false;
+  // Wall-clock instant before which no inventory refresh can prove the server
+  // finished (see holdRollbackAmbiguous). Matches the handler's own subprocess
+  // budget — atp_orchestration._DEFAULT_TIMEOUT_S = 30 s.
+  const ROLLBACK_SERVER_DEADLINE_MS = 30000;
+  let rollbackHoldUntilMs = 0;
   // Refusal types the GATE raises strictly BEFORE its single registry write, so
   // the deployed state is provably untouched and the control may safely re-arm.
   // Everything else — an unevidenced 2xx, a subprocess timeout, unparseable
@@ -735,10 +750,18 @@
   ]);
 
   function holdRollbackAmbiguous(message) {
-    // The durable outcome is unknown: the server may have completed an
-    // irreversible rollback. Hold every control until a healthy inventory
-    // summary re-reads the deployed version and resolves it.
+    // The durable outcome is unknown: the server may still be completing an
+    // irreversible rollback. Hold every control.
+    //
+    // A healthy summary alone does NOT release it: an inventory poll that
+    // lands WHILE the handler is still running reports the pre-rollback
+    // version and would look like proof of a terminal state. The hold can only
+    // be released by a refresh that could not have raced the request — i.e.
+    // one read after the server's own deadline for the operation has elapsed,
+    // by which point the handler has terminated its subprocess and the
+    // snapshot is final either way.
     rollbackAmbiguous = true;
+    rollbackHoldUntilMs = Date.now() + ROLLBACK_SERVER_DEADLINE_MS;
     rollbackStatus(message + " — the deployed version is UNVERIFIED; controls held " +
       "until the inventory refresh resolves it.", "error");
   }

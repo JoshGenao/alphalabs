@@ -393,6 +393,15 @@ def check_dashboard_arm(config: dict, server_src: str, app_src: str) -> str:
             "success is bound to the EXACT target the operator armed, not any restored hash",
         ),
         (
+            "Date.now() >= rollbackHoldUntilMs",
+            "the hold is released only by a refresh that could not have raced the request "
+            "(after the server's own deadline), never by any summary",
+        ),
+        (
+            "&& !rollbackAmbiguous",
+            "the 5 s row rebuild must not visually re-arm a held control",
+        ),
+        (
             "ROLLBACK_PRE_WRITE_REFUSALS",
             "only refusals the gate raises BEFORE its single write may re-arm the control; "
             "an allow-list, so an unknown refusal type holds rather than re-arming",
