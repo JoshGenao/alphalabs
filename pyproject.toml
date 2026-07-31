@@ -13,6 +13,7 @@ markers = [
     "boundary: L4 — service-boundary wiring with stub adapters",
     "contract: L3 — API/interface drift between Python and Rust",
     "integration: L5 — real containers / real I/O (requires ATP_RUN_INTEGRATION=1)",
+    "live_broker: needs a REAL logged-in IB Gateway; operator-run only, never in CI (phase1-ib-gateway is a placeholder)",
     "e2e: L6 — end-to-end via Playwright / WebSocket",
     "domain: L7 — trading-domain-specific safety/invariant tests",
     "safety: SRS-SAFE-* paired test; must accompany kill-switch / connectivity / stale-data changes",

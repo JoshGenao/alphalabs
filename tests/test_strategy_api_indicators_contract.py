@@ -260,10 +260,20 @@ class IndicatorParityMutationTest(unittest.TestCase):
         # its EMA(period=10) + 5 bars probe.
         self.rig.mutate(
             "indicators.py",
+            # LITERAL SOURCE ANCHOR — must track EMA.update byte-for-byte. It gained the
+            # `_DEGENERATE_PERIOD` branch (talib.EMA rejects timeperiod=1 with
+            # TA_BAD_PARAM), and without this update the rig fails with "substring not
+            # found" instead of exercising the mutation.
             find=(
                 "        self._closes.append(bar.close)\n"
                 "        if len(self._closes) < self.period:\n"
                 "            return None\n"
+                "        if self.period == _DEGENERATE_PERIOD:\n"
+                "            # See _DEGENERATE_PERIOD: talib.EMA rejects timeperiod=1"
+                " (TA_BAD_PARAM).\n"
+                "            self._value = bar.close\n"
+                "            self._ready = True\n"
+                "            return bar.close\n"
                 "        arr = np.asarray(self._closes, dtype=_FLOAT64)\n"
                 "        out = talib.EMA(arr, timeperiod=self.period)\n"
                 "        v = _nan_to_none(float(out[-1]))\n"

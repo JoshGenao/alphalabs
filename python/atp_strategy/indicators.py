@@ -119,6 +119,20 @@ def _nan_to_none(x: float) -> float | None:
     return x
 
 
+#: A one-period average is the observation itself, so there is no averaging left to do
+#: — and NEITHER backing library will do it. ``pandas_ta.sma(..., length=1)`` raises
+#: ``ValueError: Length of values (0) does not match length of index (N)`` for every
+#: input length, and ``talib.EMA(..., timeperiod=1)`` rejects the call outright with
+#: ``TA_BAD_PARAM``; both want >= 2. Since both constructors advertise ``period >= 1``,
+#: ``SMA(period=1)`` / ``EMA(period=1)`` were constructible but raised on first update.
+#:
+#: Returning the close here does NOT reimplement a library indicator (SyRS AC-6): the
+#: mean of a single value is an identity, not an algorithm, and the libraries decline to
+#: compute it at all. Every period >= 2 still routes through pandas-ta / TA-Lib
+#: unchanged, so the parity tests keep covering the real arithmetic.
+_DEGENERATE_PERIOD = 1
+
+
 class SMA(_IndicatorBase):
     """Simple moving average wrapping :func:`pandas_ta.sma` (``SRS-SDK-006``).
 
@@ -148,6 +162,11 @@ class SMA(_IndicatorBase):
         self._closes.append(bar.close)
         if len(self._closes) < self.period:
             return None
+        if self.period == _DEGENERATE_PERIOD:
+            # See _DEGENERATE_PERIOD: pandas-ta cannot compute length=1.
+            self._value = bar.close
+            self._ready = True
+            return bar.close
         ser = pd.Series(self._closes, dtype=_FLOAT64)
         out = pandas_ta.sma(ser, length=self.period)
         v = _nan_to_none(float(out.iloc[-1]))
@@ -184,6 +203,11 @@ class EMA(_IndicatorBase):
         self._closes.append(bar.close)
         if len(self._closes) < self.period:
             return None
+        if self.period == _DEGENERATE_PERIOD:
+            # See _DEGENERATE_PERIOD: talib.EMA rejects timeperiod=1 (TA_BAD_PARAM).
+            self._value = bar.close
+            self._ready = True
+            return bar.close
         arr = np.asarray(self._closes, dtype=_FLOAT64)
         out = talib.EMA(arr, timeperiod=self.period)
         v = _nan_to_none(float(out[-1]))

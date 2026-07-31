@@ -78,15 +78,22 @@ jobs:
       # whose compose defaults (/var/lib/atp/{ssd,nas}) do not exist on a runner — and
       # note they disagree with init.sh, which defaults to <repo>/data/{ssd,nas}. Point
       # both at the workspace and create them, or the volume mount fails.
+      # The tier paths are STEP-scoped on purpose — never `$GITHUB_ENV`, never job-level
+      # `env:`. Both would leak them into the pytest steps, and the data CLIs resolve
+      # their NAS tier as `--nas`, else $ATP_NAS_DATA_DIR, else <ssd>/nas
+      # (data016_ingest_cli::resolve_nas). The integration tests pass only `--dir`, so a
+      # job-wide value silently repoints every test's private tmp store at this SHARED,
+      # container-mounted directory: DATA-012 then reads bars another test seeded
+      # ("too many values to unpack") and DATA-017 collides with a foreign writer
+      # ("another writer holds the market-data store lock"). Scope it to compose alone.
       - name: Bring up Docker Compose stack
+        env:
+          ATP_SSD_DATA_DIR: ${{ github.workspace }}/data/ssd
+          ATP_NAS_DATA_DIR: ${{ github.workspace }}/data/nas
         run: |
           set -euo pipefail
-          mkdir -p "${GITHUB_WORKSPACE}/data/ssd" "${GITHUB_WORKSPACE}/data/nas"
-          echo "ATP_SSD_DATA_DIR=${GITHUB_WORKSPACE}/data/ssd" >> "$GITHUB_ENV"
-          echo "ATP_NAS_DATA_DIR=${GITHUB_WORKSPACE}/data/nas" >> "$GITHUB_ENV"
-          ATP_SSD_DATA_DIR="${GITHUB_WORKSPACE}/data/ssd" \
-          ATP_NAS_DATA_DIR="${GITHUB_WORKSPACE}/data/nas" \
-            docker compose --profile phase1 up -d
+          mkdir -p "$ATP_SSD_DATA_DIR" "$ATP_NAS_DATA_DIR"
+          docker compose --profile phase1 up -d
 
       # FAIL CLOSED. The previous version polled http://localhost:3000/ — a port the
       # stack never publishes (3000 is ATP_DEV_PORT; the dashboard publishes 8080) —
@@ -94,6 +101,11 @@ jobs:
       # and reported success over a stack that was never up. A readiness wait that
       # cannot fail is worse than no wait: it makes a dead stack look healthy.
       - name: Wait for the dashboard to serve
+        env:
+          # Only so the diagnostic `compose ps/logs` below resolve the volume config;
+          # step-scoped for the same reason as the step above.
+          ATP_SSD_DATA_DIR: ${{ github.workspace }}/data/ssd
+          ATP_NAS_DATA_DIR: ${{ github.workspace }}/data/nas
         run: |
           set -euo pipefail
           for _ in $(seq 1 60); do
@@ -108,14 +120,28 @@ jobs:
           docker compose --profile phase1 logs --tail=50
           exit 1
 
+      # NO brokerage credentials. `IB_PAPER_USERNAME` / `IB_PAPER_PASSWORD` used to be
+      # injected here and were read by NOTHING — no Python, Rust or shell consumes them
+      # — so they bought exfiltration surface for zero coverage. An IBKR paper login is
+      # provisioned from the live account and commonly shares its password, so it is
+      # live-grade material, not throwaway.
+      #
+      # The wire protocol IS covered here, without a broker: `srs_exe_006_ib_wire`
+      # drives a deterministic in-process fake gateway on ephemeral loopback ports,
+      # asserted byte-for-byte against golden vectors generated from the official
+      # `ibapi` 10.19.4 client (run by `cargo test --workspace` in ci.yml). What needs a
+      # REAL gateway stays operator-run behind ATP_RUN_INTEGRATION on the operator's own
+      # machine — see the `live_broker` marker.
       - name: Run L5 integration tests
         env:
           ATP_RUN_INTEGRATION: "1"
           DATABENTO_API_KEY: ${{ secrets.DATABENTO_API_KEY }}
           SHARADAR_API_KEY: ${{ secrets.SHARADAR_API_KEY }}
-          IB_PAPER_USERNAME: ${{ secrets.IB_PAPER_USERNAME }}
-          IB_PAPER_PASSWORD: ${{ secrets.IB_PAPER_PASSWORD }}
-        run: pytest -m integration --junitxml=pytest-integration.xml
+        # Deselect live-broker tests: `phase1-ib-gateway` is a `sleep 3600` placeholder,
+        # so those operations can only ever fail with "Connection reset by peer" here.
+        # Excluding them is not hiding a failure — it is declining to assert something
+        # this environment structurally cannot exercise.
+        run: pytest -m "integration and not live_broker" --junitxml=pytest-integration.xml
 
       - name: Run L6 e2e tests
         env:

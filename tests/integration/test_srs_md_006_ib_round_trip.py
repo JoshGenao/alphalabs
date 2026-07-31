@@ -23,7 +23,11 @@ from atp_reliability.restart import (
     SubCheckStatus,
 )
 
-pytestmark = pytest.mark.integration
+# `live_broker` as well as `integration`: this exercises a REAL logged-in IB Gateway.
+# CI's `phase1-ib-gateway` is a `sleep 3600` placeholder, so every operation there fails
+# with "Connection reset by peer" — a red that says nothing about the feature. CI
+# deselects `live_broker`; the operator runs it against their own Gateway.
+pytestmark = [pytest.mark.integration, pytest.mark.live_broker]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
