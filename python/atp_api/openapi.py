@@ -71,7 +71,14 @@ def _placeholder_object_schema(
     """
 
     types = field_types or {}
-    properties = {name: {"type": types.get(name, "string")} for name in field_names}
+    properties: dict[str, Any] = {}
+    for name in field_names:
+        declared = types.get(name, "string")
+        # `int|null` renders as OpenAPI 3.1's type union. A field the handler legitimately
+        # returns as null — the drawdown threshold whenever that trigger is disabled, which
+        # is the DEFAULT state — must say so, or the commonest valid response is documented
+        # as schema-invalid.
+        properties[name] = {"type": declared.split("|")} if "|" in declared else {"type": declared}
     return {
         "type": "object",
         "properties": properties,

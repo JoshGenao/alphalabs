@@ -37,8 +37,8 @@
 //! anchors the post-conditions at the behavioral layer.
 
 use atp_orchestrator::{
-    HotSwapSideEffectError, HotSwapTriggerLog, LiveStrategyProbe, ReservoirRankingSource,
-    StrategyOrchestrator,
+    HotSwapSideEffectError, HotSwapTriggerLog, LiveStrategyProbe, ManualPromotionError,
+    ReservoirRankingSource, StrategyOrchestrator,
 };
 use atp_types::{
     DrawdownDemotionTrigger, DrawdownThresholdBps, HotSwapTriggerConfig, HotSwapTriggerEvent,
@@ -406,12 +406,12 @@ fn resv_3_manual_promotion_fails_closed_when_log_rejected() {
         OBSERVED_AT_SECONDS,
     );
 
-    let Err(UnloggedHotSwapTrigger {
+    let Err(ManualPromotionError::Unlogged(UnloggedHotSwapTrigger {
         proposal,
         rejection_reason,
-    }) = outcome
+    })) = outcome
     else {
-        panic!("a rejected log must fail closed to Err(UnloggedHotSwapTrigger)");
+        panic!("a rejected log must fail closed to Err(ManualPromotionError::Unlogged)");
     };
     assert_eq!(proposal.kind, HotSwapTriggerKind::ManualPromotion);
     assert_eq!(proposal.candidate_strategy_id.as_str(), "cand-b");
@@ -759,4 +759,26 @@ fn resv_3_selected_proposal_maps_to_demotion_request() {
     assert_eq!(request.demoting_strategy_id.as_str(), "live-a");
     assert_eq!(request.candidate_strategy_id.as_str(), "cand-b");
     assert_eq!(request.timeout_seconds, HOT_SWAP_DEMOTION_TIMEOUT_SECONDS);
+}
+
+/// SRS-RESV-003 / SYS-49a(a): a manual Hot-Swap must name TWO strategies.
+///
+/// Demoting and promoting the same one is not a swap, and recording it would hand the
+/// SRS-RESV-004 gate a proposal asking it to take the live strategy down in order to put it
+/// back. The forbidden sink asserts the stronger half: nothing is logged, because nothing
+/// was proposed.
+#[test]
+fn resv_3_manual_promotion_refuses_a_self_swap_and_logs_nothing() {
+    let log = HotSwapTriggerLogForbiddenSink;
+    let outcome = StrategyOrchestrator.request_manual_promotion(
+        StrategyId::new("live-a"),
+        StrategyId::new("live-a"),
+        &log,
+        OBSERVED_AT_SECONDS,
+    );
+
+    let Err(ManualPromotionError::SameStrategy { strategy_id }) = outcome else {
+        panic!("a self-swap must fail closed to Err(ManualPromotionError::SameStrategy)");
+    };
+    assert_eq!(strategy_id.as_str(), "live-a");
 }

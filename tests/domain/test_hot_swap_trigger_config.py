@@ -692,3 +692,23 @@ def test_neither_operator_surface_imports_the_other(tmp_path: Path) -> None:
                 if any(name == forbidden or name.startswith(f"{forbidden}.") for name in names):
                     offenders.append(f"{source.relative_to(root)} imports {forbidden}")
     assert not offenders, offenders
+
+
+def test_a_self_swap_is_refused_by_the_domain_layer_not_just_the_rest_wrapper(
+    tmp_path: Path,
+) -> None:
+    # A swap names two strategies. Demoting and promoting the SAME one is not a Hot-Swap,
+    # and logging it would hand SRS-RESV-004 a proposal asking it to take the live strategy
+    # down in order to put it back. The REST handler rejected this, but the CLI and the Rust
+    # API — two of SYS-49a's three operator arms — reached the domain path directly, so the
+    # guard belongs in the domain layer where every arm passes through it.
+    log = tmp_path / "triggers.jsonl"
+    result = _cli("manual", "--demoting", "alpha", "--candidate", "alpha", "--log", str(log))
+
+    assert result.returncode != 0, result.stdout
+    assert "must name two different strategies" in result.stderr, result.stderr
+    # Refused outright: no proposal was created, so nothing claims to have fired...
+    assert "fired:" not in result.stdout, result.stdout
+    assert "manual-refused:SAME_STRATEGY" in result.stdout, result.stdout
+    # ...and no audit record exists for a swap that was never proposed.
+    assert not log.exists() or log.read_text() == "", log.read_text()

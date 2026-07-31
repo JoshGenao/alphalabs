@@ -19,6 +19,41 @@ pub mod kill_switch_timeout;
 pub mod order_routing_wiring;
 pub mod trigger_config_store;
 
+/// Why a manual Hot-Swap promotion did not become actionable (SRS-RESV-003 / SYS-49a(a)).
+///
+/// Two distinct causes, kept apart because they mean different things to an operator and to
+/// the audit trail: the request was malformed and nothing was ever proposed, versus a real
+/// trigger fired and its required record was refused. Collapsing them would let a CLI print
+/// `fired:` for something it refused outright.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ManualPromotionError {
+    /// Demoting and candidate name the same strategy — a swap must name two. Nothing was
+    /// proposed and nothing was logged.
+    SameStrategy {
+        /// The strategy named on both sides.
+        strategy_id: StrategyId,
+    },
+    /// The trigger fired, but the audit sink rejected its record, so it is not actionable
+    /// (fail closed — see [`UnloggedHotSwapTrigger`]).
+    Unlogged(UnloggedHotSwapTrigger),
+}
+
+impl fmt::Display for ManualPromotionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SameStrategy { strategy_id } => write!(
+                formatter,
+                "SRS-RESV-003: manual Hot-Swap names {} as both the demoting and the \
+                 candidate strategy; a swap must name two different strategies",
+                strategy_id.as_str()
+            ),
+            Self::Unlogged(unlogged) => write!(formatter, "{unlogged}"),
+        }
+    }
+}
+
+impl std::error::Error for ManualPromotionError {}
+
 #[derive(Debug, Default)]
 pub struct StrategyOrchestrator;
 
@@ -1846,7 +1881,18 @@ impl StrategyOrchestrator {
         candidate_strategy_id: StrategyId,
         log: &S,
         observed_at_seconds: u64,
-    ) -> Result<HotSwapTriggerProposal, UnloggedHotSwapTrigger> {
+    ) -> Result<HotSwapTriggerProposal, ManualPromotionError> {
+        // A swap names two strategies. Demoting and promoting the SAME one is not a
+        // Hot-Swap at all, and recording it would put a proposal on the actionable path
+        // that asks SRS-RESV-004 to take the live strategy down in order to put it back.
+        // The automatic path already refuses this (a candidate equal to the live strategy
+        // never fires); enforcing it only at the REST wrapper would leave the CLI and the
+        // Rust API — two of SYS-49a's three operator arms — able to log one.
+        if demoting_strategy_id.as_str() == candidate_strategy_id.as_str() {
+            return Err(ManualPromotionError::SameStrategy {
+                strategy_id: demoting_strategy_id,
+            });
+        }
         let (proposal, outcome) = self.fire_trigger(
             HotSwapTriggerKind::ManualPromotion,
             &demoting_strategy_id,
@@ -1857,10 +1903,10 @@ impl StrategyOrchestrator {
         );
         match outcome {
             Ok(()) => Ok(proposal),
-            Err(error) => Err(UnloggedHotSwapTrigger {
+            Err(error) => Err(ManualPromotionError::Unlogged(UnloggedHotSwapTrigger {
                 proposal,
                 rejection_reason: error.reason,
-            }),
+            })),
         }
     }
 

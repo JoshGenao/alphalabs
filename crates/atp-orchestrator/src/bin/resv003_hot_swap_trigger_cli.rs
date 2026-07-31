@@ -13,7 +13,7 @@
 
 use atp_orchestrator::{
     trigger_config_store, HotSwapSideEffectError, HotSwapTriggerLog, LiveStrategyProbe,
-    ReservoirRankingSource, StrategyOrchestrator,
+    ManualPromotionError, ReservoirRankingSource, StrategyOrchestrator,
 };
 use atp_types::json_scan::{json_string_value, parse_strict_i64, top_level_json_field};
 use atp_types::{
@@ -652,11 +652,19 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
     );
 
     println!("manual-always-available:true");
+    // A refused request never proposed anything, so there is no `fired:` line to print for
+    // it — printing one would report a trigger the domain layer declined to create.
+    if let Err(ManualPromotionError::SameStrategy { .. }) = &outcome {
+        println!("manual-refused:SAME_STRATEGY");
+        println!("manual-logged:false");
+        return Err(outcome.unwrap_err().to_string());
+    }
     // Ok = fired AND logged (safe to hand to the RESV-004 gate); Err = fired but
     // the required audit-log record was rejected (fail closed — not actionable).
     let (proposal, logged) = match &outcome {
         Ok(proposal) => (proposal, true),
-        Err(unlogged) => (&unlogged.proposal, false),
+        Err(ManualPromotionError::Unlogged(unlogged)) => (&unlogged.proposal, false),
+        Err(ManualPromotionError::SameStrategy { .. }) => unreachable!("handled above"),
     };
     println!(
         "fired:{} demoting:{} candidate:{} rationale:{}",
@@ -689,7 +697,7 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
     // Hot-Swap trigger as a successful command.
     match outcome {
         Ok(_) => Ok(()),
-        Err(unlogged) => Err(unlogged.to_string()),
+        Err(error) => Err(error.to_string()),
     }
 }
 

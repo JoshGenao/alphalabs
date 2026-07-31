@@ -517,6 +517,7 @@ def _documented_types(path: str, method: str, section: str) -> dict[str, str]:
         schema = operation["requestBody"]["content"]["application/json"]["schema"]
     else:
         schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+    # `type` is a string, or a list for an OpenAPI 3.1 union (e.g. integer-or-null).
     return {name: spec["type"] for name, spec in schema["properties"].items()}
 
 
@@ -527,9 +528,10 @@ def test_the_documented_get_response_matches_what_the_handler_returns(
     _status, body = _request(mounted, "GET", "/api/v1/hot-swap/triggers")
     documented = _documented_types("/api/v1/hot-swap/triggers", "get", "response")
     for name, value in body.items():
-        if value is None:  # a nullable field states no type of its own
-            continue
-        assert documented.get(name) == _JSON_TYPE_OF[type(value)], (name, value, documented)
+        expected = "null" if value is None else _JSON_TYPE_OF[type(value)]
+        declared = documented.get(name)
+        allowed = declared if isinstance(declared, list) else [declared]
+        assert expected in allowed, (name, value, declared)
 
 
 def test_the_documented_manual_response_matches_what_the_handler_returns(
@@ -550,7 +552,7 @@ def test_a_contract_valid_put_body_is_accepted_by_the_handler(
     # The other direction: a payload built to the DOCUMENTED types must not be refused.
     documented = _documented_types("/api/v1/hot-swap/triggers", "put", "request")
     assert documented["drawdown_demotion_enabled"] == "boolean", documented
-    assert documented["drawdown_demotion_threshold_bps"] == "integer", documented
+    assert "integer" in documented["drawdown_demotion_threshold_bps"], documented
 
     fake_cli.queue(stdout=_config_stdout(drawdown=True, threshold=250))
     fake_cli.queue(stdout=_config_stdout(drawdown=True, threshold=250))
@@ -561,3 +563,16 @@ def test_a_contract_valid_put_body_is_accepted_by_the_handler(
         {"drawdown_demotion_enabled": True, "drawdown_demotion_threshold_bps": 250},
     )
     assert status == 200, body
+
+
+def test_the_default_disabled_response_is_valid_against_the_published_schema(
+    mounted: tuple[str, int], fake_cli: _FakeCli
+) -> None:
+    # The DEFAULT state — drawdown demotion off, so the threshold is null — is the commonest
+    # response this route serves. Documenting the field as a bare integer made that response
+    # schema-invalid for every generated client.
+    fake_cli.queue(stdout=_config_stdout(source="default"))
+    _status, body = _request(mounted, "GET", "/api/v1/hot-swap/triggers")
+    assert body["drawdown_demotion_threshold_bps"] is None, body
+    documented = _documented_types("/api/v1/hot-swap/triggers", "get", "response")
+    assert "null" in documented["drawdown_demotion_threshold_bps"], documented

@@ -276,7 +276,7 @@ ROUTES: tuple[Route, ...] = (
         ),
         field_types=(
             ("drawdown_demotion_enabled", "boolean"),
-            ("drawdown_demotion_threshold_bps", "integer"),
+            ("drawdown_demotion_threshold_bps", "integer|null"),
             ("top_ranked_promotion_enabled", "boolean"),
             ("highest_momentum_promotion_enabled", "boolean"),
             ("any_automatic_enabled", "boolean"),
@@ -313,7 +313,7 @@ ROUTES: tuple[Route, ...] = (
         requires_confirmation=True,
         field_types=(
             ("drawdown_demotion_enabled", "boolean"),
-            ("drawdown_demotion_threshold_bps", "integer"),
+            ("drawdown_demotion_threshold_bps", "integer|null"),
             ("top_ranked_promotion_enabled", "boolean"),
             ("highest_momentum_promotion_enabled", "boolean"),
             ("any_automatic_enabled", "boolean"),
