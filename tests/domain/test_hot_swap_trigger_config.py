@@ -480,3 +480,28 @@ def test_the_rest_manual_trigger_never_reports_a_swap_it_did_not_perform(
     line = log.read_text().splitlines()[ordinal - 1]
     assert '"kind":"MANUAL_PROMOTION"' in line, line
     assert '"candidate_strategy_id":"beta"' in line, line
+
+
+def test_a_mounted_producer_reports_the_default_posture_as_known_off(tmp_path: Path) -> None:
+    # Clause 2 ("automatic triggers default to disabled") has to be OBSERVABLE, not merely
+    # unclaimed. Before this producer existed the chips read deferred — "SRS-RESV-003 has
+    # not produced this yet" — which was honest then and is wrong now: with the source
+    # mounted and readable, the runtime posture is known and it is disabled. A deferred cell
+    # here would understate what the system can actually say, and leave the AC's default
+    # clause unevidenced on the surface an operator reads.
+    from atp_dashboard.hotswap import CliHotSwapTriggerSource, HotSwapStatusProvider
+
+    state = tmp_path / "never-configured.json"
+    assert not state.exists()
+    snapshot = HotSwapStatusProvider(
+        CliHotSwapTriggerSource(state, binary=_trigger_cli())
+    ).hot_swap_snapshot()
+
+    assert snapshot["ok"] is True, snapshot
+    assert snapshot["auto_triggers_enabled"]["value"] is False, snapshot
+    for chip in snapshot["auto_triggers_live"]:
+        assert chip["enabled"]["value"] is False, chip
+        assert chip["enabled"]["data_source"] == "hot_swap_state", chip
+    # A KNOWN false, not an unknown — the two must stay distinguishable, because the
+    # unreadable case still has to render as unknown (asserted above).
+    assert state.exists() is False, "reading a configuration must not create one"

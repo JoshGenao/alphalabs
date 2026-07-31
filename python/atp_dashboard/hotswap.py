@@ -577,15 +577,18 @@ class CliHotSwapTriggerSource:
             )
         values = parse_trigger_cli_output(completed.stdout)
         source = values.get("config-source")
-        if source == "default":
-            # Genuinely never configured. `None` is the protocol's "no fact yet", which the
-            # pane renders as the honest default rather than as an operator choice.
-            return None
-        if source != "persisted":
+        if source not in ("default", "persisted"):
             raise HotSwapStatusUnavailable(
                 f"hot-swap trigger configuration reported an unknown source {source!r}"
             )
-        return self._config_payload(values)
+        # A readable producer ALWAYS returns a payload, including for the never-configured
+        # case — `None` would render every chip deferred, i.e. "SRS-RESV-003 has not
+        # produced this yet", which stopped being true the moment this source was mounted.
+        # The runtime posture is known and it is disabled; saying so is what makes the
+        # SYS-49a "automatic triggers default to disabled" clause observable rather than
+        # merely unclaimed. Provenance is not lost — `config_source` carries it, so a caller
+        # can still tell "off by default" from "an operator turned it off".
+        return self._config_payload(values, source=source)
 
     def live_state(self) -> dict[str, object] | None:
         """No producer persists a queryable live-swap state (owner ``SRS-RESV-004``/``005``/
@@ -603,7 +606,7 @@ class CliHotSwapTriggerSource:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _config_payload(values: dict[str, str]) -> dict[str, object]:
+    def _config_payload(values: dict[str, str], *, source: str) -> dict[str, object]:
         """The shape ``HotSwapStatusProvider`` reads.
 
         The per-trigger detail is NESTED under each ``kind`` because that is how the pane
@@ -625,6 +628,9 @@ class CliHotSwapTriggerSource:
                 )
             drawdown["threshold_bps"] = int(raw)
         return {
+            # Provenance: "default" (never configured, so the disabled values below are the
+            # built-in posture) vs "persisted" (an operator chose them).
+            "config_source": source,
             "any_enabled": strict_trigger_bool(values, "any-automatic-enabled"),
             "manual_promotion_available": strict_trigger_bool(values, "manual-promotion-available"),
             "default_disabled": strict_trigger_bool(values, "default-disabled"),

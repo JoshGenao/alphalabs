@@ -338,35 +338,25 @@ def mount_hot_swap_triggers(
 # --------------------------------------------------------------------------- #
 
 
-def _rest_config_body(config: dict[str, object] | None) -> dict[str, object]:
+def _rest_config_body(config: dict[str, object]) -> dict[str, object]:
     """The GET body for a configuration that may never have been set.
 
     ``config_source`` is what keeps the two states apart on the wire: ``default`` means
-    nothing was ever configured (so the disabled values are the honest default), while
-    ``persisted`` means an operator chose them. A caller that cannot tell those apart cannot
-    tell "off by default" from "deliberately turned off".
+    nothing was ever configured (so the disabled values are the honest built-in posture),
+    while ``persisted`` means an operator chose them. A caller that cannot tell those apart
+    cannot tell "off by default" from "deliberately turned off".
+
+    The wire keeps the flat field names the frozen contract declares; the pane's nested
+    per-kind shape is an internal detail of the source, not of the REST route.
     """
 
-    if config is None:
-        return {
-            "config_source": "default",
-            "manual_promotion_available": True,
-            "drawdown_demotion_enabled": False,
-            "drawdown_demotion_threshold_bps": None,
-            "top_ranked_promotion_enabled": False,
-            "highest_momentum_promotion_enabled": False,
-            "any_automatic_enabled": False,
-            "default_disabled": True,
-        }
-    # The wire keeps the flat field names the frozen contract declares; the pane's nested
-    # per-kind shape is an internal detail of the source, not of the REST route.
     drawdown = config["drawdown_demotion"]
     top_ranked = config["top_ranked_promotion"]
     momentum = config["highest_momentum_promotion"]
     assert isinstance(drawdown, dict) and isinstance(top_ranked, dict)
     assert isinstance(momentum, dict)
     return {
-        "config_source": "persisted",
+        "config_source": config["config_source"],
         "manual_promotion_available": config["manual_promotion_available"],
         "drawdown_demotion_enabled": drawdown["enabled"],
         "drawdown_demotion_threshold_bps": drawdown.get("threshold_bps"),
