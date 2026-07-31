@@ -1036,7 +1036,7 @@
       "Step 3: Verify acceptance criteria: Notebook code can query the unified data interface, compute pandas-ta or TA-Lib indicators, and render plots without access to live order submission.",
       "Step 4: Record objective evidence from test, demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {
@@ -1051,7 +1051,7 @@
       "Step 3: Verify acceptance criteria: The operator can open the embedded Jupyter environment from the primary dashboard workflow without using a direct service URL.",
       "Step 4: Record objective evidence from demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {
@@ -1565,7 +1565,7 @@
       "Step 3: Verify acceptance criteria: User can access Jupyter from the dashboard workflow without direct service URL navigation.",
       "Step 4: Confirm the UI behavior traces to SRS-RES-001, SRS-RES-003 and leave passes false until browser evidence is captured."
     ],
-    "passes": false,
+    "passes": true,
     "needs_clarification": false
   },
   {

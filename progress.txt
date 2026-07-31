@@ -1,3 +1,385 @@
+=== SESSION 95 ===
+Date: 2026-07-27
+Feature: UI-6 — the dashboard shall provide embedded Jupyter navigation
+         (SRS-6 UI-6; traces SRS-RES-001 + SRS-RES-003 / SyRS SYS-34a, SYS-34c, SYS-43)
+Outcome: partial(blocked-on SRS-RES-001, SRS-RES-003) — NO code written, deliberately.
+
+## Why nothing was built: UI-6 is SRS-RES-003 restated, and RES-003 was live
+
+UI-6 was claimed with a genuinely empty slate (no prior session note, nothing built). It was
+still wrong to build, because its acceptance criterion is the same sentence as SRS-RES-003's,
+and a sibling agent was mid-flight on RES-003 at that moment.
+
+Side by side, from docs/SRS.md:
+  SRS-RES-003 (line 210) "The operator can open the embedded Jupyter environment from the
+                          primary dashboard workflow without using a direct service URL."
+  UI-6         (line 269) "User can access Jupyter from the dashboard workflow without direct
+                          service URL navigation."
+The SRS traceability row for UI-6 names SRS-RES-001 + SRS-RES-003 as its owners outright, so
+this is not an inference — UI-6 *is* the dashboard-view restatement of RES-003 layered on the
+RES-001 embed.
+
+Evidence the sibling had already built it (read-only inspection of
+../alphalabs-wt-SRS-RES-003 while its lease was alive):
+  commit a2ed570 "feat(SRS-RES-003): primary dashboard navigation to the embedded Jupyter
+  research environment" — 12 files, +1796/-18, including a new python/atp_dashboard/navigation.py
+  and changes to assets/app.js, assets/index.html, assets/styles.css and server.py, plus
+  boundary/domain/e2e/unit tests. Its session note was still untracked, i.e. it was about to
+  integrate.
+
+Building UI-6 would therefore have (a) reimplemented ~1796 lines of a sibling's just-committed
+work, and (b) collided in all four shared dashboard files, guaranteeing a rebase conflict at
+integrate where one of the two implementations gets discarded. Recorded the edge instead:
+
+  python3 tools/agent_pool.py block UI-6 --on SRS-RES-001 SRS-RES-003
+
+(That writes the canonical ROOT/tools/feature_deps.json, not this branch's copy — a branch
+commit touching tools/feature_deps.json is rejected by shared_state_violations; the integrator's
+_sync_deps_into carries it to main.)
+
+## What already exists on main (so the next session does not re-survey)
+
+SRS-RES-001's research embed is on main and serves the Jupyter surface UI-6 sits on:
+  - python/atp_dashboard/research.py — ResearchEnvironmentProvider, RESEARCH_PREFIX,
+    UPSTREAM_ENV_KNOB.
+  - server.py:85 RESEARCH_SNAPSHOT_PATH="/dashboard/api/research"; mount_dashboard registers the
+    poll route when a provider is passed, and registers the same-origin /research/ reverse-proxy
+    only when an upstream is CONFIGURED (server.py:217-220). mount_default_dashboard always
+    composes the provider (server.py:305-342) so the deferred state renders honestly.
+  - assets/index.html:311-328 — panel--research with #research-status, an
+    #research-open "Open research environment" button (disabled until resolved), and a
+    same-origin #research-frame iframe.
+RES-003 adds the *primary navigation* affordance on top of that; UI-6 is the browser evidence
+that the combination satisfies the AC.
+
+## What I tested (per UI-6 step)
+- Step 1 (./init.sh + dashboard in browser automation): NOT RUN — no code to exercise, and
+  standing up a dashboard would have raced the live RES-003 sibling.
+- Step 2/3 (navigate the workflow; access Jupyter without a direct service URL): BLOCKED — the
+  navigation affordance under test is RES-003's, and it had not yet landed on main.
+- Step 4 (trace to SRS-RES-001, SRS-RES-003; leave passes false): PASS — the trace is recorded
+  as machine-readable dependency edges rather than prose. Two-phase, and the distinction
+  matters when reading this branch's diff:
+    phase 1, ALREADY IN EFFECT — `block` wrote DEFERRED_FILE = ROOT/tools/feature_deps.json
+      (agent_pool.py:159), the only copy `cmd_claim` consults. Verified by reading
+      /Users/joshgenao/Documents/Programming/Python/alphalabs/tools/feature_deps.json:
+      UI-6 -> ['SRS-RES-001','SRS-RES-003']; `block` reported no skipped cycles. The scheduler
+      stopped re-offering UI-6 the moment that returned, independent of git state.
+    phase 2, AT INTEGRATE — main records it only when this feature's own
+      `integrate --mode partial` runs `_sync_deps_into` (agent_pool.py:828) and stages the
+      canonical file into the `[agent-integrate]` marker commit.
+  So **this branch's tools/feature_deps.json still reads UI-6 -> None, and that is correct**:
+  a branch commit touching that file is rejected outright by `shared_state_violations`
+  (integrate exit 6). Do not "fix" it by staging it. To check phase 1 read ROOT; to check
+  phase 2 read origin/main after the marker commit — the branch diff alone shows neither.
+
+## Critic verdicts
+  deterministic (critic_check.py --staged): APPROVE — no findings. Notes-only diff; progress.d/
+    is carved out of the SAFETY_PATH_RE paired-domain-test rule (critic_check.py:358).
+  judgment (adversarial_review.py origin/main, reviewer=codex): APPROVE.
+    r1 BLOCK (high, 0.90) — "the note claims the dependency graph is updated and enforced, but
+      tools/feature_deps.json in the reviewed source state has no UI-6 entry." Same class as
+      UI-5's r1 this same day: correct about the branch tree, wrong about the mechanism, and
+      caused by imprecise prose on my side. Its literal recommendation ("include the actual
+      committed dependency graph update in the reviewed source state") must NOT be followed —
+      staging that file makes integrate fail with exit 6. Fixed by taking the other half of the
+      recommendation: the Step 4 entry above now spells out the two phases, where each is
+      verifiable, and why the branch copy correctly still reads None.
+    r2 APPROVE.
+    Process note: an unmodified re-run of r1 returned approve-with-no-findings before I had
+      changed anything — the reviewer is not deterministic on this input. The convenient
+      verdict was not taken as the answer; the prose was tightened first and re-reviewed. Treat
+      a verdict that flips in your favour without a diff change as unresolved, not as an
+      approve.
+
+## Resume / next
+Do NOT build a second Jupyter navigation. When SRS-RES-003 integrates and SRS-RES-001 is
+verified by the operator, UI-6 reduces to capturing browser evidence over the shipped nav:
+open the dashboard, reach Jupyter from the primary workflow without typing a service URL,
+confirm it against the RES-001 embed, then flip via the verified-e2e label. If RES-003's e2e
+(tests/e2e/test_research_navigation.py in that branch) already covers the walkthrough, UI-6's
+flip is an operator-witnessed re-run of it, not new test code.
+
+
+=== SESSION 94 ===
+Date: 2026-07-27
+Feature: SRS-RES-003 — provide primary dashboard navigation to the embedded Jupyter
+research environment (SRS §5.6 line 210; SyRS SYS-43; StRS SN-1.18 / SN-2.01;
+verification method: Demonstration; P2).
+Outcome: serialized (code on main, passes stays false — the Demonstration leg is
+         operator-run, and the environment being navigated TO is itself unflipped)
+
+WHAT WAS ALREADY THERE (do not rebuild):
+  SRS-RES-001 (serialized, passes:false) built the EMBED — the runtime
+  fixed-upstream reverse-proxy seam (atp_runtime/proxy.py), the probe-derived
+  GET /dashboard/api/research snapshot, the same-origin /research/ prefix, and the
+  "Research — Jupyter" SPA panel with its iframe + Open button.
+  SyRS v0.6 explicitly "clarified SYS-43 so it no longer duplicates SYS-34a":
+  SYS-34a is the embed (built), SYS-43 is NAVIGATION from the primary operator
+  workflow (this feature). Before this session the dashboard had NO nav chrome at
+  all — .topbar was brand + status chips + latency pulse — and the Research panel
+  sat 9th (--i:8) in a 12-panel scroll with no addressable link. An operator
+  following the primary workflow had no direct route to research.
+
+WHAT I DID:
+  1. python/atp_dashboard/navigation.py (new) — PrimaryNavigationProvider, served
+     at GET /dashboard/api/navigation. Design decision: the control gates on TWO
+     facts kept deliberately separate, so neither can stand in for the other:
+       routable  — COMPOSITION: is the same-origin /research/ prefix registered on
+                   this runtime? Probe-free, so serving the model costs no upstream
+                   traffic and cannot masquerade as liveness.
+       reachable — LIVENESS: the SRS-RES-001 probe's answer, unchanged.
+     `for_research()` derives routability from the SAME condition mount_dashboard
+     uses to register the proxy, so the two can never disagree. The provider is
+     composed with the same-origin PREFIX and a boolean — it is never handed the
+     upstream, so it has none to leak. same_origin_target() is a fail-closed
+     allow-list (root-relative only; no scheme/userinfo/protocol-relative/backslash/
+     traversal/control chars) and a REJECTED target is never echoed back, because
+     echoing it would republish exactly the direct service URL SYS-43 forbids.
+  2. server.py — NAVIGATION_SNAPSHOT_PATH, registered inside the existing
+     `if research is not None:` block (BEFORE register_proxy_route, so the proxy's
+     meta-path shadow guard sees every dashboard route already claimed). No new
+     mount_dashboard parameter: navigation to an unmounted embed would be
+     navigation to nothing, so a bare SRS-UI-001 dashboard serves no nav route.
+     mount_default_dashboard always composes research, so production always has it.
+  3. SPA — a persistent topbar entry (index.html + scoped .nav CSS in styles.css):
+     an <a href="#research"> on THIS origin (so /dashboard#research is an
+     addressable deep link that still navigates with JS disabled), lab-flask inline
+     SVG, reticle corners + travelling caret shown ONLY in the armed state so it is
+     never mistaken for the passive read-only status chips. app.js renders it from
+     one render fn: armed only when routable AND freshly reachable
+     (RESEARCH_LIVE_STALE_MS = POLL_MS * 3). Every degraded branch — 404, HTTP
+     error, malformed body, stalled fetch, a probe answer aged past its budget —
+     disarms it and DELETES the target a click would otherwise find. A click on a
+     non-armed control lands the operator on the panel (which carries the probe's
+     reason) and fabricates nothing. The #research deep-link intent is ONE-SHOT and
+     bounded (3 poll cycles): it opens only off a completed poll proving
+     reachability, then gives up honestly rather than opening blind.
+  4. Hardening carried by the same diff: the panel button and the nav now open
+     through ONE guarded helper (openResearchEmbed), so the same-origin check
+     cannot be bypassed by adding a caller; pollResearch gained the bounded
+     AbortSignal.timeout(POLL_MS) every other poll already had; the panel's two
+     non-reachable branches now clear their stale embedPath.
+  NOT touched: research.py's snapshot contract (RES-001 is serialized awaiting
+  operator sign-off — its evidence stays valid), atp_runtime/proxy.py, the compose
+  stack, runtime_services.json (no cross-language contract here).
+
+WHAT I TESTED (per step):
+  Step 1 (./init.sh): PASS — "✓ Environment ready".
+    Gotcha for the next session: init.sh does NOT install requirements-dev.txt, so
+    the worktree venv has no pytest until `.venv/bin/pip install -r requirements-dev.txt`.
+  Step 2 (exercise via browser automation + REST): PARTIAL — solo layers PASS; the
+    browser leg is written and gated, operator-run by explicit operator decision
+    this session (no parallel Jupyter/dashboard stack while 3 siblings were live):
+      L1 tests/unit/test_dashboard_navigation.py — 12 passed. Model shape; routable
+        vs explicit deferred cell naming ATP_RESEARCH_UPSTREAM + SRS-RES-001; every
+        service-URL spelling refused; a mis-composed prefix/state-route fails closed
+        WITHOUT echoing it; probe-free (a dead upstream still answers instantly).
+      L1 tests/unit/test_dashboard_navigation_client.py — 10 passed. EXECUTES the
+        shipped app.js predicate under node over the SAME adversarial corpus as the
+        Python allow-list and demands identical verdicts, so the two mirrors cannot
+        drift; malformed nav feeds (including routable:"true" / routable:1) never
+        arm; the post-success-then-degraded sequence proves NEITHER surface can
+        reopen off a stale path (the Codex R1 regression); static pins on the
+        single open-funnel + the disarm branches. Skips cleanly where node is absent.
+      L4 tests/boundary/test_research_nav_wiring.py — 7 passed. Over real TCP: SPA
+        ships the nav + #research anchor; the route serves a routable same-origin
+        entry whose target is really served by the same listener; strict read
+        (POST/PUT/DELETE refused); unconfigured embed -> not routable AND no prefix
+        to route to; bare dashboard -> 404 and no nav route; RES-001's own snapshot
+        contract unchanged.
+      L7 tests/domain/test_research_navigation_safety.py — 8 passed. The upstream
+        authority appears in NO served byte (SPA, app.js, styles.css, nav route,
+        probe route) in the reachable AND the DOWN case (an error path that quotes
+        the address leaks just as effectively); no adversarial prefix can become a
+        target; nav cannot be shadowed by a proxy prefix; the kill-switch
+        confirmation guard is unchanged with nav mounted; routable never claims
+        reachable.
+      L6 tests/e2e/test_research_navigation.py — WRITTEN, NOT RUN (gated
+        ATP_RUN_E2E=1 + playwright + jupyterlab; skips cleanly, verified).
+  Step 3 (AC — open the embed from the primary workflow without a direct service
+    URL): PASS for the code path (L4 + L7 prove the same-origin route and the
+    zero-leak property; L1-node proves the browser guard). The DEMONSTRATION
+    itself — a real browser clicking the topbar entry into real JupyterLab — is
+    the L6 test, operator-run.
+  Step 4 (record evidence, leave passes false): DONE — serialized.
+  Solo gate: pytest -m "not integration and not e2e" -> 4204 passed / 5 skipped /
+    1 failed. The single failure is tests/property/test_indicators_property.py::
+    test_bbands_property_matches_batch_talib — the DOCUMENTED pandas_ta-vs-TA-Lib
+    precision main-red (progress.txt lines 3694 / 3810 / 3915 / 4021: "indicators.py
+    — NOT touched"); this branch touches no indicator file. cargo test --workspace:
+    all suites ok, 0 failed. cargo fmt --check + cargo clippy -D warnings: clean.
+    ruff check .: clean. mypy python/: 68 errors in 16 files, ZERO in any file this
+    branch touches (and mypy is continue-on-error in ci.yml).
+  CI MIRROR (tools/run_ci_locally.sh): run it with the venv on PATH —
+    `PATH="$PWD/.venv/bin:$PATH" tools/run_ci_locally.sh` — otherwise it picks up
+    the system python and dies on `No module named numpy` in architecture_check.
+    With the venv it is green until the BLOCKING whole-repo `ruff format --check .`
+    gate, which reports exactly ONE file: tests/domain/test_safe003_connectivity_block_cli.py.
+    That file is NOT in my diff and is already unformatted on origin/main (added by
+    the SRS-SAFE-003 sibling in fa8b837 — verified by checking out the origin/main
+    blob and re-running the formatter on it). Left alone deliberately: the documented
+    "CI red behind format gates" rule says a feature PR must not whole-repo-format,
+    and rewrapping a sibling's CLI test risks breaking literal contract anchors while
+    that sibling may still be working the file. Owner: SRS-SAFE-003 / the format-pin PR.
+
+CRITIC VERDICTS:
+  deterministic (critic_check.py --staged): APPROVE — no findings, on every commit.
+  judgment (adversarial_review.py, reviewer=codex): THREE rounds, each re-reviewed
+    against its OWN follow-up diff (review-the-fix-not-the-whole-feature, so
+    already-authorized scope does not re-block).
+    R1 (base origin/main) BLOCK, 1 finding — [high] STALE OPEN BUTTON (real bug,
+      FIXED): I had deliberately left the panel button to SRS-RES-001, but making
+      openResearchEmbed a SHARED funnel pulled it into this feature's surface. On a
+      degraded probe (HTTP error / 404 / timeout) pollResearch cleared only the
+      navigation liveness fact, so #research-open kept its stale data-embed-path and
+      one click could still open an environment last seen alive several polls ago —
+      exactly the stale-truth-left-ACTIONABLE class this feature is most exposed to.
+      Fix: disarmResearchControls() in all three degraded branches (disable + delete
+      the path + state the reason). Proven by executing the SHIPPED source under
+      node through the full sequence (armed -> opened -> probe fails -> click), and
+      the test was checked to DISCRIMINATE: replaying the pre-fix control flow
+      yields reopened=true with the stale path retained.
+    R2 (base a2ed570) WARN, 1 finding — [medium] NARROWED L7 COVERAGE (FIXED):
+      confining the bare-port assertion to the JSON routes (my own flake-avoidance,
+      since a five-digit ephemeral port could coincidentally occur in a 120 KB
+      asset) meant a leak spelled localhost:<port> could pass through the assets.
+      Fix: _assert_no_service_url() over EVERY served path, matching URL SHAPE —
+      any absolute http(s) URL carrying the upstream port or naming any loopback
+      authority fails; non-flaky by construction. Verified it catches all five
+      variants (localhost / 127.0.0.1 / [::1] / 0.0.0.0 / a non-loopback hostname
+      with the port) while the assets' one legitimate absolute URL (the W3C SVG
+      namespace) passes. Coverage is now WIDER than before the narrowing.
+    R3 (base e36eea0) APPROVE — no findings; summary explicitly confirms the
+      direct-service-URL and dashboard-navigation constraints are not violated.
+      (Non-empty, specific summary — not the dropped-verdict shape.)
+
+RESUME / NEXT (for the operator to flip passes:true):
+  1. SRS-RES-003 cannot honestly flip ahead of SRS-RES-001: its AC names "the
+     embedded Jupyter environment", and RES-001 is still passes:false pending
+     (a) sign-off on its documented same-origin browser-vector residual
+     (SECURITY.md § OPERATOR SIGN-OFF GATE) and (b) the deployed-stack demo.
+     No `block` edge was recorded — `--mode serialized` already removes it from the
+     offered frontier, and a redundant edge is churn.
+  2. The demonstration, once RES-001's stack is up:
+       pip install jupyterlab playwright && playwright install chromium
+       ATP_RUN_E2E=1 pytest tests/e2e/test_research_navigation.py
+     then, on the real compose stack, open /dashboard behind the operator's
+     authenticated HTTPS proxy and click the topbar Research entry.
+  3. UI-6 (ready frontier — "dashboard provide embedded Jupyter navigation",
+     traces to SRS-RES-001 + SRS-RES-003) is now near-green off this work: its AC
+     is the same sentence. It was NOT claimed here. Its browser evidence is
+     tests/e2e/test_research_navigation.py.
+
+
+=== SESSION 93 ===
+Date: 2026-07-02
+Feature: SRS-RES-002 — provide Jupyter access to historical data, indicators, and
+plotting (SRS §5.6 line 209; SyRS SYS-34b / SYS-34c / NFR-S6; verification: Test,
+demonstration).
+Outcome: serialized (code + Test-level evidence landed; passes stays false — the
+live-JupyterLab-notebook "demonstration" needs the operator-supplied image).
+
+What I did:
+Built python/atp_research/ — the curated notebook research surface. The DATA ACCESS
+already existed (SRS-DATA-007 StoreBackedHistoricalData binding, passes:true) and the
+INDICATORS already existed (SRS-SDK-006 pandas-ta/TA-Lib wrappers); RES-002's own
+scope per architecture/runtime_services.json is the "Jupyter notebook HOST runtime
+(kernel / plotting / no-live-order isolation)". So this package composes the three
+capabilities into one import and proves the isolation:
+  * data.py — open_historical_data(): read-only SRS-DATA-007 handle. Resolves the
+    data007_query_cli path from query_binary= or the ATP_DATA_QUERY_BINARY env (the
+    operator JupyterLab-image knob), else the repo default; an absent binary fails
+    CLOSED with an actionable StoreQueryError, never a hang / silent empty.
+  * indicators.py — re-exports the SDK indicators (same objects, SyRS AC-6, no
+    reimplementation) + compute_series(indicator, bars): batch-drives an incremental
+    indicator over a bar history -> per-bar value series (None during warm-up).
+  * plotting.py — bars_to_frame() (OHLCV pandas DataFrame, plot-/pandas-ta-ready) and
+    plot_ohlc() (close line + optional indicator overlays, warm-up None drawn as a
+    NaN gap). Uses matplotlib's OO Figure API (headless, no GUI backend, no global
+    pyplot state) and RETURNS the Figure so a notebook cell inline-displays a chart
+    (Figure carries _repr_html_; Axes does not).
+  * __init__.py — curated __all__: ONLY read/compute/plot. No order-submission,
+    cancellation, position, or credential surface.
+Added matplotlib==3.11.0 to requirements.txt (operator-approved this fork over
+requirements-dev/defer; SyRS SYS-34b names "plotting capabilities").
+
+Key decisions:
+  * Separate atp_research package (not inside atp_strategy): structurally isolates the
+    research surface from the strategy SDK and sidesteps the strategy-authoring parity
+    / documentation contracts (which target atp_strategy). One-way dep research->SDK.
+  * No-live-order isolation is real: ATP's only order-submission entry point is
+    StrategyContext.order, and StrategyContext is an uninstantiable typing.Protocol —
+    there is no concrete submitter in the SDK a notebook could construct, and the
+    orchestrator never wires one into a notebook process. atp_research neither
+    re-exports it nor any order request/handle type. The CONTAINER-level sandbox
+    (read-only mounts, no brokerage creds, no execution network) is the separate
+    SRS-SEC-004 security control — named, not claimed here.
+  * The live query path needs the cargo-built data007_query_cli present in the
+    operator's JupyterLab image (docker/jupyter.Dockerfile is a Phase-1 stub;
+    provisioning is SRS-ARCH-004). Documented + failing-closed + env-configurable;
+    proven by a gated L5 integration test rather than faked.
+
+What I tested (per step):
+  Step 1: PASS — ./init.sh -> "Environment ready".
+  Step 2 (exercise): PASS solo —
+    pytest -m "not integration and not e2e" (full suite) green (2711 passed, 4
+    pre-existing skips); the new tests:
+      L1 tests/unit/test_research_indicators.py — compute_series == manual incremental
+        drive; one entry per bar; None warm-up; empty; Protocol duck-typing; re-exports
+        are the SAME SDK indicator objects.
+      L1 tests/unit/test_research_plotting.py — bars_to_frame columns/UTC-index/empty;
+        plot_ohlc renders a real PNG headlessly; returns an inline-displayable Figure
+        (has _repr_html_) vs a non-displayable Axes; indicator overlay; warm-up NaN gap;
+        rejects misaligned overlay + empty bars.
+      L4 tests/boundary/test_research_data_access.py — notebook query by
+        symbol/range/resolution with NO provider, over a fake data007 runner; empty is
+        a value; failure -> StoreQueryError; the REAL default path fails closed with an
+        actionable error when the binary is absent; ATP_DATA_QUERY_BINARY / explicit
+        query_binary resolution + precedence.
+      L7 tests/domain/test_research_isolation.py — public surface + read handle carry no
+        order/credential token; atp_research re-exports no order type; StrategyContext is
+        an uninstantiable Protocol; end-to-end data->indicator->plot touches no order path.
+  Step 3 (AC): data query + indicator compute + plot render all demonstrated by test;
+    no-live-order isolation demonstrated by L7. RAW verbatim path used for the fixture
+    (split-adjusted needs a proven coverage frontier, SRS-DATA-011).
+  Step 4 (evidence + hold passes false): serialized. The L5 integration test
+    tests/integration/test_research_data_access.py (gated ATP_RUN_INTEGRATION=1, NOT run
+    in this parallel session) exercises the REAL notebook path over the cargo-built
+    data007_query_cli (no injected runner) — ingest -> read -> indicator -> plot — as the
+    operator-runnable proof; the live-JupyterLab-in-the-dashboard demonstration
+    (SRS-RES-001 reachability + operator JupyterLab image) cannot run here. passes stays
+    false.
+  Gate: ruff check/format clean; mypy python/ unchanged at the 66-error pre-existing
+    baseline (0 added by atp_research); deterministic critic APPROVE.
+
+Critic verdicts:
+  deterministic (critic_check.py --staged): APPROVE — no findings.
+  judgment (tools/codex_review.sh origin/main): APPROVE at round 3. R1 [high]: default
+    notebook path relies on an unprovisioned data007_query_cli -> added env/arg
+    resolution + fail-closed actionable error + tests. R2 [high] data wiring + [medium]
+    inline plot: added the gated L5 real-binary no-injection integration test and made
+    plot_ohlc RETURN the Figure (inline-displayable) — R3 APPROVE, no material findings.
+
+Resume / next:
+  SRS-RES-002 stays passes:false. To flip it (operator, --mode complete or verified-e2e):
+  provision the JupyterLab image (docker/jupyter.Dockerfile production image, SRS-ARCH-004
+  Docker Compose stack) with JupyterLab + the cargo-built data007_query_cli (point at it
+  via ATP_DATA_QUERY_BINARY) + a mounted store (ATP_DATA_STORE_DIR / the :ro data volumes),
+  make it reachable from the dashboard (SRS-RES-001), then demonstrate in a live notebook:
+  import atp_research; open_historical_data(...).get_bars_range(...); compute_series(...);
+  plot_ohlc(...). Run tests/integration/test_research_data_access.py with
+  ATP_RUN_INTEGRATION=1 as the objective end-to-end evidence. Container-level Jupyter
+  isolation is SRS-SEC-004.
+
+Also this session (housekeeping, no code): de-churned two dead re-leases of
+already-serialized/blocked features so the scheduler stops re-offering them by id —
+  * SRS-NOTIF-001 (core dispatcher already done + serialized on main) blocked-on
+    SRS-EXE-006 (its real fault-injection/SMTP-SMS e2e rides the operator IB integration);
+  * SRS-RES-001 (embed Jupyter IN the dashboard) blocked-on SRS-UI-001 (no dashboard
+    exists yet; browser-automation demonstration).
+
+
 === SESSION 92 ===
 Date: 2026-07-16
 Feature: SRS-RES-001 — embed the Jupyter research environment in the dashboard workflow
