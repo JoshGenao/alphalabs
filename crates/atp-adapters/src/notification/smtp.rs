@@ -247,7 +247,12 @@ impl SmtpEmailChannel {
         // alert into a reported failure.
         let _ = session.write_line(budget, "QUIT", "QUIT");
 
-        Ok(ChannelReceipt::new(accepted.text()))
+        // Redact the SUCCESS reply too. It becomes the stored ChannelReceipt
+        // reference — durable audit data — so a relay that echoes the key or the
+        // AUTH PLAIN blob in its final 250 would write recoverable credential
+        // material into the log along the happy path. The success path is not
+        // safer than the failure path here; it is simply less obvious.
+        Ok(ChannelReceipt::new(session.redact(accepted.text())))
     }
 
     /// Build the RFC 5322 message.

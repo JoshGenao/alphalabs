@@ -149,6 +149,11 @@ def test_recording_an_alert_does_not_delay_the_reconnect() -> None:
     # and asking to reconnect -- so reporting the problem would extend it, and the
     # strategy's order path would stall for the same span. The network work is
     # moved off the caller's thread; callers that need the outcome flush().
+    #
+    # There is deliberately NO inline fallback when the worker cannot be spawned:
+    # spawn failure means resource exhaustion, so doing the I/O inline would put
+    # ~40s in front of the reconnect at the worst possible moment. Recovery wins
+    # over the page, and the miss is recorded rather than silent.
     _assert_one_passed(
         _run_cargo_test("record_returns_immediately_even_when_the_channels_are_slow"),
         "SRS-NOTIF-001 non-blocking record",

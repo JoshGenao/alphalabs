@@ -249,6 +249,42 @@ fn an_echoing_relay_cannot_get_the_credential_into_the_stored_error() {
     let _ = server.handle.join();
 }
 
+/// The SUCCESS path stores relay text too, and is no safer than the failure path.
+///
+/// The final `250`'s text becomes the `ChannelReceipt` reference, which the
+/// dispatcher persists as the delivery detail. A relay echoing the key there
+/// writes it into the audit log along the HAPPY path, where nobody thinks to
+/// look for a leak.
+#[test]
+fn an_echoing_relay_cannot_get_the_credential_into_a_successful_receipt() {
+    const ENCODED: &str = "AGF0cEBleGFtcGxlLmNvbQByZWxheS1zZWNyZXQ=";
+
+    let mut script = accepting_script();
+    script[6] = format!("250 2.0.0 Ok: queued as Q-1 (auth {ENCODED}, key {KEY})");
+    let server = spawn_smtp(script, Duration::ZERO);
+
+    let receipt = email_channel(server.port)
+        .send(&alert(), Duration::from_secs(5))
+        .expect("relay accepted the message");
+
+    assert!(
+        receipt.reference().contains("Q-1"),
+        "the queue id must survive: {:?}",
+        receipt.reference()
+    );
+    assert!(
+        !receipt.reference().contains(ENCODED),
+        "encoded credential reached the stored receipt: {:?}",
+        receipt.reference()
+    );
+    assert!(
+        !receipt.reference().contains(KEY),
+        "raw credential reached the stored receipt: {:?}",
+        receipt.reference()
+    );
+    let _ = server.handle.join();
+}
+
 /// Defence in depth: a relay that echoes the credential at a *later* stage — one
 /// the AUTH-stage rule does not cover — must also be scrubbed.
 #[test]

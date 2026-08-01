@@ -334,30 +334,24 @@ impl<K: AlertClock> ConnectivityEventSink for ConnectivityNotifierSink<K> {
             });
 
         if let Err(err) = spawned {
-            // Could not spawn: do the work inline rather than drop the alert
-            // silently. A delayed page beats no page.
+            // Could NOT spawn — record the failure and return. Deliberately no
+            // inline dispatch: an earlier revision did that ("a delayed page
+            // beats no page"), which reintroduced exactly the block this change
+            // removed, and in the worst conditions. Spawn failure means resource
+            // exhaustion, so running two channel deadlines of network I/O here
+            // would put ~40s in front of the reconnect request during a live
+            // outage. Recovery wins over the page; the failure is recorded, so it
+            // is visible rather than silent.
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
-            let outcome = dispatch_and_store(
-                &self.notifier,
-                &trigger_for_inline(&event, coalesced, now),
-                now,
-                &self.channels,
-                suppression,
-                &self.store_dir,
-            );
             let mut state = self.lock();
             state.outcomes.push(ConnectivityAlertOutcome::Failed {
-                detail: format!("could not spawn the alert worker ({err}); dispatched inline"),
+                detail: format!(
+                    "could not spawn the alert worker ({err}); alert NOT sent — dispatching \
+                     inline would have delayed the reconnect on the live outage path"
+                ),
             });
-            state.outcomes.push(outcome);
         }
     }
-}
-
-/// Rebuild the trigger for the inline fallback path (the original was moved into
-/// the worker closure).
-fn trigger_for_inline(event: &ConnectivityEvent, coalesced: u64, now: u64) -> NotificationTrigger {
-    NotificationTrigger::connectivity_loss(summary_for(event, coalesced), now)
 }
 
 /// Dispatch and persist, mapping both halves onto an outcome.
