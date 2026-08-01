@@ -23,6 +23,12 @@ state), falling back to the local working file when offline.
 
 Subcommands: ``seed``, ``status``, ``claim``, ``block``, ``integrate``,
 ``heartbeat``, ``release``. See ``prompts/coding_prompt.md`` and AGENTS.md.
+
+``claim`` auto-picks by default (``tools/claim_and_work.sh``). ``claim --id
+<FEATURE_ID>`` instead takes an operator-selected feature, bypassing the
+ready-frontier and awaiting-verification filters — those guards stop an
+autonomous agent churning on a flip-blocked feature, but a human closing one out
+by hand is exactly the case they must not block (``tools/work_on.sh``).
 """
 
 from __future__ import annotations
@@ -558,6 +564,22 @@ def branch_exists(branch: str) -> bool:
     )
 
 
+def worktree_for_branch(branch: str) -> Path | None:
+    """Path of the worktree that already has ``branch`` checked out, if any.
+
+    Git refuses to check one branch out in two worktrees, so an operator-selected
+    ``--branch`` must reuse the existing checkout rather than try to add a second.
+    """
+    out = _run(["git", "-C", str(ROOT), "worktree", "list", "--porcelain"]).stdout
+    current = None
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            current = Path(line[len("worktree ") :]).resolve()
+        elif line == f"branch refs/heads/{branch}" and current is not None:
+            return current
+    return None
+
+
 def reachable(deps: dict, src: str, dst: str) -> bool:
     """Is dst reachable from src by following deps edges? (cycle detection)"""
     seen, stack = set(), [src]
@@ -684,7 +706,42 @@ def cmd_status(args):
     return 0
 
 
+def _finish_claim(runtime: dict, active: dict, fid: str, branch: str, wt: Path, owner: str) -> int:
+    """Take the lease, materialise the worktree, print the shell env. Call under the lock.
+
+    Shared by the auto-pick and ``--id`` paths so both allocate ports from the
+    same free-index pool and create branches under the same mutex.
+    """
+    idx = free_port_index(active)
+    runtime["leases"][fid] = {
+        "owner": owner,
+        "ts": int(time.time()),
+        "expiry": int(time.time() + LEASE_TTL),
+        "port_index": idx,
+    }
+
+    # Create (or reuse) the worktree + branch under the lock so two claimers
+    # never race on branch creation.
+    if not wt.exists():
+        if branch_exists(branch):
+            _run(["git", "-C", str(ROOT), "worktree", "add", str(wt), branch])
+        else:
+            _run(["git", "-C", str(ROOT), "worktree", "add", "-b", branch, str(wt), base_ref()])
+
+    save_runtime(runtime)
+
+    print(f"FEATURE={fid}")
+    print(f"WORKTREE={wt}")
+    print(f"BRANCH={branch}")
+    for k, v in ports_for(idx).items():
+        print(f"{k}={v}")
+    return 0
+
+
 def cmd_claim(args):
+    if getattr(args, "branch", None) and not getattr(args, "id", None):
+        print("✗ --branch requires --id (it pins ONE feature's session).", file=sys.stderr)
+        return 1
     with Lock():
         # Keep the primary checkout current with origin/main FIRST (under the lock,
         # so no block/integrate races) -- otherwise serialized_notes()/load_features()
@@ -696,6 +753,61 @@ def cmd_claim(args):
         ready, blocked, active, held, by_id = compute(
             features, deps, runtime, allow_foreign_reclaim=args.reclaim
         )
+
+        owner = os.environ.get("ATP_AGENT_OWNER") or f"{socket.gethostname()}:{os.getpid()}"
+
+        # --- operator-selected target -------------------------------------
+        # `--id` deliberately bypasses the ready-frontier filter AND the
+        # awaiting-verification skip: those guards exist to stop an autonomous
+        # agent from churning on a flip-blocked feature, but a human closing one
+        # out by hand is exactly the case they should not block. Unmet deps are
+        # reported, not enforced.
+        if getattr(args, "id", None):
+            fid = args.id
+            if fid not in by_id:
+                hint = difflib.get_close_matches(fid, by_id, n=2)
+                print(
+                    f"✗ unknown feature id: {fid}" + (f" (did you mean {hint}?)" if hint else ""),
+                    file=sys.stderr,
+                )
+                return 1
+            if by_id[fid].get("passes") is True:
+                print(f"✗ {fid} already passes on origin/main — nothing to close.", file=sys.stderr)
+                return 1
+            lease = active.get(fid)
+            if lease and lease.get("owner") != owner and not args.reclaim:
+                print(
+                    f"✗ {fid} is leased by {lease.get('owner')} (another live session).\n"
+                    f"  Re-run with --reclaim to take it, or `release {fid} --force` first.",
+                    file=sys.stderr,
+                )
+                return 1
+
+            branch = args.branch or f"agent/{fid}"
+            if args.branch:
+                # An operator-pinned branch may already be checked out somewhere
+                # (git allows only one worktree per branch) — reuse that path.
+                wt = worktree_for_branch(branch) or (
+                    ROOT.parent / f"alphalabs-wt-{branch.split('/')[-1]}"
+                )
+            else:
+                wt = ROOT.parent / f"alphalabs-wt-{fid}"
+            if worktree_dirty(wt) and not args.reclaim:
+                print(
+                    f"✗ {wt} has uncommitted changes — refusing to reuse it.\n"
+                    f"  Commit/stash there, or re-run with --reclaim.",
+                    file=sys.stderr,
+                )
+                return 1
+
+            unmet = blocked.get(fid) or []
+            if unmet:
+                print(
+                    f"# note: {fid} has unmet deps ({', '.join(sorted(unmet))}) — "
+                    "claiming anyway (operator-selected).",
+                    file=sys.stderr,
+                )
+            return _finish_claim(runtime, active, fid, branch, wt, owner)
 
         # Steer toward keystones (most-unblocking first) and skip features that
         # are code-done but awaiting human e2e verification (the churn loop).
@@ -751,35 +863,14 @@ def cmd_claim(args):
             )
             return 0
 
-        idx = free_port_index(active)
-        owner = os.environ.get("ATP_AGENT_OWNER") or f"{socket.gethostname()}:{os.getpid()}"
-        runtime["leases"][choice] = {
-            "owner": owner,
-            "ts": int(time.time()),
-            "expiry": int(time.time() + LEASE_TTL),
-            "port_index": idx,
-        }
-
-        # Create (or reuse) the worktree + branch under the lock so two claimers
-        # never race on branch creation.
-        wt = ROOT.parent / f"alphalabs-wt-{choice}"
-        branch = f"agent/{choice}"
-        base = base_ref()
-        if not wt.exists():
-            if branch_exists(branch):
-                _run(["git", "-C", str(ROOT), "worktree", "add", str(wt), branch])
-            else:
-                _run(["git", "-C", str(ROOT), "worktree", "add", "-b", branch, str(wt), base])
-
-        save_runtime(runtime)
-
-    p = ports_for(idx)
-    print(f"FEATURE={choice}")
-    print(f"WORKTREE={wt}")
-    print(f"BRANCH={branch}")
-    for k, v in p.items():
-        print(f"{k}={v}")
-    return 0
+        return _finish_claim(
+            runtime,
+            active,
+            choice,
+            f"agent/{choice}",
+            ROOT.parent / f"alphalabs-wt-{choice}",
+            owner,
+        )
 
 
 def cmd_block(args):
@@ -1134,6 +1225,20 @@ def main() -> int:
         "--include-awaiting",
         action="store_true",
         help="allow claiming serialized/awaiting-verification features (default: skipped)",
+    )
+    cp.add_argument(
+        "--id",
+        metavar="FEATURE_ID",
+        help="claim THIS feature instead of auto-picking (operator-selected). "
+        "Bypasses the ready-frontier and awaiting-verification filters; "
+        "unmet deps are reported, not enforced.",
+    )
+    cp.add_argument(
+        "--branch",
+        metavar="BRANCH",
+        help="with --id: bind the session to an existing branch (e.g. "
+        "agent/SRS-MD-003-stream) instead of agent/<ID>. Reuses that branch's "
+        "existing worktree if it already has one.",
     )
 
     bp = sub.add_parser("block", help="record discovered dependency edge(s) + release lease")
