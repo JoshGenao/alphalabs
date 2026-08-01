@@ -160,6 +160,17 @@ def test_recording_an_alert_does_not_delay_the_reconnect() -> None:
     )
 
 
+def test_a_failed_alert_worker_does_not_silence_the_next_outage() -> None:
+    # The cool-down must be armed only once the worker is actually running. Armed
+    # before that, a transient resource spike suppresses the page for the whole
+    # 5-minute window on a dispatch that never began -- the operator hears nothing
+    # about a live outage and no durable event is written either.
+    _assert_one_passed(
+        _run_cargo_test("a_failed_worker_spawn_does_not_arm_the_cooldown"),
+        "SRS-NOTIF-001 failed-spawn must not suppress",
+    )
+
+
 def test_a_failing_transport_never_panics_the_execution_path() -> None:
     # This sink runs INSIDE the execution engine's order-rejection path. A panic
     # here would turn a transport hiccup into an unusable engine.

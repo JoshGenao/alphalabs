@@ -119,6 +119,9 @@ pub struct ConnectivityNotifierSink<K: AlertClock> {
     state: Arc<Mutex<EpisodeState>>,
     /// Dispatches handed to a worker and not yet finished.
     in_flight: Arc<AtomicUsize>,
+    /// Test-only: force [`Self::spawn_dispatch`] to fail.
+    #[cfg(test)]
+    force_spawn_failure: std::sync::atomic::AtomicBool,
 }
 
 impl<K: AlertClock> ConnectivityNotifierSink<K> {
@@ -137,6 +140,8 @@ impl<K: AlertClock> ConnectivityNotifierSink<K> {
             store_dir: None,
             state: Arc::new(Mutex::new(EpisodeState::default())),
             in_flight: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            force_spawn_failure: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -156,6 +161,27 @@ impl<K: AlertClock> ConnectivityNotifierSink<K> {
             std::thread::sleep(Duration::from_millis(5));
         }
         true
+    }
+
+    /// Spawn the dispatch worker.
+    ///
+    /// A seam rather than a direct `thread::Builder` call so the spawn-failure
+    /// branch is reachable from a test. That branch decides whether a transient
+    /// resource spike silences the operator for five minutes, which is far too
+    /// consequential to leave unexercised — and `thread::spawn` cannot be made to
+    /// fail on demand any other way.
+    fn spawn_dispatch<F>(&self, work: F) -> std::io::Result<()>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        #[cfg(test)]
+        if self.force_spawn_failure.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("injected spawn failure"));
+        }
+        std::thread::Builder::new()
+            .name("atp-connectivity-alert".to_string())
+            .spawn(work)
+            .map(|_| ())
     }
 
     /// Persist every dispatched event to the durable SRS-NOTIF-001 audit store.
@@ -283,15 +309,8 @@ impl<K: AlertClock> ConnectivityEventSink for ConnectivityNotifierSink<K> {
         let coalesced = window.coalesced;
         let trigger = NotificationTrigger::connectivity_loss(Self::summary(&event, coalesced), now);
 
-        // Arm the cool-down NOW, before releasing the lock, so concurrent blocked
-        // orders coalesce against this dispatch instead of each starting one.
-        // Armed on the ATTEMPT, not on success: a provider outage is exactly when
-        // every send fails, and arming on success would leave a broken provider
-        // un-rate-limited. Same window the cool-down was checked against, so
-        // maintenance and outage budgets stay independent.
-        window.last_dispatch_millis = Some(now);
-        window.coalesced = 0;
-        drop(state);
+        let coalesced = window.coalesced;
+        let trigger = NotificationTrigger::connectivity_loss(summary_for(&event, coalesced), now);
 
         // The network work runs OFF this thread.
         //
@@ -307,6 +326,12 @@ impl<K: AlertClock> ConnectivityEventSink for ConnectivityNotifierSink<K> {
         // already the rate limit: at most one dispatch per class per COOLDOWN, so
         // the thread count is bounded by construction and there is no queue to
         // size, drain, or shut down. Callers that need the outcome call `flush`.
+        //
+        // The state lock is held ACROSS the spawn so the cool-down can be armed
+        // by the same critical section that checked it — concurrent blocked
+        // orders therefore coalesce against this dispatch rather than each
+        // starting one. The worker blocks on that lock for the microseconds it
+        // takes to return.
         let notifier = self.notifier;
         let channels = self.channels.clone();
         let store_dir = self.store_dir.clone();
@@ -314,42 +339,52 @@ impl<K: AlertClock> ConnectivityEventSink for ConnectivityNotifierSink<K> {
         let in_flight = Arc::clone(&self.in_flight);
 
         in_flight.fetch_add(1, Ordering::SeqCst);
-        let spawned = std::thread::Builder::new()
-            .name("atp-connectivity-alert".to_string())
-            .spawn(move || {
-                let outcome = dispatch_and_store(
-                    &notifier,
-                    &trigger,
-                    now,
-                    &channels,
-                    suppression,
-                    &store_dir,
-                );
-                let mut state = state_handle
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                state.outcomes.push(outcome);
-                drop(state);
-                in_flight.fetch_sub(1, Ordering::SeqCst);
-            });
+        let spawned = self.spawn_dispatch(move || {
+            let outcome =
+                dispatch_and_store(&notifier, &trigger, now, &channels, suppression, &store_dir);
+            let mut state = state_handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.outcomes.push(outcome);
+            drop(state);
+            in_flight.fetch_sub(1, Ordering::SeqCst);
+        });
 
-        if let Err(err) = spawned {
-            // Could NOT spawn — record the failure and return. Deliberately no
-            // inline dispatch: an earlier revision did that ("a delayed page
-            // beats no page"), which reintroduced exactly the block this change
-            // removed, and in the worst conditions. Spawn failure means resource
-            // exhaustion, so running two channel deadlines of network I/O here
-            // would put ~40s in front of the reconnect request during a live
-            // outage. Recovery wins over the page; the failure is recorded, so it
-            // is visible rather than silent.
-            self.in_flight.fetch_sub(1, Ordering::SeqCst);
-            let mut state = self.lock();
-            state.outcomes.push(ConnectivityAlertOutcome::Failed {
-                detail: format!(
-                    "could not spawn the alert worker ({err}); alert NOT sent — dispatching \
-                     inline would have delayed the reconnect on the live outage path"
-                ),
-            });
+        match spawned {
+            Ok(()) => {
+                // Armed ONLY once the worker is running, and on the ATTEMPT
+                // rather than on delivery success: a provider outage is exactly
+                // when every send fails, and arming on success would leave a
+                // broken provider un-rate-limited.
+                let window = if suppression.is_some() {
+                    &mut state.maintenance
+                } else {
+                    &mut state.outage
+                };
+                window.last_dispatch_millis = Some(now);
+                window.coalesced = 0;
+            }
+            Err(err) => {
+                // Could NOT spawn. Two things must NOT happen here.
+                //
+                // No inline dispatch: an earlier revision did that ("a delayed
+                // page beats no page"), which reintroduced exactly the block this
+                // design removed, and worst precisely when it triggers — spawn
+                // failure means resource exhaustion, so it would put ~40s of
+                // network I/O in front of the reconnect during a live outage.
+                //
+                // And no arming: leaving the cool-down set would buy five minutes
+                // of silence for a dispatch that never started, so a transient
+                // resource spike would suppress the page for the whole window.
+                // Unarmed, the next blocked submission retries immediately.
+                self.in_flight.fetch_sub(1, Ordering::SeqCst);
+                state.outcomes.push(ConnectivityAlertOutcome::Failed {
+                    detail: format!(
+                        "could not spawn the alert worker ({err}); alert NOT sent and the \
+                         cool-down left UNARMED so the next blocked submission retries"
+                    ),
+                });
+            }
         }
     }
 }
@@ -754,6 +789,50 @@ mod tests {
             sink.outcomes().last(),
             Some(ConnectivityAlertOutcome::Dispatched(_))
         ));
+    }
+
+    /// A failed worker start must not buy five minutes of silence.
+    ///
+    /// The cool-down exists to stop a retry storm from paging hundreds of times.
+    /// If it is armed before the worker is known to be running, a transient
+    /// resource spike suppresses the page for the whole window on a dispatch that
+    /// never began — the operator hears nothing about a live outage and no
+    /// durable event is written either. Arming only on a successful spawn means
+    /// the next blocked submission retries immediately.
+    #[test]
+    fn a_failed_worker_spawn_does_not_arm_the_cooldown() {
+        let email = RecordingChannel::new(NotificationChannel::Email);
+        let sms = RecordingChannel::new(NotificationChannel::Sms);
+        let clock = StepClock::at(1_000);
+        let sink = ConnectivityNotifierSink::new(
+            OperatorNotifier::new(),
+            channels(email.clone(), sms.clone()),
+            &clock,
+        );
+
+        sink.force_spawn_failure.store(true, Ordering::SeqCst);
+        sink.record(blocked(ConnectivityState::Unreachable, false));
+
+        assert_eq!(email.sends(), 0, "nothing should have been sent");
+        assert!(
+            matches!(
+                sink.outcomes().last(),
+                Some(ConnectivityAlertOutcome::Failed { .. })
+            ),
+            "the miss must be recorded, not silent"
+        );
+
+        // Immediately afterwards — far inside COOLDOWN — a retry must page.
+        sink.force_spawn_failure.store(false, Ordering::SeqCst);
+        clock.advance(10);
+        record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
+
+        assert_eq!(
+            email.sends(),
+            1,
+            "a failed spawn armed the cool-down and silenced the retry"
+        );
+        assert_eq!(sms.sends(), 1);
     }
 
     #[test]
