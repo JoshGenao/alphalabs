@@ -212,21 +212,59 @@ fn a_relay_that_does_not_advertise_auth_is_refused_as_an_open_relay() {
 /// failure detail that echoed the command line would write `ATP_SMTP_API_KEY`
 /// (base64, but recoverable) into the audit log on every auth failure — the
 /// NFR-S4 leak the core avoids by never holding the key at all.
+/// The credential must not reach the error detail the dispatcher PERSISTS.
+///
+/// The stored `ChannelDelivery` detail is durable, operator-facing audit data. A
+/// benign `535` proves nothing here — the interesting relay is one that echoes
+/// the AUTH payload back, which is both a realistic misconfiguration (verbose
+/// logging relays quote the offending command) and the obvious hostile move. A
+/// relay being on a private network does not make it trusted.
 #[test]
-fn a_refused_credential_never_appears_in_the_error_detail() {
+fn an_echoing_relay_cannot_get_the_credential_into_the_stored_error() {
+    const ENCODED: &str = "AGF0cEBleGFtcGxlLmNvbQByZWxheS1zZWNyZXQ=";
+
     let mut script = accepting_script();
-    script[2] = "535 5.7.8 Authentication credentials invalid".into();
+    // The relay quotes back exactly what it was sent — both the base64 blob and
+    // the raw key.
+    script[2] = format!("535 5.7.8 rejected: AUTH PLAIN {ENCODED} (key {KEY})");
     let server = spawn_smtp(script, Duration::ZERO);
 
     match email_channel(server.port).send(&alert(), Duration::from_secs(5)) {
         Err(ChannelError::Rejected { detail }) => {
-            assert!(detail.contains("535"), "detail: {detail}");
-            assert!(!detail.contains(KEY), "credential leaked into: {detail}");
-            // The base64 form must not leak either.
             assert!(
-                !detail.contains("AGF0cEBleGFtcGxlLmNvbQByZWxheS1zZWNyZXQ="),
-                "encoded credential leaked into: {detail}"
+                detail.contains("535"),
+                "the code must still be reported: {detail}"
             );
+            assert!(
+                !detail.contains(ENCODED),
+                "encoded credential leaked into the stored detail: {detail}"
+            );
+            assert!(
+                !detail.contains(KEY),
+                "raw credential leaked into the stored detail: {detail}"
+            );
+        }
+        other => panic!("expected Rejected, got {other:?}"),
+    }
+    let _ = server.handle.join();
+}
+
+/// Defence in depth: a relay that echoes the credential at a *later* stage — one
+/// the AUTH-stage rule does not cover — must also be scrubbed.
+#[test]
+fn a_relay_echoing_the_credential_at_a_later_stage_is_also_redacted() {
+    const ENCODED: &str = "AGF0cEBleGFtcGxlLmNvbQByZWxheS1zZWNyZXQ=";
+
+    let mut script = accepting_script();
+    // Auth succeeds; the credential comes back in the RCPT TO rejection instead.
+    script[4] = format!("550 5.1.1 no such user (seen AUTH {ENCODED}, key {KEY})");
+    let server = spawn_smtp(script, Duration::ZERO);
+
+    match email_channel(server.port).send(&alert(), Duration::from_secs(5)) {
+        Err(ChannelError::Rejected { detail }) => {
+            assert!(detail.contains("550"), "detail: {detail}");
+            assert!(!detail.contains(ENCODED), "leaked: {detail}");
+            assert!(!detail.contains(KEY), "leaked: {detail}");
         }
         other => panic!("expected Rejected, got {other:?}"),
     }

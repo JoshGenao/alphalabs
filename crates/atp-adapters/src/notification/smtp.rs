@@ -178,9 +178,18 @@ impl SmtpEmailChannel {
 
     /// Run one SMTP submission inside `budget`.
     fn submit(&self, message: &NotificationMessage, budget: &SendBudget) -> ChannelSendResult {
+        // The AUTH PLAIN payload is computed BEFORE the session so both it and
+        // the raw key can be registered as redactions covering the whole
+        // conversation — a relay that echoes either at any stage is scrubbed, not
+        // just one that echoes it in the AUTH reply.
+        let credential = encode_base64(
+            format!("\0{}\0{}", self.config.username, self.config.api_key).as_bytes(),
+        );
+
         let stream = self.config.endpoint.connect(budget, CHANNEL)?;
         let mut session = SmtpSession {
             reader: BufReader::new(stream),
+            redactions: vec![credential.clone(), self.config.api_key.clone()],
         };
 
         // Greeting.
@@ -202,17 +211,16 @@ impl SmtpEmailChannel {
 
         // AUTH PLAIN. Cleartext is acceptable ONLY because `EgressEndpoint`
         // has already proven this hop terminates on loopback / RFC 1918.
-        let credential = encode_base64(
-            format!("\0{}\0{}", self.config.username, self.config.api_key).as_bytes(),
-        );
-        // Errors from here interpolate `stage` and the relay's own reply text —
-        // never the command line — so a refused AUTH cannot put the credential
-        // into a stored delivery record. Pinned by
-        // `a_refused_credential_never_appears_in_the_error_detail`.
+        //
+        // A rejected AUTH reports its code and stage only: the relay's reply text
+        // is withheld because that is exactly where an echoing relay would put
+        // the credential we just sent it, and the dispatcher PERSISTS these
+        // details. Pinned by `an_echoing_relay_cannot_get_the_credential_into_the_
+        // stored_error`.
         session.command(
             budget,
             &format!("AUTH PLAIN {credential}"),
-            "AUTH PLAIN",
+            AUTH_STAGE,
             &[235],
         )?;
 
@@ -301,11 +309,41 @@ impl SmtpReply {
     }
 }
 
+/// The stage label for the credential-bearing command. Its reply is never
+/// quoted back — see [`SmtpSession::expect`].
+const AUTH_STAGE: &str = "AUTH PLAIN";
+
 struct SmtpSession {
     reader: BufReader<TcpStream>,
+    /// Strings that must never appear in an error detail: the raw credential and
+    /// its base64 AUTH PLAIN encoding.
+    ///
+    /// A relay is not trusted just because it is on a private network. A hostile
+    /// or broken one can echo whatever it likes in a reply, and every reply we
+    /// reject is interpolated into a `ChannelError` detail that the dispatcher
+    /// **persists** to the durable notification store. Without this, an echoing
+    /// relay writes a recoverable `ATP_SMTP_API_KEY` into the operator's audit
+    /// trail on every auth failure — a file that exists precisely to be kept and
+    /// read later.
+    redactions: Vec<String>,
 }
 
 impl SmtpSession {
+    /// Replace any credential material a relay echoed back at us.
+    ///
+    /// Defence in depth alongside the AUTH-stage rule below: this covers a relay
+    /// that echoes the credential at some *other* stage, which the stage rule
+    /// alone would not catch.
+    fn redact(&self, text: String) -> String {
+        let mut text = text;
+        for secret in &self.redactions {
+            if !secret.is_empty() && text.contains(secret.as_str()) {
+                text = text.replace(secret.as_str(), "<redacted>");
+            }
+        }
+        text
+    }
+
     /// Write one CRLF-terminated line, arming the socket from the live budget.
     fn write_line(
         &mut self,
@@ -332,7 +370,24 @@ impl SmtpSession {
         if accepted.contains(&reply.code) {
             return Ok(reply);
         }
-        Err(classify_reply(&reply, stage))
+
+        // The AUTH reply is the one we just handed the credential to, so its text
+        // is the most likely place to find it echoed. Report the code and stage
+        // only — never the relay's words. An operator debugging a rejected login
+        // needs to know the login was rejected, not what the relay said about it.
+        if stage == AUTH_STAGE {
+            let detail = format!(
+                "{CHANNEL}: relay rejected the credential with {} during {stage} (reply text \
+                 withheld: it can echo the credential)",
+                reply.code
+            );
+            return Err(match reply.code {
+                400..=499 => ChannelError::TransportUnavailable { detail },
+                _ => ChannelError::Rejected { detail },
+            });
+        }
+
+        Err(redact_channel_error(classify_reply(&reply, stage), self))
     }
 
     /// Send a command and require one of `accepted` in reply.
@@ -422,6 +477,25 @@ impl SmtpSession {
             code: code.unwrap_or_default(),
             lines,
         })
+    }
+}
+
+/// Run a [`ChannelError`]'s detail through the session's redactions, preserving
+/// the variant (each one is a distinct operator remediation).
+fn redact_channel_error(error: ChannelError, session: &SmtpSession) -> ChannelError {
+    match error {
+        ChannelError::Unconfigured { detail } => ChannelError::Unconfigured {
+            detail: session.redact(detail),
+        },
+        ChannelError::TransportUnavailable { detail } => ChannelError::TransportUnavailable {
+            detail: session.redact(detail),
+        },
+        ChannelError::Timeout { detail } => ChannelError::Timeout {
+            detail: session.redact(detail),
+        },
+        ChannelError::Rejected { detail } => ChannelError::Rejected {
+            detail: session.redact(detail),
+        },
     }
 }
 
