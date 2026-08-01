@@ -235,3 +235,101 @@ a_refused_credential_never_appears_in_the_error_detail.
   confirm 0 deletions vs origin/main. Branch also carries 9bc2b9d (someone else's conftest
   test-isolation fix) which is NOT yet on origin/main. See
   [[feedback_primary_worktree_may_be_on_agent_branch]].
+
+=== SESSION 2026-08-01 (operator-directed: finalize + adversarial + integrate) ===
+Outcome: STILL SERIALIZED (passes:false). Detection wiring + the operator CLI landed;
+the alert path is now complete and verified end to end against a fake relay. What
+remains for the flip is genuinely only operator-side: a real egress relay and a real
+provider account. See "WHAT IS AND IS NOT PROVEN" below before claiming anything.
+
+## Built this session (steps 4 + 5 of the 6-step plan)
+
+3. connectivity_notification.rs (atp-orchestrator) — the DETECTION half that was missing.
+   atp-execution already emitted the fact (ConnectivityEvent through ConnectivityEventSink
+   at crates/atp-execution/src/lib.rs:640, the ERR-2/SAFE-003 gate); nothing implemented
+   that port against the notifier. Lives at the composition root because atp-execution must
+   not depend on atp-notification — same shape as kill_switch_timeout::NotifierAlertSink.
+   Design points that took thought:
+     * SYS-75 suppression is decided from the STATE. ConnectivityEvent carries BOTH a state
+       and a `scheduled_restart` bool and they can disagree; a bare bool that silences an
+       operator page is the forgeable-input shape, so suppression needs BOTH to agree and
+       any disagreement PAGES. On an alert path the safe direction is to page.
+     * COOL-DOWN (5 min). The sink fires once per BLOCKED ORDER, not per outage — a retry
+       loop would drive one real SMTP conversation + one real SMS per attempt. Coalescing is
+       never silent: the folded count rides in the NEXT alert's summary.
+     * The cool-down is armed by the ATTEMPT, not by success — a provider outage is exactly
+       when every send fails, and arming on success leaves a broken provider un-rate-limited.
+     * Connected never fabricates an outage (and ends the episode); backwards clock step
+       can't expire the window; poisoned mutex is recovered not panicked (this runs INSIDE
+       the engine's rejection path); dispatch-ok-but-store-failed is recorded as a FAILURE.
+
+4. notif001_operator_alert_cli (atp-orchestrator bin) — what the operator runs for the flip.
+   Every layer below the arg parser is production: it drives the REAL
+   ExecutionEngine::submit_live_order so the ConnectivityEvent comes from the real gate
+   rather than being hand-built, through the real sink/dispatcher/transports/store. Broker
+   port PANICS if reached (an ERR-2 regression is loud). Allow-list args; exits 0 only when
+   every required channel terminal-succeeded AND the event was stored.
+
+## Adversarial review (tools/adversarial_review.py, reviewer=CODEX)
+  Round 1: BLOCK, 2 findings, BOTH legitimate and BOTH fixed:
+    [high] Unbounded DNS bypassed the send deadline. I had DOCUMENTED this ("resolution is
+      not cancellable in std, so the budget is re-checked after it returns") — which
+      describes the hole rather than closing it. DNS is the step most able to wedge, and an
+      unbounded resolver holds the whole alert send while every socket timeout still looks
+      armed. FIXED: resolution runs on a worker thread, the WAIT is bounded by the remaining
+      budget, overrun is ChannelError::Timeout; an IP literal parses directly and spawns
+      nothing. NOT the detached-watchdog anti-pattern the core rejected — that one tries to
+      cancel a wedged socket syscall it cannot reach and leaks a thread per notification on
+      an unbounded path; this is a self-terminating DNS lookup on a path the sink already
+      rate-limits. LESSON: "I documented the limitation" is not a fix, and a reviewer will
+      say so.
+    [medium] The branch carried an unrelated tests/conftest.py fixture change — a concurrent
+      session's commit that landed on MY branch (see the branch hazard note in the previous
+      session). FIXED by dropping it: `git rebase --onto origin/main f4990a8`. PRESERVED
+      first on branch `fix/test-isolation-sandbox` — it is a GOOD fix (the autouse atp_*
+      import sandbox) and still needs its own PR. Do not lose it.
+
+## WHAT IS AND IS NOT PROVEN (read before claiming a green)
+  PROVEN, end to end, against a local fake relay (transcript inspected, not just exit code):
+    the REAL gate fired (gate=CONNECTIVITY_BLOCKED error_type=IbGatewayUnreachable) ->
+    dispatched within SLA -> email Delivered carrying the relay's real queue id
+    (FAKE-QUEUE-9001) -> sms Delivered carrying the gateway's accept id (SM-FAKE-4242) ->
+    event durably stored (both deliveries in notification_events.store) -> exit 0.
+    Negative path with the relay stopped: both channels TRANSPORT_UNAVAILABLE with the
+    concrete reason, failure STILL stored, exit 1.
+    The relay saw: AUTH PLAIN base64 (raw key absent), well-formed RFC 5322 message, and a
+    JSON SMS body carrying the subject (SMS has no subject line).
+  NOT PROVEN, and must not be claimed:
+    * that a REAL IB Gateway outage drives this (the CLI takes the state as an operator
+      assertion; only a real gateway stop proves the producer);
+    * that anything reached a real mailbox or a real handset. Both transports prove hand-off
+      to a RELAY. The relay image does not exist and no provider account exists.
+
+## Resume / next — the ONLY things between here and passes:true
+  1. Stand up phase1-notification-egress: terminates TLS to the providers, maps
+     ATP_SMTP_API_KEY -> the real provider credential, exposes plaintext SMTP (1025) and
+     POST /sms (8025) on the internal network. It MUST authenticate its clients — the email
+     adapter refuses a relay that does not advertise AUTH. NOT BUILT: deliberately deferred
+     rather than shipped untested, since it cannot be verified without credentials.
+  2. Providers: operator chose Brevo (free SMTP relay, 300/day, no card) for IF-10 and asked
+     about Gmail (works as relay login or destination inbox). NO SMS PROVIDER CHOSEN —
+     recommended Twilio trial (~$15 credit; verified-number-only is fine as the operator is
+     the sole recipient; trial messages carry a "Sent from your Twilio trial account" prefix
+     that WILL appear in the evidence). TWO EMAIL PROVIDERS CANNOT CLOSE THIS:
+     REQUIRED_CHANNELS is Email AND Sms enforced fail-closed — a missing SMS channel raises
+     MissingRequiredChannel and NOTHING sends.
+  3. On the Proxmox host: stop the IB Gateway for a genuine outage, run
+     `notif001_operator_alert_cli outage --state unreachable --store <dir>`, confirm a real
+     email and a real SMS arrive inside 60s and the stored event records both, then
+     `close_feature.py SRS-NOTIF-001 --verified`.
+  Still deferred beyond the flip: a long-running dispatcher process
+  (phase1-notification-dispatcher still runs core-runtime.Dockerfile's `cargo test` CMD),
+  and the CRITICAL-system-event -> critical_failure detection leg (SAFE-002 already binds
+  its own critical path; ORCH/LOG CRITICAL events are unrouted).
+
+## Gate
+  cargo test --workspace 2092 passed / 0 failed; cargo clippy --workspace -D warnings clean;
+  cargo fmt clean; 8 static checks PASS; deterministic critic APPROVE on every commit.
+  NOTE: `cargo clippy --all-targets` (stricter than CI, which omits --all-targets) reports a
+  PRE-EXISTING doc-lint in crates/atp-orchestrator/tests/resv_3_trigger_log_schema.rs — a
+  test target CI does not lint, not mine, deliberately not fixed here.
