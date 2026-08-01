@@ -35,6 +35,12 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
+
+/// Bound on waiting for the dispatch. Comfortably above the dispatcher's own
+/// worst case (two required channels x its per-channel deadline), so a timeout
+/// here means something is genuinely wedged rather than merely slow.
+const FLUSH_TIMEOUT: Duration = Duration::from_secs(90);
 
 use atp_adapters::notification::{
     SmsGatewayChannel, SmsGatewayConfig, SmtpEmailChannel, SmtpRelayConfig,
@@ -278,6 +284,17 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                     .to_string(),
             );
         }
+    }
+
+    // `record` dispatches off the caller's thread so the execution engine's
+    // reconnect is not stuck behind two network sends. This binary DOES need the
+    // outcome, so wait for it — bounded, and reported honestly if it overruns.
+    if !sink.flush(FLUSH_TIMEOUT) {
+        return Err(format!(
+            "the alert dispatch did not finish within {}s; the relay is not responding and \
+             this run proves nothing",
+            FLUSH_TIMEOUT.as_secs()
+        ));
     }
 
     report(&sink, options.state)

@@ -706,6 +706,28 @@ fn an_echoing_sms_relay_cannot_get_the_token_into_a_stored_error() {
     let _ = server.handle.join();
 }
 
+/// A malformed status line is relay-controlled text that flows straight into a
+/// persisted error, and it is read BEFORE the response body is scrubbed — so the
+/// redaction has to happen inside the status parser, not after it.
+#[test]
+fn a_malformed_status_line_echoing_the_token_is_redacted_too() {
+    let server = spawn_http(
+        "GARBAGE Authorization: Bearer relay-secret",
+        "",
+        Duration::ZERO,
+    );
+    match sms_channel(server.port).send(&alert(), Duration::from_secs(5)) {
+        Err(ChannelError::TransportUnavailable { detail }) => {
+            assert!(
+                !detail.contains(KEY),
+                "the bearer token leaked into: {detail}"
+            );
+        }
+        other => panic!("expected TransportUnavailable, got {other:?}"),
+    }
+    let _ = server.handle.join();
+}
+
 #[test]
 fn an_accepted_sms_with_no_body_never_fabricates_an_accept_id() {
     let server = spawn_http("HTTP/1.1 204 No Content", "", Duration::ZERO);

@@ -142,6 +142,19 @@ def test_the_cooldown_is_armed_by_the_attempt_not_by_success() -> None:
     )
 
 
+def test_recording_an_alert_does_not_delay_the_reconnect() -> None:
+    # `record` runs inside ExecutionEngine::submit_live_order, which calls
+    # connectivity.request_reconnect() immediately AFTER it. Dispatching inline
+    # would put up to two per-channel send deadlines between detecting the outage
+    # and asking to reconnect -- so reporting the problem would extend it, and the
+    # strategy's order path would stall for the same span. The network work is
+    # moved off the caller's thread; callers that need the outcome flush().
+    _assert_one_passed(
+        _run_cargo_test("record_returns_immediately_even_when_the_channels_are_slow"),
+        "SRS-NOTIF-001 non-blocking record",
+    )
+
+
 def test_a_failing_transport_never_panics_the_execution_path() -> None:
     # This sink runs INSIDE the execution engine's order-rejection path. A panic
     # here would turn a transport hiccup into an unusable engine.

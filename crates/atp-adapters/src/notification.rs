@@ -324,20 +324,28 @@ impl EgressEndpoint {
 /// Whether `address` is on the host or a private network — the only places the
 /// plaintext egress hop may go.
 ///
-/// IPv4: loopback plus the three RFC 1918 blocks plus RFC 3927 link-local.
-/// IPv6: loopback, unique-local (`fc00::/7`), link-local (`fe80::/10`), and
-/// IPv4-mapped addresses re-checked as IPv4 — an IPv4-mapped public address
-/// (`::ffff:93.184.216.34`) is a public address wearing an IPv6 shape, and
-/// missing that unwrap is how this class of guard is usually bypassed.
+/// IPv4: loopback plus the three RFC 1918 blocks. IPv6: loopback, unique-local
+/// (`fc00::/7`), and IPv4-mapped addresses re-checked as IPv4 — an IPv4-mapped
+/// public address (`::ffff:93.184.216.34`) is a public address wearing an IPv6
+/// shape, and missing that unwrap is how this class of guard is usually bypassed.
+///
+/// **Link-local is deliberately NOT allowed**, in either family. It looks
+/// private and is not a safe target: `169.254.169.254` is the cloud instance
+/// metadata endpoint, and both adapters send their bearer credential and the
+/// alert body immediately after connecting. A relay hostname resolving to a
+/// link-local address would hand those to whatever answers there. Nothing in
+/// this deployment needs it — the egress sidecar is reached over loopback or a
+/// Docker bridge, both of which are covered above — so the safe default is to
+/// refuse, not to widen the boundary for a case that does not arise.
 fn is_private_egress_address(address: &IpAddr) -> bool {
     match address {
-        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
         IpAddr::V6(v6) => {
             if let Some(mapped) = v6.to_ipv4_mapped() {
-                return mapped.is_loopback() || mapped.is_private() || mapped.is_link_local();
+                return mapped.is_loopback() || mapped.is_private();
             }
             let segments = v6.segments();
-            v6.is_loopback() || (segments[0] & 0xfe00) == 0xfc00 || (segments[0] & 0xffc0) == 0xfe80
+            v6.is_loopback() || (segments[0] & 0xfe00) == 0xfc00
         }
     }
 }
@@ -540,6 +548,25 @@ mod tests {
         ] {
             let parsed: IpAddr = address.parse().expect("test address parses");
             assert!(!is_private_egress_address(&parsed), "{address} should fail");
+        }
+    }
+
+    /// Link-local looks private and is not a safe egress target: both adapters
+    /// hand over a bearer credential and the alert body right after connecting,
+    /// and `169.254.169.254` is the cloud instance-metadata endpoint.
+    #[test]
+    fn link_local_addresses_are_refused_despite_looking_private() {
+        for address in [
+            "169.254.169.254",
+            "169.254.0.1",
+            "fe80::1",
+            "::ffff:169.254.169.254",
+        ] {
+            let parsed: IpAddr = address.parse().expect("test address parses");
+            assert!(
+                !is_private_egress_address(&parsed),
+                "{address} must not be a permitted egress target"
+            );
         }
     }
 

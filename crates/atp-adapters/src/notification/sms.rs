@@ -195,7 +195,7 @@ impl SmsGatewayChannel {
         }
 
         let mut reader = BufReader::new(stream);
-        let status = read_status_line(&mut reader, budget)?;
+        let status = read_status_line(&mut reader, budget, &self.config.api_key)?;
         let raw_payload = read_to_end_bounded(&mut reader, budget)?;
 
         // Scrub the bearer token BEFORE the payload can reach a receipt or an
@@ -326,6 +326,7 @@ fn json_string(value: &str) -> String {
 fn read_status_line(
     reader: &mut BufReader<TcpStream>,
     budget: &SendBudget,
+    secret: &str,
 ) -> Result<u16, ChannelError> {
     let raw = read_line_budgeted(
         reader,
@@ -334,7 +335,10 @@ fn read_status_line(
         "response status",
         MAX_STATUS_LINE_BYTES,
     )?;
-    let line = String::from_utf8_lossy(&raw).into_owned();
+    // Redact BEFORE any error is constructed from this line. A malformed status
+    // line is relay-controlled text that flows straight into a persisted
+    // ChannelError detail, so scrubbing it later in `post` is too late.
+    let line = redact_secret(&String::from_utf8_lossy(&raw), secret);
     if raw.is_empty() {
         return Err(ChannelError::TransportUnavailable {
             detail: format!("{CHANNEL}: relay closed the connection before replying"),

@@ -44,8 +44,9 @@
 //! ends the episode and re-arms immediate notification.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use atp_execution::ConnectivityEventSink;
 use atp_notification::{
@@ -115,7 +116,9 @@ pub struct ConnectivityNotifierSink<K: AlertClock> {
     channels: Vec<SharedChannelClient>,
     clock: K,
     store_dir: Option<PathBuf>,
-    state: Mutex<EpisodeState>,
+    state: Arc<Mutex<EpisodeState>>,
+    /// Dispatches handed to a worker and not yet finished.
+    in_flight: Arc<AtomicUsize>,
 }
 
 impl<K: AlertClock> ConnectivityNotifierSink<K> {
@@ -132,8 +135,27 @@ impl<K: AlertClock> ConnectivityNotifierSink<K> {
             channels,
             clock,
             store_dir: None,
-            state: Mutex::new(EpisodeState::default()),
+            state: Arc::new(Mutex::new(EpisodeState::default())),
+            in_flight: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Wait for in-flight dispatches to finish, up to `timeout`.
+    ///
+    /// `record` returns before the network work completes (see its docs), so a
+    /// caller that needs the outcome — the operator CLI, and the tests — calls
+    /// this first. Returns `false` if the timeout elapsed with work outstanding,
+    /// so a caller can report "did not finish" rather than silently reading a
+    /// half-populated outcome list.
+    pub fn flush(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while self.in_flight.load(Ordering::SeqCst) > 0 {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        true
     }
 
     /// Persist every dispatched event to the durable SRS-NOTIF-001 audit store.
@@ -182,26 +204,31 @@ impl<K: AlertClock> ConnectivityNotifierSink<K> {
     }
 
     fn summary(event: &ConnectivityEvent, coalesced: u64) -> String {
-        let base = format!(
-            "SRS-SAFE-003 / ERR-2: IB Gateway {} — live submission blocked for strategy {} \
+        summary_for(event, coalesced)
+    }
+}
+
+/// The operator-facing alert text.
+fn summary_for(event: &ConnectivityEvent, coalesced: u64) -> String {
+    let base = format!(
+        "SRS-SAFE-003 / ERR-2: IB Gateway {} — live submission blocked for strategy {} \
              on {}",
-            match event.state {
-                ConnectivityState::Unreachable => "is UNREACHABLE",
-                ConnectivityState::ScheduledRestartWindow => "is in its scheduled restart window",
-                ConnectivityState::Connected => "reported connected",
-            },
-            event.strategy_id.as_str(),
-            event.symbol,
-        );
-        if coalesced == 0 {
-            base
-        } else {
-            // Never let a coalesced storm read as a single isolated block.
-            format!(
-                "{base} (+{coalesced} further blocked submission(s) coalesced since the last \
+        match event.state {
+            ConnectivityState::Unreachable => "is UNREACHABLE",
+            ConnectivityState::ScheduledRestartWindow => "is in its scheduled restart window",
+            ConnectivityState::Connected => "reported connected",
+        },
+        event.strategy_id.as_str(),
+        event.symbol,
+    );
+    if coalesced == 0 {
+        base
+    } else {
+        // Never let a coalesced storm read as a single isolated block.
+        format!(
+            "{base} (+{coalesced} further blocked submission(s) coalesced since the last \
                  alert)"
-            )
-        }
+        )
     }
 }
 
@@ -256,51 +283,113 @@ impl<K: AlertClock> ConnectivityEventSink for ConnectivityNotifierSink<K> {
         let coalesced = window.coalesced;
         let trigger = NotificationTrigger::connectivity_loss(Self::summary(&event, coalesced), now);
 
-        let outcome = match self.notifier.dispatch_with_suppression(
-            &trigger,
-            now,
-            &self.channels,
-            suppression,
-        ) {
-            Ok(notification) => {
-                // The dispatch itself succeeded; a store failure must be recorded
-                // as a FAILURE rather than swallowed, because the AC's "delivery
-                // status is stored" leg is then unmet and an audit trail that
-                // silently loses records is worse than one that says so.
-                if let Some(dir) = &self.store_dir {
-                    if let Err(err) =
-                        NotificationEventStore::append_durably(dir, notification.clone())
-                    {
-                        ConnectivityAlertOutcome::Failed {
-                            detail: format!(
-                                "dispatched but could not store the notification event: {err}"
-                            ),
-                        }
-                    } else {
-                        ConnectivityAlertOutcome::Dispatched(Box::new(notification))
-                    }
-                } else {
-                    ConnectivityAlertOutcome::Dispatched(Box::new(notification))
-                }
-            }
-            Err(err) => ConnectivityAlertOutcome::Failed {
-                detail: format!("operator notification dispatch failed: {err}"),
-            },
-        };
-
-        // The cool-down starts on the ATTEMPT, not on success. Otherwise a
-        // provider outage — exactly when every send fails — would leave the
-        // window unarmed and let each retried order drive another pair of doomed
-        // SMTP/SMS conversations. Armed on the SAME window the cool-down was
-        // checked against, so maintenance and outage budgets stay independent.
-        let window = if suppression.is_some() {
-            &mut state.maintenance
-        } else {
-            &mut state.outage
-        };
+        // Arm the cool-down NOW, before releasing the lock, so concurrent blocked
+        // orders coalesce against this dispatch instead of each starting one.
+        // Armed on the ATTEMPT, not on success: a provider outage is exactly when
+        // every send fails, and arming on success would leave a broken provider
+        // un-rate-limited. Same window the cool-down was checked against, so
+        // maintenance and outage budgets stay independent.
         window.last_dispatch_millis = Some(now);
         window.coalesced = 0;
-        state.outcomes.push(outcome);
+        drop(state);
+
+        // The network work runs OFF this thread.
+        //
+        // `record` is called from inside `ExecutionEngine::submit_live_order`,
+        // which then calls `connectivity.request_reconnect()`. Dispatching inline
+        // would put up to two per-channel deadlines (20s each by default) between
+        // the detection and the reconnect request, so a slow or dead relay would
+        // delay recovery from the very outage it is reporting — and stall the
+        // strategy's order path while doing it. Reporting a problem must not
+        // extend it.
+        //
+        // Thread-per-dispatch rather than a queue+worker because the cool-down is
+        // already the rate limit: at most one dispatch per class per COOLDOWN, so
+        // the thread count is bounded by construction and there is no queue to
+        // size, drain, or shut down. Callers that need the outcome call `flush`.
+        let notifier = self.notifier;
+        let channels = self.channels.clone();
+        let store_dir = self.store_dir.clone();
+        let state_handle = Arc::clone(&self.state);
+        let in_flight = Arc::clone(&self.in_flight);
+
+        in_flight.fetch_add(1, Ordering::SeqCst);
+        let spawned = std::thread::Builder::new()
+            .name("atp-connectivity-alert".to_string())
+            .spawn(move || {
+                let outcome = dispatch_and_store(
+                    &notifier,
+                    &trigger,
+                    now,
+                    &channels,
+                    suppression,
+                    &store_dir,
+                );
+                let mut state = state_handle
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.outcomes.push(outcome);
+                drop(state);
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+            });
+
+        if let Err(err) = spawned {
+            // Could not spawn: do the work inline rather than drop the alert
+            // silently. A delayed page beats no page.
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            let outcome = dispatch_and_store(
+                &self.notifier,
+                &trigger_for_inline(&event, coalesced, now),
+                now,
+                &self.channels,
+                suppression,
+                &self.store_dir,
+            );
+            let mut state = self.lock();
+            state.outcomes.push(ConnectivityAlertOutcome::Failed {
+                detail: format!("could not spawn the alert worker ({err}); dispatched inline"),
+            });
+            state.outcomes.push(outcome);
+        }
+    }
+}
+
+/// Rebuild the trigger for the inline fallback path (the original was moved into
+/// the worker closure).
+fn trigger_for_inline(event: &ConnectivityEvent, coalesced: u64, now: u64) -> NotificationTrigger {
+    NotificationTrigger::connectivity_loss(summary_for(event, coalesced), now)
+}
+
+/// Dispatch and persist, mapping both halves onto an outcome.
+fn dispatch_and_store(
+    notifier: &OperatorNotifier,
+    trigger: &NotificationTrigger,
+    now: u64,
+    channels: &[SharedChannelClient],
+    suppression: Option<SuppressionReason>,
+    store_dir: &Option<PathBuf>,
+) -> ConnectivityAlertOutcome {
+    match notifier.dispatch_with_suppression(trigger, now, channels, suppression) {
+        Ok(notification) => {
+            // A store failure must be recorded as a FAILURE rather than
+            // swallowed: the AC's "delivery status is stored" leg is then unmet,
+            // and an audit trail that silently loses records is worse than one
+            // that says so.
+            if let Some(dir) = store_dir {
+                if let Err(err) = NotificationEventStore::append_durably(dir, notification.clone())
+                {
+                    return ConnectivityAlertOutcome::Failed {
+                        detail: format!(
+                            "dispatched but could not store the notification event: {err}"
+                        ),
+                    };
+                }
+            }
+            ConnectivityAlertOutcome::Dispatched(Box::new(notification))
+        }
+        Err(err) => ConnectivityAlertOutcome::Failed {
+            detail: format!("operator notification dispatch failed: {err}"),
+        },
     }
 }
 
@@ -376,6 +465,20 @@ mod tests {
         }
     }
 
+    /// `record` dispatches off-thread, so tests wait for the work before
+    /// asserting. A generous bound: these are loopback stubs, and a timeout here
+    /// means a real hang, not a slow machine.
+    fn record_and_wait<K: AlertClock>(
+        sink: &ConnectivityNotifierSink<K>,
+        event: ConnectivityEvent,
+    ) {
+        sink.record(event);
+        assert!(
+            sink.flush(Duration::from_secs(10)),
+            "alert dispatch did not finish"
+        );
+    }
+
     fn blocked(state: ConnectivityState, scheduled_restart: bool) -> ConnectivityEvent {
         ConnectivityEvent {
             state,
@@ -403,7 +506,7 @@ mod tests {
             &clock,
         );
 
-        sink.record(blocked(ConnectivityState::Unreachable, false));
+        record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
 
         assert_eq!(email.sends(), 1);
         assert_eq!(sms.sends(), 1);
@@ -431,7 +534,10 @@ mod tests {
             &clock,
         );
 
-        sink.record(blocked(ConnectivityState::ScheduledRestartWindow, true));
+        record_and_wait(
+            &sink,
+            blocked(ConnectivityState::ScheduledRestartWindow, true),
+        );
 
         // SYS-75: planned maintenance is silenced, but the event still records
         // both required channels as Suppressed — proof the dispatcher CHOSE not
@@ -463,7 +569,7 @@ mod tests {
 
         // State says the gateway is genuinely unreachable; only the boolean
         // claims planned maintenance. The alert must go out.
-        sink.record(blocked(ConnectivityState::Unreachable, true));
+        record_and_wait(&sink, blocked(ConnectivityState::Unreachable, true));
 
         assert_eq!(email.sends(), 1, "a forged flag must not silence an outage");
         assert_eq!(sms.sends(), 1);
@@ -480,7 +586,7 @@ mod tests {
             &clock,
         );
 
-        sink.record(blocked(ConnectivityState::Connected, false));
+        record_and_wait(&sink, blocked(ConnectivityState::Connected, false));
 
         assert_eq!(email.sends(), 0);
         assert_eq!(sms.sends(), 0);
@@ -499,7 +605,7 @@ mod tests {
         );
 
         for _ in 0..200 {
-            sink.record(blocked(ConnectivityState::Unreachable, false));
+            record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
             clock.advance(10);
         }
 
@@ -514,7 +620,7 @@ mod tests {
         // After the cool-down the next block pages again, and says how many were
         // folded in — a coalesced storm must never read as one isolated block.
         clock.advance(ConnectivityNotifierSink::<&StepClock>::COOLDOWN.as_millis() as u64);
-        sink.record(blocked(ConnectivityState::Unreachable, false));
+        record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
         assert_eq!(email.sends(), 2);
         match sink.outcomes().last() {
             Some(ConnectivityAlertOutcome::Dispatched(event)) => {
@@ -548,12 +654,15 @@ mod tests {
         );
 
         // Planned maintenance: correctly silent.
-        sink.record(blocked(ConnectivityState::ScheduledRestartWindow, true));
+        record_and_wait(
+            &sink,
+            blocked(ConnectivityState::ScheduledRestartWindow, true),
+        );
         assert_eq!(email.sends(), 0);
 
         // 60s later — well inside the cool-down — the gateway is genuinely down.
         clock.advance(60_000);
-        sink.record(blocked(ConnectivityState::Unreachable, false));
+        record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
 
         assert_eq!(
             email.sends(),
@@ -576,11 +685,14 @@ mod tests {
             &clock,
         );
 
-        sink.record(blocked(ConnectivityState::Unreachable, false));
+        record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
         assert_eq!(email.sends(), 1);
 
         clock.advance(60_000);
-        sink.record(blocked(ConnectivityState::ScheduledRestartWindow, true));
+        record_and_wait(
+            &sink,
+            blocked(ConnectivityState::ScheduledRestartWindow, true),
+        );
 
         // Still 1 send (maintenance is suppressed), but it produced its own
         // recorded event rather than being coalesced into the outage window.
@@ -596,6 +708,60 @@ mod tests {
         }
     }
 
+    /// `record` must not hold up the caller's recovery.
+    ///
+    /// It runs inside `ExecutionEngine::submit_live_order`, which calls
+    /// `connectivity.request_reconnect()` immediately AFTER it. Dispatching
+    /// inline would put up to two per-channel deadlines between detecting the
+    /// outage and asking to reconnect — so reporting the problem would extend it,
+    /// and the strategy's order path would stall for the same span.
+    #[test]
+    fn record_returns_immediately_even_when_the_channels_are_slow() {
+        struct SlowChannel(NotificationChannel);
+        impl NotificationChannelClient for SlowChannel {
+            fn channel(&self) -> NotificationChannel {
+                self.0
+            }
+            fn send(
+                &self,
+                _message: &NotificationMessage,
+                _deadline: Duration,
+            ) -> ChannelSendResult {
+                std::thread::sleep(Duration::from_millis(600));
+                Ok(ChannelReceipt::new("slow-accept"))
+            }
+        }
+
+        let clock = StepClock::at(1_000);
+        let sink = ConnectivityNotifierSink::new(
+            OperatorNotifier::new(),
+            vec![
+                Arc::new(SlowChannel(NotificationChannel::Email)) as SharedChannelClient,
+                Arc::new(SlowChannel(NotificationChannel::Sms)) as SharedChannelClient,
+            ],
+            &clock,
+        );
+
+        let started = std::time::Instant::now();
+        sink.record(blocked(ConnectivityState::Unreachable, false));
+        let record_elapsed = started.elapsed();
+
+        assert!(
+            record_elapsed < Duration::from_millis(200),
+            "record blocked for {record_elapsed:?}; the caller's reconnect is behind it"
+        );
+
+        // The work still happens — it is moved, not dropped.
+        assert!(
+            sink.flush(Duration::from_secs(10)),
+            "dispatch did not finish"
+        );
+        assert!(matches!(
+            sink.outcomes().last(),
+            Some(ConnectivityAlertOutcome::Dispatched(_))
+        ));
+    }
+
     #[test]
     fn recovery_re_arms_immediate_notification() {
         let email = RecordingChannel::new(NotificationChannel::Email);
@@ -607,13 +773,13 @@ mod tests {
             &clock,
         );
 
-        sink.record(blocked(ConnectivityState::Unreachable, false));
+        record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
         clock.advance(10);
-        sink.record(blocked(ConnectivityState::Connected, false));
+        record_and_wait(&sink, blocked(ConnectivityState::Connected, false));
         clock.advance(10);
         // A NEW outage inside what would have been the cool-down still pages:
         // the episode ended at recovery.
-        sink.record(blocked(ConnectivityState::Unreachable, false));
+        record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
 
         assert_eq!(email.sends(), 2);
     }
@@ -629,7 +795,7 @@ mod tests {
             &clock,
         );
 
-        sink.record(blocked(ConnectivityState::Unreachable, false));
+        record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
 
         // Both channels failed, but the dispatch still produced a stored event
         // recording the failures — no fabrication, no panic.
@@ -659,7 +825,7 @@ mod tests {
         );
 
         for _ in 0..50 {
-            sink.record(blocked(ConnectivityState::Unreachable, false));
+            record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
             clock.advance(10);
         }
 
@@ -683,13 +849,13 @@ mod tests {
             &clock,
         );
 
-        sink.record(blocked(ConnectivityState::Unreachable, false));
+        record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
         assert_eq!(email.sends(), 1);
 
         // Clock steps BACKWARDS (NTP correction). `now - last` must not be read
         // as a huge elapsed time that expires the window.
         clock.0.store(9_000_000, Ordering::SeqCst);
-        sink.record(blocked(ConnectivityState::Unreachable, false));
+        record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
         assert_eq!(email.sends(), 1, "a backwards clock let the storm through");
     }
 
@@ -709,7 +875,7 @@ mod tests {
         )
         .with_store_dir(&dir);
 
-        sink.record(blocked(ConnectivityState::Unreachable, false));
+        record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
 
         let restored = NotificationEventStore::load_from_path(&dir).expect("store reads back");
         assert_eq!(restored.events().len(), 1);
