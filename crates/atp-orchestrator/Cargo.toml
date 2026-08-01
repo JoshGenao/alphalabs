@@ -31,6 +31,16 @@ path = "src/bin/safe001_kill_switch_cli.rs"
 name = "safe002_liquidation_timeout_cli"
 path = "src/bin/safe002_liquidation_timeout_cli.rs"
 
+# SRS-NOTIF-001 operator alert path, end to end. Drives the REAL
+# ExecutionEngine::submit_live_order ERR-2 gate so the ConnectivityEvent is
+# produced by production code, through the REAL ConnectivityNotifierSink and
+# OperatorNotifier, over the REAL IF-10/IF-11 SMTP/SMS transports, into the REAL
+# durable NotificationEventStore. This is what produces the flip evidence; the
+# operator asserts the connectivity state and supplies the relay credentials.
+[[bin]]
+name = "notif001_operator_alert_cli"
+path = "src/bin/notif001_operator_alert_cli.rs"
+
 # SRS-EXE-002 order-routing operator CLI. The fixture-verification workflow:
 # drives N paper (+ optionally the one designated live) strategy orders through
 # the REAL ExecutionEngine::dispatch_order over the wired real

@@ -14,6 +14,10 @@ use atp_types::{
 };
 use std::fmt;
 
+/// SRS-NOTIF-001 detection wiring: binds `atp-execution`'s ERR-2 / SRS-SAFE-003
+/// connectivity gate to the operator-notification dispatcher. Lives here because
+/// `atp-execution` must not depend on `atp-notification` (SRS-ARCH-002).
+pub mod connectivity_notification;
 pub mod kill_switch_activation;
 pub mod kill_switch_timeout;
 pub mod order_routing_wiring;
