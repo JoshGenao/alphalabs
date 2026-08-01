@@ -333,3 +333,90 @@ provider account. See "WHAT IS AND IS NOT PROVEN" below before claiming anything
   NOTE: `cargo clippy --all-targets` (stricter than CI, which omits --all-targets) reports a
   PRE-EXISTING doc-lint in crates/atp-orchestrator/tests/resv_3_trigger_log_schema.rs — a
   test target CI does not lint, not mine, deliberately not fixed here.
+
+=== ADVERSARIAL REVIEW 2026-08-01 (9 Codex rounds) + OPERATOR AUTHORIZATION ===
+
+## The 11 in-scope defects Codex found and I fixed
+  R1 [high] Unbounded DNS bypassed the send deadline. I had DOCUMENTED the hole
+     ("resolution is not cancellable in std, so the budget is re-checked after it
+     returns") instead of closing it. Now resolution runs on a worker and the WAIT is
+     budget-bounded; an IP literal spawns nothing. LESSON: documenting a limitation is
+     not fixing it, and a reviewer will say so.
+  R1 [medium] Branch carried a concurrent session's unrelated conftest commit → dropped
+     via `git rebase --onto origin/main f4990a8`, PRESERVED on branch
+     `fix/test-isolation-sandbox`. That fix is GOOD and still needs its own PR.
+  R2 [high] connect() used only resolved[0]. `localhost` is usually ::1 AND 127.0.0.1, and
+     resolver order says nothing about who is listening — a relay bound to IPv4 behind an
+     IPv6-first resolver was "unreachable" while running. Now tries all, same budget.
+     Split into connect_validated(&[SocketAddr]) so a [dead, live] list makes it
+     deterministic (DNS order is not controllable from a test).
+  R4 [high] AUTH reply text was interpolated into a PERSISTED error → an echoing relay
+     wrote a recoverable ATP_SMTP_API_KEY into the audit log. My existing test used a
+     benign 535 and proved nothing.
+  R5 [high] Same class on SMS (I had fixed the INSTANCE, not the CLASS).
+  R5 [high] **Planned maintenance could silence a real outage** — the sharpest bug of the
+     nine. A suppressed scheduled-restart record SENDS NOTHING but armed the shared
+     cool-down, so a genuine Unreachable 60s later was coalesced and never paged. A
+     restart window is exactly when a real failure is most likely and least
+     distinguishable → worst moment to go quiet. Outage/maintenance now hold INDEPENDENT
+     windows and suppression is decided BEFORE the cool-down.
+  R6 [high] Link-local was in the egress allowlist with no justification. 169.254.169.254
+     is the cloud metadata endpoint and both adapters send credential+body right after
+     connect. Removed from both families incl. the IPv4-mapped form.
+  R6 [high] SMS status line built errors BEFORE the body redaction ran (3rd instance).
+  R6 [high] Notification I/O sat in FRONT of the reconnect — record() runs inside
+     submit_live_order, which calls request_reconnect() immediately after, so inline
+     dispatch put up to 2 channel deadlines between detection and recovery. Moved off the
+     caller's thread + flush(timeout).
+  R7 [high] SMTP SUCCESS receipt unredacted (4th instance of the same class — the happy
+     path, where nobody looks for a leak).
+  R7 [medium] My own spawn-failure fallback REINTRODUCED the inline block, worst exactly
+     when it triggers (resource exhaustion). Removed; failure recorded instead.
+  R8 [high] Arming the cool-down before the spawn meant a failed spawn bought 5 minutes of
+     silence for a dispatch that never began. Now armed only on success, lock held across
+     the spawn (also kills a double-dispatch race). Needed a `#[cfg(test)]` spawn-failure
+     seam — thread::spawn cannot be made to fail on demand, and that branch decides
+     whether a resource spike silences the operator.
+
+  PATTERN WORTH KEEPING: rounds 6→7→8 were each a consequence of the PREVIOUS round's fix,
+  all inside the async-dispatch design introduced in R6. When a fix creates the next
+  finding twice running, the design is delicate — slow down and enumerate the states
+  rather than patching forward.
+  SECOND PATTERN: the credential leak took FOUR rounds because I fixed instances. The rule
+  that would have caught all four at once: EVERY relay-controlled string reaching a
+  persisted field gets scrubbed at construction — success paths included.
+
+## The residual: why Codex still BLOCKs, and the operator authorization
+  R3 and R9 are NOT defects in the diff. They are the reasons this feature is
+  passes:false, restated as blocks:
+    R3 [high] No automatic dispatcher runtime — phase1-notification-dispatcher still runs
+       core-runtime.Dockerfile's `cargo test` CMD. Needs SRS-EXE-001 (there is no live IB
+       inbound surface to subscribe to), so it is owned there, not stubbed here.
+    R3 [high] General CRITICAL system-event stream unrouted. PARTIAL, not total:
+       SRS-SAFE-002's NotifierAlertSink already dispatches the kill-switch
+       liquidation-timeout CriticalFailure through this dispatcher. Owners for the rest:
+       SRS-LOG-001 (ERROR/CRITICAL filter), SRS-ORCH-003 (workload/health).
+    R9 [high] Detection is OBSERVATION-driven, not LOSS-driven. The trigger is a blocked
+       live submission, so a Gateway dying while no order is routed goes unnoticed, and
+       detected_at_millis is the observation instant — reading the stored latency as
+       loss-to-dispatch would credit an NFR-P6 compliance not demonstrated. Fixed the
+       HONESTY half (alert text + module/domain docs now say so). The structural half
+       needs a producer WATCHING the gateway: owners SRS-MD-003, SRS-EXE-001. Codex's own
+       next_step says "do not close or ship as satisfying the connectivity-loss leg" —
+       i.e. exactly passes:false.
+
+  OPERATOR AUTHORIZATION (AskUserQuestion, 2026-08-01): operator authorized
+  `integrate --mode serialized` over the standing BLOCK, on the basis that every remaining
+  finding is deferred scope with a named owner and none is a defect in this diff. Recorded
+  honestly — the judgment critic's verdict is BLOCK, NOT approve, and was never
+  represented otherwise. Same shape as the DATA-010 / DATA-013 operator-authorized
+  serialized landings.
+
+## Gate at integrate time
+  cargo test --workspace 2107 passed / 0 failed; pytest -m "not integration and not e2e"
+  4527 passed / 3 pre-existing skips; cargo clippy --workspace -D warnings clean; fmt
+  clean; deterministic critic APPROVE on all 14 commits.
+  GOTCHA: a mid-session full run showed 4 failures in atp-data::access_journal — a crate I
+  never touched. PHANTOM: the concurrent agent session was running cargo test at the same
+  time and the fixed-name scratch dirs collided (see [[feedback_no_concurrent_cargo_test_runs]]).
+  22/22 in isolation, 0 failures on a clean re-run. Do not chase these.
