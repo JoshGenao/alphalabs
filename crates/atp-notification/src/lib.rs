@@ -41,14 +41,35 @@
 //!     the actual provider, and neither that sidecar nor a provider account has
 //!     been stood up. Until an alert lands in a real inbox and on a real phone,
 //!     "email and SMS are sent" is proven to the relay, not to the operator;
-//!   * the real detection wiring: the execution engine's connectivity gate
-//!     (ERR-2 / SRS-SAFE-003) → [`NotificationTrigger::connectivity_loss`], and
-//!     `CRITICAL`-severity system events (SYS-46 / SYS-61) →
-//!     [`NotificationTrigger::critical_failure`], bound at the composition root;
-//!   * the SYS-75 scheduled-restart-window suppression *decision*
-//!     (SRS-MD-005) — the dispatcher honours a [`dispatcher::SuppressionReason`],
-//!     but the window logic is that feature's;
-//!   * credential encryption at rest (NFR-S4 / SRS-SEC-001).
+//!   * an automatic runtime that dispatches without an operator invoking it.
+//!     Both detection bindings below are composed and driven by operator CLIs;
+//!     `phase1-notification-dispatcher` still runs `core-runtime.Dockerfile`'s
+//!     `cargo test` CMD, so no long-running process subscribes to events. That
+//!     process needs the SRS-EXE-001 execution runtime (there is no live IB
+//!     inbound/streaming surface to subscribe to yet), so it is owned there
+//!     rather than stubbed here;
+//!   * the `CRITICAL`-severity system-event source (SYS-46 / SYS-61) →
+//!     [`NotificationTrigger::critical_failure`]. Note this is a *partial* gap,
+//!     not a total one: SRS-SAFE-002's `NotifierAlertSink` already binds the
+//!     kill-switch liquidation-timeout critical failure through this dispatcher
+//!     over both required channels. What remains unrouted is the general
+//!     CRITICAL system-event stream (owners: SRS-LOG-001 for the ERROR/CRITICAL
+//!     log filter, SRS-ORCH-003 for workload/health events).
+//!
+//! What is NO LONGER deferred, and must not be described as such:
+//!
+//!   * the connectivity-loss detection wiring — `atp-orchestrator`'s
+//!     `connectivity_notification::ConnectivityNotifierSink` implements
+//!     `atp-execution`'s `ConnectivityEventSink` against this dispatcher, so the
+//!     ERR-2 / SRS-SAFE-003 gate now pages;
+//!   * the SYS-75 scheduled-restart-window suppression *decision* — that sink
+//!     derives it from `ConnectivityState::ScheduledRestartWindow` (requiring the
+//!     event's own flag to agree, so a forged flag cannot silence an outage);
+//!   * the per-channel cancellable send deadline — the shipped adapters spend it
+//!     as one budget across the whole conversation and re-check it between
+//!     socket reads (see [`channel`]).
+//!
+//! Credential encryption at rest stays with NFR-S4 / SRS-SEC-001.
 //!
 //! The end-to-end proof (real connectivity loss → real email + SMS delivered →
 //! status stored) is the `Fault injection, integration test` method the feature
