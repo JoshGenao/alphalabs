@@ -13,9 +13,21 @@ critic requires this pairing — but it would be warranted regardless: a missed
 connectivity alert means the operator does not learn the platform stopped
 trading.
 
-Not proven here: that a REAL IB Gateway outage drives this path, or that the
-relay delivered to a real mailbox and handset. Those are the operator run that
-flips SRS-NOTIF-001.
+NOT proven here, and not claimable from this path:
+
+* That connectivity loss is DETECTED WHEN IT HAPPENS. The trigger is a blocked
+  live submission, not the disconnect — so a Gateway that drops while no order is
+  being routed goes unnoticed until the next blocked order, which may be seconds
+  later or never. The stamped detection instant is therefore the OBSERVATION
+  instant, and the stored dispatch latency measures observation-to-dispatch, not
+  loss-to-dispatch. Reading it as NFR-P6 compliance for the loss would credit
+  this path with something it has not shown.
+  Closing that needs a connectivity-loss producer watching the gateway
+  continuously, which needs the live-IB inbound surface that does not exist yet
+  (owners: SRS-MD-003 heartbeat monitor, SRS-EXE-001 execution runtime).
+* That a REAL IB Gateway outage drives this path at all, or that the relay
+  delivered to a real mailbox and handset. Those are the operator run that flips
+  SRS-NOTIF-001.
 """
 
 from __future__ import annotations

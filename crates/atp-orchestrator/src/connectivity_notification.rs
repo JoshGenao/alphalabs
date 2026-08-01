@@ -13,6 +13,31 @@
 //! shape as [`crate::kill_switch_timeout::NotifierAlertSink`], which already
 //! binds the SRS-SAFE-002 critical-failure path to the same notifier.
 //!
+//! ## What this detects, and what it does NOT
+//!
+//! The trigger here is a **blocked live submission**, not the disconnect itself.
+//! Those are different events, and the difference matters for what may be
+//! claimed:
+//!
+//! * If the Gateway drops while no live order is being submitted, nothing here
+//!   observes it. The page happens on the next blocked order — which may be
+//!   seconds later, or never.
+//! * The `detected_at_millis` stamped on the trigger is therefore the instant
+//!   the block was OBSERVED, not the instant connectivity was lost. The stored
+//!   `dispatch_latency_millis` measures observation-to-dispatch, and a reader who
+//!   assumes it measures loss-to-dispatch would credit this path with an
+//!   NFR-P6 compliance it has not demonstrated.
+//!
+//! Closing that gap needs a connectivity-loss PRODUCER — something watching the
+//! gateway continuously rather than sampling it when an order happens to be
+//! routed. That is the deferred live-IB inbound/streaming surface: no such
+//! surface exists in `atp-adapters` today (`IbGatewayConnection` is
+//! request/response only), which is why SRS-MD-003's heartbeat loop is also
+//! still deferred. Owners: SRS-MD-003 (heartbeat/freshness monitor) and
+//! SRS-EXE-001 (the execution runtime that would host it). Until one lands,
+//! SRS-NOTIF-001's connectivity-loss leg is proven for the observation path
+//! only, and the feature stays `passes:false`.
+//!
 //! ## The SYS-75 suppression decision is made here, from the STATE
 //!
 //! [`ConnectivityState::ScheduledRestartWindow`] *is* the SYS-75 scheduled IB
