@@ -659,6 +659,53 @@ fn a_stalled_sms_gateway_is_bounded_by_the_send_deadline() {
     let _ = server.handle.join();
 }
 
+/// The SMS bearer token must not survive into the durable store — on EITHER path.
+///
+/// The 2xx body becomes the stored `ChannelReceipt` reference, so a success is
+/// just as capable of carrying the secret as a failure is. A relay that echoes
+/// the `Authorization` header it was handed is a realistic verbose-logging
+/// misconfiguration as well as the obvious hostile move.
+#[test]
+fn an_echoing_sms_relay_cannot_get_the_token_into_a_stored_receipt() {
+    let server = spawn_http(
+        "HTTP/1.1 202 Accepted",
+        "accepted with Authorization: Bearer relay-secret",
+        Duration::ZERO,
+    );
+    let receipt = sms_channel(server.port)
+        .send(&alert(), Duration::from_secs(5))
+        .expect("relay accepted the message");
+    assert!(
+        !receipt.reference().contains(KEY),
+        "the bearer token reached the stored receipt: {:?}",
+        receipt.reference()
+    );
+    let _ = server.handle.join();
+}
+
+#[test]
+fn an_echoing_sms_relay_cannot_get_the_token_into_a_stored_error() {
+    let server = spawn_http(
+        "HTTP/1.1 400 Bad Request",
+        "rejected: Bearer relay-secret is malformed",
+        Duration::ZERO,
+    );
+    match sms_channel(server.port).send(&alert(), Duration::from_secs(5)) {
+        Err(ChannelError::Rejected { detail }) => {
+            assert!(
+                detail.contains("400"),
+                "the status must still surface: {detail}"
+            );
+            assert!(
+                !detail.contains(KEY),
+                "the bearer token leaked into: {detail}"
+            );
+        }
+        other => panic!("expected Rejected, got {other:?}"),
+    }
+    let _ = server.handle.join();
+}
+
 #[test]
 fn an_accepted_sms_with_no_body_never_fabricates_an_accept_id() {
     let server = spawn_http("HTTP/1.1 204 No Content", "", Duration::ZERO);

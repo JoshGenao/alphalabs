@@ -90,10 +90,22 @@ pub enum ConnectivityAlertOutcome {
     Failed { detail: String },
 }
 
+/// One class's rate-limit state.
 #[derive(Debug, Default)]
-struct EpisodeState {
+struct DispatchWindow {
     last_dispatch_millis: Option<u64>,
     coalesced: u64,
+}
+
+/// Rate-limit state, split by class.
+///
+/// Genuine outages and planned-maintenance records get **independent** windows.
+/// Sharing one lets a suppressed maintenance record — which sends nothing — arm
+/// the window that a real outage would have paged through.
+#[derive(Debug, Default)]
+struct EpisodeState {
+    outage: DispatchWindow,
+    maintenance: DispatchWindow,
     outcomes: Vec<ConnectivityAlertOutcome>,
 }
 
@@ -139,9 +151,13 @@ impl<K: AlertClock> ConnectivityNotifierSink<K> {
         self.lock().outcomes.clone()
     }
 
-    /// How many events have been folded into the next dispatch.
+    /// How many genuine-outage events have been folded into the next dispatch.
+    ///
+    /// Reports the OUTAGE window: that is the safety-relevant one. Coalesced
+    /// planned-maintenance records are tracked separately and never consume this
+    /// budget.
     pub fn coalesced_since_last_dispatch(&self) -> u64 {
-        self.lock().coalesced
+        self.lock().outage.coalesced
     }
 
     /// A poisoned mutex must not take down the execution path: a panic in one
@@ -198,22 +214,38 @@ impl<K: AlertClock> ConnectivityEventSink for ConnectivityNotifierSink<K> {
         // the episode, so the next genuine loss pages immediately.
         if !event.state.is_blocked() {
             let mut state = self.lock();
-            state.last_dispatch_millis = None;
-            state.coalesced = 0;
+            state.outage = DispatchWindow::default();
+            state.maintenance = DispatchWindow::default();
             state.outcomes.push(ConnectivityAlertOutcome::NotAnOutage);
             return;
         }
 
         let now = self.clock.now_millis();
+        // Decide suppression BEFORE consulting any cool-down, and rate-limit the
+        // two classes independently.
+        //
+        // With one shared window, a scheduled-restart event silences the next 5
+        // minutes of GENUINE outages: the maintenance record sends nothing but
+        // still arms the window, so a real `Unreachable` arriving 60s later is
+        // coalesced and the operator is never paged. Planned maintenance is
+        // exactly when a real failure is most likely and least distinguishable,
+        // so that is the worst possible time to go quiet. Separate windows mean a
+        // maintenance record can never consume the outage budget.
+        let suppression = Self::suppression_for(&event);
         let mut state = self.lock();
+        let window = if suppression.is_some() {
+            &mut state.maintenance
+        } else {
+            &mut state.outage
+        };
 
-        if let Some(last) = state.last_dispatch_millis {
+        if let Some(last) = window.last_dispatch_millis {
             // `saturating_sub` on a clock that went backwards yields 0, which is
             // inside any window — a backwards step must not be readable as "the
             // cool-down expired" and let a storm through.
             let since_last = now.saturating_sub(last);
             if since_last < Self::COOLDOWN.as_millis() as u64 {
-                state.coalesced += 1;
+                window.coalesced += 1;
                 state.outcomes.push(ConnectivityAlertOutcome::Coalesced {
                     since_last_millis: since_last,
                 });
@@ -221,9 +253,8 @@ impl<K: AlertClock> ConnectivityEventSink for ConnectivityNotifierSink<K> {
             }
         }
 
-        let coalesced = state.coalesced;
+        let coalesced = window.coalesced;
         let trigger = NotificationTrigger::connectivity_loss(Self::summary(&event, coalesced), now);
-        let suppression = Self::suppression_for(&event);
 
         let outcome = match self.notifier.dispatch_with_suppression(
             &trigger,
@@ -260,9 +291,15 @@ impl<K: AlertClock> ConnectivityEventSink for ConnectivityNotifierSink<K> {
         // The cool-down starts on the ATTEMPT, not on success. Otherwise a
         // provider outage — exactly when every send fails — would leave the
         // window unarmed and let each retried order drive another pair of doomed
-        // SMTP/SMS conversations.
-        state.last_dispatch_millis = Some(now);
-        state.coalesced = 0;
+        // SMTP/SMS conversations. Armed on the SAME window the cool-down was
+        // checked against, so maintenance and outage budgets stay independent.
+        let window = if suppression.is_some() {
+            &mut state.maintenance
+        } else {
+            &mut state.outage
+        };
+        window.last_dispatch_millis = Some(now);
+        window.coalesced = 0;
         state.outcomes.push(outcome);
     }
 }
@@ -488,6 +525,74 @@ mod tests {
                 );
             }
             other => panic!("expected a second Dispatched, got {other:?}"),
+        }
+    }
+
+    /// The false-silence case: planned maintenance must not buy a real outage
+    /// five minutes of quiet.
+    ///
+    /// A scheduled-restart record SENDS NOTHING but was still arming the shared
+    /// cool-down, so a genuine `Unreachable` arriving inside the window was
+    /// coalesced and the operator was never paged. A restart window is exactly
+    /// when a real failure is most likely and least distinguishable from the
+    /// planned disconnect — the worst possible moment to go quiet.
+    #[test]
+    fn a_maintenance_window_cannot_silence_a_real_outage_that_follows_it() {
+        let email = RecordingChannel::new(NotificationChannel::Email);
+        let sms = RecordingChannel::new(NotificationChannel::Sms);
+        let clock = StepClock::at(1_000);
+        let sink = ConnectivityNotifierSink::new(
+            OperatorNotifier::new(),
+            channels(email.clone(), sms.clone()),
+            &clock,
+        );
+
+        // Planned maintenance: correctly silent.
+        sink.record(blocked(ConnectivityState::ScheduledRestartWindow, true));
+        assert_eq!(email.sends(), 0);
+
+        // 60s later — well inside the cool-down — the gateway is genuinely down.
+        clock.advance(60_000);
+        sink.record(blocked(ConnectivityState::Unreachable, false));
+
+        assert_eq!(
+            email.sends(),
+            1,
+            "a real outage during/after a maintenance window was silenced"
+        );
+        assert_eq!(sms.sends(), 1);
+    }
+
+    /// The converse: the two windows are independent, so a genuine outage does
+    /// not stop maintenance records from being written either.
+    #[test]
+    fn an_outage_does_not_consume_the_maintenance_windows_budget() {
+        let email = RecordingChannel::new(NotificationChannel::Email);
+        let sms = RecordingChannel::new(NotificationChannel::Sms);
+        let clock = StepClock::at(1_000);
+        let sink = ConnectivityNotifierSink::new(
+            OperatorNotifier::new(),
+            channels(email.clone(), sms.clone()),
+            &clock,
+        );
+
+        sink.record(blocked(ConnectivityState::Unreachable, false));
+        assert_eq!(email.sends(), 1);
+
+        clock.advance(60_000);
+        sink.record(blocked(ConnectivityState::ScheduledRestartWindow, true));
+
+        // Still 1 send (maintenance is suppressed), but it produced its own
+        // recorded event rather than being coalesced into the outage window.
+        assert_eq!(email.sends(), 1);
+        match sink.outcomes().last() {
+            Some(ConnectivityAlertOutcome::Dispatched(event)) => {
+                assert!(event
+                    .deliveries()
+                    .iter()
+                    .all(|d| d.outcome() == DeliveryOutcome::Suppressed));
+            }
+            other => panic!("expected a suppressed Dispatched, got {other:?}"),
         }
     }
 

@@ -100,6 +100,28 @@ def test_a_healthy_gateway_never_fabricates_an_outage() -> None:
     )
 
 
+def test_a_maintenance_window_cannot_silence_a_real_outage() -> None:
+    # The false-all-clear case, and the sharpest one in this file. A scheduled
+    # restart is suppressed -- it SENDS NOTHING -- so if it also arms the shared
+    # cool-down, a genuine Unreachable arriving inside that window is coalesced
+    # and the operator is never paged. A restart window is exactly when a real
+    # failure is most likely and least distinguishable from the planned
+    # disconnect, which makes it the worst possible moment to go quiet.
+    # Outage and maintenance now hold independent windows.
+    _assert_one_passed(
+        _run_cargo_test("a_maintenance_window_cannot_silence_a_real_outage_that_follows_it"),
+        "SRS-NOTIF-001 maintenance must not mask an outage",
+    )
+
+
+def test_an_outage_does_not_consume_the_maintenance_budget() -> None:
+    # The converse direction of the same independence property.
+    _assert_one_passed(
+        _run_cargo_test("an_outage_does_not_consume_the_maintenance_windows_budget"),
+        "SRS-NOTIF-001 window independence",
+    )
+
+
 def test_a_retry_storm_pages_once_and_admits_what_it_folded() -> None:
     # The sink fires once per BLOCKED ORDER, not once per outage. Without
     # coalescing, a retry loop pages hundreds of times, burns the SMS budget, and

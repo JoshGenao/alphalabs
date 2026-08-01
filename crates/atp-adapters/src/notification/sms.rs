@@ -196,7 +196,16 @@ impl SmsGatewayChannel {
 
         let mut reader = BufReader::new(stream);
         let status = read_status_line(&mut reader, budget)?;
-        let payload = read_to_end_bounded(&mut reader, budget)?;
+        let raw_payload = read_to_end_bounded(&mut reader, budget)?;
+
+        // Scrub the bearer token BEFORE the payload can reach a receipt or an
+        // error, both of which the dispatcher PERSISTS to the durable
+        // notification store. A relay that echoes the Authorization header it
+        // was sent -- verbose logging, or hostility -- would otherwise write a
+        // recoverable ATP_SMS_API_KEY into the operator's audit trail. Applied to
+        // the 2xx path too: the accept id becomes the stored receipt reference,
+        // so a success is just as capable of carrying the secret as a failure.
+        let payload = redact_secret(&raw_payload, &self.config.api_key);
 
         match status {
             200..=299 => Ok(ChannelReceipt::new(accept_reference(&payload, status))),
@@ -382,6 +391,19 @@ fn accept_reference(payload: &str, status: u16) -> String {
         return format!("http-{status}-no-reference");
     }
     truncate_chars(&fold_protocol_line(trimmed), MAX_REFERENCE_CHARS)
+}
+
+/// Remove every occurrence of `secret` (bare, and in `Bearer <secret>` form)
+/// from relay-controlled text.
+///
+/// The relay is not trusted merely for being on a private network, and anything
+/// derived from its reply is persisted verbatim by the dispatcher.
+fn redact_secret(text: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        return text.to_string();
+    }
+    text.replace(&format!("Bearer {secret}"), "Bearer <redacted>")
+        .replace(secret, "<redacted>")
 }
 
 /// A short, single-line excerpt of a relay reply for an error detail.
