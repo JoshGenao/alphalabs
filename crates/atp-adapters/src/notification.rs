@@ -263,20 +263,61 @@ impl EgressEndpoint {
             }
         }
 
-        let timeout = budget.remaining_or_timeout("relay connect")?;
-        let address = resolved[0];
-        let stream = TcpStream::connect_timeout(&address, timeout).map_err(|err| {
-            if err.kind() == io::ErrorKind::TimedOut {
-                ChannelError::Timeout {
-                    detail: format!("{channel}: relay connect to {address} timed out"),
-                }
-            } else {
-                ChannelError::TransportUnavailable {
-                    detail: format!("{channel}: relay connect to {address} failed: {err}"),
+        self.connect_validated(&resolved, budget, channel)
+    }
+
+    /// Connect to the first reachable address, trying **all** of them.
+    ///
+    /// A hostname routinely resolves to several addresses — `localhost` is
+    /// usually `::1` *and* `127.0.0.1` — and the resolver's ordering is not a
+    /// statement about which one is listening. Taking only the first would mean a
+    /// relay bound to IPv4, behind a resolver that returns IPv6 first, is
+    /// reported unreachable while it is running: the operator gets no page, on
+    /// the path whose entire job is to page.
+    ///
+    /// Every attempt draws from the same [`SendBudget`], so trying several
+    /// addresses cannot extend the deadline — when the budget is spent the loop
+    /// stops with [`ChannelError::Timeout`] rather than working through the rest.
+    ///
+    /// Split out from [`connect`](Self::connect) so the fallback can be tested
+    /// deterministically: DNS ordering is not controllable from a test, but an
+    /// explicit `[dead, live]` list is.
+    pub(crate) fn connect_validated(
+        &self,
+        addresses: &[SocketAddr],
+        budget: &SendBudget,
+        channel: &str,
+    ) -> Result<TcpStream, ChannelError> {
+        let mut last_error: Option<ChannelError> = None;
+
+        for address in addresses {
+            // Re-checked per attempt: an exhausted budget propagates as Timeout
+            // instead of quietly spending what is left on further addresses.
+            let timeout = budget.remaining_or_timeout("relay connect")?;
+            match TcpStream::connect_timeout(address, timeout) {
+                Ok(stream) => return Ok(stream),
+                Err(err) => {
+                    last_error = Some(if err.kind() == io::ErrorKind::TimedOut {
+                        ChannelError::Timeout {
+                            detail: format!("{channel}: relay connect to {address} timed out"),
+                        }
+                    } else {
+                        ChannelError::TransportUnavailable {
+                            detail: format!("{channel}: relay connect to {address} failed: {err}"),
+                        }
+                    });
                 }
             }
-        })?;
-        Ok(stream)
+        }
+
+        Err(
+            last_error.unwrap_or_else(|| ChannelError::TransportUnavailable {
+                detail: format!(
+                    "{channel}: relay host {}:{} had no address to connect to",
+                    self.host, self.port
+                ),
+            }),
+        )
     }
 }
 
@@ -511,6 +552,72 @@ mod tests {
         assert!(matches!(
             EgressEndpoint::new("relay", 0, "email"),
             Err(ChannelError::Unconfigured { .. })
+        ));
+    }
+
+    #[test]
+    fn connect_falls_through_a_dead_address_to_a_live_one() {
+        use std::net::TcpListener;
+
+        // The live relay.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let live = listener.local_addr().expect("local addr");
+
+        // A dead address: bound then dropped, so the port is closed.
+        let dead = {
+            let doomed = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+            doomed.local_addr().expect("local addr")
+        };
+
+        let endpoint =
+            EgressEndpoint::new("relay.internal", live.port(), "email").expect("endpoint is valid");
+        let budget = SendBudget::start(Duration::from_secs(5));
+
+        // Dead first — exactly the `::1` before `127.0.0.1` shape, made
+        // deterministic. Taking only addresses[0] would report the running relay
+        // as unreachable.
+        let stream = endpoint
+            .connect_validated(&[dead, live], &budget, "email")
+            .expect("must fall through to the live address");
+        assert_eq!(stream.peer_addr().expect("peer addr").port(), live.port());
+    }
+
+    #[test]
+    fn connect_reports_the_last_failure_when_every_address_is_dead() {
+        let dead_one = {
+            let doomed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            doomed.local_addr().expect("addr")
+        };
+        let dead_two = {
+            let doomed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            doomed.local_addr().expect("addr")
+        };
+
+        let endpoint =
+            EgressEndpoint::new("relay.internal", dead_one.port(), "email").expect("valid");
+        let budget = SendBudget::start(Duration::from_secs(2));
+
+        match endpoint.connect_validated(&[dead_one, dead_two], &budget, "email") {
+            Err(ChannelError::TransportUnavailable { detail }) => {
+                assert!(detail.contains(&dead_two.port().to_string()), "{detail}");
+            }
+            other => panic!("expected TransportUnavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trying_several_addresses_cannot_extend_the_deadline() {
+        let dead = {
+            let doomed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            doomed.local_addr().expect("addr")
+        };
+        let endpoint = EgressEndpoint::new("relay.internal", dead.port(), "email").expect("valid");
+        // Already spent: the very first attempt must refuse, not work the list.
+        let budget = SendBudget::start(Duration::ZERO);
+
+        assert!(matches!(
+            endpoint.connect_validated(&[dead, dead, dead], &budget, "email"),
+            Err(ChannelError::Timeout { .. })
         ));
     }
 
