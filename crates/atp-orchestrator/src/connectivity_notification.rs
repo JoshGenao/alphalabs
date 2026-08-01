@@ -253,17 +253,14 @@ impl<K: AlertClock> ConnectivityNotifierSink<K> {
             _ => None,
         }
     }
-
-    fn summary(event: &ConnectivityEvent, coalesced: u64) -> String {
-        summary_for(event, coalesced)
-    }
 }
 
 /// The operator-facing alert text.
 fn summary_for(event: &ConnectivityEvent, coalesced: u64) -> String {
     let base = format!(
-        "SRS-SAFE-003 / ERR-2: IB Gateway {} — live submission blocked for strategy {} \
-             on {}",
+        "SRS-SAFE-003 / ERR-2: IB Gateway {} — OBSERVED when a live submission was blocked \
+         for strategy {} on {}; connectivity may have been lost earlier (this path samples \
+         the gateway at order time, it does not watch it)",
         match event.state {
             ConnectivityState::Unreachable => "is UNREACHABLE",
             ConnectivityState::ScheduledRestartWindow => "is in its scheduled restart window",
@@ -330,9 +327,6 @@ impl<K: AlertClock> ConnectivityEventSink for ConnectivityNotifierSink<K> {
                 return;
             }
         }
-
-        let coalesced = window.coalesced;
-        let trigger = NotificationTrigger::connectivity_loss(Self::summary(&event, coalesced), now);
 
         let coalesced = window.coalesced;
         let trigger = NotificationTrigger::connectivity_loss(summary_for(&event, coalesced), now);
@@ -858,6 +852,24 @@ mod tests {
             "a failed spawn armed the cool-down and silenced the retry"
         );
         assert_eq!(sms.sends(), 1);
+    }
+
+    /// The alert must not let a reader mistake observation for detection.
+    ///
+    /// The trigger fires on a blocked submission, so the gateway may have been
+    /// down well before this text was written. If the alert reads as though the
+    /// loss was caught when it happened, the stored dispatch latency gets read as
+    /// loss-to-dispatch and the path is credited with an NFR-P6 compliance it has
+    /// not shown. The wording carries that caveat, so it is pinned like any other
+    /// honesty property rather than left to survive the next edit by luck.
+    #[test]
+    fn the_alert_text_says_the_state_was_observed_not_detected_at_the_loss() {
+        let summary = summary_for(&blocked(ConnectivityState::Unreachable, false), 0);
+        assert!(summary.contains("OBSERVED"), "{summary}");
+        assert!(
+            summary.contains("connectivity may have been lost earlier"),
+            "{summary}"
+        );
     }
 
     #[test]

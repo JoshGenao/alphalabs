@@ -183,6 +183,18 @@ def test_a_failed_alert_worker_does_not_silence_the_next_outage() -> None:
     )
 
 
+def test_the_alert_does_not_pass_observation_off_as_detection() -> None:
+    # The trigger fires on a blocked submission, so the gateway may have been down
+    # well before the alert was written. If the text reads as though the loss was
+    # caught when it happened, the stored dispatch latency gets read as
+    # loss-to-dispatch and this path is credited with an NFR-P6 compliance it has
+    # not shown. The caveat is part of the alert, so it is pinned.
+    _assert_one_passed(
+        _run_cargo_test("the_alert_text_says_the_state_was_observed_not_detected_at_the_loss"),
+        "SRS-NOTIF-001 observation-vs-detection honesty",
+    )
+
+
 def test_a_failing_transport_never_panics_the_execution_path() -> None:
     # This sink runs INSIDE the execution engine's order-rejection path. A panic
     # here would turn a transport hiccup into an unusable engine.

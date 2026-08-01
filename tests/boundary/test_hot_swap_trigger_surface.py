@@ -744,8 +744,18 @@ def test_the_production_composition_serves_the_trigger_routes(tmp_path) -> None:
     host, port = runtime.start(host="127.0.0.1", port=0)
     try:
         status, body = _request((host, port), "GET", "/api/v1/hot-swap/triggers")
-        assert status == 200, body
-        assert body["config_source"] == "default", body
+        # What this test is FOR is that the route is mounted by the production
+        # composition, and that survives the CLI being absent: an unmounted route
+        # answers 501, a mounted one whose backing binary is missing answers 504.
+        # CI's Python job builds no Rust, so asserting a flat 200 made the shipped
+        # -routes property fail for a reason that has nothing to do with shipping
+        # the routes. Skipping instead — the sibling idiom — would have stopped
+        # checking the one thing this test names.
+        assert status in (200, 504), body
+        if status == 200:
+            assert body["config_source"] == "default", body
+        else:
+            assert body["error"]["type"] == "TRIGGER_CLI_UNAVAILABLE", body
         # And swap EXECUTION still is not shipped, because nothing can execute one.
         status, body = _request(
             (host, port), "POST", "/api/v1/hot-swap?confirm=yes", {"candidate_strategy_id": "b"}
