@@ -57,6 +57,7 @@
 
 use std::io::{self, BufRead, BufReader};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use atp_notification::ChannelError;
@@ -150,29 +151,91 @@ impl EgressEndpoint {
         self.port
     }
 
-    /// Resolve, validate, and connect within `budget`.
+    /// Resolve the relay host **within the budget**.
     ///
-    /// Resolution is not itself cancellable in std (`ToSocketAddrs` has no
-    /// timeout), so the budget is re-checked immediately after it returns and
-    /// before the connect is attempted; a resolver that hangs past the deadline
-    /// surfaces as [`ChannelError::Timeout`] rather than as an unbounded wait
-    /// followed by a doomed connect.
+    /// `ToSocketAddrs` is a blocking call with no timeout, so simply checking the
+    /// budget before and after it would leave the deadline unenforced across the
+    /// one step most able to wedge: a sick resolver holds the whole alert send
+    /// for however long the C library feels like, and the connectivity-loss page
+    /// never leaves the host. Checking the clock either side of an unbounded call
+    /// documents the hole rather than closing it.
+    ///
+    /// So resolution runs on a worker thread and the *wait* is bounded by the
+    /// remaining budget. If it overruns we return [`ChannelError::Timeout`] and
+    /// let the worker finish into a dropped channel — it terminates on its own
+    /// when the OS resolver gives up, holds no lock, and touches none of our
+    /// sockets.
+    ///
+    /// This is not the detached-watchdog anti-pattern
+    /// [`atp_notification::channel`] warns against. That one tries to cancel a
+    /// wedged socket syscall it cannot reach, and leaks a thread per notification
+    /// on a path with no rate limit. This is a self-terminating DNS lookup, on a
+    /// path the SRS-NOTIF-001 sink already rate-limits to one dispatch per outage
+    /// per cool-down, and it is skipped entirely when the host is an IP literal
+    /// (which needs no resolver at all).
+    fn resolve_within_budget(
+        &self,
+        budget: &SendBudget,
+        channel: &str,
+    ) -> Result<Vec<SocketAddr>, ChannelError> {
+        // An IP literal needs no resolver: parse it directly and spawn nothing.
+        if let Ok(ip) = self.host.parse::<IpAddr>() {
+            return Ok(vec![SocketAddr::new(ip, self.port)]);
+        }
+
+        let remaining = budget.remaining_or_timeout("relay address resolution")?;
+        let (sender, receiver) = mpsc::channel();
+        let host = self.host.clone();
+        let port = self.port;
+        std::thread::Builder::new()
+            .name("atp-notify-resolve".to_string())
+            .spawn(move || {
+                // A send failure means the requester already timed out and
+                // dropped the receiver; nothing to do but exit.
+                let _ = sender.send(
+                    (host.as_str(), port)
+                        .to_socket_addrs()
+                        .map(|addresses| addresses.collect::<Vec<_>>())
+                        .map_err(|err| err.to_string()),
+                );
+            })
+            .map_err(|err| ChannelError::TransportUnavailable {
+                detail: format!("{channel}: cannot start relay address resolution: {err}"),
+            })?;
+
+        match receiver.recv_timeout(remaining) {
+            Ok(Ok(addresses)) => Ok(addresses),
+            Ok(Err(err)) => Err(ChannelError::TransportUnavailable {
+                detail: format!(
+                    "{channel}: cannot resolve relay host {}:{}: {err}",
+                    self.host, self.port
+                ),
+            }),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(ChannelError::Timeout {
+                detail: format!(
+                    "{channel}: resolving relay host {} did not finish within the remaining \
+                     send budget",
+                    self.host
+                ),
+            }),
+            // The worker panicked. Fail closed rather than treat a crashed
+            // resolver as "no addresses".
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(ChannelError::TransportUnavailable {
+                detail: format!(
+                    "{channel}: relay address resolution for {} failed unexpectedly",
+                    self.host
+                ),
+            }),
+        }
+    }
+
+    /// Resolve, validate, and connect within `budget`.
     pub(crate) fn connect(
         &self,
         budget: &SendBudget,
         channel: &str,
     ) -> Result<TcpStream, ChannelError> {
-        budget.remaining_or_timeout("relay address resolution")?;
-
-        let resolved: Vec<SocketAddr> = (self.host.as_str(), self.port)
-            .to_socket_addrs()
-            .map_err(|err| ChannelError::TransportUnavailable {
-                detail: format!(
-                    "{channel}: cannot resolve relay host {}:{}: {err}",
-                    self.host, self.port
-                ),
-            })?
-            .collect();
+        let resolved = self.resolve_within_budget(budget, channel)?;
 
         if resolved.is_empty() {
             return Err(ChannelError::TransportUnavailable {

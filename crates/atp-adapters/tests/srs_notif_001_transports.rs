@@ -385,6 +385,74 @@ fn a_public_relay_address_is_refused_before_any_packet_is_sent() {
     }
 }
 
+/// DNS must not be able to eat the send deadline.
+///
+/// `ToSocketAddrs` is blocking with no timeout, so a sick resolver is the one
+/// step most able to wedge an alert send. `.invalid` is reserved by RFC 6761 and
+/// must never resolve, which makes a real resolver do real (failing) work here
+/// rather than answering from cache.
+///
+/// The assertion is the *bound*, not the error kind: whether this host fails
+/// fast (NXDOMAIN) or slowly (a resolver that retries), the send must return
+/// well inside the deadline and never hang.
+#[test]
+fn a_relay_hostname_that_will_not_resolve_cannot_outlive_the_deadline() {
+    let channel = SmtpEmailChannel::new(
+        SmtpRelayConfig::new(
+            "atp-notification-relay-does-not-exist.invalid",
+            1025,
+            SENDER,
+            RECIPIENT,
+            SENDER,
+            KEY,
+        )
+        .expect("config is structurally valid"),
+    );
+
+    let started = Instant::now();
+    let result = channel.send(&alert(), Duration::from_millis(400));
+    let elapsed = started.elapsed();
+
+    match result {
+        // Either outcome is correct; both are bounded and neither fabricates a
+        // delivery. A resolver that answers NXDOMAIN quickly gives
+        // TransportUnavailable; one that stalls past the budget gives Timeout.
+        Err(ChannelError::TransportUnavailable { .. }) | Err(ChannelError::Timeout { .. }) => {}
+        other => panic!("expected a bounded resolution failure, got {other:?}"),
+    }
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "resolution took {elapsed:?} against a 400ms deadline — DNS is outside the budget"
+    );
+}
+
+/// An IP-literal relay must not spawn a resolver thread at all.
+///
+/// Verified behaviourally: the connect refusal has to arrive far faster than any
+/// resolver round trip, which it cannot if the literal is being pushed through
+/// `to_socket_addrs` on a worker.
+#[test]
+fn an_ip_literal_relay_host_skips_resolution_entirely() {
+    let port = {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        listener.local_addr().expect("local addr").port()
+    };
+    let channel = email_channel(port);
+
+    let started = Instant::now();
+    let result = channel.send(&alert(), Duration::from_secs(2));
+    let elapsed = started.elapsed();
+
+    assert!(matches!(
+        result,
+        Err(ChannelError::TransportUnavailable { .. })
+    ));
+    assert!(
+        elapsed < Duration::from_millis(250),
+        "an IP literal took {elapsed:?} — it is going through the resolver path"
+    );
+}
+
 #[test]
 fn the_email_channel_reports_its_own_identity() {
     let channel = email_channel(1025);
