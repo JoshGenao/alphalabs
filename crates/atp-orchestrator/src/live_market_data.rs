@@ -67,6 +67,15 @@ impl IbLiveTickSource {
             .map_err(|err| FeedError::Configuration(err.to_string()))?;
         // Paper only: the live account is gated on the SRS-EXE-001 admission
         // path, and the transport itself refuses it.
+        //
+        // So the broker line this feed publishes is the PAPER gateway endpoint,
+        // and the dashboard's `ib_gateway` cell must not be read as "the broker
+        // connection real execution uses". Once SRS-EXE-001 lands a live-account
+        // path, this source must heartbeat the SAME gateway/account the
+        // designated live strategy routes through — otherwise a wedged live
+        // gateway would sit behind a cell that looks fresh because a different
+        // endpoint answered. Recorded with its owner in
+        // heartbeat_freshness_contract.live_feed.subscription_ownership.
         let gateway = TcpIbGateway::new(config, IbAccountKind::Paper);
 
         let mut source = Self {

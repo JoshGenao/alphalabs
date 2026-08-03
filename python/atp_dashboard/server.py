@@ -328,8 +328,15 @@ def mount_default_dashboard(
     #       lines are spent outside that manager's dedup/line-limit accounting.
     #       Deferred with its consequences and its owner in
     #       heartbeat_freshness_contract.live_feed.subscription_ownership.
+    #       The broker line has the same shape of limit: the daemon's transport
+    #       is IbAccountKind::Paper (the live account is gated on SRS-EXE-001
+    #       and the transport refuses it), so the `ib_gateway` cell reports the
+    #       PAPER gateway endpoint — not whichever gateway real execution uses.
+    #
     #       That is why this is opt-in and unset by default: mounting it is an
-    #       operator's explicit choice, made with the scope limit in view.
+    #       operator's explicit choice, made with the scope limits in view, and
+    #       why SRS-MD-003 stays passes:false until MD-001 and EXE-001 close
+    #       them.
     #   ATP_MD003_OBSERVATIONS — the FIXTURE producer: the directive script
     #       ``md003_heartbeat_cli`` replays. Demonstration and tests only.
     #
