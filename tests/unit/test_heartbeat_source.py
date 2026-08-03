@@ -687,3 +687,27 @@ def test_one_feeds_failed_write_is_not_masked_by_anothers_success(
     store.fail_market_data = False
     assert provider.heartbeat_snapshot()["log_write_ok"] is True
     assert {r.source for r in store.written} == {Source.MARKET_DATA, Source.IB_GATEWAY}
+
+
+def test_both_shipped_sources_satisfy_the_provider_contract(tmp_path: Path) -> None:
+    """The provider depends on ``HeartbeatSource``, not on either concrete class.
+
+    That indirection is what lets a deployment swap the fixture script for the
+    live feed daemon without touching a single downstream consumer. If a source
+    ever drifted out of the structural contract, the swap would fail at the
+    mount instead of here — with a live feed already running.
+    """
+    from atp_dashboard.heartbeat import HeartbeatSource, SnapshotHeartbeatSource
+
+    assert isinstance(CliHeartbeatSource(tmp_path / "obs.txt"), HeartbeatSource)
+    assert isinstance(SnapshotHeartbeatSource(tmp_path / "snap.txt"), HeartbeatSource)
+
+
+def test_each_source_names_the_producer_that_actually_answered(tmp_path: Path) -> None:
+    """``data_source`` rides on the health payload, so it must name the real
+    producer. Reporting the fixture's name while a live daemon answers would
+    attribute live evidence to a fixture — and vice versa."""
+    from atp_dashboard.heartbeat import SnapshotHeartbeatSource
+
+    assert CliHeartbeatSource(tmp_path / "obs.txt").data_source == "md003_heartbeat_cli"
+    assert SnapshotHeartbeatSource(tmp_path / "snap.txt").data_source == "md003_live_feed_cli"

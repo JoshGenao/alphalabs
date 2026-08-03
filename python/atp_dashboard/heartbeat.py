@@ -78,6 +78,7 @@ __all__ = [
     "CliHeartbeatSource",
     "HeartbeatCliRunner",
     "HeartbeatFreshnessProvider",
+    "HeartbeatSource",
     "HeartbeatUnavailable",
     "SnapshotHeartbeatSource",
     "THRESHOLD_MS",
@@ -164,6 +165,29 @@ class HeartbeatCliRunner(Protocol):
     def __call__(
         self, argv: list[str], *, input: str, timeout: float
     ) -> subprocess.CompletedProcess[str]: ...
+
+
+@runtime_checkable
+class HeartbeatSource(Protocol):
+    """What the provider needs from a freshness producer, and nothing more.
+
+    Two implementations ship: :class:`CliHeartbeatSource` (the fixture script
+    replayed by ``md003_heartbeat_cli``) and :class:`SnapshotHeartbeatSource`
+    (the live IB feed daemon's durable snapshot). Everything downstream of
+    ``observe()`` — the HEARTBEAT channel, ``/dashboard/api/heartbeat``, system
+    health, the transition records — is producer-agnostic by construction, so
+    naming the structural contract here is what lets a deployment swap the
+    fixture for the live feed without touching a single consumer.
+
+    ``data_source`` is part of the contract, not decoration: it rides on the
+    health payload, and a provider that reported the fixture's name while a
+    live daemon answered would misattribute real evidence to a fixture.
+    """
+
+    #: Which producer answered, reported on the health payload.
+    data_source: str
+
+    def observe(self) -> Observation: ...
 
 
 def _default_runner(
@@ -569,7 +593,7 @@ class HeartbeatFreshnessProvider:
 
     def __init__(
         self,
-        source: CliHeartbeatSource,
+        source: HeartbeatSource,
         *,
         log_store: JsonlLogStore,
     ) -> None:

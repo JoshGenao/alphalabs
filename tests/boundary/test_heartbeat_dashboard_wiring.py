@@ -20,6 +20,7 @@ cargo/subprocess):
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -152,3 +153,92 @@ def test_bare_mount_keeps_deferred_heartbeat_cells_on_the_main_ticker() -> None:
     _status, system = runtime.dispatch_rest("GET", SYSTEM_SNAPSHOT_PATH, b"")
     section = system["health"]["market_data_heartbeat"]
     assert section["value"] is None and section["data_source"].startswith("deferred:")
+
+
+# --- the live producer, mounted the way production mounts it ----------------
+#
+# Everything above wires the FIXTURE source by hand. These pin the composition
+# `mount_default_dashboard` actually performs from the environment, because
+# that is the only path a deployed dashboard takes: a live feed that verifies
+# only through a hand-built provider is a live feed nobody can turn on.
+
+MAGIC = "atp-md003-snapshot"
+
+
+def _live_snapshot(evaluated_at_ns: int, *, stale: bool) -> str:
+    """A snapshot exactly as ``atp_market_data::live_feed`` renders one."""
+
+    def row(feed_fields: str) -> str:
+        return (
+            f"status {feed_fields} last_observation_ns={evaluated_at_ns} "
+            f"staleness_ms={'20000' if stale else '250'} never_observed=false "
+            f"time_stale={'true' if stale else 'false'} gap_stale=false "
+            f"stale={'true' if stale else 'false'} threshold_ms=15000 "
+            f"evaluated_at_ns={evaluated_at_ns}"
+        )
+
+    return "\n".join(
+        [
+            f"{MAGIC} schema_version=1 evaluated_at_ns={evaluated_at_ns} "
+            f"threshold_ms=15000 observed_ticks=3 broker_probe=answered "
+            "gap_detection=unavailable degraded=false",
+            row("feed=market_data symbol=AAPL asset_class=equity"),
+            row("feed=broker"),
+        ]
+    )
+
+
+def test_default_mount_serves_the_live_snapshot_producer(tmp_path: Path) -> None:
+    """ATP_MD003_SNAPSHOT composes the LIVE feed into the same three surfaces
+    the fixture path serves — and attributes them to the live daemon."""
+    from atp_dashboard.server import mount_default_dashboard
+
+    snapshot = tmp_path / "heartbeat.snapshot"
+    now_ns = time.time_ns()
+    snapshot.write_text(_live_snapshot(now_ns, stale=True), encoding="utf-8")
+
+    runtime = OperatorInterfaceRuntime()
+    mount_default_dashboard(
+        runtime,
+        {"ATP_MD003_SNAPSHOT": str(snapshot), "ATP_MD003_LOG_DIR": str(tmp_path)},
+    )
+
+    status, body = runtime.dispatch_rest("GET", HEARTBEAT_SNAPSHOT_PATH, b"")
+    assert status == 200
+    assert body["any_stale"] is True
+
+    _status, system = runtime.dispatch_rest("GET", SYSTEM_SNAPSHOT_PATH, b"")
+    health = system["health"]["market_data_heartbeat"]
+    assert health["state"] == "STALE" and health["any_stale"] is True
+    # The health payload must name the producer that actually answered — the
+    # live daemon, never the fixture CLI. This is the assertion that would
+    # catch a mount silently falling back to the fixture composition.
+    assert health["data_source"] == "md003_live_feed_cli"
+
+
+def test_default_mount_refuses_two_competing_heartbeat_producers(tmp_path: Path) -> None:
+    """Both env vars set is a configuration error, not a precedence puzzle:
+    silently preferring either lets a fixture's verdicts be read as live
+    evidence (or buries a live feed behind a stale script)."""
+    from atp_dashboard.server import mount_default_dashboard
+
+    with pytest.raises(ValueError, match="exactly one producer"):
+        mount_default_dashboard(
+            OperatorInterfaceRuntime(),
+            {
+                "ATP_MD003_SNAPSHOT": str(tmp_path / "snap"),
+                "ATP_MD003_OBSERVATIONS": str(tmp_path / "obs"),
+                "ATP_MD003_LOG_DIR": str(tmp_path),
+            },
+        )
+
+
+def test_live_mount_still_requires_the_durable_audit_sink(tmp_path: Path) -> None:
+    """The 'logged' acceptance leg is mandatory for the live producer too."""
+    from atp_dashboard.server import mount_default_dashboard
+
+    with pytest.raises(ValueError, match="ATP_MD003_LOG_DIR"):
+        mount_default_dashboard(
+            OperatorInterfaceRuntime(),
+            {"ATP_MD003_SNAPSHOT": str(tmp_path / "snap")},
+        )

@@ -22,6 +22,7 @@ Both are false all-clears on a safety-relevant surface: the operator reads
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -363,3 +364,84 @@ def test_only_an_answered_round_trip_refreshes_the_broker_line() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout
+
+
+# --- the same invariants, through the composition production actually uses ---
+#
+# The tests above build the provider by hand. A false all-clear that only the
+# hand-built composition defends against is not defended against at all: what
+# ships is whatever `mount_default_dashboard` assembles from the environment.
+
+
+def test_a_dead_daemon_never_reads_healthy_through_the_default_mount(tmp_path: Path) -> None:
+    """The headline invariant, end to end through the production mount.
+
+    The daemon dies leaving a snapshot whose last verdict said everything was
+    fresh. A file nobody is rewriting looks exactly like a file somebody is
+    rewriting, so the age check is the only thing standing between the
+    operator and a monitor that has stopped monitoring.
+    """
+    from atp_dashboard.server import SYSTEM_SNAPSHOT_PATH, mount_default_dashboard
+    from atp_runtime import OperatorInterfaceRuntime
+
+    snapshot = tmp_path / "heartbeat.snapshot"
+    # Written well over the age limit ago, and it says FRESH.
+    dead_at_ns = time.time_ns() - (THRESHOLD_MS + 60_000) * 1_000_000
+    snapshot.write_text(
+        _snapshot(dead_at_ns, market_stale=False, broker_stale=False), encoding="utf-8"
+    )
+
+    runtime = OperatorInterfaceRuntime()
+    mount_default_dashboard(
+        runtime,
+        {"ATP_MD003_SNAPSHOT": str(snapshot), "ATP_MD003_LOG_DIR": str(tmp_path)},
+    )
+
+    _status, system = runtime.dispatch_rest("GET", SYSTEM_SNAPSHOT_PATH, b"")
+    health = system["health"]["market_data_heartbeat"]
+    assert health["state"] == "UNAVAILABLE", "a dead daemon's last FRESH verdict was served"
+    assert health["any_stale"] is True, "not proven fresh must never render as fresh"
+    assert health["ok"] is False
+
+
+def test_a_live_mount_cannot_silently_drop_its_audit_trail(tmp_path: Path) -> None:
+    """SRS-MD-003 makes "logged" a first-class acceptance leg. A live feed
+    mounted without a durable sink would monitor and display while dropping
+    every HEARTBEAT_STALE record — a configuration that must be unrepresentable,
+    not a degraded mode nobody notices."""
+    from atp_dashboard.server import mount_default_dashboard
+    from atp_runtime import OperatorInterfaceRuntime
+
+    with pytest.raises(ValueError, match="ATP_MD003_LOG_DIR"):
+        mount_default_dashboard(
+            OperatorInterfaceRuntime(),
+            {"ATP_MD003_SNAPSHOT": str(tmp_path / "heartbeat.snapshot")},
+        )
+
+
+def test_a_fixture_script_cannot_masquerade_as_the_live_feed(tmp_path: Path) -> None:
+    """Mounting both producers must fail closed at boot.
+
+    This is a safety-surface attribution bug, not a config nicety: if the
+    fixture silently won, an operator reading "FRESH" from a replayed script
+    would believe a real market feed was flowing.
+    """
+    from atp_dashboard.server import mount_default_dashboard
+    from atp_runtime import OperatorInterfaceRuntime
+
+    snapshot = tmp_path / "heartbeat.snapshot"
+    snapshot.write_text(
+        _snapshot(time.time_ns(), market_stale=False, broker_stale=False), encoding="utf-8"
+    )
+    observations = tmp_path / "observations.txt"
+    observations.write_text("watch-security AAPL equity\nwatch-broker\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="exactly one producer"):
+        mount_default_dashboard(
+            OperatorInterfaceRuntime(),
+            {
+                "ATP_MD003_SNAPSHOT": str(snapshot),
+                "ATP_MD003_OBSERVATIONS": str(observations),
+                "ATP_MD003_LOG_DIR": str(tmp_path),
+            },
+        )

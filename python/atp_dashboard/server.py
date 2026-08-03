@@ -42,7 +42,12 @@ from atp_runtime import OperatorInterfaceRuntime
 from .account import AccountStatusProvider
 from .alerts import CriticalAlertsProvider
 from .backtests import BacktestHistoryProvider, StoreCliBacktestHistorySource
-from .heartbeat import CliHeartbeatSource, HeartbeatFreshnessProvider
+from .heartbeat import (
+    CliHeartbeatSource,
+    HeartbeatFreshnessProvider,
+    HeartbeatSource,
+    SnapshotHeartbeatSource,
+)
 from .hotswap import CliHotSwapTriggerSource, HotSwapStatusProvider
 from .inventory import RollbackSnapshotInventorySource, StrategyInventoryProvider
 from .killswitch import DurableKillSwitchStatusSource, KillSwitchStatusProvider
@@ -307,29 +312,52 @@ def mount_default_dashboard(
     backtests = BacktestHistoryProvider(
         StoreCliBacktestHistorySource(results_dir=results_dir, env=env)
     )
-    # The SRS-MD-003 heartbeat-freshness provider is composed only when an
-    # observation source is configured: ATP_MD003_OBSERVATIONS names the
-    # directive script the monitor CLI replays (fixture ticks today; the
-    # deferred live feed loop will maintain it from real IB deliveries —
-    # heartbeat_freshness_contract.deferred[]). Unset, the HEARTBEAT channel
-    # keeps its honest deferred cells. When monitoring IS mounted,
-    # ATP_MD003_LOG_DIR is REQUIRED: SRS-MD-003 makes the durable
-    # HEARTBEAT_STALE/RECOVERED audit trail a first-class acceptance leg, so
-    # a composition that monitors-but-cannot-log is a configuration error
-    # that must fail closed at boot, never a silent no-audit mode (the full
-    # log-runtime wiring remains SRS-LOG-001's).
+    # The SRS-MD-003 heartbeat-freshness provider is composed only when a
+    # freshness producer is configured, and exactly ONE of the two may be:
+    #
+    #   ATP_MD003_SNAPSHOT     — the LIVE producer: the durable snapshot
+    #       ``md003_live_feed_cli`` rewrites from real IB tick deliveries and
+    #       genuine gateway round trips. This is the production wiring.
+    #   ATP_MD003_OBSERVATIONS — the FIXTURE producer: the directive script
+    #       ``md003_heartbeat_cli`` replays. Demonstration and tests only.
+    #
+    # Setting BOTH is a configuration error, not a precedence puzzle: two
+    # producers claiming one channel means the operator does not know which
+    # one the health status reflects, and silently preferring either would let
+    # a fixture's verdicts be read as live evidence (or bury a live feed behind
+    # a stale script). Fail closed at boot and make them choose.
+    #
+    # Unset, the HEARTBEAT channel keeps its honest deferred cells. When
+    # monitoring IS mounted, ATP_MD003_LOG_DIR is REQUIRED for either producer:
+    # SRS-MD-003 makes the durable HEARTBEAT_STALE/RECOVERED audit trail a
+    # first-class acceptance leg, so a composition that monitors-but-cannot-log
+    # is a configuration error that must fail closed at boot, never a silent
+    # no-audit mode (the full log-runtime wiring remains SRS-LOG-001's).
     heartbeat: HeartbeatFreshnessProvider | None = None
     observations = env.get("ATP_MD003_OBSERVATIONS") or None
-    if observations is not None:
+    snapshot = env.get("ATP_MD003_SNAPSHOT") or None
+    if observations is not None and snapshot is not None:
+        raise ValueError(
+            "ATP_MD003_SNAPSHOT and ATP_MD003_OBSERVATIONS are both set: the "
+            "heartbeat channel has exactly one producer, and mounting the live "
+            "feed snapshot alongside the fixture script leaves it ambiguous "
+            "which one system health reflects (SRS-MD-003). Set exactly one."
+        )
+    source: HeartbeatSource | None = None
+    if snapshot is not None:
+        source = SnapshotHeartbeatSource(snapshot)
+    elif observations is not None:
+        source = CliHeartbeatSource(observations)
+    if source is not None:
         log_dir = env.get("ATP_MD003_LOG_DIR") or None
         if log_dir is None:
             raise ValueError(
-                "ATP_MD003_OBSERVATIONS is set but ATP_MD003_LOG_DIR is not: "
+                "heartbeat monitoring is configured but ATP_MD003_LOG_DIR is not: "
                 "heartbeat monitoring requires the durable transition-record "
                 "sink (SRS-MD-003 'logged' acceptance leg)"
             )
         heartbeat = HeartbeatFreshnessProvider(
-            CliHeartbeatSource(observations),
+            source,
             log_store=JsonlLogStore(Path(log_dir) / "system.jsonl", log_class=LogClass.SYSTEM),
         )
     provider = ReadinessBackedProvider(env, heartbeat=heartbeat)
