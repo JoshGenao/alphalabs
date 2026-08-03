@@ -54,6 +54,7 @@ use std::net::TcpStream;
 use std::net::{IpAddr, SocketAddr};
 #[cfg(feature = "ib-live-transport")]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "ib-live-transport")]
 use std::sync::Mutex;
 #[cfg(feature = "ib-live-transport")]
 use std::time::Duration;

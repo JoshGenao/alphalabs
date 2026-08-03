@@ -460,7 +460,8 @@ fn ticks_for_another_line_survive_a_second_subscribe() {
         let _ = server_read_frame(&mut stream); // reqMarketDataType
         let _ = server_read_frame(&mut stream); // reqMktData -> 9000
         server_write_frame(&mut stream, &["1", "6", "9000", "4", "187.25", "3", "1"]);
-        let _ = server_read_frame(&mut stream); // reqMktData -> 9001
+        // reqMktData -> 9001
+        let _ = server_read_frame(&mut stream);
         // The FIRST line keeps delivering while the second waits to confirm.
         server_write_frame(&mut stream, &["1", "6", "9000", "4", "187.30", "3", "1"]);
         server_write_frame(&mut stream, &["2", "6", "9000", "5", "400"]);

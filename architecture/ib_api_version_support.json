@@ -5,8 +5,8 @@
   "negotiated_server_version": 176,
   "validated_against_paper_account": {
     "evidence_ref": "architecture/ib_paper_account_evidence.json",
-    "evidence_code_digest": "a7591ba7cf16dc65a8429e128895d38433c436400f70165c8172372185ae5bcb",
-    "evidence_generated_at": "2026-07-30T04:11:04Z",
-    "provenance": "recorded by `tools/ib_api_version_check.py --sync` from the operator IB paper-account round trip of 2026-07-30T04:11:04Z (ATP_RUN_INTEGRATION=1, port 4002)"
+    "evidence_code_digest": "b7e752f97fa6012eb1113cc7329271deca17b2116d7e972a8a8d9c419edd407d",
+    "evidence_generated_at": "2026-08-03T11:56:38Z",
+    "provenance": "recorded by `tools/ib_api_version_check.py --sync` from the operator IB paper-account round trip of 2026-08-03T11:56:38Z (ATP_RUN_INTEGRATION=1, port 4002)"
   }
 }

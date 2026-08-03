@@ -475,3 +475,35 @@ def test_transport_fault_derives_from_the_connectivity_classifier():
     # The fake-gateway suite proves the behavior end-to-end (1100 + 2110 -> reconnect).
     wire_tests = (ROOT / _runtime()["wire_tests"]).read_text()
     assert "connectivity_loss_errors_drop_the_session_and_reconnect" in wire_tests
+
+
+def test_the_default_build_carries_nothing_from_the_live_transport():
+    """The operator-gated live transport must stay entirely behind its feature.
+
+    This file's contract is that "the live transport stays feature-gated OFF by
+    default so the default surface never advertises a socket it cannot verify
+    solo". An item that escapes the gate breaks that in the direction that
+    matters: the default build starts carrying live-socket machinery nobody
+    opted into, and every feature-enabled build we run stays green while CI's
+    default build is the only thing that notices.
+
+    That is not hypothetical — it is exactly how a `#[cfg(feature = ...)]`
+    guarding `use std::sync::Mutex` came to guard a newly-inserted import
+    instead, leaving Mutex unconditionally imported. `-D warnings` is what
+    catches it, so the gate is asserted here rather than left to CI alone.
+    """
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip("cargo not on PATH")
+    result = subprocess.run(
+        [cargo, "clippy", "-p", "atp-adapters", "--all-targets", "--", "-D", "warnings"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        "the DEFAULT-feature atp-adapters build is not warning-clean, which means "
+        "something from the operator-gated live transport escaped its feature gate:\n"
+        + result.stderr
+    )
