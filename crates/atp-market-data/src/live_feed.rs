@@ -131,6 +131,14 @@ pub struct FeedStep {
     pub broker_probe: BrokerProbe,
     /// The source failure this step hit, if any. The step still evaluated.
     pub source_error: Option<FeedError>,
+    /// The instant these verdicts were evaluated at — read AFTER the step's
+    /// blocking I/O (see [`LiveFeedLoop::step`]).
+    ///
+    /// Publish the snapshot with THIS, never with a reading the caller took
+    /// before calling `step`: the header instant is what a reader ages the
+    /// file by, so a pre-I/O stamp would disagree with the row verdicts it
+    /// carries.
+    pub evaluated_at_ns: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,9 +223,26 @@ impl<S: LiveTickSource> LiveFeedLoop<S> {
 
     /// One iteration: drain ticks, probe the broker when due, evaluate.
     ///
-    /// `now_ns` is the caller's injected clock reading (this crate reads no
-    /// wall clock), and `events` receives one event per Fresh↔Stale transition.
-    pub fn step<K: HeartbeatEventSink>(&mut self, now_ns: i64, events: &K) -> FeedStep {
+    /// `clock` is the caller's injected wall-clock reader (this crate reads no
+    /// wall clock itself), and `events` receives one event per Fresh↔Stale
+    /// transition.
+    ///
+    /// **The clock is read TWICE, and that is the point.** A step blocks: the
+    /// tick drain spends its poll budget, and the broker probe can sit on the
+    /// wire until its operation deadline expires. Evaluating with the reading
+    /// taken before all that would date the verdict to a moment that has
+    /// already passed — so a broker whose last answer was near the threshold
+    /// could be judged fresh when the real clock had already crossed 15 s, and
+    /// the dashboard would stay green through exactly the window this feature
+    /// exists to catch. Observations keep the pre-I/O reading (stamping them
+    /// early only ages a line faster, which is the fail-closed direction);
+    /// the EVALUATION uses a reading taken after the I/O.
+    pub fn step<K: HeartbeatEventSink, C: Fn() -> i64>(
+        &mut self,
+        clock: C,
+        events: &K,
+    ) -> FeedStep {
+        let now_ns = clock();
         let mut source_error = None;
         let mut observed_ticks = 0;
 
@@ -252,7 +277,13 @@ impl<S: LiveTickSource> LiveFeedLoop<S> {
             BrokerProbe::NotDue
         };
 
-        let statuses = self.monitor.evaluate(now_ns, events);
+        // Re-read the clock now that every blocking call is behind us. Never
+        // earlier than the observations we just recorded: a wall clock that
+        // steps backwards must not produce a verdict that predates its own
+        // evidence.
+        let evaluated_at_ns = clock().max(now_ns);
+
+        let statuses = self.monitor.evaluate(evaluated_at_ns, events);
         for status in &statuses {
             let Some(transition) = status.transition else {
                 continue;
@@ -265,7 +296,7 @@ impl<S: LiveTickSource> LiveFeedLoop<S> {
                 transition,
                 staleness_ms: status.staleness_ms,
                 last_observation_ns: status.last_observation_ns,
-                evaluated_at_ns: now_ns,
+                evaluated_at_ns,
             });
         }
 
@@ -275,6 +306,7 @@ impl<S: LiveTickSource> LiveFeedLoop<S> {
             observed_ticks,
             broker_probe,
             source_error,
+            evaluated_at_ns,
         }
     }
 
@@ -517,7 +549,7 @@ mod tests {
     fn a_delivered_tick_refreshes_its_line() {
         let mut feed = loop_over(ScriptedSource::new(vec![Ok(vec![aapl()])], vec![Ok(())]));
         let sink = CountingSink::default();
-        let step = feed.step(SECOND_NS, &sink);
+        let step = feed.step(|| SECOND_NS, &sink);
 
         assert_eq!(step.observed_ticks, 1);
         assert_eq!(step.broker_probe, BrokerProbe::Answered);
@@ -540,12 +572,12 @@ mod tests {
         ));
         let sink = CountingSink::default();
 
-        let first = feed.step(SECOND_NS, &sink);
+        let first = feed.step(|| SECOND_NS, &sink);
         assert_eq!(first.broker_probe, BrokerProbe::Failed);
         assert!(first.source_error.is_some());
 
         // 20 s later — past the 15 s threshold with no successful probe.
-        let later = feed.step(SECOND_NS + 20 * SECOND_NS, &sink);
+        let later = feed.step(|| SECOND_NS + 20 * SECOND_NS, &sink);
         let broker = later
             .statuses
             .iter()
@@ -566,7 +598,7 @@ mod tests {
             vec![Ok(())],
         ));
         let sink = CountingSink::default();
-        let step = feed.step(SECOND_NS, &sink);
+        let step = feed.step(|| SECOND_NS, &sink);
 
         assert!(step.source_error.is_some());
         assert_eq!(step.observed_ticks, 0);
@@ -581,7 +613,7 @@ mod tests {
     fn a_never_delivered_line_is_stale_from_the_first_evaluation() {
         let mut feed = loop_over(ScriptedSource::new(vec![Ok(Vec::new())], vec![Ok(())]));
         let sink = CountingSink::default();
-        let step = feed.step(SECOND_NS, &sink);
+        let step = feed.step(|| SECOND_NS, &sink);
 
         let market = step
             .statuses
@@ -597,10 +629,10 @@ mod tests {
         let mut feed = loop_over(ScriptedSource::new(Vec::new(), Vec::new()));
         let sink = CountingSink::default();
 
-        feed.step(SECOND_NS, &sink); // first step always probes
-        let early = feed.step(SECOND_NS + SECOND_NS, &sink); // 1 s later: not due
+        feed.step(|| SECOND_NS, &sink); // first step always probes
+        let early = feed.step(|| SECOND_NS + SECOND_NS, &sink); // 1 s later: not due
         assert_eq!(early.broker_probe, BrokerProbe::NotDue);
-        let due = feed.step(SECOND_NS + 6 * SECOND_NS, &sink); // 6 s later: due
+        let due = feed.step(|| SECOND_NS + 6 * SECOND_NS, &sink); // 6 s later: due
         assert_eq!(due.broker_probe, BrokerProbe::Answered);
     }
 
@@ -648,7 +680,7 @@ mod tests {
 
         let mut feed = loop_over(ScriptedSource::new(vec![Ok(vec![aapl()])], vec![Ok(())]));
         let sink = CountingSink::default();
-        let step = feed.step(SECOND_NS, &sink);
+        let step = feed.step(|| SECOND_NS, &sink);
         write_snapshot(&path, &step, SECOND_NS).expect("durable write");
 
         let text = fs::read_to_string(&path).unwrap();
@@ -666,5 +698,81 @@ mod tests {
         assert!(leftovers.is_empty(), "scratch files must not accumulate");
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A clock that returns each scripted reading in turn, so a test can make
+    /// wall time advance ACROSS a step the way blocking I/O does.
+    struct SteppingClock {
+        readings: RefCell<Vec<i64>>,
+    }
+
+    impl SteppingClock {
+        fn new(readings: Vec<i64>) -> Self {
+            Self {
+                readings: RefCell::new(readings),
+            }
+        }
+
+        fn read(&self) -> i64 {
+            let mut readings = self.readings.borrow_mut();
+            if readings.len() == 1 {
+                readings[0]
+            } else {
+                readings.remove(0)
+            }
+        }
+    }
+
+    #[test]
+    fn a_broker_timeout_that_crosses_the_threshold_is_stale_immediately() {
+        // The step blocks: the probe can sit on the wire until its operation
+        // deadline expires. If the verdict were dated to the reading taken
+        // BEFORE that wait, a broker whose last answer was just inside the
+        // budget would be judged fresh while the real clock had already passed
+        // 15 s — and the dashboard would stay green for exactly the window
+        // this feature exists to catch.
+        let mut feed = loop_over(ScriptedSource::new(
+            vec![Ok(Vec::new()), Ok(Vec::new())],
+            vec![Ok(()), Err(FeedError::Source("no answer".to_string()))],
+        ));
+        let sink = CountingSink::default();
+
+        // Step 1 at T: the gateway answers, so the broker line is fresh.
+        let first = feed.step(|| SECOND_NS, &sink);
+        assert_eq!(first.broker_probe, BrokerProbe::Answered);
+        assert!(!broker_status(&first).freshness.is_stale());
+
+        // Step 2 enters at T+14 s (inside the budget) and the probe hangs
+        // until its deadline: by the time there is a verdict to make, the
+        // clock reads T+18 s and the broker line is 17 s old.
+        let entered = SECOND_NS + 14 * SECOND_NS;
+        let after_timeout = SECOND_NS + 18 * SECOND_NS;
+        let clock = SteppingClock::new(vec![entered, after_timeout]);
+        let second = feed.step(|| clock.read(), &sink);
+
+        assert_eq!(second.broker_probe, BrokerProbe::Failed);
+        assert_eq!(
+            second.evaluated_at_ns, after_timeout,
+            "the verdict must be dated after the blocking probe, not before it"
+        );
+        assert!(
+            broker_status(&second).freshness.is_stale(),
+            "a broker line 17 s without an answer must be STALE the moment the \
+             probe times out, not one whole step later"
+        );
+        assert!(
+            sink.events
+                .borrow()
+                .iter()
+                .any(|event| event.transition == HeartbeatTransition::BecameStale),
+            "the flip must be published, not merely rendered"
+        );
+    }
+
+    fn broker_status(step: &FeedStep) -> &HeartbeatStatus {
+        step.statuses
+            .iter()
+            .find(|status| matches!(status.feed, HeartbeatFeed::Broker))
+            .expect("the broker line is always watched")
     }
 }

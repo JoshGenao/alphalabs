@@ -204,9 +204,12 @@ mod live {
         let sink = StdoutEventSink;
         let mut steps = 0_u64;
         loop {
-            let now = now_ns();
-            let step = feed.step(now, &sink);
-            if let Err(err) = write_snapshot(&args.snapshot, &step, now) {
+            // `step` reads the clock itself — before the drain, and again after
+            // the blocking I/O for the verdict. The snapshot is stamped with
+            // THAT second reading, so the header a reader ages the file by is
+            // the same instant the rows were judged at.
+            let step = feed.step(now_ns, &sink);
+            if let Err(err) = write_snapshot(&args.snapshot, &step, step.evaluated_at_ns) {
                 // The snapshot IS the dashboard's view. If it cannot be
                 // written, continuing would leave the operator reading an
                 // increasingly old file with no indication anything is wrong —

@@ -445,3 +445,32 @@ def test_a_fixture_script_cannot_masquerade_as_the_live_feed(tmp_path: Path) -> 
                 "ATP_MD003_LOG_DIR": str(tmp_path),
             },
         )
+
+
+def test_a_broker_timeout_crossing_the_threshold_publishes_stale_at_once() -> None:
+    """Runs the Rust invariant: the verdict is dated AFTER the blocking probe.
+
+    A step blocks — the probe can sit on the wire until its deadline expires.
+    Dating the verdict to the reading taken before that wait would let a broker
+    line that has really been silent for 17 s be judged fresh, keeping the
+    dashboard green through exactly the window this feature exists to catch.
+    """
+
+    result = subprocess.run(
+        [
+            "cargo",
+            "test",
+            "-p",
+            "atp-market-data",
+            "--lib",
+            "live_feed::tests::a_broker_timeout_that_crosses_the_threshold_is_stale_immediately",
+            "--",
+            "--exact",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
