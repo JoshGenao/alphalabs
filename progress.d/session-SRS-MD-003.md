@@ -301,3 +301,98 @@ RESUME / NEXT — in order:
   dashboard mount — all built and adversarially converged. Unchanged deferred owners: MD-004
   probe bridge, MD-005 suppression, MD-006/NOTIF-001 routing, MD-007 live gap detection
   (unsatisfiable from this vendor API — TWS exposes no sequenced market-data stream).
+
+--- SESSION 3, PART 2: THE OPERATOR LIVE WINDOW ACTUALLY RAN (2026-08-03 11:33–12:00 UTC) ---
+
+THE GATEWAY BLOCKER, AND THE SECOND ONE BEHIND IT.
+  The operator cleared the "Existing session detected" modal and IBC completed login
+  (account DU5302722, paper, Read-Only API false). Port 4002 bound. But every request still
+  died: handshake OK, then `Connection reset by peer` / `closed the connection mid-frame`.
+  CAUSE: the gateway's jts.ini carries `TrustedIPs=127.0.0.1` (regenerated on today's boot),
+  and this Mac is on a different subnet (192.168.2.x vs the VM's 10.0.0.x), so the gateway
+  accepted the socket and then dropped an untrusted API client.
+  FIX USED — an SSH port-forward, so the gateway sees a trusted 127.0.0.1, and NO change was
+  made to the trading VM's configuration:
+      ssh -N -L 14002:127.0.0.1:4002 <vm>
+      ATP_IB_HOST=127.0.0.1 ATP_IB_PAPER_PORT=14002 <command>
+  Use this for every future live window from a non-VM host; it is cheaper and safer than
+  editing TrustedIPs or setting AcceptIncomingConnectionAction=accept on a trading gateway.
+
+EVIDENCE REGENERATED — the tripwire is cleared.
+  `ATP_RUN_INTEGRATION=1 python3 tools/ib_adapter_check.py` -> SRS-EXE-006 PASS, operator
+  paper-account round trip GREEN, result_line "test result: ok. 1 passed" (asserted, not a
+  MD-006-style non-asserting diagnostic — the per-op output was read).
+  `python3 tools/ib_api_version_check.py --sync` -> SRS-EXE-007 PASS.
+  Run TWICE: the Mutex cfg fix touches interactive_brokers.rs, one of the three digest files.
+  ./init.sh now reaches "✓ Environment ready"; pytest is 4549 passed / 0 FAILED.
+
+A REAL CI REGRESSION THIS BRANCH INTRODUCED, found only by running the gate.
+  Session 2 inserted `use std::sync::atomic::{AtomicU64, Ordering};` directly above
+  `use std::sync::Mutex;`, and the `#[cfg(feature = "ib-live-transport")]` that had guarded
+  Mutex ended up guarding AtomicU64 — leaving Mutex unconditionally imported. Every build we
+  had run enabled the feature, so nothing caught it; `cargo clippy --workspace -- -D warnings`
+  (default features) did. Gate restored and now PINNED by
+  tests/domain/test_ib_adapter_envelope.py::test_the_default_build_carries_nothing_from_the_live_transport
+  (mutation-verified). The rule was already written in that file's docstring; it just had no test.
+
+ALL FOUR AC LEGS, PROVEN LIVE — `md003_live_feed_cli` against the real gateway, AAPL,
+dedicated client id, delayed data (reqMarketDataType 3). Both feeds show never_observed=false,
+i.e. genuine IB tick deliveries and genuine reqCurrentTime round trips.
+  FRESH  -> GET /dashboard/api/heartbeat 200 ok:true any_stale:false
+            market_data:AAPL staleness_ms=10819 stale=False; ib_gateway staleness_ms=3057
+            health.market_data_heartbeat {state: FRESH, data_source: "md003_live_feed_cli"}
+  CUT the feed (daemon left running) ->
+  DETECTED: event kind=HEARTBEAT_STALE feed=broker      staleness_ms=15001
+            event kind=HEARTBEAT_STALE feed=market_data staleness_ms=15000
+            (the market-data event is 15000.223 ms at ns precision — strictly OVER the
+            threshold, truncated to 15000 in the ms field. The boundary behaves exactly as
+            specified: over, not at.)
+  DISPLAYED: GET /dashboard/api/heartbeat 200 any_stale:true
+            market_data:AAPL staleness_ms=45326 stale=True; ib_gateway staleness_ms=37565 stale=True
+  HEALTH:   health.market_data_heartbeat = {"ok": false, "state": "STALE", "any_stale": true,
+            "stale_feeds": ["ib_gateway", "market_data:AAPL"], "watched_feeds": 2,
+            "threshold_ms": 15000, "data_source": "md003_live_feed_cli"}
+  LOGGED:   persisted JsonlLogStore records — WARN HEARTBEAT_STALE source=MARKET_DATA and
+            WARN HEARTBEAT_STALE source=IB_GATEWAY.
+  RESTORE -> HEARTBEAT_RECOVERED on both feeds; INFO HEARTBEAT_RECOVERED persisted for both;
+            health back to FRESH.
+
+  Honest notes on the run:
+  * The dashboard reads came from THREE separate provider processes (one per phase of the
+    harness). A fresh process has an empty dedup set, so it replays the snapshot's transition
+    journal and re-logs flips it did not personally observe — which is why the final log listing
+    shows the STALE pair twice. Within a SINGLE provider lifetime the once-per-flip discipline
+    held exactly (the stale-phase process wrote exactly 2 records across 5 polls). Production
+    runs one long-lived provider, so this is a harness artifact — but a dashboard RESTART would
+    re-log journal history into the audit trail. Errs toward more audit, never toward a false
+    all-clear. Worth a follow-up, not a blocker.
+  * With the feed cut, each step fails instantly (ECONNREFUSED) and the loop spins with no
+    backoff — it burned a 400-step budget in seconds during the first attempt. Not a
+    correctness problem (every step still evaluates, which is what keeps the verdict honest),
+    but a pacing follow-up for a long outage.
+  * 5 of ~150 steps logged "poll budget expired midway through an inbound frame; dropping the
+    session so the stream resynchronizes" at poll-budget 500 ms. Session 2's R3 guard doing its
+    job; a 1500 ms budget showed far fewer. Tune the budget for production.
+
+JUDGMENT-CRITIC ROUND 8 (reviewer=codex) — verdict BLOCK, and it is recorded as BLOCK.
+  Both findings are architectural scope residuals on UNBUILT features, not in-scope defects:
+  [high] subscription ownership — unchanged, deferred to SRS-MD-001 (empty struct today).
+  [high] ACCOUNT SCOPE, new this round: IbLiveTickSource always builds IbAccountKind::Paper
+    (the transport refuses Live pending SRS-EXE-001), so the `ib_gateway` cell reports the
+    PAPER endpoint and must not be read as the broker connection real execution uses. Now
+    recorded in heartbeat_freshness_contract.live_feed, at the IbLiveTickSource::connect call
+    site, and at the dashboard mount point.
+  Codex's own next_steps: "Treat the branch as serialized/incomplete unless these runtime path
+  mismatches are resolved or explicitly excluded from production health." That is exactly the
+  disposition taken, under explicit operator authorization: integrate serialized, passes STAYS
+  FALSE, the mount opt-in and unset by default. No APPROVE was faked.
+
+WHY passes STAYS FALSE even though all four legs passed live: the legs were demonstrated on a
+PAPER gateway and on the daemon's OWN reqMktData lines. Until SRS-MD-001 owns the subscriptions
+strategies consume and SRS-EXE-001 provides the live-account path, a green cell here does not
+mean the platform's market-data and broker paths are healthy — only that these ones are.
+
+RESUME / NEXT: flip to complete once MD-001 and EXE-001 land and the feed is re-pointed at the
+consolidated stream + the live-designated gateway; re-run the live window above (SSH-forward
+recipe included) and then close_feature.py SRS-MD-003 --verified. Everything else is built and
+adversarially converged — do NOT rebuild it.
