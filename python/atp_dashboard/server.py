@@ -318,6 +318,18 @@ def mount_default_dashboard(
     #   ATP_MD003_SNAPSHOT     — the LIVE producer: the durable snapshot
     #       ``md003_live_feed_cli`` rewrites from real IB tick deliveries and
     #       genuine gateway round trips. This is the production wiring.
+    #
+    #       WHAT IT ATTESTS, PRECISELY: the daemon opens its OWN reqMktData
+    #       lines from the operator's --symbol list, so a FRESH verdict here
+    #       means "those lines are delivering", NOT "every market-data path a
+    #       strategy consumes is healthy". Until SRS-MD-001's Market Data
+    #       Subscription Manager owns these subscriptions, freshness can read
+    #       healthy while a different consolidated path is wedged, and these
+    #       lines are spent outside that manager's dedup/line-limit accounting.
+    #       Deferred with its consequences and its owner in
+    #       heartbeat_freshness_contract.live_feed.subscription_ownership.
+    #       That is why this is opt-in and unset by default: mounting it is an
+    #       operator's explicit choice, made with the scope limit in view.
     #   ATP_MD003_OBSERVATIONS — the FIXTURE producer: the directive script
     #       ``md003_heartbeat_cli`` replays. Demonstration and tests only.
     #

@@ -446,3 +446,58 @@ fn poll_drops_an_undecodable_tick_rather_than_guessing_its_line() {
     );
     finish(handle);
 }
+
+#[test]
+fn ticks_for_another_line_survive_a_second_subscribe() {
+    // The same shared-socket hazard as the heartbeat case, on the subscribe
+    // path. Opening symbol #2 waits for ITS confirmation while symbol #1 is
+    // already flowing; ticks for #1 arrive on that same socket meanwhile.
+    // Dropping them would age a line that is actively delivering into a false
+    // staleness alarm — on every multi-symbol connect, and again on every
+    // resubscribe after a reconnect.
+    let (gateway, _captured, handle) = scripted_gateway(NORMAL_DEADLINE, |mut stream, sender| {
+        server_handshake(&mut stream, &sender);
+        let _ = server_read_frame(&mut stream); // reqMarketDataType
+        let _ = server_read_frame(&mut stream); // reqMktData -> 9000
+        server_write_frame(&mut stream, &["1", "6", "9000", "4", "187.25", "3", "1"]);
+        let _ = server_read_frame(&mut stream); // reqMktData -> 9001
+        // The FIRST line keeps delivering while the second waits to confirm.
+        server_write_frame(&mut stream, &["1", "6", "9000", "4", "187.30", "3", "1"]);
+        server_write_frame(&mut stream, &["2", "6", "9000", "5", "400"]);
+        // Only now does the second subscription confirm.
+        server_write_frame(&mut stream, &["1", "6", "9001", "4", "410.10", "3", "1"]);
+        std::thread::sleep(HOLD_OPEN);
+    });
+
+    let first = gateway
+        .subscribe_market_data(&atp_adapters::MarketDataSubscription {
+            symbol: "AAPL".to_string(),
+            channel: atp_adapters::MarketDataChannel::Trades,
+        })
+        .expect("first subscription confirmed");
+    assert_eq!(first.subscription_id, "ib-md-9000");
+
+    let second = gateway
+        .subscribe_market_data(&atp_adapters::MarketDataSubscription {
+            symbol: "MSFT".to_string(),
+            channel: atp_adapters::MarketDataChannel::Trades,
+        })
+        .expect("second subscription confirmed");
+    assert_eq!(second.subscription_id, "ib-md-9001");
+
+    let ticks = gateway
+        .poll_market_data(&[9000, 9001], POLL_BUDGET)
+        .expect("drain after both subscriptions");
+    let first_line = ticks.iter().filter(|t| t.ticker_id == 9000).count();
+    assert_eq!(
+        first_line, 3,
+        "every tick delivered for the already-subscribed line must reach the \
+         feed loop: 1 confirming + 2 arriving during the second subscribe"
+    );
+    assert_eq!(
+        ticks.iter().filter(|t| t.ticker_id == 9001).count(),
+        1,
+        "the tick that confirmed the second line is evidence too"
+    );
+    finish(handle);
+}

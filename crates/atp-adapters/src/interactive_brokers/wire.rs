@@ -911,16 +911,26 @@ impl IbSession {
             match frame.first().map(String::as_str) {
                 Some(IN_MARKET_DATA_TYPE) if frame.get(2) == Some(&id_field) => break,
                 Some(IN_TICK_REQ_PARAMS) if frame.get(1) == Some(&id_field) => break,
-                Some(IN_TICK_PRICE | IN_TICK_SIZE) if frame.get(2) == Some(&id_field) => {
+                Some(IN_TICK_PRICE | IN_TICK_SIZE) => {
+                    // EVERY decodable tick seen here is buffered, not just the
+                    // one naming this request. One socket carries every line,
+                    // so while we wait for THIS symbol's confirmation the ticks
+                    // of already-subscribed symbols keep arriving; discarding
+                    // them would age a line that is actively flowing into a
+                    // false staleness alarm — during multi-symbol connect, and
+                    // again on every resubscribe after a reconnect. The ticker
+                    // id decides only whether the subscription is CONFIRMED.
+                    if let Some(tick) = decode_delivered_tick(&frame) {
+                        self.buffer_tick(tick);
+                    }
                     // This frame both confirms the subscription AND is a real
                     // delivered tick. The live feed loop subscribes before it
                     // polls, so dropping it here would let an illiquid line
                     // read never-observed — stale — while IB had in fact
                     // already delivered data for it.
-                    if let Some(tick) = decode_delivered_tick(&frame) {
-                        self.buffer_tick(tick);
+                    if frame.get(2) == Some(&id_field) {
+                        break;
                     }
-                    break;
                 }
                 Some(IN_ERR_MSG) => {
                     let err = parse_err_frame(&frame)?;
