@@ -168,3 +168,136 @@ R4 [high] SUBSCRIPTION OWNERSHIP — NOT FIXED, SCOPED (operator authorization r
   are spent outside the manager's dedup/line-limit accounting) and what MD-001 must do to close it.
   This is the documented deferred-slice non-convergence case: fix the in-scope bugs, scope the rest
   to a named owner, never fake an APPROVE.
+
+=== SESSION SRS-MD-003 (3) — the mount + three adversarial rounds, 2026-08-03 ===
+Session-3 outcome: NOT INTEGRATED (branch parked, lease released). The first `Outcome:`
+line at the top of this file is unchanged on purpose — `serialized_notes()` reads only that one.
+Branch: agent/SRS-MD-003-stream, rebased onto origin/main (was 17 behind), 5 commits ahead.
+
+THE ONE THING BLOCKING THIS FEATURE — read this first.
+  The IB Gateway never became reachable this session, so the operator live window never ran.
+  It is UP (systemd ibgateway.service active via IBC, VM reachable on ssh) but WEDGED: IBC
+  logged in at 03:59:24 and stopped at a modal dialog —
+      "detected dialog entitled: Existing session detected"
+      "User must choose whether to continue with this session (scenario 1)"
+  because /home/jgenao622/ibc/config.ini sets ExistingSessionDetectedAction=manual and nobody
+  clicked. No API port is bound (ss shows nothing on 4001/4002); polled every 15 s for 45 min.
+  REMEDY (operator choice): either click through it on the VM console/VNC, or set
+  ExistingSessionDetectedAction=primary and restart ibgateway.service so IBC dismisses it.
+  ALSO CHECK BEFORE THE WINDOW: config.ini has AcceptIncomingConnectionAction=manual and
+  jts.ini has TrustedIPs=127.0.0.1 — a connection from a non-local IP will pop an accept
+  dialog and hang. Add the client IP to the trusted list or accept it once at the console.
+
+  Consequence: the branch CANNOT INTEGRATE IN EITHER MODE right now. Session 2's wire change
+  invalidated the SRS-EXE-006/EXE-007 evidence code_digest, so 8 tests are red AND `./init.sh`
+  itself fails ("IB adapter runtime check failed"). Only
+  `ATP_RUN_INTEGRATION=1 python3 tools/ib_adapter_check.py` against the live paper account
+  clears it. Landing without it would push a red main.
+
+WHAT THIS SESSION BUILT
+1. THE MOUNT — the last unwired seam. `mount_default_dashboard` only ever read
+   ATP_MD003_OBSERVATIONS and always built the fixture CliHeartbeatSource, so the "displayed"
+   and "reflected in system health" AC legs could not be demonstrated against the LIVE producer
+   at all. Added ATP_MD003_SNAPSHOT (python/atp_dashboard/server.py). Exactly one producer may
+   be configured: setting both fails closed at boot (two producers on one channel leaves it
+   ambiguous which one health reflects, and a fixture's verdicts read as live evidence is an
+   attribution bug on a safety surface). ATP_MD003_LOG_DIR stays mandatory for either.
+2. `HeartbeatSource` Protocol (python/atp_dashboard/heartbeat.py) — the provider now depends on
+   the structural contract both sources already satisfied, not the concrete fixture class.
+3. Rebased onto origin/main. One conflict, crates/atp-adapters/src/lib.rs: my `DeliveredTick`
+   re-export met SRS-NOTIF-001's `pub use notification::{...}`. Additive — kept both.
+
+THREE JUDGMENT-CRITIC ROUNDS (reviewer=codex each time). Four real defects, all fixed and
+MUTATION-VERIFIED (each regression test was confirmed to FAIL with the fix reverted):
+R5 [high] Partial resubscribe leaked duplicate IB lines. `subscribe_all` only committed
+  `self.lines` after the whole loop succeeded, so a late failure left the earlier successful
+  reqMktData open on the wire but UNTRACKED and left `subscribed_generation` stale — and
+  `resubscribe_if_reconnected` then fired on every single step, opening a fresh duplicate line
+  each time until IB's line allowance was gone. Now the lines that opened are always committed
+  with their generation; the failed symbol ages into STALE (the truth about a line carrying no
+  data) and a genuine reconnect still retries everything.
+  Test: a_partial_subscribe_commits_the_lines_that_opened (drives a scripted fake IB server).
+R6 [high] A second subscribe ate a live line's ticks. One socket carries every line, so while
+  `subscribe_market_data` waited for symbol #2's confirmation, ticks for the already-subscribed
+  symbol #1 fell through the match arm and were DISCARDED — aging a line that was actively
+  flowing into a false staleness alarm, on every multi-symbol connect and every resubscribe.
+  Same shared-socket hazard session 2 fixed for `current_time_round_trip`, never fixed on the
+  subscribe path. Every decodable tick is now buffered; the ticker id decides only CONFIRMATION.
+  Test: ticks_for_another_line_survive_a_second_subscribe.
+R7 [high] The verdict was dated BEFORE the blocking probe. The CLI sampled the clock and passed
+  the reading into `step`, but a step blocks — the drain spends its poll budget and the broker
+  probe can sit on the wire to its operation deadline. So a broker whose last answer landed near
+  the threshold could be judged FRESH after the real clock had already crossed 15 s, keeping the
+  dashboard green through exactly the window this feature exists to catch. `step` now takes the
+  CLOCK and reads it twice: observations keep the pre-I/O reading (dating an observation early
+  only ages a line faster — fail-closed), the EVALUATION uses a post-I/O reading floored at the
+  first. FeedStep carries `evaluated_at_ns` and the CLI stamps the snapshot with it, so the
+  header instant and the row verdicts can never disagree.
+  Tests: a_broker_timeout_that_crosses_the_threshold_is_stale_immediately (L1) +
+  test_a_broker_timeout_crossing_the_threshold_publishes_stale_at_once (L7 shell).
+
+THE RESIDUAL — NOT FIXED, SCOPED TO ITS OWNER (unchanged from session 2, re-raised in R5 and R7)
+  SUBSCRIPTION OWNERSHIP. Codex wants freshness sourced from the Market Data Subscription
+  Manager's consolidated stream instead of the daemon's own reqMktData lines. Still not
+  buildable: SRS-MD-001 is passes:false and `MarketDataSubscriptionManager` is an empty struct —
+  there is no consolidated stream to observe. What THIS session changed is exposure (the new
+  mount makes the producer production-reachable), so the mitigation is honesty at the point of
+  choice: the scope limit ("a FRESH verdict means those lines are delivering, NOT that every
+  path a strategy consumes is healthy") is stated at the mount point, the knob is opt-in and
+  unset by default, and heartbeat_freshness_contract.live_feed.subscription_ownership records
+  the production exposure alongside the original consequences and MD-001 as owner.
+  Codex's own second remedy is "keep this mount non-production and non-shippable until MD-001
+  owns the same subscriptions" — which is what passes:false plus an opt-in, default-off knob
+  means. THIS NEEDS OPERATOR AUTHORIZATION before integrating, exactly as session 2's R4 did.
+  The documented deferred-slice non-convergence case: fix every in-scope bug, scope the rest to
+  a named owner, never fake an APPROVE.
+
+WHAT I TESTED (per feature step)
+  Step 1: FAIL — `./init.sh` → "✗ Environment failed / IB adapter runtime check failed".
+    Single cause: the stale evidence digest. Everything before that step passed. This is the
+    tripwire doing its job, not a broken environment.
+  Step 2: PASS (fixture/mock legs) — 4541 passed in pytest -m "not integration and not e2e";
+    the new mount serves the live snapshot through the real runtime (L4
+    test_default_mount_serves_the_live_snapshot_producer: GET /dashboard/api/heartbeat
+    any_stale=true, GET /dashboard/api/system health.market_data_heartbeat STALE with
+    data_source=md003_live_feed_cli). NOT PASS on the live leg: no IB session was reachable.
+  Step 3: PARTIAL — detected/logged/displayed/health all proven end to end through the real
+    monitor, provider, publisher, REST and log store, but over a SNAPSHOT FIXTURE, not real IB
+    ticks. The genuine Fresh->Stale transition on a live market-data line remains unwitnessed.
+  Step 4: passes STAYS FALSE. The evidence does not prove the requirement end to end.
+  Gates: cargo test --workspace 0 failed. pytest 4541 passed / 8 failed (the digest tripwire,
+    all 8). 20 of 22 tools/*_check.py pass; the 2 failures are that same tripwire.
+    clippy + ruff clean on every touched file; mypy python/ at its pre-existing baseline
+    (4 errors, all in the untouched atp_orchestration/hot_swap_triggers.py).
+    NOTE one flake seen once and not reproduced: tests/test_concurrent_read_contract.py::
+    AggregateEvidenceTest::test_run_checks_emits_ten_items failed in a run that immediately
+    followed a cargo test --workspace (its cargo smoke contends on the target lock); it passed
+    alone and in the next two full runs. Not caused by this branch.
+
+Critic verdicts:
+  deterministic: APPROVE — no findings (run before each of the 3 commits)
+  judgment (adversarial_review.py, reviewer=codex): rounds 5, 6, 7. R5 and R6 blocked on
+    defects that are now fixed + regression-tested. R7 blocks SOLELY on the MD-001 subscription
+    ownership residual above — no in-scope defect remains. NOT an APPROVE, and not recorded as
+    one.
+
+RESUME / NEXT — in order:
+  1. Unwedge IB Gateway (see the top of this section). Confirm `ss -ltn` shows 4002 bound.
+  2. `ATP_RUN_INTEGRATION=1 python3 tools/ib_adapter_check.py` — regenerates
+     architecture/ib_paper_account_evidence.json. This is what clears the 8 red tests AND
+     `./init.sh`. Read the PER-OP output, not just the exit code (the MD-006 false-green lesson:
+     a harness once reported PASSED on 0/6 successful IB ops).
+  3. `cargo build -p atp-orchestrator --features ib-live-transport --bin md003_live_feed_cli`,
+     then run it with a DEDICATED --client-id and --snapshot <path>. Point the dashboard at it
+     with ATP_MD003_SNAPSHOT=<path> ATP_MD003_LOG_DIR=<dir> (new this session — no code needed).
+  4. US equities must be OPEN: the wire encodes STK/SMART/USD only, and reqMktData asks for
+     delayed data (type 3, no entitlement needed) which still requires market hours. Confirm
+     ticks arriving and health FRESH, then PAUSE the feed >15 s and confirm all four legs:
+     detected, HEARTBEAT_STALE logged, dashboard row stale, health.market_data_heartbeat
+     flipped. Resume -> HEARTBEAT_RECOVERED.
+  5. Get operator authorization on the subscription-ownership residual, then
+     `integrate --mode complete` (or close_feature.py SRS-MD-003 --verified).
+  Do NOT rebuild the monitor, fixture CLI, provider, live feed loop, IbLiveTickSource, or the
+  dashboard mount — all built and adversarially converged. Unchanged deferred owners: MD-004
+  probe bridge, MD-005 suppression, MD-006/NOTIF-001 routing, MD-007 live gap detection
+  (unsatisfiable from this vendor API — TWS exposes no sequenced market-data stream).
