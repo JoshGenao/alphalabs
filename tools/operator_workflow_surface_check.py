@@ -556,10 +556,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(
         "SRS-API-001 SDK-SURFACE PASS — operator workflow coverage contract "
-        "(REST/CLI/WebSocket handlers + HTTP server + WS server + CLI runner "
-        "dispatcher deferred to SRS-EXE-001 / SRS-EXE-006 / SRS-ORCH-004 / "
-        "SRS-RESV-002..006 / SRS-BT-001 / SRS-BT-009 / SRS-DATA-002 / "
-        "SRS-LOG-001 / SRS-NOTIF-001 / operator-interface-runtime)"
+        "(REST/CLI/WebSocket handlers deferred to SRS-EXE-001 / SRS-EXE-006 / "
+        "SRS-ORCH-004 / SRS-RESV-002..006 / SRS-BT-001 / SRS-BT-009 / "
+        "SRS-DATA-002 / SRS-NOTIF-001; the operator-interface-runtime HTTP/WS servers "
+        "+ CLI runner are BUILT in python/atp_runtime, and the SRS-LOG-001 LOGS "
+        "workflow is REAL via atp_logs_service.wire_logs)"
     )
     for line in evidence:
         print(f"  * {line}")

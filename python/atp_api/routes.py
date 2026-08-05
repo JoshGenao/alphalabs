@@ -124,6 +124,16 @@ class Route:
             (``atp_runtime.rest_server._ACTION_CONFIRM_REQUIRED``, derived from
             the CLI's confirmation-required commands). The two are pinned
             together by tools/rest_api_check.py so they cannot drift.
+        served_by: Feature id that ships a REAL handler for this route, or ``""``
+            while the route is contract-only. This governs one sentence of the
+            generated OpenAPI description, and that sentence is the difference
+            between two opposite statements to an integrator: "this endpoint is
+            a placeholder, do not build against it" versus "this endpoint
+            answers, and the schema above is what it enforces." Leaving the
+            placeholder on a route that now serves real traffic is public
+            contract drift — the generated client is told to expect nothing from
+            an endpoint that returns audit records. Set it in the same change
+            that binds the handler.
 
     Example:
         >>> Route(
@@ -160,6 +170,17 @@ class Route:
     #: ``tests/boundary/test_hot_swap_trigger_surface.py`` checks the documented
     #: types against what the handlers actually accept and return.
     field_types: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    #: For a response field that is an ARRAY OF OBJECTS, the item's own fields and
+    #: types: ``(("events", (("timestamp", "string"), ...)), ...)``.
+    #:
+    #: :attr:`response_fields` is flat, so without this a nested payload can only be
+    #: described by hoisting the item's fields to the top level — where the handler
+    #: does not return them. A generated client would then look for ``timestamp``
+    #: beside ``events`` instead of inside each element, which is a wrong public
+    #: contract rather than a vague one.
+    response_item_fields: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = field(
+        default_factory=tuple
+    )
     #: ``True`` when the route's handler rejects any body key outside
     #: :attr:`request_fields`, which the schema then publishes as
     #: ``additionalProperties: false``.
@@ -173,6 +194,10 @@ class Route:
     #: what it would demand, but a live one that rejects a missing field while the schema
     #: calls it optional is drift a generated client walks straight into.
     required_request_fields: tuple[str, ...] = field(default_factory=tuple)
+    #: Feature id shipping a real handler for this route; ``""`` while contract-only.
+    #: See the class docstring — this decides whether the public description calls the
+    #: endpoint a placeholder or a served surface.
+    served_by: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -460,6 +485,11 @@ ROUTES: tuple[Route, ...] = (
         capability=Capability.LOGS,
         summary="Query system or strategy logs by severity, source, and time range.",
         srs_refs=("SRS-LOG-001", "SYS-38", "SYS-61"),
+        # A real handler answers here (atp_logs_service.LogsQueryHandler), so the
+        # contract-only sentence every other route carries would be a false public
+        # statement: it tells an integrator not to build against an endpoint that
+        # returns audit records, and tells an operator the trail is unavailable.
+        served_by="SRS-LOG-001",
         request_fields=(
             "log_class",
             "severity",
@@ -469,14 +499,64 @@ ROUTES: tuple[Route, ...] = (
             "start_time",
             "end_time",
         ),
+        # TOP-LEVEL response fields only. The per-event fields live under
+        # ``events[]`` and are declared in ``response_item_fields`` — hoisting
+        # them here would document them beside the array instead of inside it.
+        #
+        # An audit trail is unbounded, so a page is a page: the envelope says
+        # which class it read, how many records MATCHED, how many it RETURNED,
+        # whether it was TRUNCATED, and the cap applied — a caller must never
+        # mistake one page for the whole trail. ``store_present`` distinguishes
+        # an absent trail from an empty one.
         response_fields=(
             "events",
-            "timestamp",
-            "severity",
-            "source",
-            "event_type",
-            "message",
-            "correlation_id",
+            "log_class",
+            "returned",
+            "matched",
+            "truncated",
+            "limit",
+            "store_present",
+            "event_fields",
+            "srs_ref",
+        ),
+        # This route HAS a live handler (atp_logs_service.LogsQueryHandler), so the
+        # placeholder "everything is a string" would be worse than no schema: a
+        # generated client would misparse the event array, the counters, and the
+        # booleans it actually receives.
+        field_types=(
+            ("event_fields", "array"),
+            ("returned", "integer"),
+            ("matched", "integer"),
+            ("limit", "integer"),
+            ("truncated", "boolean"),
+            ("store_present", "boolean"),
+        ),
+        # One element of ``events`` (SyRS SYS-61). ``log_class`` travels with
+        # every event because ONE route serves both trails: without the
+        # discriminator a client cannot tell a system event from a user strategy
+        # one, and the SRS-LOG-001 separation would end at the response boundary.
+        response_item_fields=(
+            (
+                "events",
+                (
+                    ("timestamp", "string"),
+                    ("severity", "string"),
+                    ("source", "string"),
+                    ("event_type", "string"),
+                    ("message", "string"),
+                    ("correlation_id", "string"),
+                    ("log_class", "string"),
+                    # Null on system records, the emitting strategy on strategy
+                    # records: `source` alone cannot attribute a strategy line.
+                    ("strategy_id", "string|null"),
+                    # Opaque identity of the persisted line. Values repeat by
+                    # design (a retried operation writes the same message, and
+                    # the rendered timestamp is milliseconds), so a consumer
+                    # merging this feed with the LOGS channel needs something
+                    # that does not.
+                    ("record_id", "string"),
+                ),
+            ),
         ),
     ),
     # ----- Alerts  [SRS-NOTIF-001, SYS-46, SYS-58]

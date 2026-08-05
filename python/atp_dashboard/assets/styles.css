@@ -1358,3 +1358,103 @@ body {
   .hs[data-state="armed"] .hs__ring-arc { stroke-dashoffset: 0; }
   .hs__dial { animation: none; opacity: 1; transform: none; }
 }
+
+/* ---------------------------------------------------------------------------
+   SRS-LOG-001 persistent log pane (SyRS SYS-61 system events + SYS-38 user
+   strategy logs). The two classes are rendered as two independent columns fed
+   by two separate stores — the separation the feature exists to provide is
+   visible in the layout, not just in the payload. Severity is a colour token
+   reused from the alerts vocabulary; producer coverage renders as an explicit
+   strip so a short table can never read as a quiet system.
+   --------------------------------------------------------------------------- */
+.logs { display: flex; flex-direction: column; gap: 14px; }
+
+.logs__bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; }
+.logs__summary { font-size: 12.5px; color: var(--ink-dim); flex: 1 1 240px; min-width: 200px; }
+.logs__summary[data-tone="ok"] { color: var(--ink); }
+.logs__summary[data-tone="warn"] { color: var(--warn); }
+.logs__summary[data-tone="error"] { color: var(--bad); font-weight: 600; }
+
+.logs__filters { display: inline-flex; align-items: center; gap: 8px; }
+.logs__filter {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ink-dim);
+}
+.logs__select {
+  font-family: var(--mono); font-size: 11px; color: var(--ink);
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: 4px 8px;
+}
+
+/* Two columns on a wide panel, stacked when there is no room — never merged. */
+.logs__split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.logs__class {
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--panel-2); padding: 10px 12px 4px; min-width: 0;
+}
+.logs__classhead {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding-bottom: 8px; border-bottom: 1px solid var(--line-strong); margin-bottom: 6px;
+}
+.logs__classtitle {
+  margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink);
+}
+.logs__store { font-family: var(--mono); font-size: 9.5px; color: var(--ink-faint); }
+.logs__count { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); margin-left: auto; }
+.logs__count[data-tone="error"] { color: var(--bad); font-weight: 600; }
+
+.logs__scroll { overflow-x: auto; max-height: 320px; overflow-y: auto; }
+.logs__table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.logs__table th {
+  position: sticky; top: 0; z-index: 1; background: var(--panel-2);
+  text-align: left; padding: 6px 10px 6px 0; font-size: 10px; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-dim);
+  border-bottom: 1px solid var(--line-strong); white-space: nowrap;
+}
+.logs__table td {
+  padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line);
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+  color: var(--ink-dim); vertical-align: top;
+}
+.logs__table tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.logs__msg { color: var(--ink); overflow-wrap: anywhere; white-space: normal; }
+.logs__corr { color: var(--ink-faint); overflow-wrap: anywhere; }
+.logs__time { white-space: nowrap; }
+
+.logs__sev {
+  font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; padding: 2px 7px; border-radius: 999px;
+  color: var(--ink-dim); background: color-mix(in srgb, var(--ink-faint) 16%, transparent);
+  border: 1px solid var(--line); white-space: nowrap;
+}
+.logs__sev[data-sev="CRITICAL"] { color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, transparent); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
+.logs__sev[data-sev="ERROR"] { color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.logs__sev[data-sev="WARN"] { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.logs__sev[data-sev="INFO"] { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+
+.logs__empty { font-size: 11px; color: var(--ink-faint); margin: 8px 0 10px; overflow-wrap: anywhere; }
+/* An unreadable store is never styled like an empty one. */
+.logs__empty[data-tone="error"] { color: var(--bad); font-weight: 600; }
+.logs__empty[data-tone="warn"] { color: var(--warn); }
+
+/* Producer coverage: which SYS-61 sources can be written at all today. */
+.logs__coverage { display: flex; flex-wrap: wrap; gap: 6px; }
+.logs__cov {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.04em;
+  padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line);
+  color: var(--ink-dim); background: var(--panel-2); white-space: nowrap;
+}
+.logs__cov[data-state="produced"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+.logs__cov[data-state="partial"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+/* Hatched, like every other "no producer exists" cell on this dashboard. */
+.logs__cov[data-state="deferred"] {
+  color: var(--deferred); border-style: dashed;
+  background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--deferred) 14%, transparent) 0 3px, transparent 3px 6px);
+}
+
+.logs__note { font-size: 10.5px; color: var(--ink-faint); margin: 0; overflow-wrap: anywhere; }
+
+@media (max-width: 860px) {
+  .logs__split { grid-template-columns: 1fr; }
+}

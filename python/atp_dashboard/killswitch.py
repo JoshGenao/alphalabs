@@ -75,8 +75,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from atp_logging import Source
-from atp_logging.persistence import LogStoreCorruptionError, read_records
+from atp_logging import LogClass, Source
+from atp_logging.persistence import (
+    LogStoreClassMismatchError,
+    LogStoreCorruptionError,
+    read_records,
+)
 from atp_safety.audit import parse_liquidation_timeout_message
 from atp_safety.state import LastActivationCorruptError, load_last_activation
 
@@ -241,6 +245,13 @@ class DurableKillSwitchStatusSource:
             records = read_records(
                 self._log_dir / _SYSTEM_LOG_NAME,
                 max_files=self._max_log_files,
+                # This path IS the system trail, so say so: without it a
+                # strategy record contaminating the file would simply be
+                # filtered away by the two filters below, and the SYS-44b
+                # timeout record would go missing with no sign anything was
+                # wrong. A filter must not decide whether broken separation is
+                # visible.
+                expect_class=LogClass.SYSTEM,
                 source=Source.KILL_SWITCH,
                 event_type="LIQUIDATION_TIMEOUT",
                 newest_first=True,
@@ -249,7 +260,12 @@ class DurableKillSwitchStatusSource:
         except FileNotFoundError:
             # No system log yet is an honest "no timeout record", not an error.
             return None
-        except (LogStoreCorruptionError, OSError, ValueError) as error:
+        except (
+            LogStoreClassMismatchError,
+            LogStoreCorruptionError,
+            OSError,
+            ValueError,
+        ) as error:
             raise KillSwitchStatusUnavailable(
                 f"SRS-LOG-001 system log unreadable for the SYS-44b timeout record: {error}"
             ) from error

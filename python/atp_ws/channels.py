@@ -28,7 +28,7 @@ event-level traces to ``SYS-36``..``SYS-39``, ``SYS-39a``, ``SYS-41``,
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 # --------------------------------------------------------------------------- #
@@ -167,6 +167,26 @@ class EventChannel:
     payload_fields: tuple[str, ...]
     refresh_seconds: int = 5
     requires_subscription: bool = True
+    #: JSON types for payload fields whose channel has a REAL publisher, as
+    #: ``(field, type)`` pairs; ``"string|null"`` renders as a type union.
+    #: Fields left out keep the placeholder ``string`` schema.
+    #:
+    #: The contract is offline, so an unpublished channel documents its fields
+    #: as bare strings and nothing can contradict that. Once a live publisher
+    #: exists the placeholder becomes a false statement about the wire: the LOGS
+    #: channel carries BOTH log classes, and a system record is validated to have
+    #: no ``strategy_id``, so every ordinary system event publishes ``null``
+    #: against a schema that says ``string``. A subscriber validating the
+    #: documented contract would reject the commonest valid event.
+    field_types: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    #: Feature id shipping a real publisher for this channel; ``""`` while
+    #: contract-only. A subscriber reads the channel description to decide whether
+    #: events will ever arrive; leaving the placeholder on a channel that now
+    #: publishes tells them to build a polling fallback they do not need, and the
+    #: reverse would have them wait forever on a silent channel. Set it in the
+    #: change that starts the publisher — the peer of
+    #: :attr:`atp_api.routes.Route.served_by`.
+    served_by: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +286,7 @@ EVENT_CHANNELS: tuple[EventChannel, ...] = (
         name=Channel.LOGS,
         summary="System and strategy log events (event-driven, no fixed cadence).",
         srs_refs=("SRS-LOG-001", "SYS-38", "SYS-61"),
+        served_by="SRS-LOG-001",
         payload_fields=(
             "timestamp",
             "severity",
@@ -273,7 +294,27 @@ EVENT_CHANNELS: tuple[EventChannel, ...] = (
             "event_type",
             "message",
             "correlation_id",
+            # SRS-LOG-001 keeps SYSTEM and STRATEGY logs in separate stores, and
+            # the two REST surfaces keep them in separate responses. This ONE
+            # channel carries both, so the class discriminant has to travel with
+            # every event: without it a subscriber cannot tell a system event
+            # from a user-strategy one, and the separation the feature exists to
+            # provide would end at the WebSocket boundary.
+            "log_class",
+            # ``source`` is always the literal "strategy" on a strategy-class
+            # event, so without the id every Reservoir strategy's lines look
+            # alike on this channel and none can be attributed.
+            "strategy_id",
+            # Opaque identity of the persisted line: the dashboard merges this
+            # channel with a REST poll and must tell one record seen twice from
+            # two records that look alike.
+            "record_id",
         ),
+        # This channel HAS a live publisher (atp_logs_service.LogEventPublisher),
+        # and it carries both classes: a SYSTEM event has no strategy id (the
+        # record schema forbids one), so the field is legitimately null on the
+        # commonest event and the contract has to say so.
+        field_types=(("strategy_id", "string|null"),),
         refresh_seconds=0,
     ),
     EventChannel(

@@ -64,6 +64,7 @@ def _placeholder_object_schema(
     *,
     strict: bool = False,
     required: Iterable[str] = (),
+    item_fields: Mapping[str, tuple[tuple[str, str], ...]] | None = None,
 ) -> dict[str, Any]:
     """An object schema over ``field_names``.
 
@@ -83,6 +84,27 @@ def _placeholder_object_schema(
         # is the DEFAULT state — must say so, or the commonest valid response is documented
         # as schema-invalid.
         properties[name] = {"type": declared.split("|")} if "|" in declared else {"type": declared}
+    # An array-of-objects field describes its ELEMENT here. Hoisting the item's
+    # fields to the top level instead would document them beside the array rather
+    # than inside it — a client generated from that looks in the wrong place.
+    for array_name, item_spec in (item_fields or {}).items():
+        properties[array_name] = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    # Same `int|null` union rendering as the top level: an item
+                    # field that is legitimately null (a system log line has no
+                    # strategy_id) must say so, or the commonest valid element is
+                    # documented as schema-invalid.
+                    item_name: (
+                        {"type": item_type.split("|")} if "|" in item_type else {"type": item_type}
+                    )
+                    for item_name, item_type in item_spec
+                },
+                "additionalProperties": False,
+            },
+        }
     schema: dict[str, Any] = {
         "type": "object",
         "properties": properties,
@@ -185,9 +207,26 @@ def _build_request_body(route: Route) -> dict[str, Any] | None:
     return None
 
 
+def _served_description(owner: str) -> str:
+    """The implemented counterpart of :data:`_PLACEHOLDER_DESCRIPTION`.
+
+    It states two things an integrator needs and one it must not be misled about:
+    the schemas above are enforced, the owner is named, and a deployment that has
+    not composed the handler still answers ``501`` — so "served" is never read as
+    "served everywhere unconditionally".
+    """
+
+    return (
+        f"Implemented by {owner}. The request and response schemas above are the "
+        "ones the live handler enforces, not placeholders. A deployment that has "
+        f"not composed {owner}'s handler returns 501 naming it as the owner."
+    )
+
+
 def _operation_description(route: Route) -> str:
     refs = ", ".join(route.srs_refs)
-    parts = [route.summary, f"SRS trace: {refs}.", _PLACEHOLDER_DESCRIPTION]
+    served = _served_description(route.served_by) if route.served_by else _PLACEHOLDER_DESCRIPTION
+    parts = [route.summary, f"SRS trace: {refs}.", served]
     if route.requires_confirmation:
         parts.append("Requires UI-4 confirmation; pass ``confirm`` query param.")
     elif route.confirmation_actions:
@@ -220,7 +259,9 @@ def _build_operation(route: Route) -> dict[str, Any]:
                 "content": {
                     "application/json": {
                         "schema": _placeholder_object_schema(
-                            route.response_fields, dict(route.field_types)
+                            route.response_fields,
+                            dict(route.field_types),
+                            item_fields=dict(route.response_item_fields),
                         )
                     }
                 },

@@ -343,7 +343,7 @@
       ]
     },
     "/ws/v1/logs": {
-      "description": "System and strategy log events (event-driven, no fixed cadence). SRS trace: SRS-LOG-001, SYS-38, SYS-61. Contract only. Concrete payload schemas land with the downstream feature that owns the publisher (EXE-1, ORCH-1, MD-1, RESV-1, LOG-1, NOTIF-1). Event-driven; no fixed refresh cadence.",
+      "description": "System and strategy log events (event-driven, no fixed cadence). SRS trace: SRS-LOG-001, SYS-38, SYS-61. Published by SRS-LOG-001. The payload schema above is what the live publisher emits, not a placeholder. A deployment that has not composed SRS-LOG-001's publisher registers none for this channel, and the runtime reports it as unserved rather than publishing an empty stream. Event-driven; no fixed refresh cadence.",
       "subscribe": {
         "message": {
           "contentType": "application/json",
@@ -363,7 +363,13 @@
                   "event_type": {
                     "type": "string"
                   },
+                  "log_class": {
+                    "type": "string"
+                  },
                   "message": {
+                    "type": "string"
+                  },
+                  "record_id": {
                     "type": "string"
                   },
                   "severity": {
@@ -371,6 +377,12 @@
                   },
                   "source": {
                     "type": "string"
+                  },
+                  "strategy_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "timestamp": {
                     "type": "string"

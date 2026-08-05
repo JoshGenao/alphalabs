@@ -85,6 +85,13 @@ class OperatorInterfaceRuntime:
         # Channels whose publisher a downstream feature has claimed. A channel
         # counts toward workflow readiness only once its publisher is registered.
         self._publishers: set[str] = set()
+        # Guards ``_publishers``. A publisher claims and RELEASES its channel
+        # from its own background thread as its source becomes readable or
+        # not (SRS-LOG-001), while status requests read the set from server
+        # threads. Individual set operations are atomic, but a status snapshot
+        # inspects the set once per channel — without a lock one report could
+        # straddle a transition and describe a state that never existed.
+        self._publisher_lock = threading.Lock()
         self._register_runtime_handlers()
 
         discovery = self._discovery_index()
@@ -150,6 +157,12 @@ class OperatorInterfaceRuntime:
         exactly who must land for the workflow to complete.
         """
 
+        # ONE consistent view of the claims for the whole report: a snapshot
+        # that saw a channel registered for one workflow and unregistered for
+        # the next would describe a moment that never happened.
+        with self._publisher_lock:
+            claimed = set(self._publishers)
+
         rows: list[dict[str, Any]] = []
         for workflow in self._contract["ac_workflows"]:
             rest_caps = workflow.get("rest_capabilities", [])
@@ -181,7 +194,7 @@ class OperatorInterfaceRuntime:
                         deferred_owners.add(cli_owner(group, command.name))
             for channel in workflow.get("websocket_channels", []):
                 total += 1
-                if channel in self._publishers:
+                if channel in claimed:
                     real += 1
                 else:
                     deferred_owners.add(ws_owner(channel))
@@ -336,12 +349,33 @@ class OperatorInterfaceRuntime:
 
         if channel not in VALID_CHANNELS:
             raise ValueError(f"unknown event channel {channel!r}")
-        self._publishers.add(channel)
+        with self._publisher_lock:
+            self._publishers.add(channel)
+
+    def unregister_publisher(self, channel: str) -> None:
+        """Give a channel's publisher claim BACK (idempotent).
+
+        A claim answers "is this channel being published?", and that can stop
+        being true: the SRS-LOG-001 publisher releases ``LOGS`` when its audit
+        store goes missing or unreadable, because a latched claim would keep
+        ``GET /api/v1/system/status`` reporting the workflow fully served by a
+        stream that has stopped delivering. Readiness that cannot be revoked is
+        readiness that eventually lies.
+
+        The owner re-claims through :meth:`register_publisher` once it is
+        genuinely publishing again.
+        """
+
+        if channel not in VALID_CHANNELS:
+            raise ValueError(f"unknown event channel {channel!r}")
+        with self._publisher_lock:
+            self._publishers.discard(channel)
 
     def is_publisher_registered(self, channel: str) -> bool:
         """Whether a publisher has been claimed for ``channel``."""
 
-        return channel in self._publishers
+        with self._publisher_lock:
+            return channel in self._publishers
 
     def publish(self, channel: str, payload: object) -> int:
         """Fan a WebSocket EVENT out to subscribed sessions; return delivery count."""

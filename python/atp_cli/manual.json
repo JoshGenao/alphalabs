@@ -28,6 +28,10 @@
     {
       "code": 64,
       "name": "NOT_IMPLEMENTED"
+    },
+    {
+      "code": 70,
+      "name": "INTERNAL_ERROR"
     }
   ],
   "groups": [
@@ -576,13 +580,13 @@
               "is_flag": false,
               "name": "--severity",
               "required": false,
-              "summary": "Minimum severity (DEBUG, INFO, WARN, ERROR)."
+              "summary": "Minimum severity (DEBUG, INFO, WARN, ERROR, CRITICAL)."
             },
             {
               "is_flag": false,
               "name": "--source",
               "required": false,
-              "summary": "Source component or strategy id."
+              "summary": "Source component (kill_switch, ib_gateway, market_data, ...)."
             },
             {
               "is_flag": false,
@@ -592,28 +596,30 @@
             },
             {
               "is_flag": true,
-              "name": "--follow",
-              "required": false,
-              "summary": "Stream events as they arrive instead of returning."
-            },
-            {
-              "is_flag": true,
               "name": "--json",
               "required": false,
               "summary": "Emit machine-readable JSON instead of formatted text."
             }
           ],
-          "description": "Tail system or strategy logs filtered by severity, source, time. SRS trace: SRS-LOG-001, SYS-38, SYS-61. Contract only. Concrete handler behaviour lands with the downstream feature that owns the workflow (EXE-1, ORCH-1, RESV-1, LOG-1, NOTIF-1).",
+          "description": "Query system or strategy logs filtered by severity, source, time (streaming: subscribe to the LOGS WebSocket channel). SRS trace: SRS-LOG-001, SYS-38, SYS-61. Implemented by SRS-LOG-001. The arguments and exit codes above are the ones the live command honours. A deployment that has not composed SRS-LOG-001's handler exits non-zero with a structured error naming it as the owner.",
           "exit_codes": [
             {
               "code": 0,
               "name": "OK"
+            },
+            {
+              "code": 2,
+              "name": "USAGE_ERROR"
+            },
+            {
+              "code": 70,
+              "name": "INTERNAL_ERROR"
             }
           ],
           "group": "admin",
           "invocation": "admin logs",
           "name": "logs",
-          "summary": "Tail system or strategy logs filtered by severity, source, time.",
+          "summary": "Query system or strategy logs filtered by severity, source, time (streaming: subscribe to the LOGS WebSocket channel).",
           "x-requires-confirmation": false,
           "x-srs-refs": [
             "SRS-LOG-001",

@@ -78,7 +78,7 @@
     // Budget is a real, known constant — fill it immediately.
     setField("body-latency", "refresh_budget_ms", { value: BUDGET_MS, data_source: "live" }, "ms");
     // Per-panel freshness indicator (driven by monitorFreshness).
-    for (const panel of ["pnl", "metrics", "health", "latency", "strategies", "backtest", "account", "reservoir", "research", "alerts"]) addFreshDot(panel);
+    for (const panel of ["pnl", "metrics", "health", "latency", "strategies", "backtest", "account", "reservoir", "research", "alerts", "logs"]) addFreshDot(panel);
   }
 
   function addFreshDot(panel) {
@@ -292,7 +292,7 @@
     ws.onopen = () => {
       backoff = 500;
       setConn("open", "LIVE");
-      ws.send(JSON.stringify({ type: "SUBSCRIBE", channels: ["PNL", "METRICS", "HEARTBEAT", "STRATEGY_STATE", "ACCOUNT_STATUS", "RESERVOIR_RANKING"] }));
+      ws.send(JSON.stringify({ type: "SUBSCRIBE", channels: ["PNL", "METRICS", "HEARTBEAT", "STRATEGY_STATE", "ACCOUNT_STATUS", "RESERVOIR_RANKING", "LOGS"] }));
     };
     ws.onmessage = (ev) => {
       let msg; try { msg = JSON.parse(ev.data); } catch (_e) { return; }
@@ -366,6 +366,11 @@
       onAccountEvent(data);
     } else if (channel === "RESERVOIR_RANKING") {
       renderReservoir(data);
+    } else if (channel === "LOGS") {
+      // SRS-LOG-001: one event per newly-persisted record, routed to its own
+      // class buffer by the record's own log_class discriminant — the WS path
+      // cannot merge the two trails any more than the REST path can.
+      onLogEvent(data);
     }
     noteActivity(channel);
   }
@@ -3120,8 +3125,363 @@
     if (b) b.addEventListener("click", onHotTrigger);
   }
 
+  // ----- SRS-LOG-001 persistent logs (SyRS SYS-61 system + SYS-38 strategy) //
+  // Two classes, two stores, two tables — the pane never merges them. Records
+  // arrive newest-first from /dashboard/api/logs, and a record published on the
+  // subscribed LOGS WebSocket channel is prepended to its own class's buffer
+  // (see the SUBSCRIBE frame in connect() — a handler for a channel the client
+  // never subscribed to would leave this pane silently poll-only).
+  //
+  // The honesty rule that shapes every branch below: an empty table means "the
+  // store was read and matched nothing", and it is rendered with that wording.
+  // `records: null` (unreadable / unmounted) is a DIFFERENT state and renders
+  // as an explicit error — a log pane that shows "0 records" for a store it
+  // could not read is the one failure that makes an audit surface worthless.
+  const LOGS_ROUTE = "/dashboard/api/logs";
+  const LOG_CLASSES = ["system", "strategy"];
+  //: Client-side minimum-severity filter, in the SyRS SYS-61 order.
+  const LOG_SEVERITY_ORDER = ["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"];
+  //: Newest-first buffers, so a WS event can be prepended without a re-poll.
+  const logBuffers = { system: null, strategy: null };
+  //: Live LOGS events not yet seen in a REST snapshot, newest-first.
+  //
+  // The two feeds race: a poll that STARTED before a WebSocket event can resolve
+  // AFTER it, and replacing the buffer with that older snapshot would erase the
+  // event from the pane until some later poll happened to include it. An audit
+  // event that appears and then vanishes is worse than one that arrives late, so
+  // live events are held here and merged over every snapshot until the snapshot
+  // itself carries them.
+  const logLiveEvents = { system: [], strategy: [] };
+  //: Cap on that hold-back list, so a persistently failing poll cannot grow it
+  //: without bound. Oldest pending events are dropped first — they are the ones
+  //: a snapshot is most likely to already contain.
+  const LOG_LIVE_EVENT_CAP = 200;
+  //: Whether each class's store FILE exists — "absent" and "empty" are
+  //: different facts and are rendered differently.
+  const logStorePresent = { system: null, strategy: null };
+  let logMinSeverity = "";
+
+  function setLogsDot(state, title) {
+    const dot = $("fresh-logs");
+    if (dot) { dot.dataset.state = state; dot.title = title; }
+  }
+
+  // Identity of a rendered event, for matching a live event against a snapshot.
+  //
+  // record_id is the persisted line's own identity and is what this must key on:
+  // audit VALUES repeat by design — a retried operation writes the same message
+  // with the same correlation id, and the rendered timestamp is only
+  // milliseconds — so keying on them would treat two real events as one and drop
+  // the newer from the pane. The value fallback exists only for a payload
+  // without an id (an older server); it is strictly worse and never preferred.
+  function logEventKey(event) {
+    if (event && event.record_id) return "id\u0000" + String(event.record_id);
+    return [
+      "value", event.timestamp, event.severity, event.source, event.event_type,
+      event.message, event.correlation_id, event.log_class, event.strategy_id,
+    ].join("\u0000");
+  }
+
+  function severityRank(value) {
+    const idx = LOG_SEVERITY_ORDER.indexOf(String(value || "").toUpperCase());
+    return idx === -1 ? -1 : idx;
+  }
+
+  function passesSeverity(record) {
+    if (!logMinSeverity) return true;
+    const rank = severityRank(record && record.severity);
+    // An unrecognised severity is NOT silently filtered out: a record whose
+    // severity we cannot rank is shown, never hidden by a filter it may well
+    // have satisfied.
+    return rank === -1 || rank >= severityRank(logMinSeverity);
+  }
+
+  function initLogs() {
+    const select = $("logs-severity");
+    if (select) {
+      for (const sev of LOG_SEVERITY_ORDER) {
+        const opt = el("option");
+        opt.value = sev;
+        opt.textContent = sev + "+";
+        select.appendChild(opt);
+      }
+      select.addEventListener("change", () => {
+        logMinSeverity = select.value;
+        for (const cls of LOG_CLASSES) renderLogClass(cls);
+        renderLogSummary();
+      });
+    }
+    for (const cls of LOG_CLASSES) {
+      setLogClassMessage(cls, "awaiting log store…", "warn");
+    }
+  }
+
+  function setLogClassMessage(cls, text, tone) {
+    const empty = $("logs-" + cls + "-empty");
+    const table = $("logs-" + cls + "-table");
+    const rows = $("logs-" + cls + "-rows");
+    if (rows) rows.textContent = "";
+    if (table) table.hidden = true;
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = text;
+      if (tone) { empty.dataset.tone = tone; } else { delete empty.dataset.tone; }
+    }
+  }
+
+  function renderLogRow(record) {
+    const tr = el("tr");
+    const time = el("td", "logs__time");
+    time.textContent = String(record.timestamp || "—");
+    tr.appendChild(time);
+    const sevTd = el("td");
+    const sev = el("span", "logs__sev");
+    sev.dataset.sev = String(record.severity || "");
+    sev.textContent = String(record.severity || "—");
+    sevTd.appendChild(sev);
+    tr.appendChild(sevTd);
+    const source = el("td");
+    // `source` is always the literal "strategy" on a strategy line, so the id is
+    // what makes it attributable — without it every Reservoir strategy's lines
+    // look identical in this table.
+    source.textContent = record.strategy_id
+      ? String(record.source || "—") + " · " + String(record.strategy_id)
+      : String(record.source || "—");
+    tr.appendChild(source);
+    const event = el("td");
+    event.textContent = String(record.event_type || "—");
+    tr.appendChild(event);
+    const message = el("td", "logs__msg");
+    message.textContent = String(record.message || "—");
+    tr.appendChild(message);
+    const corr = el("td", "logs__corr");
+    corr.textContent = String(record.correlation_id || "—");
+    tr.appendChild(corr);
+    return tr;
+  }
+
+  function renderLogClass(cls) {
+    const buffer = logBuffers[cls];
+    if (!Array.isArray(buffer)) return;  // unreadable/unmounted state already painted
+    const shown = buffer.filter(passesSeverity);
+    const table = $("logs-" + cls + "-table");
+    const rows = $("logs-" + cls + "-rows");
+    const empty = $("logs-" + cls + "-empty");
+    if (rows) {
+      rows.textContent = "";
+      for (const record of shown) rows.appendChild(renderLogRow(record));
+    }
+    if (table) table.hidden = shown.length === 0;
+    if (empty) {
+      empty.hidden = shown.length !== 0;
+      // Wording matters: this is an observation about the READ, not a claim
+      // that the system produced nothing. And a MISSING store file is a
+      // different fact again — a trail that was never created, moved, or
+      // deleted must not render like a present-but-quiet one.
+      if (logStorePresent[cls] === false) {
+        empty.dataset.tone = "warn";
+        empty.textContent = "store file does not exist — no record has ever been written here, " +
+          "or the trail was moved. This is NOT an empty trail.";
+      } else {
+        delete empty.dataset.tone;
+        empty.textContent = logMinSeverity
+          ? "store read — no record at or above " + logMinSeverity
+          : "store read — no records in this trail yet";
+      }
+    }
+  }
+
+  function renderLogClassCell(cls, cell) {
+    const store = $("logs-" + cls + "-store");
+    const count = $("logs-" + cls + "-count");
+    if (store) store.textContent = (cell && cell.store) ? String(cell.store) : "—";
+    // Fail closed: anything but an explicit ok:true with a real list is an
+    // unreadable trail. `records: null` must never become [].
+    if (!cell || cell.ok !== true || !Array.isArray(cell.records)) {
+      logBuffers[cls] = null;
+      logLiveEvents[cls] = [];
+      logStorePresent[cls] = cell && cell.store_present === false ? false : null;
+      const reason = (cell && cell.error) ? String(cell.error) : "store unreadable";
+      // A MISSING store and an UNREADABLE one are different operator problems:
+      // one is "the trail you configured is not there", the other is "the trail
+      // is there but I cannot parse it". Neither is an empty log.
+      const missing = cell && cell.store_present === false;
+      setLogClassMessage(
+        cls,
+        (missing ? "log store MISSING: " : "log store unavailable: ") + reason +
+          " — this is NOT an empty trail",
+        "error"
+      );
+      if (count) { count.textContent = missing ? "missing" : "unreadable"; count.dataset.tone = "error"; }
+      return;
+    }
+    // Merge, never replace: keep any live event this snapshot does not yet
+    // contain (the poll may have started before it arrived), and drop the ones
+    // it does — those are now durable history rather than pending overlay.
+    const snapshot = cell.records.slice();
+    const snapshotKeys = new Set(snapshot.map(logEventKey));
+    const pending = logLiveEvents[cls].filter((event) => !snapshotKeys.has(logEventKey(event)));
+    logLiveEvents[cls] = pending;
+    // Ordered by timestamp, not by which path delivered it. Concatenating the
+    // held-back events in front assumed they were always newer, which stops
+    // being true once a burst exceeds the snapshot page: an event that fell off
+    // the page would be pinned above strictly newer records, and stay there,
+    // because a page capped at the newest N can never contain it again. The
+    // table says newest-first, so it sorts newest-first. The sort is stable, so
+    // records sharing a timestamp keep their delivery order.
+    logBuffers[cls] = pending.concat(snapshot).sort((a, b) =>
+      String(b && b.timestamp || "").localeCompare(String(a && a.timestamp || ""))
+    );
+    logStorePresent[cls] = cell.store_present === false ? false : true;
+    if (count) {
+      delete count.dataset.tone;
+      // A tail-read cell reports no total (matched: null) — it read a page, not
+      // the trail. Showing a made-up total would be the pane inventing a fact;
+      // "newest N" is what it actually knows.
+      if (cell.matched === null || cell.matched === undefined) {
+        // Say what was verified. "newest N" alone would let a reader take the
+        // green pane as a clean audit history; only the page was checked.
+        count.textContent = cell.integrity_scope === "page"
+          ? "newest " + cell.records.length + " · older history not verified here"
+          : "newest " + cell.records.length;
+      } else {
+        count.textContent = cell.truncated
+          ? cell.records.length + " of " + cell.matched
+          : String(cell.matched);
+      }
+    }
+    renderLogClass(cls);
+  }
+
+  function renderLogCoverage(coverage) {
+    const strip = $("logs-coverage");
+    if (!strip || !Array.isArray(coverage)) return;
+    strip.textContent = "";
+    for (const entry of coverage) {
+      const chip = el("span", "logs__cov");
+      chip.dataset.state = String(entry.state || "deferred");
+      const owners = Array.isArray(entry.owners) ? entry.owners : [];
+      const missing = Array.isArray(entry.unproduced_event_types)
+        ? entry.unproduced_event_types
+        : [];
+      chip.textContent = String(entry.source || "?") +
+        (missing.length ? " · " + missing.length + " unproduced" : "") +
+        (owners.length ? " · " + owners.join(" / ") : "");
+      // The hover names the event types themselves. "partial" alone tells an
+      // operator something is missing without saying what, which is how a
+      // declared-but-unproducible event type stayed invisible on the one strip
+      // whose job is to state coverage rather than imply it.
+      chip.title = (missing.length ? "no producer: " + missing.join(", ") + " — " : "") +
+        String(entry.note || "");
+      strip.appendChild(chip);
+    }
+  }
+
+  function renderLogSummary() {
+    const summary = $("logs-summary");
+    if (!summary) return;
+    const unreadable = LOG_CLASSES.filter((cls) => !Array.isArray(logBuffers[cls]));
+    if (unreadable.length) {
+      summary.textContent = unreadable.join(" + ") + " log store unreadable — see the class cell";
+      summary.dataset.tone = "error";
+      return;
+    }
+    const counts = LOG_CLASSES.map((cls) => logBuffers[cls].filter(passesSeverity).length);
+    summary.textContent = counts[0] + " system · " + counts[1] + " strategy record" +
+      (counts[1] === 1 ? "" : "s") + " shown from separate stores" +
+      (logMinSeverity ? " (min " + logMinSeverity + ")" : "");
+    summary.dataset.tone = "ok";
+  }
+
+  function renderLogs(snap) {
+    if (snap && snap.ok === false && !snap.classes) {
+      logsUnavailable(String(snap.error || "unknown"));
+      return;
+    }
+    const classes = (snap && snap.classes) || {};
+    for (const cls of LOG_CLASSES) renderLogClassCell(cls, classes[cls]);
+    renderLogCoverage(snap && snap.source_coverage);
+    const note = $("logs-note");
+    if (note) note.textContent = String((snap && snap.coverage_note) || "");
+    renderLogSummary();
+    const healthy = LOG_CLASSES.every((cls) => Array.isArray(logBuffers[cls]));
+    setLogsDot(healthy ? "fresh" : "stale", healthy ? "log stores readable" : "a log store is unreadable");
+  }
+
+  function logsUnavailable(reason) {
+    for (const cls of LOG_CLASSES) {
+      logBuffers[cls] = null;
+      setLogClassMessage(cls, "log pane unavailable: " + reason, "error");
+      const count = $("logs-" + cls + "-count");
+      if (count) { count.textContent = "unreadable"; count.dataset.tone = "error"; }
+    }
+    const summary = $("logs-summary");
+    if (summary) { summary.textContent = "log pane unavailable: " + reason; summary.dataset.tone = "error"; }
+    setLogsDot("stale", "log endpoint failing");
+  }
+
+  function logsNotMounted() {
+    for (const cls of LOG_CLASSES) {
+      logBuffers[cls] = null;
+      setLogClassMessage(cls, "log pane not mounted — SRS-LOG-001 provider not composed on this runtime (ATP_LOG_DIR unset)", "warn");
+      const count = $("logs-" + cls + "-count");
+      if (count) { count.textContent = "—"; delete count.dataset.tone; }
+    }
+    const summary = $("logs-summary");
+    if (summary) {
+      summary.textContent = "log pane not mounted — SRS-LOG-001 provider not composed on this runtime";
+      summary.dataset.tone = "warn";
+    }
+    const strip = $("logs-coverage");
+    if (strip) strip.textContent = "";
+    setLogsDot("wait", "logs route not mounted");
+  }
+
+  // A live LOGS event prepends to the class buffer it belongs to. Only applied
+  // once a poll has established a readable buffer: appending to an unreadable
+  // trail would paint a partial log as if it were the trail.
+  function onLogEvent(record) {
+    if (!record || typeof record !== "object") return;
+    const cls = String(record.log_class || "");
+    if (!LOG_CLASSES.includes(cls) || !Array.isArray(logBuffers[cls])) return;
+    // The REST poll and this channel both carry the same records, so a record
+    // the last snapshot already delivered arrives here too. Rendering it again
+    // would show one audit event as two — on the surface whose whole job is to
+    // say what happened, a duplicate reads as a second occurrence. renderLogs
+    // already dedupes its side of the merge; this is the other side of it.
+    const key = logEventKey(record);
+    if (logBuffers[cls].some((seen) => logEventKey(seen) === key)) return;
+    logBuffers[cls].unshift(record);
+    logLiveEvents[cls].unshift(record);
+    if (logLiveEvents[cls].length > LOG_LIVE_EVENT_CAP) {
+      logLiveEvents[cls].length = LOG_LIVE_EVENT_CAP;
+    }
+    renderLogClass(cls);
+    renderLogSummary();
+  }
+
+  async function pollLogs() {
+    try {
+      const res = await fetch(LOGS_ROUTE, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(POLL_MS),
+      });
+      if (res.ok) {
+        renderLogs(await res.json());
+      } else if (res.status === 404) {
+        logsNotMounted();
+      } else {
+        logsUnavailable("HTTP " + res.status);
+      }
+    } catch (_e) {
+      logsUnavailable("endpoint unreachable");
+    }
+    setTimeout(pollLogs, POLL_MS);
+  }
+
   // ----- boot ------------------------------------------------------------ //
   buildAll();
+  initLogs();
   initBacktest();
   initReservoir();
   initResearch();
@@ -3139,4 +3499,5 @@
   pollAlerts();
   pollKillSwitch();
   pollHotSwap();
+  pollLogs();
 })();

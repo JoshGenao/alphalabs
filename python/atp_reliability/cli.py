@@ -193,7 +193,14 @@ def _artifact_from_calendar(
         # corruption; OSError covers filesystem failures; ValueError covers a
         # malformed transition timestamp during reconstruction.
         try:
-            records = read_records(args.log_store, log_class=LogClass.SYSTEM)
+            # `log_class` here is a FILTER; `expect_class` is the assertion that
+            # this file IS the system trail. Without it a store holding strategy
+            # records would filter down to an empty list, and on an availability
+            # certification an empty list is not "nothing happened" — it is the
+            # no-data-means-up lie REL-001 exists to refuse.
+            records = read_records(
+                args.log_store, expect_class=LogClass.SYSTEM, log_class=LogClass.SYSTEM
+            )
             downtime = downtime_from_log_records(
                 records, window_start_ns=window_start, window_end_ns=window_end
             )

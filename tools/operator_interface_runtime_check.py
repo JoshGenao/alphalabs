@@ -285,8 +285,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"- {item}")
     print(
         "- SRS-API-001 stays passes:false: domain handlers "
-        "(SRS-EXE-001 / SRS-ORCH-004/005 / SRS-RESV-002/003 / SRS-BT-001 / "
-        "SRS-DATA-002 / SRS-LOG-001 / SRS-NOTIF-001) register on the registry as they land"
+        "(SRS-EXE-001 / SRS-ORCH-004 / SRS-RESV-002/003 / SRS-BT-001 / "
+        "SRS-DATA-002 / SRS-NOTIF-001) register on the registry as they land. "
+        "REAL under a composer that supplies their collaborators: SRS-SAFE-001 "
+        "(atp_safety.wire_kill_switch), SRS-ORCH-005 (atp_orchestration.mount_rollback), "
+        "SRS-MD-006 (atp_readiness.wire_readiness), SRS-LOG-001 (atp_logs_service.wire_logs)"
     )
     return 0
 

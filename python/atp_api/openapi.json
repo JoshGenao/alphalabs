@@ -646,7 +646,7 @@
     },
     "/api/v1/logs": {
       "get": {
-        "description": "Query system or strategy logs by severity, source, and time range. SRS trace: SRS-LOG-001, SYS-38, SYS-61. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1).",
+        "description": "Query system or strategy logs by severity, source, and time range. SRS trace: SRS-LOG-001, SYS-38, SYS-61. Implemented by SRS-LOG-001. The request and response schemas above are the ones the live handler enforces, not placeholders. A deployment that has not composed SRS-LOG-001's handler returns 501 naming it as the owner.",
         "operationId": "get_api_v1_logs",
         "parameters": [
           {
@@ -713,26 +713,68 @@
                 "schema": {
                   "additionalProperties": true,
                   "properties": {
-                    "correlation_id": {
-                      "type": "string"
-                    },
-                    "event_type": {
-                      "type": "string"
+                    "event_fields": {
+                      "type": "array"
                     },
                     "events": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "correlation_id": {
+                            "type": "string"
+                          },
+                          "event_type": {
+                            "type": "string"
+                          },
+                          "log_class": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          },
+                          "record_id": {
+                            "type": "string"
+                          },
+                          "severity": {
+                            "type": "string"
+                          },
+                          "source": {
+                            "type": "string"
+                          },
+                          "strategy_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "timestamp": {
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "log_class": {
                       "type": "string"
                     },
-                    "message": {
+                    "matched": {
+                      "type": "integer"
+                    },
+                    "returned": {
+                      "type": "integer"
+                    },
+                    "srs_ref": {
                       "type": "string"
                     },
-                    "severity": {
-                      "type": "string"
+                    "store_present": {
+                      "type": "boolean"
                     },
-                    "source": {
-                      "type": "string"
-                    },
-                    "timestamp": {
-                      "type": "string"
+                    "truncated": {
+                      "type": "boolean"
                     }
                   },
                   "type": "object"

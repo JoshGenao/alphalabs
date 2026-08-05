@@ -54,6 +54,7 @@ from atp_logging import (  # noqa: E402
 )
 from atp_logging.persistence import (  # noqa: E402
     JsonlLogStore,
+    LogStoreClassMismatchError,
     LogStoreCorruptionError,
     build_separated_log_dispatcher,
     read_records,
@@ -144,6 +145,88 @@ def test_direct_write_cannot_bypass_separation(tmp_path: Path) -> None:
     assert read_records(tmp_path / "system.jsonl") == []
 
 
+def test_a_contaminated_store_fails_closed_on_its_own_read(tmp_path: Path) -> None:
+    """The object that claims a class must enforce it on the way OUT too.
+
+    :meth:`JsonlLogStore.write` refuses a foreign record, but a file restored
+    from backup, recovered onto the wrong path, or hand-edited can still hold
+    one. Without a read-side check the SAME contamination has two different
+    wrong outcomes depending on how the caller filters: unfiltered, the foreign
+    record comes back as though it belonged to this trail; filtered on anything
+    else, it is quietly dropped and the broken separation leaves no trace. Both
+    hide the thing SRS-LOG-001 exists to guarantee, so the store raises instead
+    — on the unfiltered read AND on a filtered one that would have excluded it.
+    """
+
+    path = tmp_path / "system.jsonl"
+    with JsonlLogStore(path, log_class=LogClass.SYSTEM) as store:
+        store.write(_kill_switch_activation())
+
+    # A strategy record arrives in the system trail by a route `write` cannot see.
+    foreign = {
+        "timestamp_ns": 1_700_000_000_000_000_001,
+        "severity": "INFO",
+        "source": "strategy",
+        "event_type": "SIGNAL",
+        "message": "long AAPL",
+        "correlation_id": "run-9",
+        "log_class": "strategy",
+        "strategy_id": "sma-crossover",
+    }
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(foreign) + "\n")
+
+    with JsonlLogStore(path, log_class=LogClass.SYSTEM) as store:
+        with pytest.raises(LogStoreClassMismatchError, match="separation is broken"):
+            store.read()
+        # A filter that would have excluded the foreign record must NOT be able
+        # to launder the contamination into a clean-looking result.
+        with pytest.raises(LogStoreClassMismatchError):
+            store.read(source=Source.KILL_SWITCH)
+
+
+def test_a_caller_that_knows_its_class_gets_the_same_fail_closed_read(tmp_path: Path) -> None:
+    """``read_records`` must not let a filter decide whether contamination shows.
+
+    The lock-free reader is how callers who do NOT hold a store instance read a
+    trail — the kill-switch status cell reading the SYS-44b timeout record, the
+    availability CLI reconstructing downtime. Both know exactly which class they
+    opened, and both filter hard. Without the assertion, a strategy record in the
+    system file is simply excluded by their filters: the read succeeds, the
+    result looks normal, and the broken separation leaves no trace on the one
+    surface that would have shown it.
+    """
+
+    path = tmp_path / "system.jsonl"
+    with JsonlLogStore(path, log_class=LogClass.SYSTEM) as store:
+        store.write(_kill_switch_activation())
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "timestamp_ns": 1_700_000_000_000_000_001,
+                    "severity": "INFO",
+                    "source": "strategy",
+                    "event_type": "SIGNAL",
+                    "message": "long AAPL",
+                    "correlation_id": "run-9",
+                    "log_class": "strategy",
+                    "strategy_id": "sma-crossover",
+                }
+            )
+            + "\n"
+        )
+
+    # Unasserted, the caller's own filter hides it — this is the status quo the
+    # parameter exists to end, pinned so the risk stays visible.
+    assert [record.source for record in read_records(path, source=Source.KILL_SWITCH)] == [
+        Source.KILL_SWITCH
+    ]
+    # Asserted, the same filtered read fails closed.
+    with pytest.raises(LogStoreClassMismatchError, match="separation is broken"):
+        read_records(path, expect_class=LogClass.SYSTEM, source=Source.KILL_SWITCH)
+
+
 def test_reader_never_fabricates_on_torn_write(tmp_path: Path) -> None:
     path = tmp_path / "system.jsonl"
     good = _kill_switch_activation()
@@ -211,6 +294,71 @@ def test_read_fails_closed_on_tampered_audit_record(tmp_path: Path) -> None:
     path.write_bytes((json.dumps(tampered) + "\n").encode())
     with pytest.raises(LogStoreCorruptionError):
         read_records(path)
+
+
+def test_rotation_makes_the_new_segments_directory_entry_durable(tmp_path: Path) -> None:
+    """The first record AFTER a rotation must survive a crash, not just its bytes.
+
+    ``fsync`` on a file makes its CONTENTS durable, never its directory entry.
+    Rotation renames the active segment away and creates a fresh one, so without
+    a directory fsync after that create, a crash can leave the first
+    post-rotation record — a kill-switch activation, an IB disconnect — written
+    into a file whose name never existed.
+    """
+
+    path = tmp_path / "system.jsonl"
+    store = JsonlLogStore(path, log_class=LogClass.SYSTEM, max_bytes=200, max_files=2)
+
+    # Record, for each directory fsync, whether the ACTIVE segment existed at
+    # that moment: before the create it has been renamed away, after it is back.
+    observed: list[bool] = []
+    # Capture the DESCRIPTOR out of the class dict, not the function `getattr`
+    # unwraps it to. Restoring the bare function would rebind it as an ordinary
+    # method, so every later `self._fsync_dir(directory)` in the whole session
+    # would pass `self` as well and raise TypeError — a patch that outlives its
+    # test and breaks rotation for every file that happens to run after this one.
+    original = JsonlLogStore.__dict__["_fsync_dir"]
+
+    def recording_fsync_dir(directory: Path) -> None:
+        observed.append(path.exists())
+        original.__func__(directory)
+
+    JsonlLogStore._fsync_dir = staticmethod(recording_fsync_dir)  # type: ignore[method-assign]
+    try:
+        for index in range(6):
+            store.write(
+                LogRecord(
+                    timestamp_ns=1_700_000_000_000_000_000 + index,
+                    severity=Severity.CRITICAL,
+                    source=Source.KILL_SWITCH,
+                    event_type="ACTIVATION",
+                    message=f"activation {index}",
+                    correlation_id=f"ks-{index}",
+                    log_class=LogClass.SYSTEM,
+                )
+            )
+    finally:
+        JsonlLogStore._fsync_dir = original  # type: ignore[method-assign]
+        store.close()
+
+    assert observed, "rotation never fsynced the directory at all"
+    assert False in observed, "no directory fsync covered the renames"
+    assert True in observed, (
+        "no directory fsync happened AFTER the new active segment was created — "
+        "its name is not durable, so the next record can be lost with the file"
+    )
+    # And the records really are all there.
+    messages = {record.message for record in read_records(path, max_files=2)}
+    assert "activation 5" in messages
+
+    # The patch is gone, and gone in the SHAPE it was found in. Asserted rather
+    # than assumed: this leak is silent in this file and only surfaces as an
+    # unrelated failure in whichever file pytest happens to run next.
+    assert isinstance(JsonlLogStore.__dict__["_fsync_dir"], staticmethod)
+    survivor = tmp_path / "after.jsonl"
+    with JsonlLogStore(survivor, log_class=LogClass.SYSTEM, max_bytes=200, max_files=2) as store:
+        for index in range(6):
+            store.write(_kill_switch_activation(1_700_000_000_000_000_100 + index))
 
 
 def test_every_system_source_round_trips(tmp_path: Path) -> None:

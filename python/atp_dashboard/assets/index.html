@@ -587,6 +587,96 @@
           </div>
         </div>
       </section>
+
+      <!-- SRS-LOG-001 / SyRS SYS-61 + SYS-38: the two persistent log classes,
+           side by side and read from SEPARATE stores. The layout is the
+           requirement: system events and user strategy logs are never merged
+           into one table, because the feature exists to keep them apart.
+           Each record carries the six SYS-61 fields (timestamp, severity,
+           source, event type, message, correlation id).
+
+           HONESTY: an empty table means "this store was read and matched
+           nothing" — it is NEVER an assertion that nothing happened. The
+           coverage strip below the tables names, per system source, whether a
+           producer exists in the tree at all; five of the eight categories have
+           none yet, so the pane says so rather than letting a short table read
+           as a quiet system. An unreadable store renders as an explicit error
+           row, never as zero records. -->
+      <section class="panel panel--wide panel--logs" data-panel="logs" style="--i:12">
+        <div class="panel__head">
+          <h2 class="panel__title">Persistent Logs</h2>
+          <span class="panel__meta"><span class="tag tag--chan">LOGS</span><span class="panel__cadence">poll</span></span>
+        </div>
+        <div class="panel__body" id="body-logs" aria-live="polite">
+          <div class="logs">
+            <div class="logs__bar">
+              <span class="logs__summary" id="logs-summary">awaiting log stores…</span>
+              <span class="logs__filters">
+                <label class="logs__filter" for="logs-severity">min severity</label>
+                <select class="logs__select" id="logs-severity">
+                  <option value="">all</option>
+                </select>
+              </span>
+            </div>
+
+            <div class="logs__split">
+              <!-- SYSTEM class (SYS-61) -->
+              <div class="logs__class" data-class="system">
+                <div class="logs__classhead">
+                  <h3 class="logs__classtitle">System</h3>
+                  <span class="logs__store" id="logs-system-store">—</span>
+                  <span class="logs__count" id="logs-system-count">—</span>
+                </div>
+                <div class="logs__scroll">
+                  <table class="logs__table" id="logs-system-table" hidden>
+                    <thead>
+                      <tr>
+                        <th scope="col">Time</th>
+                        <th scope="col">Sev</th>
+                        <th scope="col">Source</th>
+                        <th scope="col">Event</th>
+                        <th scope="col">Message</th>
+                        <th scope="col">Correlation</th>
+                      </tr>
+                    </thead>
+                    <tbody id="logs-system-rows"></tbody>
+                  </table>
+                  <p class="logs__empty" id="logs-system-empty">awaiting log store…</p>
+                </div>
+              </div>
+
+              <!-- STRATEGY class (SYS-38) -->
+              <div class="logs__class" data-class="strategy">
+                <div class="logs__classhead">
+                  <h3 class="logs__classtitle">User Strategy</h3>
+                  <span class="logs__store" id="logs-strategy-store">—</span>
+                  <span class="logs__count" id="logs-strategy-count">—</span>
+                </div>
+                <div class="logs__scroll">
+                  <table class="logs__table" id="logs-strategy-table" hidden>
+                    <thead>
+                      <tr>
+                        <th scope="col">Time</th>
+                        <th scope="col">Sev</th>
+                        <th scope="col">Source</th>
+                        <th scope="col">Event</th>
+                        <th scope="col">Message</th>
+                        <th scope="col">Correlation</th>
+                      </tr>
+                    </thead>
+                    <tbody id="logs-strategy-rows"></tbody>
+                  </table>
+                  <p class="logs__empty" id="logs-strategy-empty">awaiting log store…</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="logs__coverage" id="logs-coverage"
+                 aria-label="System-log producer coverage by source (SyRS SYS-61)"></div>
+            <p class="logs__note" id="logs-note"></p>
+          </div>
+        </div>
+      </section>
     </main>
 
     <footer class="legend" role="contentinfo">

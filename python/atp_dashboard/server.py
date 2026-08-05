@@ -29,6 +29,7 @@ from types import FrameType
 
 from atp_logging import LogClass
 from atp_logging.persistence import JsonlLogStore
+from atp_logs_service import LogEventPublisher, wire_logs
 
 # NOTE: keep the next line EXACTLY as written — one line, this order.
 # tools/orchestrator_rollback_check.py greps for it as a literal to prove the dashboard
@@ -51,6 +52,7 @@ from .heartbeat import (
 from .hotswap import CliHotSwapTriggerSource, HotSwapStatusProvider
 from .inventory import RollbackSnapshotInventorySource, StrategyInventoryProvider
 from .killswitch import DurableKillSwitchStatusSource, KillSwitchStatusProvider
+from .logs import LogPaneProvider
 from .navigation import PrimaryNavigationProvider
 from .provider import DashboardMetricsProvider, ReadinessBackedProvider
 from .publisher import DashboardPublisher
@@ -129,6 +131,14 @@ KILL_SWITCH_SNAPSHOT_PATH = "/dashboard/api/kill-switch"
 #: there is deliberately no second swap path under ``/dashboard``.
 HOT_SWAP_SNAPSHOT_PATH = "/dashboard/api/hot-swap"
 
+#: REST path the dashboard SPA polls for the SRS-LOG-001 log pane (served only
+#: when a log provider is mounted). Dashboard-namespaced first-paint poll of BOTH
+#: log classes; the contract route ``GET /api/v1/logs`` on this same runtime is
+#: the full query surface (same owner, same renderer), and the ``LOGS`` WebSocket
+#: channel is the event stream. READ-ONLY: an audit trail has no dashboard-side
+#: mutation affordance.
+LOGS_SNAPSHOT_PATH = "/dashboard/api/logs"
+
 
 def load_assets() -> dict[str, tuple[str, bytes]]:
     """Read the dashboard's static assets once into an immutable route map."""
@@ -153,6 +163,7 @@ def mount_dashboard(
     alerts: CriticalAlertsProvider | None = None,
     kill_switch: KillSwitchStatusProvider | None = None,
     hot_swap: HotSwapStatusProvider | None = None,
+    logs: LogPaneProvider | None = None,
 ) -> DashboardPublisher:
     """Register the dashboard's routes on ``runtime`` and return its publisher.
 
@@ -230,6 +241,15 @@ def mount_dashboard(
     an honest deferred cell until the SRS-RESV-002..006 producers land — the
     pane never fabricates a swap state, and with no promotion candidate the
     promote control is inert.
+
+    ``logs`` (optional — the SRS-LOG-001 log-pane provider) adds the
+    ``GET /dashboard/api/logs`` poll route the log pane reads: BOTH log classes,
+    each read from its own store and returned in its own cell. It is REST-served
+    here — the event-driven ``LOGS`` WS channel is claimed by
+    ``atp_logs_service.wire_logs``'s publisher, not by this mount, so mounting a
+    pane never overstates that a stream is running. Strictly a READ: an audit
+    trail has no dashboard-side mutation affordance. Without it the pane renders
+    its explicit "not mounted" state — never an empty log table.
     """
 
     runtime.register_asset_routes(load_assets())
@@ -277,6 +297,8 @@ def mount_dashboard(
         runtime.register_meta_route(KILL_SWITCH_SNAPSHOT_PATH, kill_switch.kill_switch_snapshot)
     if hot_swap is not None:
         runtime.register_meta_route(HOT_SWAP_SNAPSHOT_PATH, hot_swap.hot_swap_snapshot)
+    if logs is not None:
+        runtime.register_meta_route(LOGS_SNAPSHOT_PATH, logs.logs_snapshot)
     return DashboardPublisher(
         runtime,
         provider,
@@ -475,6 +497,12 @@ def mount_default_dashboard(
             if hot_swap_trigger_state is not None
             else None
         )
+    # The SRS-LOG-001 log pane is opt-in on ATP_LOG_DIR, the directory holding
+    # the separated `system.jsonl` / `strategy.jsonl` stores that
+    # build_separated_log_dispatcher writes. Unset, NO route is registered and
+    # the pane renders its explicit not-mounted state — a dashboard that cannot
+    # read an audit trail must say so, never show an empty log table (which
+    # reads as "nothing has happened").
     return mount_dashboard(
         runtime,
         provider,
@@ -487,6 +515,56 @@ def mount_default_dashboard(
         alerts=CriticalAlertsProvider(),
         kill_switch=kill_switch,
         hot_swap=HotSwapStatusProvider(hot_swap_source),
+        logs=log_pane_provider(env),
+    )
+
+
+#: Env knob naming the directory that holds the SRS-LOG-001 separated stores.
+LOG_DIR_ENV_KNOB = "ATP_LOG_DIR"
+
+#: Store filenames inside that directory — the defaults
+#: ``atp_logging.persistence.build_separated_log_dispatcher`` writes.
+SYSTEM_STORE_FILENAME = "system.jsonl"
+STRATEGY_STORE_FILENAME = "strategy.jsonl"
+
+
+def log_pane_provider(env: Mapping[str, str]) -> LogPaneProvider | None:
+    """Build the SRS-LOG-001 pane provider when ``ATP_LOG_DIR`` is configured."""
+
+    log_dir = env.get(LOG_DIR_ENV_KNOB) or None
+    if log_dir is None:
+        return None
+    root = Path(log_dir)
+    return LogPaneProvider(
+        system_store_path=root / SYSTEM_STORE_FILENAME,
+        strategy_store_path=root / STRATEGY_STORE_FILENAME,
+    )
+
+
+def _mount_logs_arm(
+    runtime: OperatorInterfaceRuntime, env: Mapping[str, str]
+) -> LogEventPublisher | None:
+    """Register the SRS-LOG-001 REST/CLI/WS surfaces when ``ATP_LOG_DIR`` is set.
+
+    Same opt-in shape as the Hot-Swap trigger arm: composing it here (rather
+    than leaving it to SRS-API-001) is what makes ``GET /api/v1/logs``, the
+    ``admin logs`` CLI, and the ``LOGS`` WebSocket channel real in the shipped
+    ``python -m atp_dashboard`` entrypoint instead of answering the honest 501.
+    Unset, every LOGS operation keeps that 501 and the channel stays unclaimed —
+    a runtime with no configured trail must not report the workflow as served.
+
+    The returned publisher is un-started: :func:`serve` starts it and stops it
+    with the dashboard's own, so no ticker outlives a failed startup.
+    """
+
+    log_dir = env.get(LOG_DIR_ENV_KNOB) or None
+    if log_dir is None:
+        return None
+    root = Path(log_dir)
+    return wire_logs(
+        runtime,
+        system_store_path=root / SYSTEM_STORE_FILENAME,
+        strategy_store_path=root / STRATEGY_STORE_FILENAME,
     )
 
 
@@ -530,8 +608,25 @@ def serve(host: str = "127.0.0.1", port: int = 8080) -> None:
     publisher = mount_default_dashboard(
         runtime, env, hot_swap_source=_mount_hot_swap_trigger_arm(runtime, env)
     )
-    publisher.start()
-    bound_host, bound_port = runtime.start(host=host, port=port)
+    logs_publisher = _mount_logs_arm(runtime, env)
+
+    # Startup is all-or-nothing. The publishers run on their own threads, so a
+    # failure to BIND (port in use, a refused host) after they are running would
+    # leave tickers polling the audit stores and publishing into a runtime that
+    # never came up — invisible work behind a process that looks dead. Anything
+    # already started is stopped before the failure is re-raised.
+    started: list[object] = []
+    try:
+        publisher.start()
+        started.append(publisher)
+        if logs_publisher is not None:
+            logs_publisher.start()
+            started.append(logs_publisher)
+        bound_host, bound_port = runtime.start(host=host, port=port)
+    except BaseException:
+        for running in reversed(started):
+            running.stop()  # type: ignore[attr-defined]
+        raise
     print(  # noqa: T201 - operator-facing startup line
         f"atp-dashboard serving on http://{bound_host}:{bound_port}/dashboard "
         f"(ws://{bound_host}:{bound_port}/ws/v1)"
@@ -548,4 +643,6 @@ def serve(host: str = "127.0.0.1", port: int = 8080) -> None:
         stopped.wait()
     finally:
         publisher.stop()
+        if logs_publisher is not None:
+            logs_publisher.stop()
         runtime.stop()

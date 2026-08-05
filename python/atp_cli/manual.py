@@ -62,11 +62,27 @@ def _argument_dict(argument: Argument) -> dict[str, Any]:
     return payload
 
 
+def _served_description(owner: str) -> str:
+    """The implemented counterpart of :data:`_PLACEHOLDER_DESCRIPTION`.
+
+    The manual is what an operator reads before running a command. Telling them a
+    command that works is "contract only" costs them the command; telling them one
+    that is unwired is implemented costs them trust in the manual. So this names
+    the owner AND keeps the unwired outcome explicit.
+    """
+
+    return (
+        f"Implemented by {owner}. The arguments and exit codes above are the ones "
+        f"the live command honours. A deployment that has not composed {owner}'s "
+        "handler exits non-zero with a structured error naming it as the owner."
+    )
+
+
 def _command_dict(command: Command) -> dict[str, Any]:
     description_parts = [
         command.summary,
         f"SRS trace: {', '.join(command.srs_refs)}.",
-        _PLACEHOLDER_DESCRIPTION,
+        _served_description(command.served_by) if command.served_by else _PLACEHOLDER_DESCRIPTION,
     ]
     if command.requires_confirmation:
         description_parts.append("Requires --confirm (UI-4 / SRS-SAFE-001 two-step modal).")

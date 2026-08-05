@@ -51,7 +51,7 @@ _STATUS_TO_EXIT: dict[int, ExitCode] = {
 }
 # A 500/unmapped internal failure gets a distinct non-zero (sysexits EX_SOFTWARE)
 # — never NOT_READY, so an internal/dependency error is not read as "not ready".
-_INTERNAL_FAILURE_EXIT = 70
+_INTERNAL_FAILURE_EXIT = int(ExitCode.INTERNAL_ERROR)
 _RESERVED_OPTIONS = frozenset({"group", "command", "confirm", "json", "list"})
 
 

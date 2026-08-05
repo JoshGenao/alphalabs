@@ -18,7 +18,7 @@ evidence only; runtime publishers are out of scope here.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, MutableMapping
+from collections.abc import Iterable, Mapping, MutableMapping
 from typing import Any
 
 from .channels import (
@@ -52,8 +52,26 @@ _PLACEHOLDER_DESCRIPTION = (
 )
 
 
-def _placeholder_object_schema(field_names: Iterable[str]) -> dict[str, Any]:
-    properties = {name: {"type": "string"} for name in field_names}
+def _placeholder_object_schema(
+    field_names: Iterable[str], field_types: Mapping[str, str] | None = None
+) -> dict[str, Any]:
+    """An object schema over ``field_names``.
+
+    Fields default to ``string`` — the offline contract's placeholder for a
+    channel whose publisher has not landed. A channel that HAS a publisher
+    declares real types via ``EventChannel.field_types``, because a placeholder
+    that contradicts a live publisher is worse than no schema: a subscriber
+    validating the document would reject events the publisher legitimately emits.
+    """
+
+    types = field_types or {}
+    properties: dict[str, Any] = {}
+    for name in field_names:
+        declared = types.get(name, "string")
+        # `string|null` renders as the type union: a LOGS event for a SYSTEM
+        # record carries no strategy id, and that is the commonest event on the
+        # channel — documenting it as a bare string would make it schema-invalid.
+        properties[name] = {"type": declared.split("|")} if "|" in declared else {"type": declared}
     return {
         "type": "object",
         "properties": properties,
@@ -80,7 +98,9 @@ def _event_message(channel: EventChannel) -> dict[str, Any]:
             "properties": {
                 "type": {"const": MessageType.EVENT.value},
                 "channel": {"const": channel.name.value},
-                "data": _placeholder_object_schema(channel.payload_fields),
+                "data": _placeholder_object_schema(
+                    channel.payload_fields, dict(channel.field_types)
+                ),
             },
             "required": ["type", "channel", "data"],
             "additionalProperties": True,
@@ -110,11 +130,28 @@ def _command_message(command: ClientCommand) -> dict[str, Any]:
     }
 
 
+def _served_description(owner: str) -> str:
+    """The implemented counterpart of :data:`_PLACEHOLDER_DESCRIPTION`.
+
+    A subscriber decides from this whether to expect traffic at all, so it names
+    the publisher's owner and keeps the unwired case explicit: a channel with no
+    registered publisher stays silent, and silence must never be mistaken for a
+    quiet system.
+    """
+
+    return (
+        f"Published by {owner}. The payload schema above is what the live publisher "
+        f"emits, not a placeholder. A deployment that has not composed {owner}'s "
+        "publisher registers none for this channel, and the runtime reports it as "
+        "unserved rather than publishing an empty stream."
+    )
+
+
 def _build_event_channel(channel: EventChannel) -> dict[str, Any]:
     description_parts = [
         channel.summary,
         f"SRS trace: {', '.join(channel.srs_refs)}.",
-        _PLACEHOLDER_DESCRIPTION,
+        _served_description(channel.served_by) if channel.served_by else _PLACEHOLDER_DESCRIPTION,
     ]
     if channel.refresh_seconds == 0:
         description_parts.append("Event-driven; no fixed refresh cadence.")

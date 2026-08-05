@@ -104,6 +104,11 @@ class ExitCode(IntEnum):
     NOT_READY = 5
     TIMEOUT = 6
     NOT_IMPLEMENTED = 64
+    #: A handler failed internally (sysexits EX_SOFTWARE). Reachable by every
+    #: command with a LIVE handler — the runtime maps an unmapped/500 result
+    #: here — so a live command that can fail this way must declare it, or the
+    #: manual promises automation an outcome set the surface does not keep.
+    INTERNAL_ERROR = 70
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +190,13 @@ class Command:
     arguments: tuple[Argument, ...] = field(default_factory=tuple)
     exit_codes: tuple[ExitCode, ...] = (ExitCode.OK,)
     requires_confirmation: bool = False
+    #: Feature id shipping a real handler for this command; ``""`` while contract-only.
+    #:
+    #: The generated manual is what an operator reads before running something. A
+    #: command that works while its manual entry says "contract only" is drift that
+    #: costs them a tool they already have; set this in the change that binds the
+    #: handler, exactly as :attr:`atp_api.routes.Route.served_by` is set for REST.
+    served_by: str = ""
 
     @property
     def invocation(self) -> str:
@@ -439,8 +451,24 @@ COMMANDS: tuple[Command, ...] = (
     Command(
         group=Group.ADMIN,
         name="logs",
-        summary="Tail system or strategy logs filtered by severity, source, time.",
+        # No `--follow`: a command dispatched through the operator runtime
+        # returns ONE result and cannot stream to stdout, so advertising a
+        # follow flag here would promise behaviour nothing implements (an
+        # uncovered capability must not have a public surface). The LOGS
+        # WebSocket channel is the event-driven surface — see
+        # atp_logs_service.publisher.
+        summary=(
+            "Query system or strategy logs filtered by severity, source, time "
+            "(streaming: subscribe to the LOGS WebSocket channel)."
+        ),
         srs_refs=("SRS-LOG-001", "SYS-38", "SYS-61"),
+        served_by="SRS-LOG-001",
+        # This command HAS a live handler, so its outcomes are real: a rejected
+        # parameter is a 400 the dispatcher maps to USAGE_ERROR, and a missing,
+        # corrupt, or rotation-racing audit store is a 500 mapped to
+        # INTERNAL_ERROR. Declaring only OK would promise automation a surface
+        # that cannot fail.
+        exit_codes=(ExitCode.OK, ExitCode.USAGE_ERROR, ExitCode.INTERNAL_ERROR),
         arguments=(
             Argument(
                 name="--log-class",
@@ -449,20 +477,26 @@ COMMANDS: tuple[Command, ...] = (
             ),
             Argument(
                 name="--severity",
-                summary="Minimum severity (DEBUG, INFO, WARN, ERROR).",
+                # Every member of the SYS-61 order, CRITICAL included. The
+                # manual is what an operator reads before running the command,
+                # and CRITICAL is the level a kill-switch activation lands at —
+                # omitting it from the one CLI surface for finding critical audit
+                # events would hide exactly the filter they came for. Pinned
+                # against the Severity enum by tools/log_persistence_check.py so
+                # this list cannot drift behind the values the handler accepts.
+                summary="Minimum severity (DEBUG, INFO, WARN, ERROR, CRITICAL).",
             ),
             Argument(
                 name="--source",
-                summary="Source component or strategy id.",
+                # Not "or strategy id": the value is validated against the SYS-61
+                # Source enum, and a strategy id would be rejected. Strategy
+                # lines are reached with --log-class strategy, and each rendered
+                # event carries strategy_id for attribution.
+                summary="Source component (kill_switch, ib_gateway, market_data, ...).",
             ),
             Argument(
                 name="--since",
                 summary="ISO-8601 lower bound for event timestamp.",
-            ),
-            Argument(
-                name="--follow",
-                summary="Stream events as they arrive instead of returning.",
-                is_flag=True,
             ),
             _JSON,
         ),

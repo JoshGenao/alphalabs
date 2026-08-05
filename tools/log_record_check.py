@@ -883,12 +883,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(
         "SRS-LOG-001 SDK-SURFACE PASS — log record schema + sink routing "
-        "contract (concrete persistent sinks now BUILT in atp_logging.persistence — "
-        "see tools/log_persistence_check.py; "
-        "dashboard log pane rendering deferred to SRS-UI-001; live GET /api/v1/logs "
-        "+ LOGS WebSocket + admin logs CLI handler owned by SRS-LOG-001 (registered "
-        "on the now-built operator-interface-runtime registry, python/atp_runtime); "
-        "ERROR/CRITICAL notification fan-out deferred to SRS-NOTIF-001)"
+        "contract (concrete persistent sinks BUILT in atp_logging.persistence and their "
+        "operator surfaces BUILT in atp_logs_service + atp_dashboard.logs — see "
+        "tools/log_persistence_check.py; GET /api/v1/logs + LOGS WebSocket + admin logs "
+        "registered on the operator-interface-runtime registry by "
+        "atp_logs_service.wire_logs; ERROR/CRITICAL notification fan-out deferred to "
+        "SRS-NOTIF-001; strategy-side logging helper deferred to SRS-SDK-007)"
     )
     for line in evidence:
         print(f"  * {line}")
