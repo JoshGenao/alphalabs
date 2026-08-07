@@ -1,0 +1,122 @@
+# Contract drift — declarations, frozen snapshots, and stale prose
+
+The moment a placeholder gets a real handler, its schema becomes a false statement. This is
+the single most-repeated class in the repo's review history: LOG-001 hit it at r2, r6, r8,
+r11, r15, r19, r22, r29, r33; EXE-003 at r1, r3, r5; RESV-003 at r7, r10, r13.
+
+## Declared vs emitted
+
+1. **Compare the full field SET, in BOTH directions, per route.** A superset is undeclared
+   drift; a subset is an unkept promise. Serve a REAL request in the test and diff the
+   emitted body against the declaration. `(LOG-001 r6; RESV-003 r7/r10/r13)`
+2. **Compare each LEVEL separately.** `Route.response_fields` is flat, so declaring
+   per-event fields there documents them *beside* the `events` array instead of inside it —
+   a generated client looks in the wrong place. Declare nested item fields as item fields
+   and assert top-level set equality plus item-level set equality. `(LOG-001 r8)`
+3. **A type test that iterates the emitted body cannot see a documented-but-absent field.**
+   Iterate the schema too. `(LOG-001 r8, on its own r7 fix)`
+4. **Placeholder types contradict a live handler.** A route with no handler documents every
+   field as `string`; once it answers with arrays, ints, and booleans, populate the
+   `field_types` seam and regenerate. A placeholder that contradicts a live handler is worse
+   than no schema. `(LOG-001 r7)`
+5. **Nullable unions must be declared** — a field that is `null` on the commonest event is
+   schema-invalid as a bare `string`. Both the OpenAPI and AsyncAPI generators need the
+   union rendering. `(LOG-001 r15)`
+6. **The WS envelope is `{type, channel, data}`** — couple a contract test to the snapshot's
+   `required`, not to your memory of it. `(API-001)`
+7. **If the payload carries a discriminator the client routes on, declare it.** `log_class`
+   was load-bearing for the SPA and absent from the channel contract. `(LOG-001 r2)`
+8. **Which way to fix it:** when the extra field is load-bearing honesty (metadata,
+   counters, scope flags), move the CONTRACT to meet the code and regenerate. When it is a
+   capability nobody can use, remove the SURFACE. `(LOG-001 r6)`
+
+## When a deferred surface goes live
+
+9. **Sweep every place that calls it deferred, in one pass, then WRITE THE CHECK.** Fixing
+   instances one at a time does not converge — LOG-001 found the same "--follow is
+   deferred" claim at r11 (contract flags), r19 (a sibling contract block), r29 (a block
+   description), and r33 (three frozen public documents). The r29 collector, written once,
+   immediately caught a third instance the manual sweeps had missed. `(LOG-001 r11/r19/r29)`
+10. **The places to sweep**, exhaustively: `architecture/runtime_services.json` — every
+    block's `deferred[]` **and** its `description` prose and per-rule `note` fields; the
+    module docstrings (often two passages: a status section and a deferred list); the check
+    tool's docstring **and its printed evidence string**; test docstrings; the package
+    README; and the frozen public artefacts (`openapi.json`, the AsyncAPI snapshot, the CLI
+    `manual.json`). Grep `deferred|contract only|will be|not yet` until clean.
+    `(EXE-003 r1/r3/r5; BT-001; LOG-001 r33)`
+11. **Prefer a declarative seam over a prose edit.** `Route.served_by` / `Command.served_by`
+    / `EventChannel.served_by` swap the "Contract only" placeholder for a sentence naming
+    the implementer — while still stating that a deployment which has not composed the
+    handler returns 501, so "served" is never read as "served unconditionally". Guard the
+    declaration AND the generated artefact, so a regeneration cannot silently restore the
+    placeholder. `(LOG-001 r33)`
+12. **Drift runs in both directions.** After removing a capability, the contract still
+    promised a structured rejection for it — a consumer would look for a machine-readable
+    error and get a usage failure. Cross-check all the places at once. `(LOG-001 r11)`
+13. **Scope what you will NOT sweep, out loud.** The same staleness affected three other
+    features' frozen evidence; re-freezing their snapshots inside this feature's diff is
+    wrong. Say so in the contract and name the owners. `(LOG-001 r33)`
+
+## Owner maps and the check tools
+
+14. **Every named owner must appear in `deferred[]`** — including a `passes:true` feature
+    that owns a still-deferred operation. Drop any "closed upstream" exemption.
+    `(API-001)`
+15. **When two contract blocks disagree, make one of them authoritative and pin it.** The
+    LOGS owner flip-flopped across three rounds because two blocks and a check's print
+    string each said something different. `(API-001)`
+16. **Derive allow-lists from the enum, not from a copy of the list.** A `--severity`
+    summary that omits CRITICAL — where kill-switch activations land — is a wrong manual on
+    the one surface an operator uses to find them. Check the summary against the `Severity`
+    enum in both the declaration and the frozen artefact. `(LOG-001 r36)`
+17. **A new check script must be wired into BOTH `.github/workflows/ci.yml` and
+    `tools/run_ci_locally.sh`, in the same slot.** The deterministic critic has no parity
+    rule; the judgment reviewer blocks on it round 1. Data-layer checks aggregate through
+    `tools/architecture_check.py` instead — follow the neighbours. `(ERR-9, SESSION 31)`
+18. **Regenerate frozen snapshots with their own `--update` tool** and check the diff is
+    exactly what you intended (one line, not a reflow). `(LOG-001 r33)`
+19. **Never hand a file list that can contain `.json` to `ruff format`.** JSON is valid
+    Python syntax; ruff rewrote `runtime_services.json` and the AsyncAPI snapshot into
+    invalid JSON, ~10k lines of churn. Explicit `.py` paths only. `(LOG-001, self-inflicted)`
+
+## Versioned formats
+
+20. **Adding a variant to a durable format needs a schema-version boundary.** An old reader
+    must hit a clean version-gate rejection, not "corrupt". Write the MINIMUM version the
+    contents require, so a store without the new kind stays readable by old tools; accept a
+    range on restore; reject an old-version blob carrying the new-version-only kind.
+    `(DATA-012 §3)`
+21. **Three states, never two:** `Absent` (no version field) / `Valid(n)` / `Invalid`
+    (present but unparseable). Collapsing `Invalid` into `Absent` makes every parse failure
+    a false "readable", and a gate that says readable is worse than no gate. `(DATA-015)`
+22. **Locate the version by declared LAYOUT, never by plausibility** — a forward scan for
+    "the first integer that looks like a version" reads a record count. `(DATA-015)`
+23. **Scan every record, not the first**, and refuse ambiguity: duplicate keys (Python's
+    `json.loads` is last-value-wins — use `object_pairs_hook`), trailing bytes after `}`,
+    a key found inside a string value. `(DATA-015)`
+24. **The schema registry (SRS-DATA-015) gates every new persisted format repo-wide** — a
+    new on-disk shape is its concern, not yours to invent locally.
+
+## Flipping a mode, a gate, or a widely-referenced feature
+
+25. **Sweep the whole cluster in ONE pass; piecemeal does not converge.** Serving one new
+    normalization mode touched FOUR contract blocks, five check tools (each docstring,
+    argparse, PASS/FAIL label and `_DEFERRED_OWNERS`), and two Rust module docs — and the
+    reviewer found exactly one stale reference per round while the others still said
+    "deferred". Finish with a script that classifies EVERY reference to the token as
+    served-or-deferred. `(DATA-012 mode flip, 6 rounds)`
+26. **Keep contract tokens OUT of comments.** A check greps a compacted source token; put
+    that same string in a new comment and the mutation test that replaces the code form
+    leaves the comment behind, so the guard never fires and the mutation test fails.
+    `(DATA-012)`
+27. **Changing a port signature breaks sibling mutation anchors.** When a gate body changes
+    (`validate(&record)` → `validate(record)`), `grep -rn` the old literal across `tests/`
+    and `tools/` and update every anchor — a stale anchor makes the mutation a vacuous
+    no-op, which is worse than a failure. The structural checker often still passes (it
+    scans for token presence), so run it rather than assuming it broke. Every stub impl of
+    the port needs its one-line signature update. `(DATA-013)`
+28. **An AC clause served at the CLI but not at the binding is PARTIALLY served** — a
+    `passes:false` contributor. Do not word it "met" or "closed". `(DATA-012)`
+29. **`runtime_services.json` is ~512 KB and does NOT round-trip through `json.dumps`**
+    (~6 KB of drift). Splice a new block TEXTUALLY before the root `}`, then validate with
+    `json.loads` and confirm 0 deletions. `(PERF-001)`

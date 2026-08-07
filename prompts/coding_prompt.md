@@ -7,6 +7,10 @@ honestly goes, and **either fully integrate it into `main` (auto-flip
 `passes:true`) or land its partial progress and move to the next ready feature** —
 leaving the repo clean for the next session.
 
+What previous sessions *learned* is not lost, though: `docs/playbooks/` carries it,
+and `CLAUDE.md` carries the always-on rules. Read them (Step 1) and add to them
+(Step 8) — that directory is the only thing that compounds across sessions.
+
 You are likely **one of several agents running at once**, each in its own git
 worktree + branch + private port block, coordinated through a lock-guarded
 scheduler (`tools/agent_pool.py`). The rules below keep you isolated from
@@ -44,22 +48,40 @@ Your lease lasts ~2h. If you expect to run longer, extend it:
 ```bash
 pwd && ls -la
 cat AGENTS.md                                   # navigation + architecture
+cat CLAUDE.md                                   # always-on rules (auto-loaded, but read it)
+cat docs/playbooks/INDEX.md                     # the router — then read the matching playbooks
 python3 tools/agent_pool.py status --no-fetch   # the board: ready / blocked / leased / done
-cat progress.txt | head -60                     # folded history
 cat "progress.d/session-$ATP_FEATURE_ID.md" 2>/dev/null   # RESUME handoff, if a prior session worked this feature
+ls -t progress.d/ | head -10                    # what the most recent sessions were doing
 git log --oneline -20
 
 # Your feature's full intent:
 python3 -c "import json,os;f=next(x for x in json.load(open('feature_list.json')) if x['id']==os.environ['ATP_FEATURE_ID']);print(json.dumps(f,indent=2))"
 ```
 
+**Load your playbooks.** `docs/playbooks/` is the distilled memory of every prior
+session — each rule is there because a review round, a live run, or a red `main`
+found it. Read the two always-on playbooks (`adversarial-precheck.md`,
+`test-integrity.md`) plus the 1–3 whose trigger matches your feature. Do not read
+all of them; do not skip the always-on ones. Reading them now is what keeps the
+Step 6.6 review from spending 10+ rounds re-finding the same classes.
+
 **Resume-aware:** if `progress.d/session-$ATP_FEATURE_ID.md` exists, a prior
 session already advanced this feature (its work is on `main`, which your branch
 is based on). Read it, continue from where it left off — do not restart.
 
-Your first message must summarise: the feature, any prior progress, and its
-dependencies (from `agent_pool.py status`). You'll present the full plan for
-approval in **Step 4.6** — you're in read-only plan mode until then.
+**Already-built probe — do this BEFORE planning.** A resume note's claims are
+evidence, not proof; verify them against the tree (`git ls-files <named paths>`,
+grep for the named modules/routes/types). If everything the note claims is present
+and the note says `Outcome: serialized`, there is nothing to build: the honest move
+is `agent_pool.py block "$ATP_FEATURE_ID" --on <owner ids derived from the code>`
+then `release`, and a session note recording that this was churn. Five sessions in
+the log produced zero code by rebuilding something already on `main` (see
+`progress.d/session-UI-5.md`, session 2). Do not spend a session rediscovering that.
+
+Your first message must summarise: the feature, any prior progress, which playbooks
+you loaded, and its dependencies (from `agent_pool.py status`). You'll present the
+full plan for approval in **Step 4.6** — you're in read-only plan mode until then.
 
 ---
 
@@ -217,6 +239,14 @@ park if it's a dependency).
 
 ## Step 6.6 — Run the Critic Agent (both passes must APPROVE)
 
+### Pass 0 — self-review against the playbooks (free; do it first)
+
+Walk your own diff against `docs/playbooks/adversarial-precheck.md` plus the
+playbooks you loaded in Step 1. Every rule there is a review round somebody already
+paid for; the round count of your review is largely a function of how much of this
+you did up front. Recent features spent 9–38 rounds, and most of the repeats were
+classes already written down.
+
 ### Pass 1 — deterministic
 ```bash
 git add <your changes>
@@ -240,6 +270,28 @@ the canonical `{"verdict": "block|warn|approve", "reviewer": "...", ...}` and pr
 Record the verdict **and which reviewer ran** in the session note. Commit/integrate
 **only when both passes are `approve`** (a `warn` needs a one-line written override;
 any `block` halts you — exit code 1).
+
+### Handling a BLOCK — fix the CLASS, not the instance
+
+A finding is not resolved when the named line is fixed. Before you re-run the review:
+
+1. **Sweep** every peer call site, sibling surface, and contract block for the same
+   defect — the reviewer will find the next one otherwise.
+2. **Fix them all in this round.**
+3. **Write the guard** — a static collector or a test that fails for the whole class,
+   not for the one instance.
+
+SRS-LOG-001 spent ~20 of its 38 rounds re-finding six recurring classes one call
+site at a time; the round that finally wrote a collector caught a third instance its manual
+sweeps had missed. `docs/playbooks/adversarial-precheck.md` has the class table.
+
+A **TIMEOUT is not a verdict** (`block` with zero findings is an availability
+failure — retry it; never `--base`-shrink the diff), and an empty-summary
+`claude-fallback` approve is a dropped verdict, not an approval.
+
+If the loop will not converge because each round names the next *deferred*
+dependency, stop honestly — `docs/playbooks/scope-and-serialization.md` has the stop
+signals and the honest-close procedure. Never fake an APPROVE.
 
 ---
 
@@ -269,11 +321,19 @@ This replaces "open a PR and wait for a human." First run the full gate; only if
 **everything is green**, integrate.
 
 ```bash
+source .venv/bin/activate && pip install -r requirements-dev.txt   # init.sh skips these
 tools/run_ci_locally.sh                 # the CI mirror — must pass
 cargo test --workspace
 pytest -m "not integration and not e2e"
 # (deterministic critic + codex review already APPROVE from Step 6.6)
 ```
+
+**The mirror prints "✓ local CI mirror complete" having run ZERO of ruff / mypy /
+pytest when those tools are absent** — it guards each step with `command -v` and
+prints `skip: … not installed`. In a fresh worktree that is the default state, and it
+is how an unformatted file reached `main` and left `ruff format --check` red. Install
+the dev requirements first, then READ the step list: a "complete" line is not evidence
+the gates ran. Check `pgrep -f "cargo test"` is empty before the workspace suite.
 
 Then hand off to the locked integrator, which fetches, **rebases your branch onto
 the latest `origin/main`**, and fast-forward-pushes — serialized so two agents
@@ -311,11 +371,27 @@ What I tested (per step): Step 1: PASS — <cmd> → <result>; ...
 Critic verdicts:
   deterministic: APPROVE — <findings>
   judgment (adversarial_review.py, reviewer=codex|claude-fallback): APPROVE — <findings>
+Adversarial rounds: <N>   <one line per round: verdict, the finding, the class it belonged to>
+Playbook updates: <docs/playbooks/*.md touched | none — no new defect class found>
 Resume / next: <what's left, exact blocking ids, where to continue>
 ```
 
 `close_feature.py` folds + removes this note when the feature integrates
 `complete`; for `partial`/`serialized` it stays as the resume pointer.
+
+**`Adversarial rounds:` is a measurement, not decoration.** It is how the operator
+sees whether the playbooks are working. Recent baseline: 9, 10, 13, 13, 13, 14, 15,
+20, 38.
+
+### Step 8.5 — write back to the playbooks
+
+If review, a live run, or a red `main` found a defect class that is **not** already
+in `docs/playbooks/`, add it — same rule format (rule — why — provenance
+`(<feature> rN)`), in the playbook it belongs to, in this same **chore** commit.
+Prefer extending an existing playbook; keep each under ~150 lines; delete a rule you
+proved wrong. If nothing new came up, write `Playbook updates: none` and say so.
+
+This is the only mechanism by which the next session starts smarter than you did.
 
 ---
 

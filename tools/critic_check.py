@@ -352,10 +352,16 @@ def check_safety_critical_paired(diff: DiffSlice, report: Report) -> None:
     # by its feature id alone, so without this carve-out the integrator's own fold-and-flip commit
     # (which DELETES the note) and any notes-only handoff edit would demand a tests/domain diff that
     # has no behavior to test. The pairing requirement stays intact for every code path.
+    #
+    # docs/playbooks/ is the same shape: the lesson files are named for the subject they cover
+    # (safety-paths.md, and any future connectivity-/live-mode- playbook), so they match by
+    # filename while carrying no behavior at all. Both carve-outs are DOCUMENTATION prefixes --
+    # no source, test, or config path can reach them.
+    _DOC_ONLY_PREFIXES = ("progress.d/", "docs/playbooks/")
     safety_files = [
         p
         for p in diff.files_changed
-        if SAFETY_PATH_RE.search(p) and "test" not in p and not p.startswith("progress.d/")
+        if SAFETY_PATH_RE.search(p) and "test" not in p and not p.startswith(_DOC_ONLY_PREFIXES)
     ]
     if not safety_files:
         return

@@ -463,16 +463,22 @@ def pick_order(ready, by_id, held, impact=None):
     )
 
 
-def serialized_notes(progress_dir: Path | None = None) -> set:
-    """Feature ids whose ``progress.d/session-<id>.md`` records ``Outcome:
-    serialized`` — code is done but ≥1 step needs human IB/e2e verification.
+def _outcome_says_serialized(line: str) -> bool:
+    """Is this note's ``Outcome:`` line a real serialized outcome?
 
-    Re-offering such a feature to a fresh agent is the churn loop: it can only
-    ever integrate ``serialized`` again (never ``complete``), so it returns to
-    the ready frontier forever. We exclude these from claiming and surface them
-    as an ``awaiting_verification`` bucket for the operator to close by hand.
+    The template's menu line starts with ``complete | ...`` so only a value that
+    actually *begins* ``serialized`` counts. One implementation, shared by both
+    note sources below, so a working-tree read and an ``origin/main`` read can
+    never answer differently.
     """
-    progress_dir = progress_dir or (ROOT / "progress.d")
+    s = line.strip().lower()
+    if not s.startswith("outcome:"):
+        return False
+    return s.split("outcome:", 1)[1].strip().startswith("serialized")
+
+
+def _serialized_from_worktree(progress_dir: Path) -> set:
+    """Serialized ids from notes on disk (the primary checkout's working tree)."""
     out: set = set()
     if not progress_dir.is_dir():
         return out
@@ -483,15 +489,85 @@ def serialized_notes(progress_dir: Path | None = None) -> set:
         except OSError:
             continue
         for line in text.splitlines():
-            s = line.strip().lower()
-            if not s.startswith("outcome:"):
-                continue
-            # Value after "outcome:"; the template menu line starts with
-            # "complete | ..." so only a real serialized outcome matches.
-            if s.split("outcome:", 1)[1].strip().startswith("serialized"):
-                out.add(fid)
-            break
+            if line.strip().lower().startswith("outcome:"):
+                if _outcome_says_serialized(line):
+                    out.add(fid)
+                break  # only the FIRST Outcome: line is the outcome
     return out
+
+
+def _serialized_from_ref(ref: str) -> set | None:
+    """Serialized ids from the notes as COMMITTED on ``ref`` (normally origin/main).
+
+    Returns ``None`` when the ref cannot be read (offline first run / no remote),
+    so the caller can fall back rather than silently reporting "no serialized
+    notes" — which would re-offer every already-done feature.
+
+    One ``git grep`` for every ``Outcome:`` line across the committed notes; the
+    LOWEST line number per file is that note's outcome, matching the working-tree
+    reader's first-line-wins rule.
+    """
+    proc = _run(
+        [
+            "git",
+            "-C",
+            str(ROOT),
+            "grep",
+            "-n",
+            "-i",
+            "-E",
+            "^[[:space:]]*outcome:",
+            ref,
+            "--",
+            "progress.d/session-*.md",
+        ],
+        check=False,
+    )
+    if proc.returncode not in (0, 1):  # 1 == no matches, anything else == unreadable ref
+        return None
+    first: dict[str, tuple[int, str]] = {}
+    for raw in proc.stdout.splitlines():
+        parts = raw.split(":", 3)  # <ref>:<path>:<lineno>:<content>
+        if len(parts) != 4:
+            continue
+        _rev, path, lineno, content = parts
+        if not lineno.isdigit():
+            continue
+        name = Path(path).name
+        if not (name.startswith("session-") and name.endswith(".md")):
+            continue
+        fid = name[len("session-") : -len(".md")]
+        n = int(lineno)
+        if fid not in first or n < first[fid][0]:
+            first[fid] = (n, content)
+    return {fid for fid, (_n, content) in first.items() if _outcome_says_serialized(content)}
+
+
+def serialized_notes(progress_dir: Path | None = None) -> set:
+    """Feature ids whose ``progress.d/session-<id>.md`` records ``Outcome:
+    serialized`` — code is done but ≥1 step needs human IB/e2e verification.
+
+    Re-offering such a feature to a fresh agent is the churn loop: it can only
+    ever integrate ``serialized`` again (never ``complete``), so it returns to
+    the ready frontier forever. We exclude these from claiming and surface them
+    as an ``awaiting_verification`` bucket for the operator to close by hand.
+
+    Read from ``origin/main`` UNION the primary checkout's working tree. The
+    working tree alone is not enough: notes reach ROOT only when it advances, and
+    ``_sync_primary_checkout`` is fast-forward-only, so it correctly refuses
+    exactly when the operator is doing their own work in ROOT (a WIP branch, a
+    dirty tree) — which is the normal case. On 2026-07-27 that left the four
+    newest notes invisible and two agents were simultaneously re-offered
+    already-serialized features. The union can only ever ADD ids to the
+    awaiting bucket, so it strictly reduces churn.
+
+    ``progress_dir`` overrides both sources with one directory (tests).
+    """
+    if progress_dir is not None:
+        return _serialized_from_worktree(progress_dir)
+    local = _serialized_from_worktree(ROOT / "progress.d")
+    integrated = _serialized_from_ref(base_ref())
+    return local if integrated is None else (local | integrated)
 
 
 def assess_frontier(features, deps, runtime, *, skip_awaiting=True) -> dict:
@@ -647,6 +723,7 @@ def cmd_status(args):
                     "assessment": assessment["state"],
                     "ready": sorted(claimable),
                     "awaiting_verification": awaiting,
+                    "awaiting_without_dep_edges": [f for f in awaiting if not deps.get(f)],
                     "blocked": {k: v for k, v in sorted(blocked.items())},
                     "leases": active,
                     "done": sorted(f for f, x in by_id.items() if x.get("passes")),
@@ -692,8 +769,22 @@ def cmd_status(args):
         )
     if awaiting:
         print("\n-- awaiting human verification (serialized; not re-offered) --")
+        edgeless = []
         for fid in awaiting:
-            print(f"  {fid:18} {by_id[fid]['description'][:52]}")
+            if deps.get(fid):
+                print(f"  {fid:18} {by_id[fid]['description'][:52]}")
+            else:
+                edgeless.append(fid)
+                print(f"  {fid:18} {by_id[fid]['description'][:44]}  ⚠ no dep edges")
+        if edgeless:
+            # A note is the only thing keeping these off the frontier, and a note
+            # is only as good as the reader's view of it. A `block --on` edge is
+            # branch-independent and immediate -- it is the durable de-churn.
+            print(
+                "   ⚠ these are de-churned by their note ALONE. If a real unbuilt producer\n"
+                "     blocks the flip, record it: agent_pool.py block <id> --on <owner ids>\n"
+                f"     (derive the owners from the code, not from prose): {', '.join(edgeless[:5])}"
+            )
     if blocked:
         print("\n-- blocked (waiting on deps) --")
         for fid, unmet in sorted(blocked.items()):

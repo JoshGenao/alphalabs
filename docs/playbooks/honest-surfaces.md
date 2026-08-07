@@ -1,0 +1,140 @@
+# Honest surfaces — REST, CLI, WebSocket, dashboard panes
+
+The failure mode of an operator surface is not a crash. It is a green light over a fact
+nobody verified. Every rule here is one review round somebody already paid for.
+
+## The payload
+
+1. **Unknown is `null`, never `[]`.** `ok:true, alerts:[]` is all-clear-shaped to every
+   consumer, no matter what a separate deferred cell says. `(UI-1 r1)`
+2. **Tri-state every headline fact.** `activated` / `recovered` / `completed` must be
+   true / false / **null**. `false` only when the source is readable AND genuinely empty;
+   unreadable, corrupt, or unconfigured → `null`. Both directions are lies. `(UI-4 r2)`
+3. **Separate absent from present-but-unreadable.** They need distinct error types
+   (`LOGS_STORE_MISSING` vs `LOGS_STORE_CORRUPT`) and distinct rendering. `(LOG-001 r7)`
+4. **Refuse undeclared parameters (400), never silently drop them.** Accepting and ignoring
+   `?limit=10` reports a server-capped page as if the caller's bound was honoured.
+   `(LOG-001 §3)`
+5. **A request for something that cannot exist is a 400, not an empty result.**
+   `?log_class=strategy&source=kill_switch` answered with `[]` reads as "no kill-switch
+   activations". `(LOG-001 §1)`
+6. **Report `returned` / `matched` / `truncated`, and say when a count is unavailable.** A
+   page-only read must publish `matched: null` + `page_only: true` and render "newest N",
+   never invent a total. `(LOG-001 r24)`
+7. **State the scope of what you verified.** A tail read validates only the window it
+   scanned, so `ok:true` overclaims. Publish `integrity_scope: "page"` and define `ok` as
+   "the read succeeded", not "this trail is healthy". `(LOG-001 r32)`
+8. **Carry the identity a consumer needs.** A pane where every one of 30 strategies renders
+   an indistinguishable line is a functional loss, not a cosmetic one. `(LOG-001 r12)`
+9. **State coverage; do not imply it.** A pane showing three kinds of event reads as "the
+   system emits three kinds of event". Give every declared source/event type a
+   produced/partial/deferred verdict, name the owner of each gap, and DERIVE the verdict
+   from the produced set so it cannot drift into a second copy. `(LOG-001 §8, r37)`
+
+## The surface itself
+
+10. **An uncovered capability gets NO public surface.** A flag that always errors is still
+    a surface; remove it from the declaration so the arg parser refuses it before dispatch.
+    "No public surface exposes X" includes the Rust crate API — a `pub use` re-export
+    counts. `(LOG-001 r6/r11; DATA-012 r13)`
+11. **Readiness must never overstate.** A workflow is `fully_served` only when EVERY
+    operation — REST *and* CLI *and* the WS publisher obligation — is wired: `real == total`,
+    not `real > 0`. A readiness CLI must exit non-zero when the body says `ready:false`.
+    `(API-001)`
+12. **Claim readiness from delivery, not from wiring.** Claim the channel on the first poll
+    that reads cleanly, not in `start()`; make the claim revocable, because readiness that
+    cannot be revoked eventually lies. See
+    [lifecycle-and-concurrency.md](lifecycle-and-concurrency.md). `(LOG-001 r10/r15)`
+13. **Confirmation guards precede dispatch on every surface** — route-level *and*
+    action-level (a shared route whose `rollback` action needs confirm), REST and CLI. Prove
+    it with a spy handler that is never reached. `(API-001)`
+14. **Exit codes must be declared honestly.** A live command whose handler can 400/500 must
+    declare `USAGE_ERROR` and `INTERNAL_ERROR`; a manual promising automation a surface that
+    cannot fail is a wrong contract. `(LOG-001 r22)`
+15. **The advertised entrypoint must actually work.** Subprocess-test it. `(API-001)`
+
+## CLI input
+
+16. **Allowlist arg parser, one pass — never scan-for-known-flags.** A typo (`--sorce`) is
+    silently dropped, the CLI falls back to a default the operator never chose, and reports
+    success. Reject unknown, duplicate, value-less flags, and a value that is itself a flag.
+    `(BT-001)`
+17. **Reject degenerate numerics at the boundary** (`--cash 0`, `-1`), before building the
+    request. `(BT-001)`
+18. **Canonicalize inputs through the SAME path the consumer uses** (e.g.
+    `SecurityKey::new` → trim + upper), or `--symbol aapl` falsely reports "not available"
+    against canonically-stored records. `(DATA-005 r5)`
+
+## Panes over a live or deferred producer
+
+19. **Every degraded branch fails closed AND clears prior state** — 5xx, fetch exception,
+    stalled fetch (`AbortSignal.timeout`), 404 route-disappearance, malformed payload. Not
+    just the caption: the rows, the beacon, and the dot. `(UI-1 r3)`
+20. **Fail-closed field parsing.** Contract fields arrive as strings; truthiness reads
+    `"false"` as acknowledged. Only an explicit true acknowledges; unknown = ACTIVE.
+    `(UI-1 r4)`
+21. **Freshness of the poll is not health of the producer.** While the producer is deferred,
+    drive the dot from the render function (wait/deferred), not the shared freshness
+    monitor. `(UI-1 r2)`
+22. **Two feeds for one buffer will race.** A REST poll that *started* before a live event
+    can resolve after it and erase it. Merge, don't replace; key the merge on a real record
+    id (values repeat by design); sort by timestamp because held-back events are not always
+    newer. `(LOG-001 r13/r16/r38)`
+23. **Pin it with route-interception e2es** (`page.route` fulfilling fake payloads) — the
+    real-feed branch is testable before the producer exists. `(UI-1 r6)`
+
+## Mutating controls (a button that changes live state)
+
+24. **Stale or unknown truth must never be left ACTIONABLE.** Reconcile every burst
+    (generation stamps + sweep) so a removed entity loses its control; disarm any staged
+    confirmation first. `(UI-2 r1)`
+25. **Bind success to a confirmed id read back from durable state, never to the POST.**
+    A per-call 2xx is not the end state. `(UI-5 r2/r9)`
+26. **Keep burst state PER SOURCE** (WS vs REST poll) with one global monotonic generation
+    for sweeping — shared counters make normal interleaving read as corruption and clear a
+    healthy table. `(UI-2 r3)`
+27. **Any unknown safety field blocks the control.** Enable only with the full safety
+    picture resolved and clear. `(UI-5 r5–r12)`
+28. **Timeouts must exceed the operation they wait on** — a 30s fetch timeout over a 60s
+    demotion manufactures an ambiguous result. `(UI-5 r11)`
+
+## Evidence panes (reporting what a past run did)
+
+29. **A readable record is not a valid record.** `{}` parses. Require the record to
+    substantiate the claim, with three-way identity agreement (record id == report id ==
+    response id). Fail to `unavailable`, not to `false`. `(UI-4 r1/r3/r4)`
+30. **Time-ordering is not correlation.** If the evidence is keyed on a different identifier
+    than the thing displayed, there is no link: show it verbatim, label it "NOT correlated",
+    leave the status unknown, and name the owner who must add the key. `(UI-4 r3)`
+31. **A per-call outcome is not the end state.** "disconnect call SUCCEEDED" is not "the
+    gateway is disconnected" — require the contract's own pinned boolean. `(UI-4 r4)`
+32. **Log-message parsers must be whole-string strict** (`fullmatch`, closed vocabulary on
+    every field the consumer reasons about). A `(.*)$` tail let drift suppress the loudest
+    warning. `(UI-4 r5)`
+
+## Making the panel good, not just correct
+
+The operator has rejected a plan at three separate gates (UI-3, UI-4, UI-5) with the same
+phrase: "make sure to utilize the /frontend-design skill to make a modern/beautiful app."
+
+33. **Invoke `/frontend-design` DURING PLANNING, before ExitPlanMode** — and, before any
+    chart, `dataviz`.
+34. **Naming an aesthetic and one memorable element is not enough.** UI-5's plan did that and
+    was still rejected, because the design section read as defensive ("cohesive with the
+    existing system / additive CSS / refined execution") instead of a bold concrete vision.
+    Lead with the ambition; put the constraints second. Specify: a committed COLOR story with
+    atmosphere; dramatic TYPOGRAPHY treatment (scale, weight, tracking — character comes from
+    treatment, since no font files are allowed); the SIGNATURE inline-SVG instrument in
+    visual detail; orchestrated MOTION moments behind `prefers-reduced-motion`; and SPATIAL
+    composition (asymmetry, an oversized hero, negative space against a dense control strip).
+35. **The dashboard is strictly self-contained (SEC-002 / NFR-S3)** — no CDN, no remote fonts,
+    no remote images. System/monospace stacks with tabular-nums, hand-authored inline SVG,
+    CSS-only motion, dark and light theming. Grep the assets for `http`/`cdn`/`fonts.g` before
+    committing.
+36. **Screenshot every state before committing** — healthy, armed, unconfigured, degraded,
+    plus the light theme — with a scratchpad Playwright script. UI-4's ring and hazard-rail
+    geometry bugs were invisible in code and obvious in the render.
+37. **Keep shared `styles.css` changes additive and scope new CSS to the new panel**, or
+    sibling panels and their tests regress. After a rebase on the dashboard seam, check brace
+    balance is 0 — an appended-CSS conflict can glue into an unterminated rule, and a lost `}`
+    silently voids every later rule.

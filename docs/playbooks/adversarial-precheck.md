@@ -1,0 +1,98 @@
+# Adversarial pre-check — always, before the first review round
+
+The judgment critic finds real defects one per round. Rounds are expensive (a full review
+of the diff, a fix, a regression test, a re-run). The round count is almost entirely a
+function of how much you pre-checked.
+
+Observed round counts: SRS-LOG-001 **38**, DATA-018 **23 findings / 15 rounds**, REL-001
+**20**, DATA-007 **17**, RESV-003 **14**, API-001 **14**, DATA-012 **14**, SAFE-002 **13**,
+DATA-015 **13**, UI-5 **13**, ORCH-005 **10**, NOTIF-001 **9**, MD-003 **9 + 4 live**.
+
+## Rule 0 — fix the CLASS, not the instance
+
+**On any BLOCK, before you re-request review:**
+
+1. **Sweep.** Grep every peer call site, sibling surface, and contract block for the same
+   defect. The reviewer will.
+2. **Fix them all in this round.** Not "the one it named."
+3. **Write the guard.** Add a static collector or a test that fails for the whole class —
+   not for the single instance.
+
+Why: LOG-001 spent ~20 of 38 rounds re-finding six recurring classes at the next call site.
+
+| Class | Re-found at |
+|---|---|
+| absent/missing store not failing closed (TOCTOU) | r7, r10, r20, r25 |
+| readiness claim lifecycle (claim / release / stop / restart) | r14, r15, r17, r22, r23, r28 |
+| stale "deferred / contract-only" prose after the surface shipped | r11, r19, r29, r33 |
+| unbounded O(whole-trail) read | r4, r24, r36 |
+| value used as identity instead of physical identity | r5, r16, r18 |
+| declared contract vs emitted response drift | r2, r6, r8, r15, r22 |
+
+The session's own words at r29: *"when the same statement is duplicated across contract
+blocks, fixing instances one at a time does not converge — write the check."* It then
+immediately caught a third instance the manual sweep had missed. `(LOG-001 r29)`
+
+## The pre-check list
+
+Walk this against your own diff before Step 6.6. Most of it is one grep each.
+
+1. **Every entry point, not the outermost.** A rule enforced in the REST wrapper leaves the
+   CLI, the Rust API, and the direct library call able to violate it. Put the guard where
+   all arms pass through, and enumerate the arms. `(RESV-003 r2; EXE-003 r3/r4)`
+2. **Unreadable / absent / unknown ≠ empty.** Give each its own error type and its own
+   rendered state. A missing file *reads successfully* and yields zero records — the exact
+   shape of a healthy quiet system. `(LOG-001 r7/r10/r20)`
+3. **No TOCTOU pre-check.** `if exists(): open()` is a race. Let the absence surface from
+   the open itself; keep `exists()` only as a nicer-message fast path. `(LOG-001 r20/r25)`
+4. **Value is not identity.** Two byte-identical records are two events — a retried
+   operation writes the same message with the same correlation id. Key cursors and dedupes
+   on physical identity (device+inode+offset), and verify content *as well as* position
+   because inodes and offsets get reused. `(LOG-001 r5/r16/r18)`
+5. **Bounded reads.** Any read whose size grows with history is a defect on a polled path
+   and a hazard on a request path. State the trade if you keep an O(n) scan, and re-check
+   whether a poller shares that code. `(LOG-001 r4/r24/r36)`
+6. **Declared contract == emitted surface, both directions.** A superset is undeclared
+   drift; a subset is an unkept promise. Serve a real request in the test and compare the
+   full field set, per level (top-level and nested items separately). `(LOG-001 r6/r8)`
+7. **Implemented ≠ shipped.** Drive the e2e through the *shipped* composition helper, not a
+   test fixture that mounts the handlers itself. `serve()` never mounting the routes is a
+   real, shipped bug that every test can miss. `(RESV-003 r7)`
+8. **Writer must satisfy its own reader.** If you harden a parser, re-check the emitter:
+   a hand-rolled escaper that covers five characters will now poison its own log.
+   `(RESV-003 r3; DATA-015)`
+9. **Order of operations around durable writes.** Do every fallible read *before* the
+   append. Counting after appending means the caller is told "did not happen" while the
+   disk says it did. `(RESV-003 r4)`
+10. **Concurrency where you assumed a single writer.** The HTTP server is threaded. A
+    comment claiming serialization is not serialization. `(RESV-003 r5)`
+11. **Same-named exception in two modules.** The `except` clause misses the foreign class
+    entirely. Exception identity must be one object; assert `is`. `(RESV-003 r6)`
+12. **Scope your own claims.** After hardening, re-read the prose you wrote: module docs,
+    the check tool's printed evidence string, `deferred[]` entries, the README. A claim
+    that outruns the code is its own BLOCK. `(EXE-003 r1/r3/r5; UI-4 r6)`
+
+## Handling the reviewer
+
+- **A TIMEOUT is not a verdict.** `{"verdict":"block","findings":[]}` with a timeout summary
+  is an availability failure. Retry — on a ~40-file diff the fallback timed out twice and
+  the third attempt found a real BLOCK. Never `--base`-shrink the diff to make it finish.
+  `(LOG-001 r38)`
+- **An empty-summary `claude-fallback` APPROVE is a dropped verdict**, not an approval.
+  A real verdict has a populated summary and findings. `(DATA-011)`
+- **A verdict that flips to approve with no diff change is unresolved**, not an approve.
+  `(DATA-018)`
+- **Its observation can be right while its recommendation is wrong.** Twice on DATA-018 the
+  literal advice would have broken something. Fix the root cause it points at, and say in
+  the note where you diverged and why. `(DATA-018)`
+- **Some loops structurally cannot converge** — see
+  [scope-and-serialization.md](scope-and-serialization.md) for how to stop honestly.
+
+## Before you call the review clean
+
+- Deterministic critic APPROVE on the staged set.
+- Every fix from every round is mutation-verified.
+- The last SUBSTANTIVE round covers the tree you are shipping. If it does not (the operator
+  closed the session, or the reviewer was rate-limited after your last edit), say so
+  explicitly in the session note and name which round the last real pass covered.
+  `(LOG-001 r38 note)`

@@ -1,0 +1,119 @@
+# Committing, rebasing, and integrating in a parallel-worktree repo
+
+~48 worktrees can exist at once and they share one git object store, one stash stack, and
+one `main`. Most of this playbook is about that sharing.
+
+## Before the first commit
+
+1. **`git status -sb` — do not trust the session-start snapshot.** It is taken at launch; a
+   concurrent session can check the primary directory out onto an `agent/<ID>` branch
+   mid-session. On 2026-07-31 the snapshot said `main` while the directory was on
+   `agent/SRS-NOTIF-001`, four commits ahead, two of them another session's. The tell is
+   `agent_pool.py status` still reporting the old `done:N` — the scheduler reads
+   `origin/main`, so a flip that never reached main does not move the board.
+2. **Untracked files you did not create mean a concurrent session is mid-build.** Never
+   `git add -A`; scope every add to explicit paths.
+3. **Confirm you are where you think you are.** A fresh Bash shell does NOT inherit the
+   launcher's exports and defaults to the primary checkout — `ATP_FEATURE_ID` can be empty
+   and cwd can be the main repo (observed: `./init.sh` built main's env and wrote
+   `progress.d/plan-.md` into main). Prefix commands with
+   `cd <worktree> && export ATP_FEATURE_ID=… ATP_DEV_PORT=… ATP_AGENT_OWNER=<host:pid>`, and
+   verify with `git rev-parse --show-toplevel`.
+
+## Never do these
+
+4. **Never `git stash`.** The stash is repo-global: on a clean tree `stash` is a no-op, so
+   the later `pop` applies a *sibling's* WIP onto your branch, producing add/add conflicts in
+   files you never touched. Recovery is `git reset --hard HEAD` (the foreign stash stays in
+   the list). Compare with `git show origin/main:<path>`, `git diff origin/main...HEAD`, or a
+   throwaway worktree.
+5. **Never `git reset --soft origin/main` after main has moved.** It makes the NEW main your
+   parent WITHOUT merging it, so your diff silently REVERTS the sibling edits to any shared
+   manifest you also touched — and the integrate rebase is then a no-op, so nothing
+   re-merges. Reset to the fork point instead. Verify with
+   `git diff origin/main...HEAD --stat`: demand 0 deletions and no sibling files.
+6. **Never edit an already-tracked `progress.d/plan-<id>.md`.** It is writable exactly once,
+   while untracked. Committing it on a branch trips `shared_state_violations` (exit 6);
+   leaving it dirty makes `git rebase` refuse before it starts — and `cmd_integrate` reports
+   that as "rebase onto origin/main conflicted", which reads like a sibling conflict and is
+   not one. Check `git ls-files --error-unmatch` first; put the new plan in the session note.
+7. **Never run a whole-crate `cargo fmt`.** The local toolchain is newer than whatever last
+   formatted the repo, so it rewraps pre-existing lines — and several L3 contract tests
+   mutate Rust source with a literal `source.replace("MemBelowFloor { mem_mb: u32, … },", …)`.
+   A rewrap makes the mutation a no-op and the test fails with "CheckError not raised". Add
+   Rust with the Edit tool, match surrounding style, and verify only YOUR line ranges with
+   `rustfmt --emit stdout` diffed against the working file.
+8. **Never pass a file list that can contain `.json` to `ruff format`** — see
+   [contract-drift.md](contract-drift.md) rule 19.
+9. **Never bypass the critic** (`ATP_CRITIC_BYPASS=1`, `--no-verify`). Only humans bypass.
+
+## The critic gate
+
+10. **A safety-path diff needs a paired `tests/domain/` test in the SAME STAGED SET.**
+    `SAFETY_PATH_RE` contains literal feature ids, so `progress.d/session-SRS-SDK-004.md`
+    *is* a safety path and a notes-only chore commit is blocked. Fold the note into the same
+    commit as the domain test: `git reset --soft HEAD~1`, re-add both, `git commit -C
+    ORIG_HEAD`. Amending does not help — `--staged` only sees newly staged files.
+11. **`git commit --amend` diffs the INCREMENTAL staged change.** If the domain test is
+    already in the prior commit, the amend has none and the critic blocks — silently, if you
+    redirected output. After any amend, `git show HEAD:<file>` to confirm it landed.
+12. **After a `reset --soft`, the index is the last-commit tree, not the working tree.**
+    `git add -A` (scoped) or your working-tree fixes silently do not get committed.
+13. **A change to `tools/critic_check.py` is a prep commit the reviewer will not
+    auto-approve** (it reads it as self-modification pending human review). Consider dropping
+    it if an existing safety path already covers your diff.
+14. **Resolve rebase conflicts Read-before-Edit, and never `git add` after an Edit failure.**
+    A failed Edit followed by a chained `git add && git rebase --continue` committed conflict
+    markers. Separate the steps: resolve → `grep -c '<<<<<<<'` is 0 → build → then continue.
+
+## Running the gate
+
+15. **`tools/run_ci_locally.sh` needs the venv and the dev requirements.** `init.sh` installs
+    `requirements.txt` only, and the mirror SKIPS ruff/mypy/pytest when they are absent while
+    still printing "✓ local CI mirror complete". Install `requirements-dev.txt` first and
+    read the step list. See [test-integrity.md](test-integrity.md) rule 7.
+16. **Main is pre-existing mypy-red and partly ruff-dirty.** Keep YOUR files clean; do not
+    reflow unrelated files. When you must fix a pre-existing format red, fix only the
+    offending file, in its own commit.
+17. **Run the gate's real command after your LAST edit** — `cargo clippy --workspace -- -D
+    warnings`, not `cargo build | grep '^error'`. Check `$?`, don't grep. `(NOTIF-001)`
+18. **Check `pgrep -f "cargo test"` before a workspace suite.** See
+    [test-integrity.md](test-integrity.md) rule 13.
+
+## Integrating
+
+19. **`cmd_integrate` targets `alphalabs-wt-<feature-id>`, not the directory you are in.** On
+    2026-08-03 a session running in `alphalabs-wt-md003-stream` integrated the stale
+    `alphalabs-wt-SRS-MD-003`, which sat exactly at `origin/main`: the rebase was a no-op, the
+    push was a no-op fast-forward, and it printed `✓ integrated` while five commits of real
+    work stayed on the session's branch. Always verify:
+    `git fetch origin && git merge-base --is-ancestor <your-first-feat-sha> origin/main`.
+20. **Recovery for that case:** `git -C ../alphalabs-wt-<ID> merge --ff-only <your-branch>`
+    then re-run integrate. Do not `git push origin main` by hand — the locked integrator is
+    the only writer of main. Re-claim first if siblings are active (the false success
+    released your lease).
+21. **A fresh shell has no `ATP_AGENT_OWNER` and possibly no ssh identity.** Without the
+    owner, integrate refuses with "leased by another active session" naming your own
+    launcher's PID; without `ssh-add ~/.ssh/id_ed25519`, the push fails after the local
+    rebase. Integrate is **idempotent** — fix the auth and re-run.
+22. **Nothing but `progress.d/session-<your-id>.md` may come from a branch.**
+    `INTEGRATE_ALLOWLIST` (feature_list.json, progress.txt, progress.d, feature_deps.json) is
+    integrator-only.
+23. **`block --on` is IMMEDIATE; a serialized NOTE is not.** `cmd_block` writes
+    `ROOT/tools/feature_deps.json` in place under the lock, so the edge takes effect at the
+    next claim regardless of git staleness. A serialized note only reaches the scheduler once
+    it can read it from the integrated tree. **When a serialized feature has real unbuilt
+    producers, always record them with `block` even if you also write the note** — derive the
+    owner ids from the code (the deferred-cell `*_OWNER` constants), not from prose, and
+    exclude producers no acceptance criterion depends on. Over-blocking is as dishonest as
+    under-blocking.
+24. **A feature with no dependency edge and a flip-blocking gap returns to the ready frontier
+    every cycle.** That is the churn loop; the edge is the fix. `agent_pool.py status` now
+    flags awaiting-verification features that have no edges.
+25. **`feature_list.json`'s `notes` field is updated by NO tooling path.** `close_feature.py`
+    has no notes handling and `integrate --mode serialized` only syncs the deps file, so a
+    serialized feature's notes drift until a human edits them on main — and the reviewer
+    reliably raises "the feature record contradicts the shipped scope". You cannot fix it on
+    the branch. Leave the file byte-identical, put the full replacement text verbatim in your
+    session note under a labelled section, and answer the finding with "this is a tooling
+    gap, not a decision the branch may make." Budget one round for it.

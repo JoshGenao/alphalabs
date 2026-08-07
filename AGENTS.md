@@ -8,10 +8,12 @@ Read it first. Follow the links. Do not guess.
 0. `echo "${ATP_FEATURE_ID:?}"` - confirm your assigned feature (parallel runs)
 1. `pwd` - confirm working directory (your own `alphalabs-wt-<id>` worktree)
 2. `./init.sh` - start dev server, install hooks, verify environment
-3. `cat progress.txt` + `ls -t progress.d/` - read handoff (archived log + the
+3. `cat docs/playbooks/INDEX.md` - load the playbooks matching your feature; the
+   two always-on ones are `adversarial-precheck.md` and `test-integrity.md`
+4. `cat progress.txt` + `ls -t progress.d/` - read handoff (archived log + the
    living per-session notes)
-4. `git log --oneline -20` - understand recent changes
-5. `cat feature_list.json | grep '"passes": false' | wc -l` - count remaining work
+5. `git log --oneline -20` - understand recent changes
+6. `cat feature_list.json | grep '"passes": false' | wc -l` - count remaining work
 
 See `prompts/coding_prompt.md` for the full per-session workflow.
 
@@ -86,6 +88,8 @@ back to `main`. No file, branch, or port collisions.
 
 | Document | Path | Purpose |
 |----------|------|---------|
+| Always-on rules | `CLAUDE.md` | Auto-loaded in every worktree: the rules whose violation is expensive and silent |
+| Playbooks | `docs/playbooks/` | Distilled lessons from prior sessions, routed by `INDEX.md`; read the matching ones, add to them |
 | Stakeholder requirements | `docs/StRS_v0.7.md` | Why we're building this |
 | System requirements | `docs/SyRS_v0.7.md` | What the system must do |
 | Software requirements | `docs/SRS.md` | How the software is structured |
