@@ -1,4 +1,8 @@
-.claude/
+# .claude/ is local session state (settings.local.json, plans/) EXCEPT the skills,
+# which are project tooling: they must be tracked to reach every worktree and any
+# scheduled/cloud run. Same reason CLAUDE.md and docs/playbooks/ are tracked.
+.claude/*
+!.claude/skills/
 .vscode/
 
 .DS_Store
