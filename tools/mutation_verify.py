@@ -166,11 +166,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
-    dirty = _git("status", "--porcelain").strip()
+    # TRACKED modifications only. `git checkout` never touches untracked files, so
+    # they need no restoring — and refusing on them made the tool unusable in exactly
+    # the situation it exists for: an agent that has just recorded evidence has an
+    # untracked .harness/runs/ and could not mutation-verify anything.
+    dirty = _git("status", "--porcelain", "--untracked-files=no").strip()
     if dirty:
         print(
-            "✗ working tree is not clean; mutation_verify reverts source files and "
-            "must be able to restore them exactly. Commit or stash first.",
+            "✗ tracked files are modified; mutation_verify reverts source files and "
+            "must be able to restore them exactly. Commit or set them aside first:\n"
+            + "\n".join(f"    {line}" for line in dirty.splitlines()[:10]),
             file=sys.stderr,
         )
         return 2
