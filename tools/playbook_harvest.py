@@ -59,6 +59,10 @@ class Note:
     playbook_updates: str = ""
     findings: list[str] = field(default_factory=list)
     zero_code: bool = False
+    # Filled from .harness/runs/<feature>/review.jsonl when the reviewer recorded it.
+    rounds_source: str = "note"
+    rules: list[str] = field(default_factory=list)
+    rounds_disagree: bool = False
 
 
 def _parse_note(text: str, feature: str, path: str) -> Note:
@@ -80,6 +84,39 @@ def _parse_note(text: str, feature: str, path: str) -> Note:
         if "no code changed" in low or "this was churn" in low:
             note.zero_code = True
     return note
+
+
+def review_telemetry(feature: str) -> dict | None:
+    """Structured rounds for a feature, if adversarial_review.py recorded them.
+
+    The prose ``Adversarial rounds:`` line is what an agent remembered to type; this
+    is what the reviewer actually did. Prefer the latter and keep the former as the
+    fallback, because notes folded into progress.txt at close no longer have a
+    .harness directory to read.
+    """
+    path = ROOT / ".harness" / "runs" / feature / "review.jsonl"
+    if not path.is_file():
+        return None
+    rounds, rules = [], set()
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            rounds.append(rec)
+            rules.update(rec.get("rules") or [])
+    except (OSError, json.JSONDecodeError):
+        # Unreadable telemetry is not zero rounds — say nothing and let the note
+        # speak, rather than reporting a confident 0 (CLAUDE.md rule 3).
+        return None
+    if not rounds:
+        return None
+    return {
+        "count": len(rounds),
+        "rules": sorted(rules),
+        "verdicts": [r.get("verdict") for r in rounds],
+    }
 
 
 def _read_at(ref: str, path: str) -> str | None:
@@ -120,7 +157,14 @@ def collect(since: str | None) -> dict:
         if text is None:
             continue  # folded away and unreadable at the marker -- progress.txt has it
         feature = Path(p).stem[len("session-") :]
-        notes.append(_parse_note(text, feature, p))
+        note = _parse_note(text, feature, p)
+        if (telem := review_telemetry(feature)) is not None:
+            if note.rounds is not None and note.rounds != telem["count"]:
+                note.rounds_disagree = True
+            note.rounds = telem["count"]
+            note.rounds_source = "review.jsonl"
+            note.rules = telem["rules"]
+        notes.append(note)
 
     return {
         "marker": marker,
@@ -237,6 +281,29 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  pre-playbook baseline median: {r['baseline_median']}")
     if r["unreported"]:
         print(f"  ⚠ no 'Adversarial rounds:' line: {', '.join(r['unreported'])}")
+    measured_by_tool = [n["feature"] for n in notes if n.get("rounds_source") == "review.jsonl"]
+    if measured_by_tool:
+        print(f"  {len(measured_by_tool)} count(s) taken from review.jsonl, not from prose")
+    disagreed = [n["feature"] for n in notes if n.get("rounds_disagree")]
+    if disagreed:
+        print(f"  ⚠ note disagrees with the recorded rounds: {', '.join(disagreed)}")
+
+    # Defect classes the reviewer raised across this batch. A rule id that keeps
+    # recurring across FEATURES is a candidate for promotion into
+    # tools/critic_check.py — a regex is cheaper than a review round.
+    freq: dict[str, set] = {}
+    for n in notes:
+        for rule in n.get("rules") or []:
+            freq.setdefault(rule, set()).add(n["feature"])
+    recurring = sorted(
+        ((rule, sorted(f)) for rule, f in freq.items() if len(f) >= 3),
+        key=lambda kv: (-len(kv[1]), kv[0]),
+    )
+    if recurring:
+        print("\n-- promotion candidates (a rule the reviewer raised on 3+ features) --")
+        for rule, feats in recurring:
+            print(f"  {rule:44} {len(feats)} features: {', '.join(feats[:5])}")
+        print("  Mechanising one of these in tools/critic_check.py retires a review round.")
 
     if data["integrity"]:
         print("\n-- integrity FAILURES --")

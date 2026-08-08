@@ -38,6 +38,7 @@ import difflib
 import fcntl
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -1074,6 +1075,46 @@ def cmd_block(args):
     return 0
 
 
+def cmd_unblock(args):
+    """Retract a dependency edge that turned out to be wrong.
+
+    `block --on` appends and nothing has ever removed an edge, so the graph only
+    accretes constraints. A wrong edge is not inert: the scheduler will not offer the
+    feature until the named prerequisite passes, so one bad `block` can park a
+    feature indefinitely. `status` already surfaces the symptom (⚠ no dep edges); this
+    is the correction. Same lock, same validation, same file as `block`.
+    """
+    fid = args.id
+    with Lock():
+        ids = {f["id"] for f in load_features(fetch=False)}
+        if fid not in ids:
+            print(f"✗ unknown feature id: {fid}", file=sys.stderr)
+            return 1
+        deps = load_deps()
+        cur = set(deps.get(fid, []))
+        if not cur:
+            print(f"• {fid} has no recorded dependencies; nothing to retract")
+            return 0
+        wanted = set(args.off)
+        missing = sorted(wanted - cur)
+        if missing:
+            print(
+                f"✗ {fid} is not blocked on {missing} (current: {sorted(cur)})",
+                file=sys.stderr,
+            )
+            return 1
+        cur -= wanted
+        if cur:
+            deps[fid] = sorted(cur)
+        else:
+            deps.pop(fid, None)
+        save_deps(deps)
+    reason = args.reason or "(no reason given)"
+    print(f"✓ {fid} no longer blocked on {sorted(wanted)} — {reason}")
+    print(f"  remaining: {sorted(cur) if cur else 'none'}")
+    return 0
+
+
 def _sync_deps_into(wt: Path) -> None:
     """Copy the canonical deps file into a worktree so it lands on main."""
     if DEPS_FILE.exists():
@@ -1186,6 +1227,41 @@ def shared_state_violations(committed_paths: list[str], fid: str) -> list[str]:
         elif p.startswith(".harness/") and not p.startswith(own_evidence):
             bad.append(p)
     return bad
+
+
+def note_rounds_mismatch(wt: Path, fid: str) -> str | None:
+    """Does the session note's `Adversarial rounds:` match what the reviewer recorded?
+
+    The field is the only falsifiable claim the playbook system makes, and it
+    appeared in 1 of 38 notes because it was prose an agent had to remember. Now that
+    adversarial_review.py records each round, the note can be checked against it.
+    Returns a message when they disagree, else None. Absent telemetry is NOT a
+    mismatch — a review can legitimately predate this, or run outside the worktree.
+    """
+    jsonl = wt / ".harness" / "runs" / fid / "review.jsonl"
+    note = wt / "progress.d" / f"session-{fid}.md"
+    if not jsonl.is_file() or not note.is_file():
+        return None
+    try:
+        recorded = sum(1 for ln in jsonl.read_text(encoding="utf-8").splitlines() if ln.strip())
+        text = note.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if not recorded:
+        return None
+    m = re.search(r"^adversarial rounds:\s*(\d+)", text, re.MULTILINE | re.IGNORECASE)
+    if not m:
+        return (
+            f"session note has no `Adversarial rounds:` line, but the reviewer "
+            f"recorded {recorded} round(s) in .harness/runs/{fid}/review.jsonl"
+        )
+    claimed = int(m.group(1))
+    if claimed != recorded:
+        return (
+            f"session note claims `Adversarial rounds: {claimed}` but the reviewer "
+            f"recorded {recorded} in .harness/runs/{fid}/review.jsonl"
+        )
+    return None
 
 
 def _branch_committed(wt: Path) -> list[str]:
@@ -1336,6 +1412,17 @@ def cmd_integrate(args):
             # Defense-in-depth: the branch's own commits must not mutate shared
             # coordination state — only the integrator's marker commit may (this
             # holds for complete AND partial/serialized).
+            # The recorded rounds and the note must agree. Not cosmetic: the round
+            # count is the falsifiable claim the playbook loop is measured by, and a
+            # note that disagrees with the reviewer's own log makes every later
+            # "are the playbooks working?" answer unreliable.
+            if (mismatch := note_rounds_mismatch(wt, fid)) is not None:
+                print(
+                    f"✗ {fid}: {mismatch}.\n  Fix the note to match, then re-run integrate.",
+                    file=sys.stderr,
+                )
+                return 12
+
             violations = shared_state_violations(_branch_committed(wt), fid)
             if violations:
                 print(
@@ -1452,6 +1539,26 @@ def cmd_integrate(args):
         save_runtime(runtime)
 
     print(f"✓ integrated {fid} (mode={mode}) → origin/main; lease released")
+
+    # Garden the feature we just closed. cleanup_agents.sh has existed since the
+    # spawn-agents era with --dry-run, a dirty-tree refusal and the correct
+    # passes:true signal — and had never run, because nothing triggered it: 49
+    # worktrees, 24 merged branches with no worktree, and 3 plan files for closed
+    # features had accumulated. A garbage collector with no trigger is not one.
+    #
+    # Scoped to this feature id, outside the lock (it only touches this feature's
+    # own worktree and branch), and never fatal: a failed cleanup must not turn a
+    # successful integrate into a failure.
+    if mode == "complete":
+        script = ROOT / "tools" / "cleanup_agents.sh"
+        if script.is_file():
+            gc = _run([str(script), fid], check=False)
+            if gc.returncode != 0:
+                print(
+                    f"⚠ {fid}: integrated, but cleanup_agents.sh exited "
+                    f"{gc.returncode}; run it by hand.",
+                    file=sys.stderr,
+                )
     return 0
 
 
@@ -1534,6 +1641,11 @@ def main() -> int:
     bp.add_argument("--on", nargs="+", required=True, metavar="DEP_ID")
     bp.add_argument("--reason", default="")
 
+    up = sub.add_parser("unblock", help="retract dependency edge(s) recorded by `block`")
+    up.add_argument("id")
+    up.add_argument("--off", nargs="+", required=True, metavar="DEP_ID")
+    up.add_argument("--reason", default="")
+
     ip = sub.add_parser("integrate", help="rebase+merge to main; flip passes on complete")
     ip.add_argument("id")
     ip.add_argument("--mode", choices=["complete", "partial", "serialized"], required=True)
@@ -1566,6 +1678,7 @@ def main() -> int:
         "status": cmd_status,
         "claim": cmd_claim,
         "block": cmd_block,
+        "unblock": cmd_unblock,
         "integrate": cmd_integrate,
         "heartbeat": cmd_heartbeat,
         "release": cmd_release,

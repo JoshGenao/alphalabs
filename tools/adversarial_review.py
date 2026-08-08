@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -307,12 +308,62 @@ def run_claude_fallback(base_ref: str, timeout: int = 900) -> tuple[int, str]:
 # ----------------------------------------------------------------------------
 # Orchestration
 # ----------------------------------------------------------------------------
+def round_record(result: dict) -> dict:
+    """The structured form of one review round.
+
+    ``Adversarial rounds:`` is the only falsifiable claim the playbook system makes —
+    ``prompts/coding_prompt.md`` calls it "a measurement, not decoration" — and it
+    appeared in 1 of 38 session notes, because it was prose an agent had to remember
+    to write. The reviewer knows the number; it should not be asking anyone to
+    recount it.
+    """
+    findings = result.get("findings") or []
+    return {
+        "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "reviewer": result.get("reviewer", "?"),
+        "verdict": result.get("verdict", "?"),
+        "n_findings": len(findings),
+        # The rule ids are what P2-4 mines for defect classes worth promoting into
+        # tools/critic_check.py — the loop the playbooks currently run by hand.
+        "rules": sorted({f.get("rule", "?") for f in findings}),
+        "blocking_rules": sorted(
+            {f.get("rule", "?") for f in findings if f.get("severity") == "block"}
+        ),
+        "reviewer_note": result.get("reviewer_note", ""),
+    }
+
+
+def append_round(result: dict, fid: str | None = None) -> Path | None:
+    """Append this round to .harness/runs/<fid>/review.jsonl. Never fails the review.
+
+    Telemetry that can break the gate it measures would be worse than no telemetry:
+    an agent whose review dies because a log directory is read-only learns to stop
+    running the review.
+    """
+    fid = fid or os.environ.get("ATP_FEATURE_ID", "")
+    if not fid:
+        return None
+    path = REPO_ROOT / ".harness" / "runs" / fid / "review.jsonl"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(round_record(result), sort_keys=True) + "\n")
+    except OSError as exc:
+        print(f"(could not record review telemetry: {exc})", file=sys.stderr)
+        return None
+    return path
+
+
 def emit(result: dict) -> int:
     """Print the canonical verdict JSON + a human reviewer line; return exit code."""
     print(json.dumps(result, indent=2))
     note = f"reviewer: {result['reviewer']}"
     if result.get("reviewer_note"):
         note += f" ({result['reviewer_note']})"
+    recorded = append_round(result)
+    if recorded:
+        n = sum(1 for _ in recorded.open(encoding="utf-8"))
+        note += f" · round {n} recorded"
     print(note, file=sys.stderr)
     return 1 if result["verdict"] == "block" else 0
 
