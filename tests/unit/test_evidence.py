@@ -232,6 +232,40 @@ def test_hand_recorded_steps_pass_only_with_explicit_attestation(sandbox):
     assert ok is True, problems
 
 
+def test_executed_claim_without_an_exit_code_is_not_a_pass(sandbox):
+    """`executed: true` with no exit_code is the cheapest possible forgery.
+
+    The check was `exit_code not in (0, None)`, so an absent code read as success —
+    a hand-written record claiming execution satisfied the gate having run nothing.
+    Absent is unknown, and unknown is not zero.
+    """
+    _record_all_steps(3)
+    rec = evidence.load_record(FEATURE)
+    del rec["steps"][0]["exit_code"]
+    evidence.save_record(FEATURE, rec)
+    _approve_both()
+    ok, problems, _ = evidence.verify(FEATURE)
+    assert ok is False
+    assert any("records no exit_code" in p for p in problems)
+
+
+def test_attestation_relaxes_which_steps_count_not_whether_a_record_exists(sandbox):
+    """A human vouching for the work still has to say what the work was."""
+    ok, problems, _ = evidence.verify(FEATURE, allow_attested=True)
+    assert ok is False
+    assert any("no evidence record" in p for p in problems)
+
+    # …and an attested close cannot pass on steps recorded as failures.
+    _record_all_steps(3, executed=False)
+    rec = evidence.load_record(FEATURE)
+    rec["steps"][0]["status"] = "fail"
+    evidence.save_record(FEATURE, rec)
+    _approve_both()
+    ok, problems, _ = evidence.verify(FEATURE, allow_attested=True)
+    assert ok is False
+    assert any("status is 'fail'" in p for p in problems)
+
+
 def test_executed_step_with_nonzero_exit_is_not_a_pass(sandbox):
     _record_all_steps(3)
     rec = evidence.load_record(FEATURE)

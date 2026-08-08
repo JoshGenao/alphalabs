@@ -54,7 +54,10 @@ if [[ "${SCOPE}" == "all" ]]; then
   [[ "${LIST}" -eq 1 ]] && passthru+=(--list)
   rc=0
   for s in $("${PY}" tools/gates_registry_check.py --list-scopes); do
-    "${BASH_SOURCE[0]}" --scope "${s}" ${passthru[@]+"${passthru[@]}"} || rc=1
+    # Absolute path: the script has already cd'd to ROOT_DIR, so a relative
+    # ${BASH_SOURCE[0]} from `cd tools && ./verify_contracts.sh --scope all` would
+    # resolve to <root>/verify_contracts.sh and every sub-scope would exit 127.
+    "${ROOT_DIR}/tools/verify_contracts.sh" --scope "${s}" ${passthru[@]+"${passthru[@]}"} || rc=1
   done
   exit "${rc}"
 fi

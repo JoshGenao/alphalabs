@@ -64,12 +64,13 @@ INTEGRATE_ALLOWLIST = (
     "progress.txt",
     "progress.d",
     "tools/feature_deps.json",
-    # The integrator itself writes .harness/closes.jsonl and .harness/overrides.jsonl
-    # (via evidence.py) inside the worktree, so it must be allowed to stage them.
-    # Without this, `integrate` appends an override record and then refuses the very
-    # worktree it just dirtied — logging the event and integrating nothing.
-    ".harness",
 )
+# NOT in the allowlist: `.harness`. The integrator writes its ledgers to the PRIMARY
+# checkout (evidence.LEDGER_DIR), so they never appear in a worktree's git status.
+# Allowlisting `.harness` made `git add -A -- .harness` sweep in whatever the agent
+# had left uncommitted there — a hand-appended closes.jsonl included — and push it to
+# main. shared_state_violations() only inspects COMMITTED paths, so it could not
+# catch that: the fix is to keep the ledgers out of the tree the agent controls.
 
 # Coarse category -> subsystem/crate map. Used only to *prefer* a feature whose
 # crate no active sibling holds, to reduce merge conflicts. Unmapped categories
@@ -1214,13 +1215,17 @@ def cmd_integrate(args):
     # evidence.verify raises EvidenceError by design (absent != empty), and an
     # unhandled one out of `integrate` is the fail-open this gate exists to prevent.
     #
-    # --force-complete is the OPERATOR asserting they verified every step by hand. It
-    # skips the degrade — otherwise the degrade silently turned every forced complete
-    # into a serialized one and the override became a no-op — and is carried through
-    # to close_feature.py as `--attested-by operator`, so the flip is recorded as a
-    # named human attestation rather than as machine evidence that does not exist.
+    # --force-complete overrides the HONESTY GUARD above (the declared
+    # verification_method), and nothing else. It is a flag on the agent's own CLI —
+    # the playbooks tell agents to reach for it — so letting it also skip the evidence
+    # gate, or pass `--attested-by operator` to close_feature.py, would let the agent
+    # self-grant a HUMAN's attestation: the original self-granted `--verified` defect
+    # renamed, and worse, because .harness/closes.jsonl would then record a human
+    # attestation that no human made. A real human override runs close_feature.py
+    # directly with --attested-by. Captured here only so the ledger entry survives the
+    # degrade rewriting `mode` below.
     forced_complete = mode == "complete" and args.force_complete
-    if mode == "complete" and not forced_complete:
+    if mode == "complete":
         try:
             ok, problems, summary = evidence.verify(fid)
         except evidence.EvidenceError as exc:
@@ -1330,15 +1335,12 @@ def cmd_integrate(args):
             # flip on main can't conflict on the whole-file feature_list rewrite.
             _sync_deps_into(wt)
             if mode == "complete":
-                close_cmd = [
-                    sys.executable,
-                    str(wt / "tools" / "close_feature.py"),
-                    fid,
-                    "--verified",
-                ]
-                if forced_complete:
-                    close_cmd += ["--attested-by", "operator"]
-                _run(close_cmd)
+                # No --attested-by here, ever. agent_pool is the agent's own CLI; an
+                # attestation it can grant itself is not an attestation, and writing
+                # one into .harness/closes.jsonl would put a human's name on a claim
+                # no human made. A real override is a human running close_feature.py
+                # directly with --attested-by operator.
+                _run([sys.executable, str(wt / "tools" / "close_feature.py"), fid, "--verified"])
 
             # Stage ONLY the integration allowlist (never `git add -A`), so the
             # marker commit can never contain feature work.
@@ -1480,6 +1482,13 @@ def main() -> int:
         "--force-complete",
         action="store_true",
         help="override the IB/integration honesty guard (you verified every step solo)",
+    )
+    ip.add_argument(
+        "--reason",
+        default="",
+        help="why --force-complete was needed; recorded in .harness/overrides.jsonl. "
+        "log_override read args.reason via getattr() while this flag did not exist, "
+        "so every override entry was permanently '(no reason given)'.",
     )
     ip.add_argument("--dry-run", action="store_true")
 

@@ -186,10 +186,16 @@ def main() -> int:
     for feature_id in args.feature_ids:
         if args.dry_run:
             continue
-        if args.attested_by:
-            continue
+        # --attested-by relaxes WHICH steps count (hand-recorded ones do), not WHETHER
+        # there has to be a record. Short-circuiting the check entirely let an attested
+        # close succeed with no record at all — or with every step recorded "fail" —
+        # while this module and AGENTS.md both describe the attestation as the thing
+        # that unlocks hand-recorded steps. A human vouching for the work still has to
+        # say what the work was.
         try:
-            ok, problems, _summary = evidence.verify(feature_id, allow_attested=False)
+            ok, problems, _summary = evidence.verify(
+                feature_id, allow_attested=bool(args.attested_by)
+            )
         except evidence.EvidenceError as exc:
             # A corrupt record or an unknown feature id must refuse the close, not
             # traceback out of the one command that writes feature_list.json.

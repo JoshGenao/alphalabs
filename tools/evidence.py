@@ -47,9 +47,35 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FEATURE_FILE = ROOT / "feature_list.json"
 HARNESS_DIR = ROOT / ".harness"
+# Per-feature evidence is worktree-local: the agent commits its own record with its
+# branch, and shared_state_violations() confines it to .harness/runs/<own-id>/.
 RUNS_DIR = HARNESS_DIR / "runs"
-CLOSES_LOG = HARNESS_DIR / "closes.jsonl"
-OVERRIDES_LOG = HARNESS_DIR / "overrides.jsonl"
+
+
+def _primary_checkout() -> Path:
+    """The main worktree (git lists it first), shared by every worktree."""
+    proc = subprocess.run(
+        ["git", "-C", str(ROOT), "worktree", "list", "--porcelain"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    for line in proc.stdout.splitlines():
+        if line.startswith("worktree "):
+            return Path(line[len("worktree ") :]).resolve()
+    return ROOT
+
+
+# The audit ledgers live in the PRIMARY checkout, never in the agent's worktree.
+# When they lived alongside the evidence, `.harness` had to join INTEGRATE_ALLOWLIST
+# so the integrator could stage what it wrote — and `git add -A -- .harness` then
+# swept in whatever the agent had left uncommitted there, including a hand-appended
+# closes.jsonl, and pushed it to main. A branch-side guard could not catch it because
+# it only inspects committed paths. Keeping the ledgers outside the tree the agent
+# controls removes the vector instead of policing it.
+LEDGER_DIR = _primary_checkout() / ".harness"
+CLOSES_LOG = LEDGER_DIR / "closes.jsonl"
+OVERRIDES_LOG = LEDGER_DIR / "overrides.jsonl"
 
 # A feature closed before this gate existed. Not re-verified, and deliberately not
 # equated with an evidenced close — `agent_pool.py status` counts them separately.
@@ -239,8 +265,18 @@ def verify(
                 f"`tools/evidence.py run {fid} --step {idx} -- <command>`, or close "
                 f"with an explicit human --attested-by"
             )
-        if entry.get("executed") and entry.get("exit_code") not in (0, None):
-            problems.append(f"step {idx} exited {entry['exit_code']}, not 0")
+        if entry.get("executed"):
+            # `not in (0, None)` treated a MISSING exit_code as success, so a
+            # hand-written record claiming executed:true and omitting it passed.
+            # An absent exit code is unknown, and unknown is not zero.
+            code = entry.get("exit_code")
+            if code is None:
+                problems.append(
+                    f"step {idx} claims executed but records no exit_code — "
+                    f"re-run it with `tools/evidence.py run`"
+                )
+            elif code != 0:
+                problems.append(f"step {idx} exited {code}, not 0")
 
     for extra in sorted(n for n in by_n if isinstance(n, int) and n > len(steps)):
         problems.append(f"step {extra} is recorded but the feature has only {len(steps)} steps")
