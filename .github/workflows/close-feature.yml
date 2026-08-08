@@ -64,9 +64,13 @@ jobs:
         run: |
           FEATURE_ID="${HEAD_REF#agent/}"
           echo "Closing verified feature: ${FEATURE_ID}"
-          # --verified is required by close_feature.py; it is only ever passed
-          # here, where the verified-e2e label gate has already been satisfied.
-          python3 tools/close_feature.py "${FEATURE_ID}" --verified
+          # --verified is required by close_feature.py. --attested-by names WHO
+          # verified: here it is the human who applied the verified-e2e label,
+          # which is what lets a live-IB/e2e feature close without a machine
+          # evidence record. agent_pool.py never passes --attested-by, so an
+          # agent's local `integrate --mode complete` cannot take this path.
+          python3 tools/close_feature.py "${FEATURE_ID}" \
+            --verified --attested-by verified-e2e-label
 
       - name: Commit and push the flip
         env:

@@ -92,6 +92,58 @@ def test_needs_serialized_flags_ib_and_dashboard_but_not_pure_compute():
     assert need2 is False and hits2 == []
 
 
+# --- honesty guard: the DECLARED method outranks the prose -------------------
+# The keyword scan above matched templated boilerplate — "dashboard" appeared in 47
+# of 120 features and " ib " in 32 — so the guard fired on 90 of 120 and
+# --force-complete became the normal path. verification_method replaces it; the
+# keyword scan survives only as a fallback for an unclassified feature.
+def test_declared_method_beats_the_keyword_scan():
+    # Prose screams IB and dashboard; the declared method says it is solo-verifiable.
+    feat = _feat(
+        "X",
+        description="expose live designation state on the dashboard for IB accounts",
+        steps=["Exercise the REST contract with fixture data and provider mocks"],
+    )
+    assert agent_pool.needs_serialized(feat)[0] is True  # fallback would serialize it
+
+    feat["verification_method"] = "solo"
+    need, hits = agent_pool.needs_serialized(feat)
+    assert need is False and hits == []
+
+
+@pytest.mark.parametrize("method", ["integration", "live-ib", "e2e"])
+def test_declared_non_solo_methods_serialize(method):
+    feat = _feat("X", description="pure in-process resampling", steps=["assert aggregation"])
+    assert agent_pool.needs_serialized(feat)[0] is False  # fallback would allow complete
+    feat["verification_method"] = method
+    need, hits = agent_pool.needs_serialized(feat)
+    assert need is True and hits == [method]
+
+
+def test_unknown_method_fails_closed():
+    """Unrecognised is not 'solo'. Permissive-on-unknown is how a false green ships."""
+    feat = _feat("X", description="pure compute", steps=["assert"])
+    feat["verification_method"] = "probably-fine"
+    need, hits = agent_pool.needs_serialized(feat)
+    assert need is True
+    assert "unknown verification_method" in hits[0]
+
+
+def test_blank_method_falls_back_rather_than_passing():
+    feat = _feat("X", description="uses IB Gateway", steps=["integration test"])
+    feat["verification_method"] = "   "
+    assert agent_pool.needs_serialized(feat)[0] is True
+
+
+def test_unclassified_lists_features_still_on_the_fallback():
+    feats = [
+        _feat("A") | {"verification_method": "solo"},
+        _feat("B"),
+        _feat("C") | {"verification_method": ""},
+    ]
+    assert agent_pool.unclassified(feats) == ["B", "C"]
+
+
 # --- block id validation ----------------------------------------------------
 def test_validate_block_splits_known_and_unknown():
     ids = {"A", "B", "C"}

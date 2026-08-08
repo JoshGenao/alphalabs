@@ -1,0 +1,136 @@
+# verification_method review — EDIT THE METHOD COLUMN, then:
+#     python3 tools/classify_verification.py apply
+#
+# solo        every step verifiable in a parallel session (no shared resource)
+# integration needs real containers / gated I/O (ATP_RUN_INTEGRATION=1)
+# live-ib     needs the IB Gateway — serialized by the single-live invariant
+# e2e         needs the dashboard / Jupyter / Playwright stack
+#
+# The 'why' column is the phrase that produced the proposal. It is derived from
+# the same templated prose the old keyword guard used, so treat it as a hint,
+# not an answer — the whole point of this file is that a human decides.
+#
+# id                   method       why
+# ── 65 CONFLICT(S): the method names a real resource AND a stub
+#    for it. Proposed conservatively (non-solo). Decide these first.
+  API-1                e2e          # REVIEW: names 'websocket' but also 'fixture'
+  API-2                e2e          # REVIEW: names 'websocket' but also 'fixture'
+  API-3                e2e          # REVIEW: names 'dashboard' but also 'fixture'
+  API-4                e2e          # REVIEW: names 'websocket' but also 'fixture'
+  API-5                e2e          # REVIEW: names 'websocket' but also 'fixture'
+  API-6                e2e          # REVIEW: names 'websocket' but also 'fixture'
+  API-7                e2e          # REVIEW: names 'websocket' but also 'fixture'
+  SRS-ARCH-001         integration  # RE-DERIVED solo → integration: REVIEW: names 'container' but also 'mock'
+  SRS-ARCH-002         e2e          # REVIEW: names 'dashboard' but also 'mock'
+  SRS-ARCH-003         integration  # REVIEW: names 'integration test' but also 'mock'
+  SRS-ARCH-004         live-ib      # REVIEW: names 'ib gateway' but also 'mock'
+  SRS-ARCH-005         integration  # RE-DERIVED solo → integration: REVIEW: names 'container' but also 'mock'
+  SRS-BT-001           e2e          # REVIEW: names 'dashboard' but also 'mock'
+  SRS-BT-005           e2e          # REVIEW: names 'dashboard' but also 'mock'
+  SRS-DATA-001         integration  # REVIEW: names 'integration test' but also 'mock'
+  SRS-DATA-002         integration  # REVIEW: names 'integration test' but also 'mock'
+  SRS-DATA-003         integration  # REVIEW: names 'integration test' but also 'mock'
+  SRS-DATA-004         integration  # REVIEW: names 'integration test' but also 'mock'
+  SRS-DATA-005         integration  # REVIEW: names 'integration test' but also 'mock'
+  SRS-DATA-006         integration  # REVIEW: names 'integration test' but also 'mock'
+  SRS-DATA-007         integration  # RE-DERIVED solo → integration: REVIEW: names 'notebook' but also 'mock'
+  SRS-DATA-008         integration  # RE-DERIVED solo → integration: REVIEW: names 'nas' but also 'mock'
+  SRS-DATA-009         integration  # RE-DERIVED solo → integration: REVIEW: names 'nas' but also 'mock'
+  SRS-DATA-014         e2e          # REVIEW: names 'dashboard' but also 'mock'
+  SRS-DATA-016         integration  # RE-DERIVED solo → integration: REVIEW: names 'sharadar' but also 'mock'
+  SRS-DATA-017         integration  # RE-DERIVED solo → integration: REVIEW: names 'container' but also 'mock'
+  SRS-DATA-018         integration  # RE-DERIVED solo → integration: REVIEW: names 'nas' but also 'mock'
+  SRS-ERR-001          e2e          # REVIEW: names 'websocket' but also 'mock'
+  SRS-EXE-001          live-ib      # REVIEW: names 'live order' but also 'mock'
+  SRS-EXE-006          integration  # REVIEW: names 'integration test' but also 'mock'
+  SRS-EXE-007          live-ib      # REVIEW: names 'live trading' but also 'mock'
+  SRS-EXE-008          integration  # REVIEW: names 'integration or fault-injection' but also 'mock'
+  SRS-FAC-001          integration  # RE-DERIVED solo → integration: REVIEW: names 'sharadar' but also 'mock'
+  SRS-MD-001           integration  # REVIEW: names 'integration test' but also 'mock'
+  SRS-MD-005           live-ib      # REVIEW: names 'ib gateway' but also 'mock'
+  SRS-MD-006           integration  # RE-DERIVED solo → integration: REVIEW: names 'nas' but also 'mock'
+  SRS-ORCH-001         e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-ORCH-002         e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-ORCH-003         e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-ORCH-004         e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-ORCH-005         e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-RES-001          e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-RES-002          e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-RES-003          e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-RESV-001         e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-RESV-002         e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-RESV-003         e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-RESV-004         e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-RESV-005         e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-RESV-006         e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-SDK-001          live-ib      # REVIEW: names 'live ib' but also 'mock'
+  SRS-SDK-002          e2e          # REVIEW: names 'websocket' but also 'mock'
+  SRS-SDK-003          e2e          # REVIEW: names 'websocket' but also 'mock'
+  SRS-SDK-005          e2e          # REVIEW: names 'websocket' but also 'mock'
+  SRS-SDK-006          e2e          # REVIEW: names 'websocket' but also 'mock'
+  SRS-SDK-008          e2e          # REVIEW: names 'websocket' but also 'mock'
+  SRS-SDK-009          e2e          # REVIEW: names 'websocket' but also 'mock'
+  SRS-SEC-002          integration  # REVIEW: names 'docker compose' but also 'mock'
+  SRS-SEC-003          integration  # RE-DERIVED solo → integration: REVIEW: names 'container' but also 'mock'
+  SRS-SEC-004          live-ib      # REVIEW: names 'live order' but also 'mock'
+  SRS-SIM-001          integration  # REVIEW: names 'integration or fault-injection' but also 'mock'
+  SRS-SIM-002          integration  # REVIEW: names 'integration or fault-injection' but also 'mock'
+  SRS-SIM-003          integration  # REVIEW: names 'integration or fault-injection' but also 'mock'
+  SRS-UI-001           e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-UI-004           e2e          # REVIEW: names 'browser automation' but also 'mock'
+# ── the rest
+  ERR-1                live-ib      # method says 'live execution'
+  ERR-2                live-ib      # method says 'ib gateway'
+  ERR-3                e2e          # method says 'dashboard'
+  ERR-4                e2e          # method says 'dashboard'
+  ERR-5                e2e          # method says 'dashboard'
+  ERR-6                e2e          # method says 'dashboard'
+  ERR-7                e2e          # method says 'dashboard'
+  ERR-8                e2e          # method says 'dashboard'
+  ERR-9                e2e          # method says 'dashboard'
+  SRS-API-001          integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-BT-002           solo         # method names only self-contained means ('fixture')
+  SRS-BT-003           solo         # method names only self-contained means ('fixture')
+  SRS-BT-004           e2e          # OBSERVED: a session recorded Outcome: serialized
+  SRS-BT-006           solo         # method names only self-contained means ('fixture')
+  SRS-BT-007           integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-BT-008           integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-BT-009           solo         # method names only self-contained means ('fixture')
+  SRS-BT-010           solo         # method names only self-contained means ('fixture')
+  SRS-DATA-010         integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-DATA-011         solo         # method names only self-contained means ('fixture')
+  SRS-DATA-012         integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-DATA-013         e2e          # OBSERVED: a session recorded Outcome: serialized
+  SRS-DATA-015         solo         # method names only self-contained means ('fixture')
+  SRS-DATA-019         integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-DATA-020         integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-DATA-021         integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-EXE-002          integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-EXE-003          live-ib      # OBSERVED: a session recorded Outcome: serialized
+  SRS-EXE-004          e2e          # OBSERVED: a session recorded Outcome: serialized
+  SRS-EXE-005          integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-EXE-009          live-ib      # OBSERVED: a session recorded Outcome: serialized
+  SRS-LOG-001          e2e          # OBSERVED: a session recorded Outcome: serialized
+  SRS-MD-002           solo         # method names only self-contained means ('fixture')
+  SRS-MD-003           live-ib      # OBSERVED: a session recorded Outcome: serialized
+  SRS-MD-004           solo         # method names only self-contained means ('fixture')
+  SRS-MD-007           e2e          # OBSERVED: a session recorded Outcome: serialized
+  SRS-NOTIF-001        integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-PERF-001         integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-REL-001          integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-REL-002          integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-SAFE-001         live-ib      # OBSERVED: a session recorded Outcome: serialized
+  SRS-SAFE-002         live-ib      # OBSERVED: a session recorded Outcome: serialized
+  SRS-SAFE-003         live-ib      # OBSERVED: a session recorded Outcome: serialized
+  SRS-SDK-004          integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-SDK-007          live-ib      # OBSERVED: a session recorded Outcome: serialized
+  SRS-SEC-001          integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-SIM-004          integration  # OBSERVED: a session recorded Outcome: serialized
+  SRS-UI-002           e2e          # OBSERVED: a session recorded Outcome: serialized
+  SRS-UI-003           integration  # OBSERVED: a session recorded Outcome: serialized
+  UI-1                 integration  # OBSERVED: a session recorded Outcome: serialized
+  UI-2                 integration  # OBSERVED: a session recorded Outcome: serialized
+  UI-3                 e2e          # OBSERVED: a session recorded Outcome: serialized
+  UI-4                 integration  # OBSERVED: a session recorded Outcome: serialized
+  UI-5                 integration  # OBSERVED: a session recorded Outcome: serialized
+  UI-6                 e2e          # method says 'dashboard'

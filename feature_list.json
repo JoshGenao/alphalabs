@@ -12,7 +12,9 @@
       "Step 4: Record objective evidence from inspection, architecture test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "integration"
   },
   {
     "id": "SRS-ARCH-002",
@@ -27,7 +29,9 @@
       "Step 4: Record objective evidence from inspection, architecture test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-ARCH-003",
@@ -42,7 +46,9 @@
       "Step 4: Record objective evidence from inspection, structural test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "integration"
   },
   {
     "id": "SRS-ARCH-004",
@@ -57,7 +63,9 @@
       "Step 4: Record objective evidence from demonstration, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-ARCH-005",
@@ -72,7 +80,9 @@
       "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "integration"
   },
   {
     "id": "SRS-ORCH-001",
@@ -87,7 +97,9 @@
       "Step 4: Record objective evidence from test, inspection, performance test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-ORCH-002",
@@ -102,7 +114,9 @@
       "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-ORCH-003",
@@ -117,7 +131,9 @@
       "Step 4: Record objective evidence from test, fault injection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-ORCH-004",
@@ -132,7 +148,9 @@
       "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-ORCH-005",
@@ -147,7 +165,9 @@
       "Step 4: Record objective evidence from demonstration, test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-SDK-001",
@@ -162,7 +182,9 @@
       "Step 4: Record objective evidence from contract test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-SDK-002",
@@ -177,7 +199,9 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-SDK-003",
@@ -192,7 +216,9 @@
       "Step 4: Record objective evidence from contract test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-SDK-004",
@@ -207,7 +233,8 @@
       "Step 4: Record objective evidence from contract test, performance test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-SDK-005",
@@ -222,7 +249,9 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-SDK-006",
@@ -237,7 +266,9 @@
       "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-SDK-007",
@@ -252,7 +283,8 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-SDK-008",
@@ -267,7 +299,8 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-SDK-009",
@@ -282,7 +315,9 @@
       "Step 4: Record objective evidence from inspection, documentation test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-EXE-001",
@@ -297,7 +332,8 @@
       "Step 4: Record objective evidence from integration test, structural test, performance test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-EXE-002",
@@ -312,7 +348,8 @@
       "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-EXE-003",
@@ -327,7 +364,8 @@
       "Step 4: Record objective evidence from contract test, integration test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-EXE-004",
@@ -342,7 +380,8 @@
       "Step 4: Record objective evidence from integration test, demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-EXE-005",
@@ -357,7 +396,8 @@
       "Step 4: Record objective evidence from fault injection, test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-EXE-006",
@@ -372,7 +412,9 @@
       "Step 4: Record objective evidence from integration test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "integration"
   },
   {
     "id": "SRS-EXE-007",
@@ -387,7 +429,9 @@
       "Step 4: Record objective evidence from integration test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-EXE-008",
@@ -402,7 +446,8 @@
       "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-EXE-009",
@@ -417,7 +462,8 @@
       "Step 4: Record objective evidence from fault injection, test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-MD-001",
@@ -432,7 +478,8 @@
       "Step 4: Record objective evidence from integration test, performance test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-MD-002",
@@ -447,7 +494,8 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "solo"
   },
   {
     "id": "SRS-MD-003",
@@ -462,7 +510,8 @@
       "Step 4: Record objective evidence from test, demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-MD-004",
@@ -477,7 +526,8 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "solo"
   },
   {
     "id": "SRS-MD-005",
@@ -492,7 +542,8 @@
       "Step 4: Record objective evidence from integration test, fault injection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-MD-006",
@@ -507,7 +558,9 @@
       "Step 4: Record objective evidence from test, demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "integration"
   },
   {
     "id": "SRS-MD-007",
@@ -522,7 +575,8 @@
       "Step 4: Record objective evidence from test, fault injection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-DATA-001",
@@ -537,7 +591,8 @@
       "Step 4: Record objective evidence from integration test, performance test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-002",
@@ -552,7 +607,8 @@
       "Step 4: Record objective evidence from integration test, test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-003",
@@ -567,7 +623,8 @@
       "Step 4: Record objective evidence from integration test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-004",
@@ -582,7 +639,8 @@
       "Step 4: Record objective evidence from integration test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-005",
@@ -597,7 +655,8 @@
       "Step 4: Record objective evidence from integration test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-006",
@@ -612,7 +671,8 @@
       "Step 4: Record objective evidence from test, integration test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-007",
@@ -627,7 +687,9 @@
       "Step 4: Record objective evidence from contract test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-008",
@@ -642,7 +704,9 @@
       "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-009",
@@ -657,7 +721,8 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-010",
@@ -672,7 +737,8 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-011",
@@ -687,7 +753,9 @@
       "Step 4: Record objective evidence from test, scenario demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "solo"
   },
   {
     "id": "SRS-DATA-012",
@@ -702,7 +770,8 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-013",
@@ -717,7 +786,8 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-DATA-014",
@@ -732,7 +802,8 @@
       "Step 4: Record objective evidence from test, analysis and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-DATA-015",
@@ -747,7 +818,9 @@
       "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "solo"
   },
   {
     "id": "SRS-DATA-016",
@@ -762,7 +835,9 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-017",
@@ -777,7 +852,9 @@
       "Step 4: Record objective evidence from load test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-018",
@@ -792,7 +869,9 @@
       "Step 4: Record objective evidence from demonstration, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-019",
@@ -807,7 +886,8 @@
       "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-020",
@@ -822,7 +902,8 @@
       "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-021",
@@ -837,7 +918,8 @@
       "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-BT-001",
@@ -852,7 +934,8 @@
       "Step 4: Record objective evidence from test, demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-BT-002",
@@ -868,7 +951,9 @@
     ],
     "passes": true,
     "needs_clarification": false,
-    "notes": "SRS-BT-002 closed in SESSION 58 via the bt002_cost_cli operator binary (crates/atp-simulation/src/bin/bt002_cost_cli.rs): `defaults` prints the SyRS constants and proves CostConfig::default()==syrs_defaults() (defaults match SyRS values), and `run` builds a per-run CostConfig from --commission/--slippage/--spread flags applied to the SAME fixture strategy through the real BacktestEngine (per-run override without changing strategy code, SYS-15d); a negative override parameter fails closed before any fill (no cash fabricated). Verified end to end in fresh processes by the srs_bt_002_cost_cli integration test (L5), the test_backtest_cost L7 domain test, and the backtest_cost_check.py contract gate. Deferred owners (do not absorb): the REST + dashboard half of the override surface (SRS-API-001/SRS-UI), the real data + Python strategy host (SRS-BT-001-runtime), and the IB monthly-volume tier ladder. (The SRS-BT-003 sim paper-fill consumer that shares this cost family is now closed/passes:true as of SESSION 61.)"
+    "notes": "SRS-BT-002 closed in SESSION 58 via the bt002_cost_cli operator binary (crates/atp-simulation/src/bin/bt002_cost_cli.rs): `defaults` prints the SyRS constants and proves CostConfig::default()==syrs_defaults() (defaults match SyRS values), and `run` builds a per-run CostConfig from --commission/--slippage/--spread flags applied to the SAME fixture strategy through the real BacktestEngine (per-run override without changing strategy code, SYS-15d); a negative override parameter fails closed before any fill (no cash fabricated). Verified end to end in fresh processes by the srs_bt_002_cost_cli integration test (L5), the test_backtest_cost L7 domain test, and the backtest_cost_check.py contract gate. Deferred owners (do not absorb): the REST + dashboard half of the override surface (SRS-API-001/SRS-UI), the real data + Python strategy host (SRS-BT-001-runtime), and the IB monthly-volume tier ladder. (The SRS-BT-003 sim paper-fill consumer that shares this cost family is now closed/passes:true as of SESSION 61.)",
+    "evidence": "pre-gate",
+    "verification_method": "solo"
   },
   {
     "id": "SRS-BT-003",
@@ -884,7 +969,9 @@
     ],
     "passes": true,
     "needs_clarification": false,
-    "notes": "SESSION 61: SRS-BT-003 now passes:true. AC ('a paper strategy and backtest using identical cost configuration compute fills and commissions from the same model family') is single-context -- both engines are built (BacktestEngine + PaperSimulationEngine, both calling the IDENTICAL cost::CostConfig::cost_breakdown entry point) -- and is proven fill-for-fill by the L5 srs_bt_003_shared_cost_family + made operator-demonstrable by crates/atp-simulation/src/bin/bt003_shared_cost_cli.rs: `compare` runs the SAME fixture strategy over the SAME bars through BOTH engines under one CostConfig and prints cost-family-match:true (default family AND operator override; backtest final equity == paper ledger cash for the round trip), with every --inject fault (nonpositive-price/negative-spread/negative-commission) rejected by BOTH engines before any fill (no comparison line, no cash fabricated). Driven by L5 srs_bt_003_cost_cli (14 tests, fresh processes), L7 tests/domain/test_sim_shared_cost.py, L3 tests/test_sim_cost_contract.py SharedCostCliTest, and tools/sim_cost_check.py check_shared_cost_cli. The prior 'SDK-surface passes:false' deferral was over-conservative: its named owners (SRS-SIM-002 richer fill models, SRS-SIM-003 full ledger, SRS-SIM-004 persistence, SRS-API-001/SRS-UI REST/dashboard override, SRS-BT-001-runtime Python host) are ADJACENT features, each its own requirement and NOT part of BT-003's narrow shared-cost-family AC (the CLI realizes the operator cost-override-selection workflow over both engines; the REST/dashboard half stays SRS-API-001/SRS-UI)."
+    "notes": "SESSION 61: SRS-BT-003 now passes:true. AC ('a paper strategy and backtest using identical cost configuration compute fills and commissions from the same model family') is single-context -- both engines are built (BacktestEngine + PaperSimulationEngine, both calling the IDENTICAL cost::CostConfig::cost_breakdown entry point) -- and is proven fill-for-fill by the L5 srs_bt_003_shared_cost_family + made operator-demonstrable by crates/atp-simulation/src/bin/bt003_shared_cost_cli.rs: `compare` runs the SAME fixture strategy over the SAME bars through BOTH engines under one CostConfig and prints cost-family-match:true (default family AND operator override; backtest final equity == paper ledger cash for the round trip), with every --inject fault (nonpositive-price/negative-spread/negative-commission) rejected by BOTH engines before any fill (no comparison line, no cash fabricated). Driven by L5 srs_bt_003_cost_cli (14 tests, fresh processes), L7 tests/domain/test_sim_shared_cost.py, L3 tests/test_sim_cost_contract.py SharedCostCliTest, and tools/sim_cost_check.py check_shared_cost_cli. The prior 'SDK-surface passes:false' deferral was over-conservative: its named owners (SRS-SIM-002 richer fill models, SRS-SIM-003 full ledger, SRS-SIM-004 persistence, SRS-API-001/SRS-UI REST/dashboard override, SRS-BT-001-runtime Python host) are ADJACENT features, each its own requirement and NOT part of BT-003's narrow shared-cost-family AC (the CLI realizes the operator cost-override-selection workflow over both engines; the REST/dashboard half stays SRS-API-001/SRS-UI).",
+    "evidence": "pre-gate",
+    "verification_method": "solo"
   },
   {
     "id": "SRS-BT-004",
@@ -899,7 +986,8 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-BT-005",
@@ -915,7 +1003,8 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "notes": "SESSION 60 (Phase 1, surface shipped, flag STAYS false): shipped the operator benchmark-comparison CLI rendering surface but SRS-BT-005 stays passes:false. The AC requires 'dashboard AND backtest reports identify the benchmark'; the CLI realizes only the backtest-report identification leg, and the WEB DASHBOARD / REST identification leg (SRS-UI / SRS-API; SYS-36 <=5s, SYS-37) is genuinely not built. Codex adversarial review flagged the premature passes:true flip [high] and the flip was reverted per operator decision; no in-scope code defect was found. What IS shipped + tested: crates/atp-simulation/src/bin/benchmark_comparison_cli.rs over the real benchmark::compare() engine -- `defaults` proves BenchmarkSelection::unselected() resolves to and identifies SPY ('if no benchmark is selected, SPY is used'); `run [--benchmark SYM]` runs the SAME fixture strategy through the real BacktestEngine, resolves the benchmark through an in-binary fixture BenchmarkSource, runs the real compare(), and renders the identified comparison (SPY default or a user-selected symbol) + alpha/beta + total/excess returns + the eight SYS-16 metrics, with every undefined statistic rendered as the literal `undefined` (never a fabricated 0) and every --inject trust-boundary fault failing closed before any report line; driven by the L5 srs_bt_005_benchmark_cli (19 tests, fresh processes), the L7 test_benchmark_comparison CLI cases, the L3 test_benchmark_contract BenchmarkCliTest, and tools/benchmark_check.py check_benchmark_cli. DEFERRED owners: the dashboard/REST report identification leg (SRS-UI / SRS-API) -- the blocker keeping passes:false; the real stored-data benchmark resolver (SRS-DATA-007, behind the fixture BenchmarkSource); the persisted-comparison query record (SRS-BT-009). Phase 2 (the flag flip) lands when the SRS-UI/SRS-API dashboard identification path is implemented + tested."
+    "notes": "SESSION 60 (Phase 1, surface shipped, flag STAYS false): shipped the operator benchmark-comparison CLI rendering surface but SRS-BT-005 stays passes:false. The AC requires 'dashboard AND backtest reports identify the benchmark'; the CLI realizes only the backtest-report identification leg, and the WEB DASHBOARD / REST identification leg (SRS-UI / SRS-API; SYS-36 <=5s, SYS-37) is genuinely not built. Codex adversarial review flagged the premature passes:true flip [high] and the flip was reverted per operator decision; no in-scope code defect was found. What IS shipped + tested: crates/atp-simulation/src/bin/benchmark_comparison_cli.rs over the real benchmark::compare() engine -- `defaults` proves BenchmarkSelection::unselected() resolves to and identifies SPY ('if no benchmark is selected, SPY is used'); `run [--benchmark SYM]` runs the SAME fixture strategy through the real BacktestEngine, resolves the benchmark through an in-binary fixture BenchmarkSource, runs the real compare(), and renders the identified comparison (SPY default or a user-selected symbol) + alpha/beta + total/excess returns + the eight SYS-16 metrics, with every undefined statistic rendered as the literal `undefined` (never a fabricated 0) and every --inject trust-boundary fault failing closed before any report line; driven by the L5 srs_bt_005_benchmark_cli (19 tests, fresh processes), the L7 test_benchmark_comparison CLI cases, the L3 test_benchmark_contract BenchmarkCliTest, and tools/benchmark_check.py check_benchmark_cli. DEFERRED owners: the dashboard/REST report identification leg (SRS-UI / SRS-API) -- the blocker keeping passes:false; the real stored-data benchmark resolver (SRS-DATA-007, behind the fixture BenchmarkSource); the persisted-comparison query record (SRS-BT-009). Phase 2 (the flag flip) lands when the SRS-UI/SRS-API dashboard identification path is implemented + tested.",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-BT-006",
@@ -931,7 +1020,9 @@
     ],
     "passes": true,
     "needs_clarification": false,
-    "notes": "SESSION 59: closed by the operator-CLI-over-fixture-engine pattern (precedent: SRS-BT-009/010/002). The tear-sheet engine (compute_tear_sheet: information coefficient, factor returns, turnover) predates this slice; the gap was the operator RENDERING surface. Shipped crates/atp-factor-pipeline/src/bin/factor_tear_sheet_cli.rs: `defaults` proves a default run surfaces all three SYS-18 deliverables (deliverable-availability, as there is no SyRS numeric quantile default), `run` renders the IC/returns/turnover of a deterministic fixture FactorPanel through the REAL engine, --quantiles re-buckets the SAME fixture, and every undefined statistic renders as the literal `undefined` (never a fabricated 0). Pinned by srs_bt_006_tear_sheet_cli (L5, fresh processes), tests/domain/test_factor_tear_sheet.py (L7), and tools/factor_analysis_check.py check_tear_sheet_cli. Deferred owners (NOT absorbed here): the SRS-UI/SRS-API REST+dashboard rendering half, the SRS-FAC-001 scheduled full-universe panel producer, the SRS-DATA-007 real factor/return data wiring, and the cross-crate SRS-BT-004 metrics bundle."
+    "notes": "SESSION 59: closed by the operator-CLI-over-fixture-engine pattern (precedent: SRS-BT-009/010/002). The tear-sheet engine (compute_tear_sheet: information coefficient, factor returns, turnover) predates this slice; the gap was the operator RENDERING surface. Shipped crates/atp-factor-pipeline/src/bin/factor_tear_sheet_cli.rs: `defaults` proves a default run surfaces all three SYS-18 deliverables (deliverable-availability, as there is no SyRS numeric quantile default), `run` renders the IC/returns/turnover of a deterministic fixture FactorPanel through the REAL engine, --quantiles re-buckets the SAME fixture, and every undefined statistic renders as the literal `undefined` (never a fabricated 0). Pinned by srs_bt_006_tear_sheet_cli (L5, fresh processes), tests/domain/test_factor_tear_sheet.py (L7), and tools/factor_analysis_check.py check_tear_sheet_cli. Deferred owners (NOT absorbed here): the SRS-UI/SRS-API REST+dashboard rendering half, the SRS-FAC-001 scheduled full-universe panel producer, the SRS-DATA-007 real factor/return data wiring, and the cross-crate SRS-BT-004 metrics bundle.",
+    "evidence": "pre-gate",
+    "verification_method": "solo"
   },
   {
     "id": "SRS-BT-007",
@@ -946,7 +1037,8 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-BT-008",
@@ -961,7 +1053,8 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-BT-009",
@@ -976,7 +1069,9 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "solo"
   },
   {
     "id": "SRS-BT-010",
@@ -992,7 +1087,9 @@
     ],
     "passes": true,
     "needs_clarification": false,
-    "notes": "Closed SESSION 57 over the real BacktestEngine, cross-process: bt010_repro_cli digest run in two fresh OS processes emits byte-identical run-manifest + run-digest (the srs_bt_010_cross_process integration test pins this); RunManifest/digest_manifest fingerprint the immutable inputs so the run proves the inputs matched; in-process verify_reproducible_with_metrics covers all three artifacts. The AC's strategy-code clause is exercised with a fixture strategy; the end-to-end repeated run under the real Python strategy host (binding user strategy code + seed across the Rust<->Python boundary) is deferred to SRS-BT-001-runtime, and the REST/dashboard repeated-run surface to SRS-API-001/SRS-UI. Deterministic critic: APPROVE (0 findings). Codex adversarial review: needs-attention, flagging that deferred Python-strategy-host boundary (the SRS-BT-001-runtime superset, same boundary BT-009 closed); committed green on operator authorization, verdict recorded honestly."
+    "notes": "Closed SESSION 57 over the real BacktestEngine, cross-process: bt010_repro_cli digest run in two fresh OS processes emits byte-identical run-manifest + run-digest (the srs_bt_010_cross_process integration test pins this); RunManifest/digest_manifest fingerprint the immutable inputs so the run proves the inputs matched; in-process verify_reproducible_with_metrics covers all three artifacts. The AC's strategy-code clause is exercised with a fixture strategy; the end-to-end repeated run under the real Python strategy host (binding user strategy code + seed across the Rust<->Python boundary) is deferred to SRS-BT-001-runtime, and the REST/dashboard repeated-run surface to SRS-API-001/SRS-UI. Deterministic critic: APPROVE (0 findings). Codex adversarial review: needs-attention, flagging that deferred Python-strategy-host boundary (the SRS-BT-001-runtime superset, same boundary BT-009 closed); committed green on operator authorization, verdict recorded honestly.",
+    "evidence": "pre-gate",
+    "verification_method": "solo"
   },
   {
     "id": "SRS-FAC-001",
@@ -1007,7 +1104,8 @@
       "Step 4: Record objective evidence from performance test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-RES-001",
@@ -1022,7 +1120,9 @@
       "Step 4: Record objective evidence from demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-RES-002",
@@ -1037,7 +1137,9 @@
       "Step 4: Record objective evidence from test, demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-RES-003",
@@ -1052,7 +1154,9 @@
       "Step 4: Record objective evidence from demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-SIM-001",
@@ -1068,7 +1172,9 @@
     ],
     "passes": true,
     "needs_clarification": false,
-    "notes": "SESSION 64: SRS-SIM-001 now passes:true. AC ('Market, limit, stop, stop-limit, equity, option, and multi-leg orders are processed by the simulation engine and create no IB API order calls') names four contexts -- every order type, both asset classes, the multi-leg composite, and the no-IB-route guarantee -- all ALREADY built in crates/atp-simulation/src/paper_order.rs (PaperSimulationEngine::accept_order over a PaperOrderRequest; OrderRouting has exactly one InternalSimulation variant, so 'no IB API order calls' is a COMPILE-TIME guarantee, and the crate depends on neither atp-execution nor atp-adapters) and proven by the pre-existing L5 srs_sim_001_paper_order_intake. The only gap was the operator-demonstrable CLI surface. Closed via crates/atp-simulation/src/bin/sim001_paper_order_cli.rs: `types` routes every SYS-3 order type internally (all-order-types-routed:true), `assets` routes equity+option internally (both-asset-classes-routed:true), `multileg` routes a SYS-4 spread as one atomic composite (composite-routed:true), and `no-broker` sweeps every order shape proving none reaches a brokerage (no-ib-order-calls:true); every --inject fault (empty-symbol/nonpositive-quantity/nonpositive-limit/nonpositive-stop/empty-multileg/single-leg-composite/non-option-composite-leg) fails closed before any routing with no proof line. Driven by L5 srs_sim_001_paper_order_cli (11 tests, fresh processes), L7 tests/domain/test_sim001_paper_order_cli.py, L3 tests/test_sim_order_contract.py PaperOrderCliTest, and tools/sim_order_check.py check_paper_order_cli. The deferred SRS-SIM-002 (fills, itself built/passes:true), SRS-SIM-003 (ledger, itself built/passes:true), SRS-SIM-004 persistence, SRS-EXE-002 orchestrator routing, and the Python host are ADJACENT features, each its own requirement and NOT contexts inside SRS-SIM-001's acceptance criterion."
+    "notes": "SESSION 64: SRS-SIM-001 now passes:true. AC ('Market, limit, stop, stop-limit, equity, option, and multi-leg orders are processed by the simulation engine and create no IB API order calls') names four contexts -- every order type, both asset classes, the multi-leg composite, and the no-IB-route guarantee -- all ALREADY built in crates/atp-simulation/src/paper_order.rs (PaperSimulationEngine::accept_order over a PaperOrderRequest; OrderRouting has exactly one InternalSimulation variant, so 'no IB API order calls' is a COMPILE-TIME guarantee, and the crate depends on neither atp-execution nor atp-adapters) and proven by the pre-existing L5 srs_sim_001_paper_order_intake. The only gap was the operator-demonstrable CLI surface. Closed via crates/atp-simulation/src/bin/sim001_paper_order_cli.rs: `types` routes every SYS-3 order type internally (all-order-types-routed:true), `assets` routes equity+option internally (both-asset-classes-routed:true), `multileg` routes a SYS-4 spread as one atomic composite (composite-routed:true), and `no-broker` sweeps every order shape proving none reaches a brokerage (no-ib-order-calls:true); every --inject fault (empty-symbol/nonpositive-quantity/nonpositive-limit/nonpositive-stop/empty-multileg/single-leg-composite/non-option-composite-leg) fails closed before any routing with no proof line. Driven by L5 srs_sim_001_paper_order_cli (11 tests, fresh processes), L7 tests/domain/test_sim001_paper_order_cli.py, L3 tests/test_sim_order_contract.py PaperOrderCliTest, and tools/sim_order_check.py check_paper_order_cli. The deferred SRS-SIM-002 (fills, itself built/passes:true), SRS-SIM-003 (ledger, itself built/passes:true), SRS-SIM-004 persistence, SRS-EXE-002 orchestrator routing, and the Python host are ADJACENT features, each its own requirement and NOT contexts inside SRS-SIM-001's acceptance criterion.",
+    "evidence": "pre-gate",
+    "verification_method": "integration"
   },
   {
     "id": "SRS-SIM-002",
@@ -1084,7 +1190,9 @@
     ],
     "passes": true,
     "needs_clarification": false,
-    "notes": "SESSION 63: SRS-SIM-002 now passes:true. AC ('Market, limit, stop, and stop-limit simulated fills follow SYS-83 defaults and per-strategy configuration; fill volume constraints are enforced') is single-context -- the fill-model engine (crates/atp-simulation/src/fill_model.rs: evaluate_fill over a MarketSnapshot + per-strategy FillModelConfig, the four SYS-83 order-type rules, the two behavior-changing LimitFillModel variants, and the SYS-87b BarVolumeBudget cap single + aggregate) was already built; the only gap was the operator-demonstrable CLI surface. Closed via crates/atp-simulation/src/bin/sim002_fill_cli.rs (defaults/rules/config/volume over the real engine; each emits a non-vacuous :true proof and fails closed before any fill decision on every --inject fault), driven by L5 srs_sim_002_fill_cli + L7 test_sim002_fill_cli.py + L3 test_sim_fill_contract.py + tools/sim_fill_check.py check_fill_cli. The deferred SYS-87a market-hours / SYS-87c stale-data (SRS-MD-004) / SYS-70 live feed / SYS-83b stochastic / SRS-SIM-004 / SRS-EXE-002 / Python host are ADJACENT features, NOT contexts inside this AC."
+    "notes": "SESSION 63: SRS-SIM-002 now passes:true. AC ('Market, limit, stop, and stop-limit simulated fills follow SYS-83 defaults and per-strategy configuration; fill volume constraints are enforced') is single-context -- the fill-model engine (crates/atp-simulation/src/fill_model.rs: evaluate_fill over a MarketSnapshot + per-strategy FillModelConfig, the four SYS-83 order-type rules, the two behavior-changing LimitFillModel variants, and the SYS-87b BarVolumeBudget cap single + aggregate) was already built; the only gap was the operator-demonstrable CLI surface. Closed via crates/atp-simulation/src/bin/sim002_fill_cli.rs (defaults/rules/config/volume over the real engine; each emits a non-vacuous :true proof and fails closed before any fill decision on every --inject fault), driven by L5 srs_sim_002_fill_cli + L7 test_sim002_fill_cli.py + L3 test_sim_fill_contract.py + tools/sim_fill_check.py check_fill_cli. The deferred SYS-87a market-hours / SYS-87c stale-data (SRS-MD-004) / SYS-70 live feed / SYS-83b stochastic / SRS-SIM-004 / SRS-EXE-002 / Python host are ADJACENT features, NOT contexts inside this AC.",
+    "evidence": "pre-gate",
+    "verification_method": "integration"
   },
   {
     "id": "SRS-SIM-003",
@@ -1100,7 +1208,9 @@
     ],
     "passes": true,
     "needs_clarification": false,
-    "notes": "SESSION 62: SRS-SIM-003 now passes:true. AC ('Quantity, average cost, unrealized P&L, realized P&L, and commission paid are isolated per paper strategy and independent of IB account positions') is single-context -- the per-strategy virtual ledger (crates/atp-simulation/src/virtual_ledger.rs: VirtualPosition's five quantities, StrategyLedger per symbol, VirtualLedgerBook keyed by StrategyId, no broker/atp-execution dependency) is fully built and was already proven by the L5 srs_sim_003_virtual_ledger. Made operator-demonstrable by crates/atp-simulation/src/bin/sim003_ledger_cli.rs: `isolate` opens the SAME symbol under two paper strategies (alpha long+partial-sell, beta short) over real PaperSimulationEngine::simulate_fill -> VirtualLedgerBook::apply_fill, prints all five quantities per strategy, and proves ledger-isolation:true (mutating alpha leaves beta byte-identical while alpha DID change) and account-independent:true (same symbol -> different positions, impossible from one shared IB account); every --inject fault (nonpositive-price/zero-quantity/empty-symbol/nonpositive-mark/negative-commission) fails closed before any mutation (no isolation line) and a non-positive lot is rejected at parse (no vacuous proof). `defaults` shows a fresh book holds zero strategies and no IB account position. Driven by L5 srs_sim_003_ledger_cli (19 tests, fresh processes), L7 tests/domain/test_sim003_ledger_cli.py + the pre-existing test_virtual_ledger_isolation.py, L3 tests/test_virtual_ledger_contract.py LedgerCliTest, and tools/sim_ledger_check.py check_ledger_cli. The prior 'SDK-surface passes:false' deferral was over-conservative: its named owners (SYS-70 live feed, SYS-88 corporate actions/SRS-DATA-021, SRS-SIM-004 persistence, SYS-85 paper metrics, SRS-EXE-002 orchestrator, the Python host) are ADJACENT features, each its own requirement and NOT contexts inside SRS-SIM-003's narrow per-strategy-isolation AC."
+    "notes": "SESSION 62: SRS-SIM-003 now passes:true. AC ('Quantity, average cost, unrealized P&L, realized P&L, and commission paid are isolated per paper strategy and independent of IB account positions') is single-context -- the per-strategy virtual ledger (crates/atp-simulation/src/virtual_ledger.rs: VirtualPosition's five quantities, StrategyLedger per symbol, VirtualLedgerBook keyed by StrategyId, no broker/atp-execution dependency) is fully built and was already proven by the L5 srs_sim_003_virtual_ledger. Made operator-demonstrable by crates/atp-simulation/src/bin/sim003_ledger_cli.rs: `isolate` opens the SAME symbol under two paper strategies (alpha long+partial-sell, beta short) over real PaperSimulationEngine::simulate_fill -> VirtualLedgerBook::apply_fill, prints all five quantities per strategy, and proves ledger-isolation:true (mutating alpha leaves beta byte-identical while alpha DID change) and account-independent:true (same symbol -> different positions, impossible from one shared IB account); every --inject fault (nonpositive-price/zero-quantity/empty-symbol/nonpositive-mark/negative-commission) fails closed before any mutation (no isolation line) and a non-positive lot is rejected at parse (no vacuous proof). `defaults` shows a fresh book holds zero strategies and no IB account position. Driven by L5 srs_sim_003_ledger_cli (19 tests, fresh processes), L7 tests/domain/test_sim003_ledger_cli.py + the pre-existing test_virtual_ledger_isolation.py, L3 tests/test_virtual_ledger_contract.py LedgerCliTest, and tools/sim_ledger_check.py check_ledger_cli. The prior 'SDK-surface passes:false' deferral was over-conservative: its named owners (SYS-70 live feed, SYS-88 corporate actions/SRS-DATA-021, SRS-SIM-004 persistence, SYS-85 paper metrics, SRS-EXE-002 orchestrator, the Python host) are ADJACENT features, each its own requirement and NOT contexts inside SRS-SIM-003's narrow per-strategy-isolation AC.",
+    "evidence": "pre-gate",
+    "verification_method": "integration"
   },
   {
     "id": "SRS-SIM-004",
@@ -1115,7 +1225,8 @@
       "Step 4: Record objective evidence from fault injection, test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-RESV-001",
@@ -1130,7 +1241,8 @@
       "Step 4: Record objective evidence from system test, performance test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-RESV-002",
@@ -1145,7 +1257,8 @@
       "Step 4: Record objective evidence from test, demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-RESV-003",
@@ -1160,7 +1273,9 @@
       "Step 4: Record objective evidence from test, demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-RESV-004",
@@ -1175,7 +1290,8 @@
       "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-RESV-005",
@@ -1190,7 +1306,8 @@
       "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-RESV-006",
@@ -1205,7 +1322,8 @@
       "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-UI-001",
@@ -1220,7 +1338,9 @@
       "Step 4: Record objective evidence from demonstration, performance test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-UI-002",
@@ -1235,7 +1355,8 @@
       "Step 4: Record objective evidence from demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-UI-003",
@@ -1250,7 +1371,8 @@
       "Step 4: Record objective evidence from demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-UI-004",
@@ -1265,7 +1387,9 @@
       "Step 4: Record objective evidence from demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-LOG-001",
@@ -1280,7 +1404,8 @@
       "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-API-001",
@@ -1295,7 +1420,8 @@
       "Step 4: Record objective evidence from contract test, demonstration and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-ERR-001",
@@ -1311,7 +1437,9 @@
     ],
     "passes": true,
     "needs_clarification": false,
-    "notes": "SESSION 67 (passes:true \u2014 verified end-to-end 2026-07-23): the operator-gated live leg PASSED. A real IBKR Gateway 10.40 paper account rejected a nonexistent symbol (ZZZZQQ) with IB code 200 and the SRS-EXE-006 adapter produced an INVALID_SYMBOL StructuredOrderError with the original order unchanged \u2014 crates/atp-orchestrator/tests/srs_err_001_broker_envelope_live.rs under ATP_RUN_INTEGRATION=1 + ib-live-transport, against 127.0.0.1:4002. Reproducible across fresh processes; a negative control pointed at a dead port correctly failed CONNECTIVITY_BLOCKED, proving a real round trip (not a vacuous green). WHAT SHIPPED (SESSION 66): the SyRS SYS-64 broker-validation categories INVALID_SYMBOL / INSUFFICIENT_BUYING_POWER / RATE_LIMITED now have a production construction site proven to arrive inside a StructuredOrderError, via err001_broker_envelope_cli (crates/atp-orchestrator/src/bin \u2014 it lives in the orchestrator because SRS-ARCH-002 forbids atp-execution depending on atp-adapters) driving the REAL ExecutionEngine::route_order -> submit_live_order -> IbBrokerageBridge -> InteractiveBrokersBrokerage -> classify_ib_order_error chain; the only fixture is the transport. Also completed the cross-cutting taxonomy fix the codebase had explicitly deferred TO SRS-ERR-001: eight production sites that reported a validate() failure or an unmapped broker rejection as INVALID_SYMBOL now carry the new ORDER_PARAMETERS_INVALID / BROKER_REJECTED categories, so INVALID_SYMBOL means exactly one thing (the broker says the symbol does not exist) and is producible only by classify_ib_order_error \u2014 enforced by the tests/domain guard test_err001_broker_envelope. Related SYS-64 categories remain their owners': SUBSCRIPTION_LIMIT_REACHED (SRS-MD-002), the live COMPOSITE (combo/BAG) rejection envelope (SRS-EXE-004)."
+    "notes": "SESSION 67 (passes:true \u2014 verified end-to-end 2026-07-23): the operator-gated live leg PASSED. A real IBKR Gateway 10.40 paper account rejected a nonexistent symbol (ZZZZQQ) with IB code 200 and the SRS-EXE-006 adapter produced an INVALID_SYMBOL StructuredOrderError with the original order unchanged \u2014 crates/atp-orchestrator/tests/srs_err_001_broker_envelope_live.rs under ATP_RUN_INTEGRATION=1 + ib-live-transport, against 127.0.0.1:4002. Reproducible across fresh processes; a negative control pointed at a dead port correctly failed CONNECTIVITY_BLOCKED, proving a real round trip (not a vacuous green). WHAT SHIPPED (SESSION 66): the SyRS SYS-64 broker-validation categories INVALID_SYMBOL / INSUFFICIENT_BUYING_POWER / RATE_LIMITED now have a production construction site proven to arrive inside a StructuredOrderError, via err001_broker_envelope_cli (crates/atp-orchestrator/src/bin \u2014 it lives in the orchestrator because SRS-ARCH-002 forbids atp-execution depending on atp-adapters) driving the REAL ExecutionEngine::route_order -> submit_live_order -> IbBrokerageBridge -> InteractiveBrokersBrokerage -> classify_ib_order_error chain; the only fixture is the transport. Also completed the cross-cutting taxonomy fix the codebase had explicitly deferred TO SRS-ERR-001: eight production sites that reported a validate() failure or an unmapped broker rejection as INVALID_SYMBOL now carry the new ORDER_PARAMETERS_INVALID / BROKER_REJECTED categories, so INVALID_SYMBOL means exactly one thing (the broker says the symbol does not exist) and is producible only by classify_ib_order_error \u2014 enforced by the tests/domain guard test_err001_broker_envelope. Related SYS-64 categories remain their owners': SUBSCRIPTION_LIMIT_REACHED (SRS-MD-002), the live COMPOSITE (combo/BAG) rejection envelope (SRS-EXE-004).",
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-NOTIF-001",
@@ -1326,7 +1454,8 @@
       "Step 4: Record objective evidence from fault injection, integration test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-SAFE-001",
@@ -1341,7 +1470,8 @@
       "Step 4: Record objective evidence from scenario test, performance test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-SAFE-002",
@@ -1356,7 +1486,8 @@
       "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-SAFE-003",
@@ -1371,7 +1502,8 @@
       "Step 4: Record objective evidence from fault injection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-REL-001",
@@ -1386,7 +1518,8 @@
       "Step 4: Record objective evidence from analysis, system test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-REL-002",
@@ -1401,7 +1534,8 @@
       "Step 4: Record objective evidence from system test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-SEC-001",
@@ -1416,7 +1550,8 @@
       "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "SRS-SEC-002",
@@ -1431,7 +1566,9 @@
       "Step 4: Record objective evidence from inspection and test; for the RFC 1918-only deployment target the structural invariant (default RFC 1918/loopback bind, fail-closed refusal of any non-RFC 1918 bind, and the documented external-authentication requirement) is the acceptance evidence that proves the requirement."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "integration"
   },
   {
     "id": "SRS-SEC-003",
@@ -1446,7 +1583,9 @@
       "Step 4: Record objective evidence from inspection, security test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "integration"
   },
   {
     "id": "SRS-SEC-004",
@@ -1461,7 +1600,9 @@
       "Step 4: Record objective evidence from security test and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-PERF-001",
@@ -1476,7 +1617,8 @@
       "Step 4: Record objective evidence from test, inspection and leave passes false until the evidence proves the requirement end to end."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "UI-1",
@@ -1491,7 +1633,8 @@
       "Step 4: Confirm the UI behavior traces to SRS-UI-001, SRS-UI-002, SRS-UI-003 and leave passes false until browser evidence is captured."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "UI-2",
@@ -1506,7 +1649,8 @@
       "Step 4: Confirm the UI behavior traces to SRS-ORCH-004, SRS-EXE-001 and leave passes false until browser evidence is captured."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "UI-3",
@@ -1521,7 +1665,8 @@
       "Step 4: Confirm the UI behavior traces to SRS-BT-001, SRS-UI-004 and leave passes false until browser evidence is captured."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "UI-4",
@@ -1536,7 +1681,8 @@
       "Step 4: Confirm the UI behavior traces to SRS-SAFE-001, SRS-SAFE-002 and leave passes false until browser evidence is captured."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "UI-5",
@@ -1551,7 +1697,8 @@
       "Step 4: Confirm the UI behavior traces to SRS-RESV-003 through SRS-RESV-006 and leave passes false until browser evidence is captured."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "integration"
   },
   {
     "id": "UI-6",
@@ -1566,7 +1713,9 @@
       "Step 4: Confirm the UI behavior traces to SRS-RES-001, SRS-RES-003 and leave passes false until browser evidence is captured."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "API-1",
@@ -1581,7 +1730,9 @@
       "Step 4: Confirm the interface contract traces to SRS-SDK-001 through SRS-SDK-009 and leave passes false until contract evidence is captured."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "API-2",
@@ -1596,7 +1747,9 @@
       "Step 4: Confirm the interface contract traces to SRS-API-001 and leave passes false until contract evidence is captured."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "API-3",
@@ -1611,7 +1764,9 @@
       "Step 4: Confirm the interface contract traces to SRS-UI-001 through SRS-UI-004 and leave passes false until contract evidence is captured."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "API-4",
@@ -1626,7 +1781,9 @@
       "Step 4: Confirm the interface contract traces to SRS-API-001, SRS-SAFE-001 and leave passes false until contract evidence is captured."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "API-5",
@@ -1641,7 +1798,9 @@
       "Step 4: Confirm the interface contract traces to SRS-EXE-006, SRS-EXE-007 and leave passes false until contract evidence is captured."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "API-6",
@@ -1656,7 +1815,9 @@
       "Step 4: Confirm the interface contract traces to SRS-DATA-001 through SRS-DATA-007 and leave passes false until contract evidence is captured."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "API-7",
@@ -1671,7 +1832,9 @@
       "Step 4: Confirm the interface contract traces to SRS-DATA-007, SRS-DATA-012 and leave passes false until contract evidence is captured."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "ERR-1",
@@ -1686,7 +1849,9 @@
       "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-EXE-001, SRS-ERR-001 and leave passes false until evidence is captured."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "live-ib"
   },
   {
     "id": "ERR-2",
@@ -1701,7 +1866,9 @@
       "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-SAFE-003, SRS-MD-005 and leave passes false until evidence is captured."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "live-ib"
   },
   {
     "id": "ERR-3",
@@ -1716,7 +1883,9 @@
       "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-MD-004 and leave passes false until evidence is captured."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "ERR-4",
@@ -1731,7 +1900,9 @@
       "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-MD-002 and leave passes false until evidence is captured."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "ERR-5",
@@ -1746,7 +1917,9 @@
       "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-DATA-013 and leave passes false until evidence is captured."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "ERR-6",
@@ -1761,7 +1934,9 @@
       "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-DATA-002, SRS-DATA-004 and leave passes false until evidence is captured."
     ],
     "passes": true,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "evidence": "pre-gate",
+    "verification_method": "e2e"
   },
   {
     "id": "ERR-7",
@@ -1776,7 +1951,8 @@
       "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-RESV-004 and leave passes false until evidence is captured."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "ERR-8",
@@ -1791,7 +1967,8 @@
       "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-SAFE-002 and leave passes false until evidence is captured."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   },
   {
     "id": "ERR-9",
@@ -1806,6 +1983,7 @@
       "Step 4: Confirm logs, API responses, dashboard alerts, or side-effect absence trace to SRS-ARCH-005, SRS-MD-006 and leave passes false until evidence is captured."
     ],
     "passes": false,
-    "needs_clarification": false
+    "needs_clarification": false,
+    "verification_method": "e2e"
   }
 ]

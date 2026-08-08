@@ -44,6 +44,14 @@ build/
 # Critic Agent local artifacts
 .critic_report.json
 
+# .harness/ is verification evidence and it MUST be tracked: close_feature.py
+# reads .harness/runs/<id>/evidence.json on main to decide whether a feature may
+# flip to passes:true, and .harness/closes.jsonl / overrides.jsonl are the audit
+# trail for every flip and every --force-complete. An untracked record would make
+# the gate unverifiable by anyone but the machine that produced it.
+# Only genuinely local scratch under it is ignored:
+.harness/tmp/
+
 # Agent pool — ephemeral coordination state (feature_deps.json IS committed)
 tools/.agent_runtime.json
 tools/.agent_pool.lock

@@ -45,6 +45,10 @@ import tempfile
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import evidence  # noqa: E402  (sibling module in tools/; path set just above)
+
 # ----------------------------------------------------------------------------
 # Tunables
 # ----------------------------------------------------------------------------
@@ -55,7 +59,17 @@ INTEGRATE_MARKER = "[agent-integrate]"
 # The ONLY paths `integrate` may stage into its marker commit. Staging is
 # restricted to this allowlist (never `git add -A`) so a retry's `reset --hard`
 # can never sweep in and then drop an agent's feature/test/progress work.
-INTEGRATE_ALLOWLIST = ("feature_list.json", "progress.txt", "progress.d", "tools/feature_deps.json")
+INTEGRATE_ALLOWLIST = (
+    "feature_list.json",
+    "progress.txt",
+    "progress.d",
+    "tools/feature_deps.json",
+    # The integrator itself writes .harness/closes.jsonl and .harness/overrides.jsonl
+    # (via evidence.py) inside the worktree, so it must be allowed to stage them.
+    # Without this, `integrate` appends an override record and then refuses the very
+    # worktree it just dirtied — logging the event and integrating nothing.
+    ".harness",
+)
 
 # Coarse category -> subsystem/crate map. Used only to *prefer* a feature whose
 # crate no active sibling holds, to reduce merge conflicts. Unmapped categories
@@ -84,10 +98,18 @@ CATEGORY_SUBSYSTEM = {
     "architecture": "atp-types",
 }
 
-# Substrings (case-insensitive) in a feature's description/steps that mean it is
-# NOT solo-verifiable in a parallel session — integrate must use --mode
-# serialized (not complete) unless the agent passes --force-complete. Heuristic
-# backstop for the honesty guard; the agent's own classification still decides.
+# A feature's DECLARED verification_method. This is what the honesty guard reads.
+#   solo        — every step verifiable in a parallel session, no shared resource
+#   integration — needs real containers / gated I/O (ATP_RUN_INTEGRATION=1)
+#   live-ib     — needs the IB Gateway; serialized by the single-live invariant
+#   e2e         — needs the dashboard / Jupyter / Playwright stack
+SOLO_METHODS = {"solo"}
+NON_SOLO_METHODS = {"integration", "live-ib", "e2e"}
+
+# FALLBACK ONLY, for a feature with no declared verification_method. Substring
+# matching over templated feature prose fired on 90 of 120 features — "dashboard"
+# alone matched 47 — so the override became the normal path rather than the
+# exception. Delete this list once every feature carries a method.
 SERIALIZED_KEYWORDS = [
     "integration test",
     "interactive brokers",
@@ -309,10 +331,30 @@ def subsystem(feat: dict) -> str:
 
 
 def needs_serialized(feat: dict) -> tuple[bool, list[str]]:
-    """Heuristic: does this feature's text imply IB/integration/live/e2e steps?"""
+    """Is this feature NOT solo-verifiable in a parallel session?
+
+    Reads the feature's declared ``verification_method``. The keyword scan below
+    is only a fallback for a feature that has not been classified yet: it matched
+    templated boilerplate ("dashboard" in 47 features, " ib " in 32) and fired on
+    90 of 120 features, which is how ``--force-complete`` became routine rather
+    than exceptional. An unrecognised value fails closed (CLAUDE.md rule 3).
+    """
+    method = str(feat.get("verification_method") or "").strip().lower()
+    if method:
+        if method in SOLO_METHODS:
+            return (False, [])
+        if method in NON_SOLO_METHODS:
+            return (True, [method])
+        return (True, [f"unknown verification_method={method!r}"])
+
     hay = (" " + feat.get("description", "") + " " + " ".join(feat.get("steps", [])) + " ").lower()
     hits = [kw.strip() for kw in SERIALIZED_KEYWORDS if kw in hay]
     return (bool(hits), hits)
+
+
+def unclassified(features: list) -> list[str]:
+    """Feature ids with no declared verification_method (still on the fallback)."""
+    return [f["id"] for f in features if not str(f.get("verification_method") or "").strip()]
 
 
 def base_ref() -> str:
@@ -741,6 +783,25 @@ def cmd_status(args):
         f"awaiting-verify:{len(awaiting)}  blocked:{len(blocked)}  leased:{len(active)}"
     )
     print(f"   frontier: {assessment['state'].upper()}")
+
+    # How much of `done` is actually backed by evidence. A feature closed before
+    # the evidence gate existed is not re-verified and must not read as if it were.
+    passing = [f for f in by_id.values() if f.get("passes")]
+    pre_gate = [f["id"] for f in passing if f.get("evidence") == evidence.PRE_GATE]
+    evidenced = [f["id"] for f in passing if evidence.record_path(f["id"]).exists()]
+    if pre_gate or evidenced:
+        print(
+            f"   evidence: {len(evidenced)} evidenced, {len(pre_gate)} pre-gate "
+            f"(closed before the gate existed; NOT re-verified)"
+        )
+    unclass = unclassified(list(by_id.values()))
+    if unclass:
+        print(
+            f"   ⚠ {len(unclass)} feature(s) have no verification_method — the honesty "
+            f"guard is falling back to keyword matching for them "
+            f"(fix: tools/classify_verification.py propose)"
+        )
+
     if assessment["state"] == "deadlock" and assessment["root_blockers"]:
         guarded = assessment["guarded_root_blockers"]
         print(
@@ -1118,19 +1179,56 @@ def cmd_integrate(args):
         print(f"✗ worktree {wt} not found", file=sys.stderr)
         return 1
 
-    # Honesty guard (code-enforced backstop): refuse `complete` for a feature
-    # whose text implies IB/integration/live/e2e steps unless forced.
+    # Honesty guard (code-enforced backstop): refuse `complete` for a feature whose
+    # declared verification_method (or, absent one, whose text) implies IB /
+    # integration / live / e2e steps unless forced.
     if mode == "complete" and not args.force_complete:
         feat = next((x for x in load_features(fetch=False) if x["id"] == fid), None)
         if feat:
             need, hits = needs_serialized(feat)
             if need:
                 print(
-                    f"✗ {fid}: steps imply non-solo verification {hits} → use --mode serialized "
-                    f"(or --force-complete if you genuinely verified every step solo).",
+                    f"✗ {fid}: verification method {hits} is not solo-verifiable → "
+                    f"use --mode serialized (or --force-complete if you genuinely "
+                    f"verified every step solo).",
                     file=sys.stderr,
                 )
                 return 5
+    # The evidence gate. `complete` used to hand close_feature.py the --verified flag
+    # that flag's own error text reserves for a human; the agent attested to its own
+    # work. Now an incomplete record DEGRADES the integrate to `serialized`: the code
+    # still lands on main, `passes` stays false, and the note becomes the resume
+    # pointer the operator picks up. The honest outcome is the automatic one.
+    #
+    # A corrupt or unreadable record must reach that same degrade, not a traceback:
+    # evidence.verify raises EvidenceError by design (absent != empty), and an
+    # unhandled one out of `integrate` is the fail-open this gate exists to prevent.
+    if mode == "complete":
+        try:
+            ok, problems, summary = evidence.verify(fid)
+        except evidence.EvidenceError as exc:
+            ok, problems = False, [f"evidence record unreadable: {exc}"]
+            summary = {"steps_evidenced": 0, "steps_total": "?"}
+        if not ok:
+            print(
+                f"⚠ {fid}: evidence record is incomplete "
+                f"({summary['steps_evidenced']}/{summary['steps_total']} steps) — "
+                f"integrating as `serialized` instead of `complete`:",
+                file=sys.stderr,
+            )
+            for p in problems[:8]:
+                print(f"    · {p}", file=sys.stderr)
+            if len(problems) > 8:
+                print(f"    · … and {len(problems) - 8} more", file=sys.stderr)
+            print(
+                f"  The code will merge and `passes` stays false. To close it properly, "
+                f"record each step as you verify it:\n"
+                f"    python3 tools/evidence.py record {fid} --step N --command '...' "
+                f"--observed '...' --status pass\n"
+                f"  then re-run `integrate {fid} --mode complete`.",
+                file=sys.stderr,
+            )
+            mode = "serialized"
 
     if args.dry_run:
         ahead = _run(
@@ -1141,6 +1239,15 @@ def cmd_integrate(args):
             f"would rebase, {'flip passes:true + ' if mode == 'complete' else ''}push HEAD:main, release lease"
         )
         return 0
+
+    # Audit the override only once we are past every early return. Logging it above
+    # meant `--dry-run --force-complete` permanently recorded an override for an
+    # integration that never happened — a write on the one path whose entire contract
+    # is that it writes nothing, corrupting the trail this gate exists to create.
+    if mode == "complete" and args.force_complete:
+        evidence.log_override(
+            fid, "force-complete", getattr(args, "reason", "") or "(no reason given)"
+        )
 
     # Refuse to integrate with uncommitted work outside the integration scope —
     # otherwise it would be swept into the marker commit and lost on a retry.

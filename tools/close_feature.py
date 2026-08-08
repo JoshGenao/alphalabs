@@ -31,6 +31,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import evidence  # noqa: E402  (sibling module in tools/; path set just above)
+
 ROOT = Path(__file__).resolve().parents[1]
 FEATURE_FILE = ROOT / "feature_list.json"
 PROGRESS_FILE = ROOT / "progress.txt"
@@ -130,6 +134,15 @@ def main() -> int:
         "carries the 'verified-e2e' label.",
     )
     parser.add_argument(
+        "--attested-by",
+        metavar="SOURCE",
+        help="Who attests the steps passed, when there is no machine-readable "
+        "evidence record: 'verified-e2e-label' (a human labelled the merged PR) "
+        "or 'operator' (you ran them by hand). Required for live-IB / e2e work "
+        "that cannot produce a solo record. Every use is logged to "
+        ".harness/closes.jsonl — agent_pool.py never passes it.",
+    )
+    parser.add_argument(
         "--no-fold", action="store_true", help="only flip passes; do not fold the progress note"
     )
     parser.add_argument(
@@ -158,9 +171,56 @@ def main() -> int:
         )
         return 2
 
+    # --verified alone is an assertion by whoever ran the command. It became
+    # worthless the moment agent_pool.py started passing it on the agent's behalf.
+    # A flip now needs one of:
+    #   · an EXECUTED evidence record — every step run by `evidence.py run`, which
+    #     captures the real exit code and output rather than taking the caller's
+    #     description of them; or
+    #   · a named human attestation (the verified-e2e label, or the operator), which
+    #     also unlocks hand-recorded steps for work no subprocess can capture.
+    #
+    # Hand-recorded steps alone are NOT sufficient: `evidence.py record` takes the
+    # caller's strings, so accepting them unattested would leave the gate satisfiable
+    # by description — the same defect as the self-granted flag, one layer up.
+    for feature_id in args.feature_ids:
+        if args.dry_run:
+            continue
+        if args.attested_by:
+            continue
+        try:
+            ok, problems, _summary = evidence.verify(feature_id, allow_attested=False)
+        except evidence.EvidenceError as exc:
+            # A corrupt record or an unknown feature id must refuse the close, not
+            # traceback out of the one command that writes feature_list.json.
+            ok, problems = False, [f"evidence record unreadable: {exc}"]
+        if not ok:
+            print(
+                f"✗ refusing to close {feature_id}: no complete evidence record.\n"
+                + "".join(f"    · {p}\n" for p in problems)
+                + "  Record the per-step evidence as you verify:\n"
+                f"    tools/evidence.py record {feature_id} --step N --command '...' "
+                "--observed '...' --status pass\n"
+                "  Or, if this feature needs IB/live/e2e that cannot be captured solo,\n"
+                "  close it with an explicit human attestation:\n"
+                f"    tools/close_feature.py {feature_id} --verified "
+                "--attested-by operator\n"
+                "  (the close-feature workflow passes --attested-by verified-e2e-label\n"
+                "   once a human applies the label to the merged PR).",
+                file=sys.stderr,
+            )
+            return 3
+
     for feature_id in args.feature_ids:
         print(f"→ {feature_id}")
-        flip_passes(feature_id, dry_run=args.dry_run)
+        flipped = flip_passes(feature_id, dry_run=args.dry_run)
+        if flipped and not args.dry_run:
+            evidence.log_close(
+                feature_id,
+                mode="complete",
+                attestation=args.attested_by or "evidence-record",
+                detail="" if args.attested_by else "verified against .harness/runs/",
+            )
         if not args.no_fold:
             fold_note(feature_id, keep_note=args.keep_note, dry_run=args.dry_run)
 
