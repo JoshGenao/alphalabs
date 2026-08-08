@@ -147,12 +147,6 @@
     "SRS-DATA-005"
   ],
   "SRS-LOG-001": [
-    "SRS-DATA-013",
-    "SRS-EXE-001",
-    "SRS-MD-001",
-    "SRS-RESV-004",
-    "SRS-RESV-005",
-    "SRS-RESV-006",
     "SRS-UI-001"
   ],
   "SRS-MD-001": [

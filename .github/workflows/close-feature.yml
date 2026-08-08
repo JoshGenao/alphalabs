@@ -75,6 +75,8 @@ jobs:
       - name: Commit and push the flip
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABELER: ${{ github.event.sender.login }}
         run: |
           FEATURE_ID="${HEAD_REF#agent/}"
           git config user.name "github-actions[bot]"
@@ -84,7 +86,14 @@ jobs:
             echo "No changes to commit (feature already closed?)."
             exit 0
           fi
-          git commit -m "chore: close ${FEATURE_ID} (passes:true; fold session note) [skip ci]"
+          # Name the attestation IN THE COMMIT. .harness/*.jsonl is untracked by
+          # design (no branch may append to the ledgers), which on an ephemeral
+          # runner means the close record dies with the job — so the commit message
+          # is the durable evidence that a human, not a machine, closed this one.
+          git commit -m "chore: close ${FEATURE_ID} (passes:true; fold session note) [skip ci]
+
+          Attested-by: verified-e2e label on PR #${PR_NUMBER} by ${LABELER}
+          Evidence: .harness/runs/${FEATURE_ID}/closed-*.json (retired at close)"
           # Rebase-and-retry in case another close landed on main meanwhile.
           for attempt in 1 2 3; do
             if git pull --rebase origin main && git push origin HEAD:main; then

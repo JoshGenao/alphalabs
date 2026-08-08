@@ -81,6 +81,16 @@ def flip_passes(feature_id: str, *, dry_run: bool) -> bool:
     return True
 
 
+def feature_is_passing(feature_id: str) -> bool:
+    """Is this feature currently passes:true? (Distinct from 'we just flipped it'.)"""
+    try:
+        features = json.loads(FEATURE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    match = next((f for f in features if f.get("id") == feature_id), None)
+    return bool(match and match.get("passes") is True)
+
+
 def _next_session_number() -> int:
     if not PROGRESS_FILE.exists():
         return 1
@@ -120,6 +130,27 @@ def fold_note(feature_id: str, *, keep_note: bool, dry_run: bool) -> None:
         print(f"  ✓ {feature_id}: removed {note_path.name}")
 
 
+def retire_plan(feature_id: str, *, keep_note: bool, dry_run: bool) -> None:
+    """Remove the approved plan once its feature has closed.
+
+    fold_note has always consumed session-<id>.md and never touched plan-<id>.md, so
+    a plan for finished work survives as an authoritative-looking statement of
+    current intent — 3 of the 10 plan files on this tree belong to closed features.
+    The plan's durable content is already in the session note and the diff.
+    """
+    plan_path = PROGRESS_DIR / f"plan-{feature_id}.md"
+    if not plan_path.exists():
+        return
+    if dry_run:
+        print(f"  [dry-run] would remove {plan_path.name} (its feature is closing)")
+        return
+    if keep_note:
+        print(f"  • {feature_id}: keeping {plan_path.name} (--keep-note)")
+        return
+    plan_path.unlink()
+    print(f"  ✓ {feature_id}: removed {plan_path.name}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Close verified features on main.")
     parser.add_argument("feature_ids", nargs="+", help="feature ids to close")
@@ -140,9 +171,12 @@ def main() -> int:
         "evidence record: 'verified-e2e-label' (a human labelled the merged PR) "
         "or 'operator' (you ran them by hand). Required for live-IB / e2e work "
         "that cannot produce a solo record. Every use is logged to "
-        ".harness/closes.jsonl — agent_pool.py never passes it, and `integrate` "
-        "hard-resets feature_list.json from the base ref before staging, so a flip "
-        "made by running this command inside a worktree cannot reach main.",
+        "the local .harness/closes.jsonl (untracked, so on the CI path it lives only "
+        "for that runner's lifetime — the durable record of an attested close is the "
+        "commit message and the retired evidence file). agent_pool.py never passes "
+        "it, and `integrate` hard-resets feature_list.json from the base ref before "
+        "staging, so a flip made by running this command inside a worktree cannot "
+        "reach main.",
     )
     parser.add_argument(
         "--no-fold", action="store_true", help="only flip passes; do not fold the progress note"
@@ -222,13 +256,16 @@ def main() -> int:
     for feature_id in args.feature_ids:
         print(f"→ {feature_id}")
         flipped = flip_passes(feature_id, dry_run=args.dry_run)
-        if flipped and not args.dry_run:
-            # Consume the record, exactly as fold_note consumes the session note. A
-            # live record left behind is inherited by every worktree cut from main,
-            # so a reopened feature would arrive pre-verified by another session.
+        # Retire on any close that leaves the feature PASSING, not only on the one
+        # that flipped it. Gating on `flipped` meant a close against an
+        # already-passing feature — a retry, a double label, an idempotent
+        # integrate — exited 0 while leaving the live, still-verifying record on
+        # main, which is the exact inheritance retire() exists to prevent.
+        if not args.dry_run and (flipped or feature_is_passing(feature_id)):
             archived = evidence.retire(feature_id)
             if archived:
                 print(f"  ✓ {feature_id}: evidence retired -> {archived.name}")
+        if flipped and not args.dry_run:
             evidence.log_close(
                 feature_id,
                 mode="complete",
@@ -237,6 +274,7 @@ def main() -> int:
             )
         if not args.no_fold:
             fold_note(feature_id, keep_note=args.keep_note, dry_run=args.dry_run)
+            retire_plan(feature_id, keep_note=args.keep_note, dry_run=args.dry_run)
 
     print("\n✓ done. Review with: git diff -- feature_list.json progress.txt progress.d")
     return 0

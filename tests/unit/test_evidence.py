@@ -391,3 +391,26 @@ def test_run_records_a_failure_as_a_failure(sandbox):
     assert entry["status"] == "fail"
     assert entry["exit_code"] == 3
     assert "nope" in entry["observed"]
+
+
+def test_retire_happens_even_when_the_feature_was_already_passing(sandbox, monkeypatch):
+    """A retry, a double label, an idempotent integrate — none may leave the record.
+
+    Gating retirement on "we just flipped it" meant a close against an
+    already-passing feature exited 0 with the live, still-verifying record intact on
+    main, which every later worktree then inherits.
+    """
+    import close_feature
+
+    monkeypatch.setattr(close_feature, "FEATURE_FILE", evidence.FEATURE_FILE)
+    _record_all_steps(3)
+    _approve_both()
+
+    feats = json.loads(evidence.FEATURE_FILE.read_text())
+    feats[0]["passes"] = True
+    evidence.FEATURE_FILE.write_text(json.dumps(feats), encoding="utf-8")
+
+    assert close_feature.feature_is_passing(FEATURE) is True
+    assert evidence.record_path(FEATURE).exists()
+    evidence.retire(FEATURE)  # what the close path now does unconditionally
+    assert not evidence.record_path(FEATURE).exists()

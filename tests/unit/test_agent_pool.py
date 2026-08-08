@@ -8,6 +8,7 @@ hardening fixes from the adversarial review:
   - ready-frontier / blocked computation, subsystem-avoidance, cycle detection
 """
 
+import json
 import os
 import socket
 import time
@@ -111,7 +112,16 @@ def test_declared_method_beats_the_keyword_scan():
     assert need is False and hits == []
 
 
-@pytest.mark.parametrize("method", ["integration", "live-ib", "e2e"])
+# ids= is load-bearing, not cosmetic: pytest puts each parametrize id into
+# item.keywords, and tests/conftest.py auto-skips any item whose keywords contain
+# "integration" or "e2e". With the raw method names as ids, two of these three cases
+# were silently SKIPPED — the guard for the two most consequential methods was never
+# executed, in a suite whose own rule 6 says a test that cannot fail is not evidence.
+@pytest.mark.parametrize(
+    "method",
+    ["integration", "live-ib", "e2e"],
+    ids=["m_integration", "m_live_ib", "m_e2e"],
+)
 def test_declared_non_solo_methods_serialize(method):
     feat = _feat("X", description="pure in-process resampling", steps=["assert aggregation"])
     assert agent_pool.needs_serialized(feat)[0] is False  # fallback would allow complete
@@ -310,3 +320,102 @@ def test_should_refuse_release():
     assert agent_pool.lease_blocks_owner(own, mine, now) is False
     # no lease → not blocked
     assert agent_pool.lease_blocks_owner(None, mine, now) is False
+
+
+# --- review-round accounting (P1-1) ------------------------------------------
+# `Adversarial rounds:` appeared in 1 of 38 notes because it was prose an agent had
+# to remember. adversarial_review.py now records each round, so the note can be
+# checked against it — but absent telemetry must stay silent, since a review can
+# legitimately predate this or run outside the worktree.
+def _wt(tmp_path, fid, *, note=None, rounds=None):
+    (tmp_path / "progress.d").mkdir(parents=True, exist_ok=True)
+    if note is not None:
+        (tmp_path / "progress.d" / f"session-{fid}.md").write_text(note, encoding="utf-8")
+    if rounds is not None:
+        d = tmp_path / ".harness" / "runs" / fid
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "review.jsonl").write_text('{"verdict":"block"}\n' * rounds, encoding="utf-8")
+    return tmp_path
+
+
+def test_no_telemetry_is_not_a_mismatch(tmp_path):
+    wt = _wt(tmp_path, "F-1", note="Adversarial rounds: 7\n")
+    assert agent_pool.note_rounds_mismatch(wt, "F-1") is None
+
+
+def test_agreeing_counts_pass(tmp_path):
+    wt = _wt(tmp_path, "F-1", note="Outcome: complete\nAdversarial rounds: 3\n", rounds=3)
+    assert agent_pool.note_rounds_mismatch(wt, "F-1") is None
+
+
+def test_disagreeing_counts_are_reported(tmp_path):
+    wt = _wt(tmp_path, "F-1", note="Adversarial rounds: 1\n", rounds=4)
+    msg = agent_pool.note_rounds_mismatch(wt, "F-1")
+    assert msg and "claims `Adversarial rounds: 1`" in msg and "recorded 4" in msg
+
+
+def test_a_missing_rounds_line_is_reported_when_rounds_were_recorded(tmp_path):
+    wt = _wt(tmp_path, "F-1", note="Outcome: complete\n", rounds=2)
+    msg = agent_pool.note_rounds_mismatch(wt, "F-1")
+    assert msg and "no `Adversarial rounds:` line" in msg
+
+
+# --- dependency-edge retraction (P1-8) ---------------------------------------
+# `block --on` appends and nothing has ever removed an edge, so the graph only
+# accretes constraints. A wrong edge parks a feature until its named prerequisite
+# passes — which may be never.
+@pytest.fixture
+def deps_sandbox(tmp_path, monkeypatch):
+    feats = tmp_path / "feature_list.json"
+    feats.write_text(
+        '[{"id":"A","passes":false,"steps":[]},{"id":"B","passes":false,"steps":[]},'
+        '{"id":"C","passes":false,"steps":[]}]',
+        encoding="utf-8",
+    )
+    deps = tmp_path / "feature_deps.json"
+    deps.write_text('{"A": ["B", "C"]}', encoding="utf-8")
+    monkeypatch.setattr(agent_pool, "FEATURE_FILE", feats)
+    monkeypatch.setattr(agent_pool, "DEPS_FILE", deps)
+    monkeypatch.setattr(agent_pool, "LOCK_FILE", tmp_path / ".lock")
+    monkeypatch.setattr(
+        agent_pool, "load_features", lambda fetch=False: json.loads(feats.read_text())
+    )
+    return deps
+
+
+class _UnblockArgs:
+    def __init__(self, id, off, reason=""):
+        self.id, self.off, self.reason = id, off, reason
+
+
+def test_unblock_removes_only_the_named_edge(deps_sandbox):
+    assert agent_pool.cmd_unblock(_UnblockArgs("A", ["B"])) == 0
+    assert json.loads(deps_sandbox.read_text()) == {"A": ["C"]}
+
+
+def test_unblock_drops_the_key_when_the_last_edge_goes(deps_sandbox):
+    assert agent_pool.cmd_unblock(_UnblockArgs("A", ["B", "C"])) == 0
+    assert json.loads(deps_sandbox.read_text()) == {}
+
+
+def test_unblock_refuses_an_edge_that_does_not_exist(deps_sandbox):
+    """Silently succeeding would let a typo read as a retraction that never happened."""
+    assert agent_pool.cmd_unblock(_UnblockArgs("A", ["NOPE"])) == 1
+    assert json.loads(deps_sandbox.read_text()) == {"A": ["B", "C"]}
+
+
+def test_unblock_refuses_an_unknown_feature(deps_sandbox):
+    assert agent_pool.cmd_unblock(_UnblockArgs("ZZZ", ["B"])) == 1
+
+
+def test_this_branch_does_not_carry_integrator_owned_scheduler_state():
+    """tools/feature_deps.json is integrator-owned; a branch must not commit it.
+
+    shared_state_violations() has always said so, but nothing checked THIS repo's
+    own harness branches — and a broad `git add tools/` swept a sibling session's six
+    self-learned SRS-LOG-001 edges into a harness commit that had no reason to touch
+    the scheduler. Those edges change which features the pool hands out.
+    """
+    assert agent_pool.shared_state_violations(["tools/feature_deps.json"], "ANY") == [
+        "tools/feature_deps.json"
+    ]
