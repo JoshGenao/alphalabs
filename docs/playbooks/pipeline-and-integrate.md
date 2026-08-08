@@ -128,7 +128,15 @@ one `main`. Most of this playbook is about that sharing.
     into a FAILURE), and in *blocking semantics* (mypy blocking locally, advisory in CI).
     Fixing only the list leaves a mirror that still lies. `tools/gates.json` now carries
     scope + argv; blocking-ness is called out inline in the runner. `(harness-p0)`
-28. **`pgrep -f "cargo test"` always matches when an agent session is open** — the literal
-    string is in `prompts/coding_prompt.md`, which is passed as the session's argv. Use
-    **`pgrep -x cargo`**. A guard that fires unconditionally is one everybody learns to
-    ignore, which is worse than no guard. `(harness-p0, found live)`
+28. **`pgrep -f <anything the prompts mention>` always matches while an agent runs.** The
+    session's argv IS `prompts/coding_prompt.md` (and the reviewer's is
+    `critic_prompt.md`), so `pgrep -f "cargo test"` and `pgrep -f run_ci_locally` both
+    match with nothing of the sort running. Match the executable, not a command line:
+    **`pgrep -x cargo`**, or `ps -eo pid,command | grep "[r]un_ci_locally"`. A guard that
+    fires unconditionally is one everybody learns to ignore, which is worse than no
+    guard. `(harness-p0, found live — twice, the second time by the fix for the first)`
+29. **Killing a gate run leaves its children alive.** Stopping the wrapper shell does not
+    stop `cargo test --workspace`; it re-parents and keeps the `target/` lock, so the next
+    run trips the rule-9 guard with a 6-minute-old orphan. After aborting a gate, check
+    `pgrep -x cargo` and `ps -eo pid,command | grep "[r]un_ci_locally"` and clear both
+    before re-running. `(harness-p0, found live)`
