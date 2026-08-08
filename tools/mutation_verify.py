@@ -53,15 +53,28 @@ def is_test_path(path: str) -> bool:
     return bool(TEST_PATH_RE.search(path))
 
 
-def changed_files(rng: str) -> tuple[list[str], list[str]]:
-    """(source_files, test_files) changed in the range, both still present."""
-    names = [p for p in _git("diff", "--name-only", rng).splitlines() if p.strip()]
-    src, tst = [], []
-    for p in names:
-        if not (ROOT / p).exists():
+def changed_files(rng: str) -> tuple[list[str], list[str], list[str]]:
+    """(modified_sources, added_sources, test_files) for the range.
+
+    Added and modified sources revert differently, and getting that wrong is not a
+    detail: `git checkout <base> -- <path>` fails outright for a file the base does
+    not have, which aborts the whole run. An added file is reverted by DELETING it.
+    """
+    mods, adds, tsts = [], [], []
+    for line in _git("diff", "--name-status", "--no-renames", rng).splitlines():
+        if not line.strip():
+            continue
+        status, _, path = line.partition("\t")
+        path = path.strip()
+        if not path or not (ROOT / path).exists():
             continue  # deleted by the range; nothing to revert
-        (tst if is_test_path(p) else src).append(p)
-    return src, tst
+        if is_test_path(path):
+            tsts.append(path)
+        elif status.startswith("A"):
+            adds.append(path)
+        else:
+            mods.append(path)
+    return mods, adds, tsts
 
 
 def added_tests(rng: str, test_files: list[str]) -> dict[str, list[str]]:
@@ -117,7 +130,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    src, tst = changed_files(args.range)
+    mods, adds, tst = changed_files(args.range)
+    src = mods + adds
     added = added_tests(args.range, tst)
     names = sorted({n for v in added.values() for n in v})
 
@@ -135,12 +149,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         # Revert the SOURCE side only. The tests stay as written — that is the
         # whole experiment: do they notice their subject is gone?
-        _git("checkout", base, "--", *src)
+        if mods:
+            _git("checkout", base, "--", *mods)
+        for path in adds:
+            (ROOT / path).unlink()  # the base has no version to check out
         survivors = run_tests(args.tests, names)
     finally:
         # Always restore, even on an exception: leaving a half-reverted tree behind
         # would be far worse than the check not running.
-        _git("checkout", "HEAD", "--", *src, check=False)
+        if src:
+            _git("checkout", "HEAD", "--", *src, check=False)
 
     cannot_fail = sorted(n for n, passed in survivors.items() if passed)
 
