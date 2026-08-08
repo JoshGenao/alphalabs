@@ -158,6 +158,38 @@ def test_branch_may_commit_its_own_evidence_but_not_the_ledgers():
         assert agent_pool.shared_state_violations([forbidden], "X") == [forbidden], forbidden
 
 
+def test_integrator_owned_files_are_reset_not_trusted():
+    """The trust boundary, as a set: what the agent may author vs what it may not.
+
+    shared_state_violations only sees COMMITTED paths. Uncommitted edits to
+    feature_list.json passed every check — the path is inside INTEGRATE_ALLOWLIST, so
+    _uncommitted_outside_allowlist ignored it and `git add -A` staged it. That made
+    the human gate self-grantable: hand-write evidence, run `close_feature.py
+    --verified --attested-by operator` in the worktree, then `integrate --mode
+    serialized` and the mutated feature_list.json reaches main with passes:true.
+    `integrate` now hard-resets these from the base ref before writing them.
+    """
+    assert set(agent_pool.INTEGRATOR_OWNED) == {"feature_list.json", "progress.txt"}
+    # progress.d must NOT be reset — an agent legitimately authors its own note.
+    assert "progress.d" not in agent_pool.INTEGRATOR_OWNED
+    assert "progress.d" in agent_pool.INTEGRATE_ALLOWLIST
+
+
+def test_only_the_integrating_features_evidence_may_be_staged():
+    """close_feature's retirement has to reach main, but scoped to one feature."""
+    staged = [
+        "feature_list.json",
+        ".harness/runs/X/evidence.json",
+        ".harness/runs/X/closed-20260808T000000+0000.json",
+        ".harness/runs/OTHER/evidence.json",
+        ".harness/closes.jsonl",
+    ]
+    outside = agent_pool.staged_outside_allowlist(staged, "X")
+    assert outside == [".harness/runs/OTHER/evidence.json", ".harness/closes.jsonl"]
+    # With no feature id, no evidence path is stageable at all.
+    assert ".harness/runs/X/evidence.json" in agent_pool.staged_outside_allowlist(staged, None)
+
+
 # --- block id validation ----------------------------------------------------
 def test_validate_block_splits_known_and_unknown():
     ids = {"A", "B", "C"}

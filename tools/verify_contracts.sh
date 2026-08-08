@@ -52,8 +52,15 @@ if [[ "${SCOPE}" == "all" ]]; then
   passthru=()
   [[ "${KEEP_GOING}" -eq 1 ]] && passthru+=(--keep-going)
   [[ "${LIST}" -eq 1 ]] && passthru+=(--list)
+  # `for s in $(cmd)` does NOT abort under `set -e` when cmd fails: the substitution
+  # yields an empty word list, the loop body never runs, and `exit "${rc}"` returns 0
+  # — the runner reporting success having executed no checks at all. Resolve first,
+  # then refuse an empty list, exactly as the single-scope path does below.
+  ALL_SCOPES="$("${PY}" tools/gates_registry_check.py --list-scopes)" \
+    || die "cannot read the gate registry; refusing to report success for 0 checks"
+  [[ -n "${ALL_SCOPES}" ]] || die "gates.json declares no scopes"
   rc=0
-  for s in $("${PY}" tools/gates_registry_check.py --list-scopes); do
+  for s in ${ALL_SCOPES}; do
     # Absolute path: the script has already cd'd to ROOT_DIR, so a relative
     # ${BASH_SOURCE[0]} from `cd tools && ./verify_contracts.sh --scope all` would
     # resolve to <root>/verify_contracts.sh and every sub-scope would exit 127.

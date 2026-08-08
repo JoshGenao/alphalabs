@@ -135,12 +135,14 @@ def main() -> int:
     )
     parser.add_argument(
         "--attested-by",
-        metavar="SOURCE",
+        choices=("verified-e2e-label", "operator"),
         help="Who attests the steps passed, when there is no machine-readable "
         "evidence record: 'verified-e2e-label' (a human labelled the merged PR) "
         "or 'operator' (you ran them by hand). Required for live-IB / e2e work "
         "that cannot produce a solo record. Every use is logged to "
-        ".harness/closes.jsonl — agent_pool.py never passes it.",
+        ".harness/closes.jsonl — agent_pool.py never passes it, and `integrate` "
+        "hard-resets feature_list.json from the base ref before staging, so a flip "
+        "made by running this command inside a worktree cannot reach main.",
     )
     parser.add_argument(
         "--no-fold", action="store_true", help="only flip passes; do not fold the progress note"

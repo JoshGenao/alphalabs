@@ -225,11 +225,16 @@ def verify(
     steps = feature_steps(fid, features)
 
     want = steps_digest(steps)
-    got = rec.get("steps_digest")
-    if got != want:
+    stale = sorted(
+        e.get("n")
+        for e in rec.get("steps", [])
+        if e.get("steps_digest", rec.get("steps_digest")) != want
+    )
+    if stale:
         problems.append(
-            f"record attests a different specification (digest {got or 'absent'} != "
-            f"{want}) — the feature's steps[] changed since it was recorded; re-verify"
+            f"step(s) {stale} were recorded against a different specification (the "
+            f"feature's steps[] changed since); re-verify them — one fresh step does "
+            f"not re-bless the rest"
         )
 
     by_n = {}
@@ -301,9 +306,11 @@ def verify(
 # ----------------------------------------------------------------------------
 def _store_step(fid: str, n: int, entry: dict) -> None:
     rec = load_record(fid)
-    # Bind the record to the spec it attests and the commit it was taken at, so a
-    # stale or inherited record cannot satisfy a changed feature.
-    rec["steps_digest"] = steps_digest(feature_steps(fid))
+    # Bind EACH step to the spec in force when that step was taken. Stamping one
+    # whole-record digest on every write meant recording a single step after a
+    # respecification silently re-blessed every earlier step, which had been captured
+    # against criteria that no longer existed.
+    entry["steps_digest"] = steps_digest(feature_steps(fid))
     entry["head"] = _head()
     rec["steps"] = [s for s in rec.get("steps", []) if s.get("n") != n]
     rec["steps"].append(entry)

@@ -65,6 +65,11 @@ INTEGRATE_ALLOWLIST = (
     "progress.d",
     "tools/feature_deps.json",
 )
+
+# Files ONLY the integrator may author. `integrate` hard-resets these to the base ref
+# before writing them, so an agent's local edits — committed or not — cannot reach
+# main. progress.d is NOT here: an agent legitimately writes its own session note.
+INTEGRATOR_OWNED = ("feature_list.json", "progress.txt")
 # NOT in the allowlist: `.harness`. The integrator writes its ledgers to the PRIMARY
 # checkout (evidence.LEDGER_DIR), so they never appear in a worktree's git status.
 # Allowlisting `.harness` made `git add -A -- .harness` sweep in whatever the agent
@@ -1110,9 +1115,21 @@ def _uncommitted_outside_allowlist(wt: Path) -> list[str]:
     )
 
 
-def staged_outside_allowlist(names: list[str]) -> list[str]:
-    """Staged path names that fall outside the allowlist."""
-    return [p for p in names if p and not path_in_allowlist(p)]
+def staged_outside_allowlist(names: list[str], fid: str | None = None) -> list[str]:
+    """Staged path names that fall outside what the integrator may commit.
+
+    That is the allowlist, plus — when integrating feature ``fid`` — that one
+    feature's evidence directory, so close_feature's retirement of
+    ``.harness/runs/<fid>/evidence.json`` can actually reach main. Scoped to a single
+    id on purpose: no branch may stage another feature's evidence, and the ledgers
+    are not in a worktree at all.
+    """
+    own_evidence = f".harness/runs/{fid}/" if fid else None
+    return [
+        p
+        for p in names
+        if p and not path_in_allowlist(p) and not (own_evidence and p.startswith(own_evidence))
+    ]
 
 
 def _staged_paths(wt: Path) -> list[str]:
@@ -1328,6 +1345,22 @@ def cmd_integrate(args):
                 )
                 return 6
 
+            # THE TRUST BOUNDARY. Everything the integrator owns is reset to the base
+            # ref before the integrator writes it, so nothing the agent left in its
+            # worktree can ride along.
+            #
+            # shared_state_violations() catches these only when COMMITTED. Uncommitted
+            # edits passed every check — they are inside INTEGRATE_ALLOWLIST, so
+            # _uncommitted_outside_allowlist ignored them and `git add -A` staged them.
+            # That made the human gate self-grantable end to end: an agent could hand-
+            # write evidence, run `close_feature.py --verified --attested-by operator`
+            # in its own worktree, then `integrate --mode serialized` and have the
+            # mutated feature_list.json pushed to main with passes:true.
+            _run(
+                ["git", "-C", str(wt), "checkout", base_ref(), "--", *INTEGRATOR_OWNED],
+                check=False,
+            )
+
             # Recompute the flip against the just-rebased (latest main) tree, so the
             # close commit is fresh each attempt — never rebased, so a concurrent
             # flip on main can't conflict on the whole-file feature_list rewrite.
@@ -1361,11 +1394,21 @@ def cmd_integrate(args):
             # Stage ONLY the integration allowlist (never `git add -A`), so the
             # marker commit can never contain feature work.
             existing = [p for p in INTEGRATE_ALLOWLIST if (wt / p).exists()]
+            # …plus THIS feature's evidence directory, so close_feature's retirement
+            # (evidence.json -> closed-<ts>.json) actually reaches main. Renaming it
+            # in the worktree without staging it left the live, verifying record on
+            # origin/main forever, where every later worktree inherits it — the whole
+            # point of retiring it. Scoped to one feature id, never all of .harness:
+            # the ledgers live outside the worktree and no branch may stage another
+            # feature's evidence.
+            ev_dir = f".harness/runs/{fid}"
+            if (wt / ev_dir).exists():
+                existing.append(ev_dir)
             if existing:
                 _run(["git", "-C", str(wt), "add", "-A", "--", *existing])
             # Final assertion before committing: nothing outside the allowlist may
             # be staged (e.g. a pre-staged rename source riding in the index).
-            outside = staged_outside_allowlist(_staged_paths(wt))
+            outside = staged_outside_allowlist(_staged_paths(wt), fid)
             if outside:
                 print(
                     f"✗ {fid}: refusing — staged changes outside the integration allowlist: "

@@ -60,9 +60,9 @@ def _record_all_steps(n: int = 3, *, executed: bool = True) -> None:
         }
         if executed:
             entry["exit_code"] = 0
+        # Same per-step binding the real write path (_store_step) applies.
+        entry["steps_digest"] = evidence.steps_digest(evidence.feature_steps(FEATURE))
         rec["steps"].append(entry)
-        # Same binding the real write path (_store_step) applies.
-        rec["steps_digest"] = evidence.steps_digest(evidence.feature_steps(FEATURE))
         evidence.save_record(FEATURE, rec)
 
 
@@ -355,7 +355,29 @@ def test_respecified_feature_invalidates_the_record(sandbox):
 
     ok, problems, _ = evidence.verify(FEATURE)
     assert ok is False
-    assert any("attests a different specification" in p for p in problems)
+    assert any("recorded against a different specification" in p for p in problems)
+
+
+def test_one_fresh_step_does_not_re_bless_the_stale_ones(sandbox):
+    """A whole-record digest let a single late write re-bless every earlier step."""
+    _record_all_steps(3)
+    _approve_both()
+    feats = json.loads(evidence.FEATURE_FILE.read_text())
+    feats[0]["steps"][2] = "Step 3: now demands something entirely different"
+    evidence.FEATURE_FILE.write_text(json.dumps(feats), encoding="utf-8")
+
+    # Re-record ONLY step 3 against the new spec.
+    class Args:
+        id = FEATURE
+        step = 3
+        command = ["true"]
+
+    evidence.cmd_run(Args())
+
+    ok, problems, _ = evidence.verify(FEATURE)
+    assert ok is False
+    # steps 1 and 2 are still bound to the superseded specification
+    assert any("[1, 2]" in p for p in problems), problems
 
 
 def test_run_records_a_failure_as_a_failure(sandbox):
