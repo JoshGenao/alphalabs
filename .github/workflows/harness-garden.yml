@@ -72,6 +72,18 @@ jobs:
             echo '```'
             echo
 
+            echo '### Measurements'
+            echo '```'
+            python3 tools/harness_score.py 2>&1 | head -20 || true
+            echo '```'
+            echo
+
+            echo '### Portability'
+            echo '```'
+            python3 tools/portability_probe.py 2>&1 | tail -12 || true
+            echo '```'
+            echo
+
             echo '### Playbook harvest'
             echo '```'
             python3 tools/playbook_harvest.py 2>&1 | head -60 || true

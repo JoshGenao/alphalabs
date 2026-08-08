@@ -109,6 +109,14 @@ jobs:
       - name: Critic — deterministic
         run: python3 tools/critic_check.py --range origin/main..HEAD --format text
 
+      # ADVISORY. CLAUDE.md rule 6 — a test that cannot fail is not evidence —
+      # mechanised. Not blocking: reverting source hunks produces false failures on
+      # refactors, on multi-commit branches, and where a test's subject was deleted
+      # rather than changed. Read the output; do not ignore a real finding because
+      # the step is green.
+      - name: Mutation-verify the added tests (advisory)
+        run: python3 tools/mutation_verify.py origin/main..HEAD || true
+
       - name: Upload pytest report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # ratchet:actions/upload-artifact@v4

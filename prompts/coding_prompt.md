@@ -269,6 +269,18 @@ paid for; the round count of your review is largely a function of how much of th
 you did up front. Recent features spent 9–38 rounds, and most of the repeats were
 classes already written down.
 
+### Pass 0.5 — prove the new tests can fail (CLAUDE.md rule 6)
+
+```bash
+python3 tools/mutation_verify.py origin/main..HEAD
+python3 tools/evidence.py gate "$ATP_FEATURE_ID" --name mutation_verify --status pass
+```
+
+It reverts your SOURCE changes, leaves the tests as written, and requires every test
+you added to go red. A test that still passes does not test what you built. This is
+the rule the harness itself broke: a parametrize id collided with a pytest marker
+name, two of three guard cases were silently skipped, and the run said "832 passed".
+
 ### Pass 1 — deterministic
 ```bash
 git add <your changes>
