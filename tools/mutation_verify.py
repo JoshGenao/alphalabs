@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Prove the new tests would fail without the change they claim to cover.
+
+``CLAUDE.md`` rule 6: *a test that cannot fail is not evidence. Mutation-verify every
+regression test: remove the fix, watch the test go red, restore it.* Until now that
+was enforced by asking. It is the rule most worth mechanising, because the failure it
+prevents is invisible: a passing suite that proves nothing looks exactly like a
+passing suite that proves everything.
+
+This session shipped the defect the rule describes while quoting the rule — a
+parametrize id collided with a pytest marker name and two of three guard cases were
+silently skipped, in a run that reported "832 passed".
+
+How it works: revert the range's SOURCE hunks (test files untouched), run the tests,
+and require every test function ADDED in the range to fail. Then restore, always.
+
+    tools/mutation_verify.py origin/main..HEAD --tests tests/unit/test_evidence.py
+    tools/mutation_verify.py origin/main..HEAD --tests tests/unit/ --json
+
+Exit codes: 0 = every added test failed without the change (they are evidence),
+1 = at least one still passed (it is not), 2 = usage/internal error.
+
+ADVISORY in CI by design. A blocking version produces false failures on refactors,
+on multi-commit branches, and on tests whose subject is deleted rather than changed.
+The agent runs it at Step 6.6 and records the result with `evidence.py gate`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+ADDED_TEST_RE = re.compile(r"^\+\s*(?:async\s+)?def\s+(test_\w+)", re.MULTILINE)
+TEST_PATH_RE = re.compile(r"(^|/)(tests?/|conftest\.py$|test_[^/]*\.py$|[^/]*_test\.py$)")
+
+
+def _git(*args: str, check: bool = True) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(ROOT), *args], capture_output=True, text=True, check=False
+    )
+    if check and proc.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)}: {proc.stderr.strip()}")
+    return proc.stdout
+
+
+def is_test_path(path: str) -> bool:
+    return bool(TEST_PATH_RE.search(path))
+
+
+def changed_files(rng: str) -> tuple[list[str], list[str]]:
+    """(source_files, test_files) changed in the range, both still present."""
+    names = [p for p in _git("diff", "--name-only", rng).splitlines() if p.strip()]
+    src, tst = [], []
+    for p in names:
+        if not (ROOT / p).exists():
+            continue  # deleted by the range; nothing to revert
+        (tst if is_test_path(p) else src).append(p)
+    return src, tst
+
+
+def added_tests(rng: str, test_files: list[str]) -> dict[str, list[str]]:
+    """Test functions ADDED by this range, per file."""
+    out: dict[str, list[str]] = {}
+    for f in test_files:
+        diff = _git("diff", rng, "--", f)
+        names = ADDED_TEST_RE.findall(diff)
+        if names:
+            out[f] = sorted(set(names))
+    return out
+
+
+def run_tests(targets: list[str], names: list[str]) -> dict[str, bool]:
+    """Run the named tests. Returns {test_name: passed}."""
+    if not names:
+        return {}
+    # -k over the union of names: robust to parametrisation and class nesting, and
+    # avoids constructing node ids we would have to keep in sync with pytest.
+    expr = " or ".join(names)
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", *targets, "-k", expr, "-q", "--no-header",
+         "-p", "no:cacheprovider", "-rA"],
+        cwd=str(ROOT), capture_output=True, text=True, check=False,
+    )
+    out = proc.stdout
+    result: dict[str, bool] = {}
+    for name in names:
+        # -rA prints a PASSED/FAILED/ERROR line per test; a test that never ran at
+        # all counts as NOT failing, which is itself a finding (it cannot be
+        # evidence either — that is how the skipped-parametrize defect hid).
+        passed = re.search(rf"^PASSED .*::{re.escape(name)}\b", out, re.MULTILINE)
+        failed = re.search(rf"^(FAILED|ERROR) .*::{re.escape(name)}\b", out, re.MULTILINE)
+        result[name] = bool(passed) or not bool(failed)
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("range", help="commit range, e.g. origin/main..HEAD")
+    ap.add_argument("--tests", nargs="+", required=True, help="test paths to run")
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args(argv)
+
+    dirty = _git("status", "--porcelain").strip()
+    if dirty:
+        print(
+            "✗ working tree is not clean; mutation_verify reverts source files and "
+            "must be able to restore them exactly. Commit or stash first.",
+            file=sys.stderr,
+        )
+        return 2
+
+    src, tst = changed_files(args.range)
+    added = added_tests(args.range, tst)
+    names = sorted({n for v in added.values() for n in v})
+
+    if not names:
+        msg = f"no test functions added in {args.range} — nothing to mutation-verify"
+        print(json.dumps({"added_tests": [], "note": msg}) if args.json else f"· {msg}")
+        return 0
+    if not src:
+        msg = "range changes no source files; reverting nothing would prove nothing"
+        print(json.dumps({"added_tests": names, "note": msg}) if args.json else f"· {msg}")
+        return 0
+
+    base = args.range.split("..")[0] or "HEAD~1"
+    survivors: dict[str, bool] = {}
+    try:
+        # Revert the SOURCE side only. The tests stay as written — that is the
+        # whole experiment: do they notice their subject is gone?
+        _git("checkout", base, "--", *src)
+        survivors = run_tests(args.tests, names)
+    finally:
+        # Always restore, even on an exception: leaving a half-reverted tree behind
+        # would be far worse than the check not running.
+        _git("checkout", "HEAD", "--", *src, check=False)
+
+    cannot_fail = sorted(n for n, passed in survivors.items() if passed)
+
+    if args.json:
+        print(json.dumps({
+            "range": args.range, "reverted_files": src, "added_tests": names,
+            "cannot_fail": cannot_fail,
+        }, indent=2))
+        return 1 if cannot_fail else 0
+
+    print(f"→ reverted {len(src)} source file(s); ran {len(names)} added test(s)")
+    if cannot_fail:
+        print(f"✗ {len(cannot_fail)} added test(s) still pass without the change:")
+        for n in cannot_fail:
+            print(f"    · {n}")
+        print("  These do not test what the change did. Rule 6: a test that cannot fail")
+        print("  is not evidence — tighten the assertion or delete the test.")
+        return 1
+    print(f"✓ all {len(names)} added test(s) went red without the change — they are evidence")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except RuntimeError as exc:
+        print(f"✗ mutation_verify: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
