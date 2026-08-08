@@ -483,3 +483,43 @@ def test_reexecute_on_a_missing_record_is_a_finding_not_a_crash(sandbox, tmp_pat
     ok, problems = evidence.reexecute(FEATURE, tmp_path)
     assert ok is False
     assert any("no recorded steps" in p for p in problems)
+
+
+def test_a_quoted_argument_survives_the_record_and_the_replay(sandbox, tmp_path):
+    """`pytest -m "not integration and not e2e"` is THE standard solo-test command.
+
+    Storing only a `" ".join(...)` string and re-splitting it on whitespace regrouped
+    that into seven tokens, so re-execution failed on the one command agents are most
+    likely to record — the command this gate exists to check.
+    """
+
+    class Args:
+        id = FEATURE
+        step = 1
+        command = ["sh", "-c", "exit 0"]
+
+    # A shell-needing command is not re-executable, so use a real one for the argv
+    # round-trip and assert on the stored shape rather than on running pytest here.
+    Args.command = ["pytest", "-m", "not integration and not e2e", "--collect-only"]
+    evidence.cmd_run(Args())
+    entry = evidence.load_record(FEATURE)["steps"][0]
+
+    # argv is preserved exactly — the marker expression stays ONE argument
+    assert entry["argv"] == ["pytest", "-m", "not integration and not e2e", "--collect-only"]
+    # and the human-readable form quotes it, so a naive .split() cannot silently work
+    assert "'not integration and not e2e'" in entry["command"]
+    # the old bug, pinned: splitting the display string regroups it
+    assert entry["command"].split() != entry["argv"]
+
+
+def test_a_legacy_record_without_argv_is_split_with_shlex_not_whitespace(sandbox):
+    """Records written before argv existed must still replay correctly."""
+    _record_all_steps(1)
+    rec = evidence.load_record(FEATURE)
+    rec["steps"][0].pop("argv", None)
+    rec["steps"][0]["command"] = "pytest -m 'not integration and not e2e'"
+    evidence.save_record(FEATURE, rec)
+    # shlex.split keeps the marker expression whole; str.split would not
+    import shlex
+
+    assert shlex.split(rec["steps"][0]["command"])[2] == "not integration and not e2e"

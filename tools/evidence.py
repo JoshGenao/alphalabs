@@ -40,6 +40,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -277,9 +278,14 @@ def reexecute(fid: str, cwd: Path, features: list | None = None) -> tuple[bool, 
                 f"close with an explicit --attested-by instead"
             )
             continue
+        # Replay the recorded argv. Fall back to shlex.split (never .split) for a
+        # record written before argv was stored: splitting on whitespace regroups
+        # every quoted argument, which turned `pytest -m "not integration and not
+        # e2e"` — the standard solo-test command — into seven separate tokens.
+        argv = entry.get("argv") or shlex.split(cmd)
         try:
             proc = subprocess.run(
-                cmd.split(),
+                argv,
                 cwd=str(cwd),
                 capture_output=True,
                 text=True,
@@ -461,7 +467,13 @@ def cmd_run(args) -> int:
         {
             "n": args.step,
             "step_text": steps[args.step - 1],
-            "command": " ".join(cmd),
+            # BOTH forms. `command` is the human-readable record; `argv` is what the
+            # integrator replays. Storing only the joined string and re-splitting it
+            # regrouped `pytest -m "not integration and not e2e"` — the standard
+            # solo-test command the coding prompt tells agents to record — into seven
+            # tokens, so re-execution failed on the very command it exists to check.
+            "command": shlex.join(cmd),
+            "argv": list(cmd),
             "observed": out[-4000:],
             "exit_code": proc.returncode,
             "status": status,
