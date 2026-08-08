@@ -88,8 +88,20 @@ def added_tests(rng: str, test_files: list[str]) -> dict[str, list[str]]:
     return out
 
 
-def run_tests(targets: list[str], names: list[str]) -> dict[str, bool]:
-    """Run the named tests. Returns {test_name: passed}."""
+def run_tests(targets: list[str], names: list[str]) -> dict[str, str]:
+    """Run the named tests. Returns {test_name: "failed"|"passed"|"skipped"|"uncollectable"}.
+
+    The three outcomes are not interchangeable:
+
+    * ``failed``       — the test noticed its subject was gone. It is evidence.
+    * ``uncollectable``— the module would not even import, because the change ADDED
+      the module under test. That is the strongest possible dependence, not a
+      failure of the check. Treating it as "did not fail" flagged all 21 tests of a
+      commit that introduced tools/evidence.py.
+    * ``passed``/``skipped`` — the test does not depend on the change, or never ran
+      at all. Both mean it cannot be evidence; a silent skip is exactly how the
+      parametrize-id defect hid behind "832 passed".
+    """
     if not names:
         return {}
     # -k over the union of names: robust to parametrisation and class nesting, and
@@ -100,15 +112,22 @@ def run_tests(targets: list[str], names: list[str]) -> dict[str, bool]:
          "-p", "no:cacheprovider", "-rA"],
         cwd=str(ROOT), capture_output=True, text=True, check=False,
     )
-    out = proc.stdout
-    result: dict[str, bool] = {}
+    out = proc.stdout + proc.stderr
+    # A collection failure names the file, not the test, so it must be detected once
+    # for the whole run rather than per test.
+    uncollectable = bool(
+        re.search(r"^(ERROR collecting|E\s+ModuleNotFoundError|E\s+ImportError)", out, re.MULTILINE)
+    ) or "errors during collection" in out
+    result: dict[str, str] = {}
     for name in names:
-        # -rA prints a PASSED/FAILED/ERROR line per test; a test that never ran at
-        # all counts as NOT failing, which is itself a finding (it cannot be
-        # evidence either — that is how the skipped-parametrize defect hid).
-        passed = re.search(rf"^PASSED .*::{re.escape(name)}\b", out, re.MULTILINE)
-        failed = re.search(rf"^(FAILED|ERROR) .*::{re.escape(name)}\b", out, re.MULTILINE)
-        result[name] = bool(passed) or not bool(failed)
+        if re.search(rf"^(FAILED|ERROR) .*::{re.escape(name)}\b", out, re.MULTILINE):
+            result[name] = "failed"
+        elif re.search(rf"^PASSED .*::{re.escape(name)}\b", out, re.MULTILINE):
+            result[name] = "passed"
+        elif re.search(rf"^SKIPPED .*::{re.escape(name)}\b", out, re.MULTILINE):
+            result[name] = "skipped"
+        else:
+            result[name] = "uncollectable" if uncollectable else "skipped"
     return result
 
 
@@ -160,16 +179,23 @@ def main(argv: list[str] | None = None) -> int:
         if src:
             _git("checkout", "HEAD", "--", *src, check=False)
 
-    cannot_fail = sorted(n for n, passed in survivors.items() if passed)
+    cannot_fail = sorted(n for n, r in survivors.items() if r in ("passed", "skipped"))
+    uncollected = sorted(n for n, r in survivors.items() if r == "uncollectable")
 
     if args.json:
         print(json.dumps({
             "range": args.range, "reverted_files": src, "added_tests": names,
-            "cannot_fail": cannot_fail,
+            "cannot_fail": cannot_fail, "uncollectable": uncollected,
         }, indent=2))
         return 1 if cannot_fail else 0
 
     print(f"→ reverted {len(src)} source file(s); ran {len(names)} added test(s)")
+    if uncollected:
+        print(
+            f"  {len(uncollected)} test(s) could not even be collected without the "
+            f"change — the module under test is part of it. That is dependence, not "
+            f"a gap."
+        )
     if cannot_fail:
         print(f"✗ {len(cannot_fail)} added test(s) still pass without the change:")
         for n in cannot_fail:
