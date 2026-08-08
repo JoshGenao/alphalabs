@@ -61,6 +61,8 @@ def _record_all_steps(n: int = 3, *, executed: bool = True) -> None:
         if executed:
             entry["exit_code"] = 0
         rec["steps"].append(entry)
+        # Same binding the real write path (_store_step) applies.
+        rec["steps_digest"] = evidence.steps_digest(evidence.feature_steps(FEATURE))
         evidence.save_record(FEATURE, rec)
 
 
@@ -99,15 +101,32 @@ def test_partial_step_coverage_fails_and_names_the_gap(sandbox):
     assert any("step 3 has no evidence" in p for p in problems)
 
 
-def test_step_recorded_without_observed_output_fails(sandbox):
-    _record_all_steps(3)
+def test_hand_recorded_step_without_observed_output_fails(sandbox):
+    """For a step nobody executed, the text IS the evidence — blank means none."""
+    _record_all_steps(3, executed=False)
     rec = evidence.load_record(FEATURE)
     rec["steps"][1]["observed"] = "   "
     evidence.save_record(FEATURE, rec)
     _approve_both()
-    ok, problems, _ = evidence.verify(FEATURE)
+    ok, problems, _ = evidence.verify(FEATURE, allow_attested=True)
     assert ok is False
     assert any("step 2 records no observed output" in p for p in problems)
+
+
+def test_executed_step_may_produce_no_output(sandbox):
+    """`cargo fmt --check` and `git diff --exit-code` pass silently.
+
+    For an executed step the exit code is the observation. Requiring non-empty text
+    would push exactly those commands onto the hand-recorded path, where they would
+    then demand a human attestation to close.
+    """
+    _record_all_steps(3)
+    rec = evidence.load_record(FEATURE)
+    rec["steps"][1]["observed"] = ""
+    evidence.save_record(FEATURE, rec)
+    _approve_both()
+    ok, problems, _ = evidence.verify(FEATURE)
+    assert ok is True, problems
 
 
 def test_failing_step_is_not_a_pass(sandbox):
@@ -238,6 +257,25 @@ def test_run_executes_the_command_and_records_the_real_result(sandbox, monkeypat
     assert entry["exit_code"] == 0
     assert "hello-from-the-actual-process" in entry["observed"]
     assert entry["status"] == "pass"
+
+
+def test_respecified_feature_invalidates_the_record(sandbox):
+    """Matching step INDICES is not matching step CRITERIA.
+
+    Editing what step 3 demands used to leave the old record satisfying the new
+    acceptance criteria — the record attested a specification that no longer exists.
+    """
+    _record_all_steps(3)
+    _approve_both()
+    assert evidence.verify(FEATURE)[0] is True
+
+    feats = json.loads(evidence.FEATURE_FILE.read_text())
+    feats[0]["steps"][2] = "Step 3: now demands something entirely different"
+    evidence.FEATURE_FILE.write_text(json.dumps(feats), encoding="utf-8")
+
+    ok, problems, _ = evidence.verify(FEATURE)
+    assert ok is False
+    assert any("attests a different specification" in p for p in problems)
 
 
 def test_run_records_a_failure_as_a_failure(sandbox):

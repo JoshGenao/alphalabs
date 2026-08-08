@@ -15,12 +15,19 @@ verdicts. ``close_feature.py`` consults it, and ``agent_pool.py`` degrades a
 ``complete`` integrate to ``serialized`` when the record is incomplete — so the
 honest outcome is the automatic one.
 
+    tools/evidence.py run    <FID> --step 2 -- pytest tests/domain/test_x.py -q
     tools/evidence.py record <FID> --step 2 --command "..." --observed "..." --status pass
     tools/evidence.py gate   <FID> --name run_ci_locally --status pass
     tools/evidence.py critic <FID> --layer judgment --verdict approve --reviewer codex
-    tools/evidence.py verify <FID> [--json]
+    tools/evidence.py verify <FID> [--json] [--allow-attested]
     tools/evidence.py show   <FID>
     tools/evidence.py stamp-pre-gate --all
+
+``run`` executes the command and stores its real exit code and captured output;
+``verify`` accepts only those. ``record`` takes the caller's word (executed:false)
+and counts only when a human closes with ``--attested-by``. The record is also bound
+to the feature's ``steps[]`` digest and refuses to count once it has been merged to
+main, so it cannot be inherited by a later worktree or satisfy a re-specified feature.
 
 Exit codes: 0 = ok / record complete, 1 = incomplete or missing, 2 = usage error.
 """
@@ -28,6 +35,7 @@ Exit codes: 0 = ok / record complete, 1 = incomplete or missing, 2 = usage error
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -78,6 +86,48 @@ def _append_jsonl(path: Path, obj: dict) -> None:
 
 def record_path(fid: str) -> Path:
     return RUNS_DIR / fid / "evidence.json"
+
+
+def steps_digest(steps: list[str]) -> str:
+    """Fingerprint of the acceptance steps this record claims to have satisfied.
+
+    Without it, ``verify`` matched step *indices* only, so re-specifying a feature —
+    editing what step 3 demands — left the old record satisfying the new criteria.
+    """
+    return hashlib.sha256("\n".join(steps).encode("utf-8")).hexdigest()[:16]
+
+
+def _git(*args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(ROOT), *args], check=False, capture_output=True, text=True
+    )
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def _head() -> str:
+    return _git("rev-parse", "HEAD")
+
+
+def integrated_elsewhere(fid: str) -> bool:
+    """Was this record already merged to main by an earlier session?
+
+    ``.harness/runs/`` is tracked, so every worktree cut from ``origin/main``
+    inherits the evidence of every feature closed before it. A feature that is
+    reopened would arrive with a complete record it did not earn. Evidence whose
+    last commit is already an ancestor of the base ref belongs to that earlier
+    session, not to this one.
+    """
+    rel = record_path(fid).relative_to(ROOT).as_posix()
+    last = _git("log", "-1", "--format=%H", "--", rel)
+    if not last:
+        return False  # never committed — it is this session's working state
+    base = "origin/main" if _git("rev-parse", "--verify", "--quiet", "origin/main") else "main"
+    proc = subprocess.run(
+        ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", last, base],
+        check=False,
+        capture_output=True,
+    )
+    return proc.returncode == 0
 
 
 def load_features() -> list:
@@ -144,6 +194,21 @@ def verify(
 
     rec = load_record(fid)
     steps = feature_steps(fid, features)
+
+    want = steps_digest(steps)
+    got = rec.get("steps_digest")
+    if got != want:
+        problems.append(
+            f"record attests a different specification (digest {got or 'absent'} != "
+            f"{want}) — the feature's steps[] changed since it was recorded; re-verify"
+        )
+    if integrated_elsewhere(fid):
+        problems.append(
+            "this record was already merged to main by an earlier session — every "
+            "worktree inherits it, so it is not evidence from THIS session; re-run "
+            "the steps"
+        )
+
     by_n = {}
     for entry in rec.get("steps", []):
         n = entry.get("n")
@@ -158,7 +223,12 @@ def verify(
             continue
         if not (entry.get("command") or "").strip():
             problems.append(f"step {idx} records no command")
-        if not (entry.get("observed") or "").strip():
+        # A command that exits 0 with no output is a normal, meaningful verification
+        # (`cargo fmt --check`, `git diff --exit-code`). For an EXECUTED step the exit
+        # code is the observation, so requiring non-empty text would push exactly those
+        # steps onto the hand-recorded path and demand a human attestation for them.
+        # For a hand-recorded step the text is the only evidence there is.
+        if not (entry.get("observed") or "").strip() and not entry.get("executed"):
             problems.append(f"step {idx} records no observed output")
         status = entry.get("status")
         if status != "pass":
@@ -198,6 +268,10 @@ def verify(
 # ----------------------------------------------------------------------------
 def _store_step(fid: str, n: int, entry: dict) -> None:
     rec = load_record(fid)
+    # Bind the record to the spec it attests and the commit it was taken at, so a
+    # stale or inherited record cannot satisfy a changed feature.
+    rec["steps_digest"] = steps_digest(feature_steps(fid))
+    entry["head"] = _head()
     rec["steps"] = [s for s in rec.get("steps", []) if s.get("n") != n]
     rec["steps"].append(entry)
     rec["steps"].sort(key=lambda s: s["n"])

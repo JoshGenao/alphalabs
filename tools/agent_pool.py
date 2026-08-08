@@ -1153,12 +1153,22 @@ def shared_state_violations(committed_paths: list[str], fid: str) -> list[str]:
     progress.d/* must come solely from the integrator's marker commit.
     """
     own_note = f"progress.d/session-{fid}.md"
+    own_evidence = f".harness/runs/{fid}/"
     permanent = {"progress.d/README.md", "progress.d/.gitkeep"}
     bad = []
     for p in committed_paths:
         if p in ("feature_list.json", "progress.txt", "tools/feature_deps.json"):
             bad.append(p)
         elif p.startswith("progress.d/") and p != own_note and p not in permanent:
+            bad.append(p)
+        # .harness joined INTEGRATE_ALLOWLIST so the integrator can stage the logs it
+        # writes. Without the same branch-side restriction that progress.d has, an
+        # agent could commit its own .harness/closes.jsonl — appending a close it was
+        # never granted — or another feature's evidence, and the integrator would
+        # `git add -A -- .harness` and push it. An audit trail the audited party can
+        # write is not an audit trail. Only this feature's own evidence may come from
+        # a branch; the ledgers are integrator-only.
+        elif p.startswith(".harness/") and not p.startswith(own_evidence):
             bad.append(p)
     return bad
 
@@ -1203,7 +1213,14 @@ def cmd_integrate(args):
     # A corrupt or unreadable record must reach that same degrade, not a traceback:
     # evidence.verify raises EvidenceError by design (absent != empty), and an
     # unhandled one out of `integrate` is the fail-open this gate exists to prevent.
-    if mode == "complete":
+    #
+    # --force-complete is the OPERATOR asserting they verified every step by hand. It
+    # skips the degrade — otherwise the degrade silently turned every forced complete
+    # into a serialized one and the override became a no-op — and is carried through
+    # to close_feature.py as `--attested-by operator`, so the flip is recorded as a
+    # named human attestation rather than as machine evidence that does not exist.
+    forced_complete = mode == "complete" and args.force_complete
+    if mode == "complete" and not forced_complete:
         try:
             ok, problems, summary = evidence.verify(fid)
         except evidence.EvidenceError as exc:
@@ -1244,7 +1261,11 @@ def cmd_integrate(args):
     # meant `--dry-run --force-complete` permanently recorded an override for an
     # integration that never happened — a write on the one path whose entire contract
     # is that it writes nothing, corrupting the trail this gate exists to create.
-    if mode == "complete" and args.force_complete:
+    # `forced_complete` is captured BEFORE the evidence gate can rewrite `mode`.
+    # Keying this on `mode == "complete"` meant a force-complete with no evidence —
+    # precisely the event this ledger exists to capture, and which AGENTS.md promises
+    # is always recorded — degraded to serialized and was never logged at all.
+    if forced_complete:
         evidence.log_override(
             fid, "force-complete", getattr(args, "reason", "") or "(no reason given)"
         )
@@ -1309,7 +1330,15 @@ def cmd_integrate(args):
             # flip on main can't conflict on the whole-file feature_list rewrite.
             _sync_deps_into(wt)
             if mode == "complete":
-                _run([sys.executable, str(wt / "tools" / "close_feature.py"), fid, "--verified"])
+                close_cmd = [
+                    sys.executable,
+                    str(wt / "tools" / "close_feature.py"),
+                    fid,
+                    "--verified",
+                ]
+                if forced_complete:
+                    close_cmd += ["--attested-by", "operator"]
+                _run(close_cmd)
 
             # Stage ONLY the integration allowlist (never `git add -A`), so the
             # marker commit can never contain feature work.

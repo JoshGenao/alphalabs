@@ -144,6 +144,20 @@ def test_unclassified_lists_features_still_on_the_fallback():
     assert agent_pool.unclassified(feats) == ["B", "C"]
 
 
+# --- the audit trail is not writable by the audited party --------------------
+# .harness joined INTEGRATE_ALLOWLIST so the integrator can stage the ledgers it
+# writes. Without the branch-side restriction progress.d already has, an agent could
+# commit its own close record and the integrator would push it to main.
+def test_branch_may_commit_its_own_evidence_but_not_the_ledgers():
+    assert agent_pool.shared_state_violations([".harness/runs/X/evidence.json"], "X") == []
+    for forbidden in (
+        ".harness/closes.jsonl",
+        ".harness/overrides.jsonl",
+        ".harness/runs/OTHER/evidence.json",
+    ):
+        assert agent_pool.shared_state_violations([forbidden], "X") == [forbidden], forbidden
+
+
 # --- block id validation ----------------------------------------------------
 def test_validate_block_splits_known_and_unknown():
     ids = {"A", "B", "C"}

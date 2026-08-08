@@ -92,10 +92,14 @@ else
   skip "pytest" "not installed"
 fi
 
-# 5 — Rust tests
+# 5 — Rust tests. The `else skip` is not decoration: without it a missing cargo made
+# the entire Rust test suite vanish from the run without entering the skip ledger,
+# so the mirror could report a clean pass having compiled and tested no Rust at all.
 if command -v cargo >/dev/null 2>&1; then
   step "cargo test --workspace"
   cargo test --workspace
+else
+  skip "cargo test --workspace" "cargo not installed"
 fi
 
 # 6 — Critic against the PR diff (vs origin/main fallback to HEAD~1)
@@ -123,6 +127,16 @@ report_skips || exit 1
 
 if [[ "${ADVISORY_FAILED}" -gt 0 ]]; then
   printf '\n⚠ %d advisory step(s) reported errors (not blocking, same as ci.yml).\n' "${ADVISORY_FAILED}"
+fi
+
+# "every step ran" is a claim about this run, so it may only be printed when it is
+# true. ATP_ALLOW_SKIP=1 downgrades the EXIT CODE, never the description: a run that
+# skipped steps and then announced it had run them all would be the exact false green
+# this script was changed to stop producing.
+if [[ "${SKIP_COUNT}" -gt 0 ]]; then
+  printf '\n· local CI mirror finished with %d step(s) UNRUN (ATP_ALLOW_SKIP=1).\n' "${SKIP_COUNT}"
+  printf '  This is NOT a passing gate. Name the unrun steps in your session note.\n'
+  exit 0
 fi
 
 ok "local CI mirror complete — every step ran"
