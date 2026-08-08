@@ -76,7 +76,13 @@ jobs:
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          LABELER: ${{ github.event.sender.login }}
+          # On the `labeled` event the sender IS the labeller. On `closed` it is
+          # whoever merged the PR — which can be a bot, and naming a bot as the human
+          # who attested is worse than naming nobody. Fall back to the honest value.
+          ATTESTER: >-
+            ${{ github.event.action == 'labeled'
+                && github.event.sender.login
+                || format('(unrecorded — label predated the merge; PR #{0})', github.event.pull_request.number) }}
         run: |
           FEATURE_ID="${HEAD_REF#agent/}"
           git config user.name "github-actions[bot]"
@@ -92,7 +98,7 @@ jobs:
           # is the durable evidence that a human, not a machine, closed this one.
           git commit -m "chore: close ${FEATURE_ID} (passes:true; fold session note) [skip ci]
 
-          Attested-by: verified-e2e label on PR #${PR_NUMBER} by ${LABELER}
+          Attested-by: verified-e2e label on PR #${PR_NUMBER} — ${ATTESTER}
           Evidence: .harness/runs/${FEATURE_ID}/closed-*.json (retired at close)"
           # Rebase-and-retry in case another close landed on main meanwhile.
           for attempt in 1 2 3; do

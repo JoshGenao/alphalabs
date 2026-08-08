@@ -80,15 +80,20 @@ done < <(
     | grep "/alphalabs-wt-" || true
 )
 
+# NOTE: no early exit when there are no worktrees. There used to be one, and the
+# fresh CI checkout that harness-garden.yml runs on has no worktrees BY DEFINITION —
+# so on its only automated trigger the collector printed one line of prose and
+# reported none of the orphan plans, stale branches or leaked scratch it exists to
+# surface. A collector that reports nothing on its own trigger is the thing this
+# whole change set was fixing.
 if [[ ${#WT_DIRS[@]} -eq 0 ]]; then
-  echo "No alphalabs-wt-* worktrees registered."
+  say "No alphalabs-wt-* worktrees registered; checking the rest."
   [[ "$DRY_RUN" -eq 0 ]] && git -C "$ROOT_DIR" worktree prune
-  exit 0
 fi
 
 removed=0
 removable=0
-for wt in "${WT_DIRS[@]}"; do
+for wt in ${WT_DIRS[@]+"${WT_DIRS[@]}"}; do
   id="${wt##*/alphalabs-wt-}"
   branch="agent/${id}"
 

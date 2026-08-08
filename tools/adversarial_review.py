@@ -362,8 +362,14 @@ def emit(result: dict) -> int:
         note += f" ({result['reviewer_note']})"
     recorded = append_round(result)
     if recorded:
-        n = sum(1 for _ in recorded.open(encoding="utf-8"))
-        note += f" · round {n} recorded"
+        # append_round is wrapped so telemetry can never fail the review it measures;
+        # re-opening the file here outside any guard reintroduced exactly that, and
+        # leaked the handle. Count inside the same protection.
+        try:
+            n = len(recorded.read_text(encoding="utf-8").splitlines())
+            note += f" · round {n} recorded"
+        except OSError:
+            pass
     print(note, file=sys.stderr)
     return 1 if result["verdict"] == "block" else 0
 

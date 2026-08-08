@@ -110,6 +110,12 @@ else
   python3 tools/critic_check.py --range HEAD~1..HEAD --format text
 fi
 
+# 6b — the registry's own validator. ci.yml runs this as a BLOCKING step before the
+# contract checks; omitting it here left a gates.json edit passing the "mirror" and
+# failing CI — the step-list divergence this repo's own playbook rule 27 records.
+step "gates_registry_check.py"
+python3 tools/gates_registry_check.py
+
 # 7 — contract checks, from tools/gates.json (the one registry ci.yml also reads)
 step "contract checks (scope=ci)"
 tools/verify_contracts.sh --scope ci

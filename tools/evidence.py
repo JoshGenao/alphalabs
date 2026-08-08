@@ -149,10 +149,17 @@ def retire(fid: str, *, dry_run: bool = False) -> Path | None:
     lifecycle ``close_feature.py`` already applies to ``progress.d/session-<id>.md``:
     the live file is consumed by the close, so a reopened feature starts with none.
     """
+    stamp = _now().replace(":", "").replace("-", "")
     live = record_path(fid)
+    # review.jsonl is tracked and staged to main by every integrate mode, so without
+    # this a later session on the same feature inherits the previous session's rounds
+    # and agent_pool's own note_rounds_mismatch hard-blocks its integrate. Same
+    # inheritance defect as the evidence record, in the file added to detect it.
+    rounds = live.with_name("review.jsonl")
+    if rounds.exists() and not dry_run:
+        rounds.rename(rounds.with_name(f"closed-{stamp}-review.jsonl"))
     if not live.exists():
         return None
-    stamp = _now().replace(":", "").replace("-", "")
     archived = live.with_name(f"closed-{stamp}.json")
     if not dry_run:
         live.rename(archived)

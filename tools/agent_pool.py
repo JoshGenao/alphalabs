@@ -795,7 +795,14 @@ def cmd_status(args):
     # the evidence gate existed is not re-verified and must not read as if it were.
     passing = [f for f in by_id.values() if f.get("passes")]
     pre_gate = [f["id"] for f in passing if f.get("evidence") == evidence.PRE_GATE]
-    evidenced = [f["id"] for f in passing if evidence.record_path(f["id"]).exists()]
+    # A gated close RETIRES evidence.json to closed-<ts>.json, so counting the live
+    # file counted only the closes where retirement FAILED — the counter was inverted.
+    evidenced = [
+        f["id"]
+        for f in passing
+        if (evidence.RUNS_DIR / f["id"]).is_dir()
+        and any((evidence.RUNS_DIR / f["id"]).glob("*.json"))
+    ]
     if pre_gate or evidenced:
         print(
             f"   evidence: {len(evidenced)} evidenced, {len(pre_gate)} pre-gate "
