@@ -1290,8 +1290,8 @@ def cmd_integrate(args):
     # Honesty guard (code-enforced backstop): refuse `complete` for a feature whose
     # declared verification_method (or, absent one, whose text) implies IB /
     # integration / live / e2e steps unless forced.
+    feat = next((x for x in load_features(fetch=False) if x["id"] == fid), None)
     if mode == "complete" and not args.force_complete:
-        feat = next((x for x in load_features(fetch=False) if x["id"] == fid), None)
         if feat:
             need, hits = needs_serialized(feat)
             if need:
@@ -1328,6 +1328,24 @@ def cmd_integrate(args):
         except evidence.EvidenceError as exc:
             ok, problems = False, [f"evidence record unreadable: {exc}"]
             summary = {"steps_evidenced": 0, "steps_total": "?"}
+        # RE-EXECUTION. The record is written by the party being audited; `run` makes
+        # the honest path easy but `executed: true` is still a boolean in a file the
+        # agent's branch controls. For a feature whose own declared method says every
+        # step is verifiable solo, the integrator re-runs the recorded commands here
+        # and compares exit codes — so the pass the close depends on is produced by
+        # the integrator, not asserted by the agent.
+        #
+        # Deliberately BEFORE `with Lock():` — it is read-only w.r.t. shared state,
+        # and a full re-verification must not block siblings. Only solo features:
+        # everything else already requires a named human attestation, which
+        # re-execution cannot supply and does not improve.
+        if ok and feat and not needs_serialized(feat)[0]:
+            re_ok, re_problems = evidence.reexecute(fid, wt)
+            if not re_ok:
+                ok = False
+                problems = re_problems
+                summary = dict(summary, reexecuted=False)
+
         if not ok:
             print(
                 f"⚠ {fid}: evidence record is incomplete "

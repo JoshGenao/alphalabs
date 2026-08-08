@@ -237,6 +237,16 @@ stores what you tell it (`executed: false`) and counts only when a human closes 
 feature with `--attested-by`. It is for steps no subprocess can capture: a live IB
 window, a browser check you drove by hand.
 
+**For a `solo` feature the integrator RE-RUNS your recorded commands** and compares
+exit codes before it will close anything, so record the command that actually
+demonstrates the step — a real test path, a real check. Two consequences worth
+knowing before you write the record rather than after:
+
+- A command the integrator will not run (`true`, `echo`, anything needing a shell —
+  `;`, `|`, `>`, `&&`, backticks) cannot close the feature on machine evidence.
+- A command that passes for you and fails on a clean re-run blocks the close. That
+  is the point: it means the pass depended on something in your worktree.
+
 **Commit `.harness/runs/$ATP_FEATURE_ID/evidence.json` with your feature work**
 (Step 7). It has to be in the tree `integrate` rebases, and an uncommitted one makes
 `integrate` refuse with exit 7. `close_feature.py` retires it when the feature

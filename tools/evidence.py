@@ -39,6 +39,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -195,6 +196,109 @@ def load_record(fid: str) -> dict:
 def save_record(fid: str, rec: dict) -> None:
     rec["updated"] = _now()
     _atomic_write(record_path(fid), json.dumps(rec, indent=2, sort_keys=True) + "\n")
+
+
+# Commands the INTEGRATOR is willing to run itself. Re-execution is what turns a
+# record from the agent's testimony into the integrator's own observation — but a
+# recorded command is a string the AGENT chose, so re-running it unrestricted would
+# have the integrator execute agent-authored shell. These are the verification
+# commands the coding prompt actually tells a session to run; anything else is not
+# re-executable, which costs the feature an explicit human attestation rather than
+# silently granting it a machine one.
+REEXECUTABLE = (
+    r"^\./init\.sh(\s|$)",
+    r"^(python3?|\.venv/bin/python3?)\s+-m\s+pytest(\s|$)",
+    r"^pytest(\s|$)",
+    r"^cargo\s+(test|fmt|clippy)(\s|$)",
+    r"^(python3?|\.venv/bin/python3?)\s+tools/[a-z0-9_]+_check\.py(\s|$)",
+    r"^tools/(verify_contracts|run_ci_locally)\.sh(\s|$)",
+    r"^(python3?|\.venv/bin/python3?)\s+tools/(gates_registry_check|docs_link_check|portability_probe)\.py(\s|$)",
+    r"^ruff\s+(check|format)(\s|$)",
+    r"^mypy(\s|$)",
+)
+
+# A single verification command that has not finished in this long is not a pass.
+REEXEC_TIMEOUT = int(os.environ.get("ATP_REEXEC_TIMEOUT", 900))
+
+
+def reexecutable(command: str) -> bool:
+    """May the integrator run this itself?"""
+    cmd = (command or "").strip()
+    # No shell metacharacters: the integrator runs argv, never a shell, so a command
+    # that needs one cannot be reproduced faithfully and must not be approximated.
+    if any(ch in cmd for ch in ";|&><`$()"):
+        return False
+    return any(re.match(pat, cmd) for pat in REEXECUTABLE)
+
+
+def reexecute(fid: str, cwd: Path, features: list | None = None) -> tuple[bool, list[str]]:
+    """Re-run this feature's recorded commands and compare against what was recorded.
+
+    The record is written by the party being audited. `run` makes the honest path the
+    easy one, but ``executed: true`` is still a boolean in a file the agent's branch
+    controls. Re-execution removes the agent from the loop: the pass/fail the close
+    depends on is produced HERE, by the integrator, from the same commands.
+
+    WHAT THIS DOES AND DOES NOT ESTABLISH — stated precisely, because the difference
+    is easy to overclaim:
+
+    * It establishes that every recorded command IS a real verification command and
+      DOES exit as recorded, right now, run by the integrator. A record claiming a
+      passing test run that would actually fail is caught. So is one whose "command"
+      is ``true``, ``echo``, or anything needing a shell.
+    * It does NOT establish that the agent personally ran anything first — and it
+      does not need to. If the claim is true when the integrator checks it, the claim
+      is true; who typed it first is not the property worth defending.
+    * It does NOT establish that the commands are RELEVANT to the feature's steps. An
+      agent can record a real, passing, unrelated test suite. Nothing mechanical can
+      close that: judging whether the evidence matches the acceptance criteria is
+      what the adversarial reviewer does, reading the diff and the session note.
+
+    Returns (ok, problems). Never raises for a command's own failure — a failing
+    command is a finding, not an error.
+    """
+    problems: list[str] = []
+    try:
+        rec = load_record(fid)
+    except EvidenceError as exc:
+        return False, [f"evidence record unreadable: {exc}"]
+
+    steps = rec.get("steps", [])
+    if not steps:
+        return False, ["no recorded steps to re-execute"]
+
+    for entry in sorted(steps, key=lambda s: s.get("n", 0)):
+        n, cmd = entry.get("n"), (entry.get("command") or "").strip()
+        if not entry.get("executed"):
+            continue  # hand-recorded: the human attestation path covers these
+        if not reexecutable(cmd):
+            problems.append(
+                f"step {n}: {cmd!r} is not a command the integrator will re-run — "
+                f"close with an explicit --attested-by instead"
+            )
+            continue
+        try:
+            proc = subprocess.run(
+                cmd.split(),
+                cwd=str(cwd),
+                capture_output=True,
+                text=True,
+                timeout=REEXEC_TIMEOUT,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            problems.append(f"step {n}: {cmd!r} did not finish in {REEXEC_TIMEOUT}s")
+            continue
+        except OSError as exc:
+            problems.append(f"step {n}: {cmd!r} could not be run ({exc})")
+            continue
+        recorded = entry.get("exit_code")
+        if proc.returncode != recorded:
+            problems.append(
+                f"step {n}: recorded exit {recorded}, integrator observed "
+                f"{proc.returncode} re-running {cmd!r}"
+            )
+    return (not problems), problems
 
 
 def verify(

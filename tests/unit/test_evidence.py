@@ -414,3 +414,72 @@ def test_retire_happens_even_when_the_feature_was_already_passing(sandbox, monke
     assert evidence.record_path(FEATURE).exists()
     evidence.retire(FEATURE)  # what the close path now does unconditionally
     assert not evidence.record_path(FEATURE).exists()
+
+
+# --- integrator re-execution -----------------------------------------------------
+# `run` makes the honest path easy, but `executed: true` is a boolean in a file the
+# agent's branch controls. Re-execution moves the pass/fail to the integrator. What
+# it establishes is narrower than "the agent really ran it", and the tests say so.
+@pytest.mark.parametrize(
+    "cmd,allowed",
+    [
+        ("pytest -q", True),
+        ("python3 -m pytest tests/unit -q", True),
+        ("cargo test --workspace", True),
+        ("python3 tools/rest_api_check.py", True),
+        ("./init.sh", True),
+        ("tools/verify_contracts.sh --scope ci", True),
+        # not verification commands
+        ("true", False),
+        ("echo ok", False),
+        ("rm -rf /", False),
+        # shell metacharacters: the integrator runs argv, never a shell, so a command
+        # needing one cannot be reproduced faithfully and must not be approximated
+        ("pytest -q; rm -rf /", False),
+        ("pytest -q && echo done", False),
+        ("pytest -q > /tmp/out", False),
+        ("cat $(ls)", False),
+        # evidence tooling itself is not a check
+        ("python3 tools/evidence.py verify X", False),
+    ],
+)
+def test_only_real_verification_commands_are_re_executable(cmd, allowed):
+    assert evidence.reexecutable(cmd) is allowed
+
+
+def test_reexecute_catches_a_command_that_does_not_exit_as_recorded(sandbox, tmp_path):
+    """The fabrication that matters: a claimed pass that would really fail."""
+    _record_all_steps(3)
+    rec = evidence.load_record(FEATURE)
+    for s in rec["steps"]:
+        s["command"] = "python3 -m pytest /nonexistent_path_xyz -q"
+        s["exit_code"] = 0  # claimed passing
+    evidence.save_record(FEATURE, rec)
+    ok, problems = evidence.reexecute(FEATURE, tmp_path)
+    assert ok is False
+    assert any("integrator observed" in p for p in problems)
+
+
+def test_reexecute_refuses_a_command_it_will_not_run(sandbox, tmp_path):
+    """`evidence.py run <id> --step 1 -- true` must not buy a machine close."""
+    _record_all_steps(2)
+    rec = evidence.load_record(FEATURE)
+    for s in rec["steps"]:
+        s["command"] = "true"
+    evidence.save_record(FEATURE, rec)
+    ok, problems = evidence.reexecute(FEATURE, tmp_path)
+    assert ok is False
+    assert any("not a command the integrator will re-run" in p for p in problems)
+
+
+def test_reexecute_ignores_hand_recorded_steps(sandbox, tmp_path):
+    """Those close on a human attestation; re-running them is not the mechanism."""
+    _record_all_steps(2, executed=False)
+    ok, problems = evidence.reexecute(FEATURE, tmp_path)
+    assert ok is True, problems
+
+
+def test_reexecute_on_a_missing_record_is_a_finding_not_a_crash(sandbox, tmp_path):
+    ok, problems = evidence.reexecute(FEATURE, tmp_path)
+    assert ok is False
+    assert any("no recorded steps" in p for p in problems)
