@@ -7,7 +7,7 @@ are not evidence.
 
 This prompt is the authoritative judgment-layer specification. Its primary
 delivery path is `/codex:adversarial-review` — see the workflow in
-`prompts/coding_prompt.md` Step 6.6 Pass 2. The prompt is also portable to
+`prompts/coding_prompt.md` Step 6.1 Pass 2. The prompt is also portable to
 any fresh-context LLM as a manual fallback when Codex is unavailable.
 
 The deterministic layer (`tools/critic_check.py`) has already run. Your job

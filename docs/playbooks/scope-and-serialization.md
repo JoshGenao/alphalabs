@@ -1,6 +1,6 @@
 # Scope, serialization, and stopping honestly
 
-Read this at Step 4.6 (classifying the work) and again whenever a review will not converge.
+Read this at Step 4.1 (classifying the work) and again whenever a review will not converge.
 
 ## Before you build
 

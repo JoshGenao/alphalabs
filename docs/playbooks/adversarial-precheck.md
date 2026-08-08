@@ -35,7 +35,7 @@ immediately caught a third instance the manual sweep had missed. `(LOG-001 r29)`
 
 ## The pre-check list
 
-Walk this against your own diff before Step 6.6. Most of it is one grep each.
+Walk this against your own diff before Step 6.1. Most of it is one grep each.
 
 1. **Every entry point, not the outermost.** A rule enforced in the REST wrapper leaves the
    CLI, the Rust API, and the direct library call able to violate it. Put the guard where

@@ -104,7 +104,7 @@ back to `main`. No file, branch, or port collisions.
 | Verified close | `.github/workflows/close-feature.yml` | `verified-e2e` label on a merged `agent/<id>` PR flips `passes` + folds the note |
 | Local CI mirror | `tools/run_ci_locally.sh` | Run the same step list as `ci.yml` before pushing |
 | Test layout | `tests/{unit,property,boundary,integration,e2e,domain}/` | One bug class per layer (L1–L7) |
-| Coding agent prompt | `prompts/coding_prompt.md` | Per-session workflow; includes Steps 5.5 (test layer) and 6.5 (critic) |
+| Coding agent prompt | `prompts/coding_prompt.md` | Per-session workflow; includes Steps 5.1 (test layer) and 6.5 (critic) |
 | Agent scheduler | `tools/agent_pool.py` | Locked self-claim / block / integrate / status; the coordination core |
 | Interactive launcher | `tools/claim_and_work.sh` | Per-terminal: claim a ready feature + open an interactive agent in its worktree |
 | Judgment critic dispatcher | `tools/adversarial_review.py` | Adversarial review with Codex→fresh-context-Claude failover on usage limits |

@@ -5,7 +5,7 @@ turned `main` red. Sessions are fresh-context; this directory is the only carry-
 
 **How to use:** during orientation (coding prompt Step 1), read the two always-on playbooks
 plus the 1–3 whose trigger matches your claimed feature. Before requesting adversarial
-review (Step 6.6), walk them again against your own diff.
+review (Step 6.1), walk them again against your own diff.
 
 | Playbook | Read it when… |
 |---|---|

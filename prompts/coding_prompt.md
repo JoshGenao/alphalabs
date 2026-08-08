@@ -64,7 +64,7 @@ session — each rule is there because a review round, a live run, or a red `mai
 found it. Read the two always-on playbooks (`adversarial-precheck.md`,
 `test-integrity.md`) plus the 1–3 whose trigger matches your feature. Do not read
 all of them; do not skip the always-on ones. Reading them now is what keeps the
-Step 6.6 review from spending 10+ rounds re-finding the same classes.
+Step 6.1 review from spending 10+ rounds re-finding the same classes.
 
 **Resume-aware:** if `progress.d/session-$ATP_FEATURE_ID.md` exists, a prior
 session already advanced this feature (its work is on `main`, which your branch
@@ -81,7 +81,7 @@ the log produced zero code by rebuilding something already on `main` (see
 
 Your first message must summarise: the feature, any prior progress, which playbooks
 you loaded, and its dependencies (from `agent_pool.py status`). You'll present the
-full plan for approval in **Step 4.6** — you're in read-only plan mode until then.
+full plan for approval in **Step 4.1** — you're in read-only plan mode until then.
 
 ---
 
@@ -123,7 +123,7 @@ note, `python3 tools/agent_pool.py release "$ATP_FEATURE_ID"`, and end.
 
 ---
 
-## Step 4.6 — Plan & get operator approval (you are in PLAN MODE)
+## Step 4.1 — Plan & get operator approval (you are in PLAN MODE)
 
 This session was launched **read-only** (`--permission-mode plan`). You **cannot**
 edit files, write code, or run non-read-only tools until the operator approves. Do
@@ -134,7 +134,7 @@ operator to approve it** (ExitPlanMode). The plan must state:
 
 - **What you'll build** — the specific files/modules you'll add or change.
 - **Tests** — which layer(s) (L1–L7) and the specific cases; call out the mandatory
-  `tests/domain/` test if the feature touches any safety path (Step 5.5).
+  `tests/domain/` test if the feature touches any safety path (Step 5.1).
 - **Completeness classification you expect** — `complete` (every step verifiable
   solo) vs `serialized` (needs IB/integration/live/e2e). Be honest up front.
 - **Dependencies** — if you already know you'll need an unbuilt feature `Y`, say so;
@@ -163,7 +163,7 @@ Write the code. As you work:
 - No new dependency without confirming scope in `docs/SyRS_v0.7.md`.
 - Keep changes atomic + focused; no unrelated refactors.
 - **Never hand-edit `feature_list.json` or `progress.txt`** on your branch — the
-  flip happens only in Step 7.5 via the locked `integrate`. Your only status
+  flip happens only in Step 7.1 via the locked `integrate`. Your only status
   artifact is `progress.d/session-$ATP_FEATURE_ID.md`.
 
 ### Hit an unbuilt dependency? → park & take next
@@ -190,7 +190,7 @@ and report the board — that's a signal for the operator, not a thing to force.
 
 ---
 
-## Step 5.5 — Write tests for the right layer
+## Step 5.1 — Write tests for the right layer
 
 Every feature lands with at least one test. Pick the layer by bug class:
 
@@ -259,7 +259,7 @@ park if it's a dependency).
 
 ---
 
-## Step 6.6 — Run the Critic Agent (both passes must APPROVE)
+## Step 6.1 — Run the Critic Agent (both passes must APPROVE)
 
 ### Pass 0 — self-review against the playbooks (free; do it first)
 
@@ -359,7 +359,7 @@ Every commit must be a shippable state — no WIP.
 
 ---
 
-## Step 7.5 — Integrate (auto-merge to main; auto-flip on complete)
+## Step 7.1 — Integrate (auto-merge to main; auto-flip on complete)
 
 This replaces "open a PR and wait for a human." First run the full gate; only if
 **everything is green**, integrate.
@@ -369,7 +369,7 @@ source .venv/bin/activate && pip install -r requirements-dev.txt   # init.sh ski
 tools/run_ci_locally.sh                 # the CI mirror — must pass
 cargo test --workspace
 pytest -m "not integration and not e2e"
-# (deterministic critic + codex review already APPROVE from Step 6.6)
+# (deterministic critic + codex review already APPROVE from Step 6.1)
 ```
 
 The mirror now **fails** (exit 1, `✗ mirror INCOMPLETE — N step(s) skipped`) if any
@@ -430,7 +430,7 @@ Resume / next: <what's left, exact blocking ids, where to continue>
 sees whether the playbooks are working. Recent baseline: 9, 10, 13, 13, 13, 14, 15,
 20, 38.
 
-### Step 8.5 — write back to the playbooks
+### Step 8.1 — write back to the playbooks
 
 If review, a live run, or a red `main` found a defect class that is **not** already
 in `docs/playbooks/`, add it — same rule format (rule — why — provenance
