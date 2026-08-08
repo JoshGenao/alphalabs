@@ -681,6 +681,13 @@
         "ci": []
       },
       "why": "Strategy API docs match the code"
+    },
+    {
+      "name": "docs_link_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "every path, markdown link and Step N.N reference in the documents that route agents must resolve; the audit found four such defects by reading"
     }
   ],
   "excluded": [
