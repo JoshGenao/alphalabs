@@ -108,16 +108,35 @@ def run_tests(targets: list[str], names: list[str]) -> dict[str, str]:
     # avoids constructing node ids we would have to keep in sync with pytest.
     expr = " or ".join(names)
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", *targets, "-k", expr, "-q", "--no-header",
-         "-p", "no:cacheprovider", "-rA"],
-        cwd=str(ROOT), capture_output=True, text=True, check=False,
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            *targets,
+            "-k",
+            expr,
+            "-q",
+            "--no-header",
+            "-p",
+            "no:cacheprovider",
+            "-rA",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
     )
     out = proc.stdout + proc.stderr
     # A collection failure names the file, not the test, so it must be detected once
     # for the whole run rather than per test.
-    uncollectable = bool(
-        re.search(r"^(ERROR collecting|E\s+ModuleNotFoundError|E\s+ImportError)", out, re.MULTILINE)
-    ) or "errors during collection" in out
+    uncollectable = (
+        bool(
+            re.search(
+                r"^(ERROR collecting|E\s+ModuleNotFoundError|E\s+ImportError)", out, re.MULTILINE
+            )
+        )
+        or "errors during collection" in out
+    )
     result: dict[str, str] = {}
     for name in names:
         if re.search(rf"^(FAILED|ERROR) .*::{re.escape(name)}\b", out, re.MULTILINE):
@@ -173,7 +192,9 @@ def main(argv: list[str] | None = None) -> int:
     # Default the targets to the test files this range changed. A caller who names
     # the wrong path otherwise gets every added test reported as unable to fail.
     targets = args.tests or tst
-    uncovered = sorted(f for f in added if not any(f.startswith(t.rstrip("/")) or t.startswith(f) for t in targets))
+    uncovered = sorted(
+        f for f in added if not any(f.startswith(t.rstrip("/")) or t.startswith(f) for t in targets)
+    )
     if uncovered:
         print(
             f"⚠ these files hold added tests but are outside --tests {targets}: "
@@ -202,10 +223,18 @@ def main(argv: list[str] | None = None) -> int:
     uncollected = sorted(n for n, r in survivors.items() if r == "uncollectable")
 
     if args.json:
-        print(json.dumps({
-            "range": args.range, "reverted_files": src, "added_tests": names,
-            "cannot_fail": cannot_fail, "uncollectable": uncollected,
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "range": args.range,
+                    "reverted_files": src,
+                    "added_tests": names,
+                    "cannot_fail": cannot_fail,
+                    "uncollectable": uncollected,
+                },
+                indent=2,
+            )
+        )
         return 1 if cannot_fail else 0
 
     print(f"→ reverted {len(src)} source file(s); ran {len(names)} added test(s)")
