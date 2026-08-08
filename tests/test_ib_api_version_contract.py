@@ -88,8 +88,20 @@ def test_the_upgrade_procedure_is_documented_for_operators() -> None:
 
 
 def test_the_gate_runs_in_both_ci_paths() -> None:
-    """A check that is not wired into CI is documentation, not enforcement."""
+    """A check that is not wired into CI is documentation, not enforcement.
+
+    This used to grep both files for the literal check name, because both carried
+    their own hand-maintained list — and they disagreed (ci.yml ran 32 checks,
+    tools/run_ci_locally.sh ran 25, init.sh ran 62). Both now resolve their list
+    from tools/gates.json, so the enforceable claim is: this check is registered
+    for the `ci` scope, and both runners execute that scope.
+    """
+    registry = json.loads((TOOLS / "gates.json").read_text(encoding="utf-8"))
+    entry = next((c for c in registry["checks"] if c["name"] == "ib_api_version_check"), None)
+    assert entry is not None, "ib_api_version_check is not in the gate registry"
+    assert "ci" in entry["scopes"], f"registered but not in the ci scope: {entry['scopes']}"
+
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     mirror = (ROOT / "tools" / "run_ci_locally.sh").read_text(encoding="utf-8")
-    assert "ib_api_version" in workflow
-    assert "ib_api_version_check" in mirror
+    assert "verify_contracts.sh --scope ci" in workflow
+    assert "verify_contracts.sh --scope ci" in mirror

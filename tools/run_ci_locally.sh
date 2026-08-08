@@ -9,9 +9,41 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
+# A gate that reports success for a step it never ran is worse than no gate: it is
+# how an unformatted file reached `main` and left `ruff format --check` red. A skip
+# is an UNKNOWN result, and unknown is never "pass" (CLAUDE.md rule 3). Every skip is
+# recorded and turns the whole run non-zero unless the caller opts in explicitly.
+#
+# (A newline-delimited string, not an array: `${arr[@]}` on an empty array is an
+# unbound-variable error under `set -u` in the bash 3.2 macOS ships.)
+SKIPPED=""
+SKIP_COUNT=0
+# Steps ci.yml marks continue-on-error. Counted and reported, never silent.
+ADVISORY_FAILED=0
+
 step() { printf '\n→ %s\n' "$*"; }
 ok()   { printf '✓ %s\n' "$*"; }
-skip() { printf '· %s (skipped: %s)\n' "$1" "$2"; }
+skip() {
+  SKIPPED="${SKIPPED}    · $1 ($2)
+"
+  SKIP_COUNT=$((SKIP_COUNT + 1))
+  printf '· %s (skipped: %s)\n' "$1" "$2"
+}
+
+report_skips() {
+  [ "${SKIP_COUNT}" -eq 0 ] && return 0
+  printf '\n✗ mirror INCOMPLETE — %d step(s) skipped:\n' "${SKIP_COUNT}"
+  printf '%s' "${SKIPPED}"
+  if [[ "${ATP_ALLOW_SKIP:-0}" == "1" ]]; then
+    printf '  ATP_ALLOW_SKIP=1 — treating the run as advisory, NOT as a passing gate.\n'
+    return 0
+  fi
+  printf '  Install the dev requirements and re-run:\n'
+  printf '    source .venv/bin/activate && pip install -r requirements-dev.txt\n'
+  printf '  A skipped step is an UNKNOWN result, not a pass. Set ATP_ALLOW_SKIP=1 only\n'
+  printf '  when you have another way to cover it, and say so in the session note.\n'
+  return 1
+}
 
 # 1 — lint / format
 if command -v ruff >/dev/null 2>&1; then
@@ -23,10 +55,21 @@ else
   skip "ruff" "not installed (pip install -r requirements-dev.txt)"
 fi
 
-# 2 — typecheck
+# 2 — typecheck. ADVISORY, matching ci.yml, which carries
+# `continue-on-error: true  # remove once strict typing lands across python/`
+# on this step. It was blocking here (`set -e`) and advisory there, so the
+# "mirror" was stricter than the thing it mirrors — the same divergence class as
+# the three different check lists, in a third dimension: same step, different
+# blocking semantics. Reported loudly rather than hidden, so that "advisory" is a
+# visible decision instead of a silent pass.
 if command -v mypy >/dev/null 2>&1; then
-  step "mypy python/"
-  mypy python/
+  step "mypy python/  (advisory — matches ci.yml continue-on-error)"
+  if ! mypy python/; then
+    ADVISORY_FAILED=$((ADVISORY_FAILED + 1))
+    printf '⚠ mypy reported errors. ci.yml does not block on this step either, so\n'
+    printf '  this run is NOT failed by it — but the errors above are real and\n'
+    printf '  someone chose to defer them. Do not add to them.\n'
+  fi
 else
   skip "mypy" "not installed"
 fi
@@ -63,36 +106,23 @@ else
   python3 tools/critic_check.py --range HEAD~1..HEAD --format text
 fi
 
-# 7 — existing architecture & contract checks (the legacy gates)
-step "architecture / contract checks"
-for check in \
-    architecture_check \
-    dependency_boundary_check \
-    adapter_isolation_check \
-    deployment_check \
-    container_isolation_check \
-    jupyter_isolation_check \
-    config_check \
-    startup_readiness_gate_check \
-    startup_readiness_runtime_check \
-    rest_api_check \
-    websocket_api_check \
-    cli_check \
-    operator_workflow_surface_check \
-    operator_interface_runtime_check \
-    credential_security_check \
-    network_binding_check \
-    log_record_check \
-    log_persistence_check \
-    data015_schema_check \
-    adapter_check \
-    ib_adapter_check \
-    ib_api_version_check \
-    data_provider_check \
-    historical_data_check \
-    strategy_api_check; do
-  printf '  · %s.py\n' "${check}"
-  python3 "tools/${check}.py" >/dev/null
-done
+# 7 — contract checks, from tools/gates.json (the one registry ci.yml also reads)
+step "contract checks (scope=ci)"
+tools/verify_contracts.sh --scope ci
 
-ok "local CI mirror complete"
+# 7b — the cargo-strict variants. --require-cargo turns "cargo not on PATH ->
+# skipped, still passes" into a failure; ci.yml runs this scope in its Rust job.
+if command -v cargo >/dev/null 2>&1; then
+  step "contract checks (scope=ci-rust, --require-cargo)"
+  tools/verify_contracts.sh --scope ci-rust
+else
+  skip "contract checks (ci-rust)" "cargo not installed"
+fi
+
+report_skips || exit 1
+
+if [[ "${ADVISORY_FAILED}" -gt 0 ]]; then
+  printf '\n⚠ %d advisory step(s) reported errors (not blocking, same as ci.yml).\n' "${ADVISORY_FAILED}"
+fi
+
+ok "local CI mirror complete — every step ran"

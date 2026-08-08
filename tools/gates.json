@@ -1,0 +1,696 @@
+{
+  "$comment": [
+    "THE gate registry. This file is the single answer to 'what must pass?'.",
+    "",
+    "Before it existed there were three divergent answers: init.sh ran 62 contract",
+    "checks, .github/workflows/ci.yml ran 32, and tools/run_ci_locally.sh \u2014 the",
+    "self-described 'mirror' of ci.yml \u2014 ran 25. An agent could not determine what",
+    "'correct' meant, and 21 checks were enforced nowhere but a bootstrap script.",
+    "",
+    "Every runner now reads this file: tools/verify_contracts.sh executes it,",
+    "init.sh calls --scope env, run_ci_locally.sh and ci.yml call --scope ci.",
+    "tools/gates_registry_check.py fails CI if any tools/*_check.py is neither",
+    "registered here nor listed in `excluded`, so coverage cannot silently rot.",
+    "",
+    "Per-scope args matter: 22 checks take --require-cargo, which turns 'cargo not on",
+    "PATH -> skipped, still passes' into a hard failure (see backtest_check.py:344).",
+    "init.sh passed it; ci.yml did not. Dropping it would have silently weakened 22",
+    "gates, so scopes carry their own argv."
+  ],
+  "scopes": {
+    "env": "init.sh at bootstrap. The structural subset that proves a worktree is coherent AND the surfaces it just built still match their contracts. architecture_check aggregates 54 of the others. Kept small enough to stay a bootstrap, not a CI run.",
+    "ci": "ci.yml's Python job + tools/run_ci_locally.sh. Every contract check, individually, so a failure names the check that found it.",
+    "ci-rust": "ci.yml's Rust job (and ./init.sh --full). The same checks re-run with --require-cargo, which turns a missing-cargo SKIP into a FAILURE. Before the registry these ran cargo-strict ONLY inside init.sh on a developer's machine \u2014 CI never enforced the compile smoke."
+  },
+  "checks": [
+    {
+      "name": "architecture_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "SRS-ARCH-001..003; aggregator \u2014 calls 54 of the other checks' assert_*_static entry points"
+    },
+    {
+      "name": "dependency_boundary_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "SRS-ARCH-002 one-way dependency direction; lower crates must not import dashboard/orchestrator"
+    },
+    {
+      "name": "config_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "configuration surface is present and consistent"
+    },
+    {
+      "name": "startup_readiness_gate_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "startup readiness gate contract \u2014 a broken tree fails here first"
+    },
+    {
+      "name": "startup_readiness_runtime_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "startup readiness runtime wiring"
+    },
+    {
+      "name": "adapter_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "brokerage adapter contract"
+    },
+    {
+      "name": "adapter_isolation_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "no vendor SDK leakage into core crates"
+    },
+    {
+      "name": "ib_adapter_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "IB Gateway adapter runtime contract (SRS-EXE-006)"
+    },
+    {
+      "name": "ib_api_version_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "IB API version support matrix vs architecture/ib_api_version_support.json"
+    },
+    {
+      "name": "data_provider_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "data provider adapter contract"
+    },
+    {
+      "name": "connectivity_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "CONNECTIVITY_BLOCKED handling on adapter paths"
+    },
+    {
+      "name": "rest_api_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "REST surface matches the declared OpenAPI contract"
+    },
+    {
+      "name": "websocket_api_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "WebSocket channels match the declared AsyncAPI contract"
+    },
+    {
+      "name": "cli_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "CLI manual matches the shipped commands"
+    },
+    {
+      "name": "operator_workflow_surface_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "operator workflows are reachable from a shipped surface"
+    },
+    {
+      "name": "operator_interface_runtime_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "operator interface runtime wiring"
+    },
+    {
+      "name": "credential_security_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "SRS-SEC-001 credential handling; no plaintext secrets on any path"
+    },
+    {
+      "name": "network_binding_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "dashboard/API bind loopback or RFC1918 only"
+    },
+    {
+      "name": "container_isolation_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "least-privilege strategy containers"
+    },
+    {
+      "name": "jupyter_isolation_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "Jupyter runs isolated from the live runtime"
+    },
+    {
+      "name": "deployment_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "deployment manifests match the declared topology"
+    },
+    {
+      "name": "log_record_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "SYS-61 structured log record shape"
+    },
+    {
+      "name": "log_persistence_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "log store durability + fail-closed reads (absent != empty)"
+    },
+    {
+      "name": "data008_tiering_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "SSD/NAS storage tiering"
+    },
+    {
+      "name": "data009_cold_read_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "cold-tier read path"
+    },
+    {
+      "name": "data010_eviction_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "tier eviction policy"
+    },
+    {
+      "name": "data015_schema_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "schema evolution compatibility"
+    },
+    {
+      "name": "historical_data_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "unified historical query contract"
+    },
+    {
+      "name": "unified_query_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "unified query surface across providers"
+    },
+    {
+      "name": "store_history_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "point-in-time history store semantics"
+    },
+    {
+      "name": "concurrent_read_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "concurrent reader safety on the store"
+    },
+    {
+      "name": "coverage_manifest_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "data coverage manifest gate"
+    },
+    {
+      "name": "ingestion_idempotency_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "re-ingesting a key is a no-op, not a duplicate"
+    },
+    {
+      "name": "ingestion_validation_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "ingested market/option data is validated before it lands"
+    },
+    {
+      "name": "fundamental_ingestion_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "Sharadar fundamental ingestion contract"
+    },
+    {
+      "name": "normalization_modes_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "corporate-action normalization modes"
+    },
+    {
+      "name": "freshness_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "STALE_DATA_BLOCKED freshness semantics"
+    },
+    {
+      "name": "sequence_gap_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "market-data sequence gap detection"
+    },
+    {
+      "name": "subscription_fanout_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "one IB subscription fans out to live + paper"
+    },
+    {
+      "name": "subscription_limit_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "IB subscription ceiling is enforced"
+    },
+    {
+      "name": "pacing_budget_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "IB pacing budget is respected"
+    },
+    {
+      "name": "order_lifecycle_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "order state machine transitions"
+    },
+    {
+      "name": "order_event_dispatch_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "order events reach strategy callbacks exactly once"
+    },
+    {
+      "name": "order_routing_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "live vs simulated routing decision"
+    },
+    {
+      "name": "order_type_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "supported order types round-trip"
+    },
+    {
+      "name": "outbox_reconciliation_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "outbox reconciliation after a disconnect"
+    },
+    {
+      "name": "live_designation_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "exactly one live strategy invariant"
+    },
+    {
+      "name": "kill_switch_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "kill switch activation ordering"
+    },
+    {
+      "name": "kill_switch_timeout_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "kill-switch liquidation timeout budget"
+    },
+    {
+      "name": "error_handling_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "typed errors, no silent unwrap on adapter paths"
+    },
+    {
+      "name": "sim_fill_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "simulated fill model"
+    },
+    {
+      "name": "sim_cost_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "simulation shares the backtest cost model"
+    },
+    {
+      "name": "sim_order_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "paper order intake"
+    },
+    {
+      "name": "sim_ledger_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "virtual ledger invariants"
+    },
+    {
+      "name": "sim_halt_check",
+      "scopes": {
+        "env": [],
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "paper halt is idempotent"
+    },
+    {
+      "name": "sim_persistence_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "paper state survives restart"
+    },
+    {
+      "name": "metrics_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "paper/live metrics surface"
+    },
+    {
+      "name": "backtest_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "backtest engine contract"
+    },
+    {
+      "name": "backtest_cost_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "backtest cost model"
+    },
+    {
+      "name": "backtest_store_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "backtest result store"
+    },
+    {
+      "name": "backtest_sweep_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "parameter sweep contract"
+    },
+    {
+      "name": "walk_forward_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "walk-forward analysis contract"
+    },
+    {
+      "name": "determinism_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "backtests are reproducible; no wall-clock branching"
+    },
+    {
+      "name": "benchmark_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "benchmark comparison surface"
+    },
+    {
+      "name": "perf_measurement_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "NFR latency measurement methodology"
+    },
+    {
+      "name": "factor_analysis_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "factor analysis contract"
+    },
+    {
+      "name": "factor_job_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "factor job deadline + fail-closed outcome"
+    },
+    {
+      "name": "orchestrator_lifecycle_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "strategy container lifecycle"
+    },
+    {
+      "name": "orchestrator_deployment_version_check",
+      "scopes": {
+        "ci": [
+          "--skip-cargo"
+        ]
+      },
+      "why": "deployment version pinning"
+    },
+    {
+      "name": "orchestrator_resource_profile_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "SYS-57/58 container resource limits"
+    },
+    {
+      "name": "orchestrator_workload_priority_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "workload priority scheduling"
+    },
+    {
+      "name": "orchestrator_rollback_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "deployment rollback arm"
+    },
+    {
+      "name": "hot_swap_demotion_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "Hot-Swap demotion gate"
+    },
+    {
+      "name": "hot_swap_trigger_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "Hot-Swap trigger configuration + logging"
+    },
+    {
+      "name": "strategy_api_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "Strategy API surface"
+    },
+    {
+      "name": "strategy_api_parity_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "Python/Rust Strategy API parity"
+    },
+    {
+      "name": "strategy_api_scheduler_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "trading-calendar scheduler API"
+    },
+    {
+      "name": "strategy_api_subscriptions_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "subscription API"
+    },
+    {
+      "name": "strategy_api_order_events_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "order-event callback API"
+    },
+    {
+      "name": "strategy_api_warmup_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "indicator warm-up semantics"
+    },
+    {
+      "name": "strategy_api_indicators_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "indicator library contract"
+    },
+    {
+      "name": "strategy_api_documentation_check",
+      "scopes": {
+        "env": [],
+        "ci": []
+      },
+      "why": "Strategy API docs match the code"
+    }
+  ],
+  "excluded": [
+    {
+      "name": "critic_check",
+      "why": "The deterministic critic, not a contract gate. It runs against a DIFF (--staged / --range), not the tree, and has its own pre-commit hook and its own ci.yml step. Running it from a tree-scoped runner would be meaningless."
+    },
+    {
+      "name": "gates_registry_check",
+      "why": "The registry's own validator. ci.yml runs it as an explicit step BEFORE verify_contracts.sh, so a broken registry is caught by something that does not itself read the broken registry."
+    }
+  ]
+}

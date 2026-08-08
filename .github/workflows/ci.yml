@@ -95,12 +95,16 @@ jobs:
           NUMBA_DISABLE_JIT: "1"
         run: pytest -m "not integration and not e2e" --junitxml=pytest.xml
 
+      # The registry's own validator runs FIRST and deliberately does not itself
+      # read a scope: a broken gates.json must be caught by something that is not
+      # driven by the broken file.
+      - name: Gate registry is coherent
+        run: python3 tools/gates_registry_check.py
+
+      # Was a hand-maintained list of 32 names here, while init.sh ran 62 and
+      # tools/run_ci_locally.sh ran 25. All three now read tools/gates.json.
       - name: Architecture & contract checks
-        run: |
-          for check in architecture dependency_boundary adapter_isolation deployment container_isolation jupyter_isolation config startup_readiness_gate startup_readiness_runtime rest_api websocket_api cli operator_workflow_surface operator_interface_runtime credential_security network_binding log_record log_persistence data015_schema adapter ib_adapter ib_api_version data_provider historical_data strategy_api strategy_api_parity strategy_api_scheduler strategy_api_subscriptions strategy_api_order_events strategy_api_warmup strategy_api_indicators strategy_api_documentation; do
-            echo "→ tools/${check}_check.py"
-            python3 "tools/${check}_check.py"
-          done
+        run: tools/verify_contracts.sh --scope ci
 
       - name: Critic — deterministic
         run: python3 tools/critic_check.py --range origin/main..HEAD --format text
@@ -141,3 +145,10 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace
+
+      # 22 checks take --require-cargo, which turns "cargo not on PATH → skipped,
+      # still passes" into a hard failure (backtest_check.py:344). Only init.sh
+      # ever passed it, so the compile smoke was enforced on a developer's machine
+      # and nowhere else. This job has the toolchain, so it enforces it here too.
+      - name: Contract checks — cargo-strict
+        run: tools/verify_contracts.sh --scope ci-rust
