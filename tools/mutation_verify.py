@@ -136,7 +136,14 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("range", help="commit range, e.g. origin/main..HEAD")
-    ap.add_argument("--tests", nargs="+", required=True, help="test paths to run")
+    ap.add_argument(
+        "--tests",
+        nargs="+",
+        help="test paths to run (default: the test files the range itself changed). "
+        "Passing a path that does not contain the added tests made every one of them "
+        "look like it 'cannot fail', which is a false accusation, so the default is "
+        "derived rather than required.",
+    )
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
@@ -163,6 +170,18 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"added_tests": names, "note": msg}) if args.json else f"· {msg}")
         return 0
 
+    # Default the targets to the test files this range changed. A caller who names
+    # the wrong path otherwise gets every added test reported as unable to fail.
+    targets = args.tests or tst
+    uncovered = sorted(f for f in added if not any(f.startswith(t.rstrip("/")) or t.startswith(f) for t in targets))
+    if uncovered:
+        print(
+            f"⚠ these files hold added tests but are outside --tests {targets}: "
+            f"{uncovered}\n  Their tests cannot run, and a test that does not run is "
+            f"not a finding about the code.",
+            file=sys.stderr,
+        )
+
     base = args.range.split("..")[0] or "HEAD~1"
     survivors: dict[str, bool] = {}
     try:
@@ -172,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
             _git("checkout", base, "--", *mods)
         for path in adds:
             (ROOT / path).unlink()  # the base has no version to check out
-        survivors = run_tests(args.tests, names)
+        survivors = run_tests(targets, names)
     finally:
         # Always restore, even on an exception: leaving a half-reverted tree behind
         # would be far worse than the check not running.
