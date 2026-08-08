@@ -1162,13 +1162,10 @@ def shared_state_violations(committed_paths: list[str], fid: str) -> list[str]:
             bad.append(p)
         elif p.startswith("progress.d/") and p != own_note and p not in permanent:
             bad.append(p)
-        # .harness joined INTEGRATE_ALLOWLIST so the integrator can stage the logs it
-        # writes. Without the same branch-side restriction that progress.d has, an
-        # agent could commit its own .harness/closes.jsonl — appending a close it was
-        # never granted — or another feature's evidence, and the integrator would
-        # `git add -A -- .harness` and push it. An audit trail the audited party can
-        # write is not an audit trail. Only this feature's own evidence may come from
-        # a branch; the ledgers are integrator-only.
+        # An agent commits its OWN evidence with its branch; anything else under
+        # .harness from a branch is refused. The ledgers are not in the allowlist and
+        # live in the primary checkout, so they cannot be reached from here at all —
+        # this is the second line of defence, not the only one.
         elif p.startswith(".harness/") and not p.startswith(own_evidence):
             bad.append(p)
     return bad
@@ -1244,10 +1241,11 @@ def cmd_integrate(args):
                 print(f"    · … and {len(problems) - 8} more", file=sys.stderr)
             print(
                 f"  The code will merge and `passes` stays false. To close it properly, "
-                f"record each step as you verify it:\n"
-                f"    python3 tools/evidence.py record {fid} --step N --command '...' "
-                f"--observed '...' --status pass\n"
-                f"  then re-run `integrate {fid} --mode complete`.",
+                f"EXECUTE each step through the recorder — `record` only writes what you "
+                f"tell it and does not satisfy this gate on its own:\n"
+                f"    python3 tools/evidence.py run {fid} --step N -- <the command>\n"
+                f"  commit .harness/runs/{fid}/evidence.json with your feature work, then "
+                f"re-run `integrate {fid} --mode complete`.",
                 file=sys.stderr,
             )
             mode = "serialized"
@@ -1340,7 +1338,25 @@ def cmd_integrate(args):
                 # one into .harness/closes.jsonl would put a human's name on a claim
                 # no human made. A real override is a human running close_feature.py
                 # directly with --attested-by operator.
-                _run([sys.executable, str(wt / "tools" / "close_feature.py"), fid, "--verified"])
+                #
+                # check=False: close_feature re-verifies AFTER the rebase, so it can
+                # legitimately refuse (exit 3) on a record this function accepted
+                # before it — e.g. a concurrently re-specified steps[] changing the
+                # digest. An uncaught CalledProcessError here would escape `with
+                # Lock():` with the branch already rebased.
+                close = _run(
+                    [sys.executable, str(wt / "tools" / "close_feature.py"), fid, "--verified"],
+                    check=False,
+                )
+                if close.returncode != 0:
+                    print(
+                        f"✗ {fid}: close_feature refused after the rebase "
+                        f"(exit {close.returncode}):\n{close.stderr.strip()}\n"
+                        f"  Nothing was pushed; the branch is rebased and intact. "
+                        f"Re-record the affected steps and re-run integrate.",
+                        file=sys.stderr,
+                    )
+                    return 11
 
             # Stage ONLY the integration allowlist (never `git add -A`), so the
             # marker commit can never contain feature work.

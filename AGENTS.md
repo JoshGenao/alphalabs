@@ -177,5 +177,11 @@ IB window, a browser check). It stores `executed: false` and **does not satisfy 
 gate on its own** — those steps count only when a human closes the feature with an
 explicit `--attested-by` (the `verified-e2e` label, or `operator`). So the two ways
 to a green are "the tool ran it" and "a named person says so"; describing it is not
-one of them. Every close is appended to `.harness/closes.jsonl`, every
-`--force-complete` to `.harness/overrides.jsonl`.
+one of them.
+
+Commit your record with your feature work; `close_feature.py` retires it on the flip,
+so a reopened feature starts with none rather than inheriting yours. Closes and
+`--force-complete` overrides are also appended to `.harness/*.jsonl` in the **primary
+checkout** — untracked and local by design, since the one place a branch cannot append
+to is also a place it cannot commit. The durable record is the retired
+`closed-<ts>.json` plus the git history of `feature_list.json`.

@@ -221,6 +221,12 @@ def main() -> int:
         print(f"→ {feature_id}")
         flipped = flip_passes(feature_id, dry_run=args.dry_run)
         if flipped and not args.dry_run:
+            # Consume the record, exactly as fold_note consumes the session note. A
+            # live record left behind is inherited by every worktree cut from main,
+            # so a reopened feature would arrive pre-verified by another session.
+            archived = evidence.retire(feature_id)
+            if archived:
+                print(f"  ✓ {feature_id}: evidence retired -> {archived.name}")
             evidence.log_close(
                 feature_id,
                 mode="complete",

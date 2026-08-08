@@ -26,8 +26,9 @@ honest outcome is the automatic one.
 ``run`` executes the command and stores its real exit code and captured output;
 ``verify`` accepts only those. ``record`` takes the caller's word (executed:false)
 and counts only when a human closes with ``--attested-by``. The record is also bound
-to the feature's ``steps[]`` digest and refuses to count once it has been merged to
-main, so it cannot be inherited by a later worktree or satisfy a re-specified feature.
+to the feature's ``steps[]`` digest, and is retired (archived alongside itself) when
+the feature closes, so a reopened feature cannot inherit the evidence of an earlier
+session and a re-specified feature cannot be satisfied by a stale one.
 
 Exit codes: 0 = ok / record complete, 1 = incomplete or missing, 2 = usage error.
 """
@@ -134,26 +135,28 @@ def _head() -> str:
     return _git("rev-parse", "HEAD")
 
 
-def integrated_elsewhere(fid: str) -> bool:
-    """Was this record already merged to main by an earlier session?
+def retire(fid: str, *, dry_run: bool = False) -> Path | None:
+    """Archive the live record once its feature has been closed.
 
     ``.harness/runs/`` is tracked, so every worktree cut from ``origin/main``
-    inherits the evidence of every feature closed before it. A feature that is
-    reopened would arrive with a complete record it did not earn. Evidence whose
-    last commit is already an ancestor of the base ref belongs to that earlier
-    session, not to this one.
+    inherits the evidence of every feature closed before it — a reopened feature
+    would arrive already "verified" by a session that was not this one.
+
+    An earlier attempt rejected any record that had reached main. That made the gate
+    unsatisfiable: the record legitimately arrives on main as part of the very close
+    it justifies, and ``close-feature.yml`` runs ON main after the merge, so the
+    human-attested path could never pass. Retiring the record instead is the same
+    lifecycle ``close_feature.py`` already applies to ``progress.d/session-<id>.md``:
+    the live file is consumed by the close, so a reopened feature starts with none.
     """
-    rel = record_path(fid).relative_to(ROOT).as_posix()
-    last = _git("log", "-1", "--format=%H", "--", rel)
-    if not last:
-        return False  # never committed — it is this session's working state
-    base = "origin/main" if _git("rev-parse", "--verify", "--quiet", "origin/main") else "main"
-    proc = subprocess.run(
-        ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", last, base],
-        check=False,
-        capture_output=True,
-    )
-    return proc.returncode == 0
+    live = record_path(fid)
+    if not live.exists():
+        return None
+    stamp = _now().replace(":", "").replace("-", "")
+    archived = live.with_name(f"closed-{stamp}.json")
+    if not dry_run:
+        live.rename(archived)
+    return archived
 
 
 def load_features() -> list:
@@ -227,12 +230,6 @@ def verify(
         problems.append(
             f"record attests a different specification (digest {got or 'absent'} != "
             f"{want}) — the feature's steps[] changed since it was recorded; re-verify"
-        )
-    if integrated_elsewhere(fid):
-        problems.append(
-            "this record was already merged to main by an earlier session — every "
-            "worktree inherits it, so it is not evidence from THIS session; re-run "
-            "the steps"
         )
 
     by_n = {}

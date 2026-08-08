@@ -213,6 +213,52 @@ def test_unknown_feature_id_raises(sandbox):
         evidence.feature_steps("NOPE-1")
 
 
+# --- retirement: the record is consumed by the close it justifies -----------------
+# An earlier design REJECTED any record that had reached main. That was unsatisfiable:
+# the record arrives on main as part of the very close it justifies, and
+# close-feature.yml runs ON main after the merge, so the human-attested path — the
+# only documented route to passes:true for live-IB/e2e work — could never pass.
+def test_retire_archives_the_live_record(sandbox):
+    _record_all_steps(3)
+    _approve_both()
+    assert evidence.verify(FEATURE)[0] is True
+
+    archived = evidence.retire(FEATURE)
+    assert archived is not None
+    assert archived.exists() and archived.name.startswith("closed-")
+    assert not evidence.record_path(FEATURE).exists()
+
+
+def test_a_reopened_feature_cannot_inherit_the_retired_record(sandbox):
+    _record_all_steps(3)
+    _approve_both()
+    evidence.retire(FEATURE)
+
+    ok, problems, summary = evidence.verify(FEATURE)
+    assert ok is False
+    assert summary["steps_total"] == 3  # the real denominator, not 0
+    assert any("no evidence record" in p for p in problems)
+
+
+def test_retire_is_a_no_op_when_there_is_nothing_to_retire(sandbox):
+    assert evidence.retire(FEATURE) is None
+
+
+def test_retire_dry_run_leaves_the_record_in_place(sandbox):
+    _record_all_steps(1)
+    assert evidence.retire(FEATURE, dry_run=True) is not None
+    assert evidence.record_path(FEATURE).exists()
+
+
+def test_a_record_that_reached_main_still_verifies(sandbox):
+    """The attested close runs ON main, after the merge. Rejecting merged records
+    broke the only documented path to passes:true for live-IB/e2e features."""
+    _record_all_steps(3, executed=False)
+    _approve_both()
+    ok, problems, _ = evidence.verify(FEATURE, allow_attested=True)
+    assert ok is True, problems
+
+
 # --- executed vs merely described ------------------------------------------------
 # The gate's whole claim is "evidence, not assertion". `record` takes the caller's
 # strings and runs nothing, so accepting it unattested would leave the gate

@@ -145,9 +145,9 @@ def test_unclassified_lists_features_still_on_the_fallback():
 
 
 # --- the audit trail is not writable by the audited party --------------------
-# .harness joined INTEGRATE_ALLOWLIST so the integrator can stage the ledgers it
-# writes. Without the branch-side restriction progress.d already has, an agent could
-# commit its own close record and the integrator would push it to main.
+# The ledgers live in the primary checkout, outside any worktree, so a branch cannot
+# reach them at all. This guard is the second line of defence: it also stops a branch
+# committing ANOTHER feature's evidence, which the path layout alone does not.
 def test_branch_may_commit_its_own_evidence_but_not_the_ledgers():
     assert agent_pool.shared_state_violations([".harness/runs/X/evidence.json"], "X") == []
     for forbidden in (

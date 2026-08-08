@@ -222,19 +222,30 @@ resources and live IB violates the single-live-strategy invariant.
 ## Step 6 — Verify end-to-end, and classify completeness
 
 Walk **every** entry in the feature's `steps[]` exactly as written, with the
-tools a real user would use. **Record each step as you verify it** — this is the
-artifact that lets the feature close, not a formality:
+tools a real user would use. **Run each step THROUGH the recorder** — it executes
+the command and stores the real exit code and output, and that record is what lets
+the feature close:
 
 ```bash
-python3 tools/evidence.py record "$ATP_FEATURE_ID" --step 1 \
-  --command './init.sh' --observed '✓ Environment ready' --status pass
+python3 tools/evidence.py run "$ATP_FEATURE_ID" --step 1 -- ./init.sh
+python3 tools/evidence.py run "$ATP_FEATURE_ID" --step 2 -- pytest tests/domain/test_x.py -q
 python3 tools/evidence.py verify "$ATP_FEATURE_ID"     # what is still missing
 ```
 
+Use `run`, not `record`. **`record` does not satisfy the gate on its own** — it
+stores what you tell it (`executed: false`) and counts only when a human closes the
+feature with `--attested-by`. It is for steps no subprocess can capture: a live IB
+window, a browser check you drove by hand.
+
+**Commit `.harness/runs/$ATP_FEATURE_ID/evidence.json` with your feature work**
+(Step 7). It has to be in the tree `integrate` rebases, and an uncommitted one makes
+`integrate` refuse with exit 7. `close_feature.py` retires it when the feature
+closes, so a reopened feature starts with no record rather than inheriting yours.
+
 `close_feature.py` refuses to flip `passes:true` without a complete record, and
-`integrate --mode complete` silently degrades to `serialized` if you skip it — so
-an unrecorded step costs you the close, not just the paperwork. Put the same
-per-step PASS/FAIL summary in the session note for the human reader. Then classify:
+`integrate --mode complete` degrades to `serialized` if you skip it — so an
+unrecorded step costs you the close, not just the paperwork. Put the same per-step
+PASS/FAIL summary in the session note for the human reader. Then classify:
 
 - **complete** — every step passes *solo* (no IB/integration/live/e2e needed).
   This feature can be fully integrated and flipped to `passes:true`.
@@ -326,8 +337,10 @@ git commit -m "feat($ATP_FEATURE_ID): <what you built>
 - **prep** (optional `chore`): only for a new shared rule (e.g. extending
   `SAFETY_PATH_RE` in `tools/critic_check.py`) — keep minimal; this is the one
   place parallel branches can still conflict.
-- **feat**: implementation + tests. Must **not** edit `feature_list.json` /
-  `progress.txt` (integrate does that under the lock).
+- **feat**: implementation + tests + `.harness/runs/$ATP_FEATURE_ID/evidence.json`.
+  Must **not** edit `feature_list.json` / `progress.txt` (integrate does that under
+  the lock), and must not touch any other feature's evidence or the `.harness`
+  ledgers — the branch guard refuses both.
 - **chore**: writes `progress.d/session-$ATP_FEATURE_ID.md` (Step 8).
 
 Every commit must be a shippable state — no WIP.
