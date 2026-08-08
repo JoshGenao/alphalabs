@@ -10,8 +10,10 @@ Read it first. Follow the links. Do not guess.
 2. `./init.sh` - start dev server, install hooks, verify environment
 3. `cat docs/playbooks/INDEX.md` - load the playbooks matching your feature; the
    two always-on ones are `adversarial-precheck.md` and `test-integrity.md`
-4. `cat progress.txt` + `ls -t progress.d/` - read handoff (archived log + the
-   living per-session notes)
+4. `cat "progress.d/session-$ATP_FEATURE_ID.md"` + `ls -t progress.d/` - read the
+   handoff. **Do not `cat progress.txt`** - it is a 1 MB, 101-session archive
+   (~170k tokens); it would consume the context window you need for the work.
+   Query it instead: `python3 tools/progress_query.py --feature <id>`.
 5. `git log --oneline -20` - understand recent changes
 6. `cat feature_list.json | grep '"passes": false' | wc -l` - count remaining work
 
@@ -155,9 +157,25 @@ Runtime structure:
 - Platform safeguards include kill switch, stale-data blocking, connectivity blocking, live-strategy confirmation, credential encryption, and least-privilege strategy containers.
 - No multi-user auth, RBAC, HFT infrastructure, native mobile app, crypto/futures implementation, non-IB brokerage implementation, or institutional compliance reporting is in scope for the release baseline.
 
-## Allowed commands
+## What "correct" means
 
-No `security.py` or equivalent bash command allowlist exists yet. Until one is
-added, use standard repository inspection, setup, build, test, and local dev
-server commands that are necessary for the active requirement, and avoid
-destructive commands unless the user explicitly requests them.
+One file answers it: **`tools/gates.json`** is the registry of every contract
+check, and `tools/verify_contracts.sh --scope env|ci|ci-rust` is the only runner.
+`init.sh`, `tools/run_ci_locally.sh`, and `.github/workflows/ci.yml` all read it,
+so a local green and a CI green cannot diverge. `tools/gates_registry_check.py`
+fails CI if a `tools/*_check.py` is registered nowhere.
+
+**`passes: true` requires an executed record or a named human.** `tools/evidence.py
+run <id> --step N -- <cmd>` *executes* the command and stores its real exit code and
+captured output; `verify` accepts only steps recorded that way.
+`tools/close_feature.py --verified` refuses without a complete record, and
+`agent_pool.py integrate --mode complete` degrades to `serialized` rather than
+closing on an incomplete one.
+
+`tools/evidence.py record` also exists, for a step no subprocess can capture (a live
+IB window, a browser check). It stores `executed: false` and **does not satisfy the
+gate on its own** — those steps count only when a human closes the feature with an
+explicit `--attested-by` (the `verified-e2e` label, or `operator`). So the two ways
+to a green are "the tool ran it" and "a named person says so"; describing it is not
+one of them. Every close is appended to `.harness/closes.jsonl`, every
+`--force-complete` to `.harness/overrides.jsonl`.

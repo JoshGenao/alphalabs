@@ -44,8 +44,11 @@ next session smarter than this one.
 8. **Only pass explicit `.py` paths to `ruff format`.** A JSON file is valid Python syntax;
    ruff will silently rewrite `architecture/runtime_services.json` into invalid JSON.
 9. **Never run two `cargo test --workspace` at once.** ~37 fixed-name scratch dirs collide
-   and produce phantom failures in crates your diff never touched. Check
-   `pgrep -f "cargo test"` first.
+   and produce phantom failures in crates your diff never touched. Check with
+   **`pgrep -x cargo`** — *not* `pgrep -f "cargo test"`, which matches the literal
+   string inside `prompts/coding_prompt.md` and so reports a match for every open
+   agent session, whether or not cargo is running. A guard that always fires is a
+   guard everyone learns to ignore.
 10. **Never `git stash` in a worktree.** The stash is repo-global; you will pop a sibling's
     WIP onto your branch. Use `git show origin/main:<path>` or `git diff origin/main...HEAD`.
 

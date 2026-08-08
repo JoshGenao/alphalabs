@@ -7,7 +7,7 @@ are not evidence.
 
 This prompt is the authoritative judgment-layer specification. Its primary
 delivery path is `/codex:adversarial-review` — see the workflow in
-`prompts/coding_prompt.md` Step 6.5 Pass 2. The prompt is also portable to
+`prompts/coding_prompt.md` Step 6.6 Pass 2. The prompt is also portable to
 any fresh-context LLM as a manual fallback when Codex is unavailable.
 
 The deterministic layer (`tools/critic_check.py`) has already run. Your job
@@ -29,7 +29,12 @@ Before producing a verdict, read these inputs **in this order**:
 3. The relevant section of `docs/SRS.md` linked from that feature's
    `srs_ref` field. If you cannot identify the SRS ref, BLOCK and ask.
 4. `AGENTS.md` for hard architectural constraints.
-5. `.critic_report.json` (the deterministic-layer output) if present.
+5. The deterministic layer's report for **this** review, if the caller passed you
+   a path to one. Do **not** go looking for a `.critic_report.json` in the
+   repository root: it is gitignored, single-slot, and overwritten by every run,
+   so the one you find is as likely to be a stale verdict from another feature
+   months ago as it is to describe this diff. An unreadable or absent report is
+   not an approving one — review the diff on its own terms and say so.
 
 If any required input is unreadable, **BLOCK** and report which file you
 could not access. Do not approve based on partial information.

@@ -88,3 +88,19 @@ Read this whenever you write a test, and before you believe a green one.
     (never silently pass) where node is absent. `(LOG-001 r13)`
 19. **A wall-clock performance test must be `#[ignore]`-gated** in Rust; the deterministic
     critic only flags pytest/unittest skips. `(DATA-007)`
+20. **A Rust test scratch dir keyed on `process::id()` and never removed WILL collide.**
+    `atp-data`'s `access_journal::tests::tempdir()` builds
+    `env::temp_dir()/atp-access-journal-<pid>-<seq>` and never deletes it. macOS recycles
+    PIDs within ~99k, and a live run found **57,131** leaked `atp-*` scratch dirs (1.1 GB)
+    from 12+ different helpers — so a fresh process inherits a *populated* directory. The
+    failures land on the tests that assert ABSENCE or a specific corruption
+    (`absent_journal_is_benign_empty`, `torn_tail_is_tolerated_not_corruption`,
+    `corrupt_complete_line_fails_closed`, `recent.is_empty()`), in a crate your diff never
+    touched, and they **pass in isolation** — the signature of a phantom, not a regression.
+    Before believing such a failure: `find "$TMPDIR" -maxdepth 1 -name 'atp-*' -type d | wc -l`,
+    clean, re-run the exact failing command. A new scratch helper must use a unique dir AND
+    remove it (or the collision is only a matter of time). `(harness-p0, found live)`
+21. **A test that fails spuriously is no more evidence than one that cannot fail.** Rule 6
+    says mutation-verify; its mirror is that an intermittent red must be diagnosed, not
+    re-run until green. Re-running until green is how a real regression gets attributed to
+    "flakiness". `(harness-p0)`

@@ -222,8 +222,19 @@ resources and live IB violates the single-live-strategy invariant.
 ## Step 6 — Verify end-to-end, and classify completeness
 
 Walk **every** entry in the feature's `steps[]` exactly as written, with the
-tools a real user would use. Build a per-step PASS/FAIL record (exact command →
-observed output) for the session note. Then classify:
+tools a real user would use. **Record each step as you verify it** — this is the
+artifact that lets the feature close, not a formality:
+
+```bash
+python3 tools/evidence.py record "$ATP_FEATURE_ID" --step 1 \
+  --command './init.sh' --observed '✓ Environment ready' --status pass
+python3 tools/evidence.py verify "$ATP_FEATURE_ID"     # what is still missing
+```
+
+`close_feature.py` refuses to flip `passes:true` without a complete record, and
+`integrate --mode complete` silently degrades to `serialized` if you skip it — so
+an unrecorded step costs you the close, not just the paperwork. Put the same
+per-step PASS/FAIL summary in the session note for the human reader. Then classify:
 
 - **complete** — every step passes *solo* (no IB/integration/live/e2e needed).
   This feature can be fully integrated and flipped to `passes:true`.
@@ -267,9 +278,17 @@ the canonical `{"verdict": "block|warn|approve", "reviewer": "...", ...}` and pr
 `reviewer: codex|claude-fallback` on stderr. Check availability any time with
 `python3 tools/adversarial_review.py --status`.
 
-Record the verdict **and which reviewer ran** in the session note. Commit/integrate
-**only when both passes are `approve`** (a `warn` needs a one-line written override;
-any `block` halts you — exit code 1).
+Record the verdict **and which reviewer ran** in the session note, and in the
+evidence record — the close gate checks for both layers:
+
+```bash
+python3 tools/evidence.py critic "$ATP_FEATURE_ID" --layer deterministic --verdict approve
+python3 tools/evidence.py critic "$ATP_FEATURE_ID" --layer judgment \
+  --verdict approve --reviewer codex --rounds <N>
+```
+
+Commit/integrate **only when both passes are `approve`** (a `warn` needs a one-line
+written override; any `block` halts you — exit code 1).
 
 ### Handling a BLOCK — fix the CLASS, not the instance
 
@@ -328,12 +347,15 @@ pytest -m "not integration and not e2e"
 # (deterministic critic + codex review already APPROVE from Step 6.6)
 ```
 
-**The mirror prints "✓ local CI mirror complete" having run ZERO of ruff / mypy /
-pytest when those tools are absent** — it guards each step with `command -v` and
-prints `skip: … not installed`. In a fresh worktree that is the default state, and it
-is how an unformatted file reached `main` and left `ruff format --check` red. Install
-the dev requirements first, then READ the step list: a "complete" line is not evidence
-the gates ran. Check `pgrep -f "cargo test"` is empty before the workspace suite.
+The mirror now **fails** (exit 1, `✗ mirror INCOMPLETE — N step(s) skipped`) if any
+step could not run, so `✓ local CI mirror complete — every step ran` means what it
+says. It used to print `✓ complete` having run zero of ruff / mypy / pytest when
+those tools were absent, which is how an unformatted file reached `main` and left
+`ruff format --check` red. Install the dev requirements first (the line above).
+
+Check `pgrep -x cargo` is empty before the workspace suite — **not**
+`pgrep -f "cargo test"`, which matches this very prompt's text in any open agent
+session and so always reports a match.
 
 Then hand off to the locked integrator, which fetches, **rebases your branch onto
 the latest `origin/main`**, and fast-forward-pushes — serialized so two agents

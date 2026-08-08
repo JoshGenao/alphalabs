@@ -117,3 +117,18 @@ one `main`. Most of this playbook is about that sharing.
     the branch. Leave the file byte-identical, put the full replacement text verbatim in your
     session note under a labelled section, and answer the finding with "this is a tooling
     gap, not a decision the branch may make." Budget one round for it.
+26. **A green CI run does not mean every step passed.** `ci.yml`'s mypy step carries
+    `continue-on-error: true`, so the job, the run, and the step all report `success` while
+    printing four real errors. `gh run list` showing green is not evidence a gate held —
+    read the step's own output, or grep the log for `error:`. Any step you are relying on,
+    verify is actually blocking. `(harness-p0)`
+27. **A "mirror" can diverge in three dimensions, not one.** `run_ci_locally.sh` vs `ci.yml`
+    differed in the *step list* (25 vs 32 checks), in *argv* (22 checks took
+    `--require-cargo` in `init.sh` and bare in CI — the flag turns a missing-toolchain SKIP
+    into a FAILURE), and in *blocking semantics* (mypy blocking locally, advisory in CI).
+    Fixing only the list leaves a mirror that still lies. `tools/gates.json` now carries
+    scope + argv; blocking-ness is called out inline in the runner. `(harness-p0)`
+28. **`pgrep -f "cargo test"` always matches when an agent session is open** — the literal
+    string is in `prompts/coding_prompt.md`, which is passed as the session's argv. Use
+    **`pgrep -x cargo`**. A guard that fires unconditionally is one everybody learns to
+    ignore, which is worse than no guard. `(harness-p0, found live)`

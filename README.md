@@ -1,48 +1,42 @@
-# docs/
+# ATP — Algorithmic Trading Platform
 
-This folder is the **single source of truth** for the project's requirements.
-All agents read these files at the start of every session. All code must
-trace back to a requirement in this folder. Knowledge that lives outside
-this folder does not exist to an agent.
+A single-user platform for running Python-authored trading strategies. Core
+runtime services are Rust (`crates/`); user strategies and the Strategy API are
+Python (`python/atp_strategy`). Live brokerage integration is Interactive Brokers
+Gateway only, and exactly one strategy may trade the live account at a time.
 
----
+Most of the work here is done by AI coding agents, coordinated by a scheduler in
+`tools/agent_pool.py`.
 
-## Document chain
+## Start here
 
-Requirements flow from stakeholder intent down to developer tickets:
+| You are | Read |
+|---|---|
+| **An AI agent** | [`AGENTS.md`](AGENTS.md) — navigation, architecture, the parallel-agent protocol. `CLAUDE.md` is loaded automatically. |
+| **A human, new to the project** | [`docs/StRS_v0.7.md`](docs/StRS_v0.7.md) — the stakeholder vision and why this exists. |
+| **Looking for the requirements** | [`docs/README.md`](docs/README.md) — the StRS → SyRS → SRS → `feature_list.json` chain. |
+| **Wondering what's done** | `python3 tools/agent_pool.py status` |
+
+## Running it
+
+```bash
+./init.sh          # venv, build, dev server, contract checks — prints "✓ Environment ready"
+./init.sh --full   # additionally runs the cargo-strict contract scope
+```
+
+Verification: `tools/gates.json` lists every gate and
+`tools/verify_contracts.sh --scope ci` runs them; `tools/run_ci_locally.sh`
+mirrors CI exactly. See "What 'correct' means" in `AGENTS.md`.
+
+## Layout
 
 ```
-docs/StRS.md  →  docs/SyRS.md  →  docs/SRS.md  →  feature_list.json
-  (Why)            (What)           (How)          (Agent work queue)
+crates/          Rust core runtime services
+python/          Strategy API + user-authored strategies
+tests/           L1 unit · L2 property · L3 contract · L4 boundary
+                 L5 integration · L6 e2e · L7 domain
+tools/           checks, the agent scheduler, the critic, the gate registry
+docs/            requirements chain + docs/playbooks/ (agent lessons)
+progress.d/      per-session resume notes; progress.txt is the folded archive
+architecture/    machine-checked architecture boundary (runtime_services.json)
 ```
-
-| Document | Read it to understand… |
-|----------|----------------------|
-| `StRS.md` | The stakeholder vision, business goals, and success criteria. Use this when you need to understand *priority* or *intent* behind a requirement. |
-| `SyRS.md` | System-level constraints, non-functional requirements, and architectural rules. Use this to understand *scope* and to check if a proposed approach is in bounds. |
-| `SRS.md` | Software-level functional requirements, module structure, and acceptance criteria. This is the **primary source for `feature_list.json`**. |
-
-## For agents
-
-- Read all three files before starting any implementation work.
-- If a requirement in `SRS.md` conflicts with a constraint in `SyRS.md`,
-  the constraint wins — note the conflict in `progress.txt`.
-- If a requirement is unclear, check `StRS.md` for the underlying intent.
-- Never implement a feature that cannot be traced to a requirement in `SRS.md`.
-
-## For humans
-
-- Keep these documents up to date as requirements change.
-- When you add a requirement to `SRS.md`, also add a corresponding entry to
-  `feature_list.json` and set `"passes": false`.
-- When you remove or change a requirement, update all three files and adjust
-  `feature_list.json` accordingly.
-
-## prompts/
-
-The `prompts/` subfolder contains the agent prompt templates:
-
-| File | Used by |
-|------|---------|
-| `prompts/initializer_prompt.md` | First agent session only — sets up the environment |
-| `prompts/coding_prompt.md` | All subsequent sessions — implements features incrementally |
