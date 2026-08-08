@@ -135,7 +135,17 @@ one `main`. Most of this playbook is about that sharing.
     **`pgrep -x cargo`**, or `ps -eo pid,command | grep "[r]un_ci_locally"`. A guard that
     fires unconditionally is one everybody learns to ignore, which is worse than no
     guard. `(harness-p0, found live — twice, the second time by the fix for the first)`
-29. **Killing a gate run leaves its children alive.** Stopping the wrapper shell does not
+29. **A harness change cannot pass the judgment critic, and that is structural.**
+    `critic_prompt.md` refusal clause 2 requires a BLOCK when the reviewer cannot
+    identify the in-flight feature in `feature_list.json` — and harness/pipeline work
+    has no entry there by design (22 categories, none for tooling). So every harness
+    branch ends on `verdict: block, findings: [meta:missing-feature-record]` even when
+    no code finding survives. Read the FINDING LIST, not the verdict: if the only
+    block is that one, the review is clean and the operator merges, which is how
+    `80fe849`, `ad43185`, `226d0a1` and the P0–P2 branches all landed. Say so
+    explicitly in the commit rather than letting a `block` look like an approval —
+    and never invent a `feature_list.json` entry to satisfy it. `(harness-reexec r2)`
+30. **Killing a gate run leaves its children alive.** Stopping the wrapper shell does not
     stop `cargo test --workspace`; it re-parents and keeps the `target/` lock, so the next
     run trips the rule-9 guard with a 6-minute-old orphan. After aborting a gate, check
     `pgrep -x cargo` and `ps -eo pid,command | grep "[r]un_ci_locally"` and clear both
