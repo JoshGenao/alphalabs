@@ -1,0 +1,73 @@
+{
+  "$comment": [
+    "Tracked permission baseline. Every alphalabs-wt-<id> worktree inherits it.",
+    "",
+    "Before this existed, the only allowlist was the gitignored settings.local.json,",
+    "which had accreted to 159 entries — 121 of them with no wildcard at all, each",
+    "matching exactly one command that will never be run again, e.g.",
+    "  Bash(rustfmt --check --edition 2021 crates/atp-simulation/src/metrics.rs ...)",
+    "Being gitignored, none of it reached the 49 worktrees, so every session",
+    "re-prompted from zero while the list grew unbounded in the primary checkout.",
+    "",
+    "These are patterns, not incantations: the read-only inspection and the standard",
+    "build/test/lint commands the coding prompt tells every session to run. Anything",
+    "that mutates shared state is deliberately absent — `git push`, the pool's write",
+    "subcommands, docker, and anything touching IB ports stay prompted.",
+    "",
+    "One-off approvals still land in .claude/settings.local.json, which stays",
+    "gitignored. If an entry there proves recurring, promote it here."
+  ],
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(sed -n:*)",
+      "Bash(awk:*)",
+      "Bash(diff:*)",
+      "Bash(pwd)",
+      "Bash(which:*)",
+      "Bash(command -v:*)",
+      "Bash(pgrep:*)",
+
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git worktree list:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+
+      "Bash(./init.sh)",
+      "Bash(./init.sh --full)",
+      "Bash(tools/verify_contracts.sh:*)",
+      "Bash(tools/run_ci_locally.sh)",
+      "Bash(tools/cleanup_agents.sh --dry-run:*)",
+
+      "Bash(python3 tools/:*)",
+      "Bash(.venv/bin/python3 tools/:*)",
+      "Bash(python3 -m pytest:*)",
+      "Bash(.venv/bin/python3 -m pytest:*)",
+      "Bash(pytest:*)",
+
+      "Bash(ruff check:*)",
+      "Bash(ruff format:*)",
+      "Bash(mypy:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo build:*)",
+      "Bash(rustfmt:*)",
+
+      "Read(//Users/joshgenao/Documents/Programming/Python/**)"
+    ]
+  }
+}

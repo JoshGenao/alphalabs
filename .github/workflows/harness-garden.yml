@@ -1,0 +1,97 @@
+# Weekly harness gardening — reports, never changes.
+#
+# Every entropy figure the audit found had to be found by reading: 49 worktrees and
+# 93 GB on disk, 24 merged agent/* branches with no worktree, 3 plan files for closed
+# features, 57,131 leaked $TMPDIR/atp-* scratch dirs (1.1 GB) that made four
+# atp-data tests fail in a crate the diff never touched, a root README pointing at
+# two files that never existed, and a critic prompt citing a renumbered step.
+#
+# The tools to detect all of that now exist. This is the trigger they lacked — a
+# collector nobody runs is not a collector.
+#
+# It deliberately changes NOTHING: it opens or updates one issue. Gardening that
+# rewrites the repository unattended is how a weekend becomes an archaeology
+# project; the operator decides what to collect.
+
+name: harness-garden
+
+on:
+  schedule:
+    # Mondays, 07:00 UTC. Before the week's work, not during it.
+    - cron: "0 7 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  garden:
+    name: Report accumulated entropy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # ratchet:actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # ratchet:actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Each step is `|| true`: a gardening report that fails on its first finding
+      # reports nothing, and the whole point is to see all of it at once.
+      - name: Collect
+        id: collect
+        run: |
+          {
+            echo '## Harness gardening — automated weekly report'
+            echo
+            echo 'Nothing here has been changed. These are counts.'
+            echo
+
+            echo '### Repository entropy'
+            echo '```'
+            tools/cleanup_agents.sh --dry-run --json 2>/dev/null || echo '{"error":"cleanup_agents.sh failed"}'
+            echo '```'
+            echo 'Collect with `tools/cleanup_agents.sh` (add `--scratch` for the temp dirs).'
+            echo
+
+            echo '### Documentation references'
+            echo '```'
+            python3 tools/docs_link_check.py 2>&1 | head -40 || true
+            echo '```'
+            echo
+
+            echo '### Gate registry'
+            echo '```'
+            python3 tools/gates_registry_check.py 2>&1 | head -20 || true
+            echo '```'
+            echo
+
+            echo '### Playbook harvest'
+            echo '```'
+            python3 tools/playbook_harvest.py 2>&1 | head -60 || true
+            echo '```'
+            echo 'Run `/harvest-playbooks` to act on new material.'
+          } > report.md
+          cat report.md
+
+      - name: Open or update the gardening issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          TITLE="Harness gardening — weekly report"
+          # One issue, updated — not 52 issues a year.
+          NUM="$(gh issue list --repo "$REPO" --state open --search "$TITLE in:title" \
+                   --json number --jq '.[0].number // empty')"
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --repo "$REPO" --body-file report.md
+            echo "commented on #$NUM"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" --body-file report.md
+          fi

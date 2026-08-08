@@ -3,6 +3,10 @@
 # scheduled/cloud run. Same reason CLAUDE.md and docs/playbooks/ are tracked.
 .claude/*
 !.claude/skills/
+# The permission baseline is project tooling, same reasoning as skills/: an
+# allowlist a worktree cannot see is an allowlist that re-prompts 49 times.
+# settings.local.json stays ignored — that is where one-offs belong.
+!.claude/settings.json
 .vscode/
 
 .DS_Store
