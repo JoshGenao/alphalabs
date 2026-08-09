@@ -268,11 +268,16 @@ def record_cooldown(summary: str, now: datetime | None = None) -> datetime | Non
 # Reviewers (I/O)
 # ----------------------------------------------------------------------------
 def run_codex(base_ref: str) -> tuple[int, str]:
+    # ATP_REVIEW_DISPATCHED tells codex_review.sh that THIS process will record the
+    # round, so it must not record it too. Without the flag a dispatched round would
+    # land in review.jsonl twice and inflate every count derived from it.
+    env = {**os.environ, "ATP_REVIEW_DISPATCHED": "1"}
     proc = subprocess.run(
         ["bash", str(CODEX_REVIEW), base_ref],
         cwd=str(REPO_ROOT),
         text=True,
         capture_output=True,
+        env=env,
     )
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
@@ -308,6 +313,34 @@ def run_claude_fallback(base_ref: str, timeout: int = 900) -> tuple[int, str]:
 # ----------------------------------------------------------------------------
 # Orchestration
 # ----------------------------------------------------------------------------
+# The two reviewers describe a finding differently, and the first version of this
+# module only understood one of them. A real Codex round recorded rules=['?'] for
+# every finding and blocking_rules=[] — silently gutting the promotion-candidate
+# mining that is the whole reason the rule ids are stored.
+#
+#   Claude fallback : {"rule": "meta:critic-self-modification", "severity": "block"}
+#   Codex           : {"title": "Missing feature/SRS trace", "severity": "high"}
+#
+# Neither is wrong; the record has to speak both. Same normalization the verdict
+# itself already gets in normalize_verdict().
+BLOCKING_SEVERITIES = {"block", "critical", "high"}
+
+
+def finding_rule(finding: dict) -> str:
+    """A stable-ish grouping key for a finding, whichever reviewer produced it."""
+    for key in ("rule", "title", "id", "type"):
+        value = str(finding.get(key) or "").strip()
+        if value:
+            # Titles are prose; lower-case and clip so the same class groups across
+            # rounds without turning the ledger into paragraphs.
+            return value[:80].lower()
+    return "?"
+
+
+def is_blocking(finding: dict) -> bool:
+    return str(finding.get("severity") or "").strip().lower() in BLOCKING_SEVERITIES
+
+
 def round_record(result: dict) -> dict:
     """The structured form of one review round.
 
@@ -325,10 +358,8 @@ def round_record(result: dict) -> dict:
         "n_findings": len(findings),
         # The rule ids are what P2-4 mines for defect classes worth promoting into
         # tools/critic_check.py — the loop the playbooks currently run by hand.
-        "rules": sorted({f.get("rule", "?") for f in findings}),
-        "blocking_rules": sorted(
-            {f.get("rule", "?") for f in findings if f.get("severity") == "block"}
-        ),
+        "rules": sorted({finding_rule(f) for f in findings}),
+        "blocking_rules": sorted({finding_rule(f) for f in findings if is_blocking(f)}),
         "reviewer_note": result.get("reviewer_note", ""),
     }
 
@@ -437,7 +468,30 @@ def main() -> int:
     ap.add_argument(
         "--force-claude", action="store_true", help="skip Codex, use the Claude reviewer"
     )
+    ap.add_argument(
+        "--record-round",
+        action="store_true",
+        help="read a reviewer payload on stdin and append it to this feature's "
+        "review.jsonl, then exit. For callers that run a reviewer themselves "
+        "(tools/codex_review.sh) so no round goes unrecorded.",
+    )
     args = ap.parse_args()
+
+    if args.record_round:
+        # A round the caller already ran. Normalize it the same way review() would,
+        # so a directly-invoked reviewer and a dispatched one produce the same ledger.
+        raw = sys.stdin.read()
+        payload = extract_json(raw)
+        if payload is None:
+            print("(no parsable verdict on stdin; nothing recorded)", file=sys.stderr)
+            return 0
+        result = normalize_verdict(payload, payload.get("reviewer", "codex"))
+        path = append_round(result)
+        print(
+            f"(recorded round -> {path})" if path else "(no ATP_FEATURE_ID; not recorded)",
+            file=sys.stderr,
+        )
+        return 0
 
     if args.status:
         return cmd_status()

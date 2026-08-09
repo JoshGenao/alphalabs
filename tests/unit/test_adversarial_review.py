@@ -218,3 +218,63 @@ def test_emit_returns_the_verdict_exit_code_regardless_of_telemetry(tmp_path, mo
     assert ar.emit(_result(verdict="block")) == 1
     assert ar.emit(_result(verdict="approve")) == 0
     assert ar.emit(_result(verdict="warn")) == 0
+
+
+# --- both reviewers' finding schemas ------------------------------------------
+# A real SRS-MD-003 session ran 7 Codex rounds and every one recorded rules=['?']
+# and blocking_rules=[]. Codex describes a finding with `title`/`severity: high`;
+# the Claude fallback uses `rule`/`severity: block`. Only the second was understood,
+# which silently gutted the promotion-candidate mining the rule ids exist for.
+def test_codex_findings_yield_a_rule_key():
+    f = {"title": "Re-execution corrupts argv grouping", "severity": "high", "body": "..."}
+    assert ar.finding_rule(f) == "re-execution corrupts argv grouping"
+    assert ar.is_blocking(f) is True
+
+
+def test_claude_findings_still_yield_their_rule_id():
+    f = {"rule": "meta:critic-self-modification", "severity": "block"}
+    assert ar.finding_rule(f) == "meta:critic-self-modification"
+    assert ar.is_blocking(f) is True
+
+
+@pytest.mark.parametrize(
+    "sev,blocking",
+    [
+        ("block", True),
+        ("critical", True),
+        ("high", True),
+        ("warn", False),
+        ("medium", False),
+        ("low", False),
+        ("info", False),
+        ("", False),
+    ],
+)
+def test_both_severity_vocabularies_are_understood(sev, blocking):
+    assert ar.is_blocking({"rule": "x", "severity": sev}) is blocking
+
+
+def test_a_finding_with_no_identifying_key_is_not_silently_dropped():
+    assert ar.finding_rule({"severity": "high", "body": "no title, no rule"}) == "?"
+
+
+def test_round_record_of_a_real_codex_round_is_not_all_question_marks():
+    """The exact shape that produced 7 useless ledger entries."""
+    rec = ar.round_record(
+        {
+            "verdict": "block",
+            "reviewer": "codex",
+            "findings": [
+                {"title": "Missing feature/SRS trace", "severity": "high"},
+                {"title": "Re-execution corrupts argv grouping", "severity": "high"},
+            ],
+        }
+    )
+    assert rec["rules"] == ["missing feature/srs trace", "re-execution corrupts argv grouping"]
+    assert len(rec["blocking_rules"]) == 2
+    assert "?" not in rec["rules"]
+
+
+def test_a_long_title_is_clipped_so_the_ledger_stays_groupable():
+    long_title = "x" * 200
+    assert len(ar.finding_rule({"title": long_title})) == 80

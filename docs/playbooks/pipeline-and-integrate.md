@@ -145,7 +145,18 @@ one `main`. Most of this playbook is about that sharing.
     `80fe849`, `ad43185`, `226d0a1` and the P0–P2 branches all landed. Say so
     explicitly in the commit rather than letting a `block` look like an approval —
     and never invent a `feature_list.json` entry to satisfy it. `(harness-reexec r2)`
-30. **Killing a gate run leaves its children alive.** Stopping the wrapper shell does not
+30. **Telemetry only sees the path it was wired into, and only the shape its author
+    imagined.** SRS-MD-003 ran its 7 judgment rounds through `tools/codex_review.sh`
+    directly — `append_round` lives in `adversarial_review.py`, so none reached
+    `.harness/runs/<id>/review.jsonl`; the note claimed an APPROVE at round 5 the
+    ledger had no trace of, and `note_rounds_mismatch` passed only because 7
+    hand-typed happened to equal 7 unrelated recorded. And the rounds it DID record
+    stored `rules=['?']`, because Codex emits `{"title", "severity": "high"}` while
+    the Claude fallback emits `{"rule", "severity": "block"}` and only the latter was
+    read. Two entry points to one gate with one instrumented is the same defect as
+    three divergent check lists. Prefer `tools/adversarial_review.py`: it dispatches,
+    fails over, and records. `(SRS-MD-003, found live — both halves)`
+31. **Killing a gate run leaves its children alive.** Stopping the wrapper shell does not
     stop `cargo test --workspace`; it re-parents and keeps the `target/` lock, so the next
     run trips the rule-9 guard with a 6-minute-old orphan. After aborting a gate, check
     `pgrep -x cargo` and `ps -eo pid,command | grep "[r]un_ci_locally"` and clear both

@@ -39,4 +39,21 @@ fi
 
 # --wait → foreground; --json → structured verdict payload (parsed by
 # tools/adversarial_review.py); --base → branch review vs the integrated main.
-exec node "$companion" adversarial-review --wait --json --base "$BASE_REF" "$(cat "$PROMPT_FILE")"
+#
+# NOT `exec`: the output has to be recorded before it is handed on. A real
+# SRS-MD-003 session ran its rounds through this script directly, so none of them
+# reached .harness/runs/<id>/review.jsonl — the note claimed an APPROVE at round 5
+# that the ledger had no trace of, and the round-count guard passed only by
+# coincidence. Two entry points to one gate, one instrumented, is the same defect
+# class as the three divergent check lists.
+out="$(node "$companion" adversarial-review --wait --json --base "$BASE_REF" "$(cat "$PROMPT_FILE")")"
+rc=$?
+
+# The dispatcher records its own rounds; recording here too would double-count.
+if [[ "${ATP_REVIEW_DISPATCHED:-0}" != "1" ]]; then
+  printf '%s' "$out" | python3 "${ROOT_DIR}/tools/adversarial_review.py" --record-round || true
+fi
+
+printf '%s
+' "$out"
+exit "$rc"
