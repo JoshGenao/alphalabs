@@ -130,7 +130,23 @@ pub struct FeedStep {
     /// Whether a broker round trip was attempted, and whether it answered.
     pub broker_probe: BrokerProbe,
     /// The source failure this step hit, if any. The step still evaluated.
+    ///
+    /// A failed broker round trip lands here too, so this alone cannot tell a
+    /// driver WHICH call failed — see [`FeedStep::poll_failed`].
     pub source_error: Option<FeedError>,
+    /// Whether the TICK DRAIN specifically failed, as opposed to the broker
+    /// probe.
+    ///
+    /// The two failures need opposite pacing, which is the only reason this is
+    /// separate from [`FeedStep::source_error`]. A refused drain returns
+    /// immediately, so a driver that loops on it spins — that is what
+    /// [`degraded_backoff`] exists to slow down. A failed round trip has
+    /// already spent its own wire deadline (15 s on the IB transport, the
+    /// entire staleness budget) before it reports, so it is self-pacing;
+    /// sleeping after it as well would only push the next snapshot write
+    /// further past the threshold the dashboard ages the file by, and turn the
+    /// per-feed stale evidence into a monitor-unavailable cell.
+    pub poll_failed: bool,
     /// The instant these verdicts were evaluated at — read AFTER the step's
     /// blocking I/O (see [`LiveFeedLoop::step`]).
     ///
@@ -206,6 +222,21 @@ impl<S: LiveTickSource> LiveFeedLoop<S> {
                  {heartbeat_cadence:?} — one drain would consume the whole probe interval"
             )));
         }
+        // Each parameter being individually under the threshold is NOT enough:
+        // what the dashboard ages the snapshot by is the interval BETWEEN
+        // writes, and a degraded loop spends a pause plus a drain in that
+        // interval. `cadence=14999ms, poll_budget=14998ms` passes both checks
+        // above and still leaves the file older than the 15 s guard, which the
+        // reader reports as UNAVAILABLE rather than as the per-feed stale
+        // verdict the acceptance criteria ask for. Refuse it here, where every
+        // driver of this loop inherits the refusal.
+        if poll_budget + heartbeat_cadence >= threshold {
+            return Err(FeedError::Configuration(format!(
+                "poll budget {poll_budget:?} plus heartbeat cadence {heartbeat_cadence:?} \
+                 reaches the {threshold:?} staleness threshold — a degraded step could \
+                 leave the snapshot older than the threshold it is meant to report on"
+            )));
+        }
         let mut monitor = HeartbeatFreshnessMonitor::new();
         for key in watched {
             monitor.watch_security(key);
@@ -244,6 +275,7 @@ impl<S: LiveTickSource> LiveFeedLoop<S> {
     ) -> FeedStep {
         let now_ns = clock();
         let mut source_error = None;
+        let mut poll_failed = false;
         let mut observed_ticks = 0;
 
         match self.source.poll_observations(self.poll_budget) {
@@ -256,7 +288,10 @@ impl<S: LiveTickSource> LiveFeedLoop<S> {
             // Record the fault and carry on to evaluation: an unreported,
             // unevaluated step would leave the last verdict standing as if it
             // were current.
-            Err(err) => source_error = Some(err),
+            Err(err) => {
+                source_error = Some(err);
+                poll_failed = true;
+            }
         }
 
         let broker_probe = if self.probe_due(now_ns) {
@@ -306,6 +341,7 @@ impl<S: LiveTickSource> LiveFeedLoop<S> {
             observed_ticks,
             broker_probe,
             source_error,
+            poll_failed,
             evaluated_at_ns,
         }
     }
@@ -317,10 +353,182 @@ impl<S: LiveTickSource> LiveFeedLoop<S> {
         }
     }
 
+    /// How long a driver should pause before the next [`step`](Self::step),
+    /// given what this one did.
+    ///
+    /// The whole pacing rule lives here, with the timing state it depends on,
+    /// rather than in each driver. Three conditions, and every one of them is
+    /// about the same quantity — the interval between snapshot WRITES, which
+    /// the dashboard ages the file by and reports `UNAVAILABLE` beyond:
+    ///
+    /// 1. **Only a failed tick drain is paced.** It returns immediately, so a
+    ///    driver looping on it spins. A failed broker round trip has already
+    ///    spent its own wire deadline before reporting and paces itself.
+    /// 2. **The pause never crosses the next broker probe.** A probe can sit
+    ///    until its transport deadline — 15 s on the IB wire, the entire
+    ///    staleness budget — so a step that runs one has already committed the
+    ///    whole interval, and a pause in front of it is precisely what pushes
+    ///    the snapshot past the age guard. Pausing strictly less than the time
+    ///    remaining until the probe is due keeps the pause and the probe in
+    ///    different intervals instead of adding them together. A probe due now
+    ///    yields no pause at all.
+    /// 3. Otherwise [`degraded_backoff`], which reserves the following drain.
+    ///
+    /// Probes are due once per cadence, so a source outage is still paced on
+    /// the steps in between — which is where the spin actually happens.
+    pub fn pace_after(&self, step: &FeedStep, consecutive_poll_failures: u32) -> Duration {
+        if !step.poll_failed {
+            return Duration::ZERO;
+        }
+        let backoff = degraded_backoff(
+            consecutive_poll_failures,
+            self.heartbeat_cadence(),
+            self.poll_budget,
+        );
+        backoff.min(self.until_next_probe(step.evaluated_at_ns))
+    }
+
+    /// How long a driver may wait before the broker probe comes due, measured
+    /// from `now_ns` and kept STRICTLY short of it so a pause and a probe never
+    /// land in the same write interval. Zero once a probe is due.
+    fn until_next_probe(&self, now_ns: i64) -> Duration {
+        let Some(last) = self.last_probe_ns else {
+            return Duration::ZERO; // never probed: the next step will
+        };
+        let elapsed = now_ns.saturating_sub(last);
+        let remaining = self.heartbeat_cadence_ns.saturating_sub(elapsed);
+        u64::try_from(remaining)
+            .map(Duration::from_nanos)
+            .unwrap_or(Duration::ZERO)
+            .saturating_sub(Duration::from_millis(1))
+    }
+
+    /// The configured broker-probe interval.
+    pub fn heartbeat_cadence(&self) -> Duration {
+        Duration::from_nanos(u64::try_from(self.heartbeat_cadence_ns).unwrap_or(0))
+    }
+
     /// Read-only access to the monitor (health/status reads never publish).
     pub fn monitor(&self) -> &HeartbeatFreshnessMonitor {
         &self.monitor
     }
+}
+
+/// How long a driver should pause after `consecutive_failures` degraded steps.
+///
+/// [`LiveFeedLoop::step`] never sleeps — it is clock-free, and the caller owns
+/// pacing. In the healthy case that pacing is implicit: the tick drain blocks
+/// for its poll budget, so a step cannot complete faster than that. **A failing
+/// source breaks the assumption**: a refused connection returns immediately, so
+/// a driver that relies on the drain to pace it spins as fast as the failure
+/// comes back — burning CPU and its step budget during exactly the outage this
+/// feature exists to report. (Observed in the 2026-08-03 live window: with the
+/// feed cut, a 400-step budget was gone in seconds.)
+///
+/// The delay doubles from `cadence / 8` and is capped by
+/// [`max_degraded_backoff`]. **What must stay below the threshold is the
+/// interval between snapshot WRITES, not the sleep on its own** — the pause and
+/// the step that follows it are both part of that interval, so capping the
+/// pause at the cadence alone is not enough. A driver that slept a full cadence
+/// and then spent a full poll budget draining would leave the dashboard reading
+/// a snapshot older than its own age guard, and the operator would get
+/// `UNAVAILABLE` in place of the per-feed stale evidence this feature exists to
+/// produce. So the cap subtracts the poll budget from the threshold, and
+/// [`LiveFeedLoop::new`] refuses a configuration that leaves no room at all.
+///
+/// The driver still evaluates and rewrites the snapshot on EVERY step, so a
+/// backed-off loop keeps re-dating the file rather than going quiet.
+///
+/// Zero failures means zero delay: this only paces a loop that is already
+/// degraded, and it never re-times the healthy path that was live-verified.
+///
+/// NOT covered by this bound: the broker round trip's own wire deadline, which
+/// the transport owns and this crate cannot see (the IB one is 15 s — the whole
+/// staleness budget). A probe that sits to its deadline can stretch a write
+/// interval past the threshold no matter what this returns. That predates this
+/// pacing; see `heartbeat_freshness_contract.live_feed.write_interval` for the
+/// exposure and its owner.
+pub fn degraded_backoff(
+    consecutive_failures: u32,
+    cadence: Duration,
+    poll_budget: Duration,
+) -> Duration {
+    if consecutive_failures == 0 {
+        return Duration::ZERO;
+    }
+    let cap = max_degraded_backoff(cadence, poll_budget);
+    let base = cadence / 8;
+    // Saturating: a long outage must clamp to the cap, never wrap to a short
+    // delay (which would silently restore the spin this function exists to stop).
+    let delay = base
+        .checked_mul(
+            1_u32
+                .checked_shl(consecutive_failures - 1)
+                .unwrap_or(u32::MAX),
+        )
+        .unwrap_or(cap);
+    delay.min(cap)
+}
+
+/// Slack reserved for evaluating and durably writing the snapshot, on top of
+/// the two blocking calls a step makes. The write is an fsync + rename, so it
+/// is small — but budgeting zero for it would put the bound exactly at the
+/// threshold it has to stay under.
+pub const SNAPSHOT_WRITE_SLACK: Duration = Duration::from_millis(500);
+
+/// The longest a broker round trip's REPLY may be waited on if the step that
+/// runs it is still to rewrite the snapshot inside the staleness threshold.
+///
+/// A transport's generic request/reply deadline is NOT this number. The IB one
+/// is 15 s — sized for order operations, and equal to the entire staleness
+/// budget — so a probe allowed to run that long guarantees the write interval
+/// containing it exceeds the threshold, and the dashboard shows `UNAVAILABLE`
+/// where the acceptance criteria require a per-feed stale verdict. A liveness
+/// probe has to be bounded by the question it answers: "did the gateway reply
+/// in time to still report on time?"
+///
+/// `send_allowance` is the caller's worst case for getting the REQUEST out —
+/// the transport's socket write timeout, which a reply deadline does not cover
+/// because it only starts once the request is away. A wedged peer can block a
+/// send for that whole timeout, so leaving it out of the budget understates the
+/// interval by exactly that much. It is a parameter rather than a constant
+/// because the value belongs to the transport, which this crate must not name
+/// (SRS-ARCH-001 dependency direction).
+///
+/// A composition layer that hands the result to its transport closes the gap;
+/// one that uses the transport default does not.
+pub fn broker_probe_deadline(poll_budget: Duration, send_allowance: Duration) -> Duration {
+    Duration::from_millis(HEARTBEAT_STALENESS_THRESHOLD_MS)
+        .saturating_sub(poll_budget)
+        .saturating_sub(send_allowance)
+        .saturating_sub(SNAPSHOT_WRITE_SLACK)
+        .saturating_sub(Duration::from_millis(1)) // strictly below, never equal
+}
+
+/// Whether a drain budget and a send allowance leave ANY room for a reply
+/// inside the staleness threshold.
+///
+/// [`broker_probe_deadline`] saturates at zero, and zero is not a usable
+/// deadline — it is an unsatisfiable configuration wearing a number. A probe
+/// given no time fails instantly, every time, and the broker line then ages
+/// into a staleness alarm the monitor manufactured itself. A composition layer
+/// must refuse to start instead of publishing that.
+pub fn write_interval_fits(poll_budget: Duration, send_allowance: Duration) -> bool {
+    broker_probe_deadline(poll_budget, send_allowance) > Duration::ZERO
+}
+
+/// The largest pause that still leaves a degraded step room to rewrite the
+/// snapshot inside the staleness threshold.
+///
+/// `poll_budget` is subtracted because the pause is followed by a step that may
+/// spend its whole drain budget before the next write. The result is also held
+/// at or below `cadence`: pausing longer than the probe interval would starve
+/// the broker round trip that the cadence exists to schedule.
+pub fn max_degraded_backoff(cadence: Duration, poll_budget: Duration) -> Duration {
+    Duration::from_millis(HEARTBEAT_STALENESS_THRESHOLD_MS)
+        .saturating_sub(poll_budget)
+        .saturating_sub(Duration::from_millis(1)) // strictly below, never equal
+        .min(cadence)
 }
 
 fn duration_to_ns(duration: Duration) -> i64 {
@@ -767,6 +975,282 @@ mod tests {
                 .any(|event| event.transition == HeartbeatTransition::BecameStale),
             "the flip must be published, not merely rendered"
         );
+    }
+
+    #[test]
+    fn no_backoff_until_a_step_actually_fails() {
+        // The healthy path is paced by the drain blocking for its poll budget,
+        // and that path was verified against a live gateway. Pacing it here
+        // would re-time proven behaviour to solve a problem it does not have.
+        assert_eq!(
+            degraded_backoff(0, Duration::from_millis(5_000), Duration::from_millis(500)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn backoff_grows_with_consecutive_failures() {
+        let cadence = Duration::from_millis(5_000);
+        let budget = Duration::from_millis(500);
+        let first = degraded_backoff(1, cadence, budget);
+        let second = degraded_backoff(2, cadence, budget);
+        let third = degraded_backoff(3, cadence, budget);
+
+        assert!(first > Duration::ZERO, "a failed step must pause at all");
+        assert!(second > first);
+        assert!(third > second);
+    }
+
+    #[test]
+    fn a_step_that_probes_still_rewrites_the_snapshot_inside_the_threshold() {
+        // The write interval that CONTAINS a broker probe: drain + probe +
+        // write slack. A transport default deadline (15 s on the IB wire — the
+        // whole staleness budget) makes this interval exceed the threshold by
+        // construction, whatever the poll budget is, and the dashboard reports
+        // UNAVAILABLE instead of the broker-stale verdict the AC requires. The
+        // composition layer must hand the transport THIS deadline instead.
+        let threshold = Duration::from_millis(HEARTBEAT_STALENESS_THRESHOLD_MS);
+        for budget_ms in [1_u64, 500, 1_500, 5_000, 14_000] {
+            for send_ms in [0_u64, 1, 5_000, 14_000] {
+                let poll_budget = Duration::from_millis(budget_ms);
+                let send = Duration::from_millis(send_ms);
+                // Everything a step can spend before the next write: getting
+                // the request out, waiting for the reply, draining ticks, and
+                // persisting the snapshot.
+                if !write_interval_fits(poll_budget, send) {
+                    // Unsatisfiable: the drain and the send already spend the
+                    // whole budget. Reported as such so a composition refuses
+                    // to start, rather than handed a zero deadline that would
+                    // fail every probe and manufacture its own staleness.
+                    assert_eq!(broker_probe_deadline(poll_budget, send), Duration::ZERO);
+                    continue;
+                }
+                let worst_case = poll_budget
+                    + send
+                    + broker_probe_deadline(poll_budget, send)
+                    + SNAPSHOT_WRITE_SLACK;
+                assert!(
+                    worst_case < threshold,
+                    "a {budget_ms} ms drain, a {send_ms} ms send and a bounded probe \
+                     plus the write slack give {worst_case:?}, at or past the \
+                     {threshold:?} age guard"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_probe_deadline_is_never_the_whole_freshness_budget() {
+        // The specific shape of the bug: a probe allowed to run as long as the
+        // threshold cannot leave room for anything else in its own interval.
+        let threshold = Duration::from_millis(HEARTBEAT_STALENESS_THRESHOLD_MS);
+        let send = Duration::from_secs(5);
+        assert!(broker_probe_deadline(Duration::from_millis(1_500), send) < threshold);
+        assert_eq!(
+            broker_probe_deadline(threshold, send),
+            Duration::ZERO,
+            "a drain that spends the entire budget must leave the probe none of it"
+        );
+        assert_eq!(
+            broker_probe_deadline(Duration::from_millis(1_500), threshold),
+            Duration::ZERO,
+            "a send allowance that spends the whole budget leaves the reply none"
+        );
+        assert!(
+            write_interval_fits(Duration::from_millis(1_500), Duration::from_secs(5)),
+            "the shipped defaults must leave room for a reply"
+        );
+        assert!(
+            !write_interval_fits(Duration::from_millis(1_500), threshold),
+            "an unsatisfiable budget must be reported, not rounded to zero"
+        );
+    }
+
+    #[test]
+    fn a_due_broker_probe_cancels_the_pause_before_it() {
+        // The composite case: the drain failed (so pacing would normally
+        // apply) AND the next step will run a probe that can sit until its
+        // transport deadline — 15 s on the IB wire, the entire staleness
+        // budget. The interval to the next write is already fully committed,
+        // so a pause on top is exactly what pushes the snapshot past the age
+        // guard and turns per-feed stale evidence into UNAVAILABLE.
+        let mut feed = loop_over(ScriptedSource::new(
+            vec![
+                Err(FeedError::Source("connection refused".to_string())),
+                Err(FeedError::Source("connection refused".to_string())),
+            ],
+            vec![Ok(()), Ok(())],
+        ));
+        let sink = CountingSink::default();
+
+        // The first step probes (none has run yet). A full cadence is then
+        // left before the next one, so the spinning drain IS paced — and by
+        // strictly less than that remaining time, so the pause cannot run into
+        // the probe.
+        let first = feed.step(|| SECOND_NS, &sink);
+        assert!(first.poll_failed);
+        let paused = feed.pace_after(&first, 1);
+        assert!(
+            paused > Duration::ZERO,
+            "with the probe a whole cadence away, the spinning drain must be paced"
+        );
+        assert!(
+            paused < Duration::from_secs(5),
+            "the pause {paused:?} reached the probe it must stay short of"
+        );
+
+        // A step that lands with the probe IMMINENT — 100 ms of the cadence
+        // left. The pause must shrink to fit inside that gap rather than stack
+        // on top of a probe that may then take its whole transport deadline.
+        // The backoff alone would be 1.25 s here, so a rule that ignored the
+        // probe would put the pause and the probe in the same write interval.
+        let almost = SECOND_NS + 5 * SECOND_NS - SECOND_NS / 10;
+        let second = feed.step(|| almost, &sink);
+        assert!(second.poll_failed);
+        assert_eq!(
+            second.broker_probe,
+            BrokerProbe::NotDue,
+            "the probe is imminent but has not run yet — that is the case under test"
+        );
+        let paused = feed.pace_after(&second, 2);
+        assert!(
+            paused < Duration::from_millis(100),
+            "pause {paused:?} runs into a probe that is only 100 ms away"
+        );
+    }
+
+    #[test]
+    fn a_failed_broker_probe_is_not_a_step_a_driver_should_pause_after() {
+        // The broker round trip spends its own wire deadline before it reports
+        // — 15 s on the IB transport, the entire staleness budget. It is
+        // already self-pacing, so a driver that also slept after it would push
+        // the next snapshot write further past the age guard the dashboard
+        // reads the file by, and the operator would get UNAVAILABLE in place of
+        // the per-feed stale verdict the acceptance criteria require.
+        let mut feed = loop_over(ScriptedSource::new(
+            vec![Ok(Vec::new())],
+            vec![Err(FeedError::Source("no answer".to_string()))],
+        ));
+        let sink = CountingSink::default();
+        let step = feed.step(|| SECOND_NS, &sink);
+
+        assert_eq!(step.broker_probe, BrokerProbe::Failed);
+        assert!(step.source_error.is_some(), "the fault is still reported");
+        assert!(
+            !step.poll_failed,
+            "a broker-probe failure must not be counted as the spinning drain"
+        );
+        assert_eq!(
+            degraded_backoff(
+                u32::from(step.poll_failed),
+                Duration::from_secs(5),
+                Duration::from_millis(1_500)
+            ),
+            Duration::ZERO,
+            "a broker timeout must add NO pause to the write interval"
+        );
+    }
+
+    #[test]
+    fn a_failed_drain_is_the_step_a_driver_must_pause_after() {
+        // The other half of the discriminator: a refused drain returns at once,
+        // so without a pause the loop spins through its step budget during the
+        // outage it is supposed to be reporting.
+        let mut feed = loop_over(ScriptedSource::new(
+            vec![Err(FeedError::Source("connection refused".to_string()))],
+            vec![Ok(())],
+        ));
+        let sink = CountingSink::default();
+        let step = feed.step(|| SECOND_NS, &sink);
+
+        assert!(step.poll_failed, "a refused drain must be paced");
+        assert!(
+            degraded_backoff(
+                u32::from(step.poll_failed),
+                Duration::from_secs(5),
+                Duration::from_millis(1_500)
+            ) > Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn a_pause_plus_a_drain_that_reaches_the_threshold_is_refused() {
+        // Both values are individually legal — cadence is under the threshold
+        // and the poll budget is under the cadence — but a degraded step pauses
+        // and THEN drains, so the snapshot would be rewritten less often than
+        // the 15 s guard the dashboard ages it by, and the operator would read
+        // UNAVAILABLE instead of a per-feed stale verdict.
+        let error = LiveFeedLoop::new(
+            ScriptedSource::new(vec![], vec![]),
+            vec![aapl()],
+            Duration::from_millis(14_998),
+            Duration::from_millis(14_999),
+        )
+        .expect_err("a sum that reaches the threshold must be refused");
+        assert!(
+            matches!(&error, FeedError::Configuration(detail) if detail.contains("staleness threshold")),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn the_write_interval_stays_below_the_threshold_at_the_accepted_upper_bounds() {
+        // The invariant the refusal above exists to protect, checked on the
+        // configurations that ARE accepted: pause + drain must still leave the
+        // snapshot younger than the threshold.
+        let threshold = Duration::from_millis(HEARTBEAT_STALENESS_THRESHOLD_MS);
+        for (cadence_ms, budget_ms) in [(5_000_u64, 1_500_u64), (14_000, 999), (200, 100), (2, 1)] {
+            let cadence = Duration::from_millis(cadence_ms);
+            let poll_budget = Duration::from_millis(budget_ms);
+            assert!(
+                LiveFeedLoop::new(
+                    ScriptedSource::new(vec![], vec![]),
+                    vec![aapl()],
+                    poll_budget,
+                    cadence,
+                )
+                .is_ok(),
+                "{cadence_ms}/{budget_ms} should be an accepted configuration"
+            );
+            for failures in [1_u32, 8, 64, u32::MAX] {
+                let worst_case = degraded_backoff(failures, cadence, poll_budget) + poll_budget;
+                assert!(
+                    worst_case < threshold,
+                    "cadence {cadence_ms} ms + budget {budget_ms} ms after {failures} failures \
+                     gives a {worst_case:?} write interval, at or past the {threshold:?} guard"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn backoff_never_delays_an_evaluation_past_the_staleness_threshold() {
+        // THE safety property, held for EVERY pair a caller might pass — not
+        // only the ones `LiveFeedLoop::new` accepts. `degraded_backoff` is
+        // public, so its own contract has to be total: a backoff that outgrew
+        // the threshold would suppress the detection it is pacing, and an
+        // arithmetic overflow that wrapped would silently restore the spin.
+        let threshold = Duration::from_millis(HEARTBEAT_STALENESS_THRESHOLD_MS);
+        for cadence_ms in [1_u64, 250, 5_000, HEARTBEAT_STALENESS_THRESHOLD_MS - 1] {
+            let cadence = Duration::from_millis(cadence_ms);
+            for budget_ms in [1_u64, 100, 1_500, cadence_ms.saturating_sub(1).max(1)] {
+                let poll_budget = Duration::from_millis(budget_ms);
+                for failures in [1_u32, 2, 5, 33, 64, 1_000, u32::MAX] {
+                    let delay = degraded_backoff(failures, cadence, poll_budget);
+                    assert!(
+                        delay <= cadence,
+                        "backoff {delay:?} after {failures} failures exceeded the \
+                         {cadence:?} cadence it must stay within"
+                    );
+                    assert!(
+                        delay + poll_budget < threshold,
+                        "backoff {delay:?} plus a {poll_budget:?} drain reaches the \
+                         {threshold:?} staleness threshold — the snapshot would be \
+                         rewritten less often than the guard that ages it"
+                    );
+                }
+            }
+        }
     }
 
     fn broker_status(step: &FeedStep) -> &HeartbeatStatus {

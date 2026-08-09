@@ -38,7 +38,13 @@ every subsequent poll until it lands (so a transient sink failure during a
 brief stale incident loses neither the incident nor its recovery), the
 outage is surfaced as ``log_write_ok: false`` until the queue drains, and a
 bounded queue under sustained failure drops oldest-first with an explicit
-``dropped_log_records`` count — honest loss accounting, never silent.
+``dropped_log_records`` count — honest loss accounting, never silent. That
+per-flip memory is per-PROCESS, and the live producer's snapshot carries a
+journal of past flips, so a restarted dashboard would re-announce incidents it
+never observed; the durable trail is read back once on first use to seed the
+memory from the records it already holds. When that read fails the provider
+falls back to re-announcing rather than risk suppressing a record that was
+never written, and reports it as ``audit_dedup_seeded: false``.
 ``SEQUENCE_GAP`` lines the CLI may also emit belong to SRS-MD-007's logging
 seam and are NOT written here — they still fold into each line's merged
 ``stale`` verdict.
@@ -347,6 +353,32 @@ def _event_instant(event: dict[str, object]) -> int:
     return int(raw) if isinstance(raw, int) else 0
 
 
+def _parse_transition_correlation_id(correlation_id: str) -> tuple[str, int] | None:
+    """Recover ``(feed, evaluated_at_ns)`` from a persisted heartbeat record.
+
+    The inverse of the ``md003:{feed}:{evaluated_at_ns}`` grammar
+    :meth:`HeartbeatFreshnessProvider._build_log_record` writes, which is what
+    lets the durable trail answer "have I already logged this flip?" without a
+    second bookkeeping file to keep in sync with it.
+
+    Feed tokens contain colons of their own (``market_data:AAPL``), so the
+    instant is split off the RIGHT. Anything that does not parse returns
+    ``None`` and is skipped rather than guessed at — a foreign correlation id
+    is not evidence about this provider's trail.
+    """
+
+    prefix, sep, rest = correlation_id.partition(":")
+    if prefix != "md003" or not sep:
+        return None
+    feed, sep, instant = rest.rpartition(":")
+    if not sep or not feed:
+        return None
+    try:
+        return feed, int(instant)
+    except ValueError:
+        return None
+
+
 def _require_monitored_feeds(statuses: list[StatusRow], origin: str) -> None:
     """SYS-39's three fail-closed invariants on any source's row set.
 
@@ -637,6 +669,16 @@ class HeartbeatFreshnessProvider:
         # older than every entry in it can never be offered again.
         self._logged_transitions: set[tuple[str, str, int]] = set()
         self._transition_order: list[tuple[str, str, int]] = []
+        # Both de-duplication structures above are per-PROCESS, and the live
+        # producer's snapshot carries a journal of PAST flips — so a restarted
+        # dashboard would start with an empty memory, replay that journal, and
+        # write a second audit record for every incident it never observed
+        # (seen in the 2026-08-03 live window). The durable trail is its own
+        # authority on what has already been logged: it is read back once, on
+        # first use, to seed both. Lazily rather than in __init__ so that
+        # mounting stays cheap and an unreadable store cannot break boot.
+        self._trail_seeded = False
+        self._trail_seed_failed = False
         # The evaluation instant and full observation most recently
         # COMMITTED. The CLI runs outside the lock (a REST poll must not
         # stall behind the WS ticker's subprocess), so a slower, OLDER
@@ -717,6 +759,7 @@ class HeartbeatFreshnessProvider:
                 "log_write_ok": self._log_write_ok,
                 "pending_log_records": len(self._pending_records),
                 "dropped_log_records": self._dropped_log_records,
+                "audit_dedup_seeded": not self._trail_seed_failed,
                 "srs_ref": "SRS-MD-003",
             }
         statuses = observation["statuses"]
@@ -730,6 +773,11 @@ class HeartbeatFreshnessProvider:
             "log_write_ok": self._log_write_ok,
             "pending_log_records": len(self._pending_records),
             "dropped_log_records": self._dropped_log_records,
+            # False means the durable trail could not be read back, so this
+            # provider cannot tell its own past records from new ones and may
+            # duplicate them. Duplication is the safe direction — but a silent
+            # degraded mode is not, so it is reported.
+            "audit_dedup_seeded": not self._trail_seed_failed,
             "srs_ref": "SRS-MD-003",
         }
 
@@ -771,6 +819,11 @@ class HeartbeatFreshnessProvider:
         observation = self._source.observe()
         evaluated_at_ns = int(observation["evaluated_at_ns"])
         with self._lock:
+            # Before ANY record is written or suppressed, recover what the
+            # durable trail already holds — otherwise a restarted provider
+            # treats its own history as new.
+            if not self._trail_seeded:
+                self._seed_dedup_from_trail()
             # Monotonic-evaluation guard: concurrent callers (WS ticker, REST
             # poll, health poll) evaluate outside the lock, so completions can
             # arrive out of order. Only an observation NEWER than the last
@@ -867,6 +920,60 @@ class HeartbeatFreshnessProvider:
             # and the flag recovers only when every queued record has landed.
             self._log_write_ok = not self._pending_records
         return observation
+
+    def _seed_dedup_from_trail(self) -> None:
+        """Recover what has already been logged, from the durable trail itself.
+
+        Called once, under ``_lock``, before the first observation is committed.
+        Both de-duplication structures are in-memory, so without this a
+        restarted dashboard re-logs history through BOTH paths: the journal
+        replay writes a record for every past flip the snapshot still carries,
+        and the row loop's first-sighting branch re-announces an incident that
+        is still in progress.
+
+        **An unreadable trail is not an empty one** (CLAUDE.md rule 3), but the
+        two failure directions here are not symmetric: seeding nothing costs
+        duplicate audit records, while seeding from a partial read could
+        suppress a record that was never written. So a failed read falls back
+        to the previous replay behaviour deliberately — and says so through
+        ``audit_dedup_seeded: false`` on the snapshot, because a degraded mode
+        nobody can see is the thing this feature exists not to do.
+        """
+
+        self._trail_seeded = True
+        try:
+            records = self._log_store.read()
+        except Exception:  # noqa: BLE001 — a broken trail must not kill the tick
+            self._trail_seed_failed = True
+            return
+
+        transitions: list[tuple[str, str, int]] = []
+        for record in records:
+            if record.event_type not in _TRANSITION_EVENT_TYPES:
+                continue
+            parsed = _parse_transition_correlation_id(record.correlation_id)
+            if parsed is None:
+                continue
+            feed, instant = parsed
+            transitions.append((record.event_type, feed, instant))
+        transitions.sort(key=lambda entry: entry[2])
+
+        # Same bound the live path keeps, applied to the NEWEST keys: the
+        # producer's journal is smaller still, so a key dropped here can no
+        # longer be offered by any snapshot.
+        for key in transitions[-_MAX_LOGGED_TRANSITIONS:]:
+            self._remember_transition(key)
+
+        # The row loop's baseline is a per-feed state, not a set: seed it from
+        # each feed's LATEST persisted record so an incident already in the
+        # trail is not re-announced, while a genuine flip since then still logs.
+        latest: dict[str, tuple[int, bool]] = {}
+        for kind, feed, instant in transitions:
+            previous = latest.get(feed)
+            if previous is None or instant >= previous[0]:
+                latest[feed] = (instant, kind == "HEARTBEAT_STALE")
+        for feed, (_instant, stale) in latest.items():
+            self._logged_stale[feed] = stale
 
     def _remember_transition(self, key: tuple[str, str, int]) -> None:
         self._logged_transitions.add(key)

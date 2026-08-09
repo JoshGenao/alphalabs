@@ -711,3 +711,95 @@ def test_each_source_names_the_producer_that_actually_answered(tmp_path: Path) -
 
     assert CliHeartbeatSource(tmp_path / "obs.txt").data_source == "md003_heartbeat_cli"
     assert SnapshotHeartbeatSource(tmp_path / "snap.txt").data_source == "md003_live_feed_cli"
+
+
+# --------------------------------------------------------------------------- #
+# HeartbeatFreshnessProvider — de-duplication seeded from the durable trail
+# --------------------------------------------------------------------------- #
+
+
+def test_a_restarted_provider_does_not_relog_the_trail_it_already_wrote(
+    observations: Path, tmp_path: Path
+) -> None:
+    # The de-duplication state is per-process, so a dashboard restart used to
+    # re-announce an incident that was already in the audit trail — the same
+    # stale rows read as a first sighting to a provider with no memory.
+    segment = tmp_path / "system.jsonl"
+    first_store = JsonlLogStore(segment, log_class=LogClass.SYSTEM)
+    first = HeartbeatFreshnessProvider(
+        _source(observations, {"stdout": _stale_cli_output(NOW)}), log_store=first_store
+    )
+    first.heartbeat_events()
+    first_store.close()
+
+    after_restart = JsonlLogStore(segment, log_class=LogClass.SYSTEM)
+    second = HeartbeatFreshnessProvider(
+        _source(observations, {"stdout": _stale_cli_output(NOW)}), log_store=after_restart
+    )
+    snapshot = second.heartbeat_snapshot()
+    after_restart.close()
+
+    assert snapshot["audit_dedup_seeded"] is True
+    records = JsonlLogStore(segment, log_class=LogClass.SYSTEM).read()
+    assert [(r.event_type, r.source) for r in records] == [
+        ("HEARTBEAT_STALE", Source.MARKET_DATA),
+        ("HEARTBEAT_STALE", Source.IB_GATEWAY),
+    ], "the restarted provider duplicated an incident the trail already held"
+
+
+def test_a_restarted_provider_still_logs_a_flip_that_is_genuinely_new(
+    observations: Path, tmp_path: Path
+) -> None:
+    # The other direction, and the one that matters more: seeding must suppress
+    # only what is already recorded. A recovery that happened while the
+    # dashboard was down is still news and must reach the trail.
+    segment = tmp_path / "system.jsonl"
+    first_store = JsonlLogStore(segment, log_class=LogClass.SYSTEM)
+    first = HeartbeatFreshnessProvider(
+        _source(observations, {"stdout": _stale_cli_output(NOW)}), log_store=first_store
+    )
+    first.heartbeat_events()
+    first_store.close()
+
+    after_restart = JsonlLogStore(segment, log_class=LogClass.SYSTEM)
+    second = HeartbeatFreshnessProvider(
+        _source(observations, {"stdout": _fresh_cli_output(NOW + 1)}, now_ns=NOW + 1),
+        log_store=after_restart,
+    )
+    second.heartbeat_events()
+    after_restart.close()
+
+    records = JsonlLogStore(segment, log_class=LogClass.SYSTEM).read()
+    assert [(r.event_type, r.source) for r in records] == [
+        ("HEARTBEAT_STALE", Source.MARKET_DATA),
+        ("HEARTBEAT_STALE", Source.IB_GATEWAY),
+        ("HEARTBEAT_RECOVERED", Source.MARKET_DATA),
+        ("HEARTBEAT_RECOVERED", Source.IB_GATEWAY),
+    ]
+
+
+def test_an_unreadable_trail_replays_rather_than_losing_records(observations: Path) -> None:
+    # Unreadable is not empty (CLAUDE.md rule 3) — but the two directions cost
+    # different things here. Failing to de-duplicate writes a record twice;
+    # trusting a failed read could suppress one that was never written. So the
+    # fallback is deliberately the noisy one, and it is REPORTED rather than
+    # silently degrading.
+    class UnreadableStore:
+        def __init__(self) -> None:
+            self.written: list[object] = []
+
+        def read(self, **_filters: object) -> list[object]:
+            raise OSError("segment unreadable")
+
+        def write(self, record: object) -> None:
+            self.written.append(record)
+
+    store = UnreadableStore()
+    provider = HeartbeatFreshnessProvider(
+        _source(observations, {"stdout": _stale_cli_output(NOW)}), log_store=store
+    )
+    snapshot = provider.heartbeat_snapshot()
+
+    assert snapshot["audit_dedup_seeded"] is False, "a degraded mode must not be silent"
+    assert snapshot["log_write_ok"] is True
+    assert len(store.written) == 2, "records must still be written when de-dup is unavailable"

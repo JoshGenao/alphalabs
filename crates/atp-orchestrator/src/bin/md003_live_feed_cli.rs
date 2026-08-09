@@ -11,7 +11,7 @@
 //! ```text
 //! md003_live_feed_cli --snapshot <path> --symbol AAPL [--symbol MSFT]
 //!                     [--client-id 7] [--cadence-ms 5000]
-//!                     [--poll-budget-ms 500] [--max-steps N]
+//!                     [--poll-budget-ms 1500] [--max-steps N]
 //! ```
 //!
 //! Requires the operator-gated `ib-live-transport` feature and a reachable IB
@@ -95,7 +95,14 @@ mod live {
         let mut symbols = Vec::new();
         let mut client_id = 7_i32;
         let mut cadence_ms = 5_000_u64;
-        let mut poll_budget_ms = 500_u64;
+        // 1500 ms, not the 500 ms this shipped with. A poll budget that expires
+        // partway through an inbound frame is a transport fault (the session is
+        // dropped and rebuilt so the stream resynchronizes), and the shorter the
+        // budget the more often a re-armed drain lands mid-frame: the
+        // 2026-08-03 live window took 5 such resyncs in ~150 steps at 500 ms and
+        // far fewer at 1500 ms. Still well under the cadence, so the broker
+        // probe keeps its interval.
+        let mut poll_budget_ms = 1_500_u64;
         let mut max_steps = None;
 
         let mut rest = argv.into_iter();
@@ -144,6 +151,19 @@ mod live {
                  one drain consumes the whole probe interval"
             ));
         }
+        // The SUM, not just each part: a degraded step pauses and then drains
+        // before the snapshot is rewritten, so two individually-legal values
+        // can still leave the dashboard reading a file older than the 15 s
+        // guard. `LiveFeedLoop::new` refuses this too — it is repeated here so
+        // the daemon fails on its arguments instead of after opening an IB
+        // session and subscribing lines.
+        if poll_budget_ms + cadence_ms >= HEARTBEAT_STALENESS_THRESHOLD_MS {
+            return Err(format!(
+                "--poll-budget-ms {poll_budget_ms} plus --cadence-ms {cadence_ms} reaches the \
+                 {HEARTBEAT_STALENESS_THRESHOLD_MS} ms staleness threshold — a degraded step \
+                 could leave the snapshot older than the threshold it reports on"
+            ));
+        }
         if max_steps == Some(0) {
             return Err("--max-steps must be greater than zero".to_string());
         }
@@ -177,13 +197,14 @@ mod live {
             }
         };
 
-        let source = match IbLiveTickSource::connect(&args.symbols, args.client_id) {
-            Ok(source) => source,
-            Err(err) => {
-                eprintln!("md003_live_feed_cli: {err}");
-                return ExitCode::from(2);
-            }
-        };
+        let source =
+            match IbLiveTickSource::connect(&args.symbols, args.client_id, args.poll_budget) {
+                Ok(source) => source,
+                Err(err) => {
+                    eprintln!("md003_live_feed_cli: {err}");
+                    return ExitCode::from(2);
+                }
+            };
         let watched = source.watched();
         println!(
             "subscribed lines={} snapshot={:?} cadence={:?} poll_budget={:?}",
@@ -203,6 +224,12 @@ mod live {
 
         let sink = StdoutEventSink;
         let mut steps = 0_u64;
+        // Consecutive degraded steps, which is what paces this loop when the
+        // source stops blocking. A healthy drain spends its poll budget on the
+        // wire, so the loop is self-pacing; a refused connection returns at
+        // once, and without this the loop spins through its whole step budget
+        // in seconds during exactly the outage it is supposed to be reporting.
+        let mut consecutive_failures = 0_u32;
         loop {
             // `step` reads the clock itself — before the drain, and again after
             // the blocking I/O for the verdict. The snapshot is stamped with
@@ -229,6 +256,20 @@ mod live {
                 println!("completed {steps} steps");
                 return ExitCode::SUCCESS;
             }
+
+            // The pacing rule itself lives on the loop, next to the timing
+            // state it depends on (`LiveFeedLoop::pace_after`) — a driver that
+            // decided this for itself would have to re-derive when a broker
+            // probe is due, and get it right. The snapshot above is already
+            // written before any pause, so the operator's view is current
+            // while we wait. A clean drain clears the counter: this paces
+            // failure, it does not ration recovery.
+            if step.poll_failed {
+                consecutive_failures = consecutive_failures.saturating_add(1);
+            } else {
+                consecutive_failures = 0;
+            }
+            std::thread::sleep(feed.pace_after(&step, consecutive_failures));
         }
     }
 
@@ -246,6 +287,46 @@ mod live {
             assert_eq!(parsed.symbols, vec!["AAPL".to_string()]);
             assert!(parsed.cadence < Duration::from_millis(HEARTBEAT_STALENESS_THRESHOLD_MS));
             assert!(parsed.poll_budget < parsed.cadence);
+        }
+
+        #[test]
+        fn a_pause_plus_a_drain_that_reaches_the_threshold_is_refused() {
+            // Each value is individually legal — cadence under the threshold,
+            // budget under the cadence — but a degraded step pauses and THEN
+            // drains, so the snapshot would be rewritten less often than the
+            // 15 s guard the dashboard ages it by. Refused on the arguments,
+            // before an IB session is opened and lines are subscribed.
+            let error = args(&[
+                "--snapshot",
+                "/tmp/s",
+                "--symbol",
+                "A",
+                "--cadence-ms",
+                "14999",
+                "--poll-budget-ms",
+                "14998",
+            ])
+            .unwrap_err();
+            assert!(
+                error.contains("staleness threshold"),
+                "unexpected error: {error}"
+            );
+        }
+
+        #[test]
+        fn the_default_poll_budget_is_wide_enough_to_land_between_frames() {
+            // Pins the value, not just the ordering: at the 500 ms this shipped
+            // with, the 2026-08-03 live window hit 5 mid-frame budget expiries
+            // in ~150 steps, each one a transport fault that drops and rebuilds
+            // the session. `poll_budget < cadence` alone would still hold at
+            // 500 ms, so asserting only that would let the regression back in.
+            let parsed = args(&["--snapshot", "/tmp/s", "--symbol", "AAPL"]).expect("valid");
+            assert!(
+                parsed.poll_budget >= Duration::from_millis(1_000),
+                "default poll budget {:?} is back in the range that resynchronized \
+                 the stream every ~30 steps",
+                parsed.poll_budget
+            );
         }
 
         #[test]

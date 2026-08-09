@@ -1,0 +1,57 @@
+{
+  "created": "2026-08-09T16:02:28+00:00",
+  "critic": {
+    "deterministic": {
+      "ts": "2026-08-09T16:08:36+00:00",
+      "verdict": "approve"
+    }
+  },
+  "feature": "SRS-MD-003",
+  "gates": {
+    "mutation_verify": {
+      "status": "pass",
+      "ts": "2026-08-09T16:08:36+00:00"
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "./init.sh"
+      ],
+      "command": "./init.sh",
+      "executed": true,
+      "exit_code": 0,
+      "head": "079025823d313a14ee66450874da6fb67cec556a",
+      "n": 1,
+      "observed": "\u2192 Installing dependencies...\n  Using /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-MD-003/.venv/bin/python (Python 3.13)\n\u2192 Starting dev server...\n  A server is already reachable at http://127.0.0.1:3000; using it for smoke tests.\n\u2192 Waiting for server...\n\u2192 Running baseline smoke test...\n\u2192 Running contract checks (scope=env)...\n\u2192 contract checks (scope=env, 17 check(s))\n  \u00b7 architecture_check\n  \u00b7 dependency_boundary_check\n  \u00b7 config_check\n  \u00b7 startup_readiness_gate_check\n  \u00b7 startup_readiness_runtime_check\n  \u00b7 ib_adapter_check\n  \u00b7 rest_api_check\n  \u00b7 websocket_api_check\n  \u00b7 cli_check\n  \u00b7 operator_workflow_surface_check\n  \u00b7 operator_interface_runtime_check\n  \u00b7 log_record_check\n  \u00b7 log_persistence_check\n  \u00b7 subscription_fanout_check\n  \u00b7 sim_halt_check\n  \u00b7 strategy_api_indicators_check\n  \u00b7 strategy_api_documentation_check\n\u2713 17/17 contract check(s) passed (scope=env)\n\u2713 Environment ready",
+      "status": "pass",
+      "step_text": "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "steps_digest": "13f1de19a02f64e3",
+      "ts": "2026-08-09T16:02:28+00:00"
+    },
+    {
+      "argv": [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/unit/test_heartbeat_source.py",
+        "tests/boundary/test_heartbeat_dashboard_wiring.py",
+        "tests/test_heartbeat_freshness_contract.py",
+        "tests/domain/test_heartbeat_staleness.py",
+        "tests/domain/test_live_heartbeat_feed.py",
+        "-q"
+      ],
+      "command": ".venv/bin/python -m pytest tests/unit/test_heartbeat_source.py tests/boundary/test_heartbeat_dashboard_wiring.py tests/test_heartbeat_freshness_contract.py tests/domain/test_heartbeat_staleness.py tests/domain/test_live_heartbeat_feed.py -q",
+      "executed": true,
+      "exit_code": 0,
+      "head": "c2ab076a9ba15d0929a6d4027343c544a65b6b3d",
+      "n": 2,
+      "observed": "..................................................................       [100%]\n66 passed in 0.60s",
+      "status": "pass",
+      "step_text": "Step 2: Exercise SRS-MD-003 using CLI/API workflows with fixture market data, provider mocks, file reads, and persisted output inspection with the fixtures, mocks, or operator controls needed by the requirement.",
+      "steps_digest": "13f1de19a02f64e3",
+      "ts": "2026-08-09T16:46:14+00:00"
+    }
+  ],
+  "updated": "2026-08-09T16:46:14+00:00"
+}

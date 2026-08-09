@@ -244,6 +244,69 @@ def test_a_journalled_transition_is_logged_exactly_once(tmp_path: Path) -> None:
     )
 
 
+def test_a_dashboard_restart_does_not_duplicate_a_stale_incident(tmp_path: Path) -> None:
+    """A restart must not re-announce history it finds in the producer's journal.
+
+    The de-duplication memory lives in the provider, and the live producer's
+    snapshot deliberately carries a journal of PAST flips so a dashboard that
+    polls slowly cannot miss one. Together those mean a restarted dashboard
+    reads a real incident it never observed and writes a second audit record
+    for it — seen in the 2026-08-03 live window, where the log listing showed
+    the stale pair twice across three provider processes.
+
+    Duplicates only ever err toward more audit, never toward a false all-clear,
+    which is why this is a correctness bug and not a safety one. But an audit
+    trail that invents repeat incidents is the trail an operator stops trusting.
+    """
+
+    written_at = 1_000_000 * 1_000_000_000
+    flipped_at = written_at - 5 * 1_000_000_000
+    journal_entry = (
+        f"\nevent kind=HEARTBEAT_STALE feed=broker staleness_ms=20000 "
+        f"last_observation_ns={flipped_at} evaluated_at_ns={flipped_at} "
+        f"threshold_ms={THRESHOLD_MS}"
+    )
+    path = tmp_path / "heartbeat.snapshot"
+    path.write_text(_snapshot(written_at, market_stale=False, broker_stale=False) + journal_entry)
+    store_path = tmp_path / "system.jsonl"
+
+    clock = {"now": written_at + 500_000_000}
+    first_store = JsonlLogStore(store_path, log_class=LogClass.SYSTEM)
+    first = HeartbeatFreshnessProvider(
+        SnapshotHeartbeatSource(path, now_ns=lambda: clock["now"]), log_store=first_store
+    )
+    first.heartbeat_snapshot()
+    first_store.close()
+    # What the FIRST provider legitimately recorded: the journalled flip, and
+    # the recovery implied by rows that now read fresh. The restart must add
+    # nothing to this.
+    before_restart = [
+        r.event_type for r in JsonlLogStore(store_path, log_class=LogClass.SYSTEM).read()
+    ]
+    assert before_restart == ["HEARTBEAT_STALE", "HEARTBEAT_RECOVERED"]
+
+    # The dashboard restarts. The daemon kept running, so the snapshot has
+    # advanced — and it still carries the same journal entry.
+    later = written_at + 1_000_000_000
+    path.write_text(_snapshot(later, market_stale=False, broker_stale=False) + journal_entry)
+    clock["now"] = later + 500_000_000
+    restarted_store = JsonlLogStore(store_path, log_class=LogClass.SYSTEM)
+    restarted = HeartbeatFreshnessProvider(
+        SnapshotHeartbeatSource(path, now_ns=lambda: clock["now"]), log_store=restarted_store
+    )
+    snapshot = restarted.heartbeat_snapshot()
+    restarted_store.close()
+
+    assert snapshot["audit_dedup_seeded"] is True
+    after_restart = [
+        r.event_type for r in JsonlLogStore(store_path, log_class=LogClass.SYSTEM).read()
+    ]
+    assert after_restart == before_restart, (
+        "the restarted dashboard re-logged history that was already in the trail: "
+        f"{before_restart} became {after_restart}"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Refusing to half-read a snapshot
 # --------------------------------------------------------------------------- #

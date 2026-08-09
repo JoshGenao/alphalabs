@@ -20,9 +20,11 @@
 // as this comment learned, inside a comment.
 use atp_adapters::{
     IbAccountKind, IbApiError, IbConnectionConfig, IbGatewayConnection, MarketDataChannel,
-    MarketDataSubscription, TcpIbGateway,
+    MarketDataSubscription, TcpIbGateway, IB_CONNECT_TIMEOUT,
 };
-use atp_market_data::live_feed::{FeedError, LiveTickSource};
+use atp_market_data::live_feed::{
+    broker_probe_deadline, write_interval_fits, FeedError, LiveTickSource,
+};
 use atp_types::{AssetClass, SecurityKey};
 use std::time::Duration;
 
@@ -56,12 +58,27 @@ impl IbLiveTickSource {
     /// request/reply operations, where a tick arriving mid-`submit_order` is
     /// consumed by that operation's frame loop and lost — the line would appear
     /// to go quiet for reasons that have nothing to do with the market.
-    pub fn connect(symbols: &[String], client_id: i32) -> Result<Self, FeedError> {
+    pub fn connect(
+        symbols: &[String],
+        client_id: i32,
+        poll_budget: Duration,
+    ) -> Result<Self, FeedError> {
         if symbols.is_empty() {
             return Err(FeedError::Configuration(
                 "no symbols to subscribe — a feed watching nothing cannot monitor anything"
                     .to_string(),
             ));
+        }
+        // A drain budget that leaves the reply no time is not a fast monitor,
+        // it is a monitor that fails every probe and then reports the staleness
+        // it caused. Refuse before opening a socket.
+        if !write_interval_fits(poll_budget, IB_CONNECT_TIMEOUT) {
+            return Err(FeedError::Configuration(format!(
+                "a {poll_budget:?} poll budget leaves no room for a broker reply inside the \
+                 freshness threshold once the {IB_CONNECT_TIMEOUT:?} send allowance and the \
+                 snapshot write are accounted for — every probe would time out and the broker \
+                 line would report staleness this daemon manufactured"
+            )));
         }
         let config = IbConnectionConfig::from_env(client_id)
             .map_err(|err| FeedError::Configuration(err.to_string()))?;
@@ -76,7 +93,21 @@ impl IbLiveTickSource {
         // gateway would sit behind a cell that looks fresh because a different
         // endpoint answered. Recorded with its owner in
         // heartbeat_freshness_contract.live_feed.subscription_ownership.
-        let gateway = TcpIbGateway::new(config, IbAccountKind::Paper);
+        //
+        // The probe deadline is DERIVED from the freshness budget, not taken
+        // from the transport default. `TcpIbGateway::new` would use the generic
+        // IB operation deadline — 15 s, sized for order operations and equal to
+        // the entire staleness threshold — so a gateway that simply stopped
+        // answering would hold this step open until the snapshot on disk was
+        // already older than the age guard the dashboard reads it by, and the
+        // operator would get `UNAVAILABLE` in place of the broker-stale verdict
+        // this feature exists to show. A liveness probe must be bounded by the
+        // question it answers.
+        let gateway = TcpIbGateway::with_op_deadline(
+            config,
+            IbAccountKind::Paper,
+            broker_probe_deadline(poll_budget, IB_CONNECT_TIMEOUT),
+        );
 
         let mut source = Self {
             gateway,
