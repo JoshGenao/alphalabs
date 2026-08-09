@@ -104,3 +104,24 @@ Read this whenever you write a test, and before you believe a green one.
     says mutation-verify; its mirror is that an intermittent red must be diagnosed, not
     re-run until green. Re-running until green is how a real regression gets attributed to
     "flakiness". `(harness-p0)`
+22. **Run `mutation_verify.py` with the VENV interpreter.** It shells pytest via
+    `sys.executable`. Invoked as `python3 tools/mutation_verify.py`, that is the system
+    interpreter — which has no pytest — so pytest never runs, every added test falls
+    through to the `"skipped"` branch, and the tool reports them all as **"still pass
+    without the change"**. A false accusation that looks exactly like a real one: the same
+    output appears whether your tests are worthless or your interpreter is wrong. Activate
+    the venv first, and sanity-check that the named tests really do go red by reverting one
+    source file by hand. Absent tooling is not a passing test. `(MD-003 s4)`
+23. **Mutation-verify cannot see a test that lives in the file it reverts.** Rust unit
+    tests sit in the same `.rs` as their subject, so `git checkout <base> -- <file>` removes
+    the test along with the code and the run is vacuously green. Mutate the FUNCTION BODY
+    instead, one property per mutation, and require each test to die to exactly one — that
+    also proves the tests are orthogonal rather than three checks of one thing. MD-003's
+    backoff had three: always-return-zero killed the growth test, cap-removed killed the
+    threshold test, zero-guard-removed killed the healthy-path test. `(MD-003 s4)`
+24. **An added blank line before an existing `def test_` makes that test look added.**
+    `ADDED_TEST_RE` is `^\+\s*def\s+(test_\w+)`, and `\s` matches newlines — so a diff
+    hunk ending in a bare `+` followed by the context line ` def test_old(...)` attributes
+    a PRE-EXISTING test to your range, which then shows up as "cannot fail". Insert new
+    tests where the following line is not a `def` (their own banner section, or the end of
+    the file) rather than arguing with the report. `(MD-003 s4)`

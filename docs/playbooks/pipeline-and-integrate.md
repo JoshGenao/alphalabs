@@ -150,3 +150,22 @@ one `main`. Most of this playbook is about that sharing.
     run trips the rule-9 guard with a 6-minute-old orphan. After aborting a gate, check
     `pgrep -x cargo` and `ps -eo pid,command | grep "[r]un_ci_locally"` and clear both
     before re-running. `(harness-p0, found live)`
+31. **`block --on` CANNOT record a blocker that is transitively downstream of your
+    feature — and it still exits 0.** `cmd_block` drops cycle-forming edges with a
+    `⚠ skipped (would create dependency cycle)` on *stderr* and returns success, so a
+    session that checks the exit code believes it recorded a block that does not exist.
+    MD-003's real blockers are MD-001 and EXE-001; both reach PERF-001, which is blocked
+    on MD-003. Four features (MD-003, MD-001, EXE-001, PERF-001) can therefore never go
+    green, and MD-003 returns to the ready frontier every cycle — rule 24's churn loop
+    with rule 24's fix unavailable. Verify the edge landed
+    (`python3 -c "import json;print(json.load(open('tools/feature_deps.json')).get('<id>'))"`)
+    rather than trusting the exit code, and if it did not, say so in the session note as
+    an operator decision: only re-pointing a false edge or an attested close breaks it.
+    `(MD-003 s4)`
+32. **Record step evidence AFTER the final code commit, in its own commit.** The record
+    stamps the HEAD it ran against, so `git commit --amend` orphans it — the reviewer
+    checks `git merge-base --is-ancestor` and blocks on evidence that "did not exercise
+    the changes in this diff". Putting `evidence.json` *inside* the feat commit cannot
+    express the right thing either (the hash does not exist yet, so it stamps the
+    parent). Sequence: commit the code, run `evidence.py run`, commit the record.
+    `(MD-003 s4 r6)`

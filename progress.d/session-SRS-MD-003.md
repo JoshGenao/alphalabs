@@ -396,3 +396,162 @@ RESUME / NEXT: flip to complete once MD-001 and EXE-001 land and the feed is re-
 consolidated stream + the live-designated gateway; re-run the live window above (SSH-forward
 recipe included) and then close_feature.py SRS-MD-003 --verified. Everything else is built and
 adversarially converged — do NOT rebuild it.
+
+=== SESSION SRS-MD-003 (4) — the three live-run follow-ups, and a scheduler deadlock, 2026-08-09 ===
+Session-4 outcome: serialized (passes STAYS false). The first `Outcome:` line at the top of
+this file is unchanged on purpose — `serialized_notes()` reads only that one.
+Branch: agent/SRS-MD-003, based on origin/main (0790258), 2 commits.
+
+ALREADY-BUILT PROBE FIRST — nothing was rebuilt.
+  Verified the session 1-3 claims against the tree rather than trusting them: live_feed.rs,
+  live_market_data.rs, heartbeat.py, md003_heartbeat_cli, md003_live_feed_cli, the
+  ATP_MD003_SNAPSHOT mount and 5 test files across L1/L4/L7 are all present and on main; the
+  branch started at origin/main with 0 commits ahead. All four AC legs were proven live on
+  2026-08-03. This session added only what the live run itself recorded as unfixed.
+
+** THE OPERATOR DECISION THIS SESSION SURFACED — a four-feature deadlock. **
+  MD-003's flip is gated on SRS-MD-001 (subscription ownership) and SRS-EXE-001 (account
+  scope). Both reach SRS-PERF-001, which is blocked on SRS-MD-003:
+      SRS-MD-003 -> SRS-MD-001 -> SRS-PERF-001 -> SRS-MD-003
+      SRS-MD-003 -> SRS-EXE-001 -> SRS-PERF-001 -> SRS-MD-003
+  So MD-003, MD-001, EXE-001 and PERF-001 can never go green. Worse, the prescribed fix is
+  unavailable: `agent_pool.py block` drops cycle-forming edges with a warning on STDERR and
+  still exits 0 (tools/agent_pool.py:1062), so MD-003's real blockers cannot be recorded and
+  it returns to the ready frontier every cycle. That is rule 24's churn loop with rule 24's
+  remedy missing; now written up as pipeline-and-integrate rule 31.
+  NO GRAPH EDIT WAS MADE — the operator chose report-only. Two candidate remedies:
+    (a) Drop the SRS-PERF-001 -> SRS-MD-003 edge IF PERF-001 needs MD-003's code (which is
+        on main) rather than its flip. Would unblock PERF-001 -> MD-001/EXE-001 -> MD-003.
+    (b) Record the 2026-08-03 live window via `evidence.py record --attested-by operator`
+        (AGENTS.md's second legitimate path to a green) and force-complete from that end.
+  ALSO: before this session there was NO evidence record at all — the 2026-08-03 live run
+  was never captured through the gate. Steps 1-2 are now recorded; 3-4 still need live IB.
+
+WHAT I BUILT — the three follow-ups the live run recorded, plus what review found under them.
+1. PACING. The loop had none: `md003_live_feed_cli` relied on the tick drain blocking for its
+   poll budget, which a refused connection does not do, so a cut feed spun a 400-step budget
+   away in seconds during exactly the outage this feature reports. Added `degraded_backoff` +
+   `LiveFeedLoop::pace_after`. The whole rule lives on the loop, next to the timing state:
+   only a failed DRAIN is paced (a failed probe already spent its wire deadline and is
+   self-pacing), and the pause is kept strictly short of the next probe instant so a pause
+   and a probe never share one snapshot-write interval.
+2. AUDIT DE-DUPLICATION ACROSS A RESTART. `_logged_transitions`/`_logged_stale` are
+   per-process while the producer's snapshot carries a journal of past flips, so a restarted
+   dashboard re-announced incidents it never observed (the live run's log listing showed the
+   stale pair twice). The durable trail is now its own authority: the
+   `md003:{feed}:{evaluated_at_ns}` correlation ids already written are read back once on
+   first use via the existing `JsonlLogStore.read()`. An unreadable trail falls back to
+   re-announcing rather than risk suppressing a record that was never written (CLAUDE.md
+   rule 3, with the asymmetry stated: duplication is the safe direction here), and reports
+   it as `audit_dedup_seeded: false`.
+3. POLL BUDGET 500ms -> 1500ms. At 500 ms the live window took 5 mid-frame budget expiries in
+   ~150 steps, each dropping and rebuilding the IB session.
+4. (FROM REVIEW) THE WRITE-INTERVAL BUDGET. What must stay under 15 s is the interval between
+   snapshot WRITES — the dashboard ages the file by max_age_ms and reports UNAVAILABLE beyond
+   it, which would replace the per-feed stale evidence the AC requires. Now: `LiveFeedLoop::new`
+   and the CLI refuse `poll_budget + cadence >= threshold` (both individually legal at
+   14999/14998 and still over); `broker_probe_deadline(poll_budget, send_allowance)` derives
+   the probe's reply deadline from what is left of the budget and `IbLiveTickSource::connect`
+   hands it to the transport instead of the generic 15 s `IB_OP_DEADLINE`; the send allowance
+   (`IB_CONNECT_TIMEOUT`, the socket write timeout) is a PARAMETER because atp-market-data may
+   not name the adapter; and a budget leaving the reply no time is refused rather than started
+   with a zero deadline that would fail every probe and report staleness it manufactured.
+
+THE RESIDUAL — NOT CLOSED, operator-authorized stop (round 7).
+  The op deadline is per-OPERATION, so one step whose drain internally reconnects and
+  re-subscribes N lines can spend it per operation and then again on the probe; the composite
+  can still exceed the threshold. Every SINGLE-operation path is now bounded, and this is
+  strictly better than the pre-change state — origin/main used the generic 15 s deadline, so
+  one probe timeout alone already exceeded the whole budget. But bounding operations pairwise
+  does not enumerate to a close. The structural remedy the reviewer named twice (R3, R7) is to
+  make the write interval independent of step duration: write an interim snapshot BEFORE the
+  long I/O. That reorders evaluation and event publication inside `LiveFeedLoop::step` — the
+  once-per-flip/journal surface sessions 1-3 spent ~20 rounds converging — and cannot be
+  verified live from a parallel worktree, so it is deferred rather than attempted blind.
+  Recorded in heartbeat_freshness_contract.live_feed.write_interval with the remedy.
+
+What I tested (per step):
+  Step 1: PASS — ./init.sh -> "✓ Environment ready" (recorded via evidence.py run at HEAD).
+  Step 2: PASS — 66 tests over the fixture CLI, provider, boundary wiring, contract and
+    domain suites (recorded via evidence.py run at HEAD).
+  Step 3: NOT RUN — needs a live IB session (single-live invariant; cannot run in a parallel
+    worktree). The four AC legs were proven live on 2026-08-03 by session 3; this session did
+    not re-witness them and does not claim them.
+  Step 4: passes STAYS FALSE.
+  Gates: cargo test --workspace 2121 passed / 0 failed. cargo clippy --workspace -- -D warnings
+    (the form CI runs) clean. rustfmt clean on the 3 touched .rs files (never a whole-crate
+    fmt). pytest -m "not integration and not e2e" 4775 passed / 1 failed. ruff check+format and
+    mypy clean on the touched .py paths.
+  TWO PRE-EXISTING REDS, both reproduced on a PRISTINE origin/main worktree, neither mine:
+    * tests/unit/test_docs_link_check.py — AGENTS.md:68 `tools/.agent_runtime.json` and
+      prompts/initializer_prompt.md:135 `.git/hooks/pre-commit` "do not exist". This is a
+      WORKTREE-ONLY artifact, NOT a red main: both paths exist in the primary checkout
+      (the lease file is gitignored so it lives only there, and `.git` is a real directory
+      there but a FILE in a worktree, so the literal path cannot resolve). Verified: the
+      check exits 0 on `main` in the primary checkout and fails on a PRISTINE origin/main
+      worktree. So `tools/run_ci_locally.sh` cannot go fully green from any worktree, and
+      that is true of every agent branch, not this one. Worth an operator fix in the
+      checker (skip runtime-generated paths, or resolve `.git` via `git rev-parse
+      --git-common-dir`) so the mirror means what it says from a worktree.
+    * cargo clippy --all-targets: crates/atp-orchestrator/tests/resv_3_trigger_log_schema.rs:14
+      "doc list item overindented" — byte-identical to origin/main (from SRS-DATA-015). CI runs
+      clippy WITHOUT --all-targets, so the enforced gate is green.
+
+Critic verdicts:
+  deterministic: APPROVE — no findings (run before each commit).
+  judgment (adversarial_review.py, reviewer=codex): 7 rounds, final verdict BLOCK, recorded
+    as BLOCK. No APPROVE was faked.
+Adversarial rounds: 7   (baseline: 9, 10, 13, 13, 13, 14, 15, 20, 38)
+  R1 block [high] backoff capped at cadence, but pause + the NEXT drain is what the dashboard
+     ages the file by; cadence=14999/poll=14998 passes both individual guards and still leaves
+     the snapshot over the 15 s age guard. CLASS: per-parameter timing validation that never
+     checks the SUM. Fixed at the config gate (LiveFeedLoop::new, inherited by every driver)
+     AND mirrored in the CLI so it fails on arguments before opening a socket.
+  R2 block [high] pacing a failed BROKER PROBE adds delay to a path that never spun — it had
+     already spent its wire deadline. Fixed: added `FeedStep::poll_failed` to tell a failed
+     drain from a failed probe (source_error alone cannot), and paced only the drain.
+  R3 block [high] a paced step followed by a step that runs a DUE probe puts the pause and the
+     probe in one interval. Fixed: `pace_after` caps the pause strictly short of the next probe
+     instant, so the two bounds compose instead of adding.
+  R4 block [high] the probe ran on the transport's generic 15 s IB_OP_DEADLINE — equal to the
+     entire staleness budget, so every interval containing it was over by construction. Fixed:
+     `broker_probe_deadline` derives it from what is left of the budget; the composition layer
+     hands it to the transport. The digest-pinned interactive_brokers.rs was NOT touched.
+  R5 block [high] (a) the reply deadline does not cover getting the REQUEST out; a wedged peer
+     can block the send for the socket write timeout. Fixed: `send_allowance` parameter, given
+     `IB_CONNECT_TIMEOUT` by the composition layer; a budget with no room left is refused, not
+     run with a zero deadline. (b) evidence covers only steps 1-2 for a live-ib feature — its
+     own remedy was "merge only as serialized with passes left false", which is this
+     disposition; recorded, not treated as a defect.
+  R6 block [high] the evidence record's stamped commit was orphaned by `git commit --amend`, so
+     it did not provably exercise the reviewed tree. Fixed by ordering: commit the code, record,
+     then commit the record separately (its head is now an ancestor of HEAD). Now playbook rule 32.
+  R7 block [high] the per-OPERATION deadline can be spent by a reconnect/resubscribe inside the
+     drain and again by the probe. Real, and the documented stop: see THE RESIDUAL above.
+     Operator authorized stopping here and integrating serialized.
+
+Mutation verification (CLAUDE.md rule 6): all 4 added Python tests go red with the source
+  reverted (`mutation_verify.py` exit 0). The tool cannot cover the Rust tests — they live in
+  the file it reverts — so each was mutation-verified BY HAND, one property per mutation, and
+  each died to exactly one: always-return-zero killed the growth test, cap-removed killed the
+  threshold test, zero-guard-removed killed the healthy-path test, and 1500->500 killed the
+  default-pin test. Two harness defects found doing this, both now playbook rules 22 and 24:
+  mutation_verify run under the SYSTEM python3 (no pytest) reports every added test as
+  "cannot fail", and its added-test regex crosses newlines so an added blank line before an
+  existing `def test_` attributes that test to your range.
+
+Playbook updates: docs/playbooks/pipeline-and-integrate.md rules 31 (block cannot record a
+  downstream blocker, and exits 0 anyway) and 32 (record evidence after the final commit, in
+  its own commit); docs/playbooks/test-integrity.md rules 22, 23, 24 (mutation_verify needs the
+  venv interpreter; it cannot see tests living in the file it reverts; its added-test regex
+  crosses newlines).
+
+Resume / next:
+  1. OPERATOR: break the deadlock — remedy (a) or (b) above. Nothing in this cluster can close
+     until then, and MD-003 will keep being re-offered.
+  2. The write-interval residual: the interim-snapshot restructuring, in a session with a live
+     IB window (SSH-forward recipe in session 3 part 2).
+  3. Unchanged deferred owners: MD-001 subscription ownership, EXE-001 account scope, MD-004
+     probe bridge, MD-005 suppression, MD-006/NOTIF-001 routing, MD-007 live gap detection.
+  Do NOT rebuild the monitor, fixture CLI, provider, live feed loop, IbLiveTickSource, the
+  dashboard mount, or this session's pacing/de-duplication work.
