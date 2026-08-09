@@ -46,8 +46,17 @@ fi
 # that the ledger had no trace of, and the round-count guard passed only by
 # coincidence. Two entry points to one gate, one instrumented, is the same defect
 # class as the three divergent check lists.
-out="$(node "$companion" adversarial-review --wait --json --base "$BASE_REF" "$(cat "$PROMPT_FILE")")"
-rc=$?
+# `if out=$(...)` — NOT a bare assignment. Under `set -e` a bare command
+# substitution that exits nonzero aborts the script right there, so `rc=$?`, the
+# recording and the final replay would all be skipped. That is precisely the case
+# that matters: a rate-limited or failing Codex is the one whose output the
+# dispatcher must read to decide to fail over, and the one whose blocked round the
+# ledger most needs. The first draft of this change had exactly that bug.
+if out="$(node "$companion" adversarial-review --wait --json --base "$BASE_REF" "$(cat "$PROMPT_FILE")")"; then
+  rc=0
+else
+  rc=$?
+fi
 
 # The dispatcher records its own rounds; recording here too would double-count.
 if [[ "${ATP_REVIEW_DISPATCHED:-0}" != "1" ]]; then
