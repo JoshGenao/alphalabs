@@ -360,6 +360,39 @@ def test_a_missing_rounds_line_is_reported_when_rounds_were_recorded(tmp_path):
     assert msg and "no `Adversarial rounds:` line" in msg
 
 
+def _append_raw(wt, fid, line):
+    d = wt / ".harness" / "runs" / fid
+    d.mkdir(parents=True, exist_ok=True)
+    with (d / "review.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+
+
+def test_a_reviewer_outage_does_not_demand_a_higher_round_count(tmp_path):
+    """3 real rounds + a rate-limited Codex attempt is still `Adversarial rounds: 3`.
+
+    Counting lines here would refuse the integrate unless the note claimed 4 —
+    forcing the agent to write a number that includes a reviewer outage nobody
+    reviewed anything in.
+    """
+    wt = _wt(tmp_path, "F-1", note="Outcome: complete\nAdversarial rounds: 3\n", rounds=3)
+    _append_raw(wt, "F-1", '{"kind":"attempt","verdict":"none","reviewer":"codex"}')
+    assert agent_pool.note_rounds_mismatch(wt, "F-1") is None
+
+
+def test_attempts_alone_are_not_rounds(tmp_path):
+    """Every reviewer was down: nothing was reviewed, so nothing is claimed."""
+    wt = _wt(tmp_path, "F-1", note="Outcome: complete\n")
+    _append_raw(wt, "F-1", '{"kind":"attempt","verdict":"none","reviewer":"codex"}')
+    assert agent_pool.note_rounds_mismatch(wt, "F-1") is None
+
+
+def test_unreadable_telemetry_is_not_a_mismatch(tmp_path):
+    """CLAUDE.md rule 3 — a truncated ledger must not accuse the note of lying."""
+    wt = _wt(tmp_path, "F-1", note="Adversarial rounds: 3\n")
+    _append_raw(wt, "F-1", '{"verdict": <-- truncated')
+    assert agent_pool.note_rounds_mismatch(wt, "F-1") is None
+
+
 # --- dependency-edge retraction (P1-8) ---------------------------------------
 # `block --on` appends and nothing has ever removed an edge, so the graph only
 # accretes constraints. A wrong edge parks a feature until its named prerequisite

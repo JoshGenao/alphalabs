@@ -48,6 +48,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import adversarial_review  # noqa: E402  (sibling module in tools/; path set just above)
 import evidence  # noqa: E402  (sibling module in tools/; path set just above)
 
 # ----------------------------------------------------------------------------
@@ -1249,8 +1250,14 @@ def note_rounds_mismatch(wt: Path, fid: str) -> str | None:
     note = wt / "progress.d" / f"session-{fid}.md"
     if not jsonl.is_file() or not note.is_file():
         return None
+    # Count VERDICT-BEARING rounds, not lines: a rate-limited Codex or a timed-out
+    # fallback is recorded too (so the failover leaves a trace) but is an attempt,
+    # not a round. Counting lines here would demand the note claim a number that
+    # includes reviewer outages — the opposite of what the field measures.
+    recorded = adversarial_review.count_rounds(jsonl)
+    if recorded is None:
+        return None  # unreadable is unknown, not a mismatch (CLAUDE.md rule 3)
     try:
-        recorded = sum(1 for ln in jsonl.read_text(encoding="utf-8").splitlines() if ln.strip())
         text = note.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None

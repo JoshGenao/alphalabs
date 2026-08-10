@@ -125,3 +125,17 @@ Read this whenever you write a test, and before you believe a green one.
     a PRE-EXISTING test to your range, which then shows up as "cannot fail". Insert new
     tests where the following line is not a `def` (their own banner section, or the end of
     the file) rather than arguing with the report. `(MD-003 s4)`
+25. **Monkeypatching the function that holds the bug tests nothing.** The telemetry branch
+    shipped four consecutive fixes for "a failed reviewer is not recorded"; each added unit
+    tests that monkeypatched `run_codex`, the very function whose real behaviour (setting
+    `ATP_REVIEW_DISPATCHED=1`, so the shell deliberately stays silent) caused the drop. All
+    four passed while the defect stayed live, and only a fifth round driving the REAL
+    dispatcher against a stub reviewer caught it. When a defect lives in the seam between
+    two components, the regression test must cross that seam. Stub the paid/slow leaf
+    (a network reviewer), never the unit under test. `(harness-p1, found live, r5)`
+26. **A test whose premise depends on ambient state passes for the wrong reason.** The
+    first version of that seam test read the developer's real `tools/.codex_cooldown.json`;
+    on a day when Codex was cooling down, `review()` short-circuits before the code under
+    test ever runs — and the test goes green having exercised nothing. Force every
+    availability predicate the path consults, and stub any writer that would mutate real
+    state from a test run. `(harness-p1)`

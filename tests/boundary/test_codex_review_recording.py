@@ -17,9 +17,14 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
+
+import adversarial_review  # noqa: E402  (sibling tool under test)
 
 pytestmark = pytest.mark.boundary
 
@@ -132,6 +137,12 @@ def test_a_real_usage_limit_envelope_is_still_recorded(tmp_path, runs_dir):
     `result: null`, an empty `rawOutput`, and the cause in parseError/codex.stderr —
     so extract_json finds nothing verdict-bearing. Dropping the round there kept
     losing exactly the failure the ledger most needs. Unreadable is not empty.
+
+    It is recorded as an ATTEMPT, not a round: the reviewer never judged the diff,
+    and CLAUDE.md rule 7 is explicit that an availability failure is not a verdict.
+    The fail-closed contract lives in the EXIT CODE (still 1, so the agent halts) —
+    the record's `verdict` field is telemetry, and calling an outage "block" would
+    claim a rejection that never happened.
     """
     fid = "TEST-CR-ENVELOPE"
     shutil.rmtree(runs_dir / fid, ignore_errors=True)
@@ -146,9 +157,80 @@ def test_a_real_usage_limit_envelope_is_still_recorded(tmp_path, runs_dir):
         proc, rounds = _run(stub, fid, runs_dir)
         assert proc.returncode == 1
         assert "usage limit" in proc.stdout, "the dispatcher parses this to fail over"
-        assert len(rounds) == 1, "an unreadable round is still a round"
+        assert len(rounds) == 1, "an unreadable envelope must still leave a trace"
         rec = json.loads(rounds[0])
-        assert rec["verdict"] == "block", "fail closed, never approve"
+        assert rec["verdict"] != "approve", "fail closed, never approve"
+        assert rec["kind"] == "attempt", "no verdict was rendered — not a round"
+        assert rec["n_findings"] == 0 and rec["rules"] == []
         assert "no JSON found in reply" in rec["summary"], "carry the reviewer's own reason"
+        # The number the session note has to match: an outage is not a review round.
+        jsonl = runs_dir / fid / "review.jsonl"
+        assert adversarial_review.count_rounds(jsonl) == 0
+    finally:
+        shutil.rmtree(runs_dir / fid, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# The DISPATCHED path: adversarial_review.review() -> the REAL codex_review.sh ->
+# a stub companion. Every earlier fix hardened the shell path and left this one
+# dropping the attempt, because the unit tests monkeypatch run_codex — the exact
+# function at fault. Here run_codex is real; only the two availability predicates
+# and the paid fallback are stubbed.
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_dispatched_rate_limit_records_the_attempt_not_just_the_fallback(
+    tmp_path, runs_dir, monkeypatch
+):
+    """A rate-limited Codex must leave a trace on the path the docs tell agents to use.
+
+    run_codex sets ATP_REVIEW_DISPATCHED=1 so codex_review.sh does NOT record (else
+    the round would land twice). review() then failed over and emitted only the
+    FALLBACK — so the failed Codex attempt vanished from the ledger entirely.
+
+    `codex_cooldown_until` is forced to None because a real cooldown file in the
+    working tree would short-circuit review() before run_codex ever runs, quietly
+    turning this into a test of nothing. `record_cooldown` is stubbed so the test
+    cannot write to the developer's real tools/.codex_cooldown.json.
+    """
+    fid = "TEST-CR-DISPATCH"
+    shutil.rmtree(runs_dir / fid, ignore_errors=True)
+    stub = _stub(
+        tmp_path,
+        "console.log(JSON.stringify({review:'adversarial-review',result:null,"
+        "rawOutput:'',parseError:'no JSON found in reply',"
+        "codex:{stderr:\"you've hit your usage limit, try again at 3:00 PM\",stdout:''}}));\n"
+        "process.exit(1);\n",
+    )
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(stub))
+    monkeypatch.setenv("ATP_FEATURE_ID", fid)
+    monkeypatch.setattr(adversarial_review, "codex_cooldown_until", lambda: None)
+    monkeypatch.setattr(adversarial_review, "record_cooldown", lambda *_a, **_k: None)
+
+    def _no_claude(_base, timeout=900):
+        raise FileNotFoundError("claude")  # keep it offline; no paid call from a test
+
+    monkeypatch.setattr(adversarial_review, "run_claude_fallback", _no_claude)
+
+    try:
+        result = adversarial_review.review("origin/main")
+        assert result["verdict"] == "block", "no verdict was rendered — must fail closed"
+        adversarial_review.append_round(result)  # what emit() does
+
+        jsonl = runs_dir / fid / "review.jsonl"
+        assert jsonl.is_file(), "the dispatched attempt must be recorded somewhere"
+        recs = adversarial_review.read_records(jsonl)
+        assert recs, "unreadable/empty telemetry means the fix did not take"
+
+        codex = [r for r in recs if r["reviewer"] == "codex"]
+        assert codex, "THE DEFECT: the rate-limited Codex left no trace on this path"
+        assert codex[0]["kind"] == "attempt"
+        # Why it failed must be legible to whoever reads the ledger. The dispatcher
+        # names the cause it detected; the summary carries the reviewer's own words.
+        assert "usage limit" in codex[0]["reviewer_note"]
+        assert "no JSON found in reply" in codex[0]["summary"]
+
+        # Nobody judged the diff, so no round may be claimed.
+        assert adversarial_review.count_rounds(jsonl) == 0
+        assert all(r["verdict"] != "approve" for r in recs)
     finally:
         shutil.rmtree(runs_dir / fid, ignore_errors=True)

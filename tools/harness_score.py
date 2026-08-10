@@ -28,8 +28,13 @@ import argparse
 import json
 import statistics
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import adversarial_review  # noqa: E402  (sibling module in tools/; path set just above)
 
 ROOT = Path(__file__).resolve().parents[1]
 METRICS = ROOT / ".harness" / "metrics.json"
@@ -53,17 +58,19 @@ def review_rounds() -> dict:
     if runs.is_dir():
         for jsonl in sorted(runs.glob("*/review.jsonl")):
             fid = jsonl.parent.name
-            n = 0
-            try:
-                for line in jsonl.read_text(encoding="utf-8").splitlines():
-                    if not line.strip():
-                        continue
-                    rec = json.loads(line)
-                    n += 1
-                    for rule in rec.get("rules") or []:
-                        rule_features.setdefault(rule, set()).add(fid)
-            except (OSError, json.JSONDecodeError):
+            recs = adversarial_review.read_records(jsonl)
+            if recs is None:
                 continue  # unreadable is unknown, not zero
+            # Attempts (a rate-limited Codex, a timed-out fallback) are recorded in
+            # the same file but carry no verdict and no findings — counting them
+            # would score reviewer downtime as review activity.
+            n = 0
+            for rec in recs:
+                if not adversarial_review.is_round(rec):
+                    continue
+                n += 1
+                for rule in rec.get("rules") or []:
+                    rule_features.setdefault(rule, set()).add(fid)
             if n:
                 per_feature[fid] = n
     recurring = sorted(

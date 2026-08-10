@@ -28,6 +28,10 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import adversarial_review  # noqa: E402  (sibling module in tools/; path set just above)
+
 ROOT = Path(__file__).resolve().parents[1]
 PLAYBOOKS = ROOT / "docs" / "playbooks"
 INDEX = PLAYBOOKS / "INDEX.md"
@@ -97,19 +101,18 @@ def review_telemetry(feature: str) -> dict | None:
     path = ROOT / ".harness" / "runs" / feature / "review.jsonl"
     if not path.is_file():
         return None
-    rounds, rules = [], set()
-    try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            rec = json.loads(line)
-            rounds.append(rec)
-            rules.update(rec.get("rules") or [])
-    except (OSError, json.JSONDecodeError):
+    recs = adversarial_review.read_records(path)
+    if recs is None:
         # Unreadable telemetry is not zero rounds — say nothing and let the note
         # speak, rather than reporting a confident 0 (CLAUDE.md rule 3).
         return None
+    # Only verdict-bearing rounds. An attempt (rate-limited Codex, timed-out
+    # fallback) is in the same file so the failover leaves a trace, but it carries
+    # no findings and must not inflate the series the playbook claim rests on.
+    rounds = [r for r in recs if adversarial_review.is_round(r)]
+    rules = set()
+    for rec in rounds:
+        rules.update(rec.get("rules") or [])
     if not rounds:
         return None
     return {

@@ -11,6 +11,7 @@ transparently fail over to a fresh-context Claude review:
 """
 
 import json
+import subprocess
 from datetime import datetime, timedelta
 
 import adversarial_review as ar
@@ -324,3 +325,105 @@ def test_an_unreadable_round_fails_closed_to_block():
     assert rec["verdict"] == "block"
     assert rec["n_findings"] == 0
     assert "no JSON found in reply" in rec["summary"]
+
+
+# ---------------------------------------------------------------------------
+# Attempts vs rounds — the failover must leave a trace without inflating the count
+# ---------------------------------------------------------------------------
+def test_a_rate_limited_codex_is_recorded_on_the_dispatched_path(tmp_path, monkeypatch):
+    """The defect four consecutive fixes walked past.
+
+    run_codex sets ATP_REVIEW_DISPATCHED=1 so codex_review.sh does NOT record (else
+    the round lands twice). review() then fell back to Claude and emitted only the
+    FALLBACK — so on the one path the docs tell agents to use, a rate-limited Codex
+    left no trace at all. The earlier fixes all hardened the *shell* path, which was
+    never the one that dropped it.
+    """
+    monkeypatch.setattr(ar, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("ATP_FEATURE_ID", "F-DISPATCH")
+    monkeypatch.setattr(ar, "codex_cooldown_until", lambda: None)
+    monkeypatch.setattr(ar, "record_cooldown", lambda _out: None)
+    monkeypatch.setattr(
+        ar, "run_codex", lambda _b: (1, "you've hit your usage limit, try again at 3:00 PM")
+    )
+    monkeypatch.setattr(
+        ar, "run_claude_fallback", lambda _b, timeout=900: (0, json.dumps({"verdict": "approve"}))
+    )
+
+    result = ar.review("origin/main")
+    assert result["reviewer"] == "claude-fallback"
+    ar.append_round(result)  # emit() does this; call it directly to keep the test pure
+
+    recs = ar.read_records(tmp_path / ".harness" / "runs" / "F-DISPATCH" / "review.jsonl")
+    kinds = [r["kind"] for r in recs]
+    assert kinds == ["attempt", "round"], "the failed Codex attempt must be on the record"
+    assert recs[0]["reviewer"] == "codex"
+    assert "usage limit" in recs[0]["summary"], "carry the reviewer's own reason"
+    assert recs[0]["verdict"] == "none", "an attempt has no opinion about the diff"
+
+
+def test_an_unparseable_codex_reply_is_also_recorded_before_the_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr(ar, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("ATP_FEATURE_ID", "F-UNPARSE")
+    monkeypatch.setattr(ar, "codex_cooldown_until", lambda: None)
+    monkeypatch.setattr(ar, "run_codex", lambda _b: (0, "I could not complete the review."))
+    monkeypatch.setattr(
+        ar, "run_claude_fallback", lambda _b, timeout=900: (0, json.dumps({"verdict": "approve"}))
+    )
+
+    ar.review("origin/main")
+    recs = ar.read_records(tmp_path / ".harness" / "runs" / "F-UNPARSE" / "review.jsonl")
+    assert [r["kind"] for r in recs] == ["attempt"]
+    assert ar.count_rounds(tmp_path / ".harness" / "runs" / "F-UNPARSE" / "review.jsonl") == 0
+
+
+def test_a_successful_codex_review_records_exactly_one_round_and_no_attempt(tmp_path, monkeypatch):
+    """The non-regression half: a healthy dispatch must not gain a spurious attempt."""
+    monkeypatch.setattr(ar, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ar, "codex_cooldown_until", lambda: None)
+    monkeypatch.setattr(ar, "run_codex", lambda _b: (0, json.dumps({"verdict": "approve"})))
+    result = ar.review("origin/main")
+    assert result["reviewer"] == "codex"
+    path = ar.append_round(result, fid="F-OK")
+    assert [r["kind"] for r in ar.read_records(path)] == ["round"]
+    assert ar.count_rounds(path) == 1
+
+
+def test_a_timed_out_fallback_blocks_but_is_not_a_round(tmp_path, monkeypatch):
+    """CLAUDE.md rule 7: a reviewer TIMEOUT is not a verdict — retry it.
+
+    It must still BLOCK (exit 1 halts the agent), but counting it would let a
+    reviewer outage satisfy `Adversarial rounds:` without anyone reading the diff.
+    """
+    monkeypatch.setattr(ar, "REPO_ROOT", tmp_path)
+
+    def _timeout(_b, timeout=900):
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
+
+    monkeypatch.setattr(ar, "run_claude_fallback", _timeout)
+    result = ar.review("origin/main", force_claude=True)
+    assert result["verdict"] == "block", "still fails closed"
+    path = ar.append_round(result, fid="F-TIMEOUT")
+    assert [r["kind"] for r in ar.read_records(path)] == ["attempt"]
+    assert ar.count_rounds(path) == 0
+
+
+def test_records_written_before_kind_existed_still_count_as_rounds(tmp_path):
+    """Absent `kind` means OLD, not attempt.
+
+    Defaulting the other way would silently rewrite every feature already on main
+    down to zero rounds and fire note_rounds_mismatch across the whole board.
+    """
+    path = tmp_path / "review.jsonl"
+    path.write_text('{"verdict":"block"}\n{"verdict":"approve"}\n', encoding="utf-8")
+    assert ar.count_rounds(path) == 2
+    assert ar.is_round({"verdict": "block"}) is True
+
+
+def test_unreadable_telemetry_is_unknown_not_zero(tmp_path):
+    """CLAUDE.md rule 3 — a truncated write must not read as 'never reviewed'."""
+    path = tmp_path / "review.jsonl"
+    path.write_text('{"verdict":"block"}\n{"verdict":  <-- truncated\n', encoding="utf-8")
+    assert ar.read_records(path) is None
+    assert ar.count_rounds(path) is None
+    assert ar.count_rounds(tmp_path / "does-not-exist.jsonl") is None

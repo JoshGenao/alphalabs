@@ -367,6 +367,86 @@ def unreadable_reason(raw: str) -> str:
     return f"unreadable reviewer output: {text[:300] or '(empty)'}"
 
 
+ATTEMPT_KIND = "attempt"
+ROUND_KIND = "round"
+
+
+def is_round(rec: dict) -> bool:
+    """Does this record count toward `Adversarial rounds:`?
+
+    A ROUND is a review pass that ends in a verdict. An ATTEMPT is a reviewer
+    invocation that produced none — a rate-limited Codex, an unreadable envelope —
+    after which the dispatcher fell back and someone else delivered the verdict.
+    One round can contain several attempts; counting attempts as rounds would
+    inflate the only falsifiable number the playbook system publishes, and
+    CLAUDE.md rule 7 is explicit that an availability failure is not a verdict.
+
+    A record written before `kind` existed is a ROUND: absent here means "old",
+    not "attempt", and defaulting the other way would silently rewrite history
+    down to zero for every feature already on main.
+    """
+    return str(rec.get("kind") or ROUND_KIND) != ATTEMPT_KIND
+
+
+def read_records(path: Path) -> list[dict] | None:
+    """Every record in a review.jsonl, or None if it cannot be read.
+
+    None means UNKNOWN and is never [] (CLAUDE.md rule 3): a truncated write or a
+    permissions error must not present as "this feature was never reviewed". Callers
+    decide what unknown means for them — every current one declines to judge.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
+
+
+def count_rounds(path: Path) -> int | None:
+    """How many verdict-bearing rounds this feature recorded; None if unreadable."""
+    recs = read_records(path)
+    return None if recs is None else sum(1 for r in recs if is_round(r))
+
+
+def attempt_record(reviewer: str, note: str, summary: str) -> dict:
+    """A reviewer invocation that produced no verdict.
+
+    Recorded so the ledger shows the failover happened. Before this, `run_codex`
+    set ATP_REVIEW_DISPATCHED=1 (so the shell would not double-record), then a
+    rate-limited Codex fell through to `_claude` and only the FALLBACK was
+    recorded — the failed attempt left no trace on the one path the docs tell
+    agents to use. Same shape as a round so a reader needs one parser, but
+    `kind` keeps it out of every count.
+    """
+    return {
+        "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "kind": ATTEMPT_KIND,
+        "reviewer": reviewer,
+        # Not "block": an attempt has no opinion about the diff, and a reader
+        # scanning for blocks must not find one here.
+        "verdict": "none",
+        "n_findings": 0,
+        "rules": [],
+        "blocking_rules": [],
+        "reviewer_note": note,
+        # Already-formed prose passes through: running a clear "no reviewer
+        # available" summary back through unreadable_reason() prefixed it with
+        # "unreadable reviewer output:", which describes the wrong failure.
+        "summary": (summary.strip() or f"{reviewer}: {note}")[:300],
+    }
+
+
 def round_record(result: dict) -> dict:
     """The structured form of one review round.
 
@@ -379,6 +459,7 @@ def round_record(result: dict) -> dict:
     findings = result.get("findings") or []
     return {
         "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "kind": ROUND_KIND,
         "reviewer": result.get("reviewer", "?"),
         "verdict": result.get("verdict", "?"),
         "n_findings": len(findings),
@@ -402,6 +483,30 @@ def append_round(result: dict, fid: str | None = None) -> Path | None:
     an agent whose review dies because a log directory is read-only learns to stop
     running the review.
     """
+    # A result flagged `no_verdict` blocks the agent but records as an ATTEMPT: the
+    # reviewer never judged the diff. One funnel, so a future no-verdict path cannot
+    # become a round by forgetting to ask.
+    record = (
+        attempt_record(
+            str(result.get("reviewer") or "?"),
+            str(result.get("reviewer_note") or ""),
+            str(result.get("summary") or ""),
+        )
+        if result.get("no_verdict")
+        else round_record(result)
+    )
+    return _append(record, fid)
+
+
+def append_attempt(reviewer: str, note: str, raw: str, fid: str | None = None) -> Path | None:
+    """Record a reviewer invocation that produced no verdict. Never fails the review.
+
+    ``raw`` is the reviewer's unparsed output, so the cause is dug out of it here.
+    """
+    return _append(attempt_record(reviewer, note, unreadable_reason(raw)), fid)
+
+
+def _append(record: dict, fid: str | None = None) -> Path | None:
     fid = fid or os.environ.get("ATP_FEATURE_ID", "")
     if not fid:
         return None
@@ -409,7 +514,7 @@ def append_round(result: dict, fid: str | None = None) -> Path | None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(round_record(result), sort_keys=True) + "\n")
+            fh.write(json.dumps(record, sort_keys=True) + "\n")
     except OSError as exc:
         print(f"(could not record review telemetry: {exc})", file=sys.stderr)
         return None
@@ -427,11 +532,15 @@ def emit(result: dict) -> int:
         # append_round is wrapped so telemetry can never fail the review it measures;
         # re-opening the file here outside any guard reintroduced exactly that, and
         # leaked the handle. Count inside the same protection.
-        try:
-            n = len(recorded.read_text(encoding="utf-8").splitlines())
+        n = count_rounds(recorded)
+        if n is None:
+            note += " · telemetry unreadable"
+        elif result.get("no_verdict"):
+            # Say what was actually written. Reporting "round N" for an attempt is
+            # how the count and the note drift apart in the first place.
+            note += f" · attempt recorded (no verdict; still {n} round(s))"
+        else:
             note += f" · round {n} recorded"
-        except OSError:
-            pass
     print(note, file=sys.stderr)
     return 1 if result["verdict"] == "block" else 0
 
@@ -443,15 +552,21 @@ def review(base_ref: str, *, force_claude: bool = False) -> dict:
         return _claude(base_ref, note)
 
     code, out = run_codex(base_ref)
+    # Every path below that abandons Codex must record the attempt first. run_codex
+    # set ATP_REVIEW_DISPATCHED=1, so codex_review.sh deliberately did NOT record —
+    # if we also say nothing, a rate-limited Codex vanishes and the ledger claims the
+    # fallback was the only reviewer ever asked.
     if is_rate_limited(out, code):
         reset = record_cooldown(out)
         note = f"codex limited until {reset:%-I:%M %p}" if reset else "codex usage limit"
+        append_attempt("codex", note, out)
         return _claude(base_ref, note)
 
     payload = extract_json(out)
     if payload is None:
         # Codex ran but we couldn't read a verdict — try the fresh-eyes reviewer
         # rather than guessing. (Not a limit, so no cooldown recorded.)
+        append_attempt("codex", "codex output unparseable", out)
         return _claude(base_ref, "codex output unparseable")
     return normalize_verdict(payload, "codex")
 
@@ -466,6 +581,10 @@ def _claude(base_ref: str, note: str) -> dict:
             "reviewer_note": f"{note}; fallback timed out",
             "summary": "Fresh-context Claude reviewer timed out — treat as BLOCK.",
             "findings": [],
+            # Blocks the agent (exit 1) but is NOT a round: CLAUDE.md rule 7 —
+            # "a reviewer TIMEOUT is not a verdict … retry it". Counting it would
+            # let an availability failure satisfy `Adversarial rounds:`.
+            "no_verdict": True,
         }
     except FileNotFoundError:
         # Neither reviewer is available — fail closed so the agent halts rather
@@ -476,6 +595,7 @@ def _claude(base_ref: str, note: str) -> dict:
             "reviewer_note": f"{note}; `claude` CLI not found — run the review manually",
             "summary": "No reviewer available (Codex down and claude CLI missing) — BLOCK.",
             "findings": [],
+            "no_verdict": True,
         }
     payload = extract_json(out) or {"verdict": "block", "summary": out[:500]}
     result = normalize_verdict(payload, "claude-fallback")
@@ -526,10 +646,20 @@ def main() -> int:
                 "summary": unreadable_reason(raw),
                 "findings": [],
             }
+            unreadable = True
+        else:
+            unreadable = False
         result = normalize_verdict(payload, payload.get("reviewer", "codex"))
+        if unreadable:
+            # Kept (it must not vanish — that was this path's whole point) but not
+            # COUNTED: no verdict was rendered here either. The dispatched path
+            # treats the identical envelope as an attempt, and one shape must not
+            # mean two things depending on which entry point saw it.
+            result["no_verdict"] = True
         path = append_round(result)
+        kind = "attempt (no verdict)" if unreadable else "round"
         print(
-            f"(recorded round -> {path})" if path else "(no ATP_FEATURE_ID; not recorded)",
+            f"(recorded {kind} -> {path})" if path else "(no ATP_FEATURE_ID; not recorded)",
             file=sys.stderr,
         )
         return 0
