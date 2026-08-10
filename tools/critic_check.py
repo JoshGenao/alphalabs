@@ -192,6 +192,16 @@ ENV_FILE_RE = re.compile(r"(^|/)\.env(\.[A-Za-z0-9_]+)?$")
 
 SAFETY_PATH_RE = re.compile(
     r"(kill[_-]?switch|connectivity|stale[_-]?data|live[_-]?mode|safety"
+    # Heartbeat freshness is the input to stale-data blocking: if the heartbeat is
+    # wrong, `stale[_-]?data` above never fires and a strategy trades on data nobody
+    # is checking. It matched NOTHING here while kill_switch did, so SRS-MD-003 could
+    # retune the live heartbeat producer with no paired tests/domain/ test required —
+    # that session shipped one voluntarily and left the gap recorded for the operator.
+    # A bare token, not the narrower `/heartbeat\.py` first proposed: that missed
+    # crates/atp-market-data/src/bin/md003_heartbeat_cli.rs, the Rust source this is
+    # actually about. Covers all 8 heartbeat paths in the tree, 0 of which are under
+    # the documentation carve-outs below.
+    r"|heartbeat"
     r"|subscription[_-]?limit|market[_-]?data[_-]?line"
     r"|ingestion[_-]?validation|record[_-]?quarantine"
     r"|pacing[_-]?budget|ingestion[_-]?schedule"
