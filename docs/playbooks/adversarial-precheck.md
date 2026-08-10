@@ -87,6 +87,23 @@ Walk this against your own diff before Step 6.1. Most of it is one grep each.
   the note where you diverged and why. `(DATA-018)`
 - **Some loops structurally cannot converge** — see
   [scope-and-serialization.md](scope-and-serialization.md) for how to stop honestly.
+- **A reviewer can be silenced by the code it is reviewing.** The telemetry branch's
+  `outcome()` classified any reply containing "usage limit" as an outage; every review OF
+  that file quoted the phrase, so round 7's real BLOCK was recorded as an attempt with
+  **zero findings** and the round count went to 0. Exit stayed 1, so nothing looked wrong.
+  When your diff touches the review path itself, read the LEDGER (`kind`, `n_findings`,
+  `count_rounds`) against the verdict you were shown — they disagreeing is the tell.
+  `(harness-p1 r7, found by the reviewer falling into it)`
+- **A heuristic must never overrule a parsed answer.** Substring scans, filename guesses and
+  "looks like an error" checks are for the case where you got NOTHING. The moment a real
+  answer parses, the guess must yield — otherwise the fallback path eats the happy path.
+  `(harness-p1 r7)`
+- **Consolidating N call sites into one predicate re-opens every case at once.** Rounds 5-7
+  each fixed the previous round's fix: the class fix covered 4 of 7 sites, the consolidation
+  that followed was too eager and discarded real verdicts. After collapsing sites into one
+  decision, parametrize BOTH directions — the cases that must be caught AND the ones that
+  must still pass — or the new predicate buys its precision with false positives nobody
+  tested for. `(harness-p1 r5-r7)`
 
 ## Before you call the review clean
 
