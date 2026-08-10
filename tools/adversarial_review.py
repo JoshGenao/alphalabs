@@ -52,6 +52,11 @@ COOLDOWN_FILE = REPO_ROOT / "tools" / ".codex_cooldown.json"
 PLUGIN_STATE_DIR = Path.home() / ".claude" / "plugins" / "data" / "codex-openai-codex" / "state"
 
 USAGE_LIMIT_RE = re.compile(r"usage limit|rate limit|hit your (?:usage|rate) limit", re.IGNORECASE)
+
+# One vocabulary for "severe enough to stop the agent". It was written twice — as a
+# literal inside normalize_verdict and as this constant 236 lines later — so the two
+# could drift silently and disagree about the same finding.
+BLOCKING_SEVERITIES = {"block", "critical", "high"}
 RESET_RE = re.compile(r"try again at\s+(\d{1,2}):(\d{2})\s*([AaPp][Mm])")
 
 FRESH_EYES_SYSTEM = (
@@ -128,7 +133,7 @@ def normalize_verdict(payload: dict, reviewer: str) -> dict:
     if raw in ("block", "warn", "approve"):
         verdict = raw
     elif raw == "needs-attention":
-        verdict = "block" if severities & {"critical", "high", "block"} else "warn"
+        verdict = "block" if severities & BLOCKING_SEVERITIES else "warn"
     else:
         # Unknown/empty verdict from a reviewer we can't read → fail closed.
         verdict = "block"
@@ -139,6 +144,46 @@ def normalize_verdict(payload: dict, reviewer: str) -> dict:
         "findings": findings,
         "next_steps": payload.get("next_steps", []),
     }
+
+
+def outcome(payload: dict | None, raw: str, reviewer: str) -> dict:
+    """THE decision: did this reviewer invocation actually judge the diff?
+
+    Every entry point routes through here. Patching the sites one at a time is what
+    made rounds 2-6 of this branch: the "class fix" in the previous commit covered
+    four call sites and missed three, and the reviewer found all three. The sites
+    are not the class — the QUESTION is, so it gets asked in exactly one place.
+
+    No verdict, and therefore an `attempt`, when:
+      · nothing verdict-bearing could be parsed (`payload is None`);
+      · the payload is an explicit error envelope (`{"verdict": "error"}`), which
+        `is_rate_limited` already treats as "reviewer unavailable, fail over" — the
+        same envelope must not be an outage to one function and a legitimate BLOCK
+        to another;
+      · the raw output carries a usage/rate-limit phrase.
+
+    Fails closed in every one of those cases (verdict `block`, exit 1), because the
+    agent must halt when nobody judged the diff. What changes is only whether the
+    ledger CALLS it a round.
+    """
+    if payload is None:
+        return {
+            "verdict": "block",
+            "reviewer": reviewer,
+            "summary": unreadable_reason(raw),
+            "findings": [],
+            "no_verdict": True,
+        }
+    if str(payload.get("verdict") or "").strip().lower() == "error" or is_rate_limited(raw, 0):
+        return {
+            "verdict": "block",
+            "reviewer": reviewer,
+            "summary": str(payload.get("reason") or payload.get("summary") or "")[:300]
+            or unreadable_reason(raw),
+            "findings": [],
+            "no_verdict": True,
+        }
+    return normalize_verdict(payload, reviewer)
 
 
 def _verdict_from_envelope(obj: dict) -> dict | None:
@@ -324,9 +369,6 @@ def run_claude_fallback(base_ref: str, timeout: int = 900) -> tuple[int, str]:
 #
 # Neither is wrong; the record has to speak both. Same normalization the verdict
 # itself already gets in normalize_verdict().
-BLOCKING_SEVERITIES = {"block", "critical", "high"}
-
-
 def findings_list(payload: object) -> list:
     """Whatever a reviewer put in `findings`, as a list — for counting and grouping.
 
@@ -431,23 +473,26 @@ def read_records(path: Path) -> list[dict] | None:
     None means UNKNOWN and is never [] (CLAUDE.md rule 3): a truncated write or a
     permissions error must not present as "this feature was never reviewed". Callers
     decide what unknown means for them — every current one declines to judge.
+
+    NEVER raises, for the same reason the writer never does. Guarding only the write
+    path left the READ path able to kill the gate: `emit()` calls `count_rounds` after
+    printing its verdict, and a torn write mid-multibyte-character raises
+    UnicodeDecodeError — a ValueError, which `except OSError` does not catch. The
+    reader of a telemetry file is as load-bearing as its writer.
     """
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+        text = path.read_text(encoding="utf-8", errors="strict")
+        out = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)  # a bad line means the file is untrustworthy
+            if isinstance(rec, dict):
+                out.append(rec)
+        return out
+    except Exception:  # noqa: BLE001 — unknown, never a confident answer; see docstring
         return None
-    out = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            return None
-        if isinstance(rec, dict):
-            out.append(rec)
-    return out
 
 
 def count_rounds(path: Path) -> int | None:
@@ -652,8 +697,12 @@ def _claude(base_ref: str, note: str) -> dict:
             "findings": [],
             "no_verdict": True,
         }
-    payload = extract_json(out) or {"verdict": "block", "summary": out[:500]}
-    result = normalize_verdict(payload, "claude-fallback")
+    # The fallback RAN but may not have judged anything: an unreadable reply, or an
+    # error envelope, is an availability failure exactly like Codex's. This used to
+    # synthesise `{"verdict": "block"}` and record it as a counted round, so a mute
+    # reviewer could satisfy `Adversarial rounds:` — the very thing this branch is
+    # about, one site short.
+    result = outcome(extract_json(out), out, "claude-fallback")
     result["reviewer_note"] = note
     return result
 
@@ -688,31 +737,22 @@ def main() -> int:
         # so a directly-invoked reviewer and a dispatched one produce the same ledger.
         raw = sys.stdin.read()
         payload = extract_json(raw)
-        if payload is None:
-            # An UNREADABLE round is not a round that did not happen (CLAUDE.md
-            # rule 3). Dropping it was the third consecutive miss of the same case:
-            # a real Codex usage-limit envelope carries `result: null`, an empty
-            # `rawOutput`, and its failure text in `parseError` / `codex.stderr`, so
-            # nothing verdict-bearing survives extract_json — precisely the failing
-            # round the ledger most needs, and the one this path exists to keep.
-            # Record it, fail closed, and carry the reviewer's own words.
-            payload = {
-                "verdict": "block",
-                "summary": unreadable_reason(raw),
-                "findings": [],
-            }
-            unreadable = True
-        else:
-            unreadable = False
-        result = normalize_verdict(payload, payload.get("reviewer", "codex"))
-        if unreadable:
-            # Kept (it must not vanish — that was this path's whole point) but not
-            # COUNTED: no verdict was rendered here either. The dispatched path
-            # treats the identical envelope as an attempt, and one shape must not
-            # mean two things depending on which entry point saw it.
-            result["no_verdict"] = True
+        # An UNREADABLE round is not a round that did not happen (CLAUDE.md rule 3):
+        # a real Codex usage-limit envelope carries `result: null`, an empty
+        # `rawOutput`, and its failure text in `parseError` / `codex.stderr`, so
+        # nothing verdict-bearing survives extract_json — precisely the failure the
+        # ledger most needs, and the one this path exists to keep. It is recorded,
+        # fails closed, and carries the reviewer's own words; it is just not COUNTED.
+        #
+        # One question, one answer: `outcome` decides round-vs-attempt here exactly
+        # as it does on the dispatched path. It also catches the case this branch
+        # kept missing — a PARSEABLE `{"verdict": "error"}` outage envelope, which
+        # is_rate_limited already reads as "unavailable" but which this path used to
+        # normalize into a counted BLOCK round.
+        reviewer = (payload or {}).get("reviewer", "codex")
+        result = outcome(payload, raw, reviewer)
         path = append_round(result)
-        kind = "attempt (no verdict)" if unreadable else "round"
+        kind = "attempt (no verdict)" if result.get("no_verdict") else "round"
         print(
             f"(recorded {kind} -> {path})" if path else "(no ATP_FEATURE_ID; not recorded)",
             file=sys.stderr,

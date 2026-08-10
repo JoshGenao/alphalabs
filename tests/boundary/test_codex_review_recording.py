@@ -56,11 +56,24 @@ def _run(stub: Path, fid: str, runs_dir: Path):
 
 @pytest.fixture
 def runs_dir():
+    """The REAL .harness/runs — codex_review.sh resolves it from its own location.
+
+    These tests drive the actual script, so they cannot be pointed at tmp_path. The
+    cleanup therefore has to be real: the previous version built an empty `made` list,
+    never appended to it, and looped over nothing — cleanup that looked present in
+    review and removed nothing, leaving TEST-CR-* dirs in the developer's live ledger
+    whenever a test failed before its own `finally`.
+
+    Snapshot what exists, and remove anything this test created, pass or fail.
+    """
     d = ROOT / ".harness" / "runs"
-    made = []
+    before = {p.name for p in d.iterdir()} if d.is_dir() else set()
     yield d
-    for fid in made:
-        shutil.rmtree(d / fid, ignore_errors=True)
+    if d.is_dir():
+        for p in d.iterdir():
+            # Only ever our own fixtures: a real SRS-* ledger must survive untouched.
+            if p.name not in before and p.name.startswith("TEST-CR-"):
+                shutil.rmtree(p, ignore_errors=True)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")

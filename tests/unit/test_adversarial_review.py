@@ -494,3 +494,80 @@ def test_findings_list_normalizes_the_container():
     assert ar.findings_list([1, 2]) == [1, 2]
     assert ar.findings_list("abc") == ["abc"], "a string is ONE unreadable finding, not three"
     assert ar.findings_list({"rule": "x"}) == [{"rule": "x"}]
+
+
+# ---------------------------------------------------------------------------
+# Round 6. The previous commit called itself a class fix and covered four of the
+# SEVEN sites that decide round-vs-attempt; the reviewer found all three misses.
+# `outcome()` is now the single place the question is asked — these pin every path
+# to it, including the ones that must still count.
+# ---------------------------------------------------------------------------
+def test_a_parseable_error_envelope_is_an_outage_not_a_block_round():
+    """is_rate_limited() already calls this "unavailable" — one shape, one meaning."""
+    raw = '{"verdict":"error","reason":"you hit your usage limit"}'
+    res = ar.outcome(ar.extract_json(raw), raw, "codex")
+    assert res["no_verdict"] is True, "an error envelope is not a judgment of the diff"
+    assert res["verdict"] == "block", "but it still halts the agent"
+    assert ar.is_rate_limited(raw, 1), "the two must agree about the same envelope"
+
+
+def test_a_fallback_that_ran_but_said_nothing_readable_is_an_attempt(monkeypatch):
+    """It used to synthesise `{"verdict":"block"}` and record a COUNTED round, so a
+    mute reviewer could satisfy `Adversarial rounds:` without reading anything."""
+    monkeypatch.setattr(ar, "codex_cooldown_until", lambda: None)
+    monkeypatch.setattr(
+        ar, "run_claude_fallback", lambda _b, timeout=900: (0, "I cannot produce JSON.")
+    )
+    res = ar.review("origin/main", force_claude=True)
+    assert res.get("no_verdict") is True
+    assert res["verdict"] == "block"
+
+
+def test_the_reader_cannot_kill_the_gate_either(tmp_path):
+    """Guarding only the WRITE path left emit()'s count_rounds able to raise.
+
+    A torn write mid-multibyte-character raises UnicodeDecodeError — a ValueError,
+    which the old `except OSError` did not catch.
+    """
+    p = tmp_path / "review.jsonl"
+    p.write_bytes(b'{"kind":"round","verdict":"block"}\n\xff\xfe not utf-8 \xff\n')
+    assert ar.read_records(p) is None, "unknown, never a confident []"
+    assert ar.count_rounds(p) is None
+
+
+def test_emit_survives_an_unreadable_ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr(ar, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("ATP_FEATURE_ID", "F-TORN")
+    d = tmp_path / ".harness" / "runs" / "F-TORN"
+    d.mkdir(parents=True)
+    (d / "review.jsonl").write_bytes(b"\xff\xfe torn\n")
+    rc = ar.emit({"verdict": "block", "reviewer": "codex", "summary": "s", "findings": []})
+    assert rc == 1, "the verdict must outlive an unreadable ledger"
+
+
+@pytest.mark.parametrize(
+    "payload,expect_round",
+    [
+        pytest.param({"verdict": "approve", "findings": []}, True, id="approve_counts"),
+        pytest.param({"verdict": "warn", "findings": []}, True, id="warn_counts"),
+        pytest.param({"verdict": "block", "findings": [{"rule": "r"}]}, True, id="block_counts"),
+        pytest.param(
+            {"verdict": "needs-attention", "findings": [{"title": "T", "severity": "high"}]},
+            True,
+            id="needs_attention_counts",
+        ),
+        pytest.param({"verdict": "error"}, False, id="error_envelope_is_an_attempt"),
+        pytest.param(None, False, id="unparseable_is_an_attempt"),
+    ],
+)
+def test_outcome_is_the_single_round_vs_attempt_decision(payload, expect_round):
+    """A real judgment must still COUNT — the fix must not swallow genuine rounds."""
+    res = ar.outcome(payload, "raw output", "codex")
+    assert (not res.get("no_verdict")) is expect_round
+
+
+def test_one_severity_vocabulary():
+    """It was written twice, 236 lines apart, free to drift."""
+    src = (ar.REPO_ROOT / "tools" / "adversarial_review.py").read_text(encoding="utf-8")
+    assert src.count('{"block", "critical", "high"}') == 1
+    assert '{"critical", "high", "block"}' not in src, "a second, reordered copy came back"
