@@ -154,36 +154,43 @@ def outcome(payload: dict | None, raw: str, reviewer: str) -> dict:
     four call sites and missed three, and the reviewer found all three. The sites
     are not the class — the QUESTION is, so it gets asked in exactly one place.
 
-    No verdict, and therefore an `attempt`, when:
+    A judgment — and therefore a counted `round` — exactly when the payload parsed
+    AND declares one of block/warn/approve/needs-attention. Otherwise an `attempt`:
       · nothing verdict-bearing could be parsed (`payload is None`);
-      · the payload is an explicit error envelope (`{"verdict": "error"}`), which
-        `is_rate_limited` already treats as "reviewer unavailable, fail over" — the
-        same envelope must not be an outage to one function and a legitimate BLOCK
-        to another;
-      · the raw output carries a usage/rate-limit phrase.
+      · an explicit error envelope (`{"verdict": "error"}`), which `is_rate_limited`
+        already treats as "reviewer unavailable, fail over" — the same envelope must
+        not be an outage to one function and a legitimate BLOCK to another.
 
-    Fails closed in every one of those cases (verdict `block`, exit 1), because the
-    agent must halt when nobody judged the diff. What changes is only whether the
-    ledger CALLS it a round.
+    Fails closed in both of those (verdict `block`, exit 1): the agent must halt when
+    nobody judged the diff.
+
+    But note what an attempt COSTS, because the round-6 note understated it: an
+    attempt carries no findings. Misclassifying a real verdict does not merely
+    mislabel a ledger row, it DISCARDS what the reviewer found. That asymmetry is why
+    the test above is `payload declares a verdict → trust it`, and never the reverse.
     """
-    if payload is None:
-        return {
-            "verdict": "block",
-            "reviewer": reviewer,
-            "summary": unreadable_reason(raw),
-            "findings": [],
-            "no_verdict": True,
-        }
-    if str(payload.get("verdict") or "").strip().lower() == "error" or is_rate_limited(raw, 0):
-        return {
-            "verdict": "block",
-            "reviewer": reviewer,
-            "summary": str(payload.get("reason") or payload.get("summary") or "")[:300]
-            or unreadable_reason(raw),
-            "findings": [],
-            "no_verdict": True,
-        }
-    return normalize_verdict(payload, reviewer)
+    # A PARSED, RECOGNIZED verdict is a judgment — full stop. Nothing about the raw
+    # text may overrule it. Round 7 caught this by being its own victim: the reviewer
+    # returned a real BLOCK whose finding text quoted the phrase "usage limit", the
+    # `is_rate_limited(raw, 0)` scan below used to run first and match that prose, and
+    # the whole verdict was reclassified as an outage — findings dropped, round
+    # uncounted. Any review OF this file mentions rate limits; the scan is a heuristic
+    # for "we got no verdict", so it may only speak when there is none.
+    if payload is not None:
+        declared = str(payload.get("verdict") or "").strip().lower()
+        if declared in ("block", "warn", "approve", "needs-attention"):
+            return normalize_verdict(payload, reviewer)
+
+    reason = ""
+    if payload is not None:
+        reason = str(payload.get("reason") or payload.get("summary") or "")[:300]
+    return {
+        "verdict": "block",
+        "reviewer": reviewer,
+        "summary": reason or unreadable_reason(raw),
+        "findings": [],
+        "no_verdict": True,
+    }
 
 
 def _verdict_from_envelope(obj: dict) -> dict | None:

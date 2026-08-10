@@ -571,3 +571,68 @@ def test_one_severity_vocabulary():
     src = (ar.REPO_ROOT / "tools" / "adversarial_review.py").read_text(encoding="utf-8")
     assert src.count('{"block", "critical", "high"}') == 1
     assert '{"critical", "high", "block"}' not in src, "a second, reordered copy came back"
+
+
+# ---------------------------------------------------------------------------
+# Round 7, which caught its own bug by falling into it. The reviewer returned a real
+# BLOCK whose finding text quoted "usage limit"; outcome()'s is_rate_limited scan
+# matched that PROSE and reclassified the verdict as an outage — findings dropped,
+# round uncounted, exit still 1 so nothing looked wrong. Any review OF this file
+# mentions rate limits, so the reviewer was guaranteed to be silenced by the code it
+# was reviewing.
+# ---------------------------------------------------------------------------
+ROUND_7_ACTUAL_OUTPUT = json.dumps(
+    {
+        "verdict": "block",
+        "findings": [
+            {
+                "severity": "block",
+                "rule": "review:genuine-verdict-misread-as-outage",
+                "message": (
+                    "`outcome()` treats ANY reviewer output containing "
+                    '"usage limit"/"rate limit" as an availability failure, so a '
+                    "genuine verdict about rate-limit handling is discarded."
+                ),
+            }
+        ],
+    }
+)
+
+
+def test_a_genuine_verdict_is_not_silenced_by_its_own_prose():
+    """The exact payload round 7 produced, which round 6's code threw away."""
+    res = ar.outcome(
+        ar.extract_json(ROUND_7_ACTUAL_OUTPUT), ROUND_7_ACTUAL_OUTPUT, "claude-fallback"
+    )
+    assert not res.get("no_verdict"), "a parsed, declared verdict is a judgment"
+    assert res["verdict"] == "block"
+    assert len(res["findings"]) == 1, "an attempt carries no findings — they were DISCARDED"
+    assert res["findings"][0]["rule"] == "review:genuine-verdict-misread-as-outage"
+    # The heuristic still fires on the raw text; it just may not overrule a verdict.
+    assert ar.is_rate_limited(ROUND_7_ACTUAL_OUTPUT, 0)
+
+
+@pytest.mark.parametrize(
+    "verdict", ["block", "warn", "approve", "needs-attention"], ids=lambda v: f"v_{v}"
+)
+def test_every_declared_verdict_counts_even_mentioning_a_usage_limit(verdict):
+    payload = {
+        "verdict": verdict,
+        "summary": "the diff changes usage limit and rate limit handling",
+        "findings": [{"rule": "r", "severity": "high"}],
+    }
+    res = ar.outcome(payload, json.dumps(payload), "codex")
+    assert not res.get("no_verdict")
+    assert res["findings"], "findings must survive"
+
+
+def test_an_outage_with_no_declared_verdict_is_still_an_attempt():
+    """The round-6 behaviour must survive the round-7 reordering."""
+    for payload, raw in (
+        (None, "you've hit your usage limit, try again at 3:00 PM"),
+        (None, "I cannot produce JSON right now."),
+        ({"verdict": "error", "reason": "usage limit"}, '{"verdict":"error"}'),
+    ):
+        res = ar.outcome(payload, raw, "codex")
+        assert res.get("no_verdict") is True
+        assert res["verdict"] == "block", "still halts the agent"
