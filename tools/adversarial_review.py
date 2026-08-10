@@ -41,6 +41,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -326,8 +327,35 @@ def run_claude_fallback(base_ref: str, timeout: int = 900) -> tuple[int, str]:
 BLOCKING_SEVERITIES = {"block", "critical", "high"}
 
 
-def finding_rule(finding: dict) -> str:
-    """A stable-ish grouping key for a finding, whichever reviewer produced it."""
+def findings_list(payload: object) -> list:
+    """Whatever a reviewer put in `findings`, as a list — for counting and grouping.
+
+    Not just the ENTRIES need normalizing but the CONTAINER: a reviewer emitting
+    `findings: "some prose"` made `len()` report 13 for "totally wrong" (a string
+    is iterable, so it counted characters) and grouping iterate character by
+    character. A malformed container is ONE unknown finding, not thirteen and not
+    zero — it must not read as "the reviewer found nothing" (CLAUDE.md rule 3).
+    """
+    if payload is None:
+        return []
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, tuple):
+        return list(payload)
+    return [payload]  # a dict, a string, a number: one thing we could not read
+
+
+def finding_rule(finding: object) -> str:
+    """A stable-ish grouping key for a finding, whichever reviewer produced it.
+
+    Takes `object`, not `dict`: nothing validates a reviewer's payload shape before
+    it gets here. `normalize_verdict` already filters with `isinstance(f, dict)`
+    while this did not, so a reviewer emitting `findings: ["some string"]` passed
+    normalization and then killed the telemetry append with an AttributeError.
+    A malformed finding is UNKNOWN ("?"), never dropped (CLAUDE.md rule 3).
+    """
+    if not isinstance(finding, dict):
+        return "?"
     for key in ("rule", "title", "id", "type"):
         value = str(finding.get(key) or "").strip()
         if value:
@@ -337,7 +365,16 @@ def finding_rule(finding: dict) -> str:
     return "?"
 
 
-def is_blocking(finding: dict) -> bool:
+def is_blocking(finding: object) -> bool:
+    """Is this finding severe enough to block? A malformed one is not evidence of safety.
+
+    Fails toward "not blocking" only because the VERDICT (which `normalize_verdict`
+    computes independently, and which defaults to `block` on anything unreadable)
+    is what gates the agent — this feeds the ledger's `blocking_rules` list, not the
+    exit code.
+    """
+    if not isinstance(finding, dict):
+        return False
     return str(finding.get("severity") or "").strip().lower() in BLOCKING_SEVERITIES
 
 
@@ -456,7 +493,7 @@ def round_record(result: dict) -> dict:
     to write. The reviewer knows the number; it should not be asking anyone to
     recount it.
     """
-    findings = result.get("findings") or []
+    findings = findings_list(result.get("findings"))
     return {
         "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
         "kind": ROUND_KIND,
@@ -483,19 +520,21 @@ def append_round(result: dict, fid: str | None = None) -> Path | None:
     an agent whose review dies because a log directory is read-only learns to stop
     running the review.
     """
-    # A result flagged `no_verdict` blocks the agent but records as an ATTEMPT: the
-    # reviewer never judged the diff. One funnel, so a future no-verdict path cannot
-    # become a round by forgetting to ask.
-    record = (
-        attempt_record(
+    return _append(lambda: _record_for(result), fid)
+
+
+def _record_for(result: dict) -> dict:
+    """A result flagged `no_verdict` blocks the agent but records as an ATTEMPT.
+
+    One funnel, so a future no-verdict path cannot become a round by forgetting to ask.
+    """
+    if result.get("no_verdict"):
+        return attempt_record(
             str(result.get("reviewer") or "?"),
             str(result.get("reviewer_note") or ""),
             str(result.get("summary") or ""),
         )
-        if result.get("no_verdict")
-        else round_record(result)
-    )
-    return _append(record, fid)
+    return round_record(result)
 
 
 def append_attempt(reviewer: str, note: str, raw: str, fid: str | None = None) -> Path | None:
@@ -503,20 +542,36 @@ def append_attempt(reviewer: str, note: str, raw: str, fid: str | None = None) -
 
     ``raw`` is the reviewer's unparsed output, so the cause is dug out of it here.
     """
-    return _append(attempt_record(reviewer, note, unreadable_reason(raw)), fid)
+    return _append(lambda: attempt_record(reviewer, note, unreadable_reason(raw)), fid)
 
 
-def _append(record: dict, fid: str | None = None) -> Path | None:
+def _append(build: Callable[[], dict], fid: str | None = None) -> Path | None:
+    """Build and append one record, or return None. NEVER raises.
+
+    `build` is a callable, not a dict, so that BUILDING the record happens inside
+    the guard too. It used to happen at the call site: a reviewer emitting
+    `findings: ["a bare string"]` passed normalize_verdict (which filters on
+    `isinstance(f, dict)`) and then died in finding_rule with an AttributeError —
+    after the verdict had already been printed, killing the review that had
+    successfully completed. The docstring promised "never fails the review" while
+    only `OSError` was caught.
+
+    So the except is deliberately broad. Telemetry is strictly observational here;
+    the verdict and the exit code are computed before it and do not depend on it.
+    A ledger that can kill the gate it measures teaches agents to stop running the
+    gate — the one outcome worse than having no ledger.
+    """
     fid = fid or os.environ.get("ATP_FEATURE_ID", "")
     if not fid:
         return None
-    path = REPO_ROOT / ".harness" / "runs" / fid / "review.jsonl"
     try:
+        path = REPO_ROOT / ".harness" / "runs" / fid / "review.jsonl"
+        line = json.dumps(build(), sort_keys=True)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, sort_keys=True) + "\n")
-    except OSError as exc:
-        print(f"(could not record review telemetry: {exc})", file=sys.stderr)
+            fh.write(line + "\n")
+    except Exception as exc:  # noqa: BLE001 — see docstring; must never fail the review
+        print(f"(could not record review telemetry: {exc!r})", file=sys.stderr)
         return None
     return path
 

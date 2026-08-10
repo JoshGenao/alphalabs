@@ -427,3 +427,70 @@ def test_unreadable_telemetry_is_unknown_not_zero(tmp_path):
     assert ar.read_records(path) is None
     assert ar.count_rounds(path) is None
     assert ar.count_rounds(tmp_path / "does-not-exist.jsonl") is None
+
+
+# ---------------------------------------------------------------------------
+# Malformed reviewer payloads must not kill the review they are measuring.
+# Found by the judgment critic on this very branch: normalize_verdict filters with
+# isinstance(f, dict) but finding_rule did not, so `findings: ["a string"]` passed
+# normalization and then died with AttributeError INSIDE emit() — after the verdict
+# had already printed. Pre-existing on main; the refactor did not fix it.
+# ---------------------------------------------------------------------------
+MALFORMED = [
+    pytest.param(["a bare string"], 1, id="list_of_strings"),
+    pytest.param([None], 1, id="list_of_none"),
+    pytest.param([42], 1, id="list_of_ints"),
+    pytest.param("totally wrong", 1, id="findings_is_a_string"),
+    pytest.param(123, 1, id="findings_is_a_number"),
+    pytest.param([{"rule": "ok", "severity": "high"}, "junk", None], 3, id="mixed"),
+]
+
+
+@pytest.mark.parametrize("findings,expected_n", MALFORMED)
+def test_malformed_findings_never_crash_the_review(findings, expected_n, tmp_path, monkeypatch):
+    monkeypatch.setattr(ar, "REPO_ROOT", tmp_path)
+    result = {"verdict": "block", "reviewer": "codex", "summary": "s", "findings": findings}
+    path = ar.append_round(result, fid="F-MAL")  # must not raise
+    rec = json.loads(path.read_text().splitlines()[-1])
+    # Unreadable is UNKNOWN, never dropped and never inflated (CLAUDE.md rule 3):
+    # a string is iterable, so len("totally wrong") once reported 13 findings.
+    assert rec["n_findings"] == expected_n
+    assert "?" in rec["rules"]
+
+
+def test_emit_survives_a_malformed_payload_and_still_returns_the_verdict(tmp_path, monkeypatch):
+    """The gate must outlive its own telemetry — emit() printed, then died."""
+    monkeypatch.setattr(ar, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("ATP_FEATURE_ID", "F-EMIT")
+    rc = ar.emit({"verdict": "block", "reviewer": "codex", "summary": "s", "findings": ["junk"]})
+    assert rc == 1, "the verdict's exit code must survive a telemetry failure"
+
+
+def test_a_well_formed_payload_is_unchanged(tmp_path, monkeypatch):
+    """The non-regression half: normalizing must not blunt a real finding."""
+    monkeypatch.setattr(ar, "REPO_ROOT", tmp_path)
+    result = {
+        "verdict": "block",
+        "reviewer": "codex",
+        "findings": [{"rule": "real-one", "severity": "high"}],
+    }
+    rec = json.loads(ar.append_round(result, fid="F-OK2").read_text().splitlines()[-1])
+    assert rec["n_findings"] == 1
+    assert rec["rules"] == ["real-one"] and rec["blocking_rules"] == ["real-one"]
+
+
+def test_telemetry_can_never_raise_whatever_goes_wrong(tmp_path, monkeypatch):
+    """The guard is broad on purpose: the ledger must not be able to kill the gate."""
+    monkeypatch.setattr(ar, "REPO_ROOT", tmp_path)
+
+    def _boom():
+        raise RuntimeError("record building exploded")
+
+    assert ar._append(_boom, fid="F-BOOM") is None  # returns None, does not raise
+
+
+def test_findings_list_normalizes_the_container():
+    assert ar.findings_list(None) == []
+    assert ar.findings_list([1, 2]) == [1, 2]
+    assert ar.findings_list("abc") == ["abc"], "a string is ONE unreadable finding, not three"
+    assert ar.findings_list({"rule": "x"}) == [{"rule": "x"}]
