@@ -122,3 +122,33 @@ def test_a_codex_finding_is_recorded_with_its_title_not_a_question_mark(tmp_path
         assert rec["verdict"] == "block"  # needs-attention + high normalizes to block
     finally:
         shutil.rmtree(runs_dir / fid, ignore_errors=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_a_real_usage_limit_envelope_is_still_recorded(tmp_path, runs_dir):
+    """The shape three consecutive fixes missed.
+
+    A rate-limited Codex does not emit `{"verdict": ...}`. It emits an envelope with
+    `result: null`, an empty `rawOutput`, and the cause in parseError/codex.stderr —
+    so extract_json finds nothing verdict-bearing. Dropping the round there kept
+    losing exactly the failure the ledger most needs. Unreadable is not empty.
+    """
+    fid = "TEST-CR-ENVELOPE"
+    shutil.rmtree(runs_dir / fid, ignore_errors=True)
+    stub = _stub(
+        tmp_path,
+        "console.log(JSON.stringify({review:'adversarial-review',result:null,"
+        "rawOutput:'',parseError:'no JSON found in reply',"
+        "codex:{stderr:\"you've hit your usage limit, try again at 3:00 PM\",stdout:''}}));\n"
+        "process.exit(1);\n",
+    )
+    try:
+        proc, rounds = _run(stub, fid, runs_dir)
+        assert proc.returncode == 1
+        assert "usage limit" in proc.stdout, "the dispatcher parses this to fail over"
+        assert len(rounds) == 1, "an unreadable round is still a round"
+        rec = json.loads(rounds[0])
+        assert rec["verdict"] == "block", "fail closed, never approve"
+        assert "no JSON found in reply" in rec["summary"], "carry the reviewer's own reason"
+    finally:
+        shutil.rmtree(runs_dir / fid, ignore_errors=True)

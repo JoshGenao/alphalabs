@@ -278,3 +278,49 @@ def test_round_record_of_a_real_codex_round_is_not_all_question_marks():
 def test_a_long_title_is_clipped_so_the_ledger_stays_groupable():
     long_title = "x" * 200
     assert len(ar.finding_rule({"title": long_title})) == 80
+
+
+# --- an unreadable round is still a round -------------------------------------
+# Three consecutive rounds of this branch failed to record the failing case, each
+# time because the real shape differed from the one imagined. The last of them: a
+# Codex usage-limit envelope carries `result: null`, an empty `rawOutput`, and its
+# cause in parseError/codex.stderr — nothing verdict-bearing survives extract_json.
+# CLAUDE.md rule 3: unreadable is not empty.
+REAL_LIMIT_ENVELOPE = json.dumps(
+    {
+        "review": "adversarial-review",
+        "result": None,
+        "rawOutput": "",
+        "parseError": "no JSON found in reply",
+        "codex": {"stderr": "you've hit your usage limit, try again at 3:00 PM", "stdout": ""},
+    }
+)
+
+
+def test_the_real_usage_limit_envelope_yields_no_verdict():
+    """Pins WHY the round was dropped: extract_json genuinely cannot read it."""
+    assert ar.extract_json(REAL_LIMIT_ENVELOPE) is None
+
+
+def test_unreadable_reason_prefers_the_reviewers_own_words():
+    assert "no JSON found in reply" in ar.unreadable_reason(REAL_LIMIT_ENVELOPE)
+
+
+def test_unreadable_reason_falls_back_through_the_envelope():
+    assert "usage limit" in ar.unreadable_reason(
+        json.dumps({"codex": {"stderr": "you've hit your usage limit"}})
+    )
+    assert "boom" in ar.unreadable_reason(json.dumps({"reason": "boom"}))
+    assert "(empty)" in ar.unreadable_reason("")
+
+
+def test_an_unreadable_round_fails_closed_to_block():
+    """Not 'approve', not 'warn', and above all not 'absent'."""
+    result = ar.normalize_verdict(
+        {"verdict": "block", "summary": ar.unreadable_reason(REAL_LIMIT_ENVELOPE), "findings": []},
+        "codex",
+    )
+    rec = ar.round_record(result)
+    assert rec["verdict"] == "block"
+    assert rec["n_findings"] == 0
+    assert "no JSON found in reply" in rec["summary"]

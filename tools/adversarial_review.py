@@ -341,6 +341,32 @@ def is_blocking(finding: dict) -> bool:
     return str(finding.get("severity") or "").strip().lower() in BLOCKING_SEVERITIES
 
 
+def unreadable_reason(raw: str) -> str:
+    """The reviewer's own words about why its output could not be read.
+
+    A Codex failure envelope keeps the real cause somewhere extract_json never
+    looks — `parseError`, `codex.stderr`, or a bare `reason` — so a round recorded
+    as merely "unparsable" would throw away the one detail that makes it
+    actionable, usually "you've hit your usage limit".
+    """
+    text = (raw or "").strip()
+    try:
+        obj = json.loads(text) if text.startswith("{") else {}
+    except json.JSONDecodeError:
+        obj = {}
+    codex = obj.get("codex") if isinstance(obj.get("codex"), dict) else {}
+    for candidate in (
+        obj.get("parseError"),
+        obj.get("reason"),
+        obj.get("error"),
+        codex.get("stderr"),
+        codex.get("stdout"),
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            return f"unreadable reviewer output: {candidate.strip()[:300]}"
+    return f"unreadable reviewer output: {text[:300] or '(empty)'}"
+
+
 def round_record(result: dict) -> dict:
     """The structured form of one review round.
 
@@ -361,6 +387,11 @@ def round_record(result: dict) -> dict:
         "rules": sorted({finding_rule(f) for f in findings}),
         "blocking_rules": sorted({finding_rule(f) for f in findings if is_blocking(f)}),
         "reviewer_note": result.get("reviewer_note", ""),
+        # The reviewer's own account of the round. For an unreadable one this is the
+        # only actionable content there is ("you've hit your usage limit…"), and
+        # recording the round without it would preserve the count while discarding
+        # the reason.
+        "summary": str(result.get("summary") or "")[:300],
     }
 
 
@@ -483,8 +514,18 @@ def main() -> int:
         raw = sys.stdin.read()
         payload = extract_json(raw)
         if payload is None:
-            print("(no parsable verdict on stdin; nothing recorded)", file=sys.stderr)
-            return 0
+            # An UNREADABLE round is not a round that did not happen (CLAUDE.md
+            # rule 3). Dropping it was the third consecutive miss of the same case:
+            # a real Codex usage-limit envelope carries `result: null`, an empty
+            # `rawOutput`, and its failure text in `parseError` / `codex.stderr`, so
+            # nothing verdict-bearing survives extract_json — precisely the failing
+            # round the ledger most needs, and the one this path exists to keep.
+            # Record it, fail closed, and carry the reviewer's own words.
+            payload = {
+                "verdict": "block",
+                "summary": unreadable_reason(raw),
+                "findings": [],
+            }
         result = normalize_verdict(payload, payload.get("reviewer", "codex"))
         path = append_round(result)
         print(
