@@ -293,6 +293,20 @@ class SwapExecutionHandler:
                 detail={"owner": _LOCKOUT_OWNER},
             )
 
+        # A promotion whose AUDIT RECORD did not land is not a clean success. The
+        # designation is already written and persisted, so the swap happened — but
+        # nothing durable addresses it, and an irreversible live-trading state change
+        # with no record is an operator-reconciliation event, not a 200 that reads
+        # like every other 200.
+        #
+        # Reported as a distinct state rather than as PROMOTED. The shipped pane
+        # computes `promoted = !!swapId && promotion === "PROMOTED"`, so this value
+        # correctly holds its control inert and waits for durable confirmation
+        # instead of showing a completed swap.
+        recorded = values.get("promotion-recorded")
+        if promotion == "PROMOTED" and recorded != "true":
+            promotion = "PROMOTED_UNRECORDED"
+
         body: dict[str, object] = {
             # DEMOTED / DEMOTION_PENDING — the closed vocabulary the shipped UI-5
             # pane already routes on.

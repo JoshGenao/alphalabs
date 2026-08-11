@@ -341,6 +341,7 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
     let events = JournalPromotionEvents {
         path: args.log.as_ref().map(PathBuf::from),
         ordinal: Cell::new(None),
+        append_failed: Cell::new(false),
     };
 
     let confirmation =
@@ -434,6 +435,29 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
             .get()
             .map_or_else(|| "-".to_string(), |n| n.to_string())
     );
+    // THREE states, never two. `false` means the append was attempted and failed —
+    // the candidate may now be LIVE with no durable record of the swap, which is an
+    // operator-reconciliation event. `not-configured` means the caller asked for no
+    // journal. Reporting the first as the second would hide an unauditable live
+    // state change behind a usage choice.
+    let recorded = match (events.ordinal.get(), &events.path) {
+        (Some(_), _) => "true",
+        (None, Some(_)) => "false",
+        (None, None) => "not-configured",
+    };
+    println!("promotion-recorded:{recorded}");
+    if outcome.is_ok() && recorded == "false" {
+        // The promotion HAPPENED — the designation is written and persisted — but
+        // its audit record did not land. That is not a clean success, so the exit
+        // code must not say it was.
+        eprintln!(
+            "SRS-RESV-005: `{}` was promoted live but its promotion journal record \
+             could NOT be written; the live state change is unauditable and needs \
+             operator reconciliation",
+            candidate.as_str()
+        );
+        return Ok(false);
+    }
     Ok(outcome.is_ok())
 }
 
@@ -830,6 +854,11 @@ fn parse_version(spec: Option<&str>) -> Result<VersionAnswer, String> {
 struct JournalPromotionEvents {
     path: Option<PathBuf>,
     ordinal: Cell<Option<u64>>,
+    /// Whether an append was ATTEMPTED and failed. Kept apart from "no journal was
+    /// configured": a promotion whose audit record could not be written is an
+    /// operator-reconciliation event, while an unconfigured journal is a CLI usage
+    /// choice. Collapsing them would report the first as the second.
+    append_failed: Cell<bool>,
 }
 
 impl HotSwapPromotionEventSink for JournalPromotionEvents {
@@ -862,7 +891,13 @@ impl HotSwapPromotionEventSink for JournalPromotionEvents {
                 .map_or("null".to_string(), json_string),
             event.observed_at_seconds,
         );
-        let ordinal = append_journal_line(path, &line).map_err(HotSwapSideEffectError::new)?;
+        let ordinal = match append_journal_line(path, &line) {
+            Ok(ordinal) => ordinal,
+            Err(reason) => {
+                self.append_failed.set(true);
+                return Err(HotSwapSideEffectError::new(reason));
+            }
+        };
         self.ordinal.set(Some(ordinal));
         Ok(())
     }

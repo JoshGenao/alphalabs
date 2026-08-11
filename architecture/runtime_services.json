@@ -4789,10 +4789,12 @@
       ],
       "promotion_state_vocabulary": [
         "PROMOTED",
+        "PROMOTED_UNRECORDED",
         "BLOCKED"
       ],
+      "unrecorded_promotion_note": "Round-2 adversarial review [high]: the promotion audit sink is best-effort (the designation is already written when it runs, so a sink failure cannot roll it back), which meant an unwritable journal could leave the candidate LIVE while the API reported a clean promotion_state:PROMOTED with no durable swap_id. A live state change nobody can address is not a success. The binary now reports promotion-recorded as THREE states (true / false / not-configured -- an append that was ATTEMPTED and failed is not the same fact as a caller who asked for no journal) and exits non-zero on a promoted-but-unrecorded swap; the handler maps it to PROMOTED_UNRECORDED. The shipped pane computes promoted = !!swapId && promotion === 'PROMOTED', so that value holds its control inert and awaits durable confirmation rather than showing a completed swap.",
       "subprocess_timeout_seconds": 90,
-    "safety_input_tier": {
+      "safety_input_tier": {
       "declaration": "fixture_safety_inputs",
       "cli_flag": "--allow-fixture-safety-inputs",
       "refusal_type": "SAFETY_INPUTS_UNAVAILABLE",

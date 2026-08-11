@@ -447,3 +447,48 @@ def test_two_concurrent_swaps_cannot_both_promote(binaries, paper_store, tmp_pat
             )
         )["designated"]
         assert final == (CANDIDATE if promoted else DEMOTING)
+
+
+def test_a_promotion_whose_journal_append_fails_is_not_reported_as_clean(
+    binaries, paper_store, tmp_path
+):
+    """Round-2 adversarial review [high]: an unauditable live state change.
+
+    The audit sink is best-effort — by the time it runs the designation is already
+    written, so a sink failure cannot roll it back. But a candidate that is LIVE
+    with no durable record of how it got there is an operator-reconciliation event,
+    not a clean success, and the exit code must not say otherwise.
+
+    The append is made to fail by pointing --log at a DIRECTORY, which is a real
+    unwritable path rather than a monkeypatched function.
+    """
+    state = tmp_path / "live.state"
+    _seed_live(state, DEMOTING)
+    blocked = tmp_path / "journal-is-a-directory.jsonl"
+    blocked.mkdir()
+
+    result = _swap(binaries, state=state, paper=paper_store, extra=["--log", str(blocked)])
+    proof = _lines(result)
+
+    # The swap DID happen — the requirement's ordering held and the candidate is live.
+    assert proof["promotion"] == "PROMOTED"
+    assert proof["designation-after"] == CANDIDATE
+    # But it is not reported as a clean success.
+    assert proof["promotion-recorded"] == "false"
+    assert proof["swap-record-ordinal"] == "-"
+    assert result.returncode != 0, "a promotion with no durable record must not exit 0"
+    assert "unauditable" in result.stderr
+
+
+def test_an_unconfigured_journal_is_not_an_append_failure(binaries, paper_store, tmp_path):
+    """Three states, never two: a caller who asked for no journal has not suffered
+    a write failure, and must not be reported as though they had."""
+    state = tmp_path / "live.state"
+    _seed_live(state, DEMOTING)
+
+    result = _swap(binaries, state=state, paper=paper_store)  # no --log
+    proof = _lines(result)
+
+    assert proof["promotion"] == "PROMOTED"
+    assert proof["promotion-recorded"] == "not-configured"
+    assert result.returncode == 0, "an unconfigured journal is a usage choice, not a failure"

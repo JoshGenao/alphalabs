@@ -115,7 +115,13 @@ def test_hot_swap_affordance_uses_only_the_contract_route(mounted_runtime) -> No
     status, body = _request(host, port, "POST", "/api/v1/hot-swap?confirm=true")
     assert status == 501
     assert body["error"]["type"] == "HANDLER_DEFERRED"
-    assert body["error"]["detail"]["owner"] == "SRS-RESV-003"
+    # SRS-RESV-005, not the HOT_SWAP capability owner (SRS-RESV-003). The capability
+    # spans two features — RESV-003 owns the trigger routes, RESV-005 owns swap
+    # EXECUTION — so deriving this from the capability sent an operator to the
+    # trigger feature for a gap in the execution route. The route now declares
+    # `served_by`, and the runtime prefers it for an implemented-but-uncomposed
+    # operation. Raised by /codex adversarial review (SRS-RESV-005 r2, medium).
+    assert body["error"]["detail"]["owner"] == "SRS-RESV-005"
 
 
 def _iter_cells(node: object) -> Iterator[Mapping[str, object]]:

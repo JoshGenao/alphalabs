@@ -309,7 +309,18 @@ class Dispatcher:
 
             identifier = f"{route.method.value} {route.path}"
             key = OperationKey(Surface.REST, identifier)
-            owner = rest_owner(route.capability.value)
+            # Route-level `served_by` WINS over the capability-wide owner. A
+            # capability can span features — HOT_SWAP covers the SRS-RESV-003
+            # trigger routes AND the SRS-RESV-005 execution route — so the
+            # capability owner sends an operator to the wrong feature for any
+            # route a different feature implements. Mirrors the per-command
+            # precedent in `CLI_COMMAND_OWNER_OVERRIDES`.
+            #
+            # This is the UNCOMPOSED path: `served_by` means "a feature ships a
+            # handler", and reaching here means this deployment has not mounted
+            # it — so the honest owner to name is the one whose handler is
+            # missing, not the one that happens to own the capability.
+            owner = route.served_by or rest_owner(route.capability.value)
             handler = self._registry.resolve(
                 key, deferred=DeferredHandler(owner=owner, summary=route.summary)
             )

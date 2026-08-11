@@ -61,6 +61,7 @@ class _FakeCli:
         demotion: str = "FLAT_CONFIRMED",
         ordinal: str = "1",
         refusal: str | None = None,
+        recorded: str = "true",
     ) -> None:
         lines = [
             "transports:FIXTURE",
@@ -70,6 +71,7 @@ class _FakeCli:
         if refusal is not None:
             lines.append(f"refusal:{refusal}")
         lines.append(f"swap-record-ordinal:{ordinal}")
+        lines.append(f"promotion-recorded:{recorded}")
         self.queue(returncode=0 if promotion == "PROMOTED" else 1, stdout="\n".join(lines) + "\n")
 
     def __call__(self, argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
@@ -436,7 +438,7 @@ def test_an_executed_but_blocked_swap_is_a_200_not_an_error(mounted, fake_cli, d
 
 def test_a_swap_without_a_journal_record_carries_no_fabricated_id(mounted, fake_cli):
     fake_cli.queue_status("live-a")
-    fake_cli.queue_swap(ordinal="-")
+    fake_cli.queue_swap(ordinal="-", recorded="false")
 
     status, body = _post(mounted, _confirmed(), {"candidate_strategy_id": "paper-b"})
 
@@ -445,7 +447,9 @@ def test_a_swap_without_a_journal_record_carries_no_fabricated_id(mounted, fake_
     # not an invented one. The pane already refuses to call a response whose swap_id
     # is not a string "promoted", so the null is load-bearing.
     assert body["swap_id"] is None
-    assert body["promotion_state"] == "PROMOTED"
+    # And the promotion is NOT reported as a clean success: the candidate may be live
+    # with nothing durable addressing the swap, which needs reconciliation.
+    assert body["promotion_state"] == "PROMOTED_UNRECORDED"
 
 
 # --------------------------------------------------------------------------- #
@@ -582,3 +586,37 @@ def test_a_drill_composition_carries_its_tier_into_the_binary(mounted, fake_cli)
     assert "--allow-fixture-safety-inputs" in swap_argv
     assert "--positions" in swap_argv
     assert "--deployed-version" in swap_argv
+
+
+def test_a_promotion_whose_audit_record_did_not_land_is_not_a_clean_success(mounted, fake_cli):
+    """Round-2 adversarial review [high].
+
+    The audit sink is best-effort by design — the designation is already written
+    when it runs, so a sink failure cannot roll it back. That left an unwritable
+    journal able to produce a LIVE candidate with a clean `PROMOTED` and no durable
+    id: an irreversible live-trading state change nobody can address.
+    """
+    fake_cli.queue_status("live-a")
+    fake_cli.queue_swap(ordinal="-", recorded="false")
+
+    status, body = _post(mounted, _confirmed(), {"candidate_strategy_id": "paper-b"})
+
+    assert status == 200, "the swap RAN; a non-2xx would claim nothing mutated"
+    assert body["promotion_state"] == "PROMOTED_UNRECORDED"
+    assert body["swap_id"] is None
+    # The shipped pane requires promotion === "PROMOTED" to call it promoted, so
+    # this value holds its control inert and waits for durable confirmation.
+    assert body["promotion_state"] != "PROMOTED"
+
+
+def test_a_bare_uncomposed_execution_route_names_ITS_owner_not_the_capability_owner(bare):
+    """Round-2 adversarial review [medium].
+
+    HOT_SWAP spans two features: SRS-RESV-003 owns the trigger routes, SRS-RESV-005
+    owns execution. Deriving the 501's owner from the capability sent an operator to
+    the trigger feature for a gap in the execution route.
+    """
+    status, body = _post(bare, _confirmed(), {"candidate_strategy_id": "paper-b"})
+
+    assert status == 501
+    assert body["error"]["detail"]["owner"] == "SRS-RESV-005"
