@@ -94,7 +94,7 @@ _REQUEST_FIELDS = frozenset({"candidate_strategy_id", "confirm"})
 #: The closed set of demotion outcomes the binary may report. Anything else —
 #: including ABSENT — is unknown, and unknown fails closed rather than defaulting to
 #: a value that would let a promotion be reported with no demotion proof.
-_DEMOTION_OUTCOMES = frozenset({"FLAT_CONFIRMED", "DEMOTION_PENDING"})
+_DEMOTION_OUTCOMES = frozenset({"FLAT_CONFIRMED", "DEMOTION_PENDING", "NOT_STARTED"})
 
 #: Owner of the durable cross-attempt demotion-pending lockout (see the module docs).
 _LOCKOUT_OWNER = "SRS-RESV-004"
@@ -337,6 +337,25 @@ class SwapExecutionHandler:
                 "the live strategy from durable status before retrying",
                 type="SWAP_OUTCOME_UNREADABLE",
                 detail={"owner": _LOCKOUT_OWNER},
+            )
+        # A swap that NEVER STARTED did not mutate anything: no demotion-side port was
+        # touched, no lockout was engaged, the live slot is untouched. So it must be a
+        # non-2xx — this surface documents non-2xx as "nothing mutated; retry is
+        # allowed", and that is exactly true here.
+        #
+        # Reporting it as a 200 `DEMOTION_PENDING` (which is what collapsing the
+        # three-valued outcome into a boolean produced) told the pane a swap had been
+        # accepted and left its control inert awaiting durable confirmation of a
+        # demotion-pending state that was never created — an operator-visible dead
+        # end. DEMOTION_PENDING is reserved for the real SYS-49b timeout path.
+        if demotion == "NOT_STARTED":
+            reason = values.get("refusal") or "SWAP_NOT_STARTED"
+            raise InterfaceError(
+                ErrorCategory.BAD_REQUEST,
+                f"the swap did not start ({reason}): no demotion ran and nothing was "
+                "changed; re-read the current live strategy before retrying",
+                type=reason,
+                detail={"owner": _DESIGNATION_OWNER},
             )
         if promotion == "PROMOTED" and demotion != "FLAT_CONFIRMED":
             raise InterfaceError(

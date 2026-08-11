@@ -786,3 +786,39 @@ def test_the_published_schema_requires_what_the_handler_requires(mounted, fake_c
     assert status == 400
     assert body["error"]["type"] == "MISSING_CANDIDATE_STRATEGY_ID"
     assert fake_cli.calls == []
+
+
+def test_a_swap_that_never_started_is_a_non_2xx(mounted, fake_cli):
+    """Round-11 adversarial review [critical].
+
+    A stale or empty live slot is refused before any demotion-side port is touched,
+    so nothing mutated. Collapsing that into a 200 `DEMOTION_PENDING` told the pane
+    a swap had been ACCEPTED — and the pane then holds its control inert awaiting
+    durable confirmation of a demotion-pending state that was never created. A
+    non-2xx is not merely allowed here, it is the accurate answer.
+    """
+    fake_cli.queue_status("live-a")
+    fake_cli.queue_swap(
+        promotion="BLOCKED", demotion="NOT_STARTED", refusal="UNEXPECTED_LIVE_STRATEGY"
+    )
+
+    status, body = _post(mounted, _confirmed(), {"candidate_strategy_id": "paper-b"})
+
+    assert status == 400
+    assert body["error"]["type"] == "UNEXPECTED_LIVE_STRATEGY"
+    assert "nothing was" in body["error"]["message"]
+
+
+def test_demotion_pending_is_reserved_for_a_real_timeout(mounted, fake_cli):
+    """The other direction: a demotion that RAN and timed out is a genuine
+    accepted-but-blocked swap, and must stay a 200 carrying DEMOTION_PENDING."""
+    fake_cli.queue_status("live-a")
+    fake_cli.queue_swap(
+        promotion="BLOCKED", demotion="DEMOTION_PENDING", refusal="DEMOTION_REFUSED"
+    )
+
+    status, body = _post(mounted, _confirmed(), {"candidate_strategy_id": "paper-b"})
+
+    assert status == 200
+    assert body["demotion_state"] == "DEMOTION_PENDING"
+    assert body["promotion_state"] == "BLOCKED"

@@ -21,8 +21,8 @@
 use atp_execution::designation::{LiveDesignation, LiveDesignationConfirmation};
 use atp_orchestrator::demotion_pending_store::{DemotionPendingRecord, DemotionPendingState};
 use atp_orchestrator::hot_swap_promotion::{
-    HotSwapPromotionError, HotSwapPromotionEvent, HotSwapPromotionEventSink, LivePositionProbe,
-    OpenPosition, PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
+    DemotionProof, HotSwapPromotionError, HotSwapPromotionEvent, HotSwapPromotionEventSink,
+    LivePositionProbe, OpenPosition, PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
 };
 use atp_orchestrator::{
     DemotionPendingLock, DeployedVersionRegistry, DeployedVersionRegistryError,
@@ -370,7 +370,10 @@ fn a_timed_out_demotion_promotes_nothing() {
     // The live slot is untouched: the demoting strategy is STILL live. A gate
     // that released it on a failed demotion would leave the account unattended.
     assert_eq!(outcome.designated_after.as_deref(), Some(DEMOTING));
-    assert!(!refusal(&outcome).flat_confirmed());
+    assert_eq!(
+        refusal(&outcome).demotion_outcome(),
+        DemotionProof::TimedOut
+    );
 }
 
 #[test]
@@ -736,10 +739,11 @@ fn a_refusal_that_never_ran_a_demotion_never_claims_one() {
         );
         let error = refusal(&outcome);
         assert_eq!(error.machine_reason(), expected);
-        assert!(
-            !error.flat_confirmed(),
-            "{expected} is refused BEFORE any demotion runs, so it must not report a \
-             confirmed-flat demotion"
+        assert_eq!(
+            error.demotion_outcome(),
+            DemotionProof::NotStarted,
+            "{expected} is refused BEFORE any demotion runs: not flat, and not pending \
+             either — nothing started, so there is no lockout to wait on"
         );
         assert!(!outcome.events[0].flat_confirmed);
     }
@@ -764,8 +768,9 @@ fn every_post_demotion_refusal_still_reports_its_confirmed_demotion() {
 
     let error = refusal(&outcome);
     assert_eq!(error.machine_reason(), "LIVE_POSITIONS_OPEN");
-    assert!(
-        error.flat_confirmed(),
+    assert_eq!(
+        error.demotion_outcome(),
+        DemotionProof::FlatConfirmed,
         "the demotion DID reach flat before this refusal"
     );
 }

@@ -4788,6 +4788,7 @@
         "DEMOTED",
         "DEMOTION_PENDING"
       ],
+      "demotion_proof_note": "The gate reports the demotion half as THREE states (DemotionProof: FlatConfirmed / TimedOut / NotStarted), not a boolean. Rounds 9 and 11 were both consequences of the boolean it replaced: as a denylist it claimed a confirmed demotion for refusals that never ran one, and once corrected to false those same refusals were reported as DEMOTION_PENDING -- an accepted, mutating swap awaiting a lockout that was never engaged, which left the UI-5 control inert on a state that does not exist. NOT_STARTED is now its own wire value, and the REST handler maps it to a non-2xx: no demotion-side port was touched, nothing mutated, and this surface documents non-2xx as exactly that. DEMOTION_PENDING is reserved for the real SYS-49b timeout path where the lockout really was engaged.",
       "promotion_state_vocabulary": [
         "PROMOTED",
         "PROMOTED_UNRECORDED",

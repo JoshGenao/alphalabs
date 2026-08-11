@@ -285,6 +285,29 @@ pub struct HotSwapPromoted {
     pub demotion_elapsed_seconds: u64,
 }
 
+/// What the demotion half of a refused swap did — see
+/// [`HotSwapPromotionError::demotion_outcome`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DemotionProof {
+    /// No demotion-side port was touched; nothing mutated.
+    NotStarted,
+    /// The demotion ran and did not reach flat before its deadline (SYS-49b).
+    TimedOut,
+    /// The demotion reached flat; the refusal came afterwards.
+    FlatConfirmed,
+}
+
+impl DemotionProof {
+    /// The operator-facing wire value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotStarted => "NOT_STARTED",
+            Self::TimedOut => "DEMOTION_PENDING",
+            Self::FlatConfirmed => "FLAT_CONFIRMED",
+        }
+    }
+}
+
 /// Why a Hot-Swap promotion did not happen. One variant per guard, each carrying
 /// the fact an operator needs to act.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -374,23 +397,24 @@ impl HotSwapPromotionError {
         }
     }
 
-    /// Whether the demotion half of this swap reached flat before its timeout.
+    /// What the demotion half of this swap actually did.
     ///
-    /// An ALLOWLIST of the refusals that can only occur AFTER a demotion has
-    /// already been confirmed flat — deliberately not the inverse denylist it used
-    /// to be. That denylist read "everything except `DemotionRefused`", so the two
-    /// live-slot refusals, which are now raised BEFORE `resolve_demotion` runs,
-    /// silently inherited `true`: the CLI printed `demotion-outcome:FLAT_CONFIRMED`
-    /// and the REST body reported `demotion_state: DEMOTED` for a swap in which no
-    /// demotion had happened at all. (Raised by /codex adversarial review r9
-    /// [critical] — a defect introduced by r7's own fix.)
+    /// THREE states, because it is a three-valued fact and a boolean over it kept
+    /// producing wrong answers. It was `flat_confirmed() -> bool`, and the two
+    /// rounds that followed were both consequences of that collapse: as a denylist
+    /// it claimed a confirmed demotion for refusals that never ran one (r9), and
+    /// once corrected to `false` those refusals were then reported as
+    /// DEMOTION_PENDING — an accepted, mutating swap awaiting a lockout that was
+    /// never engaged, which left the dashboard inert on a state that does not
+    /// exist (r11). "Did not reach flat" and "never started" are different facts and
+    /// need different wire values.
     ///
-    /// Written this way round so the failure mode of forgetting a variant is an
-    /// UNDER-claim, not a false claim of a successful demotion.
-    pub fn flat_confirmed(&self) -> bool {
+    /// An ALLOWLIST, so a variant added later defaults to `NotStarted` — the
+    /// under-claim — rather than to a confirmed demotion.
+    pub fn demotion_outcome(&self) -> DemotionProof {
         match self {
-            // Reached only from inside the gate, which runs after the demotion
-            // gate returned `Ok` — i.e. after flat was confirmed.
+            // Reached only from inside the gate, which runs after the demotion gate
+            // returned `Ok` — i.e. after flat was confirmed.
             Self::ReceiptMismatch { .. }
             | Self::SameStrategy { .. }
             | Self::PositionsUnprovable { .. }
@@ -402,15 +426,16 @@ impl HotSwapPromotionError {
             | Self::CodeIdentityMissing { .. }
             | Self::CodeIdentityDrift { .. }
             | Self::DemotionReleaseFailed(_)
-            | Self::DesignationRefused(_) => true,
-            // The demotion ran and did NOT reach flat.
-            Self::DemotionRefused(_)
-            // The demotion never ran: the live slot was wrong or empty, and these
-            // are refused before any demotion-side port is touched.
-            | Self::NoLiveStrategyToDemote { .. }
+            | Self::DesignationRefused(_) => DemotionProof::FlatConfirmed,
+            // The demotion RAN and did not reach flat: the SYS-49b timeout path,
+            // where the demotion-pending lockout really was engaged.
+            Self::DemotionRefused(_) => DemotionProof::TimedOut,
+            // The demotion never started: the live slot was wrong or empty, and
+            // these are refused before any demotion-side port is touched. Nothing
+            // mutated, so no lockout exists to wait on.
+            Self::NoLiveStrategyToDemote { .. }
             | Self::UnexpectedLiveStrategy { .. }
-            // Defence-in-depth arm; no demotion acceptance was produced.
-            | Self::DemotionNotAccepted { .. } => false,
+            | Self::DemotionNotAccepted { .. } => DemotionProof::NotStarted,
         }
     }
 }
@@ -696,7 +721,7 @@ impl StrategyOrchestrator {
                 candidate_strategy_id: candidate,
                 promoted: false,
                 refusal: Some(error.machine_reason()),
-                flat_confirmed: error.flat_confirmed(),
+                flat_confirmed: error.demotion_outcome() == DemotionProof::FlatConfirmed,
                 paper_history_preserved: false,
                 deployed_version: None,
                 observed_at_seconds,

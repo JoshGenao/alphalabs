@@ -442,14 +442,12 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
             );
         }
         Err(error) => {
-            println!(
-                "demotion-outcome:{}",
-                if error.flat_confirmed() {
-                    "FLAT_CONFIRMED"
-                } else {
-                    "DEMOTION_PENDING"
-                }
-            );
+            // Three-valued, not a boolean: NOT_STARTED means no demotion-side port
+            // was touched, so nothing mutated and no lockout exists to wait on.
+            // Collapsing it into DEMOTION_PENDING told the surface a swap had been
+            // accepted and left the dashboard inert awaiting a state that was never
+            // created.
+            println!("demotion-outcome:{}", error.demotion_outcome().as_str());
             println!("promotion:BLOCKED");
             println!("refusal:{}", error.machine_reason());
             eprintln!("{error}");

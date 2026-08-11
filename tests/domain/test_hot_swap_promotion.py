@@ -752,7 +752,7 @@ def test_a_pre_demotion_refusal_never_prints_a_confirmed_demotion(binaries, pape
         proof = _lines(_swap(binaries, state=state, paper=paper_store))
 
         assert proof["refusal"] == expected
-        assert proof["demotion-outcome"] == "DEMOTION_PENDING", (
-            "a refusal that never ran a demotion must not print FLAT_CONFIRMED"
+        assert proof["demotion-outcome"] == "NOT_STARTED", (
+            "a refusal that never ran a demotion is neither flat-confirmed NOR "
+            "demotion-pending: nothing started, so no lockout exists to wait on"
         )
-        assert proof["demotion-outcome"] != "FLAT_CONFIRMED"
