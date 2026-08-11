@@ -95,7 +95,11 @@ Full gate: `pytest -m "not integration and not e2e"` → **4989 passed, 0 failed
   APPROVE was faked and none is claimed. Recorded
   verbatim in `.harness/runs/SRS-RESV-005/evidence.json`; no APPROVE was faked.
 
-## Adversarial rounds: 12 (+1 hung attempt, retried)
+## Adversarial rounds
+
+Adversarial rounds: 12
+(plus 1 hung attempt between r10 and r11, retried — a timeout is an availability failure,
+not a verdict, and the ledger correctly records no zero-finding round.)
 
 Every round found a REAL defect; none was disputed. Severity trended down.
 
