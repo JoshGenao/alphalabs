@@ -727,6 +727,6 @@ def test_a_stale_demoting_id_is_refused_before_the_demotion_runs(binaries, paper
     assert _digest(state) == before
     assert not lock.exists(), "the demotion lockout must not be engaged for a stale id"
 
-    record = [_json.loads(l) for l in journal.read_text().splitlines() if l.strip()][0]
+    record = [_json.loads(line) for line in journal.read_text().splitlines() if line.strip()][0]
     assert record["promoted"] is False
     assert record["flat_confirmed"] is False, "no demotion ran, so nothing was confirmed flat"

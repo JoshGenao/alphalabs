@@ -91,6 +91,11 @@ _DEFAULT_TIMEOUT_S = 90.0
 #: did not ask for as though it were the one they did.
 _REQUEST_FIELDS = frozenset({"candidate_strategy_id", "confirm"})
 
+#: The closed set of demotion outcomes the binary may report. Anything else —
+#: including ABSENT — is unknown, and unknown fails closed rather than defaulting to
+#: a value that would let a promotion be reported with no demotion proof.
+_DEMOTION_OUTCOMES = frozenset({"FLAT_CONFIRMED", "DEMOTION_PENDING"})
+
 #: Owner of the durable cross-attempt demotion-pending lockout (see the module docs).
 _LOCKOUT_OWNER = "SRS-RESV-004"
 
@@ -307,8 +312,40 @@ class SwapExecutionHandler:
             raise InterfaceError(
                 ErrorCategory.INTERNAL_ERROR,
                 "the hot-swap binary did not report a promotion outcome "
-                f"(exit {completed.returncode}): {completed.stderr.strip() or 'no detail'}",
+                f"(exit {completed.returncode}): {completed.stderr.strip() or 'no detail'}. "
+                "The swap state is UNKNOWN — confirm the live strategy from durable "
+                "status before retrying",
                 type="SWAP_OUTCOME_UNREADABLE",
+                detail={"owner": _LOCKOUT_OWNER},
+            )
+
+        # The DEMOTION half must be proven too, and proven POSITIVELY.
+        #
+        # Deriving it as `FLAT_CONFIRMED or else DEMOTION_PENDING` meant a stale,
+        # truncated or wrong binary whose stdout carried `promotion:PROMOTED` but no
+        # `demotion-outcome` produced a 200 reading "promoted, demotion pending" —
+        # a live promotion reported with no successful-demotion proof behind it,
+        # which is the one thing this requirement exists to prevent. Absent is not
+        # DEMOTION_PENDING; it is unknown, and unknown fails closed.
+        demotion = values.get("demotion-outcome")
+        if demotion not in _DEMOTION_OUTCOMES:
+            raise InterfaceError(
+                ErrorCategory.INTERNAL_ERROR,
+                f"the hot-swap binary reported promotion {promotion!r} with no readable "
+                f"demotion outcome (got {demotion!r}); refusing to report a promotion "
+                "whose demotion cannot be evidenced. The swap state is UNKNOWN — confirm "
+                "the live strategy from durable status before retrying",
+                type="SWAP_OUTCOME_UNREADABLE",
+                detail={"owner": _LOCKOUT_OWNER},
+            )
+        if promotion == "PROMOTED" and demotion != "FLAT_CONFIRMED":
+            raise InterfaceError(
+                ErrorCategory.INTERNAL_ERROR,
+                f"the hot-swap binary reported a PROMOTED swap whose demotion was "
+                f"{demotion!r}, not FLAT_CONFIRMED; SYS-49d permits a promotion only "
+                "after a successful demotion, so this proof stream is incoherent and is "
+                "refused rather than reported",
+                type="SWAP_OUTCOME_INCOHERENT",
                 detail={"owner": _LOCKOUT_OWNER},
             )
 
@@ -328,12 +365,8 @@ class SwapExecutionHandler:
 
         body: dict[str, object] = {
             # DEMOTED / DEMOTION_PENDING — the closed vocabulary the shipped UI-5
-            # pane already routes on.
-            "demotion_state": (
-                "DEMOTED"
-                if values.get("demotion-outcome") == "FLAT_CONFIRMED"
-                else "DEMOTION_PENDING"
-            ),
+            # pane already routes on, derived from a POSITIVELY proven outcome.
+            "demotion_state": ("DEMOTED" if demotion == "FLAT_CONFIRMED" else "DEMOTION_PENDING"),
             "promotion_state": promotion,
         }
         ordinal = values.get("swap-record-ordinal", "-")

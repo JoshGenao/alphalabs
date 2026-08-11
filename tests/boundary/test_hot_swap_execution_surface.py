@@ -58,17 +58,16 @@ class _FakeCli:
         self,
         *,
         promotion: str = "PROMOTED",
-        demotion: str = "FLAT_CONFIRMED",
+        demotion: str | None = "FLAT_CONFIRMED",
         ordinal: str = "1",
         refusal: str | None = None,
         recorded: str = "true",
         persisted: str = "durable",
     ) -> None:
-        lines = [
-            "transports:FIXTURE",
-            f"demotion-outcome:{demotion}",
-            f"promotion:{promotion}",
-        ]
+        lines = ["transports:FIXTURE"]
+        if demotion is not None:
+            lines.append(f"demotion-outcome:{demotion}")
+        lines.append(f"promotion:{promotion}")
         if refusal is not None:
             lines.append(f"refusal:{refusal}")
         lines.append(f"swap-record-ordinal:{ordinal}")
@@ -680,3 +679,64 @@ def test_a_post_publish_persistence_failure_is_never_retry_safe(mounted, fake_cl
     assert status == 200, "the live slot moved; a non-2xx would invite a retry over it"
     assert body["promotion_state"] == "PROMOTED"
     assert set(body) == _declared_response_fields()
+
+
+# --------------------------------------------------------------------------- #
+# The demotion half must be proven POSITIVELY
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "demotion",
+    [
+        pytest.param(None, id="demotion-outcome-absent"),
+        pytest.param("", id="demotion-outcome-empty"),
+        pytest.param("FLAT-CONFIRMED", id="demotion-outcome-misspelled"),
+        pytest.param("WHATEVER", id="demotion-outcome-out-of-vocabulary"),
+    ],
+)
+def test_a_promotion_without_a_readable_demotion_outcome_is_refused(mounted, fake_cli, demotion):
+    """Round-8 adversarial review [critical].
+
+    `demotion_state` used to be derived as "FLAT_CONFIRMED, or else
+    DEMOTION_PENDING". A stale, truncated or wrong binary whose stdout carried
+    `promotion:PROMOTED` but no readable `demotion-outcome` therefore produced a 200
+    reading "promoted, demotion pending" — a live promotion reported with no
+    successful-demotion proof behind it, which is the one thing SYS-49d exists to
+    prevent. Absent is not DEMOTION_PENDING; it is unknown, and unknown fails closed.
+    """
+    fake_cli.queue_status("live-a")
+    fake_cli.queue_swap(demotion=demotion)
+
+    status, body = _post(mounted, _confirmed(), {"candidate_strategy_id": "paper-b"})
+
+    assert status == 500
+    assert body["error"]["type"] == "SWAP_OUTCOME_UNREADABLE"
+    assert "demotion" in body["error"]["message"].lower()
+
+
+def test_a_promoted_swap_whose_demotion_timed_out_is_refused_as_incoherent(mounted, fake_cli):
+    """SYS-49d permits a promotion ONLY after a successful demotion, so a proof
+    stream claiming both is not a state to report — it is a contradiction."""
+    fake_cli.queue_status("live-a")
+    fake_cli.queue_swap(promotion="PROMOTED", demotion="DEMOTION_PENDING")
+
+    status, body = _post(mounted, _confirmed(), {"candidate_strategy_id": "paper-b"})
+
+    assert status == 500
+    assert body["error"]["type"] == "SWAP_OUTCOME_INCOHERENT"
+
+
+def test_a_blocked_swap_with_a_pending_demotion_is_still_a_coherent_200(mounted, fake_cli):
+    """The coherence rule must not swallow the legitimate pairing: a demotion that
+    timed out and therefore BLOCKED the promotion is the normal SYS-49b outcome."""
+    fake_cli.queue_status("live-a")
+    fake_cli.queue_swap(
+        promotion="BLOCKED", demotion="DEMOTION_PENDING", refusal="DEMOTION_REFUSED"
+    )
+
+    status, body = _post(mounted, _confirmed(), {"candidate_strategy_id": "paper-b"})
+
+    assert status == 200
+    assert body["demotion_state"] == "DEMOTION_PENDING"
+    assert body["promotion_state"] == "BLOCKED"
