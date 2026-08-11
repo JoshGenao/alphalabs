@@ -510,8 +510,15 @@ class DemotionLockoutGuardTest(unittest.TestCase):
     def test_a_timeout_arm_that_stops_engaging_the_lockout_is_caught(self) -> None:
         # Without the engage the refusal holds for ONE call: a retry whose probe reports flat
         # would promote over positions nobody resolved.
+        #
+        # Anchored inside the TIMEOUT ARM, which begins at `match outcome {`. Neither
+        # `replace(..., 1)` nor `rindex` works here: the probe-inconsistency branch engages
+        # too and precedes the match, and the timeout arm itself now calls both `engage` and
+        # `amend`. Both would mutate something other than the subject and let this check
+        # report success.
+        arm_start = self.orch_src.index("        match outcome {")
         needle = "lock.engage(DemotionPendingRecord {"
-        at = self.orch_src.rindex(needle)
+        at = self.orch_src.index(needle, arm_start)
         mutated = (
             self.orch_src[:at]
             + "noop_engage(DemotionPendingRecord {"
@@ -519,7 +526,9 @@ class DemotionLockoutGuardTest(unittest.TestCase):
         )
         with self.assertRaises(HotSwapDemotionCheckError) as ctx:
             check_resolve_demotion_guard(self.config, mutated)
-        self.assertIn("lock.engage", str(ctx.exception))
+        # The every-blocked-branch guard catches it first, and says so more usefully than a
+        # bare missing-token complaint would.
+        self.assertIn("never engages the lockout", str(ctx.exception))
 
     def test_a_probe_inconsistency_branch_that_cancels_is_caught(self) -> None:
         # Block-WITHOUT-cancel: a destructive broker action must not be taken on a report the

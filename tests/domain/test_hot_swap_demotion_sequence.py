@@ -551,3 +551,39 @@ def test_the_lockout_is_engaged_before_the_destructive_side_effects(tmp_path: Pa
     # provisional "not attempted" phase-one state.
     assert reported["liquidation-cancel"] == "SUCCEEDED"
     assert reported["operator-alert"] == "SUCCEEDED"
+
+
+def test_every_blocked_branch_leaves_a_durable_block_before_paging(tmp_path: Path) -> None:
+    # SyRS SYS-49c (c), as a CLASS: on every branch that blocks promotion the lockout reaches
+    # disk before any fallible side effect, so a process that dies mid-page still leaves
+    # promotion blocked. The timeout arm was fixed for this first and the probe-inconsistency
+    # branch was not — the instance, not the class.
+    # Found by /codex:adversarial-review round 5 [critical].
+    #
+    # Observable through the shipped CLI as: a blocked run always leaves a readable lockout
+    # whose record describes what actually happened, and the block is durable.
+    state = tmp_path / "pending.json"
+    values = _demote(state, "demotion-pending", "--position", "AAPL:100", "--resting", "AAPL")
+    assert values["promotion-block-is-durable"] == "true"
+    assert state.exists(), "the block must be on disk, not merely reported"
+
+    reported = _proof(_run("status", "--state", str(state)).stdout)
+    assert reported["demotion-pending"] == "true"
+    # Phase two landed: the persisted record carries the side-effect outcomes rather than the
+    # provisional "not attempted" state the block was created with.
+    assert reported["liquidation-cancel"] == "SUCCEEDED"
+    assert reported["operator-alert"] == "SUCCEEDED"
+
+    # ...and a swap attempted against that lockout is refused before touching anything.
+    blocked = _demote(
+        state,
+        "blocked-pending",
+        "--position",
+        "AAPL:100",
+        "--resting",
+        "AAPL",
+        "--flat-after-seconds",
+        "1",
+    )
+    assert blocked["sequence-ran"] == "false"
+    assert blocked["operator-pages"] == "0"

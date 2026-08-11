@@ -942,3 +942,92 @@ fn resv_4_the_operator_page_states_what_was_actually_done_about_the_cancel() {
         "a branch that cancels nothing must not page as though it did"
     );
 }
+
+#[test]
+fn resv_4_every_blocked_branch_engages_the_lockout_before_any_fallible_side_effect() {
+    // The class, checked behaviourally on BOTH blocked branches. A branch that pages (or
+    // cancels) before engaging leaves a window in which a crash loses the block entirely, and
+    // the next attempt reads an empty store as "nothing is pending". The timeout arm was fixed
+    // for this first and the probe-inconsistency branch was not — so this test enumerates the
+    // branches rather than naming one. `(found by /codex:adversarial-review, SRS-RESV-004 r5)`
+    use std::rc::Rc;
+
+    type CallLog = Rc<RefCell<Vec<&'static str>>>;
+
+    struct OrderedLock(CallLog);
+    impl DemotionPendingLock for OrderedLock {
+        fn state(&self) -> DemotionPendingState {
+            DemotionPendingState::Clear
+        }
+        fn engage(&self, _record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
+            self.0.borrow_mut().push("engage");
+            Ok(())
+        }
+        fn amend(&self, _record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
+            self.0.borrow_mut().push("amend");
+            Ok(())
+        }
+    }
+
+    struct OrderedAlerts(CallLog);
+    impl OperatorAlertSink for OrderedAlerts {
+        fn dispatch(&self, _event: OperatorAlertEvent) -> Result<(), HotSwapSideEffectError> {
+            self.0.borrow_mut().push("alert");
+            Ok(())
+        }
+    }
+
+    struct OrderedCanceller(CallLog);
+    impl UnfilledOrderCanceller for OrderedCanceller {
+        fn cancel_unfilled_liquidation_orders(
+            &self,
+            _request: &HotSwapDemotionRequest,
+        ) -> Result<(), HotSwapSideEffectError> {
+            self.0.borrow_mut().push("cancel");
+            Ok(())
+        }
+    }
+
+    let orchestrator = StrategyOrchestrator;
+    // (probe outcome, branch name) — both blocked branches of the gate.
+    for (probe, branch) in [
+        (
+            HotSwapLiquidationProbeSpy::timed_out(72, HOT_SWAP_DEMOTION_TIMEOUT_SECONDS),
+            "liquidation timeout",
+        ),
+        (
+            HotSwapLiquidationProbeSpy::timed_out(12, HOT_SWAP_DEMOTION_TIMEOUT_SECONDS),
+            "probe inconsistency",
+        ),
+    ] {
+        let log: CallLog = Rc::new(RefCell::new(Vec::new()));
+        let _ = orchestrator.resolve_demotion(
+            demotion("live-a", "paper-b", HOT_SWAP_DEMOTION_TIMEOUT_SECONDS),
+            &probe,
+            &OrderedCanceller(Rc::clone(&log)),
+            &OrderedAlerts(Rc::clone(&log)),
+            &HotSwapDemotionEventSinkSpy::default(),
+            &OrderedLock(Rc::clone(&log)),
+            OBSERVED_AT_SECONDS,
+        );
+
+        let calls = log.borrow().clone();
+        let engage_at = calls
+            .iter()
+            .position(|c| *c == "engage")
+            .unwrap_or_else(|| panic!("{branch}: the block was never made durable ({calls:?})"));
+        for fallible in ["cancel", "alert"] {
+            if let Some(at) = calls.iter().position(|c| *c == fallible) {
+                assert!(
+                    engage_at < at,
+                    "{branch}: `{fallible}` ran before the lockout was engaged ({calls:?})"
+                );
+            }
+        }
+        // ...and the record is completed afterwards, so it describes what actually happened.
+        assert!(
+            calls.iter().any(|c| *c == "amend"),
+            "{branch}: the provisional record was never amended ({calls:?})"
+        );
+    }
+}

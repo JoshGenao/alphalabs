@@ -1738,6 +1738,21 @@ impl StrategyOrchestrator {
             _ => None,
         };
         if let Some((elapsed_seconds, timeout_seconds)) = probe_inconsistency {
+            // Same two-phase discipline as the timeout arm, for the same reason: the block goes
+            // to disk BEFORE any fallible side effect, so a process that dies mid-page still
+            // leaves promotion blocked. Engaging after the alert left this branch with the
+            // exact crash window the timeout arm closes — the instance was fixed there and the
+            // CLASS was not. `(found by /codex:adversarial-review, SRS-RESV-004 r5 [critical])`
+            let engaged = into_outcome(lock.engage(DemotionPendingRecord {
+                demoting_strategy_id: request.demoting_strategy_id.clone(),
+                candidate_strategy_id: request.candidate_strategy_id.clone(),
+                elapsed_seconds,
+                timeout_seconds,
+                observed_at_seconds,
+                liquidation_cancel: SideEffectOutcome::NotAttempted,
+                operator_alert: SideEffectOutcome::NotAttempted,
+            }));
+            let promotion_block_is_durable = !engaged.is_failed();
             let operator_alert = into_outcome(alerts.dispatch(OperatorAlertEvent {
                 demoting_strategy_id: request.demoting_strategy_id.clone(),
                 candidate_strategy_id: request.candidate_strategy_id.clone(),
@@ -1752,16 +1767,28 @@ impl StrategyOrchestrator {
                 liquidation_cancel: SideEffectOutcome::NotAttempted,
                 observed_at_seconds,
             }));
-            let demotion_pending = into_outcome(lock.engage(DemotionPendingRecord {
-                demoting_strategy_id: request.demoting_strategy_id.clone(),
-                candidate_strategy_id: request.candidate_strategy_id.clone(),
-                elapsed_seconds,
-                timeout_seconds,
-                observed_at_seconds,
-                liquidation_cancel: SideEffectOutcome::NotAttempted,
-                operator_alert: operator_alert.clone(),
-            }));
-            let promotion_block_is_durable = !demotion_pending.is_failed();
+            let demotion_pending = if engaged.is_failed() {
+                engaged
+            } else {
+                let amended = into_outcome(lock.amend(DemotionPendingRecord {
+                    demoting_strategy_id: request.demoting_strategy_id.clone(),
+                    candidate_strategy_id: request.candidate_strategy_id.clone(),
+                    elapsed_seconds,
+                    timeout_seconds,
+                    observed_at_seconds,
+                    liquidation_cancel: SideEffectOutcome::NotAttempted,
+                    operator_alert: operator_alert.clone(),
+                }));
+                match amended {
+                    SideEffectOutcome::Failed { reason } => SideEffectOutcome::Failed {
+                        reason: format!(
+                            "the demotion-pending lockout IS held, but its side-effect \
+                             outcomes could not be recorded onto it: {reason}"
+                        ),
+                    },
+                    other => other,
+                }
+            };
             let _ = events.record(HotSwapDemotionEvent {
                 outcome,
                 demoting_strategy_id: request.demoting_strategy_id.clone(),

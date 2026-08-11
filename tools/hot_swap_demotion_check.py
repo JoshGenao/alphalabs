@@ -418,6 +418,32 @@ def check_resolve_demotion_guard(config: dict, orch_src: str) -> str:
     flat_arm = _calls(_arm_block(body, flat_token))
     timeout_arm = _calls(_arm_block(body, timeout_token))
 
+    # The CLASS, not the instance. Presence of `lock.engage` is not enough: on EVERY branch
+    # that blocks promotion it must precede every fallible side effect, or a process that dies
+    # mid-side-effect leaves no durable block and the next attempt reads an empty store as
+    # "nothing is pending". The timeout arm was fixed for this and the probe-inconsistency
+    # branch was not — which is precisely why this check enumerates the branches instead of
+    # naming one. `(SRS-RESV-004 r5)`
+    fallible_side_effects = (guard["cancel_call"] + "(", guard["alert_call"] + "(")
+    for branch_name, branch in (
+        ("probe-inconsistency", inconsistency_branch),
+        (guard["timeout_variant"], timeout_arm),
+    ):
+        at_engage = branch.find(lock_engage_token)
+        if at_engage < 0:
+            fail(
+                f"{entry['method']} {branch_name} branch never engages the lockout — every "
+                "branch that blocks promotion must make the block durable"
+            )
+        for side_effect in fallible_side_effects:
+            at_side_effect = branch.find(side_effect)
+            if 0 <= at_side_effect < at_engage:
+                fail(
+                    f"{entry['method']} {branch_name} branch calls `{side_effect}` BEFORE "
+                    f"`{lock_engage_token}` — a crash in between leaves promotion unblocked, "
+                    "and the next attempt reads an empty store as 'nothing is pending'"
+                )
+
     accepted_token = guard["accepted_struct"] + " {"
     cancel_token = guard["cancel_call"] + "("
     alert_token = guard["alert_call"] + "("
@@ -469,12 +495,6 @@ def check_resolve_demotion_guard(config: dict, orch_src: str) -> str:
         fail(
             f"{entry['method']} {timeout_token} arm never calls `{lock_amend_token}` — a "
             "lockout engaged before the side effects must be updated with their outcomes"
-        )
-    if timeout_arm.find(lock_engage_token) > timeout_arm.find(cancel_token):
-        fail(
-            f"{entry['method']} {timeout_token} arm engages the lockout AFTER the "
-            "unfilled-order cancel — a crash in between would leave no durable block, and the "
-            "next attempt would read an empty store as 'nothing is pending'"
         )
     if timeout_arm.find(lock_amend_token) < timeout_arm.find(alert_token):
         fail(

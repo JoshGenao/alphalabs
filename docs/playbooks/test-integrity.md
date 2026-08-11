@@ -150,7 +150,11 @@ Read this whenever you write a test, and before you believe a green one.
     trait method anchored as `fn last_one(...);\n}` (stale the moment the trait grows), and a
     call the function now makes twice (`alerts.dispatch` once the probe-inconsistency branch
     landed). Find the `pub struct X {` / `pub trait X {` and its closing brace, then mutate
-    inside that span. Bit this session three times, in all three shapes. `(SRS-RESV-004)`
+    inside that span — and for a match ARM, index forward from the `match` itself. Bit this
+    session FOUR times: each time the guard under test received an intact subject and reported
+    success, which is the failure mode that looks most like working. A fifth shape to expect:
+    once a function calls the same port twice (`lock.engage` then `lock.amend`), neither
+    `replace(..., 1)` nor `rindex` lands where you mean. `(SRS-RESV-004)`
 28. **A harness that ran nothing must not return a verdict.** `mutation_verify` passed pytest
     every changed `tests/` path — including Rust `.rs` files, which `is_test_path` also
     matches — so pytest exited 4 with "ERROR: not found", collected NOTHING, and all 34 added
