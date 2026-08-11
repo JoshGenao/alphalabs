@@ -592,3 +592,50 @@ def test_the_fixture_tier_has_no_success_defaults(binaries, paper_store, tmp_pat
         assert result.returncode != 0, f"omitting {omitted} must not promote"
         assert f"{omitted} is required" in result.stderr
         assert "promotion:PROMOTED" not in result.stdout
+
+
+def test_the_cli_refuses_an_empty_live_designation(binaries, paper_store, tmp_path):
+    """Round-5 adversarial review [critical]: the guard belongs in the SHARED gate.
+
+    The REST wrapper already refused this with NO_LIVE_STRATEGY_TO_DEMOTE, but the
+    CLI is a declared SYS-49a operator arm and it went straight through — the gate
+    treated "nothing is designated" as an acceptable starting state and promoted.
+    A rule enforced only at the outermost surface is not enforced.
+    """
+    state = tmp_path / "live.state"  # deliberately never created: no live strategy
+
+    result = _swap(binaries, state=state, paper=paper_store)
+    proof = _lines(result)
+
+    assert result.returncode != 0
+    assert proof["promotion"] == "BLOCKED"
+    assert proof["refusal"] == "NO_LIVE_STRATEGY_TO_DEMOTE"
+    assert proof["designation-after"] == "none"
+    assert not state.exists(), "a refused swap must not create the designation record"
+
+
+def test_a_durable_promotion_reports_its_persistence(binaries, paper_store, tmp_path):
+    """Round-5 adversarial review [high]: REST maps a non-2xx to 'nothing mutated'.
+
+    The proof line is what lets the surface tell a swap whose designation was
+    published from one that never touched the record — a post-rename failure has
+    already moved the live slot, so a retry would act on changed state.
+    """
+    state = tmp_path / "live.state"
+    _seed_live(state, DEMOTING)
+
+    proof = _lines(_swap(binaries, state=state, paper=paper_store))
+
+    assert proof["promotion"] == "PROMOTED"
+    assert proof["designation-persisted"] == "durable"
+
+
+def test_a_refused_swap_reports_the_designation_unchanged(binaries, paper_store, tmp_path):
+    state = tmp_path / "live.state"
+    before = _seed_live(state, DEMOTING)
+
+    proof = _lines(_swap(binaries, state=state, paper=paper_store, extra=["--positions", "AAPL:5"]))
+
+    assert proof["promotion"] == "BLOCKED"
+    assert proof["designation-persisted"] == "unchanged"
+    assert _digest(state) == before

@@ -560,18 +560,24 @@ fn a_third_live_strategy_is_never_promoted_over() {
 }
 
 #[test]
-fn a_free_live_slot_still_promotes() {
-    // Nothing designated (e.g. the demotion already released it): the swap is
-    // still valid, and the candidate takes the slot.
+fn an_empty_live_slot_is_refused_not_promoted_into() {
+    // This test previously asserted the OPPOSITE, and that is the point: the gate
+    // accepted an empty designation and promoted, so "only after successful
+    // demotion" did not hold on the CLI or Rust arms even though the REST wrapper
+    // refused it. A rule enforced only at the outermost surface is not enforced.
+    // Raised by /codex adversarial review r5 [critical].
     let mut designation = LiveDesignation::new();
     let outcome = run_swap(
         flat(),
         Positions(PositionAnswer::Flat),
-        PaperHistory::stable(),
-        Versions::stable(),
+        PaperHistory::queued(vec![Ok(Some(fingerprint(12, 3, "digest-a")))]),
+        Versions::queued(vec![Ok(Some(version(HASH_A)))]),
         &mut designation,
     );
 
-    outcome.result.as_ref().expect("a free slot promotes");
-    assert_eq!(outcome.designated_after.as_deref(), Some(CANDIDATE));
+    assert_eq!(
+        refusal(&outcome).machine_reason(),
+        "NO_LIVE_STRATEGY_TO_DEMOTE"
+    );
+    assert_eq!(outcome.designated_after, None, "nothing may be designated");
 }

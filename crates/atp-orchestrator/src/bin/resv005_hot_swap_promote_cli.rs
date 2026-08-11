@@ -401,8 +401,18 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
     //     the demoted strategy and then roll the candidate back) must still be
     //     persisted, or the durable record would disagree with the authority this
     //     process just decided.
+    // A pre-publish failure means the durable record is untouched, so it is safe to
+    // abort with nothing printed — REST maps that to a non-2xx, which correctly
+    // reads as "nothing mutated". A POST-publish failure is the opposite: the live
+    // slot has already moved, so the proof lines MUST still be emitted (the swap
+    // happened) with the durability caveat carried alongside them.
+    let mut published_unsynced: Option<String> = None;
     if designated_after != designated_before {
-        save_designation(&state_path, &designation)?;
+        match save_designation(&state_path, &designation) {
+            PublishOutcome::Durable => {}
+            PublishOutcome::FailedBeforePublish(reason) => return Err(reason),
+            PublishOutcome::PublishedNotSynced(reason) => published_unsynced = Some(reason),
+        }
     }
 
     match &outcome {
@@ -439,6 +449,22 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
         }
     }
     println!("designation-after:{designated_after}");
+    // Three states, same discipline as `promotion-recorded`: durable / moved but
+    // not crash-durable / not applicable.
+    println!(
+        "designation-persisted:{}",
+        match (&published_unsynced, designated_after == designated_before) {
+            (Some(_), _) => "published-unsynced",
+            (None, true) => "unchanged",
+            (None, false) => "durable",
+        }
+    );
+    if let Some(reason) = &published_unsynced {
+        eprintln!(
+            "SRS-RESV-005: the live designation was PUBLISHED but not fsynced ({reason}); \
+             the slot has moved and a retry would be acting on changed state"
+        );
+    }
     // Reported LAST and read back from the journal, so it names a record that is
     // already durable. `-` means no journal was configured or the append failed:
     // an explicitly absent id, never a fabricated one.
@@ -578,14 +604,32 @@ fn load_designation(path: &Path) -> Result<LiveDesignation, String> {
 /// Publish the designation durably: unique scratch file → fsync → atomic rename →
 /// parent-directory fsync. The repo's durable-file pattern
 /// (`orch005_rollback_cli::save_state`, `atp_simulation::backtest_store`).
-fn save_designation(path: &Path, designation: &LiveDesignation) -> Result<(), String> {
+/// Outcome of publishing the designation, split by whether the durable state
+/// ALREADY CHANGED when the failure happened.
+///
+/// The distinction is load-bearing for the REST surface: a non-2xx there documents
+/// "nothing mutated; retry is allowed". A failure AFTER the atomic rename has
+/// already moved the live slot, so reporting it the same way would invite a retry
+/// of a swap that already took effect.
+enum PublishOutcome {
+    /// Written and fsynced.
+    Durable,
+    /// Failed BEFORE the rename — the durable record is untouched.
+    FailedBeforePublish(String),
+    /// The rename SUCCEEDED (the next process will read the new designation) but a
+    /// later step did not. The live slot has moved; only crash-durability is
+    /// uncertain.
+    PublishedNotSynced(String),
+}
+
+fn save_designation(path: &Path, designation: &LiveDesignation) -> PublishOutcome {
     let mut body = String::from(STATE_MAGIC);
     body.push('\n');
     if let Some(id) = designation.designated() {
         // Write-side validation is a SUPERSET of the loader's, so a successful
         // save can never produce a snapshot the next load refuses.
         if id.as_str().trim().is_empty() || id.as_str().contains(['\t', '\n']) {
-            return Err(format!(
+            return PublishOutcome::FailedBeforePublish(format!(
                 "designated strategy id {:?} would write a snapshot the loader refuses",
                 id.as_str()
             ));
@@ -595,27 +639,42 @@ fn save_designation(path: &Path, designation: &LiveDesignation) -> Result<(), St
     let seq = SCRATCH_SEQ.fetch_add(1, Ordering::Relaxed);
     let scratch = path.with_extension(format!("tmp.{}.{seq}", std::process::id()));
     {
-        let mut file = fs::File::create(&scratch)
-            .map_err(|error| format!("cannot create scratch {}: {error}", scratch.display()))?;
+        let mut file = match fs::File::create(&scratch) {
+            Ok(file) => file,
+            Err(error) => {
+                return PublishOutcome::FailedBeforePublish(format!(
+                    "cannot create scratch {}: {error}",
+                    scratch.display()
+                ))
+            }
+        };
         if let Err(error) = file
             .write_all(body.as_bytes())
             .and_then(|()| file.sync_all())
         {
             let _ = fs::remove_file(&scratch);
-            return Err(format!(
+            return PublishOutcome::FailedBeforePublish(format!(
                 "cannot write scratch {}: {error}",
                 scratch.display()
             ));
         }
     }
-    fs::rename(&scratch, path).map_err(|error| {
+    if let Err(error) = fs::rename(&scratch, path) {
         let _ = fs::remove_file(&scratch);
-        format!("cannot publish {} (rename): {error}", path.display())
-    })?;
+        return PublishOutcome::FailedBeforePublish(format!(
+            "cannot publish {} (rename): {error}",
+            path.display()
+        ));
+    }
+    // PAST THIS POINT the live slot has moved: the rename is atomic and the next
+    // process reads the new designation. A failure here is NOT "nothing happened".
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
-    fs::File::open(parent.unwrap_or_else(|| Path::new(".")))
-        .and_then(|dir| dir.sync_all())
-        .map_err(|error| format!("cannot fsync state directory: {error}"))
+    match fs::File::open(parent.unwrap_or_else(|| Path::new("."))).and_then(|dir| dir.sync_all()) {
+        Ok(()) => PublishOutcome::Durable,
+        Err(error) => {
+            PublishOutcome::PublishedNotSynced(format!("cannot fsync state directory: {error}"))
+        }
+    }
 }
 
 // --------------------------------------------------------------------------- //

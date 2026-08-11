@@ -62,6 +62,7 @@ class _FakeCli:
         ordinal: str = "1",
         refusal: str | None = None,
         recorded: str = "true",
+        persisted: str = "durable",
     ) -> None:
         lines = [
             "transports:FIXTURE",
@@ -72,6 +73,7 @@ class _FakeCli:
             lines.append(f"refusal:{refusal}")
         lines.append(f"swap-record-ordinal:{ordinal}")
         lines.append(f"promotion-recorded:{recorded}")
+        lines.append(f"designation-persisted:{persisted}")
         self.queue(returncode=0 if promotion == "PROMOTED" else 1, stdout="\n".join(lines) + "\n")
 
     def __call__(self, argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
@@ -657,3 +659,24 @@ def test_the_drill_composition_states_every_fixture_fact_to_the_binary(mounted, 
     for flag in ("--positions", "--deployed-version", "--liquidation"):
         assert flag in argv, f"{flag} must be stated explicitly, never defaulted"
         assert argv[argv.index(flag) + 1].strip(), f"{flag} must carry a value"
+
+
+def test_a_post_publish_persistence_failure_is_never_retry_safe(mounted, fake_cli):
+    """Round-5 adversarial review [high].
+
+    `save_designation` renames atomically and only then fsyncs the parent directory.
+    A failure at that last step has ALREADY moved the live slot, so the surface must
+    not answer with a non-2xx — this surface documents non-2xx as "nothing mutated;
+    retry is allowed", and a retry would act on changed state.
+
+    The binary keeps emitting its proof lines in that case, so the handler sees a
+    real outcome and answers 200 with it.
+    """
+    fake_cli.queue_status("live-a")
+    fake_cli.queue_swap(persisted="published-unsynced")
+
+    status, body = _post(mounted, _confirmed(), {"candidate_strategy_id": "paper-b"})
+
+    assert status == 200, "the live slot moved; a non-2xx would invite a retry over it"
+    assert body["promotion_state"] == "PROMOTED"
+    assert set(body) == _declared_response_fields()

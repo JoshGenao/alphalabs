@@ -332,6 +332,10 @@ pub enum HotSwapPromotionError {
         before: String,
         after: String,
     },
+    /// Nothing holds the live slot, so there was no demotion to promote after.
+    /// Promoting here would be a DESIGNATION (SRS-EXE-001's `promote-live` route),
+    /// not a Hot-Swap.
+    NoLiveStrategyToDemote { expected: StrategyId },
     /// A strategy other than the one this swap demoted holds the live slot. The
     /// execution-time revalidation SRS-RESV-003's contract hands to this layer:
     /// a trigger proposal records a *requested* demoting id, not a verified one.
@@ -363,6 +367,7 @@ impl HotSwapPromotionError {
             Self::CodeIdentityUnprovable { .. } => "CODE_IDENTITY_UNPROVABLE",
             Self::CodeIdentityMissing { .. } => "CODE_IDENTITY_MISSING",
             Self::CodeIdentityDrift { .. } => "CODE_IDENTITY_DRIFT",
+            Self::NoLiveStrategyToDemote { .. } => "NO_LIVE_STRATEGY_TO_DEMOTE",
             Self::UnexpectedLiveStrategy { .. } => "UNEXPECTED_LIVE_STRATEGY",
             Self::DemotionReleaseFailed(_) => "DEMOTION_RELEASE_FAILED",
             Self::DesignationRefused(_) => "DESIGNATION_REFUSED",
@@ -473,6 +478,13 @@ impl fmt::Display for HotSwapPromotionError {
                 "SRS-RESV-005: the deployed artifact of `{}` changed across the promotion \
                  ({before} -> {after}); SYS-49d requires the same strategy code",
                 strategy_id.as_str(),
+            ),
+            Self::NoLiveStrategyToDemote { expected } => write!(
+                formatter,
+                "SRS-RESV-005: no strategy holds the live designation, so `{}` was never \
+                 demoted and there is nothing to promote after; designating a strategy \
+                 live with no swap is SRS-EXE-001's promote-live path",
+                expected.as_str(),
             ),
             Self::UnexpectedLiveStrategy { current, expected } => write!(
                 formatter,
@@ -701,7 +713,15 @@ impl StrategyOrchestrator {
         // revalidate at execution time. So the slot is checked against the
         // strategy this swap actually demoted, never trusted from the proposal.
         match designation.designated() {
-            None => {}
+            // Refused in the SHARED gate, not in the REST wrapper. A rule enforced
+            // only at the outermost surface leaves the CLI and the Rust API able to
+            // violate it, and the CLI is a declared SYS-49a operator arm. "Only
+            // after successful demotion" cannot hold when nothing was live to demote.
+            None => {
+                return Err(HotSwapPromotionError::NoLiveStrategyToDemote {
+                    expected: requested_demoting.clone(),
+                });
+            }
             Some(current) if current == requested_demoting => {
                 // Releasing the slot is the last act of the demotion, and it is
                 // ordered strictly before the promote below — the sequence the
