@@ -216,7 +216,14 @@ struct DemotionPendingFailingLock {
 
 impl DemotionPendingLock for DemotionPendingFailingLock {
     fn state(&self) -> DemotionPendingState {
-        DemotionPendingState::Clear
+        // Mirrors the real FileDemotionPendingLock: a failed engage poisons the lock, so a
+        // retry cannot read Clear and promote. Before that, the store is genuinely clear.
+        match self.engaged.borrow().is_empty() {
+            true => DemotionPendingState::Clear,
+            false => DemotionPendingState::Unreadable {
+                reason: "the demotion-pending lockout could NOT be persisted".to_string(),
+            },
+        }
     }
 
     fn engage(&self, record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
@@ -797,4 +804,119 @@ fn err_7_timeout_blocks_promotion_across_many_demotions() {
         assert_eq!(events_seen.len(), 1);
         assert!(events_seen[0].promotion_blocked);
     }
+}
+
+#[test]
+fn resv_4_a_retry_after_a_failed_engage_is_still_blocked() {
+    // The deepest form of the lockout defect. On timeout the gate engages a lockout; if that
+    // write FAILS it reports `promotion_block_is_durable = false` and returns Err — which
+    // blocks this call. But if nothing else changes, the store is still empty, the next
+    // attempt reads Clear, and a probe reporting flat is accepted: promotion proceeds over
+    // positions no operator resolved. Saying "not durable" describes the hole; the lock has
+    // to close it. `(found by /codex:adversarial-review, SRS-RESV-004 r3 [high])`
+    let orchestrator = StrategyOrchestrator;
+    let lock = DemotionPendingFailingLock::default();
+    let request = demotion(
+        "live-momentum",
+        "paper-reversal",
+        HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+    );
+
+    // Attempt 1 — times out, and the lockout write fails.
+    let first = orchestrator
+        .resolve_demotion(
+            request.clone(),
+            &HotSwapLiquidationProbeSpy::timed_out(72, HOT_SWAP_DEMOTION_TIMEOUT_SECONDS),
+            &UnfilledOrderCancellerSpy::default(),
+            &OperatorAlertSinkSpy::default(),
+            &HotSwapDemotionEventSinkSpy::default(),
+            &lock,
+            OBSERVED_AT_SECONDS,
+        )
+        .expect_err("a timeout refuses the swap");
+    assert_eq!(first.error_type, "HotSwapDemotionTimeout");
+    assert!(
+        !first.promotion_block_is_durable,
+        "the engage failed, so the block did not reach disk"
+    );
+
+    // Attempt 2 — the probe now reports FLAT, well inside the deadline. Nothing may promote.
+    // The forbidden stubs prove the refusal precedes any side effect.
+    let probe = HotSwapLiquidationProbeSpy::flat(3);
+    let second = orchestrator
+        .resolve_demotion(
+            request,
+            &probe,
+            &UnfilledOrderForbiddenCanceller,
+            &OperatorAlertForbiddenSink,
+            &HotSwapDemotionEventSinkSpy::default(),
+            &lock,
+            OBSERVED_AT_SECONDS + 600,
+        )
+        .expect_err("a failed engage must not leave the retry free to promote");
+
+    assert_eq!(second.error_type, "HotSwapDemotionPending");
+    assert_eq!(
+        probe.calls.get(),
+        0,
+        "the block precedes the demotion attempt"
+    );
+}
+
+#[test]
+fn resv_4_the_operator_page_states_what_was_actually_done_about_the_cancel() {
+    // The page is a RECOVERY instruction. The timeout branch cancels the unfilled order and
+    // the probe-inconsistency branch deliberately does not, so a body that describes a cancel
+    // in both cases sends the operator after an order that is still live and unmentioned.
+    // `(found by /codex:adversarial-review, SRS-RESV-004 r3 [medium])`
+    let orchestrator = StrategyOrchestrator;
+
+    // Timeout branch: the cancel ran, and its REAL outcome rides on the alert.
+    let alerts = OperatorAlertSinkSpy::default();
+    let lock = DemotionPendingLockSpy::default();
+    let _ = orchestrator.resolve_demotion(
+        demotion("live-a", "paper-b", HOT_SWAP_DEMOTION_TIMEOUT_SECONDS),
+        &HotSwapLiquidationProbeSpy::timed_out(72, HOT_SWAP_DEMOTION_TIMEOUT_SECONDS),
+        &UnfilledOrderCancellerSpy::default(),
+        &alerts,
+        &HotSwapDemotionEventSinkSpy::default(),
+        &lock,
+        OBSERVED_AT_SECONDS,
+    );
+    assert_eq!(
+        alerts.alerts.borrow()[0].liquidation_cancel,
+        SideEffectOutcome::Succeeded
+    );
+
+    // A FAILED cancel is carried as failed — the case where a live order most likely remains.
+    let failing_alerts = OperatorAlertSinkSpy::default();
+    let _ = orchestrator.resolve_demotion(
+        demotion("live-a", "paper-b", HOT_SWAP_DEMOTION_TIMEOUT_SECONDS),
+        &HotSwapLiquidationProbeSpy::timed_out(72, HOT_SWAP_DEMOTION_TIMEOUT_SECONDS),
+        &UnfilledOrderFailingCanceller::default(),
+        &failing_alerts,
+        &HotSwapDemotionEventSinkSpy::default(),
+        &DemotionPendingLockSpy::default(),
+        OBSERVED_AT_SECONDS,
+    );
+    assert!(failing_alerts.alerts.borrow()[0]
+        .liquidation_cancel
+        .is_failed());
+
+    // Probe-inconsistency branch: nothing was cancelled, and the page must say NOT_ATTEMPTED.
+    let inconsistent_alerts = OperatorAlertSinkSpy::default();
+    let _ = orchestrator.resolve_demotion(
+        demotion("live-a", "paper-b", HOT_SWAP_DEMOTION_TIMEOUT_SECONDS),
+        &HotSwapLiquidationProbeSpy::timed_out(12, HOT_SWAP_DEMOTION_TIMEOUT_SECONDS),
+        &UnfilledOrderForbiddenCanceller,
+        &inconsistent_alerts,
+        &HotSwapDemotionEventSinkSpy::default(),
+        &DemotionPendingLockSpy::default(),
+        OBSERVED_AT_SECONDS,
+    );
+    assert_eq!(
+        inconsistent_alerts.alerts.borrow()[0].liquidation_cancel,
+        SideEffectOutcome::NotAttempted,
+        "a branch that cancels nothing must not page as though it did"
+    );
 }

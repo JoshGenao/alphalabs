@@ -1739,6 +1739,8 @@ impl StrategyOrchestrator {
                 ],
                 elapsed_seconds,
                 timeout_seconds,
+                // This branch cancels NOTHING, and the page must not imply otherwise.
+                liquidation_cancel: SideEffectOutcome::NotAttempted,
                 observed_at_seconds,
             }));
             let demotion_pending = into_outcome(lock.engage(DemotionPendingRecord {
@@ -1820,6 +1822,9 @@ impl StrategyOrchestrator {
                     ],
                     elapsed_seconds,
                     timeout_seconds,
+                    // The cancel ran just above, so this is its REAL outcome — including a
+                    // failure, which is exactly what an operator must know about.
+                    liquidation_cancel: liquidation_cancel.clone(),
                     observed_at_seconds,
                 }));
                 // SyRS SYS-49c (c): hold the swap in demotion-pending. Engaged

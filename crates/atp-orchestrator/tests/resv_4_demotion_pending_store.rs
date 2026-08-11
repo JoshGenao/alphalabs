@@ -20,6 +20,7 @@
 //!     record that was written after the safety side effects ran.
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process;
 
@@ -55,6 +56,19 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
+        // A test may have made a subdirectory read-only; restore write permission so the
+        // cleanup actually succeeds rather than leaking the directory (rule 20).
+        if let Ok(entries) = fs::read_dir(&self.dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    if let Ok(meta) = fs::metadata(entry.path()) {
+                        let mut perms = meta.permissions();
+                        perms.set_mode(0o700);
+                        let _ = fs::set_permissions(entry.path(), perms);
+                    }
+                }
+            }
+        }
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
@@ -375,4 +389,91 @@ fn resv_4_a_lockout_survives_being_read_by_a_fresh_reader() {
             .elapsed_seconds,
         72
     );
+}
+
+// --------------------------------------------------------------------------- //
+// A failed engage must not leave the next attempt free to promote
+// --------------------------------------------------------------------------- //
+//
+// The hole this closes: on timeout the gate engages a lockout, and if that write fails it
+// returns Err with `promotion_block_is_durable = false`. But the store is then still EMPTY, so
+// the NEXT attempt reads `Clear`, accepts a flat probe, and promotes over positions no operator
+// resolved — exactly what SyRS SYS-49c (d) forbids. Reporting "not durable" on the way out
+// describes the hole; it does not close it.
+// `(found by /codex:adversarial-review, SRS-RESV-004 r3 [high])`
+
+#[test]
+fn resv_4_a_failed_engage_poisons_the_lock_so_a_retry_cannot_promote() {
+    use atp_orchestrator::demotion_pending_store::FileDemotionPendingLock;
+    use atp_orchestrator::DemotionPendingLock;
+
+    let scratch = Scratch::new("poison", line!());
+    // A READ-ONLY directory: the file is genuinely absent, so the read reports `Clear` — the
+    // precise state the retry would have promoted through — while every write fails.
+    let dir = scratch.dir.join("read-only");
+    fs::create_dir_all(&dir).expect("create the store dir");
+    let mut perms = fs::metadata(&dir).expect("stat").permissions();
+    perms.set_mode(0o500);
+    fs::set_permissions(&dir, perms).expect("make the store dir read-only");
+    let path = dir.join("demotion-pending.json");
+
+    let lock = FileDemotionPendingLock::new(&path);
+    // Before anything goes wrong the store is genuinely clear, and promotion is not blocked.
+    assert_eq!(lock.state(), DemotionPendingState::Clear);
+    assert!(!lock.state().blocks_promotion());
+
+    let failed = lock
+        .engage(record())
+        .expect_err("this store cannot be written");
+    assert!(!failed.reason.is_empty());
+
+    // ...and from here the lock refuses, even though the store on disk is still empty.
+    assert_eq!(
+        load(&path).expect("an unwritten store reads as absent"),
+        None,
+        "the disk really is empty — the block cannot be coming from the file"
+    );
+    let state = lock.state();
+    assert!(
+        state.blocks_promotion(),
+        "a demotion whose lockout could not be persisted must still block a retry"
+    );
+    assert!(matches!(state, DemotionPendingState::Unreadable { .. }));
+    assert!(state.reason().contains("could NOT be persisted"));
+    assert!(state.reason().contains("live-momentum"));
+
+    // The poison survives cloning: a composition that hands the lock out by value must not
+    // silently drop it.
+    let handed_out = lock.clone();
+    assert!(handed_out.state().blocks_promotion());
+    assert!(lock.poisoned().is_some());
+}
+
+#[test]
+fn resv_4_a_healthy_lock_is_not_poisoned_by_a_refused_engage() {
+    // Non-vacuity in the other direction: `engage` also fails when a lockout is ALREADY held,
+    // and that is a normal refusal, not a persistence failure. Poisoning there would be
+    // indistinguishable from the real fault — and the store already blocks on its own.
+    use atp_orchestrator::demotion_pending_store::FileDemotionPendingLock;
+    use atp_orchestrator::DemotionPendingLock;
+
+    let scratch = Scratch::new("no-false-poison", line!());
+    let path = scratch.path();
+    let lock = FileDemotionPendingLock::new(&path);
+
+    lock.engage(record()).expect("the first engage persists");
+    let second = lock.engage(record());
+    assert!(second.is_err(), "a second engage must refuse");
+
+    // Blocked, but by the RECORD on disk — not by a poison.
+    assert!(matches!(lock.state(), DemotionPendingState::Pending(_)));
+    assert_eq!(
+        lock.poisoned(),
+        None,
+        "an already-held lockout is a normal refusal, not a persistence fault"
+    );
+
+    // And an operator resolution genuinely clears it.
+    resolve(&path, "operator jg: positions flattened").expect("resolve");
+    assert!(!lock.state().blocks_promotion());
 }

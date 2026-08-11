@@ -2653,6 +2653,20 @@ pub struct OperatorAlertEvent {
     pub channels: Vec<OperatorAlertChannel>,
     pub elapsed_seconds: u64,
     pub timeout_seconds: u64,
+    /// SRS-RESV-004 / SyRS SYS-49c (b): what the gate did about the unfilled liquidation
+    /// order, as of the moment this page was raised.
+    ///
+    /// Carried because the page is a RECOVERY instruction, and the two blocked branches take
+    /// different destructive actions: the liquidation timeout cancels the unfilled order, while
+    /// the probe-inconsistency branch deliberately cancels NOTHING (it will not act
+    /// destructively on a report it is simultaneously calling untrustworthy). One shared alert
+    /// body told the operator an IB cancel was under way in both cases, sending them into
+    /// recovery over an order that is still live and unmentioned.
+    /// `(found by /codex:adversarial-review, SRS-RESV-004 r3 [medium])`
+    ///
+    /// The gate attempts the cancel BEFORE dispatching the alert, so this is the real outcome,
+    /// not an intention.
+    pub liquidation_cancel: SideEffectOutcome,
     pub observed_at_seconds: u64,
 }
 

@@ -297,13 +297,34 @@ impl DemotionNotifierAlertSink {
         self.events.borrow().clone()
     }
 
+    /// The page an operator acts on, describing what the gate ACTUALLY did.
+    ///
+    /// The cancel clause is derived from `event.liquidation_cancel`, never assumed: the
+    /// probe-inconsistency branch blocks without cancelling, and a shared body claiming "the
+    /// unfilled liquidation order is being canceled" would send the operator into recovery
+    /// over an order that is still live and unmentioned. A FAILED cancel is likewise stated
+    /// outright — that is the case where a live order most likely remains.
     fn page_summary(event: &OperatorAlertEvent) -> String {
+        let cancel_clause = match &event.liquidation_cancel {
+            SideEffectOutcome::Succeeded => {
+                "The unfilled liquidation order has been canceled".to_string()
+            }
+            SideEffectOutcome::Failed { reason } => format!(
+                "The unfilled liquidation order could NOT be canceled ({reason}) — a live IB \
+                 order may still be resting and needs manual cancellation"
+            ),
+            SideEffectOutcome::NotAttempted => {
+                "NO liquidation cancel was issued: the liquidation probe contradicted itself, \
+                 so the gate refused to act destructively on a report it cannot trust. Any \
+                 unfilled liquidation order is still live and needs manual inspection"
+                    .to_string()
+            }
+        };
         format!(
             "SRS-RESV-004 + SyRS SYS-49c: the Hot-Swap demotion of live strategy {demoting} \
              (candidate {candidate}) did NOT reach flat within the {timeout} s timeout \
-             ({elapsed} s elapsed). The unfilled liquidation order is being canceled, the swap \
-             is held in demotion-pending, and PROMOTION IS BLOCKED until the open positions are \
-             resolved manually",
+             ({elapsed} s elapsed). {cancel_clause}; the swap is held in demotion-pending, and \
+             PROMOTION IS BLOCKED until the open positions are resolved manually",
             demoting = event.demoting_strategy_id.as_str(),
             candidate = event.candidate_strategy_id.as_str(),
             timeout = event.timeout_seconds,

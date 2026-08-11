@@ -56,6 +56,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::trigger_config_store::ExclusiveGuard;
 
@@ -692,26 +693,84 @@ pub fn resolve(
 #[derive(Debug, Clone)]
 pub struct FileDemotionPendingLock {
     path: PathBuf,
+    /// Set when an `engage` FAILED. See [`state`](Self::state).
+    poison: Arc<Mutex<Option<String>>>,
 }
 
 impl FileDemotionPendingLock {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            poison: Arc::new(Mutex::new(None)),
+        }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Why this lock is refusing everything, if it is.
+    pub fn poisoned(&self) -> Option<String> {
+        self.poison
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
 }
 
 impl crate::DemotionPendingLock for FileDemotionPendingLock {
+    /// The lockout state — or a BLOCKING state if a previous engage could not persist.
+    ///
+    /// The failure this closes: on timeout the gate engages a lockout, and if that write fails
+    /// it returns `Err` with `promotion_block_is_durable = false`. But the store is then still
+    /// EMPTY, so the very next attempt reads `Clear`, and a probe reporting flat is accepted —
+    /// promotion proceeds over positions no operator resolved, which is precisely what SyRS
+    /// SYS-49c (d) forbids. Saying "not durable" on the way out is a description of the hole,
+    /// not a closure of it. `(found by /codex:adversarial-review, SRS-RESV-004 r3 [high])`
+    ///
+    /// So a failed engage POISONS this lock: every later `state()` reports the blocking
+    /// `Unreadable` variant — a demotion is pending and this build cannot evidence it — until
+    /// the operator resolves. The poison is shared across clones (`Arc`), so a composition that
+    /// hands the lock out by value cannot lose it.
+    ///
+    /// **Residual, stated rather than implied:** the poison lives in memory, so a process
+    /// RESTART over a store that is still unwritable begins clear again. Closing that needs a
+    /// second durable location to fail over to, which is the deferred SRS-LOG-001 /
+    /// SRS-ARCH-005 startup-readiness leg (`hot_swap_demotion_contract.deferred[]`). The
+    /// operator has been paged by then — the alert dispatch precedes the engage — and the
+    /// rejection says the block is not durable.
     fn state(&self) -> DemotionPendingState {
+        if let Some(reason) = self.poisoned() {
+            return DemotionPendingState::Unreadable { reason };
+        }
         read_state(&self.path)
     }
 
     fn engage(&self, record: DemotionPendingRecord) -> Result<(), crate::HotSwapSideEffectError> {
-        engage(&self.path, &record)
-            .map_err(|error| crate::HotSwapSideEffectError::new(error.to_string()))
+        match engage(&self.path, &record) {
+            Ok(()) => Ok(()),
+            // A lockout is ALREADY held: the block this engage wanted exists, and the store
+            // enforces it on its own. Poisoning here would outlive the operator's resolution
+            // and wedge the swap path permanently — a fail-closed that never reopens is its
+            // own outage, and it would be indistinguishable from the real persistence fault.
+            Err(DemotionPendingStoreError::AlreadyPending { path, held }) => {
+                Err(crate::HotSwapSideEffectError::new(
+                    DemotionPendingStoreError::AlreadyPending { path, held }.to_string(),
+                ))
+            }
+            Err(error) => {
+                let reason = format!(
+                    "a demotion of {demoting} (candidate {candidate}) timed out and its                      demotion-pending lockout could NOT be persisted ({error}); promotion stays                      blocked in this process until an operator resolves the open positions",
+                    demoting = record.demoting_strategy_id.as_str(),
+                    candidate = record.candidate_strategy_id.as_str(),
+                );
+                *self
+                    .poison
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason);
+                Err(crate::HotSwapSideEffectError::new(error.to_string()))
+            }
+        }
     }
 }
 

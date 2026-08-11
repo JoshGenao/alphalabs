@@ -4493,6 +4493,7 @@
         "channels",
         "elapsed_seconds",
         "timeout_seconds",
+        "liquidation_cancel",
         "observed_at_seconds"
       ],
       "forbidden_fields": [

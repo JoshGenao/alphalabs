@@ -464,3 +464,40 @@ def test_a_demotion_that_cannot_prove_live_identity_touches_nothing(
     # A refused demotion produces no drill output at all — it never reached the ports.
     assert "liquidations-submitted" not in result.stdout, result.stdout
     assert not state.exists(), "a refused demotion must not engage a lockout"
+
+
+def test_a_lockout_that_cannot_be_persisted_is_reported_as_a_non_durable_block(
+    tmp_path: Path,
+) -> None:
+    # SyRS SYS-49c (d) asks for a block that outlives the call. When the lockout write FAILS
+    # the gate cannot deliver that, and the one thing it must not do is imply otherwise: the
+    # store is empty, so without a fail-closed state the next attempt reads "clear" and a flat
+    # probe promotes over positions no operator resolved.
+    #
+    # Found by /codex:adversarial-review round 3 [high]. Here the store directory is read-only,
+    # so the demotion times out, the safety side effects still run, and the block is reported
+    # as NOT durable — loudly, on the event and in the operator-facing message.
+    state_dir = tmp_path / "read-only"
+    state_dir.mkdir()
+    state = state_dir / "pending.json"
+    state_dir.chmod(0o500)
+    try:
+        values = _demote(state, "demotion-pending", "--position", "AAPL:100", "--resting", "AAPL")
+
+        # Still refused, and the safety side effects still ran.
+        assert values["promotion-blocked"] == "true"
+        assert values["unfilled-order-cancels"] == "1"
+        assert values["operator-pages"] == "1"
+
+        # ...but the block is NOT durable, and every surface says so rather than implying a
+        # persistence that did not happen.
+        assert values["promotion-block-is-durable"] == "false"
+        assert values["event-demotion-pending"] == "FAILED"
+        assert "WARNING" in values["error-message"]
+        assert "a retry could promote" in values["error-message"]
+
+        # And the lockout genuinely is not on disk — the warning is not defensive boilerplate.
+        assert not state.exists()
+    finally:
+        # Restore write permission so tmp_path teardown can remove the directory.
+        state_dir.chmod(0o700)

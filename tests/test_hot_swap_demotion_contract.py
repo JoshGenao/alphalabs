@@ -50,6 +50,23 @@ from hot_swap_demotion_check import (  # noqa: E402
 )
 
 
+def _drop_field_from_struct(source: str, struct: str, field: str) -> str:
+    """Delete `field` from `struct` only — mutation anchors must be span-scoped, not textual.
+
+    A bare `.replace("pub liquidation_cancel: ...", "", 1)` mutates whichever struct happens to
+    declare it first, so the check under test receives an INTACT subject and passes for the
+    wrong reason. Locating the struct's braces first makes the mutation mean what it says.
+    """
+
+    start = source.index(f"pub struct {struct} {{")
+    end = source.index("\n}", start)
+    body = source[start:end]
+    needle = f"    pub {field}: "
+    at = body.index(needle)
+    line_end = body.index("\n", at) + 1
+    return source[:start] + body[:at] + body[line_end:] + source[end:]
+
+
 class HotSwapDemotionScriptTest(unittest.TestCase):
     def test_err_7_contract_script_passes(self) -> None:
         result = subprocess.run(
@@ -68,7 +85,7 @@ class HotSwapDemotionScriptTest(unittest.TestCase):
             "FlatBeforeTimeout, TimedOutDemotionPending",
             "OperatorAlertChannel with 3 variants",
             "Dashboard, Email, Sms",
-            "OperatorAlertEvent with the 6 required fields",
+            "OperatorAlertEvent with the 7 required fields",
             "SideEffectOutcome with 3 variants",
             "NotAttempted, Succeeded, Failed",
             "HotSwapDemotionEvent with the 8 required fields",
@@ -245,7 +262,15 @@ class HotSwapDemotionEventStructTest(unittest.TestCase):
             self.assertIn(field, evidence)
 
     def test_missing_liquidation_cancel_field_is_caught(self) -> None:
-        mutated = self.types_src.replace("    pub liquidation_cancel: SideEffectOutcome,", "", 1)
+        # `pub liquidation_cancel: SideEffectOutcome,` appears FOUR times in atp-types — on
+        # OperatorAlertEvent, on HotSwapDemotionEvent, and twice on the kill-switch structs. A
+        # `replace(..., 1)` deleted the first (the alert's) and `rindex` the last (a kill
+        # switch's); either way this check was handed a HotSwapDemotionEvent that still had its
+        # field, and stayed silent. Anchor on the STRUCT'S SPAN, not on a token the file
+        # repeats — the only form that survives another struct gaining the same field.
+        mutated = _drop_field_from_struct(
+            self.types_src, "HotSwapDemotionEvent", "liquidation_cancel"
+        )
         with self.assertRaises(HotSwapDemotionCheckError) as ctx:
             check_demotion_event_struct(self.config, mutated)
         self.assertIn("liquidation_cancel", str(ctx.exception))
