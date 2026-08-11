@@ -1,7 +1,9 @@
 === SESSION SRS-RESV-004 ===
 Date: 2026-08-11
 Feature: SRS-RESV-004 — execute Hot-Swap demotion before promotion (SyRS SYS-49b / SYS-49c, StRS SN-1.25)
-Outcome: complete(fixture-tier) — pending operator sign-off on ONE open question (see "Operator decision" below)
+Outcome: serialized — code merges, passes stays FALSE. The judgment critic's round-7 [critical]
+finding is unfixed by design: the demotion-pending lockout is not durable on the
+persistence-FAILURE path, which is the AC's own "blocked until manual resolution" clause.
 
 WHAT WAS THERE, AND WHAT WAS MISSING (verified in code, not read off a note — no prior note existed):
 ERR-7's commit 82ef06f shipped a "SDK-surface contract slice": `resolve_demotion` modelling only
@@ -52,22 +54,27 @@ Critic verdicts:
   deterministic: APPROVE — no findings (it blocked once, correctly: a safety-path change whose
     tests had gone to tests/ and crates/…/tests/ but not tests/domain/. Fixed by adding the L7
     case, not by moving the file.)
-  judgment (adversarial_review.py, reviewer=codex): see below — 4 rounds, all BLOCK, all fixed.
-    A 5th round was not reached before the session ended; the last SUBSTANTIVE round (r4) covers
-    every source change EXCEPT the r4 fixes themselves. That is stated plainly rather than
-    implied: r5 is outstanding.
+  judgment (adversarial_review.py, reviewer=codex): BLOCK at round 7 — recorded verbatim, not
+    worked around. Rounds 1-6 found nine defects and every one is fixed; round 7 names a residual
+    the code itself documents, and its own recommendation is "integrate serialized and leave
+    passes:false until a named operator accepts the residual risk". Taken. Seven rounds, seven
+    real verdicts, no timeouts and no dropped summaries (`.harness/runs/.../review.jsonl`).
 
-Adversarial rounds: 4
+Adversarial rounds: 7
   r1 [high] — the demotion liquidated ACCOUNT-level positions keyed on a caller-supplied
      `demoting_strategy_id` never checked against the live registry. Class: an identity that
      SELECTS state, not one that labels a record. Fixed with `authorize_demotion` as phase 0
      (three refusals: nobody live / wrong one / more than one), the sequence returning Result,
      the drill propagating it ahead of every port, and a static ordering guard.
-  r1 [high] — "still fixture-tier, do not close as complete". Observation correct; the
-     recommendation conflicts with an explicit operator decision. See "Operator decision".
+  r1 [high] — "still fixture-tier, do not close as complete". Correct, and now acted on: see
+     "Why serialized and not complete".
   r2 [high] — the committed evidence predated the r1 safety fix. Class: evidence must bind to
      the tree being shipped. Fixed by re-running all four steps; done again after r3 and r4.
-  r2 [high] — harness changes on a feature branch. See "Operator decision".
+  r2 [high] — harness changes on a feature branch. Not acted on, and the divergence is stated:
+     both were prerequisites for this feature's OWN mandatory gates (a red CI mirror and a
+     mutation gate returning a false accusation), both are isolated in their own commits with
+     their own critic approvals, and both make the harness STRICTER. There is no separate
+     review lane in this pipeline — `integrate` takes the branch.
   r3 [high] — a FAILED lockout write left the retry free to promote: the gate reported
      `promotion_block_is_durable = false` and the store was still empty, so the next attempt read
      `Clear`. Class: describing a fail-open is not closing it. Fixed with a poison on the port
@@ -81,10 +88,22 @@ Adversarial rounds: 4
      around durable writes, on the OUTPUT side. Fixed by validating everything first.
   r4 [high] — crash window between the destructive side effects and the lockout write. Fixed
      with a two-phase write: engage (outcomes NotAttempted) → cancel → alert → amend.
+  r5 [critical] — I had fixed that window on the TIMEOUT arm and left the probe-inconsistency
+     branch paging first. The instance, not the class. Fixed on the branch AND by making the
+     static guard enumerate every blocked branch instead of naming one, plus a behavioural twin
+     asserting engage < {cancel, alert} < amend on both.
+  r6 [high] — the pending-refusal factory hard-coded `promotion_block_is_durable = true`, which
+     stopped being true when r3's poison made the blocking state possibly in-memory. Fixed with
+     a distinct `Poisoned` state and an `is_durable()` the gate passes through.
+  r7 [critical] — UNFIXED, and the reason this is serialized. The poison lives in an
+     `Arc<Mutex<..>>`, so a fresh process constructs the lock unpoisoned, reads the unwritten
+     file as `Clear`, and a later flat probe is accepted without manual resolution. Closing it
+     needs a second durable location or a startup gate that refuses the swap path when the store
+     is unwritable — SRS-ARCH-005 / SRS-LOG-001. Recorded in `deferred[]`.
 
 Playbook updates:
-  test-integrity.md 27–28 — span-scoped mutation anchors (this bit me THREE times in one
-    session, in three shapes); a harness that ran nothing must not return a verdict.
+  test-integrity.md 27–28 — span-scoped mutation anchors (this bit me FOUR times in one session,
+    in four shapes); a harness that ran nothing must not return a verdict.
   safety-paths.md 40–42 — persist the block before the destructive side effects; a failed
     durable write needs a fail-closed STATE; prove a caller-supplied identity that selects
     account-level state.
@@ -98,21 +117,32 @@ their own commits:
   - `mutation_verify` handed pytest the Rust test paths, ran NOTHING, and reported all 34 added
     tests as unable to fail. Both changes make the harness STRICTER, never laxer.
 
-Operator decision — ONE open question before this closes `complete`:
-  The reviewer's r1 finding and the round-2 process finding both point at the same judgment
-  call: this ships with FIXTURE IB and SMTP/SMS transports. The gate, probe, sequence, durable
-  lockout, `OperatorNotifier` and paper transition are REAL and execute; the IB socket and the
-  mail/SMS transports are not, and the drill self-labels `transports: FIXTURE`. That matches the
-  RESV-003 precedent and the classification chosen at plan time — but RESV-003's AC is about
-  CONFIGURATION, while this one says "cancels resting IB orders, submits liquidation orders",
-  which a fixture adapter demonstrates without proving against IB. I have NOT flipped anything:
-  the feature is committed but not integrated. `--mode serialized` is the conservative reading
-  and needs only the word.
+Why serialized and not complete:
+  The session was planned to target `complete` on the fixture-tier reading (the RESV-003
+  precedent), under honesty conditions I wrote into the plan: "if any of these fails I integrate
+  --mode serialized". Two of them failed, and they point the same way.
+
+  1. r7 [critical], above: the AC clause "promotion is blocked until manual resolution" does not
+     hold across a restart on the persistence-failure path. That is the feature's core
+     guarantee, not a peripheral one.
+  2. r1 [high] made the same point about transports: the gate, probe, sequence, lockout,
+     `OperatorNotifier` and paper transition are REAL and execute, but the IB socket and the
+     SMTP/SMS transports are fixtures (self-labelled `transports: FIXTURE`). RESV-003 closed
+     complete on fixtures because its AC is about CONFIGURATION; this one says "cancels resting
+     IB orders, submits liquidation orders", which a fixture adapter demonstrates without
+     proving against IB.
+
+  So `passes` stays false and the operator finishes verification. Everything else built here is
+  real, tested and merged — this is the honest classification, not a failure.
 
 Resume / next:
-  - Nothing is integrated yet. `agent_pool.py integrate SRS-RESV-004 --mode complete|serialized`
-    is the remaining step, and the mode is the operator's call (above).
-  - Re-run `adversarial_review.py origin/main` for round 5: r4's own fixes have not been reviewed.
+  - Integrated `--mode serialized`; `passes` stays false. The two things that would flip it:
+    (a) close the r7 restart gap — a durable fallback location, or a startup/readiness gate that
+        refuses the swap path when the demotion-pending store is unwritable (SRS-ARCH-005 +
+        SRS-LOG-001);
+    (b) the live-IB leg for "cancels resting IB orders / submits liquidation orders"
+        (SRS-EXE-006 atp-adapters) and real SMTP/SMS (SRS-NOTIF-001).
+  - Then re-run `adversarial_review.py origin/main` — round 8 would be reviewing (a) and (b).
   - Deferred owners, all recorded in `hot_swap_demotion_contract.deferred[]`: the concrete
     SignalHalt / DemotionBrokerageControl / LivePositionSource / PaperTransition runtimes
     (SRS-ORCH-* / SRS-EXE-006 / SRS-SIM-*), the IB `cancel_order` leg, the real SMTP/SMS
@@ -120,5 +150,5 @@ Resume / next:
     501 deliberately: its declared response carries `promotion_state`, and wiring it from the
     demotion half alone would report a promotion that did not happen. That route is
     SRS-RESV-005's to complete.
-  - Known residual, stated not implied: the lockout poison lives in memory, so a process restart
-    over a still-unwritable store begins clear. Closing it needs a second durable location.
+  - The r7 residual is now declared in `hot_swap_demotion_contract.deferred[]` with its owners,
+    so the next session does not have to rediscover it.
