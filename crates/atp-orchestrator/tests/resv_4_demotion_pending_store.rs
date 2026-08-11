@@ -438,9 +438,21 @@ fn resv_4_a_failed_engage_poisons_the_lock_so_a_retry_cannot_promote() {
         state.blocks_promotion(),
         "a demotion whose lockout could not be persisted must still block a retry"
     );
-    assert!(matches!(state, DemotionPendingState::Unreadable { .. }));
+    assert!(matches!(state, DemotionPendingState::Poisoned { .. }));
     assert!(state.reason().contains("could NOT be persisted"));
     assert!(state.reason().contains("live-momentum"));
+    // ...and it must NOT claim to be durable: a restart would lose it, and a rejection that
+    // said otherwise would tell an operator the swap path is safely held when it is not.
+    assert!(
+        !state.is_durable(),
+        "an in-memory poison is not a durable block"
+    );
+    // A lockout that IS on disk — held or corrupt — survives a restart and says so.
+    assert!(DemotionPendingState::Clear.is_durable());
+    assert!(DemotionPendingState::Unreadable {
+        reason: "corrupt payload".to_string()
+    }
+    .is_durable());
 
     // The poison survives cloning: a composition that hands the lock out by value must not
     // silently drop it.

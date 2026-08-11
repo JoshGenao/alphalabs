@@ -587,3 +587,31 @@ def test_every_blocked_branch_leaves_a_durable_block_before_paging(tmp_path: Pat
     )
     assert blocked["sequence-ran"] == "false"
     assert blocked["operator-pages"] == "0"
+
+
+def test_a_block_that_only_lives_in_memory_is_never_reported_as_durable(
+    tmp_path: Path,
+) -> None:
+    # SyRS SYS-49c (d) is about a block that outlives the process. When the lockout cannot be
+    # persisted the gate still refuses — but the refusal must say the block is NOT durable, or
+    # an operator reads "promotion blocked" and believes a restart would keep it.
+    # Found by /codex:adversarial-review round 6 [high]: the pending-refusal factory hard-coded
+    # durable=true, which stopped being true the moment a failed engage could poison the lock.
+    state_dir = tmp_path / "read-only"
+    state_dir.mkdir()
+    state = state_dir / "pending.json"
+    state_dir.chmod(0o500)
+    try:
+        values = _demote(state, "demotion-pending", "--position", "AAPL:100", "--resting", "AAPL")
+        assert values["promotion-blocked"] == "true"
+        assert values["promotion-block-is-durable"] == "false"
+        assert "a retry could promote" in values["error-message"]
+        assert not state.exists(), "nothing reached disk, so nothing survives a restart"
+
+        # `status` from a FRESH process reports the honest truth: no lockout is held. The
+        # in-memory refusal never existed for anyone but the process that failed to write it,
+        # and pretending otherwise is the claim this test forbids.
+        reported = _proof(_run("status", "--state", str(state)).stdout)
+        assert reported["demotion-pending"] == "false"
+    finally:
+        state_dir.chmod(0o700)

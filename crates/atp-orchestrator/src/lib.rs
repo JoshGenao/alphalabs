@@ -1697,6 +1697,7 @@ impl StrategyOrchestrator {
             return Err(StructuredHotSwapDemotionError::demotion_pending(
                 request,
                 &pending.reason(),
+                pending.is_durable(),
             ));
         }
 

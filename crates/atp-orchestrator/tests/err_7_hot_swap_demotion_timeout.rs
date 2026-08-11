@@ -230,7 +230,7 @@ impl DemotionPendingLock for DemotionPendingFailingLock {
         // retry cannot read Clear and promote. Before that, the store is genuinely clear.
         match self.engaged.borrow().is_empty() {
             true => DemotionPendingState::Clear,
-            false => DemotionPendingState::Unreadable {
+            false => DemotionPendingState::Poisoned {
                 reason: "the demotion-pending lockout could NOT be persisted".to_string(),
             },
         }

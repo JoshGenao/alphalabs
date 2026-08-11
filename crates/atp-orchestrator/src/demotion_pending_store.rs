@@ -151,8 +151,14 @@ pub enum DemotionPendingState {
     /// A demotion timed out and has not been manually resolved. Promotion is blocked.
     Pending(Box<DemotionPendingRecord>),
     /// A lockout exists but cannot be read. Promotion is blocked (fail closed): an unreadable
-    /// lockout is emphatically not an absent one.
+    /// lockout is emphatically not an absent one. DURABLE — the bytes are on disk and will
+    /// still be there after a restart.
     Unreadable { reason: String },
+    /// A demotion timed out and its lockout could NOT be persisted, so this process is
+    /// refusing from memory. Promotion is blocked — but only here, and only until this process
+    /// exits. NOT durable, and callers must say so rather than reporting a block that a
+    /// restart would lose. `(found by /codex:adversarial-review, SRS-RESV-004 r6)`
+    Poisoned { reason: String },
 }
 
 impl DemotionPendingState {
@@ -164,8 +170,20 @@ impl DemotionPendingState {
     pub fn blocks_promotion(&self) -> bool {
         match self {
             Self::Clear => false,
-            Self::Pending(_) | Self::Unreadable { .. } => true,
+            Self::Pending(_) | Self::Unreadable { .. } | Self::Poisoned { .. } => true,
         }
+    }
+
+    /// Whether the block this state represents SURVIVES this process.
+    ///
+    /// `Pending` and `Unreadable` are both backed by bytes on disk; `Poisoned` is not. The
+    /// distinction is load-bearing for the rejection the caller returns: reporting an
+    /// in-memory refusal as a durable block tells an operator the swap path is safely held
+    /// when a restart would reopen it. Meaningless for `Clear`, which blocks nothing —
+    /// reported as `true` so no caller reads "not durable" as a hidden warning about a state
+    /// that carries none.
+    pub fn is_durable(&self) -> bool {
+        !matches!(self, Self::Poisoned { .. })
     }
 
     /// A short operator-facing reason, for the rejection message and the dashboard cell.
@@ -184,6 +202,7 @@ impl DemotionPendingState {
                 "the demotion-pending lockout exists but cannot be read ({reason}) — treated as \
                  pending"
             ),
+            Self::Poisoned { reason } => reason.clone(),
         }
     }
 }
@@ -782,7 +801,7 @@ impl crate::DemotionPendingLock for FileDemotionPendingLock {
     /// rejection says the block is not durable.
     fn state(&self) -> DemotionPendingState {
         if let Some(reason) = self.poisoned() {
-            return DemotionPendingState::Unreadable { reason };
+            return DemotionPendingState::Poisoned { reason };
         }
         read_state(&self.path)
     }

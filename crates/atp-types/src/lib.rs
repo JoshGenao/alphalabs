@@ -2792,16 +2792,29 @@ impl StructuredHotSwapDemotionError {
     /// Shares `OrderErrorCategory::HotSwapDemotionTimeout` with the other demotion
     /// rejections deliberately: that taxonomy is pinned by many contract checks and is
     /// not extended for a one-off. `error_type` carries the precise discriminator.
-    pub fn demotion_pending(request: HotSwapDemotionRequest, held_reason: &str) -> Self {
+    pub fn demotion_pending(
+        request: HotSwapDemotionRequest,
+        held_reason: &str,
+        promotion_block_is_durable: bool,
+    ) -> Self {
         let message = format!(
             "SRS-RESV-004 + SyRS SYS-49c: hot-swap of {demoting} (candidate {candidate}) \
              refused before it started — {held_reason}. Promotion stays blocked until the \
-             unfilled positions are resolved by an operator",
+             unfilled positions are resolved by an operator{durability}",
             demoting = request.demoting_strategy_id.as_str(),
             candidate = request.candidate_strategy_id.as_str(),
+            durability = durability_suffix(promotion_block_is_durable),
         );
-        // Durable by definition: this rejection exists *because* a persisted lockout was read.
-        Self::rejection(request, "HotSwapDemotionPending", message, true)
+        // NOT durable by definition. The blocking state can come from a persisted lockout —
+        // or from an in-memory poison left by an engage that could not reach disk, which a
+        // restart would lose. Assuming the former told an operator the swap path was safely
+        // held when it was not. `(found by /codex:adversarial-review, SRS-RESV-004 r6)`
+        Self::rejection(
+            request,
+            "HotSwapDemotionPending",
+            message,
+            promotion_block_is_durable,
+        )
     }
 
     /// Build a `HotSwapDemotionProbeInconsistent` rejection: the liquidation probe
@@ -4235,6 +4248,7 @@ mod tests {
             StructuredHotSwapDemotionError::demotion_pending(
                 request.clone(),
                 "a demotion of live-momentum timed out and has not been resolved",
+                true,
             ),
             StructuredHotSwapDemotionError::demotion_probe_inconsistent(request, 12, 30, true),
         ];
@@ -4256,9 +4270,21 @@ mod tests {
             "each refusal needs its own error_type"
         );
 
-        // A pending refusal is durable by construction: it exists because a persisted
-        // lockout was read back.
+        // A pending refusal reports the durability it was GIVEN — the blocking state can be
+        // an in-memory poison, which a restart would lose.
         assert!(rejections[1].promotion_block_is_durable);
+        let from_poison = StructuredHotSwapDemotionError::demotion_pending(
+            HotSwapDemotionRequest {
+                demoting_strategy_id: StrategyId::new("live-momentum"),
+                candidate_strategy_id: StrategyId::new("paper-reversal"),
+                timeout_seconds: HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+            },
+            "the lockout could NOT be persisted",
+            false,
+        );
+        assert!(!from_poison.promotion_block_is_durable);
+        assert!(from_poison.message.contains("WARNING"));
+        assert!(from_poison.message.contains("a retry could promote"));
         // And a probe-inconsistency refusal states that nothing was cancelled — the
         // destructive action is exactly what it declines to take on a bad report.
         assert!(rejections[2].message.contains("NO liquidation cancel"));

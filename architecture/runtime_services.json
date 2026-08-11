@@ -4638,7 +4638,8 @@
       "state_variants": [
         "Clear",
         "Pending",
-        "Unreadable"
+        "Unreadable",
+        "Poisoned"
       ],
       "fail_closed_reader": "read_state",
       "resolve_entry_point": "resolve",

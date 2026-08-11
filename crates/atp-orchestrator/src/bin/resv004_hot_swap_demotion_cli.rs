@@ -329,6 +329,14 @@ fn emit_status(path: &Path) -> Result<(), String> {
              demotion state that cannot be evidenced — promotion stays blocked",
             path.display()
         )),
+        // Reachable only in a process whose own engage failed. `status` runs in a fresh one,
+        // so this is defensive — and it is an ERROR for the same reason: a block that exists
+        // only in memory must not be reported as a readable demotion state.
+        DemotionPendingState::Poisoned { reason } => Err(format!(
+            "demotion-pending lockout at {} could NOT be persisted ({reason}); promotion is \
+             blocked in the affected process ONLY — a restart would lose it",
+            path.display()
+        )),
     }
 }
 

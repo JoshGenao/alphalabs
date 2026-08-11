@@ -827,19 +827,30 @@ def check_lockout_store(config: dict) -> str:
             f"`{spec['state_enum']}::Clear` — an unreadable lockout is never an absent one"
         )
 
-    # ...and the predicate the promotion path branches on must block on BOTH non-clear states.
+    # ...and the predicate the promotion path branches on must block on EVERY non-clear state.
     predicate_body = _fn_block(source, "blocks_promotion")
-    for blocking in ("Pending", "Unreadable"):
+    for blocking in ("Pending", "Unreadable", "Poisoned"):
         if blocking not in predicate_body:
             fail(
-                f"blocks_promotion does not mention `{blocking}` — an unreadable lockout must "
-                "block promotion exactly like a held one"
+                f"blocks_promotion does not mention `{blocking}` — every non-clear state must "
+                "block promotion exactly like a held lockout"
             )
+    # A block that lives only in memory must not be REPORTED as durable: `is_durable` is what
+    # keeps the rejection honest about whether a restart would reopen the swap path.
+    # `(SRS-RESV-004 r6)`
+    durability_body = _fn_block(source, "is_durable")
+    if "Poisoned" not in durability_body:
+        fail(
+            "is_durable does not distinguish `Poisoned` — an in-memory poison reported as a "
+            "durable block tells an operator the swap path is held when a restart would "
+            "reopen it"
+        )
     return (
         f"{spec['module']} declares {spec['state_enum']} with "
         f"{len(spec['state_variants'])} states ({', '.join(spec['state_variants'])}); "
         f"`{spec['fail_closed_reader']}` collapses an unreadable store to Unreadable (never "
-        f"Clear), `blocks_promotion` blocks on Pending AND Unreadable, and "
+        f"Clear), `blocks_promotion` blocks on every non-clear state, `is_durable` marks the "
+        f"in-memory Poisoned block as NOT durable, and "
         f"`{spec['resolve_entry_point']}` is the only clearing path"
     )
 
