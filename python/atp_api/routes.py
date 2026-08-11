@@ -285,6 +285,13 @@ ROUTES: tuple[Route, ...] = (
             ("demotion_state", "string"),
             ("promotion_state", "string"),
         ),
+        # The handler refuses any body key outside the declared set with a 400
+        # (UNKNOWN_REQUEST_FIELD), because accepting and ignoring a field would
+        # report a swap the caller did not ask for as though it were the one they
+        # did. A permissive schema over a strict handler is a wrong contract: a
+        # generated client would send an extension field and get a 400 the spec
+        # said was fine.
+        strict_request_body=True,
         requires_confirmation=True,
         # SRS-RESV-005 ships the handler (atp_orchestration.mount_hot_swap_execution),
         # which drives the real demotion-then-promotion gate. `swap_id` is emitted only

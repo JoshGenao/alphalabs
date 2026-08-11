@@ -104,7 +104,11 @@ def mounted(fake_cli: _FakeCli, tmp_path) -> Iterator[tuple[str, int]]:
         log_path=tmp_path / "swaps.jsonl",
         # An explicit DRILL composition. The shipped posture is the `unwired`
         # fixture below, which declares nothing and therefore refuses.
-        fixture_safety_inputs={"positions": "flat", "deployed_version": "sha256:" + "a" * 64},
+        fixture_safety_inputs={
+            "positions": "flat",
+            "deployed_version": "sha256:" + "a" * 64,
+            "liquidation": "flat",
+        },
         binary=tmp_path / "fake-bin",
         runner=fake_cli,
     )
@@ -542,6 +546,7 @@ def test_without_declared_safety_inputs_the_route_refuses_to_promote(unwired, fa
     assert body["error"]["detail"]["owner"] == "SRS-EXE-006, SRS-ORCH-004"
     assert body["error"]["detail"]["missing"] == [
         "deployed version (code identity)",
+        "liquidation outcome (demotion reached flat)",
         "open IB positions (flat-start)",
     ]
     # Refused before anything was read or run — nothing mutated.
@@ -569,8 +574,12 @@ def test_a_partial_safety_declaration_still_refuses_and_names_only_what_is_missi
         runtime.stop()
 
     assert status == 501
-    assert body["error"]["detail"]["owner"] == "SRS-ORCH-004"
-    assert body["error"]["detail"]["missing"] == ["deployed version (code identity)"]
+    # positions was declared; the other two were not, and only those are named.
+    assert body["error"]["detail"]["owner"] == "SRS-EXE-006, SRS-ORCH-004"
+    assert body["error"]["detail"]["missing"] == [
+        "deployed version (code identity)",
+        "liquidation outcome (demotion reached flat)",
+    ]
     assert fake_cli.calls == []
 
 
@@ -620,3 +629,21 @@ def test_a_bare_uncomposed_execution_route_names_ITS_owner_not_the_capability_ow
 
     assert status == 501
     assert body["error"]["detail"]["owner"] == "SRS-RESV-005"
+
+
+def test_the_drill_composition_states_every_fixture_fact_to_the_binary(mounted, fake_cli):
+    """Round-3 adversarial review [critical]: the tier declaration is not the facts.
+
+    The binary has no success defaults, so the handler must pass all three or the
+    swap is refused there. Asserting the argv is what stops a future edit dropping
+    one and silently reinstating a default.
+    """
+    fake_cli.queue_status("live-a")
+    fake_cli.queue_swap()
+
+    _post(mounted, _confirmed(), {"candidate_strategy_id": "paper-b"})
+
+    argv = fake_cli.swap_calls[0]
+    for flag in ("--positions", "--deployed-version", "--liquidation"):
+        assert flag in argv, f"{flag} must be stated explicitly, never defaulted"
+        assert argv[argv.index(flag) + 1].strip(), f"{flag} must carry a value"

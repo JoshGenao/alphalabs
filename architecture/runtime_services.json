@@ -4797,6 +4797,8 @@
       "safety_input_tier": {
       "declaration": "fixture_safety_inputs",
       "cli_flag": "--allow-fixture-safety-inputs",
+        "required_fixture_facts": ["--liquidation", "--positions", "--deployed-version"],
+        "no_success_defaults_note": "Round-3 adversarial review [critical]: declaring the fixture TIER is not the same as stating the fixture FACTS. The parsers still defaulted to a successful demotion, a flat account and a dummy sha256:aaaa... artifact, so --allow-fixture-safety-inputs ALONE promoted on facts nobody stated -- the silent success the opt-in existed to stop, one layer further in. All three now have NO default and are individually required under the fixture tier; the REST handler must state all three in its fixture_safety_inputs declaration or the route refuses, and a boundary test pins the argv so a future edit cannot drop one.",
       "refusal_type": "SAFETY_INPUTS_UNAVAILABLE",
       "owners": ["SRS-EXE-006", "SRS-ORCH-004"],
       "note": "SYS-49d turns on two SAFETY facts \u2014 the account is flat, and the artifact is unchanged \u2014 whose real producers are deferred. Round-1 adversarial review found the served route could report PROMOTED without proving either, because the CLI silently defaulted --positions to flat and --deployed-version to a dummy hash. Both are now OPT-IN at both layers: the binary refuses fixture values unless --allow-fixture-safety-inputs is passed, and the handler refuses (structured 501 SAFETY_INPUTS_UNAVAILABLE naming the owners) unless a composer explicitly declares fixture_safety_inputs. The SHIPPED posture declares nothing, so the route is mounted, its gate is real, and it will not promote on facts nobody proved."

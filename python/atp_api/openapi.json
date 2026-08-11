@@ -231,7 +231,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
+                "additionalProperties": false,
                 "properties": {
                   "candidate_strategy_id": {
                     "type": "string"

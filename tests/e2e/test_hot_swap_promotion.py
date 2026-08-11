@@ -89,7 +89,11 @@ def live_stack(binaries, tmp_path) -> Iterator[tuple[tuple[str, int], Path, Path
         log_path=journal,
         # Declared DRILL: the flat-account and code-identity producers are deferred
         # (SRS-EXE-006 / SRS-ORCH-004), and an undeclared composition refuses.
-        fixture_safety_inputs={"positions": "flat", "deployed_version": "sha256:" + "a" * 64},
+        fixture_safety_inputs={
+            "positions": "flat",
+            "deployed_version": "sha256:" + "a" * 64,
+            "liquidation": "flat",
+        },
         binary=binaries[PROMOTE_BIN],
     )
     host, port = runtime.start(host="127.0.0.1", port=0)

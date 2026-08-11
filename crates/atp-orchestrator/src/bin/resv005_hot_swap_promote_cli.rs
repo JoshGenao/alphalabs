@@ -111,12 +111,12 @@ swap FLAGS:
                                  the REAL snapshot: unreadable => refuse, absent
                                  entry => refuse. Neither reads as 'preserved'.
     --timeout <secs>             demotion liquidation timeout (default 60)
-    --liquidation <flat|timeout> FIXTURE demotion outcome (default flat)
-    --positions <spec>           FIXTURE live positions (deferred SRS-EXE-006):
+    --liquidation <flat|timeout> FIXTURE demotion outcome. REQUIRED; no default
+    --positions <spec>           FIXTURE live positions. REQUIRED (SRS-EXE-006):
                                    flat            no open positions
                                    unreadable      the probe cannot be read
                                    <SYM>:<QTY>,... explicit open positions
-    --deployed-version <spec>    FIXTURE code identity (deferred SRS-ORCH-004):
+    --deployed-version <spec>    FIXTURE code identity. REQUIRED (SRS-ORCH-004):
                                    sha256:<64-hex> the candidate's artifact
                                    missing         no recorded version
                                    unreadable      the registry cannot be read
@@ -621,8 +621,17 @@ impl HotSwapLiquidationProbe for FixtureLiquidationProbe {
     }
 }
 
+/// Parse the fixture demotion outcome. NO default: a caller that omits it has not
+/// said whether the demotion reached flat, and defaulting to "flat" would decide the
+/// requirement's central fact by omission.
 fn parse_liquidation(spec: Option<&str>) -> Result<HotSwapDemotionOutcome, String> {
-    match spec.unwrap_or("flat") {
+    let spec = spec.ok_or_else(|| {
+        format!(
+            "--liquidation is required under --allow-fixture-safety-inputs (flat|timeout); \
+             omitting it would decide the demotion outcome by default\n\n{USAGE}"
+        )
+    })?;
+    match spec {
         "flat" => Ok(HotSwapDemotionOutcome::FlatBeforeTimeout { elapsed_seconds: 4 }),
         "timeout" => Ok(HotSwapDemotionOutcome::TimedOutDemotionPending {
             elapsed_seconds: DEFAULT_TIMEOUT_SECONDS + 1,
@@ -681,8 +690,17 @@ impl LivePositionProbe for FixturePositions {
     }
 }
 
+/// Parse the fixture position answer. NO default: an unstated account is not a flat
+/// account, and defaulting to "flat" is precisely the silent success this gate exists
+/// to refuse.
 fn parse_positions(spec: Option<&str>) -> Result<PositionAnswer, String> {
-    match spec.unwrap_or("flat") {
+    let spec = spec.ok_or_else(|| {
+        format!(
+            "--positions is required under --allow-fixture-safety-inputs \
+             (flat|unreadable|<SYM>:<QTY>,...); an unstated account is not a flat one\n\n{USAGE}"
+        )
+    })?;
+    match spec {
         "flat" => Ok(PositionAnswer::Flat),
         "unreadable" => Ok(PositionAnswer::Unreadable),
         raw => {
@@ -822,9 +840,17 @@ impl DeployedVersionRegistry for FixtureVersions {
     }
 }
 
+/// Parse the fixture code identity. NO default: a dummy artifact hash handed out by
+/// omission would satisfy "uses the same strategy code" without anyone stating what
+/// the code is.
 fn parse_version(spec: Option<&str>) -> Result<VersionAnswer, String> {
-    match spec.unwrap_or("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-    {
+    let spec = spec.ok_or_else(|| {
+        format!(
+            "--deployed-version is required under --allow-fixture-safety-inputs \
+             (sha256:<64-hex>|missing|unreadable)\n\n{USAGE}"
+        )
+    })?;
+    match spec {
         "missing" => Ok(VersionAnswer::Missing),
         "unreadable" => Ok(VersionAnswer::Unreadable),
         raw => {

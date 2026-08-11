@@ -218,6 +218,9 @@ class SwapExecutionHandler:
             "open IB positions (flat-start)": (
                 "SRS-EXE-006" if "positions" not in self._fixture_safety_inputs else None
             ),
+            "liquidation outcome (demotion reached flat)": (
+                "SRS-EXE-006" if "liquidation" not in self._fixture_safety_inputs else None
+            ),
             "deployed version (code identity)": (
                 "SRS-ORCH-004"
                 if "deployed_version" not in self._fixture_safety_inputs
@@ -234,7 +237,9 @@ class SwapExecutionHandler:
                 "not",
                 type="SAFETY_INPUTS_UNAVAILABLE",
                 detail={
-                    "owner": ", ".join(sorted(o for o in missing.values() if o)),
+                    # De-duplicated: two of the three facts share SRS-EXE-006, and
+                    # naming it twice reads as two separate gaps.
+                    "owner": ", ".join(sorted({o for o in missing.values() if o})),
                     "missing": sorted(k for k, v in missing.items() if v),
                 },
             )
@@ -275,6 +280,7 @@ class SwapExecutionHandler:
                 # without declaring what they are.
                 "--positions", self._fixture_safety_inputs["positions"],
                 "--deployed-version", self._fixture_safety_inputs["deployed_version"],
+                "--liquidation", self._fixture_safety_inputs["liquidation"],
                 "--allow-fixture-safety-inputs",
                 "--confirm",
             ]

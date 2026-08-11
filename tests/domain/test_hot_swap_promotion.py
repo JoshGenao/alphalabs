@@ -114,6 +114,13 @@ def _swap(binaries, *, state: Path, paper: Path, demoting=DEMOTING, candidate=CA
         # safety inputs unless the caller says out loud that it is running a drill,
         # which is what keeps the served REST path from promoting on them.
         "--allow-fixture-safety-inputs",
+        # Every fixture safety fact is stated explicitly — the binary has no success
+        # defaults, so an omitted one is an error rather than a silent "flat".
+        # A case that needs a different value overrides it via `extra`.
+        *([] if any(f == "--liquidation" for f in extra) else ["--liquidation", "flat"]),
+        *([] if any(f == "--positions" for f in extra) else ["--positions", "flat"]),
+        *([] if any(f == "--deployed-version" for f in extra)
+          else ["--deployed-version", "sha256:" + "a" * 64]),
         *extra,
     ]
     if confirm:
@@ -492,3 +499,38 @@ def test_an_unconfigured_journal_is_not_an_append_failure(binaries, paper_store,
     assert proof["promotion"] == "PROMOTED"
     assert proof["promotion-recorded"] == "not-configured"
     assert result.returncode == 0, "an unconfigured journal is a usage choice, not a failure"
+
+
+def test_the_fixture_tier_has_no_success_defaults(binaries, paper_store, tmp_path):
+    """Round-3 adversarial review [critical].
+
+    Declaring the fixture TIER is not the same as stating the fixture FACTS. With
+    success defaults, `--allow-fixture-safety-inputs` alone promoted on an unstated
+    flat account and a dummy artifact hash — the silent success the opt-in was meant
+    to stop, one layer further in.
+    """
+    state = tmp_path / "live.state"
+    for omitted in ("--liquidation", "--positions", "--deployed-version"):
+        _seed_live(state, DEMOTING)
+        argv = [
+            str(binaries[PROMOTE_BIN]), "swap",
+            "--state", str(state),
+            "--demoting", DEMOTING,
+            "--candidate", CANDIDATE,
+            "--paper-state", str(paper_store),
+            "--allow-fixture-safety-inputs",
+            "--confirm",
+        ]
+        for flag, value in (
+            ("--liquidation", "flat"),
+            ("--positions", "flat"),
+            ("--deployed-version", "sha256:" + "a" * 64),
+        ):
+            if flag != omitted:
+                argv += [flag, value]
+
+        result = subprocess.run(argv, cwd=REPO_ROOT, capture_output=True, text=True)
+
+        assert result.returncode != 0, f"omitting {omitted} must not promote"
+        assert f"{omitted} is required" in result.stderr
+        assert "promotion:PROMOTED" not in result.stdout

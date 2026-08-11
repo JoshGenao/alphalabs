@@ -448,8 +448,27 @@ def check_safety_input_tier(config: dict, root: Path = ROOT) -> str:
             "gate the whole sequence so a refused drill touches nothing"
         )
 
+    # No SUCCESS DEFAULTS: each fixture fact must be individually required. A
+    # default here decides the requirement's own facts by omission.
+    for fact in tier["required_fixture_facts"]:
+        parser = {"--liquidation": "parse_liquidation", "--positions": "parse_positions",
+                  "--deployed-version": "parse_version"}[fact]
+        body = fn_block(cli_src, parser)
+        if "unwrap_or(" in body:
+            fail(
+                f"`{parser}` defaults a missing `{fact}` — declaring the fixture TIER is "
+                "not the same as stating the fixture FACTS, and a default decides one by "
+                "omission"
+            )
+        if "is required" not in body:
+            fail(f"`{parser}` does not require `{fact}` explicitly")
+
     handler_path = root / block["rest_surface"]["handler"].split("::")[0]
     handler_src = handler_path.read_text(encoding="utf-8")
+    for fact in tier["required_fixture_facts"]:
+        key = fact.removeprefix("--").replace("-", "_")
+        if f'"{key}"' not in handler_src:
+            fail(f"the handler never states `{fact}` — the binary would refuse, or worse, default it")
     if tier["declaration"] not in handler_src:
         fail(f"{handler_path.name} does not accept a `{tier['declaration']}` declaration")
     if tier["refusal_type"] not in handler_src:
