@@ -74,11 +74,20 @@ def binaries() -> dict[str, Path]:
     cargo = _cargo()
     build = subprocess.run(
         [
-            cargo, "build",
-            "-p", "atp-orchestrator", "--bin", PROMOTE_BIN,
-            "-p", "atp-simulation", "--bin", PERSIST_BIN,
+            cargo,
+            "build",
+            "-p",
+            "atp-orchestrator",
+            "--bin",
+            PROMOTE_BIN,
+            "-p",
+            "atp-simulation",
+            "--bin",
+            PERSIST_BIN,
         ],
-        cwd=REPO_ROOT, capture_output=True, text=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
     )
     assert build.returncode == 0, f"cargo build failed:\n{build.stderr}"
     paths = {name: REPO_ROOT / "target" / "debug" / name for name in (PROMOTE_BIN, PERSIST_BIN)}
@@ -94,21 +103,36 @@ def paper_store(binaries: dict[str, Path], tmp_path: Path) -> Path:
     store.mkdir()
     persisted = subprocess.run(
         [str(binaries[PERSIST_BIN]), "persist", "--dir", str(store)],
-        cwd=REPO_ROOT, capture_output=True, text=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
     )
     assert persisted.returncode == 0, f"seeding the paper store failed:\n{persisted.stderr}"
     assert "persisted:true" in persisted.stdout
     return store
 
 
-def _swap(binaries, *, state: Path, paper: Path, demoting=DEMOTING, candidate=CANDIDATE,
-          confirm=True, extra=()) -> subprocess.CompletedProcess[str]:
+def _swap(
+    binaries,
+    *,
+    state: Path,
+    paper: Path,
+    demoting=DEMOTING,
+    candidate=CANDIDATE,
+    confirm=True,
+    extra=(),
+) -> subprocess.CompletedProcess[str]:
     argv = [
-        str(binaries[PROMOTE_BIN]), "swap",
-        "--state", str(state),
-        "--demoting", demoting,
-        "--candidate", candidate,
-        "--paper-state", str(paper),
+        str(binaries[PROMOTE_BIN]),
+        "swap",
+        "--state",
+        str(state),
+        "--demoting",
+        demoting,
+        "--candidate",
+        candidate,
+        "--paper-state",
+        str(paper),
         # This walk exercises the GATE, and the two safety facts it turns on have no
         # real producer yet (SRS-EXE-006 / SRS-ORCH-004). The binary refuses fixture
         # safety inputs unless the caller says out loud that it is running a drill,
@@ -119,8 +143,11 @@ def _swap(binaries, *, state: Path, paper: Path, demoting=DEMOTING, candidate=CA
         # A case that needs a different value overrides it via `extra`.
         *([] if any(f == "--liquidation" for f in extra) else ["--liquidation", "flat"]),
         *([] if any(f == "--positions" for f in extra) else ["--positions", "flat"]),
-        *([] if any(f == "--deployed-version" for f in extra)
-          else ["--deployed-version", "sha256:" + "a" * 64]),
+        *(
+            []
+            if any(f == "--deployed-version" for f in extra)
+            else ["--deployed-version", "sha256:" + "a" * 64]
+        ),
         *extra,
     ]
     if confirm:
@@ -184,7 +211,9 @@ def test_a_flat_demotion_promotes_the_candidate_across_the_process_boundary(
     # boundary, so an in-process-only invariant would not hold for it.
     status = subprocess.run(
         [str(binaries[PROMOTE_BIN]), "status", "--state", str(state)],
-        cwd=REPO_ROOT, capture_output=True, text=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
     )
     assert status.returncode == 0
     assert _lines(status)["designated"] == CANDIDATE
@@ -199,8 +228,9 @@ def test_open_positions_block_the_promotion(binaries, paper_store, tmp_path):
     state = tmp_path / "live.state"
     before = _seed_live(state, DEMOTING)
 
-    proof = _lines(_swap(binaries, state=state, paper=paper_store,
-                         extra=["--positions", "AAPL:-100"]))
+    proof = _lines(
+        _swap(binaries, state=state, paper=paper_store, extra=["--positions", "AAPL:-100"])
+    )
 
     assert proof["promotion"] == "BLOCKED"
     assert proof["refusal"] == "LIVE_POSITIONS_OPEN"
@@ -212,8 +242,9 @@ def test_an_unreadable_position_probe_is_not_a_flat_account(binaries, paper_stor
     state = tmp_path / "live.state"
     before = _seed_live(state, DEMOTING)
 
-    proof = _lines(_swap(binaries, state=state, paper=paper_store,
-                         extra=["--positions", "unreadable"]))
+    proof = _lines(
+        _swap(binaries, state=state, paper=paper_store, extra=["--positions", "unreadable"])
+    )
 
     assert proof["promotion"] == "BLOCKED"
     # The DISTINCT reason is the safety property: an unreadable probe must not be
@@ -273,8 +304,9 @@ def test_paper_history_drift_rolls_the_designation_back(binaries, paper_store, t
     state = tmp_path / "live.state"
     _seed_live(state, DEMOTING)
 
-    proof = _lines(_swap(binaries, state=state, paper=paper_store,
-                         extra=["--inject", "paper-drift"]))
+    proof = _lines(
+        _swap(binaries, state=state, paper=paper_store, extra=["--inject", "paper-drift"])
+    )
 
     assert proof["promotion"] == "BLOCKED"
     assert proof["refusal"] == "PAPER_HISTORY_DRIFT"
@@ -283,7 +315,9 @@ def test_paper_history_drift_rolls_the_designation_back(binaries, paper_store, t
     # And the rollback is DURABLE — the next process must not see a live candidate.
     status = subprocess.run(
         [str(binaries[PROMOTE_BIN]), "status", "--state", str(state)],
-        cwd=REPO_ROOT, capture_output=True, text=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
     )
     assert _lines(status)["designated"] == "none"
 
@@ -297,8 +331,9 @@ def test_a_missing_deployed_version_is_refused(binaries, paper_store, tmp_path):
     state = tmp_path / "live.state"
     before = _seed_live(state, DEMOTING)
 
-    proof = _lines(_swap(binaries, state=state, paper=paper_store,
-                         extra=["--deployed-version", "missing"]))
+    proof = _lines(
+        _swap(binaries, state=state, paper=paper_store, extra=["--deployed-version", "missing"])
+    )
 
     assert proof["promotion"] == "BLOCKED"
     assert proof["refusal"] == "CODE_IDENTITY_MISSING"
@@ -309,8 +344,9 @@ def test_code_identity_drift_rolls_the_designation_back(binaries, paper_store, t
     state = tmp_path / "live.state"
     _seed_live(state, DEMOTING)
 
-    proof = _lines(_swap(binaries, state=state, paper=paper_store,
-                         extra=["--inject", "version-drift"]))
+    proof = _lines(
+        _swap(binaries, state=state, paper=paper_store, extra=["--inject", "version-drift"])
+    )
 
     assert proof["promotion"] == "BLOCKED"
     assert proof["refusal"] == "CODE_IDENTITY_DRIFT"
@@ -388,11 +424,16 @@ def test_fixture_safety_inputs_must_be_declared_out_loud(binaries, paper_store, 
     state = tmp_path / "live.state"
     _seed_live(state, DEMOTING)
     argv = [
-        str(binaries[PROMOTE_BIN]), "swap",
-        "--state", str(state),
-        "--demoting", DEMOTING,
-        "--candidate", CANDIDATE,
-        "--paper-state", str(paper_store),
+        str(binaries[PROMOTE_BIN]),
+        "swap",
+        "--state",
+        str(state),
+        "--demoting",
+        DEMOTING,
+        "--candidate",
+        CANDIDATE,
+        "--paper-state",
+        str(paper_store),
         "--confirm",
     ]  # deliberately WITHOUT --allow-fixture-safety-inputs
 
@@ -434,12 +475,16 @@ def test_two_concurrent_swaps_cannot_both_promote(binaries, paper_store, tmp_pat
         state = tmp_path / f"live-{round_index}.state"
         _seed_live(state, DEMOTING)
 
+        def attempt(state_path: Path = state) -> dict[str, str]:
+            # `state_path` is BOUND as a default rather than closed over: a lambda
+            # capturing the loop variable would read whatever the loop had reached
+            # by the time the thread ran, so a later round's file could be raced
+            # instead of this one's — the test would still pass, for the wrong
+            # reason. (ruff B023.)
+            return _lines(_swap(binaries, state=state_path, paper=paper_store))
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [
-                pool.submit(lambda: _lines(_swap(binaries, state=state, paper=paper_store)))
-                for _ in range(2)
-            ]
-            results = [f.result() for f in futures]
+            results = [f.result() for f in [pool.submit(attempt) for _ in range(2)]]
 
         promoted = [r for r in results if r.get("promotion") == "PROMOTED"]
         assert len(promoted) <= 1, (
@@ -450,7 +495,9 @@ def test_two_concurrent_swaps_cannot_both_promote(binaries, paper_store, tmp_pat
         final = _lines(
             subprocess.run(
                 [str(binaries[PROMOTE_BIN]), "status", "--state", str(state)],
-                cwd=REPO_ROOT, capture_output=True, text=True,
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
             )
         )["designated"]
         assert final == (CANDIDATE if promoted else DEMOTING)
@@ -513,11 +560,16 @@ def test_the_fixture_tier_has_no_success_defaults(binaries, paper_store, tmp_pat
     for omitted in ("--liquidation", "--positions", "--deployed-version"):
         _seed_live(state, DEMOTING)
         argv = [
-            str(binaries[PROMOTE_BIN]), "swap",
-            "--state", str(state),
-            "--demoting", DEMOTING,
-            "--candidate", CANDIDATE,
-            "--paper-state", str(paper_store),
+            str(binaries[PROMOTE_BIN]),
+            "swap",
+            "--state",
+            str(state),
+            "--demoting",
+            DEMOTING,
+            "--candidate",
+            CANDIDATE,
+            "--paper-state",
+            str(paper_store),
             "--allow-fixture-safety-inputs",
             "--confirm",
         ]

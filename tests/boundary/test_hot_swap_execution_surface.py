@@ -235,9 +235,7 @@ def test_the_emitted_body_matches_the_declared_response_fields(
 
 
 def test_the_declared_request_fields_are_the_accepted_set(mounted, fake_cli):
-    status, body = _post(
-        mounted, _confirmed(), {"candidate_strategy_id": "paper-b", "sneaky": 1}
-    )
+    status, body = _post(mounted, _confirmed(), {"candidate_strategy_id": "paper-b", "sneaky": 1})
 
     # Accepting and ignoring an undeclared field would report a swap the caller did
     # not ask for as though it were the one they did.
@@ -307,7 +305,12 @@ def test_the_handler_refuses_unconfirmed_even_when_the_transport_does_not(fake_c
 
 @pytest.mark.parametrize(
     "candidate",
-    [pytest.param(None, id="absent"), pytest.param("   ", id="blank"), pytest.param(7, id="coerced-int"), pytest.param(True, id="coerced-bool")],
+    [
+        pytest.param(None, id="absent"),
+        pytest.param("   ", id="blank"),
+        pytest.param(7, id="coerced-int"),
+        pytest.param(True, id="coerced-bool"),
+    ],
 )
 def test_a_missing_or_coerced_candidate_is_refused(mounted, fake_cli, candidate):
     body = {} if candidate is None else {"candidate_strategy_id": candidate}
@@ -500,8 +503,11 @@ def test_an_unlaunchable_binary_is_a_structured_error(mounted, fake_cli):
 
 
 def test_mounting_execution_does_not_serve_the_trigger_routes(mounted, fake_cli):
-    status, body = _post(mounted, "/api/v1/hot-swap/triggers/manual?confirm=true",
-                         {"demoting_strategy_id": "a", "candidate_strategy_id": "b"})
+    status, body = _post(
+        mounted,
+        "/api/v1/hot-swap/triggers/manual?confirm=true",
+        {"demoting_strategy_id": "a", "candidate_strategy_id": "b"},
+    )
 
     # Executing swaps says nothing about the SRS-RESV-003 trigger layer.
     assert status == 501

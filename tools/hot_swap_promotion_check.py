@@ -160,9 +160,7 @@ def check_receipt_encapsulation(config: dict, module_src: str) -> str:
     derives = derives_above(module_src, name)
     for forbidden in spec["forbidden_derives"]:
         if re.search(rf"\b{re.escape(forbidden)}\b", derives):
-            fail(
-                f"{name} derives `{forbidden}` — {spec['note']}"
-            )
+            fail(f"{name} derives `{forbidden}` — {spec['note']}")
 
     constructor, visibility = spec["constructor"], spec["constructor_visibility"]
     if not re.search(rf"{re.escape(visibility)}\s+fn\s+{re.escape(constructor)}\b", module_src):
@@ -229,7 +227,7 @@ def check_entry_point_sequencing(config: dict, module_src: str) -> str:
 
     # The gate takes the receipt BY VALUE (no `&`), so it is consumed.
     signature = module_src[module_src.index(f"fn {gate}") :][:400]
-    if re.search(rf"receipt\s*:\s*&", signature):
+    if re.search(r"receipt\s*:\s*&", signature):
         fail(
             f"`{gate}` takes the receipt by reference — a by-value receipt is what stops one "
             "demotion authorizing two promotions"
@@ -383,7 +381,7 @@ def check_rest_surface(config: dict, root: Path = ROOT) -> str:
     routes_src = (root / "python" / "atp_api" / "routes.py").read_text(encoding="utf-8")
     if f'served_by="{spec["served_by"]}"' not in routes_src:
         fail(
-            f"python/atp_api/routes.py does not declare `served_by=\"{spec['served_by']}\"` — a "
+            f'python/atp_api/routes.py does not declare `served_by="{spec["served_by"]}"` — a '
             "route with a live handler must not keep the 'Contract only' placeholder"
         )
 
@@ -451,8 +449,11 @@ def check_safety_input_tier(config: dict, root: Path = ROOT) -> str:
     # No SUCCESS DEFAULTS: each fixture fact must be individually required. A
     # default here decides the requirement's own facts by omission.
     for fact in tier["required_fixture_facts"]:
-        parser = {"--liquidation": "parse_liquidation", "--positions": "parse_positions",
-                  "--deployed-version": "parse_version"}[fact]
+        parser = {
+            "--liquidation": "parse_liquidation",
+            "--positions": "parse_positions",
+            "--deployed-version": "parse_version",
+        }[fact]
         body = fn_block(cli_src, parser)
         if "unwrap_or(" in body:
             fail(
@@ -468,7 +469,9 @@ def check_safety_input_tier(config: dict, root: Path = ROOT) -> str:
     for fact in tier["required_fixture_facts"]:
         key = fact.removeprefix("--").replace("-", "_")
         if f'"{key}"' not in handler_src:
-            fail(f"the handler never states `{fact}` — the binary would refuse, or worse, default it")
+            fail(
+                f"the handler never states `{fact}` — the binary would refuse, or worse, default it"
+            )
     if tier["declaration"] not in handler_src:
         fail(f"{handler_path.name} does not accept a `{tier['declaration']}` declaration")
     if tier["refusal_type"] not in handler_src:
@@ -589,10 +592,7 @@ def check_cargo_smoke(config: dict, *, require_cargo: bool = False) -> str:
         if require_cargo:
             fail("cargo is not on PATH and --require-cargo was given")
         return f"cargo test -p {crate}: skipped (cargo not on PATH)"
-    for args, label in (
-        (["--test", "resv_5_hot_swap_promotion"], "resv_5_hot_swap_promotion"),
-        (["--doc"], "compile_fail doctests"),
-    ):
+    for args in (["--test", "resv_5_hot_swap_promotion"], ["--doc"]):
         result = subprocess.run(
             [cargo, "test", "-p", crate, *args, "--quiet"],
             cwd=ROOT,
@@ -601,7 +601,9 @@ def check_cargo_smoke(config: dict, *, require_cargo: bool = False) -> str:
             text=True,
         )
         if result.returncode != 0:
-            fail(f"cargo test -p {crate} {' '.join(args)} failed:\n{result.stdout}\n{result.stderr}")
+            fail(
+                f"cargo test -p {crate} {' '.join(args)} failed:\n{result.stdout}\n{result.stderr}"
+            )
     return f"cargo test -p {crate} --test resv_5_hot_swap_promotion + --doc: PASS"
 
 

@@ -159,7 +159,9 @@ class OrderedGuardsTest(_Base):
         self.assertIn("ordered guards present", check_ordered_guards(self.config, self.src))
 
     def test_a_dropped_guard_is_caught(self) -> None:
-        mutated = self.src.replace("HotSwapPromotionError::PositionsOpen { symbols: held }", "todo!()", 1)
+        mutated = self.src.replace(
+            "HotSwapPromotionError::PositionsOpen { symbols: held }", "todo!()", 1
+        )
         self.assertNotEqual(mutated, self.src, "guard mutation did not apply")
         self.assertCaught(check_ordered_guards, mutated, "PositionsOpen")
 
@@ -226,7 +228,9 @@ class RestSurfaceTest(unittest.TestCase):
     def test_baseline_passes(self) -> None:
         self.assertIn("served_by=SRS-RESV-005", check_rest_surface(self.config))
 
-    def _tree_with(self, tmp: Path, *, handler: str | None = None, routes: str | None = None) -> Path:
+    def _tree_with(
+        self, tmp: Path, *, handler: str | None = None, routes: str | None = None
+    ) -> Path:
         """A minimal mirror of the paths check_rest_surface reads."""
         for relative in (
             "python/atp_api/routes.py",
@@ -236,7 +240,9 @@ class RestSurfaceTest(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text((ROOT / relative).read_text(encoding="utf-8"), encoding="utf-8")
         if handler is not None:
-            (tmp / "python/atp_orchestration/hot_swap_execution.py").write_text(handler, encoding="utf-8")
+            (tmp / "python/atp_orchestration/hot_swap_execution.py").write_text(
+                handler, encoding="utf-8"
+            )
         if routes is not None:
             (tmp / "python/atp_api/routes.py").write_text(routes, encoding="utf-8")
         return tmp
@@ -291,7 +297,7 @@ class StaleDeferralCollectorTest(unittest.TestCase):
             # Exactly the sentence this feature had to delete.
             target.write_text(
                 target.read_text(encoding="utf-8")
-                + '\n# nothing happened (swap execution is unbuilt)\n',
+                + "\n# nothing happened (swap execution is unbuilt)\n",
                 encoding="utf-8",
             )
             with self.assertRaises(HotSwapPromotionCheckError) as ctx:

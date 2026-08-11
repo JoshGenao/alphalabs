@@ -222,9 +222,7 @@ class SwapExecutionHandler:
                 "SRS-EXE-006" if "liquidation" not in self._fixture_safety_inputs else None
             ),
             "deployed version (code identity)": (
-                "SRS-ORCH-004"
-                if "deployed_version" not in self._fixture_safety_inputs
-                else None
+                "SRS-ORCH-004" if "deployed_version" not in self._fixture_safety_inputs else None
             ),
         }
         if any(missing.values()):
@@ -270,17 +268,25 @@ class SwapExecutionHandler:
         completed = self._invoke(
             [
                 "swap",
-                "--state", self._state_path,
-                "--demoting", demoting,
-                "--candidate", candidate,
-                "--paper-state", self._paper_state_dir,
-                "--log", self._log_path,
+                "--state",
+                self._state_path,
+                "--demoting",
+                demoting,
+                "--candidate",
+                candidate,
+                "--paper-state",
+                self._paper_state_dir,
+                "--log",
+                self._log_path,
                 # Explicit, never defaulted — and the fixture tier travels WITH
                 # them, so the binary refuses if a caller ever supplies the values
                 # without declaring what they are.
-                "--positions", self._fixture_safety_inputs["positions"],
-                "--deployed-version", self._fixture_safety_inputs["deployed_version"],
-                "--liquidation", self._fixture_safety_inputs["liquidation"],
+                "--positions",
+                self._fixture_safety_inputs["positions"],
+                "--deployed-version",
+                self._fixture_safety_inputs["deployed_version"],
+                "--liquidation",
+                self._fixture_safety_inputs["liquidation"],
                 "--allow-fixture-safety-inputs",
                 "--confirm",
             ]
@@ -317,7 +323,9 @@ class SwapExecutionHandler:
             # DEMOTED / DEMOTION_PENDING — the closed vocabulary the shipped UI-5
             # pane already routes on.
             "demotion_state": (
-                "DEMOTED" if values.get("demotion-outcome") == "FLAT_CONFIRMED" else "DEMOTION_PENDING"
+                "DEMOTED"
+                if values.get("demotion-outcome") == "FLAT_CONFIRMED"
+                else "DEMOTION_PENDING"
             ),
             "promotion_state": promotion,
         }

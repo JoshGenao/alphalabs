@@ -56,11 +56,20 @@ def binaries() -> dict[str, Path]:
         pytest.skip("cargo not on PATH")
     build = subprocess.run(
         [
-            cargo, "build",
-            "-p", "atp-orchestrator", "--bin", PROMOTE_BIN,
-            "-p", "atp-simulation", "--bin", PERSIST_BIN,
+            cargo,
+            "build",
+            "-p",
+            "atp-orchestrator",
+            "--bin",
+            PROMOTE_BIN,
+            "-p",
+            "atp-simulation",
+            "--bin",
+            PERSIST_BIN,
         ],
-        cwd=ROOT, capture_output=True, text=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
     )
     assert build.returncode == 0, build.stderr
     return {name: ROOT / "target" / "debug" / name for name in (PROMOTE_BIN, PERSIST_BIN)}
@@ -73,7 +82,9 @@ def live_stack(binaries, tmp_path) -> Iterator[tuple[tuple[str, int], Path, Path
     paper.mkdir()
     seeded = subprocess.run(
         [str(binaries[PERSIST_BIN]), "persist", "--dir", str(paper)],
-        cwd=ROOT, capture_output=True, text=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
     )
     assert seeded.returncode == 0, seeded.stderr
 
@@ -119,7 +130,9 @@ def _designated(binaries, state: Path) -> str:
     """The live strategy, read in a SEPARATE process from the durable record."""
     result = subprocess.run(
         [str(binaries[PROMOTE_BIN]), "status", "--state", str(state)],
-        cwd=ROOT, capture_output=True, text=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, result.stderr
     for line in result.stdout.splitlines():
@@ -134,8 +147,11 @@ def test_the_rest_route_promotes_and_the_durable_record_agrees(binaries, live_st
     snapshot = paper / "paper_sim_state.snapshot"
     history_before = snapshot.read_bytes()
 
-    status, body = _post(where, "/api/v1/hot-swap?confirm=true",
-                         {"candidate_strategy_id": CANDIDATE, "confirm": True})
+    status, body = _post(
+        where,
+        "/api/v1/hot-swap?confirm=true",
+        {"candidate_strategy_id": CANDIDATE, "confirm": True},
+    )
 
     assert status == 200
     assert body["promotion_state"] == "PROMOTED"
@@ -165,8 +181,11 @@ def test_a_blocked_swap_leaves_the_live_strategy_untouched(binaries, live_stack,
     # A candidate with no paper history cannot evidence "preserves prior paper
     # performance history", so the gate must refuse — and refuse without moving
     # the live designation.
-    status, body = _post(where, "/api/v1/hot-swap?confirm=true",
-                         {"candidate_strategy_id": "never-ran-as-paper", "confirm": True})
+    status, body = _post(
+        where,
+        "/api/v1/hot-swap?confirm=true",
+        {"candidate_strategy_id": "never-ran-as-paper", "confirm": True},
+    )
 
     assert status == 200, "the gate RAN; a non-2xx would tell the pane nothing mutated"
     assert body["promotion_state"] == "BLOCKED"
@@ -176,8 +195,7 @@ def test_a_blocked_swap_leaves_the_live_strategy_untouched(binaries, live_stack,
 def test_an_unconfirmed_swap_is_refused_before_anything_runs(binaries, live_stack):
     where, state, _paper, journal = live_stack
 
-    status, body = _post(where, "/api/v1/hot-swap",
-                         {"candidate_strategy_id": CANDIDATE})
+    status, body = _post(where, "/api/v1/hot-swap", {"candidate_strategy_id": CANDIDATE})
 
     assert status == 428
     assert body["error"]["category"] == "CONFIRMATION_REQUIRED"
@@ -185,9 +203,20 @@ def test_an_unconfirmed_swap_is_refused_before_anything_runs(binaries, live_stac
     assert not journal.exists(), "an unconfirmed swap must not journal an attempt"
 
 
-@pytest.mark.skip(reason="UI-5's promote control is inert until SRS-RESV-002's Reservoir "
-                         "ranking names a candidate, so there is no armed button to drive. "
-                         "Unskip with the browser walk once SRS-RESV-002 lands.")
+#: Why the browser half of Step 2 cannot run yet.
+#:
+#: Held in a constant rather than inline because `ruff format` re-wraps a long
+#: inline `reason=` onto its own line, and `critic_check.py`'s skip rule is
+#: line-based — so a compliant decorator silently becomes a BLOCK the next time
+#: anyone formats the file. A short constant survives both.
+_BROWSER_BLOCKED = (
+    "UI-5's promote control is inert until SRS-RESV-002's Reservoir ranking names a "
+    "candidate, so there is no armed button to drive. Unskip with the browser walk "
+    "once SRS-RESV-002 lands."
+)
+
+
+@pytest.mark.skip(reason=_BROWSER_BLOCKED)
 def test_the_dashboard_promote_control_drives_the_swap() -> None:
     raise NotImplementedError(
         "Browser walk: load /dashboard, wait for the UI-5 Hot-Swap pane to resolve a "
