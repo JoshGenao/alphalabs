@@ -12,10 +12,11 @@ The dashboard renders the trigger *configuration* — the UI-5 pane's automatic-
 resolve from the same durable file this module serves, through the same
 :mod:`atp_hotswap` client. It does **not** carry a manual-trigger button. UI-5's
 promote-live control targets ``POST /api/v1/hot-swap``, the swap EXECUTION route, which is
-owned by the unbuilt ``SRS-RESV-004``/``005`` and correctly still answers a structured 501;
-repointing that button here would tell an operator they had promoted a strategy when all
-that happened was a proposal being written to a log. Firing a manual trigger is therefore a
-CLI or REST action, which is what SYS-49a's "dashboard, CLI, **or** REST API" asks for.
+now bound by ``SRS-RESV-005``
+(:func:`atp_orchestration.mount_hot_swap_execution`); repointing that button here would
+still tell an operator they had promoted a strategy when all that happened was a proposal
+being written to a log. Firing a manual trigger is therefore a CLI or REST action, which is
+what SYS-49a's "dashboard, CLI, **or** REST API" asks for.
 
 What this surface does, and what it emphatically does not
 ---------------------------------------------------------
@@ -23,15 +24,16 @@ What this surface does, and what it emphatically does not
 proposes and it logs; it does **not** execute a swap. Firing the manual trigger here
 produces a durably logged *proposal* — nothing is demoted, nothing is promoted, and no
 strategy changes state. Execution is ``SRS-RESV-004`` (the demotion gate) and
-``SRS-RESV-005`` (promotion), neither of which is built.
+``SRS-RESV-005`` (the promotion gate, which binds ``POST /api/v1/hot-swap`` via
+:mod:`atp_orchestration.hot_swap_execution`).
 
 That distinction is the whole reason these routes are separate from
-``POST /api/v1/hot-swap``. That route is the swap-execution contract, it resolves to a
-structured 501 naming its deferred owner, and this module deliberately does not bind it: a
-surface that cannot execute a swap must not answer on the endpoint whose success means one
-happened. Every response here carries an explicit ``execution`` block naming the deferred
-owner, so no caller — human or machine — can read a fired trigger as a completed
-changeover.
+``POST /api/v1/hot-swap``. That route is the swap-execution contract, and this module still
+deliberately does not bind it — ``SRS-RESV-005`` does, in
+:mod:`atp_orchestration.hot_swap_execution`. A surface that only proposes must not answer on
+the endpoint whose success means a swap happened. Every response here carries an explicit
+``execution`` block naming the layer that executes, so no caller — human or machine — can
+read a fired trigger as a completed changeover.
 
 Fail-closed rules this layer must preserve
 ------------------------------------------
@@ -74,8 +76,12 @@ __all__ = [
     "mount_hot_swap_triggers",
 ]
 
-#: The deferred owner of swap EXECUTION. Named in every manual-trigger response so the
-#: caller is told, in the payload itself, that nothing was demoted or promoted.
+#: The owner of the still-deferred half of the swap-EXECUTION runtime — the durable
+#: cross-attempt demotion-pending lockout. Named in every manual-trigger response so the
+#: caller is told, in the payload itself, that nothing was demoted or promoted. The
+#: execution ROUTE itself is built (``SRS-RESV-005``,
+#: :func:`atp_orchestration.mount_hot_swap_execution`); what is not is the lockout that
+#: would block a retry after a demotion timeout.
 EXECUTION_OWNER = "SRS-RESV-004"
 
 #: The exact set of body keys ``PUT /api/v1/hot-swap/triggers`` accepts. `confirm` is the
@@ -379,11 +385,19 @@ class ManualTriggerHandler:
                 "rationale": proof.get("rationale", ""),
                 # The load-bearing honesty field: a fired trigger is a logged PROPOSAL.
                 "execution": {
+                    # `state` stays DEFERRED and `owner` stays SRS-RESV-004 because what
+                    # is deferred is the execution RUNTIME, not the route: SRS-RESV-005
+                    # now binds POST /api/v1/hot-swap, but SRS-RESV-004's durable
+                    # cross-attempt demotion-pending lockout is still unbuilt, so the
+                    # Hot-Swap runtime is not complete and SRS-RESV-005 stays
+                    # passes:false. `detail` names where execution actually lives, so a
+                    # caller is not left to infer that no such route exists.
                     "state": "DEFERRED",
                     "owner": EXECUTION_OWNER,
                     "detail": (
-                        "the trigger was recorded; no strategy was demoted or promoted "
-                        "(swap execution is unbuilt)"
+                        "the trigger was recorded; no strategy was demoted or promoted. "
+                        "Execute the swap at POST /api/v1/hot-swap (SRS-RESV-005); its "
+                        "durable demotion-pending lockout remains deferred to SRS-RESV-004"
                     ),
                 },
             },
@@ -407,7 +421,10 @@ def mount_hot_swap_triggers(
     configuration through one code path, and cannot disagree about it.
 
     Deliberately does NOT register ``POST /api/v1/hot-swap``: that is swap EXECUTION,
-    owned by the unbuilt ``SRS-RESV-004``/``005``, and it keeps its structured 501.
+    owned by ``SRS-RESV-005`` and mounted separately by
+    :func:`atp_orchestration.mount_hot_swap_execution`. Mounting the trigger layer alone
+    leaves it at its structured 501, which is the honest state for a deployment that can
+    propose a swap but not execute one.
     """
 
     source = CliHotSwapTriggerSource(

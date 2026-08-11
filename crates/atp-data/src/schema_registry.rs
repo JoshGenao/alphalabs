@@ -223,6 +223,34 @@ pub const PERSISTED_ENTITIES: &[SchemaDescriptor] = &[
         legacy_unversioned: true,
     },
     SchemaDescriptor {
+        entity_id: "hot-swap-live-designation",
+        owner_srs: "SRS-RESV-005",
+        writer_path: "crates/atp-orchestrator/src/bin/resv005_hot_swap_promote_cli.rs",
+        marker: "DESIGNATION_STATE_SCHEMA_VERSION",
+        magic: Some("RESV005-LIVE-DESIGNATION-STATE v1"),
+        current_version: 1,
+        min_supported_version: 1,
+        posture: EvolutionPosture::Pinned,
+        // The single-live designation is the one fact a Hot-Swap must never guess at, so
+        // this format has carried its version (in the magic line) since its first byte and
+        // a foreign or truncated file refuses the whole read rather than reading as
+        // "nothing is live". There is no unversioned payload to stay compatible with.
+        legacy_unversioned: false,
+    },
+    SchemaDescriptor {
+        entity_id: "hot-swap-promotion-log",
+        owner_srs: "SRS-RESV-005",
+        writer_path: "crates/atp-orchestrator/src/bin/resv005_hot_swap_promote_cli.rs",
+        marker: "PROMOTION_LOG_SCHEMA_VERSION",
+        magic: None,
+        current_version: 1,
+        min_supported_version: 1,
+        posture: EvolutionPosture::Pinned,
+        // Unlike its sibling hot-swap-trigger-log, this journal carried a per-line
+        // schema_version from its first append, so there is no legacy line to migrate.
+        legacy_unversioned: false,
+    },
+    SchemaDescriptor {
         entity_id: "hot-swap-trigger-config",
         owner_srs: "SRS-RESV-003",
         writer_path: "crates/atp-orchestrator/src/trigger_config_store.rs",

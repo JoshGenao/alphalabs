@@ -31,6 +31,9 @@ pub mod hot_swap_demotion;
 /// SRS-RESV-004 — the fixture-tier composition binding the real demotion sequence, gate,
 /// lockout and SRS-NOTIF-001 notifier into one runnable drill (the operator CLI's engine).
 pub mod hot_swap_demotion_drill;
+/// SRS-RESV-005 — the Hot-Swap promotion gate: a live promotion is reachable
+/// only from a real SRS-RESV-004 demotion acceptance.
+pub mod hot_swap_promotion;
 pub mod kill_switch_activation;
 pub mod kill_switch_timeout;
 /// SRS-MD-003 — composition of the IB transport with the live freshness feed

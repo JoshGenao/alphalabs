@@ -90,6 +90,18 @@ path = "src/bin/orch005_rollback_cli.rs"
 name = "err001_broker_envelope_cli"
 path = "src/bin/err001_broker_envelope_cli.rs"
 
+# SRS-RESV-005 Hot-Swap promotion operator CLI. Drives the REAL
+# StrategyOrchestrator::execute_hot_swap gate — the SRS-RESV-004 demotion gate,
+# then the promotion gate — over the REAL SRS-EXE-001 LiveDesignation authority
+# (persisted between invocations) and the REAL SRS-SIM-004 paper-state snapshot
+# that carries the candidate's performance history. The IB position feed
+# (SRS-EXE-006) and the durable deployed-version registry (SRS-ORCH-004) are
+# FIXTURES and the tool labels every run `transports:FIXTURE`. The
+# python/atp_orchestration REST arm shells this binary.
+[[bin]]
+name = "resv005_hot_swap_promote_cli"
+path = "src/bin/resv005_hot_swap_promote_cli.rs"
+
 # SRS-SAFE-003 connectivity-block operator CLI. Fault-injects the IB-unreachable /
 # scheduled-restart connectivity states through the REAL ExecutionEngine::
 # dispatch_order -> route_order -> submit_live_order authority chain over the wired

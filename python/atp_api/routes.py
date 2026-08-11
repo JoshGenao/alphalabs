@@ -270,10 +270,29 @@ ROUTES: tuple[Route, ...] = (
         path="/api/v1/hot-swap",
         capability=Capability.HOT_SWAP,
         summary="Manually trigger a Reservoir-strategy promotion (demote-then-promote).",
-        srs_refs=("SRS-RESV-003", "SRS-RESV-004", "SYS-49a"),
+        srs_refs=("SRS-RESV-003", "SRS-RESV-004", "SRS-RESV-005", "SYS-49a", "SYS-49d"),
         request_fields=("candidate_strategy_id", "confirm"),
         response_fields=("swap_id", "demotion_state", "promotion_state"),
+        # Real types, not the offline placeholder: this route has a live handler.
+        # `swap_id` is a UNION because it is legitimately null whenever the promotion
+        # journal did not record the attempt — declaring it a bare string would
+        # document a genuinely valid degraded response as schema-invalid.
+        # `demotion_state` and `promotion_state` are closed vocabularies
+        # (DEMOTED|DEMOTION_PENDING and PROMOTED|BLOCKED) and never null: the handler
+        # returns 200 only once the gate has produced one of them.
+        field_types=(
+            ("swap_id", "string|null"),
+            ("demotion_state", "string"),
+            ("promotion_state", "string"),
+        ),
         requires_confirmation=True,
+        # SRS-RESV-005 ships the handler (atp_orchestration.mount_hot_swap_execution),
+        # which drives the real demotion-then-promotion gate. `swap_id` is emitted only
+        # when the promotion journal recorded the attempt — a response without one is
+        # explicitly unconfirmed, never a fabricated identity. Composition stays opt-in,
+        # so a deployment that has not mounted the handler still answers the structured
+        # 501 rather than accepting a swap it cannot execute.
+        served_by="SRS-RESV-005",
     ),
     Route(
         method=Method.GET,

@@ -618,6 +618,16 @@
       "why": "Hot-Swap demotion gate"
     },
     {
+      "name": "hot_swap_promotion_check",
+      "scopes": {
+        "ci": [],
+        "ci-rust": [
+          "--require-cargo"
+        ]
+      },
+      "why": "Hot-Swap promotion gate (demote-before-promote is unforgeable)"
+    },
+    {
       "name": "hot_swap_trigger_check",
       "scopes": {
         "ci": []

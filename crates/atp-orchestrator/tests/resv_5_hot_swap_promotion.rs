@@ -1,0 +1,556 @@
+//! SRS-RESV-005 / SyRS SYS-49d — the Hot-Swap promotion gate.
+//!
+//! The requirement is an ordering constraint plus three post-conditions, so these
+//! tests are organised the same way:
+//!
+//!   * **ordering** — a demotion that did not reach flat promotes NOTHING, and the
+//!     live designation is byte-unchanged afterwards;
+//!   * **clause 1 (flat start)** — open positions refuse, and an *unreadable*
+//!     position probe refuses with a DIFFERENT reason (unprovable is not flat);
+//!   * **clause 2 (paper history preserved)** — missing, unreadable, and drifted
+//!     history each refuse, and drift rolls the designation back;
+//!   * **clause 3 (same strategy code)** — missing and drifted deployed versions
+//!     each refuse, and drift rolls the designation back;
+//!   * **execution-time revalidation** — a third strategy holding the live slot
+//!     refuses rather than being promoted over.
+//!
+//! Every refusal asserts the designation state as well as the error, because a
+//! gate that refuses *after* briefly designating the candidate live has already
+//! violated the requirement it is reporting on.
+
+use atp_execution::designation::{LiveDesignation, LiveDesignationConfirmation};
+use atp_orchestrator::hot_swap_promotion::{
+    HotSwapPromotionError, HotSwapPromotionEvent, HotSwapPromotionEventSink, LivePositionProbe,
+    OpenPosition, PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
+};
+use atp_orchestrator::{
+    DeployedVersionRegistry, DeployedVersionRegistryError, HotSwapDemotionEventSink,
+    HotSwapLiquidationProbe, HotSwapSideEffectError, OperatorAlertSink, StrategyOrchestrator,
+    UnfilledOrderCanceller,
+};
+use atp_types::{
+    DeployedVersion, HotSwapDemotionEvent, HotSwapDemotionOutcome, HotSwapDemotionRequest,
+    OperatorAlertEvent, SourceHash, StrategyId,
+};
+use std::cell::RefCell;
+
+const OBSERVED_AT: u64 = 1_715_000_000;
+const TIMEOUT_S: u64 = 60;
+const DEMOTING: &str = "live-alpha";
+const CANDIDATE: &str = "paper-beta";
+const HASH_A: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const HASH_B: &str = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+// --------------------------------------------------------------------------- //
+// Demotion-side stubs (the SRS-RESV-004 ports the gate composes)
+// --------------------------------------------------------------------------- //
+
+struct Probe(HotSwapDemotionOutcome);
+impl HotSwapLiquidationProbe for Probe {
+    fn await_flat_or_timeout(&self, _request: &HotSwapDemotionRequest) -> HotSwapDemotionOutcome {
+        self.0
+    }
+}
+
+fn flat() -> Probe {
+    Probe(HotSwapDemotionOutcome::FlatBeforeTimeout { elapsed_seconds: 4 })
+}
+
+fn timed_out() -> Probe {
+    Probe(HotSwapDemotionOutcome::TimedOutDemotionPending {
+        elapsed_seconds: 61,
+        timeout_seconds: TIMEOUT_S,
+    })
+}
+
+struct Canceller;
+impl UnfilledOrderCanceller for Canceller {
+    fn cancel_unfilled_liquidation_orders(
+        &self,
+        _request: &HotSwapDemotionRequest,
+    ) -> Result<(), HotSwapSideEffectError> {
+        Ok(())
+    }
+}
+
+struct Alerts;
+impl OperatorAlertSink for Alerts {
+    fn dispatch(&self, _event: OperatorAlertEvent) -> Result<(), HotSwapSideEffectError> {
+        Ok(())
+    }
+}
+
+struct DemotionEvents;
+impl HotSwapDemotionEventSink for DemotionEvents {
+    fn record(&self, _event: HotSwapDemotionEvent) -> Result<(), HotSwapSideEffectError> {
+        Ok(())
+    }
+}
+
+// --------------------------------------------------------------------------- //
+// Promotion-side stubs
+// --------------------------------------------------------------------------- //
+
+enum PositionAnswer {
+    Flat,
+    Open(Vec<OpenPosition>),
+    Unreadable(&'static str),
+}
+
+struct Positions(PositionAnswer);
+impl LivePositionProbe for Positions {
+    fn open_positions(&self) -> Result<Vec<OpenPosition>, HotSwapSideEffectError> {
+        match &self.0 {
+            PositionAnswer::Flat => Ok(Vec::new()),
+            PositionAnswer::Open(held) => Ok(held.clone()),
+            PositionAnswer::Unreadable(reason) => Err(HotSwapSideEffectError::new(*reason)),
+        }
+    }
+}
+
+fn fingerprint(points: u64, trades: u64, digest: &str) -> PaperHistoryFingerprint {
+    PaperHistoryFingerprint {
+        equity_points: points,
+        trades,
+        digest: digest.to_string(),
+    }
+}
+
+/// Answers a queue of results, one per call, so a test can make the SECOND read
+/// (the post-condition re-read) differ from the first.
+struct PaperHistory {
+    answers: RefCell<Vec<Result<Option<PaperHistoryFingerprint>, &'static str>>>,
+}
+
+impl PaperHistory {
+    fn stable() -> Self {
+        Self::queued(vec![
+            Ok(Some(fingerprint(12, 3, "digest-a"))),
+            Ok(Some(fingerprint(12, 3, "digest-a"))),
+        ])
+    }
+
+    fn queued(answers: Vec<Result<Option<PaperHistoryFingerprint>, &'static str>>) -> Self {
+        Self {
+            answers: RefCell::new(answers),
+        }
+    }
+}
+
+impl PaperHistorySource for PaperHistory {
+    fn fingerprint(
+        &self,
+        _strategy_id: &StrategyId,
+    ) -> Result<Option<PaperHistoryFingerprint>, HotSwapSideEffectError> {
+        let mut answers = self.answers.borrow_mut();
+        assert!(
+            !answers.is_empty(),
+            "the gate read the paper history more times than the test scripted"
+        );
+        match answers.remove(0) {
+            Ok(value) => Ok(value),
+            Err(reason) => Err(HotSwapSideEffectError::new(reason)),
+        }
+    }
+}
+
+/// Same queue discipline for the deployed-version registry.
+struct Versions {
+    answers: RefCell<Vec<Result<Option<DeployedVersion>, &'static str>>>,
+}
+
+impl Versions {
+    fn stable() -> Self {
+        Self::queued(vec![Ok(Some(version(HASH_A))), Ok(Some(version(HASH_A)))])
+    }
+
+    fn queued(answers: Vec<Result<Option<DeployedVersion>, &'static str>>) -> Self {
+        Self {
+            answers: RefCell::new(answers),
+        }
+    }
+}
+
+fn version(hash: &str) -> DeployedVersion {
+    DeployedVersion::new(SourceHash::new(hash), 1_700_000_000)
+}
+
+impl DeployedVersionRegistry for Versions {
+    fn record(
+        &self,
+        _strategy_id: &StrategyId,
+        _version: DeployedVersion,
+    ) -> Result<(), DeployedVersionRegistryError> {
+        panic!("SRS-RESV-005: the promotion gate must never WRITE a deployed version");
+    }
+
+    fn lookup(
+        &self,
+        _strategy_id: &StrategyId,
+    ) -> Result<Option<DeployedVersion>, DeployedVersionRegistryError> {
+        let mut answers = self.answers.borrow_mut();
+        assert!(
+            !answers.is_empty(),
+            "the gate read the deployed version more times than the test scripted"
+        );
+        match answers.remove(0) {
+            Ok(value) => Ok(value),
+            Err(reason) => Err(DeployedVersionRegistryError::new(reason)),
+        }
+    }
+}
+
+#[derive(Default)]
+struct PromotionEvents {
+    recorded: RefCell<Vec<HotSwapPromotionEvent>>,
+}
+
+impl HotSwapPromotionEventSink for PromotionEvents {
+    fn record(&self, event: HotSwapPromotionEvent) -> Result<(), HotSwapSideEffectError> {
+        self.recorded.borrow_mut().push(event);
+        Ok(())
+    }
+}
+
+// --------------------------------------------------------------------------- //
+// Harness
+// --------------------------------------------------------------------------- //
+
+fn request() -> HotSwapDemotionRequest {
+    HotSwapDemotionRequest {
+        demoting_strategy_id: StrategyId::new(DEMOTING),
+        candidate_strategy_id: StrategyId::new(CANDIDATE),
+        timeout_seconds: TIMEOUT_S,
+    }
+}
+
+fn confirmation(strategy: &str) -> LiveDesignationConfirmation {
+    LiveDesignationConfirmation::from_operator(
+        StrategyId::new(strategy),
+        "operator confirmed the Hot-Swap promotion",
+    )
+    .expect("a non-empty acknowledgement yields a confirmation token")
+}
+
+/// A designation already holding `strategy` as the live one.
+fn designation_holding(strategy: &str) -> LiveDesignation {
+    let mut designation = LiveDesignation::new();
+    designation
+        .designate(StrategyId::new(strategy), confirmation(strategy))
+        .expect("seeding the live designation must succeed");
+    designation
+}
+
+struct Outcome {
+    result: Result<atp_orchestrator::hot_swap_promotion::HotSwapPromoted, HotSwapPromotionError>,
+    designated_after: Option<String>,
+    events: Vec<HotSwapPromotionEvent>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_swap(
+    probe: Probe,
+    positions: Positions,
+    paper: PaperHistory,
+    versions: Versions,
+    designation: &mut LiveDesignation,
+) -> Outcome {
+    let orchestrator = StrategyOrchestrator;
+    let events = PromotionEvents::default();
+    let result = orchestrator.execute_hot_swap(
+        request(),
+        &probe,
+        &Canceller,
+        &Alerts,
+        &DemotionEvents,
+        PromotionPorts {
+            positions: &positions,
+            paper_history: &paper,
+            versions: &versions,
+            events: &events,
+        },
+        designation,
+        confirmation(CANDIDATE),
+        OBSERVED_AT,
+    );
+    Outcome {
+        designated_after: designation.designated().map(|id| id.as_str().to_string()),
+        result,
+        events: events.recorded.into_inner(),
+    }
+}
+
+fn refusal(outcome: &Outcome) -> &HotSwapPromotionError {
+    outcome
+        .result
+        .as_ref()
+        .expect_err("this swap must be refused")
+}
+
+// --------------------------------------------------------------------------- //
+// Ordering — the requirement itself
+// --------------------------------------------------------------------------- //
+
+#[test]
+fn a_timed_out_demotion_promotes_nothing() {
+    let mut designation = designation_holding(DEMOTING);
+    let outcome = run_swap(
+        timed_out(),
+        Positions(PositionAnswer::Flat),
+        PaperHistory::stable(),
+        Versions::stable(),
+        &mut designation,
+    );
+
+    assert_eq!(refusal(&outcome).machine_reason(), "DEMOTION_REFUSED");
+    // The live slot is untouched: the demoting strategy is STILL live. A gate
+    // that released it on a failed demotion would leave the account unattended.
+    assert_eq!(outcome.designated_after.as_deref(), Some(DEMOTING));
+    assert!(!refusal(&outcome).flat_confirmed());
+}
+
+#[test]
+fn a_flat_demotion_promotes_the_candidate() {
+    let mut designation = designation_holding(DEMOTING);
+    let outcome = run_swap(
+        flat(),
+        Positions(PositionAnswer::Flat),
+        PaperHistory::stable(),
+        Versions::stable(),
+        &mut designation,
+    );
+
+    let promoted = outcome.result.as_ref().expect("a flat demotion promotes");
+    assert_eq!(promoted.promoted_strategy_id.as_str(), CANDIDATE);
+    assert_eq!(promoted.demoted_strategy_id.as_str(), DEMOTING);
+    assert!(promoted.flat_confirmed);
+    // Exactly one strategy is live, and it is the candidate (SYS-2a).
+    assert_eq!(outcome.designated_after.as_deref(), Some(CANDIDATE));
+}
+
+#[test]
+fn the_promotion_audit_record_is_written_on_both_outcomes() {
+    for (probe, expect_promoted) in [(flat(), true), (timed_out(), false)] {
+        let mut designation = designation_holding(DEMOTING);
+        let outcome = run_swap(
+            probe,
+            Positions(PositionAnswer::Flat),
+            PaperHistory::stable(),
+            Versions::stable(),
+            &mut designation,
+        );
+        assert_eq!(outcome.events.len(), 1, "exactly one promotion record");
+        let event = &outcome.events[0];
+        assert_eq!(event.promoted, expect_promoted);
+        assert_eq!(event.refusal.is_none(), expect_promoted);
+        assert_eq!(event.candidate_strategy_id.as_str(), CANDIDATE);
+        assert_eq!(event.observed_at_seconds, OBSERVED_AT);
+    }
+}
+
+// --------------------------------------------------------------------------- //
+// AC clause 1 — starts live with no open IB positions
+// --------------------------------------------------------------------------- //
+
+#[test]
+fn open_positions_refuse_and_never_designate_the_candidate() {
+    let mut designation = designation_holding(DEMOTING);
+    let outcome = run_swap(
+        flat(),
+        Positions(PositionAnswer::Open(vec![OpenPosition {
+            symbol: "AAPL".to_string(),
+            quantity: -100,
+        }])),
+        PaperHistory::queued(vec![Ok(Some(fingerprint(12, 3, "digest-a")))]),
+        Versions::queued(vec![Ok(Some(version(HASH_A)))]),
+        &mut designation,
+    );
+
+    match refusal(&outcome) {
+        HotSwapPromotionError::PositionsOpen { symbols } => {
+            assert_eq!(symbols, &vec!["AAPL".to_string()]);
+        }
+        other => panic!("expected PositionsOpen, got {other:?}"),
+    }
+    assert_eq!(outcome.designated_after.as_deref(), Some(DEMOTING));
+}
+
+#[test]
+fn an_unreadable_position_probe_is_not_a_flat_account() {
+    let mut designation = designation_holding(DEMOTING);
+    let outcome = run_swap(
+        flat(),
+        Positions(PositionAnswer::Unreadable("IB position feed unreachable")),
+        PaperHistory::queued(vec![Ok(Some(fingerprint(12, 3, "digest-a")))]),
+        Versions::queued(vec![Ok(Some(version(HASH_A)))]),
+        &mut designation,
+    );
+
+    // The distinct reason is the point: "we could not check" must not be
+    // reported, or handled, as "there is nothing there".
+    assert_eq!(
+        refusal(&outcome).machine_reason(),
+        "LIVE_POSITIONS_UNPROVABLE"
+    );
+    assert_ne!(refusal(&outcome).machine_reason(), "LIVE_POSITIONS_OPEN");
+    assert_eq!(outcome.designated_after.as_deref(), Some(DEMOTING));
+}
+
+#[test]
+fn a_zero_quantity_position_is_flat() {
+    let mut designation = designation_holding(DEMOTING);
+    let outcome = run_swap(
+        flat(),
+        Positions(PositionAnswer::Open(vec![OpenPosition {
+            symbol: "AAPL".to_string(),
+            quantity: 0,
+        }])),
+        PaperHistory::stable(),
+        Versions::stable(),
+        &mut designation,
+    );
+
+    outcome
+        .result
+        .as_ref()
+        .expect("a zero quantity is not an open position");
+    assert_eq!(outcome.designated_after.as_deref(), Some(CANDIDATE));
+}
+
+// --------------------------------------------------------------------------- //
+// AC clause 2 — preserves prior paper performance history
+// --------------------------------------------------------------------------- //
+
+#[test]
+fn a_missing_paper_history_refuses_rather_than_reading_as_preserved() {
+    let mut designation = designation_holding(DEMOTING);
+    let outcome = run_swap(
+        flat(),
+        Positions(PositionAnswer::Flat),
+        PaperHistory::queued(vec![Ok(None)]),
+        Versions::queued(vec![]),
+        &mut designation,
+    );
+
+    assert_eq!(refusal(&outcome).machine_reason(), "PAPER_HISTORY_MISSING");
+    assert_eq!(outcome.designated_after.as_deref(), Some(DEMOTING));
+}
+
+#[test]
+fn an_unreadable_paper_history_refuses_distinctly_from_a_missing_one() {
+    let mut designation = designation_holding(DEMOTING);
+    let outcome = run_swap(
+        flat(),
+        Positions(PositionAnswer::Flat),
+        PaperHistory::queued(vec![Err("paper state store unreadable")]),
+        Versions::queued(vec![]),
+        &mut designation,
+    );
+
+    assert_eq!(
+        refusal(&outcome).machine_reason(),
+        "PAPER_HISTORY_UNREADABLE"
+    );
+    assert_eq!(outcome.designated_after.as_deref(), Some(DEMOTING));
+}
+
+#[test]
+fn paper_history_drift_rolls_the_designation_back() {
+    let mut designation = designation_holding(DEMOTING);
+    let outcome = run_swap(
+        flat(),
+        Positions(PositionAnswer::Flat),
+        // The re-read after the designation write disagrees with the capture.
+        PaperHistory::queued(vec![
+            Ok(Some(fingerprint(12, 3, "digest-a"))),
+            Ok(Some(fingerprint(12, 3, "digest-REWRITTEN"))),
+        ]),
+        Versions::queued(vec![Ok(Some(version(HASH_A)))]),
+        &mut designation,
+    );
+
+    assert_eq!(refusal(&outcome).machine_reason(), "PAPER_HISTORY_DRIFT");
+    // Rolled back: the candidate must NOT be left live after a refused promotion.
+    assert_eq!(outcome.designated_after, None);
+}
+
+// --------------------------------------------------------------------------- //
+// AC clause 3 — same strategy code / API behavior
+// --------------------------------------------------------------------------- //
+
+#[test]
+fn a_missing_deployed_version_refuses() {
+    let mut designation = designation_holding(DEMOTING);
+    let outcome = run_swap(
+        flat(),
+        Positions(PositionAnswer::Flat),
+        PaperHistory::queued(vec![Ok(Some(fingerprint(12, 3, "digest-a")))]),
+        Versions::queued(vec![Ok(None)]),
+        &mut designation,
+    );
+
+    assert_eq!(refusal(&outcome).machine_reason(), "CODE_IDENTITY_MISSING");
+    assert_eq!(outcome.designated_after.as_deref(), Some(DEMOTING));
+}
+
+#[test]
+fn code_identity_drift_rolls_the_designation_back() {
+    let mut designation = designation_holding(DEMOTING);
+    let outcome = run_swap(
+        flat(),
+        Positions(PositionAnswer::Flat),
+        PaperHistory::stable(),
+        // The artifact changed between capture and re-read: the promoted
+        // strategy would not be running the code it ran as paper.
+        Versions::queued(vec![Ok(Some(version(HASH_A))), Ok(Some(version(HASH_B)))]),
+        &mut designation,
+    );
+
+    assert_eq!(refusal(&outcome).machine_reason(), "CODE_IDENTITY_DRIFT");
+    assert_eq!(outcome.designated_after, None);
+}
+
+// --------------------------------------------------------------------------- //
+// Execution-time revalidation of the live strategy
+// --------------------------------------------------------------------------- //
+
+#[test]
+fn a_third_live_strategy_is_never_promoted_over() {
+    // SRS-RESV-003's contract states a trigger proposal records a REQUESTED
+    // demoting id, not a verified one — so the slot is revalidated here.
+    let mut designation = designation_holding("live-gamma");
+    let outcome = run_swap(
+        flat(),
+        Positions(PositionAnswer::Flat),
+        PaperHistory::queued(vec![Ok(Some(fingerprint(12, 3, "digest-a")))]),
+        Versions::queued(vec![Ok(Some(version(HASH_A)))]),
+        &mut designation,
+    );
+
+    match refusal(&outcome) {
+        HotSwapPromotionError::UnexpectedLiveStrategy { current, expected } => {
+            assert_eq!(current.as_str(), "live-gamma");
+            assert_eq!(expected.as_str(), DEMOTING);
+        }
+        other => panic!("expected UnexpectedLiveStrategy, got {other:?}"),
+    }
+    // The unrelated live strategy keeps the slot — untouched.
+    assert_eq!(outcome.designated_after.as_deref(), Some("live-gamma"));
+}
+
+#[test]
+fn a_free_live_slot_still_promotes() {
+    // Nothing designated (e.g. the demotion already released it): the swap is
+    // still valid, and the candidate takes the slot.
+    let mut designation = LiveDesignation::new();
+    let outcome = run_swap(
+        flat(),
+        Positions(PositionAnswer::Flat),
+        PaperHistory::stable(),
+        Versions::stable(),
+        &mut designation,
+    );
+
+    outcome.result.as_ref().expect("a free slot promotes");
+    assert_eq!(outcome.designated_after.as_deref(), Some(CANDIDATE));
+}

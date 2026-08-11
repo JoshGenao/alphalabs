@@ -4692,6 +4692,121 @@
       "SyRS SYS-49d promotion (owner SRS-RESV-005) and SYS-49e cool-down (owner SRS-RESV-006). complete_demotion_to_paper produces the DemotionCompleted token that is SYS-49d's precondition; consuming it is the promotion phase's job, not this feature's."
     ]
   },
+  "hot_swap_promotion_contract": {
+    "requirement": "SRS-RESV-005",
+    "srs_refs": [
+      "SRS-RESV-005"
+    ],
+    "syrs_refs": [
+      "SYS-49d",
+      "AC-14"
+    ],
+    "strs_refs": [
+      "SN-1.25",
+      "SN-1.30"
+    ],
+    "description": "SRS-RESV-005 promote a selected paper strategy to live execution ONLY after successful demotion (SyRS SYS-49d / AC-14). Acceptance: 'The promoted strategy starts live with no open IB positions, preserves prior paper performance history, and uses the same strategy code/API behavior.' THE UNFORGEABLE ORDERING: HotSwapDemotionResolved (the ERR-7 acceptance) has public fields and derives Clone, so consuming it directly would make 'only after successful demotion' satisfiable by a struct literal. It cannot be tightened -- tools/hot_swap_demotion_check.py pins it byte-for-byte and ERR-7's tests depend on its shape -- so this contract LAYERS a new authority on top and leaves the pinned primitive alone: DemotionReceipt has private fields, no Clone, no Default, and a pub(crate) sole constructor (mint) that additionally refuses a promotion_allowed:false acceptance. promote_after_demotion is pub(crate) and takes the receipt BY VALUE, so the only public promotion path is execute_hot_swap, which runs resolve_demotion first. Violating demote-before-promote is therefore a COMPILE ERROR, proven by two compile_fail doctests that build as external consumers of the crate (struct literal -> private fields; DemotionReceipt::mint -> not nameable). THE GATE (promote_after_demotion): every guard runs BEFORE the single designation write, in a fixed order -- receipt/request identity agreement -> a swap must name two strategies -> paper-history fingerprint CAPTURED (fail closed) -> deployed version CAPTURED (fail closed) -> live positions probed and required to be PROVABLY empty (AC clause 1) -> execution-time live revalidation (the slot must be free or held by the strategy THIS swap demotes; releasing it is the last act of the demotion, ordered strictly before any promote; a THIRD strategy refuses with UnexpectedLiveStrategy) -> the single LiveDesignation::designate write -> the two post-conditions RE-READ, and any drift rolls the designation back and refuses (AC clauses 2 and 3). THREE-WAY PORTS: LivePositionProbe / PaperHistorySource / DeployedVersionRegistry each separate unreadable from absent from empty, because a promotion that proceeded on an unprovable position state is the exact failure this requirement exists to prevent; each maps to its own refusal variant (LIVE_POSITIONS_UNPROVABLE vs LIVE_POSITIONS_OPEN, PAPER_HISTORY_UNREADABLE vs PAPER_HISTORY_MISSING, CODE_IDENTITY_UNPROVABLE vs CODE_IDENTITY_MISSING). No new OrderErrorCategory variant is added -- the machine cause travels on HotSwapPromotionError::machine_reason(), a closed vocabulary. AUDIT: HotSwapPromotionEventSink records the SYS-61 hot_swap PROMOTION transition on BOTH outcomes (a blocked swap is exactly the transition an operator needs), best-effort like the demotion sink. SURFACES: the CLI arm resv005_hot_swap_promote_cli drives the REAL execute_hot_swap over the REAL SRS-EXE-001 LiveDesignation authority persisted in a magic-headed snapshot (scratch -> fsync -> atomic rename; a foreign/truncated/ambiguous file refuses the whole read, never a silent 'nothing is live') and the REAL SRS-SIM-004 PaperStateSnapshot, from which the history fingerprint is computed. The REST arm python/atp_orchestration.mount_hot_swap_execution (opt-in composition, the mount_rollback / mount_hot_swap_triggers idiom) BINDS POST /api/v1/hot-swap and shells that binary. STATUS-CODE SPLIT (load-bearing, derived from the SHIPPED consumer): assets/app.js treats a non-2xx as 'mutated nothing -- retry is allowed', so a refusal is a non-2xx ONLY when decided BEFORE the gate runs (bad request, missing confirmation, nothing live to demote); an executed-but-BLOCKED swap is a 200 carrying promotion_state, or the pane would offer a retry of a swap whose demotion had already released the live strategy. swap_id is derived from the promotion journal's record ordinal -- a durable position a later reader can address -- and is NULL (declared string|null, never omitted and never invented) when the append did not land. Verification: cargo resv_5_hot_swap_promotion (13 cases: every refusal arm asserted side-effect-free on the designation, both drift arms asserted to roll back) + 2 compile_fail doctests + tools/hot_swap_promotion_check.py (static guards + the stale-prose collector) + tests/test_hot_swap_promotion_contract.py (per-guard non-vacuity mutations) + tests/boundary/test_hot_swap_execution_surface.py (mounted vs bare 501, 428 with a spy proving dispatch was never reached, declared-vs-emitted field-set equality in BOTH directions across every outcome) + tests/domain/test_hot_swap_promotion.py (the real binary over a real paper snapshot; 'preserved' asserted as the snapshot file being byte-identical on disk).",
+    "types_crate": {
+      "crate": "atp-types",
+      "path": "crates/atp-types"
+    },
+    "orchestrator_crate": {
+      "crate": "atp-orchestrator",
+      "path": "crates/atp-orchestrator"
+    },
+    "module": {
+      "path": "crates/atp-orchestrator/src/hot_swap_promotion.rs"
+    },
+    "receipt": {
+      "type": "DemotionReceipt",
+      "constructor": "mint",
+      "constructor_visibility": "pub(crate)",
+      "forbidden_derives": [
+        "Clone",
+        "Default"
+      ],
+      "private_fields": [
+        "demoting_strategy_id",
+        "candidate_strategy_id",
+        "elapsed_seconds"
+      ],
+      "note": "Private fields + a pub(crate) sole constructor are what make demote-before-promote a compile error rather than a convention. Adding Clone would let a retained receipt authorize a second promotion after the first consumed it; adding Default or a public constructor would let a caller mint one with no demotion behind it."
+    },
+    "entry_point": {
+      "type": "StrategyOrchestrator",
+      "method": "execute_hot_swap"
+    },
+    "gate": {
+      "type": "StrategyOrchestrator",
+      "method": "promote_after_demotion",
+      "visibility": "pub(crate)"
+    },
+    "ports": [
+      {
+        "trait": "LivePositionProbe",
+        "method": "open_positions",
+        "read_only": true
+      },
+      {
+        "trait": "PaperHistorySource",
+        "method": "fingerprint",
+        "read_only": true
+      },
+      {
+        "trait": "HotSwapPromotionEventSink",
+        "method": "record",
+        "best_effort": true
+      }
+    ],
+    "ordered_guards": [
+      "ReceiptMismatch",
+      "SameStrategy",
+      "PaperHistoryUnreadable",
+      "PaperHistoryMissing",
+      "CodeIdentityUnprovable",
+      "CodeIdentityMissing",
+      "PositionsUnprovable",
+      "PositionsOpen",
+      "UnexpectedLiveStrategy",
+      "DemotionReleaseFailed",
+      "DesignationRefused",
+      "PaperHistoryDrift",
+      "CodeIdentityDrift"
+    ],
+    "rest_surface": {
+      "route": "POST /api/v1/hot-swap",
+      "served_by": "SRS-RESV-005",
+      "handler": "python/atp_orchestration/hot_swap_execution.py::SwapExecutionHandler",
+      "mount": "python/atp_orchestration.mount_hot_swap_execution",
+      "response_fields": [
+        "swap_id",
+        "demotion_state",
+        "promotion_state"
+      ],
+      "demotion_state_vocabulary": [
+        "DEMOTED",
+        "DEMOTION_PENDING"
+      ],
+      "promotion_state_vocabulary": [
+        "PROMOTED",
+        "BLOCKED"
+      ],
+      "subprocess_timeout_seconds": 90,
+      "note": "The subprocess budget MUST exceed the SYS-49b demotion timeout it waits on (60s default) or a slow-but-successful swap returns an ambiguous result; 90s matches the SPA's HOT_FETCH_TIMEOUT_MS."
+    },
+    "deferred": [
+      "The REAL IB position feed behind LivePositionProbe. The shipped CLI supplies it as a FIXTURE and labels every run `transports:FIXTURE`, so a run is evidence about the GATE, not about a live IB account (owner: SRS-EXE-006 adapter / SRS-EXE-001 live state).",
+      "The DURABLE deployed-version registry behind the code-identity clause. The CLI supplies it as a FIXTURE; the in-memory RetainingVersionRegistry is not cross-process (owner: SRS-ORCH-004).",
+      "The durable CROSS-ATTEMPT demotion-pending lockout. This gate decides ONE attempt: a timeout blocks promotion for THAT call and the REST response says so, but no demotion-pending lock is persisted, so SRS-RESV-004's 'promotion is blocked until manual resolution' is NOT enforced across a LATER retry whose probe reports flat. The persistent store plus the operator manual-resolution command that clears it are the deferred Hot-Swap runtime (owner: SRS-RESV-004). Consequence for the AC: the demote-before-promote ordering is ENFORCED, the cross-attempt lockout is NOT -- that clause is PARTIALLY served and SRS-RESV-005 stays passes:false.",
+      "GET /api/v1/hot-swap/status keeps its structured 501: two of its four declared fields (demotion_pending, cooldown_expires_at) are owned by the deferred lockout above and the unbuilt cool-down, and answering with half a payload would be worse than not answering (owner: SRS-RESV-004 / SRS-RESV-006).",
+      "Cool-down enforcement after a successful swap (default 7 days; manual-swap confirmation during cool-down per SYS-49e) is NOT applied by this gate (owner: SRS-RESV-006).",
+      "The Reservoir ranking that NAMES a promotion candidate. The UI-5 pane's promote control stays inert while it has no candidate, so binding this route does not arm the dashboard button (owner: SRS-RESV-002).",
+      "The UI-5 pane's live_state cell (current live strategy + successful-promotion state) is NOT resolved by this feature; it is jointly owned and stays a deferred cell (owner: SRS-RESV-004 / SRS-RESV-005 / SRS-RESV-006).",
+      "Routing the promotion journal into the SYS-61 operator log store. This feature writes its own durable JSON-Lines promotion journal (the swap_id source), but the hot_swap system-log source still has no producer in atp_logging's store, so atp_dashboard.logs.SOURCE_COVERAGE stays deferred (owner: SRS-LOG-001).",
+      "The browser-automation (e2e) evidence for the feature's own verification step. tests/e2e/test_hot_swap_promotion.py is WRITTEN and gated but was NOT run: the dashboard stack binds fixed shared resources and cannot run alongside sibling agents, and the pane's control is inert until SRS-RESV-002 names a candidate (owner: UI-5 / SRS-RESV-002)."
+    ]
+  },
+
   "hot_swap_trigger_contract": {
     "requirement": "SRS-RESV-003",
     "srs_refs": [
@@ -4920,10 +5035,10 @@
     "deferred": [
       "Concrete ReservoirRankingSource backed by the real SRS-RESV-002 / SYS-48 ranking (Sharpe/Sortino + momentum over the configurable evaluation window) and LiveStrategyProbe backed by the SRS-RESV-001 reservoir + live-strategy drawdown — this slice injects both through ports so the trigger layer is buildable and testable without the ranking runtime (owner: SRS-RESV-001 / SRS-RESV-002).",
       "RICHER typed error taxonomy on the injected LiveStrategyProbe / ReservoirRankingSource ports: the ports ALREADY return Result (Err = degraded), and evaluation fails closed while surfacing the reason string in TriggerEvaluation.degraded_inputs — so a degraded dependency is NOT silently collapsed into a healthy empty state. Replacing the single reason-string HotSwapSideEffectError with a structured CONNECTIVITY_BLOCKED / STALE_DATA / SOURCE_UNAVAILABLE taxonomy (and any retry/backoff policy) is deferred to the concrete probes (same reason-string-now / typed-later precedent as the demotion contract's IB-cancel error taxonomy) (owner: SRS-RESV-001 / SRS-RESV-002).",
-      "Swap EXECUTION: the demote-before-promote sequence + liquidation-timeout gate is SRS-RESV-004 (resolve_demotion, already built); flat-start promotion is SRS-RESV-005; cool-down enforcement (default 7 days, manual-swap confirmation during cool-down per SYS-49e) is SRS-RESV-006. This trigger layer only decides + logs, and hands a selected proposal to resolve_demotion via to_demotion_request (owner: SRS-RESV-004 / SRS-RESV-005 / SRS-RESV-006).",
+      "Swap EXECUTION: the demote-before-promote sequence + liquidation-timeout gate is SRS-RESV-004 (resolve_demotion, already built); flat-start promotion is SRS-RESV-005 (BUILT — see hot_swap_promotion_contract; execute_hot_swap binds POST /api/v1/hot-swap); cool-down enforcement (default 7 days, manual-swap confirmation during cool-down per SYS-49e) is SRS-RESV-006. This trigger layer only decides + logs, and hands a selected proposal to resolve_demotion via to_demotion_request (owner: SRS-RESV-004 / SRS-RESV-005 / SRS-RESV-006).",
       "Durable, queryable, dashboard-viewable SYS-61 system-log store consuming HotSwapTriggerEvent (the Hot-Swap trigger log class) — the SRS-LOG-001 sink. This slice records every fired trigger through the HotSwapTriggerLog port (a REJECTED record fails closed — kept out of selected / manual returns Err; see trigger_log_port.note) and demonstrates durable JSONL persistence in the resv003_hot_swap_trigger_cli --log flag; the shared durable store, which must persist an ACCEPTED record, is deferred (owner: SRS-LOG-001).",
       "MANUAL demoting-side resolution: request_manual_promotion takes demoting_strategy_id from its caller and only checks it differs from the candidate, while evaluate_automatic_triggers resolves the live strategy through LiveStrategyProbe. The probe's real producer is the deferred SRS-RESV-001 reservoir / SRS-RESV-002 ranking runtime, so there is no authoritative live-strategy fact to validate a manual request against; fabricating one would be worse than naming the gap. Consequence: a logged manual proposal is a REQUEST to swap, not a verified one, and the SRS-RESV-004 gate MUST revalidate the current live strategy at execution time rather than trusting the demoting id in the record (owner: SRS-RESV-001 / SRS-RESV-002 for the probe, SRS-RESV-004 for the execution-time revalidation).",
-      "SRS-API-001 composition of these handlers into a shipped process main. mount_hot_swap_triggers is opt-in, exactly like mount_rollback / mount_dashboard, so a bare runtime still resolves every trigger operation to its structured 501. SYS-49a's arms, precisely. CONFIGURING the automatic triggers ships on all three: CLI (resv003_hot_swap_trigger_cli), REST (GET/PUT /api/v1/hot-swap/triggers), and dashboard (CliHotSwapTriggerSource resolving the UI-5 pane's auto-trigger chips from the same durable file). FIRING the manual trigger ships on CLI and REST only (POST /api/v1/hot-swap/triggers/manual) — the dashboard has no manual-trigger control, and adding one is NOT deferred work being tracked here, it is a deliberate refusal: UI-5's promote-live button targets POST /api/v1/hot-swap (swap EXECUTION, owner SRS-RESV-004/005, still a structured 501), and repointing it at the trigger route would tell an operator they had promoted a strategy when all that happened was a proposal being written to a log. SYS-49a asks for 'the dashboard, CLI, OR REST API', which CLI and REST satisfy. A dashboard manual control becomes honest only once RESV-004/005 can execute the swap it implies (owner: UI-5 + SRS-RESV-004 / SRS-RESV-005). POST /api/v1/hot-swap — swap EXECUTION — is deliberately NOT bound and keeps its structured 501: this feature decides and logs, it does not demote or promote, and a surface that cannot execute a swap must not answer on the endpoint whose success means one happened (owner: SRS-RESV-004 / SRS-RESV-005 for execution, SRS-API-001 for the shipped composition)."
+      "SRS-API-001 composition of these handlers into a shipped process main. mount_hot_swap_triggers is opt-in, exactly like mount_rollback / mount_dashboard, so a bare runtime still resolves every trigger operation to its structured 501. SYS-49a's arms, precisely. CONFIGURING the automatic triggers ships on all three: CLI (resv003_hot_swap_trigger_cli), REST (GET/PUT /api/v1/hot-swap/triggers), and dashboard (CliHotSwapTriggerSource resolving the UI-5 pane's auto-trigger chips from the same durable file). FIRING the manual trigger ships on CLI and REST only (POST /api/v1/hot-swap/triggers/manual) — the dashboard has no manual-trigger control, and adding one is NOT deferred work being tracked here, it is a deliberate refusal: UI-5's promote-live button targets POST /api/v1/hot-swap (swap EXECUTION, owner SRS-RESV-004/005, still a structured 501), and repointing it at the trigger route would tell an operator they had promoted a strategy when all that happened was a proposal being written to a log. SYS-49a asks for 'the dashboard, CLI, OR REST API', which CLI and REST satisfy. A dashboard manual control becomes honest only once RESV-004/005 can execute the swap it implies; SRS-RESV-005 now executes it, and the UI-5 promote control stays inert regardless until SRS-RESV-002 names a candidate (owner: UI-5 + SRS-RESV-002 + SRS-RESV-004). POST /api/v1/hot-swap — swap EXECUTION — is deliberately NOT bound BY THIS FEATURE, and stays 501 when only the trigger layer is mounted: this feature decides and logs, it does not demote or promote, and a surface that cannot execute a swap must not answer on the endpoint whose success means one happened. SRS-RESV-005 binds it separately (mount_hot_swap_execution — see hot_swap_promotion_contract); the shipped process-main composition remains SRS-API-001's."
     ]
   },
   "kill_switch_timeout_contract": {
@@ -10242,7 +10357,7 @@
     "check_script": "tools/data015_schema_check.py",
     "cli": "crates/atp-data/src/bin/data015_schema_cli.rs",
     "golden_corpus": "tests/fixtures/schema_evolution",
-    "entity_count": 18,
+    "entity_count": 20,
     "postures": [
       "Ranged",
       "MigrateOnRead",
