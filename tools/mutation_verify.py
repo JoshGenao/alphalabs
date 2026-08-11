@@ -127,6 +127,18 @@ def run_tests(targets: list[str], names: list[str]) -> dict[str, str]:
         check=False,
     )
     out = proc.stdout + proc.stderr
+    # pytest's exit 4 is USAGE_ERROR — a target it could not even resolve. Nothing ran, so
+    # every name below would fall through to "skipped" and be reported as unable to fail:
+    # an accusation against 34 tests that were never executed, in output shaped exactly like
+    # a real finding. A check that finds nothing must say so rather than return a verdict.
+    if proc.returncode == 4 or "no tests ran" in out:
+        raise SystemExit(
+            "✗ mutation_verify could not run the tests it was pointed at — pytest exited "
+            f"{proc.returncode} having collected nothing. This is a harness failure, NOT a "
+            "verdict about the tests.\n"
+            f"  targets: {targets}\n"
+            f"{out[-2000:]}"
+        )
     # A collection failure names the file, not the test, so it must be detected once
     # for the whole run rather than per test.
     uncollectable = (
@@ -194,9 +206,23 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"added_tests": names, "note": msg}) if args.json else f"· {msg}")
         return 0
 
-    # Default the targets to the test files this range changed. A caller who names
+    # Default the targets to the PYTHON test files this range changed. A caller who names
     # the wrong path otherwise gets every added test reported as unable to fail.
-    targets = args.tests or tst
+    #
+    # The `.py` filter is load-bearing. `is_test_path` matches any `tests/` path, so a range
+    # that adds a Rust integration test next to a Python one handed pytest a `.rs` file —
+    # pytest then exits 4 with "ERROR: not found" and runs NOTHING, every added test falls
+    # through to the "skipped" branch, and the report accuses all of them of being unable to
+    # fail. Rust tests contribute no names anyway (`ADDED_TEST_RE` only matches `def test_`),
+    # so they belong nowhere near the pytest argv. `(SRS-RESV-004, found live)`
+    targets = args.tests or [t for t in tst if t.endswith(".py")]
+    if not targets:
+        print(
+            f"✗ {args.range} adds test functions but no PYTHON test file to run them from "
+            f"(changed test files: {tst}). Name one with --tests.",
+            file=sys.stderr,
+        )
+        return 1
     uncovered = sorted(
         f for f in added if not any(f.startswith(t.rstrip("/")) or t.startswith(f) for t in targets)
     )
