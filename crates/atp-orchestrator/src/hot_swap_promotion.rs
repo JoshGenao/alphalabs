@@ -575,6 +575,47 @@ impl StrategyOrchestrator {
         let demoting = request.demoting_strategy_id.clone();
         let candidate = request.candidate_strategy_id.clone();
 
+        // REVALIDATE THE LIVE SLOT BEFORE ANY DEMOTION-SIDE PORT RUNS.
+        //
+        // `resolve_demotion` is not read-only: on its timeout branch it engages the
+        // durable demotion-pending lockout, cancels unfilled liquidation orders, and
+        // pages the operator on three channels. Checking the slot only afterwards (in
+        // `promote_after_demotion`) meant a swap aimed at a STALE demoting id — one
+        // that queued behind another swap which had already promoted something else —
+        // could fire all of that against a strategy that was no longer live, and only
+        // then be refused.
+        //
+        // So the same two refusals run here, first. The copies inside the gate stay:
+        // they are what a caller reaching the gate by any other route still passes
+        // through, and they own the slot RELEASE that must be ordered before the
+        // promote. Raised by /codex adversarial review r7 [critical].
+        let stale = match designation.designated() {
+            None => Some(HotSwapPromotionError::NoLiveStrategyToDemote {
+                expected: demoting.clone(),
+            }),
+            Some(current) if current != &demoting => {
+                Some(HotSwapPromotionError::UnexpectedLiveStrategy {
+                    current: current.clone(),
+                    expected: demoting.clone(),
+                })
+            }
+            Some(_) => None,
+        };
+        if let Some(error) = stale {
+            let _ = ports.events.record(HotSwapPromotionEvent {
+                demoting_strategy_id: demoting,
+                candidate_strategy_id: candidate,
+                promoted: false,
+                refusal: Some(error.machine_reason()),
+                // The demotion never ran, so nothing about it was confirmed.
+                flat_confirmed: false,
+                paper_history_preserved: false,
+                deployed_version: None,
+                observed_at_seconds,
+            });
+            return Err(error);
+        }
+
         let outcome = match self.resolve_demotion(
             request,
             liquidation,

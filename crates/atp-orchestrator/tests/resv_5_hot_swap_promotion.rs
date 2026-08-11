@@ -64,6 +64,49 @@ fn timed_out() -> Probe {
     })
 }
 
+/// Every demotion-side port, wired to PANIC. A stale demoting id must reach none of
+/// them: `resolve_demotion` engages the durable lockout, cancels unfilled liquidation
+/// orders and pages the operator on its timeout branch, so a guard that runs after it
+/// is too late for exactly the effects that matter.
+struct ForbiddenProbe;
+impl HotSwapLiquidationProbe for ForbiddenProbe {
+    fn await_flat_or_timeout(&self, _request: &HotSwapDemotionRequest) -> HotSwapDemotionOutcome {
+        panic!("the liquidation probe ran for a strategy that is not live");
+    }
+}
+
+struct ForbiddenCanceller;
+impl UnfilledOrderCanceller for ForbiddenCanceller {
+    fn cancel_unfilled_liquidation_orders(
+        &self,
+        _request: &HotSwapDemotionRequest,
+    ) -> Result<(), HotSwapSideEffectError> {
+        panic!("an unfilled-order cancel ran for a strategy that is not live");
+    }
+}
+
+struct ForbiddenAlerts;
+impl OperatorAlertSink for ForbiddenAlerts {
+    fn dispatch(&self, _event: OperatorAlertEvent) -> Result<(), HotSwapSideEffectError> {
+        panic!("an operator page went out for a strategy that is not live");
+    }
+}
+
+struct ForbiddenLock;
+impl DemotionPendingLock for ForbiddenLock {
+    fn state(&self) -> DemotionPendingState {
+        panic!("the demotion lockout was consulted for a strategy that is not live");
+    }
+
+    fn engage(&self, _record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
+        panic!("the demotion lockout was ENGAGED for a strategy that is not live");
+    }
+
+    fn amend(&self, _record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
+        panic!("the demotion lockout was amended for a strategy that is not live");
+    }
+}
+
 struct Canceller;
 impl UnfilledOrderCanceller for Canceller {
     fn cancel_unfilled_liquidation_orders(
@@ -580,4 +623,92 @@ fn an_empty_live_slot_is_refused_not_promoted_into() {
         "NO_LIVE_STRATEGY_TO_DEMOTE"
     );
     assert_eq!(outcome.designated_after, None, "nothing may be designated");
+}
+
+#[test]
+fn a_stale_demoting_id_reaches_no_demotion_side_port() {
+    // A swap that queued behind another one can arrive with a demoting id that is no
+    // longer live. `resolve_demotion` is NOT read-only on that path — it engages the
+    // durable lockout, cancels resting liquidation orders and pages the operator — so
+    // refusing only afterwards fires all of it against the wrong strategy.
+    //
+    // Every demotion-side port here panics if touched, which is the strongest
+    // available form of "was never called".
+    // Raised by /codex adversarial review r7 [critical].
+    let orchestrator = StrategyOrchestrator;
+    let events = PromotionEvents::default();
+    let positions = Positions(PositionAnswer::Flat);
+    let paper = PaperHistory::queued(vec![]);
+    let versions = Versions::queued(vec![]);
+    let mut designation = designation_holding("live-gamma"); // NOT the demoting id
+
+    let result = orchestrator.execute_hot_swap(
+        request(),
+        &ForbiddenProbe,
+        &ForbiddenCanceller,
+        &ForbiddenAlerts,
+        &DemotionEvents,
+        &ForbiddenLock,
+        PromotionPorts {
+            positions: &positions,
+            paper_history: &paper,
+            versions: &versions,
+            events: &events,
+        },
+        &mut designation,
+        confirmation(CANDIDATE),
+        OBSERVED_AT,
+    );
+
+    let error = result.expect_err("a stale demoting id must be refused");
+    assert_eq!(error.machine_reason(), "UNEXPECTED_LIVE_STRATEGY");
+    assert_eq!(
+        designation.designated().map(|id| id.as_str()),
+        Some("live-gamma")
+    );
+    // The refusal is still audited — a swap that was refused before it began is a
+    // transition an operator needs to see.
+    let recorded = events.recorded.into_inner();
+    assert_eq!(recorded.len(), 1);
+    assert!(!recorded[0].promoted);
+    assert!(
+        !recorded[0].flat_confirmed,
+        "no demotion ran, so nothing was confirmed flat"
+    );
+}
+
+#[test]
+fn an_empty_live_slot_reaches_no_demotion_side_port_either() {
+    let orchestrator = StrategyOrchestrator;
+    let events = PromotionEvents::default();
+    let positions = Positions(PositionAnswer::Flat);
+    let paper = PaperHistory::queued(vec![]);
+    let versions = Versions::queued(vec![]);
+    let mut designation = LiveDesignation::new();
+
+    let result = orchestrator.execute_hot_swap(
+        request(),
+        &ForbiddenProbe,
+        &ForbiddenCanceller,
+        &ForbiddenAlerts,
+        &DemotionEvents,
+        &ForbiddenLock,
+        PromotionPorts {
+            positions: &positions,
+            paper_history: &paper,
+            versions: &versions,
+            events: &events,
+        },
+        &mut designation,
+        confirmation(CANDIDATE),
+        OBSERVED_AT,
+    );
+
+    assert_eq!(
+        result
+            .expect_err("an empty slot must be refused")
+            .machine_reason(),
+        "NO_LIVE_STRATEGY_TO_DEMOTE"
+    );
+    assert_eq!(designation.designated(), None);
 }

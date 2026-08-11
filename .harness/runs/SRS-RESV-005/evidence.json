@@ -57,13 +57,13 @@
       "command": "python -m pytest tests/domain/test_hot_swap_promotion.py -q",
       "executed": true,
       "exit_code": 0,
-      "head": "04ed0ffc18c0d5fdd415dc0217bf6925db48f32d",
+      "head": "091faf3e2c2a096aefaf459a4c2da0cb457a5cb0",
       "n": 3,
-      "observed": "..............                                                           [100%]\n14 passed in 0.94s",
+      "observed": ".........................                                                [100%]\n25 passed in 1.38s",
       "status": "pass",
       "step_text": "Step 3: Verify acceptance criteria: The promoted strategy starts live with no open IB positions, preserves prior paper performance history, and uses the same strategy code/API behavior.",
       "steps_digest": "5c8abf5ba8070593",
-      "ts": "2026-08-11T03:05:32+00:00"
+      "ts": "2026-08-11T12:37:58+00:00"
     },
     {
       "argv": [
@@ -73,14 +73,14 @@
       "command": "python tools/hot_swap_promotion_check.py",
       "executed": true,
       "exit_code": 0,
-      "head": "04ed0ffc18c0d5fdd415dc0217bf6925db48f32d",
+      "head": "091faf3e2c2a096aefaf459a4c2da0cb457a5cb0",
       "n": 4,
-      "observed": "SRS-RESV-005 PASS\n- DemotionReceipt: private fields ['demoting_strategy_id', 'candidate_strategy_id', 'elapsed_seconds'], derives neither ['Clone', 'Default'], sole constructor `mint` is pub(crate) and refuses a promotion_allowed:false acceptance\n- `execute_hot_swap` is the sole public path: resolve_demotion -> DemotionReceipt::mint -> `promote_after_demotion` (pub(crate), receipt by value)\n- `promote_after_demotion`: 13 ordered guards present, exactly one `designate(` write, positions probed before it, drift rolled back after it\n- ports ['LivePositionProbe', 'PaperHistorySource', 'HotSwapPromotionEventSink'] are observation-only (no promote/designate/demote method)\n- 2 compile_fail doctests: struct-literal forge and `DemotionReceipt::mint` are both proven unreachable from an external crate\n- REST: `POST /api/v1/hot-swap` served_by=SRS-RESV-005, closed vocabularies emitted, subprocess budget 90.0s > 60s demotion timeout\n- stale-deferral collector: 5 claim patterns, 9 files, 0 matches\n- cargo test -p atp-orchestrator --test resv_5_hot_swap_promotion + --doc: PASS",
+      "observed": "SRS-RESV-005 PASS\n- DemotionReceipt: private fields ['demoting_strategy_id', 'candidate_strategy_id', 'elapsed_seconds'], derives neither ['Clone', 'Default'], sole constructor `mint` is pub(crate) and refuses a promotion_allowed:false acceptance\n- `execute_hot_swap` is the sole public path: resolve_demotion -> DemotionReceipt::mint -> `promote_after_demotion` (pub(crate), receipt by value)\n- `promote_after_demotion`: 14 ordered guards present, exactly one `designate(` write, positions probed before it, drift rolled back after it\n- ports ['LivePositionProbe', 'PaperHistorySource', 'HotSwapPromotionEventSink'] are observation-only (no promote/designate/demote method)\n- 2 compile_fail doctests: struct-literal forge and `DemotionReceipt::mint` are both proven unreachable from an external crate\n- REST: `POST /api/v1/hot-swap` served_by=SRS-RESV-005, closed vocabularies emitted, subprocess budget 90.0s > 60s demotion timeout\n- safety-input tier: opt-in at BOTH layers (`--allow-fixture-safety-inputs` before the state read; `fixture_safety_inputs` or a SAFETY_INPUTS_UNAVAILABLE 501 naming ['SRS-EXE-006', 'SRS-ORCH-004'])\n- swap serialized: `trigger_config_store::ExclusiveGuard::acquire_creating` bound for the lifetime of the whole load -> execute -> save sequence in cmd_swap\n- stale-deferral collector: 7 claim patterns, 9 files, 0 matches\n- cargo test -p atp-orchestrator --test resv_5_hot_swap_promotion + --doc: PASS",
       "status": "pass",
       "step_text": "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end.",
       "steps_digest": "5c8abf5ba8070593",
-      "ts": "2026-08-11T03:05:33+00:00"
+      "ts": "2026-08-11T12:36:54+00:00"
     }
   ],
-  "updated": "2026-08-11T11:35:04+00:00"
+  "updated": "2026-08-11T12:37:58+00:00"
 }

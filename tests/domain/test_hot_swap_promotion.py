@@ -697,3 +697,36 @@ def test_a_blocked_swap_is_still_journalled(binaries, paper_store, tmp_path):
     assert len(records) == 1
     assert records[0]["promoted"] is False
     assert records[0]["refusal"] == "LIVE_POSITIONS_OPEN"
+
+
+def test_a_stale_demoting_id_is_refused_before_the_demotion_runs(binaries, paper_store, tmp_path):
+    """Round-7 adversarial review [critical], at the CLI arm.
+
+    `resolve_demotion` is not read-only: on its timeout branch it engages the
+    durable lockout, cancels unfilled liquidation orders and pages the operator. A
+    swap that queued behind another one can arrive naming a strategy that is no
+    longer live, so refusing only after the demotion ran would fire all of that
+    against the wrong strategy.
+
+    Observable here: the refusal is UNEXPECTED_LIVE_STRATEGY, the journal records
+    the demotion as never confirmed, and the durable lockout file is never brought
+    into being.
+    """
+    import json as _json
+
+    state = tmp_path / "live.state"
+    before = _seed_live(state, "some-other-live-strategy")
+    journal = tmp_path / "swaps.jsonl"
+    lock = tmp_path / "demotion-pending.json"
+
+    proof = _lines(_swap(binaries, state=state, paper=paper_store, extra=["--log", str(journal)]))
+
+    assert proof["promotion"] == "BLOCKED"
+    assert proof["refusal"] == "UNEXPECTED_LIVE_STRATEGY"
+    assert proof["designation-after"] == "some-other-live-strategy"
+    assert _digest(state) == before
+    assert not lock.exists(), "the demotion lockout must not be engaged for a stale id"
+
+    record = [_json.loads(l) for l in journal.read_text().splitlines() if l.strip()][0]
+    assert record["promoted"] is False
+    assert record["flat_confirmed"] is False, "no demotion ran, so nothing was confirmed flat"
