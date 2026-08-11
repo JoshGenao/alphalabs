@@ -51,7 +51,7 @@ use atp_types::{
     DeployedVersion, HotSwapDemotionEvent, HotSwapDemotionOutcome, HotSwapDemotionRequest,
     OperatorAlertEvent, SourceHash, StrategyId,
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -352,6 +352,7 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
     // safety inputs already had to close.
     let lock = FileDemotionPendingLock::new(required(&args.demotion_lock, "--demotion-lock")?);
     let events = JournalPromotionEvents {
+        pending: RefCell::new(None),
         path: args.log.as_ref().map(PathBuf::from),
         ordinal: Cell::new(None),
         append_failed: Cell::new(false),
@@ -410,10 +411,16 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
     if designated_after != designated_before {
         match save_designation(&state_path, &designation) {
             PublishOutcome::Durable => {}
+            // Nothing was published, so no committed promotion record may exist.
             PublishOutcome::FailedBeforePublish(reason) => return Err(reason),
             PublishOutcome::PublishedNotSynced(reason) => published_unsynced = Some(reason),
         }
     }
+
+    // The durable live state is now settled (published, or provably unchanged), so the
+    // audit record can be committed without the risk of outliving a swap that never
+    // took effect.
+    events.commit();
 
     match &outcome {
         Ok(promoted) => {
@@ -951,6 +958,8 @@ fn parse_version(spec: Option<&str>) -> Result<VersionAnswer, String> {
 /// With no `--log` the sink only prints, and the ordinal is reported as `-` — an
 /// explicitly absent id, never a fabricated one.
 struct JournalPromotionEvents {
+    /// The accepted-but-not-yet-appended event (see `record`).
+    pending: RefCell<Option<HotSwapPromotionEvent>>,
     path: Option<PathBuf>,
     ordinal: Cell<Option<u64>>,
     /// Whether an append was ATTEMPTED and failed. Kept apart from "no journal was
@@ -961,11 +970,32 @@ struct JournalPromotionEvents {
 }
 
 impl HotSwapPromotionEventSink for JournalPromotionEvents {
+    /// ACCEPTS the event; it does not append it yet.
+    ///
+    /// The gate calls this while the live designation is still only in memory. If the
+    /// append happened here and the durable publish then failed BEFORE its rename, the
+    /// journal would claim `promoted:true` for a swap the durable authority never
+    /// accepted — and recovery tooling would reconcile from a false audit record for a
+    /// live-trading state change. So the event is buffered and [`commit`] appends it
+    /// once the designation is published (or once the attempt is known to have changed
+    /// nothing). Raised by /codex adversarial review r6 [high].
     fn record(&self, event: HotSwapPromotionEvent) -> Result<(), HotSwapSideEffectError> {
         println!("promotion-event-promoted:{}", event.promoted);
         println!("promotion-event-refusal:{}", event.refusal.unwrap_or("-"));
+        *self.pending.borrow_mut() = Some(event);
+        Ok(())
+    }
+}
+
+impl JournalPromotionEvents {
+    /// Append the buffered event, AFTER the durable live-state publish. Called only on
+    /// paths where the designation is known: published, or provably unchanged.
+    fn commit(&self) {
+        let Some(event) = self.pending.borrow_mut().take() else {
+            return;
+        };
         let Some(path) = &self.path else {
-            return Ok(());
+            return;
         };
         let line = format!(
             "{{\"schema_version\":{PROMOTION_LOG_SCHEMA_VERSION},\
@@ -990,15 +1020,13 @@ impl HotSwapPromotionEventSink for JournalPromotionEvents {
                 .map_or("null".to_string(), json_string),
             event.observed_at_seconds,
         );
-        let ordinal = match append_journal_line(path, &line) {
-            Ok(ordinal) => ordinal,
+        match append_journal_line(path, &line) {
+            Ok(ordinal) => self.ordinal.set(Some(ordinal)),
             Err(reason) => {
                 self.append_failed.set(true);
-                return Err(HotSwapSideEffectError::new(reason));
+                eprintln!("SRS-RESV-005: promotion journal append failed: {reason}");
             }
-        };
-        self.ordinal.set(Some(ordinal));
-        Ok(())
+        }
     }
 }
 

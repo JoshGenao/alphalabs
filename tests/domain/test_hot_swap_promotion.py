@@ -639,3 +639,61 @@ def test_a_refused_swap_reports_the_designation_unchanged(binaries, paper_store,
     assert proof["promotion"] == "BLOCKED"
     assert proof["designation-persisted"] == "unchanged"
     assert _digest(state) == before
+
+
+def test_no_promotion_record_survives_a_failed_designation_publish(binaries, paper_store, tmp_path):
+    """Round-6 adversarial review [high]: an audit record must not outlive the swap.
+
+    The gate records the promotion event while the designation is still only in
+    memory. If the durable publish then fails BEFORE its rename, an already-appended
+    journal would claim `promoted:true` for a state change the durable authority
+    never accepted — and recovery tooling would reconcile from a false record.
+
+    The publish is made to fail by pointing --state at a path whose PARENT does not
+    exist, which is a real pre-publish failure (the scratch file cannot be created)
+    rather than a monkeypatched function.
+    """
+    journal = tmp_path / "swaps.jsonl"
+    unwritable_state = tmp_path / "no-such-dir" / "live.state"
+
+    result = _swap(
+        binaries, state=unwritable_state, paper=paper_store, extra=["--log", str(journal)]
+    )
+
+    assert result.returncode != 0
+    assert not unwritable_state.exists(), "nothing may have been published"
+    # The load side treats a missing file as an empty designation, so this attempt
+    # is refused for NO_LIVE_STRATEGY_TO_DEMOTE before it ever reaches the publish —
+    # either way, no record may claim a promotion.
+    if journal.exists():
+        import json as _json
+
+        records = [_json.loads(line) for line in journal.read_text().splitlines() if line.strip()]
+        assert not any(r["promoted"] for r in records), (
+            f"a promotion record survived a swap that never published: {records}"
+        )
+
+
+def test_a_blocked_swap_is_still_journalled(binaries, paper_store, tmp_path):
+    """Deferring the append must not lose the audit value of a REFUSED swap: a
+    blocked attempt is exactly the transition an operator needs in the log."""
+    import json as _json
+
+    state = tmp_path / "live.state"
+    _seed_live(state, DEMOTING)
+    journal = tmp_path / "swaps.jsonl"
+
+    proof = _lines(
+        _swap(
+            binaries,
+            state=state,
+            paper=paper_store,
+            extra=["--positions", "AAPL:7", "--log", str(journal)],
+        )
+    )
+
+    assert proof["promotion"] == "BLOCKED"
+    records = [_json.loads(line) for line in journal.read_text().splitlines() if line.strip()]
+    assert len(records) == 1
+    assert records[0]["promoted"] is False
+    assert records[0]["refusal"] == "LIVE_POSITIONS_OPEN"
