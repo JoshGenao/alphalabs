@@ -237,6 +237,9 @@
                     "type": "string"
                   }
                 },
+                "required": [
+                  "candidate_strategy_id"
+                ],
                 "type": "object"
               }
             }

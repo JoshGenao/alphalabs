@@ -292,6 +292,13 @@ ROUTES: tuple[Route, ...] = (
         # generated client would send an extension field and get a 400 the spec
         # said was fine.
         strict_request_body=True,
+        # The handler rejects a missing or non-string candidate_strategy_id before
+        # dispatch, so the published schema has to say the field is required — a
+        # generated client that legally omits it per the contract and then gets a
+        # 400 from the served route is public drift, not a client bug. `confirm` is
+        # deliberately NOT listed: the transport also accepts it as a query token,
+        # so a body without it is legal.
+        required_request_fields=("candidate_strategy_id",),
         requires_confirmation=True,
         # SRS-RESV-005 ships the handler (atp_orchestration.mount_hot_swap_execution),
         # which drives the real demotion-then-promotion gate. `swap_id` is emitted only

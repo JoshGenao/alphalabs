@@ -760,3 +760,29 @@ def test_a_pre_demotion_refusal_is_not_reported_as_a_completed_demotion(mounted,
     assert body["promotion_state"] == "BLOCKED"
     assert body["demotion_state"] == "DEMOTION_PENDING"
     assert body["demotion_state"] != "DEMOTED"
+
+
+def test_the_published_schema_requires_what_the_handler_requires(mounted, fake_cli):
+    """Round-10 adversarial review [high]: contract drift on a LIVE route.
+
+    The handler rejects a missing `candidate_strategy_id` before dispatch, so a
+    schema without a `required` array lets a generated client legally omit it and
+    then take a 400 from the served route. Asserted against the FROZEN artefact,
+    not just the declaration, because the artefact is what clients are generated
+    from.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    snapshot = _json.loads(
+        (_Path(__file__).resolve().parents[2] / "python/atp_api/openapi.json").read_text()
+    )
+    schema = snapshot["paths"][HOT_SWAP_PATH]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]
+    assert schema["required"] == ["candidate_strategy_id"]
+    # And the handler really does refuse it, so the two agree in both directions.
+    status, body = _post(mounted, _confirmed(), {})
+    assert status == 400
+    assert body["error"]["type"] == "MISSING_CANDIDATE_STRATEGY_ID"
+    assert fake_cli.calls == []
