@@ -80,6 +80,12 @@ def live_dashboard(
     env = {
         "ATP_HOT_SWAP_TRIGGER_STATE": str(state),
         "ATP_HOT_SWAP_TRIGGER_LOG": str(log),
+        # Required alongside the other two since SRS-RESV-006 (the arm refuses to start
+        # without it). The path does not exist, so the SYS-49e window reads as "no swap has
+        # ever completed" and this suite keeps measuring the RESV-003 trigger surface. It
+        # also mounts the cool-down leg, so the pane's three cool-down cells resolve here
+        # rather than rendering their deferred placeholder.
+        "ATP_HOT_SWAP_COOLDOWN_STATE": str(tmp_path / "cooldown.json"),
     }
     runtime = OperatorInterfaceRuntime()
     publisher = mount_default_dashboard(

@@ -2889,18 +2889,23 @@
     const started = hotSwapCellValue(cd.started_at);
     const inEffect = hotSwapCellBool(cd.in_effect);
     const days = typeof snap.cooldown_days_default === "number" ? snap.cooldown_days_default : 7;
-    const c = hotSwapCooldown(typeof expires === "string" ? expires : null, Date.now(), days);
-    // The dial keys off the KNOWN cool-down flag first: an explicit not-in-effect
-    // is READY (no active cool-down), not a hatched "unknown". Only an unknown
-    // (null) in_effect renders deferred.
-    let dialState = c.state;
-    if (c.state === "deferred" && inEffect === false) dialState = "expired";
+    // The server's in_effect is passed IN and is the authority for the state; the helper's
+    // clock arithmetic now only drives the countdown label and the arc fraction. Previously
+    // the state was derived here from a browser-clock comparison and then patched up, which
+    // made a skewed viewer clock a second source of truth about whether a swap is safe.
+    const c = hotSwapCooldown(typeof expires === "string" ? expires : null, Date.now(), days, inEffect);
+    const dialState = c.state;
     if (dial) dial.dataset.state = dialState;
     if (arc) arc.style.strokeDashoffset = String(dialState === "active" ? HS_DIAL_CIRC * (1 - c.fraction) : 0);
     if (valueEl) valueEl.textContent = dialState === "active" ? c.label : dialState === "expired" ? "READY" : c.label;
     if (subEl) {
       subEl.textContent = dialState === "deferred"
-        ? "cool-down state — awaiting SRS-RESV-006"
+        // NOT "awaiting SRS-RESV-006" any more — that producer landed. Deferred here now
+        // means the runtime has no cool-down window mounted (ATP_HOT_SWAP_COOLDOWN_STATE
+        // unset) or the one it has could not be read, and either way the pane cannot say
+        // whether a swap is inside a window. Stale prose outliving its producer is its own
+        // defect: it tells an operator to wait for something that already shipped.
+        ? "cool-down state UNKNOWN — no readable SRS-RESV-006 window on this runtime; promotion is held"
         : dialState === "expired"
           ? "no active cool-down — automatic triggers may fire"
           : (typeof started === "string" && started ? "since " + started + " · " : "") + "expires " + expires;
@@ -2946,7 +2951,7 @@
     if (dial) dial.dataset.state = "deferred";
     const arc = $("hs-dial-arc"); if (arc) arc.style.strokeDashoffset = "0";
     const cv = $("hs-cooldown-value"); if (cv) cv.textContent = "— —";
-    const cs = $("hs-cooldown-sub"); if (cs) cs.textContent = "cool-down — awaiting SRS-RESV-006";
+    const cs = $("hs-cooldown-sub"); if (cs) cs.textContent = "cool-down state UNKNOWN — the whole pane is unreadable";
     hsSlot("hs-live", "hs-live-src", null, "SRS-RESV-005");
     hsSlot("hs-candidate", "hs-candidate-src", null, "SRS-RESV-002");
     renderTriggers({});

@@ -201,6 +201,25 @@ def _trigger_cli() -> Path:
 
 
 def _cli(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run the trigger CLI, defaulting the SRS-RESV-006 window to a CLEAR one.
+
+    Injected here rather than at each call site because it is not what this suite
+    measures. The SYS-49e gate is fail-closed by design: omitting ``--cooldown-state``
+    leaves the window UNKNOWN, which suppresses every automatic pass and refuses every
+    manual fire — so without this default all ~12 invocations below would exercise the
+    cool-down instead of the trigger semantics they were written for.
+
+    The path deliberately does not exist: an absent window reads as "no swap has ever
+    completed", which is the only state that is both clear and honest for a fixture. A
+    caller that IS testing the cool-down passes its own ``--cooldown-state`` and this
+    default steps aside.
+    """
+
+    # Only the two FIRING subcommands take the flag. `config` reads and writes the trigger
+    # configuration and never classifies an instant, so injecting it there would make every
+    # config assertion below fail on an unknown flag rather than on what it is testing.
+    if args and args[0] in ("evaluate", "manual") and "--cooldown-state" not in args:
+        args = (*args, "--cooldown-state", str(REPO_ROOT / "target" / "resv003-clear-window.json"))
     return subprocess.run(
         [str(_trigger_cli()), *args],
         cwd=REPO_ROOT,
@@ -457,6 +476,7 @@ def test_the_rest_manual_trigger_never_reports_a_swap_it_did_not_perform(
         runtime,
         state_path=tmp_path / "triggers.json",
         log_path=log,
+        cooldown_state_path=tmp_path / "cooldown.json",
         binary=_trigger_cli(),
     )
     key = OperationKey(Surface.REST, "POST /api/v1/hot-swap/triggers/manual")
@@ -572,6 +592,9 @@ def test_concurrent_manual_fires_each_get_their_own_record(tmp_path: Path) -> No
                 candidate,
                 "--log",
                 str(log),
+                # A clear SYS-49e window, so this stays a test about concurrent APPENDS.
+                "--cooldown-state",
+                str(tmp_path / "cooldown.json"),
             ],
             cwd=REPO_ROOT,
             check=False,
@@ -762,6 +785,7 @@ def test_the_rest_success_is_correlated_to_the_record_the_binary_wrote(tmp_path:
         runtime,
         state_path=tmp_path / "triggers.json",
         log_path=log,
+        cooldown_state_path=tmp_path / "cooldown.json",
         binary=_trigger_cli(),
     )
     key = OperationKey(Surface.REST, "POST /api/v1/hot-swap/triggers/manual")
@@ -802,6 +826,7 @@ def test_a_non_string_strategy_id_never_reaches_the_audit_log(tmp_path: Path) ->
         runtime,
         state_path=tmp_path / "triggers.json",
         log_path=log,
+        cooldown_state_path=tmp_path / "cooldown.json",
         binary=_trigger_cli(),
     )
     key = OperationKey(Surface.REST, "POST /api/v1/hot-swap/triggers/manual")
@@ -838,6 +863,7 @@ def test_a_misspelled_rest_trigger_field_never_persists_a_partial_change(
         runtime,
         state_path=state,
         log_path=tmp_path / "triggers.jsonl",
+        cooldown_state_path=tmp_path / "cooldown.json",
         binary=_trigger_cli(),
     )
     key = OperationKey(Surface.REST, "PUT /api/v1/hot-swap/triggers")
@@ -935,7 +961,19 @@ def test_a_relative_log_path_still_fires_and_reads_back(tmp_path: Path) -> None:
     # durable, or the first fire reports logged:true with an ordinal a crash would erase.
     binary = _trigger_cli()
     fired = subprocess.run(
-        [str(binary), "manual", "--demoting", "alpha", "--candidate", "beta", "--log", "t.jsonl"],
+        [
+            str(binary),
+            "manual",
+            "--demoting",
+            "alpha",
+            "--candidate",
+            "beta",
+            "--log",
+            "t.jsonl",
+            # Relative on purpose, like --log: a clear window, resolved against cwd.
+            "--cooldown-state",
+            "cooldown.json",
+        ],
         cwd=tmp_path,
         check=False,
         capture_output=True,

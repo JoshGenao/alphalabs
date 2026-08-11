@@ -73,6 +73,7 @@ from collections.abc import Mapping
 from typing import Protocol, runtime_checkable
 
 from atp_hotswap import (
+    CliHotSwapCooldownSource,
     CliHotSwapDemotionSource,
     CliHotSwapPromotionSource,
     CliHotSwapTriggerSource,
@@ -89,6 +90,7 @@ from .provider import DEFERRED
 
 __all__ = [
     "CHANGEOVER_SEQUENCE",
+    "CliHotSwapCooldownSource",
     "CliHotSwapDemotionSource",
     "CliHotSwapPromotionSource",
     "CliHotSwapTriggerSource",

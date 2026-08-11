@@ -14,12 +14,21 @@ use atp_types::{
 };
 use std::fmt;
 
+use crate::cooldown::{CooldownState, ManualCooldownAcknowledgement};
 use crate::demotion_pending_store::{DemotionPendingRecord, DemotionPendingState};
 
 /// SRS-NOTIF-001 detection wiring: binds `atp-execution`'s ERR-2 / SRS-SAFE-003
 /// connectivity gate to the operator-notification dispatcher. Lives here because
 /// `atp-execution` must not depend on `atp-notification` (SRS-ARCH-002).
 pub mod connectivity_notification;
+/// SRS-RESV-006 — the SyRS SYS-49e Hot-Swap cool-down window: the pure classifier
+/// (`CooldownState`) both SRS-RESV-003 entry points consult through one predicate,
+/// `proven_clear`. No clock, no I/O — see [`cooldown_store`] for the durable half.
+pub mod cooldown;
+/// SRS-RESV-006 — the durable SyRS SYS-49e window: the configured period plus the last
+/// swap completion, in one atomically-published record. Absent means no swap has ever
+/// completed; UNREADABLE means [`cooldown::CooldownState::Unknown`], never "no cool-down".
+pub mod cooldown_store;
 /// SRS-RESV-004 — the durable demotion-pending lockout SyRS SYS-49c (c)/(d) requires:
 /// engaged by the liquidation-timeout branch, cleared only by an explicit operator
 /// resolution, and fail-closed on an unreadable store.
@@ -59,6 +68,20 @@ pub enum ManualPromotionError {
     /// The trigger fired, but the audit sink rejected its record, so it is not actionable
     /// (fail closed — see [`UnloggedHotSwapTrigger`]).
     Unlogged(UnloggedHotSwapTrigger),
+    /// SRS-RESV-006 / SyRS SYS-49e: the swap names a real pair, but a cool-down window
+    /// covers this instant — or this build cannot prove one does not — and the operator has
+    /// not acknowledged it. Nothing was proposed and nothing was logged.
+    ///
+    /// **Not a refusal the operator cannot clear.** Manual promotion stays always available
+    /// (the SRS-RESV-003 invariant): the identical call carrying
+    /// [`ManualCooldownAcknowledgement::Acknowledged`] fires. The cool-down adds a
+    /// confirmation, never a block.
+    CooldownConfirmationRequired {
+        /// The window that was in effect, so a surface can render what is being overridden.
+        state: CooldownState,
+        /// The SYS-49e warning text the operator must acknowledge.
+        warning: String,
+    },
 }
 
 impl fmt::Display for ManualPromotionError {
@@ -71,6 +94,12 @@ impl fmt::Display for ManualPromotionError {
                 strategy_id.as_str()
             ),
             Self::Unlogged(unlogged) => write!(formatter, "{unlogged}"),
+            Self::CooldownConfirmationRequired { state, warning } => write!(
+                formatter,
+                "SRS-RESV-006: manual Hot-Swap requires confirmation during a cool-down \
+                 (window {}): {warning}",
+                state.as_str()
+            ),
         }
     }
 }
@@ -1121,9 +1150,12 @@ pub struct HotSwapDemotionResolved {
 //     triggers shall be logged"); its outcome is load-bearing (a REJECTED record
 //     keeps the trigger out of the actionable path — fail closed). Durable
 //     persistence of an ACCEPTED record is the deferred SRS-LOG-001 sink.
-// Everything not owned here — demotion execution, promotion, cool-down, the
-// durable log store, and the REST/dashboard handlers — is enumerated in
+// Everything not owned here — promotion, the durable log store, and the
+// REST/dashboard handlers — is enumerated in
 // `architecture/runtime_services.json` `hot_swap_trigger_contract.deferred[]`.
+// Demotion execution landed as SRS-RESV-004 (`resolve_demotion`), and the SYS-49e
+// cool-down as SRS-RESV-006: both entry points below now take a
+// `cooldown::CooldownState` and consult `proven_clear` before they fire anything.
 
 /// SRS-RESV-003 read-only probe for the current live strategy (identity +
 /// observed drawdown, in basis points). Mirrors the no-mutator discipline of
@@ -1213,18 +1245,34 @@ pub struct TriggerEvaluation {
     /// but the degradation is surfaced here so it is distinguishable from a healthy
     /// "no live strategy" / "no candidates" outcome — never silently collapsed.
     pub degraded_inputs: Vec<String>,
+    /// SRS-RESV-006 / SyRS SYS-49e: the cool-down window this pass was evaluated
+    /// against.
+    ///
+    /// Carried on every evaluation, not just suppressed ones, because without it a pass
+    /// suppressed by a cool-down is byte-identical to a healthy "nothing fired" — the
+    /// operator would see automatic triggers silently doing nothing for a week with no
+    /// surface saying why (`CLAUDE.md` rule 3). It is never derived from a stored
+    /// "suppressed" flag: [`CooldownState::proven_clear`] is the single source of truth,
+    /// so this field and the suppression can never disagree.
+    pub cooldown: CooldownState,
 }
 
 impl TriggerEvaluation {
     /// A no-swap evaluation (nothing fired, nothing selected) carrying any
     /// `degraded_inputs` reasons. Used on the fail-closed early exits (no live
-    /// strategy, or a degraded input port).
-    fn empty(degraded_inputs: Vec<String>) -> Self {
+    /// strategy, a degraded input port, or an SRS-RESV-006 cool-down).
+    ///
+    /// The cool-down state is a REQUIRED argument rather than a default: a
+    /// [`CooldownState::NeverSwapped`] default here would have every degraded-probe pass
+    /// report "no cool-down is in effect" — a claim about a window this pass may never
+    /// have read. An evaluation must not assert a fact it did not establish.
+    fn empty(degraded_inputs: Vec<String>, cooldown: CooldownState) -> Self {
         Self {
             fired: Vec::new(),
             unlogged: Vec::new(),
             selected: None,
             degraded_inputs,
+            cooldown,
         }
     }
 }
@@ -1964,6 +2012,7 @@ impl StrategyOrchestrator {
     pub fn evaluate_automatic_triggers<L, R, S>(
         &self,
         config: &HotSwapTriggerConfig,
+        cooldown: &CooldownState,
         live: &L,
         ranking: &R,
         log: &S,
@@ -1974,6 +2023,24 @@ impl StrategyOrchestrator {
         R: ReservoirRankingSource,
         S: HotSwapTriggerLog,
     {
+        // SRS-RESV-006 / SyRS SYS-49e, FIRST — ahead of the input ports and ahead of every
+        // trigger. During a cool-down the automatic triggers are IGNORED, which is the same
+        // posture a `Disabled` configuration takes: nothing is evaluated, nothing fires, and
+        // nothing is written to the audit log, because no trigger occurred to log.
+        //
+        // An UNKNOWN window suppresses too, and additionally joins `degraded_inputs`: a
+        // window this build cannot read is a failed pass, never a clean "nothing fired"
+        // (`CLAUDE.md` rule 3). An ACTIVE window is NOT degraded — a working cool-down is
+        // healthy, and marking it degraded would make every legitimate suppression exit the
+        // operator CLI non-zero.
+        if !cooldown.proven_clear() {
+            let degraded = cooldown
+                .degraded_reason()
+                .map(|reason| vec![format!("hot-swap cool-down state: {reason}")])
+                .unwrap_or_default();
+            return TriggerEvaluation::empty(degraded, cooldown.clone());
+        }
+
         let mut fired: Vec<HotSwapTriggerProposal> = Vec::new();
         // Aligned with `fired`: each fired trigger's log-record outcome. Used to
         // derive `unlogged` (carrying the rejection reason) and the fail-closed
@@ -1986,13 +2053,13 @@ impl StrategyOrchestrator {
         // promotion is a separate, always-available path.)
         let live_state = match live.current_live() {
             Ok(Some(state)) => state,
-            Ok(None) => return TriggerEvaluation::empty(Vec::new()),
-            Err(error) => return TriggerEvaluation::empty(vec![error.reason]),
+            Ok(None) => return TriggerEvaluation::empty(Vec::new(), cooldown.clone()),
+            Err(error) => return TriggerEvaluation::empty(vec![error.reason], cooldown.clone()),
         };
         // A degraded ranking source likewise fails closed with the reason surfaced.
         let snapshot = match ranking.snapshot() {
             Ok(snapshot) => snapshot,
-            Err(error) => return TriggerEvaluation::empty(vec![error.reason]),
+            Err(error) => return TriggerEvaluation::empty(vec![error.reason], cooldown.clone()),
         };
 
         // Priority 1 — drawdown-demotion (SYS-49a(b)): the live strategy breached
@@ -2094,6 +2161,10 @@ impl StrategyOrchestrator {
             selected,
             // Reached only when both input ports read cleanly, so no degradation.
             degraded_inputs: Vec::new(),
+            // Reached only past the SYS-49e gate above, so this is a provably clear
+            // window — reported rather than assumed, so a caller can tell "the cool-down
+            // had expired" from "there has never been a swap".
+            cooldown: cooldown.clone(),
         }
     }
 
@@ -2117,13 +2188,21 @@ impl StrategyOrchestrator {
     /// Returns `Ok(proposal)` when the record was
     /// accepted (safe to hand to the SRS-RESV-004 gate) and
     /// `Err(UnloggedHotSwapTrigger)` when the sink rejected it — fail closed, so a
-    /// caller never acts on an unlogged manual swap. The cool-down confirmation
-    /// warning for a manual swap during cool-down (SYS-49e) is the deferred
-    /// SRS-RESV-006 concern and is intentionally NOT enforced here.
+    /// caller never acts on an unlogged manual swap.
+    ///
+    /// **SYS-49e cool-down (SRS-RESV-006) IS enforced here**, as a confirmation rather
+    /// than a block: when `cooldown` is not provably clear and `acknowledgement` is
+    /// [`ManualCooldownAcknowledgement::NotAcknowledged`], this returns
+    /// [`ManualPromotionError::CooldownConfirmationRequired`] having proposed and logged
+    /// nothing. Repeating the call with
+    /// [`ManualCooldownAcknowledgement::Acknowledged`] always fires, so "manual promotion
+    /// is always available" continues to hold.
     pub fn request_manual_promotion<S: HotSwapTriggerLog>(
         &self,
         demoting_strategy_id: StrategyId,
         candidate_strategy_id: StrategyId,
+        cooldown: &CooldownState,
+        acknowledgement: ManualCooldownAcknowledgement,
         log: &S,
         observed_at_seconds: u64,
     ) -> Result<HotSwapTriggerProposal, ManualPromotionError> {
@@ -2138,6 +2217,26 @@ impl StrategyOrchestrator {
                 strategy_id: demoting_strategy_id,
             });
         }
+
+        // SRS-RESV-006 / SyRS SYS-49e — AFTER the self-swap check, deliberately. Asking an
+        // operator to acknowledge a cool-down for a request that is malformed anyway would
+        // teach them to confirm past the warning, and confirming it would then produce the
+        // same refusal one step later.
+        //
+        // The SAME predicate the automatic arm uses (`proven_clear`), so suppression and
+        // confirmation can never drift apart — but the CONSEQUENCE is deliberately weaker:
+        // automatic is suppressed outright, manual is only asked to confirm. SRS-RESV-003
+        // guarantees manual promotion is always available, and this preserves that: the
+        // identical call with `Acknowledged` fires. An UNKNOWN window warns too — a build
+        // that cannot prove the window is clear must not let a manual swap through as if it
+        // had.
+        if !cooldown.proven_clear() && !acknowledgement.is_acknowledged() {
+            return Err(ManualPromotionError::CooldownConfirmationRequired {
+                state: cooldown.clone(),
+                warning: cooldown.warning_text(),
+            });
+        }
+
         let (proposal, outcome) = self.fire_trigger(
             HotSwapTriggerKind::ManualPromotion,
             &demoting_strategy_id,

@@ -71,9 +71,12 @@ def test_cooldown_is_deferred_when_expiry_is_unknown() -> None:
 
 @pytest.mark.skipif(_NODE is None, reason="node unavailable to exercise the browser helpers")
 def test_cooldown_expired_reads_ready() -> None:
+    # SRS-RESV-006 changed the 4th argument from absent to load-bearing: the SERVER's
+    # in_effect is the authority for the state. `false` is what a real snapshot carries
+    # alongside a past expiry, and it still reads READY.
     past = _NOW_MS - _DAY_MS
     expiry = f'"{_iso(past)}"'
-    state = json.loads(_eval(f"JSON.stringify(h.hotSwapCooldown({expiry}, {_NOW_MS}, 7))"))
+    state = json.loads(_eval(f"JSON.stringify(h.hotSwapCooldown({expiry}, {_NOW_MS}, 7, false))"))
     assert state["state"] == "expired"
     assert state["label"] == "READY"
 
@@ -82,11 +85,66 @@ def test_cooldown_expired_reads_ready() -> None:
 def test_cooldown_active_reports_remaining_and_fraction() -> None:
     future = _NOW_MS + 3 * _DAY_MS + 4 * 3600000  # 3d 04h remaining
     expiry = f'"{_iso(future)}"'
-    state = json.loads(_eval(f"JSON.stringify(h.hotSwapCooldown({expiry}, {_NOW_MS}, 7))"))
+    state = json.loads(_eval(f"JSON.stringify(h.hotSwapCooldown({expiry}, {_NOW_MS}, 7, true))"))
     assert state["state"] == "active"
     assert state["label"] == "3d 04h"
     # 3d04h of a 7-day window remaining.
     assert 0.4 < state["fraction"] < 0.5
+
+
+# --------------------------------------------------------------------------- #
+# SRS-RESV-006 — the server's in_effect outranks the browser clock
+# --------------------------------------------------------------------------- #
+#
+# The window is classified server-side, against the server clock and the durable record.
+# Letting the pane re-decide it locally makes the VIEWER's clock a second source of truth
+# about whether a live-strategy swap is safe — and this state gates the promote control.
+
+
+@pytest.mark.skipif(_NODE is None, reason="node unavailable to exercise the browser helpers")
+def test_a_fast_browser_clock_cannot_retire_a_window_the_server_says_is_open() -> None:
+    # Expiry already passed by the viewer's clock, but the server says in_effect. The dial
+    # must stay ACTIVE: a few minutes of clock skew must not render READY over a window the
+    # server is still suppressing on.
+    past = _NOW_MS - 60_000
+    expiry = f'"{_iso(past)}"'
+    state = json.loads(_eval(f"JSON.stringify(h.hotSwapCooldown({expiry}, {_NOW_MS}, 7, true))"))
+    assert state["state"] == "active"
+    assert state["fraction"] == 0
+    assert state["label"] == "< 1m", "a skewed clock must not render a negative countdown"
+
+
+@pytest.mark.skipif(_NODE is None, reason="node unavailable to exercise the browser helpers")
+def test_a_slow_browser_clock_cannot_show_a_countdown_the_server_says_is_over() -> None:
+    # The mirror image: the viewer's clock still shows time remaining, but the server says
+    # the window is closed.
+    future = _NOW_MS + 2 * _DAY_MS
+    expiry = f'"{_iso(future)}"'
+    state = json.loads(_eval(f"JSON.stringify(h.hotSwapCooldown({expiry}, {_NOW_MS}, 7, false))"))
+    assert state["state"] == "expired"
+    assert state["label"] == "READY"
+
+
+@pytest.mark.skipif(_NODE is None, reason="node unavailable to exercise the browser helpers")
+def test_an_unknown_in_effect_never_reads_ready_on_the_browser_clock_alone() -> None:
+    # The fail-closed case. The expiry has passed locally but the server did not say whether
+    # the window is in effect, so the pane cannot confirm it closed — it stays deferred, and
+    # hotActionable() holds the promote control inert on exactly that.
+    past = _NOW_MS - _DAY_MS
+    expiry = f'"{_iso(past)}"'
+    state = json.loads(_eval(f"JSON.stringify(h.hotSwapCooldown({expiry}, {_NOW_MS}, 7, null))"))
+    assert state["state"] == "deferred"
+    assert state["label"] == "— —"
+
+
+@pytest.mark.skipif(_NODE is None, reason="node unavailable to exercise the browser helpers")
+def test_a_never_swapped_snapshot_reads_ready_without_any_expiry() -> None:
+    # NEVER_SWAPPED carries in_effect:false and NO timestamps — there is no window to date.
+    # That must render READY, not a hatched unknown: no swap has ever happened, so nothing
+    # is being suppressed.
+    state = json.loads(_eval(f"JSON.stringify(h.hotSwapCooldown(null, {_NOW_MS}, 7, false))"))
+    assert state["state"] == "expired"
+    assert state["label"] == "READY"
 
 
 def _iso(epoch_ms: int) -> str:

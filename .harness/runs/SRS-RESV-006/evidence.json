@@ -1,0 +1,70 @@
+{
+  "created": "2026-08-11T12:35:32+00:00",
+  "critic": {},
+  "feature": "SRS-RESV-006",
+  "gates": {},
+  "steps": [
+    {
+      "argv": [
+        "./init.sh"
+      ],
+      "command": "./init.sh",
+      "executed": true,
+      "exit_code": 0,
+      "head": "17a64fafebd52f8d0bd06c09dccc233464882067",
+      "n": 1,
+      "observed": "\u2192 Installing dependencies...\n  Using /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-RESV-006/.venv/bin/python (Python 3.13)\n\u2192 Starting dev server...\n  Dev server already running at http://127.0.0.1:3020.\n\u2192 Waiting for server...\n\u2192 Running baseline smoke test...\n\u2192 Running contract checks (scope=env)...\n\u2192 contract checks (scope=env, 17 check(s))\n  \u00b7 architecture_check\n  \u00b7 dependency_boundary_check\n  \u00b7 config_check\n  \u00b7 startup_readiness_gate_check\n  \u00b7 startup_readiness_runtime_check\n  \u00b7 ib_adapter_check\n  \u00b7 rest_api_check\n  \u00b7 websocket_api_check\n  \u00b7 cli_check\n  \u00b7 operator_workflow_surface_check\n  \u00b7 operator_interface_runtime_check\n  \u00b7 log_record_check\n  \u00b7 log_persistence_check\n  \u00b7 subscription_fanout_check\n  \u00b7 sim_halt_check\n  \u00b7 strategy_api_indicators_check\n  \u00b7 strategy_api_documentation_check\n\u2713 17/17 contract check(s) passed (scope=env)\n\u2713 Environment ready",
+      "status": "pass",
+      "step_text": "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "steps_digest": "8d3fca4513f5238f",
+      "ts": "2026-08-11T12:35:32+00:00"
+    },
+    {
+      "command": "pytest tests/e2e/test_hot_swap_triggers.py -q  # + browser automation against the dashboard Hot-Swap pane",
+      "executed": false,
+      "head": "17a64fafebd52f8d0bd06c09dccc233464882067",
+      "n": 2,
+      "observed": "SERIALIZED \u2014 NOT RUN this session. Step 2 needs browser automation against the dashboard plus REST/WS checks; those bind the shared dashboard stack, which the parallel-agent protocol forbids while siblings hold leases (SRS-RESV-005 was live). Implemented and covered at L4 instead: tests/boundary/test_hot_swap_cooldown_surface.py drives the REAL mounted route over HTTP (16 cases) and the real CliHotSwapCooldownSource leg; tests/domain/test_hot_swap_cooldown.py drives both real binaries end to end (13 cases). The browser-witnessed acceptance run is the operator's to perform. Marked fail so no gate can mistake this for executed evidence.",
+      "status": "fail",
+      "step_text": "Step 2: Exercise SRS-RESV-006 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "steps_digest": "8d3fca4513f5238f",
+      "ts": "2026-08-11T12:36:05+00:00"
+    },
+    {
+      "argv": [
+        "pytest",
+        "tests/domain/test_hot_swap_cooldown.py",
+        "-q"
+      ],
+      "command": "pytest tests/domain/test_hot_swap_cooldown.py -q",
+      "executed": true,
+      "exit_code": 0,
+      "head": "17a64fafebd52f8d0bd06c09dccc233464882067",
+      "n": 3,
+      "observed": ".............                                                            [100%]\n13 passed in 0.68s",
+      "status": "pass",
+      "step_text": "Step 3: Verify acceptance criteria: After successful swap, automatic triggers are ignored for the configured cool-down period defaulting to 7 calendar days; manual swap during cool-down requires confirmation warning; the cool-down start time is the timestamp of the most recent successful swap completion.",
+      "steps_digest": "8d3fca4513f5238f",
+      "ts": "2026-08-11T12:35:40+00:00"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "atp-orchestrator"
+      ],
+      "command": "cargo test -p atp-orchestrator",
+      "executed": true,
+      "exit_code": 0,
+      "head": "17a64fafebd52f8d0bd06c09dccc233464882067",
+      "n": 4,
+      "observed": "t.rs (target/debug/deps/err_7_hot_swap_demotion_timeout-ced04f9e2cfda387)\n     Running tests/exe002_cli_fail_closed.rs (target/debug/deps/exe002_cli_fail_closed-c79f22be4b7f28a7)\n     Running tests/orch_1_lifecycle_contract.rs (target/debug/deps/orch_1_lifecycle_contract-426792d336ccf851)\n     Running tests/orch_2_resource_profile_contract.rs (target/debug/deps/orch_2_resource_profile_contract-0c59774e0600eb24)\n     Running tests/orch_3_workload_priority_contract.rs (target/debug/deps/orch_3_workload_priority_contract-94b4409fcff62ff9)\n     Running tests/orch_4_deployment_version_contract.rs (target/debug/deps/orch_4_deployment_version_contract-9230411cb4d996e5)\n     Running tests/orch_5_cli_fail_closed.rs (target/debug/deps/orch_5_cli_fail_closed-3e3ad6e7410bf814)\n     Running tests/orch_5_rollback_contract.rs (target/debug/deps/orch_5_rollback_contract-8aa82b83cde1a886)\n     Running tests/resv_3_cli_fail_closed.rs (target/debug/deps/resv_3_cli_fail_closed-3fabb8eb83e0f186)\nresv003_hot_swap_trigger_cli: degraded input port(s): hot-swap cool-down state: no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect (fail closed)\nresv003_hot_swap_trigger_cli: degraded input port(s): hot-swap cool-down state: no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect (fail closed)\nresv003_hot_swap_trigger_cli: SRS-RESV-006: manual Hot-Swap requires confirmation during a cool-down (window UNKNOWN): the Hot-Swap cool-down window could not be determined, so this build cannot say whether a swap is within one (SyRS SYS-49e): no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect. Confirm to swap manually anyway.\nresv003_hot_swap_trigger_cli: SRS-RESV-006: manual Hot-Swap requires confirmation during a cool-down (window UNKNOWN): the Hot-Swap cool-down window could not be determined, so this build cannot say whether a swap is within one (SyRS SYS-49e): no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect. Confirm to swap manually anyway.\n     Running tests/resv_3_hot_swap_triggers.rs (target/debug/deps/resv_3_hot_swap_triggers-10121bc7c1b057cc)\n     Running tests/resv_3_trigger_log_schema.rs (target/debug/deps/resv_3_trigger_log_schema-437ea1d8e05b0210)\n     Running tests/resv_4_demotion_pending_store.rs (target/debug/deps/resv_4_demotion_pending_store-b152c697ac060d9d)\n     Running tests/resv_4_demotion_sequence.rs (target/debug/deps/resv_4_demotion_sequence-07669abc31280677)\n     Running tests/resv_6_cli_fail_closed.rs (target/debug/deps/resv_6_cli_fail_closed-9a2c6cb1e9747aec)\n     Running tests/resv_6_cooldown_classification.rs (target/debug/deps/resv_6_cooldown_classification-3c0904e86ad10157)\n     Running tests/resv_6_cooldown_gate.rs (target/debug/deps/resv_6_cooldown_gate-f97f316675f504c4)\n     Running tests/resv_6_cooldown_relative_path.rs (target/debug/deps/resv_6_cooldown_relative_path-0a07aa9b5423091e)\n     Running tests/resv_6_cooldown_store.rs (target/debug/deps/resv_6_cooldown_store-64245a320d20503b)\n     Running tests/safe_002_liquidation_timeout_scenario.rs (target/debug/deps/safe_002_liquidation_timeout_scenario-199cc03cea16d6c7)\n     Running tests/srs_err_001_broker_envelope_cli.rs (target/debug/deps/srs_err_001_broker_envelope_cli-1f299bfa619b165a)\n     Running tests/srs_err_001_broker_envelope_live.rs (target/debug/deps/srs_err_001_broker_envelope_live-790d7ec6b628aa11)\n     Running tests/srs_exe_002_routing_wiring.rs (target/debug/deps/srs_exe_002_routing_wiring-e26840c56cf238d8)\n     Running tests/srs_safe_003_connectivity_block_cli.rs (target/debug/deps/srs_safe_003_connectivity_block_cli-b4bec2264f50527e)\n     Running tests/srs_safe_003_connectivity_block_wiring.rs (target/debug/deps/srs_safe_003_connectivity_block_wiring-6730626bf9fc6ce0)\n   Doc-tests atp_orchestrator",
+      "status": "pass",
+      "step_text": "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end.",
+      "steps_digest": "8d3fca4513f5238f",
+      "ts": "2026-08-11T12:35:43+00:00"
+    }
+  ],
+  "updated": "2026-08-11T12:36:05+00:00"
+}

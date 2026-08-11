@@ -635,6 +635,13 @@
       "why": "Hot-Swap trigger configuration + logging"
     },
     {
+      "name": "hot_swap_cooldown_check",
+      "scopes": {
+        "ci": []
+      },
+      "why": "SRS-RESV-006 / SyRS SYS-49e cool-down window: both trigger entry points consult proven_clear (the anti-bypass check), Unknown is never clear, classify uses saturating_sub + checked_add, and the operator CLIs resolve their window from the durable store instead of constructing one"
+    },
+    {
       "name": "strategy_api_check",
       "scopes": {
         "ci": []

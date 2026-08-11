@@ -10,10 +10,17 @@
 //! proof lines (repo convention) and fails closed on unknown / duplicate /
 //! valueless flags. The trigger layer only proposes + logs — it does NOT execute
 //! the swap (that is the SRS-RESV-004 gate).
+//!
+//! **SRS-RESV-006 / SyRS SYS-49e** gates both firing subcommands: `evaluate` is
+//! suppressed entirely inside a cool-down window, and `manual` requires
+//! `--confirm-cooldown`. Because a cool-down is a decision about an INSTANT, this tool
+//! now reads the real clock by default (`--now` overrides it for reproducible proof
+//! runs) — see [`wall_clock_seconds`] for why a frozen constant stopped being tenable.
 
+use atp_orchestrator::cooldown::ManualCooldownAcknowledgement;
 use atp_orchestrator::{
-    trigger_config_store, HotSwapSideEffectError, HotSwapTriggerLog, LiveStrategyProbe,
-    ManualPromotionError, ReservoirRankingSource, StrategyOrchestrator,
+    cooldown_store, trigger_config_store, HotSwapSideEffectError, HotSwapTriggerLog,
+    LiveStrategyProbe, ManualPromotionError, ReservoirRankingSource, StrategyOrchestrator,
 };
 use atp_types::json_scan::{json_string_value, parse_strict_i64, top_level_json_field};
 use atp_types::{
@@ -27,9 +34,32 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-/// Fixed demonstration observation timestamp (wall-clock time is intentionally
-/// not read — the tool is deterministic).
-const OBSERVED_AT_SECONDS: u64 = 1_715_000_000;
+/// The observation instant, read from the REAL clock unless `--now` overrides it.
+///
+/// This value is BOTH the trigger record's `observed_at_seconds` AND the instant the
+/// SRS-RESV-006 / SyRS SYS-49e cool-down window is evaluated against, so a single read
+/// keeps the audit record and the suppression decision describing the same moment.
+///
+/// It used to be a frozen constant, on the grounds that the tool was deterministic. That
+/// stopped being tenable once a time-WINDOWED decision moved through here: a frozen
+/// default makes every cool-down look like it began at the same instant forever, so a
+/// scheduled `evaluate` would see zero elapsed time on every run and either suppress
+/// permanently or never suppress at all (durable-writes playbook rule 23). Determinism is
+/// preserved where it is actually needed — proof runs — by `--now <epoch-seconds>`.
+fn wall_clock_seconds() -> Result<u64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        // NOT `unwrap_or(0)`. A zero here would place every recorded completion far in the
+        // past, so every cool-down window would read as long expired and SYS-49e would be
+        // silently defeated by a misconfigured clock. A clock this build cannot trust
+        // refuses the time-windowed decision instead.
+        .map_err(|_| {
+            "system clock reports a time before the Unix epoch; refusing to evaluate a \
+             time-windowed Hot-Swap decision against it"
+                .to_string()
+        })
+}
 
 /// The trigger-event line layout this build WRITES (SRS-DATA-015 / SyRS SYS-66).
 /// **Version history:** v1 = `{schema_version, kind, demoting_strategy_id,
@@ -91,12 +121,25 @@ evaluate FLAGS:
                                  a sink the pass fails closed (nonzero exit)
     --inject disabled            non-vacuity: ignore the enable flags and use the
                                  default (all-disabled) config, proving nothing fires
+    --cooldown-state <path>      the SRS-RESV-006 / SYS-49e cool-down window. OMITTING
+                                 it is NOT permissive: with no window to read, this
+                                 build cannot say whether a swap is inside one, so the
+                                 pass is UNKNOWN -> suppressed -> nonzero exit
+    --now <epoch-seconds>        override the real clock (proof runs). Default: the
+                                 system clock
 
 manual FLAGS:
     --demoting <id>              the current live strategy to demote (required)
     --candidate <id>             the reservoir strategy to promote (required)
     --log <path>                 durable JSONL audit log (REQUIRED — manual always
                                  fires; without a sink the command fails closed)
+    --cooldown-state <path>      as above. A cool-down never BLOCKS a manual swap; it
+                                 requires --confirm-cooldown
+    --confirm-cooldown           acknowledge the SYS-49e warning and swap anyway. This
+                                 is NOT the transport's SYS-49a confirmation: an
+                                 ordinary confirmed manual trigger must not silently
+                                 override a live cool-down
+    --now <epoch-seconds>        override the real clock (proof runs)
 ";
 
 fn main() -> ExitCode {
@@ -362,6 +405,8 @@ fn cmd_evaluate(rest: &[String]) -> Result<(), String> {
     let mut inject_disabled = false;
     let mut log_path: Option<String> = None;
     let mut state_path: Option<String> = None;
+    let mut cooldown_state_path: Option<String> = None;
+    let mut now_override: Option<u64> = None;
     let mut ranked: Vec<RankedStrategy> = Vec::new();
 
     let mut iter = rest.iter();
@@ -422,6 +467,18 @@ fn cmd_evaluate(rest: &[String]) -> Result<(), String> {
                     return Err(dup(flag));
                 }
                 log_path = Some(take_value(&mut iter, flag)?);
+            }
+            "--cooldown-state" => {
+                if cooldown_state_path.is_some() {
+                    return Err(dup(flag));
+                }
+                cooldown_state_path = Some(take_value(&mut iter, flag)?);
+            }
+            "--now" => {
+                if now_override.is_some() {
+                    return Err(dup(flag));
+                }
+                now_override = Some(parse_u64(&take_value(&mut iter, flag)?, flag)?);
             }
             "--state" => {
                 if state_path.is_some() {
@@ -511,16 +568,44 @@ fn cmd_evaluate(rest: &[String]) -> Result<(), String> {
 
     let log = CollectingTriggerLog::new(log_path.as_deref().map(PathBuf::from));
 
+    // One clock read for the whole pass: the same instant classifies the SYS-49e window and
+    // stamps any record this pass writes, so the audit trail and the suppression decision
+    // can never describe different moments.
+    let observed_at_seconds = match now_override {
+        Some(now) => now,
+        None => wall_clock_seconds()?,
+    };
+    // SRS-RESV-006: the ONE production producer of a CooldownState. Constructing one here
+    // by hand would let this surface assert a window it never read.
+    let cooldown = cooldown_store::resolve(
+        cooldown_state_path.as_deref().map(Path::new),
+        observed_at_seconds,
+    );
+
     let evaluation = StrategyOrchestrator.evaluate_automatic_triggers(
         &config,
+        &cooldown,
         &live,
         &ranking,
         &log,
-        OBSERVED_AT_SECONDS,
+        observed_at_seconds,
     );
 
     println!("inject-disabled:{inject_disabled}");
     println!("any-automatic-enabled:{}", config.any_automatic_enabled());
+    println!("observed-at-seconds:{observed_at_seconds}");
+    println!("cooldown-state:{}", evaluation.cooldown.as_str());
+    // Derived from the same predicate the gate used, not from a second opinion about it.
+    println!(
+        "cooldown-suppressed:{}",
+        !evaluation.cooldown.proven_clear()
+    );
+    if let Some(started) = evaluation.cooldown.started_at_seconds() {
+        println!("cooldown-started-at-seconds:{started}");
+    }
+    if let Some(expires) = evaluation.cooldown.expires_at_seconds() {
+        println!("cooldown-expires-at-seconds:{expires}");
+    }
     for proposal in &evaluation.fired {
         println!(
             "fired:{} demoting:{} candidate:{} rationale:{}",
@@ -611,6 +696,9 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
     let mut demoting: Option<String> = None;
     let mut candidate: Option<String> = None;
     let mut log_path: Option<String> = None;
+    let mut cooldown_state_path: Option<String> = None;
+    let mut confirm_cooldown = false;
+    let mut now_override: Option<u64> = None;
 
     let mut iter = rest.iter();
     while let Some(flag) = iter.next() {
@@ -632,6 +720,24 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
                     return Err(dup(flag));
                 }
                 log_path = Some(take_value(&mut iter, flag)?);
+            }
+            "--cooldown-state" => {
+                if cooldown_state_path.is_some() {
+                    return Err(dup(flag));
+                }
+                cooldown_state_path = Some(take_value(&mut iter, flag)?);
+            }
+            "--confirm-cooldown" => {
+                if confirm_cooldown {
+                    return Err(dup(flag));
+                }
+                confirm_cooldown = true;
+            }
+            "--now" => {
+                if now_override.is_some() {
+                    return Err(dup(flag));
+                }
+                now_override = Some(parse_u64(&take_value(&mut iter, flag)?, flag)?);
             }
             other => return Err(format!("unknown flag '{other}'\n\n{USAGE}")),
         }
@@ -670,14 +776,47 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
     };
 
     let log = CollectingTriggerLog::new(log_path.as_deref().map(PathBuf::from));
+    // One clock read, shared by the SYS-49e window and the record's observed_at_seconds.
+    let observed_at_seconds = match now_override {
+        Some(now) => now,
+        None => wall_clock_seconds()?,
+    };
+    let cooldown = cooldown_store::resolve(
+        cooldown_state_path.as_deref().map(Path::new),
+        observed_at_seconds,
+    );
+    let acknowledgement = if confirm_cooldown {
+        ManualCooldownAcknowledgement::Acknowledged
+    } else {
+        ManualCooldownAcknowledgement::NotAcknowledged
+    };
     let outcome = StrategyOrchestrator.request_manual_promotion(
         demoting_id,
         candidate_id,
+        &cooldown,
+        acknowledgement,
         &log,
-        OBSERVED_AT_SECONDS,
+        observed_at_seconds,
     );
 
     println!("manual-always-available:true");
+    println!("observed-at-seconds:{observed_at_seconds}");
+    println!("cooldown-state:{}", cooldown.as_str());
+    // Whether a confirmation was NEEDED, and whether one was GIVEN, are two separate facts:
+    // a surface that printed only "confirmed" could not tell an operator who over-confirmed
+    // a clear window from one who overrode a live cool-down.
+    println!(
+        "cooldown-confirmation-required:{}",
+        !cooldown.proven_clear()
+    );
+    println!("cooldown-confirmed:{confirm_cooldown}");
+    if let Some(started) = cooldown.started_at_seconds() {
+        println!("cooldown-started-at-seconds:{started}");
+    }
+    if let Some(expires) = cooldown.expires_at_seconds() {
+        println!("cooldown-expires-at-seconds:{expires}");
+    }
+
     // A refused request never proposed anything, so there is no `fired:` line to print for
     // it — printing one would report a trigger the domain layer declined to create.
     if let Err(ManualPromotionError::SameStrategy { .. }) = &outcome {
@@ -685,13 +824,30 @@ fn cmd_manual(rest: &[String]) -> Result<(), String> {
         println!("manual-logged:false");
         return Err(outcome.unwrap_err().to_string());
     }
+    // SRS-RESV-006: an unacknowledged swap inside (or possibly inside) a SYS-49e window.
+    // Recoverable by construction — the same call with --confirm-cooldown fires — so the
+    // proof stream says so rather than leaving "refused" to read as "impossible".
+    if let Err(ManualPromotionError::CooldownConfirmationRequired { warning, .. }) = &outcome {
+        println!("manual-refused:COOLDOWN_CONFIRMATION_REQUIRED");
+        println!("manual-logged:false");
+        println!("cooldown-warning:{}", one_line(warning));
+        println!("cooldown-override-available:--confirm-cooldown");
+        return Err(outcome.unwrap_err().to_string());
+    }
     // Ok = fired AND logged (safe to hand to the RESV-004 gate); Err = fired but
     // the required audit-log record was rejected (fail closed — not actionable).
     let (proposal, logged) = match &outcome {
         Ok(proposal) => (proposal, true),
         Err(ManualPromotionError::Unlogged(unlogged)) => (&unlogged.proposal, false),
-        Err(ManualPromotionError::SameStrategy { .. }) => unreachable!("handled above"),
+        Err(ManualPromotionError::SameStrategy { .. })
+        | Err(ManualPromotionError::CooldownConfirmationRequired { .. }) => {
+            unreachable!("handled above")
+        }
     };
+    // A manual swap that fired while a window was open is the SYS-49e override an audit
+    // reader most needs to find. Printed only past the refusal branches, so it can never
+    // describe a swap that did not happen.
+    println!("cooldown-override:{}", !cooldown.proven_clear());
     println!(
         "fired:{} demoting:{} candidate:{} rationale:{}",
         proposal.kind.as_str(),
@@ -750,6 +906,30 @@ fn parse_u32(value: &str, flag: &str) -> Result<u32, String> {
     value
         .parse()
         .map_err(|_| format!("{flag} expects a u32 (got '{value}')\n\n{USAGE}"))
+}
+
+/// Flatten a message onto ONE proof line.
+///
+/// The proof stream is line-oriented `key:value` and `atp_hotswap.parse_trigger_cli_output`
+/// splits it that way, so a value carrying a newline would silently become a bogus extra
+/// key — and a control character would make the line unprintable. The SYS-49e warning is
+/// generated in-process today, but it is the only proof value assembled from a
+/// multi-sentence string, and a reader must not be able to be steered by one
+/// (honest-surfaces rule 38: validate what the command will print).
+fn one_line(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn parse_u64(value: &str, flag: &str) -> Result<u64, String> {
+    value
+        .parse()
+        .map_err(|_| format!("{flag} expects a u64 (got '{value}')\n\n{USAGE}"))
 }
 
 fn take_value<'a>(

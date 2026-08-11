@@ -50,6 +50,7 @@ from .heartbeat import (
     SnapshotHeartbeatSource,
 )
 from .hotswap import (
+    CliHotSwapCooldownSource,
     CliHotSwapDemotionSource,
     CliHotSwapPromotionSource,
     CliHotSwapTriggerSource,
@@ -520,23 +521,37 @@ def mount_default_dashboard(
     # itself writes. Setting it resolves the pane's current_live_strategy_id cell,
     # which every prior session rendered as deferred:SRS-RESV-005.
     #
-    # A THIRD leg because it answers a different question from a different file, read
-    # by a different binary — so a lockout that is merely ABSENT does not stop the
-    # designation resolving, and either can be composed without the other.
+    # SRS-RESV-006: ATP_HOT_SWAP_COOLDOWN_STATE names the durable SyRS SYS-49e window
+    # that resv006_hot_swap_cooldown_cli maintains, the trigger gate classifies, and
+    # execute_hot_swap both consults and writes. Setting it resolves the pane's
+    # cooldown.in_effect / started_at / expires_at cells, which have rendered
+    # deferred:SRS-RESV-006 since UI-5 shipped.
     #
-    # It does NOT buy failure independence, and saying so would be the drift this pane
-    # exists to avoid: both halves feed ONE protocol method (`live_state`), so a leg
-    # that RAISES defers the whole live-state group, including a live strategy that was
-    # perfectly readable. That is the fail-closed direction — the promote control goes
-    # inert rather than acting on half a safety picture — and
-    # tests/boundary/test_dashboard_designation_wiring.py pins it as the real
-    # behaviour. Splitting it finer is UI-5's protocol to change, not this call site's.
+    # FOUR separate legs, because each answers a different question from a different
+    # file read by a different binary — so a lockout that is merely ABSENT does not
+    # stop the designation resolving, and any one composes without the others.
     #
-    # Unset, the leg is absent and the cell keeps its deferred placeholder — a dashboard
-    # that cannot read the designation must never report which strategy is live.
+    # That does NOT buy failure independence, and saying so would be the drift this
+    # pane exists to avoid: all three live-state sub-legs feed ONE protocol method
+    # (`live_state`), so a leg that RAISES defers the whole live-state group, including
+    # a live strategy or a cool-down window that was perfectly readable. That is the
+    # fail-closed direction — the promote control goes inert rather than acting on part
+    # of a safety picture — and tests/boundary/test_dashboard_designation_wiring.py
+    # pins it as the real behaviour. Splitting it finer is UI-5's protocol to change,
+    # not this call site's.
+    #
+    # Unset, a leg is absent and its cells keep their deferred placeholder — a
+    # dashboard that cannot read the designation must never report which strategy is
+    # live, and one that cannot read the window must never report "no cool-down is in
+    # effect". The pane holds its promote control inert on exactly those unknowns.
     hot_swap_demotion_state = env.get("ATP_HOT_SWAP_DEMOTION_STATE") or None
     hot_swap_designation_state = env.get("ATP_HOT_SWAP_DESIGNATION_STATE") or None
-    if hot_swap_demotion_state is not None or hot_swap_designation_state is not None:
+    hot_swap_cooldown_state = env.get("ATP_HOT_SWAP_COOLDOWN_STATE") or None
+    if (
+        hot_swap_demotion_state is not None
+        or hot_swap_designation_state is not None
+        or hot_swap_cooldown_state is not None
+    ):
         hot_swap_source = CompositeHotSwapStatusSource(
             triggers=hot_swap_source,
             demotion=(
@@ -547,6 +562,11 @@ def mount_default_dashboard(
             promotion=(
                 CliHotSwapPromotionSource(hot_swap_designation_state)
                 if hot_swap_designation_state is not None
+                else None
+            ),
+            cooldown=(
+                CliHotSwapCooldownSource(hot_swap_cooldown_state)
+                if hot_swap_cooldown_state is not None
                 else None
             ),
         )
@@ -633,6 +653,13 @@ def _mount_hot_swap_trigger_arm(
     failure rather than a degraded mode: "all swap triggers are logged" is a first-class
     acceptance clause, so a surface that could fire a trigger it cannot record must not come
     up at all. Same rule the SRS-MD-003 heartbeat composition applies to its audit sink.
+
+    ``ATP_HOT_SWAP_COOLDOWN_STATE`` is REQUIRED for the same reason (SRS-RESV-006 /
+    SyRS SYS-49e). The binary already fails closed on a missing window — it reports UNKNOWN
+    and refuses — so an unset knob would leave the REST arm mounted but structurally unable
+    to fire ANY manual trigger, which reads to an operator as a broken surface rather than
+    as a missing setting. Failing at boot names the actual cause once, instead of once per
+    request.
     """
 
     state_path = env.get("ATP_HOT_SWAP_TRIGGER_STATE") or None
@@ -646,7 +673,21 @@ def _mount_hot_swap_trigger_arm(
             "(SRS-RESV-003 'all swap triggers are logged'), so it must not start without "
             "somewhere to write one"
         )
-    return mount_hot_swap_triggers(runtime, state_path=state_path, log_path=log_path)
+    cooldown_state_path = env.get("ATP_HOT_SWAP_COOLDOWN_STATE") or None
+    if cooldown_state_path is None:
+        raise ValueError(
+            "ATP_HOT_SWAP_TRIGGER_STATE is set but ATP_HOT_SWAP_COOLDOWN_STATE is not: the "
+            "Hot-Swap trigger surface enforces the SyRS SYS-49e cool-down "
+            "(SRS-RESV-006), and with no window to read every manual trigger would be "
+            "refused as UNKNOWN — a surface that can never fire must not come up claiming "
+            "it can"
+        )
+    return mount_hot_swap_triggers(
+        runtime,
+        state_path=state_path,
+        log_path=log_path,
+        cooldown_state_path=cooldown_state_path,
+    )
 
 
 def serve(host: str = "127.0.0.1", port: int = 8080) -> None:

@@ -116,6 +116,14 @@ path = "src/bin/resv005_hot_swap_promote_cli.rs"
 name = "safe003_connectivity_block_cli"
 path = "src/bin/safe003_connectivity_block_cli.rs"
 
+# SRS-RESV-006 — the SyRS SYS-49e cool-down window: inspect it, configure its period, and
+# record a swap completion. Separate from resv003_hot_swap_trigger_cli deliberately: a
+# tool that decides which triggers fire must not also be the tool that can START the
+# window suppressing them.
+[[bin]]
+name = "resv006_hot_swap_cooldown_cli"
+path = "src/bin/resv006_hot_swap_cooldown_cli.rs"
+
 [dependencies]
 # The orchestrator is the composition layer (SRS-ARCH-001): it is allowed to
 # see both the execution gate and the simulation fleet, which stay

@@ -279,6 +279,23 @@ pub const PERSISTED_ENTITIES: &[SchemaDescriptor] = &[
         legacy_unversioned: false,
     },
     SchemaDescriptor {
+        entity_id: "hot-swap-cooldown-state",
+        owner_srs: "SRS-RESV-006",
+        writer_path: "crates/atp-orchestrator/src/cooldown_store.rs",
+        marker: "COOLDOWN_SCHEMA_VERSION",
+        magic: Some("ATP-HOT-SWAP-COOLDOWN"),
+        current_version: 1,
+        min_supported_version: 1,
+        posture: EvolutionPosture::Pinned,
+        // The SyRS SYS-49e window (configured period + last swap completion), versioned from
+        // its first byte. Pinned for the same reason as its demotion sibling above: this record
+        // decides whether an automatic live-strategy swap may fire, so a payload this build
+        // cannot interpret exactly must fail the read — which resolves to
+        // CooldownState::Unknown and SUPPRESSES — rather than be migrated into a shape nobody
+        // wrote and read as "no cool-down".
+        legacy_unversioned: false,
+    },
+    SchemaDescriptor {
         entity_id: "kill-switch-last-activation",
         owner_srs: "SRS-SAFE-001",
         writer_path: "python/atp_safety/state.py",

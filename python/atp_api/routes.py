@@ -404,8 +404,19 @@ ROUTES: tuple[Route, ...] = (
             "Fire the always-available manual promotion TRIGGER, producing a logged "
             "proposal (SYS-49a(a)). Does not execute the swap."
         ),
-        srs_refs=("SRS-RESV-003", "SYS-49a"),
-        request_fields=("demoting_strategy_id", "candidate_strategy_id", "confirm"),
+        srs_refs=("SRS-RESV-003", "SRS-RESV-006", "SYS-49a", "SYS-49e"),
+        # `confirm_cooldown` is the SRS-RESV-006 / SYS-49e acknowledgement, and it is
+        # deliberately NOT `confirm`. That one is the transport's SYS-49a confirmation for
+        # firing a manual trigger at all; this one says "I know a cool-down is running and I
+        # am overriding it". One token for both would make every ordinary confirmed trigger
+        # a silent cool-down override, and the operator would never see the warning.
+        # Optional, and absent means NOT acknowledged — the fail-closed direction.
+        request_fields=(
+            "demoting_strategy_id",
+            "candidate_strategy_id",
+            "confirm",
+            "confirm_cooldown",
+        ),
         required_request_fields=("demoting_strategy_id", "candidate_strategy_id"),
         response_fields=(
             "trigger_kind",
@@ -420,6 +431,7 @@ ROUTES: tuple[Route, ...] = (
         field_types=(
             ("logged", "boolean"),
             ("execution", "object"),
+            ("confirm_cooldown", "boolean"),
         ),
     ),
     # ----- Backtest launch  [SRS-BT-001, SYS-14, SYS-43a]

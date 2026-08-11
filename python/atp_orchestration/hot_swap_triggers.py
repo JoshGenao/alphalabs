@@ -277,9 +277,11 @@ class ManualTriggerHandler:
         source: CliHotSwapTriggerSource,
         *,
         log_path: str,
+        cooldown_state_path: str,
     ) -> None:
         self._source = source
         self._log_path = log_path
+        self._cooldown_state_path = cooldown_state_path
 
     def handle(self, request: Request) -> HandlerResult:
         demoting = _required_id(request, "demoting_strategy_id")
@@ -302,20 +304,58 @@ class ManualTriggerHandler:
                 detail={"srs_refs": ["SRS-RESV-003", "SYS-49a"]},
             )
 
+        # SRS-RESV-006 / SyRS SYS-49e. `confirm_cooldown` is a SEPARATE token from
+        # `request.confirmed` above, deliberately. That one is the transport's SYS-49a
+        # "yes, fire a manual trigger"; this one is "yes, I know a cool-down is running and
+        # I want to override it". Reusing the first for the second would make every
+        # ordinary confirmed manual trigger a silent cool-down override — the operator
+        # would never see the warning the AC exists to show them.
+        argv = [
+            "manual",
+            "--demoting",
+            demoting,
+            "--candidate",
+            candidate,
+            "--log",
+            self._log_path,
+            "--cooldown-state",
+            self._cooldown_state_path,
+        ]
+        if _optional_flag(request, "confirm_cooldown"):
+            argv.append("--confirm-cooldown")
+
         completed = _invoke_or_fail(
             self._source,
-            [
-                "manual",
-                "--demoting",
-                demoting,
-                "--candidate",
-                candidate,
-                "--log",
-                self._log_path,
-            ],
+            argv,
             what=f"the manual Hot-Swap trigger for {candidate!r} could not be fired",
         )
         if completed.returncode != 0:
+            # A cool-down refusal is checked FIRST, because it is not a failure at all: the
+            # trigger was declined, nothing was attempted, and the operator can clear it by
+            # re-sending with confirm_cooldown. Falling through to the branch below would
+            # report it as INTERNAL_ERROR / "was not logged and therefore did not fire",
+            # which describes a broken audit sink — a different incident, sent to a
+            # different responder, about a system that is working exactly as specified.
+            stdout_values = _parse_or_empty(completed.stdout)
+            if stdout_values.get("manual-refused") == "COOLDOWN_CONFIRMATION_REQUIRED":
+                raise InterfaceError(
+                    ErrorCategory.CONFIRMATION_REQUIRED,
+                    f"a Hot-Swap cool-down is in effect, so promoting {candidate!r} needs "
+                    "explicit acknowledgement (SyRS SYS-49e): "
+                    f"{stdout_values.get('cooldown-warning', '')}",
+                    type="HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED",
+                    detail={
+                        "cooldown_state": stdout_values.get("cooldown-state", ""),
+                        "cooldown_started_at_seconds": stdout_values.get(
+                            "cooldown-started-at-seconds", ""
+                        ),
+                        "cooldown_expires_at_seconds": stdout_values.get(
+                            "cooldown-expires-at-seconds", ""
+                        ),
+                        "override_field": "confirm_cooldown",
+                        "srs_refs": ["SRS-RESV-006", "SYS-49e"],
+                    },
+                )
             # The binary exits nonzero when the required audit record was REJECTED. That is
             # not an incidental logging failure: an unlogged trigger is not actionable and
             # must never be reported as fired.
@@ -409,6 +449,7 @@ def mount_hot_swap_triggers(
     *,
     state_path: str | Path,
     log_path: str | Path,
+    cooldown_state_path: str | Path,
     binary: str | Path | None = None,
     runner: HotSwapTriggerCliRunner | None = None,
     timeout: float | None = None,
@@ -438,7 +479,12 @@ def mount_hot_swap_triggers(
     runtime.registry.register(REST_TRIGGER_CONFIG_GET, config_handler)
     runtime.registry.register(REST_TRIGGER_CONFIG_PUT, config_handler)
     runtime.registry.register(
-        REST_TRIGGER_MANUAL, ManualTriggerHandler(source, log_path=str(log_path))
+        REST_TRIGGER_MANUAL,
+        ManualTriggerHandler(
+            source,
+            log_path=str(log_path),
+            cooldown_state_path=str(cooldown_state_path),
+        ),
     )
     return source
 
@@ -511,6 +557,46 @@ def _positive_int(value: object) -> str:
             type="THRESHOLD_OUT_OF_RANGE",
         )
     return str(value)
+
+
+def _optional_flag(request: Request, key: str) -> bool:
+    """Read an optional boolean body/query field, refusing a non-boolean.
+
+    Strictly ``True``/``False`` (or the query-string spellings ``"true"``/``"false"``).
+    ``bool(raw)`` would be a coercion, not a read, and this particular flag decides whether
+    a live-strategy swap proceeds inside a safety window — the string ``"false"`` is truthy
+    in Python, so a lenient read would turn an operator's explicit refusal into an override.
+    Absent means not acknowledged, which is the fail-closed direction.
+    """
+
+    raw = request.body.get(key, request.query.get(key))
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str) and raw.lower() in ("true", "false"):
+        return raw.lower() == "true"
+    raise InterfaceError(
+        ErrorCategory.BAD_REQUEST,
+        f"{key} must be a boolean (got {type(raw).__name__} {raw!r}); refusing to coerce "
+        "it into a cool-down override",
+        type="NON_BOOLEAN_COOLDOWN_CONFIRMATION",
+    )
+
+
+def _parse_or_empty(stdout: str) -> dict[str, str]:
+    """Parse the proof stream, tolerating an unparseable one.
+
+    Used only on the ERROR path, where the binary has already exited non-zero: the caller
+    is deciding which failure to report, and a proof stream too broken to parse must not
+    replace that with a parser exception. The healthy path still uses the strict
+    ``parse_trigger_cli_output``, so an ambiguous stream can never become a success.
+    """
+
+    try:
+        return parse_trigger_cli_output(stdout)
+    except HotSwapStatusUnavailable:
+        return {}
 
 
 def _required_id(request: Request, key: str) -> str:

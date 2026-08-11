@@ -28,15 +28,18 @@ single implementation in Rust.
 from __future__ import annotations
 
 import subprocess
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 
 __all__ = [
+    "CliHotSwapCooldownSource",
     "CliHotSwapDemotionSource",
     "CliHotSwapPromotionSource",
     "CliHotSwapTriggerSource",
     "CompositeHotSwapStatusSource",
+    "HotSwapCooldownLeg",
     "HotSwapDemotionLeg",
     "HotSwapTriggerLeg",
     "HotSwapStatusUnavailable",
@@ -47,8 +50,10 @@ __all__ = [
     "HotSwapTriggerCliUnavailable",
     "HotSwapTriggerOutputUnreadable",
     "BINARY_ENV_KNOB",
+    "COOLDOWN_BINARY_ENV_KNOB",
     "DEMOTION_BINARY_ENV_KNOB",
     "default_binary",
+    "default_cooldown_binary",
     "default_demotion_binary",
     "parse_trigger_cli_output",
     "strict_trigger_bool",
@@ -475,6 +480,169 @@ class HotSwapTriggerLeg(Protocol):
     def promotion_candidate(self) -> "Mapping[str, object] | None": ...
 
 
+# ============================================================================== #
+# SRS-RESV-006 — the cool-down leg (SyRS SYS-49e)
+# ============================================================================== #
+
+#: Environment override for the cool-down binary's location.
+COOLDOWN_BINARY_ENV_KNOB = "ATP_HOT_SWAP_COOLDOWN_BINARY"
+
+_DEFAULT_COOLDOWN_BINARY = (
+    Path(__file__).resolve().parents[2] / "target" / "debug" / "resv006_hot_swap_cooldown_cli"
+)
+
+
+def default_cooldown_binary(env: "Mapping[str, str] | None" = None) -> Path:
+    """The cool-down binary's path: the env override when set, else the dev-tree fallback."""
+
+    import os
+
+    source = os.environ if env is None else env
+    override = source.get(COOLDOWN_BINARY_ENV_KNOB)
+    return Path(override) if override else _DEFAULT_COOLDOWN_BINARY
+
+
+def _cooldown_runner(argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+    """Run the cool-down CLI with ``argv`` as a list (``shell=False``)."""
+
+    if not Path(argv[0]).exists():
+        raise FileNotFoundError(
+            f"hot-swap cool-down binary not found at {argv[0]}; build it with "
+            "`cargo build -p atp-orchestrator --bin resv006_hot_swap_cooldown_cli`"
+        )
+    return subprocess.run(argv, check=False, capture_output=True, text=True, timeout=timeout)
+
+
+def _iso_utc(epoch_seconds: int) -> str:
+    """Render epoch seconds as the ISO-8601 UTC string the pane's dial parses."""
+
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch_seconds))
+
+
+class CliHotSwapCooldownSource:
+    """The ``cooldown`` half of ``live_state()``, from the durable SRS-RESV-006 window.
+
+    ``atp_dashboard.hotswap`` renders ``cooldown.in_effect`` / ``started_at`` /
+    ``expires_at`` as ``deferred:SRS-RESV-006`` cells whenever no source resolves them.
+    This class resolves them by shelling ``resv006_hot_swap_cooldown_cli status``, which
+    reads the same file the SYS-49e gate classifies — one format owner, in Rust, for the
+    durable record.
+
+    **Three states, and only two of them are answers.** No swap ever → ``in_effect: False``
+    with NO timestamps (there is genuinely no window to date); an open or closed window →
+    the boolean plus both ISO-8601 UTC strings; an UNREADABLE window →
+    :class:`HotSwapStatusUnavailable`.
+
+    That third case is the whole point, and it is why this class never returns a bare
+    ``in_effect: False`` on a failed read. A corrupt window rendered as "no cool-down" is a
+    false all-clear: the pane would enable the promote control, and an operator would be
+    told a swap is safe by a producer that could not read the fact it was reporting.
+    """
+
+    def __init__(
+        self,
+        state_path: str | Path,
+        *,
+        binary: str | Path | None = None,
+        runner: HotSwapTriggerCliRunner | None = None,
+        timeout: float = _DEFAULT_TIMEOUT_S,
+    ) -> None:
+        self._state_path = str(state_path)
+        self._binary = Path(binary) if binary is not None else default_cooldown_binary()
+        self._runner = runner or _cooldown_runner
+        self._timeout = timeout
+
+    @property
+    def state_path(self) -> str:
+        return self._state_path
+
+    def live_state(self) -> dict[str, object] | None:
+        """The cool-down facts, or raise when the window cannot be read.
+
+        Never returns ``None``: a readable producer always has an answer, and ``None``
+        would render the cells deferred — i.e. "SRS-RESV-006 has not produced this yet",
+        which stopped being true the moment this source was mounted.
+
+        Returns ONLY the ``cooldown`` key. ``current_live_strategy_id`` (SRS-RESV-005) and
+        the demotion facts (SRS-RESV-004) are not this source's to state, and omitting them
+        is what keeps their cells rendering their own owners' deferrals.
+        """
+
+        completed = self._invoke(["status", "--state", self._state_path])
+        values = parse_trigger_cli_output(completed.stdout)
+        state = values.get("cooldown-state")
+
+        # The binary exits non-zero on an UNREADABLE window (and only then — an ACTIVE
+        # window is healthy and exits zero). Read the state line first so the raise can name
+        # what the tool actually said, then refuse on either signal.
+        if state == "UNKNOWN" or completed.returncode != 0:
+            reason = values.get("cooldown-unreadable-reason") or completed.stderr.strip()
+            raise HotSwapStatusUnavailable(f"hot-swap cool-down window unreadable: {reason}")
+        if state not in ("NEVER_SWAPPED", "ACTIVE", "EXPIRED"):
+            raise HotSwapTriggerOutputUnreadable(
+                f"resv006_hot_swap_cooldown_cli reported an unknown cool-down state {state!r}"
+            )
+
+        in_effect = strict_trigger_bool(values, "cooldown-in-effect")
+        # Cross-check the two facts against each other rather than trusting either alone: a
+        # binary that said `cooldown-state:ACTIVE` alongside `cooldown-in-effect:false` has
+        # not told us which is true, and picking one would publish a swap-safety state
+        # nobody asserted.
+        if in_effect != (state == "ACTIVE"):
+            raise HotSwapTriggerOutputUnreadable(
+                f"resv006_hot_swap_cooldown_cli reported cooldown-state {state!r} with "
+                f"cooldown-in-effect {in_effect!r}; the proof stream contradicts itself"
+            )
+
+        cooldown: dict[str, object] = {"in_effect": in_effect}
+        if state == "NEVER_SWAPPED":
+            # No timestamps, deliberately. There is no start instant to report, and an
+            # invented one would put a resolved date on a window that never existed; the
+            # pane renders those two cells deferred, which is the truth.
+            return {"cooldown": cooldown}
+
+        started = values.get("cooldown-started-at-seconds")
+        expires = values.get("cooldown-expires-at-seconds")
+        if not started or not expires:
+            raise HotSwapTriggerOutputUnreadable(
+                f"resv006_hot_swap_cooldown_cli reported state {state!r} without both "
+                "window boundaries; refusing to render a half-known cool-down"
+            )
+        try:
+            cooldown["started_at"] = _iso_utc(int(started))
+            cooldown["expires_at"] = _iso_utc(int(expires))
+        except (TypeError, ValueError) as bad:
+            raise HotSwapTriggerOutputUnreadable(
+                f"resv006_hot_swap_cooldown_cli emitted a non-numeric window boundary: {bad}"
+            ) from bad
+        return {"cooldown": cooldown}
+
+    def trigger_config(self) -> dict[str, object] | None:
+        """Not this source's fact — the trigger configuration is ``SRS-RESV-003``'s."""
+
+        return None
+
+    def promotion_candidate(self) -> dict[str, object] | None:
+        """Not this source's fact — the ranking candidate is ``SRS-RESV-002``'s."""
+
+        return None
+
+    def _invoke(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        argv = [str(self._binary), *args]
+        try:
+            return self._runner(argv, timeout=self._timeout)
+        except subprocess.TimeoutExpired as expired:
+            raise HotSwapTriggerCliUnavailable(
+                f"resv006_hot_swap_cooldown_cli timed out after {self._timeout}s"
+            ) from expired
+        except OSError as launch_error:
+            raise HotSwapTriggerCliUnavailable(
+                "resv006_hot_swap_cooldown_cli could not be launched (is it built? "
+                "`cargo build -p atp-orchestrator --bin resv006_hot_swap_cooldown_cli`): "
+                f"{launch_error}"
+            ) from launch_error
+
+
 class HotSwapDemotionLeg(Protocol):
     """The live-state half of the pane's source protocol (``SRS-RESV-004``)."""
 
@@ -582,6 +750,12 @@ class HotSwapPromotionLeg(Protocol):
     def live_state(self) -> "Mapping[str, object] | None": ...
 
 
+class HotSwapCooldownLeg(Protocol):
+    """The ``SRS-RESV-006`` cool-down leg of the pane's ``live_state``."""
+
+    def live_state(self) -> "Mapping[str, object] | None": ...
+
+
 class CompositeHotSwapStatusSource:
     """One :class:`~atp_dashboard.hotswap.HotSwapStatusSource` over several per-leg producers.
 
@@ -602,10 +776,12 @@ class CompositeHotSwapStatusSource:
         triggers: "HotSwapTriggerLeg | None" = None,
         demotion: "HotSwapDemotionLeg | None" = None,
         promotion: "HotSwapPromotionLeg | None" = None,
+        cooldown: "HotSwapCooldownLeg | None" = None,
     ) -> None:
         self._triggers = triggers
         self._demotion = demotion
         self._promotion = promotion
+        self._cooldown = cooldown
 
     def trigger_config(self) -> "Mapping[str, object] | None":
         if self._triggers is None:
@@ -613,29 +789,51 @@ class CompositeHotSwapStatusSource:
         return self._triggers.trigger_config()
 
     def live_state(self) -> "Mapping[str, object] | None":
-        """The live-swap state, MERGED from the legs that own its parts.
+        """The live-swap state, MERGED from the three legs that own its parts.
 
-        Two features answer different halves of one protocol method: SRS-RESV-004 owns
-        the demotion-pending facts, SRS-RESV-005 owns which strategy holds the live
-        designation. Their key sets are disjoint, so the merge is a union rather than a
-        precedence rule — nothing here has to decide which leg wins, and a future leg
-        that DID collide would be a contract bug, not something to paper over here.
+        Three features answer different parts of one protocol method: SRS-RESV-004 owns
+        the demotion-pending facts (``demotion_pending`` / ``demotion_detail`` /
+        ``sequence``), SRS-RESV-005 owns which strategy holds the live designation
+        (``current_live_strategy_id``), SRS-RESV-006 owns the cool-down window
+        (``cooldown``). Their key sets are disjoint by construction, so the merge is a
+        union rather than a precedence rule — nothing here has to decide which leg wins.
 
-        Neither exception is caught, matching this class's per-leg discipline: the
-        provider records it as one ``ok:false`` reason. Note the honest limit — both
-        halves feed ONE protocol method, so an unreadable lockout defers the live
-        strategy too. That is the fail-closed direction (the control goes inert), and
-        splitting it further is UI-5's protocol to change, not this class's.
+        A key COLLISION is refused rather than silently resolved: it would mean one owner
+        had started answering for another, and quietly letting the last writer win is how
+        a pane ends up reporting a fact nobody produced. `merged.update()` would do
+        exactly that, which is why this is a loop and not a one-liner.
+
+        No exception is caught, matching this class's per-leg discipline: the provider
+        records it as one ``ok:false`` reason. Note the honest limit, also recorded in
+        ``hot_swap_cooldown_contract.deferred`` — all three sub-legs feed ONE protocol
+        method, so an unreadable lockout defers the live strategy and the cool-down cells
+        too. That is the fail-closed direction (the control goes inert) and the raise
+        names which sub-leg failed, but it is coarser than per-fact independence.
+        Splitting ``live_state`` into per-owner legs is UI-5's pane protocol to change,
+        not this class's.
         """
 
-        parts = [leg.live_state() for leg in (self._demotion, self._promotion) if leg is not None]
-        resolved = [part for part in parts if part is not None]
-        if not resolved:
-            return None
         merged: dict[str, object] = {}
-        for part in resolved:
-            merged.update(part)
-        return merged
+        for owner, leg in (
+            ("SRS-RESV-004", self._demotion),
+            ("SRS-RESV-005", self._promotion),
+            ("SRS-RESV-006", self._cooldown),
+        ):
+            if leg is None:
+                continue
+            produced = leg.live_state()
+            if produced is None:
+                continue
+            for key, value in produced.items():
+                if key in merged:
+                    raise HotSwapTriggerOutputUnreadable(
+                        f"two hot-swap live-state producers both answered {key!r} "
+                        f"(latest: {owner}); one of them is reporting a fact it does not own"
+                    )
+                merged[key] = value
+        # `None` (no leg mounted, or every leg silent) keeps every live cell deferred to its
+        # own owner — which is the truth when nothing is composed.
+        return merged or None
 
     def promotion_candidate(self) -> "Mapping[str, object] | None":
         # Owner SRS-RESV-002. Asked of the trigger source only because that is where a ranking

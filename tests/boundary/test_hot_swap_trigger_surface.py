@@ -103,6 +103,10 @@ def mounted(fake_cli: _FakeCli, tmp_path) -> Iterator[tuple[str, int]]:
         runtime,
         state_path=tmp_path / "triggers.json",
         log_path=tmp_path / "triggers.jsonl",
+        # A CLEAR SRS-RESV-006 window: the path does not exist, so no swap has ever
+        # completed and SYS-49e suppresses nothing. This suite measures the RESV-003
+        # trigger surface; the cool-down arm has its own coverage.
+        cooldown_state_path=tmp_path / "cooldown.json",
         binary=tmp_path / "fake-bin",
         runner=fake_cli,
     )
@@ -735,6 +739,9 @@ def test_the_production_composition_serves_the_trigger_routes(tmp_path) -> None:
     env = {
         "ATP_HOT_SWAP_TRIGGER_STATE": str(tmp_path / "triggers.json"),
         "ATP_HOT_SWAP_TRIGGER_LOG": str(tmp_path / "triggers.jsonl"),
+        # Required alongside the other two since SRS-RESV-006: the arm enforces the SYS-49e
+        # cool-down, and without a window every manual trigger would be refused as UNKNOWN.
+        "ATP_HOT_SWAP_COOLDOWN_STATE": str(tmp_path / "cooldown.json"),
     }
     runtime = OperatorInterfaceRuntime()
     publisher = mount_default_dashboard(
@@ -795,6 +802,25 @@ def test_a_trigger_surface_that_cannot_log_refuses_to_start(tmp_path) -> None:
     with pytest.raises(ValueError, match="ATP_HOT_SWAP_TRIGGER_LOG"):
         _mount_hot_swap_trigger_arm(
             runtime, {"ATP_HOT_SWAP_TRIGGER_STATE": str(tmp_path / "triggers.json")}
+        )
+
+
+def test_a_trigger_surface_with_no_cooldown_window_refuses_to_start(tmp_path) -> None:
+    # SRS-RESV-006, the same rule as its audit-log sibling above. The binary already fails
+    # closed on a missing window (UNKNOWN -> refuse), so an unset knob would leave the REST
+    # arm mounted and structurally unable to fire ANY manual trigger. That reads to an
+    # operator as a broken surface rather than as a missing setting, and it would be
+    # diagnosed once per request instead of once at boot.
+    from atp_dashboard.server import _mount_hot_swap_trigger_arm
+
+    runtime = OperatorInterfaceRuntime()
+    with pytest.raises(ValueError, match="ATP_HOT_SWAP_COOLDOWN_STATE"):
+        _mount_hot_swap_trigger_arm(
+            runtime,
+            {
+                "ATP_HOT_SWAP_TRIGGER_STATE": str(tmp_path / "triggers.json"),
+                "ATP_HOT_SWAP_TRIGGER_LOG": str(tmp_path / "triggers.jsonl"),
+            },
         )
 
 

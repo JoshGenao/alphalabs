@@ -492,7 +492,7 @@
     },
     "/api/v1/hot-swap/triggers/manual": {
       "post": {
-        "description": "Fire the always-available manual promotion TRIGGER, producing a logged proposal (SYS-49a(a)). Does not execute the swap. SRS trace: SRS-RESV-003, SYS-49a. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1). Requires UI-4 confirmation; pass ``confirm`` query param.",
+        "description": "Fire the always-available manual promotion TRIGGER, producing a logged proposal (SYS-49a(a)). Does not execute the swap. SRS trace: SRS-RESV-003, SRS-RESV-006, SYS-49a, SYS-49e. Contract only. Concrete request and response schemas land with the downstream feature that owns the handler (EXE-1, ORCH-1, RESV-1, BT-1, DATA-1, LOG-1, NOTIF-1). Requires UI-4 confirmation; pass ``confirm`` query param.",
         "operationId": "post_api_v1_hot-swap_triggers_manual",
         "parameters": [
           {
@@ -513,6 +513,9 @@
                 "properties": {
                   "candidate_strategy_id": {
                     "type": "string"
+                  },
+                  "confirm_cooldown": {
+                    "type": "boolean"
                   },
                   "demoting_strategy_id": {
                     "type": "string"
@@ -573,7 +576,9 @@
         "x-requires-confirmation": true,
         "x-srs-refs": [
           "SRS-RESV-003",
-          "SYS-49a"
+          "SRS-RESV-006",
+          "SYS-49a",
+          "SYS-49e"
         ]
       }
     },

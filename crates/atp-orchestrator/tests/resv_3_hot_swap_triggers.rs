@@ -36,6 +36,7 @@
 //! (the contract's default-disabled + log-on-every-fire guard); this Rust test
 //! anchors the post-conditions at the behavioral layer.
 
+use atp_orchestrator::cooldown::{CooldownState, ManualCooldownAcknowledgement};
 use atp_orchestrator::{
     HotSwapSideEffectError, HotSwapTriggerLog, LiveStrategyProbe, ManualPromotionError,
     ReservoirRankingSource, StrategyOrchestrator,
@@ -49,6 +50,16 @@ use atp_types::{
 use std::cell::{Cell, RefCell};
 
 const OBSERVED_AT_SECONDS: u64 = 1_715_000_000;
+
+/// A provably-clear SYS-49e window, so this suite keeps testing exactly what it always
+/// tested: SRS-RESV-003's own trigger semantics, with SRS-RESV-006 out of the way.
+///
+/// `NeverSwapped` rather than `Expired` deliberately — it is the state a system that has
+/// never completed a swap is genuinely in, so nothing here depends on a window having once
+/// existed. The cool-down's own behaviour (that a NON-clear window changes these outcomes)
+/// is proven in `resv_6_cooldown_gate.rs`; if this constant were wrong, that file's
+/// suppression tests would fail rather than these silently passing.
+const CLEAR: CooldownState = CooldownState::NeverSwapped;
 
 // --- injected input stubs (mirror the RESV-004 spy/forbidden fake-port style) ---
 
@@ -214,6 +225,7 @@ fn resv_3_default_config_fires_nothing_even_when_conditions_met() {
 
     let evaluation = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &live,
         &ranking,
         &log,
@@ -245,6 +257,7 @@ fn resv_3_drawdown_demotion_fires_and_logs_when_breached() {
 
     let evaluation = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &live,
         &ranking,
         &log,
@@ -286,6 +299,7 @@ fn resv_3_drawdown_demotion_does_not_fire_below_threshold() {
 
     let evaluation = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &live,
         &ranking,
         &log,
@@ -312,6 +326,7 @@ fn resv_3_top_ranked_promotion_fires_and_logs() {
 
     let evaluation = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &live,
         &ranking,
         &log,
@@ -348,6 +363,7 @@ fn resv_3_highest_momentum_promotion_fires_and_logs() {
 
     let evaluation = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &live,
         &ranking,
         &log,
@@ -376,6 +392,8 @@ fn resv_3_manual_promotion_always_fires_and_logs_even_when_all_disabled() {
         .request_manual_promotion(
             StrategyId::new("live-a"),
             StrategyId::new("cand-b"),
+            &CLEAR,
+            ManualCooldownAcknowledgement::NotAcknowledged,
             &log,
             OBSERVED_AT_SECONDS,
         )
@@ -402,6 +420,8 @@ fn resv_3_manual_promotion_fails_closed_when_log_rejected() {
     let outcome = orchestrator.request_manual_promotion(
         StrategyId::new("live-a"),
         StrategyId::new("cand-b"),
+        &CLEAR,
+        ManualCooldownAcknowledgement::NotAcknowledged,
         &log,
         OBSERVED_AT_SECONDS,
     );
@@ -440,6 +460,7 @@ fn resv_3_all_enabled_all_conditions_met_fire_in_priority_order_and_each_logged(
 
     let evaluation = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &live,
         &ranking,
         &log,
@@ -487,6 +508,7 @@ fn resv_3_failing_log_sink_fails_closed_not_selected() {
     // Must not panic despite the sink returning Err.
     let evaluation = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &live,
         &ranking,
         &log,
@@ -535,6 +557,7 @@ fn resv_3_all_fired_but_top_priority_unlogged_selects_nothing() {
 
     let evaluation = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &live,
         &ranking,
         &log,
@@ -569,6 +592,7 @@ fn resv_3_partial_log_rejection_fails_whole_pass_closed() {
 
     let evaluation = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &live,
         &ranking,
         &log,
@@ -600,6 +624,7 @@ fn resv_3_ranking_non_finite_and_empty_fail_closed_no_fire() {
     let empty_ranking = ReservoirRankingSourceStub::new(snapshot(vec![]));
     let empty_eval = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &live,
         &empty_ranking,
         &HotSwapTriggerLogForbiddenSink,
@@ -612,6 +637,7 @@ fn resv_3_ranking_non_finite_and_empty_fail_closed_no_fire() {
         ReservoirRankingSourceStub::new(snapshot(vec![ranked("cand-b", 1, f64::NAN, f64::NAN)]));
     let nan_eval = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &live,
         &nan_ranking,
         &HotSwapTriggerLogForbiddenSink,
@@ -638,6 +664,7 @@ fn resv_3_promotion_skips_when_top_candidate_is_already_live() {
 
     let evaluation = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &live,
         &ranking,
         &log,
@@ -663,6 +690,7 @@ fn resv_3_no_live_strategy_fires_nothing() {
 
     let evaluation = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &live,
         &ranking,
         &log,
@@ -692,6 +720,7 @@ fn resv_3_degraded_live_probe_fails_closed_and_surfaces_reason() {
 
     let evaluation = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &DegradedLiveProbe,
         &ranking,
         &HotSwapTriggerLogForbiddenSink,
@@ -719,6 +748,7 @@ fn resv_3_degraded_ranking_source_fails_closed_and_surfaces_reason() {
 
     let evaluation = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &live,
         &DegradedRankingSource,
         &HotSwapTriggerLogForbiddenSink,
@@ -748,6 +778,7 @@ fn resv_3_selected_proposal_maps_to_demotion_request() {
 
     let evaluation = orchestrator.evaluate_automatic_triggers(
         &config,
+        &CLEAR,
         &live,
         &ranking,
         &log,
@@ -773,6 +804,8 @@ fn resv_3_manual_promotion_refuses_a_self_swap_and_logs_nothing() {
     let outcome = StrategyOrchestrator.request_manual_promotion(
         StrategyId::new("live-a"),
         StrategyId::new("live-a"),
+        &CLEAR,
+        ManualCooldownAcknowledgement::NotAcknowledged,
         &log,
         OBSERVED_AT_SECONDS,
     );

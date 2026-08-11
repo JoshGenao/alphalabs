@@ -55,6 +55,10 @@ from historical_data_check import (
     HistoricalDataCheckError,
     assert_unified_historical_data_static,
 )
+from hot_swap_cooldown_check import (
+    HotSwapCooldownCheckError,
+    assert_hot_swap_cooldown_static,
+)
 from hot_swap_demotion_check import (
     HotSwapDemotionCheckError,
     assert_hot_swap_demotion_static,
@@ -582,6 +586,26 @@ def assert_hot_swap_trigger(config: dict) -> list[str]:
         "disabled, every fired trigger is logged, and a selected proposal bridges to "
         f"the SRS-RESV-004 gate via {block['guard']['demotion_request_bridge']} "
         "(SRS-RESV-003, SyRS SYS-49a)"
+    )
+    return static_evidence + [summary]
+
+
+def assert_hot_swap_cooldown(config: dict) -> list[str]:
+    block = config.get("hot_swap_cooldown_contract")
+    if block is None:
+        return []
+
+    static_evidence = assert_hot_swap_cooldown_static(config, ROOT)
+    summary = (
+        f"{block['orchestrator_crate']['crate']} enforces the Hot-Swap cool-down on "
+        f"{block['state_enum']['enum']} "
+        f"({len(block['state_enum']['variants'])} states, "
+        f"{len(block['state_enum']['clear_variants'])} of them clear): both SRS-RESV-003 "
+        f"entry points consult {block['guard']['clear_predicate']}, so automatic triggers "
+        f"are suppressed and a manual swap needs "
+        f"{block['acknowledgement']['enum']}::Acknowledged, for a period defaulting to "
+        f"{block['period']['default_days']} calendar days "
+        "(SRS-RESV-006, SyRS SYS-49e)"
     )
     return static_evidence + [summary]
 
@@ -1435,6 +1459,10 @@ def run_checks() -> list[str]:
     try:
         evidence.extend(assert_hot_swap_trigger(config))
     except HotSwapTriggerCheckError as error:
+        fail(str(error))
+    try:
+        evidence.extend(assert_hot_swap_cooldown(config))
+    except HotSwapCooldownCheckError as error:
         fail(str(error))
     try:
         evidence.extend(assert_kill_switch_timeout(config))

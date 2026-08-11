@@ -43,6 +43,12 @@ fn run_manual_over_seeded_log(tag: &str, seed: &str) -> (bool, String) {
             "--log",
         ])
         .arg(&log)
+        // An absent cool-down state = no swap has ever completed = the SYS-49e window is
+        // provably clear, so what this suite measures stays the LOG SCHEMA rather than
+        // SRS-RESV-006's gate. Omitting it would leave the window UNKNOWN and refuse the
+        // manual fire before a single byte reached the log.
+        .arg("--cooldown-state")
+        .arg(dir.join("clear-cooldown.json"))
         .output()
         .expect("run resv003_hot_swap_trigger_cli");
     (
@@ -322,6 +328,9 @@ fn resv_3_control_characters_in_an_id_do_not_poison_the_log() {
             let output = Command::new(BIN)
                 .args(["manual", "--demoting", id, "--candidate", "cand-b", "--log"])
                 .arg(&log)
+                // As above: a clear window keeps this about control characters in the log.
+                .arg("--cooldown-state")
+                .arg(dir.join("clear-cooldown.json"))
                 .output()
                 .expect("run resv003_hot_swap_trigger_cli");
             assert!(

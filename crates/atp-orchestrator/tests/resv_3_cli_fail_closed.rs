@@ -13,6 +13,20 @@ use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_resv003_hot_swap_trigger_cli");
 
+/// A cool-down state path that does not exist -> the store reads "no swap has ever
+/// completed" -> the SYS-49e window is provably clear -> SRS-RESV-003's own semantics are
+/// what the assertion below is measuring.
+///
+/// Passing it is now MANDATORY for any test that expects a zero exit: omitting
+/// `--cooldown-state` leaves the window UNKNOWN, which suppresses and exits nonzero on
+/// purpose (SRS-RESV-006). That posture has its own coverage in `resv_6_cli_fail_closed.rs`;
+/// here it would only mask what these tests exist to check.
+fn clear_cooldown(name: &str) -> PathBuf {
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("resv003-clear-{name}.json"));
+    let _ = std::fs::remove_file(&path);
+    path
+}
+
 fn unwritable_log(name: &str) -> PathBuf {
     // Parent directory intentionally does not exist → OpenOptions::open fails.
     Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -55,6 +69,8 @@ fn resv_3_cli_manual_exits_zero_on_healthy_log() {
             "--log",
         ])
         .arg(&good_log)
+        .arg("--cooldown-state")
+        .arg(clear_cooldown("manual-ok"))
         .status()
         .expect("run resv003_hot_swap_trigger_cli");
     assert!(status.success(), "a healthy manual log must exit zero");
@@ -76,6 +92,8 @@ fn resv_3_cli_evaluate_surfaces_sink_failure_cause() {
             "--log",
         ])
         .arg(unwritable_log("cause.jsonl"))
+        .arg("--cooldown-state")
+        .arg(clear_cooldown("cause"))
         .output()
         .expect("run resv003_hot_swap_trigger_cli");
     assert!(!output.status.success());
@@ -147,6 +165,8 @@ fn resv_3_cli_evaluate_no_fire_no_log_exits_zero() {
             "--inject",
             "disabled",
         ])
+        .arg("--cooldown-state")
+        .arg(clear_cooldown("no-fire"))
         .status()
         .expect("run resv003_hot_swap_trigger_cli");
     assert!(

@@ -5059,10 +5059,176 @@
     "deferred": [
       "Concrete ReservoirRankingSource backed by the real SRS-RESV-002 / SYS-48 ranking (Sharpe/Sortino + momentum over the configurable evaluation window) and LiveStrategyProbe backed by the SRS-RESV-001 reservoir + live-strategy drawdown — this slice injects both through ports so the trigger layer is buildable and testable without the ranking runtime (owner: SRS-RESV-001 / SRS-RESV-002).",
       "RICHER typed error taxonomy on the injected LiveStrategyProbe / ReservoirRankingSource ports: the ports ALREADY return Result (Err = degraded), and evaluation fails closed while surfacing the reason string in TriggerEvaluation.degraded_inputs — so a degraded dependency is NOT silently collapsed into a healthy empty state. Replacing the single reason-string HotSwapSideEffectError with a structured CONNECTIVITY_BLOCKED / STALE_DATA / SOURCE_UNAVAILABLE taxonomy (and any retry/backoff policy) is deferred to the concrete probes (same reason-string-now / typed-later precedent as the demotion contract's IB-cancel error taxonomy) (owner: SRS-RESV-001 / SRS-RESV-002).",
-      "Swap EXECUTION: the demote-before-promote sequence + liquidation-timeout gate is SRS-RESV-004 (resolve_demotion, already built); flat-start promotion is SRS-RESV-005 (BUILT — see hot_swap_promotion_contract; execute_hot_swap binds POST /api/v1/hot-swap); cool-down enforcement (default 7 days, manual-swap confirmation during cool-down per SYS-49e) is SRS-RESV-006. This trigger layer only decides + logs, and hands a selected proposal to resolve_demotion via to_demotion_request (owner: SRS-RESV-004 / SRS-RESV-005 / SRS-RESV-006).",
+      "Swap EXECUTION: the demote-before-promote sequence + liquidation-timeout gate is SRS-RESV-004 (resolve_demotion, already built); flat-start promotion is SRS-RESV-005 (BUILT — see hot_swap_promotion_contract; execute_hot_swap binds POST /api/v1/hot-swap). This trigger layer only decides + logs, and hands a selected proposal to resolve_demotion via to_demotion_request (owner: SRS-RESV-004 / SRS-RESV-005). SYS-49e cool-down enforcement is NO LONGER DEFERRED ON THIS LAYER: SRS-RESV-006 landed it on these two entry points, which now take a cooldown::CooldownState and consult proven_clear before anything fires — see hot_swap_cooldown_contract. Enforcement at the EXECUTION handoff (execute_hot_swap) and the production writer of a swap completion are tracked in hot_swap_cooldown_contract, not here.",
       "Durable, queryable, dashboard-viewable SYS-61 system-log store consuming HotSwapTriggerEvent (the Hot-Swap trigger log class) — the SRS-LOG-001 sink. This slice records every fired trigger through the HotSwapTriggerLog port (a REJECTED record fails closed — kept out of selected / manual returns Err; see trigger_log_port.note) and demonstrates durable JSONL persistence in the resv003_hot_swap_trigger_cli --log flag; the shared durable store, which must persist an ACCEPTED record, is deferred (owner: SRS-LOG-001).",
       "MANUAL demoting-side resolution: request_manual_promotion takes demoting_strategy_id from its caller and only checks it differs from the candidate, while evaluate_automatic_triggers resolves the live strategy through LiveStrategyProbe. The probe's real producer is the deferred SRS-RESV-001 reservoir / SRS-RESV-002 ranking runtime, so there is no authoritative live-strategy fact to validate a manual request against; fabricating one would be worse than naming the gap. Consequence: a logged manual proposal is a REQUEST to swap, not a verified one, and the SRS-RESV-004 gate MUST revalidate the current live strategy at execution time rather than trusting the demoting id in the record (owner: SRS-RESV-001 / SRS-RESV-002 for the probe, SRS-RESV-004 for the execution-time revalidation).",
       "SRS-API-001 composition of these handlers into a shipped process main. mount_hot_swap_triggers is opt-in, exactly like mount_rollback / mount_dashboard, so a bare runtime still resolves every trigger operation to its structured 501. SYS-49a's arms, precisely. CONFIGURING the automatic triggers ships on all three: CLI (resv003_hot_swap_trigger_cli), REST (GET/PUT /api/v1/hot-swap/triggers), and dashboard (CliHotSwapTriggerSource resolving the UI-5 pane's auto-trigger chips from the same durable file). FIRING the manual trigger ships on CLI and REST only (POST /api/v1/hot-swap/triggers/manual) — the dashboard has no manual-trigger control, and adding one is NOT deferred work being tracked here, it is a deliberate refusal: UI-5's promote-live button targets POST /api/v1/hot-swap (swap EXECUTION, owner SRS-RESV-004/005, still a structured 501), and repointing it at the trigger route would tell an operator they had promoted a strategy when all that happened was a proposal being written to a log. SYS-49a asks for 'the dashboard, CLI, OR REST API', which CLI and REST satisfy. A dashboard manual control becomes honest only once RESV-004/005 can execute the swap it implies; SRS-RESV-005 now executes it, and the UI-5 promote control stays inert regardless until SRS-RESV-002 names a candidate (owner: UI-5 + SRS-RESV-002 + SRS-RESV-004). POST /api/v1/hot-swap — swap EXECUTION — is deliberately NOT bound BY THIS FEATURE, and stays 501 when only the trigger layer is mounted: this feature decides and logs, it does not demote or promote, and a surface that cannot execute a swap must not answer on the endpoint whose success means one happened. SRS-RESV-005 binds it separately (mount_hot_swap_execution — see hot_swap_promotion_contract); the shipped process-main composition remains SRS-API-001's."
+    ]
+  },
+  "hot_swap_cooldown_contract": {
+    "requirement": "SRS-RESV-006",
+    "srs_refs": [
+      "SRS-RESV-006"
+    ],
+    "syrs_refs": [
+      "SYS-49e"
+    ],
+    "strs_refs": [
+      "SN-1.25"
+    ],
+    "orchestrator_crate": {
+      "crate": "atp-orchestrator",
+      "path": "crates/atp-orchestrator"
+    },
+    "cooldown_module": "crates/atp-orchestrator/src/cooldown.rs",
+    "period": {
+      "struct": "CooldownPeriodDays",
+      "default_days": 7,
+      "max_days": 365,
+      "calendar_day_seconds": 86400,
+      "zero_is_disabled": false,
+      "note": "0 is REFUSED. A zero-length window silently defeats SYS-49e while looking like configuration, and is indistinguishable from a field nobody set. The honest ways to stop automatic swapping already exist: disable the triggers through HotSwapTriggerConfig (SYS-49a's default-disabled posture), or use the manual arm, which is always available and only ever asks for an acknowledgement. Mirrors DrawdownThresholdBps, which likewise refuses 0 rather than reading it as 'no threshold'. A calendar day is EXACTLY 86400s here: Unix time carries no leap seconds and UTC has no DST, so '7 calendar days' is exact arithmetic."
+    },
+    "state_enum": {
+      "enum": "CooldownState",
+      "variants": [
+        "NeverSwapped",
+        "Active",
+        "Expired",
+        "Unknown"
+      ],
+      "wire_strings": {
+        "NeverSwapped": "NEVER_SWAPPED",
+        "Active": "ACTIVE",
+        "Expired": "EXPIRED",
+        "Unknown": "UNKNOWN"
+      },
+      "clear_variants": [
+        "NeverSwapped",
+        "Expired"
+      ],
+      "note": "Four variants because three of the four answers to 'may an automatic trigger fire?' are distinct facts an operator needs told apart: never swapped, window open, window closed, and THIS BUILD CANNOT SAY. Collapsing Unknown into any other is the fail-open CLAUDE.md rule 3 forbids \u2014 an unreadable window rendered as 'no cool-down' is a false all-clear authorising an automatic live-strategy swap."
+    },
+    "swap_completion": {
+      "struct": "SwapCompletion",
+      "required_fields": [
+        "completed_at_seconds",
+        "demoted_strategy_id",
+        "promoted_strategy_id"
+      ],
+      "window_start": "completed_at_seconds",
+      "note": "SYS-49e names the COMPLETION instant as the window start, not the instant the record was written \u2014 a store that stamped its own write time would silently extend every window by the recording latency. 'Completion' means a promotion SUCCEEDED: SRS-RESV-004's demotion can finish with no promotion at all (the SYS-49b demotion-pending timeout), and starting a week-long window from a FAILED changeover would suppress the automatic triggers because something went wrong.",
+      "forbidden_fields": [
+        "broker",
+        "ib_session_id",
+        "ib_order_id",
+        "tick_id",
+        "databento_dataset",
+        "sharadar_table",
+        "raw_parquet_path",
+        "vendor_credentials",
+        "container_id",
+        "docker_image"
+      ]
+    },
+    "acknowledgement": {
+      "enum": "ManualCooldownAcknowledgement",
+      "variants": [
+        "NotAcknowledged",
+        "Acknowledged"
+      ],
+      "derives_default": false,
+      "note": "An enum, not a bool: at the call site a bare `true` is unreadable and one character from meaning its opposite, and this argument decides whether a live-strategy changeover proceeds inside a safety window. No Default is derived \u2014 there is no sensible 'whichever', so a caller must state which one it means."
+    },
+    "cooldown_store": {
+      "module": "crates/atp-orchestrator/src/cooldown_store.rs",
+      "schema_entity_id": "hot-swap-cooldown-state",
+      "magic": "ATP-HOT-SWAP-COOLDOWN",
+      "marker": "COOLDOWN_SCHEMA_VERSION",
+      "durability": "scratch -> fsync -> rename -> parent fsync (the SRS-BT-009 backtest_store discipline), so a window cannot silently revert after a power loss and let an automatic trigger fire inside a cool-down the operator watched start.",
+      "lock": "reuses trigger_config_store::ExclusiveGuard (O_EXCL <path>.lock) rather than copying the mechanism: two O_EXCL implementations in one tree drift, and the read-modify-write in set_period / record_completion needs exactly the serialisation the sibling already proved. Only its error vocabulary is translated, by structural match on the public variants \u2014 never by re-wrapping its Display, which names a TRIGGER CONFIGURATION and would send an operator chasing a wedged cool-down to the wrong file.",
+      "read_states": [
+        "absent -> Ok(None): no swap has ever completed and no period was configured, so no window can logically be open. This INVERTS the sibling trigger_config_store, where absent means the SAFE all-disabled default, and the inversion is deliberate: a window is opened only by a swap COMPLETING, and reading 'no history' as 'in cool-down' would leave SRS-RESV-003's automatic triggers permanently dead on a fresh install with nothing on any surface to explain why.",
+        "readable -> Ok(Some(record))",
+        "unreadable / corrupt / empty / foreign -> Err, which resolve() turns into CooldownState::Unknown and NEVER into 'no cool-down'. An empty-but-present file is a torn write, not an absent one \u2014 the single case where empty must not read as never-swapped."
+      ],
+      "monotonic": "record_completion KEEPS a stored completion newer than the one offered (CompletionOutcome::KeptNewer, a non-zero exit on the CLI). A clock that stepped backwards between two swaps would otherwise pull the window's start backwards and retire a live safety interval early \u2014 the one direction a cool-down must never move.",
+      "unknown_fields": "refused",
+      "completion_fields_atomic": "the three last_* fields are all-present-or-all-absent; any partial combination is Malformed. A payload that half-remembers a swap has no half worth believing."
+    },
+    "guard": {
+      "clear_predicate": "proven_clear",
+      "classifier": "classify",
+      "resolver": "resolve",
+      "warning_accessor": "confirmation_warning",
+      "evaluate_method": "evaluate_automatic_triggers",
+      "manual_method": "request_manual_promotion",
+      "manual_error_variant": "CooldownConfirmationRequired",
+      "evaluation_field": "cooldown",
+      "backwards_clock_token": "saturating_sub",
+      "overflow_token": "checked_add",
+      "trigger_cli": "crates/atp-orchestrator/src/bin/resv003_hot_swap_trigger_cli.rs",
+      "cooldown_cli": "crates/atp-orchestrator/src/bin/resv006_hot_swap_cooldown_cli.rs",
+      "real_clock_token": "SystemTime::now",
+      "frozen_clock_token": "1_715_000_000",
+      "note": "ONE predicate drives both arms, so the automatic suppression and the manual confirmation cannot drift apart and a single mutation reddens both families of regression test. The asymmetry is in the CONSEQUENCE only: automatic is suppressed outright, manual is merely asked to confirm \u2014 SRS-RESV-003 guarantees manual promotion is always available, and the identical call carrying Acknowledged fires."
+    },
+    "entry_points": [
+      {
+        "method": "evaluate_automatic_triggers",
+        "type": "StrategyOrchestrator",
+        "effect": "suppressed entirely while the window is not proven clear; fires and logs nothing"
+      },
+      {
+        "method": "request_manual_promotion",
+        "type": "StrategyOrchestrator",
+        "effect": "returns CooldownConfirmationRequired unless acknowledged; never blocks"
+      },
+      {
+        "surface": "CLI",
+        "route": "resv006_hot_swap_cooldown_cli status",
+        "handler": "crates/atp-orchestrator/src/bin/resv006_hot_swap_cooldown_cli.rs::cmd_status"
+      },
+      {
+        "surface": "CLI",
+        "route": "resv006_hot_swap_cooldown_cli configure",
+        "handler": "crates/atp-orchestrator/src/bin/resv006_hot_swap_cooldown_cli.rs::cmd_configure"
+      },
+      {
+        "surface": "CLI",
+        "route": "resv006_hot_swap_cooldown_cli record-completion",
+        "handler": "crates/atp-orchestrator/src/bin/resv006_hot_swap_cooldown_cli.rs::cmd_record_completion"
+      },
+      {
+        "surface": "CLI",
+        "route": "resv003_hot_swap_trigger_cli evaluate --cooldown-state",
+        "handler": "crates/atp-orchestrator/src/bin/resv003_hot_swap_trigger_cli.rs::cmd_evaluate"
+      },
+      {
+        "surface": "CLI",
+        "route": "resv003_hot_swap_trigger_cli manual --cooldown-state [--confirm-cooldown]",
+        "handler": "crates/atp-orchestrator/src/bin/resv003_hot_swap_trigger_cli.rs::cmd_manual"
+      },
+      {
+        "surface": "REST",
+        "route": "POST /api/v1/hot-swap/triggers/manual",
+        "handler": "python/atp_orchestration/hot_swap_triggers.py::ManualTriggerHandler",
+        "requires_confirmation": true,
+        "note": "accepts confirm_cooldown, which is DISTINCT from the transport's SYS-49a `confirmed` token"
+      },
+      {
+        "surface": "dashboard",
+        "route": "GET /dashboard/api/hot-swap",
+        "handler": "python/atp_hotswap/__init__.py::CliHotSwapCooldownSource"
+      }
+    ],
+    "deferred": [
+      "The PRODUCTION caller of cooldown_store::record_completion is SRS-RESV-005's flat-start promotion \u2014 the only code that can observe a swap COMPLETING. SRS-RESV-004's demotion can finish without a promotion (the SYS-49b demotion-pending timeout), which is not a swap and must NOT start a window, so resolve_demotion deliberately does not call it. Until RESV-005 lands, the only writer is the operator subcommand `resv006_hot_swap_cooldown_cli record-completion`, which names itself `deferred-writer:SRS-RESV-005` on its own proof stream: that is a demonstration + operator surface, not the runtime binding (owner: SRS-RESV-005).",
+      "RESIDUAL, stated rather than implied (safety-paths rule 41): if record_completion fails, the swap really completed and NO window started, so SYS-49e is not suppressing anything. A CLI that then exits cannot hold a fail-closed state in memory, so it exits non-zero saying in as many words that the window did not start. The durable close belongs to the SRS-RESV-005 caller, which can refuse to report the swap complete until the window is (owner: SRS-RESV-005).",
+      "The gate lives on the TRIGGER entry points, not on execution: a proposal captured before the window opened and replayed later through resolve_demotion would still execute. The AC quantifies over triggers, so that is in scope for this feature \u2014 but SRS-RESV-004/005 should revalidate the window at execution time rather than trusting a proposal's age (owner: SRS-RESV-004 / SRS-RESV-005).",
+      "POST /api/v1/hot-swap and GET /api/v1/hot-swap/status keep their structured 501. This is a REFUSAL, not an oversight: the status response declares current_live_strategy_id / demotion_pending / auto_triggers_enabled alongside cooldown_expires_at, and three of those four are SRS-RESV-005 / 004 / 003's to produce. Binding the route from the cool-down half alone would fabricate them. The cool-down IS served, per-cell and honestly, on GET /dashboard/api/hot-swap (owner: SRS-API-001 for the shipped composition).",
+      "No WebSocket channel: python/atp_ws/asyncapi.json declares none for hot-swap, and publishing on an undeclared channel would be fabrication at the transport layer. The pane is REST-poll-only by design (owner: SRS-API-001).",
+      "The pane's HotSwapStatusSource protocol has ONE live_state leg, so the demotion (SRS-RESV-004) and cool-down (SRS-RESV-006) sub-legs share a failure domain: an unreadable demotion lockout defers the cool-down cells too, and vice versa. Fail-closed and honest \u2014 the raise names which sub-leg failed \u2014 but coarser than per-fact independence. Splitting live_state into per-owner legs is UI-5's pane protocol to change (owner: UI-5)."
     ]
   },
   "kill_switch_timeout_contract": {
@@ -10381,7 +10547,7 @@
     "check_script": "tools/data015_schema_check.py",
     "cli": "crates/atp-data/src/bin/data015_schema_cli.rs",
     "golden_corpus": "tests/fixtures/schema_evolution",
-    "entity_count": 20,
+    "entity_count": 21,
     "postures": [
       "Ranged",
       "MigrateOnRead",

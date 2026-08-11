@@ -11,9 +11,10 @@
  *   hotSwapCellValue({value:"x",data_source:"deferred:SRS-RESV-002"}) === null
  *   hotSwapCellBool({value:true,data_source:"hot_swap_state"})        === true
  *   hotSwapCellBool({value:true,data_source:"deferred:SRS-RESV-004"}) === null
- *   hotSwapCooldown(null, now, 7).state    === "deferred"
- *   hotSwapCooldown(past, now, 7).state    === "expired"
- *   hotSwapCooldown(future, now, 7).state  === "active"
+ *   hotSwapCooldown(null, now, 7, null)    .state === "deferred"  // server said nothing
+ *   hotSwapCooldown(past, now, 7, false)   .state === "expired"
+ *   hotSwapCooldown(future, now, 7, true)  .state === "active"
+ *   hotSwapCooldown(past, now, 7, true)    .state === "active"    // server outranks the clock
  */
 (function (root) {
   "use strict";
@@ -34,12 +35,34 @@
     return String(n).padStart(2, "0");
   }
 
-  function hotSwapCooldown(expiresAtIso, nowMs, cooldownDays) {
+  // `inEffect` is the SERVER's answer (SRS-RESV-006 classifies the window against the
+  // server clock and the durable record) and it is the AUTHORITY for `state` whenever it is
+  // known. The arithmetic below is kept only for `fraction` and `label`, which are cosmetic.
+  //
+  // Without that split the browser clock becomes a second source of truth: a viewer whose
+  // machine is a few minutes fast would render READY on a window the server is still
+  // suppressing, and the promote control keys off this state. Tri-state on purpose —
+  // `null` means the server did not say, which is never "ready".
+  function hotSwapCooldown(expiresAtIso, nowMs, cooldownDays, inEffect) {
     var expires = typeof expiresAtIso === "string" ? Date.parse(expiresAtIso) : NaN;
     if (!isFinite(expires) || typeof nowMs !== "number" || !isFinite(nowMs)) {
+      // No parseable expiry. An explicit not-in-effect is still a real answer — a window
+      // that has never existed has no expiry to report — so it renders READY, not unknown.
+      if (inEffect === false) return { state: "expired", fraction: 0, label: "READY" };
       return { state: "deferred", fraction: 0, label: "— —" };
     }
     var remainMs = expires - nowMs;
+    if (inEffect === true) {
+      // The server says the window is OPEN. Trust that over local arithmetic, and clamp the
+      // cosmetic remainder so a skewed clock cannot render a negative countdown.
+      if (!(remainMs > 0)) return { state: "active", fraction: 0, label: "< 1m" };
+    } else if (inEffect === false) {
+      return { state: "expired", fraction: 0, label: "READY" };
+    } else if (!(remainMs > 0)) {
+      // in_effect unknown AND the expiry has passed: the pane cannot confirm the window
+      // closed, so it stays deferred rather than claiming READY on its own clock.
+      return { state: "deferred", fraction: 0, label: "— —" };
+    }
     if (!(remainMs > 0)) return { state: "expired", fraction: 0, label: "READY" };
     var days = cooldownDays > 0 ? cooldownDays : 7;
     var totalMs = days * 86400000;

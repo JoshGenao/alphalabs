@@ -329,6 +329,12 @@ def _manual_over_seeded_log(tmp_path: Path, seed: str) -> subprocess.CompletedPr
             "cand-b",
             "--log",
             str(log),
+            # A CLEAR SRS-RESV-006 window (the path does not exist = no swap has ever
+            # completed), so this suite keeps measuring the LOG SCHEMA. Omitting it leaves
+            # the SYS-49e window UNKNOWN, which refuses the manual fire before a byte
+            # reaches the log — a real safety behaviour, but not the one under test here.
+            "--cooldown-state",
+            str(tmp_path / "clear-cooldown.json"),
         ],
         capture_output=True,
         text=True,
@@ -591,6 +597,9 @@ def test_a_control_character_in_an_id_cannot_poison_the_audit_log(
                 "cand-b",
                 "--log",
                 str(log),
+                # As above: a clear window keeps this about control characters in the log.
+                "--cooldown-state",
+                str(tmp_path / "clear-cooldown.json"),
             ],
             capture_output=True,
             text=True,
