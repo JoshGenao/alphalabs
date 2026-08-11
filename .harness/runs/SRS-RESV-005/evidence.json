@@ -57,13 +57,13 @@
       "command": "python -m pytest tests/domain/test_hot_swap_promotion.py -q",
       "executed": true,
       "exit_code": 0,
-      "head": "00ddbaeb915cb2b29deb5479626be0189171f02f",
+      "head": "90c736868cf63841855903c21ebe7f8516181819",
       "n": 3,
-      "observed": ".........................                                                [100%]\n25 passed in 1.73s",
+      "observed": "..........................                                               [100%]\n26 passed in 1.56s",
       "status": "pass",
       "step_text": "Step 3: Verify acceptance criteria: The promoted strategy starts live with no open IB positions, preserves prior paper performance history, and uses the same strategy code/API behavior.",
       "steps_digest": "5c8abf5ba8070593",
-      "ts": "2026-08-11T12:48:50+00:00"
+      "ts": "2026-08-11T12:59:26+00:00"
     },
     {
       "argv": [
@@ -82,5 +82,5 @@
       "ts": "2026-08-11T12:36:54+00:00"
     }
   ],
-  "updated": "2026-08-11T12:48:50+00:00"
+  "updated": "2026-08-11T12:59:26+00:00"
 }

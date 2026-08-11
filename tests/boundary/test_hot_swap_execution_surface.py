@@ -740,3 +740,23 @@ def test_a_blocked_swap_with_a_pending_demotion_is_still_a_coherent_200(mounted,
     assert status == 200
     assert body["demotion_state"] == "DEMOTION_PENDING"
     assert body["promotion_state"] == "BLOCKED"
+
+
+def test_a_pre_demotion_refusal_is_not_reported_as_a_completed_demotion(mounted, fake_cli):
+    """Round-9 adversarial review [critical], at the REST body boundary.
+
+    A BLOCKED swap whose demotion never ran must not surface as
+    `demotion_state: DEMOTED` — that is the wire form of claiming a demotion that
+    did not happen.
+    """
+    fake_cli.queue_status("live-a")
+    fake_cli.queue_swap(
+        promotion="BLOCKED", demotion="DEMOTION_PENDING", refusal="UNEXPECTED_LIVE_STRATEGY"
+    )
+
+    status, body = _post(mounted, _confirmed(), {"candidate_strategy_id": "paper-b"})
+
+    assert status == 200
+    assert body["promotion_state"] == "BLOCKED"
+    assert body["demotion_state"] == "DEMOTION_PENDING"
+    assert body["demotion_state"] != "DEMOTED"

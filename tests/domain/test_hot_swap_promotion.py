@@ -730,3 +730,29 @@ def test_a_stale_demoting_id_is_refused_before_the_demotion_runs(binaries, paper
     record = [_json.loads(line) for line in journal.read_text().splitlines() if line.strip()][0]
     assert record["promoted"] is False
     assert record["flat_confirmed"] is False, "no demotion ran, so nothing was confirmed flat"
+
+
+def test_a_pre_demotion_refusal_never_prints_a_confirmed_demotion(binaries, paper_store, tmp_path):
+    """Round-9 adversarial review [critical], at the CLI proof-line boundary.
+
+    The live-slot guards run before any demotion side effect (r7), but
+    `flat_confirmed()` was a denylist, so those refusals printed
+    `demotion-outcome:FLAT_CONFIRMED` — and the REST handler maps that to
+    `demotion_state: DEMOTED`. A swap in which no demotion ran would have told the
+    operator one succeeded.
+    """
+    for seeded, expected in (
+        (None, "NO_LIVE_STRATEGY_TO_DEMOTE"),
+        ("some-other-live-strategy", "UNEXPECTED_LIVE_STRATEGY"),
+    ):
+        state = tmp_path / f"live-{expected}.state"
+        if seeded is not None:
+            _seed_live(state, seeded)
+
+        proof = _lines(_swap(binaries, state=state, paper=paper_store))
+
+        assert proof["refusal"] == expected
+        assert proof["demotion-outcome"] == "DEMOTION_PENDING", (
+            "a refusal that never ran a demotion must not print FLAT_CONFIRMED"
+        )
+        assert proof["demotion-outcome"] != "FLAT_CONFIRMED"

@@ -375,10 +375,43 @@ impl HotSwapPromotionError {
     }
 
     /// Whether the demotion half of this swap reached flat before its timeout.
-    /// `false` only for [`Self::DemotionRefused`] — every other refusal happens
-    /// after a confirmed-flat demotion.
+    ///
+    /// An ALLOWLIST of the refusals that can only occur AFTER a demotion has
+    /// already been confirmed flat — deliberately not the inverse denylist it used
+    /// to be. That denylist read "everything except `DemotionRefused`", so the two
+    /// live-slot refusals, which are now raised BEFORE `resolve_demotion` runs,
+    /// silently inherited `true`: the CLI printed `demotion-outcome:FLAT_CONFIRMED`
+    /// and the REST body reported `demotion_state: DEMOTED` for a swap in which no
+    /// demotion had happened at all. (Raised by /codex adversarial review r9
+    /// [critical] — a defect introduced by r7's own fix.)
+    ///
+    /// Written this way round so the failure mode of forgetting a variant is an
+    /// UNDER-claim, not a false claim of a successful demotion.
     pub fn flat_confirmed(&self) -> bool {
-        !matches!(self, Self::DemotionRefused(_))
+        match self {
+            // Reached only from inside the gate, which runs after the demotion
+            // gate returned `Ok` — i.e. after flat was confirmed.
+            Self::ReceiptMismatch { .. }
+            | Self::SameStrategy { .. }
+            | Self::PositionsUnprovable { .. }
+            | Self::PositionsOpen { .. }
+            | Self::PaperHistoryUnreadable { .. }
+            | Self::PaperHistoryMissing { .. }
+            | Self::PaperHistoryDrift { .. }
+            | Self::CodeIdentityUnprovable { .. }
+            | Self::CodeIdentityMissing { .. }
+            | Self::CodeIdentityDrift { .. }
+            | Self::DemotionReleaseFailed(_)
+            | Self::DesignationRefused(_) => true,
+            // The demotion ran and did NOT reach flat.
+            Self::DemotionRefused(_)
+            // The demotion never ran: the live slot was wrong or empty, and these
+            // are refused before any demotion-side port is touched.
+            | Self::NoLiveStrategyToDemote { .. }
+            | Self::UnexpectedLiveStrategy { .. }
+            // Defence-in-depth arm; no demotion acceptance was produced.
+            | Self::DemotionNotAccepted { .. } => false,
+        }
     }
 }
 

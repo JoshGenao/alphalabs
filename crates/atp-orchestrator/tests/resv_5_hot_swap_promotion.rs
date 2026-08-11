@@ -712,3 +712,60 @@ fn an_empty_live_slot_reaches_no_demotion_side_port_either() {
     );
     assert_eq!(designation.designated(), None);
 }
+
+#[test]
+fn a_refusal_that_never_ran_a_demotion_never_claims_one() {
+    // r7 moved the live-slot guards ahead of `resolve_demotion`; `flat_confirmed()`
+    // was a denylist ("everything except DemotionRefused"), so those two refusals
+    // inherited `true` and the operator-facing proof stream claimed a successful
+    // demotion for a swap in which none had run.
+    // Raised by /codex adversarial review r9 [critical].
+    for (mut designation, expected) in [
+        (LiveDesignation::new(), "NO_LIVE_STRATEGY_TO_DEMOTE"),
+        (
+            designation_holding("live-gamma"),
+            "UNEXPECTED_LIVE_STRATEGY",
+        ),
+    ] {
+        let outcome = run_swap(
+            flat(),
+            Positions(PositionAnswer::Flat),
+            PaperHistory::queued(vec![]),
+            Versions::queued(vec![]),
+            &mut designation,
+        );
+        let error = refusal(&outcome);
+        assert_eq!(error.machine_reason(), expected);
+        assert!(
+            !error.flat_confirmed(),
+            "{expected} is refused BEFORE any demotion runs, so it must not report a \
+             confirmed-flat demotion"
+        );
+        assert!(!outcome.events[0].flat_confirmed);
+    }
+}
+
+#[test]
+fn every_post_demotion_refusal_still_reports_its_confirmed_demotion() {
+    // The other direction, so the allowlist cannot be "fixed" by returning false
+    // everywhere: a refusal that happened AFTER a confirmed-flat demotion must
+    // still say so, or the operator loses the fact that the demotion succeeded.
+    let mut designation = designation_holding(DEMOTING);
+    let outcome = run_swap(
+        flat(),
+        Positions(PositionAnswer::Open(vec![OpenPosition {
+            symbol: "AAPL".to_string(),
+            quantity: 5,
+        }])),
+        PaperHistory::queued(vec![Ok(Some(fingerprint(12, 3, "digest-a")))]),
+        Versions::queued(vec![Ok(Some(version(HASH_A)))]),
+        &mut designation,
+    );
+
+    let error = refusal(&outcome);
+    assert_eq!(error.machine_reason(), "LIVE_POSITIONS_OPEN");
+    assert!(
+        error.flat_confirmed(),
+        "the demotion DID reach flat before this refusal"
+    );
+}
