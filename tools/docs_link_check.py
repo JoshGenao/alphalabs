@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +49,15 @@ SCANNED = (
 
 # The step-numbered workflow every other document cites.
 STEP_SOURCE = "prompts/coding_prompt.md"
+
+#: Gitignored artifacts a document may legitimately reference before anything creates them.
+#:
+#: These are RUNTIME state, not shipped files: the scheduler writes the lease file when an
+#: agent claims a feature, and it writes it in the PRIMARY checkout, so it never resolves from
+#: a linked worktree. A reference to one is still a real, navigable pointer — the document is
+#: telling a reader where the state lives — so the gate must not treat its absence as a broken
+#: link and turn red for every parallel session.
+RUNTIME_ARTIFACTS = frozenset({"tools/.agent_runtime.json"})
 
 MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 STEP_REF_RE = re.compile(r"\bStep\s+(\d+(?:\.\d+)?)\b")
@@ -102,13 +112,55 @@ def _looks_like_path(text: str, top_level: frozenset[str]) -> bool:
     return text.split("/", 1)[0] in top_level
 
 
+def _git_common_dir() -> Path | None:
+    """The repository's shared git directory, or ``None`` when this is not a git checkout.
+
+    In a linked worktree — which is where every parallel agent session runs — ``.git`` is a
+    FILE containing a `gitdir:` pointer, so a literal ``.git/hooks/...`` path resolves in the
+    primary checkout and nowhere else. Asking git removes the difference.
+    """
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    common = result.stdout.strip()
+    if not common:
+        return None
+    path = Path(common)
+    return path if path.is_absolute() else (ROOT / path)
+
+
 def _resolve(ref: str, source: Path) -> bool:
     """Does this reference point at something that exists?"""
     ref = ref.split("#", 1)[0].strip().rstrip("/")
     if not ref:
         return True  # a pure anchor
     # Relative to the referring file first (how markdown links read), then to root.
-    return (source.parent / ref).exists() or (ROOT / ref).exists()
+    if (source.parent / ref).exists() or (ROOT / ref).exists():
+        return True
+    # A `.git/...` reference must be resolved through git, not through the literal directory:
+    # in a linked worktree `.git` is a file, so `.git/hooks/pre-commit` "does not exist" here
+    # while being perfectly present for the repository. A checker that fails in every
+    # `alphalabs-wt-*` worktree is a guard everyone learns to ignore.
+    if ref.startswith(".git/"):
+        common = _git_common_dir()
+        if common is not None and (common / ref[len(".git/") :]).exists():
+            return True
+    # A gitignored RUNTIME artifact is created by the thing the document describes, not shipped
+    # by the tree. Requiring it to exist would make this gate's verdict depend on whether an
+    # agent happens to be running — and in a worktree it never resolves, because the scheduler
+    # writes it in the primary checkout.
+    return ref in RUNTIME_ARTIFACTS
 
 
 def known_steps() -> set[str]:

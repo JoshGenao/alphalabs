@@ -87,3 +87,35 @@ def test_a_file_that_defines_its_own_steps_owns_them(tmp_path, monkeypatch):
 def test_the_shipped_tree_has_no_unresolved_references():
     """The gate must be green on the repository it ships in."""
     assert dlc.main([]) == 0
+
+
+# --- the worktree class: a guard that fires everywhere fires for no one -------
+#
+# Every parallel agent session runs in a linked `alphalabs-wt-<id>` worktree, where `.git` is a
+# FILE (a `gitdir:` pointer) rather than a directory, and where the scheduler's lease file lives
+# in the PRIMARY checkout. Both made this gate red in every worktree, for references that are
+# perfectly correct — and a red gate nobody caused is one everybody learns to skip.
+
+
+def test_a_dot_git_reference_resolves_through_git_not_the_literal_directory():
+    # Correct in the primary checkout AND in a worktree; before the fix, only the former.
+    assert dlc._resolve(".git/hooks/pre-commit", dlc.ROOT / "AGENTS.md")
+
+
+def test_a_missing_dot_git_reference_is_still_reported():
+    # Non-vacuity: the `.git/` branch must resolve real paths, not wave the prefix through.
+    assert not dlc._resolve(".git/hooks/no-such-hook", dlc.ROOT / "AGENTS.md")
+
+
+def test_a_gitignored_runtime_artifact_is_a_valid_reference():
+    # `tools/.agent_runtime.json` is written by the scheduler at claim time, in the primary
+    # checkout. A document naming it is telling the reader where the state lives; that pointer
+    # is not broken merely because no agent is running.
+    assert "tools/.agent_runtime.json" in dlc.RUNTIME_ARTIFACTS
+    assert dlc._resolve("tools/.agent_runtime.json", dlc.ROOT / "AGENTS.md")
+
+
+def test_an_unlisted_missing_path_under_tools_is_still_reported():
+    # The runtime-artifact allowance is an explicit allowlist, not a blanket exemption for
+    # anything under tools/.
+    assert not dlc._resolve("tools/.no_such_runtime_file.json", dlc.ROOT / "AGENTS.md")
