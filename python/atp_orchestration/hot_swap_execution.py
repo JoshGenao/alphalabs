@@ -35,18 +35,17 @@ by the trigger client would manufacture an ambiguous result on a real swap.
 stream, or a binary that cannot be launched each surface as a structured error. None of
 them reads as "no strategy is live", which would let a promotion run over a live strategy.
 
-Scope — what this surface does NOT yet enforce
-----------------------------------------------
-Each POST is ONE demote-then-promote attempt. A timed-out demotion blocks promotion for
-that attempt, and the response says so. It does **not** persist a demotion-pending lock, so
-SRS-RESV-004's "promotion is blocked until manual resolution" is not yet enforced across a
-LATER retry whose probe reports flat. That durable lockout, and the operator
-manual-resolution command that clears it, are ``SRS-RESV-004``'s — recorded in
-``hot_swap_promotion_contract.deferred[]``. ``GET /api/v1/hot-swap/status`` therefore stays
-at its structured 501: two of its four declared fields (``demotion_pending``,
-``cooldown_expires_at``) are owned by that deferred lockout and by the unbuilt
-``SRS-RESV-006`` cool-down, and answering with half a payload would be worse than not
-answering.
+Scope
+-----
+Each POST is ONE demote-then-promote attempt, and the cross-attempt block is real:
+``SRS-RESV-004`` ships the durable demotion-pending lockout, and ``resolve_demotion``
+consults it BEFORE its probe, so a swap attempted while a previous demotion is
+unresolved is refused before any side effect fires. This surface threads that lock
+through (``demotion_lock_path``); it does not reimplement the rule.
+
+``GET /api/v1/hot-swap/status`` still keeps its structured 501: its
+``cooldown_expires_at`` field is owned by the unbuilt ``SRS-RESV-006`` cool-down, and
+answering with part of a payload would be worse than not answering.
 """
 
 from __future__ import annotations
@@ -159,6 +158,7 @@ class SwapExecutionHandler:
         state_path: str | Path,
         paper_state_dir: str | Path,
         log_path: str | Path,
+        demotion_lock_path: str | Path,
         fixture_safety_inputs: Mapping[str, str] | None = None,
         binary: str | Path | None = None,
         runner: SwapCliRunner | None = None,
@@ -177,6 +177,11 @@ class SwapExecutionHandler:
         self._state_path = str(state_path)
         self._paper_state_dir = str(paper_state_dir)
         self._log_path = str(log_path)
+        #: SRS-RESV-004's durable demotion-pending lockout. `resolve_demotion`
+        #: consults it BEFORE its probe, so a swap attempted while a previous
+        #: demotion is unresolved is refused before any side effect fires. Required,
+        #: not optional: an optional path would let a composer opt out of the block.
+        self._demotion_lock_path = str(demotion_lock_path)
         self._binary = Path(binary) if binary is not None else default_binary()
         self._runner = runner if runner is not None else _default_runner
         self._timeout = float(timeout) if timeout is not None else _DEFAULT_TIMEOUT_S
@@ -278,6 +283,8 @@ class SwapExecutionHandler:
                 self._paper_state_dir,
                 "--log",
                 self._log_path,
+                "--demotion-lock",
+                self._demotion_lock_path,
                 # Explicit, never defaulted — and the fixture tier travels WITH
                 # them, so the binary refuses if a caller ever supplies the values
                 # without declaring what they are.
@@ -422,6 +429,7 @@ def mount_hot_swap_execution(
     state_path: str | Path,
     paper_state_dir: str | Path,
     log_path: str | Path,
+    demotion_lock_path: str | Path,
     fixture_safety_inputs: Mapping[str, str] | None = None,
     binary: str | Path | None = None,
     runner: SwapCliRunner | None = None,
@@ -441,6 +449,7 @@ def mount_hot_swap_execution(
         state_path=state_path,
         paper_state_dir=paper_state_dir,
         log_path=log_path,
+        demotion_lock_path=demotion_lock_path,
         fixture_safety_inputs=fixture_safety_inputs,
         binary=binary,
         runner=runner,

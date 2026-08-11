@@ -42,9 +42,9 @@ use atp_orchestrator::hot_swap_promotion::{
     PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
 };
 use atp_orchestrator::{
-    trigger_config_store, DeployedVersionRegistry, DeployedVersionRegistryError,
-    HotSwapDemotionEventSink, HotSwapLiquidationProbe, HotSwapSideEffectError, OperatorAlertSink,
-    StrategyOrchestrator, UnfilledOrderCanceller,
+    demotion_pending_store::FileDemotionPendingLock, trigger_config_store, DeployedVersionRegistry,
+    DeployedVersionRegistryError, HotSwapDemotionEventSink, HotSwapLiquidationProbe,
+    HotSwapSideEffectError, OperatorAlertSink, StrategyOrchestrator, UnfilledOrderCanceller,
 };
 use atp_simulation::paper_state::PaperStateSnapshot;
 use atp_types::{
@@ -132,6 +132,12 @@ swap FLAGS:
                                  fixture artifact hash is a false green on a live
                                  trading path, and a caller must say out loud that
                                  it is running a drill.
+    --demotion-lock <path>       SRS-RESV-004 durable demotion-pending lockout
+                                 (REQUIRED). resolve_demotion consults it BEFORE
+                                 its probe, so a swap attempted while a previous
+                                 demotion is unresolved is refused before any side
+                                 effect fires. An unreadable lockout blocks exactly
+                                 like a held one.
     --log <path>                 durable JSON-Lines promotion journal (append +
                                  fsync). The record's 1-based ordinal is printed
                                  as `swap-record-ordinal` and is the swap's
@@ -188,6 +194,7 @@ struct SwapArgs {
     positions: Option<String>,
     deployed_version: Option<String>,
     inject: Option<String>,
+    demotion_lock: Option<String>,
     log: Option<String>,
     confirm: bool,
     allow_fixture_safety_inputs: bool,
@@ -210,6 +217,7 @@ fn parse_swap_args(rest: &[String]) -> Result<SwapArgs, String> {
             "--deployed-version" => set_once(&mut parsed.deployed_version, &mut iter, flag)?,
             "--inject" => set_once(&mut parsed.inject, &mut iter, flag)?,
             "--log" => set_once(&mut parsed.log, &mut iter, flag)?,
+            "--demotion-lock" => set_once(&mut parsed.demotion_lock, &mut iter, flag)?,
             "--timeout" => {
                 if parsed.timeout.is_some() {
                     return Err(dup(flag));
@@ -338,6 +346,11 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
         reads: Cell::new(0),
         drift: matches!(inject, Injection::VersionDrift),
     };
+    // SRS-RESV-004's durable lockout. Required, not optional: making it optional
+    // would let a caller opt out of the very block that stops a swap running over
+    // an unresolved demotion, which is the same silent-default class the fixture
+    // safety inputs already had to close.
+    let lock = FileDemotionPendingLock::new(required(&args.demotion_lock, "--demotion-lock")?);
     let events = JournalPromotionEvents {
         path: args.log.as_ref().map(PathBuf::from),
         ordinal: Cell::new(None),
@@ -359,6 +372,7 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
         &FixtureCanceller,
         &FixtureAlerts,
         &FixtureDemotionEvents,
+        &lock,
         PromotionPorts {
             positions: &positions,
             paper_history: &paper,

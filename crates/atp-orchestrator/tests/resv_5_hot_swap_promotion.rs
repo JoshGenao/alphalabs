@@ -19,14 +19,15 @@
 //! violated the requirement it is reporting on.
 
 use atp_execution::designation::{LiveDesignation, LiveDesignationConfirmation};
+use atp_orchestrator::demotion_pending_store::{DemotionPendingRecord, DemotionPendingState};
 use atp_orchestrator::hot_swap_promotion::{
     HotSwapPromotionError, HotSwapPromotionEvent, HotSwapPromotionEventSink, LivePositionProbe,
     OpenPosition, PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
 };
 use atp_orchestrator::{
-    DeployedVersionRegistry, DeployedVersionRegistryError, HotSwapDemotionEventSink,
-    HotSwapLiquidationProbe, HotSwapSideEffectError, OperatorAlertSink, StrategyOrchestrator,
-    UnfilledOrderCanceller,
+    DemotionPendingLock, DeployedVersionRegistry, DeployedVersionRegistryError,
+    HotSwapDemotionEventSink, HotSwapLiquidationProbe, HotSwapSideEffectError, OperatorAlertSink,
+    StrategyOrchestrator, UnfilledOrderCanceller,
 };
 use atp_types::{
     DeployedVersion, HotSwapDemotionEvent, HotSwapDemotionOutcome, HotSwapDemotionRequest,
@@ -76,6 +77,25 @@ impl UnfilledOrderCanceller for Canceller {
 struct Alerts;
 impl OperatorAlertSink for Alerts {
     fn dispatch(&self, _event: OperatorAlertEvent) -> Result<(), HotSwapSideEffectError> {
+        Ok(())
+    }
+}
+
+/// A CLEAR SRS-RESV-004 lockout: nothing unresolved, so `resolve_demotion` proceeds
+/// to its probe. The BLOCKING behaviour is SRS-RESV-004's own gate and is covered by
+/// its `resv_4_demotion_pending_store` suite; what matters here is that the promotion
+/// path threads a real lock through and therefore inherits it.
+struct ClearLock;
+impl DemotionPendingLock for ClearLock {
+    fn state(&self) -> DemotionPendingState {
+        DemotionPendingState::Clear
+    }
+
+    fn engage(&self, _record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
+        Ok(())
+    }
+
+    fn amend(&self, _record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
         Ok(())
     }
 }
@@ -263,6 +283,7 @@ fn run_swap(
         &Canceller,
         &Alerts,
         &DemotionEvents,
+        &ClearLock,
         PromotionPorts {
             positions: &positions,
             paper_history: &paper,

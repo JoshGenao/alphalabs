@@ -554,6 +554,18 @@ _STALE_CLAIMS = (
         r"POST /api/v1/hot-swap — swap EXECUTION — is deliberately NOT bound and",
         "the route IS bound by SRS-RESV-005's mount_hot_swap_execution",
     ),
+    # SRS-RESV-004 landed its durable lockout mid-flight, which turned this
+    # feature's own deferral prose false. Kept as a pattern, not a one-off sweep:
+    # the same sentence lived in three places and would have gone stale again.
+    (
+        r"does not persist a demotion-pending lock",
+        "SRS-RESV-004's DemotionPendingLock is built, and resolve_demotion consults "
+        "it before its probe, so the promotion path inherits the block",
+    ),
+    (
+        r"not yet enforced across a \*{0,2}later retry",
+        "the cross-attempt lockout is enforced by SRS-RESV-004's store",
+    ),
 )
 
 

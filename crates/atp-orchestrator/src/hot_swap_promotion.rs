@@ -60,17 +60,18 @@
 //! demotion-pending lockout (SRS-RESV-004), the cool-down window (SRS-RESV-006),
 //! and the Reservoir ranking that names a candidate (SRS-RESV-002).
 //!
-//! In particular: this gate decides **one** demote-then-promote attempt. A
-//! timeout blocks promotion for *that* attempt. It does not persist a
-//! demotion-pending lock, so SRS-RESV-004's "promotion is blocked until manual
-//! resolution" is not yet enforced across a **later retry** whose probe reports
-//! flat. That store is SRS-RESV-004's, and the REST surface says so on the wire
-//! rather than implying otherwise.
+//! The cross-attempt lockout is no longer a gap. SRS-RESV-004 shipped
+//! `DemotionPendingLock`, and `resolve_demotion` consults it BEFORE its probe, so
+//! a swap attempted while a previous demotion is unresolved is refused before any
+//! side effect fires — and an unreadable lockout blocks exactly like a held one.
+//! Because the only path to this gate runs through `resolve_demotion`, that
+//! protection is inherited here rather than reimplemented: `execute_hot_swap`
+//! threads the lock through and cannot reach the promotion gate when it blocks.
 
 use crate::{
-    DeployedVersionRegistry, HotSwapDemotionEventSink, HotSwapDemotionResolved,
-    HotSwapLiquidationProbe, HotSwapSideEffectError, OperatorAlertSink, StrategyOrchestrator,
-    UnfilledOrderCanceller,
+    DemotionPendingLock, DeployedVersionRegistry, HotSwapDemotionEventSink,
+    HotSwapDemotionResolved, HotSwapLiquidationProbe, HotSwapSideEffectError, OperatorAlertSink,
+    StrategyOrchestrator, UnfilledOrderCanceller,
 };
 use atp_execution::designation::{
     LiveDesignation, LiveDesignationConfirmation, LiveDesignationError,
@@ -535,13 +536,14 @@ impl StrategyOrchestrator {
     /// durable demotion-pending lockout that would also block a later retry is
     /// SRS-RESV-004's (see the module docs).
     #[allow(clippy::too_many_arguments)]
-    pub fn execute_hot_swap<P, C, A, E, Q, H, R, S>(
+    pub fn execute_hot_swap<P, C, A, E, L, Q, H, R, S>(
         &self,
         request: HotSwapDemotionRequest,
         liquidation: &P,
         canceller: &C,
         alerts: &A,
         demotion_events: &E,
+        lock: &L,
         ports: PromotionPorts<'_, Q, H, R, S>,
         designation: &mut LiveDesignation,
         confirmation: LiveDesignationConfirmation,
@@ -552,6 +554,7 @@ impl StrategyOrchestrator {
         C: UnfilledOrderCanceller,
         A: OperatorAlertSink,
         E: HotSwapDemotionEventSink,
+        L: DemotionPendingLock,
         Q: LivePositionProbe,
         H: PaperHistorySource,
         R: DeployedVersionRegistry,
@@ -566,6 +569,7 @@ impl StrategyOrchestrator {
             canceller,
             alerts,
             demotion_events,
+            lock,
             observed_at_seconds,
         ) {
             Ok(resolved) => match DemotionReceipt::mint(&resolved) {

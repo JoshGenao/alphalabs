@@ -102,6 +102,7 @@ def mounted(fake_cli: _FakeCli, tmp_path) -> Iterator[tuple[str, int]]:
         state_path=tmp_path / "live.state",
         paper_state_dir=tmp_path / "paper",
         log_path=tmp_path / "swaps.jsonl",
+        demotion_lock_path=tmp_path / "demotion-pending.json",
         # An explicit DRILL composition. The shipped posture is the `unwired`
         # fixture below, which declares nothing and therefore refuses.
         fixture_safety_inputs={
@@ -128,6 +129,7 @@ def unwired(fake_cli: _FakeCli, tmp_path) -> Iterator[tuple[str, int]]:
         state_path=tmp_path / "live.state",
         paper_state_dir=tmp_path / "paper",
         log_path=tmp_path / "swaps.jsonl",
+        demotion_lock_path=tmp_path / "demotion-pending.json",
         binary=tmp_path / "fake-bin",
         runner=fake_cli,
     )
@@ -279,6 +281,7 @@ def test_the_handler_refuses_unconfirmed_even_when_the_transport_does_not(fake_c
         state_path=tmp_path / "live.state",
         paper_state_dir=tmp_path / "paper",
         log_path=tmp_path / "swaps.jsonl",
+        demotion_lock_path=tmp_path / "demotion-pending.json",
         binary=tmp_path / "fake-bin",
         runner=fake_cli,
     )
@@ -569,6 +572,7 @@ def test_a_partial_safety_declaration_still_refuses_and_names_only_what_is_missi
         state_path=tmp_path / "live.state",
         paper_state_dir=tmp_path / "paper",
         log_path=tmp_path / "swaps.jsonl",
+        demotion_lock_path=tmp_path / "demotion-pending.json",
         fixture_safety_inputs={"positions": "flat"},  # no deployed_version
         binary=tmp_path / "fake-bin",
         runner=fake_cli,

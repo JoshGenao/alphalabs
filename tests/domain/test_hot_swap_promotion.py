@@ -133,6 +133,8 @@ def _swap(
         candidate,
         "--paper-state",
         str(paper),
+        "--demotion-lock",
+        str(state.parent / "demotion-pending.json"),
         # This walk exercises the GATE, and the two safety facts it turns on have no
         # real producer yet (SRS-EXE-006 / SRS-ORCH-004). The binary refuses fixture
         # safety inputs unless the caller says out loud that it is running a drill,
@@ -434,6 +436,8 @@ def test_fixture_safety_inputs_must_be_declared_out_loud(binaries, paper_store, 
         CANDIDATE,
         "--paper-state",
         str(paper_store),
+        "--demotion-lock",
+        str(tmp_path / "demotion-pending.json"),
         "--confirm",
     ]  # deliberately WITHOUT --allow-fixture-safety-inputs
 
@@ -570,6 +574,8 @@ def test_the_fixture_tier_has_no_success_defaults(binaries, paper_store, tmp_pat
             CANDIDATE,
             "--paper-state",
             str(paper_store),
+            "--demotion-lock",
+            str(tmp_path / "demotion-pending.json"),
             "--allow-fixture-safety-inputs",
             "--confirm",
         ]

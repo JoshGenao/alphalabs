@@ -98,6 +98,7 @@ def live_stack(binaries, tmp_path) -> Iterator[tuple[tuple[str, int], Path, Path
         state_path=state,
         paper_state_dir=paper,
         log_path=journal,
+        demotion_lock_path=tmp_path / "demotion-pending.json",
         # Declared DRILL: the flat-account and code-identity producers are deferred
         # (SRS-EXE-006 / SRS-ORCH-004), and an undeclared composition refuses.
         fixture_safety_inputs={
