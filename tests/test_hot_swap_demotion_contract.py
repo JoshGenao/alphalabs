@@ -50,6 +50,20 @@ from hot_swap_demotion_check import (  # noqa: E402
 )
 
 
+def _add_method_to_trait(source: str, trait: str, method: str) -> str:
+    """Insert `method` into `trait`'s body — span-scoped, for the same reason as the struct helper.
+
+    An anchor like `"fn engage(...);\n}"` binds to whichever declaration happens to be LAST in
+    the trait, so adding a method to that trait silently turns the mutation into a no-op and the
+    check under test is handed an unmodified subject. Locating the trait's braces makes the
+    mutation survive the trait growing.
+    """
+
+    start = source.index(f"pub trait {trait} {{")
+    end = source.index("\n}", start)
+    return source[:end] + f"\n    {method}" + source[end:]
+
+
 def _drop_field_from_struct(source: str, struct: str, field: str) -> str:
     """Delete `field` from `struct` only — mutation anchors must be span-scoped, not textual.
 
@@ -480,13 +494,7 @@ class DemotionLockoutGuardTest(unittest.TestCase):
     def test_a_lock_port_that_can_clear_a_lockout_is_caught(self) -> None:
         # Every capability on the port is one the gate can exercise; clearing a
         # demotion-pending lockout is the operator's alone.
-        mutated = self.orch_src.replace(
-            "    fn engage(&self, record: DemotionPendingRecord)"
-            " -> Result<(), HotSwapSideEffectError>;\n}",
-            "    fn engage(&self, record: DemotionPendingRecord)"
-            " -> Result<(), HotSwapSideEffectError>;\n    fn clear(&self);\n}",
-            1,
-        )
+        mutated = _add_method_to_trait(self.orch_src, "DemotionPendingLock", "fn clear(&self);")
         self.assertNotEqual(mutated, self.orch_src, "mutation anchor not found")
         with self.assertRaises(HotSwapDemotionCheckError) as ctx:
             check_demotion_pending_lock_port(self.config, mutated)
@@ -543,11 +551,7 @@ class DemotionLockoutGuardTest(unittest.TestCase):
 
     def test_a_brokerage_port_that_can_disconnect_is_caught(self) -> None:
         source = module_source(self.sequence_module)
-        mutated = source.replace(
-            "    ) -> Result<(), HotSwapSideEffectError>;\n}",
-            "    ) -> Result<(), HotSwapSideEffectError>;\n    fn disconnect(&self);\n}",
-            1,
-        )
+        mutated = _add_method_to_trait(source, "DemotionBrokerageControl", "fn disconnect(&self);")
         self.assertNotEqual(mutated, source, "mutation anchor not found")
         with self.assertRaises(HotSwapDemotionCheckError) as ctx:
             # _check_forbidden_methods reads the trait out of the text it is given.

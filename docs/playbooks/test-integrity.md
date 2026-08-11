@@ -139,3 +139,23 @@ Read this whenever you write a test, and before you believe a green one.
     test ever runs — and the test goes green having exercised nothing. Force every
     availability predicate the path consults, and stub any writer that would mutate real
     state from a test run. `(harness-p1)`
+
+## Mutating the right thing (SRS-RESV-004)
+
+27. **Anchor a mutation on the declaration's SPAN, not on a token the file repeats.** A
+    `.replace("    pub liquidation_cancel: SideEffectOutcome,", "", 1)` mutated whichever
+    struct declared it FIRST; `rindex` mutated the LAST — and atp-types has four. Either way
+    the check under test received an intact subject and stayed silent, which reads exactly
+    like "the guard works". The same trap has three shapes: a field several structs share, a
+    trait method anchored as `fn last_one(...);\n}` (stale the moment the trait grows), and a
+    call the function now makes twice (`alerts.dispatch` once the probe-inconsistency branch
+    landed). Find the `pub struct X {` / `pub trait X {` and its closing brace, then mutate
+    inside that span. Bit this session three times, in all three shapes. `(SRS-RESV-004)`
+28. **A harness that ran nothing must not return a verdict.** `mutation_verify` passed pytest
+    every changed `tests/` path — including Rust `.rs` files, which `is_test_path` also
+    matches — so pytest exited 4 with "ERROR: not found", collected NOTHING, and all 34 added
+    tests fell through `run_tests`' final `else` to "skipped", reported as *"still pass
+    without the change"*. The output is indistinguishable from a real finding; the only tell
+    was that the accusation was unanimous. Rule 22's false-accusation mode with a second
+    cause. If a verdict indicts EVERY test you added, suspect the harness before the tests —
+    and make the tool raise instead of classifying. `(SRS-RESV-004, found live)`

@@ -501,3 +501,53 @@ def test_a_lockout_that_cannot_be_persisted_is_reported_as_a_non_durable_block(
     finally:
         # Restore write permission so tmp_path teardown can remove the directory.
         state_dir.chmod(0o700)
+
+
+def test_an_unreportable_resolution_refuses_without_clearing_the_lockout(
+    tmp_path: Path,
+) -> None:
+    # `resolve` DELETES the lockout. If a proof line were rejected afterwards, the command would
+    # exit non-zero having already unblocked promotion — the operator reads a failure while the
+    # system reads "clear", and nothing records that a manual resolution happened.
+    #
+    # Found by /codex:adversarial-review round 4 [critical]. Every fallible check now runs
+    # before the destructive write.
+    state = tmp_path / "pending.json"
+    _demote(state, "demotion-pending", "--position", "AAPL:100", "--resting", "AAPL")
+    assert state.exists()
+
+    # An acknowledgement carrying a control character cannot be printed as one proof line.
+    refused = _run("resolve", "--state", str(state), "--confirm", "operator\njg: done")
+    assert refused.returncode != 0, refused.stdout
+    assert "control character" in refused.stderr, refused.stderr
+
+    # The lockout survived, and promotion is still blocked.
+    assert state.exists(), "a resolution that cannot be reported must not clear the lockout"
+    status = _run("status", "--state", str(state))
+    assert status.returncode == 0
+    assert _proof(status.stdout)["demotion-pending"] == "true"
+
+    # A representable acknowledgement still works — the guard is not a blanket refusal.
+    cleared = _run("resolve", "--state", str(state), "--confirm", "operator jg: flattened")
+    assert cleared.returncode == 0, cleared.stderr
+    assert not state.exists()
+
+
+def test_the_lockout_is_engaged_before_the_destructive_side_effects(tmp_path: Path) -> None:
+    # SyRS SYS-49c (c) two-phase write: the block must exist before anything destructive
+    # happens, so a crash between the cancel and the lockout write cannot leave the next
+    # process reading an empty store as "nothing is pending".
+    #
+    # Found by /codex:adversarial-review round 4 [high]. Observable here as: a completed
+    # timeout leaves a lockout that carries the side-effect outcomes (phase two amended it),
+    # and the block is durable.
+    state = tmp_path / "pending.json"
+    values = _demote(state, "demotion-pending", "--position", "AAPL:100", "--resting", "AAPL")
+    assert values["promotion-block-is-durable"] == "true"
+    assert values["event-demotion-pending"] == "SUCCEEDED"
+
+    reported = _proof(_run("status", "--state", str(state)).stdout)
+    # The amend landed: the persisted record describes what actually happened, not the
+    # provisional "not attempted" phase-one state.
+    assert reported["liquidation-cancel"] == "SUCCEEDED"
+    assert reported["operator-alert"] == "SUCCEEDED"

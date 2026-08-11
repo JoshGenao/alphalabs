@@ -138,3 +138,18 @@ phrase: "make sure to utilize the /frontend-design skill to make a modern/beauti
     sibling panels and their tests regress. After a rebase on the dashboard seam, check brace
     balance is 0 — an appended-CSS conflict can glue into an unterminated rule, and a lost `}`
     silently voids every later rule.
+
+## Commands that mutate durable state
+
+38. **Validate every value the command will PRINT before it mutates anything.** `resolve`
+    deleted the demotion-pending lockout and then emitted its proof lines; a control character
+    in the operator's acknowledgement made a line unprintable, so the command exited non-zero
+    having already unblocked promotion. The operator reads a failure, the system reads "clear",
+    and nothing records that a manual resolution happened. Same shape as rule 9's
+    order-of-operations trap, on the output side. `(SRS-RESV-004 r4)`
+39. **One alert body shared by branches that took different actions misdescribes at least one
+    of them.** Both blocked demotion branches paged "the unfilled liquidation order is being
+    canceled" — but the probe-inconsistency branch deliberately cancels nothing, so the page
+    sent the operator after an order that is still live and unmentioned. A page is a RECOVERY
+    instruction: derive it from the recorded outcome (including the FAILED case, where a live
+    order most likely remains), never from the branch's intent. `(SRS-RESV-004 r3)`

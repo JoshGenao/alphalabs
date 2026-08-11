@@ -460,9 +460,25 @@ def check_resolve_demotion_guard(config: dict, orch_src: str) -> str:
             f"{entry['method']} {timeout_token} arm dispatches the operator alert before the "
             "unfilled-order cancel — the destructive broker action goes first"
         )
-    if timeout_arm.find(lock_engage_token) < timeout_arm.find(alert_token):
+    # Two-phase, and the order is the whole point. The lockout is engaged BEFORE anything
+    # destructive, so a crash between the side effects and the write cannot lose the block; it
+    # is amended AFTER, so the persisted record carries the outcomes an operator resolves
+    # against. `(found by /codex:adversarial-review, SRS-RESV-004 r4 [high])`
+    lock_amend_token = guard["lock_amend_call"] + "("
+    if lock_amend_token not in timeout_arm:
         fail(
-            f"{entry['method']} {timeout_token} arm engages the lockout before the operator "
+            f"{entry['method']} {timeout_token} arm never calls `{lock_amend_token}` — a "
+            "lockout engaged before the side effects must be updated with their outcomes"
+        )
+    if timeout_arm.find(lock_engage_token) > timeout_arm.find(cancel_token):
+        fail(
+            f"{entry['method']} {timeout_token} arm engages the lockout AFTER the "
+            "unfilled-order cancel — a crash in between would leave no durable block, and the "
+            "next attempt would read an empty store as 'nothing is pending'"
+        )
+    if timeout_arm.find(lock_amend_token) < timeout_arm.find(alert_token):
+        fail(
+            f"{entry['method']} {timeout_token} arm amends the lockout before the operator "
             "alert — the persisted record must carry the side-effect outcomes it is resolved "
             "against"
         )

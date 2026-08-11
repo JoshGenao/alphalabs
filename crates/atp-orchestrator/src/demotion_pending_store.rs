@@ -635,6 +635,47 @@ pub fn engage(
     write_atomically(path, record)
 }
 
+/// Update the record of a lockout that is ALREADY held, keeping the block continuous.
+///
+/// The two-phase write exists because of a crash window. The gate used to cancel the unfilled
+/// order and page the operator and only THEN engage, so the record could carry their outcomes —
+/// but a process that died in between left no lockout at all, and the next process read `Clear`
+/// and could promote over positions nobody resolved. `(found by /codex:adversarial-review,
+/// SRS-RESV-004 r4 [high])`
+///
+/// So the gate engages FIRST, with both outcomes `NotAttempted`, which blocks promotion from
+/// that instant; then it runs the side effects; then it amends. A crash anywhere after phase one
+/// leaves a lockout that blocks — with a record that understates what was attempted, which is
+/// the safe direction to be wrong in.
+///
+/// Amending REQUIRES an existing record for the same strategies: this is not a second engage,
+/// and it must never bring a lockout into being that the gate believes it already created.
+pub fn amend(path: &Path, record: &DemotionPendingRecord) -> Result<(), DemotionPendingStoreError> {
+    let _guard = ExclusiveGuard::acquire_creating(path).map_err(|error| {
+        DemotionPendingStoreError::Locked {
+            detail: error.to_string(),
+        }
+    })?;
+    let held = match load(path) {
+        Ok(Some(held)) => held,
+        Ok(None) => {
+            return Err(DemotionPendingStoreError::NotPending {
+                path: path.to_path_buf(),
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    if held.demoting_strategy_id != record.demoting_strategy_id
+        || held.candidate_strategy_id != record.candidate_strategy_id
+    {
+        return Err(DemotionPendingStoreError::AlreadyPending {
+            path: path.to_path_buf(),
+            held: Box::new(held),
+        });
+    }
+    write_atomically(path, record)
+}
+
 /// The manual resolution SYS-49c (d) requires: clear the lockout so promotion may proceed again.
 ///
 /// `acknowledgement` is the operator's statement that they have inspected and resolved the unfilled
@@ -771,6 +812,13 @@ impl crate::DemotionPendingLock for FileDemotionPendingLock {
                 Err(crate::HotSwapSideEffectError::new(error.to_string()))
             }
         }
+    }
+
+    /// Amend the record this lock already engaged. Never poisons: the block is already held,
+    /// so a failure here costs detail on the record, not the block itself.
+    fn amend(&self, record: DemotionPendingRecord) -> Result<(), crate::HotSwapSideEffectError> {
+        amend(&self.path, &record)
+            .map_err(|error| crate::HotSwapSideEffectError::new(error.to_string()))
     }
 }
 

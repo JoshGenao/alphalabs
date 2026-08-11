@@ -80,6 +80,19 @@ one `main`. Most of this playbook is about that sharing.
 18. **Check `pgrep -f "cargo test"` before a workspace suite.** See
     [test-integrity.md](test-integrity.md) rule 13.
 
+## Gates that fail for reasons no diff caused
+
+- **A gate that is red in every worktree is red for nobody.** `docs_link_check` failed in every
+  `alphalabs-wt-<id>` on two correct references: `.git/hooks/pre-commit` (in a linked worktree
+  `.git` is a FILE holding a `gitdir:` pointer, so the literal path never resolves) and
+  `tools/.agent_runtime.json` (the scheduler writes it in the PRIMARY checkout). Both made
+  `run_ci_locally.sh` red for work that did not cause it, which is CLAUDE.md rule 9's
+  "a guard that always fires is a guard everyone learns to ignore" arriving from a new
+  direction. Resolve `.git/…` through `git rev-parse --git-common-dir`, and give gitignored
+  RUNTIME artifacts an explicit allowlist — an allowlist, not a blanket exemption, so a genuinely
+  dead path is still reported. Before assuming a red gate is yours, check whether the file it
+  names is even in your diff. `(SRS-RESV-004)`
+
 ## Integrating
 
 19. **`cmd_integrate` targets `alphalabs-wt-<feature-id>`, not the directory you are in.** On

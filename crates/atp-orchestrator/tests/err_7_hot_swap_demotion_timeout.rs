@@ -204,6 +204,16 @@ impl DemotionPendingLock for DemotionPendingLockSpy {
         self.engaged.borrow_mut().push(record);
         Ok(())
     }
+
+    fn amend(&self, record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
+        // Mirrors the store: an amend REPLACES the held record rather than adding a lockout.
+        let mut engaged = self.engaged.borrow_mut();
+        if engaged.is_empty() {
+            return Err(HotSwapSideEffectError::new("nothing to amend"));
+        }
+        *engaged.last_mut().expect("held") = record;
+        Ok(())
+    }
 }
 
 /// Lockout that records the engage but reports failure — models an unwritable store.
@@ -230,6 +240,11 @@ impl DemotionPendingLock for DemotionPendingFailingLock {
         self.engaged.borrow_mut().push(record);
         Err(HotSwapSideEffectError::new("lockout store unwritable"))
     }
+
+    fn amend(&self, _record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
+        // Phase one failed, so there is nothing to amend — and the gate must not try.
+        panic!("a lockout that could not be engaged must not be amended");
+    }
 }
 
 /// Lockout that panics if engaged. Used by the flat positive control to prove an
@@ -243,6 +258,10 @@ impl DemotionPendingLock for DemotionPendingForbiddenLock {
 
     fn engage(&self, _record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
         panic!("ERR-7: FlatBeforeTimeout branch must not engage a demotion-pending lockout");
+    }
+
+    fn amend(&self, _record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
+        panic!("ERR-7: FlatBeforeTimeout branch must not touch the demotion-pending lockout");
     }
 }
 
@@ -434,6 +453,9 @@ fn resv_4_an_unreadable_lockout_blocks_promotion_exactly_like_a_held_one() {
         }
         fn engage(&self, _record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
             panic!("RESV-004: a blocked-before-start swap must not engage a second lockout");
+        }
+        fn amend(&self, _record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
+            panic!("RESV-004: a blocked-before-start swap must not touch the lockout");
         }
     }
 

@@ -133,7 +133,7 @@ fn wants_help(args: &[String]) -> bool {
 /// validates nothing, so this is reachable from real data, and the fail-closed answer is to
 /// refuse the whole command: a status that cannot be stated exactly must read as unavailable, not
 /// as a different status.
-fn proof(key: &str, value: &str) -> Result<(), String> {
+fn proof_representable(key: &str, value: &str) -> Result<(), String> {
     if let Some(bad) = value.chars().find(|c| (*c as u32) < 0x20 || *c == '\u{7f}') {
         return Err(format!(
             "refusing to emit '{key}': the value carries control character U+{:04X}, which \
@@ -141,7 +141,32 @@ fn proof(key: &str, value: &str) -> Result<(), String> {
             bad as u32
         ));
     }
+    Ok(())
+}
+
+fn proof(key: &str, value: &str) -> Result<(), String> {
+    proof_representable(key, value)?;
     println!("{key}:{value}");
+    Ok(())
+}
+
+/// Every value `emit_record` would print, checked without printing any of them.
+///
+/// Used to prove a resolution is REPORTABLE before the lockout is removed — see `cmd_resolve`.
+fn record_is_representable(record: &DemotionPendingRecord) -> Result<(), String> {
+    proof_representable("demoting-strategy-id", record.demoting_strategy_id.as_str())?;
+    proof_representable(
+        "candidate-strategy-id",
+        record.candidate_strategy_id.as_str(),
+    )?;
+    for (key, outcome) in [
+        ("liquidation-cancel", &record.liquidation_cancel),
+        ("operator-alert", &record.operator_alert),
+    ] {
+        if let SideEffectOutcome::Failed { reason } = outcome {
+            proof_representable(&format!("{key}-reason"), reason)?;
+        }
+    }
     Ok(())
 }
 
@@ -332,6 +357,19 @@ fn cmd_resolve(rest: &[String]) -> Result<(), String> {
     let args = Args::parse(rest, &["--state", "--confirm"], &[], &[])?;
     let path = state_path(&args)?;
     let acknowledgement = args.require("--confirm")?;
+
+    // Prove the resolution can be REPORTED before it is performed. `resolve` deletes the
+    // lockout; if a proof line were rejected afterwards the command would exit non-zero having
+    // already unblocked promotion, leaving no valid record that a manual resolution happened —
+    // the operator would read a failure and the system would read "clear". Do every fallible
+    // check before the destructive write, not after it.
+    // `(found by /codex:adversarial-review, SRS-RESV-004 r4 [critical])`
+    proof_representable("operator-acknowledgement", acknowledgement)?;
+    // Not-pending / unreadable need no check here: `resolve` refuses both on its own, with a
+    // better message than anything this could produce.
+    if let DemotionPendingState::Pending(held) = read_state(&path) {
+        record_is_representable(&held)?;
+    }
 
     let cleared = resolve(&path, acknowledgement).map_err(|error| error.to_string())?;
 

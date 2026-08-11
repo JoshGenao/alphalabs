@@ -25,8 +25,8 @@ use std::path::PathBuf;
 use std::process;
 
 use atp_orchestrator::demotion_pending_store::{
-    engage, load, read_state, resolve, serialize, DemotionPendingRecord, DemotionPendingState,
-    DemotionPendingStoreError, MAGIC,
+    amend, engage, load, read_state, resolve, serialize, DemotionPendingRecord,
+    DemotionPendingState, DemotionPendingStoreError, MAGIC,
 };
 use atp_types::{SideEffectOutcome, StrategyId};
 
@@ -476,4 +476,89 @@ fn resv_4_a_healthy_lock_is_not_poisoned_by_a_refused_engage() {
     // And an operator resolution genuinely clears it.
     resolve(&path, "operator jg: positions flattened").expect("resolve");
     assert!(!lock.state().blocks_promotion());
+}
+
+// --------------------------------------------------------------------------- //
+// The two-phase write: block first, describe second
+// --------------------------------------------------------------------------- //
+
+#[test]
+fn resv_4_amend_updates_a_held_lockout_without_ever_creating_one() {
+    let scratch = Scratch::new("amend", line!());
+    let path = scratch.path();
+
+    // Phase one: the block exists before either side effect has run.
+    let provisional = DemotionPendingRecord {
+        liquidation_cancel: SideEffectOutcome::NotAttempted,
+        operator_alert: SideEffectOutcome::NotAttempted,
+        ..record()
+    };
+    engage(&path, &provisional).expect("engage phase one");
+    assert!(read_state(&path).blocks_promotion());
+
+    // Phase two: the outcomes land on the SAME record.
+    amend(&path, &record()).expect("amend phase two");
+    let held = load(&path).expect("read").expect("held");
+    assert_eq!(held, record());
+    assert!(read_state(&path).blocks_promotion());
+
+    // Amend is not a back-door engage: with nothing held it refuses rather than creating one.
+    let empty = Scratch::new("amend-empty", line!());
+    let error = amend(&empty.path(), &record()).expect_err("amend must not create a lockout");
+    assert!(matches!(
+        error,
+        DemotionPendingStoreError::NotPending { .. }
+    ));
+    assert!(!empty.path().exists());
+}
+
+#[test]
+fn resv_4_amend_refuses_to_overwrite_a_different_demotions_record() {
+    // The amend is for the record THIS gate engaged. Letting it rewrite another demotion's
+    // lockout would silently retarget the thing an operator is about to resolve.
+    let scratch = Scratch::new("amend-identity", line!());
+    let path = scratch.path();
+    engage(&path, &record()).expect("engage");
+
+    let foreign = DemotionPendingRecord {
+        demoting_strategy_id: StrategyId::new("live-someone-else"),
+        ..record()
+    };
+    let error = amend(&path, &foreign).expect_err("a foreign amend must refuse");
+    assert!(matches!(
+        error,
+        DemotionPendingStoreError::AlreadyPending { .. }
+    ));
+    // The original record is untouched.
+    assert_eq!(load(&path).expect("read").expect("held"), record());
+}
+
+#[test]
+fn resv_4_a_crash_between_the_side_effects_and_the_amend_still_blocks() {
+    // The window the two-phase write closes. Phase one has landed and phase two never runs —
+    // the process died after cancelling and paging. The lockout must still be held, and it must
+    // still be readable, so the next process refuses to promote.
+    let scratch = Scratch::new("crash-window", line!());
+    let path = scratch.path();
+    let provisional = DemotionPendingRecord {
+        liquidation_cancel: SideEffectOutcome::NotAttempted,
+        operator_alert: SideEffectOutcome::NotAttempted,
+        ..record()
+    };
+    engage(&path, &provisional).expect("engage phase one");
+
+    // Nothing else happens — this is the crash.
+    let state = read_state(&path);
+    assert!(
+        state.blocks_promotion(),
+        "a demotion that timed out must stay blocked even if it never recorded its outcomes"
+    );
+    match state {
+        DemotionPendingState::Pending(held) => {
+            assert_eq!(held.demoting_strategy_id.as_str(), "live-momentum");
+            // The record understates what was attempted — the safe direction to be wrong in.
+            assert_eq!(held.liquidation_cancel, SideEffectOutcome::NotAttempted);
+        }
+        other => panic!("expected Pending, got {other:?}"),
+    }
 }

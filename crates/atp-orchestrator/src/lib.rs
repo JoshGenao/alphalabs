@@ -1073,6 +1073,15 @@ pub trait DemotionPendingLock {
     /// is blocked for THIS call but not for the next one — and the gate surfaces it
     /// on both the demotion event and the returned error rather than swallowing it.
     fn engage(&self, record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError>;
+
+    /// Update a lockout this gate already engaged, with the outcomes of the side effects that
+    /// ran after it. Never brings a lockout into being — see `demotion_pending_store::amend`.
+    ///
+    /// The gate engages BEFORE the destructive side effects so a crash in between still leaves
+    /// promotion blocked, and amends after so the persisted record carries the facts an
+    /// operator resolves against. A failed amend leaves the block standing on a record that
+    /// understates what was attempted, which is the safe direction to be wrong in.
+    fn amend(&self, record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError>;
 }
 
 /// SRS-RESV-004 acceptance evidence: the demotion reached flat before the
@@ -1810,6 +1819,20 @@ impl StrategyOrchestrator {
                 // failed cancel / missed alert is observable rather than
                 // indistinguishable from success. Promotion is blocked
                 // regardless via the returned `Err`.
+                // SyRS SYS-49c (c), FIRST: block promotion durably before anything
+                // destructive happens. Engaging after the cancel and the page left a window
+                // in which a crash lost the block entirely, and the next process read the
+                // empty store as `Clear`. The record starts with both outcomes NotAttempted
+                // and is amended below once they are known.
+                let engaged = into_outcome(lock.engage(DemotionPendingRecord {
+                    demoting_strategy_id: request.demoting_strategy_id.clone(),
+                    candidate_strategy_id: request.candidate_strategy_id.clone(),
+                    elapsed_seconds,
+                    timeout_seconds,
+                    observed_at_seconds,
+                    liquidation_cancel: SideEffectOutcome::NotAttempted,
+                    operator_alert: SideEffectOutcome::NotAttempted,
+                }));
                 let liquidation_cancel =
                     into_outcome(canceller.cancel_unfilled_liquidation_orders(&request));
                 let operator_alert = into_outcome(alerts.dispatch(OperatorAlertEvent {
@@ -1827,25 +1850,39 @@ impl StrategyOrchestrator {
                     liquidation_cancel: liquidation_cancel.clone(),
                     observed_at_seconds,
                 }));
-                // SyRS SYS-49c (c): hold the swap in demotion-pending. Engaged
-                // AFTER the two safety side effects so the persisted record
-                // carries their outcomes — whether a live liquidation order may
-                // still be resting, and whether anyone was actually paged, are
-                // exactly the facts the operator resolves against — and BEFORE
-                // this call returns, so the block is already durable by the time
-                // any caller can retry. Unlike the audit sink below, this write
-                // is not best-effort: its failure is what separates "blocked" from
-                // "stays blocked", so it is carried onto the event AND the error.
-                let demotion_pending = into_outcome(lock.engage(DemotionPendingRecord {
-                    demoting_strategy_id: request.demoting_strategy_id.clone(),
-                    candidate_strategy_id: request.candidate_strategy_id.clone(),
-                    elapsed_seconds,
-                    timeout_seconds,
-                    observed_at_seconds,
-                    liquidation_cancel: liquidation_cancel.clone(),
-                    operator_alert: operator_alert.clone(),
-                }));
-                let promotion_block_is_durable = !demotion_pending.is_failed();
+                // Phase two of the lockout write: record what the side effects actually did,
+                // so the operator resolves against the real facts — whether a live liquidation
+                // order may still be resting, and whether anyone was paged. Only attempted when
+                // phase one landed; a failed amend leaves the BLOCK standing on an
+                // understated record, which is the safe direction to be wrong in.
+                //
+                // `demotion_pending` reports the durability of the BLOCK, which phase one
+                // decides. That is what separates "blocked" from "stays blocked", so it is
+                // carried onto the event AND the error rather than swallowed.
+                let promotion_block_is_durable = !engaged.is_failed();
+                let demotion_pending = if engaged.is_failed() {
+                    engaged
+                } else {
+                    let amended = into_outcome(lock.amend(DemotionPendingRecord {
+                        demoting_strategy_id: request.demoting_strategy_id.clone(),
+                        candidate_strategy_id: request.candidate_strategy_id.clone(),
+                        elapsed_seconds,
+                        timeout_seconds,
+                        observed_at_seconds,
+                        liquidation_cancel: liquidation_cancel.clone(),
+                        operator_alert: operator_alert.clone(),
+                    }));
+                    match amended {
+                        // The block is durable either way; a failed amend only costs detail.
+                        SideEffectOutcome::Failed { reason } => SideEffectOutcome::Failed {
+                            reason: format!(
+                                "the demotion-pending lockout IS held, but its side-effect \
+                                 outcomes could not be recorded onto it: {reason}"
+                            ),
+                        },
+                        other => other,
+                    }
+                };
                 // Best-effort audit emission (see the gate Rustdoc): a sink
                 // failure does not roll back the cancel/alert/lockout above or
                 // change the promotion-block outcome below.

@@ -4570,7 +4570,8 @@
       "trait": "DemotionPendingLock",
       "methods": [
         "state",
-        "engage"
+        "engage",
+        "amend"
       ],
       "forbidden_methods": [
         "clear",
@@ -4658,6 +4659,7 @@
       "lock_state_call": "lock.state",
       "lock_blocks_predicate": "blocks_promotion",
       "lock_engage_call": "lock.engage",
+      "lock_amend_call": "lock.amend",
       "accepted_struct": "HotSwapDemotionResolved",
       "error_factory": "StructuredHotSwapDemotionError::demotion_timeout",
       "pending_error_factory": "StructuredHotSwapDemotionError::demotion_pending",

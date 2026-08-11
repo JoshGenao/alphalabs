@@ -146,6 +146,35 @@ including when only the *filename* matches (a notes-only chore for a safety-name
 39. **Prove the ordering.** A broker stub that asserts the snapshot file EXISTS on disk at
     `submit_order` time is what proves durable-before-submit. `(EXE-009)`
 
+## Durable safety blocks
+
+40. **Persist the block BEFORE the destructive side effects it describes, then amend it.** The
+    demotion gate cancelled the unfilled order, paged the operator, and only then engaged the
+    demotion-pending lockout — so the record could carry their outcomes. A process that died in
+    between left no lockout at all, and the next one read the empty store as "nothing is
+    pending" and could promote. Engage first with the outcomes `NotAttempted` (the block is live
+    from that instant), run the side effects, then `amend`. A crash after phase one leaves a
+    record that UNDERSTATES what was attempted — the safe direction to be wrong in — and the
+    amend path must refuse to create a lockout, or it is a second engage wearing a disguise.
+    `(SRS-RESV-004 r4)`
+41. **A failed durable write must leave a fail-closed STATE, not just a truthful error.**
+    Returning `promotion_block_is_durable = false` described the hole precisely and closed
+    nothing: the store was still empty, so the next attempt read `Clear` and promoted. The port
+    impl now poisons itself on a failed engage and reports the blocking state until an operator
+    resolves. Two counter-rules learned the same day: poison ONLY on the failures that mean
+    "the block is absent" — an `AlreadyPending` refusal means the block EXISTS, and poisoning
+    there outlives the operator's resolution and wedges the swap path permanently; and state the
+    residual (an in-memory poison does not survive a restart) instead of implying it does.
+    `(SRS-RESV-004 r3)`
+42. **An action keyed on a caller-supplied identity that selects ACCOUNT-level state must prove
+    that identity against the authority, before the first port call.** `execute_demotion_sequence`
+    liquidated every position in `LiveExecutionState::open_positions` — the whole account book —
+    using `request.demoting_strategy_id`, without checking it against the live registry. The id
+    was not a label on the audit record; it decided whose positions were flattened. Prove it
+    first, and refuse on all three failures: nobody live, the wrong one live, and MORE than one
+    live (an already-broken single-live invariant must not be resolved by guessing).
+    `(SRS-RESV-004 r1)`
+
 ## Deterministic-critic false positives (reword, don't disable)
 
 - `money:float-arithmetic` fires on the substring `price/quantity` in a comment (the `/`
