@@ -42,9 +42,9 @@ use atp_orchestrator::hot_swap_promotion::{
     PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
 };
 use atp_orchestrator::{
-    DeployedVersionRegistry, DeployedVersionRegistryError, HotSwapDemotionEventSink,
-    HotSwapLiquidationProbe, HotSwapSideEffectError, OperatorAlertSink, StrategyOrchestrator,
-    UnfilledOrderCanceller,
+    trigger_config_store, DeployedVersionRegistry, DeployedVersionRegistryError,
+    HotSwapDemotionEventSink, HotSwapLiquidationProbe, HotSwapSideEffectError, OperatorAlertSink,
+    StrategyOrchestrator, UnfilledOrderCanceller,
 };
 use atp_simulation::paper_state::PaperStateSnapshot;
 use atp_types::{
@@ -124,6 +124,14 @@ swap FLAGS:
                                    disagree with the capture, proving the gate
                                    rolls the designation back
                                    (paper-drift | version-drift)
+    --allow-fixture-safety-inputs
+                                 REQUIRED to run with FIXTURE values for the two
+                                 SAFETY facts below (--positions,
+                                 --deployed-version). Without it the swap refuses:
+                                 a promotion decided on a fixture flat-account or a
+                                 fixture artifact hash is a false green on a live
+                                 trading path, and a caller must say out loud that
+                                 it is running a drill.
     --log <path>                 durable JSON-Lines promotion journal (append +
                                  fsync). The record's 1-based ordinal is printed
                                  as `swap-record-ordinal` and is the swap's
@@ -182,6 +190,7 @@ struct SwapArgs {
     inject: Option<String>,
     log: Option<String>,
     confirm: bool,
+    allow_fixture_safety_inputs: bool,
 }
 
 /// Allowlist parse in ONE pass: an unknown, duplicated, or value-less flag is an
@@ -217,6 +226,12 @@ fn parse_swap_args(rest: &[String]) -> Result<SwapArgs, String> {
                 }
                 parsed.confirm = true;
             }
+            "--allow-fixture-safety-inputs" => {
+                if parsed.allow_fixture_safety_inputs {
+                    return Err(dup(flag));
+                }
+                parsed.allow_fixture_safety_inputs = true;
+            }
             other => return Err(format!("unknown flag '{other}'\n\n{USAGE}")),
         }
     }
@@ -251,6 +266,31 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
             demoting.as_str()
         ));
     }
+    // FIXTURE-TIER QUARANTINE. Two of this tool's inputs are the SAFETY facts the
+    // requirement turns on: whether the live account is flat (--positions) and
+    // whether the candidate runs the same artifact (--deployed-version). Their real
+    // producers are deferred (SRS-EXE-006 / SRS-ORCH-004), so the values here are
+    // FIXTURES — and a promotion decided on a fixture flat-account is a false green
+    // on a live trading path, not a demo.
+    //
+    // Defaulting them silently is what made the served REST route able to report
+    // PROMOTED without proving either fact. So the fixture tier is now OPT-IN: a
+    // caller has to say out loud that it is running a drill. The REST handler never
+    // passes this flag, which is what keeps the served path honest.
+    //
+    // Checked BEFORE the state file is read or written, so a refused drill leaves
+    // nothing behind.
+    if !args.allow_fixture_safety_inputs {
+        return Err(
+            "refusing to promote on FIXTURE safety inputs: --positions (the flat-account \
+             fact, real producer deferred to SRS-EXE-006) and --deployed-version (the \
+             code-identity fact, real producer deferred to SRS-ORCH-004) have no real \
+             source in this build. Pass --allow-fixture-safety-inputs to run this as an \
+             explicit drill; a caller that cannot prove the account is flat must not \
+             report a promotion"
+                .to_string(),
+        );
+    }
 
     let inject = match args.inject.as_deref() {
         None => Injection::None,
@@ -264,6 +304,16 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
     };
 
     let state_path = PathBuf::from(state_path);
+    // SERIALIZE the whole read -> execute -> write sequence. Without this, two
+    // concurrent swaps both read the same live strategy, both run the gate against
+    // that stale snapshot, both report PROMOTED for different candidates, and the
+    // last rename decides durable state — breaking the single-live-strategy
+    // invariant that this gate exists to protect. The guard is held for the LIFETIME
+    // of the critical section (it is dropped at the end of `cmd_swap`, after the
+    // save), not merely acquired: releasing it before the write would reopen the
+    // same race.
+    let _swap_guard = trigger_config_store::ExclusiveGuard::acquire_creating(&state_path)
+        .map_err(|error| format!("cannot serialize the swap against concurrent ones: {error}"))?;
     let mut designation = load_designation(&state_path)?;
     let designated_before = designation
         .designated()

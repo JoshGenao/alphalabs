@@ -109,6 +109,11 @@ def _swap(binaries, *, state: Path, paper: Path, demoting=DEMOTING, candidate=CA
         "--demoting", demoting,
         "--candidate", candidate,
         "--paper-state", str(paper),
+        # This walk exercises the GATE, and the two safety facts it turns on have no
+        # real producer yet (SRS-EXE-006 / SRS-ORCH-004). The binary refuses fixture
+        # safety inputs unless the caller says out loud that it is running a drill,
+        # which is what keeps the served REST path from promoting on them.
+        "--allow-fixture-safety-inputs",
         *extra,
     ]
     if confirm:
@@ -363,3 +368,82 @@ def test_the_operator_surface_labels_its_fixture_tier(binaries, paper_store, tmp
     # A run of this tool is evidence about the GATE, not about a live IB account.
     # The label is what stops a reader inferring the wrong one.
     assert proof["transports"] == "FIXTURE"
+
+
+def test_fixture_safety_inputs_must_be_declared_out_loud(binaries, paper_store, tmp_path):
+    """The served REST path's protection, at its source.
+
+    --positions (the flat-account fact) and --deployed-version (the code-identity
+    fact) have no real producer in this build. Defaulting them silently is what let
+    a served route report PROMOTED without proving either, so the binary refuses
+    them unless the caller declares the drill.
+    """
+    state = tmp_path / "live.state"
+    _seed_live(state, DEMOTING)
+    argv = [
+        str(binaries[PROMOTE_BIN]), "swap",
+        "--state", str(state),
+        "--demoting", DEMOTING,
+        "--candidate", CANDIDATE,
+        "--paper-state", str(paper_store),
+        "--confirm",
+    ]  # deliberately WITHOUT --allow-fixture-safety-inputs
+
+    result = subprocess.run(argv, cwd=REPO_ROOT, capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert "FIXTURE safety inputs" in result.stderr
+    assert "SRS-EXE-006" in result.stderr and "SRS-ORCH-004" in result.stderr
+    assert "promotion:PROMOTED" not in result.stdout
+    # Refused before the state file was touched.
+    assert _lines(result).get("designation-after") is None
+
+
+# ----------------------------------------------------------------------------- #
+# 7. Concurrency — two swaps must not both promote
+# ----------------------------------------------------------------------------- #
+
+
+def test_two_concurrent_swaps_cannot_both_promote(binaries, paper_store, tmp_path):
+    """The single-live-strategy invariant under a real race.
+
+    The gate loads the durable designation, decides, and writes it back. Without a
+    lock over that WHOLE read-execute-write sequence, both attempts read the same
+    live strategy, both promote the same candidate, and both report PROMOTED — two
+    swaps acknowledged against one IB account, with the last rename deciding.
+
+    Both attempts request the SAME swap (a -> b) on purpose: that is the pair that
+    can genuinely both succeed on a stale read. With the lock, the first wins and
+    the second sees `b` already live, so its execution-time revalidation refuses.
+
+    Repeated, because a race that reproduces once in N runs is still a race — a
+    single round can pass by luck on either side of the fix.
+
+    Raised by the round-1 adversarial review; this is the regression lock.
+    """
+    import concurrent.futures
+
+    for round_index in range(12):
+        state = tmp_path / f"live-{round_index}.state"
+        _seed_live(state, DEMOTING)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(lambda: _lines(_swap(binaries, state=state, paper=paper_store)))
+                for _ in range(2)
+            ]
+            results = [f.result() for f in futures]
+
+        promoted = [r for r in results if r.get("promotion") == "PROMOTED"]
+        assert len(promoted) <= 1, (
+            f"round {round_index}: both concurrent swaps reported PROMOTED — the "
+            f"read-execute-write sequence is not serialized: {results}"
+        )
+        # The durable record must agree with whoever won.
+        final = _lines(
+            subprocess.run(
+                [str(binaries[PROMOTE_BIN]), "status", "--state", str(state)],
+                cwd=REPO_ROOT, capture_output=True, text=True,
+            )
+        )["designated"]
+        assert final == (CANDIDATE if promoted else DEMOTING)

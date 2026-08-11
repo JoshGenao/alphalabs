@@ -417,6 +417,80 @@ def check_rest_surface(config: dict, root: Path = ROOT) -> str:
     )
 
 
+def check_safety_input_tier(config: dict, root: Path = ROOT) -> str:
+    """The two SAFETY facts must never be servable from a silent default.
+
+    Round-1 adversarial review [critical]: the served route could report PROMOTED
+    without proving the account was flat, because the CLI defaulted `--positions`
+    to `flat`. The fix is opt-in at BOTH layers, so this guard checks both — a
+    single-layer fix would leave the other able to reintroduce it.
+    """
+
+    block = contract_block(config)
+    tier = block["rest_surface"]["safety_input_tier"]
+
+    cli_path = root / "crates/atp-orchestrator/src/bin/resv005_hot_swap_promote_cli.rs"
+    cli_src = cli_path.read_text(encoding="utf-8")
+    if tier["cli_flag"] not in cli_src:
+        fail(f"the CLI does not declare `{tier['cli_flag']}`")
+    swap = fn_block(cli_src, "cmd_swap")
+    if "allow_fixture_safety_inputs" not in swap:
+        fail(
+            "`cmd_swap` never consults the fixture-tier opt-in — fixture safety facts "
+            "would again be usable without a caller saying so"
+        )
+    # The refusal must precede the state read, so a refused drill leaves nothing.
+    refusal_at = swap.index("allow_fixture_safety_inputs")
+    load_at = swap.index("load_designation(")
+    if refusal_at > load_at:
+        fail(
+            "the fixture-tier refusal runs AFTER the designation is loaded — it must "
+            "gate the whole sequence so a refused drill touches nothing"
+        )
+
+    handler_path = root / block["rest_surface"]["handler"].split("::")[0]
+    handler_src = handler_path.read_text(encoding="utf-8")
+    if tier["declaration"] not in handler_src:
+        fail(f"{handler_path.name} does not accept a `{tier['declaration']}` declaration")
+    if tier["refusal_type"] not in handler_src:
+        fail(f"{handler_path.name} never raises `{tier['refusal_type']}`")
+    for owner in tier["owners"]:
+        if owner not in handler_src:
+            fail(f"{handler_path.name} does not name deferred owner `{owner}` in its refusal")
+    return (
+        f"safety-input tier: opt-in at BOTH layers (`{tier['cli_flag']}` before the state "
+        f"read; `{tier['declaration']}` or a {tier['refusal_type']} 501 naming "
+        f"{tier['owners']})"
+    )
+
+
+def check_swap_is_serialized(config: dict, root: Path = ROOT) -> str:
+    """The read-execute-write sequence must be under a lock, held for its lifetime."""
+
+    spec = contract_block(config)["rest_surface"]["concurrency"]
+    cli_path = root / "crates/atp-orchestrator/src/bin/resv005_hot_swap_promote_cli.rs"
+    swap = fn_block(cli_path.read_text(encoding="utf-8"), "cmd_swap")
+
+    if spec["guard"] not in swap:
+        fail(
+            f"`cmd_swap` does not acquire `{spec['guard']}` — two concurrent swaps would "
+            "read the same live strategy and both promote"
+        )
+    # LIFETIME, not presence: a `let _ = acquire(...)` drops the guard immediately and
+    # reopens the race while still containing the token this check greps for.
+    if "let _swap_guard" not in swap:
+        fail(
+            "the swap lock is not bound to a named guard held for the critical section. "
+            "`let _ = acquire(...)` drops it immediately and reopens the race while still "
+            "mentioning the acquire call"
+        )
+    guard_at = swap.index("let _swap_guard")
+    load_at = swap.index("load_designation(")
+    if guard_at > load_at:
+        fail("the swap lock is acquired AFTER the designation is loaded — the read is unprotected")
+    return f"swap serialized: `{spec['guard']}` bound for the lifetime of {spec['scope']}"
+
+
 # --------------------------------------------------------------------------- #
 # (h) The stale-deferral collector
 # --------------------------------------------------------------------------- #
@@ -529,6 +603,8 @@ _STATIC_CHECKS = (
 def _run_static(config: dict, module_src: str, root: Path = ROOT) -> list[str]:
     evidence = [check(config, module_src) for _, check in _STATIC_CHECKS]
     evidence.append(check_rest_surface(config, root))
+    evidence.append(check_safety_input_tier(config, root))
+    evidence.append(check_swap_is_serialized(config, root))
     evidence.append(check_no_stale_deferral(root))
     return evidence
 

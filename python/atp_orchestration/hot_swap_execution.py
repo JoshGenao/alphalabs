@@ -159,10 +159,21 @@ class SwapExecutionHandler:
         state_path: str | Path,
         paper_state_dir: str | Path,
         log_path: str | Path,
+        fixture_safety_inputs: Mapping[str, str] | None = None,
         binary: str | Path | None = None,
         runner: SwapCliRunner | None = None,
         timeout: float | None = None,
     ) -> None:
+        #: A composer's EXPLICIT declaration that it is running a drill on fixture
+        #: safety facts: ``{"positions": ..., "deployed_version": ...}``. Default
+        #: ``None`` is the shipped posture — the route then refuses rather than
+        #: promoting on facts nobody proved (see :meth:`handle`).
+        #:
+        #: It is deliberately not a bare pair of "sources": naming it after the TIER
+        #: is what stops a future composer wiring a fixture in and forgetting it is
+        #: one. When the real producers land (SRS-EXE-006 / SRS-ORCH-004) they get
+        #: their own parameter and this one keeps meaning exactly "drill".
+        self._fixture_safety_inputs = dict(fixture_safety_inputs or {})
         self._state_path = str(state_path)
         self._paper_state_dir = str(paper_state_dir)
         self._log_path = str(log_path)
@@ -189,6 +200,43 @@ class SwapExecutionHandler:
                 "executing a Hot-Swap designates a strategy live and requires explicit "
                 "operator confirmation (SyRS SYS-2d / NFR-S2)",
                 type="CONFIRMATION_REQUIRED",
+            )
+
+        # FIXTURE-TIER REFUSAL, before anything is read or run.
+        #
+        # SYS-49d turns on two SAFETY facts: the live account is flat, and the
+        # candidate runs the same artifact. Their real producers are deferred
+        # (SRS-EXE-006 / SRS-ORCH-004). A served route that promoted anyway would
+        # report PROMOTED without proving either — a false green on a live trading
+        # path, which is worse than an unbound route.
+        #
+        # So the route is MOUNTED and the gate behind it is real, but it refuses
+        # until a composer supplies real sources. This is deliberately a different
+        # 501 from an unbound operation: it names exactly which fact is missing and
+        # who owns it, and it is the wiring point those owners plug into.
+        missing = {
+            "open IB positions (flat-start)": (
+                "SRS-EXE-006" if "positions" not in self._fixture_safety_inputs else None
+            ),
+            "deployed version (code identity)": (
+                "SRS-ORCH-004"
+                if "deployed_version" not in self._fixture_safety_inputs
+                else None
+            ),
+        }
+        if any(missing.values()):
+            raise InterfaceError(
+                ErrorCategory.NOT_IMPLEMENTED,
+                "refusing to execute a Hot-Swap without real safety inputs: the promoted "
+                "strategy must be proven to start with no open IB positions and to run the "
+                "same artifact it ran as paper, and no producer of those facts is composed "
+                "on this runtime. The gate itself is built (SRS-RESV-005); these inputs are "
+                "not",
+                type="SAFETY_INPUTS_UNAVAILABLE",
+                detail={
+                    "owner": ", ".join(sorted(o for o in missing.values() if o)),
+                    "missing": sorted(k for k, v in missing.items() if v),
+                },
             )
 
         demoting = self._current_live_strategy()
@@ -222,6 +270,12 @@ class SwapExecutionHandler:
                 "--candidate", candidate,
                 "--paper-state", self._paper_state_dir,
                 "--log", self._log_path,
+                # Explicit, never defaulted — and the fixture tier travels WITH
+                # them, so the binary refuses if a caller ever supplies the values
+                # without declaring what they are.
+                "--positions", self._fixture_safety_inputs["positions"],
+                "--deployed-version", self._fixture_safety_inputs["deployed_version"],
+                "--allow-fixture-safety-inputs",
                 "--confirm",
             ]
         )
@@ -340,6 +394,7 @@ def mount_hot_swap_execution(
     state_path: str | Path,
     paper_state_dir: str | Path,
     log_path: str | Path,
+    fixture_safety_inputs: Mapping[str, str] | None = None,
     binary: str | Path | None = None,
     runner: SwapCliRunner | None = None,
     timeout: float | None = None,
@@ -358,6 +413,7 @@ def mount_hot_swap_execution(
         state_path=state_path,
         paper_state_dir=paper_state_dir,
         log_path=log_path,
+        fixture_safety_inputs=fixture_safety_inputs,
         binary=binary,
         runner=runner,
         timeout=timeout,

@@ -100,6 +100,28 @@ def mounted(fake_cli: _FakeCli, tmp_path) -> Iterator[tuple[str, int]]:
         state_path=tmp_path / "live.state",
         paper_state_dir=tmp_path / "paper",
         log_path=tmp_path / "swaps.jsonl",
+        # An explicit DRILL composition. The shipped posture is the `unwired`
+        # fixture below, which declares nothing and therefore refuses.
+        fixture_safety_inputs={"positions": "flat", "deployed_version": "sha256:" + "a" * 64},
+        binary=tmp_path / "fake-bin",
+        runner=fake_cli,
+    )
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        yield host, port
+    finally:
+        runtime.stop()
+
+
+@pytest.fixture
+def unwired(fake_cli: _FakeCli, tmp_path) -> Iterator[tuple[str, int]]:
+    """Mounted, but with NO safety-input declaration — the shipped posture."""
+    runtime = OperatorInterfaceRuntime()
+    mount_hot_swap_execution(
+        runtime,
+        state_path=tmp_path / "live.state",
+        paper_state_dir=tmp_path / "paper",
+        log_path=tmp_path / "swaps.jsonl",
         binary=tmp_path / "fake-bin",
         runner=fake_cli,
     )
@@ -494,3 +516,69 @@ def test_mounting_execution_does_not_serve_the_status_route(mounted, fake_cli):
     # worse than no payload.
     assert status == 501
     assert body["error"]["category"] == "NOT_IMPLEMENTED"
+
+
+# --------------------------------------------------------------------------- #
+# The safety inputs the promotion turns on are not fabricable
+# --------------------------------------------------------------------------- #
+
+
+def test_without_declared_safety_inputs_the_route_refuses_to_promote(unwired, fake_cli):
+    """The shipped posture: mounted, real gate behind it, and it will not promote.
+
+    SYS-49d turns on two facts — the account is flat, and the artifact is the same.
+    Their producers are deferred, so a served route that promoted anyway would
+    report PROMOTED without proving either. That is a false green on a live trading
+    path, and worse than an unbound route.
+    """
+    status, body = _post(unwired, _confirmed(), {"candidate_strategy_id": "paper-b"})
+
+    assert status == 501
+    assert body["error"]["type"] == "SAFETY_INPUTS_UNAVAILABLE"
+    assert body["error"]["detail"]["owner"] == "SRS-EXE-006, SRS-ORCH-004"
+    assert body["error"]["detail"]["missing"] == [
+        "deployed version (code identity)",
+        "open IB positions (flat-start)",
+    ]
+    # Refused before anything was read or run — nothing mutated.
+    assert fake_cli.calls == []
+
+
+def test_a_partial_safety_declaration_still_refuses_and_names_only_what_is_missing(
+    fake_cli, tmp_path
+):
+    """Half the safety picture is not the safety picture (UI-5 r5-r12's rule)."""
+    runtime = OperatorInterfaceRuntime()
+    mount_hot_swap_execution(
+        runtime,
+        state_path=tmp_path / "live.state",
+        paper_state_dir=tmp_path / "paper",
+        log_path=tmp_path / "swaps.jsonl",
+        fixture_safety_inputs={"positions": "flat"},  # no deployed_version
+        binary=tmp_path / "fake-bin",
+        runner=fake_cli,
+    )
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        status, body = _post((host, port), _confirmed(), {"candidate_strategy_id": "paper-b"})
+    finally:
+        runtime.stop()
+
+    assert status == 501
+    assert body["error"]["detail"]["owner"] == "SRS-ORCH-004"
+    assert body["error"]["detail"]["missing"] == ["deployed version (code identity)"]
+    assert fake_cli.calls == []
+
+
+def test_a_drill_composition_carries_its_tier_into_the_binary(mounted, fake_cli):
+    """The fixture tier travels WITH the values, so the binary can refuse a caller
+    that supplies them without saying what they are."""
+    fake_cli.queue_status("live-a")
+    fake_cli.queue_swap()
+
+    _post(mounted, _confirmed(), {"candidate_strategy_id": "paper-b"})
+
+    swap_argv = fake_cli.swap_calls[0]
+    assert "--allow-fixture-safety-inputs" in swap_argv
+    assert "--positions" in swap_argv
+    assert "--deployed-version" in swap_argv
