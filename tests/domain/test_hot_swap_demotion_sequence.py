@@ -411,3 +411,56 @@ def test_a_drill_cannot_pass_by_doing_something_other_than_it_claims(tmp_path: P
     assert wrong.returncode != 0
     assert "expected disposition 'demotion-pending'" in wrong.stderr
     assert "'flat'" in wrong.stderr
+
+
+# --------------------------------------------------------------------------- #
+# SyRS SYS-2a: the identity that decides whose book gets liquidated
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("extra", "reason"),
+    [
+        (("--designated-live", "live-someone-else"), "a strategy that is not the live one"),
+        (("--no-live-strategy",), "no live strategy at all"),
+        (
+            ("--designated-live", DEMOTING, "--designated-live", "live-someone-else"),
+            "an already-broken single-live invariant",
+        ),
+    ],
+)
+def test_a_demotion_that_cannot_prove_live_identity_touches_nothing(
+    tmp_path: Path, extra: tuple[str, ...], reason: str
+) -> None:
+    # The positions a demotion liquidates are ACCOUNT-level, so `--demoting` is not a label on
+    # the audit record — it decides whose book is market-liquidated. A stale or malformed swap
+    # request naming a strategy that is not live would flatten the live account under an
+    # identity that does not own it.
+    #
+    # Found by /codex:adversarial-review round 1 [high]. Refused before the first port call:
+    # no signal halt, no cancel, no liquidation, and no lockout engaged.
+    state = tmp_path / "pending.json"
+    result = _run(
+        "demote",
+        "--demoting",
+        DEMOTING,
+        "--candidate",
+        CANDIDATE,
+        "--state",
+        str(state),
+        "--expect",
+        "flat",
+        "--position",
+        "AAPL:100",
+        "--resting",
+        "AAPL",
+        "--flat-after-seconds",
+        "1",
+        *extra,
+    )
+    assert result.returncode != 0, f"{reason} must refuse the demotion:\n{result.stdout}"
+    assert "SYS-2a" in result.stderr, result.stderr
+    assert "Nothing was cancelled, liquidated or halted" in result.stderr, result.stderr
+    # A refused demotion produces no drill output at all — it never reached the ports.
+    assert "liquidations-submitted" not in result.stdout, result.stdout
+    assert not state.exists(), "a refused demotion must not engage a lockout"

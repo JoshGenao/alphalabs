@@ -53,9 +53,15 @@ demote FLAGS:
                                  demotion whose block cannot outlive the process does
                                  not satisfy SYS-49c (d))
     --expect <disposition>       what this scenario must produce: flat | demotion-pending |
-                                 blocked-pending | probe-inconsistent (required). The run
-                                 exits non-zero if it produces anything else, so a drill
-                                 cannot pass by doing something other than what it claims.
+                                 blocked-pending | probe-inconsistent | refused (required).
+                                 The run exits non-zero if it produces anything else, so a
+                                 drill cannot pass by doing something other than it claims.
+    --designated-live <id>       who the live registry names (repeatable). Omit to designate
+                                 the demoting strategy, which is the normal case. Use it to
+                                 exercise the SyRS SYS-2a refusal: naming someone else, or
+                                 naming two strategies, must refuse BEFORE any broker call.
+    --no-live-strategy           designate NOBODY live — the account's positions are then not
+                                 this request's to liquidate.
     --timeout-seconds <n>        SYS-49b step 4 budget (default 60)
     --position <SYM:qty>         an open position to liquidate, signed (repeatable)
     --resting <SYM>              a resting order that must be cancelled (repeatable)
@@ -350,11 +356,12 @@ fn cmd_resolve(rest: &[String]) -> Result<(), String> {
 // demote
 // --------------------------------------------------------------------------- //
 
-const DISPOSITIONS: [&str; 4] = [
+const DISPOSITIONS: [&str; 5] = [
     "flat",
     "demotion-pending",
     "blocked-pending",
     "probe-inconsistent",
+    "refused",
 ];
 
 fn cmd_demote(rest: &[String]) -> Result<(), String> {
@@ -374,7 +381,7 @@ fn cmd_demote(rest: &[String]) -> Result<(), String> {
             "--observed-at",
             "--position-fault",
         ],
-        &["--position", "--resting"],
+        &["--position", "--resting", "--designated-live"],
         &[
             "--fail-signal-halt",
             "--fail-cancels",
@@ -383,6 +390,7 @@ fn cmd_demote(rest: &[String]) -> Result<(), String> {
             "--fail-email",
             "--fail-sms",
             "--fail-paper-transition",
+            "--no-live-strategy",
         ],
     )?;
 
@@ -430,6 +438,21 @@ fn cmd_demote(rest: &[String]) -> Result<(), String> {
         fail_email: args.is_set("--fail-email"),
         fail_sms: args.is_set("--fail-sms"),
         fail_paper_transition: args.is_set("--fail-paper-transition"),
+        designated_live: match (
+            args.is_set("--no-live-strategy"),
+            args.list("--designated-live"),
+        ) {
+            (true, ids) if !ids.is_empty() => {
+                return Err(
+                    "--no-live-strategy and --designated-live contradict each other".to_string(),
+                )
+            }
+            // An explicitly EMPTY live registry, so the SyRS SYS-2a "nothing to demote" refusal
+            // is reachable — distinct from the default, which designates the demoting strategy.
+            (true, _) => Some(Vec::new()),
+            (false, []) => None,
+            (false, ids) => Some(ids.to_vec()),
+        },
         position_fault: match args.get("--position-fault") {
             None => None,
             Some("connectivity") => Some(BrokerReconcileError::connectivity_blocked(

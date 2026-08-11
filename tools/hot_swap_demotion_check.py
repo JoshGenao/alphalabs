@@ -610,6 +610,19 @@ def check_demotion_sequence_order(config: dict) -> str:
     except AssertionError as error:
         fail(str(error))
 
+    # SyRS SYS-2a, checked BEFORE the phase order: the positions this sequence liquidates are
+    # ACCOUNT-level, so `request.demoting_strategy_id` decides whose book gets flattened. It must
+    # be proven against the live registry before the first port call, or a stale/malformed swap
+    # request liquidates the live account under an identity that does not own it.
+    # `(found by /codex:adversarial-review, SRS-RESV-004 r1 [high])`
+    authorization = spec["authorization_call"] + "("
+    at_authorization = body.find(authorization)
+    if at_authorization < 0:
+        fail(
+            f"{spec['entry_point']} does not call `{authorization}` — a demotion must prove the "
+            "request names the CURRENT LIVE strategy before it liquidates an account-level book"
+        )
+
     positions: list[tuple[str, int]] = []
     for call in spec["ordered_calls"]:
         token = call + "("
@@ -620,6 +633,12 @@ def check_demotion_sequence_order(config: dict) -> str:
                 "three demotion phases"
             )
         positions.append((call, index))
+        if index < at_authorization:
+            fail(
+                f"{spec['entry_point']} calls `{call}` BEFORE `{authorization}` — every port "
+                "call must sit behind the live-identity proof, or a refused demotion has "
+                "already touched the account"
+            )
     for (earlier, at_earlier), (later, at_later) in zip(positions, positions[1:], strict=False):
         if at_earlier >= at_later:
             fail(
@@ -627,8 +646,9 @@ def check_demotion_sequence_order(config: dict) -> str:
                 "phase order is load-bearing, not cosmetic"
             )
     return (
-        f"atp-orchestrator::{spec['entry_point']} runs the SYS-49b phases in order: "
-        + " < ".join(call for call, _ in positions)
+        f"atp-orchestrator::{spec['entry_point']} proves live identity via "
+        f"`{spec['authorization_call']}` before ANY port call, then runs the SYS-49b phases in "
+        "order: " + " < ".join(call for call, _ in positions)
     )
 
 

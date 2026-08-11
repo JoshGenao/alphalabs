@@ -388,6 +388,10 @@ pub struct DemotionScenario {
     pub fail_sms: bool,
     pub fail_paper_transition: bool,
     pub position_fault: Option<BrokerReconcileError>,
+    /// Who the live registry says is live. `None` designates the demoting strategy (the normal
+    /// case); `Some(ids)` designates exactly those, so a drill can exercise the SyRS SYS-2a
+    /// refusal — no live strategy, the wrong one, or more than one.
+    pub designated_live: Option<Vec<String>>,
 }
 
 impl DemotionScenario {
@@ -411,6 +415,7 @@ impl DemotionScenario {
             fail_sms: false,
             fail_paper_transition: false,
             position_fault: None,
+            designated_live: None,
         }
     }
 
@@ -469,9 +474,19 @@ impl DemotionScenario {
                 .with_position(symbol, *quantity)
                 .map_err(|error| format!("building the fixture position: {error}"))?;
         }
-        state
-            .with_live_strategy(&demoting)
-            .map_err(|error| format!("building the fixture live designation: {error}"))
+        // Whom the live registry names. Defaults to the demoting strategy — the case a real
+        // swap is built on — but a drill can designate someone else, or nobody, to exercise the
+        // SyRS SYS-2a refusal.
+        let designated: Vec<StrategyId> = match &self.designated_live {
+            None => vec![demoting.clone()],
+            Some(ids) => ids.iter().map(|id| StrategyId::new(id.clone())).collect(),
+        };
+        for id in &designated {
+            state = state
+                .with_live_strategy(id)
+                .map_err(|error| format!("building the fixture live designation: {error}"))?;
+        }
+        Ok(state)
     }
 }
 
@@ -526,6 +541,12 @@ pub fn run_fixture_demotion(scenario: &DemotionScenario) -> Result<DemotionDrill
     let blocked_before_start = crate::DemotionPendingLock::state(&lock).blocks_promotion();
 
     // SYS-49b (1)-(3), skipped entirely when the swap is already blocked.
+    //
+    // A `DemotionRefusal` aborts the WHOLE run, before the gate exists — which matters because
+    // the gate's timeout branch fires the IB unfilled-order cancel on `request` alone. Letting
+    // an unauthorised request reach it would put a destructive broker action behind an identity
+    // nothing proved (SyRS SYS-2a). The refusal is the composition's single authorisation point,
+    // and it sits ahead of every port in the run.
     let sequence = if blocked_before_start {
         DemotionSequenceReport {
             demoting_strategy_id: request.demoting_strategy_id.clone(),
@@ -535,6 +556,7 @@ pub fn run_fixture_demotion(scenario: &DemotionScenario) -> Result<DemotionDrill
         }
     } else {
         execute_demotion_sequence(&request, &state, &signals, &brokerage)
+            .map_err(|refusal| refusal.to_string())?
     };
 
     // SYS-49b (4): the wait, on the REAL polling probe over a simulated clock.

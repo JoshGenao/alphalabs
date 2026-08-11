@@ -32,7 +32,8 @@ use atp_execution::outbox::BrokerReconcileError;
 use atp_execution::LiveExecutionState;
 use atp_orchestrator::hot_swap_demotion::{
     complete_demotion_to_paper, execute_demotion_sequence, DemotionBrokerageControl,
-    DemotionCompletionError, LivePositionSource, PaperTransition, PollingFlatProbe, SignalHalt,
+    DemotionCompletionError, DemotionRefusal, LivePositionSource, PaperTransition,
+    PollingFlatProbe, SignalHalt,
 };
 use atp_orchestrator::{HotSwapDemotionResolved, HotSwapLiquidationProbe, HotSwapSideEffectError};
 use atp_types::{
@@ -354,7 +355,8 @@ fn resv_4_sequence_ceases_signals_then_cancels_then_liquidates() {
     let signals = SignalHaltSpy::clean(Rc::clone(&log));
     let brokerage = BrokerageSpy::clean(Rc::clone(&log));
 
-    let report = execute_demotion_sequence(&request(60), &live_state(), &signals, &brokerage);
+    let report = execute_demotion_sequence(&request(60), &live_state(), &signals, &brokerage)
+        .expect("the fixture designates the demoting strategy live");
 
     let calls = log.borrow().clone();
     let cease_at = calls.iter().position(|c| c.starts_with("cease:")).unwrap();
@@ -408,7 +410,8 @@ fn resv_4_sequence_ceases_signals_then_cancels_then_liquidates() {
         &live_state(),
         &SignalHaltSpy::clean(Rc::new(RefCell::new(Vec::new()))),
         &BrokerageSpy::clean(Rc::new(RefCell::new(Vec::new()))),
-    );
+    )
+    .expect("the fixture designates the demoting strategy live");
     assert_eq!(
         repeat.resting_order_cancels, report.resting_order_cancels,
         "an identical state must produce an identical audit record"
@@ -456,7 +459,8 @@ fn resv_4_a_failed_signal_halt_still_runs_the_rest_but_poisons_a_flat_result() {
     let signals = SignalHaltSpy::failing(Rc::clone(&log));
     let brokerage = BrokerageSpy::clean(Rc::clone(&log));
 
-    let report = execute_demotion_sequence(&request(60), &live_state(), &signals, &brokerage);
+    let report = execute_demotion_sequence(&request(60), &live_state(), &signals, &brokerage)
+        .expect("the fixture designates the demoting strategy live");
 
     // Everything downstream still ran.
     assert!(report.signal_halt.is_failed());
@@ -495,7 +499,8 @@ fn resv_4_a_failed_cancel_also_poisons_a_flat_result_but_a_failed_liquidation_do
     let signals = SignalHaltSpy::clean(Rc::clone(&log));
     let failing_cancel = BrokerageSpy::failing_cancel(Rc::clone(&log), "c-rest-ack");
     let with_bad_cancel =
-        execute_demotion_sequence(&request(60), &live_state(), &signals, &failing_cancel);
+        execute_demotion_sequence(&request(60), &live_state(), &signals, &failing_cancel)
+            .expect("the fixture designates the demoting strategy live");
     assert!(!with_bad_cancel.safe_to_accept_flat());
     assert!(with_bad_cancel
         .degradation_reason()
@@ -506,7 +511,8 @@ fn resv_4_a_failed_cancel_also_poisons_a_flat_result_but_a_failed_liquidation_do
     let signals2 = SignalHaltSpy::clean(Rc::clone(&log2));
     let failing_liquidation = BrokerageSpy::failing_liquidation(Rc::clone(&log2), "AAPL");
     let with_bad_liquidation =
-        execute_demotion_sequence(&request(60), &live_state(), &signals2, &failing_liquidation);
+        execute_demotion_sequence(&request(60), &live_state(), &signals2, &failing_liquidation)
+            .expect("the fixture designates the demoting strategy live");
     assert!(with_bad_liquidation
         .liquidations
         .iter()
@@ -524,12 +530,13 @@ fn resv_4_an_empty_live_state_still_ceases_signals_and_is_clean() {
     let signals = SignalHaltSpy::clean(Rc::clone(&log));
     let brokerage = BrokerageSpy::clean(Rc::clone(&log));
 
-    let report = execute_demotion_sequence(
-        &request(60),
-        &LiveExecutionState::new(OrderLedger::new()),
-        &signals,
-        &brokerage,
-    );
+    // Nothing to cancel and nothing to liquidate — but the strategy IS the live one, so the
+    // demotion is authorised and step 1 still runs.
+    let state = LiveExecutionState::new(OrderLedger::new())
+        .with_live_strategy(&StrategyId::new(DEMOTING))
+        .expect("live designation");
+    let report = execute_demotion_sequence(&request(60), &state, &signals, &brokerage)
+        .expect("the demoting strategy is the live one");
 
     assert!(report.resting_order_cancels.is_empty());
     assert!(report.liquidations.is_empty());
@@ -550,7 +557,8 @@ fn resv_4_a_clean_flat_demotion_transitions_the_container_to_paper() {
         &live_state(),
         &SignalHaltSpy::clean(Rc::clone(&log)),
         &BrokerageSpy::clean(Rc::clone(&log)),
-    );
+    )
+    .expect("the fixture designates the demoting strategy live");
     let resolved = HotSwapDemotionResolved {
         demoting_strategy_id: StrategyId::new(DEMOTING),
         candidate_strategy_id: StrategyId::new(CANDIDATE),
@@ -580,7 +588,8 @@ fn resv_4_completion_refuses_evidence_that_describes_a_different_strategy() {
         &live_state(),
         &SignalHaltSpy::clean(Rc::clone(&log)),
         &BrokerageSpy::clean(Rc::clone(&log)),
-    );
+    )
+    .expect("the fixture designates the demoting strategy live");
     let foreign = HotSwapDemotionResolved {
         demoting_strategy_id: StrategyId::new("live-someone-else"),
         candidate_strategy_id: StrategyId::new(CANDIDATE),
@@ -604,7 +613,8 @@ fn resv_4_a_failed_paper_transition_is_surfaced_not_swallowed() {
         &live_state(),
         &SignalHaltSpy::clean(Rc::clone(&log)),
         &BrokerageSpy::clean(Rc::clone(&log)),
-    );
+    )
+    .expect("the fixture designates the demoting strategy live");
     let resolved = HotSwapDemotionResolved {
         demoting_strategy_id: StrategyId::new(DEMOTING),
         candidate_strategy_id: StrategyId::new(CANDIDATE),
@@ -717,4 +727,110 @@ fn resv_4_probe_enforces_the_deadline_before_polling() {
         0,
         "an elapsed deadline must be decided before any poll"
     );
+}
+
+// --------------------------------------------------------------------------- //
+// SyRS SYS-2a: the identity that decides whose book gets liquidated
+// --------------------------------------------------------------------------- //
+//
+// `LiveExecutionState::open_positions` is the ACCOUNT's book, not a per-strategy slice, so
+// `request.demoting_strategy_id` is not a label on the audit record — it decides whose positions
+// are market-liquidated. A stale or malformed swap request naming a strategy that is not live
+// would flatten the live account anyway, under an identity that does not own it.
+//
+// Found by /codex:adversarial-review round 1 [high].
+
+/// Panics if any port is touched — a refused demotion must reach none of them.
+struct ForbiddenPorts;
+
+impl SignalHalt for ForbiddenPorts {
+    fn cease_new_signals(&self, _strategy_id: &StrategyId) -> Result<(), HotSwapSideEffectError> {
+        panic!("SYS-2a: a refused demotion must not cease signals");
+    }
+}
+
+impl DemotionBrokerageControl for ForbiddenPorts {
+    fn cancel_resting_order(
+        &self,
+        _cancel: &RestingOrderCancel,
+    ) -> Result<(), HotSwapSideEffectError> {
+        panic!("SYS-2a: a refused demotion must not cancel a resting order");
+    }
+
+    fn submit_market_liquidation(
+        &self,
+        _submission: &OrderSubmission,
+    ) -> Result<(), HotSwapSideEffectError> {
+        panic!("SYS-2a: a refused demotion must not submit a market liquidation");
+    }
+}
+
+/// The full live state, but with `designated` named live instead of the demoting strategy.
+fn state_with_live(designated: &[&str]) -> LiveExecutionState {
+    let mut state = LiveExecutionState::new(OrderLedger::new())
+        .with_position("AAPL", 100)
+        .expect("long position");
+    for id in designated {
+        state = state
+            .with_live_strategy(&StrategyId::new(*id))
+            .expect("live designation");
+    }
+    state
+}
+
+#[test]
+fn resv_4_a_demotion_of_a_strategy_that_is_not_live_touches_nothing() {
+    let refusal = execute_demotion_sequence(
+        &request(60),
+        &state_with_live(&["live-someone-else"]),
+        &ForbiddenPorts,
+        &ForbiddenPorts,
+    )
+    .expect_err("a mismatched demoting identity must refuse");
+
+    assert!(matches!(
+        refusal,
+        DemotionRefusal::NotTheLiveStrategy { .. }
+    ));
+    let message = refusal.to_string();
+    assert!(message.contains("SYS-2a"));
+    assert!(message.contains("live-someone-else"));
+    // The refusal states the safety-relevant fact plainly: nothing happened.
+    assert!(message.contains("Nothing was cancelled, liquidated or halted"));
+}
+
+#[test]
+fn resv_4_a_demotion_with_no_live_strategy_touches_nothing() {
+    let refusal = execute_demotion_sequence(
+        &request(60),
+        &state_with_live(&[]),
+        &ForbiddenPorts,
+        &ForbiddenPorts,
+    )
+    .expect_err("with nobody live there is nothing to demote");
+
+    assert!(matches!(refusal, DemotionRefusal::NoLiveStrategy { .. }));
+    assert!(refusal
+        .to_string()
+        .contains("no strategy is designated live"));
+}
+
+#[test]
+fn resv_4_a_broken_single_live_invariant_refuses_rather_than_guessing() {
+    // Two live strategies means the invariant this demotion depends on is ALREADY broken. The
+    // account book cannot be attributed, so no automated liquidation may proceed on a guess —
+    // including when one of the two IS the requested strategy.
+    let refusal = execute_demotion_sequence(
+        &request(60),
+        &state_with_live(&[DEMOTING, "live-someone-else"]),
+        &ForbiddenPorts,
+        &ForbiddenPorts,
+    )
+    .expect_err("an ambiguous live registry must refuse");
+
+    assert!(matches!(
+        refusal,
+        DemotionRefusal::MultipleLiveStrategies { .. }
+    ));
+    assert!(refusal.to_string().contains("AC-15"));
 }

@@ -190,6 +190,86 @@ impl DemotionSequenceReport {
     }
 }
 
+/// Why a demotion was refused BEFORE it touched anything.
+///
+/// SyRS SYS-2a / AC-15: exactly one strategy may execute against the live IB account, and the
+/// open positions the sequence liquidates are ACCOUNT-level — `LiveExecutionState::open_positions`
+/// is the whole book, not a per-strategy slice. So `request.demoting_strategy_id` is not merely a
+/// label on the audit record: it decides whose positions get market-liquidated. A stale or
+/// malformed swap request naming a strategy that is not live would liquidate the live account
+/// anyway, under an identity that does not own it.
+///
+/// The identity is therefore proven against the live registry before the first port call, and a
+/// mismatch refuses without ceasing signals, cancelling an order, or submitting a liquidation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DemotionRefusal {
+    /// No strategy is designated live. There is nothing to demote, and the account's positions
+    /// are not this request's to close.
+    NoLiveStrategy { requested: String },
+    /// A strategy is live, and it is not the one this request names.
+    NotTheLiveStrategy {
+        requested: String,
+        live: Vec<String>,
+    },
+    /// The registry reports more than one live strategy — the single-live invariant is already
+    /// violated, so no automated liquidation may proceed on a guess about which book is whose.
+    MultipleLiveStrategies {
+        requested: String,
+        live: Vec<String>,
+    },
+}
+
+impl std::fmt::Display for DemotionRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoLiveStrategy { requested } => write!(
+                formatter,
+                "SRS-RESV-004 + SyRS SYS-2a: refusing to demote {requested} — no strategy is \
+                 designated live, so the account's open positions are not this request's to \
+                 liquidate. Nothing was cancelled, liquidated or halted"
+            ),
+            Self::NotTheLiveStrategy { requested, live } => write!(
+                formatter,
+                "SRS-RESV-004 + SyRS SYS-2a: refusing to demote {requested} — the live strategy \
+                 is {}. The open positions this sequence would liquidate are ACCOUNT-level, so \
+                 acting on a mismatched identity would flatten another strategy's book. Nothing \
+                 was cancelled, liquidated or halted",
+                live.join(", ")
+            ),
+            Self::MultipleLiveStrategies { requested, live } => write!(
+                formatter,
+                "SRS-RESV-004 + SyRS SYS-2a / AC-15: refusing to demote {requested} — {} \
+                 strategies are designated live ({}). The single-live invariant is already \
+                 broken; resolve it before any automated liquidation. Nothing was cancelled, \
+                 liquidated or halted",
+                live.len(),
+                live.join(", ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DemotionRefusal {}
+
+/// Prove the request names the current live strategy, before anything is touched.
+fn authorize_demotion(
+    request: &HotSwapDemotionRequest,
+    state: &LiveExecutionState,
+) -> Result<(), DemotionRefusal> {
+    let requested = request.demoting_strategy_id.as_str().to_string();
+    let live: Vec<String> = state
+        .live_strategies()
+        .iter()
+        .map(|id| id.as_str().to_string())
+        .collect();
+    match live.len() {
+        0 => Err(DemotionRefusal::NoLiveStrategy { requested }),
+        1 if live[0] == requested => Ok(()),
+        1 => Err(DemotionRefusal::NotTheLiveStrategy { requested, live }),
+        _ => Err(DemotionRefusal::MultipleLiveStrategies { requested, live }),
+    }
+}
+
 fn outcome_of(result: Result<(), HotSwapSideEffectError>) -> SideEffectOutcome {
     match result {
         Ok(()) => SideEffectOutcome::Succeeded,
@@ -210,11 +290,17 @@ pub fn execute_demotion_sequence<H, B>(
     state: &LiveExecutionState,
     signals: &H,
     brokerage: &B,
-) -> DemotionSequenceReport
+) -> Result<DemotionSequenceReport, DemotionRefusal>
 where
     H: SignalHalt,
     B: DemotionBrokerageControl,
 {
+    // Phase 0 — SyRS SYS-2a: prove this request names the CURRENT LIVE strategy, before any
+    // port is touched. The positions liquidated below are account-level, so a mismatched
+    // identity would flatten a book this request does not own. Refusing here means no signal
+    // halt, no cancel and no liquidation were attempted. (See `DemotionRefusal`.)
+    authorize_demotion(request, state)?;
+
     let demoting = &request.demoting_strategy_id;
 
     // Phase 1 — SYS-49b (1). FIRST, so the cancel sweep below converges: a strategy still emitting
@@ -296,12 +382,12 @@ where
         })
         .collect();
 
-    DemotionSequenceReport {
+    Ok(DemotionSequenceReport {
         demoting_strategy_id: demoting.clone(),
         signal_halt,
         resting_order_cancels,
         liquidations,
-    }
+    })
 }
 
 /// The concrete SYS-49b step-4 wait loop: poll the demoting strategy's positions until they are all

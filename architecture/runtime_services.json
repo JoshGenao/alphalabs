@@ -4613,6 +4613,7 @@
     "sequence_guard": {
       "module": "crates/atp-orchestrator/src/hot_swap_demotion.rs",
       "entry_point": "execute_demotion_sequence",
+      "authorization_call": "authorize_demotion",
       "ordered_calls": [
         "signals.cease_new_signals",
         "brokerage.cancel_resting_order",
