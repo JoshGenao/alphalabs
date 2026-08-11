@@ -232,6 +232,46 @@ def test_an_unconfirmed_swap_never_reaches_the_binary(mounted, fake_cli):
     assert fake_cli.calls == [], "an unconfirmed swap must not invoke the binary at all"
 
 
+def test_the_handler_refuses_unconfirmed_even_when_the_transport_does_not(fake_cli, tmp_path):
+    """The ACTION-level guard, isolated from the route-level one.
+
+    The route carries ``requires_confirmation=True``, so the transport answers 428
+    before dispatch — which means the test above passes whether or not the handler
+    checks for itself. Mutation verification caught exactly that: deleting the
+    handler's own guard left that test green.
+
+    So this one calls the handler DIRECTLY with ``confirmed=False``, the position a
+    future dispatch path (a CLI arm, a batch runner, a re-routed surface) would be
+    in. Defence in depth is only defence if something proves the inner layer.
+    """
+    from atp_api.routes import Method
+    from atp_orchestration.hot_swap_execution import REST_HOT_SWAP_EXECUTE, SwapExecutionHandler
+    from atp_runtime.errors import InterfaceError
+    from atp_runtime.registry import Request, Surface
+
+    handler = SwapExecutionHandler(
+        state_path=tmp_path / "live.state",
+        paper_state_dir=tmp_path / "paper",
+        log_path=tmp_path / "swaps.jsonl",
+        binary=tmp_path / "fake-bin",
+        runner=fake_cli,
+    )
+    request = Request(
+        surface=Surface.REST,
+        operation=REST_HOT_SWAP_EXECUTE,
+        method=Method.POST.value.upper(),
+        path=HOT_SWAP_PATH,
+        body={"candidate_strategy_id": "paper-b"},
+        confirmed=False,
+    )
+
+    with pytest.raises(InterfaceError) as excinfo:
+        handler.handle(request)
+
+    assert excinfo.value.category.value == "CONFIRMATION_REQUIRED"
+    assert fake_cli.calls == [], "the handler's own guard must precede every read"
+
+
 # --------------------------------------------------------------------------- #
 # Request validation (all decided BEFORE the gate runs => non-2xx is honest)
 # --------------------------------------------------------------------------- #
@@ -288,6 +328,25 @@ def test_an_unreadable_designation_record_is_not_no_strategy_is_live(mounted, fa
     assert body["error"]["type"] == "LIVE_DESIGNATION_UNREADABLE"
     # The critical part: it did NOT fall through to "nothing is live", which would
     # have let the swap proceed over a live strategy.
+    assert fake_cli.swap_calls == []
+
+
+def test_a_failed_status_read_is_refused_even_when_it_printed_a_designation(mounted, fake_cli):
+    """Isolates the EXIT-CODE guard from the missing-line guard.
+
+    Mutation verification caught this: deleting the ``returncode != 0`` check left
+    the previous test green, because its fake also produced no ``designated`` line
+    and the second guard picked it up. A binary that fails *and still prints* a
+    plausible line is the case that distinguishes them — and trusting that line
+    would mean promoting against a designation the tool itself could not stand
+    behind.
+    """
+    fake_cli.queue(returncode=1, stdout="designated:live-a\n", stderr="snapshot unreadable")
+
+    status, body = _post(mounted, _confirmed(), {"candidate_strategy_id": "paper-b"})
+
+    assert status == 500
+    assert body["error"]["type"] == "LIVE_DESIGNATION_UNREADABLE"
     assert fake_cli.swap_calls == []
 
 
