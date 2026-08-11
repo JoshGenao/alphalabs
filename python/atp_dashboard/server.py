@@ -49,7 +49,13 @@ from .heartbeat import (
     HeartbeatSource,
     SnapshotHeartbeatSource,
 )
-from .hotswap import CliHotSwapTriggerSource, HotSwapStatusProvider
+from .hotswap import (
+    CliHotSwapDemotionSource,
+    CliHotSwapTriggerSource,
+    CompositeHotSwapStatusSource,
+    HotSwapStatusProvider,
+    HotSwapStatusSource,
+)
 from .inventory import RollbackSnapshotInventorySource, StrategyInventoryProvider
 from .killswitch import DurableKillSwitchStatusSource, KillSwitchStatusProvider
 from .logs import LogPaneProvider
@@ -313,7 +319,7 @@ def mount_default_dashboard(
     runtime: OperatorInterfaceRuntime,
     env: Mapping[str, str],
     *,
-    hot_swap_source: CliHotSwapTriggerSource | None = None,
+    hot_swap_source: HotSwapStatusSource | None = None,
 ) -> DashboardPublisher:
     """The default composition used by ``python -m atp_dashboard``: the SRS-UI-001
     metrics surface plus the SRS-UI-004 backtest history.
@@ -496,6 +502,23 @@ def mount_default_dashboard(
             CliHotSwapTriggerSource(hot_swap_trigger_state)
             if hot_swap_trigger_state is not None
             else None
+        )
+    # SRS-RESV-004: ATP_HOT_SWAP_DEMOTION_STATE names the durable demotion-pending
+    # lockout that resv004_hot_swap_demotion_cli maintains and the demotion gate
+    # engages. Setting it resolves the pane's demotion_pending / demotion_detail
+    # cells, which every prior session rendered as deferred:SRS-RESV-004.
+    #
+    # Composed as a SEPARATE leg rather than folded into the trigger source: they
+    # answer different questions from different files, and a trigger configuration
+    # that cannot be read must not blank a demotion state that can. Unset, the leg
+    # is absent and those cells keep their honest deferred placeholder — an
+    # unconfigured dashboard must never report "no demotion is pending", because it
+    # does not know.
+    hot_swap_demotion_state = env.get("ATP_HOT_SWAP_DEMOTION_STATE") or None
+    if hot_swap_demotion_state is not None:
+        hot_swap_source = CompositeHotSwapStatusSource(
+            triggers=hot_swap_source,
+            demotion=CliHotSwapDemotionSource(hot_swap_demotion_state),
         )
     # The SRS-LOG-001 log pane is opt-in on ATP_LOG_DIR, the directory holding
     # the separated `system.jsonl` / `strategy.jsonl` stores that

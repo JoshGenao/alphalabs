@@ -29,9 +29,10 @@
 //!     `complete_swap(`, `go_live(`, … call in the timeout arm); this Rust
 //!     test anchors the post-condition at the behavioral layer.
 
+use atp_orchestrator::demotion_pending_store::{DemotionPendingRecord, DemotionPendingState};
 use atp_orchestrator::{
-    HotSwapDemotionEventSink, HotSwapLiquidationProbe, HotSwapSideEffectError, OperatorAlertSink,
-    StrategyOrchestrator, UnfilledOrderCanceller,
+    DemotionPendingLock, HotSwapDemotionEventSink, HotSwapLiquidationProbe, HotSwapSideEffectError,
+    OperatorAlertSink, StrategyOrchestrator, UnfilledOrderCanceller,
 };
 use atp_types::{
     HotSwapDemotionEvent, HotSwapDemotionOutcome, HotSwapDemotionRequest, OperatorAlertChannel,
@@ -183,6 +184,61 @@ impl HotSwapDemotionEventSink for HotSwapDemotionEventFailingSink {
     }
 }
 
+/// Lockout spy over the SRS-RESV-004 durable demotion-pending store. Starts CLEAR and
+/// records every engage, so a test can assert that the timeout branch persisted the
+/// block rather than merely returning `Err` for one call.
+#[derive(Default)]
+struct DemotionPendingLockSpy {
+    engaged: RefCell<Vec<DemotionPendingRecord>>,
+}
+
+impl DemotionPendingLock for DemotionPendingLockSpy {
+    fn state(&self) -> DemotionPendingState {
+        match self.engaged.borrow().last() {
+            None => DemotionPendingState::Clear,
+            Some(record) => DemotionPendingState::Pending(Box::new(record.clone())),
+        }
+    }
+
+    fn engage(&self, record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
+        self.engaged.borrow_mut().push(record);
+        Ok(())
+    }
+}
+
+/// Lockout that records the engage but reports failure — models an unwritable store.
+/// The gate must still block promotion for THIS call, and must say the block is not
+/// durable rather than implying the retry is covered.
+#[derive(Default)]
+struct DemotionPendingFailingLock {
+    engaged: RefCell<Vec<DemotionPendingRecord>>,
+}
+
+impl DemotionPendingLock for DemotionPendingFailingLock {
+    fn state(&self) -> DemotionPendingState {
+        DemotionPendingState::Clear
+    }
+
+    fn engage(&self, record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
+        self.engaged.borrow_mut().push(record);
+        Err(HotSwapSideEffectError::new("lockout store unwritable"))
+    }
+}
+
+/// Lockout that panics if engaged. Used by the flat positive control to prove an
+/// in-time demotion persists no demotion-pending state.
+struct DemotionPendingForbiddenLock;
+
+impl DemotionPendingLock for DemotionPendingForbiddenLock {
+    fn state(&self) -> DemotionPendingState {
+        DemotionPendingState::Clear
+    }
+
+    fn engage(&self, _record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
+        panic!("ERR-7: FlatBeforeTimeout branch must not engage a demotion-pending lockout");
+    }
+}
+
 fn demotion(demoting: &str, candidate: &str, timeout_seconds: u64) -> HotSwapDemotionRequest {
     HotSwapDemotionRequest {
         demoting_strategy_id: StrategyId::new(demoting),
@@ -202,6 +258,7 @@ fn err_7_timeout_enters_demotion_pending_blocks_promotion_and_alerts_all_channel
     let canceller = UnfilledOrderCancellerSpy::default();
     let alerts = OperatorAlertSinkSpy::default();
     let events = HotSwapDemotionEventSinkSpy::default();
+    let lock = DemotionPendingLockSpy::default();
     let request = demotion(
         "live-momentum",
         "paper-reversal",
@@ -215,6 +272,7 @@ fn err_7_timeout_enters_demotion_pending_blocks_promotion_and_alerts_all_channel
             &canceller,
             &alerts,
             &events,
+            &lock,
             OBSERVED_AT_SECONDS,
         )
         .expect_err("ERR-7: a liquidation timeout must refuse the swap");
@@ -258,6 +316,266 @@ fn err_7_timeout_enters_demotion_pending_blocks_promotion_and_alerts_all_channel
         SideEffectOutcome::Succeeded
     );
     assert_eq!(events_seen[0].operator_alert, SideEffectOutcome::Succeeded);
+
+    // SyRS SYS-49c (c): the demotion-pending state is DURABLE, and the persisted
+    // record carries the two facts an operator resolves against — whether a live
+    // liquidation order may still be resting, and whether anyone was paged.
+    assert_eq!(
+        events_seen[0].demotion_pending,
+        SideEffectOutcome::Succeeded
+    );
+    assert!(error.promotion_block_is_durable);
+    let engaged = lock.engaged.borrow();
+    assert_eq!(engaged.len(), 1);
+    assert_eq!(
+        engaged[0].demoting_strategy_id,
+        request.demoting_strategy_id
+    );
+    assert_eq!(
+        engaged[0].candidate_strategy_id,
+        request.candidate_strategy_id
+    );
+    assert_eq!(engaged[0].elapsed_seconds, 72);
+    assert_eq!(
+        engaged[0].timeout_seconds,
+        HOT_SWAP_DEMOTION_TIMEOUT_SECONDS
+    );
+    assert_eq!(engaged[0].observed_at_seconds, OBSERVED_AT_SECONDS);
+    assert_eq!(engaged[0].liquidation_cancel, SideEffectOutcome::Succeeded);
+    assert_eq!(engaged[0].operator_alert, SideEffectOutcome::Succeeded);
+}
+
+#[test]
+fn resv_4_a_held_lockout_blocks_a_later_flat_demotion_until_it_is_resolved() {
+    // THE regression this feature exists for. SyRS SYS-49c (d): "block the promotion
+    // phase until the operator manually resolves the unfilled positions."
+    //
+    // Before the durable lockout, `resolve_demotion` was a stateless single-attempt
+    // decision: attempt 1 timed out and returned Err, and attempt 2 — a retry, a
+    // restart, another operator surface — was judged purely on its own probe. A probe
+    // reporting flat (the demoted strategy's positions having been closed by anything
+    // OTHER than the timed-out liquidation, or simply a different sampling moment)
+    // promoted the candidate over positions nobody had resolved.
+    //
+    // The lockout persists across the two calls here, so attempt 2 must be refused
+    // even though its probe says flat — and refused BEFORE any destructive side
+    // effect fires, since nothing new has gone wrong.
+    let orchestrator = StrategyOrchestrator;
+    let lock = DemotionPendingLockSpy::default();
+    let request = demotion(
+        "live-momentum",
+        "paper-reversal",
+        HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+    );
+
+    // Attempt 1 — times out and engages the lockout.
+    let first = orchestrator
+        .resolve_demotion(
+            request.clone(),
+            &HotSwapLiquidationProbeSpy::timed_out(72, HOT_SWAP_DEMOTION_TIMEOUT_SECONDS),
+            &UnfilledOrderCancellerSpy::default(),
+            &OperatorAlertSinkSpy::default(),
+            &HotSwapDemotionEventSinkSpy::default(),
+            &lock,
+            OBSERVED_AT_SECONDS,
+        )
+        .expect_err("attempt 1: a liquidation timeout must refuse the swap");
+    assert_eq!(first.error_type, "HotSwapDemotionTimeout");
+    assert!(first.promotion_block_is_durable);
+    assert_eq!(lock.engaged.borrow().len(), 1);
+
+    // Attempt 2 — the probe now reports FLAT, well inside the deadline. The forbidden
+    // stubs prove the refusal happens before the swap is even attempted: a request
+    // that was never permitted to start must not cancel orders or page anyone.
+    let probe = HotSwapLiquidationProbeSpy::flat(3);
+    let events = HotSwapDemotionEventSinkSpy::default();
+    let second = orchestrator
+        .resolve_demotion(
+            request.clone(),
+            &probe,
+            &UnfilledOrderForbiddenCanceller,
+            &OperatorAlertForbiddenSink,
+            &events,
+            &lock,
+            OBSERVED_AT_SECONDS + 600,
+        )
+        .expect_err("attempt 2: a held demotion-pending lockout must block a flat retry");
+
+    assert_eq!(second.error_type, "HotSwapDemotionPending");
+    assert_eq!(second.category, OrderErrorCategory::HotSwapDemotionTimeout);
+    assert!(second.promotion_block_is_durable);
+    assert!(second.message.contains("SYS-49c"));
+    assert!(second.message.contains("live-momentum"));
+    // The probe was never even consulted — the block precedes the demotion attempt.
+    assert_eq!(probe.calls.get(), 0);
+    // And no second lockout was engaged over the one the operator still must resolve.
+    assert_eq!(lock.engaged.borrow().len(), 1);
+    assert!(events.events.borrow().is_empty());
+}
+
+#[test]
+fn resv_4_an_unreadable_lockout_blocks_promotion_exactly_like_a_held_one() {
+    // "Unreadable, absent, or unknown is NEVER empty." A corrupt lockout file yields
+    // no record, which is the same shape as no lockout at all — and reading it as
+    // "clear" would be a false all-clear on the single question the file answers.
+    struct UnreadableLock;
+    impl DemotionPendingLock for UnreadableLock {
+        fn state(&self) -> DemotionPendingState {
+            DemotionPendingState::Unreadable {
+                reason: "payload declares unknown field 'demotng_strategy_id'".to_string(),
+            }
+        }
+        fn engage(&self, _record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError> {
+            panic!("RESV-004: a blocked-before-start swap must not engage a second lockout");
+        }
+    }
+
+    let orchestrator = StrategyOrchestrator;
+    let probe = HotSwapLiquidationProbeSpy::flat(3);
+    let error = StrategyOrchestrator::resolve_demotion(
+        &orchestrator,
+        demotion(
+            "live-momentum",
+            "paper-reversal",
+            HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+        ),
+        &probe,
+        &UnfilledOrderForbiddenCanceller,
+        &OperatorAlertForbiddenSink,
+        &HotSwapDemotionEventSinkSpy::default(),
+        &UnreadableLock,
+        OBSERVED_AT_SECONDS,
+    )
+    .expect_err("an unreadable lockout must block promotion");
+
+    assert_eq!(error.error_type, "HotSwapDemotionPending");
+    assert!(error.message.contains("cannot be read"));
+    assert_eq!(probe.calls.get(), 0);
+}
+
+#[test]
+fn resv_4_a_lockout_that_could_not_be_persisted_still_refuses_but_says_it_is_not_durable() {
+    // A failed engage is a real safety degradation: promotion is blocked for THIS
+    // call and for no other. The gate must neither swallow it (reporting a durable
+    // block it did not achieve) nor let it turn the refusal into an acceptance.
+    let orchestrator = StrategyOrchestrator;
+    let lock = DemotionPendingFailingLock::default();
+    let canceller = UnfilledOrderCancellerSpy::default();
+    let alerts = OperatorAlertSinkSpy::default();
+    let events = HotSwapDemotionEventSinkSpy::default();
+
+    let error = orchestrator
+        .resolve_demotion(
+            demotion(
+                "live-momentum",
+                "paper-reversal",
+                HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+            ),
+            &HotSwapLiquidationProbeSpy::timed_out(72, HOT_SWAP_DEMOTION_TIMEOUT_SECONDS),
+            &canceller,
+            &alerts,
+            &events,
+            &lock,
+            OBSERVED_AT_SECONDS,
+        )
+        .expect_err("a timeout refuses the swap whether or not the lockout persisted");
+
+    // Still a refusal, and the safety side effects still ran.
+    assert_eq!(error.error_type, "HotSwapDemotionTimeout");
+    assert_eq!(canceller.cancels.borrow().len(), 1);
+    assert_eq!(alerts.alerts.borrow().len(), 1);
+    // But the block is NOT durable, and both the error and the event say so.
+    assert!(!error.promotion_block_is_durable);
+    assert!(error.message.contains("WARNING"));
+    assert_eq!(lock.engaged.borrow().len(), 1);
+    let events_seen = events.events.borrow();
+    assert_eq!(events_seen.len(), 1);
+    assert!(events_seen[0].demotion_pending.is_failed());
+    assert!(events_seen[0].promotion_blocked);
+}
+
+#[test]
+fn resv_4_a_premature_timeout_report_blocks_promotion_without_cancelling() {
+    // The inverse outcome-consistency case. A probe reporting TimedOutDemotionPending
+    // at 12 s against a 60 s budget contradicts itself, and the old gate would have
+    // fired the destructive unfilled-order cancel on that report.
+    //
+    // Block-WITHOUT-cancel: promotion is refused (an unbelievable probe cannot vouch
+    // for flat positions) and the lockout is engaged, but the cancel is not issued —
+    // a destructive broker action must not be taken on evidence the gate is
+    // simultaneously declaring untrustworthy. The operator is still paged.
+    let orchestrator = StrategyOrchestrator;
+    let lock = DemotionPendingLockSpy::default();
+    let alerts = OperatorAlertSinkSpy::default();
+    let events = HotSwapDemotionEventSinkSpy::default();
+
+    let error = orchestrator
+        .resolve_demotion(
+            demotion(
+                "live-momentum",
+                "paper-reversal",
+                HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+            ),
+            &HotSwapLiquidationProbeSpy::timed_out(12, HOT_SWAP_DEMOTION_TIMEOUT_SECONDS),
+            // Panics if the cancel path is reached.
+            &UnfilledOrderForbiddenCanceller,
+            &alerts,
+            &events,
+            &lock,
+            OBSERVED_AT_SECONDS,
+        )
+        .expect_err("a self-contradicting timeout report must block promotion");
+
+    assert_eq!(error.error_type, "HotSwapDemotionProbeInconsistent");
+    assert_eq!(error.category, OrderErrorCategory::HotSwapDemotionTimeout);
+    assert!(error.promotion_block_is_durable);
+    // Paged, locked out, recorded — but nothing cancelled.
+    assert_eq!(alerts.alerts.borrow().len(), 1);
+    assert_eq!(lock.engaged.borrow().len(), 1);
+    assert_eq!(
+        lock.engaged.borrow()[0].liquidation_cancel,
+        SideEffectOutcome::NotAttempted
+    );
+    let events_seen = events.events.borrow();
+    assert_eq!(events_seen.len(), 1);
+    assert!(events_seen[0].promotion_blocked);
+    assert_eq!(
+        events_seen[0].liquidation_cancel,
+        SideEffectOutcome::NotAttempted
+    );
+}
+
+#[test]
+fn resv_4_a_timeout_reported_against_the_wrong_budget_is_also_inconsistent() {
+    // The other half of the same class: elapsed is past the REPORTED budget, so a
+    // check that only compared `elapsed < timeout_seconds` would wave it through —
+    // but the reported budget is not the configured one, so the probe is still
+    // describing a demotion that was not the one requested.
+    let orchestrator = StrategyOrchestrator;
+    let lock = DemotionPendingLockSpy::default();
+
+    let error = orchestrator
+        .resolve_demotion(
+            demotion(
+                "live-momentum",
+                "paper-reversal",
+                HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+            ),
+            // 31 s elapsed against a 30 s budget is internally consistent, but the
+            // request configured 60 s.
+            &HotSwapLiquidationProbeSpy::timed_out(31, 30),
+            &UnfilledOrderForbiddenCanceller,
+            &OperatorAlertSinkSpy::default(),
+            &HotSwapDemotionEventSinkSpy::default(),
+            &lock,
+            OBSERVED_AT_SECONDS,
+        )
+        .expect_err("a timeout against a foreign budget must block promotion");
+
+    assert_eq!(error.error_type, "HotSwapDemotionProbeInconsistent");
+    assert!(error.message.contains("30"));
+    assert!(error.message.contains("60"));
+    assert_eq!(lock.engaged.borrow().len(), 1);
 }
 
 #[test]
@@ -269,6 +587,7 @@ fn err_7_flat_before_timeout_promotes_with_no_alert_or_cancel() {
     let canceller = UnfilledOrderForbiddenCanceller;
     let alerts = OperatorAlertForbiddenSink;
     let events = HotSwapDemotionEventSinkSpy::default();
+    let lock = DemotionPendingForbiddenLock;
     let request = demotion(
         "live-momentum",
         "paper-reversal",
@@ -282,6 +601,7 @@ fn err_7_flat_before_timeout_promotes_with_no_alert_or_cancel() {
             &canceller,
             &alerts,
             &events,
+            &lock,
             OBSERVED_AT_SECONDS,
         )
         .expect("ERR-7: a flat-before-timeout demotion must proceed");
@@ -323,6 +643,7 @@ fn err_7_failed_cancel_and_alert_are_observable_and_still_block_promotion() {
     let canceller = UnfilledOrderFailingCanceller::default();
     let alerts = OperatorAlertFailingSink::default();
     let events = HotSwapDemotionEventSinkSpy::default();
+    let lock = DemotionPendingLockSpy::default();
     let request = demotion(
         "live-momentum",
         "paper-reversal",
@@ -336,6 +657,7 @@ fn err_7_failed_cancel_and_alert_are_observable_and_still_block_promotion() {
             &canceller,
             &alerts,
             &events,
+            &lock,
             OBSERVED_AT_SECONDS,
         )
         .expect_err("ERR-7: a timeout must block promotion even when side effects fail");
@@ -373,6 +695,7 @@ fn err_7_flat_outcome_over_deadline_is_failed_closed_and_blocks_promotion() {
     let canceller = UnfilledOrderCancellerSpy::default();
     let alerts = OperatorAlertSinkSpy::default();
     let events = HotSwapDemotionEventSinkSpy::default();
+    let lock = DemotionPendingLockSpy::default();
     let request = demotion(
         "live-momentum",
         "paper-reversal",
@@ -386,6 +709,7 @@ fn err_7_flat_outcome_over_deadline_is_failed_closed_and_blocks_promotion() {
             &canceller,
             &alerts,
             &events,
+            &lock,
             OBSERVED_AT_SECONDS,
         )
         .expect_err("ERR-7: a flat outcome past the timeout must fail closed");
@@ -410,6 +734,7 @@ fn err_7_audit_sink_failure_is_best_effort_and_safety_posture_holds() {
     let canceller = UnfilledOrderCancellerSpy::default();
     let alerts = OperatorAlertSinkSpy::default();
     let events = HotSwapDemotionEventFailingSink::default();
+    let lock = DemotionPendingLockSpy::default();
     let request = demotion(
         "live-momentum",
         "paper-reversal",
@@ -423,6 +748,7 @@ fn err_7_audit_sink_failure_is_best_effort_and_safety_posture_holds() {
             &canceller,
             &alerts,
             &events,
+            &lock,
             OBSERVED_AT_SECONDS,
         )
         .expect_err("ERR-7: a timeout blocks promotion even when the audit sink fails");
@@ -447,6 +773,7 @@ fn err_7_timeout_blocks_promotion_across_many_demotions() {
         let canceller = UnfilledOrderCancellerSpy::default();
         let alerts = OperatorAlertSinkSpy::default();
         let events = HotSwapDemotionEventSinkSpy::default();
+        let lock = DemotionPendingLockSpy::default();
         let request = demotion("live-x", "paper-y", timeout);
 
         let error = orchestrator
@@ -456,6 +783,7 @@ fn err_7_timeout_blocks_promotion_across_many_demotions() {
                 &canceller,
                 &alerts,
                 &events,
+                &lock,
                 OBSERVED_AT_SECONDS,
             )
             .expect_err("ERR-7: every liquidation timeout must block the swap");

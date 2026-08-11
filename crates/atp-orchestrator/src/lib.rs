@@ -14,10 +14,23 @@ use atp_types::{
 };
 use std::fmt;
 
+use crate::demotion_pending_store::{DemotionPendingRecord, DemotionPendingState};
+
 /// SRS-NOTIF-001 detection wiring: binds `atp-execution`'s ERR-2 / SRS-SAFE-003
 /// connectivity gate to the operator-notification dispatcher. Lives here because
 /// `atp-execution` must not depend on `atp-notification` (SRS-ARCH-002).
 pub mod connectivity_notification;
+/// SRS-RESV-004 — the durable demotion-pending lockout SyRS SYS-49c (c)/(d) requires:
+/// engaged by the liquidation-timeout branch, cleared only by an explicit operator
+/// resolution, and fail-closed on an unreadable store.
+pub mod demotion_pending_store;
+/// SRS-RESV-004 — the SyRS SYS-49b demotion sequence (cease signals → cancel resting
+/// orders → submit liquidations) and the flat-confirmation probe that feeds
+/// [`StrategyOrchestrator::resolve_demotion`].
+pub mod hot_swap_demotion;
+/// SRS-RESV-004 — the fixture-tier composition binding the real demotion sequence, gate,
+/// lockout and SRS-NOTIF-001 notifier into one runnable drill (the operator CLI's engine).
+pub mod hot_swap_demotion_drill;
 pub mod kill_switch_activation;
 pub mod kill_switch_timeout;
 /// SRS-MD-003 — composition of the IB transport with the live freshness feed
@@ -1030,6 +1043,38 @@ pub trait HotSwapDemotionEventSink {
     fn record(&self, event: HotSwapDemotionEvent) -> Result<(), HotSwapSideEffectError>;
 }
 
+/// SRS-RESV-004 / SyRS SYS-49c (c) and (d): the durable demotion-pending lockout
+/// that survives the call, the process, and the machine.
+///
+/// The other four ports mediate ONE attempt. This one is what makes "promotion is
+/// blocked **until the operator manually resolves**" true across attempts: the gate
+/// consults [`state`](Self::state) before it is willing to accept any flat result,
+/// and [`engage`](Self::engage)s a lockout on the timeout branch before it returns.
+/// Without it a retry whose probe reports flat promotes a candidate over IB
+/// positions nobody resolved.
+///
+/// **There is deliberately no `clear`/`resolve` method.** Every capability handed to
+/// the gate is a capability the gate can exercise, and unblocking a demotion-pending
+/// swap is the operator's alone (`demotion_pending_store::resolve`, which requires a
+/// non-blank operator acknowledgement). Keeping it off the port makes "only a person
+/// clears this" a property of the type graph rather than of the gate's good
+/// behaviour — the same discipline that keeps a strategy from minting its own live
+/// authority (SRS-EXE-001 `LiveDesignation`).
+pub trait DemotionPendingLock {
+    /// The current lockout state. Implementations MUST fail closed: a store that
+    /// exists but cannot be read is [`DemotionPendingState::Unreadable`], which
+    /// blocks promotion — never [`DemotionPendingState::Clear`].
+    /// `demotion_pending_store::read_state` performs that collapse in one place.
+    fn state(&self) -> DemotionPendingState;
+
+    /// Persist the lockout. Called on the timeout branch BEFORE the gate returns its
+    /// rejection, so the block is durable by the time any caller can retry. Returns
+    /// `Result` because a failed engage is a genuine safety degradation — promotion
+    /// is blocked for THIS call but not for the next one — and the gate surfaces it
+    /// on both the demotion event and the returned error rather than swallowing it.
+    fn engage(&self, record: DemotionPendingRecord) -> Result<(), HotSwapSideEffectError>;
+}
+
 /// SRS-RESV-004 acceptance evidence: the demotion reached flat before the
 /// timeout, so promotion of the candidate is allowed. The `Err` counterpart
 /// (`StructuredHotSwapDemotionError`) is the only other outcome of
@@ -1597,24 +1642,32 @@ impl StrategyOrchestrator {
     /// or change the promotion-block outcome; durable delivery is the
     /// deferred SRS-LOG-001 sink's concern.
     ///
-    /// **Scope — stateless single-attempt gate.** This gate decides ONE
-    /// demotion attempt: a timeout blocks promotion for THAT call (it returns
-    /// `Err`, and a caller promotes only on `Ok`). It does NOT persist a
-    /// demotion-pending lockout, so SRS-RESV-004's "promotion is blocked
-    /// until manual resolution" is not yet enforced across a later retry
-    /// whose probe reports flat. The durable demotion-pending store + the
-    /// operator manual-resolution command that clears it are the deferred
-    /// Hot-Swap runtime (SRS-RESV-003 / SRS-RESV-004 / SRS-RESV-006 — the
-    /// promote/demote/rollback subsystem tracked by the skipped
-    /// `tests/domain/test_single_live_invariant.py`), recorded in
-    /// `hot_swap_demotion_contract.deferred[]`.
-    pub fn resolve_demotion<P, C, A, E>(
+    /// **Scope — the durable lockout makes the block outlive the call.** The gate
+    /// consults `lock.state()` BEFORE it is willing to attempt anything, and engages
+    /// a lockout on every blocked branch before returning. That is what makes
+    /// SRS-RESV-004's "promotion is blocked until manual resolution" true across a
+    /// later retry whose probe reports flat, rather than only for the call that timed
+    /// out. Clearing the lockout is `demotion_pending_store::resolve` and is
+    /// deliberately not reachable through any port this gate holds.
+    ///
+    /// An engage that fails does not turn a refusal into an acceptance — this call
+    /// still returns `Err` — but it does mean the block is not durable, which the gate
+    /// surfaces on `HotSwapDemotionEvent::demotion_pending` and on the error's
+    /// `promotion_block_is_durable` rather than swallowing.
+    // Five injected ports plus the request, the receiver and the observation time. The arity
+    // is the design, not an accident: each port is a separate authority the gate is granted,
+    // and bundling them into one struct would hide that behind a single parameter without
+    // removing a single capability. The same allow is already used by `launch` below, for the
+    // same reason. (`tools/hot_swap_demotion_check.py` is what keeps the set honest.)
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_demotion<P, C, A, E, L>(
         &self,
         request: HotSwapDemotionRequest,
         liquidation: &P,
         canceller: &C,
         alerts: &A,
         events: &E,
+        lock: &L,
         observed_at_seconds: u64,
     ) -> Result<HotSwapDemotionResolved, StructuredHotSwapDemotionError>
     where
@@ -1622,7 +1675,22 @@ impl StrategyOrchestrator {
         C: UnfilledOrderCanceller,
         A: OperatorAlertSink,
         E: HotSwapDemotionEventSink,
+        L: DemotionPendingLock,
     {
+        // SyRS SYS-49c (d), FIRST: an unresolved demotion blocks the promotion phase.
+        // Consulted before the probe runs, so a swap attempted over unresolved
+        // positions is refused rather than re-executed — and so no destructive side
+        // effect fires on a request that was never permitted to start. The state is
+        // fail-closed at its source: an unreadable lockout blocks exactly like a held
+        // one (see `demotion_pending_store::read_state`).
+        let pending = lock.state();
+        if pending.blocks_promotion() {
+            return Err(StructuredHotSwapDemotionError::demotion_pending(
+                request,
+                &pending.reason(),
+            ));
+        }
+
         let reported = liquidation.await_flat_or_timeout(&request);
         // Defense-in-depth fail-closed: the probe is the timing authority,
         // but a FlatBeforeTimeout whose elapsed exceeds the configured
@@ -1640,13 +1708,75 @@ impl StrategyOrchestrator {
             }
             other => other,
         };
+
+        // The INVERSE inconsistency: a timeout reported before the configured deadline
+        // elapsed, or against a budget that is not the configured one. Previously this
+        // fell through to the timeout arm and fired the destructive unfilled-order
+        // cancel on a report the numbers contradict. It is now its own branch:
+        // promotion is blocked (an unbelievable probe cannot vouch for flat positions)
+        // and the lockout is engaged, but NO cancel is issued — block-without-cancel,
+        // distinct from block-with-cancel. The operator is still paged: a swap that
+        // cannot proceed and tells nobody is the worse failure.
+        let probe_inconsistency = match outcome {
+            HotSwapDemotionOutcome::TimedOutDemotionPending {
+                elapsed_seconds,
+                timeout_seconds,
+            } if timeout_seconds != request.timeout_seconds
+                || elapsed_seconds < request.timeout_seconds =>
+            {
+                Some((elapsed_seconds, timeout_seconds))
+            }
+            _ => None,
+        };
+        if let Some((elapsed_seconds, timeout_seconds)) = probe_inconsistency {
+            let operator_alert = into_outcome(alerts.dispatch(OperatorAlertEvent {
+                demoting_strategy_id: request.demoting_strategy_id.clone(),
+                candidate_strategy_id: request.candidate_strategy_id.clone(),
+                channels: vec![
+                    OperatorAlertChannel::Dashboard,
+                    OperatorAlertChannel::Email,
+                    OperatorAlertChannel::Sms,
+                ],
+                elapsed_seconds,
+                timeout_seconds,
+                observed_at_seconds,
+            }));
+            let demotion_pending = into_outcome(lock.engage(DemotionPendingRecord {
+                demoting_strategy_id: request.demoting_strategy_id.clone(),
+                candidate_strategy_id: request.candidate_strategy_id.clone(),
+                elapsed_seconds,
+                timeout_seconds,
+                observed_at_seconds,
+                liquidation_cancel: SideEffectOutcome::NotAttempted,
+                operator_alert: operator_alert.clone(),
+            }));
+            let promotion_block_is_durable = !demotion_pending.is_failed();
+            let _ = events.record(HotSwapDemotionEvent {
+                outcome,
+                demoting_strategy_id: request.demoting_strategy_id.clone(),
+                candidate_strategy_id: request.candidate_strategy_id.clone(),
+                promotion_blocked: true,
+                liquidation_cancel: SideEffectOutcome::NotAttempted,
+                operator_alert,
+                demotion_pending,
+                observed_at_seconds,
+            });
+            return Err(StructuredHotSwapDemotionError::demotion_probe_inconsistent(
+                request,
+                elapsed_seconds,
+                timeout_seconds,
+                promotion_block_is_durable,
+            ));
+        }
+
         match outcome {
             HotSwapDemotionOutcome::FlatBeforeTimeout { elapsed_seconds } => {
                 // SRS-RESV-004: positions reached flat in time — the swap
                 // proceeds. Record the audit transition (promotion NOT
                 // blocked) and return the acceptance; no alert, no cancel
-                // (both side effects are NotAttempted on this branch). Event
-                // emission is best-effort (see the gate Rustdoc).
+                // (both side effects are NotAttempted on this branch), and no
+                // lockout is engaged — nothing is pending. Event emission is
+                // best-effort (see the gate Rustdoc).
                 let _ = events.record(HotSwapDemotionEvent {
                     outcome,
                     demoting_strategy_id: request.demoting_strategy_id.clone(),
@@ -1654,6 +1784,7 @@ impl StrategyOrchestrator {
                     promotion_blocked: false,
                     liquidation_cancel: SideEffectOutcome::NotAttempted,
                     operator_alert: SideEffectOutcome::NotAttempted,
+                    demotion_pending: SideEffectOutcome::NotAttempted,
                     observed_at_seconds,
                 });
                 Ok(HotSwapDemotionResolved {
@@ -1691,9 +1822,28 @@ impl StrategyOrchestrator {
                     timeout_seconds,
                     observed_at_seconds,
                 }));
+                // SyRS SYS-49c (c): hold the swap in demotion-pending. Engaged
+                // AFTER the two safety side effects so the persisted record
+                // carries their outcomes — whether a live liquidation order may
+                // still be resting, and whether anyone was actually paged, are
+                // exactly the facts the operator resolves against — and BEFORE
+                // this call returns, so the block is already durable by the time
+                // any caller can retry. Unlike the audit sink below, this write
+                // is not best-effort: its failure is what separates "blocked" from
+                // "stays blocked", so it is carried onto the event AND the error.
+                let demotion_pending = into_outcome(lock.engage(DemotionPendingRecord {
+                    demoting_strategy_id: request.demoting_strategy_id.clone(),
+                    candidate_strategy_id: request.candidate_strategy_id.clone(),
+                    elapsed_seconds,
+                    timeout_seconds,
+                    observed_at_seconds,
+                    liquidation_cancel: liquidation_cancel.clone(),
+                    operator_alert: operator_alert.clone(),
+                }));
+                let promotion_block_is_durable = !demotion_pending.is_failed();
                 // Best-effort audit emission (see the gate Rustdoc): a sink
-                // failure does not roll back the cancel/alert above or change
-                // the promotion-block outcome below.
+                // failure does not roll back the cancel/alert/lockout above or
+                // change the promotion-block outcome below.
                 let _ = events.record(HotSwapDemotionEvent {
                     outcome,
                     demoting_strategy_id: request.demoting_strategy_id.clone(),
@@ -1701,12 +1851,14 @@ impl StrategyOrchestrator {
                     promotion_blocked: true,
                     liquidation_cancel,
                     operator_alert,
+                    demotion_pending,
                     observed_at_seconds,
                 });
                 Err(StructuredHotSwapDemotionError::demotion_timeout(
                     request,
                     elapsed_seconds,
                     timeout_seconds,
+                    promotion_block_is_durable,
                 ))
             }
         }

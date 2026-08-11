@@ -2699,6 +2699,16 @@ pub struct HotSwapDemotionEvent {
     /// flat branch). A `Failed` value means the operator may not have been
     /// paged.
     pub operator_alert: SideEffectOutcome,
+    /// SRS-RESV-004 / SyRS SYS-49c (d) observability: the outcome of engaging the
+    /// DURABLE demotion-pending lockout on a blocked branch (`NotAttempted` on the
+    /// flat branch, where nothing is pending).
+    ///
+    /// This is the field that separates "promotion is blocked" from "promotion stays
+    /// blocked". A `Failed` value means the refusal held for the call that produced
+    /// this event and for no other: a later attempt whose probe reports flat would be
+    /// accepted. It is therefore a safety degradation in its own right and must be
+    /// surfaced, not folded into the `promotion_blocked` boolean above.
+    pub demotion_pending: SideEffectOutcome,
     pub observed_at_seconds: u64,
 }
 
@@ -2715,6 +2725,19 @@ pub struct StructuredHotSwapDemotionError {
     pub error_type: String,
     pub message: String,
     pub original_request: HotSwapDemotionRequest,
+    /// Whether the promotion block outlives this call.
+    ///
+    /// Every variant of this error blocks promotion *for the attempt that produced
+    /// it* — the caller promotes only on `Ok`. SyRS SYS-49c (d) asks for more than
+    /// that: promotion must stay blocked "until the operator manually resolves". That
+    /// stronger guarantee comes from the durable demotion-pending lockout, and
+    /// engaging it can fail (an unwritable disk, a held lock).
+    ///
+    /// `false` therefore means: a retry could promote. It is duplicated onto the
+    /// error rather than left to the separately-persisted record because the record
+    /// is exactly what did not land — an error that pointed at it for this fact would
+    /// point at nothing (ERR-8 / SAFE-002 r4).
+    pub promotion_block_is_durable: bool,
 }
 
 impl StructuredHotSwapDemotionError {
@@ -2727,27 +2750,113 @@ impl StructuredHotSwapDemotionError {
         request: HotSwapDemotionRequest,
         elapsed_seconds: u64,
         timeout_seconds: u64,
+        promotion_block_is_durable: bool,
+    ) -> Self {
+        let message = format!(
+            "SRS-RESV-004 + SyRS SYS-49b / SYS-49c: hot-swap demotion of strategy \
+             {demoting} (candidate {candidate}) liquidation timed out — {elapsed} s \
+             elapsed, {timeout} s permitted; entering demotion-pending, promotion blocked{durability}",
+            demoting = request.demoting_strategy_id.as_str(),
+            candidate = request.candidate_strategy_id.as_str(),
+            elapsed = elapsed_seconds,
+            timeout = timeout_seconds,
+            durability = durability_suffix(promotion_block_is_durable),
+        );
+        Self::rejection(
+            request,
+            "HotSwapDemotionTimeout",
+            message,
+            promotion_block_is_durable,
+        )
+    }
+
+    /// Build a `HotSwapDemotionPending` rejection: a demotion-pending lockout is already
+    /// held, so SyRS SYS-49c (d) forbids the promotion phase until an operator resolves
+    /// the unfilled positions. No demotion is attempted and no destructive side effect
+    /// fires — the swap is refused before it starts.
+    ///
+    /// Shares `OrderErrorCategory::HotSwapDemotionTimeout` with the other demotion
+    /// rejections deliberately: that taxonomy is pinned by many contract checks and is
+    /// not extended for a one-off. `error_type` carries the precise discriminator.
+    pub fn demotion_pending(request: HotSwapDemotionRequest, held_reason: &str) -> Self {
+        let message = format!(
+            "SRS-RESV-004 + SyRS SYS-49c: hot-swap of {demoting} (candidate {candidate}) \
+             refused before it started — {held_reason}. Promotion stays blocked until the \
+             unfilled positions are resolved by an operator",
+            demoting = request.demoting_strategy_id.as_str(),
+            candidate = request.candidate_strategy_id.as_str(),
+        );
+        // Durable by definition: this rejection exists *because* a persisted lockout was read.
+        Self::rejection(request, "HotSwapDemotionPending", message, true)
+    }
+
+    /// Build a `HotSwapDemotionProbeInconsistent` rejection: the liquidation probe
+    /// reported a timeout that its own numbers contradict (a deadline that has not
+    /// elapsed, or a timeout that is not the configured one).
+    ///
+    /// Promotion is blocked — an unbelievable probe cannot vouch for flat positions —
+    /// but the unfilled-order cancel is deliberately NOT fired. Cancelling on a
+    /// premature or mismatched report would be a destructive action taken on evidence
+    /// this envelope exists to say is untrustworthy.
+    pub fn demotion_probe_inconsistent(
+        request: HotSwapDemotionRequest,
+        elapsed_seconds: u64,
+        reported_timeout_seconds: u64,
+        promotion_block_is_durable: bool,
+    ) -> Self {
+        let message = format!(
+            "SRS-RESV-004 + SyRS SYS-49b: the liquidation probe for {demoting} (candidate \
+             {candidate}) reported a timeout at {elapsed} s against a {reported} s budget, \
+             but the configured timeout is {configured} s — the report contradicts itself. \
+             Promotion is blocked and NO liquidation cancel was issued (the report is not \
+             trustworthy enough to act destructively on){durability}",
+            demoting = request.demoting_strategy_id.as_str(),
+            candidate = request.candidate_strategy_id.as_str(),
+            elapsed = elapsed_seconds,
+            reported = reported_timeout_seconds,
+            configured = request.timeout_seconds,
+            durability = durability_suffix(promotion_block_is_durable),
+        );
+        Self::rejection(
+            request,
+            "HotSwapDemotionProbeInconsistent",
+            message,
+            promotion_block_is_durable,
+        )
+    }
+
+    /// The one construction site, so every demotion rejection carries the SyRS SYS-64
+    /// category the contract pins and none can smuggle a different one through.
+    fn rejection(
+        request: HotSwapDemotionRequest,
+        error_type: &str,
+        message: String,
+        promotion_block_is_durable: bool,
     ) -> Self {
         let category = OrderErrorCategory::HotSwapDemotionTimeout;
         debug_assert!(
             matches!(category, OrderErrorCategory::HotSwapDemotionTimeout),
             "StructuredHotSwapDemotionError must carry HotSwapDemotionTimeout"
         );
-        let message = format!(
-            "SRS-RESV-004 + SyRS SYS-49b / SYS-49c: hot-swap demotion of strategy \
-             {demoting} (candidate {candidate}) liquidation timed out — {elapsed} s \
-             elapsed, {timeout} s permitted; entering demotion-pending, promotion blocked",
-            demoting = request.demoting_strategy_id.as_str(),
-            candidate = request.candidate_strategy_id.as_str(),
-            elapsed = elapsed_seconds,
-            timeout = timeout_seconds,
-        );
         Self {
             category,
-            error_type: "HotSwapDemotionTimeout".to_string(),
+            error_type: error_type.to_string(),
             message,
             original_request: request,
+            promotion_block_is_durable,
         }
+    }
+}
+
+/// The clause appended to a rejection message when the promotion block did NOT reach
+/// disk. Said out loud in the message because an operator reading a log line is the
+/// most likely consumer, and "blocked" reads as durable unless contradicted.
+fn durability_suffix(promotion_block_is_durable: bool) -> &'static str {
+    if promotion_block_is_durable {
+        ""
+    } else {
+        " — WARNING: the demotion-pending lockout could not be persisted, so this block \
+         holds for this attempt ONLY and a retry could promote"
     }
 }
 
@@ -4042,7 +4151,9 @@ mod tests {
             request.clone(),
             72,
             HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+            true,
         );
+        assert!(error.promotion_block_is_durable);
         assert_eq!(error.category, OrderErrorCategory::HotSwapDemotionTimeout);
         assert_eq!(error.category.as_str(), "HOT_SWAP_DEMOTION_TIMEOUT");
         assert_eq!(error.error_type, "HotSwapDemotionTimeout");
@@ -4056,6 +4167,87 @@ mod tests {
         assert!(error.message.contains("60"));
         // Display renders the SyRS SYS-64 wire string in the bracket prefix.
         assert!(error.to_string().starts_with("[HOT_SWAP_DEMOTION_TIMEOUT]"));
+    }
+
+    #[test]
+    fn a_non_durable_promotion_block_says_so_in_the_message() {
+        // SRS-RESV-004: "blocked" reads as durable unless contradicted, so a
+        // demotion-pending lockout that did NOT reach disk has to say out loud that
+        // a retry could promote — the flag alone is missed by a log reader.
+        let request = HotSwapDemotionRequest {
+            demoting_strategy_id: StrategyId::new("live-momentum"),
+            candidate_strategy_id: StrategyId::new("paper-reversal"),
+            timeout_seconds: HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+        };
+        let durable = StructuredHotSwapDemotionError::demotion_timeout(
+            request.clone(),
+            72,
+            HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+            true,
+        );
+        let fragile = StructuredHotSwapDemotionError::demotion_timeout(
+            request,
+            72,
+            HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+            false,
+        );
+        assert!(durable.promotion_block_is_durable);
+        assert!(!durable.message.contains("WARNING"));
+        assert!(!fragile.promotion_block_is_durable);
+        assert!(fragile.message.contains("WARNING"));
+        assert!(fragile.message.contains("a retry could promote"));
+        // Both still refuse under the same pinned SyRS SYS-64 category.
+        assert_eq!(fragile.category, OrderErrorCategory::HotSwapDemotionTimeout);
+    }
+
+    #[test]
+    fn every_demotion_rejection_shares_the_pinned_category_and_differs_by_error_type() {
+        // SRS-RESV-004 has three refusal shapes. `OrderErrorCategory` is a taxonomy
+        // pinned by many contract checks and is deliberately NOT extended for them:
+        // the discriminator is `error_type`. This test is what would fail if a later
+        // change gave one of them its own category.
+        let request = HotSwapDemotionRequest {
+            demoting_strategy_id: StrategyId::new("live-momentum"),
+            candidate_strategy_id: StrategyId::new("paper-reversal"),
+            timeout_seconds: HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+        };
+        let rejections = [
+            StructuredHotSwapDemotionError::demotion_timeout(
+                request.clone(),
+                72,
+                HOT_SWAP_DEMOTION_TIMEOUT_SECONDS,
+                true,
+            ),
+            StructuredHotSwapDemotionError::demotion_pending(
+                request.clone(),
+                "a demotion of live-momentum timed out and has not been resolved",
+            ),
+            StructuredHotSwapDemotionError::demotion_probe_inconsistent(request, 12, 30, true),
+        ];
+        let mut error_types = Vec::new();
+        for rejection in &rejections {
+            assert_eq!(
+                rejection.category,
+                OrderErrorCategory::HotSwapDemotionTimeout
+            );
+            assert_eq!(rejection.category.as_str(), "HOT_SWAP_DEMOTION_TIMEOUT");
+            assert!(rejection.message.contains("SRS-RESV-004"));
+            error_types.push(rejection.error_type.clone());
+        }
+        error_types.sort();
+        error_types.dedup();
+        assert_eq!(
+            error_types.len(),
+            3,
+            "each refusal needs its own error_type"
+        );
+
+        // A pending refusal is durable by construction: it exists because a persisted
+        // lockout was read back.
+        assert!(rejections[1].promotion_block_is_durable);
+        // And a probe-inconsistency refusal states that nothing was cancelled — the
+        // destructive action is exactly what it declines to take on a bad report.
+        assert!(rejections[2].message.contains("NO liquidation cancel"));
     }
 
     #[test]

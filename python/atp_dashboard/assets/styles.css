@@ -1346,6 +1346,8 @@ body {
 .hs__note { font-size: 11px; color: var(--ink-faint); margin-top: 14px; overflow-wrap: anywhere; }
 .hs__note[data-tone="warn"] { color: var(--warn); }
 .hs__note[data-tone="error"] { color: var(--bad); }
+/* SRS-RESV-004: a RESOLVED "no demotion is pending" is a fact, not a caveat. */
+.hs__note[data-tone="ok"] { color: var(--accent); }
 
 @media (max-width: 760px) {
   .hs__top { grid-template-columns: 1fr; justify-items: center; }

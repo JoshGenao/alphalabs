@@ -3077,8 +3077,14 @@
       } else if (demotionPending === true) {
         note.textContent = "DEMOTION-PENDING — a swap timed out before flat; promotion is blocked until manual resolution (SRS-RESV-004)";
         note.dataset.tone = "error";
+      } else if (demotionPending === false) {
+        // A RESOLVED false, from a mounted SRS-RESV-004 lockout. Saying "everything is
+        // deferred" here would be stale prose outliving the producer that landed — and it
+        // would hide a real, load-bearing fact: no prior timeout is blocking a promotion.
+        note.textContent = "no demotion is pending — no prior Hot-Swap timeout is blocking promotion (SRS-RESV-004); the remaining live facts are deferred to SRS-RESV-002/005/006";
+        note.dataset.tone = "ok";
       } else {
-        note.textContent = "every live Hot-Swap fact is deferred to its SRS-RESV producer; the control POSTs to the contract route and renders the runtime's response verbatim";
+        note.textContent = "the demotion-pending state is UNKNOWN — no SRS-RESV-004 lockout is readable on this runtime, so the pane cannot say whether a swap is half-finished; the remaining live facts are deferred to their SRS-RESV producers";
         note.dataset.tone = "warn";
       }
     }

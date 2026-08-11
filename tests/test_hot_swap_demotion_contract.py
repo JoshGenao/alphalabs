@@ -30,15 +30,20 @@ from hot_swap_demotion_check import (  # noqa: E402
     check_demotion_event_sink_port,
     check_demotion_event_struct,
     check_demotion_outcome_enum,
+    check_demotion_pending_lock_port,
     check_demotion_request_struct,
+    check_demotion_sequence_order,
     check_liquidation_probe_port,
+    check_lockout_store,
     check_operator_alert_channel_enum,
     check_operator_alert_event_struct,
     check_operator_alert_sink_port,
+    check_paper_transition_is_flat_only,
     check_resolve_demotion_guard,
     check_side_effect_outcome_enum,
     check_unfilled_order_canceller_port,
     load_config,
+    module_source,
     orchestrator_source,
     run_checks,
     types_source,
@@ -66,7 +71,7 @@ class HotSwapDemotionScriptTest(unittest.TestCase):
             "OperatorAlertEvent with the 6 required fields",
             "SideEffectOutcome with 3 variants",
             "NotAttempted, Succeeded, Failed",
-            "HotSwapDemotionEvent with the 7 required fields",
+            "HotSwapDemotionEvent with the 8 required fields",
             "liquidation_cancel, operator_alert",
             "HotSwapLiquidationProbe with 1 method(s) (await_flat_or_timeout)",
             "UnfilledOrderCanceller with 1 method(s) (cancel_unfilled_liquidation_orders)",
@@ -377,10 +382,17 @@ class ResolveDemotionGuardTest(unittest.TestCase):
         self.assertIn("cancel_unfilled_liquidation_orders", str(ctx.exception))
 
     def test_dropped_alert_in_timeout_arm_is_caught(self) -> None:
-        mutated = self.orch_src.replace(
-            "alerts.dispatch(OperatorAlertEvent {",
-            "noop_dispatch(OperatorAlertEvent {",
-            1,
+        # The anchor must be the TIMEOUT arm's dispatch. Since SRS-RESV-004 the
+        # probe-inconsistency branch dispatches too, and it appears FIRST — a
+        # `replace(..., 1)` silently mutated that one instead, leaving the timeout arm
+        # intact so the guard (correctly) did not fire and the test passed for the wrong
+        # reason. Anchor on the last occurrence.
+        needle = "alerts.dispatch(OperatorAlertEvent {"
+        at = self.orch_src.rindex(needle)
+        mutated = (
+            self.orch_src[:at]
+            + "noop_dispatch(OperatorAlertEvent {"
+            + self.orch_src[at + len(needle) :]
         )
         with self.assertRaises(HotSwapDemotionCheckError) as ctx:
             check_resolve_demotion_guard(self.config, mutated)
@@ -427,6 +439,113 @@ class ResolveDemotionGuardTest(unittest.TestCase):
         self.assertIn("not an acceptance", str(ctx.exception))
 
 
+class DemotionLockoutGuardTest(unittest.TestCase):
+    """SRS-RESV-004 collectors: each must FAIL when its invariant is broken.
+
+    A static check that cannot fail is not evidence — its PASS line would keep claiming the
+    invariant is enforced long after the code stopped enforcing it. Each case below is a
+    compiling regression somebody could plausibly write.
+    """
+
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.orch_src = orchestrator_source(self.config)
+        self.sequence_module = self.config["hot_swap_demotion_contract"]["sequence_guard"]["module"]
+
+    def test_a_lock_port_that_can_clear_a_lockout_is_caught(self) -> None:
+        # Every capability on the port is one the gate can exercise; clearing a
+        # demotion-pending lockout is the operator's alone.
+        mutated = self.orch_src.replace(
+            "    fn engage(&self, record: DemotionPendingRecord)"
+            " -> Result<(), HotSwapSideEffectError>;\n}",
+            "    fn engage(&self, record: DemotionPendingRecord)"
+            " -> Result<(), HotSwapSideEffectError>;\n    fn clear(&self);\n}",
+            1,
+        )
+        self.assertNotEqual(mutated, self.orch_src, "mutation anchor not found")
+        with self.assertRaises(HotSwapDemotionCheckError) as ctx:
+            check_demotion_pending_lock_port(self.config, mutated)
+        self.assertIn("forbidden method", str(ctx.exception))
+
+    def test_a_gate_that_ignores_the_lock_verdict_is_caught(self) -> None:
+        mutated = self.orch_src.replace("if pending.blocks_promotion() {", "if false {", 1)
+        self.assertNotEqual(mutated, self.orch_src, "mutation anchor not found")
+        with self.assertRaises(HotSwapDemotionCheckError) as ctx:
+            check_resolve_demotion_guard(self.config, mutated)
+        self.assertIn("blocks_promotion", str(ctx.exception))
+
+    def test_a_timeout_arm_that_stops_engaging_the_lockout_is_caught(self) -> None:
+        # Without the engage the refusal holds for ONE call: a retry whose probe reports flat
+        # would promote over positions nobody resolved.
+        needle = "lock.engage(DemotionPendingRecord {"
+        at = self.orch_src.rindex(needle)
+        mutated = (
+            self.orch_src[:at]
+            + "noop_engage(DemotionPendingRecord {"
+            + self.orch_src[at + len(needle) :]
+        )
+        with self.assertRaises(HotSwapDemotionCheckError) as ctx:
+            check_resolve_demotion_guard(self.config, mutated)
+        self.assertIn("lock.engage", str(ctx.exception))
+
+    def test_a_probe_inconsistency_branch_that_cancels_is_caught(self) -> None:
+        # Block-WITHOUT-cancel: a destructive broker action must not be taken on a report the
+        # gate is simultaneously declaring untrustworthy.
+        mutated = self.orch_src.replace(
+            "            let operator_alert = into_outcome(alerts.dispatch(OperatorAlertEvent {",
+            "            let _ = canceller.cancel_unfilled_liquidation_orders(&request);\n"
+            "            let operator_alert = into_outcome(alerts.dispatch(OperatorAlertEvent {",
+            1,
+        )
+        self.assertNotEqual(mutated, self.orch_src, "mutation anchor not found")
+        with self.assertRaises(HotSwapDemotionCheckError) as ctx:
+            check_resolve_demotion_guard(self.config, mutated)
+        self.assertIn("probe-inconsistency", str(ctx.exception))
+
+    def test_a_flat_arm_that_engages_a_lockout_is_caught(self) -> None:
+        # A demotion that reached flat has nothing pending; a lockout written there would
+        # block every subsequent swap.
+        mutated = self.orch_src.replace(
+            "                Ok(HotSwapDemotionResolved {",
+            "                let _ = lock.engage(todo!());\n"
+            "                Ok(HotSwapDemotionResolved {",
+            1,
+        )
+        self.assertNotEqual(mutated, self.orch_src, "mutation anchor not found")
+        with self.assertRaises(HotSwapDemotionCheckError) as ctx:
+            check_resolve_demotion_guard(self.config, mutated)
+        self.assertIn("nothing pending to lock out", str(ctx.exception))
+
+    def test_a_brokerage_port_that_can_disconnect_is_caught(self) -> None:
+        source = module_source(self.sequence_module)
+        mutated = source.replace(
+            "    ) -> Result<(), HotSwapSideEffectError>;\n}",
+            "    ) -> Result<(), HotSwapSideEffectError>;\n    fn disconnect(&self);\n}",
+            1,
+        )
+        self.assertNotEqual(mutated, source, "mutation anchor not found")
+        with self.assertRaises(HotSwapDemotionCheckError) as ctx:
+            # _check_forbidden_methods reads the trait out of the text it is given.
+            from hot_swap_demotion_check import _check_forbidden_methods
+
+            _check_forbidden_methods(
+                mutated, self.config["hot_swap_demotion_contract"]["demotion_brokerage_port"]
+            )
+        self.assertIn("disconnect", str(ctx.exception))
+
+    def test_the_sequence_order_and_store_collapse_are_currently_enforced(self) -> None:
+        # Positive control for the two whole-module collectors: they run, and their evidence
+        # names the property rather than merely reporting success.
+        order = check_demotion_sequence_order(self.config)
+        self.assertIn("cease_new_signals", order)
+        self.assertIn("<", order)
+        store = check_lockout_store(self.config)
+        self.assertIn("Unreadable", store)
+        self.assertIn("never", store)
+        completion = check_paper_transition_is_flat_only(self.config, self.orch_src)
+        self.assertIn("ONLY", completion)
+
+
 class HotSwapDemotionWireStringTest(unittest.TestCase):
     """Wire-string drift is caught by the atp-types unit test
     `order_error_category_wire_strings_track_syrs_sys_64`. This test
@@ -447,15 +566,17 @@ class HotSwapDemotionWireStringTest(unittest.TestCase):
 
 
 class AggregateEvidenceTest(unittest.TestCase):
-    def test_run_checks_emits_twelve_evidence_items(self) -> None:
+    def test_run_checks_emits_every_static_item_plus_the_cargo_smoke(self) -> None:
         evidence = run_checks()
-        # 11 static + 1 cargo smoke (or skipped marker if cargo absent).
-        self.assertEqual(len(evidence), 12)
+        # 19 static + 1 cargo smoke (or skipped marker if cargo absent).
+        self.assertEqual(len(evidence), 20)
 
-    def test_assert_hot_swap_demotion_static_emits_eleven_evidence_items(self) -> None:
+    def test_assert_hot_swap_demotion_static_emits_nineteen_evidence_items(self) -> None:
         config = load_config()
         evidence = assert_hot_swap_demotion_static(config, ROOT)
-        self.assertEqual(len(evidence), 11)
+        # 6 type/envelope + 9 ports + the gate + the completion guard + the sequence order
+        # + the lockout store. SRS-RESV-004 added 8 to ERR-7's original 11.
+        self.assertEqual(len(evidence), 19)
 
 
 if __name__ == "__main__":

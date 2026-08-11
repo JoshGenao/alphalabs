@@ -236,6 +236,21 @@ pub const PERSISTED_ENTITIES: &[SchemaDescriptor] = &[
         legacy_unversioned: false,
     },
     SchemaDescriptor {
+        entity_id: "hot-swap-demotion-pending",
+        owner_srs: "SRS-RESV-004",
+        writer_path: "crates/atp-orchestrator/src/demotion_pending_store.rs",
+        marker: "DEMOTION_PENDING_SCHEMA_VERSION",
+        magic: Some("ATP-HOT-SWAP-DEMOTION-PENDING"),
+        current_version: 1,
+        min_supported_version: 1,
+        posture: EvolutionPosture::Pinned,
+        // The SyRS SYS-49c (d) lockout, versioned from its first byte. Pinned rather than
+        // MigrateOnRead deliberately: this record decides whether a live promotion is blocked,
+        // and a payload this build cannot interpret exactly must fail the read (and keep
+        // blocking) rather than be migrated into a shape nobody wrote.
+        legacy_unversioned: false,
+    },
+    SchemaDescriptor {
         entity_id: "kill-switch-last-activation",
         owner_srs: "SRS-SAFE-001",
         writer_path: "python/atp_safety/state.py",

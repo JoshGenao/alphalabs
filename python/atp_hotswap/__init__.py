@@ -33,13 +33,19 @@ from pathlib import Path
 from typing import Protocol
 
 __all__ = [
+    "CliHotSwapDemotionSource",
     "CliHotSwapTriggerSource",
+    "CompositeHotSwapStatusSource",
+    "HotSwapDemotionLeg",
+    "HotSwapTriggerLeg",
     "HotSwapStatusUnavailable",
     "HotSwapTriggerCliRunner",
     "HotSwapTriggerCliUnavailable",
     "HotSwapTriggerOutputUnreadable",
     "BINARY_ENV_KNOB",
+    "DEMOTION_BINARY_ENV_KNOB",
     "default_binary",
+    "default_demotion_binary",
     "parse_trigger_cli_output",
     "strict_trigger_bool",
 ]
@@ -301,3 +307,204 @@ class CliHotSwapTriggerSource:
                 "`cargo build -p atp-orchestrator --bin resv003_hot_swap_trigger_cli`): "
                 f"{launch_error}"
             ) from launch_error
+
+
+# ============================================================================== #
+# SRS-RESV-004 — the demotion-pending leg (SyRS SYS-49b / SYS-49c)
+# ============================================================================== #
+
+#: Environment override for the demotion binary's location. Same reasoning as
+#: :data:`BINARY_ENV_KNOB`: a deployed image has no reason to keep the dev-tree layout.
+DEMOTION_BINARY_ENV_KNOB = "ATP_HOT_SWAP_DEMOTION_BINARY"
+
+#: Fallback location of the cargo-built demotion binary, relative to the repo root. Build it
+#: with ``cargo build -p atp-orchestrator --bin resv004_hot_swap_demotion_cli``.
+_DEFAULT_DEMOTION_BINARY = (
+    Path(__file__).resolve().parents[2] / "target" / "debug" / "resv004_hot_swap_demotion_cli"
+)
+
+
+def default_demotion_binary(env: "Mapping[str, str] | None" = None) -> Path:
+    """The demotion binary's path: the env override when set, else the dev-tree fallback."""
+
+    import os
+
+    source = os.environ if env is None else env
+    override = source.get(DEMOTION_BINARY_ENV_KNOB)
+    return Path(override) if override else _DEFAULT_DEMOTION_BINARY
+
+
+def _demotion_runner(argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+    """Run the demotion CLI with ``argv`` as a list (``shell=False``)."""
+
+    if not Path(argv[0]).exists():
+        raise FileNotFoundError(
+            f"hot-swap demotion binary not found at {argv[0]}; build it with "
+            "`cargo build -p atp-orchestrator --bin resv004_hot_swap_demotion_cli`"
+        )
+    return subprocess.run(argv, check=False, capture_output=True, text=True, timeout=timeout)
+
+
+class CliHotSwapDemotionSource:
+    """``live_state()`` from the durable SRS-RESV-004 demotion-pending lockout.
+
+    The producer the UI-5 pane has been waiting on. ``atp_dashboard.hotswap`` renders
+    ``demotion_pending`` / ``demotion_detail`` as ``deferred:SRS-RESV-004`` cells whenever no
+    source resolves them; this class resolves them by shelling
+    ``resv004_hot_swap_demotion_cli status``, which reads the same file the demotion gate
+    engages. One format owner, in Rust, for the durable record — the repo's cross-language
+    boundary pattern.
+
+    **Three states, and only two of them are answers.** No lockout is ``demotion_pending:
+    False``; a held lockout is ``True`` with the detail; an UNREADABLE lockout is
+    :class:`HotSwapStatusUnavailable`, which the pane renders as ``value: None``. That third
+    case is the whole point: a corrupt lockout that rendered as "no demotion is pending" would
+    be a false all-clear about whether a live changeover is half-finished.
+
+    The other legs return ``None`` rather than inventing a value: the current live strategy is
+    ``SRS-RESV-005``'s and the cool-down is ``SRS-RESV-006``'s, and neither persists a queryable
+    fact yet.
+    """
+
+    def __init__(
+        self,
+        state_path: str | Path,
+        *,
+        binary: str | Path | None = None,
+        runner: HotSwapTriggerCliRunner | None = None,
+        timeout: float = _DEFAULT_TIMEOUT_S,
+    ) -> None:
+        self._state_path = str(state_path)
+        self._binary = Path(binary) if binary is not None else default_demotion_binary()
+        self._runner = runner or _demotion_runner
+        self._timeout = timeout
+
+    @property
+    def state_path(self) -> str:
+        return self._state_path
+
+    def live_state(self) -> dict[str, object] | None:
+        """The demotion-pending facts, or raise when the lockout cannot be read.
+
+        Never returns ``None``: a readable producer always has an answer, and ``None`` would
+        render the cells deferred — i.e. "SRS-RESV-004 has not produced this yet", which stopped
+        being true the moment this source was mounted.
+        """
+
+        completed = self._invoke(["status", "--state", self._state_path])
+        if completed.returncode != 0:
+            raise HotSwapStatusUnavailable(
+                f"hot-swap demotion state unreadable: {completed.stderr.strip()}"
+            )
+        values = parse_trigger_cli_output(completed.stdout)
+        source = values.get("state-source")
+        if source not in ("clear", "pending"):
+            raise HotSwapTriggerOutputUnreadable(
+                f"resv004_hot_swap_demotion_cli reported an unknown state source {source!r}"
+            )
+        pending = strict_trigger_bool(values, "demotion-pending")
+        # Cross-check the two facts against each other rather than trusting either alone: a
+        # binary that said `state-source:clear` alongside `demotion-pending:true` has not told
+        # us which is true, and picking one would publish a swap state nobody asserted.
+        if pending != (source == "pending"):
+            raise HotSwapTriggerOutputUnreadable(
+                f"resv004_hot_swap_demotion_cli reported state-source {source!r} with "
+                f"demotion-pending {pending!r}; the proof stream contradicts itself"
+            )
+        detail = values.get("demotion-detail")
+        if not detail:
+            raise HotSwapTriggerOutputUnreadable(
+                "resv004_hot_swap_demotion_cli emitted no demotion-detail line; refusing to "
+                "report a demotion state with no description"
+            )
+
+        state: dict[str, object] = {
+            "demotion_pending": pending,
+            "demotion_detail": detail,
+        }
+        if pending:
+            # The SYS-49b changeover ladder's timeout branch. Resolved ONLY while a demotion is
+            # actually pending — a clear lockout says nothing about whether that phase was ever
+            # reached, and claiming otherwise would light a rung on no evidence.
+            state["sequence"] = {"demotion_pending": {"status": "BLOCKED", "detail": detail}}
+        return state
+
+    def trigger_config(self) -> dict[str, object] | None:
+        """Not this source's fact — the trigger configuration is ``SRS-RESV-003``'s."""
+
+        return None
+
+    def promotion_candidate(self) -> dict[str, object] | None:
+        """Not this source's fact — the ranking candidate is ``SRS-RESV-002``'s."""
+
+        return None
+
+    def _invoke(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        argv = [str(self._binary), *args]
+        try:
+            return self._runner(argv, timeout=self._timeout)
+        except subprocess.TimeoutExpired as expired:
+            raise HotSwapTriggerCliUnavailable(
+                f"resv004_hot_swap_demotion_cli timed out after {self._timeout}s"
+            ) from expired
+        except OSError as launch_error:
+            raise HotSwapTriggerCliUnavailable(
+                "resv004_hot_swap_demotion_cli could not be launched (is it built? "
+                "`cargo build -p atp-orchestrator --bin resv004_hot_swap_demotion_cli`): "
+                f"{launch_error}"
+            ) from launch_error
+
+
+class HotSwapTriggerLeg(Protocol):
+    """The trigger + candidate half of the pane's source protocol (``SRS-RESV-003``/``002``)."""
+
+    def trigger_config(self) -> "Mapping[str, object] | None": ...
+
+    def promotion_candidate(self) -> "Mapping[str, object] | None": ...
+
+
+class HotSwapDemotionLeg(Protocol):
+    """The live-state half of the pane's source protocol (``SRS-RESV-004``)."""
+
+    def live_state(self) -> "Mapping[str, object] | None": ...
+
+
+class CompositeHotSwapStatusSource:
+    """One :class:`~atp_dashboard.hotswap.HotSwapStatusSource` over several per-leg producers.
+
+    The pane's protocol has three legs owned by three different features, and they land one at a
+    time. This composes whichever exist without either producer having to know about the other —
+    ``atp_orchestration`` and ``atp_dashboard`` are peers, and neither may import the other.
+
+    Each leg keeps failing INDEPENDENTLY, which is the property the pane relies on: an unreadable
+    trigger configuration must not blank an otherwise readable demotion state, so this class does
+    not catch :class:`HotSwapStatusUnavailable` — it lets each leg's exception reach the
+    provider's per-leg handler, which records it as one ``ok:false`` reason and defers only that
+    leg. Swallowing here would turn one degraded producer into a silently all-deferred pane.
+    """
+
+    def __init__(
+        self,
+        *,
+        triggers: "HotSwapTriggerLeg | None" = None,
+        demotion: "HotSwapDemotionLeg | None" = None,
+    ) -> None:
+        self._triggers = triggers
+        self._demotion = demotion
+
+    def trigger_config(self) -> "Mapping[str, object] | None":
+        if self._triggers is None:
+            return None
+        return self._triggers.trigger_config()
+
+    def live_state(self) -> "Mapping[str, object] | None":
+        if self._demotion is None:
+            return None
+        return self._demotion.live_state()
+
+    def promotion_candidate(self) -> "Mapping[str, object] | None":
+        # Owner SRS-RESV-002. Asked of the trigger source only because that is where a ranking
+        # producer would land; today it answers None.
+        if self._triggers is None:
+            return None
+        return self._triggers.promotion_candidate()

@@ -17,6 +17,17 @@ path = "src/lib.rs"
 name = "resv003_hot_swap_trigger_cli"
 path = "src/bin/resv003_hot_swap_trigger_cli.rs"
 
+# SRS-RESV-004 Hot-Swap demotion operator CLI (SyRS SYS-49b / SYS-49c). Drives the
+# REAL demotion sequence, the REAL flat-confirmation probe, the REAL resolve_demotion
+# gate over the REAL durable demotion-pending lockout, and the REAL SRS-NOTIF-001
+# OperatorNotifier — with FIXTURE IB and SMTP/SMS transports, which the outcome
+# self-labels. Also serves the operator's status read and the SYS-49c (d) manual
+# resolution. The python/atp_hotswap client shells this binary; the live IB cancel and
+# the real SMTP/SMS transports are the deferred atp-adapters / SRS-NOTIF-001 legs.
+[[bin]]
+name = "resv004_hot_swap_demotion_cli"
+path = "src/bin/resv004_hot_swap_demotion_cli.rs"
+
 # SRS-SAFE-001 kill-switch activation operator CLI. Drives the REAL
 # atp-execution activation gate over a REAL LiveExecutionState + REAL
 # atp-simulation PaperEngineFleet with the deterministic mocked-IB fixture

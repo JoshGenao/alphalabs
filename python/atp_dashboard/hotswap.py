@@ -73,7 +73,9 @@ from collections.abc import Mapping
 from typing import Protocol, runtime_checkable
 
 from atp_hotswap import (
+    CliHotSwapDemotionSource,
     CliHotSwapTriggerSource,
+    CompositeHotSwapStatusSource,
     HotSwapStatusUnavailable,
     HotSwapTriggerCliRunner,
     HotSwapTriggerCliUnavailable,
@@ -86,7 +88,9 @@ from .provider import DEFERRED
 
 __all__ = [
     "CHANGEOVER_SEQUENCE",
+    "CliHotSwapDemotionSource",
     "CliHotSwapTriggerSource",
+    "CompositeHotSwapStatusSource",
     "COOLDOWN_DAYS_DEFAULT",
     "DEMOTION_TIMEOUT_SECONDS_DEFAULT",
     "HOT_SWAP_CANDIDATE_OWNER",

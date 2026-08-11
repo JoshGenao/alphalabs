@@ -377,6 +377,16 @@ pub struct FixtureEmailChannel {
 }
 
 impl FixtureEmailChannel {
+    /// Build one with the transport fault flag set. A sibling composition module cannot use
+    /// struct-update syntax here (the recording buffer is private), and this keeps the fault
+    /// injectable without widening the field's visibility.
+    pub fn with_failure(fail: bool) -> Self {
+        Self {
+            fail,
+            sent: Mutex::new(Vec::new()),
+        }
+    }
+
     pub fn sent(&self) -> Vec<NotificationMessage> {
         self.sent
             .lock()
@@ -412,6 +422,14 @@ pub struct FixtureSmsChannel {
 }
 
 impl FixtureSmsChannel {
+    /// See [`FixtureEmailChannel::with_failure`].
+    pub fn with_failure(fail: bool) -> Self {
+        Self {
+            fail,
+            sent: Mutex::new(Vec::new()),
+        }
+    }
+
     pub fn sent(&self) -> Vec<NotificationMessage> {
         self.sent
             .lock()

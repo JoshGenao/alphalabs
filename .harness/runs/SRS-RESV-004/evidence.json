@@ -1,0 +1,86 @@
+{
+  "created": "2026-08-11T03:44:02+00:00",
+  "critic": {
+    "deterministic": {
+      "ts": "2026-08-11T03:44:57+00:00",
+      "verdict": "approve"
+    }
+  },
+  "feature": "SRS-RESV-004",
+  "gates": {},
+  "steps": [
+    {
+      "argv": [
+        "./init.sh"
+      ],
+      "command": "./init.sh",
+      "executed": true,
+      "exit_code": 0,
+      "head": "04ed0ffc18c0d5fdd415dc0217bf6925db48f32d",
+      "n": 1,
+      "observed": "\u2192 Installing dependencies...\n  Using /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-RESV-004/.venv/bin/python (Python 3.13)\n\u2192 Starting dev server...\n  A server is already reachable at http://127.0.0.1:3000; using it for smoke tests.\n\u2192 Waiting for server...\n\u2192 Running baseline smoke test...\n\u2192 Running contract checks (scope=env)...\n\u2192 contract checks (scope=env, 17 check(s))\n  \u00b7 architecture_check\n  \u00b7 dependency_boundary_check\n  \u00b7 config_check\n  \u00b7 startup_readiness_gate_check\n  \u00b7 startup_readiness_runtime_check\n  \u00b7 ib_adapter_check\n  \u00b7 rest_api_check\n  \u00b7 websocket_api_check\n  \u00b7 cli_check\n  \u00b7 operator_workflow_surface_check\n  \u00b7 operator_interface_runtime_check\n  \u00b7 log_record_check\n  \u00b7 log_persistence_check\n  \u00b7 subscription_fanout_check\n  \u00b7 sim_halt_check\n  \u00b7 strategy_api_indicators_check\n  \u00b7 strategy_api_documentation_check\n\u2713 17/17 contract check(s) passed (scope=env)\n\u2713 Environment ready",
+      "status": "pass",
+      "step_text": "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
+      "steps_digest": "8cec3dc05b896b0a",
+      "ts": "2026-08-11T03:44:02+00:00"
+    },
+    {
+      "argv": [
+        "env",
+        "ATP_RUN_E2E=1",
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/e2e/test_hot_swap_demotion.py",
+        "-q"
+      ],
+      "command": "env ATP_RUN_E2E=1 .venv/bin/python -m pytest tests/e2e/test_hot_swap_demotion.py -q",
+      "executed": true,
+      "exit_code": 0,
+      "head": "04ed0ffc18c0d5fdd415dc0217bf6925db48f32d",
+      "n": 2,
+      "observed": ".                                                                        [100%]\n1 passed in 13.70s",
+      "status": "pass",
+      "step_text": "Step 2: Exercise SRS-RESV-004 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
+      "steps_digest": "8cec3dc05b896b0a",
+      "ts": "2026-08-11T03:44:23+00:00"
+    },
+    {
+      "argv": [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/domain/test_hot_swap_demotion_sequence.py",
+        "tests/boundary/test_hot_swap_demotion_backend.py",
+        "-q"
+      ],
+      "command": ".venv/bin/python -m pytest tests/domain/test_hot_swap_demotion_sequence.py tests/boundary/test_hot_swap_demotion_backend.py -q",
+      "executed": true,
+      "exit_code": 0,
+      "head": "04ed0ffc18c0d5fdd415dc0217bf6925db48f32d",
+      "n": 3,
+      "observed": "..............................                                           [100%]\n30 passed in 2.69s",
+      "status": "pass",
+      "step_text": "Step 3: Verify acceptance criteria: Current live strategy stops new signals, cancels resting IB orders, submits liquidation orders, waits for flat confirmation or the configured timeout defaulting to 60 seconds, and transitions to paper only after live positions are flat; on timeout, the swap enters demotion-pending state, dashboard/email/SMS notifications are sent, unfilled liquidation orders are canceled, and promotion is blocked until manual resolution.",
+      "steps_digest": "8cec3dc05b896b0a",
+      "ts": "2026-08-11T03:44:33+00:00"
+    },
+    {
+      "argv": [
+        ".venv/bin/python",
+        "tools/hot_swap_demotion_check.py"
+      ],
+      "command": ".venv/bin/python tools/hot_swap_demotion_check.py",
+      "executed": true,
+      "exit_code": 0,
+      "head": "04ed0ffc18c0d5fdd415dc0217bf6925db48f32d",
+      "n": 4,
+      "observed": "ision (the 60 s wait loop that produces it is the deferred runtime)\n- atp-types declares OperatorAlertChannel with 3 variants (Dashboard, Email, Sms) \u2014 the SRS-RESV-004 dashboard/email/SMS notification triad\n- atp-types declares OperatorAlertEvent with the 6 required fields (demoting_strategy_id, candidate_strategy_id, channels, elapsed_seconds, timeout_seconds, observed_at_seconds) and rejects 10 forbidden broker/IB-order/vendor fields\n- atp-types declares SideEffectOutcome with 3 variants (NotAttempted, Succeeded, Failed) \u2014 the observable timeout-branch side-effect outcome (a failed IB cancel / missed operator alert is recorded as Failed, not silently indistinguishable from success)\n- atp-types declares HotSwapDemotionEvent with the 8 required fields (outcome, demoting_strategy_id, candidate_strategy_id, promotion_blocked, liquidation_cancel, operator_alert, demotion_pending, observed_at_seconds) and rejects 10 forbidden broker/IB-order/vendor fields\n- atp-orchestrator declares port trait HotSwapLiquidationProbe with 1 method(s) (await_flat_or_timeout) \u2014 the read-only flat-vs-timeout timing authority (no mutators \u2014 the gate cannot promote through this port)\n- atp-orchestrator declares port trait UnfilledOrderCanceller with 1 method(s) (cancel_unfilled_liquidation_orders) \u2014 the SRS-RESV-004 unfilled-liquidation-order cancel path (deferred IB adapter)\n- atp-orchestrator declares port trait OperatorAlertSink with 1 method(s) (dispatch) \u2014 the SRS-RESV-004 dashboard/email/SMS operator-alert dispatch channel\n- atp-orchestrator declares port trait HotSwapDemotionEventSink with 1 method(s) (record) \u2014 the structured demotion state-transition audit record (SRS-LOG-001 / SRS-UI-001)\n- atp-orchestrator declares port trait DemotionPendingLock with 2 method(s) (state, engage) \u2014 the SyRS SYS-49c (d) durable lockout \u2014 consulted before any flat result is accepted, engaged before a refusal returns, and declares NO clearing method (clear, resolve, release, unblock, reset) \u2014 only an operator resolves a lockout\n- atp-orchestrator declares port trait SignalHalt with 1 method(s) (cease_new_signals) \u2014 SyRS SYS-49b (1)\n- atp-orchestrator declares port trait DemotionBrokerageControl with 2 method(s) (cancel_resting_order, submit_market_liquidation) \u2014 SyRS SYS-49b (2) and (3), and NO disconnect \u2014 a demotion must never disconnect IB\n- atp-orchestrator declares port trait PaperTransition with 1 method(s) (transition_to_paper) \u2014 the SyRS SYS-49b flat-start handoff to the internal simulation engine\n- atp-orchestrator declares port trait LivePositionSource with 1 method(s) (open_positions) \u2014 the fallible flat-confirmation input (an unreadable view is never an empty one)\n- atp-orchestrator::resolve_demotion matches `liquidation.await_flat_or_timeout`; the HotSwapDemotionOutcome::FlatBeforeTimeout arm is the sole `HotSwapDemotionResolved` site (no alert, no cancel); the HotSwapDemotionOutcome::TimedOutDemotionPending arm cancels via `canceller.cancel_unfilled_liquidation_orders`, alerts all 3 channels via `alerts.dispatch`, records via `events.record`, emits OrderErrorCategory::HotSwapDemotionTimeout, and calls no promotion path (ERR-7)\n- atp-orchestrator::complete_demotion_to_paper requires the `&HotSwapDemotionResolved` acceptance token (constructed only by the gate's flat arm) and is the crate's ONLY `paper.transition_to_paper` call site\n- atp-orchestrator::execute_demotion_sequence runs the SYS-49b phases in order: signals.cease_new_signals < brokerage.cancel_resting_order < brokerage.submit_market_liquidation\n- crates/atp-orchestrator/src/demotion_pending_store.rs declares DemotionPendingState with 3 states (Clear, Pending, Unreadable); `read_state` collapses an unreadable store to Unreadable (never Clear), `blocks_promotion` blocks on Pending AND Unreadable, and `resolve` is the only clearing path\n- cargo test -p atp-orchestrator --lib + err_7_hot_swap_demotion_timeout: PASS (timeout demotion-pending + blocked promotion + flat-arm selectivity verified)",
+      "status": "pass",
+      "step_text": "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end.",
+      "steps_digest": "8cec3dc05b896b0a",
+      "ts": "2026-08-11T03:44:40+00:00"
+    }
+  ],
+  "updated": "2026-08-11T03:44:57+00:00"
+}
