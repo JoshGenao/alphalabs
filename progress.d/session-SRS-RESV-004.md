@@ -135,6 +135,15 @@ Why serialized and not complete:
   So `passes` stays false and the operator finishes verification. Everything else built here is
   real, tested and merged — this is the honest classification, not a failure.
 
+Harness contradiction worth fixing (not fixed here — it is the prompt's, not this feature's):
+  `prompts/coding_prompt.md` Step 4.1 says the first action after plan approval is to persist
+  the plan to `progress.d/plan-$ATP_FEATURE_ID.md`. `agent_pool.py integrate` then REFUSES the
+  branch: "branch commits modify shared coordination files ['progress.d/plan-SRS-RESV-004.md']
+  — only the integrator may write them." Every session that follows Step 4.1 literally will hit
+  this at the last step, after all the work is done. Either the guard should allow
+  `plan-<id>.md` alongside `session-<id>.md`, or Step 4.1 should name a path outside
+  `progress.d/`. I removed the file; the plan's content is in this note.
+
 Resume / next:
   - Integrated `--mode serialized`; `passes` stays false. The two things that would flip it:
     (a) close the r7 restart gap — a durable fallback location, or a startup/readiness gate that

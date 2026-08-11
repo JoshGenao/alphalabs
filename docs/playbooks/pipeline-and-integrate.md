@@ -82,6 +82,14 @@ one `main`. Most of this playbook is about that sharing.
 
 ## Gates that fail for reasons no diff caused
 
+- **Do not commit `progress.d/plan-<id>.md`, even though Step 4.1 tells you to write it.** The
+  integrate guard treats everything in `progress.d/` except `session-<id>.md` as shared
+  coordination state and refuses the branch — at the very last step, after the whole gate has
+  passed. Write the plan there if you want it as a working aid, but keep it out of the commit
+  (or put its content in the session note, which is the artefact that survives anyway).
+  `(SRS-RESV-004, hit at integrate)`
+
+
 - **A gate that is red in every worktree is red for nobody.** `docs_link_check` failed in every
   `alphalabs-wt-<id>` on two correct references: `.git/hooks/pre-commit` (in a linked worktree
   `.git` is a FILE holding a `gitdir:` pointer, so the literal path never resolves) and
