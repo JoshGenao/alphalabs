@@ -203,3 +203,13 @@ one `main`. Most of this playbook is about that sharing.
     envelope or timed-out fallback records `kind:"attempt"`, excluded from every count, so
     it cannot satisfy `Adversarial rounds:` (which counts passes that reached a VERDICT).
     It still blocks: fail-closed is the exit code, not the record. `(harness-p1, r7)`
+
+- **`ruff format` can rewrite a compliant pytest skip decorator into a BLOCK.** `critic_check`'s
+  skip rule is line-based (`reason=` must be on the decorator's line), and ruff re-wraps a long
+  inline `reason=` onto its own line — so a passing commit becomes a blocked one the next time
+  anyone formats the file. Put the text in a short module constant:
+  a decorator whose `reason=` is a short module constant survives both. `(SRS-RESV-005)`
+- **Pass EXPLICIT `.py` paths to `ruff format`, never `.`** — the CI mirror runs
+  `ruff format --check .`, so it is tempting to fix it with `ruff format .`, which silently
+  rewrites `architecture/runtime_services.json` into invalid JSON (CLAUDE.md r8). Format the
+  files you touched, by name, then re-run the mirror. `(SRS-RESV-005)`

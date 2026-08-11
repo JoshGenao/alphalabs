@@ -74,6 +74,25 @@ Read this whenever you write a test, and before you believe a green one.
     all appear passes a regression that `drop(_lock)` before the save. Enforce order, forbid
     the premature drop, and add a non-vacuity test that injects it. `(DATA-017)`
 
+29. **`mutation_verify` reverts TRACKED MODIFICATIONS only** — its own comment says so, and
+    `git checkout` cannot restore a file the base never had. A feature whose implementation
+    lives in NEW files is therefore left completely intact, every added test legitimately
+    passes, and the tool reports *all* of them as "still pass without the change". That is a
+    false accusation shaped exactly like a real one (cf. rule 22). Check
+    `git diff --name-status origin/main..HEAD`: if the sources carrying the behaviour are
+    `A`, the run proved nothing and the properties must be mutated BY HAND — one property per
+    mutation, each killing exactly one named test. `(RESV-005)`
+30. **A test can encode the bug.** `a_free_live_slot_still_promotes` asserted that an EMPTY
+    live designation still promotes — the permissive behaviour was written down as the
+    expectation, so it survived four review rounds and made the gate look covered. When a
+    reviewer names a behaviour as wrong, grep your own tests for the assertion that blesses
+    it before arguing. `(RESV-005 r5)`
+31. **A `compile_fail` doctest is real evidence, and cheap.** Encapsulation claims ("this
+    token cannot be forged outside the crate") are provable by two doctests that build as an
+    external consumer — and they are mutation-verifiable: make the field `pub` and they go red
+    with "Test compiled successfully, but it's marked `compile_fail`". Prefer them to a grep
+    that merely asserts the word `pub(crate)` appears. `(RESV-005)`
+
 ## Layer selection
 
 `tests/unit` L1 · `tests/property` L2 · `tests/` L3 contract · `tests/boundary` L4 ·

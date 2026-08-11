@@ -175,10 +175,45 @@ including when only the *filename* matches (a notes-only chore for a safety-name
     live (an already-broken single-live invariant must not be resolved by guessing).
     `(SRS-RESV-004 r1)`
 
+## Guard placement and default direction
+
+43. **A guard that runs AFTER a gate with destructive side effects is too late.** The
+    live-slot revalidation sat inside the promotion gate, which runs after
+    `resolve_demotion` — and `resolve_demotion` is not read-only: on its timeout branch it
+    engages the durable lockout, cancels unfilled liquidation orders, and pages the operator
+    on three channels. A swap queued behind another one, arriving with a demoting id that
+    was no longer live, fired all of that against the wrong strategy and only then was
+    refused. Ask of every guard: what has already happened by the time it runs?
+    `(RESV-005 r7)`
+44. **Write safety predicates as ALLOWLISTS, never denylists.** `flat_confirmed()` was
+    "everything except `DemotionRefused`". Two new refusal variants — added one round earlier
+    to guard the live slot before the demotion runs — silently inherited `true`, so the CLI
+    printed `demotion-outcome:FLAT_CONFIRMED` and the REST body reported
+    `demotion_state: DEMOTED` for a swap in which no demotion had happened at all. A denylist
+    defaults a NEW case to the dangerous answer; an allowlist defaults it to an under-claim.
+    Pin BOTH directions, or "fix" it by returning false everywhere. `(RESV-005 r9, a defect
+    introduced by r7's own fix)`
+45. **Declaring the fixture TIER is not stating the fixture FACTS.** An opt-in flag
+    (`--allow-fixture-safety-inputs`) made the tier explicit while the values still defaulted
+    to a successful demotion, a flat account and a dummy artifact hash — so the flag alone
+    promoted on facts nobody stated, which is the same silent success the opt-in existed to
+    stop, one layer in. Every fixture value standing in for a SAFETY fact must be individually
+    required, and the check must reject an `unwrap_or(` in its parser. `(RESV-005 r1/r3)`
+46. **An audit record must not be appended before the durable state it describes is
+    published.** The gate records the promotion event while the designation is still in
+    memory; the caller persisted it afterwards. A publish that failed before its rename left a
+    journal claiming `promoted:true` for a state change the authority never accepted, and
+    recovery tooling reconciles from that. Buffer the event and commit it once the state is
+    settled — and keep journalling REFUSALS, or deferring the append quietly becomes
+    "record only successes". `(RESV-005 r6)`
+
 ## Deterministic-critic false positives (reword, don't disable)
 
 - `money:float-arithmetic` fires on the substring `price/quantity` in a comment (the `/`
   reads as division) and on `price-` hyphenations. Reword to "price and quantity" /
   "adjusted price". `(DATA-019)`
 - It also fires on `price * factor` in prose. Say "a value scaled by a split ratio".
+- `tests:skip-without-reason` fires on the literal decorator token in PROSE — a playbook rule
+  or a session note that quotes it is flagged even though it contains no test. Write "a pytest
+  skip decorator" instead of pasting the token. `(RESV-005, on its own write-back)`
   `(DATA-012)`

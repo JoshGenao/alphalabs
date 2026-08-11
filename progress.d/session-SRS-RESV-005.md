@@ -1,0 +1,182 @@
+=== SESSION SRS-RESV-005 ===
+Date: 2026-08-11
+Feature: SRS-RESV-005 — promote a selected paper strategy to live execution only after
+successful demotion (SyRS SYS-49d / AC-14; StRS SN-1.25 / SN-1.30)
+Outcome: serialized
+
+## What I did
+
+**The gap.** RESV-004's demotion gate already produced an acceptance
+(`HotSwapDemotionResolved`), and nothing consumed it: no promotion path existed anywhere —
+`promote(` / `complete_swap(` / `go_live(` were literally a *forbidden token list* in the
+demotion contract. `POST /api/v1/hot-swap` was a structured 501.
+
+**The design decision that shaped everything.** `HotSwapDemotionResolved` has public fields
+and derives `Clone`, so consuming it directly would make "only after successful demotion"
+satisfiable by a struct literal. It could not be tightened — `hot_swap_demotion_check.py`
+pins it byte-for-byte and ERR-7's tests depend on its shape — so the fix LAYERS a new
+authority on top and leaves the pinned primitive alone (scope-and-serialization r9):
+
+* `DemotionReceipt` — private fields, no `Clone`, no `Default`, `pub(crate)` sole
+  constructor that additionally refuses a `promotion_allowed:false` acceptance;
+* `promote_after_demotion` is `pub(crate)` and takes the receipt BY VALUE;
+* the only public path is `execute_hot_swap`, which runs `resolve_demotion` first.
+
+Violating demote-before-promote is a **compile error**, proven by two `compile_fail`
+doctests that build as external consumers of the crate — and mutation-verified (making the
+fields `pub` turns them red with "Test compiled successfully, but it's marked
+`compile_fail`").
+
+**Shipped:**
+* `crates/atp-orchestrator/src/hot_swap_promotion.rs` — the receipt, four read-only ports,
+  the gate. Every guard runs before the single designation write; the two post-conditions
+  are re-read after it and any drift rolls the designation back. Each port is three-way, so
+  unreadable / absent / empty stay three different facts.
+* `resv005_hot_swap_promote_cli` — drives the REAL gate over the REAL `LiveDesignation`
+  authority (persisted: scratch → fsync → atomic rename; a foreign file refuses the whole
+  read rather than reading as "nothing is live") and the REAL SRS-SIM-004 paper snapshot,
+  from which the history fingerprint is computed. Serialized under `ExclusiveGuard`.
+* `python/atp_orchestration/hot_swap_execution.py` — binds `POST /api/v1/hot-swap`, opt-in,
+  so a bare runtime keeps its 501. **The shipped posture REFUSES to promote**: the two
+  safety facts SYS-49d turns on (flat account, unchanged artifact) have no real producer, so
+  the route answers a structured 501 `SAFETY_INPUTS_UNAVAILABLE` naming SRS-EXE-006 /
+  SRS-ORCH-004 unless a composer explicitly declares a drill.
+* Both new persisted formats registered in the SRS-DATA-015 schema registry;
+  `tools/hot_swap_promotion_check.py` (10 guards) registered in `tools/gates.json`.
+
+**Rebased mid-flight onto SRS-RESV-004**, which landed while this was in review. That was a
+gain, not a cost: their `DemotionPendingLock` is exactly what three of my deferral notes had
+called deferred, and `resolve_demotion` consults it before its probe — so the promotion path
+now INHERITS the cross-attempt block rather than deferring it. I dropped my own
+`tools/docs_link_check.py` fix because they had landed an equivalent one.
+
+## What I tested (per step)
+
+* **Step 1: PASS** — `./init.sh` → "✓ Environment ready" (`evidence.py run`).
+* **Step 2: FAIL (partial, honest)** — REST half RUN and green
+  (`tests/boundary/test_hot_swap_execution_surface.py`, 43 cases: mounted vs bare 501, 428
+  with a spy proving dispatch was never reached, declared-vs-emitted field-set equality in
+  BOTH directions across every outcome). **Browser half NOT RUN**: the dashboard stack binds
+  fixed shared resources the parallel protocol forbids, and it cannot pass yet regardless —
+  the UI-5 promote control is inert until SRS-RESV-002 names a candidate.
+  `tests/e2e/test_hot_swap_promotion.py` is written and gated, with the browser case
+  explicitly skipped naming SRS-RESV-002.
+* **Step 3: PASS** — `pytest tests/domain/test_hot_swap_promotion.py` → 26 passed
+  (`evidence.py run`). Drives the real binary over a real paper snapshot; "preserves prior
+  paper performance history" is asserted as the snapshot file being **byte-identical on
+  disk** after a successful promotion.
+* **Step 4: PASS** — `tools/hot_swap_promotion_check.py` → 10 guards (`evidence.py run`).
+
+Full gate: `pytest -m "not integration and not e2e"` → **4989 passed, 0 failed**;
+`cargo test --workspace` exit 0; `cargo clippy --workspace -- -D warnings` exit 0;
+`cargo fmt --all --check` exit 0; `ruff check .` + `ruff format --check .` exit 0;
+`rest_api_check.py` in sync; `data015_schema_check.py` PASS (20 entities).
+
+**Two environment findings, reported not papered over:**
+1. `tools/run_ci_locally.sh` went red once on `tests/test_data010_eviction_contract.py`. It
+   passes in isolation, the underlying `cargo test -p atp-data --lib` passes standalone (238
+   passed), my diff touches only two descriptors in that crate, and there are **18,557**
+   leaked `atp-*` scratch dirs in `$TMPDIR` — the phantom documented in test-integrity r20. I
+   could not clean them (the recursive delete was refused by the sandbox). **The operator
+   should clear `$TMPDIR/atp-*`.**
+2. `mutation_verify.py` reported all 57 added tests as "still pass without the change". It
+   reverts TRACKED MODIFICATIONS only, and this feature's sources are `A` (added), so nothing
+   was removed. All 8 properties were therefore mutation-verified BY HAND, one property per
+   mutation, each killing exactly one named test. Written back to test-integrity as rule 29.
+
+## Critic verdicts
+
+* deterministic (`critic_check.py --staged`): **APPROVE** — no findings. It BLOCKed twice
+  during the session and was right both times: a multi-line pytest skip reason, and a
+  safety-path change whose paired `tests/domain/` diff covered only the Rust arm.
+* judgment (`adversarial_review.py`, reviewer=**codex**): **BLOCK** — 12 rounds, every one
+  a real finding, none disputed. The final round's finding is the evidence-vs-HEAD ordering
+  above, which this chore commit resolves; the substantive code loop converged at r11. No
+  APPROVE was faked and none is claimed. Recorded
+  verbatim in `.harness/runs/SRS-RESV-005/evidence.json`; no APPROVE was faked.
+
+## Adversarial rounds: 12 (+1 hung attempt, retried)
+
+Every round found a REAL defect; none was disputed. Severity trended down.
+
+* **r1** [critical] the served route could report PROMOTED on FIXTURE safety facts (the CLI
+  defaulted `--positions` to flat) → opt-in at both layers. [high] the read-execute-write
+  sequence was unserialized → `ExclusiveGuard` held for the critical section.
+* **r2** [high] an unwritable journal left the candidate live with a clean `PROMOTED` →
+  `promotion-recorded` is three-way and the handler answers `PROMOTED_UNRECORDED`. [medium]
+  the uncomposed 501 named the capability owner (RESV-003) not the route's → route-level
+  `served_by` now wins.
+* **r3** [critical] declaring the fixture TIER still left the fixture FACTS defaulting to
+  success → all three individually required, guarded against `unwrap_or(`. [medium] the
+  published schema said `additionalProperties: true` over a strict handler.
+* **r4** [high] SCOPE — the branch mixed a harness fix with the feature. Dissolved rather
+  than overridden: SRS-RESV-004 landed an equivalent fix, so I dropped mine.
+* **r5** [critical] the SHARED gate promoted into an EMPTY live slot — the REST wrapper
+  refused it, the CLI and Rust arms did not. [high] a post-rename persistence failure
+  surfaced as a retry-safe non-2xx after the slot had moved → `PublishOutcome` split.
+* **r6** [high] the audit record was appended before the durable publish → buffered, and
+  committed only once the state is settled.
+* **r7** [critical] the live-slot guard ran AFTER `resolve_demotion`, which engages the
+  lockout, cancels orders and pages the operator on its timeout branch → moved ahead of every
+  demotion-side port, proven with ports that PANIC if touched. [high] evidence stale.
+* **r8** [critical] `demotion_state` was derived as "FLAT_CONFIRMED or else DEMOTION_PENDING",
+  so a truncated proof stream produced a 200 claiming a promotion with no demotion proof →
+  closed vocabulary + incoherent-combination refusal.
+* **r9** [critical] `flat_confirmed()` was a DENYLIST, so r7's two new variants inherited
+  "the demotion succeeded" → inverted to a fail-closed allowlist, both directions pinned.
+  **This one was introduced by r7's own fix** — the pattern adversarial-precheck warns about.
+* **r10** [high] the published schema did not mark `candidate_strategy_id` required while the
+  handler rejects it → declared and pinned against the frozen artefact.
+* **r11** [critical] the corrected `false` from r9 then printed `DEMOTION_PENDING` for
+  refusals that never started, so REST answered 200 and the pane held its control inert
+  awaiting a lockout that was never engaged. Root cause one level below all three rounds:
+  `flat_confirmed() -> bool` was a boolean over a THREE-valued fact → replaced with
+  `DemotionProof { FlatConfirmed, TimedOut, NotStarted }`, and `NOT_STARTED` maps to a
+  non-2xx because nothing mutated. **The r7 → r9 → r11 chain is the single most useful thing
+  this review found**: each round fixed the previous round's fix, and only the third exposed
+  the type that was wrong from the start.
+
+* **r12** [high] the committed evidence recorded an older HEAD than the commit under review.
+  Structural, not a code defect: evidence is recorded BEFORE the commit that contains it, so
+  it always names the parent. Resolved by pinning every step to the final CODE commit
+  (`642b38d`) and keeping this chore commit code-free — the notes and playbooks that follow
+  change no behaviour, so the record still covers everything shipped. Worth knowing for the
+  next session: do not write "re-recorded at this HEAD" in a commit message; the record names
+  the parent, and the honest claim is "recorded at the final code commit".
+
+The reviewer also HUNG once between r10 and r11 (>25 min, no output). Per
+`adversarial-precheck.md` that is an availability failure, not a verdict — it was killed and
+retried, and the ledger correctly shows 11 rows with findings and no zero-finding round.
+
+## Playbook updates
+
+* `safety-paths.md` r43–r46 — guard placement after a destructive gate; allowlists not
+  denylists for safety predicates; declaring the fixture tier ≠ stating the fixture facts; an
+  audit record must not precede the durable publish.
+* `honest-surfaces.md` 9b–9c — never derive a headline state as "X or else Y"; a non-2xx is a
+  promise that nothing mutated, so check what the consumer already believes.
+* `test-integrity.md` r29–r31 — `mutation_verify` reverts tracked modifications only (a
+  new-file feature is reported as 100% "cannot fail"); a test can encode the bug;
+  `compile_fail` doctests are cheap, real, mutation-verifiable evidence.
+* `pipeline-and-integrate.md` — `ruff format` can rewrite a compliant skip decorator into a
+  critic BLOCK; pass explicit `.py` paths, never `.`.
+
+## Resume / next
+
+`passes` stays **false**. What is left is Step 2's browser leg, and it is blocked on other
+features, not on this one:
+
+1. **SRS-RESV-002** — the Reservoir ranking that names a promotion candidate. Until it lands,
+   the UI-5 promote control is inert (`hotCandidate === null`), so there is no armed button
+   to drive and `tests/e2e/test_hot_swap_promotion.py::test_the_dashboard_promote_control_drives_the_swap`
+   stays skipped.
+2. **SRS-EXE-006 / SRS-ORCH-004** — the real IB position feed and the durable
+   deployed-version registry. Until they land, the served route refuses with
+   `SAFETY_INPUTS_UNAVAILABLE`; wire them at `mount_hot_swap_execution` and the route
+   promotes with no change to the module.
+
+To continue: run `tests/e2e/test_hot_swap_promotion.py` (REST leg is ready today, browser leg
+after RESV-002), then close with `--attested-by`. The gate, its ordering and all three AC
+clauses are already proven offline and at the CLI.
+
+Blocked-on recorded via `agent_pool.py block SRS-RESV-005 --on SRS-RESV-002 SRS-EXE-006`.

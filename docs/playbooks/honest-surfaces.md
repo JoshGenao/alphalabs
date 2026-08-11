@@ -31,6 +31,21 @@ nobody verified. Every rule here is one review round somebody already paid for.
    produced/partial/deferred verdict, name the owner of each gap, and DERIVE the verdict
    from the produced set so it cannot drift into a second copy. `(LOG-001 §8, r37)`
 
+9b. **Never derive a headline state as "X, or else Y".** `demotion_state` was
+   `FLAT_CONFIRMED or else DEMOTION_PENDING`, and only the *promotion* field was checked
+   against a closed vocabulary. A stale or truncated producer whose output carried
+   `promotion:PROMOTED` but no readable `demotion-outcome` therefore returned a 200 reading
+   "promoted, demotion pending" — a live promotion reported with no successful-demotion proof
+   behind it. Require the field, check it against the closed set, AND refuse incoherent
+   COMBINATIONS (`PROMOTED` + not-flat is a contradiction, not a state). `(RESV-005 r8)`
+9c. **A non-2xx is a promise that nothing mutated** — check what your consumer already
+   believes before choosing a status. `assets/app.js` says so in a comment ("a refusal
+   (non-2xx) mutated nothing — retry is allowed"), which makes an executed-but-BLOCKED swap a
+   200 carrying its outcome, and makes a post-rename persistence failure a 200 too: the
+   atomic rename already moved the live slot, so answering non-2xx would invite a retry over
+   changed state. Split persistence outcomes by whether the durable state ALREADY changed.
+   `(RESV-005 r5)`
+
 ## The surface itself
 
 10. **An uncovered capability gets NO public surface.** A flag that always errors is still
