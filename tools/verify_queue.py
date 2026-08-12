@@ -78,10 +78,22 @@ MARK_RE = re.compile(r"pytest\.mark\.([a-z_]+)")
 # Test discovery — what artifacts actually exist for a feature
 # ---------------------------------------------------------------------------
 def _fid_forms(fid: str) -> tuple:
-    """The spellings a feature id takes in source: SRS-MD-003 / srs_md_003 / md003."""
+    """The spellings a feature id takes in source: SRS-MD-003 / srs_md_003 / md003.
+
+    The compact form is what test FILENAMES use (`test_data013_...`), but deriving
+    it by dropping the first segment produces `"3"` for `API-3` and `"1"` for
+    `UI-1` — and a bare digit is a substring of very nearly every source file, so
+    every one of those features matched the whole tree. `run` EXECUTES this
+    selection, so a false match is not cosmetic: it files an unrelated passing
+    suite as a feature's evidence. Require the compact form to carry a letter and
+    real length, and drop it otherwise — the hyphenated and snake spellings are
+    specific enough on their own.
+    """
     lower = fid.lower()
     snake = lower.replace("-", "_")
     compact = re.sub(r"[^a-z0-9]", "", lower.split("-", 1)[-1])  # md003, data013
+    if len(compact) < 4 or not any(c.isalpha() for c in compact):
+        compact = ""
     return (fid, snake, compact)
 
 

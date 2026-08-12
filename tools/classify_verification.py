@@ -202,8 +202,25 @@ def derive(feat: dict, observed: dict[str, str] | None = None) -> tuple[str, str
     fid = feat.get("id", "")
     hay = method_text(feat)
 
+    # AN OBSERVATION IS A DATA POINT, NOT A VERDICT — and it used to be both.
+    # Returning needs_review=False here made one `Outcome: serialized` note a
+    # one-way ratchet: `serialized_notes()` pulled the feature out of the claim
+    # pool, and this pinned it non-solo forever, overriding its own text. SRS-MD-003
+    # says "fixture market data, provider mocks" and was pinned `live-ib` by a
+    # session whose gateway had wedged. Nothing could ever undo either half, because
+    # the same note fed both and no session could claim the feature to change it.
+    #
+    # Now it still PROPOSES the observed flavour — a real session hitting a real
+    # wall is the best signal available — but always flags for review, so the
+    # operator sees it in the CONFLICT block rather than buried among 120 rows.
     if fid in observed:
-        return _flavour(observed[fid]), "OBSERVED: a session recorded Outcome: serialized", False
+        return (
+            _flavour(observed[fid]),
+            "REVIEW: a session recorded Outcome: serialized — check WHY before "
+            "keeping this; a one-off (a wedged gateway, a sibling holding the "
+            "dashboard) is not a property of the feature",
+            True,
+        )
 
     stubbed = next((s for s in STUBBED if s in hay), "")
     for label, needles in (
@@ -234,6 +251,44 @@ def derive(feat: dict, observed: dict[str, str] | None = None) -> tuple[str, str
     )
 
 
+def derive_from_tests(feat: dict) -> tuple[str, str, bool] | None:
+    """Propose from the feature's REAL tests instead of its templated prose.
+
+    CLAUDE.md rule 5: verify the artifact, not the intention. Every rule above
+    reads ``steps[]``, which is generated boilerplate — three of every four entries
+    are template — and that is why the corpus came out solo 9 / non-solo 111. A
+    `@pytest.mark.e2e` on a file named for the feature is a fact about what running
+    it needs.
+
+    Returns None when no test names the feature, so the caller falls back to the
+    text rules rather than treating "found nothing" as "found solo".
+    """
+    try:
+        import verify_queue
+    except ImportError:  # pragma: no cover - only if tools/ is not importable
+        return None
+    disc = verify_queue.discover_tests(feat.get("id", ""))
+    method, why = verify_queue.method_from_markers(disc)
+    if method is None:
+        return None
+    files = ", ".join(Path(f).name for f in disc["strong"][:3])
+    # ALWAYS needs_review when the tests disagree with the acceptance criterion's
+    # own words. Tests prove the mechanism; the AC can quantify over the deployed
+    # path — SRS-MD-003's tests are all fixtures and its AC names a real gateway.
+    hay = method_text(feat)
+    contested = method == "solo" and (
+        any(n in hay for n in REAL_IB) or any(n in hay for n in BROWSER + SURFACE)
+    )
+    if contested:
+        return (
+            "integration",
+            f"REVIEW: tests say solo ({files}) but the method text names a real "
+            f"resource — read steps[2], the AC decides",
+            True,
+        )
+    return (method, f"TESTS: {why} ({files})", False)
+
+
 def cmd_propose(args) -> int:
     features = load_features()
     lines = [
@@ -259,7 +314,8 @@ def cmd_propose(args) -> int:
         if current and not args.rederive:
             method, why, review = current, "already declared", False
         else:
-            method, why, review = derive(feat, observed)
+            from_tests = derive_from_tests(feat) if args.from_tests else None
+            method, why, review = from_tests or derive(feat, observed)
             if current and method != current:
                 why = f"RE-DERIVED {current} → {method}: {why}"
         counts[method] = counts.get(method, 0) + 1
@@ -369,6 +425,15 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("propose", help="write the operator review file")
     p.add_argument("--stdout", action="store_true")
+    p.add_argument(
+        "--from-tests",
+        action="store_true",
+        help="derive from the feature's REAL test markers rather than its templated "
+        "steps[] prose (CLAUDE.md rule 5). Falls back to the text rules for a feature "
+        "no test names — 'found nothing' is not 'found solo'. Implies nothing on its "
+        "own: every row still needs a human, and rows where the tests and the "
+        "acceptance criterion disagree are flagged as CONFLICTs.",
+    )
     p.add_argument(
         "--rederive",
         action="store_true",

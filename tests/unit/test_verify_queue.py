@@ -165,3 +165,24 @@ def test_a_passing_feature_never_appears_in_the_queue(monkeypatch, tmp_path):
     monkeypatch.setattr(agent_pool, "serialized_notes", lambda *a, **k: set())
     q = _queue([_feat("A", passes=True), _feat("B")])
     assert [r["id"] for r in q["rows"]] == ["B"]
+
+
+# --- id spellings: the compact form must not match the whole tree -------------
+def test_a_short_id_yields_no_compact_form():
+    """`API-3` reduced to `"3"`, and a bare digit is a substring of very nearly
+    every source file — so every short-id feature matched the whole tree. `run`
+    EXECUTES the selection, so a false match files an unrelated passing suite as a
+    feature's evidence."""
+    assert verify_queue._fid_forms("API-3") == ("API-3", "api_3", "")
+    assert verify_queue._fid_forms("UI-1") == ("UI-1", "ui_1", "")
+
+
+def test_a_real_feature_id_keeps_its_compact_form():
+    """`test_data013_ingestion_validation.py` is found by exactly this."""
+    assert verify_queue._fid_forms("SRS-DATA-013")[2] == "data013"
+    assert verify_queue._fid_forms("SRS-MD-003")[2] == "md003"
+
+
+def test_discovery_of_a_short_id_does_not_sweep_the_tree():
+    strong = verify_queue.discover_tests("UI-1")["strong"]
+    assert len(strong) < 20, f"UI-1 matched {len(strong)} files — the digit is matching everything"
