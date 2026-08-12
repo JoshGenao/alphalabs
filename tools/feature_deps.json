@@ -84,6 +84,9 @@
     "SRS-DATA-011",
     "SRS-MD-001"
   ],
+  "SRS-DATA-013": [
+    "SRS-NOTIF-001"
+  ],
   "SRS-DATA-014": [
     "SRS-DATA-013"
   ],
@@ -214,7 +217,9 @@
     "SRS-RESV-001"
   ],
   "SRS-RESV-004": [
-    "SRS-RESV-003"
+    "SRS-NOTIF-001",
+    "SRS-RESV-003",
+    "SRS-RESV-005"
   ],
   "SRS-RESV-005": [
     "SRS-EXE-006",
@@ -229,6 +234,10 @@
     "SRS-EXE-002",
     "SRS-EXE-006"
   ],
+  "SRS-SAFE-002": [
+    "SRS-API-001",
+    "SRS-NOTIF-001"
+  ],
   "SRS-SAFE-003": [
     "ERR-9",
     "SRS-EXE-001",
@@ -242,6 +251,15 @@
   ],
   "SRS-SEC-001": [
     "SRS-LOG-001"
+  ],
+  "SRS-SIM-004": [
+    "SRS-EXE-002"
+  ],
+  "SRS-UI-002": [
+    "SRS-BT-004"
+  ],
+  "SRS-UI-003": [
+    "SRS-RESV-002"
   ],
   "UI-1": [
     "SRS-NOTIF-001",
