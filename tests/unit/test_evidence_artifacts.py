@@ -173,11 +173,18 @@ def test_a_live_ib_feature_is_gated_the_same_way(rec):
 @pytest.mark.parametrize("method", ["solo", "integration"], ids=["m_solo", "m_integration"])
 def test_a_non_visual_feature_needs_no_image(rec, method):
     """For these the captured stdout IS the artifact. Demanding a screenshot of
-    `cargo fmt --check` teaches everyone to produce a meaningless one."""
+    `cargo fmt --check` teaches everyone to produce a meaningless one.
+
+    Asserts the artifact COUNT as well as the verdict, not just `ok`. Checking only
+    `ok` passed before this change existed too, so it proved nothing about the
+    gate's scope — the guard has to show the artifact machinery ran and chose not
+    to fire, which is a different fact from it never having run.
+    """
     fid = rec(method=method)
     _complete_record(fid)
-    ok, problems, _ = evidence.verify(fid, allow_attested=True)
+    ok, problems, summary = evidence.verify(fid, allow_attested=True)
     assert ok, problems
+    assert summary["artifacts"] == 0
 
 
 def test_a_video_alone_does_not_satisfy_the_image_gate(rec, tmp_path):

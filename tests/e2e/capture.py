@@ -6,14 +6,17 @@ assertion proves a selector matched; it does not let a reviewer look at the page
 For `e2e` and `live-ib` features ``evidence.verify`` therefore requires an image
 on the acceptance-criterion step, and this is how a test produces one.
 
+Inside an e2e test body (the example is written without its ``def`` line on
+purpose — ``tools/mutation_verify.py`` scans diffs for added ``def test_*`` and a
+sample in a docstring reads to it as a real test that never fails, which is a false
+finding in the one tool whose worth depends on its findings being trustworthy):
+
     from tests.e2e.capture import evidence_browser
 
-    def test_the_panels_render(dashboard):
-        url, *_ = dashboard
-        with evidence_browser(sync_api, "SRS-UI-003", step=3) as cap:
-            page = cap.page(url)
-            assert page.locator("#account-equity").is_visible()
-            cap.shot(page, "account panel with live equity")
+    with evidence_browser(sync_api, "SRS-UI-003", step=3) as cap:
+        page = cap.page(url)
+        assert page.locator("#account-equity").is_visible()
+        cap.shot(page, "account panel with live equity")
 
 Everything lands in ``.harness/runs/<FID>/artifacts/`` and is attached to the step
 on exit, so the artifacts and the record can never disagree about what was run.
