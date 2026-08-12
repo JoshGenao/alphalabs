@@ -179,8 +179,27 @@ explicit `--attested-by` (the `verified-e2e` label, or `operator`). So the two w
 to a green are "the tool ran it" and "a named person says so"; describing it is not
 one of them.
 
+**A visual acceptance criterion needs a visual artifact.** "The dashboard shows IB
+equity, daily and cumulative P&L" is a claim about what a human would *see*; an exit
+code cannot show it. For `e2e` and `live-ib` features, `verify` requires an image on
+the acceptance-criterion step:
+
+```
+tools/evidence.py artifact <id> --step 3 --file shot.png --caption "what it shows"
+tools/evidence.py render   <id>          # -> .harness/runs/<id>/EVIDENCE.md
+```
+
+`EVIDENCE.md` is the reviewable form — GitHub renders the screenshots inline in the
+PR. Browser tests get this for free via `tests/e2e/capture.py`'s `evidence_browser`
+(screenshots + video, under `ATP_CAPTURE_EVIDENCE=1`). Video is *linked*, not
+embedded: GitHub plays video only from a comment upload, never from a repo path.
+There is no git-lfs here, so artifacts are size-capped — 2 MB an image, 8 MB a
+video, 20 MB a feature.
+
 Commit your record with your feature work; `close_feature.py` retires it on the flip,
-so a reopened feature starts with none rather than inheriting yours. Closes and
+so a reopened feature starts with none rather than inheriting yours — artifacts and
+`EVIDENCE.md` included, because a stale screenshot is *more* convincing than a stale
+exit code, not less. Closes and
 `--force-complete` overrides are also appended to `.harness/*.jsonl` in the **primary
 checkout** — untracked and local by design, since the one place a branch cannot append
 to is also a place it cannot commit. The durable record is the retired

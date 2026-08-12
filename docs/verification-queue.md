@@ -140,6 +140,51 @@ tool invented would satisfy the human-attestation path with nobody's attestation
 SRS-MD-003's matches include two harness tests that merely name it as an example.
 Read the printed plan, or pass `--only <paths>`.
 
+## Closure artifacts — what you review on GitHub
+
+A captured exit code proves a command ran. It cannot show you that the dashboard
+displayed the stale row, and *"the dashboard shows IB equity, daily and cumulative
+P&L, margin usage"* is an acceptance criterion about exactly that.
+
+Every record renders to **`.harness/runs/<FID>/EVIDENCE.md`** — the acceptance
+criterion, each step's command and captured output, and the screenshots **inline**.
+GitHub displays it directly from the PR's file tree.
+
+```
+tools/evidence.py artifact <FID> --step 3 --file shot.png --caption "what it shows"
+tools/evidence.py render   <FID>          # regenerate; run/record do it automatically
+```
+
+Browser tests get it for free — `tests/e2e/capture.py`:
+
+```python
+with evidence_browser(sync_api, "SRS-UI-003", step=3) as cap:
+    page = cap.page(url)
+    assert page.locator("#account-equity").is_visible()
+    cap.shot(page, "account panel with live equity")
+```
+
+Screenshots *and* video land in `.harness/runs/<FID>/artifacts/` and attach to the
+step on context close. Capture is off unless `ATP_CAPTURE_EVIDENCE=1`; CI sets it on
+the L6 e2e job and also uploads the results as a downloadable run artifact.
+
+**The gate.** For `e2e` and `live-ib` features, `evidence.verify` refuses a record
+with no image on the acceptance-criterion step, so those features cannot close
+without one. `solo` and `integration` features are not gated this way — their
+captured stdout *is* the artifact, and demanding a screenshot of
+`cargo fmt --check` only teaches everyone to produce a meaningless one.
+
+**Two constraints worth knowing.** GitHub renders PNG/JPG inline from a repo path
+but will **not** play `.webm`/`.mp4` from one — inline playback works only for files
+uploaded into a comment. So video is *linked*, and `EVIDENCE.md` says why rather
+than leaving you clicking a dead player. And this repo has **no git-lfs**, so every
+artifact byte is permanent history for every clone and every worktree: 2 MB an
+image, 8 MB a video, 20 MB a feature, refused above that rather than truncated.
+
+Artifacts retire with the record on close. A reopened feature must not start with
+the previous session's screenshot sitting where its own evidence belongs — a stale
+screenshot is *more* convincing than a stale exit code, not less.
+
 ## Why `integrate --force-complete` does not get you out of this
 
 The deadlock message says *"verify + `integrate --force-complete`"*. It does not work, and

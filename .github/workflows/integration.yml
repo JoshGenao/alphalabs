@@ -143,9 +143,14 @@ jobs:
         # this environment structurally cannot exercise.
         run: pytest -m "integration and not live_broker" --junitxml=pytest-integration.xml
 
+      # ATP_CAPTURE_EVIDENCE turns on tests/e2e/capture.py: screenshots + video into
+      # .harness/runs/<FID>/artifacts/, attached to the feature's evidence record.
+      # An e2e acceptance criterion is a claim about what a human would SEE, and a
+      # green assertion only proves a selector matched.
       - name: Run L6 e2e tests
         env:
           ATP_RUN_E2E: "1"
+          ATP_CAPTURE_EVIDENCE: "1"
         run: pytest -m e2e --junitxml=pytest-e2e.xml
 
       - name: Tear down Docker Compose stack
@@ -158,4 +163,20 @@ jobs:
         with:
           name: integration-reports
           path: pytest-*.xml
+          retention-days: 30
+
+      # Captured evidence is uploaded SEPARATELY from the reports so a reviewer can
+      # download just the video without the XML. It is NOT committed from here: this
+      # job runs on pull_request_target against fork-controlled code, and a workflow
+      # that commits what that code produced is a write primitive handed to the fork.
+      # The committed copy is the one the feature's own session records and pushes.
+      - name: Upload captured e2e evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # ratchet:actions/upload-artifact@v4
+        with:
+          name: e2e-evidence
+          path: |
+            .harness/runs/*/artifacts/**
+            .harness/runs/*/EVIDENCE.md
+          if-no-files-found: ignore
           retention-days: 30

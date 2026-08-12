@@ -15,13 +15,22 @@ verdicts. ``close_feature.py`` consults it, and ``agent_pool.py`` degrades a
 ``complete`` integrate to ``serialized`` when the record is incomplete — so the
 honest outcome is the automatic one.
 
-    tools/evidence.py run    <FID> --step 2 -- pytest tests/domain/test_x.py -q
-    tools/evidence.py record <FID> --step 2 --command "..." --observed "..." --status pass
-    tools/evidence.py gate   <FID> --name run_ci_locally --status pass
-    tools/evidence.py critic <FID> --layer judgment --verdict approve --reviewer codex
-    tools/evidence.py verify <FID> [--json] [--allow-attested]
-    tools/evidence.py show   <FID>
+    tools/evidence.py run      <FID> --step 2 -- pytest tests/domain/test_x.py -q
+    tools/evidence.py record   <FID> --step 2 --command "..." --observed "..." --status pass
+    tools/evidence.py artifact <FID> --step 3 --file shot.png --caption "stale row"
+    tools/evidence.py gate     <FID> --name run_ci_locally --status pass
+    tools/evidence.py critic   <FID> --layer judgment --verdict approve --reviewer codex
+    tools/evidence.py verify   <FID> [--json] [--allow-attested]
+    tools/evidence.py render   <FID> [--stdout]
+    tools/evidence.py show     <FID>
     tools/evidence.py stamp-pre-gate --all
+
+``artifact`` attaches a screenshot, recording, or trace to a step and ``render``
+writes ``.harness/runs/<FID>/EVIDENCE.md`` — the form a human reviews on GitHub,
+with the images inline. A captured exit code proves a command ran; it cannot show
+that the dashboard displayed the stale row. For ``e2e`` and ``live-ib`` features,
+whose acceptance criteria are stated in terms of what is displayed, ``verify``
+REQUIRES an image on the acceptance-criterion step.
 
 ``run`` executes the command and stores its real exit code and captured output;
 ``verify`` accepts only those. ``record`` takes the caller's word (executed:false)
@@ -133,6 +142,130 @@ def _rel(path: Path) -> str:
         return str(path)
 
 
+# ----------------------------------------------------------------------------
+# Artifacts — the part of the evidence a human can look at
+# ----------------------------------------------------------------------------
+# A captured exit code proves a command ran. It does not let a reviewer SEE that
+# the dashboard showed the stale row, or that the liquidation banner appeared. For
+# an e2e or live-IB acceptance criterion — the ones stated in terms of what is
+# displayed — a reviewer who cannot see it is taking the record's word for it,
+# which is the same trust boundary this module exists to remove.
+#
+# Storage is `.harness/runs/<fid>/artifacts/`, alongside the record and inside the
+# path shared_state_violations already confines a branch to, so artifacts ride the
+# feature's own PR and land on main with its close.
+IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+VIDEO_EXT = (".webm", ".mp4")
+TRACE_EXT = (".zip",)
+ARTIFACT_EXT = IMAGE_EXT + VIDEO_EXT + TRACE_EXT + (".txt", ".log", ".json")
+
+# This repository has no git-lfs, so every byte committed here is permanent
+# history for every future clone and every worktree cut from it. A 10-second
+# Playwright webm at 800x600 is tens of kilobytes; anything near these ceilings is
+# a full-length screen recording that belongs in a CI artifact, not in git.
+MAX_IMAGE_BYTES = 2 * 1024 * 1024
+MAX_VIDEO_BYTES = 8 * 1024 * 1024
+MAX_TOTAL_BYTES = 20 * 1024 * 1024
+
+# Methods whose acceptance criteria are stated in terms of what a human SEES, and
+# which therefore cannot be closed on captured stdout alone.
+VISUAL_METHODS = ("e2e", "live-ib")
+
+
+def artifacts_dir(fid: str) -> Path:
+    return RUNS_DIR / fid / "artifacts"
+
+
+def artifact_kind(name: str) -> str:
+    ext = Path(name).suffix.lower()
+    if ext in IMAGE_EXT:
+        return "image"
+    if ext in VIDEO_EXT:
+        return "video"
+    if ext in TRACE_EXT:
+        return "trace"
+    return "file"
+
+
+def attach(fid: str, n: int, src: Path, caption: str = "") -> dict:
+    """Copy a file into the feature's artifact dir and record it against step n.
+
+    Refuses rather than truncates. A silently-dropped artifact would leave a record
+    that claims a screenshot exists and a directory that does not contain it —
+    "unreadable, absent, or unknown is NEVER empty" (CLAUDE.md rule 3) applies to
+    the thing being written, not only to the thing being read.
+    """
+    src = Path(src)
+    if not src.is_file():
+        raise EvidenceError(f"artifact not found: {src}")
+    ext = src.suffix.lower()
+    if ext not in ARTIFACT_EXT:
+        raise EvidenceError(
+            f"{src.name}: {ext or '(no extension)'} is not an artifact type this "
+            f"repo stores ({', '.join(ARTIFACT_EXT)})"
+        )
+    size = src.stat().st_size
+    kind = artifact_kind(src.name)
+    cap = {"image": MAX_IMAGE_BYTES, "video": MAX_VIDEO_BYTES}.get(kind)
+    if cap and size > cap:
+        raise EvidenceError(
+            f"{src.name} is {size / 1e6:.1f} MB; the cap for a {kind} is "
+            f"{cap / 1e6:.0f} MB. This repo has no git-lfs, so every byte is "
+            f"permanent history for every future clone. Crop the screenshot, or "
+            f"shorten/downscale the recording."
+        )
+    dest_dir = artifacts_dir(fid)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    existing = sum(p.stat().st_size for p in dest_dir.glob("*") if p.is_file())
+    dest = dest_dir / f"step{n}-{src.name}"
+    already = dest.stat().st_size if dest.exists() else 0
+    if existing - already + size > MAX_TOTAL_BYTES:
+        raise EvidenceError(
+            f"{fid} artifacts would total "
+            f"{(existing - already + size) / 1e6:.1f} MB, over the "
+            f"{MAX_TOTAL_BYTES / 1e6:.0f} MB per-feature cap"
+        )
+    dest.write_bytes(src.read_bytes())
+
+    rec = load_record(fid)
+    entry = next((s for s in rec.get("steps", []) if s.get("n") == n), None)
+    if entry is None:
+        raise EvidenceError(
+            f"step {n} has no record yet — run or record it first, then attach. An "
+            f"artifact with no step is evidence of nothing in particular."
+        )
+    art = {
+        "name": dest.name,
+        "kind": kind,
+        "bytes": size,
+        "caption": caption,
+        "sha256": hashlib.sha256(dest.read_bytes()).hexdigest()[:16],
+        "ts": _now(),
+    }
+    entry["artifacts"] = [a for a in entry.get("artifacts", []) if a.get("name") != dest.name]
+    entry["artifacts"].append(art)
+    save_record(fid, rec)
+    return art
+
+
+def step_artifacts(rec: dict, n: int) -> list:
+    entry = next((s for s in rec.get("steps", []) if s.get("n") == n), None)
+    return list((entry or {}).get("artifacts", []))
+
+
+def ac_step_index(steps: list) -> int | None:
+    """Which step states the acceptance criterion.
+
+    Matched on the text rather than hard-coded to 3: the 4-step shape is a
+    generator template, not a guarantee, and a feature written by hand would
+    silently get its artifact requirement applied to the wrong step.
+    """
+    for i, text in enumerate(steps, start=1):
+        if "verify acceptance criteria" in str(text).lower():
+            return i
+    return None
+
+
 def steps_digest(steps: list[str]) -> str:
     """Fingerprint of the acceptance steps this record claims to have satisfied.
 
@@ -176,6 +309,17 @@ def retire(fid: str, *, dry_run: bool = False) -> Path | None:
     rounds = live.with_name("review.jsonl")
     if rounds.exists() and not dry_run:
         rounds.rename(rounds.with_name(f"closed-{stamp}-review.jsonl"))
+    # Artifacts and the rendered page retire with the record, for the same reason:
+    # they are tracked, so a reopened feature would otherwise start with a
+    # screenshot of the PREVIOUS session's dashboard sitting where its own
+    # evidence belongs — and a stale screenshot is more convincing than a stale
+    # exit code, not less.
+    arts = artifacts_dir(fid)
+    if arts.is_dir() and any(arts.iterdir()) and not dry_run:
+        arts.rename(arts.with_name(f"closed-{stamp}-artifacts"))
+    page = live.with_name("EVIDENCE.md")
+    if page.exists() and not dry_run:
+        page.rename(page.with_name(f"closed-{stamp}-EVIDENCE.md"))
     if not live.exists():
         return None
     archived = live.with_name(f"closed-{stamp}.json")
@@ -188,6 +332,11 @@ def load_features() -> list:
     if not FEATURE_FILE.exists():
         raise EvidenceError(f"{FEATURE_FILE.name} not found")
     return json.loads(FEATURE_FILE.read_text(encoding="utf-8"))
+
+
+def feat_of(fid: str, features: list | None = None) -> dict | None:
+    feats = features if features is not None else load_features()
+    return next((f for f in feats if f.get("id") == fid), None)
 
 
 def feature_steps(fid: str, features: list | None = None) -> list[str]:
@@ -424,14 +573,139 @@ def verify(
         elif got.get("verdict") != "approve":
             problems.append(f"{layer} critic verdict is {got.get('verdict')!r}, not 'approve'")
 
+    # A visual acceptance criterion needs a visual artifact. "the dashboard shows
+    # IB equity, daily and cumulative P&L, margin usage" is a claim about what a
+    # human would SEE; closing it on a captured exit code asks the reviewer to take
+    # the record's word for exactly the thing the record cannot show. Applied only
+    # to e2e and live-ib: for a solo feature the captured stdout IS the artifact,
+    # and demanding a screenshot of `cargo fmt --check` would teach everyone to
+    # produce a meaningless one.
+    method = str((feat_of(fid, features) or {}).get("verification_method") or "").strip().lower()
+    if method in VISUAL_METHODS and steps:
+        ac_n = ac_step_index(steps)
+        targets = [ac_n] if ac_n else list(range(1, len(steps) + 1))
+        images = [a for n in targets for a in step_artifacts(rec, n) if a.get("kind") == "image"]
+        if not images:
+            where = f"step {ac_n}" if ac_n else "any step"
+            problems.append(
+                f"verification_method is {method!r} but no image artifact is attached to "
+                f"{where} — its acceptance criterion is about what a reviewer can SEE. "
+                f"Attach one: `tools/evidence.py artifact {fid} --step "
+                f"{ac_n or 'N'} --file <screenshot.png> --caption '...'`"
+            )
+
     summary = {
         "steps_total": len(steps),
         "steps_evidenced": sum(
             1 for i in range(1, len(steps) + 1) if by_n.get(i, {}).get("status") == "pass"
         ),
         "critic": {k: v.get("verdict") for k, v in critic.items()},
+        "artifacts": sum(len(step_artifacts(rec, i)) for i in range(1, len(steps) + 1)),
     }
     return (not problems, problems, summary)
+
+
+def render_markdown(fid: str, features: list | None = None) -> str:
+    """The reviewable form of the record, for GitHub.
+
+    evidence.json is the machine's copy; nobody reviews a 3 KB blob of escaped
+    stdout in a PR diff. This renders the same facts as a page GitHub displays:
+    the acceptance criterion, each step's command and captured output, and the
+    screenshots INLINE.
+
+    Images are written as relative links because that is what GitHub renders from
+    a repo path. Video is NOT rendered inline — GitHub plays video only for files
+    uploaded into a comment, never from a repo path — so it is linked, and the
+    link says so rather than leaving a reviewer clicking a broken player.
+    """
+    feat = feat_of(fid, features) or {}
+    steps = list(feat.get("steps", []))
+    try:
+        rec = load_record(fid)
+    except EvidenceError as exc:
+        return f"# {fid}\n\n**The evidence record is unreadable:** {exc}\n"
+    ok, problems, summary = verify(fid, features, allow_attested=True)
+    ac_n = ac_step_index(steps)
+
+    out = [f"# {fid} — verification evidence", ""]
+    out.append(f"> {feat.get('description', '')}")
+    out.append("")
+    out.append(f"- **method**: `{feat.get('verification_method') or '(unclassified)'}`")
+    out.append(f"- **steps evidenced**: {summary.get('steps_evidenced', 0)}/{len(steps)}")
+    out.append(
+        "- **critics**: "
+        + (
+            ", ".join(f"{k} `{v}`" for k, v in (summary.get("critic") or {}).items())
+            or "none recorded"
+        )
+    )
+    out.append(f"- **artifacts**: {summary.get('artifacts', 0)}")
+    out.append(f"- **record complete**: {'yes' if ok else 'NO'}")
+    out.append("")
+    if problems:
+        out += ["## Outstanding", ""]
+        out += [f"- {p}" for p in problems]
+        out.append("")
+    if ac_n:
+        out += ["## Acceptance criterion", "", f"> {steps[ac_n - 1]}", ""]
+
+    out.append("## Steps")
+    for i in range(1, len(steps) + 1):
+        entry = next((s for s in rec.get("steps", []) if s.get("n") == i), None)
+        out += ["", f"### Step {i}", "", f"{steps[i - 1]}", ""]
+        if entry is None:
+            out.append("**No evidence recorded for this step.**")
+            continue
+        how = (
+            "executed by the tool" if entry.get("executed") else "hand-recorded (needs attestation)"
+        )
+        out.append(f"`{entry.get('status', '?')}` · exit `{entry.get('exit_code', 'n/a')}` · {how}")
+        if entry.get("command"):
+            out += ["", "```", str(entry["command"]), "```"]
+        observed = (entry.get("observed") or "").strip()
+        if observed:
+            # Long captures are the norm (a pytest run is thousands of lines) and a
+            # PR page that scrolls for a screen and a half gets skipped. Collapsed,
+            # with the tail — which is where the verdict is.
+            tail = "\n".join(observed.splitlines()[-40:])
+            out += [
+                "",
+                "<details><summary>observed output (tail)</summary>",
+                "",
+                "```",
+                tail,
+                "```",
+                "",
+                "</details>",
+            ]
+        arts = entry.get("artifacts") or []
+        if arts:
+            out.append("")
+            for a in arts:
+                rel = f"artifacts/{a['name']}"
+                cap = a.get("caption") or a["name"]
+                if a.get("kind") == "image":
+                    out.append(f"![{cap}]({rel})")
+                    out.append("")
+                    out.append(f"*{cap}*")
+                elif a.get("kind") == "video":
+                    out.append(
+                        f"🎬 [{cap}]({rel}) — {a['bytes'] / 1e6:.1f} MB. GitHub does not "
+                        f"play video from a repo path; download it, or open the PR's "
+                        f"CI artifact."
+                    )
+                else:
+                    out.append(f"📎 [{cap}]({rel}) — {a['bytes'] / 1e3:.0f} KB")
+                out.append("")
+    out += [
+        "",
+        "---",
+        "",
+        "Generated by `tools/evidence.py render`. `passes: true` requires either every "
+        "step executed by the tool with both critics approving, or a named human "
+        "attestation — see `AGENTS.md`.",
+    ]
+    return "\n".join(out) + "\n"
 
 
 # ----------------------------------------------------------------------------
@@ -499,6 +773,7 @@ def cmd_run(args) -> int:
     )
     tail = out.splitlines()[-1][:100] if out else "(no output)"
     print(f"{'✓' if status == 'pass' else '✗'} {args.id} step {args.step}: {status} — {tail}")
+    _refresh_markdown(args.id)
     return 0 if status == "pass" else 1
 
 
@@ -526,6 +801,7 @@ def cmd_record(args) -> int:
         },
     )
     print(f"✓ {args.id} step {args.step}: {args.status} (attested, NOT executed by the tool)")
+    _refresh_markdown(args.id)
     return 0
 
 
@@ -573,6 +849,52 @@ def cmd_show(args) -> int:
         print(f"✗ no evidence record for {args.id}", file=sys.stderr)
         return 1
     print(path.read_text(encoding="utf-8"), end="")
+    return 0
+
+
+def cmd_artifact(args) -> int:
+    """Attach a screenshot / recording / trace to a step."""
+    try:
+        art = attach(args.id, args.step, Path(args.file), args.caption or "")
+    except EvidenceError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"✓ {args.id} step {args.step}: attached {art['name']} "
+        f"({art['kind']}, {art['bytes'] / 1e3:.0f} KB)"
+    )
+    _write_markdown(args.id)
+    return 0
+
+
+def _refresh_markdown(fid: str) -> None:
+    """Keep EVIDENCE.md in step with the record, without ever costing a record.
+
+    Best-effort on purpose: writing the evidence is the load-bearing action, and a
+    rendering failure (a missing feature entry, an unwritable dir) must not turn a
+    successful capture into a non-zero exit that the caller reads as "the step
+    failed". The page is regenerable from the record at any time; the record is not
+    regenerable from anything.
+    """
+    try:
+        _write_markdown(fid)
+    except (EvidenceError, OSError):
+        pass
+
+
+def _write_markdown(fid: str) -> Path:
+    out = RUNS_DIR / fid / "EVIDENCE.md"
+    _atomic_write(out, render_markdown(fid))
+    return out
+
+
+def cmd_render(args) -> int:
+    """Regenerate EVIDENCE.md — the form a human reviews in the PR."""
+    if args.stdout:
+        print(render_markdown(args.id), end="")
+        return 0
+    out = _write_markdown(args.id)
+    print(f"✓ wrote {_rel(out)}")
     return 0
 
 
@@ -668,6 +990,16 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("show", help="print the raw record")
     s.add_argument("id")
 
+    at = sub.add_parser("artifact", help="attach a screenshot / recording / trace to a step")
+    at.add_argument("id")
+    at.add_argument("--step", type=int, required=True)
+    at.add_argument("--file", required=True, help="path to the image, video, or trace")
+    at.add_argument("--caption", help="what it shows — this becomes the figure caption")
+
+    rd = sub.add_parser("render", help="(re)generate EVIDENCE.md, the reviewable page")
+    rd.add_argument("id")
+    rd.add_argument("--stdout", action="store_true")
+
     p = sub.add_parser("stamp-pre-gate", help="mark already-passing features as un-evidenced")
     p.add_argument("ids", nargs="*")
     p.add_argument("--all", action="store_true", help="every feature with passes:true")
@@ -681,6 +1013,8 @@ def main(argv: list[str] | None = None) -> int:
         "critic": cmd_critic,
         "verify": cmd_verify,
         "show": cmd_show,
+        "artifact": cmd_artifact,
+        "render": cmd_render,
         "stamp-pre-gate": cmd_stamp_pre_gate,
     }
     return handlers[args.cmd](args)

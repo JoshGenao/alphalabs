@@ -177,6 +177,10 @@ def test_complete_record_verifies(sandbox):
         "steps_total": 3,
         "steps_evidenced": 3,
         "critic": {"deterministic": "approve", "judgment": "approve"},
+        # 0, not absent: this fixture's feature is not e2e/live-ib, so no image is
+        # required — but the count is always reported, because "no artifacts" and
+        # "artifacts not counted" must not look the same to a reader (rule 3).
+        "artifacts": 0,
     }
 
 
