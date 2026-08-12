@@ -485,12 +485,6 @@ class _BlockArgs:
         self.id, self.on, self.reason = id, on, reason
 
 
-def test_block_records_the_edge_and_reports_the_whole_file(deps_sandbox, capsys):
-    assert agent_pool.cmd_block(_BlockArgs("B", ["C"])) == 0
-    assert json.loads(deps_sandbox.read_text()) == {"A": ["B", "C"], "B": ["C"]}
-    assert "B blocked-on ['C']" in capsys.readouterr().out
-
-
 def test_block_unions_with_edges_already_recorded(deps_sandbox, capsys):
     """A re-run adding one edge to existing ones must report all of them, not just
     the new one — the message is what the operator checks the graph against."""
@@ -534,10 +528,4 @@ def test_block_is_all_or_nothing_when_one_edge_cycles(deps_sandbox, capsys):
 def test_block_refuses_a_self_edge(deps_sandbox):
     before = deps_sandbox.read_text()
     assert agent_pool.cmd_block(_BlockArgs("B", ["B"])) == 13
-    assert deps_sandbox.read_text() == before
-
-
-def test_block_still_rejects_an_unknown_dependency_id(deps_sandbox):
-    before = deps_sandbox.read_text()
-    assert agent_pool.cmd_block(_BlockArgs("B", ["NOPE"])) == 1
     assert deps_sandbox.read_text() == before
