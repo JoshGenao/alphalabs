@@ -21,22 +21,30 @@ rule 6 already requires naming the exact step and blocker; this is where that la
 
 Class **C** is the one that manufactures fake deadlocks. `SRS-REL-001`'s own note says it
 plainly: *"No `block`: deps … are on main; **the block is real-operation evidence, not an
-unbuilt feature.**"* A dependency edge would be a lie, so nothing was recorded, so it sits
-in the awaiting bucket forever and drags `assess_frontier` into `DEADLOCK` with it.
+unbuilt feature.**"* A dependency edge would be a lie, so nothing was recorded, so it sat
+in the awaiting bucket forever and dragged `assess_frontier` into `DEADLOCK` with it.
+`external_blocker` is where those now go.
 
 ## The board's real shape
 
-Almost everything funnels through three features. `impact_scores()`, today:
+Two of the three cycle edges were assertions that feature X could not close until feature
+Y's `passes` flipped, when what X consumes is Y's **code** — already on main. An edge
+meaning *needs the code* and an edge meaning *needs the flip* are not the same edge.
+With them cut, `impact_scores()` says something the prose never did:
 
 ```
-SRS-NOTIF-001  unblocks 38 ┐
-SRS-SDK-004    unblocks 38 ├─→ SRS-PERF-001 (35) ─→ ┬─ SRS-EXE-001 (28) ─→ RESV-001/002 → API-001, LOG-001…
-SRS-MD-003     unblocks 37 ┘                        └─ SRS-MD-001  (22) ─→ BT-004 → UI-2, SDK-007, DATA-012…
+SRS-NOTIF-001  unblocks 56 of 120   deps=[SRS-EXE-006]  ← already passes
+   └─→ SRS-PERF-001 (45) ─→ ┬─ SRS-EXE-001 (36) ─→ RESV-001/002 → API-001, LOG-001…
+                            └─ SRS-MD-001  (29) ─→ BT-004 → UI-2, SDK-007, DATA-012…
 ```
 
-Everything else in the deadlock message is downstream noise. `SRS-REL-001`, `SRS-REL-002`
-and `SRS-SIM-004` unblock **0** features each and should never have been in that
-conversation.
+**`SRS-NOTIF-001` has no unmet feature dependency at all.** The only thing between it and
+green is an SMS provider account plus the unbuilt egress relay. One procurement decision
+is worth 56 features. Behind it, `SRS-PERF-001` additionally needs a PTP-disciplined host.
+
+`SRS-MD-003` left the critical path entirely and is now what it always was: a closeable
+leaf. `SRS-REL-001`, `SRS-REL-002` and `SRS-SIM-004` unblock **0** features each and
+should never have been in the deadlock conversation.
 
 ## The queue
 

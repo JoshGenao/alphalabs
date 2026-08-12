@@ -55,6 +55,14 @@ Superseded revisions live in `docs/archive/`. They are history, not truth.
   `tools/classify_verification.py`).
 - When you remove or change a requirement, update all three documents and adjust
   `feature_list.json` accordingly.
+- If a feature is waiting on something **no other feature can supply** — an
+  account you have not bought, hardware you do not have, calendar time that has
+  not elapsed — give it an `"external_blocker"` naming that thing. It leaves the
+  ready frontier and appears under *blocked on an external resource* in
+  `agent_pool.py status`, which is the operator's procurement backlog. Do **not**
+  use `block --on` for these: a dependency edge asserts a feature owns the
+  blocker, and if none does, the edge is a lie that never clears.
+  See `docs/verification-queue.md`.
 
 ## prompts/
 

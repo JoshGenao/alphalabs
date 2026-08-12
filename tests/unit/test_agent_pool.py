@@ -529,3 +529,72 @@ def test_block_refuses_a_self_edge(deps_sandbox):
     before = deps_sandbox.read_text()
     assert agent_pool.cmd_block(_BlockArgs("B", ["B"])) == 13
     assert deps_sandbox.read_text() == before
+
+
+# --- external_blocker: a blocker no FEATURE owns ------------------------------
+# `block --on` cannot express "needs 30 real market-hours days" or "needs an SMS
+# provider account" — the thing in the way is not a feature. With nowhere to put
+# it, those features stayed `ready`, fell into the serialized-note bucket, and
+# made assess_frontier report DEADLOCK over work no agent could ever have done.
+def test_external_blocker_reads_the_declared_reason():
+    assert agent_pool.external_blocker({"external_blocker": "a PTP host"}) == "a PTP host"
+    assert agent_pool.external_blocker({}) == ""
+
+
+def test_external_blocker_treats_whitespace_as_absent():
+    """A field stubbed out with spaces must not park a feature forever."""
+    assert agent_pool.external_blocker({"external_blocker": "   "}) == ""
+    assert agent_pool.external_blocker({"external_blocker": None}) == ""
+
+
+def test_compute_excludes_an_externally_blocked_feature_from_ready():
+    features = [_feat("A"), _feat("B") | {"external_blocker": "an SMS provider account"}]
+    ready, blocked, *_ = agent_pool.compute(features, {}, {"leases": {}})
+    assert ready == ["A"]
+    assert "B" not in blocked  # not blocked-on-deps either — it has no unmet dep
+
+
+def test_externally_blocked_ignores_features_that_have_since_closed():
+    """A stale reason on a green feature keeps no claim on the operator's attention."""
+    features = [
+        _feat("A") | {"external_blocker": "a PTP host"},
+        _feat("B", passes=True) | {"external_blocker": "an SMS provider account"},
+    ]
+    assert agent_pool.externally_blocked(features) == {"A": "a PTP host"}
+
+
+def test_assess_frontier_separates_external_roots_from_guarded_ones():
+    """Both are "a human must act", but only one is answerable by verifying."""
+    features = [
+        _feat("EXT") | {"verification_method": "integration", "external_blocker": "an SMS account"},
+        _feat("GUARD") | {"verification_method": "live-ib"},
+        _feat("DOWN"),
+    ]
+    deps = {"DOWN": ["EXT", "GUARD"]}
+    a = agent_pool.assess_frontier(features, deps, {"leases": {}}, skip_awaiting=False)
+    assert a["external_root_blockers"] == ["EXT"]
+    assert a["guarded_root_blockers"] == ["GUARD"]  # EXT is not double-counted here
+    assert set(a["root_blockers"]) == {"EXT", "GUARD"}
+    assert a["external_blocked"] == {"EXT": "an SMS account"}
+
+
+def test_deadlock_advice_never_prescribes_force_complete():
+    """--force-complete overrides the honesty guard and NOTHING ELSE; the evidence
+    gate rewrites the mode straight back to `serialized`. Both `status` and `claim`
+    told the operator to run it, which is why they looped."""
+    advice = "\n".join(
+        agent_pool.deadlock_advice(
+            {
+                "external_root_blockers": ["EXT"],
+                "external_blocked": {"EXT": "an SMS provider account"},
+                "guarded_root_blockers": ["GUARD"],
+            }
+        )
+    )
+    assert "an SMS provider account" in advice  # the reason, not just the id
+    assert "--attested-by operator" in advice
+    assert "does NOT skip it" in advice
+
+
+def test_deadlock_advice_is_empty_when_nothing_is_stuck():
+    assert agent_pool.deadlock_advice({}) == []

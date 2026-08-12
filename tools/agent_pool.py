@@ -459,6 +459,16 @@ def compute(features, deps, runtime, *, allow_foreign_reclaim=False):
     for fid, f in by_id.items():
         if f.get("passes") is True or f.get("needs_clarification") is True:
             continue
+        # A blocker no FEATURE owns. `block --on` cannot express "needs 30 real
+        # market-hours days" or "needs an SMS provider account", because the thing
+        # in the way is not a feature — SRS-REL-001's own note says so: "the block
+        # is real-operation evidence, not an unbuilt feature." With nowhere to put
+        # it, those features stayed `ready`, fell into the serialized-note bucket,
+        # and made `assess_frontier` report DEADLOCK over work no agent could ever
+        # have done. Skipped here exactly like needs_clarification: not ready, not
+        # blocked, and surfaced to the operator by `status` instead.
+        if external_blocker(f):
+            continue
         if fid in active:
             continue
         unmet = [d for d in deps.get(fid, []) if d not in passed and d in by_id]
@@ -467,6 +477,29 @@ def compute(features, deps, runtime, *, allow_foreign_reclaim=False):
         else:
             ready.append(fid)
     return ready, blocked, active, held, by_id
+
+
+def external_blocker(feat: dict) -> str:
+    """The declared real-world blocker on this feature, or "" if it has none.
+
+    Whitespace-only is treated as absent, matching how ``needs_serialized`` reads
+    ``verification_method``: a field someone stubbed out with spaces must not
+    silently park a feature forever.
+    """
+    return str(feat.get("external_blocker") or "").strip()
+
+
+def externally_blocked(features) -> dict:
+    """Map feature id -> its external blocker, for features not yet passing.
+
+    A feature that has since closed keeps no claim on the operator's attention,
+    so an already-green feature with a stale ``external_blocker`` is not listed.
+    """
+    return {
+        f["id"]: external_blocker(f)
+        for f in features
+        if external_blocker(f) and f.get("passes") is not True
+    }
 
 
 def impact_scores(deps: dict, by_id: dict) -> dict:
@@ -652,6 +685,13 @@ def assess_frontier(features, deps, runtime, *, skip_awaiting=True) -> dict:
         key=lambda d: (-impact.get(d, 0), d),
     )
     guarded = [d for d in blockers if d in by_id and needs_serialized(by_id[d])[0]]
+    # Split the root blockers by WHAT WOULD MOVE THEM. `guarded` says "a human must
+    # verify this"; external says "a human must obtain something first, and no
+    # amount of verification helps until they do". Merging the two is why the
+    # deadlock message prescribed `integrate --force-complete` for SRS-NOTIF-001,
+    # whose actual blocker is that nobody has chosen an SMS provider.
+    external = externally_blocked(features)
+    external_roots = [d for d in blockers if d in external]
     return {
         "state": state,
         "total": total,
@@ -660,9 +700,48 @@ def assess_frontier(features, deps, runtime, *, skip_awaiting=True) -> dict:
         "awaiting_verification": awaiting,
         "blocked": blocked,
         "root_blockers": blockers,
-        "guarded_root_blockers": guarded,
+        "guarded_root_blockers": [d for d in guarded if d not in external],
+        "external_blocked": external,
+        "external_root_blockers": external_roots,
         "active": active,
     }
+
+
+def deadlock_advice(assessment: dict) -> list:
+    """What to actually DO about a deadlock, split by what would move each blocker.
+
+    ONE implementation, because there were two and both were wrong the same way.
+    `status` and `claim` each told the operator to "verify + `integrate
+    --force-complete`", and that cannot work: --force-complete overrides the
+    honesty guard and NOTHING ELSE (see cmd_integrate). The evidence gate runs
+    regardless and rewrites the mode straight back to `serialized` whenever the
+    record is incomplete — which it is for every feature in this bucket, because
+    an incomplete record is why they are in it. An operator following that advice
+    loops forever.
+
+    The honest split:
+      · external  — a human must OBTAIN something first (an SMS provider account,
+                    a PTP host, 30 market days). No verification helps until then.
+      · guarded   — the work may be done; it needs a human to verify and attest.
+    """
+    lines = []
+    external = assessment.get("external_root_blockers") or []
+    reasons = assessment.get("external_blocked") or {}
+    if external:
+        lines.append("these are waiting on something no feature can supply:")
+        for fid in external[:5]:
+            lines.append(f"  · {fid} — {reasons.get(fid, 'external blocker')}")
+    guarded = assessment.get("guarded_root_blockers") or []
+    if guarded:
+        lines.append(
+            "these need a human to verify and attest — "
+            "`close_feature.py <id> --verified --attested-by operator`,"
+        )
+        lines.append(
+            "  or the verified-e2e PR label. Both still require a complete evidence record;"
+        )
+        lines.append("  `integrate --force-complete` does NOT skip it: " + ", ".join(guarded[:5]))
+    return lines
 
 
 def free_port_index(active) -> int:
@@ -800,6 +879,8 @@ def cmd_status(args):
                     "done": sorted(f for f, x in by_id.items() if x.get("passes")),
                     "root_blockers": assessment["root_blockers"],
                     "guarded_root_blockers": assessment["guarded_root_blockers"],
+                    "external_blocked": assessment["external_blocked"],
+                    "external_root_blockers": assessment["external_root_blockers"],
                 },
                 indent=2,
             )
@@ -839,16 +920,12 @@ def cmd_status(args):
         )
 
     if assessment["state"] == "deadlock" and assessment["root_blockers"]:
-        guarded = assessment["guarded_root_blockers"]
         print(
             "   ⚠ no autonomous progress possible — highest-impact blockers: "
             + ", ".join(assessment["root_blockers"][:5])
         )
-        if guarded:
-            print(
-                "   these need a human `integrate --force-complete` / verified-e2e: "
-                + ", ".join(guarded[:5])
-            )
+        for line in deadlock_advice(assessment):
+            print(f"   {line}")
     if active:
         print("\n-- in progress (leased) --")
         for fid, lease in sorted(active.items()):
@@ -886,6 +963,14 @@ def cmd_status(args):
         print("\n-- blocked (waiting on deps) --")
         for fid, unmet in sorted(blocked.items()):
             print(f"  {fid:18} blocked-on {', '.join(unmet)}")
+    ext = assessment["external_blocked"]
+    if ext:
+        # The operator's procurement/ops backlog. These are NOT stalled work — they
+        # are stalled purchases, provisioning, and calendar time, and printing them
+        # next to "blocked (waiting on deps)" is what let them read as engineering.
+        print("\n-- blocked on an external resource (operator; no feature owns these) --")
+        for fid in sorted(ext, key=lambda f: (-impact.get(f, 0), f)):
+            print(f"  {fid:18} unblocks:{impact.get(fid, 0):<3} {ext[fid]}")
     nc = [f for f, x in by_id.items() if x.get("needs_clarification")]
     if nc:
         print("\n-- needs clarification (operator) --")
@@ -1025,17 +1110,18 @@ def cmd_claim(args):
             elif assessment["state"] == "deadlock":
                 note.append(
                     "DEADLOCK — no autonomous progress possible; every remaining "
-                    "feature is blocked or awaiting human verification"
+                    "feature is blocked, awaiting human verification, or waiting "
+                    "on a resource no feature can supply"
                 )
-                if assessment["guarded_root_blockers"]:
-                    note.append(
-                        "verify + `integrate --force-complete` (or verified-e2e label): "
-                        + ", ".join(assessment["guarded_root_blockers"][:5])
-                    )
-                elif assessment["root_blockers"]:
+                if assessment["root_blockers"]:
                     note.append(
                         "highest-impact blockers: " + ", ".join(assessment["root_blockers"][:5])
                     )
+                # Same advice text as `status`, from the same function — the two
+                # used to disagree, and both recommended a --force-complete that
+                # the evidence gate silently undoes.
+                note.extend(deadlock_advice(assessment))
+                note.append("full triage: docs/verification-queue.md")
             if awaiting:
                 note.append(
                     f"{len(awaiting)} awaiting human verification (serialized): "

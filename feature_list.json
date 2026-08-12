@@ -1455,7 +1455,8 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "integration",
+    "external_blocker": "SMS provider account (none chosen; REQUIRED_CHANNELS is Email AND Sms, fail-closed) + the unbuilt phase1-notification-egress relay"
   },
   {
     "id": "SRS-SAFE-001",
@@ -1519,7 +1520,8 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "integration",
+    "external_blocker": "30 rolling market-hours days of real platform operation, plus a host-liveness feed and an operator outage ledger"
   },
   {
     "id": "SRS-REL-002",
@@ -1535,7 +1537,8 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "integration",
+    "external_blocker": "a real full-stack restart during RTH on the reference Proxmox deployment, plus the SYS-76 runtime probes"
   },
   {
     "id": "SRS-SEC-001",
@@ -1618,7 +1621,8 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "integration",
+    "external_blocker": "a PTP-disciplined host clock; LatencyVerificationArtifact::from_samples fails closed without one"
   },
   {
     "id": "UI-1",
