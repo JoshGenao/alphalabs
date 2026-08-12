@@ -117,6 +117,22 @@ def record_path(fid: str) -> Path:
     return RUNS_DIR / fid / "evidence.json"
 
 
+def _rel(path: Path) -> str:
+    """Repo-relative for display, absolute when the path is outside the repo.
+
+    ``Path.relative_to`` RAISES on a non-descendant, and it was being called on the
+    record path inside the two messages that report a MISSING or CORRUPT record —
+    the failure paths. A ValueError there escapes ``evidence.verify`` as neither a
+    verdict nor an EvidenceError, so ``close_feature.py``'s ``except
+    EvidenceError`` would not catch it and the close would traceback instead of
+    refusing. Formatting a path must never be able to fail.
+    """
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
 def steps_digest(steps: list[str]) -> str:
     """Fingerprint of the acceptance steps this record claims to have satisfied.
 
@@ -191,7 +207,7 @@ def load_record(fid: str) -> dict:
     except json.JSONDecodeError as exc:
         # An unreadable record is NOT an empty one (CLAUDE.md rule 3): a corrupt
         # file must fail closed, never present as "no evidence recorded yet".
-        raise EvidenceError(f"{path.relative_to(ROOT)} is corrupt: {exc}") from exc
+        raise EvidenceError(f"{_rel(path)} is corrupt: {exc}") from exc
 
 
 def save_record(fid: str, rec: dict) -> None:
@@ -332,7 +348,7 @@ def verify(
         return (
             False,
             [
-                f"no evidence record at {path.relative_to(ROOT)} — record one with "
+                f"no evidence record at {_rel(path)} — record one with "
                 f"`tools/evidence.py record {fid} --step N --command ... --observed ...`"
             ],
             {"steps_total": len(feature_steps(fid, features)), "steps_evidenced": 0},
