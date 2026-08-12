@@ -74,6 +74,25 @@ def test_reachable_detects_cycle():
     assert agent_pool.reachable(deps, "A", "B") is False
 
 
+def test_dep_path_returns_the_hops_not_just_yes():
+    """`block` has to PRINT the cycle, not merely refuse on it.
+
+    Reporting "would create dependency cycle: ['SRS-MD-001']" left the operator to
+    reconstruct the other hops by hand from a 4,000-line deps file; four features
+    sat unrecordable behind that missing sentence.
+    """
+    deps = {"MD1": ["PERF1"], "PERF1": ["MD3"]}
+    assert agent_pool.dep_path(deps, "MD1", "MD3") == ["MD1", "PERF1", "MD3"]
+    assert agent_pool.dep_path(deps, "MD3", "MD1") is None
+
+
+def test_dep_path_returns_the_shortest_route():
+    """Breadth-first: the operator gets the cycle they have the best chance of
+    recognising, not whichever one a DFS stack happened to surface."""
+    deps = {"A": ["B", "LONG1"], "LONG1": ["LONG2"], "LONG2": ["Z"], "B": ["Z"]}
+    assert agent_pool.dep_path(deps, "A", "Z") == ["A", "B", "Z"]
+
+
 # --- honesty guard ----------------------------------------------------------
 def test_needs_serialized_flags_ib_and_dashboard_but_not_pure_compute():
     ib = _feat(
@@ -402,7 +421,7 @@ def deps_sandbox(tmp_path, monkeypatch):
     feats = tmp_path / "feature_list.json"
     feats.write_text(
         '[{"id":"A","passes":false,"steps":[]},{"id":"B","passes":false,"steps":[]},'
-        '{"id":"C","passes":false,"steps":[]}]',
+        '{"id":"C","passes":false,"steps":[]},{"id":"D","passes":false,"steps":[]}]',
         encoding="utf-8",
     )
     deps = tmp_path / "feature_deps.json"
@@ -452,3 +471,73 @@ def test_this_branch_does_not_carry_integrator_owned_scheduler_state():
     assert agent_pool.shared_state_violations(["tools/feature_deps.json"], "ANY") == [
         "tools/feature_deps.json"
     ]
+
+
+# --- block: a refused edge is a FAILURE, not a warning on the way to exit 0 ---
+# `block` used to drop cycle-forming edges, print "✓ {fid} blocked-on [survivors]",
+# and return 0 — and `if cur:` meant a feature with no prior edges whose every
+# requested edge was dropped had NOTHING written while still printing ✓. The
+# operator's blocker was therefore silently not recorded and the feature returned to
+# the ready frontier every cycle: rule 24's churn loop with rule 24's remedy missing
+# (pipeline-and-integrate rule 32).
+class _BlockArgs:
+    def __init__(self, id, on, reason=""):
+        self.id, self.on, self.reason = id, on, reason
+
+
+def test_block_records_the_edge_and_reports_the_whole_file(deps_sandbox, capsys):
+    assert agent_pool.cmd_block(_BlockArgs("B", ["C"])) == 0
+    assert json.loads(deps_sandbox.read_text()) == {"A": ["B", "C"], "B": ["C"]}
+    assert "B blocked-on ['C']" in capsys.readouterr().out
+
+
+def test_block_unions_with_edges_already_recorded(deps_sandbox, capsys):
+    """A re-run adding one edge to existing ones must report all of them, not just
+    the new one — the message is what the operator checks the graph against."""
+    assert agent_pool.cmd_block(_BlockArgs("D", ["B"])) == 0
+    assert agent_pool.cmd_block(_BlockArgs("D", ["C"])) == 0
+    assert json.loads(deps_sandbox.read_text())["D"] == ["B", "C"]
+    assert "D blocked-on ['B', 'C']" in capsys.readouterr().out
+
+
+def test_block_refuses_a_cycle_nonzero_and_writes_nothing(deps_sandbox, capsys):
+    """The whole defect in one test: A already depends on B, so B->A closes a loop."""
+    before = deps_sandbox.read_text()
+    assert agent_pool.cmd_block(_BlockArgs("B", ["A"])) == 13
+    assert deps_sandbox.read_text() == before  # untouched, not partially written
+    err = capsys.readouterr().err
+    assert "NOTHING was written" in err
+    assert "B -> A -> B" in err  # the cycle is printed, not just named
+
+
+def test_block_cycle_refusal_names_the_edge_to_retract(deps_sandbox, capsys):
+    """The operator needs the one concrete `unblock` that breaks the loop.
+
+    A depends on B and C; adding C -> A closes C->A->C, so the last hop on the
+    existing path (A -> C) is what must be retracted.
+    """
+    assert agent_pool.cmd_block(_BlockArgs("C", ["A"])) == 13
+    assert "agent_pool.py unblock A --off C" in capsys.readouterr().err
+
+
+def test_block_is_all_or_nothing_when_one_edge_cycles(deps_sandbox, capsys):
+    """A partial write behind a non-zero exit is the ambiguous state that produced
+    the original confusion. B->C is fine; B->A is not; neither is recorded."""
+    before = deps_sandbox.read_text()
+    assert agent_pool.cmd_block(_BlockArgs("B", ["C", "A"])) == 13
+    assert deps_sandbox.read_text() == before
+    err = capsys.readouterr().err
+    assert "1 of 2 requested" in err
+    assert "agent_pool.py block B --on C" in err  # the salvageable subset, spelled out
+
+
+def test_block_refuses_a_self_edge(deps_sandbox):
+    before = deps_sandbox.read_text()
+    assert agent_pool.cmd_block(_BlockArgs("B", ["B"])) == 13
+    assert deps_sandbox.read_text() == before
+
+
+def test_block_still_rejects_an_unknown_dependency_id(deps_sandbox):
+    before = deps_sandbox.read_text()
+    assert agent_pool.cmd_block(_BlockArgs("B", ["NOPE"])) == 1
+    assert deps_sandbox.read_text() == before

@@ -44,6 +44,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import deque
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -708,16 +709,36 @@ def worktree_for_branch(branch: str) -> Path | None:
 
 def reachable(deps: dict, src: str, dst: str) -> bool:
     """Is dst reachable from src by following deps edges? (cycle detection)"""
-    seen, stack = set(), [src]
-    while stack:
-        cur = stack.pop()
-        if cur == dst:
-            return True
-        if cur in seen:
-            continue
-        seen.add(cur)
-        stack.extend(deps.get(cur, []))
-    return False
+    return dep_path(deps, src, dst) is not None
+
+
+def dep_path(deps: dict, src: str, dst: str) -> list | None:
+    """The actual edge path src -> ... -> dst, or None if dst is unreachable.
+
+    ``reachable`` answered yes/no, which is all the guard needed to REFUSE an edge
+    — but not enough to tell the operator what to do about it. `block` therefore
+    reported "would create dependency cycle: ['SRS-MD-001']" and left them to
+    reconstruct the other three hops by hand from a 4,000-line deps file. Four
+    features (MD-003, MD-001, EXE-001, PERF-001) sat unrecordable for six weeks
+    behind that missing sentence (pipeline-and-integrate rule 32).
+
+    Breadth-first, so the path printed is the SHORTEST one — the cycle the
+    operator has the best chance of recognising.
+    """
+    if src == dst:
+        return [src]
+    seen = {src}
+    queue = deque([[src]])
+    while queue:
+        path = queue.popleft()
+        for nxt in deps.get(path[-1], []):
+            if nxt == dst:
+                return path + [nxt]
+            if nxt in seen:
+                continue
+            seen.add(nxt)
+            queue.append(path + [nxt])
+    return None
 
 
 def validate_block(ids: set, fid: str, on: list) -> tuple[list, list]:
@@ -1057,29 +1078,91 @@ def cmd_block(args):
                     file=sys.stderr,
                 )
             return 1
-        cur = set(deps.get(fid, []))
-        cycles = []
+        # Cycle-forming edges are REFUSED, and refusing is a failure — not a
+        # warning on the way to exit 0. The old code dropped them, printed
+        # "✓ {fid} blocked-on [...]" listing only the survivors, and returned 0;
+        # worse, `if cur:` meant a feature with no prior edges whose every
+        # requested edge was dropped had NOTHING written while still printing ✓.
+        # So the operator's blocker was silently not recorded, the feature
+        # returned to the ready frontier every cycle, and the scheduler's own
+        # advice ("record it: agent_pool.py block <id> --on <owner ids>") could
+        # not be followed. That is rule 24's churn loop with rule 24's remedy
+        # missing (pipeline-and-integrate rule 32).
+        #
+        # All-or-nothing on purpose: a partial write behind a non-zero exit is
+        # the ambiguous state that produced the original confusion. Either the
+        # request is recorded in full, or the file is untouched.
+        cycles = {}
         for dep in known:
-            if dep == fid or reachable(deps, dep, fid):
-                cycles.append(dep)
-                continue
-            cur.add(dep)
-        if cur:
-            deps[fid] = sorted(cur)
+            if dep == fid:
+                cycles[dep] = [fid, fid]
+            else:
+                path = dep_path(deps, dep, fid)
+                if path is not None:
+                    cycles[dep] = path
+        if cycles:
+            ok = sorted(set(known) - set(cycles))
+            print(
+                f"✗ {fid}: refusing to record — {len(cycles)} of {len(known)} requested "
+                f"edge(s) would create a dependency cycle. NOTHING was written.",
+                file=sys.stderr,
+            )
+            # `dep_path` returns [dep, ..., fid] — dep is blocked on ... blocked on
+            # fid. Adding fid -> dep closes it. Naming the LAST hop gives the
+            # operator the one concrete `unblock` that breaks the loop, instead of
+            # a cycle diagram they have to translate themselves.
+            retractions = []
+            for dep, path in sorted(cycles.items()):
+                print(
+                    f"    {fid} -> {dep} closes the loop: " + " -> ".join([fid, *path]),
+                    file=sys.stderr,
+                )
+                if len(path) >= 2:
+                    retractions.append((path[-2], path[-1]))
+            print(
+                "\n  A cycle means the graph disagrees with itself about which feature "
+                "owns what.\n  Decide which of the two directions is real, then re-run:\n"
+                "\n  · The reverse edge is a CODE edge — the consumer needs the other "
+                "feature's\n    code, which is already on main, not its `passes` flip. "
+                "Retract it:",
+                file=sys.stderr,
+            )
+            for blocked_id, dep_id in sorted(set(retractions)):
+                print(
+                    f"        agent_pool.py unblock {blocked_id} --off {dep_id} "
+                    f"--reason '<why the flip is not needed>'",
+                    file=sys.stderr,
+                )
+            print(
+                "\n  · Both directions are genuine — the two features share an "
+                "acceptance\n    criterion and one of them must be split. See "
+                "docs/playbooks/\n    scope-and-serialization.md rules 14-17 "
+                "(the operator edits feature_list.json\n    and docs/SRS.md on main; "
+                "a branch may not).",
+                file=sys.stderr,
+            )
+            if ok:
+                print(
+                    f"\n  The other edge(s) are fine on their own:\n"
+                    f"    agent_pool.py block {fid} --on {' '.join(ok)}",
+                    file=sys.stderr,
+                )
+            return 13
+        # Unconditional write: `known` is non-empty (argparse requires --on) and no
+        # edge was refused, so there is always something to record here.
+        deps[fid] = sorted(set(deps.get(fid, [])) | set(known))
         save_deps(deps)
+        recorded = deps[fid]
         # NOTE: block does NOT release the lease — you keep ownership until you
         # `integrate --mode partial` (which releases it on success). Releasing
         # here would open a window where a sibling could claim the same worktree
         # before your partial work lands.
+    # Report what is now IN THE FILE, not what was asked for: a re-run that adds
+    # one edge to three existing ones should say so.
     print(
-        f"✓ {fid} blocked-on {sorted(set(known) - set(cycles))}; lease kept "
+        f"✓ {fid} blocked-on {recorded}; lease kept "
         f"(release it via `integrate --mode partial` or `release {fid}`)"
     )
-    if cycles:
-        print(
-            f"⚠ skipped (would create dependency cycle): {cycles} — resolve manually",
-            file=sys.stderr,
-        )
     return 0
 
 
