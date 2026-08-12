@@ -153,7 +153,6 @@
     "SRS-DATA-013",
     "SRS-EXE-001",
     "SRS-MD-001",
-    "SRS-RESV-004",
     "SRS-RESV-005",
     "SRS-RESV-006",
     "SRS-UI-001"
@@ -194,9 +193,7 @@
     "SRS-UI-001"
   ],
   "SRS-PERF-001": [
-    "SRS-MD-003",
     "SRS-NOTIF-001",
-    "SRS-SDK-004",
     "SRS-UI-001"
   ],
   "SRS-RES-001": [
@@ -217,6 +214,7 @@
     "SRS-RESV-001"
   ],
   "SRS-RESV-004": [
+    "SRS-LOG-001",
     "SRS-NOTIF-001",
     "SRS-RESV-003",
     "SRS-RESV-005"
@@ -242,6 +240,9 @@
     "ERR-9",
     "SRS-EXE-001",
     "SRS-MD-005"
+  ],
+  "SRS-SDK-004": [
+    "SRS-EXE-001"
   ],
   "SRS-SDK-007": [
     "SRS-MD-001"
