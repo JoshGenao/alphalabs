@@ -40,6 +40,23 @@ Read this at Step 4.1 (classifying the work) and again whenever a review will no
    read the test's stated intent, and check the sibling branch for asymmetry. Regression-scope
    by blast radius, not by feature id: a closed-green feature going red is the worst outcome
    of a close. `(RES-003)`
+7b. **"Serialized" is four different situations; say which one.** The label drove one
+   bucket for eleven features, and telling them apart cost every fresh-context session
+   ~2,000 lines of note reading. **A** = done, evidence never recorded (close it).
+   **B** = an unbuilt FEATURE is in the way (`block --on`). **C** = a real-world resource
+   no feature owns (`external_blocker`). **D** = a graph cycle (an operator decides which
+   direction is a code edge). Rule 6 already demands the exact step and blocker; this is
+   the shape that demand takes. `tools/verify_queue.py list` derives it, and
+   `docs/verification-queue.md` is the standing triage. `(2026-08-12)`
+7c. **A visual acceptance criterion needs a visual artifact.** "The dashboard shows IB
+   equity, daily and cumulative P&L" is a claim about what a human would SEE; an exit code
+   cannot show it, and closing on one asks the reviewer to take the record's word for
+   exactly the thing it cannot evidence. `evidence.py verify` now refuses an `e2e` or
+   `live-ib` record with no image on the AC step. Browser tests get it free from
+   `tests/e2e/capture.py`; `evidence.py render` writes the `EVIDENCE.md` the reviewer
+   reads on GitHub. Not applied to `solo`/`integration` — their captured stdout IS the
+   artifact, and demanding a screenshot of `cargo fmt --check` only teaches everyone to
+   produce a meaningless one. `(2026-08-12)`
 
 ## When the review will not converge
 

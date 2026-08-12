@@ -180,18 +180,44 @@ one `main`. Most of this playbook is about that sharing.
     run trips the rule-9 guard with a 6-minute-old orphan. After aborting a gate, check
     `pgrep -x cargo` and `ps -eo pid,command | grep "[r]un_ci_locally"` and clear both
     before re-running. `(harness-p0, found live)`
-32. **`block --on` CANNOT record a blocker that is transitively downstream of your
-    feature — and it still exits 0.** `cmd_block` drops cycle-forming edges with a
-    `⚠ skipped (would create dependency cycle)` on *stderr* and returns success, so a
-    session that checks the exit code believes it recorded a block that does not exist.
-    MD-003's real blockers are MD-001 and EXE-001; both reach PERF-001, which is blocked
-    on MD-003. Four features (MD-003, MD-001, EXE-001, PERF-001) can therefore never go
-    green, and MD-003 returns to the ready frontier every cycle — rule 24's churn loop
-    with rule 24's fix unavailable. Verify the edge landed
-    (`python3 -c "import json;print(json.load(open('tools/feature_deps.json')).get('<id>'))"`)
-    rather than trusting the exit code, and if it did not, say so in the session note as
-    an operator decision: only re-pointing a false edge or an attested close breaks it.
-    `(MD-003 s4)`
+32. **A cycle-forming `block --on` is REFUSED, with the cycle printed — exit 13.**
+    *(FIXED; this rule used to describe the defect.)* `cmd_block` previously dropped
+    cycle-forming edges to stderr and returned 0, so a session checking the exit code
+    believed it recorded a block that did not exist — and `if cur:` meant a feature
+    with no prior edges whose every edge was dropped had nothing written while still
+    printing `✓`. Four features (MD-003, MD-001, EXE-001, PERF-001) sat unrecordable
+    behind it for six weeks. It now writes nothing, exits 13, prints the full path
+    (`SRS-MD-003 -> SRS-MD-001 -> SRS-PERF-001 -> SRS-MD-003`) and names the one
+    `unblock` that breaks it. All-or-nothing: a partial write behind a non-zero exit
+    is the ambiguous state that caused the confusion. `(MD-003 s4; fixed 2026-08-12)`
+34. **An edge meaning "needs the code" and an edge meaning "needs the flip" are not
+    the same edge.** Both cycles above were the first kind recorded as the second.
+    SRS-PERF-001 is a measurement substrate — "there is no standalone CLI" — that
+    consumes the MD-003 and SDK-004 runtimes, whose code is on main; it never needed
+    their `passes`. Cutting those two edges dissolved both cycles and revealed that
+    SRS-NOTIF-001 unblocks **56 of 120** features with no unmet feature dependency at
+    all. Before recording an edge, ask which one you mean. `(2026-08-12)`
+35. **A blocker no FEATURE owns needs `external_blocker`, never `block --on`.** "30
+    real market-hours days", "an SMS provider account", "a PTP-disciplined host" cannot
+    be a dependency edge, because a dependency edge asserts some feature owns the
+    blocker — and if none does, the edge never clears. SRS-REL-001's note said this and
+    correctly recorded nothing, which left it in `ready`, then in the serialized-note
+    bucket, dragging `assess_frontier` into DEADLOCK over work no agent could do.
+    `external_blocker` takes it out of the frontier and into `status`'s procurement
+    section. Four features carry one. `(2026-08-12)`
+36. **An observation that is also a verdict becomes a ratchet with no release.** One
+    `Outcome: serialized` note fed BOTH `serialized_notes()` (feature leaves the claim
+    pool) and `classify_verification.derive()` with `needs_review=False` (pinned
+    non-solo forever), so a single wedged-gateway session permanently reclassified
+    SRS-MD-003 — whose own step 2 says "fixture market data, provider mocks" — as
+    `live-ib`, and no session could claim it to undo either half. An observation may
+    PROPOSE; only a human may pin. `(2026-08-12)`
+37. **`verify_queue.py check` before you claim, and read what it says is class C.**
+    `list` ranks the queue, `show <FID>` is the whole verification brief in one screen
+    (AC, evidence gaps, discovered tests, the note's own Resume/next), `check` reports
+    only drift and exits 1 when something needs a decision.
+    `.github/workflows/verification-watch.yml` runs it daily and on every main push
+    that touches the board. `(2026-08-12)`
 33. **Record step evidence AFTER the final code commit, in its own commit.** The record
     stamps the HEAD it ran against, so `git commit --amend` orphans it — the reviewer
     checks `git merge-base --is-ancestor` and blocks on evidence that "did not exercise

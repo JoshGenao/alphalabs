@@ -14,6 +14,24 @@ Read this whenever you write a test, and before you believe a green one.
 3. **Assert the harness reports the moment that matters.** A UI harness that only inspected
    the buffer *after* step 3 hid a duplicate that step 2 introduced and step 3 repaired —
    "wrong for four seconds is still wrong". `(LOG-001 r38)`
+4. **A test that describes behaviour the change PRESERVED is not evidence of it.**
+   `mutation_verify` names these exactly; the remedy is "tighten or delete", and when the
+   pre- and post-change behaviour is identical by design there is no honest tightening.
+   Fold the companion assertion into the test that DOES fail — one test asserting both
+   directions of a boundary keeps the guard and stays evidence. Deleting it outright drops
+   real protection against the over-correction. `(2026-08-12)`
+5. **Do not put a `def test_*` in a docstring.** `mutation_verify` scans diffs for added
+   test functions, so a usage example inside a module docstring reads to it as a real test
+   that never fails — a false finding in the one tool whose worth depends on its findings
+   being trustworthy. Same family as CLAUDE.md rule 9: a guard that cries wolf is a guard
+   people learn to skip. Write the example without its `def` line. `(2026-08-12)`
+6. **An identifier matcher built by dropping a prefix can match everything.**
+   `verify_queue.discover_tests` derived a "compact" id form by dropping the first
+   segment — `SRS-DATA-013` → `data013`, fine, but `API-3` → `"3"`, and a bare digit is a
+   substring of nearly every source file, so those features matched the whole tree. The
+   selection is EXECUTED and recorded as a feature's evidence, so a false match files an
+   unrelated passing suite as proof. Require a letter and real length, or drop the form.
+   `(2026-08-12)`
 
 ## False greens
 
