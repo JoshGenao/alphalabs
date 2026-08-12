@@ -97,6 +97,49 @@ normal path and each needs an explicit operator decision about which edge is rea
 | `SRS-MD-003 → SRS-MD-001 → SRS-PERF-001 → SRS-MD-003` and `SRS-SDK-004 → SRS-EXE-001 → SRS-PERF-001 → SRS-SDK-004` | Does `SRS-PERF-001` need those features' **code** or their **flip**? | **Code.** PERF-001 is a measurement substrate — its own note says *"There is no standalone CLI"* — and all three runtimes' code is on main. Cut `SRS-PERF-001 → {SRS-MD-003, SRS-SDK-004}`; both cycles dissolve at once. |
 | `SRS-RESV-004 → SRS-LOG-001 → SRS-RESV-004` | Same question for the log sink. | Same shape: RESV-004 needs LOG-001's **sink code**, LOG-001 needs RESV-004's **record types**. Cut the edge whose consumer only needs code. |
 
+## The watch loop
+
+`tools/verify_queue.py` derives all of the above from `feature_list.json`,
+`tools/feature_deps.json`, `.harness/runs/` and the session notes — so it is never
+staler than the board.
+
+```
+tools/verify_queue.py list              # the ranked worklist
+tools/verify_queue.py show <FID>        # AC, evidence gaps, discovered tests, Resume/next
+tools/verify_queue.py check             # DRIFT ONLY; exit 1 when something needs a decision
+tools/verify_queue.py run <FID> --yes   # execute the machine-runnable steps into the record
+```
+
+`check` reports only what **changed or is inconsistent** — a dependency cycle, a
+feature held off the frontier by a note alone with nothing recording why, an evidence
+record invalidated by a re-spec. Steady state prints nothing and exits 0. A watcher
+that prints the whole board every run is a watcher whose output stops being read, and
+then the one run that mattered scrolls past with the rest.
+
+**Unattended:** `.github/workflows/verification-watch.yml` runs it daily at 06:30 UTC
+*and on every push to main that touches `feature_list.json`, `tools/feature_deps.json`
+or `.harness/runs/`* — because closing one feature is exactly what unblocks the next,
+so "your last blocker just cleared" should arrive in minutes, not tomorrow. It opens or
+updates **one** issue, and closes that issue when the board goes clean. It changes
+nothing else.
+
+**Interactive:** `/loop 30m tools/verify_queue.py check` in a Claude Code session, or
+just run it before claiming.
+
+### What `run` will and will not do
+
+It executes step 1 (`./init.sh`, identical for every feature) and a discovered test
+selection for step 2, through `evidence.py run`, so the record holds real exit codes.
+
+It **stops** at steps 3 and 4 — the acceptance criterion and the evidence instruction.
+Those are a judgement and a live observation, and it leaves them **unrecorded**. It
+will never write a record for a step it did not execute: a hand-written record the
+tool invented would satisfy the human-attestation path with nobody's attestation.
+
+`--yes` is required, because the step-2 selection is grep-derived and fallible —
+SRS-MD-003's matches include two harness tests that merely name it as an example.
+Read the printed plan, or pass `--only <paths>`.
+
 ## Why `integrate --force-complete` does not get you out of this
 
 The deadlock message says *"verify + `integrate --force-complete`"*. It does not work, and

@@ -1,0 +1,155 @@
+# Continuous verification watch — reports, never changes.
+#
+# The board's own deadlock detector answers one question ("is anything
+# claimable?") and answers it only when somebody runs `claim`. That is how eleven
+# features sat in the "awaiting human verification" bucket for six weeks: the
+# facts that would have unstuck them — a blocker that had since closed, a
+# dependency cycle nothing could record, an evidence record invalidated by a
+# re-spec — were all derivable the whole time, and nothing was deriving them.
+#
+# This runs `tools/verify_queue.py check` on a schedule and opens or updates ONE
+# issue. Like harness-garden.yml it changes NOTHING: no edges recorded, no
+# features closed, no files written. The operator decides.
+#
+# It deliberately reports DRIFT first and the full board second. A watcher that
+# leads with a table nobody's eye stops on is a watcher whose output stops being
+# read, and then the one run that mattered scrolls past with the rest.
+
+name: verification-watch
+
+on:
+  schedule:
+    # Daily, 06:30 UTC — before the US market opens, so a live-verification
+    # window can be planned against the same day's session.
+    - cron: "30 6 * * *"
+  # Every merge to main can close a feature, and closing one is exactly what
+  # unblocks the next. Checking then is what makes "your last blocker just
+  # cleared" arrive within minutes instead of within a day.
+  push:
+    branches: [main]
+    paths:
+      - "feature_list.json"
+      - "tools/feature_deps.json"
+      - ".harness/runs/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Two merges landing together must not race to comment on the same issue.
+concurrency:
+  group: verification-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Report what drifted
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # ratchet:actions/checkout@v4
+        with:
+          # verify_queue reads origin/main for feature truth (features are
+          # integrator-owned; a branch's local edits must not move the board), so
+          # the ref has to exist locally. A shallow clone leaves it unresolvable
+          # and load_features silently falls back to the working file — which on
+          # this runner is the same tree, but only by accident.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # ratchet:actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # `check` exits 1 when something needs a decision — that is its CONTRACT,
+      # not a failure of this job. Capturing it lets the step below decide whether
+      # to bother the operator at all, without `|| true` swallowing a real crash:
+      # exit codes 0 and 1 are expected, anything else is a genuine error.
+      - name: Check for drift
+        id: check
+        run: |
+          set +e
+          python3 tools/verify_queue.py check > drift.txt 2>&1
+          rc=$?
+          set -e
+          cat drift.txt
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::verify_queue.py check failed with exit $rc"
+            exit "$rc"
+          fi
+          echo "drift=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Build the report
+        if: steps.check.outputs.drift == '1'
+        run: |
+          {
+            echo "## Verification watch — $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo
+            echo "Nothing here has been changed. \`verify_queue.py check\` found"
+            echo "something that needs a decision."
+            echo
+            python3 tools/verify_queue.py list --markdown
+            echo
+            echo "<details><summary>Raw <code>check</code> output</summary>"
+            echo
+            echo '```'
+            cat drift.txt
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+            echo "Reproduce locally:"
+            echo '```'
+            echo 'python3 tools/verify_queue.py check'
+            echo 'python3 tools/verify_queue.py show <FEATURE_ID>'
+            echo '```'
+            echo
+            echo "Triage classes and the two legitimate paths to a green are in"
+            echo "[docs/verification-queue.md](../blob/main/docs/verification-queue.md)."
+          } > report.md
+          cat report.md
+
+      - name: Open or update the watch issue
+        if: steps.check.outputs.drift == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          TITLE="Verification queue — what is stuck and what would move it"
+          # One issue, updated — not one per run. A daily cron that opens issues
+          # buries the tracker in a fortnight and trains everyone to close them
+          # unread.
+          NUM="$(gh issue list --repo "$REPO" --state open --search "$TITLE in:title" \
+                   --json number --jq '.[0].number // empty')"
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --repo "$REPO" --body-file report.md
+            echo "commented on #$NUM"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" --body-file report.md \
+              --label "verification" || \
+            gh issue create --repo "$REPO" --title "$TITLE" --body-file report.md
+          fi
+
+      # Closing the loop matters as much as opening it: an issue that stays open
+      # after the board is clean is the same false signal in the other direction.
+      - name: Close the watch issue when the board is clean
+        if: steps.check.outputs.drift == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          TITLE="Verification queue — what is stuck and what would move it"
+          NUM="$(gh issue list --repo "$REPO" --state open --search "$TITLE in:title" \
+                   --json number --jq '.[0].number // empty')"
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --repo "$REPO" --body \
+              "✅ \`verify_queue.py check\` is clean — no cycles, nothing held off the
+            frontier without a recorded reason, no stale evidence records. Closing;
+            the next run that finds drift will reopen the report."
+            gh issue close "$NUM" --repo "$REPO"
+          else
+            echo "board is clean and no issue is open — nothing to do"
+          fi
