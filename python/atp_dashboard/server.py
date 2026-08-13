@@ -520,11 +520,20 @@ def mount_default_dashboard(
     # itself writes. Setting it resolves the pane's current_live_strategy_id cell,
     # which every prior session rendered as deferred:SRS-RESV-005.
     #
-    # A THIRD leg for the same reason the demotion one is separate: it answers a
-    # different question from a different file, and a lockout that cannot be read must
-    # not blank a designation that can. Unset, the leg is absent and the cell keeps its
-    # deferred placeholder — a dashboard that cannot read the designation must never
-    # report which strategy is live, because it does not know.
+    # A THIRD leg because it answers a different question from a different file, read
+    # by a different binary — so a lockout that is merely ABSENT does not stop the
+    # designation resolving, and either can be composed without the other.
+    #
+    # It does NOT buy failure independence, and saying so would be the drift this pane
+    # exists to avoid: both halves feed ONE protocol method (`live_state`), so a leg
+    # that RAISES defers the whole live-state group, including a live strategy that was
+    # perfectly readable. That is the fail-closed direction — the promote control goes
+    # inert rather than acting on half a safety picture — and
+    # tests/boundary/test_dashboard_designation_wiring.py pins it as the real
+    # behaviour. Splitting it finer is UI-5's protocol to change, not this call site's.
+    #
+    # Unset, the leg is absent and the cell keeps its deferred placeholder — a dashboard
+    # that cannot read the designation must never report which strategy is live.
     hot_swap_demotion_state = env.get("ATP_HOT_SWAP_DEMOTION_STATE") or None
     hot_swap_designation_state = env.get("ATP_HOT_SWAP_DESIGNATION_STATE") or None
     if hot_swap_demotion_state is not None or hot_swap_designation_state is not None:
