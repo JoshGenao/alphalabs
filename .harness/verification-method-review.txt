@@ -11,126 +11,126 @@
 # not an answer — the whole point of this file is that a human decides.
 #
 # id                   method       why
-# ── 65 CONFLICT(S): the method names a real resource AND a stub
+# ── 55 CONFLICT(S): the method names a real resource AND a stub
 #    for it. Proposed conservatively (non-solo). Decide these first.
   API-1                e2e          # REVIEW: names 'websocket' but also 'fixture'
   API-2                e2e          # REVIEW: names 'websocket' but also 'fixture'
-  API-3                e2e          # REVIEW: names 'dashboard' but also 'fixture'
+  API-3                e2e          # AC names 'dashboard'; no tests discovered
   API-4                e2e          # REVIEW: names 'websocket' but also 'fixture'
-  API-5                e2e          # REVIEW: names 'websocket' but also 'fixture'
   API-6                e2e          # REVIEW: names 'websocket' but also 'fixture'
   API-7                e2e          # REVIEW: names 'websocket' but also 'fixture'
-  SRS-ARCH-001         integration  # RE-DERIVED solo → integration: REVIEW: names 'container' but also 'mock'
-  SRS-ARCH-002         e2e          # REVIEW: names 'dashboard' but also 'mock'
-  SRS-ARCH-003         integration  # REVIEW: names 'integration test' but also 'mock'
-  SRS-ARCH-004         live-ib      # REVIEW: names 'ib gateway' but also 'mock'
-  SRS-ARCH-005         integration  # RE-DERIVED solo → integration: REVIEW: names 'container' but also 'mock'
-  SRS-BT-001           e2e          # REVIEW: names 'dashboard' but also 'mock'
-  SRS-BT-005           e2e          # REVIEW: names 'dashboard' but also 'mock'
-  SRS-DATA-001         integration  # REVIEW: names 'integration test' but also 'mock'
-  SRS-DATA-002         integration  # REVIEW: names 'integration test' but also 'mock'
+  ERR-2                e2e          # REVIEW: AC names 'dashboard' but tests say solo (test_connectivity_blocked.py, test_connectivity_notification.py) — the AC decides unless the AC is wrong
+  ERR-8                integration  # REVIEW: AC names 'email and sms' but tests say solo (test_kill_switch_liquidation_timeout.py, test_kill_switch_timeout_contract.py) — the AC decides unless the AC is wrong
+  ERR-9                e2e          # REVIEW: AC names 'dashboard' but tests say solo (test_startup_readiness_gate.py, test_startup_readiness_gate_contract.py) — the AC decides unless the AC is wrong
+  SRS-ARCH-003         integration  # REVIEW: AC names 'sharadar' but tests say solo (test_fundamental_ingestion.py, test_architecture.py) — the AC decides unless the AC is wrong
+  SRS-BT-001           e2e          # AC names 'dashboard'; no tests discovered
+  SRS-BT-004           e2e          # REVIEW: AC names 'dashboard' but tests say solo (test_dashboard_safety.py, test_paper_metrics.py) — the AC decides unless the AC is wrong
+  SRS-BT-005           e2e          # REVIEW: AC names 'dashboard' but tests say solo (test_benchmark_comparison.py, test_dashboard_safety.py) — the AC decides unless the AC is wrong
+  SRS-DATA-001         integration  # AC names 'nas'; no tests discovered
+  SRS-DATA-002         e2e          # REVIEW: AC names 'dashboard' but tests say solo (test_pacing_budget_refused.py, test_pacing_budget_contract.py) — the AC decides unless the AC is wrong
   SRS-DATA-003         integration  # REVIEW: names 'integration test' but also 'mock'
-  SRS-DATA-004         integration  # REVIEW: names 'integration test' but also 'mock'
-  SRS-DATA-005         integration  # REVIEW: names 'integration test' but also 'mock'
   SRS-DATA-006         integration  # REVIEW: names 'integration test' but also 'mock'
-  SRS-DATA-007         integration  # RE-DERIVED solo → integration: REVIEW: names 'notebook' but also 'mock'
-  SRS-DATA-008         integration  # RE-DERIVED solo → integration: REVIEW: names 'nas' but also 'mock'
-  SRS-DATA-009         integration  # RE-DERIVED solo → integration: REVIEW: names 'nas' but also 'mock'
-  SRS-DATA-014         e2e          # REVIEW: names 'dashboard' but also 'mock'
-  SRS-DATA-016         integration  # RE-DERIVED solo → integration: REVIEW: names 'sharadar' but also 'mock'
-  SRS-DATA-017         integration  # RE-DERIVED solo → integration: REVIEW: names 'container' but also 'mock'
-  SRS-DATA-018         integration  # RE-DERIVED solo → integration: REVIEW: names 'nas' but also 'mock'
-  SRS-ERR-001          e2e          # REVIEW: names 'websocket' but also 'mock'
-  SRS-EXE-001          live-ib      # REVIEW: names 'live order' but also 'mock'
-  SRS-EXE-006          integration  # REVIEW: names 'integration test' but also 'mock'
-  SRS-EXE-007          live-ib      # REVIEW: names 'live trading' but also 'mock'
-  SRS-EXE-008          integration  # REVIEW: names 'integration or fault-injection' but also 'mock'
-  SRS-FAC-001          integration  # RE-DERIVED solo → integration: REVIEW: names 'sharadar' but also 'mock'
-  SRS-MD-001           integration  # REVIEW: names 'integration test' but also 'mock'
-  SRS-MD-005           live-ib      # REVIEW: names 'ib gateway' but also 'mock'
-  SRS-MD-006           integration  # RE-DERIVED solo → integration: REVIEW: names 'nas' but also 'mock'
-  SRS-ORCH-001         e2e          # REVIEW: names 'browser automation' but also 'mock'
-  SRS-ORCH-002         e2e          # REVIEW: names 'browser automation' but also 'mock'
-  SRS-ORCH-003         e2e          # REVIEW: names 'browser automation' but also 'mock'
-  SRS-ORCH-004         e2e          # REVIEW: names 'browser automation' but also 'mock'
-  SRS-ORCH-005         e2e          # REVIEW: names 'browser automation' but also 'mock'
-  SRS-RES-001          e2e          # REVIEW: names 'browser automation' but also 'mock'
-  SRS-RES-002          e2e          # REVIEW: names 'browser automation' but also 'mock'
-  SRS-RES-003          e2e          # REVIEW: names 'browser automation' but also 'mock'
-  SRS-RESV-001         e2e          # REVIEW: names 'browser automation' but also 'mock'
-  SRS-RESV-002         e2e          # REVIEW: names 'browser automation' but also 'mock'
-  SRS-RESV-003         e2e          # REVIEW: names 'browser automation' but also 'mock'
-  SRS-RESV-004         e2e          # REVIEW: names 'browser automation' but also 'mock'
-  SRS-RESV-005         e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-DATA-007         e2e          # REVIEW: AC names 'notebook' but tests say integration (test_research_data_access.py, test_store_history_binding.py) — the AC decides unless the AC is wrong
+  SRS-DATA-008         integration  # AC names 'nas'; no tests discovered
+  SRS-DATA-009         integration  # AC names 'nas'; no tests discovered
+  SRS-DATA-013         e2e          # REVIEW: AC names 'dashboard' but tests say solo (test_data013_ingestion_validation.py, test_ingestion_validation_quarantine.py) — the AC decides unless the AC is wrong
+  SRS-DATA-014         e2e          # AC names 'dashboard'; no tests discovered
+  SRS-DATA-017         e2e          # REVIEW: AC names 'notebook' but tests say integration (test_data017_concurrent_reads.py, test_data017_named_consumer_read.py) — the AC decides unless the AC is wrong
+  SRS-DATA-018         integration  # AC names 'nas'; no tests discovered
+  SRS-DATA-019         live-ib      # REVIEW: AC names 'live order' but tests say solo (test_data019_resting_order_corp_action.py) — the AC decides unless the AC is wrong
+  SRS-EXE-001          live-ib      # REVIEW: AC names 'submit to ib' but tests say solo (test_connectivity_notification.py, test_data019_resting_order_corp_action.py) — the AC decides unless the AC is wrong
+  SRS-EXE-005          integration  # REVIEW: AC names 'container' but tests say solo (test_live_state_recovery.py, test_outbox_reconciliation.py) — the AC decides unless the AC is wrong
+  SRS-EXE-007          live-ib      # REVIEW: AC names 'live trading' but tests say solo (test_exe007_ib_api_version_gate.py, test_ib_adapter_envelope.py) — the AC decides unless the AC is wrong
+  SRS-EXE-008          integration  # REVIEW: AC names 'restart' but tests say solo (test_live_state_recovery.py, test_order_event_category.py) — the AC decides unless the AC is wrong
+  SRS-EXE-009          integration  # REVIEW: AC names 'restart' but tests say solo (test_live_state_recovery.py, test_outbox_reconciliation.py) — the AC decides unless the AC is wrong
+  SRS-FAC-001          integration  # REVIEW: AC names 'sharadar' but tests say solo (test_factor_job.py, test_data007_unified_interface_close.py) — the AC decides unless the AC is wrong
+  SRS-MD-003           live-ib      # REVIEW: AC names 'ib gateway' but tests say solo (test_codex_review_recording.py, test_heartbeat_dashboard_wiring.py) — the AC decides unless the AC is wrong
+  SRS-MD-007           e2e          # REVIEW: AC names 'dashboard' but tests say solo (test_heartbeat_staleness.py, test_sequence_gap_stale.py) — the AC decides unless the AC is wrong
+  SRS-ORCH-001         e2e          # REVIEW: AC names 'dashboard' but tests say solo (test_orchestrator_lifecycle.py, test_rust_parser_hoist.py) — the AC decides unless the AC is wrong
+  SRS-ORCH-003         e2e          # REVIEW: AC names 'dashboard' but tests say solo (test_orchestrator_workload_priority.py, test_orchestrator_workload_priority_contract.py) — the AC decides unless the AC is wrong
+  SRS-ORCH-004         e2e          # REVIEW: AC names 'dashboard' but tests say solo (test_orchestrator_deployment_version.py, test_strategy_rollback.py) — the AC decides unless the AC is wrong
+  SRS-ORCH-005         e2e          # REVIEW: AC names 'dashboard' but tests say solo (test_strategy_rollback.py, test_orchestrator_rollback_contract.py) — the AC decides unless the AC is wrong
+  SRS-PERF-001         integration  # REVIEW: AC names 'ptp' but tests say solo (test_dashboard_safety.py, test_paper_callback_delivery.py) — the AC decides unless the AC is wrong
+  SRS-REL-002          integration  # REVIEW: AC names 'docker' but tests say solo (test_restart_recovery.py, test_restart_properties.py) — the AC decides unless the AC is wrong
+  SRS-RES-001          e2e          # REVIEW: AC names 'dashboard' but tests say integration (test_research_embed_wiring.py, test_jupyter_credential_isolation.py) — the AC decides unless the AC is wrong
+  SRS-RES-002          e2e          # REVIEW: AC names 'notebook' but tests say integration (test_research_data_access.py, test_research_isolation.py) — the AC decides unless the AC is wrong
+  SRS-RES-003          e2e          # REVIEW: AC names 'dashboard' but tests say solo (test_research_nav_wiring.py, test_research_navigation_safety.py) — the AC decides unless the AC is wrong
+  SRS-RESV-002         e2e          # REVIEW: AC names 'dashboard' but tests say solo (test_hot_swap_promotion.py, test_dashboard_account_reservoir.py) — the AC decides unless the AC is wrong
   SRS-RESV-006         e2e          # REVIEW: names 'browser automation' but also 'mock'
-  SRS-SDK-001          live-ib      # REVIEW: names 'live ib' but also 'mock'
-  SRS-SDK-002          e2e          # REVIEW: names 'websocket' but also 'mock'
-  SRS-SDK-003          e2e          # REVIEW: names 'websocket' but also 'mock'
-  SRS-SDK-005          e2e          # REVIEW: names 'websocket' but also 'mock'
-  SRS-SDK-006          e2e          # REVIEW: names 'websocket' but also 'mock'
-  SRS-SDK-008          e2e          # REVIEW: names 'websocket' but also 'mock'
-  SRS-SDK-009          e2e          # REVIEW: names 'websocket' but also 'mock'
-  SRS-SEC-002          integration  # REVIEW: names 'docker compose' but also 'mock'
-  SRS-SEC-003          integration  # RE-DERIVED solo → integration: REVIEW: names 'container' but also 'mock'
-  SRS-SEC-004          live-ib      # REVIEW: names 'live order' but also 'mock'
-  SRS-SIM-001          integration  # REVIEW: names 'integration or fault-injection' but also 'mock'
-  SRS-SIM-002          integration  # REVIEW: names 'integration or fault-injection' but also 'mock'
-  SRS-SIM-003          integration  # REVIEW: names 'integration or fault-injection' but also 'mock'
-  SRS-UI-001           e2e          # REVIEW: names 'browser automation' but also 'mock'
-  SRS-UI-004           e2e          # REVIEW: names 'browser automation' but also 'mock'
+  SRS-SAFE-001         live-ib      # REVIEW: AC names 'ib gateway' but tests say solo (test_dashboard_killswitch_wiring.py, test_operator_interface_runtime_wiring.py) — the AC decides unless the AC is wrong
+  SRS-SAFE-002         integration  # REVIEW: AC names 'email and sms' but tests say solo (test_dashboard_killswitch_wiring.py, test_liquidation_timeout_backend.py) — the AC decides unless the AC is wrong
+  SRS-SDK-001          live-ib      # REVIEW: AC names 'paper account' but tests say solo (test_order_event_category.py, test_strategy_api_parity.py) — the AC decides unless the AC is wrong
+  SRS-SDK-002          integration  # REVIEW: AC names 'nas' but tests say solo (test_trading_calendar_scheduler.py, test_strategy_api_scheduler_contract.py) — the AC decides unless the AC is wrong
+  SRS-SDK-004          live-ib      # REVIEW: AC names 'broker fill' but tests say solo (test_data019_resting_order_corp_action.py, test_data020_live_position_corp_action.py) — the AC decides unless the AC is wrong
+  SRS-SEC-004          e2e          # REVIEW: AC names 'jupyter' but tests say integration (test_jupyter_credential_isolation.py, test_research_embed_safety.py) — the AC decides unless the AC is wrong
+  SRS-UI-001           e2e          # REVIEW: AC names 'dashboard' but tests say solo (test_dashboard_hot_swap_wiring.py, test_dashboard_killswitch_wiring.py) — the AC decides unless the AC is wrong
+  SRS-UI-002           e2e          # AC names 'shows'; no tests discovered
+  SRS-UI-003           live-ib      # REVIEW: AC names 'ib equity' but tests say solo (test_dashboard_account_reservoir_wiring.py, test_dashboard_account_reservoir.py) — the AC decides unless the AC is wrong
+  UI-2                 integration  # AC names 'container'; no tests discovered
+  UI-6                 e2e          # AC names 'dashboard'; no tests discovered
 # ── the rest
-  ERR-1                live-ib      # method says 'live execution'
-  ERR-2                live-ib      # method says 'ib gateway'
-  ERR-3                e2e          # method says 'dashboard'
-  ERR-4                e2e          # method says 'dashboard'
-  ERR-5                e2e          # method says 'dashboard'
-  ERR-6                e2e          # method says 'dashboard'
-  ERR-7                e2e          # method says 'dashboard'
-  ERR-8                e2e          # method says 'dashboard'
-  ERR-9                e2e          # method says 'dashboard'
-  SRS-API-001          integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-BT-002           solo         # method names only self-contained means ('fixture')
-  SRS-BT-003           solo         # method names only self-contained means ('fixture')
-  SRS-BT-004           e2e          # OBSERVED: a session recorded Outcome: serialized
-  SRS-BT-006           solo         # method names only self-contained means ('fixture')
-  SRS-BT-007           integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-BT-008           integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-BT-009           solo         # method names only self-contained means ('fixture')
-  SRS-BT-010           solo         # method names only self-contained means ('fixture')
-  SRS-DATA-010         integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-DATA-011         solo         # method names only self-contained means ('fixture')
-  SRS-DATA-012         integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-DATA-013         e2e          # OBSERVED: a session recorded Outcome: serialized
-  SRS-DATA-015         solo         # method names only self-contained means ('fixture')
-  SRS-DATA-019         integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-DATA-020         integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-DATA-021         integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-EXE-002          integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-EXE-003          live-ib      # OBSERVED: a session recorded Outcome: serialized
-  SRS-EXE-004          e2e          # OBSERVED: a session recorded Outcome: serialized
-  SRS-EXE-005          integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-EXE-009          live-ib      # OBSERVED: a session recorded Outcome: serialized
-  SRS-LOG-001          e2e          # OBSERVED: a session recorded Outcome: serialized
-  SRS-MD-002           solo         # method names only self-contained means ('fixture')
-  SRS-MD-003           live-ib      # OBSERVED: a session recorded Outcome: serialized
-  SRS-MD-004           solo         # method names only self-contained means ('fixture')
-  SRS-MD-007           e2e          # OBSERVED: a session recorded Outcome: serialized
-  SRS-NOTIF-001        integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-PERF-001         integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-REL-001          integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-REL-002          integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-SAFE-001         live-ib      # OBSERVED: a session recorded Outcome: serialized
-  SRS-SAFE-002         live-ib      # OBSERVED: a session recorded Outcome: serialized
-  SRS-SAFE-003         live-ib      # OBSERVED: a session recorded Outcome: serialized
-  SRS-SDK-004          integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-SDK-007          live-ib      # OBSERVED: a session recorded Outcome: serialized
-  SRS-SEC-001          integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-SIM-004          integration  # OBSERVED: a session recorded Outcome: serialized
-  SRS-UI-002           e2e          # OBSERVED: a session recorded Outcome: serialized
-  SRS-UI-003           integration  # OBSERVED: a session recorded Outcome: serialized
-  UI-1                 integration  # OBSERVED: a session recorded Outcome: serialized
-  UI-2                 integration  # OBSERVED: a session recorded Outcome: serialized
-  UI-3                 e2e          # OBSERVED: a session recorded Outcome: serialized
-  UI-4                 integration  # OBSERVED: a session recorded Outcome: serialized
-  UI-5                 integration  # OBSERVED: a session recorded Outcome: serialized
-  UI-6                 e2e          # method says 'dashboard'
+  API-5                solo         # AC names no shared resource; tests in-process (test_data020_live_position_corp_action.py, test_adapter_contract.py)
+  ERR-1                solo         # AC names no shared resource; tests in-process (test_non_live_strategy_rejection.py, test_rust_parser_hoist.py)
+  ERR-3                solo         # AC names no shared resource; tests in-process (test_stale_data_block.py, test_freshness_contract.py)
+  ERR-4                solo         # AC names no shared resource; tests in-process (test_subscription_limit_block.py, test_subscription_limit_contract.py)
+  ERR-5                solo         # AC names no shared resource; tests in-process (test_data013_ingestion_validation.py, test_ingestion_idempotency.py)
+  ERR-6                solo         # AC names no shared resource; tests in-process (test_pacing_budget_refused.py, test_pacing_budget_contract.py)
+  ERR-7                solo         # AC names no shared resource; tests in-process (test_hot_swap_demotion_timeout.py, test_hot_swap_demotion_contract.py)
+  SRS-API-001          solo         # AC names no shared resource; tests in-process (test_hot_swap_execution_surface.py, test_hot_swap_trigger_surface.py)
+  SRS-ARCH-001         solo         # OPERATOR: AC: 'BUILD MANIFESTS show rust crates for core runtime services; python package exposes the strategy api'. A static manifest inspection — tools/architecture_check.py. It named no resource at all, so it fell to the conservative non-solo fallback.
+  SRS-ARCH-002         solo         # OPERATOR: AC: 'AUTOMATED DEPENDENCY CHECK fails if a lower layer imports the dashboard...'. 'dashboard' is a layer NAME in a static import rule — tools/architecture_check.py, no browser.
+  SRS-ARCH-004         integration  # OPERATOR: AC: 'COMPOSE CONFIGURATION starts core services, dashboard/api, strategy containers, jupyter, ...'. Every name in it is a compose SERVICE, so the derivation reads 'dashboard' as a browser surface and proposes e2e; what the criterion actually needs is the stack up. This is the row that the one-directional config rule cannot get right, and the reason that rule is allowed to stay simple.
+  SRS-ARCH-005         solo         # AC names no shared resource; tests in-process (test_orchestrator_resource_profile.py, test_architecture.py)
+  SRS-BT-002           solo         # AC names no shared resource; tests in-process (test_backtest_cost.py, test_backtest_cost_contract.py)
+  SRS-BT-003           solo         # AC names no shared resource; tests in-process (test_sim_shared_cost.py, test_sim_cost_contract.py)
+  SRS-BT-006           solo         # AC names no shared resource; tests in-process (test_factor_tear_sheet.py, test_factor_analysis_contract.py)
+  SRS-BT-007           solo         # AC names no shared resource; tests in-process (test_backtest_parameter_sweep.py, test_backtest_sweep_contract.py)
+  SRS-BT-008           solo         # AC names no shared resource; tests in-process (test_walk_forward.py, test_backtest_sweep_contract.py)
+  SRS-BT-009           solo         # AC names no shared resource; tests in-process (test_dashboard_backtests_wiring.py, test_backtest_record_query.py)
+  SRS-BT-010           solo         # AC names no shared resource; tests in-process (test_backtest_determinism.py, test_determinism_contract.py)
+  SRS-DATA-004         integration  # OPERATOR: AC requires option-chain SNAPSHOT RECORDS with bid/ask/volume/open interest/IV — real provider data, which no fixture earns.
+  SRS-DATA-005         integration  # OPERATOR: AC: fundamentals 'for US equities are INGESTED' — needs the Sharadar feed. The AC names no resource word the derivation looks for.
+  SRS-DATA-010         integration  # OPERATOR: AC: 'at the default 80 percent HIGH-WATER MARK, eviction prioritizes old inactive data' — the SSD/NAS tiers, phrased without naming them.
+  SRS-DATA-011         integration  # TESTS: a discovered test is marked @pytest.mark.integration (test_coverage_gate.py, test_store_history_binding.py)
+  SRS-DATA-012         integration  # TESTS: a discovered test is marked @pytest.mark.integration (test_store_history_binding.py, test_coverage_gate_domain.py)
+  SRS-DATA-015         solo         # AC names no shared resource; tests in-process (test_data015_schema_safety.py, test_data015_schema_invariants.py)
+  SRS-DATA-016         integration  # AC names 'sharadar' and tests agree (test_ingestion_idempotency.py, test_data011_coverage_gate.py)
+  SRS-DATA-020         integration  # OPERATOR: Live POSITIONS are internal state adjusted from a corporate-action feed; unlike SRS-DATA-019's resting live ORDERS, nothing has to exist at the broker. The provider feed is the real external need.
+  SRS-DATA-021         integration  # OPERATOR: AC is entirely about PAPER strategy virtual positions; 'live trading' appears only as 'the same corporate-action data source AS live trading'. Naming a shared source is not requiring the thing that shares it.
+  SRS-ERR-001          solo         # AC names no shared resource; tests in-process (test_err001_broker_envelope.py, test_err001_error_cli.py)
+  SRS-EXE-002          solo         # AC names no shared resource; tests in-process (test_kill_switch_activation.py, test_order_routing_dispatch.py)
+  SRS-EXE-003          live-ib      # OPERATOR: AC: 'acknowledged in both LIVE ADAPTER TEST MODE and internal simulation'. The derivation read only the simulation half and proposed solo.
+  SRS-EXE-004          live-ib      # OPERATOR: AC: 'submitted as one composite order in IB LIVE TEST MODE'. Proposed e2e on the trailing 'displayed as one composite dashboard position' — the dashboard is real but the gateway is the binding constraint.
+  SRS-EXE-006          live-ib      # TESTS: a discovered test is marked @pytest.mark.live_broker (test_data020_live_position_corp_action.py, test_err001_broker_envelope.py)
+  SRS-LOG-001          e2e          # OPERATOR: AC: 'both log classes are VIEWABLE FROM THE DASHBOARD'. 'ib gateway connection state changes' is one of eight log SOURCES the records must cover, not a resource the verification needs.
+  SRS-MD-001           live-ib      # OPERATOR: AC: 'no more than 100 ms additional latency RELATIVE TO THE IB FEED'. A latency budget measured against a real feed cannot be established without one; the consolidation half alone looks solo.
+  SRS-MD-002           solo         # AC names no shared resource; tests in-process (test_subscription_limit_block.py, test_subscription_fanout_contract.py)
+  SRS-MD-004           solo         # AC names no shared resource; tests in-process (test_sequence_gap_stale.py, test_stale_data_block.py)
+  SRS-MD-005           integration  # OPERATOR: AC: 'if IB GATEWAY REMAINS UNAVAILABLE after the window, standard connectivity loss handling occurs'. The criterion is the behaviour during an outage — proven by fault injection against a dead port, which needs no gateway.
+  SRS-MD-006           live-ib      # AC names 'ib account' and tests agree (test_readiness_runtime_cli.py, test_dashboard_safety.py)
+  SRS-NOTIF-001        integration  # OPERATOR: The AC states only the 60-second dispatch budget, so the text looks solo — but REQUIRED_CHANNELS is Email AND Sms enforced fail-closed against real relays. See its external_blocker.
+  SRS-ORCH-002         solo         # AC names no shared resource; tests in-process (test_orchestrator_resource_profile.py, test_strategy_container_least_privilege.py)
+  SRS-REL-001          integration  # OPERATOR: AC names the gateway only in 'scheduled IB GATEWAY RESTART EXCLUDED per SyRS NFR-R1' — an exclusion from the availability window. The measurement itself is an analysis over a log store. (See external_blocker: it also needs 30 real market days.)
+  SRS-RESV-001         integration  # OPERATOR: AC: 'one live strategy and 30 PAPER STRATEGIES RUN ON THE REFERENCE HARDWARE BASELINE' — 31 real containers.
+  SRS-RESV-003         solo         # AC names no shared resource; tests in-process (test_dashboard_hot_swap_wiring.py, test_hot_swap_trigger_surface.py)
+  SRS-RESV-004         live-ib      # OPERATOR: AC: 'CANCELS RESTING IB ORDERS, submits liquidation orders'. Proposed e2e — no AC_LIVE_IB phrase covers 'resting ib orders', and 'dashboard' matched first.
+  SRS-RESV-005         integration  # OPERATOR: AC: 'the promoted strategy STARTS LIVE' — needs the orchestrator lifecycle. 'no open ib positions' is correctly read as negated, which then left nothing else.
+  SRS-SAFE-003         solo         # AC names no shared resource; tests in-process (test_connectivity_blocked.py, test_connectivity_notification.py)
+  SRS-SDK-003          solo         # AC names no shared resource; tests in-process (test_asset_class_invariant.py, test_strategy_api_subscriptions_contract.py)
+  SRS-SDK-005          solo         # AC names no shared resource; tests in-process (test_live_state_recovery.py, test_warmup_replay.py)
+  SRS-SDK-006          solo         # AC names no shared resource; tests in-process (test_indicators_parity.py, test_indicators_property.py)
+  SRS-SDK-007          solo         # AC names no shared resource; tests in-process (test_store_history_consolidation.py, test_consolidation_parity.py)
+  SRS-SDK-008          solo         # OPERATOR: AC: 'renko and range bars can be generated from tick or minute-resolution input data' — pure computation over input bars. It fell to the conservative fallback only because no test names it.
+  SRS-SDK-009          solo         # AC names no shared resource; tests in-process (test_api_documentation.py, test_strategy_api_documentation_contract.py)
+  SRS-SEC-001          integration  # AC names 'sms' and tests agree (test_credential_redaction.py, test_jupyter_isolation_inspect.py)
+  SRS-SEC-002          integration  # OPERATOR: SECURITY.md verifies the bind policy by running `docker inspect` on a real container under ATP_RUN_INTEGRATION=1. 'dashboard/api' in the AC is a compose service name, not a browser.
+  SRS-SEC-003          integration  # AC names 'container' and tests agree (test_jupyter_credential_isolation.py, test_strategy_container_least_privilege.py)
+  SRS-SIM-001          solo         # AC names no shared resource; tests in-process (test_composite_order.py, test_order_routing_wiring.py)
+  SRS-SIM-002          solo         # AC names no shared resource; tests in-process (test_order_event_category.py, test_sim001_paper_order_cli.py)
+  SRS-SIM-003          solo         # AC names no shared resource; tests in-process (test_sim001_paper_order_cli.py, test_sim003_ledger_cli.py)
+  SRS-SIM-004          integration  # OPERATOR: AC: 'restored within 30 seconds of CONTAINER RESTART, excluding warm-up'. The exclusion applies to the warm-up, not the container — this row is exactly why trailing negators were removed.
+  SRS-UI-004           solo         # AC names no shared resource; tests in-process (test_dashboard_backtests_wiring.py, test_dashboard_refresh.py)
+  UI-1                 e2e          # OPERATOR: AC: 'user can inspect ... WITHOUT SSH ACCESS' — the criterion is dashboard reachability. The real IB values it displays are SRS-UI-003's to prove; UI-1 blocks on it.
+  UI-3                 solo         # AC names no shared resource; tests in-process (test_dashboard_backtests_wiring.py, test_dashboard_backtests.py)
+  UI-4                 solo         # AC names no shared resource; tests in-process (test_dashboard_killswitch_wiring.py, test_operator_interface_runtime_wiring.py)
+  UI-5                 solo         # AC names no shared resource; tests in-process (test_dashboard_hot_swap_wiring.py, test_hot_swap_demotion_backend.py)

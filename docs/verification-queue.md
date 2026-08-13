@@ -173,9 +173,11 @@ the scarcest resource on the board.
 
 23 rows where no text rule gets it right without breaking a different row live in
 **`tools/verification_method_overrides.json`**, each with the sentence of AC that
-decided it. That file is *tracked*, so `propose --rederive` cannot silently undo a
-decision and the reason outlives the session that made it — the review file at
-`.harness/verification-method-review.txt` is gitignored and could do neither.
+decided it. `propose` regenerates `.harness/verification-method-review.txt` from
+scratch every run — method column and `# why` comment alike — so a hand edit there
+survives only until the next `--rederive`, and its reason survives not at all. The
+review file is a worksheet; the override file is the record, and it is validated:
+a bad method or a missing reason is refused.
 
 ```
 tools/classify_verification.py propose --rederive --from-tests   # re-derive

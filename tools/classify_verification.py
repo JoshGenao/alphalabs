@@ -32,9 +32,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FEATURE_FILE = ROOT / "feature_list.json"
 REVIEW_FILE = ROOT / ".harness" / "verification-method-review.txt"
-#: Operator decisions that outrank the derivation, WITH their reasons. Tracked, so
-#: a later `--rederive` cannot silently undo one and the reason outlives the
-#: session that made it — the review file is gitignored and could do neither.
+#: Operator decisions that outrank the derivation, WITH their reasons.
+#:
+#: Why this exists when REVIEW_FILE is also tracked: `propose` REGENERATES the
+#: review file from scratch every run, method column and `# why` comment alike, so
+#: a hand-edited row survives only until the next `--rederive` and its reason
+#: survives not at all. The review file is a worksheet; this is the record. It is
+#: also validated — a bad method or a missing reason is refused, which a free-text
+#: column cannot do.
 OVERRIDE_FILE = ROOT / "tools" / "verification_method_overrides.json"
 
 VALID = ("solo", "integration", "live-ib", "e2e")
