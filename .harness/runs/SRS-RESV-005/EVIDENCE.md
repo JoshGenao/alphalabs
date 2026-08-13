@@ -76,30 +76,30 @@ python -m pytest tests/e2e/test_hot_swap_promotion_browser.py -q -p no:randomly
 
 ```
 ..                                                                       [100%]
-2 passed in 6.58s
+2 passed in 6.26s
 ```
 
 </details>
 
-![UI-5 Hot-Swap pane before the swap: reservoir-a is live](artifacts/step2-01-l5oj02.png)
+![UI-5 Hot-Swap pane before the swap: reservoir-a is live](artifacts/step2-01-1vtbo0.png)
 
 *UI-5 Hot-Swap pane before the swap: reservoir-a is live*
 
-![control ARMED — confirm within 5s to demote and promote](artifacts/step2-02-l5oj02.png)
+![control ARMED — confirm within 5s to demote and promote](artifacts/step2-02-1vtbo0.png)
 
 *control ARMED — confirm within 5s to demote and promote*
 
-![after the swap: reservoir-b is live, promoted via the dashboard](artifacts/step2-03-l5oj02.png)
+![after the swap: reservoir-b is live, promoted via the dashboard](artifacts/step2-03-1vtbo0.png)
 
 *after the swap: reservoir-b is live, promoted via the dashboard*
 
-🎬 [full session recording](artifacts/step2-page@13859720cf69a8c66474981538ddab9f.webm) — 0.3 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
+🎬 [full session recording](artifacts/step2-page@c6c017d8c362741f51b6335e2ff89686.webm) — 0.3 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
 
-![unreadable designation: the pane refuses to name a live strategy](artifacts/step2-01-8hp8j_.png)
+![unreadable designation: the pane refuses to name a live strategy](artifacts/step2-01-m22qvj.png)
 
 *unreadable designation: the pane refuses to name a live strategy*
 
-🎬 [full session recording](artifacts/step2-page@db5b6ff2682f331b25405116bf617b77.webm) — 0.3 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
+🎬 [full session recording](artifacts/step2-page@657c475363e14b2db3ca78a784fd9720.webm) — 0.3 MB. GitHub does not play video from a repo path; download it, or open the PR's CI artifact.
 
 
 ### Step 3
@@ -116,7 +116,7 @@ python -m pytest tests/domain/test_hot_swap_promotion.py -q
 
 ```
 ............................                                             [100%]
-28 passed in 1.56s
+28 passed in 1.33s
 ```
 
 </details>
