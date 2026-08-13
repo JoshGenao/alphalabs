@@ -2,7 +2,7 @@
   "created": "2026-08-11T02:19:14+00:00",
   "critic": {
     "deterministic": {
-      "ts": "2026-08-11T13:57:28+00:00",
+      "ts": "2026-08-13T05:18:30+00:00",
       "verdict": "approve"
     },
     "judgment": {
@@ -16,7 +16,7 @@
   "gates": {
     "mutation_verify": {
       "status": "pass",
-      "ts": "2026-08-11T13:57:28+00:00"
+      "ts": "2026-08-13T05:18:30+00:00"
     }
   },
   "steps": [
@@ -27,24 +27,84 @@
       "command": "./init.sh",
       "executed": true,
       "exit_code": 0,
-      "head": "642b38d228f2edd02dfd978e3ab08a83f4997f26",
+      "head": "67e565dd34a5627585ee1a16e07058ce91e9b256",
       "n": 1,
       "observed": "\u2192 Installing dependencies...\n  Using /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-RESV-005/.venv/bin/python (Python 3.13)\n\u2192 Starting dev server...\n  A server is already reachable at http://127.0.0.1:3010; using it for smoke tests.\n\u2192 Waiting for server...\n\u2192 Running baseline smoke test...\n\u2192 Running contract checks (scope=env)...\n\u2192 contract checks (scope=env, 17 check(s))\n  \u00b7 architecture_check\n  \u00b7 dependency_boundary_check\n  \u00b7 config_check\n  \u00b7 startup_readiness_gate_check\n  \u00b7 startup_readiness_runtime_check\n  \u00b7 ib_adapter_check\n  \u00b7 rest_api_check\n  \u00b7 websocket_api_check\n  \u00b7 cli_check\n  \u00b7 operator_workflow_surface_check\n  \u00b7 operator_interface_runtime_check\n  \u00b7 log_record_check\n  \u00b7 log_persistence_check\n  \u00b7 subscription_fanout_check\n  \u00b7 sim_halt_check\n  \u00b7 strategy_api_indicators_check\n  \u00b7 strategy_api_documentation_check\n\u2713 17/17 contract check(s) passed (scope=env)\n\u2713 Environment ready",
       "status": "pass",
       "step_text": "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "steps_digest": "5c8abf5ba8070593",
-      "ts": "2026-08-11T13:57:25+00:00"
+      "ts": "2026-08-13T05:18:23+00:00"
     },
     {
-      "command": "pytest tests/e2e/test_hot_swap_promotion.py (browser+REST e2e; NOT RUN) / pytest tests/boundary/test_hot_swap_execution_surface.py (REST half, RUN)",
-      "executed": false,
-      "head": "642b38d228f2edd02dfd978e3ab08a83f4997f26",
+      "argv": [
+        "python",
+        "-m",
+        "pytest",
+        "tests/e2e/test_hot_swap_promotion_browser.py",
+        "-q",
+        "-p",
+        "no:randomly"
+      ],
+      "artifacts": [
+        {
+          "bytes": 98634,
+          "caption": "UI-5 Hot-Swap pane before the swap: reservoir-a is live",
+          "kind": "image",
+          "name": "step2-01-l5oj02.png",
+          "sha256": "67d888d6f956d174",
+          "ts": "2026-08-13T05:18:27+00:00"
+        },
+        {
+          "bytes": 104651,
+          "caption": "control ARMED \u2014 confirm within 5s to demote and promote",
+          "kind": "image",
+          "name": "step2-02-l5oj02.png",
+          "sha256": "8a089f3ba8030e96",
+          "ts": "2026-08-13T05:18:27+00:00"
+        },
+        {
+          "bytes": 96194,
+          "caption": "after the swap: reservoir-b is live, promoted via the dashboard",
+          "kind": "image",
+          "name": "step2-03-l5oj02.png",
+          "sha256": "5a0ae0e70efd0e26",
+          "ts": "2026-08-13T05:18:27+00:00"
+        },
+        {
+          "bytes": 314525,
+          "caption": "full session recording",
+          "kind": "video",
+          "name": "step2-page@13859720cf69a8c66474981538ddab9f.webm",
+          "sha256": "c363064245318a4e",
+          "ts": "2026-08-13T05:18:27+00:00"
+        },
+        {
+          "bytes": 112668,
+          "caption": "unreadable designation: the pane refuses to name a live strategy",
+          "kind": "image",
+          "name": "step2-01-8hp8j_.png",
+          "sha256": "f54686a9e3c3b61c",
+          "ts": "2026-08-13T05:18:30+00:00"
+        },
+        {
+          "bytes": 286908,
+          "caption": "full session recording",
+          "kind": "video",
+          "name": "step2-page@db5b6ff2682f331b25405116bf617b77.webm",
+          "sha256": "b397f8602ae9da50",
+          "ts": "2026-08-13T05:18:30+00:00"
+        }
+      ],
+      "command": "python -m pytest tests/e2e/test_hot_swap_promotion_browser.py -q -p no:randomly",
+      "executed": true,
+      "exit_code": 0,
+      "head": "67e565dd34a5627585ee1a16e07058ce91e9b256",
       "n": 2,
-      "observed": "PARTIAL \u2014 REST half RUN and green at this HEAD (45 passed in 22.97s). BROWSER half NOT RUN and cannot pass yet: the dashboard stack binds fixed shared resources the parallel-agent protocol forbids, and the UI-5 promote control is inert until SRS-RESV-002's Reservoir ranking names a candidate. tests/e2e/test_hot_swap_promotion.py is written and gated with the browser case explicitly skipped naming SRS-RESV-002. Operator must run this step to close; passes stays false.",
-      "status": "fail",
+      "observed": "..                                                                       [100%]\n2 passed in 6.58s",
+      "status": "pass",
       "step_text": "Step 2: Exercise SRS-RESV-005 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
       "steps_digest": "5c8abf5ba8070593",
-      "ts": "2026-08-11T13:58:03+00:00"
+      "ts": "2026-08-13T05:18:30+00:00"
     },
     {
       "argv": [
@@ -57,13 +117,13 @@
       "command": "python -m pytest tests/domain/test_hot_swap_promotion.py -q",
       "executed": true,
       "exit_code": 0,
-      "head": "642b38d228f2edd02dfd978e3ab08a83f4997f26",
+      "head": "67e565dd34a5627585ee1a16e07058ce91e9b256",
       "n": 3,
-      "observed": "..........................                                               [100%]\n26 passed in 1.28s",
+      "observed": "............................                                             [100%]\n28 passed in 1.56s",
       "status": "pass",
       "step_text": "Step 3: Verify acceptance criteria: The promoted strategy starts live with no open IB positions, preserves prior paper performance history, and uses the same strategy code/API behavior.",
       "steps_digest": "5c8abf5ba8070593",
-      "ts": "2026-08-11T13:57:26+00:00"
+      "ts": "2026-08-13T05:18:44+00:00"
     },
     {
       "argv": [
@@ -73,14 +133,14 @@
       "command": "python tools/hot_swap_promotion_check.py",
       "executed": true,
       "exit_code": 0,
-      "head": "642b38d228f2edd02dfd978e3ab08a83f4997f26",
+      "head": "67e565dd34a5627585ee1a16e07058ce91e9b256",
       "n": 4,
-      "observed": "SRS-RESV-005 PASS\n- DemotionReceipt: private fields ['demoting_strategy_id', 'candidate_strategy_id', 'elapsed_seconds'], derives neither ['Clone', 'Default'], sole constructor `mint` is pub(crate) and refuses a promotion_allowed:false acceptance\n- `execute_hot_swap` is the sole public path: resolve_demotion -> DemotionReceipt::mint -> `promote_after_demotion` (pub(crate), receipt by value)\n- `promote_after_demotion`: 14 ordered guards present, exactly one `designate(` write, positions probed before it, drift rolled back after it\n- ports ['LivePositionProbe', 'PaperHistorySource', 'HotSwapPromotionEventSink'] are observation-only (no promote/designate/demote method)\n- 2 compile_fail doctests: struct-literal forge and `DemotionReceipt::mint` are both proven unreachable from an external crate\n- REST: `POST /api/v1/hot-swap` served_by=SRS-RESV-005, closed vocabularies emitted, subprocess budget 90.0s > 60s demotion timeout\n- safety-input tier: opt-in at BOTH layers (`--allow-fixture-safety-inputs` before the state read; `fixture_safety_inputs` or a SAFETY_INPUTS_UNAVAILABLE 501 naming ['SRS-EXE-006', 'SRS-ORCH-004'])\n- swap serialized: `trigger_config_store::ExclusiveGuard::acquire_creating` bound for the lifetime of the whole load -> execute -> save sequence in cmd_swap\n- stale-deferral collector: 7 claim patterns, 9 files, 0 matches\n- cargo test -p atp-orchestrator --test resv_5_hot_swap_promotion + --doc: PASS",
+      "observed": "SRS-RESV-005 PASS\n- DemotionReceipt: private fields ['demoting_strategy_id', 'candidate_strategy_id', 'elapsed_seconds'], derives neither ['Clone', 'Default'], sole constructor `mint` is pub(crate) and refuses a promotion_allowed:false acceptance\n- `execute_hot_swap` is the sole public path: resolve_demotion -> DemotionReceipt::mint -> `promote_after_demotion` (pub(crate), receipt by value)\n- `promote_after_demotion`: 14 ordered guards present, exactly one `designate(` write, positions probed before it, drift rolled back after it\n- ports ['LivePositionProbe', 'PaperHistorySource', 'HotSwapPromotionEventSink'] are observation-only (no promote/designate/demote method)\n- 2 compile_fail doctests: struct-literal forge and `DemotionReceipt::mint` are both proven unreachable from an external crate\n- REST: `POST /api/v1/hot-swap` served_by=SRS-RESV-005, closed vocabularies emitted, subprocess budget 90.0s > 60s demotion timeout\n- safety-input tier: opt-in at BOTH layers (`--allow-fixture-safety-inputs` before the state read; `fixture_safety_inputs` or a SAFETY_INPUTS_UNAVAILABLE 501 naming ['SRS-EXE-006', 'SRS-ORCH-004'])\n- swap serialized: `trigger_config_store::ExclusiveGuard::acquire_creating` bound for the lifetime of the whole load -> execute -> save sequence in cmd_swap\n- stale-deferral collector: 8 claim patterns, 9 files, 0 matches\n- cargo test -p atp-orchestrator --test resv_5_hot_swap_promotion + --doc: PASS",
       "status": "pass",
       "step_text": "Step 4: Record objective evidence from scenario test and leave passes false until the evidence proves the requirement end to end.",
       "steps_digest": "5c8abf5ba8070593",
-      "ts": "2026-08-11T13:57:27+00:00"
+      "ts": "2026-08-13T05:18:45+00:00"
     }
   ],
-  "updated": "2026-08-11T13:58:03+00:00"
+  "updated": "2026-08-13T05:18:45+00:00"
 }
