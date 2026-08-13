@@ -756,3 +756,67 @@ def test_a_pre_demotion_refusal_never_prints_a_confirmed_demotion(binaries, pape
             "a refusal that never ran a demotion is neither flat-confirmed NOR "
             "demotion-pending: nothing started, so no lockout exists to wait on"
         )
+
+
+# ----------------------------------------------------------------------------- #
+# 8. The pane reads the AUTHORITY, over the real binary
+# ----------------------------------------------------------------------------- #
+
+
+def test_the_pane_reads_the_live_strategy_from_the_real_designation_record(
+    binaries, paper_store, tmp_path, monkeypatch
+):
+    """SRS-RESV-005's own pane cell, driven by the REAL binary over a REAL record.
+
+    Safety-relevant because the promote control is gated on this cell: a pane that
+    reported the wrong live strategy — or reported one when the record was unreadable
+    — would arm a swap aimed at a strategy that is not actually live, which is exactly
+    what the gate's execution-time revalidation exists to catch. Pane and gate must
+    agree, and here they are both driven by the same durable record.
+    """
+    from atp_dashboard import HotSwapStatusProvider
+    from atp_hotswap import CliHotSwapPromotionSource, CompositeHotSwapStatusSource
+
+    monkeypatch.setenv("ATP_HOT_SWAP_PROMOTE_BINARY", str(binaries[PROMOTE_BIN]))
+    state = tmp_path / "live.state"
+    _seed_live(state, DEMOTING)
+
+    def snapshot():
+        source = CompositeHotSwapStatusSource(
+            promotion=CliHotSwapPromotionSource(state, binary=binaries[PROMOTE_BIN])
+        )
+        return HotSwapStatusProvider(source=source).hot_swap_snapshot()
+
+    before = snapshot()
+    assert before["ok"] is True
+    assert before["current_live_strategy_id"]["value"] == DEMOTING
+
+    # Run a REAL swap through the REAL gate, then re-read the pane.
+    proof = _lines(_swap(binaries, state=state, paper=paper_store))
+    assert proof["promotion"] == "PROMOTED"
+
+    after = snapshot()
+    assert after["ok"] is True
+    # The pane followed the authority, because it IS the authority's record.
+    assert after["current_live_strategy_id"]["value"] == CANDIDATE
+
+
+def test_an_unreadable_designation_never_renders_as_a_live_strategy(
+    binaries, paper_store, tmp_path
+):
+    """A foreign or truncated record must not resolve the cell that gates the control."""
+    from atp_dashboard import HotSwapStatusProvider
+    from atp_hotswap import CliHotSwapPromotionSource, CompositeHotSwapStatusSource
+
+    state = tmp_path / "live.state"
+    state.write_text("SOME-OTHER-TOOLS-FORMAT\ndesignated\treservoir-a\n")
+
+    source = CompositeHotSwapStatusSource(
+        promotion=CliHotSwapPromotionSource(state, binary=binaries[PROMOTE_BIN])
+    )
+    snap = HotSwapStatusProvider(source=source).hot_swap_snapshot()
+
+    assert snap["ok"] is False, "an unreadable record must surface as a pane error"
+    assert snap["current_live_strategy_id"]["value"] is None
+    # The strategy named in the tampered file must not leak through anywhere.
+    assert "reservoir-a" not in str(snap["current_live_strategy_id"])

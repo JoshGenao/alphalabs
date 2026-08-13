@@ -51,6 +51,7 @@ from .heartbeat import (
 )
 from .hotswap import (
     CliHotSwapDemotionSource,
+    CliHotSwapPromotionSource,
     CliHotSwapTriggerSource,
     CompositeHotSwapStatusSource,
     HotSwapStatusProvider,
@@ -514,11 +515,31 @@ def mount_default_dashboard(
     # is absent and those cells keep their honest deferred placeholder — an
     # unconfigured dashboard must never report "no demotion is pending", because it
     # does not know.
+    # SRS-RESV-005: ATP_HOT_SWAP_DESIGNATION_STATE names the durable live-designation
+    # snapshot resv005_hot_swap_promote_cli maintains — the record the promotion gate
+    # itself writes. Setting it resolves the pane's current_live_strategy_id cell,
+    # which every prior session rendered as deferred:SRS-RESV-005.
+    #
+    # A THIRD leg for the same reason the demotion one is separate: it answers a
+    # different question from a different file, and a lockout that cannot be read must
+    # not blank a designation that can. Unset, the leg is absent and the cell keeps its
+    # deferred placeholder — a dashboard that cannot read the designation must never
+    # report which strategy is live, because it does not know.
     hot_swap_demotion_state = env.get("ATP_HOT_SWAP_DEMOTION_STATE") or None
-    if hot_swap_demotion_state is not None:
+    hot_swap_designation_state = env.get("ATP_HOT_SWAP_DESIGNATION_STATE") or None
+    if hot_swap_demotion_state is not None or hot_swap_designation_state is not None:
         hot_swap_source = CompositeHotSwapStatusSource(
             triggers=hot_swap_source,
-            demotion=CliHotSwapDemotionSource(hot_swap_demotion_state),
+            demotion=(
+                CliHotSwapDemotionSource(hot_swap_demotion_state)
+                if hot_swap_demotion_state is not None
+                else None
+            ),
+            promotion=(
+                CliHotSwapPromotionSource(hot_swap_designation_state)
+                if hot_swap_designation_state is not None
+                else None
+            ),
         )
     # The SRS-LOG-001 log pane is opt-in on ATP_LOG_DIR, the directory holding
     # the separated `system.jsonl` / `strategy.jsonl` stores that

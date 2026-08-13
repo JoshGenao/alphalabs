@@ -74,6 +74,7 @@ from typing import Protocol, runtime_checkable
 
 from atp_hotswap import (
     CliHotSwapDemotionSource,
+    CliHotSwapPromotionSource,
     CliHotSwapTriggerSource,
     CompositeHotSwapStatusSource,
     HotSwapStatusUnavailable,
@@ -89,6 +90,7 @@ from .provider import DEFERRED
 __all__ = [
     "CHANGEOVER_SEQUENCE",
     "CliHotSwapDemotionSource",
+    "CliHotSwapPromotionSource",
     "CliHotSwapTriggerSource",
     "CompositeHotSwapStatusSource",
     "COOLDOWN_DAYS_DEFAULT",

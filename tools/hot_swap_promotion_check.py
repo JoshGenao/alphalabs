@@ -566,6 +566,12 @@ _STALE_CLAIMS = (
         r"not yet enforced across a \*{0,2}later retry",
         "the cross-attempt lockout is enforced by SRS-RESV-004's store",
     ),
+    # The pane's live-strategy cell now resolves from the durable designation record.
+    (
+        r"no ``SRS-RESV-002``/``004``/``005``/``006`` producer persists a\s+queryable fact yet",
+        "CliHotSwapPromotionSource produces the live-strategy cell and "
+        "CliHotSwapDemotionSource produces the demotion-pending cells",
+    ),
 )
 
 
