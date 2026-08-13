@@ -129,7 +129,7 @@ Full gate: `pytest -m "not integration and not e2e"` → **4989 passed, 0 failed
 
 ## Adversarial rounds
 
-Adversarial rounds: 14
+Adversarial rounds: 16
 (plus 1 hung attempt between r10 and r11, retried — a timeout is an availability failure,
 not a verdict, and the ledger correctly records no zero-finding round.)
 
@@ -183,6 +183,37 @@ Every round found a REAL defect; none was disputed. Severity trended down.
 The reviewer also HUNG once between r10 and r11 (>25 min, no output). Per
 `adversarial-precheck.md` that is an availability failure, not a verdict — it was killed and
 retried, and the ledger correctly shows 11 rows with findings and no zero-finding round.
+
+## Rounds 15-16, and the honest close
+
+* **r15** [medium] my composition comment claimed leg independence the implementation does
+  not provide — both halves feed ONE `live_state`, so a leg that RAISES defers the readable
+  one too. Comment corrected to the real semantics; the peer claim in `atp_hotswap` is
+  ACCURATE and stays, because `trigger_config` and `live_state` are separate methods.
+  [high] SCOPE — harness commits on a feature branch (see below).
+* **r16** [high] and this one was MY fix from r15's phase: carrying artifacts forward let a
+  LATER run stamp the step at a new commit while older screenshots rode along, so the visual
+  gate could certify a dashboard nobody looked at on this code. Artifacts now carry the head
+  they were captured at; the carry-forward and `verify` both require a match. Four regression
+  tests, both directions, each mutation-verified to die to exactly one guard.
+
+**Closed on operator authorization with the verdict recorded verbatim: BLOCK.** The only
+finding left standing is r15's scope objection — the branch carries three harness commits
+(evidence pipeline + browser capture) alongside the feature. They are not incidental: without
+them step 2 cannot file its artifacts at all, and the last one closes a false-green I had
+introduced. They are separate commits and independently revertable. The operator chose to
+record the override rather than split, exactly as for the r4 scoping block. No APPROVE was
+faked and none is claimed.
+
+**Unrelated failure, reported not fixed:** `tests/property/test_indicators_property.py::
+test_bbands_property_matches_batch_talib` began failing during this session — a Bollinger
+Bands parity tolerance ~8% too tight (`1.079e-05 <= 1.000e-05`), found by Hypothesis and
+cached in `.hypothesis/examples`, so it now reproduces deterministically. **Owner:
+SRS-SDK-006**, whose most recent commit on that file is already "bound the BollingerBands
+parity check by TA-Lib's relative precision". My diff touches nothing in indicators/talib.
+Retuning another feature's numeric tolerance is how a real precision bug gets masked, and
+clearing the example DB would be re-running until green — so neither was done. **It leaves
+the CI mirror red on that one step.**
 
 ## Playbook updates
 
