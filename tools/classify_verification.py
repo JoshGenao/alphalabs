@@ -32,6 +32,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FEATURE_FILE = ROOT / "feature_list.json"
 REVIEW_FILE = ROOT / ".harness" / "verification-method-review.txt"
+#: Operator decisions that outrank the derivation, WITH their reasons. Tracked, so
+#: a later `--rederive` cannot silently undo one and the reason outlives the
+#: session that made it — the review file is gitignored and could do neither.
+OVERRIDE_FILE = ROOT / "tools" / "verification_method_overrides.json"
 
 VALID = ("solo", "integration", "live-ib", "e2e")
 
@@ -132,6 +136,37 @@ def _atomic_write(path: Path, text: str) -> None:
 
 def load_features() -> list:
     return json.loads(FEATURE_FILE.read_text(encoding="utf-8"))
+
+
+def load_overrides() -> dict:
+    """Operator decisions, keyed by feature id. Unreadable is fatal, never empty.
+
+    Silently treating a corrupt or missing override file as "no overrides" would
+    re-derive every hand-made call from the templated prose the derivation exists
+    to distrust, and it would do it quietly — CLAUDE.md rule 3.
+    """
+    if not OVERRIDE_FILE.exists():
+        return {}
+    try:
+        raw = json.loads(OVERRIDE_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"✗ {OVERRIDE_FILE.name} is corrupt: {exc}") from exc
+    out = {}
+    for fid, entry in raw.items():
+        if fid.startswith("$"):  # $comment and friends
+            continue
+        method = str((entry or {}).get("method") or "").strip()
+        if method not in VALID:
+            raise SystemExit(
+                f"✗ {OVERRIDE_FILE.name}: {fid} has method {method!r}, expected one of {VALID}"
+            )
+        if not str((entry or {}).get("why") or "").strip():
+            raise SystemExit(
+                f"✗ {OVERRIDE_FILE.name}: {fid} has no 'why'. An override with no "
+                f"reason is the override this file exists to replace."
+            )
+        out[fid] = entry
+    return out
 
 
 def method_text(feat: dict) -> str:
@@ -251,42 +286,235 @@ def derive(feat: dict, observed: dict[str, str] | None = None) -> tuple[str, str
     )
 
 
+# ---------------------------------------------------------------------------
+# Deriving from the ACCEPTANCE CRITERION, not the template
+# ---------------------------------------------------------------------------
+# The whole file's problem is that ``steps[]`` is generated: steps 1, 2 and 4 are
+# boilerplate shared by dozens of features, which is how "dashboard" matched 47 and
+# " ib " matched 32. Step 3 is different — it is a verbatim copy of the SRS
+# acceptance-criteria cell, and it is the ONLY feature-specific prose in the record.
+# It is also the thing `passes: true` actually asserts. So it, not the template,
+# decides.
+#
+# Phrases below were derived by profiling all 120 ACs rather than guessed: of the
+# corpus, 27 name a dashboard, 9 a container, 8 a live strategy, 7 the NAS tier,
+# 6 the IB Gateway, 5 Jupyter.
+AC_LIVE_IB = (
+    "ib gateway",
+    "interactive brokers",
+    "submit to ib",
+    "ib-bound",
+    "live order",
+    "live trading",
+    "paper account",
+    "broker fill",
+    "broker acknowledgement",
+    "from broker",
+    "ib equity",
+    "ib account",
+    "ib status",
+)
+AC_E2E = (
+    "dashboard",
+    "browser",
+    "jupyter",
+    "notebook",
+    "displayed",
+    "is displayed",
+    "are displayed",
+    "shows",
+    "shown",
+    "web ui",
+)
+AC_INTEGRATION = (
+    "container",
+    "docker",
+    "nas",
+    "ssd",
+    " tier",
+    "sharadar",
+    "databento",
+    "provider data",
+    "market data feed",
+    "restart",
+    "reboot",
+    "proxmox",
+    "email and sms",
+    "email",
+    "sms",
+    "ptp",
+    "8,000+",
+    "retention",
+    "rolling 30-day",
+)
+
+
+def ac_text(feat: dict) -> str:
+    """The acceptance criterion alone — step 3, stripped of its template prefix."""
+    steps = feat.get("steps") or []
+    if len(steps) < 3:
+        return ""
+    return " " + re.sub(r"^Step 3: Verify acceptance criteria:\s*", "", steps[2]).lower() + " "
+
+
+# A resource NAMED is not a resource NEEDED. A third of the ACs that mention IB
+# mention it to say the system must NOT touch it — "paper strategy orders never
+# create ib orders" (SRS-EXE-002), "jupyter ... cannot submit live orders"
+# (SRS-SEC-004), "independent of ib account positions" (SRS-SIM-003), "without
+# access to live order submission" (SRS-RES-002). Those criteria are proven by
+# showing nothing reached the gateway, which needs no gateway. Reading them as
+# live-ib is the exact inverse of the old " ib " keyword scan, and it costs the
+# scarcest resource on the board: an operator's live window.
+#
+# Same for a mention that is about configuration or documentation rather than a
+# session — SRS-ARCH-004's "ib gateway integration configuration" is a compose
+# entry (and `phase1-ib-gateway` is a `sleep 3600` placeholder), and SRS-REL-001
+# names the gateway restart only to EXCLUDE it from an availability window.
+NEGATORS = (
+    "never",
+    "cannot",
+    "can not",
+    "without",
+    "independent of",
+    "no access",
+    "denied",
+    "blocked from",
+    "prevented",
+    # Refusing a live submission is proven by showing the refusal, not by having a
+    # gateway to refuse against — ERR-2's "reject live order submission with
+    # CONNECTIVITY_BLOCKED" is a fault-injection criterion. Safe alongside
+    # SRS-EXE-001, whose first un-negated IB phrase ("submit to ib") comes earlier
+    # than its "all other IB-bound attempts are rejected" clause.
+    "reject",
+    "refuse",
+)
+# NO TRAILING NEGATORS. Scanning behind the phrase looked attractive — SRS-REL-001
+# names the gateway only in "scheduled IB Gateway restart EXCLUDED per NFR-R1" — but
+# English puts "excluding" after unrelated nouns just as often, and SRS-SIM-004's
+# "restored within 30 seconds of container restart, EXCLUDING warm-up" was
+# neutralised by it: the exclusion applies to the warm-up, not the container, and
+# the feature silently became `solo`. Both phrases put the negator ~10 characters
+# behind the match, so no window separates them. A rule that turns one correct
+# non-solo call into a wrong solo one is worse than the miss it fixes — `solo` is
+# the permissive answer. REL-001 is corrected in OVERRIDES instead, where a human
+# reason is attached to it.
+CONTEXTUAL = ("configuration", "config", "documents", "documented", "documentation")
+
+#: How far back to look for a negator. Long enough to span "paper strategy orders
+#: never create ib orders", short enough not to reach the previous clause.
+NEGATION_WINDOW = 60
+
+#: CONTEXTUAL is checked ONLY IMMEDIATELY AFTER the phrase — the "<noun>
+#: configuration" form — and nowhere else. A negator governs its whole clause
+#: ("paper strategy orders NEVER create ib orders", 30 characters apart), but a
+#: configuration qualifier binds to one noun, and scanning for it in either
+#: direction cannot be made to work here: in SRS-ARCH-004's "…ib gateway
+#: integration CONFIGURATION, ssd paths, and nas path" the same word sits 20
+#: characters after `ib gateway` (where it belongs) and 19 characters before `ssd`
+#: (where it does not), so no window separates the two. Anything the one-directional
+#: rule then gets wrong belongs in OVERRIDE_FILE with a human's reason attached —
+#: which is where SRS-ARCH-004 itself ended up.
+CONTEXT_WINDOW = 20
+
+
+def _neutralised_by(hay: str, idx: int, phrase: str) -> str:
+    """The marker that makes ``phrase`` at ``idx`` not a real dependency, or "".
+
+    A negator counts only BEFORE the phrase, at clause scope ("paper strategy
+    orders NEVER create ib orders"). A configuration qualifier counts only
+    IMMEDIATELY AFTER it — the "<noun> configuration" form — because the
+    "configuration for <noun>" form cannot be distinguished from the next clause's
+    subject; see CONTEXT_WINDOW.
+    """
+    before = hay[max(0, idx - NEGATION_WINDOW) : idx]
+    for marker in NEGATORS:
+        if marker in before:
+            return marker
+    near_after = hay[idx : idx + len(phrase) + CONTEXT_WINDOW]
+    for marker in CONTEXTUAL:
+        if marker in near_after:
+            return marker
+    return ""
+
+
+def derive_from_ac(feat: dict) -> tuple[str, str] | None:
+    """(method, phrase) implied by the acceptance criterion, or None if it names nothing.
+
+    Precedence is by BINDING CONSTRAINT, not by severity: a real IB dependency
+    outranks a dashboard one because the single-live invariant is what actually
+    serializes sessions, and a dashboard outranks a container because the e2e
+    stack subsumes the compose stack it runs against.
+
+    A negated or configuration-only mention does not count. When the only IB
+    reference is neutralised the search CONTINUES to the next tier rather than
+    stopping, so "jupyter ... cannot submit live orders" lands on `e2e` — it does
+    genuinely need Jupyter — instead of falling all the way through to `solo`.
+    """
+    hay = ac_text(feat)
+    if not hay.strip():
+        return None
+    for needles, method in (
+        (AC_LIVE_IB, "live-ib"),
+        (AC_E2E, "e2e"),
+        (AC_INTEGRATION, "integration"),
+    ):
+        for n in needles:
+            idx = hay.find(n)
+            if idx < 0 or _neutralised_by(hay, idx, n):
+                continue
+            return (method, n)
+    return None
+
+
 def derive_from_tests(feat: dict) -> tuple[str, str, bool] | None:
-    """Propose from the feature's REAL tests instead of its templated prose.
+    """Propose from the feature's REAL tests and its acceptance criterion.
 
-    CLAUDE.md rule 5: verify the artifact, not the intention. Every rule above
-    reads ``steps[]``, which is generated boilerplate — three of every four entries
-    are template — and that is why the corpus came out solo 9 / non-solo 111. A
-    `@pytest.mark.e2e` on a file named for the feature is a fact about what running
-    it needs.
+    CLAUDE.md rule 5: verify the artifact, not the intention. The two artifacts are
+    the tests that exist (what running the verification needs *today*) and the AC
+    (what ``passes: true`` will assert). They answer different questions and can
+    disagree legitimately — SRS-MD-003's tests are all fixtures and its AC names a
+    real gateway — so when they do, **the AC wins and the row is flagged**. Tests
+    prove the mechanism; the AC quantifies over the deployed path, and closing on
+    the mechanism is exactly the false green this whole gate exists to stop.
 
-    Returns None when no test names the feature, so the caller falls back to the
-    text rules rather than treating "found nothing" as "found solo".
+    Returns None only when NEITHER artifact says anything, so the caller falls back
+    to the text rules rather than treating "found nothing" as "found solo".
     """
     try:
         import verify_queue
     except ImportError:  # pragma: no cover - only if tools/ is not importable
         return None
     disc = verify_queue.discover_tests(feat.get("id", ""))
-    method, why = verify_queue.method_from_markers(disc)
-    if method is None:
+    from_tests, why = verify_queue.method_from_markers(disc)
+    from_ac = derive_from_ac(feat)
+    if from_tests is None and from_ac is None:
         return None
-    files = ", ".join(Path(f).name for f in disc["strong"][:3])
-    # ALWAYS needs_review when the tests disagree with the acceptance criterion's
-    # own words. Tests prove the mechanism; the AC can quantify over the deployed
-    # path — SRS-MD-003's tests are all fixtures and its AC names a real gateway.
-    hay = method_text(feat)
-    contested = method == "solo" and (
-        any(n in hay for n in REAL_IB) or any(n in hay for n in BROWSER + SURFACE)
+
+    files = ", ".join(Path(f).name for f in disc["strong"][:2]) or "no tests found"
+    if from_ac is None:
+        # The AC names no shared resource. That is a positive signal for solo, but
+        # only together with tests that are actually in-process — an AC can be terse
+        # and still be about the deployed path.
+        if from_tests == "solo":
+            return ("solo", f"AC names no shared resource; tests in-process ({files})", False)
+        if from_tests is None:
+            return None
+        return (from_tests, f"TESTS: {why} ({files})", False)
+
+    ac_method, phrase = from_ac
+    if from_tests is None:
+        return (ac_method, f"AC names {phrase!r}; no tests discovered", True)
+    if from_tests == ac_method:
+        return (ac_method, f"AC names {phrase!r} and tests agree ({files})", False)
+    # They disagree. Take the AC and make a human look — this is the row where a
+    # wrong call ships a false green in one direction or wastes an operator window
+    # in the other.
+    return (
+        ac_method,
+        f"REVIEW: AC names {phrase!r} but tests say {from_tests} ({files}) — "
+        f"the AC decides unless the AC is wrong",
+        True,
     )
-    if contested:
-        return (
-            "integration",
-            f"REVIEW: tests say solo ({files}) but the method text names a real "
-            f"resource — read steps[2], the AC decides",
-            True,
-        )
-    return (method, f"TESTS: {why} ({files})", False)
 
 
 def cmd_propose(args) -> int:
@@ -307,11 +535,19 @@ def cmd_propose(args) -> int:
         f"# {'id':<20} {'method':<12} why",
     ]
     observed = observed_serialized()
+    overrides = load_overrides()
     counts: dict[str, int] = {}
     rows: list[tuple[bool, str, str, str]] = []
     for feat in sorted(features, key=lambda f: f["id"]):
         current = str(feat.get("verification_method") or "").strip()
-        if current and not args.rederive:
+        override = overrides.get(feat["id"])
+        if override:
+            # An override IS the review — a human already read this row and wrote
+            # down why. Never flagged, and it wins over `--rederive`, which is the
+            # whole point: the derivation must not be able to quietly reverse a
+            # decision someone made after reading the acceptance criterion.
+            method, why, review = override["method"], f"OPERATOR: {override['why']}", False
+        elif current and not args.rederive:
             method, why, review = current, "already declared", False
         else:
             from_tests = derive_from_tests(feat) if args.from_tests else None

@@ -14,7 +14,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "integration"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-ARCH-002",
@@ -31,7 +31,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-ARCH-003",
@@ -65,7 +65,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "live-ib"
+    "verification_method": "integration"
   },
   {
     "id": "SRS-ARCH-005",
@@ -82,7 +82,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "integration"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-ORCH-001",
@@ -116,7 +116,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-ORCH-003",
@@ -201,7 +201,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "e2e"
+    "verification_method": "integration"
   },
   {
     "id": "SRS-SDK-003",
@@ -218,7 +218,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-SDK-004",
@@ -234,7 +234,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-SDK-005",
@@ -251,7 +251,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-SDK-006",
@@ -268,7 +268,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-SDK-007",
@@ -284,7 +284,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "live-ib"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-SDK-008",
@@ -300,7 +300,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-SDK-009",
@@ -317,7 +317,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-EXE-001",
@@ -349,7 +349,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-EXE-003",
@@ -381,7 +381,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "e2e"
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-EXE-005",
@@ -414,7 +414,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "integration"
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-EXE-007",
@@ -463,7 +463,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "live-ib"
+    "verification_method": "integration"
   },
   {
     "id": "SRS-MD-001",
@@ -479,7 +479,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-MD-002",
@@ -543,7 +543,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "live-ib"
+    "verification_method": "integration"
   },
   {
     "id": "SRS-MD-006",
@@ -560,7 +560,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "integration"
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-MD-007",
@@ -608,7 +608,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-DATA-003",
@@ -689,7 +689,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "integration"
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-DATA-008",
@@ -755,7 +755,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "solo"
+    "verification_method": "integration"
   },
   {
     "id": "SRS-DATA-012",
@@ -854,7 +854,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "integration"
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-DATA-018",
@@ -887,7 +887,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-DATA-020",
@@ -1038,7 +1038,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-BT-008",
@@ -1054,7 +1054,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-BT-009",
@@ -1174,7 +1174,7 @@
     "needs_clarification": false,
     "notes": "SESSION 64: SRS-SIM-001 now passes:true. AC ('Market, limit, stop, stop-limit, equity, option, and multi-leg orders are processed by the simulation engine and create no IB API order calls') names four contexts -- every order type, both asset classes, the multi-leg composite, and the no-IB-route guarantee -- all ALREADY built in crates/atp-simulation/src/paper_order.rs (PaperSimulationEngine::accept_order over a PaperOrderRequest; OrderRouting has exactly one InternalSimulation variant, so 'no IB API order calls' is a COMPILE-TIME guarantee, and the crate depends on neither atp-execution nor atp-adapters) and proven by the pre-existing L5 srs_sim_001_paper_order_intake. The only gap was the operator-demonstrable CLI surface. Closed via crates/atp-simulation/src/bin/sim001_paper_order_cli.rs: `types` routes every SYS-3 order type internally (all-order-types-routed:true), `assets` routes equity+option internally (both-asset-classes-routed:true), `multileg` routes a SYS-4 spread as one atomic composite (composite-routed:true), and `no-broker` sweeps every order shape proving none reaches a brokerage (no-ib-order-calls:true); every --inject fault (empty-symbol/nonpositive-quantity/nonpositive-limit/nonpositive-stop/empty-multileg/single-leg-composite/non-option-composite-leg) fails closed before any routing with no proof line. Driven by L5 srs_sim_001_paper_order_cli (11 tests, fresh processes), L7 tests/domain/test_sim001_paper_order_cli.py, L3 tests/test_sim_order_contract.py PaperOrderCliTest, and tools/sim_order_check.py check_paper_order_cli. The deferred SRS-SIM-002 (fills, itself built/passes:true), SRS-SIM-003 (ledger, itself built/passes:true), SRS-SIM-004 persistence, SRS-EXE-002 orchestrator routing, and the Python host are ADJACENT features, each its own requirement and NOT contexts inside SRS-SIM-001's acceptance criterion.",
     "evidence": "pre-gate",
-    "verification_method": "integration"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-SIM-002",
@@ -1192,7 +1192,7 @@
     "needs_clarification": false,
     "notes": "SESSION 63: SRS-SIM-002 now passes:true. AC ('Market, limit, stop, and stop-limit simulated fills follow SYS-83 defaults and per-strategy configuration; fill volume constraints are enforced') is single-context -- the fill-model engine (crates/atp-simulation/src/fill_model.rs: evaluate_fill over a MarketSnapshot + per-strategy FillModelConfig, the four SYS-83 order-type rules, the two behavior-changing LimitFillModel variants, and the SYS-87b BarVolumeBudget cap single + aggregate) was already built; the only gap was the operator-demonstrable CLI surface. Closed via crates/atp-simulation/src/bin/sim002_fill_cli.rs (defaults/rules/config/volume over the real engine; each emits a non-vacuous :true proof and fails closed before any fill decision on every --inject fault), driven by L5 srs_sim_002_fill_cli + L7 test_sim002_fill_cli.py + L3 test_sim_fill_contract.py + tools/sim_fill_check.py check_fill_cli. The deferred SYS-87a market-hours / SYS-87c stale-data (SRS-MD-004) / SYS-70 live feed / SYS-83b stochastic / SRS-SIM-004 / SRS-EXE-002 / Python host are ADJACENT features, NOT contexts inside this AC.",
     "evidence": "pre-gate",
-    "verification_method": "integration"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-SIM-003",
@@ -1210,7 +1210,7 @@
     "needs_clarification": false,
     "notes": "SESSION 62: SRS-SIM-003 now passes:true. AC ('Quantity, average cost, unrealized P&L, realized P&L, and commission paid are isolated per paper strategy and independent of IB account positions') is single-context -- the per-strategy virtual ledger (crates/atp-simulation/src/virtual_ledger.rs: VirtualPosition's five quantities, StrategyLedger per symbol, VirtualLedgerBook keyed by StrategyId, no broker/atp-execution dependency) is fully built and was already proven by the L5 srs_sim_003_virtual_ledger. Made operator-demonstrable by crates/atp-simulation/src/bin/sim003_ledger_cli.rs: `isolate` opens the SAME symbol under two paper strategies (alpha long+partial-sell, beta short) over real PaperSimulationEngine::simulate_fill -> VirtualLedgerBook::apply_fill, prints all five quantities per strategy, and proves ledger-isolation:true (mutating alpha leaves beta byte-identical while alpha DID change) and account-independent:true (same symbol -> different positions, impossible from one shared IB account); every --inject fault (nonpositive-price/zero-quantity/empty-symbol/nonpositive-mark/negative-commission) fails closed before any mutation (no isolation line) and a non-positive lot is rejected at parse (no vacuous proof). `defaults` shows a fresh book holds zero strategies and no IB account position. Driven by L5 srs_sim_003_ledger_cli (19 tests, fresh processes), L7 tests/domain/test_sim003_ledger_cli.py + the pre-existing test_virtual_ledger_isolation.py, L3 tests/test_virtual_ledger_contract.py LedgerCliTest, and tools/sim_ledger_check.py check_ledger_cli. The prior 'SDK-surface passes:false' deferral was over-conservative: its named owners (SYS-70 live feed, SYS-88 corporate actions/SRS-DATA-021, SRS-SIM-004 persistence, SYS-85 paper metrics, SRS-EXE-002 orchestrator, the Python host) are ADJACENT features, each its own requirement and NOT contexts inside SRS-SIM-003's narrow per-strategy-isolation AC.",
     "evidence": "pre-gate",
-    "verification_method": "integration"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-SIM-004",
@@ -1242,7 +1242,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "e2e"
+    "verification_method": "integration"
   },
   {
     "id": "SRS-RESV-002",
@@ -1275,7 +1275,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-RESV-004",
@@ -1291,7 +1291,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "e2e"
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-RESV-005",
@@ -1307,7 +1307,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "e2e"
+    "verification_method": "integration"
   },
   {
     "id": "SRS-RESV-006",
@@ -1372,7 +1372,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "live-ib"
   },
   {
     "id": "SRS-UI-004",
@@ -1389,7 +1389,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-LOG-001",
@@ -1421,7 +1421,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-ERR-001",
@@ -1439,7 +1439,7 @@
     "needs_clarification": false,
     "notes": "SESSION 67 (passes:true \u2014 verified end-to-end 2026-07-23): the operator-gated live leg PASSED. A real IBKR Gateway 10.40 paper account rejected a nonexistent symbol (ZZZZQQ) with IB code 200 and the SRS-EXE-006 adapter produced an INVALID_SYMBOL StructuredOrderError with the original order unchanged \u2014 crates/atp-orchestrator/tests/srs_err_001_broker_envelope_live.rs under ATP_RUN_INTEGRATION=1 + ib-live-transport, against 127.0.0.1:4002. Reproducible across fresh processes; a negative control pointed at a dead port correctly failed CONNECTIVITY_BLOCKED, proving a real round trip (not a vacuous green). WHAT SHIPPED (SESSION 66): the SyRS SYS-64 broker-validation categories INVALID_SYMBOL / INSUFFICIENT_BUYING_POWER / RATE_LIMITED now have a production construction site proven to arrive inside a StructuredOrderError, via err001_broker_envelope_cli (crates/atp-orchestrator/src/bin \u2014 it lives in the orchestrator because SRS-ARCH-002 forbids atp-execution depending on atp-adapters) driving the REAL ExecutionEngine::route_order -> submit_live_order -> IbBrokerageBridge -> InteractiveBrokersBrokerage -> classify_ib_order_error chain; the only fixture is the transport. Also completed the cross-cutting taxonomy fix the codebase had explicitly deferred TO SRS-ERR-001: eight production sites that reported a validate() failure or an unmapped broker rejection as INVALID_SYMBOL now carry the new ORDER_PARAMETERS_INVALID / BROKER_REJECTED categories, so INVALID_SYMBOL means exactly one thing (the broker says the symbol does not exist) and is producible only by classify_ib_order_error \u2014 enforced by the tests/domain guard test_err001_broker_envelope. Related SYS-64 categories remain their owners': SUBSCRIPTION_LIMIT_REACHED (SRS-MD-002), the live COMPOSITE (combo/BAG) rejection envelope (SRS-EXE-004).",
     "evidence": "pre-gate",
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-NOTIF-001",
@@ -1488,7 +1488,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "live-ib"
+    "verification_method": "integration"
   },
   {
     "id": "SRS-SAFE-003",
@@ -1504,7 +1504,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "live-ib"
+    "verification_method": "solo"
   },
   {
     "id": "SRS-REL-001",
@@ -1605,7 +1605,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "live-ib"
+    "verification_method": "e2e"
   },
   {
     "id": "SRS-PERF-001",
@@ -1638,7 +1638,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "e2e"
   },
   {
     "id": "UI-2",
@@ -1670,7 +1670,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "UI-4",
@@ -1686,7 +1686,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "solo"
   },
   {
     "id": "UI-5",
@@ -1702,7 +1702,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "integration"
+    "verification_method": "solo"
   },
   {
     "id": "UI-6",
@@ -1804,7 +1804,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "API-6",
@@ -1855,7 +1855,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "live-ib"
+    "verification_method": "solo"
   },
   {
     "id": "ERR-2",
@@ -1872,7 +1872,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "live-ib"
+    "verification_method": "e2e"
   },
   {
     "id": "ERR-3",
@@ -1889,7 +1889,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "ERR-4",
@@ -1906,7 +1906,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "ERR-5",
@@ -1923,7 +1923,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "ERR-6",
@@ -1940,7 +1940,7 @@
     "passes": true,
     "needs_clarification": false,
     "evidence": "pre-gate",
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "ERR-7",
@@ -1956,7 +1956,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "e2e"
+    "verification_method": "solo"
   },
   {
     "id": "ERR-8",
@@ -1972,7 +1972,7 @@
     ],
     "passes": false,
     "needs_clarification": false,
-    "verification_method": "e2e"
+    "verification_method": "integration"
   },
   {
     "id": "ERR-9",

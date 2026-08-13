@@ -140,6 +140,54 @@ tool invented would satisfy the human-attestation path with nobody's attestation
 SRS-MD-003's matches include two harness tests that merely name it as an example.
 Read the printed plan, or pass `--only <paths>`.
 
+## verification_method — reviewed 2026-08-12
+
+The field decides whether a feature can ever close as `complete` without a human
+attestation. It had been set from a machine proposal nobody corrected, derived from
+templated prose — three of every four `steps[]` entries are boilerplate — which
+produced **solo 9 / non-solo 111** and made `--force-complete` routine.
+
+Re-derived from the two real artifacts, then reviewed row by row:
+
+| | before | after |
+|---|---:|---:|
+| solo | 9 | **39** |
+| integration | 47 | 35 |
+| e2e | 49 | 32 |
+| live-ib | 15 | **14** |
+
+The derivation now reads the **acceptance criterion** (`steps[2]` — the only
+feature-specific prose) and the **pytest markers on the feature's own tests**. They
+answer different questions and disagree legitimately: SRS-MD-003's tests are all
+fixtures while its AC names a real gateway. When they disagree the AC wins, because
+that is what `passes: true` asserts, and the row is flagged.
+
+**The judgement that recurs: a resource NAMED is not a resource NEEDED.** A third of
+the ACs that mention IB mention it to require the system *not* touch it —
+*"paper strategy orders **never** create IB orders"*, *"Jupyter **cannot** submit
+live orders"*, *"independent of IB account positions"* — or to name it as a data
+source shared with live trading, or to exclude it from a measurement window. Those
+are proven by showing nothing reached the gateway, which needs no gateway. Reading
+them as `live-ib` is the exact inverse of the old ` ib ` keyword scan, and it spends
+the scarcest resource on the board.
+
+23 rows where no text rule gets it right without breaking a different row live in
+**`tools/verification_method_overrides.json`**, each with the sentence of AC that
+decided it. That file is *tracked*, so `propose --rederive` cannot silently undo a
+decision and the reason outlives the session that made it — the review file at
+`.harness/verification-method-review.txt` is gitignored and could do neither.
+
+```
+tools/classify_verification.py propose --rederive --from-tests   # re-derive
+tools/classify_verification.py apply                             # write it back
+tools/classify_verification.py status
+```
+
+**13 not-yet-passing features are now solo-closable** — they can reach
+`passes: true` through `integrate --mode complete` on evidence alone, with no
+operator window: ERR-7, SRS-API-001, SRS-BT-007, SRS-BT-008, SRS-EXE-002,
+SRS-MD-002, SRS-MD-004, SRS-SAFE-003, SRS-SDK-007, SRS-SDK-008, UI-3, UI-4, UI-5.
+
 ## Closure artifacts — what you review on GitHub
 
 A captured exit code proves a command ran. It cannot show you that the dashboard

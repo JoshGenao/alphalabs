@@ -1,0 +1,113 @@
+{
+  "$comment": [
+    "Operator decisions on verification_method, with the reason attached.",
+    "",
+    "classify_verification.py derives a PROPOSAL from two artifacts: the pytest",
+    "markers on the feature's own tests, and its acceptance criterion (steps[2] —",
+    "the only feature-specific prose in a 4-step template). Both are inference, and",
+    "on ~15% of the corpus they are wrong in a way no text rule fixes without",
+    "breaking a different row. This file is where a human overrules them.",
+    "",
+    "It is TRACKED, unlike .harness/verification-method-review.txt, so a later",
+    "`propose --rederive` cannot silently undo a decision and the reason survives",
+    "the session that made it. An override is never flagged for review; it IS the",
+    "review. Delete an entry to hand the row back to the derivation.",
+    "",
+    "The recurring judgement, stated once: a resource NAMED is not a resource",
+    "NEEDED. Half the corrections below are ACs that mention IB in order to require",
+    "the system NOT touch it, or that name it as a data source shared with live",
+    "trading, or that exclude it from a measurement window."
+  ],
+
+  "SRS-EXE-003": {
+    "method": "live-ib",
+    "why": "AC: 'acknowledged in both LIVE ADAPTER TEST MODE and internal simulation'. The derivation read only the simulation half and proposed solo."
+  },
+  "SRS-EXE-004": {
+    "method": "live-ib",
+    "why": "AC: 'submitted as one composite order in IB LIVE TEST MODE'. Proposed e2e on the trailing 'displayed as one composite dashboard position' — the dashboard is real but the gateway is the binding constraint."
+  },
+  "SRS-MD-001": {
+    "method": "live-ib",
+    "why": "AC: 'no more than 100 ms additional latency RELATIVE TO THE IB FEED'. A latency budget measured against a real feed cannot be established without one; the consolidation half alone looks solo."
+  },
+  "SRS-RESV-004": {
+    "method": "live-ib",
+    "why": "AC: 'CANCELS RESTING IB ORDERS, submits liquidation orders'. Proposed e2e — no AC_LIVE_IB phrase covers 'resting ib orders', and 'dashboard' matched first."
+  },
+
+  "SRS-MD-005": {
+    "method": "integration",
+    "why": "AC: 'if IB GATEWAY REMAINS UNAVAILABLE after the window, standard connectivity loss handling occurs'. The criterion is the behaviour during an outage — proven by fault injection against a dead port, which needs no gateway."
+  },
+  "SRS-DATA-021": {
+    "method": "integration",
+    "why": "AC is entirely about PAPER strategy virtual positions; 'live trading' appears only as 'the same corporate-action data source AS live trading'. Naming a shared source is not requiring the thing that shares it."
+  },
+  "SRS-DATA-020": {
+    "method": "integration",
+    "why": "Live POSITIONS are internal state adjusted from a corporate-action feed; unlike SRS-DATA-019's resting live ORDERS, nothing has to exist at the broker. The provider feed is the real external need."
+  },
+  "SRS-LOG-001": {
+    "method": "e2e",
+    "why": "AC: 'both log classes are VIEWABLE FROM THE DASHBOARD'. 'ib gateway connection state changes' is one of eight log SOURCES the records must cover, not a resource the verification needs."
+  },
+  "SRS-REL-001": {
+    "method": "integration",
+    "why": "AC names the gateway only in 'scheduled IB GATEWAY RESTART EXCLUDED per SyRS NFR-R1' — an exclusion from the availability window. The measurement itself is an analysis over a log store. (See external_blocker: it also needs 30 real market days.)"
+  },
+  "UI-1": {
+    "method": "e2e",
+    "why": "AC: 'user can inspect ... WITHOUT SSH ACCESS' — the criterion is dashboard reachability. The real IB values it displays are SRS-UI-003's to prove; UI-1 blocks on it."
+  },
+
+  "SRS-ARCH-001": {
+    "method": "solo",
+    "why": "AC: 'BUILD MANIFESTS show rust crates for core runtime services; python package exposes the strategy api'. A static manifest inspection — tools/architecture_check.py. It named no resource at all, so it fell to the conservative non-solo fallback."
+  },
+  "SRS-ARCH-002": {
+    "method": "solo",
+    "why": "AC: 'AUTOMATED DEPENDENCY CHECK fails if a lower layer imports the dashboard...'. 'dashboard' is a layer NAME in a static import rule — tools/architecture_check.py, no browser."
+  },
+  "SRS-ARCH-004": {
+    "method": "integration",
+    "why": "AC: 'COMPOSE CONFIGURATION starts core services, dashboard/api, strategy containers, jupyter, ...'. Every name in it is a compose SERVICE, so the derivation reads 'dashboard' as a browser surface and proposes e2e; what the criterion actually needs is the stack up. This is the row that the one-directional config rule cannot get right, and the reason that rule is allowed to stay simple."
+  },
+  "SRS-SDK-008": {
+    "method": "solo",
+    "why": "AC: 'renko and range bars can be generated from tick or minute-resolution input data' — pure computation over input bars. It fell to the conservative fallback only because no test names it."
+  },
+
+  "SRS-DATA-004": {
+    "method": "integration",
+    "why": "AC requires option-chain SNAPSHOT RECORDS with bid/ask/volume/open interest/IV — real provider data, which no fixture earns."
+  },
+  "SRS-DATA-005": {
+    "method": "integration",
+    "why": "AC: fundamentals 'for US equities are INGESTED' — needs the Sharadar feed. The AC names no resource word the derivation looks for."
+  },
+  "SRS-DATA-010": {
+    "method": "integration",
+    "why": "AC: 'at the default 80 percent HIGH-WATER MARK, eviction prioritizes old inactive data' — the SSD/NAS tiers, phrased without naming them."
+  },
+  "SRS-RESV-001": {
+    "method": "integration",
+    "why": "AC: 'one live strategy and 30 PAPER STRATEGIES RUN ON THE REFERENCE HARDWARE BASELINE' — 31 real containers."
+  },
+  "SRS-RESV-005": {
+    "method": "integration",
+    "why": "AC: 'the promoted strategy STARTS LIVE' — needs the orchestrator lifecycle. 'no open ib positions' is correctly read as negated, which then left nothing else."
+  },
+  "SRS-SIM-004": {
+    "method": "integration",
+    "why": "AC: 'restored within 30 seconds of CONTAINER RESTART, excluding warm-up'. The exclusion applies to the warm-up, not the container — this row is exactly why trailing negators were removed."
+  },
+  "SRS-SEC-002": {
+    "method": "integration",
+    "why": "SECURITY.md verifies the bind policy by running `docker inspect` on a real container under ATP_RUN_INTEGRATION=1. 'dashboard/api' in the AC is a compose service name, not a browser."
+  },
+  "SRS-NOTIF-001": {
+    "method": "integration",
+    "why": "The AC states only the 60-second dispatch budget, so the text looks solo — but REQUIRED_CHANNELS is Email AND Sms enforced fail-closed against real relays. See its external_blocker."
+  }
+}
