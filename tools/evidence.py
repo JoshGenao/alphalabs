@@ -240,6 +240,11 @@ def attach(fid: str, n: int, src: Path, caption: str = "") -> dict:
         "bytes": size,
         "caption": caption,
         "sha256": hashlib.sha256(dest.read_bytes()).hexdigest()[:16],
+        # The commit this artifact was CAPTURED at. A screenshot is a claim about what
+        # a reviewer would see running specific code, so it has to carry which code —
+        # otherwise a later re-run stamps the step at a new head while older images
+        # ride along, and the visual gate certifies a dashboard nobody looked at.
+        "head": _head(),
         "ts": _now(),
     }
     entry["artifacts"] = [a for a in entry.get("artifacts", []) if a.get("name") != dest.name]
@@ -584,8 +589,33 @@ def verify(
     if method in VISUAL_METHODS and steps:
         ac_n = ac_step_index(steps)
         targets = [ac_n] if ac_n else list(range(1, len(steps) + 1))
-        images = [a for n in targets for a in step_artifacts(rec, n) if a.get("kind") == "image"]
-        if not images:
+        # Captured at the SAME head the step was executed at. An image from an earlier
+        # run proves nothing about the code being closed, and a record that accepted
+        # one would let a dashboard regression hide behind a screenshot of the version
+        # before it.
+        fresh = []
+        for n in targets:
+            step_head = (by_n.get(n) or {}).get("head")
+            fresh += [
+                a
+                for a in step_artifacts(rec, n)
+                if a.get("kind") == "image" and a.get("head") == step_head
+            ]
+        stale = [
+            a
+            for n in targets
+            for a in step_artifacts(rec, n)
+            if a.get("kind") == "image" and a.get("head") != (by_n.get(n) or {}).get("head")
+        ]
+        images = fresh
+        if not images and stale:
+            problems.append(
+                f"verification_method is {method!r} and {len(stale)} image artifact(s) are "
+                f"attached, but none was captured at the head its step records — they are "
+                f"from an earlier run and prove nothing about this code. Re-run the step so "
+                f"the screenshots are produced by the commit being closed."
+            )
+        if not images and not stale:
             where = f"step {ac_n}" if ac_n else "any step"
             problems.append(
                 f"verification_method is {method!r} but no image artifact is attached to "
@@ -731,14 +761,23 @@ def _store_step(fid: str, n: int, entry: dict) -> None:
     #
     # `attach` de-duplicates by stored name, so a re-run replaces its own shots
     # rather than piling up duplicates.
-    # Only those whose FILE is still on disk: carrying a name whose bytes were
-    # cleaned up would make the record claim an artifact the directory does not
-    # hold, which is the same lie in the other direction.
+    # Carried forward only when BOTH hold: the file is still on disk, and it was
+    # captured at the head this entry is being stamped with.
+    #
+    # The disk check stops the record claiming an artifact the directory does not
+    # hold. The head check stops the opposite and worse failure: a later passing run
+    # stamping the step at a new commit while screenshots from an older run ride
+    # along, so the visual gate certifies a dashboard nobody ever looked at on this
+    # code. An artifact is a claim about what a reviewer would SEE running specific
+    # code; re-running the step without re-capturing means there is no such claim,
+    # and `verify` should say so rather than accept a stale one.
     previous = next((s for s in rec.get("steps", []) if s.get("n") == n), None)
     if previous and previous.get("artifacts") and not entry.get("artifacts"):
         live_dir = artifacts_dir(fid)
         entry["artifacts"] = [
-            a for a in previous["artifacts"] if (live_dir / str(a.get("name"))).is_file()
+            a
+            for a in previous["artifacts"]
+            if (live_dir / str(a.get("name"))).is_file() and a.get("head") == entry["head"]
         ]
     rec["steps"] = [s for s in rec.get("steps", []) if s.get("n") != n]
     rec["steps"].append(entry)

@@ -240,3 +240,76 @@ def test_retire_archives_the_artifacts_with_the_record(rec, tmp_path):
     archived = list((evidence.RUNS_DIR / fid).glob("closed-*-artifacts"))
     assert len(archived) == 1 and (archived[0] / "step3-shot.png").is_file()
     assert list((evidence.RUNS_DIR / fid).glob("closed-*-EVIDENCE.md"))
+
+
+# --- freshness: an artifact certifies the code it was captured on --------------
+def test_an_artifact_records_the_head_it_was_captured_at(rec, tmp_path):
+    fid = rec()
+    _seed_step(fid, 3)
+
+    art = evidence.attach(fid, 3, _png(tmp_path), "the panel")
+
+    # A screenshot is a claim about what a reviewer would see running specific code,
+    # so it has to carry which code.
+    assert art["head"] == evidence._head()
+
+
+def test_a_rerun_at_a_new_head_does_not_retain_the_previous_images(rec, tmp_path, monkeypatch):
+    """Round-16 adversarial review [high].
+
+    `_store_step` carries artifacts forward so a browser test's screenshots survive
+    the `run` that produced them. Left unqualified, that let a LATER passing run
+    stamp the step at a new commit while older images rode along — the visual gate
+    then certifying a dashboard nobody had looked at on this code.
+    """
+    fid = rec()
+    monkeypatch.setattr(evidence, "_head", lambda: "aaaaaaa")
+    _seed_step(fid, 3)
+    evidence.attach(fid, 3, _png(tmp_path), "captured on aaaaaaa")
+    assert len(evidence.step_artifacts(evidence.load_record(fid), 3)) == 1
+
+    # A second successful run at a DIFFERENT head that captured nothing.
+    monkeypatch.setattr(evidence, "_head", lambda: "bbbbbbb")
+    _seed_step(fid, 3, executed=True)
+
+    assert evidence.step_artifacts(evidence.load_record(fid), 3) == [], (
+        "images from an earlier commit must not ride along onto a fresh run"
+    )
+
+
+def test_a_rerun_at_the_same_head_keeps_the_images_it_produced(rec, tmp_path, monkeypatch):
+    """The other direction, so the fix is not "drop everything always": a browser
+    test attaches from INSIDE the subprocess `run` is executing, and those artifacts
+    must survive the entry `run` writes immediately afterwards."""
+    fid = rec()
+    monkeypatch.setattr(evidence, "_head", lambda: "aaaaaaa")
+    _seed_step(fid, 3)
+    evidence.attach(fid, 3, _png(tmp_path), "captured on aaaaaaa")
+
+    _seed_step(fid, 3, executed=True)  # same head
+
+    assert len(evidence.step_artifacts(evidence.load_record(fid), 3)) == 1
+
+
+def test_verify_refuses_a_visual_close_on_stale_images(rec, tmp_path, monkeypatch):
+    """An image from an earlier run must not satisfy the visual gate."""
+    fid = rec(method="e2e")
+    monkeypatch.setattr(evidence, "_head", lambda: "aaaaaaa")
+    for n in (1, 2, 3, 4):
+        _seed_step(fid, n, executed=True)
+    evidence.attach(fid, 3, _png(tmp_path), "the panel")
+
+    # Re-stamp the AC step at a new head WITHOUT re-capturing, then force the stale
+    # image to remain attached (the carry-forward would have dropped it).
+    record = evidence.load_record(fid)
+    stale = evidence.step_artifacts(record, 3)
+    monkeypatch.setattr(evidence, "_head", lambda: "bbbbbbb")
+    _seed_step(fid, 3, executed=True)
+    record = evidence.load_record(fid)
+    next(s for s in record["steps"] if s["n"] == 3)["artifacts"] = stale
+    evidence.save_record(fid, record)
+
+    ok, problems, _ = evidence.verify(fid)
+
+    assert ok is False
+    assert any("earlier run" in p for p in problems), problems
