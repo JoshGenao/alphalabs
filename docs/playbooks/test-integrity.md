@@ -111,6 +111,27 @@ Read this whenever you write a test, and before you believe a green one.
     with "Test compiled successfully, but it's marked `compile_fail`". Prefer them to a grep
     that merely asserts the word `pub(crate)` appears. `(RESV-005)`
 
+## Browser evidence
+
+32. **A wait that the INITIAL DOM already satisfies proves nothing.** The pane's static
+    markup ships `data-state="deferred"`, so a negative test that waited for exactly that
+    passed before any fetch resolved — and stayed green when the binary was mutated to accept
+    a foreign snapshot. Anchor on a POSITIVE signal only a completed fetch can produce (a cell
+    fed by a leg that still works), then assert the negative. `(RESV-005 browser leg)`
+33. **An element screenshot of an animated card comes out BLANK** unless you wait on the
+    ANCESTOR opacity chain. The dashboard reveals cards with `rise`
+    (`delay = --i * 90ms + 120ms`); the target itself reports `opacity: 1` while its parent is
+    still fully transparent, so every check passes and four empty PNGs get filed as proof.
+    `(RESV-005 browser leg)`
+34. **A full-page screenshot of a long dashboard is not evidence.** The pane sat at y=2933 of
+    a ~3900px page — a few illegible pixels once viewed inline. Scope the shot to the element
+    (`cap.shot(page, caption, element="#hs")`). `(RESV-005 browser leg)`
+35. **Enumerate EVERY cell the control gates on before promising a browser walk.** UI-5's
+    promote button requires candidate AND live-strategy AND `demotion_pending === false` AND
+    a KNOWN cool-down — so the walk was blocked on SRS-RESV-006 as well as SRS-RESV-002, a
+    dependency nobody had recorded. Read the actionability predicate, not the obvious cell.
+    `(RESV-005 browser leg)`
+
 ## Layer selection
 
 `tests/unit` L1 · `tests/property` L2 · `tests/` L3 contract · `tests/boundary` L4 ·

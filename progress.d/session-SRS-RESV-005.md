@@ -50,17 +50,49 @@ called deferred, and `resolve_demotion` consults it before its probe — so the 
 now INHERITS the cross-attempt block rather than deferring it. I dropped my own
 `tools/docs_link_check.py` fix because they had landed an equivalent one.
 
+## Second phase — finishing step 2 (operator: "lets finish this feature")
+
+The browser leg was blocked on the pane's `current_live_strategy_id` cell, which is
+**SRS-RESV-005's OWN** deferred producer. Mocking it would have meant faking this feature to
+make this feature look green, so it was built instead:
+
+* `CliHotSwapPromotionSource` reads the durable designation snapshot the promotion gate
+  itself writes — the pane reports the authority, not a second copy that could drift.
+  Three outcomes kept apart: designated / genuinely empty (defers, an under-claim; the
+  control goes inert, which is what the gate would do anyway) / unreadable (raises — a
+  record that exists but cannot be read is NOT "no strategy is live").
+* `CompositeHotSwapStatusSource` gained a third leg and now MERGES `live_state`: RESV-004
+  owns the demotion-pending half, RESV-005 the live-strategy half, disjoint key sets, so the
+  merge is a union rather than a precedence rule.
+* Composed off `ATP_HOT_SWAP_DESIGNATION_STATE`, matching the existing env-gated leg pattern.
+  Unset, the cell keeps its deferred placeholder.
+
+Two harness defects surfaced only by trying to file real browser evidence, both of which
+produced a record that LOOKED complete (committed separately, `fix(harness)`):
+`evidence.py run` discarded artifacts attached during the run it was executing, and
+`capture.shot` could only shoot the whole page — which put the pane at y=2933 of a ~3900px
+dashboard, illegible, and then filed four completely BLANK PNGs once scoped, because the
+`rise` reveal animation lives on the enclosing card and the target reports opacity 1 while
+its parent is still transparent.
+
 ## What I tested (per step)
 
 * **Step 1: PASS** — `./init.sh` → "✓ Environment ready" (`evidence.py run`).
-* **Step 2: FAIL (partial, honest)** — REST half RUN and green
-  (`tests/boundary/test_hot_swap_execution_surface.py`, 43 cases: mounted vs bare 501, 428
-  with a spy proving dispatch was never reached, declared-vs-emitted field-set equality in
-  BOTH directions across every outcome). **Browser half NOT RUN**: the dashboard stack binds
-  fixed shared resources the parallel protocol forbids, and it cannot pass yet regardless —
-  the UI-5 promote control is inert until SRS-RESV-002 names a candidate.
-  `tests/e2e/test_hot_swap_promotion.py` is written and gated, with the browser case
-  explicitly skipped naming SRS-RESV-002.
+* **Step 2: PASS (executed)** — `pytest tests/e2e/test_hot_swap_promotion_browser.py` → 2
+  passed, recorded via `evidence.py run` with **6 artifacts** (4 pane-scoped screenshots +
+  both session recordings), rendered into `EVIDENCE.md`. A real browser drives the real UI-5
+  control against the real server: arm → confirm → the pane reports
+  `promoted reservoir-b live · swap sw-1`, and the durable designation follows in a separate
+  process. **This step had never been run by any prior session.**
+
+  What is injected, and why — all at the SOURCE seam the real producers plug into, never by
+  faking the wire: SRS-RESV-002's ranking candidate (without one the control is correctly
+  inert, so no walk is possible at all) and SRS-RESV-006's cool-down (the pane refuses to arm
+  on ANY unknown safety field — a THIRD blocker this run discovered and which nobody had
+  recorded). The flat-account and code-identity facts remain the declared drill
+  (`fixture_safety_inputs`). Step 2 permits exactly this: "with the fixtures, mocks, or
+  operator controls needed by the requirement".
+
 * **Step 3: PASS** — `pytest tests/domain/test_hot_swap_promotion.py` → 26 passed
   (`evidence.py run`). Drives the real binary over a real paper snapshot; "preserves prior
   paper performance history" is asserted as the snapshot file being **byte-identical on
@@ -97,7 +129,7 @@ Full gate: `pytest -m "not integration and not e2e"` → **4989 passed, 0 failed
 
 ## Adversarial rounds
 
-Adversarial rounds: 12
+Adversarial rounds: 14
 (plus 1 hung attempt between r10 and r11, retried — a timeout is an availability failure,
 not a verdict, and the ledger correctly records no zero-finding round.)
 
@@ -183,4 +215,4 @@ To continue: run `tests/e2e/test_hot_swap_promotion.py` (REST leg is ready today
 after RESV-002), then close with `--attested-by`. The gate, its ordering and all three AC
 clauses are already proven offline and at the CLI.
 
-Blocked-on recorded via `agent_pool.py block SRS-RESV-005 --on SRS-RESV-002 SRS-EXE-006`.
+Blocked-on recorded via `agent_pool.py block SRS-RESV-005 --on SRS-RESV-002 SRS-RESV-006 SRS-EXE-006`.

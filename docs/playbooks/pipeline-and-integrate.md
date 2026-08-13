@@ -239,3 +239,20 @@ one `main`. Most of this playbook is about that sharing.
   `ruff format --check .`, so it is tempting to fix it with `ruff format .`, which silently
   rewrites `architecture/runtime_services.json` into invalid JSON (CLAUDE.md r8). Format the
   files you touched, by name, then re-run the mirror. `(SRS-RESV-005)`
+
+- **Never edit `tools/critic_check.py` to make your own diff pass.** The judgment critic
+  blocks critic-gate self-modification outright (`meta:critic-self-modification`, confidence
+  1.0), and it is right to: an agent that can loosen its own gate and then approve itself has
+  no gate. When the deterministic critic false-positives on your diff, the fix is upstream of
+  the gate — a caption-derived screenshot filename matched `SAFETY_PATH_RE`, and the answer
+  was generic filenames with the caption on the record, not a new carve-out.
+  `(SRS-RESV-005 r14)`
+- **Evidence names the commit it was recorded on, which is the PARENT of the commit that
+  carries it.** Two review rounds went on this. Record after the last CODE commit, then land
+  the record in a code-free chore commit — the certification still covers everything shipped,
+  and no commit message should claim "re-recorded at this HEAD". `(SRS-RESV-005 r12/r13)`
+- **Artifacts attached DURING `evidence.py run` used to be dropped by that same run**
+  (`_store_step` replaced the step entry wholesale). Fixed, but the shape is worth knowing: a
+  record saying `artifacts: []` while the files are on disk is a write-ordering bug, not a
+  capture failure. `(SRS-RESV-005)`
+
