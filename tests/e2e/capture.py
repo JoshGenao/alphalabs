@@ -71,18 +71,62 @@ class _Capture:
             )
         return page
 
-    def shot(self, page, caption: str) -> Path | None:
+    def shot(self, page, caption: str, *, element: str | None = None) -> Path | None:
         """Capture the page as it is right now, with what it is meant to show.
 
         The caption is required, not optional: an unlabelled screenshot in a PR is
         a picture of a dashboard, and the reviewer still has to work out which
         clause of the AC it is supposed to satisfy.
+
+        ``element`` scopes the capture to one CSS selector. Reach for it whenever the
+        pane you are evidencing sits far down a long dashboard: a full-page shot of a
+        ~4000px page renders that pane a few illegible pixels tall once a reviewer
+        views it inline, which is a picture of a dashboard rather than proof of an
+        acceptance criterion. Scoped shots stay readable at the size they are actually
+        looked at.
         """
         if not self._enabled:
             return None
         self._n += 1
-        slug = "".join(c if c.isalnum() else "-" for c in caption.lower())[:48].strip("-")
-        path = self._tmp / f"{self._n:02d}-{slug or 'shot'}.png"
+        # A GENERIC filename, with the caption carried in the record instead.
+        #
+        # Deriving the slug from the caption looked friendlier, but a caption
+        # describes the acceptance criterion it evidences — so an artifact for any
+        # safety feature ("...hot-swap pane before the swap...") matched
+        # SAFETY_PATH_RE by filename and the deterministic critic demanded a
+        # tests/domain diff to commit a PNG. The fix is not to loosen that gate, nor
+        # to write captions that dodge a regex: it is to stop encoding prose in
+        # filenames. `_attach_all` files the caption on the artifact record, which is
+        # what EVIDENCE.md renders and what a reviewer actually reads.
+        # The trailing token is this CONTEXT's unique tempdir suffix, not prose. Two
+        # tests evidencing the same step each restart numbering at 01, and
+        # `evidence.attach` keys the stored artifact on the basename — so without it
+        # the second test silently overwrites the first one's shots, and the record
+        # claims artifacts it no longer holds.
+        path = self._tmp / f"{self._n:02d}-{self._tmp.name[-6:]}.png"
+        if element is not None:
+            target = page.locator(element)
+            target.scroll_into_view_if_needed()
+            # The dashboard reveals each card with a staggered `rise` animation
+            # (styles.css: delay = --i * 90ms + 120ms). Shooting before it finishes
+            # captures a transparent element — a perfectly blank "screenshot of the
+            # pane" that still gets filed as proof. Wait for it to be opaque.
+            # Walk the ANCESTORS, not just the element: the `rise` animation is on
+            # the enclosing `.card`, so the target itself reports opacity 1 while its
+            # parent is still fully transparent — and the shot comes out blank while
+            # every check passes. Effective opacity is the product down the chain.
+            page.wait_for_function(
+                "sel => { let el = document.querySelector(sel); if (!el) return false;"
+                " while (el) {"
+                "   if (parseFloat(getComputedStyle(el).opacity) < 0.99) return false;"
+                "   el = el.parentElement; }"
+                " return true; }",
+                arg=element,
+                timeout=10_000,
+            )
+            target.screenshot(path=str(path))
+            self._shots.append((path, caption))
+            return path
         page.screenshot(path=str(path), full_page=True)
         self._shots.append((path, caption))
         return path

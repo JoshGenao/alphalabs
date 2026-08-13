@@ -719,6 +719,27 @@ def _store_step(fid: str, n: int, entry: dict) -> None:
     # against criteria that no longer existed.
     entry["steps_digest"] = steps_digest(feature_steps(fid))
     entry["head"] = _head()
+    # Carry forward artifacts already attached to this step.
+    #
+    # A browser test attaches its screenshots from INSIDE the subprocess that
+    # `run` is executing, so they land on the step entry before `run` writes its
+    # own. Replacing the entry wholesale then dropped every one of them: the
+    # record came back with `artifacts: []` while the files sat in the artifacts
+    # directory, which is exactly the inverse of the failure `attach` refuses to
+    # cause ("a record that claims a screenshot exists and a directory that does
+    # not contain it"). Same rule, other direction.
+    #
+    # `attach` de-duplicates by stored name, so a re-run replaces its own shots
+    # rather than piling up duplicates.
+    # Only those whose FILE is still on disk: carrying a name whose bytes were
+    # cleaned up would make the record claim an artifact the directory does not
+    # hold, which is the same lie in the other direction.
+    previous = next((s for s in rec.get("steps", []) if s.get("n") == n), None)
+    if previous and previous.get("artifacts") and not entry.get("artifacts"):
+        live_dir = artifacts_dir(fid)
+        entry["artifacts"] = [
+            a for a in previous["artifacts"] if (live_dir / str(a.get("name"))).is_file()
+        ]
     rec["steps"] = [s for s in rec.get("steps", []) if s.get("n") != n]
     rec["steps"].append(entry)
     rec["steps"].sort(key=lambda s: s["n"])
