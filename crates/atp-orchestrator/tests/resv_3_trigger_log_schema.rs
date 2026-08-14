@@ -11,7 +11,7 @@
 //! could all be waved through as "legacy". These tests pin the corrected three-state rule:
 //!
 //! * key genuinely ABSENT      → legacy, counted (an existing log stays readable — SRS-DATA-015's
-//!                               "no bulk migration");
+//!   "no bulk migration");
 //! * key present and VALID     → counted iff in the supported range;
 //! * key present and MALFORMED → hard error, never silently downgraded to legacy.
 

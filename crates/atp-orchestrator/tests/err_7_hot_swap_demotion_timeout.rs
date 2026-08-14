@@ -1026,7 +1026,7 @@ fn resv_4_every_blocked_branch_engages_the_lockout_before_any_fallible_side_effe
         }
         // ...and the record is completed afterwards, so it describes what actually happened.
         assert!(
-            calls.iter().any(|c| *c == "amend"),
+            calls.contains(&"amend"),
             "{branch}: the provisional record was never amended ({calls:?})"
         );
     }
