@@ -508,21 +508,38 @@ def test_an_approval_that_cannot_be_checked_is_rejected(rec, monkeypatch):
     assert any("cannot be checked against this one" in p for p in problems)
 
 
-def test_a_current_approval_still_passes(rec, monkeypatch):
-    """The guard must not reject the normal case: evidence is recorded BEFORE the
-    commit that carries it, so equality with HEAD is never the test."""
+def test_an_approval_passes_when_current_and_fails_once_code_moves(rec, monkeypatch):
+    """Both directions of the same boundary, in one test deliberately.
+
+    The accepting half alone cannot fail — before this change a stale approval
+    passed too — so on its own it proves nothing (rule 6). It still has to be
+    asserted: the guard must NOT reject the normal case, because evidence is
+    recorded BEFORE the commit that carries it and a valid record always names the
+    parent of its own chore commit.
+    """
     fid = rec(method="solo")
     for n in range(1, 5):
         _seed_step(fid, n)
     _approve_at(fid, "cafebabe" * 5)
+
     monkeypatch.setattr(evidence, "code_changed_since", lambda h: [])
     ok, problems, _ = evidence.verify(fid, allow_attested=True)
     assert ok, problems
 
+    monkeypatch.setattr(evidence, "code_changed_since", lambda h: ["crates/atp-types/src/lib.rs"])
+    ok, problems, _ = evidence.verify(fid, allow_attested=True)
+    assert not ok
+    assert any("non-evidence path(s) have changed" in p for p in problems)
 
-def test_a_block_is_still_reported_as_a_block_not_a_currency_problem(rec, monkeypatch):
+
+def test_a_block_is_reported_as_a_block_beside_a_currency_failure(rec, monkeypatch):
     """A blocking verdict must not be reframed as a staleness question — the
-    operator needs to know the reviewer objected, not that a hash is old."""
+    operator needs to know the reviewer objected, not that a hash is old.
+
+    Asserted alongside a REAL currency failure on the other layer, so the test
+    exercises the new code path rather than only the pre-existing one: without the
+    change the deterministic complaint never appears and this fails.
+    """
     fid = rec(method="solo")
     for n in range(1, 5):
         _seed_step(fid, n)
@@ -532,11 +549,14 @@ def test_a_block_is_still_reported_as_a_block_not_a_currency_problem(rec, monkey
         "judgment": {"verdict": "block", "head": None},
     }
     evidence.save_record(fid, r)
-    monkeypatch.setattr(evidence, "code_changed_since", lambda h: [])
+    monkeypatch.setattr(evidence, "code_changed_since", lambda h: ["python/atp_dashboard/app.js"])
     ok, problems, _ = evidence.verify(fid, allow_attested=True)
     assert not ok
+    # the objection, stated as an objection
     assert any("judgment critic verdict is 'block'" in p for p in problems)
     assert not any("judgment critic approved" in p for p in problems)
+    # and the other layer's staleness, stated separately
+    assert any("deterministic critic approved at cafebabe" in p for p in problems)
 
 
 def test_cmd_critic_stamps_the_head_it_judged(rec, monkeypatch):
