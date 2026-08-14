@@ -231,3 +231,16 @@ Read this whenever you write a test, and before you believe a green one.
    "has any non-evidence path moved since". `code_changed_since` answers it and
    returns `None`, never `[]`, when it cannot — an unverifiable head is not a fresh
    one. `(2026-08-13/14, three rounds)`
+8. **A tool that reports on ANOTHER system must never render its own blind spots as
+   findings.** `tools/ci_watch.sh` needed four corrections in one afternoon, all the
+   same bug pointing outward: an in-flight run shown with a blank status (GitHub
+   returns `conclusion: ""`, not null, so jq's `//` does not fall through); running
+   workflows reported as failures; cancelled ones — the `cancel-in-progress`
+   concurrency group doing its job — reported as failures; and an abbreviated sha
+   handed to `gh run list --commit`, which matches only the full 40 chars, printing
+   "no workflow runs found … either the push has not landed or no workflow matches
+   it" about a commit with three live runs. That is rule 3 one layer out: absence of
+   evidence rendered as evidence of absence, about a system you are only observing.
+   Distinguish *cannot see it*, *not finished*, *finished badly*, and *superseded* —
+   an alarm that fires on benign states is one people skim past on the day it is
+   right. `(2026-08-14)`
