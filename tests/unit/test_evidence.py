@@ -43,6 +43,12 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(evidence, "RUNS_DIR", tmp_path / ".harness" / "runs")
     monkeypatch.setattr(evidence, "CLOSES_LOG", tmp_path / ".harness" / "closes.jsonl")
     monkeypatch.setattr(evidence, "OVERRIDES_LOG", tmp_path / ".harness" / "overrides.jsonl")
+    # ROOT points at a tmp dir that is not a git repo, so the real
+    # `code_changed_since` can only ever answer None here and every record in this
+    # module would fail closed on currency rather than on what it is testing.
+    # Neutralised deliberately, and ONLY here: currency is exercised against a real
+    # throwaway repo in test_evidence_artifacts.py.
+    monkeypatch.setattr(evidence, "code_changed_since", lambda head: [])
     return tmp_path
 
 
@@ -67,8 +73,16 @@ def _record_all_steps(n: int = 3, *, executed: bool = True) -> None:
 
 
 def _approve_both() -> None:
+    # `head` is what `cmd_critic` stamps: a verdict certifies the code it judged.
+    # The value is arbitrary here because `sandbox` neutralises the currency check —
+    # this fixture points evidence.ROOT at a tmp dir that is not a git repo, so the
+    # real `code_changed_since` could only ever fail closed. Currency itself is
+    # covered against a REAL repo in test_evidence_artifacts.py.
     rec = evidence.load_record(FEATURE)
-    rec["critic"] = {"deterministic": {"verdict": "approve"}, "judgment": {"verdict": "approve"}}
+    rec["critic"] = {
+        "deterministic": {"verdict": "approve", "head": "0" * 40},
+        "judgment": {"verdict": "approve", "head": "0" * 40},
+    }
     evidence.save_record(FEATURE, rec)
 
 

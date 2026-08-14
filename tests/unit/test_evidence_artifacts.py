@@ -140,9 +140,11 @@ def test_ac_step_index_matches_the_text_not_the_position():
 def _complete_record(fid, *, steps=4):
     for n in range(1, steps + 1):
         _seed_step(fid, n)
+    # `head` mirrors what `cmd_critic` stamps — a verdict certifies the code it
+    # judged, and `verify` fails closed on one it cannot place in history.
     for layer in ("deterministic", "judgment"):
         r = evidence.load_record(fid)
-        r.setdefault("critic", {})[layer] = {"verdict": "approve"}
+        r.setdefault("critic", {})[layer] = {"verdict": "approve", "head": evidence._head()}
         evidence.save_record(fid, r)
 
 
@@ -454,3 +456,99 @@ def test_code_changed_since_fails_closed_on_an_uncheckable_head(git_repo, head):
 
     # None, never [] — an unverifiable head must not read as a fresh one.
     assert evidence.code_changed_since(head) is None
+
+
+# --- a verdict certifies the code it judged ----------------------------------
+# Steps and artifacts were bound to their commit; critic verdicts were not, so an
+# `approve` recorded against one tree satisfied the gate against any later one —
+# the same defect, one field over, in the dangerous direction. SRS-MD-003 is the
+# live illustration in the safe direction: a `block` from 2026-08-09 against HEAD
+# a8870cb, whose objection three later sessions addressed.
+def _approve_at(fid, head):
+    for layer in ("deterministic", "judgment"):
+        r = evidence.load_record(fid)
+        r.setdefault("critic", {})[layer] = {"verdict": "approve", "head": head}
+        evidence.save_record(fid, r)
+
+
+def test_an_approval_with_no_head_cannot_be_placed_in_history(rec, monkeypatch):
+    """Rule 3: unknown is not fresh. Every pre-existing record is in this state,
+    and each must be re-reviewed rather than grandfathered."""
+    fid = rec(method="solo")
+    for n in range(1, 5):
+        _seed_step(fid, n)
+    _approve_at(fid, None)
+    ok, problems, _ = evidence.verify(fid, allow_attested=True)
+    assert not ok
+    assert any("an unrecorded commit" in p for p in problems)
+
+
+def test_an_approval_whose_code_has_moved_is_rejected(rec, monkeypatch):
+    fid = rec(method="solo")
+    for n in range(1, 5):
+        _seed_step(fid, n)
+    _approve_at(fid, "cafebabe" * 5)
+    monkeypatch.setattr(
+        evidence, "code_changed_since", lambda h: ["crates/atp-market-data/src/lib.rs"]
+    )
+    ok, problems, _ = evidence.verify(fid, allow_attested=True)
+    assert not ok
+    assert any("non-evidence path(s) have changed" in p for p in problems)
+    assert any("atp-market-data" in p for p in problems)  # names WHAT moved
+
+
+def test_an_approval_that_cannot_be_checked_is_rejected(rec, monkeypatch):
+    fid = rec(method="solo")
+    for n in range(1, 5):
+        _seed_step(fid, n)
+    _approve_at(fid, "cafebabe" * 5)
+    monkeypatch.setattr(evidence, "code_changed_since", lambda h: None)
+    ok, problems, _ = evidence.verify(fid, allow_attested=True)
+    assert not ok
+    assert any("cannot be checked against this one" in p for p in problems)
+
+
+def test_a_current_approval_still_passes(rec, monkeypatch):
+    """The guard must not reject the normal case: evidence is recorded BEFORE the
+    commit that carries it, so equality with HEAD is never the test."""
+    fid = rec(method="solo")
+    for n in range(1, 5):
+        _seed_step(fid, n)
+    _approve_at(fid, "cafebabe" * 5)
+    monkeypatch.setattr(evidence, "code_changed_since", lambda h: [])
+    ok, problems, _ = evidence.verify(fid, allow_attested=True)
+    assert ok, problems
+
+
+def test_a_block_is_still_reported_as_a_block_not_a_currency_problem(rec, monkeypatch):
+    """A blocking verdict must not be reframed as a staleness question — the
+    operator needs to know the reviewer objected, not that a hash is old."""
+    fid = rec(method="solo")
+    for n in range(1, 5):
+        _seed_step(fid, n)
+    r = evidence.load_record(fid)
+    r["critic"] = {
+        "deterministic": {"verdict": "approve", "head": "cafebabe" * 5},
+        "judgment": {"verdict": "block", "head": None},
+    }
+    evidence.save_record(fid, r)
+    monkeypatch.setattr(evidence, "code_changed_since", lambda h: [])
+    ok, problems, _ = evidence.verify(fid, allow_attested=True)
+    assert not ok
+    assert any("judgment critic verdict is 'block'" in p for p in problems)
+    assert not any("judgment critic approved" in p for p in problems)
+
+
+def test_cmd_critic_stamps_the_head_it_judged(rec, monkeypatch):
+    """The recorder must supply what the gate now requires, or the honest path is
+    unusable and everyone reaches for the override."""
+    fid = rec(method="solo")
+    monkeypatch.setattr(evidence, "_head", lambda: "d00df00d" * 5)
+
+    class A:
+        id, layer, verdict, reviewer, rounds = fid, "judgment", "approve", "codex", 3
+
+    assert evidence.cmd_critic(A()) == 0
+    got = evidence.load_record(fid)["critic"]["judgment"]
+    assert got["head"] == "d00df00d" * 5
+    assert got["verdict"] == "approve" and got["reviewer"] == "codex"

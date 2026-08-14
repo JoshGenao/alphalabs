@@ -619,12 +619,44 @@ def verify(
         problems.append(f"step {extra} is recorded but the feature has only {len(steps)} steps")
 
     critic = rec.get("critic", {})
+    # A VERDICT CERTIFIES THE CODE IT JUDGED. Steps and their artifacts are bound to
+    # the commit they were produced on; critic verdicts were not, so an `approve`
+    # recorded against one tree satisfied the gate against any later one — the same
+    # defect that was closed for screenshots, one field over, and in the dangerous
+    # direction. SRS-MD-003 is the live illustration in the safe direction: its
+    # judgment `block` dates from 2026-08-09 against HEAD a8870cb, whose objection
+    # three later sessions addressed.
+    #
+    # Same question as the artifact gate, same fail-closed: equality with HEAD is NOT
+    # the test, because a verdict is recorded before the commit that carries it.
+    # `code_changed_since` returns None when it cannot be answered, and an
+    # unverifiable head is not a fresh one.
     for layer in ("deterministic", "judgment"):
         got = critic.get(layer)
         if not got:
             problems.append(f"no {layer} critic verdict recorded")
-        elif got.get("verdict") != "approve":
+            continue
+        if got.get("verdict") != "approve":
             problems.append(f"{layer} critic verdict is {got.get('verdict')!r}, not 'approve'")
+            continue
+        verdict_head = got.get("head")
+        moved = code_changed_since(verdict_head)
+        if moved is None:
+            problems.append(
+                f"{layer} critic approved at "
+                f"{('commit ' + str(verdict_head)[:8]) if verdict_head else 'an unrecorded commit'}, "
+                f"which cannot be checked against this one (missing, unknown, unreadable, or on "
+                f"another line of history). An unverifiable verdict is not a current one — "
+                f"re-run the {layer} review."
+            )
+        elif moved:
+            problems.append(
+                f"{layer} critic approved at {str(verdict_head)[:8]}, but "
+                f"{len(moved)} non-evidence path(s) have changed since "
+                f"({', '.join(sorted(moved)[:3])}{'…' if len(moved) > 3 else ''}) — "
+                f"the approval describes code this close would not ship. Re-run the "
+                f"{layer} review."
+            )
 
     # A visual acceptance criterion needs a visual artifact. "the dashboard shows
     # IB equity, daily and cumulative P&L, margin usage" is a claim about what a
@@ -954,7 +986,11 @@ def cmd_gate(args) -> int:
 
 def cmd_critic(args) -> int:
     rec = load_record(args.id)
-    entry = {"verdict": args.verdict, "ts": _now()}
+    # Stamp the commit the reviewer actually judged, exactly as `_store_step` does
+    # for a step. A verdict is a statement ABOUT A DIFF; without the head it is a
+    # statement about nothing in particular, and `verify` had no way to ask whether
+    # the code had moved underneath it.
+    entry = {"verdict": args.verdict, "ts": _now(), "head": _head()}
     if args.reviewer:
         entry["reviewer"] = args.reviewer
     if args.rounds is not None:
