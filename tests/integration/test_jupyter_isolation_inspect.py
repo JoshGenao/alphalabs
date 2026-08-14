@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -53,6 +54,28 @@ _SECRET_KEYS = (
     "ATP_VAULT_KEY_FILE",
     "ATP_VAULT_PASSPHRASE",
 )
+
+
+def _compose_project(dir_name: str) -> str:
+    """A Compose project name Docker will accept, derived from a temp dir name.
+
+    Compose builds image references as ``<project>-<service>``, so the project name
+    has to be legal in a Docker reference on its own AND after that suffix is
+    appended. The old expression was
+    ``f"atpsec004{data_root.name.replace('-', '')[:20]}"``, which strips hyphens but
+    not underscores — and ``tempfile.mkdtemp`` draws its random suffix from
+    ``[a-z0-9_]``. When the draw ended in ``_`` (or the 20-char truncation landed on
+    one) the project became ``...ntkxt33_`` and the image
+    ``...ntkxt33_-phase1-jupyter``, which the daemon rejects with "invalid reference
+    format". It failed only on the unlucky draws, which is why it passed for months
+    and then turned CI red on an unrelated commit.
+
+    Keeping ONLY ``[a-z0-9]`` removes the whole class rather than the one character
+    that happened to bite: no separator can reach either end, and no future
+    mkdtemp alphabet change can reintroduce it.
+    """
+    suffix = re.sub(r"[^a-z0-9]", "", dir_name.lower())[:20]
+    return f"atpsec004{suffix}"
 
 
 def _docker_available() -> bool:
@@ -83,7 +106,7 @@ def created_jupyter_container():
     nas = data_root / "nas"
     ssd.mkdir()
     nas.mkdir()
-    project = f"atpsec004{data_root.name.replace('-', '')[:20]}"
+    project = _compose_project(data_root.name)
 
     env = {
         **os.environ,
