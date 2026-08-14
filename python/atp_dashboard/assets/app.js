@@ -2594,6 +2594,11 @@
   // disarm-on-upsert in renderHotSwap is the primary guard; posting the armed id
   // (not the live one) is the belt-and-suspenders identity bind.
   let hotArmedCandidate = null;
+  // SRS-RESV-006 / SYS-49e. Whether the COOL-DOWN WARNING was on screen when the
+  // operator armed. Bound at ARM time for the same reason the candidate is: a poll
+  // landing between arm and confirm must not silently change what the click means.
+  // `null` = armed with no known-active window, so nothing is being overridden.
+  let hotArmedCooldownOverride = false;
   // An ACCEPTED (2xx) swap awaiting durable confirmation, or null:
   //   {swapId, candidate, priorLive, promoted}. The contract response carries no
   // strategy id, so the outcome is asserted ONLY from a durable status read:
@@ -2698,6 +2703,7 @@
   function disarmHotSwap(restoreResting) {
     if (hotArmTimer) { clearTimeout(hotArmTimer); hotArmTimer = null; }
     hotArmedCandidate = null;   // the staged target is released
+    hotArmedCooldownOverride = false;   // ...and so is any cool-down acknowledgement
     const b = hsBtn();
     if (b) { b.dataset.armed = "false"; b.textContent = "PROMOTE CANDIDATE"; }
     hsState(hotConfirmedSwapId ? "fired" : "resting");
@@ -2708,6 +2714,11 @@
     hotShowingResult = false;   // operator re-engaged; the arm caption takes over
     hotPendingSwap = null; // a fresh arm supersedes any awaiting confirmation
     hotArmedCandidate = hotCandidate;   // bind the target id at arm time
+    // The acknowledgement is bound to the WARNING actually shown below, and only to
+    // the KNOWN-active case. An unknown window is not something an operator can
+    // knowingly override, so it is never auto-acknowledged: the swap is refused and
+    // they are told the window could not be read.
+    hotArmedCooldownOverride = hotCooldownActive === true;
     const b = hsBtn();
     if (b) { b.dataset.armed = "true"; b.textContent = "CONFIRM PROMOTE"; }
     hsState("armed");
@@ -2727,6 +2738,7 @@
     // renderHotSwap, so reaching here with a stale target should be impossible;
     // posting the armed id (not hotCandidate) makes that guarantee local too.
     const candidate = hotArmedCandidate;
+    const override = hotArmedCooldownOverride;
     if (hotInFlight || !candidate) return;
     hotInFlight = true;
     // A mutation invalidates any status read issued before it: bump the poll
@@ -2741,7 +2753,17 @@
       const res = await fetch(HOT_SWAP_ROUTE, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ candidate_strategy_id: candidate, confirm: true }),
+        // `confirm_cooldown` is sent ONLY when this control armed with the SYS-49e
+        // warning on screen — which is what makes the operator's CONFIRM click an
+        // acknowledgement of that specific window. Sending it unconditionally would
+        // make every ordinary swap a silent cool-down override, and never sending it
+        // would show the operator a warning, take their confirmation, and then have
+        // the route refuse them for not confirming.
+        body: JSON.stringify(
+          override
+            ? { candidate_strategy_id: candidate, confirm: true, confirm_cooldown: true }
+            : { candidate_strategy_id: candidate, confirm: true }
+        ),
         signal: AbortSignal.timeout(HOT_FETCH_TIMEOUT_MS),
       });
       const body = await res.json().catch(() => null);

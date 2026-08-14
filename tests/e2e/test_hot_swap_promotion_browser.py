@@ -9,14 +9,17 @@ The browser leg of the acceptance evidence. The AC:
 SRS-SIM-004 paper snapshot; the real UI-5 pane is served by the real
 ``mount_dashboard`` composition; the pane's *current live strategy* comes from
 SRS-RESV-005's real durable designation record and its *demotion-pending* cell from
-SRS-RESV-004's real lockout, both read by their real binaries; the operator's click
-POSTs to the real ``/api/v1/hot-swap`` route, which shells the real promotion binary,
-which runs the real ``execute_hot_swap`` gate over the real ``LiveDesignation``
-authority. No transport is intercepted — the browser talks to the real server.
+SRS-RESV-004's real lockout, both read by their real binaries; its *cool-down* cells
+from SRS-RESV-006's real window, read by its real binary; the operator's click POSTs
+to the real ``/api/v1/hot-swap`` route, which shells the real promotion binary, which
+runs the real ``execute_hot_swap`` gate — now itself gated by that same cool-down —
+over the real ``LiveDesignation`` authority. No transport is intercepted: the browser
+talks to the real server.
 
 **What is injected, and why.** Two things, both belonging to features that do not
 exist yet, injected at the SOURCE seam their real producers will plug into rather
-than by faking the wire:
+than by faking the wire. (SRS-RESV-006's cool-down used to be a third; it landed,
+and the shim is gone.)
 
 * the promotion **candidate** — SRS-RESV-002's Reservoir ranking. Without it the
   pane's control is correctly inert (there is nothing to promote), so no browser
@@ -58,6 +61,7 @@ from atp_dashboard import (  # noqa: E402
     mount_dashboard,
 )
 from atp_hotswap import (  # noqa: E402
+    CliHotSwapCooldownSource,
     CliHotSwapDemotionSource,
     CliHotSwapPromotionSource,
     CompositeHotSwapStatusSource,
@@ -73,6 +77,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PROMOTE_BIN = "resv005_hot_swap_promote_cli"
 DEMOTION_BIN = "resv004_hot_swap_demotion_cli"
 PERSIST_BIN = "sim004_persist_cli"
+COOLDOWN_BIN = "resv006_hot_swap_cooldown_cli"
 
 #: The two strategies the SRS-SIM-004 fixture snapshot actually contains.
 DEMOTING = "reservoir-a"
@@ -103,32 +108,17 @@ class _RankingStandIn:
         return {"candidate_strategy_id": self._candidate}
 
 
-class _WithCooldown:
-    """Stands in for SRS-RESV-006's cool-down window.
-
-    The pane refuses to arm on ANY unknown safety field (`hotActionable` requires
-    `hotCooldownActive !== null`), and the cool-down is SRS-RESV-006's — unbuilt. So
-    without this the control is correctly inert and no browser walk of SRS-RESV-005 is
-    possible at all. Reported "not in effect", the state a fresh system is in.
-
-    Wrapped around the composite rather than folded into a leg, because no existing
-    leg owns this fact and inventing an owner would misattribute it.
-    """
-
-    def __init__(self, inner) -> None:
-        self._inner = inner
-
-    def trigger_config(self):
-        return self._inner.trigger_config()
-
-    def promotion_candidate(self):
-        return self._inner.promotion_candidate()
-
-    def live_state(self):
-        state = self._inner.live_state()
-        merged = dict(state) if state is not None else {}
-        merged["cooldown"] = {"in_effect": False}
-        return merged
+# SRS-RESV-006's cool-down used to be stood in for here — it no longer is.
+#
+# This file previously wrapped the composite in a `_WithCooldown` shim reporting
+# `{"in_effect": False}`, because the pane refuses to arm on ANY unknown safety
+# field (`hotActionable` requires `hotCooldownActive !== null`) and the cool-down
+# was unbuilt. That was the THIRD blocker SRS-RESV-005's session recorded.
+#
+# It is built now, so the shim is gone and the fixture composes the REAL
+# `CliHotSwapCooldownSource` over a real window file. The fact the shim DECLARED is
+# now PRODUCED: the window file is absent here, which the real classifier reads as
+# NEVER_SWAPPED — genuinely clear, because no swap has completed in this fixture.
 
 
 @pytest.fixture(scope="module")
@@ -148,6 +138,8 @@ def binaries() -> dict[str, Path]:
             "atp-orchestrator",
             "--bin",
             DEMOTION_BIN,
+            "--bin",
+            COOLDOWN_BIN,
             "-p",
             "atp-simulation",
             "--bin",
@@ -158,7 +150,10 @@ def binaries() -> dict[str, Path]:
         text=True,
     )
     assert build.returncode == 0, build.stderr
-    paths = {n: ROOT / "target" / "debug" / n for n in (PROMOTE_BIN, DEMOTION_BIN, PERSIST_BIN)}
+    paths = {
+        n: ROOT / "target" / "debug" / n
+        for n in (PROMOTE_BIN, DEMOTION_BIN, PERSIST_BIN, COOLDOWN_BIN)
+    }
     for name, path in paths.items():
         assert path.exists(), f"{name} not built at {path}"
     return paths
@@ -182,15 +177,16 @@ def live_dashboard(binaries, tmp_path) -> Iterator[tuple[str, Path, Path, Path]]
     lockout = tmp_path / "demotion-pending.json"
     journal = tmp_path / "swaps.jsonl"
 
-    source = _WithCooldown(
-        CompositeHotSwapStatusSource(
-            # SRS-RESV-002 stand-in.
-            triggers=_RankingStandIn(CANDIDATE),
-            # SRS-RESV-004's REAL lockout leg.
-            demotion=CliHotSwapDemotionSource(lockout, binary=binaries[DEMOTION_BIN]),
-            # SRS-RESV-005's REAL designation leg — the feature under test.
-            promotion=CliHotSwapPromotionSource(state, binary=binaries[PROMOTE_BIN]),
-        )
+    cooldown = tmp_path / "cooldown.json"
+    source = CompositeHotSwapStatusSource(
+        # SRS-RESV-002 stand-in.
+        triggers=_RankingStandIn(CANDIDATE),
+        # SRS-RESV-004's REAL lockout leg.
+        demotion=CliHotSwapDemotionSource(lockout, binary=binaries[DEMOTION_BIN]),
+        # SRS-RESV-005's REAL designation leg — the feature under test.
+        promotion=CliHotSwapPromotionSource(state, binary=binaries[PROMOTE_BIN]),
+        # SRS-RESV-006's REAL cool-down leg, over a real (absent) window file.
+        cooldown=CliHotSwapCooldownSource(cooldown, binary=binaries[COOLDOWN_BIN]),
     )
 
     runtime = OperatorInterfaceRuntime()
@@ -205,6 +201,8 @@ def live_dashboard(binaries, tmp_path) -> Iterator[tuple[str, Path, Path, Path]]
         paper_state_dir=paper,
         log_path=journal,
         demotion_lock_path=lockout,
+        # SRS-RESV-006 / SYS-49e — required, so this drill cannot skip the window.
+        cooldown_state_path=cooldown,
         # Declared DRILL: SRS-EXE-006 / SRS-ORCH-004 have no producer, and the route
         # refuses to promote unless a composer says out loud that these are fixtures.
         fixture_safety_inputs={
