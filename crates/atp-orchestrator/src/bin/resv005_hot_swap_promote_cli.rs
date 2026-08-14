@@ -37,9 +37,12 @@
 //! later retry is SRS-RESV-004's (see `hot_swap_promotion_contract.deferred[]`).
 
 use atp_execution::designation::{LiveDesignation, LiveDesignationConfirmation};
+use atp_orchestrator::cooldown::{ManualCooldownAcknowledgement, SwapCompletion};
+use atp_orchestrator::cooldown_store::{self, CompletionOutcome};
 use atp_orchestrator::hot_swap_promotion::{
-    HotSwapPromotionEvent, HotSwapPromotionEventSink, LivePositionProbe, OpenPosition,
-    PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
+    CooldownControl, CooldownWindowOutcome, HotSwapPromotionEvent, HotSwapPromotionEventSink,
+    LivePositionProbe, OpenPosition, PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
+    SwapCompletionSink,
 };
 use atp_orchestrator::{
     demotion_pending_store::FileDemotionPendingLock, trigger_config_store, DeployedVersionRegistry,
@@ -60,7 +63,28 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Fixed demonstration observation timestamp — wall-clock time is intentionally
 /// not read, so a run is reproducible.
-const OBSERVED_AT_SECONDS: u64 = 1_715_000_000;
+/// Read the REAL clock, with `--now` as the only override.
+///
+/// This used to be `const OBSERVED_AT_SECONDS: u64 = 1_715_000_000`, which was
+/// harmless while the timestamp only labelled an audit record. It stopped being
+/// harmless when SRS-RESV-006 made this binary the producer of a swap COMPLETION:
+/// SYS-49e says the cool-down starts at "the timestamp of the most recent
+/// successful swap completion", so a frozen constant would stamp every window with
+/// the same 2024 instant and the seven-day window would be born already expired —
+/// a cool-down that never suppresses anything (`durable-writes.md` rule 23).
+///
+/// A pre-epoch clock is an `Err`, never `unwrap_or(0)`: a 0 would make every window
+/// read as long expired, which is the same fail-open by another route.
+fn wall_clock_seconds() -> Result<u64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .map_err(|_| {
+            "system clock reports a time before the Unix epoch; refusing to execute a \
+             Hot-Swap whose cool-down window would be stamped against it"
+                .to_string()
+        })
+}
 
 /// SYS-49b default liquidation timeout.
 const DEFAULT_TIMEOUT_SECONDS: u64 = 60;
@@ -143,6 +167,24 @@ swap FLAGS:
                                  as `swap-record-ordinal` and is the swap's
                                  identity for the REST surface; without --log the
                                  ordinal is reported as `-`, never invented.
+    --cooldown-state <path>      SRS-RESV-006 durable SyRS SYS-49e cool-down
+                                 window (REQUIRED). Consulted BEFORE the demotion:
+                                 an ACTIVE window — or one that cannot be read —
+                                 refuses the swap unless --confirm-cooldown is
+                                 given. A SUCCESSFUL swap then RECORDS its
+                                 completion here, which starts the next window.
+                                 Required rather than defaulted so that 'we could
+                                 not tell' is never reachable by omitting a flag.
+    --confirm-cooldown           acknowledge the cool-down confirmation warning
+                                 and swap anyway. SYS-49e PERMITS a manual swap
+                                 during the window; it only requires the operator
+                                 to say so. Deliberately separate from --confirm,
+                                 which is the SYS-2d transport confirmation — one
+                                 flag meaning both would make every ordinary
+                                 confirmed swap a silent cool-down override.
+    --now <epoch-seconds>        override the clock (default: the real one). This
+                                 is the timestamp the cool-down window STARTS at,
+                                 so it is read fresh per run and never frozen.
 
 status FLAGS:
     --state <path>               the snapshot to read (required)
@@ -196,7 +238,12 @@ struct SwapArgs {
     inject: Option<String>,
     demotion_lock: Option<String>,
     log: Option<String>,
+    /// SRS-RESV-006: the durable SyRS SYS-49e window this swap is gated by and
+    /// records into. REQUIRED, like `--demotion-lock` and for the same reason.
+    cooldown_state: Option<String>,
+    now: Option<u64>,
     confirm: bool,
+    confirm_cooldown: bool,
     allow_fixture_safety_inputs: bool,
 }
 
@@ -218,6 +265,23 @@ fn parse_swap_args(rest: &[String]) -> Result<SwapArgs, String> {
             "--inject" => set_once(&mut parsed.inject, &mut iter, flag)?,
             "--log" => set_once(&mut parsed.log, &mut iter, flag)?,
             "--demotion-lock" => set_once(&mut parsed.demotion_lock, &mut iter, flag)?,
+            "--cooldown-state" => set_once(&mut parsed.cooldown_state, &mut iter, flag)?,
+            "--now" => {
+                if parsed.now.is_some() {
+                    return Err(dup(flag));
+                }
+                let raw = take_value(&mut iter, flag)?;
+                parsed.now = Some(
+                    raw.parse()
+                        .map_err(|_| format!("{flag} expects a u64 (got '{raw}')\n\n{USAGE}"))?,
+                );
+            }
+            "--confirm-cooldown" => {
+                if parsed.confirm_cooldown {
+                    return Err(dup(flag));
+                }
+                parsed.confirm_cooldown = true;
+            }
             "--timeout" => {
                 if parsed.timeout.is_some() {
                     return Err(dup(flag));
@@ -244,6 +308,34 @@ fn parse_swap_args(rest: &[String]) -> Result<SwapArgs, String> {
         }
     }
     Ok(parsed)
+}
+
+/// The REAL SRS-RESV-006 window writer — the production caller `cooldown_store`
+/// named as `deferred-writer:SRS-RESV-005` until this binary existed.
+///
+/// All the filesystem work stays inside `cooldown_store`, which is the module the
+/// SRS-DATA-015 registry names as this entity's writer; this is only the seam.
+struct FileSwapCompletions {
+    path: PathBuf,
+}
+
+impl SwapCompletionSink for FileSwapCompletions {
+    fn record_swap_completion(&self, completion: &SwapCompletion) -> Result<(), String> {
+        match cooldown_store::record_completion(&self.path, completion) {
+            Ok(CompletionOutcome::Recorded { .. }) => Ok(()),
+            // The store KEPT a newer completion than the one this swap offered. The
+            // swap still happened, but the window an operator will observe is not
+            // the one this swap opened — only a clock that disagrees with recorded
+            // history reaches here, and silently reporting "started" would hide it.
+            Ok(CompletionOutcome::KeptNewer { stored, offered }) => Err(format!(
+                "a NEWER swap completion is already recorded ({} > {}); the running window \
+                 belongs to that swap, not this one — the clock disagrees with recorded \
+                 history and both need reconciling",
+                stored.completed_at_seconds, offered.completed_at_seconds
+            )),
+            Err(error) => Err(error.to_string()),
+        }
+    }
 }
 
 fn cmd_swap(rest: &[String]) -> Result<bool, String> {
@@ -362,10 +454,36 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
         LiveDesignationConfirmation::from_operator(candidate.clone(), "operator --confirm")
             .map_err(|error| error.to_string())?;
 
+    // SRS-RESV-006 / SYS-49e. The window is resolved through the ONE resolver, so
+    // the store read and the `Err -> Unknown` mapping happen in a single place —
+    // and an omitted `--cooldown-state` is `Unknown`, which the gate refuses. That
+    // is why the flag is required rather than defaulted: "we could not tell" must
+    // never be reachable by leaving an argument off.
+    let cooldown_state_path = PathBuf::from(required(&args.cooldown_state, "--cooldown-state")?);
+    let observed_at_seconds = match args.now {
+        Some(now) => now,
+        None => wall_clock_seconds()?,
+    };
+    let cooldown_state = cooldown_store::resolve(Some(&cooldown_state_path), observed_at_seconds);
+    let completions = FileSwapCompletions {
+        path: cooldown_state_path,
+    };
+    let acknowledgement = if args.confirm_cooldown {
+        ManualCooldownAcknowledgement::Acknowledged
+    } else {
+        ManualCooldownAcknowledgement::NotAcknowledged
+    };
+
     println!("transports:FIXTURE");
     println!("demoting:{}", demoting.as_str());
     println!("candidate:{}", candidate.as_str());
     println!("designation-before:{designated_before}");
+    println!("observed-at-seconds:{observed_at_seconds}");
+    println!("cooldown-state:{}", cooldown_state.as_str());
+    println!("cooldown-in-effect:{}", !cooldown_state.proven_clear());
+    // Printed on EVERY run, not only on the refusal: an operator reading a
+    // successful swap needs to know whether they overrode a live window.
+    println!("cooldown-confirmed:{}", args.confirm_cooldown);
 
     let outcome = StrategyOrchestrator.execute_hot_swap(
         request,
@@ -380,9 +498,14 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
             versions: &versions,
             events: &events,
         },
+        CooldownControl {
+            state: &cooldown_state,
+            acknowledgement,
+            completions: &completions,
+        },
         &mut designation,
         confirmation,
-        OBSERVED_AT_SECONDS,
+        observed_at_seconds,
     );
 
     let designated_after = designation
@@ -440,6 +563,15 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
                 "demotion-elapsed-seconds:{}",
                 promoted.demotion_elapsed_seconds
             );
+            // SYS-49e's third clause, evidenced: this swap's completion timestamp IS
+            // the next window's start.
+            println!("cooldown-window:{}", promoted.cooldown_window.as_str());
+            if let CooldownWindowOutcome::Started {
+                started_at_seconds, ..
+            } = &promoted.cooldown_window
+            {
+                println!("cooldown-window-started-at-seconds:{started_at_seconds}");
+            }
         }
         Err(error) => {
             // Three-valued, not a boolean: NOT_STARTED means no demotion-side port
@@ -491,6 +623,25 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
         (None, None) => "not-configured",
     };
     println!("promotion-recorded:{recorded}");
+    // The swap COMPLETED and its SYS-49e window did not start. The automatic
+    // triggers are therefore NOT suppressed, which is a fail-open on a safety
+    // path — it cannot be undone here (the designation has moved and the book is
+    // flat, so rolling back over an unwritable file would be strictly worse), so it
+    // is made loud instead: an explicit sentence and a non-zero exit.
+    if let Ok(promoted) = &outcome {
+        if let CooldownWindowOutcome::NotStarted { reason } = &promoted.cooldown_window {
+            eprintln!(
+                "SRS-RESV-006: `{}` was promoted live but the SyRS SYS-49e cool-down window \
+                 did NOT start ({reason}). THE COOL-DOWN IS NOT IN EFFECT — automatic swap \
+                 triggers are not suppressed. Repair the cool-down state file and record the \
+                 completion with resv006_hot_swap_cooldown_cli record-completion \
+                 --completed-at {observed_at_seconds}, or disable the automatic triggers with \
+                 resv003_hot_swap_trigger_cli until you have.",
+                candidate.as_str()
+            );
+            return Ok(false);
+        }
+    }
     if outcome.is_ok() && recorded == "false" {
         // The promotion HAPPENED — the designation is written and persisted — but
         // its audit record did not land. That is not a clean success, so the exit

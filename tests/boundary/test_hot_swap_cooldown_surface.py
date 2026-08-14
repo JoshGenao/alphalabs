@@ -350,10 +350,13 @@ def test_an_unlogged_refusal_is_still_reported_as_an_internal_error(tmp_path) ->
         assert body["error"]["type"] == "MANUAL_TRIGGER_UNLOGGED", body
 
 
-def test_the_execution_and_status_routes_stay_deferred(tmp_path) -> None:
-    # A deliberate refusal, not an oversight: GET /api/v1/hot-swap/status declares three
-    # fields that are SRS-RESV-004/005/003's to produce, and binding it from the cool-down
-    # half alone would fabricate them.
+def test_mounting_the_trigger_arm_alone_serves_neither_execution_nor_status(tmp_path) -> None:
+    # Composition stays per-arm. Mounting the TRIGGER surface must not make the
+    # EXECUTION route answer — a surface that decides and logs must never respond on
+    # the endpoint whose success means a swap happened. Execution is bound separately
+    # (mount_hot_swap_execution, exercised below), and GET /api/v1/hot-swap/status has
+    # a built owner for all four of its fields but no composer: binding it is
+    # SRS-API-001's process-main.
     for where in _mount(_StubCli(NEVER_STATUS), tmp_path):
         status, body = _request(where, "GET", "/api/v1/hot-swap/status")
         assert status == 501, body
@@ -362,3 +365,200 @@ def test_the_execution_and_status_routes_stay_deferred(tmp_path) -> None:
         status, body = _request(where, "POST", "/api/v1/hot-swap?confirm=true", {"x": 1})
         assert status == 501, body
         assert body["error"]["type"] == "HANDLER_DEFERRED", body
+
+
+# --------------------------------------------------------------------------- #
+# The EXECUTION route (adversarial review r2 — `cooldown-execution-bypass`)
+# --------------------------------------------------------------------------- #
+#
+# The trigger arm above was already cool-down aware; the route whose success means
+# a swap HAPPENED was not. These pin the transport half of the fix: the flag is
+# forwarded, it stays distinct from the SYS-2d confirmation, and the refusal is a
+# CONFIRMATION_REQUIRED an operator can clear rather than a malformed request.
+
+SWAP_REFUSED_BY_COOLDOWN = (
+    "transports:FIXTURE\n"
+    "observed-at-seconds:1715003600\n"
+    "cooldown-state:ACTIVE\n"
+    "cooldown-in-effect:true\n"
+    "cooldown-confirmed:false\n"
+    "demotion-outcome:NOT_STARTED\n"
+    "promotion:BLOCKED\n"
+    "refusal:HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED\n"
+    "designation-after:live-a\n"
+    "designation-persisted:unchanged\n"
+    "swap-record-ordinal:-\n"
+    "promotion-recorded:not-configured\n"
+)
+SWAP_PROMOTED = (
+    "transports:FIXTURE\n"
+    "observed-at-seconds:1715003600\n"
+    "cooldown-state:NEVER_SWAPPED\n"
+    "cooldown-in-effect:false\n"
+    "cooldown-confirmed:false\n"
+    "demotion-outcome:FLAT_CONFIRMED\n"
+    "promotion:PROMOTED\n"
+    "cooldown-window:STARTED\n"
+    "cooldown-window-started-at-seconds:1715003600\n"
+    "designation-after:cand-b\n"
+    "designation-persisted:durable\n"
+    "swap-record-ordinal:1\n"
+    "promotion-recorded:true\n"
+)
+#: A swap that COMPLETED and whose window did not start — the fail-open.
+SWAP_PROMOTED_NO_WINDOW = SWAP_PROMOTED.replace(
+    "cooldown-window:STARTED\ncooldown-window-started-at-seconds:1715003600\n",
+    "cooldown-window:NOT_STARTED\n",
+)
+DESIGNATION_STATUS = "designated:live-a\n"
+
+
+class _ScriptedCli:
+    """Replays one result per call, and records every argv."""
+
+    def __init__(self, *results: tuple[int, str]) -> None:
+        self.results = list(results)
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        self.calls.append(list(argv))
+        returncode, stdout = self.results.pop(0)
+        return subprocess.CompletedProcess(argv, returncode, stdout, "")
+
+    @property
+    def swap_argv(self) -> list[str]:
+        return next(call for call in self.calls if "swap" in call)
+
+
+def _mount_execution(stub: _ScriptedCli, tmp_path) -> Iterator[tuple[str, int]]:
+    from atp_orchestration import mount_hot_swap_execution
+
+    runtime = OperatorInterfaceRuntime()
+    mount_hot_swap_execution(
+        runtime,
+        state_path=tmp_path / "live.state",
+        paper_state_dir=tmp_path / "paper",
+        log_path=tmp_path / "promotions.jsonl",
+        demotion_lock_path=tmp_path / "demotion-pending.json",
+        cooldown_state_path=tmp_path / "cooldown.json",
+        fixture_safety_inputs={
+            "positions": "flat",
+            "deployed_version": "sha256:" + "a" * 64,
+            "liquidation": "flat",
+        },
+        binary=tmp_path / "fake-bin",
+        runner=stub,
+    )
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        yield host, port
+    finally:
+        runtime.stop()
+
+
+def _swap_request(where: tuple[str, int], body: dict) -> tuple[int, dict]:
+    return _request(where, "POST", "/api/v1/hot-swap?confirm=true", body)
+
+
+def test_the_execution_route_forwards_the_cooldown_state_on_every_swap(tmp_path) -> None:
+    # Unconditional, never optional: a route that could skip the window would BE the
+    # execution bypass this gate closes.
+    stub = _ScriptedCli((0, DESIGNATION_STATUS), (0, SWAP_PROMOTED))
+    for where in _mount_execution(stub, tmp_path):
+        status, body = _swap_request(where, {"candidate_strategy_id": "cand-b"})
+        assert status == 200, body
+        argv = stub.swap_argv
+        assert "--cooldown-state" in argv, argv
+        assert argv[argv.index("--cooldown-state") + 1].endswith("cooldown.json"), argv
+        assert "--confirm-cooldown" not in argv, "an override must be asked for"
+        assert body["cooldown_window"] == "STARTED", body
+
+
+def test_an_execution_cooldown_refusal_is_confirmation_required(tmp_path) -> None:
+    # NOT a BAD_REQUEST. The request was well-formed and the caller can clear it by
+    # re-sending — reporting it as malformed hides the one action that completes it.
+    stub = _ScriptedCli((0, DESIGNATION_STATUS), (1, SWAP_REFUSED_BY_COOLDOWN))
+    for where in _mount_execution(stub, tmp_path):
+        status, body = _swap_request(where, {"candidate_strategy_id": "cand-b"})
+        error = body["error"]
+        assert error["category"] == "CONFIRMATION_REQUIRED", body
+        assert error["type"] == "HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED", body
+        assert status == 428, body
+        assert error["detail"]["confirm_field"] == "confirm_cooldown", body
+        assert error["detail"]["owner"] == "SRS-RESV-006", body
+        assert "SYS-49e" in error["message"], body
+
+
+def test_the_transport_confirmation_does_not_waive_the_execution_cooldown(tmp_path) -> None:
+    # `?confirm=true` is ALWAYS on this route (it is `requires_confirmation`). If it
+    # also meant "override the cool-down", every ordinary confirmed swap would be a
+    # silent override and there would be no window left to override.
+    stub = _ScriptedCli((0, DESIGNATION_STATUS), (1, SWAP_REFUSED_BY_COOLDOWN))
+    for where in _mount_execution(stub, tmp_path):
+        _swap_request(where, {"candidate_strategy_id": "cand-b"})
+        assert "--confirm-cooldown" not in stub.swap_argv
+
+
+def test_confirm_cooldown_is_forwarded_to_the_swap_binary(tmp_path) -> None:
+    stub = _ScriptedCli((0, DESIGNATION_STATUS), (0, SWAP_PROMOTED))
+    for where in _mount_execution(stub, tmp_path):
+        status, _ = _swap_request(
+            where, {"candidate_strategy_id": "cand-b", "confirm_cooldown": True}
+        )
+        assert status == 200
+        assert "--confirm-cooldown" in stub.swap_argv
+
+
+def test_a_non_boolean_execution_confirm_cooldown_is_refused_not_coerced(tmp_path) -> None:
+    # "false" is a truthy string; 0 is falsy. The one field that waives a seven-day
+    # safety window is not inferred from a value's truthiness.
+    stub = _ScriptedCli((0, DESIGNATION_STATUS))
+    for where in _mount_execution(stub, tmp_path):
+        status, body = _swap_request(
+            where, {"candidate_strategy_id": "cand-b", "confirm_cooldown": "true"}
+        )
+        assert status == 400, body
+        assert body["error"]["type"] == "INVALID_CONFIRM_COOLDOWN", body
+        assert not [call for call in stub.calls if "swap" in call], (
+            "a refused request must not have reached the binary"
+        )
+
+
+def test_a_swap_whose_window_did_not_start_is_not_a_clean_success(tmp_path) -> None:
+    # The fail-open: the candidate IS live, so this is a 200 (a non-2xx would say
+    # nothing mutated and invite a retry over a changed live slot) — but not a clean
+    # `PROMOTED`, because the triggers this swap should have suppressed are armed.
+    stub = _ScriptedCli((0, DESIGNATION_STATUS), (1, SWAP_PROMOTED_NO_WINDOW))
+    for where in _mount_execution(stub, tmp_path):
+        status, body = _swap_request(where, {"candidate_strategy_id": "cand-b"})
+        assert status == 200, body
+        assert body["promotion_state"] == "PROMOTED_COOLDOWN_NOT_STARTED", body
+        assert body["cooldown_window"] == "NOT_STARTED", body
+
+
+def test_a_binary_that_reports_no_window_at_all_is_unknown_never_started(tmp_path) -> None:
+    # A stale or truncated binary has not evidenced a window. Absent must not read as
+    # STARTED (CLAUDE.md rule 3) — that would report a cool-down nobody opened.
+    stripped = SWAP_PROMOTED.replace(
+        "cooldown-window:STARTED\ncooldown-window-started-at-seconds:1715003600\n", ""
+    )
+    stub = _ScriptedCli((0, DESIGNATION_STATUS), (0, stripped))
+    for where in _mount_execution(stub, tmp_path):
+        status, body = _swap_request(where, {"candidate_strategy_id": "cand-b"})
+        assert status == 200, body
+        assert body["cooldown_window"] == "UNKNOWN", body
+        assert body["promotion_state"] == "PROMOTED_COOLDOWN_NOT_STARTED", body
+
+
+def test_a_blocked_swap_still_declares_its_cooldown_window_field(tmp_path) -> None:
+    # Present on EVERY 200, including a refusal: an optional field would make the
+    # commonest degraded response a subset of what the published schema advertises.
+    blocked = SWAP_REFUSED_BY_COOLDOWN.replace(
+        "demotion-outcome:NOT_STARTED", "demotion-outcome:FLAT_CONFIRMED"
+    ).replace("refusal:HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED", "refusal:LIVE_POSITIONS_OPEN")
+    stub = _ScriptedCli((0, DESIGNATION_STATUS), (1, blocked))
+    for where in _mount_execution(stub, tmp_path):
+        status, body = _swap_request(where, {"candidate_strategy_id": "cand-b"})
+        assert status == 200, body
+        assert body["promotion_state"] == "BLOCKED", body
+        assert "cooldown_window" in body, body

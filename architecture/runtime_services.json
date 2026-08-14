@@ -4782,7 +4782,8 @@
       "response_fields": [
         "swap_id",
         "demotion_state",
-        "promotion_state"
+        "promotion_state",
+        "cooldown_window"
       ],
       "demotion_state_vocabulary": [
         "DEMOTED",
@@ -4792,8 +4793,15 @@
       "promotion_state_vocabulary": [
         "PROMOTED",
         "PROMOTED_UNRECORDED",
+        "PROMOTED_COOLDOWN_NOT_STARTED",
         "BLOCKED"
       ],
+      "cooldown_window_vocabulary": [
+        "STARTED",
+        "NOT_STARTED",
+        "UNKNOWN"
+      ],
+      "cooldown_window_note": "SRS-RESV-006 (adversarial review r2, `cooldown-execution-bypass`). The SyRS SYS-49e window is enforced in execute_hot_swap -- the single chokepoint the Rust API, the CLI `swap` subcommand and this route all pass through -- and a SUCCESSFUL swap records its completion there, which starts the next window. A swap that completed and whose window did NOT start is a fail-open: the automatic triggers it should have suppressed for seven days are still armed. It cannot be rolled back (the designation has moved and the book is flat, so reverting over an unwritable file is strictly worse), so it is made loud instead: the binary exits non-zero, promotion_state degrades to PROMOTED_COOLDOWN_NOT_STARTED so a consumer routing only on that field fails closed, and cooldown_window carries the precise fact on every 200 so it survives when the unrecorded-journal degradation also applies (that one keeps precedence, being the value the shipped UI-5 pane already routes on). ABSENT is UNKNOWN, never STARTED.",
       "unrecorded_promotion_note": "Round-2 adversarial review [high]: the promotion audit sink is best-effort (the designation is already written when it runs, so a sink failure cannot roll it back), which meant an unwritable journal could leave the candidate LIVE while the API reported a clean promotion_state:PROMOTED with no durable swap_id. A live state change nobody can address is not a success. The binary now reports promotion-recorded as THREE states (true / false / not-configured -- an append that was ATTEMPTED and failed is not the same fact as a caller who asked for no journal) and exits non-zero on a promoted-but-unrecorded swap; the handler maps it to PROMOTED_UNRECORDED. The shipped pane computes promoted = !!swapId && promotion === 'PROMOTED', so that value holds its control inert and awaits durable confirmation rather than showing a completed swap.",
       "subprocess_timeout_seconds": 90,
       "safety_input_tier": {
@@ -4821,9 +4829,9 @@
     "deferred": [
       "The REAL IB position feed behind LivePositionProbe. The shipped CLI supplies it as a FIXTURE and labels every run `transports:FIXTURE`, so a run is evidence about the GATE, not about a live IB account (owner: SRS-EXE-006 adapter / SRS-EXE-001 live state).",
       "The DURABLE deployed-version registry behind the code-identity clause. The CLI supplies it as a FIXTURE; the in-memory RetainingVersionRegistry is not cross-process (owner: SRS-ORCH-004).",
-      "The SyRS SYS-49e COOL-DOWN after a successful swap (default 7 days; manual-swap confirmation during cool-down) is NOT applied by this gate (owner: SRS-RESV-006). NOTE: the durable cross-attempt demotion-pending lockout that this entry previously deferred is now BUILT -- SRS-RESV-004 landed DemotionPendingLock and resolve_demotion consults it BEFORE its probe, so a swap attempted while a previous demotion is unresolved is refused before any side effect fires, and an unreadable lockout blocks exactly like a held one. Because execute_hot_swap's only path to the promotion gate runs through resolve_demotion, that protection is INHERITED here rather than reimplemented; the CLI's --demotion-lock and the handler's demotion_lock_path thread the real store through.",
-      "GET /api/v1/hot-swap/status keeps its structured 501: two of its four declared fields (demotion_pending, cooldown_expires_at) are owned by the deferred lockout above and the unbuilt cool-down, and answering with half a payload would be worse than not answering (owner: SRS-RESV-004 / SRS-RESV-006).",
-      "Cool-down enforcement after a successful swap (default 7 days; manual-swap confirmation during cool-down per SYS-49e) is NOT applied by this gate (owner: SRS-RESV-006).",
+      "The SyRS SYS-49e COOL-DOWN after a successful swap is NO LONGER deferred by this gate: SRS-RESV-006 landed it ON execute_hot_swap, which takes a required CooldownControl and refuses on the same proven_clear() predicate the two SRS-RESV-003 trigger arms use, ahead of every demotion-side port -- and RECORDS the completion that starts the next window on its success arm. See hot_swap_cooldown_contract. NOTE: the durable cross-attempt demotion-pending lockout that this entry previously deferred is also BUILT -- SRS-RESV-004 landed DemotionPendingLock and resolve_demotion consults it BEFORE its probe, so a swap attempted while a previous demotion is unresolved is refused before any side effect fires, and an unreadable lockout blocks exactly like a held one. Because execute_hot_swap's only path to the promotion gate runs through resolve_demotion, that protection is INHERITED here rather than reimplemented; the CLI's --demotion-lock and the handler's demotion_lock_path thread the real store through.",
+      "GET /api/v1/hot-swap/status keeps its structured 501, but no longer because a producer is missing: all four of its declared fields now have BUILT owners (auto_triggers_enabled SRS-RESV-003, demotion_pending SRS-RESV-004, current_live_strategy_id SRS-RESV-005, cooldown_expires_at SRS-RESV-006). What it lacks is a COMPOSER -- like every route here it is opt-in, and binding it is the shipped process-main composition (owner: SRS-API-001). Recorded as a scope boundary rather than a missing capability, so the next session does not re-derive it.",
+      "Cool-down enforcement after a successful swap (default 7 days; manual-swap confirmation during cool-down per SYS-49e) IS applied by this gate as of SRS-RESV-006 -- see the entry above and hot_swap_cooldown_contract. What remains genuinely out of scope here is gating a demotion that ends WITHOUT a promotion (resv004_hot_swap_demotion_cli demote): that is not a swap, and requiring a cool-down acknowledgement to STOP trading a strategy would be a safety regression -- an operator must always be able to demote. Deliberate refusal, not a deferral.",
       "The Reservoir ranking that NAMES a promotion candidate. The UI-5 pane's promote control stays inert while it has no candidate, so binding this route does not arm the dashboard button (owner: SRS-RESV-002).",
       "The UI-5 pane's live_state cell (current live strategy + successful-promotion state) is NOT resolved by this feature; it is jointly owned and stays a deferred cell (owner: SRS-RESV-004 / SRS-RESV-005 / SRS-RESV-006).",
       "Routing the promotion journal into the SYS-61 operator log store. This feature writes its own durable JSON-Lines promotion journal (the swap_id source), but the hot_swap system-log source still has no producer in atp_logging's store, so atp_dashboard.logs.SOURCE_COVERAGE stays deferred (owner: SRS-LOG-001).",
@@ -5163,6 +5171,40 @@
       "warning_accessor": "confirmation_warning",
       "evaluate_method": "evaluate_automatic_triggers",
       "manual_method": "request_manual_promotion",
+      "execute_method": "execute_hot_swap",
+      "promotion_module": "crates/atp-orchestrator/src/hot_swap_promotion.rs",
+      "promote_cli": "crates/atp-orchestrator/src/bin/resv005_hot_swap_promote_cli.rs",
+      "execution_refusal_code": "HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED",
+      "window_outcome_enum": "CooldownWindowOutcome",
+      "completion_sink": "SwapCompletionSink",
+      "swap_path_markers": [
+        "resolve_demotion(",
+        "execute_demotion_sequence(",
+        "promote_after_demotion("
+      ],
+      "must_be_discovered": [
+        "execute_hot_swap"
+      ],
+      "must_be_discovered_note": "The two TRIGGER arms are deliberately NOT here: they mint a proposal and never reach a demotion-side port, so the marker scan does not — and should not — see them. They are enumerable (exactly two, both on StrategyOrchestrator, both named in this block) and are pinned by their own check. Two different classes, two different guards: a closed set checked by name, and an open set discovered from source.",
+      "ungated_swap_paths": [
+        {
+          "method": "resolve_demotion",
+          "reason": "SRS-RESV-004's demotion gate itself. A demotion that ends WITHOUT a promotion is not a swap -- it is an operator ceasing to trade a strategy (the SYS-49b/49c path), and requiring a seven-day cool-down acknowledgement to STOP trading would be a safety regression: an operator must always be able to demote. The cool-down governs starting a NEW live strategy, and it is enforced on execute_hot_swap, the only path that reaches a promotion. Deliberate refusal, not a deferral."
+        },
+        {
+          "method": "execute_demotion_sequence",
+          "reason": "Same reason as resolve_demotion: the liquidate-and-cease half of a changeover, reachable on its own only through resv004_hot_swap_demotion_cli demote. It promotes nothing."
+        },
+        {
+          "method": "complete_demotion_to_paper",
+          "reason": "The tail of the demotion half -- moves the demoted strategy onto the internal simulation engine. Promotes nothing."
+        },
+        {
+          "method": "run_fixture_demotion",
+          "reason": "SRS-RESV-004's operator drill behind resv004_hot_swap_demotion_cli demote. Discovered by this check rather than remembered, which is the point of scanning the source: it runs execute_demotion_sequence, resolve_demotion and complete_demotion_to_paper, and verifiably calls nothing that promotes or designates (0 occurrences of promote/designate/execute_hot_swap in its body). Exempt for the same reason as resolve_demotion: it ceases trading a strategy, it does not start one."
+        }
+      ],
+      "anti_bypass_note": "Adversarial review r2 (`cooldown-execution-bypass`). The first version of this guard NAMED two methods -- evaluate_automatic_triggers and request_manual_promotion -- and asserted nothing about anything else, which is exactly how execute_hot_swap ran ungated: those two only MINT a proposal, and nothing in the type graph requires a swap to have come from one (HotSwapDemotionRequest is freely constructible and the CLI builds one straight from argv). A checklist of known arms cannot catch the arm nobody added to it, so the check now DISCOVERS the arms from source: any pub fn in the orchestrator crate whose body reaches a demotion-side side effect is a swap path and must consult proven_clear, with the reasoned per-method exemptions above. A future third entry point fails the check the moment it is written.",
       "manual_error_variant": "CooldownConfirmationRequired",
       "evaluation_field": "cooldown",
       "backwards_clock_token": "saturating_sub",

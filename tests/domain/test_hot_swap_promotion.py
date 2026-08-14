@@ -135,6 +135,17 @@ def _swap(
         str(paper),
         "--demotion-lock",
         str(state.parent / "demotion-pending.json"),
+        # SRS-RESV-006 / SYS-49e. Required by the binary, so no walk can skip the
+        # window. The file does not exist here, which resolves to NEVER_SWAPPED —
+        # proven clear — because no swap has completed in these fixtures. That is
+        # the right baseline for a suite measuring the PROMOTION gate; the
+        # cool-down's own refusals are pinned by tests/domain/test_hot_swap_cooldown.py.
+        # A case that needs an OPEN window overrides the path via `extra`.
+        *(
+            []
+            if any(f == "--cooldown-state" for f in extra)
+            else ["--cooldown-state", str(state.parent / "cooldown.json")]
+        ),
         # This walk exercises the GATE, and the two safety facts it turns on have no
         # real producer yet (SRS-EXE-006 / SRS-ORCH-004). The binary refuses fixture
         # safety inputs unless the caller says out loud that it is running a drill,
@@ -438,6 +449,8 @@ def test_fixture_safety_inputs_must_be_declared_out_loud(binaries, paper_store, 
         str(paper_store),
         "--demotion-lock",
         str(tmp_path / "demotion-pending.json"),
+        "--cooldown-state",
+        str(tmp_path / "cooldown.json"),
         "--confirm",
     ]  # deliberately WITHOUT --allow-fixture-safety-inputs
 

@@ -54,11 +54,10 @@
 //! # Scope — what is real here and what is deferred
 //!
 //! The gate, its ordering, and its refusals are real and proven offline. The
-//! concrete producers behind three of the ports are deferred and enumerated in
+//! concrete producers behind two of the ports are deferred and enumerated in
 //! `architecture/runtime_services.json` `hot_swap_promotion_contract.deferred[]`:
-//! the real IB position feed (SRS-EXE-006), the durable cross-attempt
-//! demotion-pending lockout (SRS-RESV-004), the cool-down window (SRS-RESV-006),
-//! and the Reservoir ranking that names a candidate (SRS-RESV-002).
+//! the real IB position feed (SRS-EXE-006) and the Reservoir ranking that names a
+//! candidate (SRS-RESV-002).
 //!
 //! The cross-attempt lockout is no longer a gap. SRS-RESV-004 shipped
 //! `DemotionPendingLock`, and `resolve_demotion` consults it BEFORE its probe, so
@@ -67,7 +66,26 @@
 //! Because the only path to this gate runs through `resolve_demotion`, that
 //! protection is inherited here rather than reimplemented: `execute_hot_swap`
 //! threads the lock through and cannot reach the promotion gate when it blocks.
+//!
+//! # The SYS-49e cool-down is enforced HERE, not merely upstream (SRS-RESV-006)
+//!
+//! SRS-RESV-006 gates the two SRS-RESV-003 trigger entry points, but those only
+//! *mint a proposal* — nothing in the type graph requires a swap to have come from
+//! one. `HotSwapDemotionRequest` is freely constructible and the CLI builds one
+//! straight from argv, so a suppressed evaluation constrained nothing: this
+//! module, `resv005_hot_swap_promote_cli swap` and `POST /api/v1/hot-swap` all
+//! reached the demotion untouched. That was `cooldown-execution-bypass`, and the
+//! fix is that [`CooldownControl`] is a **required, non-optional** parameter of
+//! [`StrategyOrchestrator::execute_hot_swap`]: a caller cannot execute a swap
+//! without stating what the window says, and `Unknown` refuses exactly as an
+//! active window does.
+//!
+//! The same entry point also **starts** the next window, on its success arm only —
+//! SYS-49e's "the timestamp of the most recent successful swap completion". A
+//! demotion that ends without a promotion is a failed changeover, not a swap, and
+//! must not open one.
 
+use crate::cooldown::{CooldownState, ManualCooldownAcknowledgement, SwapCompletion};
 use crate::{
     DemotionPendingLock, DeployedVersionRegistry, HotSwapDemotionEventSink,
     HotSwapDemotionResolved, HotSwapLiquidationProbe, HotSwapSideEffectError, OperatorAlertSink,
@@ -260,7 +278,98 @@ pub struct HotSwapPromotionEvent {
     pub paper_history_preserved: bool,
     /// The candidate's deployed version identifier, when it could be resolved.
     pub deployed_version: Option<String>,
+    /// Whether this swap started its SyRS SYS-49e cool-down window. `false` on
+    /// every refusal (no swap completed, so no window is due) AND on a completed
+    /// swap whose window write failed — the fail-open case, which is exactly the
+    /// one an audit trail must not be silent about. Read `promoted` alongside it:
+    /// `promoted:true` with `cooldown_window_started:false` is the state that
+    /// needs an operator.
+    pub cooldown_window_started: bool,
     pub observed_at_seconds: u64,
+}
+
+// --------------------------------------------------------------------------- //
+// The SYS-49e cool-down (SRS-RESV-006)
+// --------------------------------------------------------------------------- //
+
+/// Where a **completed** swap starts its SyRS SYS-49e cool-down window.
+///
+/// A sink rather than a path, for the same reason every other dependency here is a
+/// port: the gate must be drivable without a filesystem, and its ordering is the
+/// thing under test. The concrete implementation is
+/// [`crate::cooldown_store::record_completion`], bound at the composition root.
+///
+/// This is the ONLY mutator in the promotion path that is not the designation
+/// write itself, and it is deliberately not part of [`PromotionPorts`] — that
+/// bundle is pinned read-only by `tools/hot_swap_promotion_check.py`, and a
+/// writer belongs nowhere near it.
+///
+/// `Err` carries an operator-facing reason. It does **not** roll the promotion
+/// back: see [`CooldownWindowOutcome::NotStarted`].
+pub trait SwapCompletionSink {
+    fn record_swap_completion(&self, completion: &SwapCompletion) -> Result<(), String>;
+}
+
+/// The SYS-49e inputs [`StrategyOrchestrator::execute_hot_swap`] requires.
+///
+/// One bundle, and **not** optional, because that is the whole anti-bypass
+/// property: a caller cannot execute a swap without stating what the cool-down
+/// window says. A composer with no window configured resolves
+/// [`CooldownState::Unknown`] through [`crate::cooldown_store::resolve`], which
+/// this gate refuses — "we could not tell" is never "no cool-down is in effect".
+pub struct CooldownControl<'a, W>
+where
+    W: SwapCompletionSink,
+{
+    /// The window as [`crate::cooldown_store::resolve`] classified it. A resolved
+    /// VALUE, not a port: the store read and the `Err -> Unknown` mapping happen
+    /// in exactly one place, at the composition root.
+    pub state: &'a CooldownState,
+    /// Whether the operator has acknowledged the confirmation warning. An enum, so
+    /// a bare `true` at the call site is not one character from the opposite.
+    pub acknowledgement: ManualCooldownAcknowledgement,
+    /// Where a successful swap records the completion that STARTS the next window.
+    pub completions: &'a W,
+}
+
+/// Whether the completed swap actually started its next cool-down window.
+///
+/// Carried on [`HotSwapPromoted`] rather than swallowed, because the failure it
+/// describes is a **fail-open**: the swap happened, so the next automatic
+/// evaluation reads no window and does not suppress. The window cannot be started
+/// BEFORE the designation write — a refused promotion would then have opened a
+/// seven-day window for a swap that never happened, which contradicts SYS-49e's
+/// "the timestamp of the most recent successful swap completion" and would let a
+/// repeatedly-failing swap disable the automatic triggers indefinitely.
+///
+/// Nor can the promotion be rolled back on this failure: positions are flat and the
+/// candidate is live: reverting the designation over an unwritable file would leave
+/// the demoted strategy live with an emptied book, which is strictly worse. So the
+/// honest handling is to make it LOUD — every surface reports it and exits
+/// non-zero — and to record the residual rather than imply it does not exist
+/// (`safety-paths.md` rule 41's own counter-rule).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CooldownWindowOutcome {
+    /// The completion was recorded; automatic triggers are suppressed from here.
+    Started { started_at_seconds: u64 },
+    /// The swap completed and the window did NOT start. Automatic triggers are
+    /// **not** suppressed until an operator repairs the store.
+    NotStarted { reason: String },
+}
+
+impl CooldownWindowOutcome {
+    /// The operator-facing wire value.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Started { .. } => "STARTED",
+            Self::NotStarted { .. } => "NOT_STARTED",
+        }
+    }
+
+    /// True only when the next window is genuinely running.
+    pub const fn started(&self) -> bool {
+        matches!(self, Self::Started { .. })
+    }
 }
 
 // --------------------------------------------------------------------------- //
@@ -283,6 +392,10 @@ pub struct HotSwapPromoted {
     /// identical across the mode change.
     pub deployed_version: DeployedVersion,
     pub demotion_elapsed_seconds: u64,
+    /// Whether this swap started the SyRS SYS-49e cool-down window that now
+    /// suppresses automatic triggers. Not a `bool` and not omitted: a swap whose
+    /// window failed to start is a fail-open every surface must report.
+    pub cooldown_window: CooldownWindowOutcome,
 }
 
 /// What the demotion half of a refused swap did — see
@@ -370,6 +483,17 @@ pub enum HotSwapPromotionError {
     DemotionReleaseFailed(LiveDesignationError),
     /// The live-designation authority refused the promotion.
     DesignationRefused(LiveDesignationError),
+    /// SyRS SYS-49e: a Hot-Swap cool-down window is in effect (or could not be
+    /// read), and the operator has not acknowledged the confirmation warning.
+    ///
+    /// Never a permanent block — that is the requirement. The identical call with
+    /// [`ManualCooldownAcknowledgement::Acknowledged`] proceeds, which is what
+    /// makes this a *confirmation*, and what keeps a manual swap available during
+    /// a window exactly as SYS-49a(a) requires.
+    CooldownConfirmationRequired {
+        state: CooldownState,
+        warning: String,
+    },
 }
 
 impl HotSwapPromotionError {
@@ -394,6 +518,7 @@ impl HotSwapPromotionError {
             Self::UnexpectedLiveStrategy { .. } => "UNEXPECTED_LIVE_STRATEGY",
             Self::DemotionReleaseFailed(_) => "DEMOTION_RELEASE_FAILED",
             Self::DesignationRefused(_) => "DESIGNATION_REFUSED",
+            Self::CooldownConfirmationRequired { .. } => "HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED",
         }
     }
 
@@ -430,11 +555,13 @@ impl HotSwapPromotionError {
             // The demotion RAN and did not reach flat: the SYS-49b timeout path,
             // where the demotion-pending lockout really was engaged.
             Self::DemotionRefused(_) => DemotionProof::TimedOut,
-            // The demotion never started: the live slot was wrong or empty, and
-            // these are refused before any demotion-side port is touched. Nothing
-            // mutated, so no lockout exists to wait on.
+            // The demotion never started: the live slot was wrong or empty, or the
+            // SYS-49e cool-down refused the attempt outright. All are refused
+            // before any demotion-side port is touched. Nothing mutated, so no
+            // lockout exists to wait on.
             Self::NoLiveStrategyToDemote { .. }
             | Self::UnexpectedLiveStrategy { .. }
+            | Self::CooldownConfirmationRequired { .. }
             | Self::DemotionNotAccepted { .. } => DemotionProof::NotStarted,
         }
     }
@@ -560,6 +687,14 @@ impl fmt::Display for HotSwapPromotionError {
                 formatter,
                 "SRS-RESV-005: the live-designation authority refused the promotion ({error})",
             ),
+            Self::CooldownConfirmationRequired { state, warning } => write!(
+                formatter,
+                "SRS-RESV-006: a Hot-Swap cool-down is in effect (window {}) and this swap was \
+                 not confirmed against it — {warning}. Nothing was demoted and nothing was \
+                 promoted. Re-run acknowledging the warning to swap anyway; SYS-49e permits a \
+                 manual swap during the window, it only requires you to say so.",
+                state.as_str(),
+            ),
         }
     }
 }
@@ -606,7 +741,7 @@ impl StrategyOrchestrator {
     /// durable demotion-pending lockout that would also block a later retry is
     /// SRS-RESV-004's (see the module docs).
     #[allow(clippy::too_many_arguments)]
-    pub fn execute_hot_swap<P, C, A, E, L, Q, H, R, S>(
+    pub fn execute_hot_swap<P, C, A, E, L, Q, H, R, S, W>(
         &self,
         request: HotSwapDemotionRequest,
         liquidation: &P,
@@ -615,6 +750,7 @@ impl StrategyOrchestrator {
         demotion_events: &E,
         lock: &L,
         ports: PromotionPorts<'_, Q, H, R, S>,
+        cooldown: CooldownControl<'_, W>,
         designation: &mut LiveDesignation,
         confirmation: LiveDesignationConfirmation,
         observed_at_seconds: u64,
@@ -629,9 +765,52 @@ impl StrategyOrchestrator {
         H: PaperHistorySource,
         R: DeployedVersionRegistry,
         S: HotSwapPromotionEventSink,
+        W: SwapCompletionSink,
     {
         let demoting = request.demoting_strategy_id.clone();
         let candidate = request.candidate_strategy_id.clone();
+
+        // THE SYS-49e COOL-DOWN, BEFORE EVERYTHING ELSE.
+        //
+        // SYS-49e says that during the window no automatic trigger "shall be ACTED
+        // UPON". SRS-RESV-006 landed the same `proven_clear()` predicate on the two
+        // SRS-RESV-003 entry points, but those only MINT a proposal — nothing forces
+        // a swap to have come from one. `HotSwapDemotionRequest` is freely
+        // constructible and the CLI builds one straight from argv, so a suppressed
+        // evaluation constrained nothing at all: this function, the CLI's `swap`
+        // subcommand and `POST /api/v1/hot-swap` reached the demotion untouched.
+        // Enforcing here is what makes the window mean something, because this is
+        // the single chokepoint all three of those surfaces pass through.
+        // Raised by adversarial review r2 as `cooldown-execution-bypass`.
+        //
+        // FIRST, ahead of the stale-slot revalidation below, for two reasons. It
+        // consults no port, so ordering it first costs nothing; and an operator
+        // blocked by a seven-day window who is told "no strategy holds the live
+        // designation" is being sent to fix the wrong thing. Both refusals are
+        // pre-side-effect, so the order is an honesty question, not a safety one.
+        //
+        // The predicate is `proven_clear()`, identical to the two trigger-path arms
+        // — so `Unknown` (unreadable, absent path, corrupt) refuses here exactly as
+        // it suppresses there, and one mutation reddens all three test families.
+        if !cooldown.state.proven_clear() && !cooldown.acknowledgement.is_acknowledged() {
+            let error = HotSwapPromotionError::CooldownConfirmationRequired {
+                state: cooldown.state.clone(),
+                warning: cooldown.state.warning_text(),
+            };
+            let _ = ports.events.record(HotSwapPromotionEvent {
+                demoting_strategy_id: demoting,
+                candidate_strategy_id: candidate,
+                promoted: false,
+                refusal: Some(error.machine_reason()),
+                // Nothing ran: the refusal is ahead of every demotion-side port.
+                flat_confirmed: false,
+                paper_history_preserved: false,
+                deployed_version: None,
+                cooldown_window_started: false,
+                observed_at_seconds,
+            });
+            return Err(error);
+        }
 
         // REVALIDATE THE LIVE SLOT BEFORE ANY DEMOTION-SIDE PORT RUNS.
         //
@@ -669,6 +848,7 @@ impl StrategyOrchestrator {
                 flat_confirmed: false,
                 paper_history_preserved: false,
                 deployed_version: None,
+                cooldown_window_started: false,
                 observed_at_seconds,
             });
             return Err(error);
@@ -702,6 +882,41 @@ impl StrategyOrchestrator {
             Err(refused) => Err(HotSwapPromotionError::DemotionRefused(refused)),
         };
 
+        // START THE NEXT WINDOW — SYS-49e's third clause, on the success arm ONLY.
+        //
+        // "The cool-down start time shall be the timestamp of the most recent
+        // successful swap COMPLETION", so the completion is recorded here, after the
+        // designation write, with `observed_at_seconds` as the start. Two arms that
+        // deliberately do NOT write:
+        //
+        // * any refusal — a demotion that ended without a promotion is a failed
+        //   changeover, not a swap (SRS-RESV-004's SYS-49b timeout reaches exactly
+        //   that state). Starting a window there would suppress the automatic
+        //   triggers for seven days over a swap that never happened, and would let a
+        //   repeatedly-failing swap disable them indefinitely;
+        // * anything before the designation write, for the same reason in the other
+        //   direction.
+        //
+        // A failed write is NOT swallowed and NOT a rollback — see
+        // `CooldownWindowOutcome::NotStarted` for why neither is available here.
+        let outcome = outcome.map(|promoted| {
+            let completion = SwapCompletion {
+                completed_at_seconds: observed_at_seconds,
+                demoted_strategy_id: promoted.demoted_strategy_id.clone(),
+                promoted_strategy_id: promoted.promoted_strategy_id.clone(),
+            };
+            let cooldown_window = match cooldown.completions.record_swap_completion(&completion) {
+                Ok(()) => CooldownWindowOutcome::Started {
+                    started_at_seconds: observed_at_seconds,
+                },
+                Err(reason) => CooldownWindowOutcome::NotStarted { reason },
+            };
+            HotSwapPromoted {
+                cooldown_window,
+                ..promoted
+            }
+        });
+
         // Best-effort audit on both arms (see `HotSwapPromotionEventSink`): the
         // decision is already made and the designation write has already
         // happened or already been refused, so a sink failure changes nothing.
@@ -714,6 +929,7 @@ impl StrategyOrchestrator {
                 flat_confirmed: true,
                 paper_history_preserved: true,
                 deployed_version: Some(promoted.deployed_version.version_identifier()),
+                cooldown_window_started: promoted.cooldown_window.started(),
                 observed_at_seconds,
             },
             Err(error) => HotSwapPromotionEvent {
@@ -724,6 +940,9 @@ impl StrategyOrchestrator {
                 flat_confirmed: error.demotion_outcome() == DemotionProof::FlatConfirmed,
                 paper_history_preserved: false,
                 deployed_version: None,
+                // No swap completed, so no window was due. Distinct from the
+                // `promoted:true` + `false` pair above, which IS the fail-open.
+                cooldown_window_started: false,
                 observed_at_seconds,
             },
         });
@@ -884,6 +1103,15 @@ impl StrategyOrchestrator {
             paper_history: history_before,
             deployed_version: version_before,
             demotion_elapsed_seconds: receipt.elapsed_seconds,
+            // The gate does not own the SYS-49e window — `execute_hot_swap` records
+            // the completion and overwrites this. The default is the UNDER-claim, so
+            // any path that somehow reached the gate without going through the entry
+            // point reports "no window started", which is then the truth.
+            cooldown_window: CooldownWindowOutcome::NotStarted {
+                reason: "the cool-down window is recorded by `execute_hot_swap`, and this \
+                         promotion did not run through it"
+                    .to_string(),
+            },
         })
     }
 }

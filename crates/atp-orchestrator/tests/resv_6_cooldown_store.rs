@@ -392,8 +392,14 @@ fn resv_6_an_ordinary_id_with_punctuation_still_round_trips() {
 
     let record = cooldown_store::load(&path).unwrap().expect("a window");
     let stored = record.last_completion.expect("a completion");
-    assert_eq!(stored.demoted_strategy_id.as_str(), "mean-rev.v2:eu/large_cap");
-    assert_eq!(stored.promoted_strategy_id.as_str(), "momo-3d.v11:us/small_cap");
+    assert_eq!(
+        stored.demoted_strategy_id.as_str(),
+        "mean-rev.v2:eu/large_cap"
+    );
+    assert_eq!(
+        stored.promoted_strategy_id.as_str(),
+        "momo-3d.v11:us/small_cap"
+    );
 }
 
 #[test]

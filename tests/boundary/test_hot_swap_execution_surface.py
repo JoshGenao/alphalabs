@@ -63,6 +63,11 @@ class _FakeCli:
         refusal: str | None = None,
         recorded: str = "true",
         persisted: str = "durable",
+        # SRS-RESV-006: the real binary emits this on every successful swap, so the
+        # fake has to as well — a stub that under-reports the real surface would make
+        # these tests measure a binary nobody ships. `None` models the OLD binary
+        # (no line at all), which the handler must read as UNKNOWN, never as STARTED.
+        cooldown_window: str | None = "STARTED",
     ) -> None:
         lines = ["transports:FIXTURE"]
         if demotion is not None:
@@ -70,6 +75,8 @@ class _FakeCli:
         lines.append(f"promotion:{promotion}")
         if refusal is not None:
             lines.append(f"refusal:{refusal}")
+        if cooldown_window is not None and promotion == "PROMOTED":
+            lines.append(f"cooldown-window:{cooldown_window}")
         lines.append(f"swap-record-ordinal:{ordinal}")
         lines.append(f"promotion-recorded:{recorded}")
         lines.append(f"designation-persisted:{persisted}")
@@ -104,6 +111,10 @@ def mounted(fake_cli: _FakeCli, tmp_path) -> Iterator[tuple[str, int]]:
         paper_state_dir=tmp_path / "paper",
         log_path=tmp_path / "swaps.jsonl",
         demotion_lock_path=tmp_path / "demotion-pending.json",
+        # SRS-RESV-006: required, so no composition can opt out of the SYS-49e
+        # window. Absent on disk = NEVER_SWAPPED = proven clear, which is the
+        # right baseline for tests measuring the PROMOTION gate.
+        cooldown_state_path=tmp_path / "cooldown.json",
         # An explicit DRILL composition. The shipped posture is the `unwired`
         # fixture below, which declares nothing and therefore refuses.
         fixture_safety_inputs={
@@ -131,6 +142,10 @@ def unwired(fake_cli: _FakeCli, tmp_path) -> Iterator[tuple[str, int]]:
         paper_state_dir=tmp_path / "paper",
         log_path=tmp_path / "swaps.jsonl",
         demotion_lock_path=tmp_path / "demotion-pending.json",
+        # SRS-RESV-006: required, so no composition can opt out of the SYS-49e
+        # window. Absent on disk = NEVER_SWAPPED = proven clear, which is the
+        # right baseline for tests measuring the PROMOTION gate.
+        cooldown_state_path=tmp_path / "cooldown.json",
         binary=tmp_path / "fake-bin",
         runner=fake_cli,
     )
@@ -283,6 +298,10 @@ def test_the_handler_refuses_unconfirmed_even_when_the_transport_does_not(fake_c
         paper_state_dir=tmp_path / "paper",
         log_path=tmp_path / "swaps.jsonl",
         demotion_lock_path=tmp_path / "demotion-pending.json",
+        # SRS-RESV-006: required, so no composition can opt out of the SYS-49e
+        # window. Absent on disk = NEVER_SWAPPED = proven clear, which is the
+        # right baseline for tests measuring the PROMOTION gate.
+        cooldown_state_path=tmp_path / "cooldown.json",
         binary=tmp_path / "fake-bin",
         runner=fake_cli,
     )
@@ -574,6 +593,10 @@ def test_a_partial_safety_declaration_still_refuses_and_names_only_what_is_missi
         paper_state_dir=tmp_path / "paper",
         log_path=tmp_path / "swaps.jsonl",
         demotion_lock_path=tmp_path / "demotion-pending.json",
+        # SRS-RESV-006: required, so no composition can opt out of the SYS-49e
+        # window. Absent on disk = NEVER_SWAPPED = proven clear, which is the
+        # right baseline for tests measuring the PROMOTION gate.
+        cooldown_state_path=tmp_path / "cooldown.json",
         fixture_safety_inputs={"positions": "flat"},  # no deployed_version
         binary=tmp_path / "fake-bin",
         runner=fake_cli,

@@ -475,3 +475,221 @@ def test_an_unrepresentable_id_is_refused_without_disarming_a_running_window(
     evaluated = _evaluate(state, log, DURING)
     assert _kv(evaluated.stdout)["cooldown-suppressed"] == "true"
     assert _log_lines(log) == 0, f"{label}: a suppressed pass must write no trigger record"
+
+
+# --------------------------------------------------------------------------- #
+# The EXECUTION handoff — a real swap, a real window, a real suppression
+# --------------------------------------------------------------------------- #
+#
+# Adversarial review r2 (`cooldown-execution-bypass`). The cases above prove the
+# TRIGGER layer is gated, but a trigger only mints a proposal — nothing forced a
+# swap to have come from one. These drive the whole loop across THREE real
+# binaries and one real file:
+#
+#     resv005 swap  ->  the window opens at the swap's own completion timestamp
+#                   ->  resv003 evaluate is suppressed
+#                   ->  resv005 swap is itself refused until acknowledged
+#
+# so "the cool-down start time is the timestamp of the most recent successful swap
+# completion" is demonstrated by the producer the requirement actually names,
+# rather than by the operator CLI standing in for it.
+
+PROMOTE_BIN = "resv005_hot_swap_promote_cli"
+PERSIST_BIN = "sim004_persist_cli"
+#: The two strategies the SRS-SIM-004 fixture snapshot actually contains.
+SWAP_DEMOTING = "reservoir-a"
+SWAP_CANDIDATE = "reservoir-b"
+DESIGNATION_MAGIC = "RESV005-LIVE-DESIGNATION-STATE v1"
+
+
+@pytest.fixture(scope="module")
+def swap_binaries() -> dict[str, Path]:
+    """Build the promotion binary and the paper-snapshot writer it reads."""
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip("cargo not on PATH")
+    build = subprocess.run(
+        [
+            cargo,
+            "build",
+            "-q",
+            "-p",
+            "atp-orchestrator",
+            "--bin",
+            PROMOTE_BIN,
+            "-p",
+            "atp-simulation",
+            "--bin",
+            PERSIST_BIN,
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, f"cargo build failed:\n{build.stderr}"
+    paths = {name: REPO_ROOT / "target" / "debug" / name for name in (PROMOTE_BIN, PERSIST_BIN)}
+    for name, path in paths.items():
+        assert path.exists(), f"{name} was not built at {path}"
+    return paths
+
+
+def _swap(
+    swap_binaries: dict[str, Path],
+    tmp_path: Path,
+    *,
+    cooldown_state: Path,
+    now: int,
+    extra: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess[str]:
+    """One REAL demote-then-promote attempt, gated by `cooldown_state`."""
+    paper = tmp_path / "paper"
+    if not paper.exists():
+        paper.mkdir()
+        seeded = subprocess.run(
+            [str(swap_binaries[PERSIST_BIN]), "persist", "--dir", str(paper)],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert seeded.returncode == 0, f"seeding the paper store failed:\n{seeded.stderr}"
+
+    designation = tmp_path / "live.state"
+    designation.write_text(f"{DESIGNATION_MAGIC}\ndesignated\t{SWAP_DEMOTING}\n")
+
+    return subprocess.run(
+        [
+            str(swap_binaries[PROMOTE_BIN]),
+            "swap",
+            "--state",
+            str(designation),
+            "--demoting",
+            SWAP_DEMOTING,
+            "--candidate",
+            SWAP_CANDIDATE,
+            "--paper-state",
+            str(paper),
+            "--demotion-lock",
+            str(tmp_path / "demotion-pending.json"),
+            "--cooldown-state",
+            str(cooldown_state),
+            "--now",
+            str(now),
+            "--liquidation",
+            "flat",
+            "--positions",
+            "flat",
+            "--deployed-version",
+            "sha256:" + "a" * 64,
+            "--allow-fixture-safety-inputs",
+            "--confirm",
+            *extra,
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_a_real_swap_opens_the_window_that_then_suppresses_the_triggers(
+    swap_binaries, tmp_path
+) -> None:
+    """The whole SYS-49e loop, across three binaries and one file.
+
+    This is the case that closes `cooldown-execution-bypass`: the window is opened
+    by the PRODUCTION producer (a completed swap), not by the operator CLI standing
+    in for it, and the suppression it causes is observed by a separate process.
+    """
+
+    state, log = tmp_path / "cd.json", tmp_path / "t.jsonl"
+
+    # Before the swap: every armed trigger fires.
+    before = _evaluate(state, log, COMPLETED_AT - 10)
+    assert _kv(before.stdout)["cooldown-state"] == "NEVER_SWAPPED"
+    assert _kv(before.stdout)["selected"] != "NONE"
+    fired_records = _log_lines(log)
+    assert fired_records >= 1, "the pre-swap pass must actually fire, or nothing is proven"
+
+    swapped = _swap(swap_binaries, tmp_path, cooldown_state=state, now=COMPLETED_AT)
+    assert swapped.returncode == 0, f"the swap must succeed:\n{swapped.stderr}"
+    fields = _kv(swapped.stdout)
+    assert fields["promotion"] == "PROMOTED"
+    assert fields["cooldown-window"] == "STARTED"
+    # SYS-49e clause 3, from the real producer: the window starts at the swap's own
+    # completion timestamp, not at the time the file happened to be written.
+    assert fields["cooldown-window-started-at-seconds"] == str(COMPLETED_AT)
+
+    window = _kv(_cooldown("status", "--state", str(state), "--now", str(DURING)).stdout)
+    assert window["cooldown-state"] == "ACTIVE"
+    assert window["cooldown-started-at-seconds"] == str(COMPLETED_AT)
+
+    # And a DIFFERENT process now sees the automatic triggers suppressed.
+    during = _evaluate(state, log, DURING)
+    assert _kv(during.stdout)["cooldown-suppressed"] == "true"
+    assert _kv(during.stdout)["selected"] == "NONE"
+    assert _log_lines(log) == fired_records, (
+        "a suppressed pass must append no audit record — 'ignored' means ignored"
+    )
+
+
+def test_a_second_swap_inside_the_window_is_refused_until_acknowledged(
+    swap_binaries, tmp_path
+) -> None:
+    """SYS-49a(a): a manual swap stays AVAILABLE during a window, with a warning.
+
+    The refusal and the override are asserted as a PAIR against one window, so a
+    gate that blocked every swap would fail the second half and a gate that blocked
+    none would fail the first.
+    """
+
+    state = tmp_path / "cd.json"
+    _open_window(state)
+
+    refused = _swap(swap_binaries, tmp_path, cooldown_state=state, now=DURING)
+    assert refused.returncode != 0, "a swap inside the window must be refused"
+    fields = _kv(refused.stdout)
+    assert fields["cooldown-state"] == "ACTIVE"
+    assert fields["cooldown-in-effect"] == "true"
+    assert fields["promotion"] == "BLOCKED"
+    assert fields["refusal"] == "HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED"
+    # NOT_STARTED, not DEMOTION_PENDING: nothing ran, so there is no lockout to
+    # wait on and nothing to reconcile.
+    assert fields["demotion-outcome"] == "NOT_STARTED"
+    assert fields["designation-after"] == SWAP_DEMOTING, "the live slot must be untouched"
+    assert "SYS-49e permits a manual swap" in refused.stderr
+
+    # The IDENTICAL call, acknowledged, fires.
+    confirmed = _swap(
+        swap_binaries,
+        tmp_path,
+        cooldown_state=state,
+        now=DURING,
+        extra=("--confirm-cooldown",),
+    )
+    assert confirmed.returncode == 0, f"an acknowledged swap must fire:\n{confirmed.stderr}"
+    confirmed_fields = _kv(confirmed.stdout)
+    assert confirmed_fields["promotion"] == "PROMOTED"
+    assert confirmed_fields["cooldown-confirmed"] == "true"
+    assert confirmed_fields["designation-after"] == SWAP_CANDIDATE
+    # The override RESTARTS the window at the new swap's completion.
+    assert confirmed_fields["cooldown-window-started-at-seconds"] == str(DURING)
+
+
+def test_a_swap_cannot_run_against_an_unreadable_window(swap_binaries, tmp_path) -> None:
+    """UNKNOWN is not "no cool-down is in effect" (CLAUDE.md rule 3).
+
+    A corrupt window must refuse the EXECUTION, not just the proposal — otherwise
+    damaging the state file is a way to switch the cool-down off.
+    """
+
+    state = tmp_path / "cd.json"
+    state.write_text("{not json at all")
+
+    refused = _swap(swap_binaries, tmp_path, cooldown_state=state, now=DURING)
+    assert refused.returncode != 0
+    fields = _kv(refused.stdout)
+    assert fields["cooldown-state"] == "UNKNOWN"
+    assert fields["refusal"] == "HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED"
+    assert fields["designation-after"] == SWAP_DEMOTING

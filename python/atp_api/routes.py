@@ -270,20 +270,31 @@ ROUTES: tuple[Route, ...] = (
         path="/api/v1/hot-swap",
         capability=Capability.HOT_SWAP,
         summary="Manually trigger a Reservoir-strategy promotion (demote-then-promote).",
-        srs_refs=("SRS-RESV-003", "SRS-RESV-004", "SRS-RESV-005", "SYS-49a", "SYS-49d"),
-        request_fields=("candidate_strategy_id", "confirm"),
-        response_fields=("swap_id", "demotion_state", "promotion_state"),
+        srs_refs=(
+            "SRS-RESV-003",
+            "SRS-RESV-004",
+            "SRS-RESV-005",
+            "SRS-RESV-006",
+            "SYS-49a",
+            "SYS-49d",
+            "SYS-49e",
+        ),
+        request_fields=("candidate_strategy_id", "confirm", "confirm_cooldown"),
+        response_fields=("swap_id", "demotion_state", "promotion_state", "cooldown_window"),
         # Real types, not the offline placeholder: this route has a live handler.
         # `swap_id` is a UNION because it is legitimately null whenever the promotion
         # journal did not record the attempt — declaring it a bare string would
         # document a genuinely valid degraded response as schema-invalid.
-        # `demotion_state` and `promotion_state` are closed vocabularies
-        # (DEMOTED|DEMOTION_PENDING and PROMOTED|BLOCKED) and never null: the handler
-        # returns 200 only once the gate has produced one of them.
+        # `demotion_state`, `promotion_state` and `cooldown_window` are closed
+        # vocabularies (DEMOTED|DEMOTION_PENDING;
+        # PROMOTED|PROMOTED_UNRECORDED|PROMOTED_COOLDOWN_NOT_STARTED|BLOCKED;
+        # STARTED|NOT_STARTED|UNKNOWN) and never null: the handler returns 200 only
+        # once the gate has produced one of them.
         field_types=(
             ("swap_id", "string|null"),
             ("demotion_state", "string"),
             ("promotion_state", "string"),
+            ("cooldown_window", "string"),
         ),
         # The handler refuses any body key outside the declared set with a 400
         # (UNKNOWN_REQUEST_FIELD), because accepting and ignoring a field would

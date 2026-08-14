@@ -43,9 +43,21 @@ consults it BEFORE its probe, so a swap attempted while a previous demotion is
 unresolved is refused before any side effect fires. This surface threads that lock
 through (``demotion_lock_path``); it does not reimplement the rule.
 
-``GET /api/v1/hot-swap/status`` still keeps its structured 501: its
-``cooldown_expires_at`` field is owned by the unbuilt ``SRS-RESV-006`` cool-down, and
-answering with part of a payload would be worse than not answering.
+**The SyRS SYS-49e cool-down is enforced here too** (``SRS-RESV-006``), and for the
+same reason: it is threaded through (``cooldown_state_path``) into the shared Rust
+gate rather than re-decided in this wrapper. A rule enforced only at the outermost
+surface leaves the CLI and the Rust API able to violate it — that was the
+``cooldown-execution-bypass`` finding, and the fix belongs in
+``StrategyOrchestrator::execute_hot_swap``, not here. What this module owns is the
+TRANSPORT half: forwarding ``confirm_cooldown`` as a flag, keeping it strictly
+distinct from the SYS-2d ``confirm``, and mapping the refusal to
+``CONFIRMATION_REQUIRED`` rather than to a malformed-request error.
+
+``GET /api/v1/hot-swap/status`` still keeps its structured 501, but no longer
+because a producer is missing — all four of its fields now have built owners
+(``SRS-RESV-003`` / ``004`` / ``005`` / ``006``). What it lacks is a composer: like
+every route here it is opt-in, and binding it is ``SRS-API-001``'s process-main
+composition, recorded in ``hot_swap_cooldown_contract.deferred``.
 """
 
 from __future__ import annotations
@@ -89,7 +101,12 @@ _DEFAULT_TIMEOUT_S = 90.0
 #: The exact set of body keys this route accepts. Anything else is refused rather
 #: than silently dropped: accepting and ignoring a field reports a swap the caller
 #: did not ask for as though it were the one they did.
-_REQUEST_FIELDS = frozenset({"candidate_strategy_id", "confirm"})
+_REQUEST_FIELDS = frozenset({"candidate_strategy_id", "confirm", "confirm_cooldown"})
+
+#: SRS-RESV-006's refusal code, as `HotSwapPromotionError::machine_reason` emits it.
+#: Intercepted ahead of the generic `NOT_STARTED` branch below, because it is the one
+#: refusal in that class the caller can resolve by re-sending — see :meth:`handle`.
+_COOLDOWN_REFUSAL = "HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED"
 
 #: The closed set of demotion outcomes the binary may report. Anything else —
 #: including ABSENT — is unknown, and unknown fails closed rather than defaulting to
@@ -102,6 +119,9 @@ _LOCKOUT_OWNER = "SRS-RESV-004"
 #: Owner of the live-designation route to use when NOTHING is live — promoting with
 #: no strategy to demote is a designation, not a Hot-Swap.
 _DESIGNATION_OWNER = "SRS-EXE-001"
+
+#: Owner of the SyRS SYS-49e cool-down window this route is gated by.
+_COOLDOWN_OWNER = "SRS-RESV-006"
 
 
 def default_binary(env: Mapping[str, str] | None = None) -> Path:
@@ -164,6 +184,7 @@ class SwapExecutionHandler:
         paper_state_dir: str | Path,
         log_path: str | Path,
         demotion_lock_path: str | Path,
+        cooldown_state_path: str | Path,
         fixture_safety_inputs: Mapping[str, str] | None = None,
         binary: str | Path | None = None,
         runner: SwapCliRunner | None = None,
@@ -187,6 +208,12 @@ class SwapExecutionHandler:
         #: demotion is unresolved is refused before any side effect fires. Required,
         #: not optional: an optional path would let a composer opt out of the block.
         self._demotion_lock_path = str(demotion_lock_path)
+        #: SRS-RESV-006's durable SyRS SYS-49e window. Required for the same reason
+        #: the lockout is: an optional path would let a composer opt out of the
+        #: cool-down entirely, and the binary resolves an omitted one to UNKNOWN,
+        #: which refuses. Every swap this route runs is gated by it, and every
+        #: successful one records its completion into it.
+        self._cooldown_state_path = str(cooldown_state_path)
         self._binary = Path(binary) if binary is not None else default_binary()
         self._runner = runner if runner is not None else _default_runner
         self._timeout = float(timeout) if timeout is not None else _DEFAULT_TIMEOUT_S
@@ -200,6 +227,7 @@ class SwapExecutionHandler:
             )
 
         candidate = self._read_candidate(request)
+        confirm_cooldown = self._read_confirm_cooldown(request)
 
         # Defence in depth under the transport's requires-confirmation guard: a
         # future dispatch path must not reach the binary unconfirmed. Checked
@@ -290,6 +318,13 @@ class SwapExecutionHandler:
                 self._log_path,
                 "--demotion-lock",
                 self._demotion_lock_path,
+                # SRS-RESV-006 / SYS-49e. Always passed, never conditional: an
+                # omitted path resolves to UNKNOWN in the binary, and a route that
+                # could silently skip the window would be the execution bypass this
+                # gate exists to close.
+                "--cooldown-state",
+                self._cooldown_state_path,
+                *(["--confirm-cooldown"] if confirm_cooldown else []),
                 # Explicit, never defaulted — and the fixture tier travels WITH
                 # them, so the binary refuses if a caller ever supplies the values
                 # without declaring what they are.
@@ -350,6 +385,30 @@ class SwapExecutionHandler:
         # end. DEMOTION_PENDING is reserved for the real SYS-49b timeout path.
         if demotion == "NOT_STARTED":
             reason = values.get("refusal") or "SWAP_NOT_STARTED"
+            # THE COOL-DOWN REFUSAL IS A CONFIRMATION, NOT A BAD REQUEST.
+            #
+            # It shares the "nothing mutated" property with its neighbours below,
+            # but not their remedy: the request was well-formed and the caller can
+            # resolve it by re-sending with `confirm_cooldown`. Reporting SYS-49e's
+            # confirmation warning as BAD_REQUEST would tell an operator their
+            # request was malformed and hide the one action that completes it —
+            # the same defect `hot_swap_triggers.py` closed on the manual arm,
+            # arriving at the execution route by a different route.
+            if reason == _COOLDOWN_REFUSAL:
+                raise InterfaceError(
+                    ErrorCategory.CONFIRMATION_REQUIRED,
+                    "a Hot-Swap cool-down window is in effect (or could not be read); "
+                    "SyRS SYS-49e permits a manual swap during the window but requires "
+                    "the operator to acknowledge the warning. Nothing was demoted and "
+                    "nothing was promoted. Re-send with confirm_cooldown=true to swap "
+                    "anyway.",
+                    type=_COOLDOWN_REFUSAL,
+                    detail={
+                        "owner": _COOLDOWN_OWNER,
+                        "cooldown_state": values.get("cooldown-state"),
+                        "confirm_field": "confirm_cooldown",
+                    },
+                )
             raise InterfaceError(
                 ErrorCategory.BAD_REQUEST,
                 f"the swap did not start ({reason}): no demotion ran and nothing was "
@@ -379,14 +438,44 @@ class SwapExecutionHandler:
         # correctly holds its control inert and waits for durable confirmation
         # instead of showing a completed swap.
         recorded = values.get("promotion-recorded")
-        if promotion == "PROMOTED" and recorded != "true":
-            promotion = "PROMOTED_UNRECORDED"
+
+        # THE SWAP HAPPENED AND ITS COOL-DOWN WINDOW DID NOT START (SYS-49e).
+        #
+        # The same shape as the unrecorded case below, and reported the same way:
+        # NOT a non-2xx, because this surface documents a non-2xx as "nothing
+        # mutated" and something very much did — the candidate is live. But not a
+        # clean `PROMOTED` either, because the automatic triggers this swap should
+        # have suppressed for seven days are still armed.
+        #
+        # ABSENT is UNKNOWN, not STARTED: a stale or truncated binary whose stdout
+        # carries no `cooldown-window` line has not evidenced a window, and this
+        # surface must not invent one (`CLAUDE.md` rule 3).
+        cooldown_window = values.get("cooldown-window")
+        if cooldown_window not in ("STARTED", "NOT_STARTED"):
+            cooldown_window = "UNKNOWN"
+
+        # Both degradations are carried, and neither is allowed to mask the other:
+        # `promotion_state` degrades on EITHER so a consumer routing only on it
+        # fails closed, and `cooldown_window` is a declared field present on every
+        # 200 so the precise fact survives when both are true. `PROMOTED_UNRECORDED`
+        # keeps precedence in the overlap because it is the value the shipped UI-5
+        # pane already routes on.
+        if promotion == "PROMOTED":
+            if recorded != "true":
+                promotion = "PROMOTED_UNRECORDED"
+            elif cooldown_window != "STARTED":
+                promotion = "PROMOTED_COOLDOWN_NOT_STARTED"
 
         body: dict[str, object] = {
             # DEMOTED / DEMOTION_PENDING — the closed vocabulary the shipped UI-5
             # pane already routes on, derived from a POSITIVELY proven outcome.
             "demotion_state": ("DEMOTED" if demotion == "FLAT_CONFIRMED" else "DEMOTION_PENDING"),
             "promotion_state": promotion,
+            # SRS-RESV-006 / SYS-49e. Present on EVERY 200, including a BLOCKED
+            # swap (where it is NOT_STARTED because no swap completed and no window
+            # was due) — an optional field would make the commonest degraded
+            # response a subset of what the schema advertises.
+            "cooldown_window": cooldown_window,
         }
         ordinal = values.get("swap-record-ordinal", "-")
         # An absent journal record means there is no durable position to address, so
@@ -422,6 +511,35 @@ class SwapExecutionHandler:
                 type="MISSING_CANDIDATE_STRATEGY_ID",
             )
         return candidate.strip()
+
+    def _read_confirm_cooldown(self, request: Request) -> bool:
+        """SYS-49e's acknowledgement, kept STRICTLY apart from ``request.confirmed``.
+
+        ``confirm`` is the transport's SYS-2d confirmation that the caller means to
+        designate a strategy live at all. ``confirm_cooldown`` is the operator
+        acknowledging a specific seven-day safety window they are overriding. One
+        flag meaning both would make every ordinary confirmed swap a silent
+        cool-down override, which is exactly the warning SYS-49e requires.
+
+        Absent is ``False`` — an override must be asked for. A non-boolean is
+        REFUSED rather than coerced: ``"false"``, ``0`` and ``[]`` are all truthy
+        or falsy by accident, and the one field that waives a safety window must be
+        said in full.
+        """
+
+        body = request.body or {}
+        if "confirm_cooldown" not in body:
+            return False
+        value = body["confirm_cooldown"]
+        if not isinstance(value, bool):
+            raise InterfaceError(
+                ErrorCategory.BAD_REQUEST,
+                f"confirm_cooldown must be a JSON boolean, got {type(value).__name__}; "
+                "the field that overrides a Hot-Swap cool-down is not coerced",
+                type="INVALID_CONFIRM_COOLDOWN",
+                detail={"owner": _COOLDOWN_OWNER},
+            )
+        return value
 
     def _current_live_strategy(self) -> str | None:
         """The demoting side, read from the DURABLE designation record.
@@ -482,6 +600,7 @@ def mount_hot_swap_execution(
     paper_state_dir: str | Path,
     log_path: str | Path,
     demotion_lock_path: str | Path,
+    cooldown_state_path: str | Path,
     fixture_safety_inputs: Mapping[str, str] | None = None,
     binary: str | Path | None = None,
     runner: SwapCliRunner | None = None,
@@ -502,6 +621,7 @@ def mount_hot_swap_execution(
         paper_state_dir=paper_state_dir,
         log_path=log_path,
         demotion_lock_path=demotion_lock_path,
+        cooldown_state_path=cooldown_state_path,
         fixture_safety_inputs=fixture_safety_inputs,
         binary=binary,
         runner=runner,

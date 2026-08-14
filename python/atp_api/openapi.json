@@ -214,7 +214,7 @@
     },
     "/api/v1/hot-swap": {
       "post": {
-        "description": "Manually trigger a Reservoir-strategy promotion (demote-then-promote). SRS trace: SRS-RESV-003, SRS-RESV-004, SRS-RESV-005, SYS-49a, SYS-49d. Implemented by SRS-RESV-005. The request and response schemas above are the ones the live handler enforces, not placeholders. A deployment that has not composed SRS-RESV-005's handler returns 501 naming it as the owner. Requires UI-4 confirmation; pass ``confirm`` query param.",
+        "description": "Manually trigger a Reservoir-strategy promotion (demote-then-promote). SRS trace: SRS-RESV-003, SRS-RESV-004, SRS-RESV-005, SRS-RESV-006, SYS-49a, SYS-49d, SYS-49e. Implemented by SRS-RESV-005. The request and response schemas above are the ones the live handler enforces, not placeholders. A deployment that has not composed SRS-RESV-005's handler returns 501 naming it as the owner. Requires UI-4 confirmation; pass ``confirm`` query param.",
         "operationId": "post_api_v1_hot-swap",
         "parameters": [
           {
@@ -235,6 +235,9 @@
                 "properties": {
                   "candidate_strategy_id": {
                     "type": "string"
+                  },
+                  "confirm_cooldown": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -253,6 +256,9 @@
                 "schema": {
                   "additionalProperties": true,
                   "properties": {
+                    "cooldown_window": {
+                      "type": "string"
+                    },
                     "demotion_state": {
                       "type": "string"
                     },
@@ -284,8 +290,10 @@
           "SRS-RESV-003",
           "SRS-RESV-004",
           "SRS-RESV-005",
+          "SRS-RESV-006",
           "SYS-49a",
-          "SYS-49d"
+          "SYS-49d",
+          "SYS-49e"
         ]
       }
     },

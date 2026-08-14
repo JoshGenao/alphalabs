@@ -20,11 +20,23 @@ SRS-RESV-006 traces SyRS SYS-49e (StRS SN-1.25). The contract guarantees:
       elapsed and silently retires a live safety window.
   (e) ``proven_clear`` matches exactly ``NeverSwapped | Expired`` and never names
       ``Unknown``. Adding ``Unknown`` there IS the fail-open.
-  (f) **The anti-bypass check.** BOTH SRS-RESV-003 entry points
-      (``evaluate_automatic_triggers`` / ``request_manual_promotion``) consult
-      ``proven_clear``, so no arm can fire a swap trigger around the gate, and
-      ``TriggerEvaluation`` / ``ManualPromotionError`` carry the states that make
-      a suppressed pass distinguishable from a healthy quiet one.
+  (f) **The anti-bypass check, in two halves.** A CLOSED set checked by name —
+      both SRS-RESV-003 trigger arms (``evaluate_automatic_triggers`` /
+      ``request_manual_promotion``) consult ``proven_clear`` — and an OPEN set
+      DISCOVERED from source: every ``pub fn`` in the orchestrator crate whose body
+      reaches a demotion-side side effect must consult it too, with reasoned
+      exemptions declared in ``guard.ungated_swap_paths``.
+
+      The second half exists because the first was not enough. This check's first
+      version named exactly those two methods and asserted nothing about anything
+      else, and adversarial review r2 found ``execute_hot_swap`` demoting and
+      promoting with no cool-down at all (``cooldown-execution-bypass``): the two
+      trigger arms only MINT a proposal, and nothing in the type graph requires a
+      swap to have come from one. A checklist of known arms cannot catch the arm
+      nobody added to it, so the arms are now enumerated from the code.
+
+      ``TriggerEvaluation`` / ``ManualPromotionError`` additionally carry the states
+      that make a suppressed pass distinguishable from a healthy quiet one.
   (g) the durable store declares its magic + version marker and the four
       durability tokens, and ``record_completion`` holds the exclusive guard and
       keeps the newer completion.
@@ -262,11 +274,16 @@ def check_clear_predicate(config: dict, cooldown_src: str) -> str:
     )
 
 
-def check_both_entry_points_are_gated(config: dict, orchestrator_src: str) -> str:
-    """The anti-bypass check.
+def check_trigger_arms_are_gated(config: dict, orchestrator_src: str) -> str:
+    """The CLOSED half of the anti-bypass rule: the two trigger arms, by name.
+
+    These mint a proposal and never touch a demotion-side port, so the source scan
+    in :func:`check_every_swap_path_is_gated` does not see them — correctly, since
+    they are a different class. They are a finite, enumerable set (exactly two, both
+    on ``StrategyOrchestrator``), so they are checked by name here.
 
     A gate enforced on one arm leaves the other able to fire a swap trigger inside a
-    cool-down. Enumerating the arms is the rule that RESV-003 r2 and EXE-003 r3/r4 both
+    cool-down. Enumerating the arms is the rule RESV-003 r2 and EXE-003 r3/r4 both
     paid for (adversarial-precheck rule 1).
     """
     guard = contract_block(config)["guard"]
@@ -279,6 +296,78 @@ def check_both_entry_points_are_gated(config: dict, orchestrator_src: str) -> st
                 "reads is a window it cannot enforce"
             )
     return f"both {guard['evaluate_method']} and {guard['manual_method']} consult `{predicate}`"
+
+
+def check_every_swap_path_is_gated(config: dict, root: Path) -> str:
+    """The anti-bypass check — DISCOVERED from the code, not listed in the contract.
+
+    The first version of this check named two methods, and that is exactly how the
+    bypass survived to review round 2: it pinned `evaluate_automatic_triggers` and
+    `request_manual_promotion` and asserted nothing about anything else, while
+    `execute_hot_swap` — the function that actually demotes and promotes — ran
+    ungated. A checklist of known arms cannot catch the arm nobody added to it.
+
+    So this enumerates the arms FROM THE SOURCE. Any `pub fn` in the orchestrator
+    crate whose body reaches a demotion-side side effect is a swap path, and every
+    swap path must consult the clear predicate. A future third entry point fails
+    this check the moment it is written, rather than being re-found by a reviewer
+    (CLAUDE.md rule 1; adversarial-precheck rule 0 — "write the guard").
+
+    The exemptions are contract-declared and reasoned, not silent: see
+    `guard.ungated_swap_paths`.
+    """
+    guard = contract_block(config)["guard"]
+    predicate = guard["clear_predicate"]
+    markers = tuple(guard["swap_path_markers"])
+    exempt = {entry["method"]: entry["reason"] for entry in guard["ungated_swap_paths"]}
+
+    modules = sorted((root / "crates/atp-orchestrator/src").rglob("*.rs"))
+    if not modules:
+        fail("no orchestrator sources found; the anti-bypass check would pass vacuously")
+
+    found: list[str] = []
+    ungated: list[str] = []
+    for module in modules:
+        source = _strip_comments(module.read_text(encoding="utf-8"))
+        for match in re.finditer(r"\bpub(?:\([^)]*\))?\s+fn\s+(\w+)", source):
+            name = match.group(1)
+            try:
+                body = _any_fn_block(source, name)
+            except HotSwapCooldownCheckError:
+                continue
+            if not any(marker in body for marker in markers):
+                continue
+            found.append(name)
+            if predicate in body or name in exempt:
+                continue
+            ungated.append(f"{module.relative_to(root)}::{name}")
+
+    if ungated:
+        fail(
+            f"{len(ungated)} swap-executing entry point(s) never consult `{predicate}`: "
+            f"{sorted(ungated)}. A SYS-49e window enforced only on the trigger arms is "
+            "not enforced at all — a caller can build a HotSwapDemotionRequest from argv "
+            "and reach the demotion without ever minting a proposal. Gate it, or declare "
+            "it in `hot_swap_cooldown_contract.guard.ungated_swap_paths` with the reason."
+        )
+    if not found:
+        fail(
+            f"the anti-bypass scan matched NO function against markers {list(markers)} — "
+            "the markers have drifted from the code and this check is passing vacuously"
+        )
+    # Non-vacuity in the other direction: the two trigger arms and the execution
+    # entry point must each be among the discovered set, or the scan is not looking
+    # where the requirement lives.
+    for required in guard["must_be_discovered"]:
+        if required not in found:
+            fail(
+                f"the anti-bypass scan did not discover `{required}`, which is a known "
+                "swap path — the discovery is broken, not the code"
+            )
+    return (
+        f"{len(found)} swap-executing entry point(s) discovered from source, all gated on "
+        f"`{predicate}` ({len(exempt)} declared exemption(s))"
+    )
 
 
 def check_evaluation_and_error_carry_the_state(config: dict, orchestrator_src: str) -> str:
@@ -440,7 +529,8 @@ def assert_hot_swap_cooldown_static(config: dict, root: Path = ROOT) -> list[str
         check_acknowledgement(config, cooldown_src),
         check_classify_arithmetic(config, cooldown_src),
         check_clear_predicate(config, cooldown_src),
-        check_both_entry_points_are_gated(config, orchestrator_src),
+        check_trigger_arms_are_gated(config, orchestrator_src),
+        check_every_swap_path_is_gated(config, root),
         check_evaluation_and_error_carry_the_state(config, orchestrator_src),
         check_store_durability(config, store_src),
         check_resolver_is_the_only_producer(config, root),

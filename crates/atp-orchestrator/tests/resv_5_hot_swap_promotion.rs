@@ -19,10 +19,12 @@
 //! violated the requirement it is reporting on.
 
 use atp_execution::designation::{LiveDesignation, LiveDesignationConfirmation};
+use atp_orchestrator::cooldown::{CooldownState, ManualCooldownAcknowledgement, SwapCompletion};
 use atp_orchestrator::demotion_pending_store::{DemotionPendingRecord, DemotionPendingState};
 use atp_orchestrator::hot_swap_promotion::{
-    DemotionProof, HotSwapPromotionError, HotSwapPromotionEvent, HotSwapPromotionEventSink,
-    LivePositionProbe, OpenPosition, PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
+    CooldownControl, DemotionProof, HotSwapPromotionError, HotSwapPromotionEvent,
+    HotSwapPromotionEventSink, LivePositionProbe, OpenPosition, PaperHistoryFingerprint,
+    PaperHistorySource, PromotionPorts, SwapCompletionSink,
 };
 use atp_orchestrator::{
     DemotionPendingLock, DeployedVersionRegistry, DeployedVersionRegistryError,
@@ -304,6 +306,33 @@ fn designation_holding(strategy: &str) -> LiveDesignation {
     designation
 }
 
+/// SRS-RESV-006's window writer, recording rather than persisting.
+///
+/// These are SRS-RESV-005's tests: every case here runs with a PROVEN-CLEAR window
+/// so the promotion gate's own behaviour is what they measure. The cool-down's own
+/// refusals and its write ordering are pinned by
+/// `crates/atp-orchestrator/tests/resv_6_cooldown_execution.rs`.
+#[derive(Default)]
+struct Completions {
+    recorded: RefCell<Vec<SwapCompletion>>,
+}
+
+impl SwapCompletionSink for Completions {
+    fn record_swap_completion(&self, completion: &SwapCompletion) -> Result<(), String> {
+        self.recorded.borrow_mut().push(completion.clone());
+        Ok(())
+    }
+}
+
+/// A window no swap has ever opened, plus a sink — the "nothing is in effect" case.
+fn clear_cooldown(completions: &Completions) -> CooldownControl<'_, Completions> {
+    CooldownControl {
+        state: &CooldownState::NeverSwapped,
+        acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
+        completions,
+    }
+}
+
 struct Outcome {
     result: Result<atp_orchestrator::hot_swap_promotion::HotSwapPromoted, HotSwapPromotionError>,
     designated_after: Option<String>,
@@ -320,6 +349,7 @@ fn run_swap(
 ) -> Outcome {
     let orchestrator = StrategyOrchestrator;
     let events = PromotionEvents::default();
+    let completions = Completions::default();
     let result = orchestrator.execute_hot_swap(
         request(),
         &probe,
@@ -333,6 +363,7 @@ fn run_swap(
             versions: &versions,
             events: &events,
         },
+        clear_cooldown(&completions),
         designation,
         confirmation(CANDIDATE),
         OBSERVED_AT,
@@ -640,6 +671,7 @@ fn a_stale_demoting_id_reaches_no_demotion_side_port() {
     // Raised by /codex adversarial review r7 [critical].
     let orchestrator = StrategyOrchestrator;
     let events = PromotionEvents::default();
+    let completions = Completions::default();
     let positions = Positions(PositionAnswer::Flat);
     let paper = PaperHistory::queued(vec![]);
     let versions = Versions::queued(vec![]);
@@ -658,6 +690,7 @@ fn a_stale_demoting_id_reaches_no_demotion_side_port() {
             versions: &versions,
             events: &events,
         },
+        clear_cooldown(&completions),
         &mut designation,
         confirmation(CANDIDATE),
         OBSERVED_AT,
@@ -684,6 +717,7 @@ fn a_stale_demoting_id_reaches_no_demotion_side_port() {
 fn an_empty_live_slot_reaches_no_demotion_side_port_either() {
     let orchestrator = StrategyOrchestrator;
     let events = PromotionEvents::default();
+    let completions = Completions::default();
     let positions = Positions(PositionAnswer::Flat);
     let paper = PaperHistory::queued(vec![]);
     let versions = Versions::queued(vec![]);
@@ -702,6 +736,7 @@ fn an_empty_live_slot_reaches_no_demotion_side_port_either() {
             versions: &versions,
             events: &events,
         },
+        clear_cooldown(&completions),
         &mut designation,
         confirmation(CANDIDATE),
         OBSERVED_AT,
