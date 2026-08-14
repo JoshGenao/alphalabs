@@ -633,6 +633,15 @@ def verify(
     # to e2e and live-ib: for a solo feature the captured stdout IS the artifact,
     # and demanding a screenshot of `cargo fmt --check` would teach everyone to
     # produce a meaningless one.
+    #
+    # KNOWN GAP, deliberately left open — this keys off the DECLARED method, not off
+    # what the steps actually demand. 13 features declare `integration` or `solo`
+    # while a step still says "using browser automation against the dashboard"
+    # (SRS-RESV-005 among them); their screenshots are not gated here. Closing it by
+    # keying off step text is a cross-feature policy change — it would newly gate ten
+    # open features, so it belongs to whoever owns the close policy, not to a harness
+    # fix. Either widen the predicate there, or correct the offending rows'
+    # `verification_method` in feature_list.json, which only `integrate` may edit.
     method = str((feat_of(fid, features) or {}).get("verification_method") or "").strip().lower()
     if method in VISUAL_METHODS and steps:
         ac_n = ac_step_index(steps)
