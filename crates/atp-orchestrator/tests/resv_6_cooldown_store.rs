@@ -308,6 +308,94 @@ fn resv_6_a_self_swap_completion_is_refused_before_it_is_written() {
     );
 }
 
+// --------------------------------------------------------------------------- //
+// The writer must satisfy its own reader (adversarial review r2, finding 1)
+// --------------------------------------------------------------------------- //
+//
+// `serialize` hand-builds one JSON line and `StrategyId::new` accepts ANY string, so an id
+// carrying `"` or `\` used to produce a durable line this build's own reader could not
+// parse — while `record_completion` returned Ok and the CLI reported success. The window
+// then read UNKNOWN forever after, which fails closed but permanently suppresses the
+// automatic triggers with nothing naming the cause.
+
+#[test]
+fn resv_6_an_id_that_would_break_the_json_line_is_refused_before_it_is_written() {
+    let scratch = Scratch::new("json-escape-write");
+    let path = scratch.path("cooldown.json");
+    // Seed a good window, so the test also proves the refusal does not clobber it.
+    cooldown_store::record_completion(&path, &completion_at(COMPLETED_AT)).unwrap();
+
+    for (label, demoted, promoted) in [
+        ("quote in demoted", "al\"pha", "beta"),
+        ("quote in promoted", "alpha", "be\"ta"),
+        ("backslash in demoted", "al\\pha", "beta"),
+        ("backslash in promoted", "alpha", "be\\ta"),
+        ("newline", "al\npha", "beta"),
+        ("tab", "alpha", "be\tta"),
+    ] {
+        let bad = SwapCompletion {
+            completed_at_seconds: COMPLETED_AT + 100,
+            demoted_strategy_id: StrategyId::new(demoted),
+            promoted_strategy_id: StrategyId::new(promoted),
+        };
+        assert!(
+            matches!(
+                cooldown_store::record_completion(&path, &bad),
+                Err(CooldownStoreError::Malformed { .. })
+            ),
+            "{label}: an id this format cannot represent must be refused, not written"
+        );
+    }
+
+    // The prior good window is untouched and still readable.
+    let state = cooldown_store::resolve(Some(&path), COMPLETED_AT + 60);
+    assert_eq!(state.as_str(), "ACTIVE");
+    assert_eq!(state.started_at_seconds(), Some(COMPLETED_AT));
+}
+
+#[test]
+fn resv_6_a_hand_written_escaped_id_is_refused_on_read() {
+    // The other direction. A file written by a laxer build, a hand edit, or a partial
+    // overwrite can still contain one — and serving it would hand a caller `al\"pha` as the
+    // strategy id, which is not the strategy that swapped.
+    let scratch = Scratch::new("json-escape-read");
+    let path = scratch.path("cooldown.json");
+    fs::write(
+        &path,
+        r#"{"magic":"ATP-HOT-SWAP-COOLDOWN","schema_version":1,"cooldown_days":7,"last_completed_at_seconds":1715000000,"last_demoted_strategy_id":"al\"pha","last_promoted_strategy_id":"beta"}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        cooldown_store::load(&path),
+        Err(CooldownStoreError::Malformed { .. })
+    ));
+    assert_eq!(
+        cooldown_store::resolve(Some(&path), COMPLETED_AT).as_str(),
+        "UNKNOWN",
+        "an unrepresentable id must fail closed, never be served"
+    );
+}
+
+#[test]
+fn resv_6_an_ordinary_id_with_punctuation_still_round_trips() {
+    // The non-vacuity control: the refusal above must be NARROW. Hyphens, dots, colons,
+    // underscores and slashes are all ordinary in a strategy id and must keep working, or
+    // the fix for a corruption bug becomes an outage.
+    let scratch = Scratch::new("json-escape-ok");
+    let path = scratch.path("cooldown.json");
+    let completion = SwapCompletion {
+        completed_at_seconds: COMPLETED_AT,
+        demoted_strategy_id: StrategyId::new("mean-rev.v2:eu/large_cap"),
+        promoted_strategy_id: StrategyId::new("momo-3d.v11:us/small_cap"),
+    };
+    cooldown_store::record_completion(&path, &completion).unwrap();
+
+    let record = cooldown_store::load(&path).unwrap().expect("a window");
+    let stored = record.last_completion.expect("a completion");
+    assert_eq!(stored.demoted_strategy_id.as_str(), "mean-rev.v2:eu/large_cap");
+    assert_eq!(stored.promoted_strategy_id.as_str(), "momo-3d.v11:us/small_cap");
+}
+
 #[test]
 fn resv_6_set_period_preserves_the_recorded_completion() {
     // A read-modify-write that dropped the completion would silently retire a running

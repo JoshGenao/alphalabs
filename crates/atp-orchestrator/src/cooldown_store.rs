@@ -237,6 +237,41 @@ fn malformed(path: &Path, reason: impl Into<String>) -> CooldownStoreError {
     }
 }
 
+/// THE strategy-id rule for this format, applied on WRITE and again on READ.
+///
+/// One validator shared by both directions, because a writer that can emit what its own
+/// reader refuses corrupts the store while reporting success (durable-writes rule 9;
+/// adversarial-precheck rule 8 — "writer must satisfy its own reader", the RESV-003 r3
+/// class).
+///
+/// **Why refuse rather than escape.** [`serialize`] hand-builds a single JSON line, so a
+/// `"` or `\` in an id would need escaping — but `json_string_value` deliberately returns
+/// the RAW, still-escaped inner text (the sibling trigger-config store depends on that to
+/// compare key spellings). Escaping on write would therefore round-trip `a"b` back as
+/// `a\"b`: a DIFFERENT strategy id, silently. Refusing the two characters keeps the
+/// persisted form literal in both directions, and no legitimate strategy id needs them.
+/// Control characters go with them for the same reason the trigger log excludes them.
+fn validate_strategy_id(value: &str, field: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!("{field} is empty"));
+    }
+    if let Some(bad) = value.chars().find(|c| c.is_control()) {
+        return Err(format!(
+            "{field} contains the control character U+{:04X}; the cool-down record is one \
+             JSON line and a control character cannot survive it",
+            bad as u32
+        ));
+    }
+    if let Some(bad) = value.chars().find(|&c| c == '"' || c == '\\') {
+        return Err(format!(
+            "{field} contains {bad:?}, which this format refuses: the record is hand-built \
+             JSON and its reader returns raw (still-escaped) text, so escaping would \
+             round-trip a different id back"
+        ));
+    }
+    Ok(())
+}
+
 /// Serialize `record` to the single-line v1 JSON payload this module persists.
 ///
 /// The three completion fields are written together or not at all — [`deserialize`]
@@ -370,11 +405,12 @@ fn deserialize(path: &Path, payload: &str) -> Result<CooldownRecord, CooldownSto
                     format!("field '{FIELD_PROMOTED}' is not a JSON string"),
                 )
             })?;
-            if demoted.is_empty() || promoted.is_empty() {
-                return Err(malformed(
-                    path,
-                    "a recorded swap completion names an empty strategy id",
-                ));
+            // Re-validated on READ, not merely on write: a hand-edited file, a record from
+            // a build with a laxer writer, or a partially-overwritten line is exactly where
+            // an id this format cannot represent would enter. Serving one would hand a
+            // caller a strategy id that is not the one that was recorded.
+            for (value, field) in [(demoted, FIELD_DEMOTED), (promoted, FIELD_PROMOTED)] {
+                validate_strategy_id(value, field).map_err(|reason| malformed(path, reason))?;
             }
             if demoted == promoted {
                 return Err(malformed(
@@ -527,14 +563,14 @@ pub fn record_completion(
     completion: &SwapCompletion,
 ) -> Result<CompletionOutcome, CooldownStoreError> {
     // Validated BEFORE the guard and the write: a completion this build's own reader would
-    // refuse must never reach the file (durable-writes rule 4).
-    if completion.demoted_strategy_id.as_str().is_empty()
-        || completion.promoted_strategy_id.as_str().is_empty()
-    {
-        return Err(malformed(
-            path,
-            "a swap completion names an empty strategy id",
-        ));
+    // refuse must never reach the file (durable-writes rule 4). `StrategyId::new` accepts
+    // ANY string, so this is the only place between an arbitrary caller — including the
+    // deferred SRS-RESV-005 producer — and the durable line.
+    for (value, field) in [
+        (completion.demoted_strategy_id.as_str(), FIELD_DEMOTED),
+        (completion.promoted_strategy_id.as_str(), FIELD_PROMOTED),
+    ] {
+        validate_strategy_id(value, field).map_err(|reason| malformed(path, reason))?;
     }
     if completion.demoted_strategy_id.as_str() == completion.promoted_strategy_id.as_str() {
         return Err(malformed(

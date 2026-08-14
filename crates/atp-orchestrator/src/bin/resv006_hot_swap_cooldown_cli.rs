@@ -328,6 +328,20 @@ fn cmd_record_completion(rest: &[String]) -> Result<(), String> {
     if let Some(expires) = state.expires_at_seconds() {
         println!("reread-cooldown-expires-at-seconds:{expires}");
     }
+    // "The write returned Ok" is not "the window is readable". If the bytes that landed
+    // cannot be classified, the swap happened and NOTHING suppresses — the same fail-open
+    // as a failed write, reached by a different route, so it gets the same non-zero exit
+    // and the same explicit sentence. Verifying the published artefact rather than the
+    // intent is CLAUDE.md rule 5.
+    if let Some(reason) = state.degraded_reason() {
+        println!("cooldown-window-started:false");
+        return Err(format!(
+            "the completion was written but the window it produced is NOT readable: \
+             {reason}\n\
+             THE COOL-DOWN IS NOT IN EFFECT. Repair the state file and re-run, or disable \
+             the automatic triggers with resv003_hot_swap_trigger_cli until it is."
+        ));
+    }
     Ok(())
 }
 

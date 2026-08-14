@@ -418,3 +418,60 @@ def test_the_recording_surface_names_its_deferred_production_writer(tmp_path) ->
     )
     assert result.returncode == 0, result.stderr
     assert _kv(result.stdout)["deferred-writer"] == "SRS-RESV-005"
+
+
+# --------------------------------------------------------------------------- #
+# The window survives an id this format cannot represent (adversarial review r2)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("label", "demoted", "promoted"),
+    [
+        ("quote-in-demoted", 'al"pha', "cand-b"),
+        ("backslash-in-promoted", "live-a", "cand\\b"),
+        ("newline-in-demoted", "al\npha", "cand-b"),
+    ],
+)
+def test_an_unrepresentable_id_is_refused_without_disarming_a_running_window(
+    tmp_path, label: str, demoted: str, promoted: str
+) -> None:
+    """A refused completion must not become a permanent suppression, or a silent one.
+
+    ``serialize`` hand-builds one JSON line and ``StrategyId::new`` accepts any string, so an
+    id carrying ``"`` or ``\\`` used to produce a durable line this build's own reader could
+    not parse. Both failure directions are safety failures, and this asserts against both at
+    once: the operator is told NO, and the seven-day window that was already running is still
+    the thing suppressing the automatic triggers afterwards — not an ``UNKNOWN`` that
+    suppresses for a reason nobody can act on, and not a cleared file that suppresses nothing.
+    """
+
+    state, log = tmp_path / "cd.json", tmp_path / "t.jsonl"
+    _open_window(state)
+    before = state.read_text()
+
+    refused = _cooldown(
+        "record-completion",
+        "--state",
+        str(state),
+        "--demoted",
+        demoted,
+        "--promoted",
+        promoted,
+        "--completed-at",
+        str(COMPLETED_AT + 100),
+    )
+    assert refused.returncode != 0, f"{label}: an unrepresentable id must be refused"
+    assert state.read_text() == before, f"{label}: a refused completion must not touch the file"
+
+    # The ORIGINAL window is still readable and still the one in force — the refusal left a
+    # window an operator can reason about, not a corrupt one.
+    status = _cooldown("status", "--state", str(state), "--now", str(DURING))
+    assert status.returncode == 0, status.stderr
+    fields = _kv(status.stdout)
+    assert fields["cooldown-state"] == "ACTIVE"
+    assert fields["cooldown-started-at-seconds"] == str(COMPLETED_AT)
+
+    evaluated = _evaluate(state, log, DURING)
+    assert _kv(evaluated.stdout)["cooldown-suppressed"] == "true"
+    assert _log_lines(log) == 0, f"{label}: a suppressed pass must write no trigger record"
