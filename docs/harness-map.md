@@ -43,12 +43,25 @@ flowchart TD
     S61 --> S7["Step 7 commit prep -> feat -> chore"]
     S7 --> S71["Step 7.1 integrate"]
     S71 --> GATE(["the close gate — diagram 2"])
-    S71 --> S8["Step 8 session note + Outcome line"]
+    S71 --> PUSH{"pre-push hook<br/>run_ci_locally.sh --fast<br/>~1s"}
+    PUSH -->|"fails"| FIX["push REFUSED<br/>fix, or ATP_PREPUSH_BYPASS=1"]
+    FIX --> S7
+    PUSH -->|"passes"| PUSHED["pushed to main"]
+    PUSHED --> WATCH(["tools/ci_watch.sh<br/>the real verdict"])
+    WATCH -->|"red"| REDFIX["highest-priority work<br/>read the failure, do not re-run"]
+    WATCH -->|"green"| S8["Step 8 session note + Outcome line"]
     S8 --> S81["Step 8.1 write back to the playbooks"]
 ```
 
 **Step 4.1 is a hard stop.** The session starts read-only; the agent cannot edit
 anything until you approve its plan.
+
+**The pre-push hook cannot predict CI, and does not claim to.** It runs only the
+sub-second checks — ruff, format, `cargo fmt`, the gate registry, doc links — and
+its skip ledger names everything it did not run. Timing the mirror is what settled
+this: every other step is minutes, the pytest suite included (5,093 tests, ~7 min).
+It is worth having anyway, because those cheap checks cause a red `main` out of all
+proportion to their cost. The verdict comes from `tools/ci_watch.sh` afterwards.
 
 ---
 
@@ -66,8 +79,8 @@ flowchart TD
     FORCE -->|"yes"| EV
     HON -->|"yes"| EV{"evidence.verify"}
 
-    EV -->|"every step executed,<br/>exit 0, both critics approve,<br/>image if e2e/live-ib"| REEX{"solo?<br/>integrator RE-RUNS<br/>the recorded argv"}
-    EV -->|"anything missing"| DEGRADE["DEGRADES to serialized<br/>code merges, passes stays false"]
+    EV -->|"every step executed, exit 0<br/>both critics approve AND CURRENT<br/>image if e2e/live-ib, also current"| REEX{"solo?<br/>integrator RE-RUNS<br/>the recorded argv"}
+    EV -->|"anything missing<br/>or stale"| DEGRADE["DEGRADES to serialized<br/>code merges, passes stays false"]
 
     REEX -->|"exit codes match"| CLOSE["close_feature.py --verified<br/>passes := true<br/>note folded, evidence retired"]
     REEX -->|"mismatch"| DEGRADE
@@ -79,13 +92,20 @@ flowchart TD
     ATTEV -->|"no record at all"| REFUSE["exit 3 — refused"]
 ```
 
-Two things this diagram is drawn to make unmissable:
+Three things this diagram is drawn to make unmissable:
 
 - **`--force-complete` only bypasses the honesty guard.** The evidence gate still
   runs and still degrades you to `serialized`. It cannot rescue a missing record —
   the old deadlock message advised exactly that, and it looped forever.
 - **`--attested-by` relaxes *which* steps count, never *whether* there is a
   record.** A human vouching for the work still has to say what the work was.
+- **Evidence certifies the commit it was produced on.** Steps, artifacts *and*
+  critic verdicts each carry the head they were made against, and `verify` refuses
+  any of them once a non-evidence path has moved since. Equality with HEAD is not
+  the test — evidence is recorded *before* the commit that carries it, so a valid
+  record names the parent of its own chore commit. An unplaceable head is not a
+  fresh one. This is why a feature has to be re-reviewed and re-captured in the
+  same window it closes in, rather than accumulating evidence across days.
 
 ---
 
@@ -155,4 +175,12 @@ Before either, to see what you're walking into:
 ```bash
 python3 tools/verify_queue.py list          # the ranked queue
 python3 tools/verify_queue.py show <ID>     # the full brief for one feature
+```
+
+And after every push, to find out what CI actually did:
+
+```bash
+tools/ci_watch.sh                # waits for every workflow on HEAD; non-zero on red
+tools/run_ci_locally.sh          # the full mirror, minutes — before an integrate
+tools/run_ci_locally.sh --fast   # what the pre-push hook runs, ~1s
 ```
