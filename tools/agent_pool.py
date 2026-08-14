@@ -979,6 +979,55 @@ def cmd_status(args):
     return 0
 
 
+def _refresh_worktree(wt: Path) -> str:
+    """Fast-forward a REUSED worktree to base_ref, or say why it was left alone.
+
+    Diagnostics go to STDERR without exception: `claim` prints shell-assignable
+    FEATURE=/WORKTREE=/ports on stdout and both launchers `eval` it, so one stray
+    line there is a syntax error in the caller's shell.
+
+    Fast-forward only, and only when the tree is clean. A worktree with commits of
+    its own is a session's unmerged work; rebasing it here would rewrite somebody's
+    branch as a side effect of claiming, which is the kind of surprise that costs an
+    afternoon. Those are reported and left exactly as they are.
+    """
+    behind = _run(
+        ["git", "-C", str(wt), "rev-list", "--count", f"HEAD..{base_ref()}"], check=False
+    ).stdout.strip()
+    if behind in ("", "0"):
+        return "current"
+    ahead = _run(
+        ["git", "-C", str(wt), "rev-list", "--count", f"{base_ref()}..HEAD"], check=False
+    ).stdout.strip()
+    dirty = bool(_run(["git", "-C", str(wt), "status", "--porcelain"], check=False).stdout.strip())
+    if ahead not in ("", "0") or dirty:
+        why = []
+        if ahead not in ("", "0"):
+            why.append(f"{ahead} unmerged commit(s)")
+        if dirty:
+            why.append("uncommitted changes")
+        print(
+            f"⚠ {wt.name} is {behind} commit(s) behind {base_ref()} and has "
+            f"{' and '.join(why)}, so it was NOT refreshed.\n"
+            f"  You may be running an older harness than main. Resolve it yourself:\n"
+            f"    git -C {wt} rebase {base_ref()}",
+            file=sys.stderr,
+        )
+        return "stale-kept"
+    ff = _run(["git", "-C", str(wt), "merge", "--ff-only", base_ref()], check=False)
+    if ff.returncode != 0:
+        print(
+            f"⚠ {wt.name} is {behind} commit(s) behind {base_ref()} and could not "
+            f"fast-forward:\n    {ff.stderr.strip().splitlines()[0] if ff.stderr.strip() else '(no detail)'}",
+            file=sys.stderr,
+        )
+        return "stale-failed"
+    print(
+        f"→ refreshed {wt.name}: fast-forwarded {behind} commit(s) to {base_ref()}", file=sys.stderr
+    )
+    return "refreshed"
+
+
 def _finish_claim(runtime: dict, active: dict, fid: str, branch: str, wt: Path, owner: str) -> int:
     """Take the lease, materialise the worktree, print the shell env. Call under the lock.
 
@@ -1000,6 +1049,15 @@ def _finish_claim(runtime: dict, active: dict, fid: str, branch: str, wt: Path, 
             _run(["git", "-C", str(ROOT), "worktree", "add", str(wt), branch])
         else:
             _run(["git", "-C", str(ROOT), "worktree", "add", "-b", branch, str(wt), base_ref()])
+    else:
+        # REUSED worktree — the stale-tooling path. A fresh one is cut from
+        # base_ref and has the current harness; a reused one can be arbitrarily far
+        # behind, and the session then runs tools that no longer exist alongside a
+        # feature_list.json whose verification_method values are months old. On
+        # 2026-08-13, 47 of 51 worktrees sat 59 commits back and none of them had
+        # tools/verify_queue.py. Nothing announced it; the session just behaved as
+        # if the harness had never been updated.
+        _refresh_worktree(wt)
 
     save_runtime(runtime)
 

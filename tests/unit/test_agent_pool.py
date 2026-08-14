@@ -598,3 +598,85 @@ def test_deadlock_advice_never_prescribes_force_complete():
 
 def test_deadlock_advice_is_empty_when_nothing_is_stuck():
     assert agent_pool.deadlock_advice({}) == []
+
+
+# --- a REUSED worktree must not silently run an older harness ----------------
+# A fresh worktree is cut from base_ref and has the current tooling; a reused one
+# can be arbitrarily far behind. On 2026-08-13, 47 of 51 sat 59 commits back and
+# none had tools/verify_queue.py — nothing announced it.
+def _wt_repo(tmp_path, name="wt"):
+    """A tiny real git repo with an origin/main ref, for _refresh_worktree."""
+    import subprocess
+
+    wt = tmp_path / name
+    wt.mkdir()
+
+    def run(*a):
+        return subprocess.run(["git", "-C", str(wt), *a], check=True, capture_output=True)
+
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@t")
+    run("config", "user.name", "t")
+    (wt / "f.txt").write_text("one", encoding="utf-8")
+    run("add", "f.txt")
+    run("commit", "-qm", "one")
+    run("update-ref", "refs/remotes/origin/main", "HEAD")
+    return wt, run
+
+
+def _advance_origin(wt, run, text="two"):
+    """Move origin/main one commit ahead of the worktree's HEAD."""
+    import subprocess
+
+    head = subprocess.run(
+        ["git", "-C", str(wt), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    run("checkout", "-q", "--detach")
+    (wt / "f.txt").write_text(text, encoding="utf-8")
+    run("commit", "-qam", text)
+    run("update-ref", "refs/remotes/origin/main", "HEAD")
+    run("checkout", "-q", "main")
+    run("reset", "-q", "--hard", head)
+
+
+def test_a_current_worktree_is_left_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_pool, "base_ref", lambda: "origin/main")
+    wt, _ = _wt_repo(tmp_path)
+    assert agent_pool._refresh_worktree(wt) == "current"
+
+
+def test_a_clean_behind_worktree_is_fast_forwarded(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(agent_pool, "base_ref", lambda: "origin/main")
+    wt, run = _wt_repo(tmp_path)
+    _advance_origin(wt, run)
+    assert agent_pool._refresh_worktree(wt) == "refreshed"
+    assert (wt / "f.txt").read_text(encoding="utf-8") == "two"
+    # STDERR only: claim's stdout is eval'd by both launchers, so one stray line
+    # there is a syntax error in the caller's shell.
+    out, err = capsys.readouterr()
+    assert out == "" and "refreshed" in err
+
+
+def test_a_worktree_with_unmerged_commits_is_reported_not_rebased(tmp_path, monkeypatch, capsys):
+    """Rebasing somebody's branch as a side effect of claiming is the surprise
+    that costs an afternoon."""
+    monkeypatch.setattr(agent_pool, "base_ref", lambda: "origin/main")
+    wt, run = _wt_repo(tmp_path)
+    _advance_origin(wt, run)
+    (wt / "mine.txt").write_text("my work", encoding="utf-8")
+    run("add", "mine.txt")
+    run("commit", "-qm", "my work")
+    assert agent_pool._refresh_worktree(wt) == "stale-kept"
+    assert (wt / "mine.txt").exists()  # untouched
+    out, err = capsys.readouterr()
+    assert out == "" and "unmerged commit" in err and "rebase" in err
+
+
+def test_a_dirty_worktree_is_reported_not_refreshed(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(agent_pool, "base_ref", lambda: "origin/main")
+    wt, run = _wt_repo(tmp_path)
+    _advance_origin(wt, run)
+    (wt / "f.txt").write_text("uncommitted edit", encoding="utf-8")
+    assert agent_pool._refresh_worktree(wt) == "stale-kept"
+    assert (wt / "f.txt").read_text(encoding="utf-8") == "uncommitted edit"
+    assert "uncommitted changes" in capsys.readouterr().err

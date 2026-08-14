@@ -51,6 +51,13 @@ cat AGENTS.md                                   # navigation + architecture
 cat CLAUDE.md                                   # always-on rules (auto-loaded, but read it)
 cat docs/playbooks/INDEX.md                     # the router — then read the matching playbooks
 python3 tools/agent_pool.py status --no-fetch   # the board: ready / blocked / leased / done
+
+# YOUR VERIFICATION BRIEF, in one command. What the acceptance criterion is, which
+# steps already have evidence, which tests name this feature and what markers they
+# carry, and the prior session's own Resume/next block. Read this before the note —
+# it is derived from the tree, so it cannot be stale the way prose goes stale.
+python3 tools/verify_queue.py show "$ATP_FEATURE_ID"
+
 cat "progress.d/session-$ATP_FEATURE_ID.md" 2>/dev/null   # RESUME handoff, if a prior session worked this feature
 ls -t progress.d/ | head -10                    # what the most recent sessions were doing
 git log --oneline -20
@@ -166,12 +173,29 @@ Write the code. As you work:
   flip happens only in Step 7.1 via the locked `integrate`. Your only status
   artifact is `progress.d/session-$ATP_FEATURE_ID.md`.
 
-### Hit an unbuilt dependency? → park & take next
-If you discover this feature genuinely needs another feature `Y` that isn't done:
+### Hit a blocker? → say WHICH KIND, then park & take next
+Three different things get called "blocked", and they have three different homes.
+Putting one in the wrong home is what produced a bucket of eleven features that no
+agent could claim and no human could close (`docs/verification-queue.md`).
+
+| what is in the way | where it goes |
+|---|---|
+| another **feature** that isn't built | `agent_pool.py block --on <ids>` |
+| a **real-world resource no feature owns** — an account you have not bought, hardware you do not have, calendar time that has not elapsed | an `"external_blocker"` on the feature in `feature_list.json` |
+| nothing; the work is done and only evidence is missing | neither — finish the record and close it |
+
+**Never use `block --on` for the second kind.** A dependency edge asserts that some
+feature owns the blocker; if none does, the edge never clears and the feature is
+parked forever. `external_blocker` takes it off the ready frontier and onto the
+operator's procurement list in `status` instead. It is integrator-owned, so name it
+in your session note and let the operator write it — a branch may not edit
+`feature_list.json`.
+
+If this feature genuinely needs another feature `Y` that isn't done:
 
 ```bash
-# 1. record the edge (cycle-safe; appends to feature_deps.json). KEEPS your lease
-#    so a sibling can't grab this worktree before your partial work lands.
+# 1. record the edge. KEEPS your lease so a sibling can't grab this worktree
+#    before your partial work lands.
 python3 tools/agent_pool.py block "$ATP_FEATURE_ID" --on <Y> [<Z> ...] --reason "why"
 # 2. land any safe partial/foundational work so siblings + the next session benefit
 #    (commit on your branch first — Step 7 — then integrate partial, which RELEASES
@@ -187,6 +211,25 @@ cd "$WORKTREE" && export ATP_FEATURE_ID="$FEATURE" ATP_DEV_PORT ATP_IB_LIVE_PORT
 `block` marks `$ATP_FEATURE_ID` blocked-on `Y`; the scheduler won't re-offer it
 until `Y` is `passes:true`. If the frontier is empty (everything blocked), stop
 and report the board — that's a signal for the operator, not a thing to force.
+
+**`block` REFUSES a cycle — exit 13, and it writes nothing.** If `Y` already
+depends (transitively) on your feature, recording `you -> Y` would close a loop in
+which neither can ever go green, so it prints the full path and stops:
+
+```
+✗ SRS-MD-003: refusing to record — 1 of 1 requested edge(s) would create a
+  dependency cycle. NOTHING was written.
+    SRS-MD-003 -> SRS-MD-001 closes the loop:
+      SRS-MD-003 -> SRS-MD-001 -> SRS-PERF-001 -> SRS-MD-003
+```
+
+Do **not** work around it by dropping the edge and carrying on — that is how four
+features sat unrecordable for six weeks. A cycle means the graph disagrees with
+itself about which feature owns what, and the fix is an operator decision the
+refusal spells out: usually one direction is a **code edge** (the consumer needs
+the other feature's code, which is already on main) rather than a **flip edge**
+(it needs `passes:true`). Record the cycle and the two candidate readings in your
+session note, integrate `--mode partial`, and take the next feature.
 
 ---
 
@@ -247,9 +290,32 @@ knowing before you write the record rather than after:
 - A command that passes for you and fails on a clean re-run blocks the close. That
   is the point: it means the pass depended on something in your worktree.
 
-**Commit `.harness/runs/$ATP_FEATURE_ID/evidence.json` with your feature work**
-(Step 7). It has to be in the tree `integrate` rebases, and an uncommitted one makes
-`integrate` refuse with exit 7. `close_feature.py` retires it when the feature
+**If your feature is `e2e` or `live-ib`, the record ALSO needs an image.** Those
+acceptance criteria are claims about what a human would *see* — "the dashboard
+shows IB equity, daily and cumulative P&L" — and an exit code cannot show it, so
+`verify` refuses a record with no image on the acceptance-criterion step. Check
+which you are with `verify_queue.py show "$ATP_FEATURE_ID"` (the `method` line).
+
+```bash
+python3 tools/evidence.py artifact "$ATP_FEATURE_ID" --step 3 \
+    --file /tmp/account-panel.png --caption "account panel showing IB equity"
+python3 tools/evidence.py render "$ATP_FEATURE_ID"   # -> .harness/runs/<ID>/EVIDENCE.md
+```
+
+Browser tests produce both screenshots and video automatically — wrap the body in
+`tests/e2e/capture.py`'s `evidence_browser(sync_api, "<ID>", step=3)`, call
+`cap.shot(page, "what this shows")` at each assertion, and run under
+`ATP_CAPTURE_EVIDENCE=1`. Everything attaches to the step on context close.
+
+`EVIDENCE.md` is the form a human reviews on GitHub — images render inline in the
+PR. `run`/`record`/`artifact` regenerate it, so you never write it by hand. Video
+is *linked*, not embedded: GitHub plays video only from a comment upload, never
+from a repo path. There is no git-lfs here, so artifacts are capped (2 MB an image,
+8 MB a video, 20 MB a feature) and an oversized one is **refused, not truncated**.
+
+**Commit `.harness/runs/$ATP_FEATURE_ID/` with your feature work** — the record,
+`EVIDENCE.md`, and `artifacts/` (Step 7). It has to be in the tree `integrate`
+rebases, and an uncommitted one makes `integrate` refuse with exit 7. `close_feature.py` retires it when the feature
 closes, so a reopened feature starts with no record rather than inheriting yours.
 
 `close_feature.py` refuses to flip `passes:true` without a complete record, and
@@ -263,6 +329,25 @@ PASS/FAIL summary in the session note for the human reader. Then classify:
   live / dashboard-e2e that you cannot run in parallel. The code integrates but
   `passes` **stays false**; the operator finishes verification later (manually or
   via the `verified-e2e` label). **This is the honest path — never fake a green.**
+
+  **`serialized` alone is not an answer — say which kind.** One label over four
+  situations is what produced a bucket nobody could clear. State it in the
+  `Outcome:` line and the Resume block, using the classes in
+  `docs/verification-queue.md`: **A** done, only evidence missing · **B** blocked
+  on an unbuilt feature (record the edge — see Step 5) · **C** blocked on a
+  real-world resource no feature owns (name it for the operator's
+  `external_blocker`) · **D** a dependency cycle (record both readings). A future
+  session reads that line to decide whether the feature needs a human, a purchase,
+  or just twenty minutes with the recorder.
+
+Your feature's declared `verification_method` decides which of these is even
+available: a `solo` feature can reach `complete`, and the other three cannot
+without a named human attestation. It is derived from the acceptance criterion and
+the feature's own test markers and reviewed by the operator — so if you believe it
+is wrong, say so in the session note with the sentence of AC that shows it. Do not
+route around it with `--force-complete`; that overrides the honesty guard and
+**nothing else**, and the evidence gate will rewrite your `complete` back to
+`serialized` anyway.
 
 If a step you *could* run solo fails, it's not done — keep working (or `block` +
 park if it's a dependency).
@@ -421,7 +506,7 @@ in Step 7, so it lands on `main` via integrate and the next session can resume):
 === SESSION <feature-id> ===
 Date: <today>
 Feature: $ATP_FEATURE_ID — <description>
-Outcome: complete | serialized | partial(blocked-on <Y>)
+Outcome: complete | serialized (<A|B|C|D>: <what is in the way>) | partial(blocked-on <Y>)
 
 What I did:  <implementation + key decisions>
 What I tested (per step): Step 1: PASS — <cmd> → <result>; ...
@@ -435,6 +520,14 @@ Resume / next: <what's left, exact blocking ids, where to continue>
 
 `close_feature.py` folds + removes this note when the feature integrates
 `complete`; for `partial`/`serialized` it stays as the resume pointer.
+
+**The `Outcome:` line is machine-read, so keep its shape.** `serialized_notes()`
+takes the FIRST line matching `^outcome:` and counts it only if the value *begins*
+`serialized` — that one line is what pulls the feature out of the claim pool, so a
+second session appending to this file must leave the original line alone. Put the
+class in parentheses after the word (`serialized (C: needs an SMS provider
+account)`); the parser reads the prefix and a human reads the rest, and a bucket
+of eleven features went untriaged for weeks because the word arrived without it.
 
 **`Adversarial rounds:` is a measurement, not decoration.** It is how the operator
 sees whether the playbooks are working. Recent baseline: 9, 10, 13, 13, 13, 14, 15,
