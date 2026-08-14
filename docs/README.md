@@ -33,6 +33,9 @@ Superseded revisions live in `docs/archive/`. They are history, not truth.
 | Path | What it is |
 |------|-----------|
 | `playbooks/` | What previous sessions learned the expensive way. Routed by `playbooks/INDEX.md` — read the ones whose trigger matches your feature. |
+| `harness-map.md` | How the harness fits together: the session lifecycle, the close gate, where a blocker goes, the watch loop. Four diagrams. **Start here if you are new.** |
+| `verification-queue.md` | What to do when a feature *can't* close. The A/B/C/D triage, and the two legitimate paths to `passes: true`. |
+| `live-ib-runbook.md` | The operator checklist for a live-IB verification window — preflight, waking the gateway, the digest tripwire, capturing the artifact, closing. |
 | `DEPLOYMENT.md` | How the system is deployed. |
 | `tradestudies/` | Recorded option comparisons behind specific decisions. |
 | `plans/` | Long-form plans that outlived a single session. |
