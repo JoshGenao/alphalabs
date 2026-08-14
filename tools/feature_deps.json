@@ -222,7 +222,8 @@
   "SRS-RESV-005": [
     "SRS-EXE-006",
     "SRS-RESV-002",
-    "SRS-RESV-003"
+    "SRS-RESV-003",
+    "SRS-RESV-006"
   ],
   "SRS-RESV-006": [
     "SRS-RESV-003"
