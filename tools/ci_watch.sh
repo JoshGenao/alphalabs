@@ -69,25 +69,42 @@ if [ "$WAIT" = "1" ]; then
 fi
 
 echo
+# GitHub returns conclusion as "" (not null) while a run is in flight, so jq's `//`
+# does NOT fall through to .status — that rendered every in-progress run as a blank
+# status column. Choose explicitly.
 gh run list --repo "$REPO" --commit "$SHA" \
   --json workflowName,status,conclusion \
-  --jq '.[] | "  \(.conclusion // .status)\t\(.workflowName)"'
+  --jq '.[] | "  \(if (.conclusion // "") == "" then .status else .conclusion end)\t\(.workflowName)"'
 
-BAD="$(gh run list --repo "$REPO" --commit "$SHA" --json status,conclusion,workflowName \
-        --jq '[.[] | select(.status != "completed" or (.conclusion != "success" and .conclusion != "skipped"))] | length')"
+RUNNING="$(gh run list --repo "$REPO" --commit "$SHA" --json status \
+            --jq '[.[] | select(.status != "completed")] | length')"
+FAILED="$(gh run list --repo "$REPO" --commit "$SHA" --json status,conclusion \
+            --jq '[.[] | select(.status == "completed" and .conclusion != "success" and .conclusion != "skipped")] | length')"
 
-if [ "${BAD:-1}" -eq 0 ]; then
+if [ "${RUNNING:-0}" -eq 0 ] && [ "${FAILED:-1}" -eq 0 ]; then
   echo
   echo "✓ every workflow for ${SHA:0:8} concluded successfully."
   exit 0
 fi
 
-cat >&2 <<EOF
+# Still running and actually failed are different facts, and calling the first one
+# "did not succeed" would train the reader to ignore the message that matters.
+if [ "${FAILED:-0}" -gt 0 ]; then
+  cat >&2 <<EOF
 
-✗ ${BAD} workflow(s) for ${SHA:0:8} did not succeed.
+✗ ${FAILED} workflow(s) for ${SHA:0:8} FAILED.
   This is now the highest-priority work: a red main is the state in which nobody
-  else's green means anything. Read the failure, do not re-run it hoping:
+  else's green means anything. Read the failure, do not re-run it hoping — a
+  CI-only failure is usually something the runner does not have:
     gh run list --repo $REPO --commit $SHA
     gh run view <run-id> --repo $REPO --log-failed
 EOF
+fi
+if [ "${RUNNING:-0}" -gt 0 ]; then
+  cat >&2 <<EOF
+
+· ${RUNNING} workflow(s) for ${SHA:0:8} are STILL RUNNING — not a pass yet
+  (rule 3: unknown is never success). Re-run without --no-wait to wait for them.
+EOF
+fi
 exit 1
