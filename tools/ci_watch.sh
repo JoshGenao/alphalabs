@@ -30,7 +30,17 @@ for arg in "$@"; do
     *) SHA="$arg" ;;
   esac
 done
-[ -n "$SHA" ] || SHA="$(git rev-parse HEAD)"
+[ -n "$SHA" ] || SHA="HEAD"
+# `gh run list --commit` matches on the FULL 40-char sha and silently returns
+# nothing for an abbreviated one — which this script then reported as "no workflow
+# runs found", i.e. a lookup bug dressed as a finding about the repository.
+# Resolve whatever the caller typed (short sha, HEAD, a branch) to the full form.
+if FULL="$(git rev-parse --verify "${SHA}^{commit}" 2>/dev/null)"; then
+  SHA="$FULL"
+else
+  echo "✗ ci_watch: '${SHA}' is not a commit this repository knows." >&2
+  exit 2
+fi
 
 command -v gh >/dev/null 2>&1 || {
   echo "✗ ci_watch: the gh CLI is not installed — cannot read workflow results." >&2
