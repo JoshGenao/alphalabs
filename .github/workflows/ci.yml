@@ -145,6 +145,54 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # ratchet:Swatinem/rust-cache@v2
 
+      # This job runs `verify_contracts.sh --scope ci-rust` below: 23 Python check
+      # scripts that shell cargo. Several of them IMPORT a Python binding to prove
+      # the Rust store is reachable from Python (store_history_check loads
+      # StoreBackedHistoricalData), and the binding chain needs numpy. With no
+      # Python environment here the job failed on
+      # "could not import the Python binding ...: No module named 'numpy'" — a
+      # missing interpreter reported as a broken contract.
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # ratchet:actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      # Same key as the Python job, so the ~2 min C build happens once per runner
+      # image and both jobs restore it.
+      - name: Cache TA-Lib C library
+        id: cache-talib
+        uses: actions/cache@d4323d4df104b026a6aa633fdb11d772146be0bf # ratchet:actions/cache@v4
+        with:
+          path: |
+            /usr/local/lib/libta-lib.*
+            /usr/local/lib/libta_lib.*
+            /usr/local/include/ta-lib
+          key: talib-c-0.6.4-${{ runner.os }}
+
+      - name: Install TA-Lib C library 0.6.4 (SRS-SDK-006 / SyRS C-9)
+        if: steps.cache-talib.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential wget ca-certificates
+          cd /tmp
+          wget -q https://github.com/TA-Lib/ta-lib/releases/download/v0.6.4/ta-lib-0.6.4-src.tar.gz
+          tar -xzf ta-lib-0.6.4-src.tar.gz
+          cd ta-lib-0.6.4
+          ./configure --prefix=/usr/local
+          make
+          sudo make install
+          sudo ldconfig
+
+      - name: Refresh ldconfig (TA-Lib cache restore path)
+        if: steps.cache-talib.outputs.cache-hit == 'true'
+        run: sudo ldconfig
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
       - name: cargo fmt --check
         run: cargo fmt --check
 

@@ -57,7 +57,14 @@ STEP_SOURCE = "prompts/coding_prompt.md"
 #: a linked worktree. A reference to one is still a real, navigable pointer — the document is
 #: telling a reader where the state lives — so the gate must not treat its absence as a broken
 #: link and turn red for every parallel session.
-RUNTIME_ARTIFACTS = frozenset({"tools/.agent_runtime.json"})
+# `.git/hooks/pre-commit` is INSTALLED by tools/install_hooks.sh, not shipped by the
+# tree — so it exists on any machine where someone ran the installer and on none
+# where nobody did. That made this gate pass locally and fail in CI for a reference
+# that is perfectly correct either way (prompts/initializer_prompt.md documents the
+# installer by naming what it installs). Same reasoning as the runtime artifact
+# below: a document naming it is telling the reader where the hook lands, and that
+# pointer is not broken merely because the installer has not been run.
+RUNTIME_ARTIFACTS = frozenset({"tools/.agent_runtime.json", ".git/hooks/pre-commit"})
 
 MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 STEP_REF_RE = re.compile(r"\bStep\s+(\d+(?:\.\d+)?)\b")

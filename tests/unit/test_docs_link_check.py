@@ -97,9 +97,33 @@ def test_the_shipped_tree_has_no_unresolved_references():
 # perfectly correct — and a red gate nobody caused is one everybody learns to skip.
 
 
-def test_a_dot_git_reference_resolves_through_git_not_the_literal_directory():
-    # Correct in the primary checkout AND in a worktree; before the fix, only the former.
-    assert dlc._resolve(".git/hooks/pre-commit", dlc.ROOT / "AGENTS.md")
+def test_a_dot_git_reference_resolves_through_git_not_the_literal_directory(tmp_path, monkeypatch):
+    """The `.git/` branch must resolve through the git COMMON dir, not the literal
+    directory — in a linked worktree `.git` is a file, so the literal path exists in
+    the primary checkout and nowhere else.
+
+    Driven against a synthetic common dir rather than the real one. The old version
+    asserted `.git/hooks/pre-commit`, which exists only where somebody ran
+    tools/install_hooks.sh: it passed on developer machines and failed in CI, for a
+    property that has nothing to do with hooks being installed. It would now also
+    pass via RUNTIME_ARTIFACTS without exercising this branch at all.
+    """
+    common = tmp_path / "gitdir"
+    (common / "hooks").mkdir(parents=True)
+    (common / "hooks" / "some-hook").write_text("#!/bin/sh\n", encoding="utf-8")
+    # ROOT elsewhere, so the literal-path checks miss and the `.git/` branch is the
+    # only thing that can answer.
+    monkeypatch.setattr(dlc, "ROOT", tmp_path / "elsewhere")
+    monkeypatch.setattr(dlc, "_git_common_dir", lambda: common)
+    assert dlc._resolve(".git/hooks/some-hook", tmp_path / "elsewhere" / "AGENTS.md")
+    assert not dlc._resolve(".git/hooks/absent-hook", tmp_path / "elsewhere" / "AGENTS.md")
+
+
+def test_an_installed_hook_reference_is_a_runtime_artifact():
+    """tools/install_hooks.sh CREATES it; the tree never ships it. Requiring it to
+    exist made the gate green on any machine where somebody had run the installer
+    and red in every fresh checkout — including CI."""
+    assert ".git/hooks/pre-commit" in dlc.RUNTIME_ARTIFACTS
 
 
 def test_a_missing_dot_git_reference_is_still_reported():
