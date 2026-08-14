@@ -303,9 +303,23 @@ python3 tools/evidence.py render "$ATP_FEATURE_ID"   # -> .harness/runs/<ID>/EVI
 ```
 
 Browser tests produce both screenshots and video automatically — wrap the body in
-`tests/e2e/capture.py`'s `evidence_browser(sync_api, "<ID>", step=3)`, call
-`cap.shot(page, "what this shows")` at each assertion, and run under
-`ATP_CAPTURE_EVIDENCE=1`. Everything attaches to the step on context close.
+`tests/e2e/capture.py`'s `evidence_browser(sync_api, "<ID>", step=3)`, shoot at
+each assertion, and run under `ATP_CAPTURE_EVIDENCE=1`. Everything attaches to the
+step on context close.
+
+```python
+with evidence_browser(sync_api, "$ATP_FEATURE_ID", step=3) as cap:
+    page = cap.page(url)
+    assert page.locator("#account-equity").is_visible()
+    cap.shot(page, "account panel showing IB equity", element="#account-card")
+```
+
+**Pass `element=` whenever the pane you are evidencing is not at the top of the
+page.** A full-page shot of a ~4000px dashboard renders a pane near the bottom a
+few illegible pixels tall once a reviewer looks at it inline — a picture of a
+dashboard, not proof of an acceptance criterion. `element=` also waits out the
+card's `rise` animation before shooting; without that wait a scoped shot can come
+back completely blank while every assertion in the test still passes.
 
 `EVIDENCE.md` is the form a human reviews on GitHub — images render inline in the
 PR. `run`/`record`/`artifact` regenerate it, so you never write it by hand. Video
