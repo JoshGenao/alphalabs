@@ -16,10 +16,19 @@
 #   PYSEC-2026-2141      fixed in 46.0.5
 #   PYSEC-2026-35        fixed in 46.0.6
 #   PYSEC-2026-36        fixed in 46.0.7
-#   GHSA-537c-gmf6-5ccf  fixed in 48.0.1   <- the binding constraint
-# 48.0.1 is therefore the lowest version clearing all four. The ceiling stays
-# one major ahead so a future 50.x is reviewed rather than silently adopted.
-cryptography>=48.0.1,<50
+#   GHSA-537c-gmf6-5ccf  fixed in 48.0.1
+#   PYSEC-2026-3552      fixed in 50.0.0   <- the binding constraint
+# 50.0.0 is therefore the lowest version clearing all five.
+#
+# The previous ceiling was `<50`, written so "a future 50.x is reviewed rather
+# than silently adopted". This IS that review: pip-audit turned the security
+# workflow red on PYSEC-2026-3552, whose only fix is the major the ceiling
+# excluded — the pin was holding the repository on the vulnerable release. We use
+# exactly one API from this package, `cryptography.fernet.Fernet` (encrypt /
+# decrypt / generate_key) in python/atp_config/vault.py, which is unchanged across
+# the major. The ceiling moves up one, keeping the same review-the-next-major
+# posture rather than dropping the bound.
+cryptography>=50.0.0,<51
 
 # SRS-SDK-002 — trading-calendar-aware scheduling.
 # exchange_calendars supplies NYSE/NASDAQ holiday and early-close data;
