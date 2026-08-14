@@ -291,6 +291,54 @@ def _head() -> str:
     return _git("rev-parse", "HEAD")
 
 
+#: Paths whose change cannot invalidate evidence: the record itself, its artifacts,
+#: and the session notes. Everything else is code, docs a reviewer reads, or config
+#: that can change what a run would observe.
+_EVIDENCE_ONLY_PREFIXES = (".harness/runs/", "progress.d/")
+
+
+def code_changed_since(head: str) -> list[str] | None:
+    """Non-evidence paths that changed between ``head`` and the current HEAD.
+
+    ``[]`` means the evidence still describes the working code. ``None`` means the
+    question could not be answered — an unknown, unreadable, or non-ancestor commit —
+    and the caller fails closed on that, because an unverifiable head is not a fresh
+    one.
+
+    Equality with HEAD is deliberately NOT the test. Evidence is recorded BEFORE the
+    commit that carries it, so a valid record always names the parent of its own
+    chore commit; demanding equality would reject the exact workflow the review
+    process requires. What matters is whether any CODE moved underneath it.
+    """
+
+    if not head or not isinstance(head, str):
+        return None
+    if (
+        not _git("cat-file", "-e", f"{head}^{{commit}}")
+        and _git("rev-parse", "--verify", f"{head}^{{commit}}") == ""
+    ):
+        return None
+    current = _head()
+    if not current:
+        return None
+    if head == current:
+        return []
+    # An evidence head that is not an ancestor of HEAD describes a different line of
+    # history — a rebase, a reset, or another branch's commit. Not comparable.
+    ancestor = subprocess.run(
+        ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", head, current],
+        check=False,
+        capture_output=True,
+    )
+    if ancestor.returncode != 0:
+        return None
+    changed = _git("diff", "--name-only", f"{head}..{current}")
+    if changed == "" and _git("rev-list", "--count", f"{head}..{current}") == "":
+        return None
+    paths = [p for p in changed.splitlines() if p.strip()]
+    return [p for p in paths if not p.startswith(_EVIDENCE_ONLY_PREFIXES)]
+
+
 def retire(fid: str, *, dry_run: bool = False) -> Path | None:
     """Archive the live record once its feature has been closed.
 
@@ -589,34 +637,56 @@ def verify(
     if method in VISUAL_METHODS and steps:
         ac_n = ac_step_index(steps)
         targets = [ac_n] if ac_n else list(range(1, len(steps) + 1))
-        # Captured at the SAME head the step was executed at. An image from an earlier
-        # run proves nothing about the code being closed, and a record that accepted
-        # one would let a dashboard regression hide behind a screenshot of the version
-        # before it.
-        fresh = []
+        # An image certifies the code it was captured on, so two things must hold:
+        # it was captured at the head its step records, AND no code has moved since.
+        #
+        # Equality with HEAD is deliberately not the test. Evidence is recorded
+        # BEFORE the commit that carries it, so a valid record always names the
+        # parent of its own chore commit — demanding equality would reject the exact
+        # workflow the review process requires. `code_changed_since` asks the
+        # question that actually matters, and returns None (fail closed) when it
+        # cannot be answered.
+        fresh, mismatched, outdated, unverifiable = [], [], [], []
         for n in targets:
             step_head = (by_n.get(n) or {}).get("head")
-            fresh += [
-                a
-                for a in step_artifacts(rec, n)
-                if a.get("kind") == "image" and a.get("head") == step_head
-            ]
-        stale = [
-            a
-            for n in targets
-            for a in step_artifacts(rec, n)
-            if a.get("kind") == "image" and a.get("head") != (by_n.get(n) or {}).get("head")
-        ]
+            moved = code_changed_since(step_head)
+            for a in step_artifacts(rec, n):
+                if a.get("kind") != "image":
+                    continue
+                if a.get("head") != step_head:
+                    mismatched.append(a)
+                elif moved is None:
+                    unverifiable.append(a)
+                elif moved:
+                    outdated.append((a, moved))
+                else:
+                    fresh.append(a)
         images = fresh
-        if not images and stale:
+        where = f"step {ac_n}" if ac_n else "any step"
+        if not images and mismatched:
             problems.append(
-                f"verification_method is {method!r} and {len(stale)} image artifact(s) are "
-                f"attached, but none was captured at the head its step records — they are "
-                f"from an earlier run and prove nothing about this code. Re-run the step so "
-                f"the screenshots are produced by the commit being closed."
+                f"verification_method is {method!r} and {len(mismatched)} image artifact(s) "
+                f"are attached to {where}, but none was captured at the head its step "
+                f"records — they are from an earlier run and prove nothing about this code. "
+                f"Re-run the step so the screenshots are produced by the commit being closed."
             )
-        if not images and not stale:
-            where = f"step {ac_n}" if ac_n else "any step"
+        elif not images and unverifiable:
+            problems.append(
+                f"verification_method is {method!r} and {len(unverifiable)} image "
+                f"artifact(s) are attached to {where}, but the commit they record cannot be "
+                f"checked against this one (unknown, unreadable, or on another line of "
+                f"history). An unverifiable head is not a fresh one — re-run the step."
+            )
+        elif not images and outdated:
+            moved_paths = sorted({p for _, paths in outdated for p in paths})[:5]
+            problems.append(
+                f"verification_method is {method!r} and {len(outdated)} image artifact(s) "
+                f"are attached to {where}, but code has changed since they were captured "
+                f"({', '.join(moved_paths)}{' …' if len(moved_paths) == 5 else ''}). A "
+                f"screenshot of the previous version cannot certify this one — re-run the "
+                f"step."
+            )
+        elif not images:
             problems.append(
                 f"verification_method is {method!r} but no image artifact is attached to "
                 f"{where} — its acceptance criterion is about what a reviewer can SEE. "

@@ -270,7 +270,7 @@ def test_a_rerun_at_a_new_head_does_not_retain_the_previous_images(rec, tmp_path
 
     # A second successful run at a DIFFERENT head that captured nothing.
     monkeypatch.setattr(evidence, "_head", lambda: "bbbbbbb")
-    _seed_step(fid, 3, executed=True)
+    _seed_step(fid, 3, executed=True, exit_code=0)
 
     assert evidence.step_artifacts(evidence.load_record(fid), 3) == [], (
         "images from an earlier commit must not ride along onto a fresh run"
@@ -286,7 +286,7 @@ def test_a_rerun_at_the_same_head_keeps_the_images_it_produced(rec, tmp_path, mo
     _seed_step(fid, 3)
     evidence.attach(fid, 3, _png(tmp_path), "captured on aaaaaaa")
 
-    _seed_step(fid, 3, executed=True)  # same head
+    _seed_step(fid, 3, executed=True, exit_code=0)  # same head
 
     assert len(evidence.step_artifacts(evidence.load_record(fid), 3)) == 1
 
@@ -296,7 +296,7 @@ def test_verify_refuses_a_visual_close_on_stale_images(rec, tmp_path, monkeypatc
     fid = rec(method="e2e")
     monkeypatch.setattr(evidence, "_head", lambda: "aaaaaaa")
     for n in (1, 2, 3, 4):
-        _seed_step(fid, n, executed=True)
+        _seed_step(fid, n, executed=True, exit_code=0)
     evidence.attach(fid, 3, _png(tmp_path), "the panel")
 
     # Re-stamp the AC step at a new head WITHOUT re-capturing, then force the stale
@@ -304,7 +304,7 @@ def test_verify_refuses_a_visual_close_on_stale_images(rec, tmp_path, monkeypatc
     record = evidence.load_record(fid)
     stale = evidence.step_artifacts(record, 3)
     monkeypatch.setattr(evidence, "_head", lambda: "bbbbbbb")
-    _seed_step(fid, 3, executed=True)
+    _seed_step(fid, 3, executed=True, exit_code=0)
     record = evidence.load_record(fid)
     next(s for s in record["steps"] if s["n"] == 3)["artifacts"] = stale
     evidence.save_record(fid, record)
@@ -313,3 +313,144 @@ def test_verify_refuses_a_visual_close_on_stale_images(rec, tmp_path, monkeypatc
 
     assert ok is False
     assert any("earlier run" in p for p in problems), problems
+
+
+# --- currency: agreeing with each other is not enough ------------------------
+def test_verify_refuses_when_step_and_image_agree_but_both_are_stale(rec, tmp_path, monkeypatch):
+    """Independent harness review [high].
+
+    The first freshness fix only required `artifact.head == step.head`. A browser run
+    and its screenshot captured TOGETHER on an older commit satisfy that trivially —
+    both stale heads agree — so evidence from before a code change could still close
+    the feature. Agreeing with each other is not the same as describing this code.
+    """
+    fid = rec(method="e2e")
+    monkeypatch.setattr(evidence, "_head", lambda: "aaaaaaa")
+    for n in (1, 2, 3, 4):
+        _seed_step(fid, n, executed=True, exit_code=0)
+    evidence.attach(fid, 3, _png(tmp_path), "the panel")
+    # Internally consistent: step and image both say aaaaaaa.
+    art = evidence.step_artifacts(evidence.load_record(fid), 3)[0]
+    assert art["head"] == "aaaaaaa"
+
+    # Code has since moved. Nothing about the record changed.
+    monkeypatch.setattr(evidence, "code_changed_since", lambda h: ["python/atp_dashboard/app.js"])
+
+    ok, problems, _ = evidence.verify(fid)
+
+    assert ok is False
+    assert any("code has changed since they were captured" in p for p in problems), problems
+
+
+def test_verify_accepts_evidence_recorded_at_the_parent_of_its_own_chore_commit(
+    rec, tmp_path, monkeypatch
+):
+    """The workflow this must NOT break.
+
+    Evidence is recorded BEFORE the commit that carries it, so a valid record always
+    names the parent of its own chore commit. Requiring equality with HEAD would
+    reject every correctly-produced record — which is why the test is "has code
+    moved", not "is the head current".
+    """
+    fid = rec(method="e2e")
+    monkeypatch.setattr(evidence, "_head", lambda: "aaaaaaa")
+    for n in (1, 2, 3, 4):
+        _seed_step(fid, n, executed=True, exit_code=0)
+    evidence.attach(fid, 3, _png(tmp_path), "the panel")
+    record = evidence.load_record(fid)
+    record["critic"] = {
+        "deterministic": {"verdict": "approve"},
+        "judgment": {"verdict": "approve"},
+    }
+    evidence.save_record(fid, record)
+
+    # HEAD advanced by the evidence-only chore commit: no CODE moved.
+    monkeypatch.setattr(evidence, "_head", lambda: "bbbbbbb")
+    monkeypatch.setattr(evidence, "code_changed_since", lambda h: [])
+
+    ok, problems, _ = evidence.verify(fid)
+
+    assert ok is True, problems
+
+
+def test_verify_fails_closed_when_the_recorded_commit_cannot_be_checked(rec, tmp_path, monkeypatch):
+    """An unverifiable head is not a fresh one."""
+    fid = rec(method="e2e")
+    monkeypatch.setattr(evidence, "_head", lambda: "aaaaaaa")
+    for n in (1, 2, 3, 4):
+        _seed_step(fid, n, executed=True, exit_code=0)
+    evidence.attach(fid, 3, _png(tmp_path), "the panel")
+
+    monkeypatch.setattr(evidence, "code_changed_since", lambda h: None)
+
+    ok, problems, _ = evidence.verify(fid)
+
+    assert ok is False
+    assert any("cannot be checked" in p for p in problems), problems
+
+
+# --- code_changed_since, against real git ------------------------------------
+@pytest.fixture
+def git_repo(tmp_path, monkeypatch):
+    """A throwaway repo so the currency helper is tested, not mocked.
+
+    The tests above monkeypatch `code_changed_since` to drive `verify`'s branches;
+    that leaves the helper itself unexercised, and a mutation making it always report
+    "fresh" survived every one of them. This fixture closes that.
+    """
+    import subprocess as sp
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def run(*args):
+        sp.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "t")
+    monkeypatch.setattr(evidence, "ROOT", repo)
+
+    def commit(path, text):
+        f = repo / path
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text)
+        run("add", "-A")
+        run("commit", "-qm", f"touch {path}")
+        return sp.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+        ).stdout.strip()
+
+    return commit
+
+
+def test_code_changed_since_is_empty_at_the_same_commit(git_repo):
+    head = git_repo("src/app.py", "v1")
+
+    assert evidence.code_changed_since(head) == []
+
+
+def test_code_changed_since_ignores_evidence_only_commits(git_repo):
+    head = git_repo("src/app.py", "v1")
+    git_repo(".harness/runs/F-1/evidence.json", "{}")
+    git_repo("progress.d/session-F-1.md", "note")
+
+    # This is the workflow: record at the last code commit, then commit the record.
+    assert evidence.code_changed_since(head) == []
+
+
+def test_code_changed_since_reports_a_real_code_change(git_repo):
+    head = git_repo("src/app.py", "v1")
+    git_repo("src/app.py", "v2")
+
+    assert evidence.code_changed_since(head) == ["src/app.py"]
+
+
+@pytest.mark.parametrize(
+    "head", [pytest.param("", id="empty"), pytest.param("deadbeefdeadbeef", id="unknown-sha")]
+)
+def test_code_changed_since_fails_closed_on_an_uncheckable_head(git_repo, head):
+    git_repo("src/app.py", "v1")
+
+    # None, never [] — an unverifiable head must not read as a fresh one.
+    assert evidence.code_changed_since(head) is None
