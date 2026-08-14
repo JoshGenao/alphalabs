@@ -256,3 +256,24 @@ one `main`. Most of this playbook is about that sharing.
   record saying `artifacts: []` while the files are on disk is a write-ordering bug, not a
   capture failure. `(SRS-RESV-005)`
 
+38. **Push is gated; CI is the verdict — collect it.** `tools/install_hooks.sh`
+    installs a `pre-push` hook running `run_ci_locally.sh --fast` (~1 s: ruff,
+    format, `cargo fmt`, gate registry, doc links). It CANNOT predict CI: timing the
+    mirror, every other step is minutes — clippy, cargo test, both contract scopes,
+    and the pytest run too (5,093 tests, ~7 min). Run `tools/ci_watch.sh` after
+    pushing; it exits non-zero on red. A red `main` is the state in which nobody
+    else's green means anything. `(2026-08-14)`
+39. **A gate that fails on every clean tree gets bypassed, so check yours passes
+    before shipping it.** `run_ci_locally.sh` shelled bare `python3`/`ruff`/`pytest`
+    and died importing atp_strategy without the venv activated. As a script you
+    chose to run that is an annoyance; as a pre-push hook it would have made
+    `ATP_PREPUSH_BYPASS=1` the normal way to push within a day. Prefer `.venv/bin`.
+    Same family as rule 9. `(2026-08-14)`
+40. **CI-only failures are environment coupling, and no local run finds them.** All
+    four reds on 2026-08-14 were of this shape: a doc reference resolved against
+    `.git/hooks/pre-commit`, which exists only where someone ran the installer; the
+    Rust job ran 23 Python checks with no interpreter and reported "No module named
+    'numpy'" as a broken contract; a CVE whose fix was excluded by the pin's own
+    ceiling; and a Compose project name built from `tempfile.mkdtemp`, invalid only
+    when the random suffix ended in `_`. When CI is red and local is green, ask what
+    the runner does NOT have rather than re-running. `(2026-08-14)`
