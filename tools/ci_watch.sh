@@ -79,9 +79,14 @@ gh run list --repo "$REPO" --commit "$SHA" \
 RUNNING="$(gh run list --repo "$REPO" --commit "$SHA" --json status \
             --jq '[.[] | select(.status != "completed")] | length')"
 FAILED="$(gh run list --repo "$REPO" --commit "$SHA" --json status,conclusion \
-            --jq '[.[] | select(.status == "completed" and .conclusion != "success" and .conclusion != "skipped")] | length')"
+            --jq '[.[] | select(.status == "completed" and .conclusion != "success" and .conclusion != "skipped" and .conclusion != "cancelled")] | length')"
+# `cancel-in-progress: true` means pushing again cancels the previous commit's runs.
+# That is the concurrency group working, not a failure — but it is also not a pass,
+# so it is reported as its own outcome and points at the commit that superseded it.
+CANCELLED="$(gh run list --repo "$REPO" --commit "$SHA" --json status,conclusion \
+            --jq '[.[] | select(.conclusion == "cancelled")] | length')"
 
-if [ "${RUNNING:-0}" -eq 0 ] && [ "${FAILED:-1}" -eq 0 ]; then
+if [ "${RUNNING:-0}" -eq 0 ] && [ "${FAILED:-1}" -eq 0 ] && [ "${CANCELLED:-0}" -eq 0 ]; then
   echo
   echo "✓ every workflow for ${SHA:0:8} concluded successfully."
   exit 0
@@ -105,6 +110,17 @@ if [ "${RUNNING:-0}" -gt 0 ]; then
 
 · ${RUNNING} workflow(s) for ${SHA:0:8} are STILL RUNNING — not a pass yet
   (rule 3: unknown is never success). Re-run without --no-wait to wait for them.
+EOF
+fi
+if [ "${CANCELLED:-0}" -gt 0 ]; then
+  TIP="$(git rev-parse HEAD 2>/dev/null || echo '')"
+  cat >&2 <<EOF
+
+· ${CANCELLED} workflow(s) for ${SHA:0:8} were CANCELLED. ci.yml sets
+  cancel-in-progress, so a later push supersedes an earlier commit's runs — that is
+  the concurrency group working, not a defect. It is still not a pass FOR THIS
+  COMMIT; the verdict you want belongs to the tip:
+    tools/ci_watch.sh ${TIP:0:8}
 EOF
 fi
 exit 1
