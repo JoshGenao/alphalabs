@@ -491,6 +491,35 @@ Check `pgrep -x cargo` is empty before the workspace suite — **not**
 `pgrep -f "cargo test"`, which matches this very prompt's text in any open agent
 session and so always reports a match.
 
+### The push is not the end — CI is
+
+A `pre-push` hook (installed by `tools/install_hooks.sh`, which `init.sh` runs)
+gates every push on `tools/run_ci_locally.sh --fast`. It takes about a second and
+runs only the sub-second checks: ruff, format, `cargo fmt`, the gate registry, and
+the doc-link check. **It cannot predict CI and does not claim to** — the test
+suites, clippy and both contract scopes are minutes each, and the skip ledger names
+every one it did not run.
+
+It is worth having anyway, because those cheap checks cause a red `main` out of all
+proportion to their cost: on 2026-08-14 `ci` went red on `docs_link_check`, a
+sub-second check invisible to any test run.
+
+**After pushing, confirm the real answer:**
+
+```bash
+tools/ci_watch.sh          # waits for every workflow on HEAD, exits non-zero on red
+```
+
+A red `main` is the state in which nobody else's green means anything, so treat it
+as the highest-priority work — ahead of the next feature. Read the failure rather
+than re-running it hopefully: three of the four failures on 2026-08-14 were
+environment coupling no local run could have surfaced (a link check resolving
+against a file only developer machines have, a Rust job with no Python interpreter,
+a Compose project name invalid only on unlucky random draws).
+
+`ATP_PREPUSH_BYPASS=1 git push` skips the hook. It is visible in shell history, so
+if you use it, say why in the session note. Never `--no-verify`.
+
 Then hand off to the locked integrator, which fetches, **rebases your branch onto
 the latest `origin/main`**, and fast-forward-pushes — serialized so two agents
 never race on `main`:

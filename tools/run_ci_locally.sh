@@ -9,6 +9,49 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
+# --fast keeps only the SUB-SECOND checks. Chosen by measuring the mirror, and the
+# measurement killed the original design: `ruff check`, `ruff format`, `cargo fmt`,
+# gates_registry_check and docs_link_check are each under a second, but every other
+# step is minutes — `cargo clippy --workspace`, `cargo test --workspace`, both
+# contract scopes, and the pytest run too (5,093 tests, ~7 min; the ~35 s figure was
+# tests/unit alone).
+#
+# So there is no fast subset that meaningfully PREDICTS CI, and pretending otherwise
+# would be the more comfortable lie. What --fast is for is narrower and still worth
+# having: the cheap structural checks that cause a red main out of proportion to
+# their cost. On 2026-08-14 the `ci` workflow went red on docs_link_check — a
+# sub-second check, invisible to any test run, failing on a reference that resolved
+# only where somebody had run tools/install_hooks.sh.
+#
+# A gate that takes eight minutes is a gate people learn to pass with --no-verify,
+# and a bypassed gate catches nothing at all. This one takes about two seconds.
+# The real answer arrives after the push: tools/ci_watch.sh.
+#
+# It is NOT a passing mirror, and does not pretend to be. The dropped steps go
+# through the SAME skip ledger as a missing toolchain, so the run still reports
+# itself incomplete — `--fast` merely says the incompleteness was chosen. The full
+# answer is CI; `tools/ci_watch.sh` is how you get it after the push.
+# Use the project venv when there is one. The mirror shells `python3`, `ruff` and
+# `pytest` by name, so without this it runs against whatever the shell happens to
+# have: on a machine where the venv is not activated, `python3` has no numpy and
+# architecture_check dies importing atp_strategy — the identical coupling that had
+# the Rust CI job reporting "No module named 'numpy'" as a broken contract.
+#
+# It matters more now that a pre-push hook calls this: a gate that fails on every
+# clean tree is a gate everyone learns to bypass, and then it catches nothing.
+if [[ -x "${ROOT_DIR}/.venv/bin/python" ]]; then
+  PATH="${ROOT_DIR}/.venv/bin:${PATH}"
+  export PATH
+fi
+
+FAST=0
+for arg in "$@"; do
+  case "$arg" in
+    --fast) FAST=1 ;;
+    *) printf 'run_ci_locally.sh: unknown argument %s\n' "$arg" >&2; exit 2 ;;
+  esac
+done
+
 # A gate that reports success for a step it never ran is worse than no gate: it is
 # how an unformatted file reached `main` and left `ruff format --check` red. A skip
 # is an UNKNOWN result, and unknown is never "pass" (CLAUDE.md rule 3). Every skip is
@@ -78,14 +121,20 @@ fi
 if command -v cargo >/dev/null 2>&1; then
   step "cargo fmt --check"
   cargo fmt --check
-  step "cargo clippy --workspace -- -D warnings"
-  cargo clippy --workspace -- -D warnings
+  if [[ "${FAST}" == "1" ]]; then
+    skip "cargo clippy --workspace" "--fast: minutes on a cold cache; CI runs it"
+  else
+    step "cargo clippy --workspace -- -D warnings"
+    cargo clippy --workspace -- -D warnings
+  fi
 else
   skip "cargo gates" "cargo not installed"
 fi
 
 # 4 — Python tests (L1+L2+L3+L4+L7; integration & e2e are gated)
-if command -v pytest >/dev/null 2>&1; then
+if [[ "${FAST}" == "1" ]]; then
+  skip "pytest" "--fast: 5,093 tests, ~7 min; CI runs it"
+elif command -v pytest >/dev/null 2>&1; then
   step "pytest -m \"not integration and not e2e\""
   pytest -m "not integration and not e2e"
 else
@@ -95,7 +144,9 @@ fi
 # 5 — Rust tests. The `else skip` is not decoration: without it a missing cargo made
 # the entire Rust test suite vanish from the run without entering the skip ledger,
 # so the mirror could report a clean pass having compiled and tested no Rust at all.
-if command -v cargo >/dev/null 2>&1; then
+if [[ "${FAST}" == "1" ]]; then
+  skip "cargo test --workspace" "--fast: too slow for a pre-push gate; CI runs it"
+elif command -v cargo >/dev/null 2>&1; then
   step "cargo test --workspace"
   cargo test --workspace
 else
@@ -103,11 +154,15 @@ else
 fi
 
 # 6 — Critic against the PR diff (vs origin/main fallback to HEAD~1)
+if [[ "${FAST}" == "1" ]]; then
+  skip "critic_check.py --range" "--fast: reviews the whole diff; run it at Step 6.1"
+else
 step "critic_check.py --range"
 if git rev-parse --verify origin/main >/dev/null 2>&1; then
   python3 tools/critic_check.py --range origin/main..HEAD --format text
 else
   python3 tools/critic_check.py --range HEAD~1..HEAD --format text
+fi
 fi
 
 # 6b — the registry's own validator. ci.yml runs this as a BLOCKING step before the
@@ -116,20 +171,42 @@ fi
 step "gates_registry_check.py"
 python3 tools/gates_registry_check.py
 
+# Sub-second, and it is what turned `ci` red on 2026-08-14 for a reference that
+# resolved only on machines where somebody had run tools/install_hooks.sh. Exactly
+# the shape a pre-push gate should catch: cheap, and invisible to a normal test run.
+step "docs_link_check.py"
+python3 tools/docs_link_check.py
+
 # 7 — contract checks, from tools/gates.json (the one registry ci.yml also reads)
-step "contract checks (scope=ci)"
-tools/verify_contracts.sh --scope ci
+if [[ "${FAST}" == "1" ]]; then
+  skip "contract checks (scope=ci)" "--fast: >7 min; CI runs it"
+else
+  step "contract checks (scope=ci)"
+  tools/verify_contracts.sh --scope ci
+fi
 
 # 7b — the cargo-strict variants. --require-cargo turns "cargo not on PATH ->
 # skipped, still passes" into a failure; ci.yml runs this scope in its Rust job.
-if command -v cargo >/dev/null 2>&1; then
+if [[ "${FAST}" == "1" ]]; then
+  skip "contract checks (ci-rust)" "--fast: too slow for a pre-push gate; CI runs it"
+elif command -v cargo >/dev/null 2>&1; then
   step "contract checks (scope=ci-rust, --require-cargo)"
   tools/verify_contracts.sh --scope ci-rust
 else
   skip "contract checks (ci-rust)" "cargo not installed"
 fi
 
-report_skips || exit 1
+if [[ "${FAST}" == "1" ]]; then
+  # The skips are the ones --fast chose, so they do not fail the run — but the
+  # ledger is still printed, and the run is still not a mirror pass.
+  ATP_ALLOW_SKIP=1 report_skips || true
+  printf '\n→ --fast ran the sub-second checks ONLY. The test suites, clippy and the\n'
+  printf '  contract scopes were NOT run — this is not a green CI and cannot predict\n'
+  printf '  one. Get the real answer after pushing:\n'
+  printf '    tools/ci_watch.sh\n'
+else
+  report_skips || exit 1
+fi
 
 if [[ "${ADVISORY_FAILED}" -gt 0 ]]; then
   printf '\n⚠ %d advisory step(s) reported errors (not blocking, same as ci.yml).\n' "${ADVISORY_FAILED}"

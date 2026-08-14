@@ -179,6 +179,20 @@ explicit `--attested-by` (the `verified-e2e` label, or `operator`). So the two w
 to a green are "the tool ran it" and "a named person says so"; describing it is not
 one of them.
 
+**Every push is gated, and CI is the real answer.** `tools/install_hooks.sh` (run by
+`init.sh`) installs a `pre-push` hook that runs `tools/run_ci_locally.sh --fast` —
+about a second, covering only the sub-second checks. It cannot predict CI and does
+not claim to; the skip ledger names every step it did not run. Confirm properly
+after pushing:
+
+```bash
+tools/ci_watch.sh          # every workflow on HEAD; exits non-zero on red
+```
+
+A red `main` is the state in which nobody else's green means anything. Bypass is
+`ATP_PREPUSH_BYPASS=1 git push` (visible in shell history — say why in the note),
+never `--no-verify`.
+
 **A visual acceptance criterion needs a visual artifact.** "The dashboard shows IB
 equity, daily and cumulative P&L" is a claim about what a human would *see*; an exit
 code cannot show it. For `e2e` and `live-ib` features, `verify` requires an image on
