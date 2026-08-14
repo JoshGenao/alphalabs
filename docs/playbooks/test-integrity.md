@@ -221,3 +221,13 @@ Read this whenever you write a test, and before you believe a green one.
     was that the accusation was unanimous. Rule 22's false-accusation mode with a second
     cause. If a verdict indicts EVERY test you added, suspect the harness before the tests —
     and make the tool raise instead of classifying. `(SRS-RESV-004, found live)`
+7. **Evidence certifies the commit it was produced on — steps, artifacts, AND critic
+   verdicts.** Each was bound in a separate pass, and the gap between passes was
+   exploitable every time: a screenshot reused across runs, then a run and its
+   screenshot both captured on an older commit (internally consistent, still stale),
+   then an `approve` recorded against a tree the implementation had since left. The
+   question is never "does this equal HEAD" — evidence is recorded BEFORE the commit
+   that carries it, so a valid record names the parent of its own chore commit. It is
+   "has any non-evidence path moved since". `code_changed_since` answers it and
+   returns `None`, never `[]`, when it cannot — an unverifiable head is not a fresh
+   one. `(2026-08-13/14, three rounds)`
