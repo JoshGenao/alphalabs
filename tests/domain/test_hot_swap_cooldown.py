@@ -1408,6 +1408,8 @@ def test_an_operator_can_reconcile_an_interrupted_swap_that_did_not_complete(tmp
         "cand-b",
         "--at",
         str(COMPLETED_AT),
+        "--attempt-id",
+        INTERRUPTED_ATTEMPT,
         "--confirm",
     )
     assert cleared.returncode == 0, cleared.stderr
@@ -1444,6 +1446,8 @@ def test_clearing_a_marker_needs_explicit_confirmation(tmp_path) -> None:
         "cand-b",
         "--at",
         str(COMPLETED_AT),
+        "--attempt-id",
+        INTERRUPTED_ATTEMPT,
     )
     assert refused.returncode != 0
     assert "--confirm is required" in refused.stderr
@@ -1469,6 +1473,8 @@ def test_the_clear_refuses_a_marker_belonging_to_a_different_swap(tmp_path) -> N
         "not-mine",
         "--at",
         str(COMPLETED_AT),
+        "--attempt-id",
+        INTERRUPTED_ATTEMPT,
         "--confirm",
     )
     assert refused.returncode != 0
@@ -1495,6 +1501,8 @@ def test_the_clear_can_never_retire_a_CONFIRMED_window(tmp_path) -> None:
         "cand-b",
         "--at",
         str(COMPLETED_AT),
+        "--attempt-id",
+        INTERRUPTED_ATTEMPT,
         "--confirm",
     )
     assert refused.returncode != 0
@@ -1531,6 +1539,8 @@ def test_reconciling_the_marker_unblocks_the_next_swap(swap_binaries, tmp_path) 
         "cand-b",
         "--at",
         str(COMPLETED_AT),
+        "--attempt-id",
+        INTERRUPTED_ATTEMPT,
         "--confirm",
     )
     assert cleared.returncode == 0, cleared.stderr
@@ -1590,6 +1600,8 @@ def test_every_operator_write_leaves_a_record_the_reader_accepts(tmp_path) -> No
         "cand-b",
         "--at",
         str(COMPLETED_AT + 10_000),
+        "--attempt-id",
+        INTERRUPTED_ATTEMPT,
         "--confirm",
     )
     assert cleared.returncode == 0, cleared.stderr
@@ -1663,6 +1675,8 @@ def test_a_same_pair_retry_between_the_read_and_the_clear_is_refused(tmp_path) -
         "cand-b",
         "--at",
         str(inspected),
+        "--attempt-id",
+        INTERRUPTED_ATTEMPT,
         "--confirm",
     )
     assert refused.returncode != 0, "a marker that MOVED must not be cleared"
@@ -1687,6 +1701,8 @@ def test_a_same_pair_retry_between_the_read_and_the_clear_is_refused(tmp_path) -
         "cand-b",
         "--at",
         str(COMPLETED_AT + 1_000),
+        "--attempt-id",
+        INTERRUPTED_ATTEMPT,
         "--confirm",
     )
     assert cleared.returncode == 0, cleared.stderr
@@ -1711,8 +1727,82 @@ def test_the_clear_refuses_to_guess_which_attempt_was_meant(tmp_path) -> None:
         "--confirm",
     )
     assert refused.returncode != 0
-    assert "--at <epoch-secs> is required" in refused.stderr
+    # Whichever of the two identity flags is checked first, the refusal must name a
+    # REQUIRED identity rather than proceed — the point is that nothing is defaulted.
+    assert "is required" in refused.stderr
+    assert "--attempt-id <id>" in refused.stderr or "--at <epoch-secs>" in refused.stderr
     assert json.loads(state.read_text()) == before
+
+
+def test_a_same_second_retry_defeats_a_stale_read_of_the_marker(tmp_path) -> None:
+    """Adversarial review r27 [high] — the compare-and-swap has to compare the IDENTITY.
+
+    Round 25 made the repair command name the marker's instant, and round 26 gave the
+    marker a real attempt id in the store. Between them the CLI was left half-fixed: it
+    matched on the pair and the instant, then cleared using the id it had just re-read
+    from disk. A retry of the same swap in the same second leaves the pair and the
+    instant unchanged while the ATTEMPT changes — so the command re-read and cleared
+    whatever was there, which is precisely the operation r25 set out to prevent.
+
+    The operator names all three now, and all three are compared.
+    """
+    state = tmp_path / "cd.json"
+    log = tmp_path / "triggers.jsonl"
+    _strand(state, completed_at=COMPLETED_AT)
+
+    inspected = _kv(_cooldown("status", "--state", str(state), "--now", str(DURING)).stdout)
+    assert inspected["cooldown-provisional-at-seconds"] == str(COMPLETED_AT)
+
+    # The retry: same swap, SAME second, different attempt. Every value the old match
+    # looked at is unchanged.
+    record = json.loads(state.read_text())
+    record["provisional_attempt_id"] = "a-different-attempt"
+    state.write_text(json.dumps(record))
+
+    refused = _cooldown(
+        "clear-provisional",
+        "--state",
+        str(state),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--at",
+        str(COMPLETED_AT),
+        "--attempt-id",
+        INTERRUPTED_ATTEMPT,
+        "--confirm",
+    )
+    assert refused.returncode != 0, (
+        "the marker is a different attempt now; clearing it would retire suppression "
+        "for an interruption the operator never inspected"
+    )
+    assert "it MOVED between your read and this command" in refused.stderr, refused.stderr
+    assert "a-different-attempt" in refused.stderr, "and it must name what is there now"
+
+    assert json.loads(state.read_text())["provisional_attempt_id"] == "a-different-attempt"
+    assert _kv(_evaluate(state, log, DURING).stdout)["cooldown-suppressed"] == "true", (
+        "the surviving marker still suppresses"
+    )
+
+    # Re-reading and naming the attempt that is actually there works — without this the
+    # command could refuse everything and satisfy the case above (what r22 blocked on).
+    cleared = _cooldown(
+        "clear-provisional",
+        "--state",
+        str(state),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--at",
+        str(COMPLETED_AT),
+        "--attempt-id",
+        "a-different-attempt",
+        "--confirm",
+    )
+    assert cleared.returncode == 0, cleared.stderr
+    assert _kv(cleared.stdout)["provisional-cleared"] == "true"
 
 
 def test_a_confirmed_window_is_reported_as_confirmed(swap_binaries, tmp_path) -> None:

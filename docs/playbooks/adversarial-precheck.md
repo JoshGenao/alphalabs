@@ -139,3 +139,9 @@ Walk this against your own diff before Step 6.1. Most of it is one grep each.
   manual swap DURING the window the feature enforces, so two records coexisting is normal
   operation, not an edge case. The permitted-concurrent-operation path is where this class
   lives. `(RESV-006 r21)`
+- **A fix that spans a store and its surface is not done until BOTH ends compare the same
+  thing.** RESV-006 hardened the store's ownership check (r26) and left the operator command
+  matching on the old, weaker key and then acting with the value it had just re-read — which
+  turned a compare-and-swap back into read-and-clobber while every commit message said
+  otherwise. When you strengthen an identity, grep every caller that *names* that identity
+  and check what each one COMPARES, not just what it passes. `(RESV-006 r27)`

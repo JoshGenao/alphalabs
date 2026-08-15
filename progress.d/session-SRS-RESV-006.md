@@ -429,6 +429,19 @@ without the change.
   assertion rather than as the proof: a record whose id matches but whose swap does not is
   corruption, and clearing on it would be acting on a record nobody can explain.
 
+* **r27 `block`** — *`clear-provisional`'s compare-and-swap ignored the attempt identity*
+  [high]. Class: *a two-round fix left half-applied*. r25 made the repair command name the
+  marker's instant; r26 gave the marker a real attempt id in the STORE. In between, the CLI
+  matched on the pair and the instant and then cleared using the id it had just re-read
+  from disk — so a retry in the same second, which leaves the pair and the instant
+  unchanged while the attempt changes, was re-read and cleared. That is not a
+  compare-and-swap; it is the operation r25 set out to prevent, wearing r25's clothes.
+
+  `--attempt-id` is required now and all three values are compared. **This was the final
+  review round the operator authorised**, so the fix ships with its regression and its
+  mutation but WITHOUT a subsequent APPROVE — see "Outcome" for what that means for the
+  integrate mode.
+
 Every finding was accepted and fixed; none was disputed.
 
 ## Playbook updates

@@ -64,11 +64,11 @@ clear-provisional FLAGS:
     --state <path>      the durable window (REQUIRED)
     --demoted <id>      the interrupted swap's demoted strategy (REQUIRED)
     --promoted <id>     the interrupted swap's promoted strategy (REQUIRED)
-    --at <epoch-secs>   the marker's instant, as `status` reported it (REQUIRED).
-                        A retry of the SAME swap replaces the marker, so naming the
-                        pair alone would clear whichever attempt happens to be there
-                        now rather than the one you inspected. This makes the clear a
-                        compare-and-swap against your read
+    --at <epoch-secs>   the marker's instant, as `status` reported it (REQUIRED)
+    --attempt-id <id>   the marker's attempt id, as `status` reported it (REQUIRED).
+                        The pair and the instant are not an identity — a retry in the
+                        same second leaves all three unchanged — so this is the value
+                        that makes the clear a true compare-and-swap against your read
     --confirm           REQUIRED. Clearing a marker retires suppression that may be
                         protecting a strategy that went live before the interruption,
                         so it is an explicit operator act (SyRS SYS-2d / NFR-S2)
@@ -290,6 +290,7 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
     let mut demoted: Option<String> = None;
     let mut promoted: Option<String> = None;
     let mut at_seconds: Option<u64> = None;
+    let mut attempt_id: Option<String> = None;
     let mut confirm = false;
 
     let mut iter = rest.iter();
@@ -319,6 +320,12 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
                 }
                 at_seconds = Some(parse_u64(&take_value(&mut iter, flag)?, flag)?);
             }
+            "--attempt-id" => {
+                if attempt_id.is_some() {
+                    return Err(dup(flag));
+                }
+                attempt_id = Some(take_value(&mut iter, flag)?);
+            }
             "--confirm" => {
                 if confirm {
                     return Err(dup(flag));
@@ -331,6 +338,15 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
     let state_path = state_path.ok_or_else(|| format!("--state <path> is required\n\n{USAGE}"))?;
     let demoted = demoted.ok_or_else(|| format!("--demoted <id> is required\n\n{USAGE}"))?;
     let promoted = promoted.ok_or_else(|| format!("--promoted <id> is required\n\n{USAGE}"))?;
+    let attempt_id = attempt_id.ok_or_else(|| {
+        format!(
+            "--attempt-id <id> is required: name the attempt exactly as `status` reported \
+             it. The pair and the instant are not an identity — a retry of the same swap \
+             in the same second leaves all three unchanged while the ATTEMPT changes — so \
+             without it this command would clear whichever attempt is there now rather \
+             than the one you inspected (adversarial review r27)\n\n{USAGE}"
+        )
+    })?;
     let at_seconds = at_seconds.ok_or_else(|| {
         format!(
             "--at <epoch-secs> is required: name the marker's instant exactly as `status` \
@@ -370,8 +386,14 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
     // this command, a retry of the SAME swap can replace the marker, and a pair-only
     // match would retire the newer attempt's suppression on the strength of a request
     // about the older one.
+    // The ATTEMPT ID is the identity; the pair and the instant are consistency checks
+    // on top of it (adversarial review r27). Matching without it and then clearing with
+    // the CURRENT marker's id — which is what this did — is not a compare-and-swap at
+    // all: it re-reads and clears whatever is there, which is the operation r25 set out
+    // to prevent.
     let matched = found.as_ref().is_some_and(|stored| {
-        stored.completion.demoted_strategy_id.as_str() == demoted_id.as_str()
+        stored.attempt_id == attempt_id
+            && stored.completion.demoted_strategy_id.as_str() == demoted_id.as_str()
             && stored.completion.promoted_strategy_id.as_str() == promoted_id.as_str()
             && stored.completion.completed_at_seconds == at_seconds
     });
@@ -404,12 +426,15 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
                     && stored.completion.promoted_strategy_id.as_str() == promoted_id.as_str() =>
             {
                 format!(
-                    "the marker for this swap is at {}s, not the {}s you named — it MOVED \
-                     between your read and this command, which means the swap was retried. \
-                     Re-read it with `status` and reconcile the attempt that is actually \
-                     recorded; the one you inspected is gone and the one here may be \
-                     protecting a strategy that went live",
-                    stored.completion.completed_at_seconds, at_seconds,
+                    "the marker for this swap is attempt {:?} at {}s, not the {:?} at {}s \
+                     you named — it MOVED between your read and this command, which means \
+                     the swap was retried. Re-read it with `status` and reconcile the \
+                     attempt that is actually recorded; the one you inspected is gone and \
+                     the one here may be protecting a strategy that went live",
+                    stored.attempt_id,
+                    stored.completion.completed_at_seconds,
+                    attempt_id,
+                    at_seconds,
                 )
             }
             Some(stored) => format!(
