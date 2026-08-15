@@ -236,6 +236,17 @@ including when only the *filename* matches (a notes-only chore for a safety-name
     and never let it fall back to the start instant: that is the bug wearing a default.
     `(RESV-006 r5)`
 
+50. **A caller-supplied proof is a forgeable proof — and a static check over YOUR call
+    sites is not a property of the API.** SRS-RESV-006 passed the gate a `&CooldownState`
+    and documented the fabrication risk as "closed by a static check, not by types". The
+    check really did pin both CLIs to the resolver, and it was still wrong: `CooldownState`
+    is a public enum, so any external caller could hand `NeverSwapped` to the execution gate
+    and swap straight through an active window. Give the gate the PORT and let it read the
+    fact itself. That also closes a staleness gap the value form hides — the state is then
+    read at the instant the decision is made, not whenever the caller happened to look.
+    Keep the caller supplying only what the store cannot know (here: whether a human was
+    shown the warning and said yes). `(RESV-006 r10)`
+
 ## Deterministic-critic false positives (reword, don't disable)
 
 - `money:float-arithmetic` fires on the substring `price/quantity` in a comment (the `/`

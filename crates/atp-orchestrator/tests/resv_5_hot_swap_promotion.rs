@@ -22,9 +22,9 @@ use atp_execution::designation::{LiveDesignation, LiveDesignationConfirmation};
 use atp_orchestrator::cooldown::{CooldownState, ManualCooldownAcknowledgement, SwapCompletion};
 use atp_orchestrator::demotion_pending_store::{DemotionPendingRecord, DemotionPendingState};
 use atp_orchestrator::hot_swap_promotion::{
-    CooldownControl, DemotionProof, HotSwapPromotionError, HotSwapPromotionEvent,
-    HotSwapPromotionEventSink, LivePositionProbe, OpenPosition, PaperHistoryFingerprint,
-    PaperHistorySource, PromotionPorts, SwapCompletionSink,
+    CooldownControl, DemotionProof, HotSwapCooldownPort, HotSwapPromotionError,
+    HotSwapPromotionEvent, HotSwapPromotionEventSink, LivePositionProbe, OpenPosition,
+    PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
 };
 use atp_orchestrator::{
     DemotionPendingLock, DeployedVersionRegistry, DeployedVersionRegistryError,
@@ -317,7 +317,14 @@ struct Completions {
     recorded: RefCell<Vec<SwapCompletion>>,
 }
 
-impl SwapCompletionSink for Completions {
+impl HotSwapCooldownPort for Completions {
+    fn resolve_window(&self, _now_seconds: u64) -> CooldownState {
+        // These are SRS-RESV-005's tests: a proven-clear window keeps what they
+        // measure the PROMOTION gate. The cool-down's own refusals live in
+        // `resv_6_cooldown_execution.rs`.
+        CooldownState::NeverSwapped
+    }
+
     fn probe_writable(&self) -> Result<(), String> {
         Ok(())
     }
@@ -333,11 +340,10 @@ impl SwapCompletionSink for Completions {
 }
 
 /// A window no swap has ever opened, plus a sink — the "nothing is in effect" case.
-fn clear_cooldown(completions: &Completions) -> CooldownControl<'_, Completions> {
+fn clear_cooldown(store: &Completions) -> CooldownControl<'_, Completions> {
     CooldownControl {
-        state: &CooldownState::NeverSwapped,
         acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
-        completions,
+        store,
     }
 }
 

@@ -778,6 +778,48 @@ def test_a_window_exists_only_alongside_a_durably_moved_designation(
     )
 
 
+def test_the_window_an_operator_reads_is_the_one_the_gate_enforced(swap_binaries, tmp_path) -> None:
+    """Adversarial review r10 [critical] — one resolver, so the two cannot disagree.
+
+    The gate used to take a `&CooldownState` from its caller, which made the printed
+    `cooldown-state:` line and the state the gate acted on two INDEPENDENT reads —
+    and made a caller-supplied window forgeable outright, since `CooldownState` is a
+    public enum. The gate now reads the window itself through
+    `HotSwapCooldownPort::resolve_window`, and the CLI resolves its proof lines
+    through the same port.
+
+    Asserted in BOTH directions, because agreement on one outcome is not agreement:
+    an ACTIVE window must both PRINT active and REFUSE, and an EXPIRED one must both
+    print expired and let the swap through.
+    """
+
+    # ACTIVE: the printed state and the enforced decision agree.
+    active_dir = tmp_path / "active"
+    active_dir.mkdir()
+    active_state = active_dir / "cd.json"
+    _open_window(active_state)
+    refused = _swap(swap_binaries, active_dir, cooldown_state=active_state, now=DURING)
+    active_fields = _kv(refused.stdout)
+    assert active_fields["cooldown-state"] == "ACTIVE"
+    assert active_fields["cooldown-in-effect"] == "true"
+    assert active_fields["refusal"] == "HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED", (
+        "the state the operator was shown must be the state that refused them"
+    )
+
+    # EXPIRED: the same agreement, in the direction that lets the swap through — the
+    # non-vacuity half. Without it, a gate that refused everything would pass above.
+    expired_dir = tmp_path / "expired"
+    expired_dir.mkdir()
+    expired_state = expired_dir / "cd.json"
+    _open_window(expired_state)
+    fired = _swap(swap_binaries, expired_dir, cooldown_state=expired_state, now=AFTER)
+    expired_fields = _kv(fired.stdout)
+    assert fired.returncode == 0, fired.stderr
+    assert expired_fields["cooldown-state"] == "EXPIRED"
+    assert expired_fields["cooldown-in-effect"] == "false"
+    assert expired_fields["promotion"] == "PROMOTED"
+
+
 def test_a_reported_promotion_always_carries_a_window_outcome(swap_binaries, tmp_path) -> None:
     """Adversarial review r8 [high] — the observable shadow of a compile-time guarantee.
 

@@ -97,8 +97,12 @@ class AntiBypassDiscoveryTest(unittest.TestCase):
 
     def test_an_ungated_execution_entry_point_is_caught(self) -> None:
         # The round-2 regression itself: the gate deleted from `execute_hot_swap`.
+        # Anchored on the expression as it is TODAY. Round 10 replaced
+        # `cooldown.state` with a window the gate resolves itself, and this anchor
+        # went stale — the mutation stopped applying and `_rewrite` said so, which is
+        # why it asserts the count rather than silently replacing nothing.
         self._rewrite(
-            "if !cooldown.state.proven_clear() && !cooldown.acknowledgement.is_acknowledged() {",
+            "if !window.proven_clear() && !cooldown.acknowledgement.is_acknowledged() {",
             "if false {",
         )
         with self.assertRaises(HotSwapCooldownCheckError) as caught:

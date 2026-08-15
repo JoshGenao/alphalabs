@@ -30,9 +30,9 @@ use atp_orchestrator::cooldown::{
 };
 use atp_orchestrator::demotion_pending_store::{DemotionPendingRecord, DemotionPendingState};
 use atp_orchestrator::hot_swap_promotion::{
-    CooldownControl, CooldownWindowOutcome, DemotionProof, HotSwapPromotionError,
-    HotSwapPromotionEvent, HotSwapPromotionEventSink, LivePositionProbe, OpenPosition,
-    PaperHistoryFingerprint, PaperHistorySource, PromotionPorts, SwapCompletionSink,
+    CooldownControl, CooldownWindowOutcome, DemotionProof, HotSwapCooldownPort,
+    HotSwapPromotionError, HotSwapPromotionEvent, HotSwapPromotionEventSink, LivePositionProbe,
+    OpenPosition, PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
 };
 use atp_orchestrator::{
     DemotionPendingLock, DeployedVersionRegistry, DeployedVersionRegistryError,
@@ -206,6 +206,10 @@ struct Completions {
     /// The instant `completed_at_seconds()` reports. `None` = "same as the caller's
     /// observation instant", which is the DEGENERATE case a real clock never hits.
     completed_at: Option<u64>,
+    /// The window this store REPORTS. Held here, not passed to the gate: since
+    /// adversarial review r10 the gate reads its own window through the port, so a
+    /// test cannot hand it a forged one either — which is the property under test.
+    window: CooldownState,
 }
 
 impl Completions {
@@ -215,6 +219,7 @@ impl Completions {
             fail_with: None,
             probe_fails_with: None,
             completed_at: None,
+            window: CooldownState::NeverSwapped,
         }
     }
     /// Writable at pre-flight, unwritable by the time the swap completes — the race.
@@ -224,6 +229,7 @@ impl Completions {
             fail_with: Some("the cool-down state file is read-only"),
             probe_fails_with: None,
             completed_at: None,
+            window: CooldownState::NeverSwapped,
         }
     }
     /// Unwritable from the start — the case the pre-flight must catch.
@@ -233,6 +239,7 @@ impl Completions {
             fail_with: Some("the cool-down state file is read-only"),
             probe_fails_with: Some("cannot write hot-swap cool-down window: permission denied"),
             completed_at: None,
+            window: CooldownState::NeverSwapped,
         }
     }
 
@@ -243,14 +250,25 @@ impl Completions {
             fail_with: None,
             probe_fails_with: None,
             completed_at: Some(completed_at),
+            window: CooldownState::NeverSwapped,
         }
     }
     fn count(&self) -> usize {
         self.recorded.borrow().len()
     }
+
+    /// The window this store will report to the gate.
+    fn reporting(mut self, window: CooldownState) -> Self {
+        self.window = window;
+        self
+    }
 }
 
-impl SwapCompletionSink for Completions {
+impl HotSwapCooldownPort for Completions {
+    fn resolve_window(&self, _now_seconds: u64) -> CooldownState {
+        self.window.clone()
+    }
+
     fn probe_writable(&self) -> Result<(), String> {
         match self.probe_fails_with {
             Some(reason) => Err(reason.to_string()),
@@ -313,7 +331,6 @@ fn active_window(now: u64) -> CooldownState {
 /// A swap attempt whose demotion-side ports all PANIC — so reaching any of them is
 /// a test failure rather than an assertion about a counter.
 fn refused_swap(
-    cooldown: &CooldownState,
     acknowledgement: ManualCooldownAcknowledgement,
     events: &PromotionEvents,
     completions: &Completions,
@@ -333,9 +350,8 @@ fn refused_swap(
             events,
         },
         CooldownControl {
-            state: cooldown,
             acknowledgement,
-            completions,
+            store: completions,
         },
         &mut designation,
         confirmation(CANDIDATE),
@@ -360,7 +376,6 @@ struct Completed {
 /// — is `resv_6_a_swap_whose_publish_failed_opens_no_window`.
 #[allow(clippy::type_complexity)]
 fn live_swap(
-    cooldown: &CooldownState,
     acknowledgement: ManualCooldownAcknowledgement,
     events: &PromotionEvents,
     completions: &Completions,
@@ -381,9 +396,8 @@ fn live_swap(
             events,
         },
         CooldownControl {
-            state: cooldown,
             acknowledgement,
-            completions,
+            store: completions,
         },
         &mut designation,
         confirmation(CANDIDATE),
@@ -410,9 +424,8 @@ fn live_swap(
 #[test]
 fn resv_6_an_active_window_refuses_the_swap_and_touches_no_demotion_side_port() {
     let events = PromotionEvents::default();
-    let completions = Completions::working();
+    let completions = Completions::working().reporting(active_window(COMPLETED_AT + 3_600));
     let error = refused_swap(
-        &active_window(COMPLETED_AT + 3_600),
         ManualCooldownAcknowledgement::NotAcknowledged,
         &events,
         &completions,
@@ -449,9 +462,9 @@ fn resv_6_an_unknown_window_refuses_the_swap_too() {
     // "We could not tell" is never "no cool-down is in effect" (CLAUDE.md rule 3).
     // This is the arm an omitted --cooldown-state reaches.
     let events = PromotionEvents::default();
-    let completions = Completions::working();
+    let completions = Completions::working()
+        .reporting(CooldownState::unknown("no cool-down state path configured"));
     let error = refused_swap(
-        &CooldownState::unknown("no cool-down state path configured"),
         ManualCooldownAcknowledgement::NotAcknowledged,
         &events,
         &completions,
@@ -468,9 +481,8 @@ fn resv_6_an_unknown_window_refuses_the_swap_too() {
 #[test]
 fn resv_6_the_warning_names_the_window_the_operator_would_be_overriding() {
     let events = PromotionEvents::default();
-    let completions = Completions::working();
+    let completions = Completions::working().reporting(active_window(COMPLETED_AT + 3_600));
     let error = refused_swap(
-        &active_window(COMPLETED_AT + 3_600),
         ManualCooldownAcknowledgement::NotAcknowledged,
         &events,
         &completions,
@@ -499,10 +511,9 @@ fn resv_6_an_acknowledged_swap_during_a_window_fires() {
     // requires a confirmation warning. Without this case, a gate that refused every
     // swap unconditionally would pass every suppression assertion above.
     let events = PromotionEvents::default();
-    let completions = Completions::working();
     let now = COMPLETED_AT + 3_600;
+    let completions = Completions::working().reporting(active_window(now));
     let (outcome, designated) = live_swap(
-        &active_window(now),
         ManualCooldownAcknowledgement::Acknowledged,
         &events,
         &completions,
@@ -532,7 +543,6 @@ fn resv_6_an_expired_window_needs_no_acknowledgement() {
     assert_eq!(expired.as_str(), "EXPIRED");
 
     let (outcome, designated) = live_swap(
-        &expired,
         ManualCooldownAcknowledgement::NotAcknowledged,
         &events,
         &completions,
@@ -548,7 +558,6 @@ fn resv_6_a_first_ever_swap_is_not_suppressed() {
     let completions = Completions::working();
     let now = COMPLETED_AT;
     let (outcome, _) = live_swap(
-        &CooldownState::NeverSwapped,
         ManualCooldownAcknowledgement::NotAcknowledged,
         &events,
         &completions,
@@ -577,7 +586,6 @@ fn resv_6_a_successful_swap_starts_the_window_at_its_own_completion_timestamp() 
     let events = PromotionEvents::default();
     let completions = Completions::working();
     let (outcome, _) = live_swap(
-        &CooldownState::NeverSwapped,
         ManualCooldownAcknowledgement::NotAcknowledged,
         &events,
         &completions,
@@ -616,7 +624,6 @@ fn resv_6_the_window_starts_when_the_swap_completed_not_when_it_was_requested() 
     let events = PromotionEvents::default();
     let completions = Completions::with_completion_clock(COMPLETED_AT + SWAP_TOOK);
     let (outcome, _) = live_swap(
-        &CooldownState::NeverSwapped,
         ManualCooldownAcknowledgement::NotAcknowledged,
         &events,
         &completions,
@@ -675,9 +682,9 @@ fn resv_6_a_failed_window_write_carries_the_completion_instant_for_the_repair() 
         fail_with: Some("the cool-down state file is read-only"),
         probe_fails_with: None,
         completed_at: Some(COMPLETED_AT + SWAP_TOOK),
+        window: CooldownState::NeverSwapped,
     };
     let (outcome, _) = live_swap(
-        &CooldownState::NeverSwapped,
         ManualCooldownAcknowledgement::NotAcknowledged,
         &events,
         &completions,
@@ -704,7 +711,10 @@ fn resv_6_a_completion_clock_that_cannot_be_read_does_not_fall_back_to_the_start
     // The fix must not reintroduce the bug as a fallback. An unreadable clock is an
     // unstarted window — loud — never a silent reuse of the observation instant.
     struct NoClock;
-    impl SwapCompletionSink for NoClock {
+    impl HotSwapCooldownPort for NoClock {
+        fn resolve_window(&self, _now_seconds: u64) -> CooldownState {
+            CooldownState::NeverSwapped
+        }
         fn probe_writable(&self) -> Result<(), String> {
             Ok(())
         }
@@ -732,9 +742,8 @@ fn resv_6_a_completion_clock_that_cannot_be_read_does_not_fall_back_to_the_start
             events: &events,
         },
         CooldownControl {
-            state: &CooldownState::NeverSwapped,
             acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
-            completions: &NoClock,
+            store: &NoClock,
         },
         &mut designation,
         confirmation(CANDIDATE),
@@ -788,9 +797,8 @@ fn resv_6_a_swap_whose_publish_failed_opens_no_window() {
             events: &events,
         },
         CooldownControl {
-            state: &CooldownState::NeverSwapped,
             acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
-            completions: &completions,
+            store: &completions,
         },
         &mut designation,
         confirmation(CANDIDATE),
@@ -844,9 +852,8 @@ fn resv_6_a_refused_swap_opens_no_window() {
             events: &events,
         },
         CooldownControl {
-            state: &CooldownState::NeverSwapped,
             acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
-            completions: &completions,
+            store: &completions,
         },
         &mut designation,
         confirmation(CANDIDATE),
@@ -875,8 +882,9 @@ fn resv_6_a_swap_is_refused_when_its_window_could_not_be_recorded() {
     // available proof that the refusal happened first.
     let events = PromotionEvents::default();
     let completions = Completions::unwritable();
+    // The window itself is CLEAR (`Completions::unwritable` reports NeverSwapped) —
+    // only the write fails, so nothing but the pre-flight can refuse this.
     let error = refused_swap(
-        &CooldownState::NeverSwapped, // the window itself is CLEAR — only the write fails
         ManualCooldownAcknowledgement::NotAcknowledged,
         &events,
         &completions,
@@ -903,7 +911,6 @@ fn resv_6_an_acknowledged_swap_is_still_refused_if_the_window_is_unrecordable() 
     let events = PromotionEvents::default();
     let completions = Completions::unwritable();
     let error = refused_swap(
-        &active_window(COMPLETED_AT + 3_600),
         ManualCooldownAcknowledgement::Acknowledged,
         &events,
         &completions,
@@ -923,7 +930,6 @@ fn resv_6_the_unwaivable_refusal_is_reported_before_the_waivable_one() {
     let events = PromotionEvents::default();
     let completions = Completions::unwritable();
     let error = refused_swap(
-        &active_window(COMPLETED_AT + 3_600),
         ManualCooldownAcknowledgement::NotAcknowledged,
         &events,
         &completions,
@@ -948,7 +954,6 @@ fn resv_6_a_window_that_fails_to_start_is_reported_not_swallowed() {
     let completions = Completions::failing();
     let now = COMPLETED_AT;
     let (outcome, designated) = live_swap(
-        &CooldownState::NeverSwapped,
         ManualCooldownAcknowledgement::NotAcknowledged,
         &events,
         &completions,
@@ -1003,10 +1008,10 @@ fn resv_6_execution_and_the_trigger_arms_agree_on_every_window() {
 
     for window in windows {
         let events = PromotionEvents::default();
-        let completions = Completions::working();
+        // The STORE reports the window; the gate reads it from there (r10).
+        let completions = Completions::working().reporting(window.clone());
         let refuses_unacknowledged = if window.proven_clear() {
             let (outcome, _) = live_swap(
-                &window,
                 ManualCooldownAcknowledgement::NotAcknowledged,
                 &events,
                 &completions,
@@ -1015,7 +1020,6 @@ fn resv_6_execution_and_the_trigger_arms_agree_on_every_window() {
             outcome.is_err()
         } else {
             refused_swap(
-                &window,
                 ManualCooldownAcknowledgement::NotAcknowledged,
                 &events,
                 &completions,

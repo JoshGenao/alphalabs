@@ -299,7 +299,23 @@ pub struct HotSwapPromotionEvent {
 ///
 /// `Err` carries an operator-facing reason. It does **not** roll the promotion
 /// back: see [`CooldownWindowOutcome::NotStarted`].
-pub trait SwapCompletionSink {
+pub trait HotSwapCooldownPort {
+    /// READ the durable SyRS SYS-49e window, at execution time.
+    ///
+    /// The gate resolves the window ITSELF rather than accepting one from its
+    /// caller. `CooldownState` is a public enum, so a caller-supplied proof is a
+    /// forgeable proof: any external Rust caller could hand in
+    /// `CooldownState::NeverSwapped` and execute a swap straight through an active
+    /// window. A static check pinned the two CLIs to `cooldown_store::resolve`, but
+    /// a check on this repo's call sites is not a property of the API (adversarial
+    /// review r10).
+    ///
+    /// Resolving here also kills a staleness window the value-parameter had: the
+    /// state is now read at the instant the swap is gated, not whenever the caller
+    /// happened to look. The implementation is `cooldown_store::resolve`, whose
+    /// `Err -> Unknown` mapping is what makes an unreadable store refuse.
+    fn resolve_window(&self, now_seconds: u64) -> CooldownState;
+
     /// Prove a completion COULD be recorded, before anything irreversible runs.
     ///
     /// Checked at the top of [`StrategyOrchestrator::execute_hot_swap`], because a
@@ -331,6 +347,47 @@ pub trait SwapCompletionSink {
 
 /// The SYS-49e inputs [`StrategyOrchestrator::execute_hot_swap`] requires.
 ///
+/// There is deliberately **no `state` field**. It used to carry a
+/// `&CooldownState`, and `CooldownState` is a public enum — so any external caller
+/// could hand the gate `CooldownState::NeverSwapped` and execute straight through an
+/// active window. A static check pinned the two CLIs to `cooldown_store::resolve`,
+/// but a check over this repo's call sites is not a property of the API
+/// (adversarial review r10). The gate now reads the window itself, through
+/// [`HotSwapCooldownPort::resolve_window`].
+///
+/// Compiler-enforced, and this doctest is the proof — a forged window has nowhere
+/// to go:
+///
+/// ```compile_fail
+/// use atp_orchestrator::cooldown::{CooldownState, ManualCooldownAcknowledgement};
+/// use atp_orchestrator::hot_swap_promotion::{CooldownControl, HotSwapCooldownPort};
+/// // The trait bound is spelled out on purpose: without it this would fail to
+/// // compile for a reason that has nothing to do with the forged window, and a
+/// // compile_fail test that fails for the wrong reason cannot fail for the right
+/// // one either (`test-integrity.md`: a test that cannot fail is not evidence).
+/// fn forge<W: HotSwapCooldownPort>(store: &W) -> CooldownControl<'_, W> {
+///     CooldownControl {
+///         state: &CooldownState::NeverSwapped,
+///         acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
+///         store,
+///     }
+/// }
+/// ```
+///
+/// The same function WITHOUT the forged field compiles, which is what proves the
+/// case above fails on the field and not on its surroundings:
+///
+/// ```
+/// use atp_orchestrator::cooldown::ManualCooldownAcknowledgement;
+/// use atp_orchestrator::hot_swap_promotion::{CooldownControl, HotSwapCooldownPort};
+/// fn honest<W: HotSwapCooldownPort>(store: &W) -> CooldownControl<'_, W> {
+///     CooldownControl {
+///         acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
+///         store,
+///     }
+/// }
+/// ```
+///
 /// One bundle, and **not** optional, because that is the whole anti-bypass
 /// property: a caller cannot execute a swap without stating what the cool-down
 /// window says. A composer with no window configured resolves
@@ -338,17 +395,19 @@ pub trait SwapCompletionSink {
 /// this gate refuses — "we could not tell" is never "no cool-down is in effect".
 pub struct CooldownControl<'a, W>
 where
-    W: SwapCompletionSink,
+    W: HotSwapCooldownPort,
 {
-    /// The window as [`crate::cooldown_store::resolve`] classified it. A resolved
-    /// VALUE, not a port: the store read and the `Err -> Unknown` mapping happen
-    /// in exactly one place, at the composition root.
-    pub state: &'a CooldownState,
     /// Whether the operator has acknowledged the confirmation warning. An enum, so
     /// a bare `true` at the call site is not one character from the opposite.
+    ///
+    /// This is the ONE thing the caller still supplies, and it is the one thing only
+    /// the caller can know: whether a human was shown the warning and said yes. The
+    /// window itself is read from the store below, never handed in.
     pub acknowledgement: ManualCooldownAcknowledgement,
-    /// Where a successful swap records the completion that STARTS the next window.
-    pub completions: &'a W,
+    /// The durable window: read for the gate, probed before the swap, written after
+    /// it. One port for the whole SYS-49e concern, so there is no arrangement of
+    /// arguments in which the gate consults one window and records into another.
+    pub store: &'a W,
 }
 
 /// Whether the completed swap actually started its next cool-down window.
@@ -424,13 +483,13 @@ impl PendingCooldownWindow {
     }
 
     /// Open the window this swap owes. The ONLY caller of
-    /// [`SwapCompletionSink::record_swap_completion`], and reachable only through
+    /// [`HotSwapCooldownPort::record_swap_completion`], and reachable only through
     /// [`HotSwapPromoted::into_completed`].
     ///
     /// Takes `self` by value: one swap, one window.
     fn redeem<W>(self, completions: &W) -> CooldownWindowOutcome
     where
-        W: SwapCompletionSink,
+        W: HotSwapCooldownPort,
     {
         // The COMPLETION instant, read HERE — after the promotion, after the durable
         // publish. Everything before this may have taken the whole SYS-49b
@@ -547,7 +606,7 @@ impl HotSwapPromoted {
     /// window.
     pub fn into_completed<W>(self, completions: &W) -> CompletedHotSwap
     where
-        W: SwapCompletionSink,
+        W: HotSwapCooldownPort,
     {
         let cooldown_window = self.pending_cooldown.redeem(completions);
         CompletedHotSwap {
@@ -968,7 +1027,7 @@ impl StrategyOrchestrator {
         H: PaperHistorySource,
         R: DeployedVersionRegistry,
         S: HotSwapPromotionEventSink,
-        W: SwapCompletionSink,
+        W: HotSwapCooldownPort,
     {
         let demoting = request.demoting_strategy_id.clone();
         let candidate = request.candidate_strategy_id.clone();
@@ -996,7 +1055,7 @@ impl StrategyOrchestrator {
         // and not writable a few seconds later. `CooldownWindowOutcome::NotStarted`
         // still covers it, still exits non-zero, and it is stated in
         // `hot_swap_cooldown_contract.deferred` rather than implied away.
-        if let Err(reason) = cooldown.completions.probe_writable() {
+        if let Err(reason) = cooldown.store.probe_writable() {
             let error = HotSwapPromotionError::CooldownWindowUnrecordable { reason };
             let _ = ports.events.record(HotSwapPromotionEvent {
                 demoting_strategy_id: demoting,
@@ -1033,10 +1092,13 @@ impl StrategyOrchestrator {
         // The predicate is `proven_clear()`, identical to the two trigger-path arms
         // — so `Unknown` (unreadable, absent path, corrupt) refuses here exactly as
         // it suppresses there, and one mutation reddens all three test families.
-        if !cooldown.state.proven_clear() && !cooldown.acknowledgement.is_acknowledged() {
+        // READ the window here, from the store, at the instant the swap is gated —
+        // never from a caller-supplied value (adversarial review r10).
+        let window = cooldown.store.resolve_window(observed_at_seconds);
+        if !window.proven_clear() && !cooldown.acknowledgement.is_acknowledged() {
             let error = HotSwapPromotionError::CooldownConfirmationRequired {
-                state: cooldown.state.clone(),
-                warning: cooldown.state.warning_text(),
+                warning: window.warning_text(),
+                state: window,
             };
             let _ = ports.events.record(HotSwapPromotionEvent {
                 demoting_strategy_id: demoting,

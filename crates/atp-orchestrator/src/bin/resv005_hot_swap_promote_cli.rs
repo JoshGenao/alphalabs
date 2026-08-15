@@ -40,9 +40,9 @@ use atp_execution::designation::{LiveDesignation, LiveDesignationConfirmation};
 use atp_orchestrator::cooldown::{ManualCooldownAcknowledgement, SwapCompletion};
 use atp_orchestrator::cooldown_store::{self, CompletionOutcome};
 use atp_orchestrator::hot_swap_promotion::{
-    CooldownControl, CooldownWindowOutcome, DemotionProof, HotSwapPromotionEvent,
-    HotSwapPromotionEventSink, LivePositionProbe, OpenPosition, PaperHistoryFingerprint,
-    PaperHistorySource, PromotionPorts, SwapCompletionSink,
+    CooldownControl, CooldownWindowOutcome, DemotionProof, HotSwapCooldownPort,
+    HotSwapPromotionEvent, HotSwapPromotionEventSink, LivePositionProbe, OpenPosition,
+    PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
 };
 use atp_orchestrator::{
     demotion_pending_store::FileDemotionPendingLock, trigger_config_store, DeployedVersionRegistry,
@@ -321,7 +321,7 @@ struct PromotedFacts {
 ///
 /// All the filesystem work stays inside `cooldown_store`, which is the module the
 /// SRS-DATA-015 registry names as this entity's writer; this is only the seam.
-struct FileSwapCompletions {
+struct FileCooldownStore {
     path: PathBuf,
     /// `--now`, when the operator pinned the clock. `None` means read the real one.
     ///
@@ -332,7 +332,11 @@ struct FileSwapCompletions {
     pinned_now: Option<u64>,
 }
 
-impl SwapCompletionSink for FileSwapCompletions {
+impl HotSwapCooldownPort for FileCooldownStore {
+    fn resolve_window(&self, now_seconds: u64) -> atp_orchestrator::cooldown::CooldownState {
+        cooldown_store::resolve(Some(&self.path), now_seconds)
+    }
+
     fn probe_writable(&self) -> Result<(), String> {
         cooldown_store::probe_writable(&self.path).map_err(|error| error.to_string())
     }
@@ -492,11 +496,16 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
         Some(now) => now,
         None => wall_clock_seconds()?,
     };
-    let cooldown_state = cooldown_store::resolve(Some(&cooldown_state_path), observed_at_seconds);
-    let completions = FileSwapCompletions {
+    let store = FileCooldownStore {
         path: cooldown_state_path,
         pinned_now: args.now,
     };
+    // For the PROOF LINES only. The gate reads its own window through the port at
+    // execution time and does not take this value — a caller-supplied proof is a
+    // forgeable proof (adversarial review r10). Resolved through the same
+    // `resolve_window` the gate uses, so the line an operator reads and the state
+    // the gate acted on cannot describe different windows.
+    let cooldown_state = store.resolve_window(observed_at_seconds);
     let acknowledgement = if args.confirm_cooldown {
         ManualCooldownAcknowledgement::Acknowledged
     } else {
@@ -528,9 +537,8 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
             events: &events,
         },
         CooldownControl {
-            state: &cooldown_state,
             acknowledgement,
-            completions: &completions,
+            store: &store,
         },
         &mut designation,
         confirmation,
@@ -587,7 +595,7 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
             // `into_completed` is the ONLY way to read what the swap did, and it
             // redeems the window on the way — so this call site cannot report a
             // promotion without opening one.
-            let completed = promoted.into_completed(&completions);
+            let completed = promoted.into_completed(&store);
             let window = completed.cooldown_window.clone();
             outcome_facts = Some(PromotedFacts {
                 paper_history: completed.paper_history,

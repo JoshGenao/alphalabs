@@ -274,6 +274,21 @@ def check_clear_predicate(config: dict, cooldown_src: str) -> str:
     )
 
 
+def _struct_body_named(source: str, name: str) -> str:
+    """Body of `pub struct <name>`, tolerating generics and a `where` clause."""
+    match = re.search(rf"\bpub\s+struct\s+{re.escape(name)}\b[^{{]*{{", source)
+    if not match:
+        fail(f"the promotion module has no `pub struct {name}`")
+    start, depth, index = match.end(), 1, match.end()
+    while index < len(source) and depth:
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+        index += 1
+    return source[start : index - 1]
+
+
 def check_trigger_arms_are_gated(config: dict, orchestrator_src: str) -> str:
     """The CLOSED half of the anti-bypass rule: the two trigger arms, by name.
 
@@ -317,6 +332,23 @@ def check_the_window_is_committed_after_the_publish(config: dict, root: Path) ->
     module = _strip_comments(_read(root, guard["promotion_module"]))
 
     entry_body = _any_fn_block(module, entry)
+    # The gate must READ its own window, not take one. `CooldownState` is a public
+    # enum, so a caller-supplied proof is a forgeable proof: an external caller could
+    # hand in `NeverSwapped` and execute straight through an active window. Pinning
+    # the CLIs to `resolve(` is not a property of the API (adversarial review r10).
+    resolver = guard["window_resolver"]
+    if f"{resolver}(" not in entry_body:
+        fail(
+            f"`{entry}` does not call `{resolver}(` — it must read the window from the "
+            "store at execution time rather than accept one from its caller, which any "
+            "external caller could forge"
+        )
+    control = _struct_body_named(module, "CooldownControl")
+    if re.search(r"state\s*:", control):
+        fail(
+            "`CooldownControl` carries a caller-supplied `state` — that is the forgeable "
+            "proof r10 removed; the window comes from the port"
+        )
     if "record_swap_completion(" in entry_body:
         fail(
             f"`{entry}` records the swap completion itself; the window must be minted "

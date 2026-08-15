@@ -5187,7 +5187,8 @@
         "into_completed"
       ],
       "window_outcome_enum": "CooldownWindowOutcome",
-      "completion_sink": "SwapCompletionSink",
+      "completion_sink": "HotSwapCooldownPort",
+      "window_resolver": "resolve_window",
       "swap_path_markers": [
         "resolve_demotion(",
         "execute_demotion_sequence(",
