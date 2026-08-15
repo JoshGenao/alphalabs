@@ -207,6 +207,35 @@ including when only the *filename* matches (a notes-only chore for a safety-name
     settled — and keep journalling REFUSALS, or deferring the append quietly becomes
     "record only successes". `(RESV-005 r6)`
 
+## Guarantees have to be placed where they are still available (SRS-RESV-006)
+
+47. **For an IRREVERSIBLE action, "reported loudly" is not "enforced".** RESV-006 shipped a
+    swap that recorded its cool-down window afterwards, and when that write failed it
+    returned success carrying `NotStarted`, a non-zero exit and an explicit page. All true,
+    and all useless: the designation had moved, the book was flat, and the automatic triggers
+    the window existed to suppress were armed against the strategy just promoted. Rolling
+    back would have been worse. The only point at which the requirement was still guaranteeable
+    was BEFORE the swap — so the writability of the durable state is now PROVED first
+    (a real locked read-modify-write through the same publish path, not a permissions guess)
+    and the swap refused while nothing has mutated. Ask of every post-action durable write:
+    *if this fails, what can I still do?* If the answer is "describe it", move the check
+    earlier. Keep the loud reporting for the residual race, and state that residual.
+    `(RESV-006 r4)`
+48. **Order an UNWAIVABLE refusal ahead of a waivable one.** Both were pre-side-effect, so
+    neither was less safe — but an operator inside a cool-down whose store was *also* broken
+    was told to acknowledge, acknowledged, and only then hit the wall no acknowledgement
+    could move. Same reason a corrupt window now reports UNRECORDABLE rather than
+    CONFIRMATION_REQUIRED: confirming cannot repair a file, and the old code sent them in a
+    circle. `(RESV-006 r4)`
+49. **The instant an operation STARTS is not the instant it COMPLETES, and a safety window
+    keys on the second.** One `observed_at_seconds` was read at CLI entry and reused both to
+    classify the existing window and to stamp the new one. A demotion may legitimately run
+    for the whole SYS-49b liquidation timeout, so a seven-day window opened up to 60s early
+    and the automatic triggers resumed that much sooner — the one direction a cool-down must
+    never move. Read the completion instant *after* the thing completes, make it fallible,
+    and never let it fall back to the start instant: that is the bug wearing a default.
+    `(RESV-006 r5)`
+
 ## Deterministic-critic false positives (reword, don't disable)
 
 - `money:float-arithmetic` fires on the substring `price/quantity` in a comment (the `/`

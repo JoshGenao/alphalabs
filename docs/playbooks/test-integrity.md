@@ -132,6 +132,18 @@ Read this whenever you write a test, and before you believe a green one.
     dependency nobody had recorded. Read the actionability predicate, not the obvious cell.
     `(RESV-005 browser leg)`
 
+32. **A browser test that clicks twice on a self-disarming control re-arms instead of
+    confirming — silently, because both clicks succeed.** The UI-5 promote control disarms
+    itself after 5s, and a `cap.shot()` between arm and confirm legitimately outlives that.
+    The confirm click then landed on a resting button, no request was ever made, and the
+    failure surfaced as a 30s `expect_response` timeout that says nothing about the cause.
+    Wait on the real armed STATE rather than assuming a click produced it, and put nothing
+    slow between the arm and the confirm. `(RESV-006, first real browser run)`
+33. **Match a response by URL SUBSTRING plus method, never `endswith` on the path.** The
+    pane posts to `/api/v1/hot-swap?confirm=true` — the confirmation token is a query param —
+    so an `endswith("/api/v1/hot-swap")` matcher never fires and the test times out looking
+    like a broken feature rather than a broken assertion. `(RESV-006, same run)`
+
 ## Layer selection
 
 `tests/unit` L1 · `tests/property` L2 · `tests/` L3 contract · `tests/boundary` L4 ·

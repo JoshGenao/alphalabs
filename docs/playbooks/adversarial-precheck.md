@@ -33,6 +33,17 @@ The session's own words at r29: *"when the same statement is duplicated across c
 blocks, fixing instances one at a time does not converge — write the check."* It then
 immediately caught a third instance the manual sweep had missed. `(LOG-001 r29)`
 
+**But a guard shaped like a CHECKLIST cannot catch the arm nobody added to it.**
+RESV-006 wrote the check — and wrote it as "these two methods consult the predicate". It
+passed happily while a third entry point demoted and promoted with no cool-down at all,
+because the two it named only *minted a proposal* and nothing in the type graph required a
+swap to have come from one. Enumerate the arms **from the source**: find the functions that
+reach the dangerous side effect and require the guard on each, with per-item exemptions that
+carry a stated reason. The rewrite immediately found a fourth arm nobody had listed. Then
+prove the discovery itself: markers that match nothing must FAIL rather than pass vacuously,
+and a known arm vanishing from the scan must fail too — a broken discovery reports a clean
+tree, which is the failure mode that looks most like working. `(RESV-006 r2)`
+
 ## The pre-check list
 
 Walk this against your own diff before Step 6.1. Most of it is one grep each.

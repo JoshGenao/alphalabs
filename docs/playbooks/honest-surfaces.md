@@ -168,3 +168,14 @@ phrase: "make sure to utilize the /frontend-design skill to make a modern/beauti
     sent the operator after an order that is still live and unmentioned. A page is a RECOVERY
     instruction: derive it from the recorded outcome (including the FAILED case, where a live
     order most likely remains), never from the branch's intent. `(SRS-RESV-004 r3)`
+
+40. **A control that DISPLAYS a confirmation warning must TRANSMIT the acknowledgement.**
+    The UI-5 pane raised SYS-49e's "COOL-DOWN ACTIVE — manual swap during cool-down" on arm
+    and then posted a body with no acknowledgement in it, so the moment the route started
+    enforcing the window an operator who was shown the warning and confirmed it got a 428
+    refusing them for not confirming. Bind the acknowledgement to the warning that was
+    ACTUALLY shown, at ARM time, exactly as the target id is bound — a poll landing between
+    arm and confirm must not silently change what the click means — and send it only for the
+    KNOWN-active case: always would make every ordinary action a silent override, and an
+    UNKNOWN state is not something anyone can knowingly override. `(RESV-006, found by the
+    browser leg, invisible to every offline test)`

@@ -277,3 +277,12 @@ one `main`. Most of this playbook is about that sharing.
     ceiling; and a Compose project name built from `tempfile.mkdtemp`, invalid only
     when the random suffix ended in `_`. When CI is red and local is green, ask what
     the runner does NOT have rather than re-running. `(2026-08-14)`
+41. **A structural reviewer refusal reviews NONE of your diff — budget it as the whole
+    review, not one finding.** `meta:critic-self-modification` (rule 13) does not sit
+    alongside code findings; Codex returns that ONE finding and says nothing about anything
+    else. RESV-006 kept a `SAFETY_PATH_RE` prep commit believing it cost a recorded
+    meta-block, and rounds 1 and 3 both came back with zero findings about the feature. The
+    real price is that the product code ships unjudged. Drop the gate change onto its own
+    human-reviewed branch and re-run on the product diff — which is what the reviewer's own
+    recommendation says — and record the guard you wanted in the session note so it is not
+    lost. `(RESV-006 r1/r3)`
