@@ -39,8 +39,8 @@ SRS-RESV-006 traces SyRS SYS-49e (StRS SN-1.25). The contract guarantees:
       that make a suppressed pass distinguishable from a healthy quiet one.
   (g) the durable store declares its magic + version marker and the four
       durability tokens; EVERY declared writer holds the exclusive guard (round
-      13's two-phase protocol added three more read-modify-writes to a check that
-      named only one), and the completion write keeps the newer completion.
+      13's two-phase protocol added more read-modify-writes to a check that named
+      only one), and the completion write keeps the newer completion.
   (g2) **The two-phase window.** ``execute_hot_swap`` opens a provisional window
       before its first demotion-side port and abandons it if the swap does not
       complete, while the CONFIRMATION stays with the caller, after the durable
@@ -53,6 +53,11 @@ SRS-RESV-006 traces SyRS SYS-49e (StRS SN-1.25). The contract guarantees:
       the frozen constant it used to hardcode.
   (i) the persisted entity is registered in ``crates/atp-data``'s schema
       registry with the same id, magic and marker.
+  (j) **The contract-drift guard.** Every ``Type::method`` path this block names —
+      in its values and in its ``deferred`` prose alike — still exists in the
+      orchestrator sources. Round 14 blocked on a ``deferred`` entry that described
+      the fail-open as future work while this branch closed it, and named the
+      mechanism by two identifiers renamed three rounds earlier.
 
 Static-only (no cargo): the behavioural post-conditions are anchored by
 ``crates/atp-orchestrator/tests/resv_6_*.rs`` and ``tests/domain/``. Reached
@@ -466,6 +471,95 @@ def check_the_window_is_committed_after_the_publish(config: dict, root: Path) ->
     )
 
 
+def check_the_contract_names_nothing_that_moved(config: dict, root: Path) -> str:
+    """Every Rust identifier this contract block NAMES must still exist.
+
+    Adversarial review r14 [high]. The block's ``deferred`` list said the fail-open
+    race "needs a two-phase window ... belongs to whoever next revises this entity"
+    while this very branch implemented one, and named the mechanism as
+    ``SwapCompletionSink::probe_writable`` — a type and a function that had both been
+    renamed three rounds earlier. Neither is caught by any behavioural test, because
+    the registry is prose: it fails silently, and it fails in the direction that
+    matters most, since a future reviewer reads it as the statement of what is
+    deliberately still open.
+
+    Prose cannot be fully checked, but its IDENTIFIERS can. Every ``snake_case``
+    function name and every ``Type::method`` path mentioned anywhere in this block —
+    values and deferred entries alike — is required to exist somewhere in the
+    orchestrator sources. A renamed symbol then reddens CI at the rename rather than
+    surviving to be read as fact.
+    """
+    block = contract_block(config)
+    sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((root / "crates/atp-orchestrator/src").rglob("*.rs"))
+    )
+    if not sources:
+        fail("no orchestrator sources found; the contract-drift check would pass vacuously")
+
+    def prose(node: object) -> list[str]:
+        if isinstance(node, str):
+            return [node]
+        if isinstance(node, dict):
+            return [text for value in node.values() for text in prose(value)]
+        if isinstance(node, list):
+            return [text for value in node for text in prose(value)]
+        return []
+
+    # `Type::method` only. A bare snake_case word matches far too much English prose
+    # ("read_states", "fail-open"), and a guard that fires on wording is a guard that
+    # gets silenced (this script's own `_strip_comments` exists for that reason).
+    mentioned = {
+        match.group(0)
+        for text in prose(block)
+        for match in re.finditer(r"\b[A-Z]\w+::[a-z_]\w+\b", text)
+    }
+
+    # BOTH halves, because the halves rot independently. The r14 instance was
+    # `SwapCompletionSink::probe_writable`: the method still existed (privately, in the
+    # store), and only the TYPE had been renamed — so a method-only check would have
+    # passed on the exact drift it exists to catch. `CooldownState::NeverSwapped` and
+    # friends are variants rather than functions, so the right-hand half accepts any
+    # declaration or use site, not just `fn`.
+    def declared(name: str) -> bool:
+        return bool(
+            re.search(rf"\b(?:struct|enum|trait|type|fn|mod)\s+{re.escape(name)}\b", sources)
+        )
+
+    # Foreign types (std, other crates) are enumerated in the contract rather than
+    # inferred from "undeclared", because a RENAMED local type is also undeclared —
+    # that is exactly the case this guard exists for. Skipping anything the crate does
+    # not declare would skip the defect.
+    foreign = set(block["guard"]["foreign_types"])
+    stale_allowlist = sorted(name for name in foreign if declared(name))
+    if stale_allowlist:
+        fail(
+            f"guard.foreign_types lists {stale_allowlist}, which this crate DOES declare — "
+            "an allowlist entry that stopped being foreign silently exempts a local type "
+            "from the drift check"
+        )
+    missing = sorted(
+        path
+        for path in mentioned
+        if path.split("::")[0] not in foreign
+        and (
+            not declared(path.split("::")[0])
+            or not (
+                declared(path.split("::")[1])
+                or re.search(rf"\b{re.escape(path.split('::')[1])}\b\s*[,({{]", sources)
+            )
+        )
+    )
+    if missing:
+        fail(
+            f"the contract block names {missing}, which no longer exist in "
+            "crates/atp-orchestrator/src — a registry that describes symbols that moved "
+            "is read as fact by the next reviewer and cannot be caught by any test of "
+            "behaviour"
+        )
+    return f"all {len(mentioned)} Type::method paths named in the contract still exist"
+
+
 def check_every_swap_path_is_gated(config: dict, root: Path) -> str:
     """The anti-bypass check — DISCOVERED from the code, not listed in the contract.
 
@@ -725,6 +819,7 @@ def assert_hot_swap_cooldown_static(config: dict, root: Path = ROOT) -> list[str
         check_trigger_arms_are_gated(config, orchestrator_src),
         check_every_swap_path_is_gated(config, root),
         check_the_window_is_committed_after_the_publish(config, root),
+        check_the_contract_names_nothing_that_moved(config, root),
         check_evaluation_and_error_carry_the_state(config, orchestrator_src),
         check_store_durability(config, store_src),
         check_resolver_is_the_only_producer(config, root),

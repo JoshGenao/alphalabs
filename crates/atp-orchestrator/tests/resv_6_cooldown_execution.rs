@@ -1135,7 +1135,7 @@ fn resv_6_the_unwaivable_refusal_is_reported_before_the_waivable_one() {
     // store cannot be written. The operator must be told the one no acknowledgement
     // can move — otherwise they confirm, re-send, and only then hit the wall.
     //
-    // Placement, not preference: `probe_writable` runs ahead of the confirmation
+    // Placement, not preference: `probe_recordable` runs ahead of the confirmation
     // gate in `execute_hot_swap`, and this is what pins that order.
     let events = PromotionEvents::default();
     let completions = Completions::unwritable();

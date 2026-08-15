@@ -1045,6 +1045,85 @@ def test_an_interrupted_swap_leaves_a_window_that_still_suppresses(swap_binaries
     assert "COOLDOWN_CONFIRMATION_REQUIRED" in manual.stdout + manual.stderr
 
 
+def test_an_operator_can_clear_a_stranded_provisional_window(tmp_path) -> None:
+    """The repair path the contract's residual entry names, exercised end to end.
+
+    Adversarial review r14 rewrote ``hot_swap_cooldown_contract.deferred`` to say what
+    ACTUALLY remains after r13 closed the fail-open: an unconfirmed window that
+    over-suppresses until an operator resolves it with the cool-down CLI. That entry
+    is a claim about a repair path, and a claim in the registry with nothing
+    exercising it is how the previous entry came to describe a mechanism under a name
+    that no longer existed.
+
+    So: strand a window, and check an operator really can get out of it.
+    """
+    state = tmp_path / "cd.json"
+    log = tmp_path / "triggers.jsonl"
+    _open_window(state)
+
+    record = json.loads(state.read_text())
+    record["last_completion_provisional"] = True
+    state.write_text(json.dumps(record))
+    assert (
+        _kv(_cooldown("status", "--state", str(state), "--now", str(DURING)).stdout)[
+            "cooldown-completion-provisional"
+        ]
+        == "true"
+    )
+
+    # The repair: the operator records the completion they confirmed actually happened.
+    # It goes through the SAME monotone writer the swap uses, so the repair cannot
+    # shorten a window that a later real swap already opened.
+    repaired = _cooldown(
+        "record-completion",
+        "--state",
+        str(state),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--completed-at",
+        str(COMPLETED_AT + 60),
+    )
+    assert repaired.returncode == 0, repaired.stderr
+
+    status = _kv(_cooldown("status", "--state", str(state), "--now", str(DURING)).stdout)
+    assert status["cooldown-completion-provisional"] == "false", (
+        "the repair must clear the provisional flag, or the operator has no way out"
+    )
+    assert status["cooldown-state"] == "ACTIVE", "and the window itself must survive it"
+    assert status["cooldown-started-at-seconds"] == str(COMPLETED_AT + 60)
+
+    # ...and the window still suppresses afterwards, which is the point of repairing it
+    # rather than deleting the file.
+    evaluated = _evaluate(state, log, DURING)
+    assert evaluated.returncode == 0, evaluated.stderr
+    assert _kv(evaluated.stdout)["cooldown-suppressed"] == "true"
+
+
+def test_the_repair_cannot_shorten_a_newer_window(tmp_path) -> None:
+    # The other direction, and the reason the repair goes through the monotone writer:
+    # an operator reconciling a stranded marker must not be able to pull a LIVE
+    # window's start backwards and retire a safety interval early.
+    state = tmp_path / "cd.json"
+    _open_window(state, completed_at=COMPLETED_AT + 10_000)
+
+    stale = _cooldown(
+        "record-completion",
+        "--state",
+        str(state),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--completed-at",
+        str(COMPLETED_AT),
+    )
+    assert stale.returncode != 0, "an older completion must not silently win"
+    status = _kv(_cooldown("status", "--state", str(state), "--now", str(DURING)).stdout)
+    assert status["cooldown-started-at-seconds"] == str(COMPLETED_AT + 10_000)
+
+
 def test_a_confirmed_window_is_reported_as_confirmed(swap_binaries, tmp_path) -> None:
     """The other direction, without which the case above proves nothing.
 

@@ -43,6 +43,7 @@ from hot_swap_cooldown_check import (  # noqa: E402
     HotSwapCooldownCheckError,
     check_every_swap_path_is_gated,
     check_store_durability,
+    check_the_contract_names_nothing_that_moved,
     check_the_window_is_committed_after_the_publish,
     check_trigger_arms_are_gated,
     load_config,
@@ -454,3 +455,56 @@ def _any_fn(source: str, name: str) -> str:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContractDriftTest(unittest.TestCase):
+    """The registry may not describe symbols that moved (adversarial review r14).
+
+    The ``deferred`` list is prose, so nothing behavioural covers it — and it is the
+    part a future reviewer reads as the statement of what is deliberately still open.
+    Round 14 found it saying the SYS-49e fail-open "needs a two-phase window ...
+    belongs to whoever next revises this entity" while this branch shipped one, and
+    naming the mechanism as ``SwapCompletionSink::probe_writable``: a type and a
+    function both renamed three rounds earlier.
+    """
+
+    def setUp(self) -> None:
+        self.config = load_config()
+
+    def test_the_shipped_contract_names_only_symbols_that_exist(self) -> None:
+        evidence = check_the_contract_names_nothing_that_moved(self.config, ROOT)
+        self.assertIn("still exist", evidence)
+
+    def test_a_renamed_symbol_left_in_the_prose_is_caught(self) -> None:
+        # The r14 instance itself, replayed: the old name put back into the deferred
+        # entry that carried it.
+        config = load_config()
+        block = config["hot_swap_cooldown_contract"]
+        block["deferred"] = [
+            *block["deferred"],
+            "Closing it needs SwapCompletionSink::probe_writable, which this build "
+            "does not have any more.",
+        ]
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_the_contract_names_nothing_that_moved(config, ROOT)
+        self.assertIn("SwapCompletionSink::probe_writable", str(caught.exception))
+
+    def test_a_renamed_symbol_in_a_VALUE_is_caught_too(self) -> None:
+        # Not just the prose: the same drift in a declared value must fail, or the
+        # guard would only cover the half that happened to break this time.
+        config = load_config()
+        config["hot_swap_cooldown_contract"]["guard"]["completion_probe_note"] = (
+            "the probe is HotSwapCooldownPort::probe_that_never_existed"
+        )
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_the_contract_names_nothing_that_moved(config, ROOT)
+        self.assertIn("probe_that_never_existed", str(caught.exception))
+
+    def test_the_scan_fails_rather_than_passing_on_an_empty_tree(self) -> None:
+        # A guard that quietly stops looking is worse than no guard (CLAUDE.md r9).
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as empty:
+            with self.assertRaises(HotSwapCooldownCheckError) as caught:
+                check_the_contract_names_nothing_that_moved(self.config, Path(empty))
+        self.assertIn("vacuously", str(caught.exception))

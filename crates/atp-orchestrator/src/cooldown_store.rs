@@ -27,15 +27,26 @@
 //! A clock that stepped backwards between two swaps would otherwise shorten a live safety
 //! window, which is the one direction a cool-down must never move.
 //!
-//! ## Residual: a failed write leaves no window (owner SRS-RESV-005)
+//! ## The window is written TWICE, and that is what closes the fail-open
 //!
-//! If [`record_completion`] returns `Err`, the swap really did complete and no window
-//! started — automatic triggers are NOT suppressed. That is a fail-open, and it is not
-//! closeable from inside a CLI that then exits: an in-memory poison cannot outlive the
-//! process (safety-paths rule 41's own counter-rule says to state the residual rather than
-//! imply it survives). The write surface therefore exits non-zero saying in as many words
-//! that the window did not start, and the durable close belongs to the production caller
-//! in SRS-RESV-005, which can refuse to report the swap complete until the window is.
+//! A failed [`record_completion`] used to mean the swap had completed and no window had
+//! started — the automatic triggers armed against a strategy that was just promoted, with
+//! nothing left to reconcile because the designation had already moved. Ordering could not
+//! fix it: the publish and the window are two separate writes, so writing first strands a
+//! window for a swap that never happened (review r6) and writing second strands a swap with
+//! no window (review r13).
+//!
+//! So [`begin_provisional`] opens the window BEFORE the demotion, flagged
+//! [`CooldownRecord::provisional`] and stamped with the attempt instant, and
+//! [`record_completion`] confirms it after the durable publish with the real completion
+//! instant. A changeover that refuses or fails calls [`abandon_provisional`], so a window
+//! still never outlives a swap that did not happen. Every interruption in between now lands
+//! on a window that EXISTS: it may expire up to the SYS-49b liquidation timeout early,
+//! which is recoverable, rather than being absent, which is not.
+//!
+//! The residual is stated rather than implied (safety-paths rule 41): an unconfirmed window
+//! is visible as provisional on every surface, and clearing a stranded one is the operator
+//! CLI's `record-completion` / repair job.
 
 use crate::cooldown::{CooldownPeriodDays, CooldownState, SwapCompletion};
 use crate::trigger_config_store::{ExclusiveGuard, TriggerConfigStoreError};
