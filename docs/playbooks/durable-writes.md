@@ -108,3 +108,43 @@ Reference implementation: `crates/atp-simulation/src/backtest_store.rs::save_to_
     move the operator CLI up to the composition root that can supply the real decoder, and
     carry a `VerificationDepth` so weaker evidence never renders identically to a full
     decode. `(DATA-018)`
+
+## Markers that must survive a crash (RESV-006 r6/r13)
+
+26. **A guarantee that spans two writes needs two writes.** If a safety marker must exist
+    whenever a durable action happened, and the marker and the action are separate writes,
+    then NO single ordering is correct — ordering only chooses which direction fails.
+    Marker-then-action leaves a marker for an action that never happened; action-then-marker
+    leaves an action with no marker, which is the fail-OPEN one. Write it **twice**: a
+    provisional marker before, confirmed after, and abandoned explicitly when the action does
+    not complete. RESV-006 spent r6 fixing one direction and r13 discovering it had opened
+    the other; RESV-004's engage-then-amend lockout is the same shape. `(RESV-006 r13)`
+27. **Once phase one exists, "drop it" stops meaning "nothing happened".** Every path that
+    previously relied on dropping a token to write nothing now silently leaves the
+    provisional marker standing — including the ones the fix never looked at. Re-walk each
+    of them and make the abandon EXPLICIT. Do not make it a `Drop` impl: an implicit abandon
+    also fires on panics and early returns, where the durable state is *unknown* rather than
+    known-unchanged, and clearing a marker you cannot reason about is the fail-open again.
+    `(RESV-006 r13)`
+28. **A provisional marker is a new durable STATE, so give it a surface.** It suppresses
+    exactly like a confirmed one — over-suppressing after a maybe-action is recoverable,
+    under-suppressing after a real one is not — but only an operator can find out what
+    actually happened, and they cannot resolve what they cannot distinguish. Publish the flag
+    on every reader, tri-state: `true`, `false`, and **unknown** for a store that could not
+    be read. Never collapse unknown to `false`. `(RESV-006 r13)`
+29. **Two facts with different LIFETIMES cannot share one durable slot.** A provisional
+    marker is discarded when its action fails; a confirmed record is never discarded. Store
+    them in one field with a flag saying which you mean, and clearing the first clears the
+    second. RESV-006 shipped exactly that: the provisional write reused `last_completion`,
+    so an acknowledged manual swap inside a running cool-down overwrote the window it was
+    running inside, and abandoning that attempt when it failed deleted a live seven-day
+    window — the automatic triggers resuming days early. Separate slots; the abandon touches
+    only the provisional one; the resolver takes whichever runs LATER, so the pair can never
+    resolve to less protection than either alone. `(RESV-006 r15)`
+30. **After a two-phase conversion, re-ask the original safety question on every path.**
+    The conversion changes what "the record" means, so every read and every clear that was
+    correct against one slot must be re-derived. The concurrent-operation path is the one
+    that bites: RESV-006's own requirement guarantees a manual swap stays available DURING
+    a window, which is precisely the case that made two records coexist — and the case
+    nobody had a test for. If your feature permits an operation during the state it
+    protects, write that test first. `(RESV-006 r15)`

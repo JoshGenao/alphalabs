@@ -289,3 +289,16 @@ Read this whenever you write a test, and before you believe a green one.
    Distinguish *cannot see it*, *not finished*, *finished badly*, and *superseded* —
    an alarm that fires on benign states is one people skim past on the day it is
    right. `(2026-08-14)`
+37. **Never `git checkout -- <path>` to undo a by-hand mutation.** It restores from HEAD, not
+    from your working tree, so in a session with uncommitted work it silently discards every
+    unstaged edit to that file — the mutation *and* the feature work underneath it. `cp` the
+    file to the scratch directory before mutating and restore from that copy; the backup is
+    two seconds and the alternative is reconstructing lost work from a build error.
+    Same family as CLAUDE.md rule 10 (`git stash` is repo-global): destructive git commands
+    scoped by PATH are still scoped by COMMIT, and the commit is the part that bites.
+    `(RESV-006 r13, lost the promote CLI's port impl mid-mutation)`
+38. **Reordering mutations must actually reorder.** A test that moves a call to prove an
+    ordering check works can re-insert it on the same side of the boundary and pass while
+    asserting nothing. Assert the mutated text has the property you are testing for
+    (`moved.index(a) > moved.index(b)`) before feeding it to the checker.
+    `(RESV-006 r13, first draft of the phase-one-ordering test)`

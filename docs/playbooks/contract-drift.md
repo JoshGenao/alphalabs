@@ -119,4 +119,26 @@ r11, r15, r19, r22, r29, r33; EXE-003 at r1, r3, r5; RESV-003 at r7, r10, r13.
     `passes:false` contributor. Do not word it "met" or "closed". `(DATA-012)`
 29. **`runtime_services.json` is ~512 KB and does NOT round-trip through `json.dumps`**
     (~6 KB of drift). Splice a new block TEXTUALLY before the root `}`, then validate with
-    `json.loads` and confirm 0 deletions. `(PERF-001)`
+    `json.loads` and confirm 0 deletions. `(PERF-001)` The symptom is unmistakable
+    once you look: short arrays that were inline explode one-element-per-line, and
+    `git diff --numstat` reads ~1200/380 for a change you know added six keys. **Check
+    `--numstat` after every registry edit** — a semantic diff (`json.load` both sides and
+    walk) tells you what actually changed, and the Edit tool applied to the original text
+    is how you land it. Re-formatting the whole file also buries the real change from the
+    reviewer, which is the part that costs a round. `(PERF-001; re-learned RESV-006 r13)`
+30. **A `deferred` entry is a CLAIM, and closing the gap makes it a lie** — in the
+    direction that costs most, because the registry is what the next reviewer reads as the
+    statement of what is deliberately still open. Update it in the same commit that closes
+    the residual, and say what actually remains now rather than deleting the entry: "the
+    race is closed, what is left is bounded and in the safe direction" is the useful
+    sentence. Grep the claim's WORDING across the tree — RESV-006 carried the same stale
+    sentence in the registry, a module docstring, a test comment and the session note.
+    `(RESV-006 r14)`
+31. **Prose in a machine-readable registry is still checkable — check the identifiers.**
+    Every `Type::method` a contract block names, in values and deferred prose alike, must
+    still exist in the source it points at. Two traps: check BOTH halves (RESV-006's stale
+    entry named a renamed TYPE whose method still existed privately, so a method-only scan
+    passed), and enumerate foreign types explicitly instead of skipping anything the crate
+    does not declare — a renamed local type is also undeclared, which is the whole defect.
+    Beware the guard firing on its own explanatory note: write the example without the
+    `Type::method` form. `(RESV-006 r14)`
