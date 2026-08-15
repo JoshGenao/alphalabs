@@ -61,8 +61,6 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Fixed demonstration observation timestamp — wall-clock time is intentionally
-/// not read, so a run is reproducible.
 /// Read the REAL clock, with `--now` as the only override.
 ///
 /// This used to be `const OBSERVED_AT_SECONDS: u64 = 1_715_000_000`, which was
@@ -317,11 +315,29 @@ fn parse_swap_args(rest: &[String]) -> Result<SwapArgs, String> {
 /// SRS-DATA-015 registry names as this entity's writer; this is only the seam.
 struct FileSwapCompletions {
     path: PathBuf,
+    /// `--now`, when the operator pinned the clock. `None` means read the real one.
+    ///
+    /// Held here rather than reused from the observation instant because those are
+    /// two different moments: the swap is classified against the window when it
+    /// STARTS, and the next window opens when it COMPLETES, with the whole SYS-49b
+    /// liquidation timeout legitimately in between (adversarial review r5).
+    pinned_now: Option<u64>,
 }
 
 impl SwapCompletionSink for FileSwapCompletions {
     fn probe_writable(&self) -> Result<(), String> {
         cooldown_store::probe_writable(&self.path).map_err(|error| error.to_string())
+    }
+
+    fn completed_at_seconds(&self) -> Result<u64, String> {
+        match self.pinned_now {
+            // An explicit `--now` pins BOTH instants, so a test or a replay stays
+            // reproducible. Deliberate, and the only way the two can coincide.
+            Some(now) => Ok(now),
+            // Otherwise the REAL clock, read at this moment — after the demotion
+            // liquidated, after the promotion designated, after the drift re-reads.
+            None => wall_clock_seconds(),
+        }
     }
 
     fn record_swap_completion(&self, completion: &SwapCompletion) -> Result<(), String> {
@@ -471,6 +487,7 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
     let cooldown_state = cooldown_store::resolve(Some(&cooldown_state_path), observed_at_seconds);
     let completions = FileSwapCompletions {
         path: cooldown_state_path,
+        pinned_now: args.now,
     };
     let acknowledgement = if args.confirm_cooldown {
         ManualCooldownAcknowledgement::Acknowledged

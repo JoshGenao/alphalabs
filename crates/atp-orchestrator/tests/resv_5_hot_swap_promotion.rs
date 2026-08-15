@@ -322,6 +322,10 @@ impl SwapCompletionSink for Completions {
         Ok(())
     }
 
+    fn completed_at_seconds(&self) -> Result<u64, String> {
+        Ok(OBSERVED_AT)
+    }
+
     fn record_swap_completion(&self, completion: &SwapCompletion) -> Result<(), String> {
         self.recorded.borrow_mut().push(completion.clone());
         Ok(())

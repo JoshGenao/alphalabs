@@ -203,6 +203,9 @@ struct Completions {
     /// before the swap runs) versus one that becomes unwritable mid-swap (the
     /// residual race, which can only be reported).
     probe_fails_with: Option<&'static str>,
+    /// The instant `completed_at_seconds()` reports. `None` = "same as the caller's
+    /// observation instant", which is the DEGENERATE case a real clock never hits.
+    completed_at: Option<u64>,
 }
 
 impl Completions {
@@ -211,6 +214,7 @@ impl Completions {
             recorded: RefCell::new(Vec::new()),
             fail_with: None,
             probe_fails_with: None,
+            completed_at: None,
         }
     }
     /// Writable at pre-flight, unwritable by the time the swap completes — the race.
@@ -219,6 +223,7 @@ impl Completions {
             recorded: RefCell::new(Vec::new()),
             fail_with: Some("the cool-down state file is read-only"),
             probe_fails_with: None,
+            completed_at: None,
         }
     }
     /// Unwritable from the start — the case the pre-flight must catch.
@@ -227,6 +232,17 @@ impl Completions {
             recorded: RefCell::new(Vec::new()),
             fail_with: Some("the cool-down state file is read-only"),
             probe_fails_with: Some("cannot write hot-swap cool-down window: permission denied"),
+            completed_at: None,
+        }
+    }
+
+    /// A clock that has ADVANCED by the time the swap completes.
+    fn with_completion_clock(completed_at: u64) -> Self {
+        Self {
+            recorded: RefCell::new(Vec::new()),
+            fail_with: None,
+            probe_fails_with: None,
+            completed_at: Some(completed_at),
         }
     }
     fn count(&self) -> usize {
@@ -240,6 +256,10 @@ impl SwapCompletionSink for Completions {
             Some(reason) => Err(reason.to_string()),
             None => Ok(()),
         }
+    }
+
+    fn completed_at_seconds(&self) -> Result<u64, String> {
+        Ok(self.completed_at.unwrap_or(COMPLETED_AT))
     }
 
     fn record_swap_completion(&self, completion: &SwapCompletion) -> Result<(), String> {
@@ -528,35 +548,145 @@ fn resv_6_a_first_ever_swap_is_not_suppressed() {
 #[test]
 fn resv_6_a_successful_swap_starts_the_window_at_its_own_completion_timestamp() {
     // "The cool-down start time shall be the timestamp of the most recent successful
-    // swap completion" — asserted on the value actually handed to the store, not on
+    // swap COMPLETION" — asserted on the value actually handed to the store, not on
     // a re-read that could agree with a wrong write.
+    //
+    // The completion instant is the SINK's, read after the promotion. Here it equals
+    // the observation instant, which is the degenerate case; the case that matters
+    // is the next test.
     let events = PromotionEvents::default();
     let completions = Completions::working();
-    let now = COMPLETED_AT + 12_345;
     let (outcome, _) = live_swap(
         &CooldownState::NeverSwapped,
         ManualCooldownAcknowledgement::NotAcknowledged,
         &events,
         &completions,
-        now,
+        COMPLETED_AT,
     );
     let promoted = outcome.expect("this swap must succeed");
 
     assert_eq!(
         promoted.cooldown_window,
         CooldownWindowOutcome::Started {
-            started_at_seconds: now
+            started_at_seconds: COMPLETED_AT
         }
     );
     let recorded = completions.recorded.borrow();
     assert_eq!(recorded.len(), 1, "exactly one window per swap");
-    assert_eq!(recorded[0].completed_at_seconds, now);
+    assert_eq!(recorded[0].completed_at_seconds, COMPLETED_AT);
     assert_eq!(recorded[0].demoted_strategy_id.as_str(), DEMOTING);
     assert_eq!(recorded[0].promoted_strategy_id.as_str(), CANDIDATE);
 
     let audit = events.recorded.borrow();
     assert!(audit[0].promoted);
     assert!(audit[0].cooldown_window_started);
+}
+
+#[test]
+fn resv_6_the_window_starts_when_the_swap_completed_not_when_it_was_requested() {
+    // Adversarial review r5 [high]. A swap is not instantaneous: `resolve_demotion`
+    // alone may legitimately run for the whole SYS-49b liquidation timeout (60s by
+    // default) before the promotion even begins. Stamping the window with the instant
+    // the ATTEMPT STARTED shortens a seven-day safety window by the duration of the
+    // swap, letting the automatic triggers resume that much early — the one direction
+    // a cool-down must never move.
+    //
+    // The clock advances by a full SYS-49b timeout between the observation instant and
+    // the completion, and the recorded window must follow the LATTER.
+    const SWAP_TOOK: u64 = 60;
+    let events = PromotionEvents::default();
+    let completions = Completions::with_completion_clock(COMPLETED_AT + SWAP_TOOK);
+    let (outcome, _) = live_swap(
+        &CooldownState::NeverSwapped,
+        ManualCooldownAcknowledgement::NotAcknowledged,
+        &events,
+        &completions,
+        COMPLETED_AT, // the instant the attempt was OBSERVED
+    );
+    let promoted = outcome.expect("this swap must succeed");
+
+    let recorded = completions.recorded.borrow();
+    assert_eq!(
+        recorded[0].completed_at_seconds,
+        COMPLETED_AT + SWAP_TOOK,
+        "the window must start when the swap COMPLETED, not when it was requested"
+    );
+    assert_eq!(
+        promoted.cooldown_window,
+        CooldownWindowOutcome::Started {
+            started_at_seconds: COMPLETED_AT + SWAP_TOOK
+        },
+        "the reported start must agree with the recorded one"
+    );
+
+    // And the consequence the requirement is actually about: the window still has its
+    // FULL seven days left at the moment the swap completed.
+    let window = CooldownState::classify(
+        Some(&recorded[0]),
+        CooldownPeriodDays::default(),
+        COMPLETED_AT + SWAP_TOOK,
+    );
+    match window {
+        CooldownState::Active {
+            remaining_seconds, ..
+        } => assert_eq!(
+            remaining_seconds, SEVEN_DAYS,
+            "a swap that took {SWAP_TOOK}s must not have spent {SWAP_TOOK}s of its own \
+             cool-down before it started"
+        ),
+        other => panic!("expected an ACTIVE window, got {other:?}"),
+    }
+}
+
+#[test]
+fn resv_6_a_completion_clock_that_cannot_be_read_does_not_fall_back_to_the_start() {
+    // The fix must not reintroduce the bug as a fallback. An unreadable clock is an
+    // unstarted window — loud — never a silent reuse of the observation instant.
+    struct NoClock;
+    impl SwapCompletionSink for NoClock {
+        fn probe_writable(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn completed_at_seconds(&self) -> Result<u64, String> {
+            Err("system clock reports a time before the Unix epoch".to_string())
+        }
+        fn record_swap_completion(&self, _completion: &SwapCompletion) -> Result<(), String> {
+            panic!("nothing may be recorded against a completion instant nobody could read");
+        }
+    }
+
+    let events = PromotionEvents::default();
+    let mut designation = live_designation();
+    let outcome = StrategyOrchestrator.execute_hot_swap(
+        request(),
+        &FlatProbe,
+        &Canceller,
+        &Alerts,
+        &DemotionEvents,
+        &ClearLock,
+        PromotionPorts {
+            positions: &FlatPositions,
+            paper_history: &StablePaper,
+            versions: &StableVersions,
+            events: &events,
+        },
+        CooldownControl {
+            state: &CooldownState::NeverSwapped,
+            acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
+            completions: &NoClock,
+        },
+        &mut designation,
+        confirmation(CANDIDATE),
+        COMPLETED_AT,
+    );
+
+    let promoted = outcome.expect("the swap itself still succeeded");
+    match &promoted.cooldown_window {
+        CooldownWindowOutcome::NotStarted { reason } => {
+            assert!(reason.contains("Unix epoch"), "{reason}");
+        }
+        other => panic!("expected NotStarted, got {other:?}"),
+    }
 }
 
 #[test]

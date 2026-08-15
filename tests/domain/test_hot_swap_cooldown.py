@@ -494,6 +494,13 @@ def test_an_unrepresentable_id_is_refused_without_disarming_a_running_window(
 # completion" is demonstrated by the producer the requirement actually names,
 # rather than by the operator CLI standing in for it.
 
+
+def _now_wall_seconds() -> int:
+    import time
+
+    return int(time.time())
+
+
 PROMOTE_BIN = "resv005_hot_swap_promote_cli"
 PERSIST_BIN = "sim004_persist_cli"
 #: The two strategies the SRS-SIM-004 fixture snapshot actually contains.
@@ -539,7 +546,7 @@ def _swap(
     tmp_path: Path,
     *,
     cooldown_state: Path,
-    now: int,
+    now: int | None,
     extra: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     """One REAL demote-then-promote attempt, gated by `cooldown_state`."""
@@ -574,8 +581,9 @@ def _swap(
             str(tmp_path / "demotion-pending.json"),
             "--cooldown-state",
             str(cooldown_state),
-            "--now",
-            str(now),
+            # `None` means: do not pin the clock, so the binary reads the REAL one —
+            # twice, once per instant. Every other case pins it for determinism.
+            *([] if now is None else ["--now", str(now)]),
             "--liquidation",
             "flat",
             "--positions",
@@ -675,6 +683,40 @@ def test_a_second_swap_inside_the_window_is_refused_until_acknowledged(
     assert confirmed_fields["designation-after"] == SWAP_CANDIDATE
     # The override RESTARTS the window at the new swap's completion.
     assert confirmed_fields["cooldown-window-started-at-seconds"] == str(DURING)
+
+
+def test_the_real_binary_stamps_the_window_from_its_own_clock(swap_binaries, tmp_path) -> None:
+    """Adversarial review r5 [high] — the window starts when the swap COMPLETED.
+
+    Without `--now` the binary reads the real clock TWICE: once to classify the
+    existing window when the attempt starts, and again to stamp the completion after
+    the promotion has succeeded. This drives the real binary with no `--now` at all
+    and asserts both instants are real and correctly ordered — a single read reused
+    for both would make a swap that took the whole SYS-49b timeout open a window
+    already 60 seconds old.
+    """
+
+    state = tmp_path / "cd.json"
+    before = _now_wall_seconds()
+    swapped = _swap(swap_binaries, tmp_path, cooldown_state=state, now=None)
+    after = _now_wall_seconds()
+    assert swapped.returncode == 0, swapped.stderr
+
+    fields = _kv(swapped.stdout)
+    assert fields["cooldown-window"] == "STARTED"
+    observed = int(fields["observed-at-seconds"])
+    started = int(fields["cooldown-window-started-at-seconds"])
+
+    # Both are real instants from this run, not the frozen constant this binary
+    # used to carry.
+    assert before <= observed <= after, (observed, before, after)
+    assert before <= started <= after, (started, before, after)
+    # And the completion is never EARLIER than the observation — the ordering the
+    # requirement turns on.
+    assert started >= observed, (
+        f"the window opened at {started}, before the swap it belongs to was even "
+        f"observed at {observed}"
+    )
 
 
 def test_a_swap_is_refused_when_its_window_could_not_be_recorded(swap_binaries, tmp_path) -> None:

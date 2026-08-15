@@ -317,6 +317,22 @@ pub trait SwapCompletionSink {
     /// than merely well-reported (adversarial review r4).
     fn probe_writable(&self) -> Result<(), String>;
 
+    /// The instant the swap that just succeeded COMPLETED at.
+    ///
+    /// Read AFTER the promotion, and deliberately NOT the `observed_at_seconds` the
+    /// call started with. SYS-49e says the window starts at "the timestamp of the
+    /// most recent successful swap COMPLETION", and a swap is not instantaneous:
+    /// `resolve_demotion` alone may legitimately run for the whole SYS-49b
+    /// liquidation timeout (60s by default) before the promotion even begins.
+    /// Stamping the window with the instant the attempt STARTED would therefore
+    /// shorten a seven-day safety window by the duration of the swap, letting the
+    /// automatic triggers resume that much early — the one direction a cool-down
+    /// must never move (adversarial review r5).
+    ///
+    /// Fallible, and not defaulted: a clock that cannot be read must not silently
+    /// become `observed_at_seconds` again, which is the bug wearing a fallback.
+    fn completed_at_seconds(&self) -> Result<u64, String>;
+
     fn record_swap_completion(&self, completion: &SwapCompletion) -> Result<(), String>;
 }
 
@@ -968,16 +984,26 @@ impl StrategyOrchestrator {
         // A failed write is NOT swallowed and NOT a rollback — see
         // `CooldownWindowOutcome::NotStarted` for why neither is available here.
         let outcome = outcome.map(|promoted| {
-            let completion = SwapCompletion {
-                completed_at_seconds: observed_at_seconds,
-                demoted_strategy_id: promoted.demoted_strategy_id.clone(),
-                promoted_strategy_id: promoted.promoted_strategy_id.clone(),
-            };
-            let cooldown_window = match cooldown.completions.record_swap_completion(&completion) {
-                Ok(()) => CooldownWindowOutcome::Started {
-                    started_at_seconds: observed_at_seconds,
-                },
+            // The COMPLETION instant, read here rather than reused from
+            // `observed_at_seconds` — see `SwapCompletionSink::completed_at_seconds`.
+            // Everything above this line may have taken the whole SYS-49b liquidation
+            // timeout, and a window stamped with the attempt's START would be that
+            // much shorter than the seven days SYS-49e requires.
+            let cooldown_window = match cooldown.completions.completed_at_seconds() {
                 Err(reason) => CooldownWindowOutcome::NotStarted { reason },
+                Ok(completed_at_seconds) => {
+                    let completion = SwapCompletion {
+                        completed_at_seconds,
+                        demoted_strategy_id: promoted.demoted_strategy_id.clone(),
+                        promoted_strategy_id: promoted.promoted_strategy_id.clone(),
+                    };
+                    match cooldown.completions.record_swap_completion(&completion) {
+                        Ok(()) => CooldownWindowOutcome::Started {
+                            started_at_seconds: completed_at_seconds,
+                        },
+                        Err(reason) => CooldownWindowOutcome::NotStarted { reason },
+                    }
+                }
             };
             HotSwapPromoted {
                 cooldown_window,
