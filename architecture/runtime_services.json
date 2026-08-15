@@ -5178,11 +5178,13 @@
       "unrecordable_refusal_code": "HOT_SWAP_COOLDOWN_UNRECORDABLE",
       "completion_probe": "probe_writable",
       "pending_window_token": "PendingCooldownWindow",
-      "commit_method": "commit_cooldown_window",
-      "publish_ordering_note": "Adversarial review r6 [high]. execute_hot_swap designates the candidate live IN MEMORY; the caller publishes that designation durably afterwards. Recording the cool-down inside the gate meant a publish that failed before its rename left a seven-day window suppressing the automatic triggers for a swap the durable authority never accepted. The gate now MINTS a PendingCooldownWindow -- private fields, no Clone, no Default, pub(crate) sole constructor, #[must_use] -- and the caller redeems it with commit_cooldown_window AFTER the publish. Dropping it opens no window (the r6 direction); dropping it silently is what #[must_use] and the r4 pre-flight guard against (the r2/r4 direction). HotSwapPromoted therefore lost its Clone derive: a clonable acceptance would let one swap redeem two windows.",
+      "commit_method": "redeem",
+      "acceptance_converter": "into_completed",
+      "completed_type": "CompletedHotSwap",
+      "publish_ordering_note": "Adversarial review r6 [high]. execute_hot_swap designates the candidate live IN MEMORY; the caller publishes that designation durably afterwards. Recording the cool-down inside the gate meant a publish that failed before its rename left a seven-day window suppressing the automatic triggers for a swap the durable authority never accepted. The gate now MINTS a PendingCooldownWindow -- private fields, no Clone, no Default, pub(crate) sole constructor, #[must_use] -- and the caller redeems it with commit_cooldown_window AFTER the publish. Dropping it opens no window (the r6 direction); dropping it silently is what #[must_use] and the r4 pre-flight guard against (the r2/r4 direction). HotSwapPromoted therefore lost its Clone derive: a clonable acceptance would let one swap redeem two windows. Round 8 tightened it from a convention into a TYPE: #[must_use] and a public pending_cooldown field were a lint, not a guarantee, so a Rust caller could read promoted_strategy_id, report a successful live swap and drop the token. HotSwapPromoted is now OPAQUE -- every field private, no accessors -- and into_completed(sink) is the only way to read what the swap did. It consumes the acceptance and redeems the window on the way, so the two things a caller can do are redeem (records the window) or drop the whole acceptance (records nothing, reports nothing). Two compile_fail doctests build as external consumers and prove both halves; making one field pub turns the first red.",
       "commit_after_publish_tokens": [
         "save_designation",
-        "commit_cooldown_window"
+        "into_completed"
       ],
       "window_outcome_enum": "CooldownWindowOutcome",
       "completion_sink": "SwapCompletionSink",

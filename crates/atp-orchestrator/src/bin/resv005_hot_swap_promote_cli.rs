@@ -584,12 +584,15 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
     // HAS moved), or provably unchanged.
     let cooldown_window = match outcome {
         Ok(promoted) => {
-            let window = StrategyOrchestrator
-                .commit_cooldown_window(promoted.pending_cooldown, &completions);
+            // `into_completed` is the ONLY way to read what the swap did, and it
+            // redeems the window on the way — so this call site cannot report a
+            // promotion without opening one.
+            let completed = promoted.into_completed(&completions);
+            let window = completed.cooldown_window.clone();
             outcome_facts = Some(PromotedFacts {
-                paper_history: promoted.paper_history,
-                deployed_version: promoted.deployed_version,
-                demotion_elapsed_seconds: promoted.demotion_elapsed_seconds,
+                paper_history: completed.paper_history,
+                deployed_version: completed.deployed_version,
+                demotion_elapsed_seconds: completed.demotion_elapsed_seconds,
             });
             Some(window)
         }

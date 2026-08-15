@@ -778,6 +778,60 @@ def test_a_window_exists_only_alongside_a_durably_moved_designation(
     )
 
 
+def test_a_reported_promotion_always_carries_a_window_outcome(swap_binaries, tmp_path) -> None:
+    """Adversarial review r8 [high] — the observable shadow of a compile-time guarantee.
+
+    `HotSwapPromoted` is now opaque: `into_completed` is the only way to read what a
+    swap did, and it redeems the SYS-49e window on the way. A caller therefore cannot
+    report a promotion without having handled one — that half is enforced by the
+    compiler and proven by two ``compile_fail`` doctests in `hot_swap_promotion.rs`,
+    which build as external consumers of the crate.
+
+    What a domain test CAN check is the shadow that discipline casts on the wire: no
+    `promotion:PROMOTED` line without a `cooldown-window:` line beside it, on any
+    path. Asserted across three outcomes so it is not one lucky case — a success, a
+    refusal, and a success whose window failed to open.
+    """
+
+    # 1. A clean success.
+    ok_state = tmp_path / "ok.json"
+    ok = _swap(swap_binaries, tmp_path, cooldown_state=ok_state, now=COMPLETED_AT)
+    assert ok.returncode == 0, ok.stderr
+    ok_fields = _kv(ok.stdout)
+    assert ok_fields["promotion"] == "PROMOTED"
+    assert ok_fields["cooldown-window"] == "STARTED"
+
+    # 2. A refusal reports no promotion, and therefore owes no window.
+    blocked_dir = tmp_path / "blocked"
+    blocked_dir.mkdir()
+    blocked_state = blocked_dir / "cd.json"
+    _open_window(blocked_state)
+    blocked = _swap(swap_binaries, blocked_dir, cooldown_state=blocked_state, now=DURING)
+    assert blocked.returncode != 0
+    blocked_fields = _kv(blocked.stdout)
+    assert blocked_fields["promotion"] == "BLOCKED"
+    assert "cooldown-window" not in blocked_fields, (
+        "a swap that did not promote owes no window and must not claim one"
+    )
+
+    # 3. A success whose window did NOT open still reports the outcome — the pairing
+    #    holds in the case it most matters, which is the fail-open.
+    kept_dir = tmp_path / "kept"
+    kept_dir.mkdir()
+    kept_state = kept_dir / "cd.json"
+    _open_window(kept_state, completed_at=AFTER + 10_000)
+    kept = _swap(
+        swap_binaries,
+        kept_dir,
+        cooldown_state=kept_state,
+        now=DURING,
+        extra=("--confirm-cooldown",),
+    )
+    kept_fields = _kv(kept.stdout)
+    assert kept_fields["promotion"] == "PROMOTED"
+    assert kept_fields["cooldown-window"] == "NOT_STARTED"
+
+
 def test_a_failed_window_write_tells_the_operator_the_right_instant(
     swap_binaries, tmp_path
 ) -> None:

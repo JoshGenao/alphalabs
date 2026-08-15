@@ -390,10 +390,15 @@ fn live_swap(
         now,
     );
     let designated = designation.designated().map(|id| id.as_str().to_string());
-    let outcome = outcome.map(|promoted| Completed {
-        promoted_strategy_id: promoted.promoted_strategy_id.as_str().to_string(),
-        cooldown_window: StrategyOrchestrator
-            .commit_cooldown_window(promoted.pending_cooldown, completions),
+    // `HotSwapPromoted` is OPAQUE: reading what the swap did requires redeeming its
+    // window, which is the r8 guarantee. There is no way to write this helper that
+    // reports a promotion without one.
+    let outcome = outcome.map(|promoted| {
+        let completed = promoted.into_completed(completions);
+        Completed {
+            promoted_strategy_id: completed.promoted_strategy_id.as_str().to_string(),
+            cooldown_window: completed.cooldown_window,
+        }
     });
     (outcome, designated)
 }
@@ -736,9 +741,10 @@ fn resv_6_a_completion_clock_that_cannot_be_read_does_not_fall_back_to_the_start
         COMPLETED_AT,
     );
 
-    let promoted = outcome.expect("the swap itself still succeeded");
-    let window = StrategyOrchestrator.commit_cooldown_window(promoted.pending_cooldown, &NoClock);
-    match &window {
+    let completed = outcome
+        .expect("the swap itself still succeeded")
+        .into_completed(&NoClock);
+    match &completed.cooldown_window {
         CooldownWindowOutcome::NotStarted {
             reason,
             completed_at_seconds,
@@ -792,8 +798,10 @@ fn resv_6_a_swap_whose_publish_failed_opens_no_window() {
     );
 
     let promoted = outcome.expect("the gate itself succeeded");
-    // ...and here the caller's durable publish fails, so the token is NEVER redeemed.
-    drop(promoted.pending_cooldown);
+    // ...and here the caller's durable publish fails, so the acceptance is dropped
+    // WHOLE rather than converted — which is the only other thing a caller can do
+    // with it, and it opens no window.
+    drop(promoted);
 
     assert_eq!(
         completions.count(),

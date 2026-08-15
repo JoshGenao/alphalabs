@@ -342,7 +342,7 @@ fn clear_cooldown(completions: &Completions) -> CooldownControl<'_, Completions>
 }
 
 struct Outcome {
-    result: Result<atp_orchestrator::hot_swap_promotion::HotSwapPromoted, HotSwapPromotionError>,
+    result: Result<atp_orchestrator::hot_swap_promotion::CompletedHotSwap, HotSwapPromotionError>,
     designated_after: Option<String>,
     events: Vec<HotSwapPromotionEvent>,
 }
@@ -378,7 +378,9 @@ fn run_swap(
     );
     Outcome {
         designated_after: designation.designated().map(|id| id.as_str().to_string()),
-        result,
+        // `HotSwapPromoted` is opaque: reading what the swap did REQUIRES redeeming
+        // its SYS-49e window, which is the guarantee r8 asked for.
+        result: result.map(|promoted| promoted.into_completed(&completions)),
         events: events.recorded.into_inner(),
     }
 }

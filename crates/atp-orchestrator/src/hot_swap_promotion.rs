@@ -422,6 +422,44 @@ impl PendingCooldownWindow {
             promoted_strategy_id: promoted.clone(),
         }
     }
+
+    /// Open the window this swap owes. The ONLY caller of
+    /// [`SwapCompletionSink::record_swap_completion`], and reachable only through
+    /// [`HotSwapPromoted::into_completed`].
+    ///
+    /// Takes `self` by value: one swap, one window.
+    fn redeem<W>(self, completions: &W) -> CooldownWindowOutcome
+    where
+        W: SwapCompletionSink,
+    {
+        // The COMPLETION instant, read HERE — after the promotion, after the durable
+        // publish. Everything before this may have taken the whole SYS-49b
+        // liquidation timeout, and a window stamped with the attempt's START would be
+        // that much shorter than the seven days SYS-49e requires (review r5).
+        let completed_at_seconds = match completions.completed_at_seconds() {
+            Ok(seconds) => seconds,
+            Err(reason) => {
+                return CooldownWindowOutcome::NotStarted {
+                    reason,
+                    completed_at_seconds: None,
+                }
+            }
+        };
+        let completion = SwapCompletion {
+            completed_at_seconds,
+            demoted_strategy_id: self.demoted_strategy_id,
+            promoted_strategy_id: self.promoted_strategy_id,
+        };
+        match completions.record_swap_completion(&completion) {
+            Ok(()) => CooldownWindowOutcome::Started {
+                started_at_seconds: completed_at_seconds,
+            },
+            Err(reason) => CooldownWindowOutcome::NotStarted {
+                reason,
+                completed_at_seconds: Some(completed_at_seconds),
+            },
+        }
+    }
 }
 
 impl CooldownWindowOutcome {
@@ -450,8 +488,83 @@ impl CooldownWindowOutcome {
 /// acceptance would let one swap redeem two windows — the same reasoning that keeps
 /// [`DemotionReceipt`] un-`Clone`-able. The compiler enforces it: this derive cannot
 /// name `Clone` while that field is present.
+///
+/// **OPAQUE.** Every field is private and there are no accessors: the ONLY way to
+/// read what this swap did is [`HotSwapPromoted::into_completed`], which consumes
+/// the pending window and records it.
+///
+/// `#[must_use]` and a public `pending_cooldown` field were not enough. A lint is
+/// not a type: a caller could read `promoted_strategy_id`, report a successful live
+/// swap, and drop the token — leaving the automatic triggers unsuppressed through
+/// the seven days SYS-49e requires. Making the facts unreachable until the window is
+/// handled turns "the caller must remember" into "the caller cannot express it"
+/// (adversarial review r8). Same discipline as [`DemotionReceipt`], one layer out.
+///
+/// Compiler-enforced, and this doctest is the proof — it builds as an EXTERNAL
+/// consumer of the crate, which is exactly the position the reviewer's hypothetical
+/// non-CLI caller is in. Reading a success fact without redeeming the window does
+/// not compile:
+///
+/// ```compile_fail
+/// use atp_orchestrator::hot_swap_promotion::HotSwapPromoted;
+/// fn report(promoted: HotSwapPromoted) -> String {
+///     promoted.promoted_strategy_id.as_str().to_string()
+/// }
+/// ```
+///
+/// Nor can the pending window be taken out and dropped on its own:
+///
+/// ```compile_fail
+/// use atp_orchestrator::hot_swap_promotion::HotSwapPromoted;
+/// fn discard(promoted: HotSwapPromoted) {
+///     drop(promoted.pending_cooldown);
+/// }
+/// ```
+///
+/// The only two things a caller can do are redeem it — which records the window —
+/// or drop the whole acceptance, which records nothing and reports nothing.
+#[must_use = "a promoted swap is not observable until into_completed() redeems its \
+              SYS-49e cool-down window"]
 #[derive(Debug, PartialEq, Eq)]
 pub struct HotSwapPromoted {
+    demoted_strategy_id: StrategyId,
+    promoted_strategy_id: StrategyId,
+    flat_confirmed: bool,
+    paper_history: PaperHistoryFingerprint,
+    deployed_version: DeployedVersion,
+    demotion_elapsed_seconds: u64,
+    pending_cooldown: PendingCooldownWindow,
+}
+
+impl HotSwapPromoted {
+    /// Redeem the SYS-49e window and hand back what the swap did.
+    ///
+    /// Call this AFTER the durable publish — that ordering is the whole point of
+    /// the token (see [`PendingCooldownWindow`]), and a caller whose publish failed
+    /// simply drops this value instead, which opens no window.
+    ///
+    /// Consumes `self`, so a swap cannot be reported twice or reported without its
+    /// window.
+    pub fn into_completed<W>(self, completions: &W) -> CompletedHotSwap
+    where
+        W: SwapCompletionSink,
+    {
+        let cooldown_window = self.pending_cooldown.redeem(completions);
+        CompletedHotSwap {
+            demoted_strategy_id: self.demoted_strategy_id,
+            promoted_strategy_id: self.promoted_strategy_id,
+            flat_confirmed: self.flat_confirmed,
+            paper_history: self.paper_history,
+            deployed_version: self.deployed_version,
+            demotion_elapsed_seconds: self.demotion_elapsed_seconds,
+            cooldown_window,
+        }
+    }
+}
+
+/// What a swap did, readable only once its cool-down window has been handled.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CompletedHotSwap {
     pub demoted_strategy_id: StrategyId,
     pub promoted_strategy_id: StrategyId,
     /// Always `true` — carried explicitly so a surface renders the gate's
@@ -464,12 +577,9 @@ pub struct HotSwapPromoted {
     /// identical across the mode change.
     pub deployed_version: DeployedVersion,
     pub demotion_elapsed_seconds: u64,
-    /// The SyRS SYS-49e window this swap OWES, not one it has already opened.
-    ///
-    /// Redeemed by [`StrategyOrchestrator::commit_cooldown_window`] once the caller
-    /// has durably published the designation — see [`PendingCooldownWindow`] for why
-    /// the gate must not record it itself.
-    pub pending_cooldown: PendingCooldownWindow,
+    /// Whether the SyRS SYS-49e window actually opened. `NotStarted` is a fail-open
+    /// every surface must report — see [`CooldownWindowOutcome`].
+    pub cooldown_window: CooldownWindowOutcome,
 }
 
 /// What the demotion half of a refused swap did — see
@@ -1056,59 +1166,6 @@ impl StrategyOrchestrator {
         });
 
         outcome
-    }
-
-    /// Redeem a [`PendingCooldownWindow`] — open the SYS-49e window a completed swap
-    /// owes, AFTER its designation has been durably published.
-    ///
-    /// Separate from [`Self::execute_hot_swap`] because the ordering is the whole
-    /// point. That call designates the candidate live *in memory*; the caller then
-    /// persists it. Recording the cool-down inside the gate meant a publish that
-    /// failed before its rename left a seven-day window suppressing the automatic
-    /// triggers for a swap the durable authority never accepted — a partial-failure
-    /// state with nothing to reconcile against (adversarial review r6).
-    ///
-    /// So the caller redeems this only on the paths where the swap really is
-    /// durable, and simply drops the token on the paths where it is not. Dropping
-    /// warns (`#[must_use]`), which is what stops the *other* direction — a
-    /// completed swap whose window silently never opened.
-    ///
-    /// Takes the token **by value**: one swap, one window.
-    pub fn commit_cooldown_window<W>(
-        &self,
-        pending: PendingCooldownWindow,
-        completions: &W,
-    ) -> CooldownWindowOutcome
-    where
-        W: SwapCompletionSink,
-    {
-        // The COMPLETION instant, read HERE — after the promotion, after the durable
-        // publish. Everything before this may have taken the whole SYS-49b
-        // liquidation timeout, and a window stamped with the attempt's START would be
-        // that much shorter than the seven days SYS-49e requires (review r5).
-        let completed_at_seconds = match completions.completed_at_seconds() {
-            Ok(seconds) => seconds,
-            Err(reason) => {
-                return CooldownWindowOutcome::NotStarted {
-                    reason,
-                    completed_at_seconds: None,
-                }
-            }
-        };
-        let completion = SwapCompletion {
-            completed_at_seconds,
-            demoted_strategy_id: pending.demoted_strategy_id,
-            promoted_strategy_id: pending.promoted_strategy_id,
-        };
-        match completions.record_swap_completion(&completion) {
-            Ok(()) => CooldownWindowOutcome::Started {
-                started_at_seconds: completed_at_seconds,
-            },
-            Err(reason) => CooldownWindowOutcome::NotStarted {
-                reason,
-                completed_at_seconds: Some(completed_at_seconds),
-            },
-        }
     }
 
     /// The promotion gate proper. `pub(crate)` on purpose: a caller outside this
