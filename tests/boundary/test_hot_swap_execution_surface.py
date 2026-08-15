@@ -811,6 +811,41 @@ def test_the_published_schema_requires_what_the_handler_requires(mounted, fake_c
     assert fake_cli.calls == []
 
 
+def test_the_published_schema_types_what_the_handler_accepts(mounted, fake_cli):
+    """Round-4 adversarial review [high] — the same drift class, on a TYPE.
+
+    `confirm_cooldown` defaulted to the placeholder `string` type while
+    `_read_confirm_cooldown` refuses any non-boolean rather than coercing. A client
+    generated from that schema would send `"true"` — schema-valid — and take a 400
+    from the live route. Both directions are asserted here, because a schema fixed
+    without checking the handler is the same defect facing the other way.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    snapshot = _json.loads(
+        (_Path(__file__).resolve().parents[2] / "python/atp_api/openapi.json").read_text()
+    )
+    schema = snapshot["paths"][HOT_SWAP_PATH]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]
+    assert schema["properties"]["confirm_cooldown"] == {"type": "boolean"}, schema
+
+    # The declared type is what the handler ACCEPTS...
+    fake_cli.queue_status("live-a")
+    fake_cli.queue_swap()
+    status, _ = _post(
+        mounted, _confirmed(), {"candidate_strategy_id": "paper-b", "confirm_cooldown": True}
+    )
+    assert status == 200
+    # ...and a value of any other type is refused, never coerced.
+    status, body = _post(
+        mounted, _confirmed(), {"candidate_strategy_id": "paper-b", "confirm_cooldown": "true"}
+    )
+    assert status == 400, body
+    assert body["error"]["type"] == "INVALID_CONFIRM_COOLDOWN", body
+
+
 def test_a_swap_that_never_started_is_a_non_2xx(mounted, fake_cli):
     """Round-11 adversarial review [critical].
 

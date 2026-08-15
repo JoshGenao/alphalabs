@@ -307,6 +307,16 @@ pub struct HotSwapPromotionEvent {
 /// `Err` carries an operator-facing reason. It does **not** roll the promotion
 /// back: see [`CooldownWindowOutcome::NotStarted`].
 pub trait SwapCompletionSink {
+    /// Prove a completion COULD be recorded, before anything irreversible runs.
+    ///
+    /// Checked at the top of [`StrategyOrchestrator::execute_hot_swap`], because a
+    /// swap that completes and then cannot record its window is a fail-open that
+    /// nothing downstream can repair: the designation has moved and the book is
+    /// flat, so it is far too late to refuse. Refusing HERE costs nothing — no
+    /// demotion-side port has run — which is what makes the guarantee real rather
+    /// than merely well-reported (adversarial review r4).
+    fn probe_writable(&self) -> Result<(), String>;
+
     fn record_swap_completion(&self, completion: &SwapCompletion) -> Result<(), String>;
 }
 
@@ -494,6 +504,15 @@ pub enum HotSwapPromotionError {
         state: CooldownState,
         warning: String,
     },
+    /// SyRS SYS-49e: the cool-down window this swap would have to record cannot be
+    /// written, so the swap is refused BEFORE it runs.
+    ///
+    /// Not a pedantic pre-check. A swap that completes and then cannot record its
+    /// window leaves the automatic triggers armed against a strategy that has just
+    /// been swapped in, and by then nothing can be undone. Refusing while nothing
+    /// has happened is the only point at which the requirement can actually be
+    /// guaranteed rather than reported on (adversarial review r4).
+    CooldownWindowUnrecordable { reason: String },
 }
 
 impl HotSwapPromotionError {
@@ -519,6 +538,7 @@ impl HotSwapPromotionError {
             Self::DemotionReleaseFailed(_) => "DEMOTION_RELEASE_FAILED",
             Self::DesignationRefused(_) => "DESIGNATION_REFUSED",
             Self::CooldownConfirmationRequired { .. } => "HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED",
+            Self::CooldownWindowUnrecordable { .. } => "HOT_SWAP_COOLDOWN_UNRECORDABLE",
         }
     }
 
@@ -562,6 +582,7 @@ impl HotSwapPromotionError {
             Self::NoLiveStrategyToDemote { .. }
             | Self::UnexpectedLiveStrategy { .. }
             | Self::CooldownConfirmationRequired { .. }
+            | Self::CooldownWindowUnrecordable { .. }
             | Self::DemotionNotAccepted { .. } => DemotionProof::NotStarted,
         }
     }
@@ -695,6 +716,14 @@ impl fmt::Display for HotSwapPromotionError {
                  manual swap during the window, it only requires you to say so.",
                 state.as_str(),
             ),
+            Self::CooldownWindowUnrecordable { reason } => write!(
+                formatter,
+                "SRS-RESV-006: the Hot-Swap cool-down window cannot be recorded ({reason}), so \
+                 this swap is refused BEFORE it runs. Nothing was demoted and nothing was \
+                 promoted. A swap that completed and then could not open its window would \
+                 leave the automatic triggers armed against the strategy just promoted, and \
+                 nothing could undo it at that point — repair the cool-down state file first.",
+            ),
         }
     }
 }
@@ -770,7 +799,46 @@ impl StrategyOrchestrator {
         let demoting = request.demoting_strategy_id.clone();
         let candidate = request.candidate_strategy_id.clone();
 
-        // THE SYS-49e COOL-DOWN, BEFORE EVERYTHING ELSE.
+        // PROVE THE NEXT WINDOW CAN BE RECORDED, BEFORE EVERYTHING ELSE.
+        //
+        // The confirmation gate below stops a swap the window FORBIDS. This one stops
+        // a swap the window could not be UPDATED by — the other half of the same
+        // requirement, and the one that cannot be repaired after the fact: on the
+        // success arm, a failed completion write leaves the designation moved, the
+        // book flat, and the automatic triggers armed against the strategy just
+        // promoted, with rolling back strictly worse than living with it.
+        //
+        // FIRST of the two, because this one is UNWAIVABLE and the confirmation is
+        // not. An operator inside a window whose store is also broken would
+        // otherwise be told to acknowledge, acknowledge, and only then hit the wall
+        // that no acknowledgement can move.
+        //
+        // Refusing HERE costs nothing — no demotion-side port has run, nothing has
+        // mutated — which is what turns "we report the fail-open loudly" into "the
+        // fail-open is unreachable by this cause". Raised by adversarial review r4
+        // as the residual the loud reporting still left open.
+        //
+        // The residual that REMAINS is a genuine race: a store that is writable here
+        // and not writable a few seconds later. `CooldownWindowOutcome::NotStarted`
+        // still covers it, still exits non-zero, and it is stated in
+        // `hot_swap_cooldown_contract.deferred` rather than implied away.
+        if let Err(reason) = cooldown.completions.probe_writable() {
+            let error = HotSwapPromotionError::CooldownWindowUnrecordable { reason };
+            let _ = ports.events.record(HotSwapPromotionEvent {
+                demoting_strategy_id: demoting,
+                candidate_strategy_id: candidate,
+                promoted: false,
+                refusal: Some(error.machine_reason()),
+                flat_confirmed: false,
+                paper_history_preserved: false,
+                deployed_version: None,
+                cooldown_window_started: false,
+                observed_at_seconds,
+            });
+            return Err(error);
+        }
+
+        // THEN the SYS-49e CONFIRMATION gate.
         //
         // SYS-49e says that during the window no automatic trigger "shall be ACTED
         // UPON". SRS-RESV-006 landed the same `proven_clear()` predicate on the two

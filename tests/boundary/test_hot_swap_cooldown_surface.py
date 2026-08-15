@@ -550,6 +550,28 @@ def test_a_binary_that_reports_no_window_at_all_is_unknown_never_started(tmp_pat
         assert body["promotion_state"] == "PROMOTED_COOLDOWN_NOT_STARTED", body
 
 
+def test_an_unrecordable_window_refuses_the_swap_as_an_operator_repair(tmp_path) -> None:
+    # Adversarial review r4 [critical]. Distinct from the CONFIRMATION refusal: no
+    # amount of confirming makes an unwritable store writable, so routing this to
+    # `confirm_cooldown` would send the operator in a circle. It is also not a
+    # BAD_REQUEST — the caller did nothing wrong.
+    unrecordable = SWAP_REFUSED_BY_COOLDOWN.replace(
+        "refusal:HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED",
+        "refusal:HOT_SWAP_COOLDOWN_UNRECORDABLE",
+    )
+    stub = _ScriptedCli((0, DESIGNATION_STATUS), (1, unrecordable))
+    for where in _mount_execution(stub, tmp_path):
+        status, body = _swap_request(where, {"candidate_strategy_id": "cand-b"})
+        error = body["error"]
+        assert error["type"] == "HOT_SWAP_COOLDOWN_UNRECORDABLE", body
+        assert error["category"] == "INTERNAL_ERROR", body
+        assert error["detail"]["owner"] == "SRS-RESV-006", body
+        # The remedy must be the RIGHT one — never "re-send with confirm_cooldown".
+        assert "confirm_cooldown" not in error["message"], error["message"]
+        assert "Repair the cool-down state file" in error["message"], error["message"]
+        assert "Nothing was demoted" in error["message"], error["message"]
+
+
 def test_a_blocked_swap_still_declares_its_cooldown_window_field(tmp_path) -> None:
     # Present on EVERY 200, including a refusal: an optional field would make the
     # commonest degraded response a subset of what the published schema advertises.

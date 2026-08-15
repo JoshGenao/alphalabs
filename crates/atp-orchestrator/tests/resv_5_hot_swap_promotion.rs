@@ -318,6 +318,10 @@ struct Completions {
 }
 
 impl SwapCompletionSink for Completions {
+    fn probe_writable(&self) -> Result<(), String> {
+        Ok(())
+    }
+
     fn record_swap_completion(&self, completion: &SwapCompletion) -> Result<(), String> {
         self.recorded.borrow_mut().push(completion.clone());
         Ok(())

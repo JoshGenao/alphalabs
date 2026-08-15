@@ -198,6 +198,11 @@ impl HotSwapPromotionEventSink for PromotionEvents {
 struct Completions {
     recorded: RefCell<Vec<SwapCompletion>>,
     fail_with: Option<&'static str>,
+    /// Whether the PRE-FLIGHT probe succeeds. Separate from `fail_with`, because the
+    /// two model different worlds: a store that was unwritable all along (caught
+    /// before the swap runs) versus one that becomes unwritable mid-swap (the
+    /// residual race, which can only be reported).
+    probe_fails_with: Option<&'static str>,
 }
 
 impl Completions {
@@ -205,12 +210,23 @@ impl Completions {
         Self {
             recorded: RefCell::new(Vec::new()),
             fail_with: None,
+            probe_fails_with: None,
         }
     }
+    /// Writable at pre-flight, unwritable by the time the swap completes — the race.
     fn failing() -> Self {
         Self {
             recorded: RefCell::new(Vec::new()),
             fail_with: Some("the cool-down state file is read-only"),
+            probe_fails_with: None,
+        }
+    }
+    /// Unwritable from the start — the case the pre-flight must catch.
+    fn unwritable() -> Self {
+        Self {
+            recorded: RefCell::new(Vec::new()),
+            fail_with: Some("the cool-down state file is read-only"),
+            probe_fails_with: Some("cannot write hot-swap cool-down window: permission denied"),
         }
     }
     fn count(&self) -> usize {
@@ -219,6 +235,13 @@ impl Completions {
 }
 
 impl SwapCompletionSink for Completions {
+    fn probe_writable(&self) -> Result<(), String> {
+        match self.probe_fails_with {
+            Some(reason) => Err(reason.to_string()),
+            None => Ok(()),
+        }
+    }
+
     fn record_swap_completion(&self, completion: &SwapCompletion) -> Result<(), String> {
         if let Some(reason) = self.fail_with {
             return Err(reason.to_string());
@@ -589,6 +612,79 @@ fn resv_6_a_refused_swap_opens_no_window() {
         completions.count(),
         0,
         "a swap that did not complete must not open a cool-down window"
+    );
+}
+
+#[test]
+fn resv_6_a_swap_is_refused_when_its_window_could_not_be_recorded() {
+    // Adversarial review r4 [critical]. Reporting the fail-open loudly is not the
+    // same as preventing it: once the swap has completed there is nothing left to
+    // undo, so the only place the requirement can actually be GUARANTEED is before
+    // anything runs. Every demotion-side port panics here, which is the strongest
+    // available proof that the refusal happened first.
+    let events = PromotionEvents::default();
+    let completions = Completions::unwritable();
+    let error = refused_swap(
+        &CooldownState::NeverSwapped, // the window itself is CLEAR — only the write fails
+        ManualCooldownAcknowledgement::NotAcknowledged,
+        &events,
+        &completions,
+    )
+    .expect_err("a swap whose window cannot be recorded must be refused before it runs");
+
+    assert_eq!(error.machine_reason(), "HOT_SWAP_COOLDOWN_UNRECORDABLE");
+    assert_eq!(error.demotion_outcome(), DemotionProof::NotStarted);
+    assert!(
+        error.to_string().contains("Nothing was demoted"),
+        "the refusal must say what did NOT happen: {error}"
+    );
+    assert_eq!(completions.count(), 0);
+
+    let recorded = events.recorded.borrow();
+    assert_eq!(recorded.len(), 1);
+    assert!(!recorded[0].promoted);
+    assert!(!recorded[0].cooldown_window_started);
+}
+
+#[test]
+fn resv_6_an_acknowledged_swap_is_still_refused_if_the_window_is_unrecordable() {
+    // The acknowledgement waives the WARNING, not the requirement. An operator may
+    // choose to swap during a window; nobody may choose to swap without one.
+    let events = PromotionEvents::default();
+    let completions = Completions::unwritable();
+    let error = refused_swap(
+        &active_window(COMPLETED_AT + 3_600),
+        ManualCooldownAcknowledgement::Acknowledged,
+        &events,
+        &completions,
+    )
+    .expect_err("acknowledging a window does not make an unwritable store writable");
+    assert_eq!(error.machine_reason(), "HOT_SWAP_COOLDOWN_UNRECORDABLE");
+}
+
+#[test]
+fn resv_6_the_unwaivable_refusal_is_reported_before_the_waivable_one() {
+    // Both refusals apply here: the window is ACTIVE and unacknowledged, AND the
+    // store cannot be written. The operator must be told the one no acknowledgement
+    // can move — otherwise they confirm, re-send, and only then hit the wall.
+    //
+    // Placement, not preference: `probe_writable` runs ahead of the confirmation
+    // gate in `execute_hot_swap`, and this is what pins that order.
+    let events = PromotionEvents::default();
+    let completions = Completions::unwritable();
+    let error = refused_swap(
+        &active_window(COMPLETED_AT + 3_600),
+        ManualCooldownAcknowledgement::NotAcknowledged,
+        &events,
+        &completions,
+    )
+    .expect_err("both refusals apply; one of them must win");
+
+    assert_eq!(
+        error.machine_reason(),
+        "HOT_SWAP_COOLDOWN_UNRECORDABLE",
+        "the UNWAIVABLE refusal must be reported ahead of the one an operator can \
+         clear by confirming"
     );
 }
 

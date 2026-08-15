@@ -548,6 +548,36 @@ pub fn set_period(
     Ok(record)
 }
 
+/// Prove this window can be RECORDED, before anything irreversible depends on it.
+///
+/// A swap that completes and then cannot record its completion is a fail-open: the
+/// designation has moved, the book is flat, and the automatic triggers the window was
+/// supposed to suppress are still armed. It cannot be undone afterwards — reverting a
+/// live designation over an unwritable file leaves the demoted strategy live with an
+/// emptied book, which is strictly worse — so the honest place to catch it is BEFORE
+/// the swap runs, where refusing costs nothing (`safety-paths` rule 41: a failed
+/// durable write must leave a fail-closed STATE, not just a truthful error;
+/// adversarial review r4 named the residual this closes).
+///
+/// The probe is a real read-modify-write through [`set_period`], not a permissions
+/// guess: it takes the same lock, walks the same scratch → fsync → rename path, and
+/// therefore fails for every reason the real write would. It is idempotent in
+/// MEANING — the period is written back as it was read, and an absent file becomes a
+/// present one carrying the default period, which classifies identically
+/// ([`CooldownState::NeverSwapped`]). Any recorded completion is preserved, because
+/// `set_period` preserves it.
+///
+/// This narrows the fail-open to a genuine race (a disk that fills between this call
+/// and the completion write). That residual is stated rather than implied — see
+/// `hot_swap_cooldown_contract.deferred`.
+pub fn probe_writable(path: &Path) -> Result<(), CooldownStoreError> {
+    let period = match load(path)? {
+        Some(record) => record.period,
+        None => CooldownPeriodDays::default(),
+    };
+    set_period(path, period).map(|_| ())
+}
+
 /// Record a swap completion, starting the SYS-49e window at its timestamp.
 ///
 /// **Only a PROMOTION may call this.** SRS-RESV-004's demotion can finish without any

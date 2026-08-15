@@ -677,11 +677,57 @@ def test_a_second_swap_inside_the_window_is_refused_until_acknowledged(
     assert confirmed_fields["cooldown-window-started-at-seconds"] == str(DURING)
 
 
+def test_a_swap_is_refused_when_its_window_could_not_be_recorded(swap_binaries, tmp_path) -> None:
+    """Adversarial review r4 [critical] — the fail-open, closed at the only point it can be.
+
+    A swap that completes and THEN cannot record its window leaves the automatic
+    triggers armed against the strategy just promoted, and nothing can undo it: the
+    designation has moved and the book is flat, so rolling back would be strictly
+    worse. The requirement can therefore only be guaranteed before the swap runs.
+
+    Driven against a genuinely unwritable directory, not a stubbed error, so the
+    real `cooldown_store` write path is what fails.
+    """
+    import os
+    import stat
+
+    readonly = tmp_path / "readonly"
+    readonly.mkdir()
+    state = readonly / "cd.json"
+    _open_window(state)
+    before = state.read_text()
+    # Drop write permission on the DIRECTORY: the store publishes by writing a
+    # scratch file beside the target and renaming it, so this is what a real
+    # unwritable store looks like to it.
+    os.chmod(readonly, stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        refused = _swap(swap_binaries, tmp_path, cooldown_state=state, now=DURING)
+        assert refused.returncode != 0, "an unrecordable window must refuse the swap"
+        fields = _kv(refused.stdout)
+        assert fields["refusal"] == "HOT_SWAP_COOLDOWN_UNRECORDABLE", refused.stdout
+        assert fields["demotion-outcome"] == "NOT_STARTED", refused.stdout
+        assert fields["promotion"] == "BLOCKED", refused.stdout
+        assert fields["designation-after"] == SWAP_DEMOTING, "the live slot must be untouched"
+        assert "Nothing was demoted" in refused.stderr
+    finally:
+        os.chmod(readonly, stat.S_IRWXU)
+
+    # The window that was already there is untouched — a refused swap changes nothing.
+    assert state.read_text() == before
+
+
 def test_a_swap_cannot_run_against_an_unreadable_window(swap_binaries, tmp_path) -> None:
     """UNKNOWN is not "no cool-down is in effect" (CLAUDE.md rule 3).
 
     A corrupt window must refuse the EXECUTION, not just the proposal — otherwise
     damaging the state file is a way to switch the cool-down off.
+
+    The refusal is the UNRECORDABLE one, not the confirmation. A corrupt window
+    cannot be classified AND cannot be updated (the store re-reads before it writes,
+    so the completion write would fail too), and acknowledging a warning does not
+    repair a file. Sending the operator to `--confirm-cooldown` here would send them
+    in a circle; the accurate remedy is to repair the window. The state is still
+    reported as UNKNOWN on the proof stream, so nothing is hidden.
     """
 
     state = tmp_path / "cd.json"
@@ -691,5 +737,15 @@ def test_a_swap_cannot_run_against_an_unreadable_window(swap_binaries, tmp_path)
     assert refused.returncode != 0
     fields = _kv(refused.stdout)
     assert fields["cooldown-state"] == "UNKNOWN"
-    assert fields["refusal"] == "HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED"
+    assert fields["refusal"] == "HOT_SWAP_COOLDOWN_UNRECORDABLE"
     assert fields["designation-after"] == SWAP_DEMOTING
+    # And confirming does NOT get past it — the refusal is genuinely unwaivable.
+    still_refused = _swap(
+        swap_binaries,
+        tmp_path,
+        cooldown_state=state,
+        now=DURING,
+        extra=("--confirm-cooldown",),
+    )
+    assert still_refused.returncode != 0
+    assert _kv(still_refused.stdout)["refusal"] == "HOT_SWAP_COOLDOWN_UNRECORDABLE"

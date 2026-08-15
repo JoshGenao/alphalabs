@@ -108,6 +108,13 @@ _REQUEST_FIELDS = frozenset({"candidate_strategy_id", "confirm", "confirm_cooldo
 #: refusal in that class the caller can resolve by re-sending — see :meth:`handle`.
 _COOLDOWN_REFUSAL = "HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED"
 
+#: SRS-RESV-006's PRE-FLIGHT refusal: the window this swap would have to record
+#: cannot be written, so the swap is refused before it runs. Distinct from the
+#: confirmation refusal above because the remedy is different — no amount of
+#: confirming makes an unwritable store writable, and telling an operator to
+#: re-send with `confirm_cooldown` would send them in a circle.
+_COOLDOWN_UNRECORDABLE = "HOT_SWAP_COOLDOWN_UNRECORDABLE"
+
 #: The closed set of demotion outcomes the binary may report. Anything else —
 #: including ABSENT — is unknown, and unknown fails closed rather than defaulting to
 #: a value that would let a promotion be reported with no demotion proof.
@@ -408,6 +415,22 @@ class SwapExecutionHandler:
                         "cooldown_state": values.get("cooldown-state"),
                         "confirm_field": "confirm_cooldown",
                     },
+                )
+            # An UNWRITABLE cool-down store is an operator-repair event, not a bad
+            # request: the caller did nothing wrong and cannot fix it by re-sending.
+            # Reported as the internal failure it is, with the owner and the fact
+            # that nothing mutated — which is true, and is why a non-2xx is correct.
+            if reason == _COOLDOWN_UNRECORDABLE:
+                raise InterfaceError(
+                    ErrorCategory.INTERNAL_ERROR,
+                    "the SyRS SYS-49e cool-down window cannot be recorded, so the swap "
+                    "was refused BEFORE it ran: a swap that completed and then failed to "
+                    "open its window would leave the automatic triggers armed against the "
+                    "strategy just promoted, and nothing could undo it at that point. "
+                    "Nothing was demoted and nothing was promoted. Repair the cool-down "
+                    "state file, then retry.",
+                    type=_COOLDOWN_UNRECORDABLE,
+                    detail={"owner": _COOLDOWN_OWNER},
                 )
             raise InterfaceError(
                 ErrorCategory.BAD_REQUEST,

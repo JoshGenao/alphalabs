@@ -320,6 +320,10 @@ struct FileSwapCompletions {
 }
 
 impl SwapCompletionSink for FileSwapCompletions {
+    fn probe_writable(&self) -> Result<(), String> {
+        cooldown_store::probe_writable(&self.path).map_err(|error| error.to_string())
+    }
+
     fn record_swap_completion(&self, completion: &SwapCompletion) -> Result<(), String> {
         match cooldown_store::record_completion(&self.path, completion) {
             Ok(CompletionOutcome::Recorded { .. }) => Ok(()),

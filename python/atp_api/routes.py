@@ -295,6 +295,14 @@ ROUTES: tuple[Route, ...] = (
             ("demotion_state", "string"),
             ("promotion_state", "string"),
             ("cooldown_window", "string"),
+            # A REQUEST field, and a boolean one. The default placeholder type is
+            # `string`, which published a schema a generated client could satisfy
+            # and the live handler would then refuse: `_read_confirm_cooldown`
+            # rejects any non-boolean rather than coercing, because the one field
+            # that waives a seven-day safety window must be said in full. A
+            # permissive schema over a strict handler is public drift, not a
+            # client bug. (Adversarial review r4.)
+            ("confirm_cooldown", "boolean"),
         ),
         # The handler refuses any body key outside the declared set with a 400
         # (UNKNOWN_REQUEST_FIELD), because accepting and ignoring a field would
