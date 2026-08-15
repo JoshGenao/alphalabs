@@ -333,7 +333,11 @@ impl HotSwapCooldownPort for Completions {
         Ok(OBSERVED_AT)
     }
 
-    fn begin_provisional_window(&self, _completion: &SwapCompletion) -> Result<(), String> {
+    fn begin_provisional_window(
+        &self,
+        _completion: &SwapCompletion,
+        _attempt_id: &str,
+    ) -> Result<(), String> {
         Ok(())
     }
 
@@ -342,7 +346,7 @@ impl HotSwapCooldownPort for Completions {
         Ok(())
     }
 
-    fn abandon_provisional_window(&self, _completion: &SwapCompletion) {}
+    fn abandon_provisional_window(&self, _completion: &SwapCompletion, _attempt_id: &str) {}
 }
 
 /// A window no swap has ever opened, plus a sink — the "nothing is in effect" case.

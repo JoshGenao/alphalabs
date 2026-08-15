@@ -99,11 +99,21 @@ const FIELD_PROMOTED: &str = "last_promoted_strategy_id";
 const FIELD_PROVISIONAL_COMPLETED_AT: &str = "provisional_completed_at_seconds";
 const FIELD_PROVISIONAL_DEMOTED: &str = "provisional_demoted_strategy_id";
 const FIELD_PROVISIONAL_PROMOTED: &str = "provisional_promoted_strategy_id";
+/// The ATTEMPT's identity — adversarial review r26.
+///
+/// The strategy pair plus the instant is not proof of ownership: the instant is
+/// seconds-resolution and `--now` can pin it, so two attempts at the same swap
+/// starting in the same second are indistinguishable, and the second one's cleanup
+/// clears the first one's marker. That first attempt may have published its live
+/// designation already, which makes it the fail-open r13 exists to prevent.
+///
+/// So an attempt says who it is, once, and only that attempt can retire its marker.
+const FIELD_PROVISIONAL_ATTEMPT_ID: &str = "provisional_attempt_id";
 
 /// The complete set of keys a v1 payload may declare. Anything else fails the read: a key
 /// this build does not know is a fact it cannot honour, and honouring the rest of the
 /// record while silently dropping it is the fail-open direction.
-const KNOWN_FIELDS: [&str; 9] = [
+const KNOWN_FIELDS: [&str; 10] = [
     FIELD_MAGIC,
     FIELD_SCHEMA_VERSION,
     FIELD_COOLDOWN_DAYS,
@@ -113,17 +123,20 @@ const KNOWN_FIELDS: [&str; 9] = [
     FIELD_PROVISIONAL_COMPLETED_AT,
     FIELD_PROVISIONAL_DEMOTED,
     FIELD_PROVISIONAL_PROMOTED,
+    FIELD_PROVISIONAL_ATTEMPT_ID,
 ];
 
 /// The three completion fields are all-present-or-all-absent. A partial triple is a
 /// payload that half-remembers a swap, and there is no half of it worth believing.
 const COMPLETION_FIELDS: [&str; 3] = [FIELD_COMPLETED_AT, FIELD_DEMOTED, FIELD_PROMOTED];
 
-/// Same rule for the in-flight triple, for the same reason.
-const PROVISIONAL_FIELDS: [&str; 3] = [
+/// Same rule for the in-flight record, for the same reason — and the attempt id is
+/// part of it, so a marker can never be present without the identity that owns it.
+const PROVISIONAL_FIELDS: [&str; 4] = [
     FIELD_PROVISIONAL_COMPLETED_AT,
     FIELD_PROVISIONAL_DEMOTED,
     FIELD_PROVISIONAL_PROMOTED,
+    FIELD_PROVISIONAL_ATTEMPT_ID,
 ];
 
 /// Base name of the scratch file an atomic save writes before renaming it onto the
@@ -161,7 +174,24 @@ pub struct CooldownRecord {
     /// It SUPPRESSES exactly like a confirmed completion: over-suppressing after a
     /// maybe-swap is recoverable, under-suppressing after a real one is not. See
     /// [`resolve`], which classifies against whichever of the two runs later.
-    pub provisional_completion: Option<SwapCompletion>,
+    pub provisional: Option<ProvisionalAttempt>,
+}
+
+/// A swap ATTEMPT that opened a window and has not confirmed it.
+///
+/// The attempt id and the completion travel together and are written together, so a
+/// marker can never exist without the identity that owns it. Adversarial review r26:
+/// ownership had been inferred from the strategy pair plus the completion instant, and
+/// that instant is seconds-resolution and pinnable with `--now` — two attempts at the
+/// same swap in the same second were indistinguishable, so the second one's cleanup
+/// retired the first one's marker even though the first may already have published its
+/// live designation. Provenance has to be stated, not derived.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvisionalAttempt {
+    /// Unique to one execution of one swap. Minted by the gate, carried on the
+    /// [`crate::hot_swap_promotion::PendingCooldownWindow`], and required to clear.
+    pub attempt_id: String,
+    pub completion: SwapCompletion,
 }
 
 impl CooldownRecord {
@@ -170,7 +200,7 @@ impl CooldownRecord {
         Self {
             period: CooldownPeriodDays::default(),
             last_completion: None,
-            provisional_completion: None,
+            provisional: None,
         }
     }
 }
@@ -354,7 +384,7 @@ pub fn serialize(record: &CooldownRecord) -> String {
             FIELD_PROMOTED,
         ),
         (
-            &record.provisional_completion,
+            &record.provisional.as_ref().map(|a| a.completion.clone()),
             FIELD_PROVISIONAL_COMPLETED_AT,
             FIELD_PROVISIONAL_DEMOTED,
             FIELD_PROVISIONAL_PROMOTED,
@@ -371,6 +401,12 @@ pub fn serialize(record: &CooldownRecord) -> String {
                 completion.promoted_strategy_id.as_str()
             ));
         }
+    }
+    if let Some(attempt) = &record.provisional {
+        payload.push_str(&format!(
+            ",\"{FIELD_PROVISIONAL_ATTEMPT_ID}\":\"{}\"",
+            attempt.attempt_id
+        ));
     }
     payload.push('}');
     payload
@@ -522,12 +558,58 @@ fn deserialize(path: &Path, payload: &str) -> Result<CooldownRecord, CooldownSto
         };
 
     let last_completion = read_triple(COMPLETION_FIELDS)?;
-    let provisional_completion = read_triple(PROVISIONAL_FIELDS)?;
+    // The provisional record is a QUAD since review r26 — the triple plus the attempt
+    // id that owns it — and all four are present or all absent, for the same reason the
+    // triple is atomic: a marker with no identity cannot say who may retire it.
+    // Sliced from the declared set rather than re-listed, so the atomicity rule and the
+    // KNOWN_FIELDS whitelist cannot describe different records.
+    let [at, demoted, promoted, attempt_id_field] = PROVISIONAL_FIELDS;
+    let provisional_triple = [at, demoted, promoted];
+    let attempt_id_present = keys.contains(&attempt_id_field);
+    let triple_present = provisional_triple.iter().any(|key| keys.contains(key));
+    if attempt_id_present != triple_present {
+        return Err(malformed(
+            path,
+            format!(
+                "the provisional record is half-present ('{FIELD_PROVISIONAL_ATTEMPT_ID}' \
+                 {}, the completion fields {}); an attempt marker without the identity \
+                 that owns it cannot say who may retire it",
+                if attempt_id_present {
+                    "present"
+                } else {
+                    "absent"
+                },
+                if triple_present { "present" } else { "absent" },
+            ),
+        ));
+    }
+    let provisional = match read_triple(provisional_triple)? {
+        None => None,
+        Some(completion) => {
+            let attempt_id = json_string_value(required(FIELD_PROVISIONAL_ATTEMPT_ID)?)
+                .ok_or_else(|| {
+                    malformed(
+                        path,
+                        format!("field '{FIELD_PROVISIONAL_ATTEMPT_ID}' is not a JSON string"),
+                    )
+                })?;
+            // Same rule as a strategy id, and for the same reason: this value is written
+            // into a hand-built JSON line and read back raw, so anything the writer
+            // cannot represent exactly would round-trip as a DIFFERENT attempt — and an
+            // attempt id that is not the one recorded is a key to someone else's marker.
+            validate_strategy_id(attempt_id, FIELD_PROVISIONAL_ATTEMPT_ID)
+                .map_err(|reason| malformed(path, reason))?;
+            Some(ProvisionalAttempt {
+                attempt_id: attempt_id.to_string(),
+                completion,
+            })
+        }
+    };
 
     Ok(CooldownRecord {
         period,
         last_completion,
-        provisional_completion,
+        provisional,
     })
 }
 
@@ -623,9 +705,7 @@ pub fn set_period(
         period,
         last_completion: existing.as_ref().and_then(|r| r.last_completion.clone()),
         // A period change must neither confirm nor discard an in-flight swap.
-        provisional_completion: existing
-            .as_ref()
-            .and_then(|r| r.provisional_completion.clone()),
+        provisional: existing.as_ref().and_then(|r| r.provisional.clone()),
     };
     save(path, &record)?;
     Ok(record)
@@ -738,7 +818,7 @@ fn record_completion_inner(
         .unwrap_or_default();
     let stored_provisional = existing
         .as_ref()
-        .and_then(|record| record.provisional_completion.clone());
+        .and_then(|record| record.provisional.clone());
     let previous = existing
         .as_ref()
         .and_then(|record| record.last_completion.clone());
@@ -762,8 +842,8 @@ fn record_completion_inner(
     // the confirmed completion being written in the same locked section, so leaving it
     // would strand a marker every surface would report as an unresolved interruption.
     // Another swap's provisional record is left strictly alone.
-    let provisional_completion = match &stored_provisional {
-        Some(stored) if is_same_swap(stored, completion) => None,
+    let provisional = match &stored_provisional {
+        Some(stored) if is_same_swap(&stored.completion, completion) => None,
         other => other.clone(),
     };
 
@@ -772,7 +852,7 @@ fn record_completion_inner(
         &CooldownRecord {
             period,
             last_completion: Some(completion.clone()),
-            provisional_completion,
+            provisional,
         },
     )?;
     Ok(CompletionOutcome::Recorded { previous })
@@ -791,7 +871,8 @@ fn record_completion_inner(
 /// newer provisional marker on its way past, which is a shortening by another name.
 fn governing(record: &Option<CooldownRecord>) -> Option<&SwapCompletion> {
     let record = record.as_ref()?;
-    match (&record.last_completion, &record.provisional_completion) {
+    let in_flight = record.provisional.as_ref().map(|a| &a.completion);
+    match (&record.last_completion, in_flight) {
         (Some(confirmed), Some(in_flight)) => Some(
             if in_flight.completed_at_seconds > confirmed.completed_at_seconds {
                 in_flight
@@ -800,7 +881,7 @@ fn governing(record: &Option<CooldownRecord>) -> Option<&SwapCompletion> {
             },
         ),
         (Some(confirmed), None) => Some(confirmed),
-        (None, in_flight) => in_flight.as_ref(),
+        (None, in_flight) => in_flight,
     }
 }
 
@@ -830,7 +911,21 @@ fn is_same_swap(left: &SwapCompletion, right: &SwapCompletion) -> bool {
 pub fn begin_provisional(
     path: &Path,
     completion: &SwapCompletion,
+    attempt_id: &str,
 ) -> Result<CompletionOutcome, CooldownStoreError> {
+    // The attempt id is written into the same hand-built JSON line as the ids, so it
+    // gets the same rule: a value the writer cannot represent exactly would read back
+    // as a DIFFERENT attempt, and an attempt id that is not the one recorded is a key
+    // to somebody else's marker (review r26).
+    validate_strategy_id(attempt_id, FIELD_PROVISIONAL_ATTEMPT_ID)
+        .map_err(|reason| malformed(path, reason))?;
+    if attempt_id.is_empty() {
+        return Err(malformed(
+            path,
+            "an attempt must identify itself before it opens a window it will later have \
+             to prove it owns",
+        ));
+    }
     for (value, field) in [
         (
             completion.demoted_strategy_id.as_str(),
@@ -865,7 +960,7 @@ pub fn begin_provisional(
         .and_then(|record| record.last_completion.clone());
     let previous = existing
         .as_ref()
-        .and_then(|record| record.provisional_completion.clone());
+        .and_then(|record| record.provisional.clone());
 
     // A stranded marker belonging to a DIFFERENT swap is refused, not overwritten —
     // adversarial review r21. Displacing it looks harmless because the replacement is
@@ -880,9 +975,9 @@ pub fn begin_provisional(
     // operator must settle before another swap runs, and the message says how.
     if let Some(stranded) = existing
         .as_ref()
-        .and_then(|record| record.provisional_completion.as_ref())
+        .and_then(|record| record.provisional.as_ref())
     {
-        if !is_same_swap(stranded, completion) {
+        if !is_same_swap(&stranded.completion, completion) {
             return Err(malformed(
                 path,
                 format!(
@@ -892,9 +987,9 @@ pub fn begin_provisional(
                      Resolve it first: confirm it with `resv006_hot_swap_cooldown_cli \
                      record-completion` if that swap did complete, or clear it if it did \
                      not",
-                    stranded.demoted_strategy_id.as_str(),
-                    stranded.promoted_strategy_id.as_str(),
-                    stranded.completed_at_seconds,
+                    stranded.completion.demoted_strategy_id.as_str(),
+                    stranded.completion.promoted_strategy_id.as_str(),
+                    stranded.completion.completed_at_seconds,
                 ),
             ));
         }
@@ -916,10 +1011,15 @@ pub fn begin_provisional(
         &CooldownRecord {
             period,
             last_completion,
-            provisional_completion: Some(completion.clone()),
+            provisional: Some(ProvisionalAttempt {
+                attempt_id: attempt_id.to_string(),
+                completion: completion.clone(),
+            }),
         },
     )?;
-    Ok(CompletionOutcome::Recorded { previous })
+    Ok(CompletionOutcome::Recorded {
+        previous: previous.map(|attempt| attempt.completion),
+    })
 }
 
 /// Clear a provisional window whose swap never became durable.
@@ -931,21 +1031,25 @@ pub fn begin_provisional(
 pub fn abandon_provisional(
     path: &Path,
     completion: &SwapCompletion,
+    attempt_id: &str,
 ) -> Result<(), CooldownStoreError> {
     let _guard = ExclusiveGuard::acquire_creating(path).map_err(|e| from_lock_error(e, path))?;
     let Some(record) = load(path)? else {
         return Ok(());
     };
-    // FULL equality, not just the strategy pair — adversarial review r18. A RETRY of
-    // the same swap whose clock stepped backwards is kept out of the slot by
-    // `begin_provisional`'s monotonicity rule and writes nothing; matching on identity
-    // alone let that retry's failure clear the marker the FIRST attempt wrote, taking
-    // with it the only window suppressing the automatic triggers after an interrupted
-    // swap. An attempt clears exactly the record it wrote, or nothing.
-    let ours = record
-        .provisional_completion
-        .as_ref()
-        .is_some_and(|stored| stored == completion);
+    // An attempt clears exactly the record it wrote, or nothing — the invariant reviews
+    // r18 and r25 both landed on, from the failure arm and from the operator surface.
+    //
+    // The ATTEMPT ID is the proof, not the timestamp — adversarial review r26. Seconds
+    // resolution is not identity: two attempts at the same swap starting in the same
+    // second (or under a pinned `--now`) matched each other, so the second one's cleanup
+    // retired the first one's marker — and the first may already have published its live
+    // designation. The pair is checked too, as a consistency assertion rather than as
+    // the proof: a record whose id matches but whose swap does not is corruption, and
+    // clearing on it would be acting on a record we cannot explain.
+    let ours = record.provisional.as_ref().is_some_and(|stored| {
+        stored.attempt_id == attempt_id && is_same_swap(&stored.completion, completion)
+    });
     if !ours {
         // Nothing in flight, not ours, or a newer attempt's. Leaving it alone is the
         // safe direction: an over-suppressing marker is resolvable, an absent one is
@@ -957,7 +1061,7 @@ pub fn abandon_provisional(
         &CooldownRecord {
             period: record.period,
             last_completion: record.last_completion,
-            provisional_completion: None,
+            provisional: None,
         },
     )
 }
@@ -977,7 +1081,7 @@ pub fn abandon_provisional(
 /// candidate is actually running and then either let the window stand or clear it.
 pub fn completion_is_provisional(path: &Path) -> Option<bool> {
     let record = load(path).ok()??;
-    if record.provisional_completion.is_some() {
+    if record.provisional.is_some() {
         // An attempt is in flight, or a stranded marker is left over from one that was
         // interrupted. Either way the window an operator is looking at is not yet a
         // confirmed one, and that is exactly the state they must be told about.
@@ -1055,7 +1159,7 @@ mod resv006_cooldown_store_unit_tests {
                 demoted_strategy_id: StrategyId::new("alpha"),
                 promoted_strategy_id: StrategyId::new("beta"),
             }),
-            provisional_completion: None,
+            provisional: None,
         };
         let payload = serialize(&record);
         let parsed = deserialize(Path::new("t.json"), &payload).expect("round trip");

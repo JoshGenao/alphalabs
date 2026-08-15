@@ -185,7 +185,8 @@ fn cmd_status(rest: &[String]) -> Result<(), String> {
     // they get around to typing: the clear is a compare-and-swap against this value, and
     // a retry of the same swap between the two moves it.
     if let Ok(Some(record)) = cooldown_store::load(Path::new(&state_path)) {
-        if let Some(marker) = record.provisional_completion {
+        if let Some(attempt) = record.provisional {
+            let marker = attempt.completion;
             println!(
                 "cooldown-provisional-at-seconds:{}",
                 marker.completed_at_seconds
@@ -363,16 +364,16 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
     // matched what you named".
     let found = cooldown_store::load(path)
         .map_err(|error| format!("the cool-down window could not be read: {error}"))?
-        .and_then(|record| record.provisional_completion);
+        .and_then(|record| record.provisional);
     // FULL equality — pair AND instant. Identity is not provenance (the r18 lesson,
     // here at the operator surface): between an operator reading `status` and running
     // this command, a retry of the SAME swap can replace the marker, and a pair-only
     // match would retire the newer attempt's suppression on the strength of a request
     // about the older one.
     let matched = found.as_ref().is_some_and(|stored| {
-        stored.demoted_strategy_id.as_str() == demoted_id.as_str()
-            && stored.promoted_strategy_id.as_str() == promoted_id.as_str()
-            && stored.completed_at_seconds == at_seconds
+        stored.completion.demoted_strategy_id.as_str() == demoted_id.as_str()
+            && stored.completion.promoted_strategy_id.as_str() == promoted_id.as_str()
+            && stored.completion.completed_at_seconds == at_seconds
     });
 
     match &found {
@@ -380,13 +381,17 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
             println!("provisional-found:true");
             println!(
                 "provisional-demoted:{}",
-                stored.demoted_strategy_id.as_str()
+                stored.completion.demoted_strategy_id.as_str()
             );
             println!(
                 "provisional-promoted:{}",
-                stored.promoted_strategy_id.as_str()
+                stored.completion.promoted_strategy_id.as_str()
             );
-            println!("provisional-at-seconds:{}", stored.completed_at_seconds);
+            println!(
+                "provisional-at-seconds:{}",
+                stored.completion.completed_at_seconds
+            );
+            println!("provisional-attempt-id:{}", stored.attempt_id);
         }
         None => println!("provisional-found:false"),
     }
@@ -395,8 +400,8 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
         println!("provisional-cleared:false");
         return Err(match &found {
             Some(stored)
-                if stored.demoted_strategy_id.as_str() == demoted_id.as_str()
-                    && stored.promoted_strategy_id.as_str() == promoted_id.as_str() =>
+                if stored.completion.demoted_strategy_id.as_str() == demoted_id.as_str()
+                    && stored.completion.promoted_strategy_id.as_str() == promoted_id.as_str() =>
             {
                 format!(
                     "the marker for this swap is at {}s, not the {}s you named — it MOVED \
@@ -404,15 +409,15 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
                      Re-read it with `status` and reconcile the attempt that is actually \
                      recorded; the one you inspected is gone and the one here may be \
                      protecting a strategy that went live",
-                    stored.completed_at_seconds, at_seconds,
+                    stored.completion.completed_at_seconds, at_seconds,
                 )
             }
             Some(stored) => format!(
                 "the unconfirmed marker here belongs to a DIFFERENT swap ({} -> {}); \
                  refusing to clear it on the strength of a request naming {} -> {}. \
                  Reconcile the swap that is actually recorded",
-                stored.demoted_strategy_id.as_str(),
-                stored.promoted_strategy_id.as_str(),
+                stored.completion.demoted_strategy_id.as_str(),
+                stored.completion.promoted_strategy_id.as_str(),
                 demoted_id.as_str(),
                 promoted_id.as_str(),
             ),
@@ -423,8 +428,8 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
         });
     }
 
-    let completion = found.expect("matched implies present");
-    cooldown_store::abandon_provisional(path, &completion)
+    let attempt = found.expect("matched implies present");
+    cooldown_store::abandon_provisional(path, &attempt.completion, &attempt.attempt_id)
         .map_err(|error| format!("the marker could not be cleared: {error}"))?;
 
     // Verify the artefact, not the intent (CLAUDE.md rule 5): re-read and say what the
@@ -432,7 +437,7 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
     // needs to know whether the automatic triggers are armed again.
     let record = cooldown_store::load(path)
         .map_err(|error| format!("the marker was cleared but the window is unreadable: {error}"))?;
-    if record.and_then(|r| r.provisional_completion).is_some() {
+    if record.and_then(|r| r.provisional).is_some() {
         return Err(
             "the marker is still present after the clear; the window on disk is not what \
              this command just wrote"

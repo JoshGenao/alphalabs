@@ -213,6 +213,12 @@ struct Completions {
     /// WHICH phase ran.
     provisional: RefCell<Vec<SwapCompletion>>,
     abandoned: RefCell<Vec<SwapCompletion>>,
+    /// The attempt IDENTITIES phase one offered and the abandon named. Kept so a test
+    /// can assert the two are the same string — the r26 property: an attempt clears
+    /// the marker it wrote because it says who it is, not because a seconds-resolution
+    /// timestamp happens to match.
+    attempt_ids: RefCell<Vec<String>>,
+    abandoned_ids: RefCell<Vec<String>>,
     begin_fails_with: Option<&'static str>,
     /// The window this store REPORTS. Held here, not passed to the gate: since
     /// adversarial review r10 the gate reads its own window through the port, so a
@@ -226,6 +232,8 @@ impl Completions {
             recorded: RefCell::new(Vec::new()),
             provisional: RefCell::new(Vec::new()),
             abandoned: RefCell::new(Vec::new()),
+            attempt_ids: RefCell::new(Vec::new()),
+            abandoned_ids: RefCell::new(Vec::new()),
             begin_fails_with: None,
             fail_with: None,
             probe_fails_with: None,
@@ -239,6 +247,8 @@ impl Completions {
             recorded: RefCell::new(Vec::new()),
             provisional: RefCell::new(Vec::new()),
             abandoned: RefCell::new(Vec::new()),
+            attempt_ids: RefCell::new(Vec::new()),
+            abandoned_ids: RefCell::new(Vec::new()),
             begin_fails_with: None,
             fail_with: Some("the cool-down state file is read-only"),
             probe_fails_with: None,
@@ -252,6 +262,8 @@ impl Completions {
             recorded: RefCell::new(Vec::new()),
             provisional: RefCell::new(Vec::new()),
             abandoned: RefCell::new(Vec::new()),
+            attempt_ids: RefCell::new(Vec::new()),
+            abandoned_ids: RefCell::new(Vec::new()),
             begin_fails_with: None,
             fail_with: Some("the cool-down state file is read-only"),
             probe_fails_with: Some("cannot write hot-swap cool-down window: permission denied"),
@@ -266,6 +278,8 @@ impl Completions {
             recorded: RefCell::new(Vec::new()),
             provisional: RefCell::new(Vec::new()),
             abandoned: RefCell::new(Vec::new()),
+            attempt_ids: RefCell::new(Vec::new()),
+            abandoned_ids: RefCell::new(Vec::new()),
             begin_fails_with: None,
             fail_with: None,
             probe_fails_with: None,
@@ -300,7 +314,12 @@ impl HotSwapCooldownPort for Completions {
         Ok(self.completed_at.unwrap_or(COMPLETED_AT))
     }
 
-    fn begin_provisional_window(&self, completion: &SwapCompletion) -> Result<(), String> {
+    fn begin_provisional_window(
+        &self,
+        completion: &SwapCompletion,
+        attempt_id: &str,
+    ) -> Result<(), String> {
+        self.attempt_ids.borrow_mut().push(attempt_id.to_string());
         if let Some(reason) = self.begin_fails_with {
             return Err(reason.to_string());
         }
@@ -316,7 +335,8 @@ impl HotSwapCooldownPort for Completions {
         Ok(())
     }
 
-    fn abandon_provisional_window(&self, completion: &SwapCompletion) {
+    fn abandon_provisional_window(&self, completion: &SwapCompletion, attempt_id: &str) {
+        self.abandoned_ids.borrow_mut().push(attempt_id.to_string());
         self.abandoned.borrow_mut().push(completion.clone());
     }
 }
@@ -713,6 +733,8 @@ fn resv_6_a_failed_window_write_carries_the_completion_instant_for_the_repair() 
         recorded: RefCell::new(Vec::new()),
         provisional: RefCell::new(Vec::new()),
         abandoned: RefCell::new(Vec::new()),
+        attempt_ids: RefCell::new(Vec::new()),
+        abandoned_ids: RefCell::new(Vec::new()),
         begin_fails_with: None,
         fail_with: Some("the cool-down state file is read-only"),
         probe_fails_with: None,
@@ -756,13 +778,17 @@ fn resv_6_a_completion_clock_that_cannot_be_read_does_not_fall_back_to_the_start
         fn completed_at_seconds(&self) -> Result<u64, String> {
             Err("system clock reports a time before the Unix epoch".to_string())
         }
-        fn begin_provisional_window(&self, _completion: &SwapCompletion) -> Result<(), String> {
+        fn begin_provisional_window(
+            &self,
+            _completion: &SwapCompletion,
+            _attempt_id: &str,
+        ) -> Result<(), String> {
             Ok(())
         }
         fn confirm_window(&self, _completion: &SwapCompletion) -> Result<(), String> {
             panic!("nothing may be confirmed against a completion instant nobody could read");
         }
-        fn abandon_provisional_window(&self, _completion: &SwapCompletion) {}
+        fn abandon_provisional_window(&self, _completion: &SwapCompletion, _attempt_id: &str) {}
     }
 
     let events = PromotionEvents::default();

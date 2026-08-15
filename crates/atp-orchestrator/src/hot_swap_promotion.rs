@@ -355,7 +355,11 @@ pub trait HotSwapCooldownPort {
     /// instant the automatic triggers are held — which is the point: the gap between
     /// "the swap ran" and "the swap is durable" is the one r13 found unprotected,
     /// and over-suppressing across it is recoverable where under-suppressing is not.
-    fn begin_provisional_window(&self, completion: &SwapCompletion) -> Result<(), String>;
+    fn begin_provisional_window(
+        &self,
+        completion: &SwapCompletion,
+        attempt_id: &str,
+    ) -> Result<(), String>;
 
     /// PHASE TWO: the swap became durable, so its window is real.
     fn confirm_window(&self, completion: &SwapCompletion) -> Result<(), String>;
@@ -364,8 +368,13 @@ pub trait HotSwapCooldownPort {
     ///
     /// Best-effort by design. Failing to clear leaves a labelled marker that
     /// over-suppresses — the safe direction — and an operator can resolve it.
-    fn abandon_provisional_window(&self, completion: &SwapCompletion);
+    fn abandon_provisional_window(&self, completion: &SwapCompletion, attempt_id: &str);
 }
+
+/// Process-local counter distinguishing one swap attempt from the next. Not a clock
+/// and not an RNG, so a run stays reproducible (`--now` pins the instants; this pins
+/// the identities).
+static ATTEMPT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Who asked for a swap — the SYS-49e distinction the cool-down turns on.
 ///
@@ -542,10 +551,13 @@ pub enum CooldownWindowOutcome {
 pub struct PendingCooldownWindow {
     demoted_strategy_id: StrategyId,
     promoted_strategy_id: StrategyId,
-    /// The instant phase one offered — the token's proof of WHICH provisional record
-    /// it wrote, so a retry that wrote nothing cannot clear another attempt's marker
-    /// (adversarial review r18).
+    /// The instant phase one offered.
     attempt_at_seconds: u64,
+    /// WHICH attempt this is — the token's proof that the marker it clears is its own
+    /// (adversarial review r26). The instant alone was not proof: it is
+    /// seconds-resolution and pinnable with `--now`, so two attempts at the same swap
+    /// in the same second could clear each other's markers.
+    attempt_id: String,
 }
 
 impl PendingCooldownWindow {
@@ -553,11 +565,13 @@ impl PendingCooldownWindow {
         demoted: &StrategyId,
         promoted: &StrategyId,
         attempt_at_seconds: u64,
+        attempt_id: String,
     ) -> Self {
         Self {
             demoted_strategy_id: demoted.clone(),
             promoted_strategy_id: promoted.clone(),
             attempt_at_seconds,
+            attempt_id,
         }
     }
 
@@ -582,11 +596,14 @@ impl PendingCooldownWindow {
     where
         W: HotSwapCooldownPort,
     {
-        completions.abandon_provisional_window(&SwapCompletion {
-            completed_at_seconds: self.attempt_at_seconds,
-            demoted_strategy_id: self.demoted_strategy_id,
-            promoted_strategy_id: self.promoted_strategy_id,
-        });
+        completions.abandon_provisional_window(
+            &SwapCompletion {
+                completed_at_seconds: self.attempt_at_seconds,
+                demoted_strategy_id: self.demoted_strategy_id,
+                promoted_strategy_id: self.promoted_strategy_id,
+            },
+            &self.attempt_id,
+        );
     }
 
     /// Open the window this swap owes. The ONLY caller of
@@ -1309,7 +1326,19 @@ impl StrategyOrchestrator {
             demoted_strategy_id: demoting.clone(),
             promoted_strategy_id: candidate.clone(),
         };
-        if let Err(reason) = cooldown.store.begin_provisional_window(&provisional) {
+        // WHO this attempt is. Unique per execution and derived, not random: a store
+        // that needed an RNG could not be replayed, and `--now` already pins the clock
+        // for proof runs. The pid separates processes; the counter separates attempts
+        // within one. Adversarial review r26 — a timestamp is not an identity.
+        let attempt_id = format!(
+            "{}-{}",
+            std::process::id(),
+            ATTEMPT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        if let Err(reason) = cooldown
+            .store
+            .begin_provisional_window(&provisional, &attempt_id)
+        {
             let error = HotSwapPromotionError::CooldownWindowUnrecordable { reason };
             let _ = ports.events.record(HotSwapPromotionEvent {
                 demoting_strategy_id: demoting,
@@ -1344,6 +1373,7 @@ impl StrategyOrchestrator {
                     designation,
                     confirmation,
                     observed_at_seconds,
+                    attempt_id.clone(),
                 ),
                 None => Err(HotSwapPromotionError::DemotionNotAccepted {
                     demoting_strategy_id: demoting.clone(),
@@ -1358,7 +1388,9 @@ impl StrategyOrchestrator {
         // is r6's defect. Best-effort: a failure to clear leaves a LABELLED marker
         // that over-suppresses, which is the safe direction and is resolvable.
         if outcome.is_err() {
-            cooldown.store.abandon_provisional_window(&provisional);
+            cooldown
+                .store
+                .abandon_provisional_window(&provisional, &attempt_id);
         }
 
         // START THE NEXT WINDOW — SYS-49e's third clause, on the success arm ONLY.
@@ -1437,9 +1469,11 @@ impl StrategyOrchestrator {
         versions: &R,
         designation: &mut LiveDesignation,
         confirmation: LiveDesignationConfirmation,
-        // The instant phase one stamped its provisional record with. Threaded here so
-        // the minted token can name exactly the marker this attempt wrote (r18).
+        // The instant phase one stamped its provisional record with, and WHO wrote it.
+        // Threaded here so the minted token names exactly the marker this attempt wrote
+        // (r18) and can prove it owns that marker (r26).
         attempt_at_seconds: u64,
+        attempt_id: String,
     ) -> Result<HotSwapPromoted, HotSwapPromotionError>
     where
         Q: LivePositionProbe,
@@ -1572,6 +1606,7 @@ impl StrategyOrchestrator {
                 // The SAME instant phase one stamped its record with, so an abandon
                 // clears exactly the marker this attempt wrote and nothing else.
                 attempt_at_seconds,
+                attempt_id,
             ),
         })
     }

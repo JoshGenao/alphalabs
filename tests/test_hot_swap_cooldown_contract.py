@@ -206,8 +206,8 @@ impl StrategyOrchestrator {
         must turn the guard red, or the next edit reopens it silently.
         """
         self._rewrite(
-            "if let Err(reason) = cooldown.store.begin_provisional_window(&provisional) {",
-            "if let Err(reason) = Ok::<(), String>(()) {",
+            "        if let Err(reason) = cooldown\n            .store\n            .begin_provisional_window(&provisional, &attempt_id)\n        {",
+            "        if let Err(reason) = Ok::<(), String>(()) {",
         )
         with self.assertRaises(HotSwapCooldownCheckError) as caught:
             check_the_window_is_committed_after_the_publish(self.config, self.root)
@@ -225,9 +225,7 @@ impl StrategyOrchestrator {
         """
         module = self._module()
         source = module.read_text(encoding="utf-8")
-        opener = (
-            "        if let Err(reason) = cooldown.store.begin_provisional_window(&provisional) {"
-        )
+        opener = "        if let Err(reason) = cooldown\n            .store\n            .begin_provisional_window(&provisional, &attempt_id)\n        {"
         start = source.index(opener)
         end = source.index("\n        }\n", start) + len("\n        }\n")
         block = source[start:end]
@@ -239,7 +237,7 @@ impl StrategyOrchestrator {
         moved = without.replace(anchor, block + anchor, 1)
         self.assertNotEqual(moved, without, "reorder mutation did not apply")
         self.assertGreater(
-            moved.index("begin_provisional_window(&provisional)"),
+            moved.index("begin_provisional_window(&provisional,"),
             moved.index("let outcome = match self.resolve_demotion("),
             "the mutation must place phase one AFTER the demotion, or it tests nothing",
         )
@@ -254,8 +252,8 @@ impl StrategyOrchestrator {
         # r6's direction, which r13 must not undo: a swap that FAILS leaves no
         # window, or a failed changeover suppresses the triggers for seven days.
         self._rewrite(
-            "cooldown.store.abandon_provisional_window(&provisional);",
-            "let _ = &provisional;",
+            "            cooldown\n                .store\n                .abandon_provisional_window(&provisional, &attempt_id);",
+            "            let _ = &provisional;",
         )
         with self.assertRaises(HotSwapCooldownCheckError) as caught:
             check_the_window_is_committed_after_the_publish(self.config, self.root)

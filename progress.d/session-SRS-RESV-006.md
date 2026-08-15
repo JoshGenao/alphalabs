@@ -412,6 +412,23 @@ without the change.
   what is actually there. `status` publishes `cooldown-provisional-at-seconds` alongside
   the pair, so the value to pass comes from the same read.
 
+* **r26 `block`** — *a same-second retry can clear another attempt's marker* [high].
+  Class: *provenance was still being INFERRED*. Ownership of a provisional marker had been
+  derived from the strategy pair (r18 found that insufficient), then from the pair plus the
+  completion instant (r25, at the operator surface). Still insufficient: the instant is
+  seconds-resolution and `--now` can pin it, so two attempts at the same swap starting in
+  the same second are indistinguishable — and the second one's cleanup clears the first
+  one's marker, which may be the only thing suppressing the automatic triggers against a
+  strategy the first attempt had already promoted.
+
+  Three rounds of sharpening a comparison; the answer was to stop comparing. The
+  provisional record is a QUAD now — the completion plus a `provisional_attempt_id` the
+  gate mints (pid + a process-local counter: unique per execution, derived rather than
+  random so a run stays replayable) — written and read together, and only the attempt that
+  wrote a marker can retire it. The pair is still checked on abandon as a CONSISTENCY
+  assertion rather than as the proof: a record whose id matches but whose swap does not is
+  corruption, and clearing on it would be acting on a record nobody can explain.
+
 Every finding was accepted and fixed; none was disputed.
 
 ## Playbook updates

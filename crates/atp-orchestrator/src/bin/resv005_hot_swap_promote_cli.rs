@@ -356,8 +356,12 @@ impl HotSwapCooldownPort for FileCooldownStore {
     /// PHASE ONE (adversarial review r13): open the window BEFORE the demotion, so
     /// no interruption between the promotion and the confirmation can leave a live
     /// strategy with the automatic triggers still armed.
-    fn begin_provisional_window(&self, completion: &SwapCompletion) -> Result<(), String> {
-        match cooldown_store::begin_provisional(&self.path, completion) {
+    fn begin_provisional_window(
+        &self,
+        completion: &SwapCompletion,
+        attempt_id: &str,
+    ) -> Result<(), String> {
+        match cooldown_store::begin_provisional(&self.path, completion, attempt_id) {
             Ok(CompletionOutcome::Recorded { .. }) => Ok(()),
             // A NEWER completion is already stored, so this provisional record was
             // not written — and must not be. That is reachable on the legitimate
@@ -374,8 +378,8 @@ impl HotSwapCooldownPort for FileCooldownStore {
     /// Give back a provisional window whose swap did not become durable. Best-effort
     /// and infallible by signature: the caller is already on a failure path, and a
     /// window that could not be cleared over-suppresses, which is the safe direction.
-    fn abandon_provisional_window(&self, completion: &SwapCompletion) {
-        let _ = cooldown_store::abandon_provisional(&self.path, completion);
+    fn abandon_provisional_window(&self, completion: &SwapCompletion, attempt_id: &str) {
+        let _ = cooldown_store::abandon_provisional(&self.path, completion, attempt_id);
     }
 
     /// PHASE TWO: confirm the window and stamp it with the real completion instant,

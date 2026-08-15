@@ -163,3 +163,13 @@ Reference implementation: `crates/atp-simulation/src/backtest_store.rs::save_to_
     safety window. Extract ONE selector and route the reader and every writer through it; a
     comment saying "keep these in sync" is not a mechanism. Reviews r18 and r19 were the same
     defect on the failure arm and the success arm, found a round apart. `(RESV-006 r19)`
+33. **Identity is stated, never derived — and a timestamp is not an identity.** RESV-006
+    spent three review rounds sharpening the comparison that decided whether a durable
+    marker was "mine": the entity pair (r18), then the pair plus the instant (r25), then the
+    same-second collision (r26). Each fix narrowed the window and none closed it, because a
+    record's CONTENTS can coincide. Mint an explicit attempt/generation id, write it
+    alongside the record atomically, and require it to retire the record. Derive it (pid +
+    a process-local counter) rather than randomising, so runs stay replayable. Keep the
+    content check as a consistency assertion, not as the proof: a record whose id matches
+    but whose subject does not is corruption, and acting on it is acting on something you
+    cannot explain. `(RESV-006 r26)`

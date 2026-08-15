@@ -6,7 +6,9 @@
 //! because "no cool-down" is an all-clear authorising an automatic live-strategy swap.
 
 use atp_orchestrator::cooldown::{CooldownPeriodDays, CooldownState, SwapCompletion};
-use atp_orchestrator::cooldown_store::{self, CompletionOutcome, CooldownStoreError};
+use atp_orchestrator::cooldown_store::{
+    self, CompletionOutcome, CooldownStoreError, ProvisionalAttempt,
+};
 use atp_types::StrategyId;
 use std::fs;
 use std::path::PathBuf;
@@ -14,6 +16,8 @@ use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const COMPLETED_AT: u64 = 1_715_000_000;
+/// The attempt identity most cases do not vary; the ones that DO name their own.
+const ATTEMPT: &str = "attempt-1";
 const SEVEN_DAYS: u64 = 7 * 86_400;
 
 static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -48,6 +52,14 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The provisional record `ATTEMPT` would have written for `completion`.
+fn marker(completion: SwapCompletion) -> ProvisionalAttempt {
+    ProvisionalAttempt {
+        attempt_id: ATTEMPT.to_string(),
+        completion,
     }
 }
 
@@ -514,7 +526,8 @@ fn resv_6_the_provisional_flag_survives_the_round_trip_in_both_states() {
         let path = dir.path(&format!("cd-{provisional}.json"));
         cooldown_store::record_completion(&path, &completion_at(COMPLETED_AT)).unwrap();
         if provisional {
-            cooldown_store::begin_provisional(&path, &completion_at(COMPLETED_AT + 5)).unwrap();
+            cooldown_store::begin_provisional(&path, &completion_at(COMPLETED_AT + 5), ATTEMPT)
+                .unwrap();
         }
         assert_eq!(
             cooldown_store::completion_is_provisional(&path),
@@ -554,7 +567,7 @@ fn resv_6_a_failed_in_window_swap_cannot_delete_the_window_it_ran_inside() {
         demoted_strategy_id: StrategyId::new("beta"),
         promoted_strategy_id: StrategyId::new("gamma"),
     };
-    cooldown_store::begin_provisional(&path, &b).unwrap();
+    cooldown_store::begin_provisional(&path, &b, ATTEMPT).unwrap();
 
     // A's completion is untouched while B is in flight — that is the whole fix.
     let mid = cooldown_store::load(&path).unwrap().expect("record");
@@ -564,7 +577,7 @@ fn resv_6_a_failed_in_window_swap_cannot_delete_the_window_it_ran_inside() {
         "an in-flight attempt must not displace the completion it is running inside"
     );
 
-    cooldown_store::abandon_provisional(&path, &b).unwrap();
+    cooldown_store::abandon_provisional(&path, &b, ATTEMPT).unwrap();
 
     let after = cooldown_store::load(&path).unwrap().expect("record");
     assert_eq!(
@@ -572,7 +585,7 @@ fn resv_6_a_failed_in_window_swap_cannot_delete_the_window_it_ran_inside() {
         Some(&a),
         "abandoning a failed swap must not delete the window it ran inside"
     );
-    assert_eq!(after.provisional_completion, None, "B's marker is gone");
+    assert_eq!(after.provisional, None, "B's marker is gone");
 
     // ...and the window A opened still suppresses, read through the production resolver.
     let state = cooldown_store::resolve(Some(&path), COMPLETED_AT + 7_200);
@@ -603,7 +616,7 @@ fn resv_6_an_in_flight_attempt_extends_the_window_it_never_shortens() {
         demoted_strategy_id: StrategyId::new("beta"),
         promoted_strategy_id: StrategyId::new("gamma"),
     };
-    cooldown_store::begin_provisional(&path, &newer).unwrap();
+    cooldown_store::begin_provisional(&path, &newer, ATTEMPT).unwrap();
 
     // An instant PAST the confirmed window but well inside the in-flight one.
     let state = cooldown_store::resolve(Some(&path), COMPLETED_AT + SEVEN_DAYS + 60);
@@ -631,7 +644,7 @@ fn resv_6_confirming_retires_this_swaps_marker_and_leaves_another_swaps_alone() 
         demoted_strategy_id: StrategyId::new("alpha"),
         promoted_strategy_id: StrategyId::new("beta"),
     };
-    cooldown_store::begin_provisional(&path, &ours).unwrap();
+    cooldown_store::begin_provisional(&path, &ours, ATTEMPT).unwrap();
     let confirmed = SwapCompletion {
         completed_at_seconds: COMPLETED_AT + 42,
         ..ours.clone()
@@ -640,7 +653,7 @@ fn resv_6_confirming_retires_this_swaps_marker_and_leaves_another_swaps_alone() 
     let after = cooldown_store::load(&path).unwrap().expect("record");
     assert_eq!(after.last_completion.as_ref(), Some(&confirmed));
     assert_eq!(
-        after.provisional_completion, None,
+        after.provisional, None,
         "a confirmed swap must not leave its own marker behind"
     );
 
@@ -650,7 +663,7 @@ fn resv_6_confirming_retires_this_swaps_marker_and_leaves_another_swaps_alone() 
         demoted_strategy_id: StrategyId::new("beta"),
         promoted_strategy_id: StrategyId::new("gamma"),
     };
-    cooldown_store::begin_provisional(&path, &theirs).unwrap();
+    cooldown_store::begin_provisional(&path, &theirs, ATTEMPT).unwrap();
     let unrelated = SwapCompletion {
         completed_at_seconds: COMPLETED_AT + 200,
         demoted_strategy_id: StrategyId::new("delta"),
@@ -658,11 +671,8 @@ fn resv_6_confirming_retires_this_swaps_marker_and_leaves_another_swaps_alone() 
     };
     cooldown_store::record_completion(&path, &unrelated).unwrap();
     assert_eq!(
-        cooldown_store::load(&path)
-            .unwrap()
-            .unwrap()
-            .provisional_completion,
-        Some(theirs),
+        cooldown_store::load(&path).unwrap().unwrap().provisional,
+        Some(marker(theirs)),
         "one swap's completion must not retire another's in-flight marker"
     );
 }
@@ -675,19 +685,16 @@ fn resv_6_an_older_provisional_cannot_shorten_an_in_flight_window() {
     let path = scratch.path("cooldown.json");
 
     let newer = completion_at(COMPLETED_AT + 1_000);
-    cooldown_store::begin_provisional(&path, &newer).unwrap();
+    cooldown_store::begin_provisional(&path, &newer, ATTEMPT).unwrap();
     let older = completion_at(COMPLETED_AT);
-    let outcome = cooldown_store::begin_provisional(&path, &older).unwrap();
+    let outcome = cooldown_store::begin_provisional(&path, &older, ATTEMPT).unwrap();
     assert!(
         matches!(outcome, CompletionOutcome::KeptNewer { .. }),
         "an older attempt must not replace a newer in-flight one, got {outcome:?}"
     );
     assert_eq!(
-        cooldown_store::load(&path)
-            .unwrap()
-            .unwrap()
-            .provisional_completion,
-        Some(newer)
+        cooldown_store::load(&path).unwrap().unwrap().provisional,
+        Some(marker(newer))
     );
 }
 
@@ -709,23 +716,24 @@ fn resv_6_a_retry_that_wrote_nothing_cannot_clear_the_attempt_that_did() {
     let path = scratch.path("cooldown.json");
 
     let first = completion_at(COMPLETED_AT + 1_000);
-    cooldown_store::begin_provisional(&path, &first).unwrap();
+    cooldown_store::begin_provisional(&path, &first, ATTEMPT).unwrap();
 
+    // A RETRY is a different attempt and says so (review r26). Under the old model it
+    // was indistinguishable from the first — same pair, and a seconds-resolution
+    // instant that `--now` can pin — which is what let its cleanup clear the marker it
+    // never wrote.
     let retry = completion_at(COMPLETED_AT); // same pair, older instant
-    let kept = cooldown_store::begin_provisional(&path, &retry).unwrap();
+    let kept = cooldown_store::begin_provisional(&path, &retry, "attempt-2").unwrap();
     assert!(
         matches!(kept, CompletionOutcome::KeptNewer { .. }),
         "the retry must be kept out, or this test is not exercising r18: {kept:?}"
     );
 
-    cooldown_store::abandon_provisional(&path, &retry).unwrap();
+    cooldown_store::abandon_provisional(&path, &retry, "attempt-2").unwrap();
 
     assert_eq!(
-        cooldown_store::load(&path)
-            .unwrap()
-            .unwrap()
-            .provisional_completion,
-        Some(first),
+        cooldown_store::load(&path).unwrap().unwrap().provisional,
+        Some(marker(first)),
         "an attempt that wrote nothing must not clear the marker another attempt wrote"
     );
     let state = cooldown_store::resolve(Some(&path), COMPLETED_AT + 2_000);
@@ -744,14 +752,11 @@ fn resv_6_the_attempt_that_did_write_still_clears_its_own_marker() {
     let path = scratch.path("cooldown.json");
 
     let mine = completion_at(COMPLETED_AT + 1_000);
-    cooldown_store::begin_provisional(&path, &mine).unwrap();
-    cooldown_store::abandon_provisional(&path, &mine).unwrap();
+    cooldown_store::begin_provisional(&path, &mine, ATTEMPT).unwrap();
+    cooldown_store::abandon_provisional(&path, &mine, ATTEMPT).unwrap();
 
     assert_eq!(
-        cooldown_store::load(&path)
-            .unwrap()
-            .unwrap()
-            .provisional_completion,
+        cooldown_store::load(&path).unwrap().unwrap().provisional,
         None,
         "the attempt that wrote the marker must be able to clear it"
     );
@@ -771,7 +776,7 @@ fn resv_6_a_confirmation_cannot_shorten_a_newer_provisional_window() {
     let path = scratch.path("cooldown.json");
 
     let interrupted = completion_at(COMPLETED_AT + 5_000);
-    cooldown_store::begin_provisional(&path, &interrupted).unwrap();
+    cooldown_store::begin_provisional(&path, &interrupted, ATTEMPT).unwrap();
 
     let stale_confirm = completion_at(COMPLETED_AT);
     let outcome = cooldown_store::record_completion(&path, &stale_confirm).unwrap();
@@ -782,8 +787,8 @@ fn resv_6_a_confirmation_cannot_shorten_a_newer_provisional_window() {
 
     let after = cooldown_store::load(&path).unwrap().expect("record");
     assert_eq!(
-        after.provisional_completion,
-        Some(interrupted.clone()),
+        after.provisional,
+        Some(marker(interrupted.clone())),
         "the newer marker must survive — it is the window that is suppressing"
     );
     assert_eq!(
@@ -802,7 +807,7 @@ fn resv_6_a_confirmation_newer_than_the_marker_still_lands() {
     let path = scratch.path("cooldown.json");
 
     let attempt = completion_at(COMPLETED_AT);
-    cooldown_store::begin_provisional(&path, &attempt).unwrap();
+    cooldown_store::begin_provisional(&path, &attempt, ATTEMPT).unwrap();
     let completed = completion_at(COMPLETED_AT + 42);
     let outcome = cooldown_store::record_completion(&path, &completed).unwrap();
     assert!(
@@ -813,7 +818,7 @@ fn resv_6_a_confirmation_newer_than_the_marker_still_lands() {
     let after = cooldown_store::load(&path).unwrap().expect("record");
     assert_eq!(after.last_completion, Some(completed));
     assert_eq!(
-        after.provisional_completion, None,
+        after.provisional, None,
         "and it retires its own marker on the way"
     );
 }
@@ -827,7 +832,7 @@ fn resv_6_the_window_a_writer_guards_is_the_window_a_reader_resolves() {
     let path = scratch.path("cooldown.json");
 
     cooldown_store::record_completion(&path, &completion_at(COMPLETED_AT)).unwrap();
-    cooldown_store::begin_provisional(&path, &completion_at(COMPLETED_AT + 900)).unwrap();
+    cooldown_store::begin_provisional(&path, &completion_at(COMPLETED_AT + 900), ATTEMPT).unwrap();
 
     // The reader says the later slot governs...
     assert_eq!(
@@ -904,7 +909,7 @@ fn resv_6_the_preflight_preserves_a_swap_completion_it_finds() {
 
     let completion = completion_at(COMPLETED_AT);
     cooldown_store::record_completion(&path, &completion).unwrap();
-    cooldown_store::begin_provisional(&path, &completion_at(COMPLETED_AT + 500)).unwrap();
+    cooldown_store::begin_provisional(&path, &completion_at(COMPLETED_AT + 500), ATTEMPT).unwrap();
     let before = cooldown_store::load(&path).unwrap().expect("record");
 
     cooldown_store::probe_recordable(&path, &StrategyId::new("alpha"), &StrategyId::new("beta"))
@@ -942,14 +947,14 @@ fn resv_6_a_new_swap_cannot_displace_another_swaps_unconfirmed_marker() {
         demoted_strategy_id: StrategyId::new("alpha"),
         promoted_strategy_id: StrategyId::new("beta"),
     };
-    cooldown_store::begin_provisional(&path, &stranded).unwrap();
+    cooldown_store::begin_provisional(&path, &stranded, ATTEMPT).unwrap();
 
     let follow_up = SwapCompletion {
         completed_at_seconds: COMPLETED_AT + 3_600,
         demoted_strategy_id: StrategyId::new("beta"),
         promoted_strategy_id: StrategyId::new("gamma"),
     };
-    let refused = cooldown_store::begin_provisional(&path, &follow_up)
+    let refused = cooldown_store::begin_provisional(&path, &follow_up, ATTEMPT)
         .expect_err("a different swap's unconfirmed marker must not be replaced");
     let message = refused.to_string();
     assert!(
@@ -962,11 +967,8 @@ fn resv_6_a_new_swap_cannot_displace_another_swaps_unconfirmed_marker() {
     );
 
     assert_eq!(
-        cooldown_store::load(&path)
-            .unwrap()
-            .unwrap()
-            .provisional_completion,
-        Some(stranded),
+        cooldown_store::load(&path).unwrap().unwrap().provisional,
+        Some(marker(stranded)),
         "the stranded marker survives — it may be the only thing suppressing a \
          strategy that went live before it was interrupted"
     );
@@ -981,17 +983,14 @@ fn resv_6_the_same_swap_may_still_reopen_its_own_marker() {
     let path = scratch.path("cooldown.json");
 
     let first = completion_at(COMPLETED_AT);
-    cooldown_store::begin_provisional(&path, &first).unwrap();
+    cooldown_store::begin_provisional(&path, &first, ATTEMPT).unwrap();
     let retry = completion_at(COMPLETED_AT + 60);
-    cooldown_store::begin_provisional(&path, &retry)
+    cooldown_store::begin_provisional(&path, &retry, ATTEMPT)
         .expect("the same swap may reopen its own marker");
 
     assert_eq!(
-        cooldown_store::load(&path)
-            .unwrap()
-            .unwrap()
-            .provisional_completion,
-        Some(retry),
+        cooldown_store::load(&path).unwrap().unwrap().provisional,
+        Some(marker(retry)),
         "and the retry's newer instant governs, because it suppresses for longer"
     );
 }
@@ -1021,8 +1020,85 @@ fn resv_6_a_confirmed_window_does_not_block_an_acknowledged_manual_swap() {
             demoted_strategy_id: StrategyId::new("beta"),
             promoted_strategy_id: StrategyId::new("gamma"),
         },
+        ATTEMPT,
     )
     .expect("an acknowledged manual swap inside a confirmed window must proceed");
+}
+
+#[test]
+fn resv_6_a_same_second_retry_cannot_clear_another_attempts_marker() {
+    // Adversarial review r26 [high]. The last place ownership was still INFERRED rather
+    // than stated. `abandon_provisional` took the strategy pair plus
+    // `completed_at_seconds` as proof — but that instant is seconds-resolution and
+    // `--now` can pin it, so two attempts at the same swap starting in the same second
+    // are indistinguishable. Attempt A publishes its live designation and is
+    // interrupted before confirming; attempt B starts in the same second, fails, and
+    // its cleanup matches A's marker exactly. B clears the only thing suppressing the
+    // automatic triggers against a strategy A had just promoted.
+    //
+    // An attempt now says WHO it is, and only that attempt can retire its marker. Note
+    // the completions here are byte-identical — the whole point is that they no longer
+    // decide anything.
+    let scratch = Scratch::new("r26-same-second");
+    let path = scratch.path("cooldown.json");
+
+    let same_instant = completion_at(COMPLETED_AT);
+    cooldown_store::begin_provisional(&path, &same_instant, "attempt-a").unwrap();
+
+    // B's cleanup, naming an identical completion but a different attempt.
+    cooldown_store::abandon_provisional(&path, &same_instant, "attempt-b").unwrap();
+
+    assert_eq!(
+        cooldown_store::load(&path).unwrap().unwrap().provisional,
+        Some(ProvisionalAttempt {
+            attempt_id: "attempt-a".to_string(),
+            completion: same_instant.clone(),
+        }),
+        "a same-second retry must not clear a marker it did not write — the attempt \
+         that did may already have published its live designation"
+    );
+    assert!(
+        !cooldown_store::resolve(Some(&path), COMPLETED_AT + 60).proven_clear(),
+        "and the window that marker holds must still suppress"
+    );
+
+    // The non-vacuity control: the attempt that DID write still clears its own, or the
+    // r18/r22 direction breaks and a failed changeover leaves seven days of suppression.
+    cooldown_store::abandon_provisional(&path, &same_instant, "attempt-a").unwrap();
+    assert_eq!(
+        cooldown_store::load(&path).unwrap().unwrap().provisional,
+        None
+    );
+}
+
+#[test]
+fn resv_6_a_marker_without_an_identity_is_refused_on_read() {
+    // The record is a QUAD: the completion and the attempt that owns it are written
+    // together or not at all. A marker with no identity cannot say who may retire it,
+    // so a payload carrying one is corruption — and corruption reads as UNKNOWN, which
+    // suppresses, rather than as a marker anybody could clear.
+    let scratch = Scratch::new("r26-half-record");
+    let path = scratch.path("cooldown.json");
+    cooldown_store::begin_provisional(&path, &completion_at(COMPLETED_AT), ATTEMPT).unwrap();
+
+    let payload = fs::read_to_string(&path).unwrap();
+    let stripped = payload.replace(&format!(",\"provisional_attempt_id\":\"{ATTEMPT}\""), "");
+    assert_ne!(
+        stripped, payload,
+        "the attempt id must have been in the payload"
+    );
+    fs::write(&path, &stripped).unwrap();
+
+    let error = cooldown_store::load(&path).expect_err("a half-present record must be refused");
+    assert!(
+        error.to_string().contains("half-present"),
+        "the refusal must name what is missing: {error}"
+    );
+    assert_eq!(
+        cooldown_store::resolve(Some(&path), COMPLETED_AT + 60).as_str(),
+        "UNKNOWN",
+        "and an unreadable window suppresses — it is never 'no cool-down'"
+    );
 }
 
 // NOTE: the relative-path case needs `set_current_dir`, which is process-global and would

@@ -35,6 +35,8 @@ pytestmark = [pytest.mark.domain, pytest.mark.safety]
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 COMPLETED_AT = 1_715_000_000
+#: The attempt id the planted interruptions carry — a real gate mints "<pid>-<seq>".
+INTERRUPTED_ATTEMPT = "4242-0"
 SEVEN_DAYS = 7 * 86_400
 DURING = COMPLETED_AT + 3_600
 AFTER = COMPLETED_AT + SEVEN_DAYS + 1
@@ -1022,6 +1024,10 @@ def test_an_interrupted_swap_leaves_a_window_that_still_suppresses(swap_binaries
     record["provisional_completed_at_seconds"] = record.pop("last_completed_at_seconds")
     record["provisional_demoted_strategy_id"] = record.pop("last_demoted_strategy_id")
     record["provisional_promoted_strategy_id"] = record.pop("last_promoted_strategy_id")
+    # The attempt's identity travels with the marker (review r26): a record carrying one
+    # without the other is half-present and is refused on read, so the interruption this
+    # plants has to name an attempt exactly as a real one would.
+    record["provisional_attempt_id"] = INTERRUPTED_ATTEMPT
     state.write_text(json.dumps(record))
 
     # 1. The operator surface says a window is in effect...
@@ -1070,6 +1076,10 @@ def test_an_operator_can_clear_a_stranded_provisional_window(tmp_path) -> None:
     record["provisional_completed_at_seconds"] = record.pop("last_completed_at_seconds")
     record["provisional_demoted_strategy_id"] = record.pop("last_demoted_strategy_id")
     record["provisional_promoted_strategy_id"] = record.pop("last_promoted_strategy_id")
+    # The attempt's identity travels with the marker (review r26): a record carrying one
+    # without the other is half-present and is refused on read, so the interruption this
+    # plants has to name an attempt exactly as a real one would.
+    record["provisional_attempt_id"] = INTERRUPTED_ATTEMPT
     state.write_text(json.dumps(record))
     assert (
         _kv(_cooldown("status", "--state", str(state), "--now", str(DURING)).stdout)[
@@ -1211,6 +1221,10 @@ def test_a_failed_retry_cannot_clear_an_earlier_attempts_window(swap_binaries, t
     record["provisional_completed_at_seconds"] = record.pop("last_completed_at_seconds")
     record["provisional_demoted_strategy_id"] = record.pop("last_demoted_strategy_id")
     record["provisional_promoted_strategy_id"] = record.pop("last_promoted_strategy_id")
+    # The attempt's identity travels with the marker (review r26): a record carrying one
+    # without the other is half-present and is refused on read, so the interruption this
+    # plants has to name an attempt exactly as a real one would.
+    record["provisional_attempt_id"] = INTERRUPTED_ATTEMPT
     state.write_text(json.dumps(record))
     # Parsed, not raw: the pre-flight probe (`probe_recordable`) performs a real locked
     # read-modify-write, so the bytes are legitimately rewritten in canonical form even
@@ -1255,6 +1269,10 @@ def test_the_repair_cannot_shorten_an_INTERRUPTED_attempts_window(tmp_path) -> N
     record["provisional_completed_at_seconds"] = record.pop("last_completed_at_seconds")
     record["provisional_demoted_strategy_id"] = record.pop("last_demoted_strategy_id")
     record["provisional_promoted_strategy_id"] = record.pop("last_promoted_strategy_id")
+    # The attempt's identity travels with the marker (review r26): a record carrying one
+    # without the other is half-present and is refused on read, so the interruption this
+    # plants has to name an attempt exactly as a real one would.
+    record["provisional_attempt_id"] = INTERRUPTED_ATTEMPT
     state.write_text(json.dumps(record))
 
     stale = _cooldown(
@@ -1356,6 +1374,10 @@ def _strand(state: Path, completed_at: int = COMPLETED_AT) -> None:
     record["provisional_completed_at_seconds"] = record.pop("last_completed_at_seconds")
     record["provisional_demoted_strategy_id"] = record.pop("last_demoted_strategy_id")
     record["provisional_promoted_strategy_id"] = record.pop("last_promoted_strategy_id")
+    # The attempt's identity travels with the marker (review r26): a record carrying one
+    # without the other is half-present and is refused on read, so the interruption this
+    # plants has to name an attempt exactly as a real one would.
+    record["provisional_attempt_id"] = INTERRUPTED_ATTEMPT
     state.write_text(json.dumps(record))
 
 
