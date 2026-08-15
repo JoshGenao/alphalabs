@@ -1349,6 +1349,161 @@ def test_the_repair_command_states_the_window_verdict_exactly_once(tmp_path) -> 
     assert _kv(result.stdout)["cooldown-window-started"] == "true"
 
 
+def _strand(state: Path, completed_at: int = COMPLETED_AT) -> None:
+    """An interrupted swap's leftovers: phase one written, phase two never reached."""
+    _open_window(state, completed_at=completed_at)
+    record = json.loads(state.read_text())
+    record["provisional_completed_at_seconds"] = record.pop("last_completed_at_seconds")
+    record["provisional_demoted_strategy_id"] = record.pop("last_demoted_strategy_id")
+    record["provisional_promoted_strategy_id"] = record.pop("last_promoted_strategy_id")
+    state.write_text(json.dumps(record))
+
+
+def test_an_operator_can_reconcile_an_interrupted_swap_that_did_not_complete(tmp_path) -> None:
+    """Adversarial review r22 [high] — the recovery path r21's refusal promised.
+
+    Round 21 made a new swap refuse to displace another swap's unconfirmed marker, and
+    the refusal told the operator to "clear it if it did not complete". Nothing could:
+    the only public write path was ``record-completion``, which would have turned a
+    swap that never completed into one that did. The honest options were to hand-edit
+    the file or to lie to the tool, and an error message that names a capability the
+    surface does not have is worse than one that admits the dead end.
+    """
+    state = tmp_path / "cd.json"
+    log = tmp_path / "triggers.jsonl"
+    _strand(state)
+
+    # It is suppressing, which is why clearing it is a safety act and not a cleanup.
+    assert _kv(_evaluate(state, log, DURING).stdout)["cooldown-suppressed"] == "true"
+
+    cleared = _cooldown(
+        "clear-provisional",
+        "--state",
+        str(state),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--confirm",
+    )
+    assert cleared.returncode == 0, cleared.stderr
+    fields = _kv(cleared.stdout)
+    assert fields["provisional-found"] == "true"
+    assert fields["provisional-cleared"] == "true"
+    assert fields["provisional-at-seconds"] == str(COMPLETED_AT), (
+        "the report must describe the marker that was actually there"
+    )
+
+    # Reconciled: no window, and the automatic triggers are armed again — which is the
+    # correct outcome for a swap that never happened, and the reason --confirm is
+    # required to get here.
+    after = _kv(_cooldown("status", "--state", str(state), "--now", str(DURING)).stdout)
+    assert after["cooldown-state"] == "NEVER_SWAPPED"
+    assert after["cooldown-completion-provisional"] == "unknown"
+    assert _kv(_evaluate(state, log, DURING).stdout)["cooldown-suppressed"] == "false"
+
+
+def test_clearing_a_marker_needs_explicit_confirmation(tmp_path) -> None:
+    # Retiring suppression is a safety act (SYS-2d / NFR-S2). Without --confirm nothing
+    # moves, and the refusal points at the command that CONFIRMS rather than retires.
+    state = tmp_path / "cd.json"
+    _strand(state)
+    before = json.loads(state.read_text())
+
+    refused = _cooldown(
+        "clear-provisional", "--state", str(state), "--demoted", "live-a", "--promoted", "cand-b"
+    )
+    assert refused.returncode != 0
+    assert "--confirm is required" in refused.stderr
+    assert "record-completion instead" in refused.stderr
+    assert json.loads(state.read_text()) == before, "an unconfirmed clear must move nothing"
+
+
+def test_the_clear_refuses_a_marker_belonging_to_a_different_swap(tmp_path) -> None:
+    # An operator reconciles a specific interruption. Clearing whatever happens to be
+    # there on the strength of a request naming a different swap is how the wrong
+    # window gets retired.
+    state = tmp_path / "cd.json"
+    _strand(state)
+    before = json.loads(state.read_text())
+
+    refused = _cooldown(
+        "clear-provisional",
+        "--state",
+        str(state),
+        "--demoted",
+        "someone-else",
+        "--promoted",
+        "not-mine",
+        "--confirm",
+    )
+    assert refused.returncode != 0
+    assert "belongs to a DIFFERENT swap" in refused.stderr
+    assert _kv(refused.stdout)["provisional-cleared"] == "false"
+    assert json.loads(state.read_text()) == before
+
+
+def test_the_clear_can_never_retire_a_CONFIRMED_window(tmp_path) -> None:
+    # The invariant that makes this command safe to hand an operator: a swap that
+    # really did complete keeps its cool-down, whatever anyone types.
+    state = tmp_path / "cd.json"
+    log = tmp_path / "triggers.jsonl"
+    _open_window(state)
+    before = json.loads(state.read_text())
+
+    refused = _cooldown(
+        "clear-provisional",
+        "--state",
+        str(state),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--confirm",
+    )
+    assert refused.returncode != 0
+    assert "no unconfirmed marker" in refused.stderr
+    assert json.loads(state.read_text()) == before
+    assert _kv(_evaluate(state, log, DURING).stdout)["cooldown-suppressed"] == "true", (
+        "a real cool-down survives an attempt to clear it and keeps suppressing"
+    )
+
+
+def test_reconciling_the_marker_unblocks_the_next_swap(swap_binaries, tmp_path) -> None:
+    """The loop closes: r21's refusal, r22's recovery, and the swap that was blocked.
+
+    This is the whole operator story in one test — an interrupted swap blocks the next
+    one, the operator establishes it did not complete and clears it, and the swap they
+    were trying to run now goes through.
+    """
+    state = tmp_path / "cd.json"
+    _strand(state, completed_at=COMPLETED_AT)
+
+    blocked = _swap(
+        swap_binaries, tmp_path, cooldown_state=state, now=DURING, extra=("--confirm-cooldown",)
+    )
+    assert blocked.returncode != 0, "an unreconciled interruption must block a new swap"
+    assert "unconfirmed swap is already recorded" in blocked.stderr, blocked.stderr
+
+    cleared = _cooldown(
+        "clear-provisional",
+        "--state",
+        str(state),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--confirm",
+    )
+    assert cleared.returncode == 0, cleared.stderr
+
+    unblocked = _swap(swap_binaries, tmp_path, cooldown_state=state, now=DURING)
+    assert unblocked.returncode == 0, unblocked.stderr
+    assert _kv(_cooldown("status", "--state", str(state), "--now", str(DURING + 1)).stdout)[
+        "cooldown-started-at-seconds"
+    ] == str(DURING), "and the window now running is the one the NEW swap opened"
+
+
 def test_a_confirmed_window_is_reported_as_confirmed(swap_binaries, tmp_path) -> None:
     """The other direction, without which the case above proves nothing.
 

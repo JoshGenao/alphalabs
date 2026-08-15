@@ -1,7 +1,8 @@
 //! SRS-RESV-006 / SyRS SYS-49e operator CLI — the Hot-Swap cool-down window.
 //!
-//! Three operator concerns: read the window (`status`), set how long it lasts
-//! (`configure`), and record a swap completion that STARTS it (`record-completion`).
+//! Four operator concerns: read the window (`status`), set how long it lasts
+//! (`configure`), record a swap completion that STARTS it (`record-completion`), and
+//! clear an unconfirmed marker an interrupted swap left behind (`clear-provisional`).
 //!
 //! **Separate from `resv003_hot_swap_trigger_cli` deliberately.** That tool decides which
 //! triggers fire; this one can open the window that suppresses them. Folding the two
@@ -37,6 +38,8 @@ SUBCOMMANDS:
     configure           Set the cool-down period durably (--set-days).
     record-completion   Record a swap completion, STARTING the window at its
                         timestamp. The production caller is SRS-RESV-005.
+    clear-provisional   Clear an UNCONFIRMED marker left by an interrupted swap
+                        that did NOT complete. Never touches a confirmed window.
     help                Print this help.
 
 status FLAGS:
@@ -56,6 +59,18 @@ record-completion FLAGS:
     --promoted <id>     the strategy that went live (REQUIRED)
     --completed-at <s>  the completion instant in epoch seconds. SYS-49e starts the
                         window HERE, not at the write. Defaults to the real clock
+
+clear-provisional FLAGS:
+    --state <path>      the durable window (REQUIRED)
+    --demoted <id>      the interrupted swap's demoted strategy (REQUIRED)
+    --promoted <id>     the interrupted swap's promoted strategy (REQUIRED)
+    --confirm           REQUIRED. Clearing a marker retires suppression that may be
+                        protecting a strategy that went live before the interruption,
+                        so it is an explicit operator act (SyRS SYS-2d / NFR-S2)
+
+    Use this ONLY when you have established the swap did not complete — that the
+    promoted strategy is not live. If it DID complete, use record-completion
+    instead: that confirms the window rather than retiring it.
 ";
 
 fn main() -> ExitCode {
@@ -78,6 +93,7 @@ fn run(args: &[String]) -> Result<(), String> {
         "status" => cmd_status(rest),
         "configure" => cmd_configure(rest),
         "record-completion" => cmd_record_completion(rest),
+        "clear-provisional" => cmd_clear_provisional(rest),
         "help" | "--help" | "-h" => {
             print!("{USAGE}");
             Ok(())
@@ -216,6 +232,155 @@ fn cmd_configure(rest: &[String]) -> Result<(), String> {
     if reread != record {
         return Err("the re-read cool-down window does not match what was written".to_string());
     }
+    Ok(())
+}
+
+/// Clear an UNCONFIRMED marker an interrupted swap left behind.
+///
+/// Adversarial review r22. Round 21 made `begin_provisional` refuse to displace a
+/// different swap's unconfirmed marker — correctly, since that marker may be the only
+/// thing suppressing the automatic triggers for a strategy that went live before the
+/// interruption — and the refusal told the operator to "clear it if it did not
+/// complete". No subcommand did that. The only public write path was
+/// `record-completion`, which would have turned a swap that never completed into one
+/// that did, so the honest recovery was to hand-edit the file or to lie to the tool.
+///
+/// This is the recovery surface that refusal promised. It is deliberately narrow:
+///
+///   * it names the swap, so an operator states WHICH interruption they reconciled;
+///   * it requires `--confirm`, because retiring suppression is a safety act, not a
+///     cleanup (SyRS SYS-2d / NFR-S2);
+///   * it can never touch a CONFIRMED completion — the store refuses, and a swap that
+///     really did complete keeps its window;
+///   * it reports what it found rather than a bare exit, so "nothing matched" is
+///     distinguishable from "cleared", which is the difference between an operator
+///     believing they have reconciled something and having actually done so.
+fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
+    if wants_help(rest) {
+        print!("{USAGE}");
+        return Ok(());
+    }
+    let mut state_path: Option<String> = None;
+    let mut demoted: Option<String> = None;
+    let mut promoted: Option<String> = None;
+    let mut confirm = false;
+
+    let mut iter = rest.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--state" => {
+                if state_path.is_some() {
+                    return Err(dup(flag));
+                }
+                state_path = Some(take_value(&mut iter, flag)?);
+            }
+            "--demoted" => {
+                if demoted.is_some() {
+                    return Err(dup(flag));
+                }
+                demoted = Some(take_value(&mut iter, flag)?);
+            }
+            "--promoted" => {
+                if promoted.is_some() {
+                    return Err(dup(flag));
+                }
+                promoted = Some(take_value(&mut iter, flag)?);
+            }
+            "--confirm" => {
+                if confirm {
+                    return Err(dup(flag));
+                }
+                confirm = true;
+            }
+            other => return Err(format!("unknown flag '{other}'\n\n{USAGE}")),
+        }
+    }
+    let state_path = state_path.ok_or_else(|| format!("--state <path> is required\n\n{USAGE}"))?;
+    let demoted = demoted.ok_or_else(|| format!("--demoted <id> is required\n\n{USAGE}"))?;
+    let promoted = promoted.ok_or_else(|| format!("--promoted <id> is required\n\n{USAGE}"))?;
+    if !confirm {
+        return Err(format!(
+            "--confirm is required: clearing an unconfirmed marker RETIRES the cool-down \
+             it was holding, and that marker may be the only thing suppressing the \
+             automatic triggers for a strategy that went live before the interruption. \
+             Establish that the swap did NOT complete first — if it did, use \
+             record-completion instead, which confirms the window rather than retiring \
+             it (SyRS SYS-2d / NFR-S2)\n\n{USAGE}"
+        ));
+    }
+
+    // Validated before anything mutates, same rule as `record-completion`: a value that
+    // cannot be represented must not reach the proof stream after the window has moved.
+    let demoted_id = parse_strategy_id(&demoted, "--demoted")?;
+    let promoted_id = parse_strategy_id(&promoted, "--promoted")?;
+    let path = Path::new(&state_path);
+
+    // Read BEFORE, so the report describes what was actually there rather than what the
+    // operator asked for. `abandon_provisional` is deliberately idempotent and silent
+    // about mismatches — the right shape for a best-effort call on a failure path, and
+    // the wrong shape for an operator surface, which must be able to say "nothing here
+    // matched what you named".
+    let found = cooldown_store::load(path)
+        .map_err(|error| format!("the cool-down window could not be read: {error}"))?
+        .and_then(|record| record.provisional_completion);
+    let matched = found.as_ref().is_some_and(|stored| {
+        stored.demoted_strategy_id.as_str() == demoted_id.as_str()
+            && stored.promoted_strategy_id.as_str() == promoted_id.as_str()
+    });
+
+    match &found {
+        Some(stored) => {
+            println!("provisional-found:true");
+            println!(
+                "provisional-demoted:{}",
+                stored.demoted_strategy_id.as_str()
+            );
+            println!(
+                "provisional-promoted:{}",
+                stored.promoted_strategy_id.as_str()
+            );
+            println!("provisional-at-seconds:{}", stored.completed_at_seconds);
+        }
+        None => println!("provisional-found:false"),
+    }
+
+    if !matched {
+        println!("provisional-cleared:false");
+        return Err(match &found {
+            Some(stored) => format!(
+                "the unconfirmed marker here belongs to a DIFFERENT swap ({} -> {}); \
+                 refusing to clear it on the strength of a request naming {} -> {}. \
+                 Reconcile the swap that is actually recorded",
+                stored.demoted_strategy_id.as_str(),
+                stored.promoted_strategy_id.as_str(),
+                demoted_id.as_str(),
+                promoted_id.as_str(),
+            ),
+            None => "there is no unconfirmed marker at this window to clear. A CONFIRMED \
+                     completion is not clearable by this command — it is a real cool-down, \
+                     and it expires on its own"
+                .to_string(),
+        });
+    }
+
+    let completion = found.expect("matched implies present");
+    cooldown_store::abandon_provisional(path, &completion)
+        .map_err(|error| format!("the marker could not be cleared: {error}"))?;
+
+    // Verify the artefact, not the intent (CLAUDE.md rule 5): re-read and say what the
+    // window is NOW, because retiring suppression is exactly the moment an operator
+    // needs to know whether the automatic triggers are armed again.
+    let record = cooldown_store::load(path)
+        .map_err(|error| format!("the marker was cleared but the window is unreadable: {error}"))?;
+    if record.and_then(|r| r.provisional_completion).is_some() {
+        return Err(
+            "the marker is still present after the clear; the window on disk is not what \
+             this command just wrote"
+                .to_string(),
+        );
+    }
+    println!("provisional-cleared:true");
+    println!("deferred-writer:SRS-RESV-005");
     Ok(())
 }
 

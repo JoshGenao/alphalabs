@@ -5249,6 +5249,17 @@
       "evaluation_field": "cooldown",
       "backwards_clock_token": "saturating_sub",
       "overflow_token": "checked_add",
+      "cooldown_cli_non_classifying": [
+        {
+          "subcommand": "cmd_configure",
+          "reason": "Writes the PERIOD. It does not classify an instant, so it has no window to resolve -- and resolving one would invite a surface that reports a cool-down state derived from a value it just changed."
+        },
+        {
+          "subcommand": "cmd_clear_provisional",
+          "reason": "Reconciles an unconfirmed marker (adversarial review r22). It reads the RECORD through cooldown_store::load to report which marker it found and to refuse one belonging to a different swap; it never classifies an instant, and it constructs no CooldownState. Resolving a window here would report a state either side of a write that changes it."
+        }
+      ],
+      "cooldown_cli_discovery_note": "The subcommands are DISCOVERED from the source rather than listed, because a list is the shape that failed at review r2: the anti-bypass check named two methods and asserted nothing about the third. A new cool-down subcommand that fabricates a CooldownState, or that classifies an instant without going through the durable resolver, fails this check the moment it is written -- and an exemption has to be declared here with a reason, which is a reviewable act rather than an omission.",
       "trigger_cli": "crates/atp-orchestrator/src/bin/resv003_hot_swap_trigger_cli.rs",
       "cooldown_cli": "crates/atp-orchestrator/src/bin/resv006_hot_swap_cooldown_cli.rs",
       "real_clock_token": "SystemTime::now",

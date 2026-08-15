@@ -42,6 +42,7 @@ if str(TOOLS_ROOT) not in sys.path:
 from hot_swap_cooldown_check import (  # noqa: E402
     HotSwapCooldownCheckError,
     check_every_swap_path_is_gated,
+    check_resolver_is_the_only_producer,
     check_store_durability,
     check_the_contract_names_nothing_that_moved,
     check_the_window_is_committed_after_the_publish,
@@ -664,3 +665,70 @@ class GoverningWindowGuardTest(unittest.TestCase):
         with self.assertRaises(HotSwapCooldownCheckError) as caught:
             check_store_durability(self.config, mutated)
         self.assertIn("resolve", str(caught.exception))
+
+
+class CooldownCliDiscoveryTest(unittest.TestCase):
+    """The cool-down CLI's subcommands are discovered, not listed (review r22).
+
+    The list version of this check named three subcommands. Round 22 added a fourth —
+    ``clear-provisional``, the recovery surface r21's refusal had promised — and the
+    check would have said nothing about it. That is the r2 shape exactly: a checklist
+    cannot catch the arm nobody added to it.
+    """
+
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.root = ROOT
+
+    def test_the_shipped_cli_passes(self) -> None:
+        evidence = check_resolver_is_the_only_producer(self.config, self.root)
+        self.assertIn("construct no state literal", evidence)
+
+    def test_a_NEW_subcommand_that_fabricates_a_window_is_caught(self) -> None:
+        # Nothing in the contract has heard of this subcommand, and it is still caught.
+        import shutil
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / "crates/atp-orchestrator/src/bin").mkdir(parents=True)
+            for key in ("cooldown_cli", "trigger_cli"):
+                relative = self.config["hot_swap_cooldown_contract"]["guard"][key]
+                shutil.copy(ROOT / relative, root / relative)
+            cli = root / self.config["hot_swap_cooldown_contract"]["guard"]["cooldown_cli"]
+            cli.write_text(
+                cli.read_text(encoding="utf-8")
+                + """
+fn cmd_pretend(_rest: &[String]) -> Result<(), String> {
+    let state = CooldownState::NeverSwapped;
+    println!("cooldown-state:{}", state.as_str());
+    Ok(())
+}
+""",
+                encoding="utf-8",
+            )
+            with self.assertRaises(HotSwapCooldownCheckError) as caught:
+                check_resolver_is_the_only_producer(self.config, root)
+        self.assertIn("cmd_pretend", str(caught.exception))
+        self.assertIn("only production producer", str(caught.exception))
+
+    def test_a_stale_exemption_is_caught(self) -> None:
+        # An exemption that outlives the subcommand it excused silently covers whatever
+        # is written next under that name.
+        config = load_config()
+        config["hot_swap_cooldown_contract"]["guard"]["cooldown_cli_non_classifying"] = [
+            {"subcommand": "cmd_long_gone", "reason": "removed three rounds ago"}
+        ]
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_resolver_is_the_only_producer(config, self.root)
+        self.assertIn("cmd_long_gone", str(caught.exception))
+        self.assertIn("stale exemption", str(caught.exception))
+
+    def test_every_exemption_states_a_reason(self) -> None:
+        exempt = self.config["hot_swap_cooldown_contract"]["guard"]["cooldown_cli_non_classifying"]
+        self.assertTrue(exempt, "an empty exemption set would make the check vacuous here")
+        for entry in exempt:
+            self.assertTrue(
+                entry["reason"].strip(),
+                f"{entry['subcommand']} is exempt with no stated reason",
+            )

@@ -355,6 +355,26 @@ without the change.
   cannot appear without being declared. That is what turns "the cases we thought of" into a
   property of the code.
 
+* **r22 `block`** — *no operator path clears a stranded provisional cool-down* [high].
+  Class: *an error message that names a capability the surface does not have*. My own r21
+  refusal told the operator to "clear it if it did not complete", and nothing could: the
+  only public write path was `record-completion`, which would have turned a swap that never
+  completed into one that did. The honest options left were hand-editing the durable file or
+  lying to the tool — and an unreconcilable marker suppresses the automatic triggers AND
+  blocks every subsequent swap.
+
+  `clear-provisional` is the recovery surface that refusal promised, and it is deliberately
+  narrow: it names the swap (so an operator states which interruption they reconciled), it
+  requires `--confirm` (retiring suppression is a safety act, not a cleanup), it can never
+  touch a CONFIRMED completion, and it reports what it FOUND rather than exiting silently —
+  "nothing matched" and "cleared" must not look the same to someone who believes they have
+  just reconciled something.
+
+  The static check's subcommand LIST became a discovery in the same commit. A list is the
+  shape that failed at r2, and this round proved it again: the check named three
+  subcommands, r22 added a fourth, and it would have said nothing. Exemptions are now
+  declared in the contract with reasons, and a stale one is an error.
+
 Every finding was accepted and fixed; none was disputed.
 
 ## Playbook updates

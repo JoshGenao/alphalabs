@@ -790,27 +790,46 @@ def check_resolver_is_the_only_producer(config: dict, root: Path) -> str:
     guard = contract_block(config)["guard"]
     findings: list[str] = []
     for cli_key, subcommands in (
-        ("cooldown_cli", ("cmd_status", "cmd_configure", "cmd_record_completion")),
+        ("cooldown_cli", None),
         ("trigger_cli", ("cmd_evaluate", "cmd_manual")),
     ):
         relative = guard[cli_key]
         source = _read(root, relative)
         name = Path(relative).name
+        # The cool-down CLI's subcommands are DISCOVERED, not listed. A list is the shape
+        # that failed at review r2 — it named two arms and asserted nothing about the one
+        # nobody added to it — and r22 added a fourth subcommand to this very tool.
+        exempt: dict[str, str] = {}
+        if subcommands is None:
+            subcommands = tuple(sorted(set(re.findall(r"\bfn (cmd_\w+)", source))))
+            if not subcommands:
+                fail(f"no subcommands discovered in {name}; this check would pass vacuously")
+            exempt = {
+                entry["subcommand"]: entry["reason"]
+                for entry in guard["cooldown_cli_non_classifying"]
+            }
+            unknown = sorted(set(exempt) - set(subcommands))
+            if unknown:
+                fail(
+                    f"cooldown_cli_non_classifying exempts {unknown}, which {name} does not "
+                    "declare — a stale exemption silently covers whatever is written next"
+                )
         for subcommand in subcommands:
             body = _strip_comments(_any_fn_block(source, subcommand))
-            if cli_key == "cooldown_cli" and subcommand in ("cmd_configure",):
-                # `configure` writes the period; it does not classify an instant.
+            # The fabrication rule binds EVERY subcommand, exempt or not: a surface may
+            # legitimately have no window to classify, but none may invent one.
+            if re.search(r"CooldownState::(?!unknown)", body):
+                fail(
+                    f"{name}::{subcommand} constructs a CooldownState literal; the durable "
+                    "store is the only production producer of one"
+                )
+            if subcommand in exempt:
                 continue
             if f"{guard['resolver']}(" not in body:
                 fail(
                     f"{name}::{subcommand} must obtain its window from "
                     f"cooldown_store::{guard['resolver']}( — a surface that constructs its "
                     "own state can assert a cool-down it never read"
-                )
-            if re.search(r"CooldownState::(?!unknown)", body):
-                fail(
-                    f"{name}::{subcommand} constructs a CooldownState literal; the durable "
-                    "store is the only production producer of one"
                 )
         findings.append(name)
 

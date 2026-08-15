@@ -190,3 +190,17 @@ phrase: "make sure to utilize the /frontend-design skill to make a modern/beauti
     outcome and print THAT — and when the value genuinely is not known, print no timestamp at
     all rather than the nearest one to hand. After fixing a value, grep the strings that TELL
     someone what to do with it. `(RESV-006 r7)`
+41. **An error message that names a recovery is a promise; go and check it exists.** RESV-006
+    added a fail-closed refusal telling the operator to "clear it if it did not complete" —
+    and no subcommand could. The only write path would have recorded the failed swap as
+    completed, so the honest options were hand-editing the durable file or lying to the tool.
+    Whenever a refusal instructs, grep the surface for the thing it instructs, and if the
+    path does not exist either build it in the same commit or word the message around the
+    dead end. A fail-closed state with no reconciliation path is a wedge, not a guard.
+    `(RESV-006 r22)`
+42. **A reconciliation command must report what it FOUND, not just exit.** "Nothing matched
+    what you named" and "cleared" must be distinguishable, or an operator walks away
+    believing they resolved something they did not touch. Name the swap being reconciled and
+    refuse a marker belonging to a different one — clearing whatever happens to be there on
+    the strength of a request about something else is how the wrong safety window gets
+    retired. `(RESV-006 r22)`
