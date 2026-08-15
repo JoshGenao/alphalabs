@@ -542,30 +542,48 @@ pub enum CooldownWindowOutcome {
 pub struct PendingCooldownWindow {
     demoted_strategy_id: StrategyId,
     promoted_strategy_id: StrategyId,
+    /// The instant phase one offered — the token's proof of WHICH provisional record
+    /// it wrote, so a retry that wrote nothing cannot clear another attempt's marker
+    /// (adversarial review r18).
+    attempt_at_seconds: u64,
 }
 
 impl PendingCooldownWindow {
-    pub(crate) fn mint(demoted: &StrategyId, promoted: &StrategyId) -> Self {
+    pub(crate) fn mint(
+        demoted: &StrategyId,
+        promoted: &StrategyId,
+        attempt_at_seconds: u64,
+    ) -> Self {
         Self {
             demoted_strategy_id: demoted.clone(),
             promoted_strategy_id: promoted.clone(),
+            attempt_at_seconds,
         }
     }
 
     /// Clear the provisional window this swap opened, because the swap did not
     /// become durable. Reachable only through [`HotSwapPromoted::abandon`].
     ///
-    /// The instant does not matter here — the store matches a provisional record on
-    /// swap IDENTITY, and a confirmed one is never touched — so this needs no clock
-    /// and cannot fail in a way the caller could act on. Best-effort by design: a
-    /// failure leaves a labelled provisional window that over-suppresses, which is
-    /// the safe direction and is resolvable by an operator.
+    /// Carries the ATTEMPT instant, and adversarial review r18 is why. The store used
+    /// to match a provisional record on swap identity alone, which is wrong for a
+    /// RETRY of the same pair: a second attempt whose clock stepped backwards is kept
+    /// out by `begin_provisional`'s monotonicity rule (`KeptNewer`) and writes
+    /// nothing — but on failure it abandoned anyway, deleting the newer marker the
+    /// FIRST attempt wrote, and with it the only window suppressing the automatic
+    /// triggers after an interrupted swap.
+    ///
+    /// So the token remembers exactly what phase one offered, and the store clears a
+    /// record only when it matches in full. An attempt that did not write cannot
+    /// clear, without the gate having to thread phase one's outcome through the swap.
+    ///
+    /// Best-effort by design: a failure leaves a labelled provisional window that
+    /// over-suppresses, which is the safe direction and is resolvable by an operator.
     fn abandon<W>(self, completions: &W)
     where
         W: HotSwapCooldownPort,
     {
         completions.abandon_provisional_window(&SwapCompletion {
-            completed_at_seconds: 0,
+            completed_at_seconds: self.attempt_at_seconds,
             demoted_strategy_id: self.demoted_strategy_id,
             promoted_strategy_id: self.promoted_strategy_id,
         });
@@ -1325,6 +1343,7 @@ impl StrategyOrchestrator {
                     ports.versions,
                     designation,
                     confirmation,
+                    observed_at_seconds,
                 ),
                 None => Err(HotSwapPromotionError::DemotionNotAccepted {
                     demoting_strategy_id: demoting.clone(),
@@ -1418,6 +1437,9 @@ impl StrategyOrchestrator {
         versions: &R,
         designation: &mut LiveDesignation,
         confirmation: LiveDesignationConfirmation,
+        // The instant phase one stamped its provisional record with. Threaded here so
+        // the minted token can name exactly the marker this attempt wrote (r18).
+        attempt_at_seconds: u64,
     ) -> Result<HotSwapPromoted, HotSwapPromotionError>
     where
         Q: LivePositionProbe,
@@ -1547,6 +1569,9 @@ impl StrategyOrchestrator {
             pending_cooldown: PendingCooldownWindow::mint(
                 &requested_demoting.clone(),
                 &requested_candidate.clone(),
+                // The SAME instant phase one stamped its record with, so an abandon
+                // clears exactly the marker this attempt wrote and nothing else.
+                attempt_at_seconds,
             ),
         })
     }

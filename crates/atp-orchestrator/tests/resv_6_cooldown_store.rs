@@ -709,6 +709,72 @@ fn resv_6_an_older_provisional_cannot_shorten_an_in_flight_window() {
     );
 }
 
+#[test]
+fn resv_6_a_retry_that_wrote_nothing_cannot_clear_the_attempt_that_did() {
+    // Adversarial review r18 [critical]. The scenario, exactly:
+    //
+    //   1. attempt 1 of swap A->B opens a provisional window at T+1000;
+    //   2. attempt 2 of the SAME pair runs with a clock that stepped backwards, so
+    //      `begin_provisional` keeps the newer record (`KeptNewer`) and attempt 2
+    //      writes NOTHING;
+    //   3. attempt 2 fails and abandons.
+    //
+    // Matching a provisional record on the strategy pair alone made step 3 delete
+    // attempt 1's marker — removing the only window suppressing the automatic
+    // triggers after an interrupted swap. An attempt now clears exactly the record it
+    // wrote, so one that wrote nothing clears nothing.
+    let scratch = Scratch::new("r18-retry");
+    let path = scratch.path("cooldown.json");
+
+    let first = completion_at(COMPLETED_AT + 1_000);
+    cooldown_store::begin_provisional(&path, &first).unwrap();
+
+    let retry = completion_at(COMPLETED_AT); // same pair, older instant
+    let kept = cooldown_store::begin_provisional(&path, &retry).unwrap();
+    assert!(
+        matches!(kept, CompletionOutcome::KeptNewer { .. }),
+        "the retry must be kept out, or this test is not exercising r18: {kept:?}"
+    );
+
+    cooldown_store::abandon_provisional(&path, &retry).unwrap();
+
+    assert_eq!(
+        cooldown_store::load(&path)
+            .unwrap()
+            .unwrap()
+            .provisional_completion,
+        Some(first),
+        "an attempt that wrote nothing must not clear the marker another attempt wrote"
+    );
+    let state = cooldown_store::resolve(Some(&path), COMPLETED_AT + 2_000);
+    assert!(
+        !state.proven_clear(),
+        "the surviving window must still suppress the automatic triggers"
+    );
+}
+
+#[test]
+fn resv_6_the_attempt_that_did_write_still_clears_its_own_marker() {
+    // The non-vacuity control, and it is load-bearing: an `abandon_provisional` that
+    // never cleared anything would satisfy the case above and resurrect r6 — a failed
+    // changeover leaving seven days of suppression behind it.
+    let scratch = Scratch::new("r18-owner-clears");
+    let path = scratch.path("cooldown.json");
+
+    let mine = completion_at(COMPLETED_AT + 1_000);
+    cooldown_store::begin_provisional(&path, &mine).unwrap();
+    cooldown_store::abandon_provisional(&path, &mine).unwrap();
+
+    assert_eq!(
+        cooldown_store::load(&path)
+            .unwrap()
+            .unwrap()
+            .provisional_completion,
+        None,
+        "the attempt that wrote the marker must be able to clear it"
+    );
+}
+
 // NOTE: the relative-path case needs `set_current_dir`, which is process-global and would
 // race the tests above (cargo runs one file's tests as threads in a single process). It
 // lives alone in `resv_6_cooldown_relative_path.rs`, which cargo builds as its own binary.

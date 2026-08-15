@@ -1178,6 +1178,66 @@ def test_an_acknowledged_manual_swap_buys_one_swap_not_a_lifted_cooldown(
     assert _log_lines(log) == 0, "no automatic trigger armed at any point"
 
 
+def test_a_failed_retry_cannot_clear_an_earlier_attempts_window(swap_binaries, tmp_path) -> None:
+    """Adversarial review r18, through the real binaries.
+
+    An earlier attempt at this swap was interrupted and left a provisional window at
+    T+1000. A RETRY of the same pair then runs with a clock that reads T — older — so
+    the store keeps the newer record and the retry writes nothing. The retry fails.
+
+    Matching a provisional record on the strategy pair alone meant the retry's cleanup
+    deleted the earlier attempt's marker, and with it the only window suppressing the
+    automatic triggers after an interrupted swap. The retry now clears exactly the
+    record it wrote, which is none.
+    """
+    state = tmp_path / "cd.json"
+    log = tmp_path / "triggers.jsonl"
+
+    # The interrupted attempt's marker, produced by the real writer and moved into the
+    # provisional slot — which is what an interruption between phase one and phase two
+    # leaves behind.
+    _cooldown(
+        "record-completion",
+        "--state",
+        str(state),
+        "--demoted",
+        SWAP_DEMOTING,
+        "--promoted",
+        SWAP_CANDIDATE,
+        "--completed-at",
+        str(COMPLETED_AT + 1_000),
+    )
+    record = json.loads(state.read_text())
+    record["provisional_completed_at_seconds"] = record.pop("last_completed_at_seconds")
+    record["provisional_demoted_strategy_id"] = record.pop("last_demoted_strategy_id")
+    record["provisional_promoted_strategy_id"] = record.pop("last_promoted_strategy_id")
+    state.write_text(json.dumps(record))
+    # Parsed, not raw: the pre-flight probe (`probe_recordable`) performs a real locked
+    # read-modify-write, so the bytes are legitimately rewritten in canonical form even
+    # when nothing about the window changed. What must not change is the RECORD.
+    before = json.loads(state.read_text())
+
+    # The retry: same pair, OLDER clock, acknowledged so it gets past the gate, and
+    # made to fail after the demotion by the drift injection.
+    retry = _swap(
+        swap_binaries,
+        tmp_path,
+        cooldown_state=state,
+        now=COMPLETED_AT,
+        extra=("--confirm-cooldown", "--inject", "paper-drift"),
+    )
+    assert retry.returncode != 0, "the injected drift must refuse the promotion"
+
+    assert json.loads(state.read_text()) == before, (
+        "an attempt that wrote nothing must clear nothing — the earlier attempt's "
+        "window is the only thing suppressing the automatic triggers"
+    )
+    suppressed = _kv(_evaluate(state, log, COMPLETED_AT + 2_000).stdout)
+    assert suppressed["cooldown-state"] == "ACTIVE"
+    assert suppressed["cooldown-suppressed"] == "true"
+    assert _log_lines(log) == 0
+
+
 def test_a_confirmed_window_is_reported_as_confirmed(swap_binaries, tmp_path) -> None:
     """The other direction, without which the case above proves nothing.
 

@@ -270,6 +270,26 @@ without the change.
   non-vacuity control that a clear window still lets an automatic swap through, without which
   a gate that refused every automatic swap would pass and silently disable SRS-RESV-003.
 
+* **r18 `block`** — *abandon can delete a newer same-pair provisional window it did not
+  create* [critical]. Class: *"is this mine?" answered by identity when it needed provenance*.
+  `abandon_provisional` matched on the strategy pair alone. For a RETRY of the same swap
+  under a backwards clock, `begin_provisional`'s monotonicity rule keeps the newer record and
+  the retry writes NOTHING — but on failure it abandoned anyway and deleted the first
+  attempt's marker, removing the only window suppressing the automatic triggers after an
+  interrupted swap. The backward-clock case the feature exists to make safe.
+
+  `PendingCooldownWindow` now carries the attempt instant, and the store clears on FULL
+  equality: an attempt clears exactly the record it wrote, or nothing — no need to thread
+  phase one's outcome through the swap. Phase two still matches on identity, and must,
+  because it rewrites the timestamp.
+
+  Worth recording how the second half was found: the first mutation (`abandon` matching the
+  pair again) went red, but the second (the token forgetting its instant) stayed GREEN — the
+  execution-layer stub records whatever it is handed and never emulates the store's matching,
+  so the token→store contract had no test at all. Fixed by asserting the abandoned record
+  EQUALS the provisional one rather than counting calls, which is the assertion that makes
+  the two layers agree.
+
 Every finding was accepted and fixed; none was disputed.
 
 ## Playbook updates

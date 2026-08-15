@@ -899,6 +899,11 @@ fn resv_6_a_refused_swap_opened_a_window_first_and_then_cleared_it() {
         "a refused swap must clear the provisional window it opened — a failed \
          changeover is not a swap, and seven days of suppression over one is r6's defect"
     );
+    assert_eq!(
+        completions.abandoned.borrow()[0],
+        completions.provisional.borrow()[0],
+        "and it must name the exact record it wrote, or the store clears nothing (r18)"
+    );
     assert!(
         completions.recorded.borrow().is_empty(),
         "nothing was confirmed, because nothing completed"
@@ -1130,6 +1135,16 @@ fn resv_6_a_swap_whose_publish_failed_opens_no_window() {
         completions.abandoned.borrow().len(),
         1,
         "the provisional window must be given back, not merely left unconfirmed"
+    );
+    // The token→store contract (adversarial review r18): the abandon must name EXACTLY
+    // the record phase one wrote, instant included. The store clears on full equality,
+    // so a token that forgot its attempt instant would silently clear nothing here —
+    // and, worse, would match nothing at the store while every count assertion above
+    // still passed.
+    assert_eq!(
+        completions.abandoned.borrow()[0],
+        completions.provisional.borrow()[0],
+        "the abandon must name the exact record phase one wrote"
     );
 }
 

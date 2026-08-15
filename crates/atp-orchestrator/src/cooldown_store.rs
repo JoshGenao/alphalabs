@@ -864,12 +864,20 @@ pub fn abandon_provisional(
     let Some(record) = load(path)? else {
         return Ok(());
     };
+    // FULL equality, not just the strategy pair — adversarial review r18. A RETRY of
+    // the same swap whose clock stepped backwards is kept out of the slot by
+    // `begin_provisional`'s monotonicity rule and writes nothing; matching on identity
+    // alone let that retry's failure clear the marker the FIRST attempt wrote, taking
+    // with it the only window suppressing the automatic triggers after an interrupted
+    // swap. An attempt clears exactly the record it wrote, or nothing.
     let ours = record
         .provisional_completion
         .as_ref()
-        .is_some_and(|stored| is_same_swap(stored, completion));
+        .is_some_and(|stored| stored == completion);
     if !ours {
-        // Nothing in flight, or not ours. Leaving it alone is the safe direction.
+        // Nothing in flight, not ours, or a newer attempt's. Leaving it alone is the
+        // safe direction: an over-suppressing marker is resolvable, an absent one is
+        // the fail-open.
         return Ok(());
     }
     save(

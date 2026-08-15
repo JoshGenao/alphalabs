@@ -148,3 +148,10 @@ Reference implementation: `crates/atp-simulation/src/backtest_store.rs::save_to_
     a window, which is precisely the case that made two records coexist — and the case
     nobody had a test for. If your feature permits an operation during the state it
     protects, write that test first. `(RESV-006 r15)`
+31. **"Is this record mine?" needs provenance, not identity.** Matching a durable marker by
+    the entity it names is not the same as matching the marker you wrote. Under any
+    retry/monotonicity rule the two diverge: the attempt that lost the race wrote nothing,
+    yet identity-matching lets its cleanup delete the winner's marker. Carry what you wrote
+    on the token and clear on FULL equality, so an attempt that wrote nothing clears nothing
+    — that beats threading the write's outcome through every path that might clean up.
+    `(RESV-006 r18)`

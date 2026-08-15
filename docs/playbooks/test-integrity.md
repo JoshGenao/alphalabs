@@ -302,3 +302,10 @@ Read this whenever you write a test, and before you believe a green one.
     asserting nothing. Assert the mutated text has the property you are testing for
     (`moved.index(a) > moved.index(b)`) before feeding it to the checker.
     `(RESV-006 r13, first draft of the phase-one-ordering test)`
+39. **Counting calls does not test a cross-layer contract.** A stub that records whatever it
+    is handed will accept a malformed argument forever: RESV-006 asserted "abandon was called
+    once", and the mutation that made the token forget its timestamp — so the real store
+    would have matched nothing and cleared nothing — stayed GREEN. Assert the VALUE against
+    the other side of the contract (`abandoned[0] == provisional[0]`), not the count. If a
+    mutation to production code leaves a suite green, the suite is describing the stub.
+    `(RESV-006 r18)`
