@@ -778,6 +778,49 @@ def test_a_window_exists_only_alongside_a_durably_moved_designation(
     )
 
 
+def test_a_failed_window_write_tells_the_operator_the_right_instant(
+    swap_binaries, tmp_path
+) -> None:
+    """Adversarial review r7 [high] — the repair instruction is executable text.
+
+    Round 5 separated "when the attempt started" from "when the swap completed",
+    because a seven-day window stamped with the former is short by however long the
+    swap took. Round 7 found that defect still living in the REMEDIATION: the failure
+    message told the operator to reopen the window with the START instant, so anyone
+    who followed it re-created by hand what the fix had just removed.
+
+    Reached through the one path where the write fails but the pre-flight passes: a
+    completion NEWER than this swap's is already stored, so `record_completion` keeps
+    it (a window only ever moves forward) and reports `KeptNewer`, which the sink
+    surfaces as an error.
+    """
+
+    state = tmp_path / "cd.json"
+    # A completion from the future — newer than anything this swap can offer.
+    _open_window(state, completed_at=AFTER + 10_000)
+
+    # Acknowledged, because a future completion also reads as an ACTIVE window (a
+    # clock that disagrees with history fails closed) and the confirmation gate would
+    # otherwise refuse before the write is ever attempted.
+    result = _swap(
+        swap_binaries,
+        tmp_path,
+        cooldown_state=state,
+        now=DURING,
+        extra=("--confirm-cooldown",),
+    )
+    assert result.returncode != 0, "a swap whose window did not open must not exit clean"
+    fields = _kv(result.stdout)
+    assert fields["promotion"] == "PROMOTED", "the swap itself succeeded"
+    assert fields["cooldown-window"] == "NOT_STARTED", result.stdout
+
+    # The remediation names the COMPLETION instant and says so in as many words.
+    assert "record-completion --completed-at" in result.stderr, result.stderr
+    assert "the instant this swap COMPLETED" in result.stderr, result.stderr
+    assert "do not substitute the time the attempt started" in result.stderr, result.stderr
+    assert "THE COOL-DOWN IS NOT IN EFFECT" in result.stderr, result.stderr
+
+
 def test_a_swap_is_refused_when_its_window_could_not_be_recorded(swap_binaries, tmp_path) -> None:
     """Adversarial review r4 [critical] — the fail-open, closed at the only point it can be.
 

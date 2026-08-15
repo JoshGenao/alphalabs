@@ -653,6 +653,48 @@ fn resv_6_the_window_starts_when_the_swap_completed_not_when_it_was_requested() 
 }
 
 #[test]
+fn resv_6_a_failed_window_write_carries_the_completion_instant_for_the_repair() {
+    // Adversarial review r7 [high]. A recovery instruction is EXECUTABLE TEXT: an
+    // operator who follows it reopens the window at whatever timestamp it names. The
+    // CLI printed `observed_at_seconds` — the instant the attempt STARTED — so
+    // following the repair after a swap that spent a minute liquidating would have
+    // reopened a seven-day window already a minute short. Exactly r5's defect, moved
+    // into the remediation.
+    //
+    // So the outcome carries the COMPLETION instant whenever it was known, and the
+    // surfaces print that.
+    const SWAP_TOOK: u64 = 60;
+    let events = PromotionEvents::default();
+    let completions = Completions {
+        recorded: RefCell::new(Vec::new()),
+        fail_with: Some("the cool-down state file is read-only"),
+        probe_fails_with: None,
+        completed_at: Some(COMPLETED_AT + SWAP_TOOK),
+    };
+    let (outcome, _) = live_swap(
+        &CooldownState::NeverSwapped,
+        ManualCooldownAcknowledgement::NotAcknowledged,
+        &events,
+        &completions,
+        COMPLETED_AT,
+    );
+    let promoted = outcome.expect("the swap itself still succeeded");
+
+    match &promoted.cooldown_window {
+        CooldownWindowOutcome::NotStarted {
+            completed_at_seconds,
+            ..
+        } => assert_eq!(
+            *completed_at_seconds,
+            Some(COMPLETED_AT + SWAP_TOOK),
+            "the repair instruction must be able to name the COMPLETION instant, not \
+             the instant the attempt started"
+        ),
+        other => panic!("expected NotStarted, got {other:?}"),
+    }
+}
+
+#[test]
 fn resv_6_a_completion_clock_that_cannot_be_read_does_not_fall_back_to_the_start() {
     // The fix must not reintroduce the bug as a fallback. An unreadable clock is an
     // unstarted window — loud — never a silent reuse of the observation instant.
@@ -697,8 +739,15 @@ fn resv_6_a_completion_clock_that_cannot_be_read_does_not_fall_back_to_the_start
     let promoted = outcome.expect("the swap itself still succeeded");
     let window = StrategyOrchestrator.commit_cooldown_window(promoted.pending_cooldown, &NoClock);
     match &window {
-        CooldownWindowOutcome::NotStarted { reason } => {
+        CooldownWindowOutcome::NotStarted {
+            reason,
+            completed_at_seconds,
+        } => {
             assert!(reason.contains("Unix epoch"), "{reason}");
+            // ...and there is NO timestamp to offer, so none is offered. A repair
+            // instruction that invented one would be worse than one that admits it
+            // cannot (adversarial review r7).
+            assert_eq!(*completed_at_seconds, None);
         }
         other => panic!("expected NotStarted, got {other:?}"),
     }
@@ -903,7 +952,7 @@ fn resv_6_a_window_that_fails_to_start_is_reported_not_swallowed() {
     assert_eq!(designated.as_deref(), Some(CANDIDATE));
     // ...and the failure is carried, with the reason, rather than being dropped.
     match &promoted.cooldown_window {
-        CooldownWindowOutcome::NotStarted { reason } => {
+        CooldownWindowOutcome::NotStarted { reason, .. } => {
             assert!(
                 reason.contains("read-only"),
                 "the reason the window did not start must survive: {reason}"

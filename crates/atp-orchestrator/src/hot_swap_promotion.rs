@@ -373,7 +373,20 @@ pub enum CooldownWindowOutcome {
     Started { started_at_seconds: u64 },
     /// The swap completed and the window did NOT start. Automatic triggers are
     /// **not** suppressed until an operator repairs the store.
-    NotStarted { reason: String },
+    NotStarted {
+        reason: String,
+        /// The instant the swap COMPLETED, when it was known.
+        ///
+        /// Carried so a repair instruction can name the right one. Without it the
+        /// only timestamp a surface has to hand is the instant the attempt STARTED,
+        /// and telling an operator to reopen the window at that value reintroduces
+        /// exactly the defect r5 fixed — a seven-day window short by however long
+        /// the swap took (adversarial review r7).
+        ///
+        /// `None` when the clock itself could not be read, which is the one case
+        /// where no timestamped repair command can honestly be printed.
+        completed_at_seconds: Option<u64>,
+    },
 }
 
 /// A window that is DUE but not yet opened — the swap is decided, not yet durable.
@@ -1075,7 +1088,12 @@ impl StrategyOrchestrator {
         // that much shorter than the seven days SYS-49e requires (review r5).
         let completed_at_seconds = match completions.completed_at_seconds() {
             Ok(seconds) => seconds,
-            Err(reason) => return CooldownWindowOutcome::NotStarted { reason },
+            Err(reason) => {
+                return CooldownWindowOutcome::NotStarted {
+                    reason,
+                    completed_at_seconds: None,
+                }
+            }
         };
         let completion = SwapCompletion {
             completed_at_seconds,
@@ -1086,7 +1104,10 @@ impl StrategyOrchestrator {
             Ok(()) => CooldownWindowOutcome::Started {
                 started_at_seconds: completed_at_seconds,
             },
-            Err(reason) => CooldownWindowOutcome::NotStarted { reason },
+            Err(reason) => CooldownWindowOutcome::NotStarted {
+                reason,
+                completed_at_seconds: Some(completed_at_seconds),
+            },
         }
     }
 

@@ -179,3 +179,14 @@ phrase: "make sure to utilize the /frontend-design skill to make a modern/beauti
     KNOWN-active case: always would make every ordinary action a silent override, and an
     UNKNOWN state is not something anyone can knowingly override. `(RESV-006, found by the
     browser leg, invisible to every offline test)`
+
+41. **A recovery instruction is EXECUTABLE TEXT — it inherits every bug the code has.**
+    SRS-RESV-006 spent round 5 separating "the instant the swap started" from "the instant it
+    completed", because a seven-day window stamped with the former is short by however long
+    the swap took. Round 7 found the same defect surviving in the REMEDIATION: the failure
+    message told the operator to reopen the window with
+    `record-completion --completed-at <observed_at_seconds>`, so anyone who followed it
+    reintroduced by hand what the fix had just removed. Carry the correct value on the failure
+    outcome and print THAT — and when the value genuinely is not known, print no timestamp at
+    all rather than the nearest one to hand. After fixing a value, grep the strings that TELL
+    someone what to do with it. `(RESV-006 r7)`

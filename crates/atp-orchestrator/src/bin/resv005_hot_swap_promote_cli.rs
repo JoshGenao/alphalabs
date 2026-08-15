@@ -697,14 +697,38 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
     // flat, so rolling back over an unwritable file would be strictly worse), so it
     // is made loud instead: an explicit sentence and a non-zero exit.
     if outcome_facts.is_some() {
-        if let Some(CooldownWindowOutcome::NotStarted { reason }) = &cooldown_window {
+        if let Some(CooldownWindowOutcome::NotStarted {
+            reason,
+            completed_at_seconds,
+        }) = &cooldown_window
+        {
+            // The repair command names the COMPLETION instant, never
+            // `observed_at_seconds`. A recovery instruction is executable text: an
+            // operator who follows it reopens the window at whatever timestamp it
+            // prints, so printing the instant the ATTEMPT STARTED would hand them
+            // exactly the defect r5 fixed — a seven-day window short by however long
+            // the swap took liquidating. And when the clock could not be read at all
+            // there is no honest timestamp to offer, so none is offered: the
+            // instruction says to use the real completion time rather than inventing
+            // one. Raised by adversarial review r7.
+            let repair = match completed_at_seconds {
+                Some(seconds) => format!(
+                    "record the completion with `resv006_hot_swap_cooldown_cli \
+                     record-completion --completed-at {seconds}` (the instant this swap \
+                     COMPLETED — do not substitute the time the attempt started)"
+                ),
+                None => "record the completion with `resv006_hot_swap_cooldown_cli \
+                         record-completion --completed-at <the epoch-seconds instant this \
+                         swap COMPLETED>` — this run could not read a clock, so it has no \
+                         timestamp to give you and will not guess one"
+                    .to_string(),
+            };
             eprintln!(
                 "SRS-RESV-006: `{}` was promoted live but the SyRS SYS-49e cool-down window \
                  did NOT start ({reason}). THE COOL-DOWN IS NOT IN EFFECT — automatic swap \
-                 triggers are not suppressed. Repair the cool-down state file and record the \
-                 completion with resv006_hot_swap_cooldown_cli record-completion \
-                 --completed-at {observed_at_seconds}, or disable the automatic triggers with \
-                 resv003_hot_swap_trigger_cli until you have.",
+                 triggers are not suppressed. Repair the cool-down state file, then {repair}, \
+                 or disable the automatic triggers with resv003_hot_swap_trigger_cli until \
+                 you have.",
                 candidate.as_str()
             );
             return Ok(false);
