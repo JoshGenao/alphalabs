@@ -1238,6 +1238,47 @@ def test_a_failed_retry_cannot_clear_an_earlier_attempts_window(swap_binaries, t
     assert _log_lines(log) == 0
 
 
+def test_the_repair_cannot_shorten_an_INTERRUPTED_attempts_window(tmp_path) -> None:
+    """Adversarial review r19, at the operator's repair surface.
+
+    ``test_the_repair_cannot_shorten_a_newer_window`` covers the confirmed slot. This
+    is the same rule against the PROVISIONAL one, which is the slot an interrupted
+    swap leaves behind — and the slot the writer's monotonicity check used to ignore.
+    An operator reconciling a stranded marker with a stale timestamp must not be able
+    to pull a running window's start backwards and retire it early.
+    """
+    state = tmp_path / "cd.json"
+    log = tmp_path / "triggers.jsonl"
+    _open_window(state, completed_at=COMPLETED_AT + 5_000)
+
+    record = json.loads(state.read_text())
+    record["provisional_completed_at_seconds"] = record.pop("last_completed_at_seconds")
+    record["provisional_demoted_strategy_id"] = record.pop("last_demoted_strategy_id")
+    record["provisional_promoted_strategy_id"] = record.pop("last_promoted_strategy_id")
+    state.write_text(json.dumps(record))
+
+    stale = _cooldown(
+        "record-completion",
+        "--state",
+        str(state),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--completed-at",
+        str(COMPLETED_AT),
+    )
+    assert stale.returncode != 0, (
+        "an older completion must not silently displace the window in force, even when "
+        "the window in force is a provisional one"
+    )
+
+    status = _kv(_cooldown("status", "--state", str(state), "--now", str(DURING)).stdout)
+    assert status["cooldown-started-at-seconds"] == str(COMPLETED_AT + 5_000)
+    assert status["cooldown-state"] == "ACTIVE"
+    assert _kv(_evaluate(state, log, COMPLETED_AT + 6_000).stdout)["cooldown-suppressed"] == "true"
+
+
 def test_a_confirmed_window_is_reported_as_confirmed(swap_binaries, tmp_path) -> None:
     """The other direction, without which the case above proves nothing.
 

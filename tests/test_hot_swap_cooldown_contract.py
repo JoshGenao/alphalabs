@@ -568,3 +568,63 @@ class SwapOriginGuardTest(AntiBypassDiscoveryTest):
         with self.assertRaises(HotSwapCooldownCheckError) as caught:
             check_the_window_is_committed_after_the_publish(self.config, self.root)
         self.assertIn("waives_cooldown", str(caught.exception))
+
+
+class GoverningWindowGuardTest(unittest.TestCase):
+    """Read and write must share one definition of "the window in force" (review r19).
+
+    They had already drifted once: `resolve` took the later of the two slots while
+    `record_completion_inner` guarded only `last_completion`, so a confirmation with an
+    older instant cleared a newer provisional marker and shortened a live window. A
+    comment saying "keep these in sync" is not a mechanism; this is.
+    """
+
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.source = (ROOT / "crates/atp-orchestrator/src/cooldown_store.rs").read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_shipped_store_passes(self) -> None:
+        self.assertIn("writers are guarded", check_store_durability(self.config, self.source))
+
+    def test_a_writer_that_guards_only_one_slot_is_caught(self) -> None:
+        # The r19 defect itself.
+        mutated = self.source.replace(
+            "    if let Some(stored) = governing(&existing) {\n"
+            "        if stored.completed_at_seconds > completion.completed_at_seconds {\n"
+            "            return Ok(CompletionOutcome::KeptNewer {\n"
+            "                stored: stored.clone(),\n"
+            "                offered: completion.clone(),\n"
+            "            });\n"
+            "        }\n"
+            "    }\n\n"
+            "    // Phase two also RETIRES this swap's provisional record",
+            "    if let Some(stored) = &previous {\n"
+            "        if stored.completed_at_seconds > completion.completed_at_seconds {\n"
+            "            return Ok(CompletionOutcome::KeptNewer {\n"
+            "                stored: stored.clone(),\n"
+            "                offered: completion.clone(),\n"
+            "            });\n"
+            "        }\n"
+            "    }\n\n"
+            "    // Phase two also RETIRES this swap's provisional record",
+        )
+        self.assertNotEqual(mutated, self.source, "mutation anchor drifted")
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_store_durability(self.config, mutated)
+        self.assertIn("record_completion_inner", str(caught.exception))
+        self.assertIn("window is in force", str(caught.exception))
+
+    def test_a_reader_that_stops_using_the_shared_selector_is_caught(self) -> None:
+        # The other half. A reader that disagreed with the writers would report a
+        # shorter window than the one being enforced — the operator surface and the
+        # gate describing different cool-downs.
+        mutated = self.source.replace(
+            "            let start = governing(&record);",
+            "            let start = record.as_ref().and_then(|r| r.last_completion.as_ref());",
+        )
+        self.assertNotEqual(mutated, self.source, "reader mutation did not apply")
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_store_durability(self.config, mutated)
+        self.assertIn("resolve", str(caught.exception))

@@ -734,6 +734,22 @@ def check_store_durability(config: dict, store_src: str) -> str:
                 "read-modify-write, or a concurrent writer interleaves with it"
             )
 
+    # r19: the monotonicity rule is about the window IN FORCE — the later of the two
+    # slots — and every site that decides it must use the SAME selector as the reader.
+    # A writer guarding only `last_completion` accepts an older completion over a newer
+    # provisional marker and shortens a live safety window.
+    selector = spec["governing_selector"]
+    for site in (*writers, "record_completion_inner", "resolve"):
+        body = _strip_comments(_any_fn_block(store_src, site))
+        if "KeptNewer" not in body and "classify(" not in body:
+            continue
+        if f"{selector}(" not in body:
+            fail(
+                f"cooldown_store::{site} decides which window is in force without "
+                f"`{selector}(` — read and write must share one definition, or a "
+                "confirmation with an older instant shortens a running window"
+            )
+
     record = _strip_comments(_any_fn_block(store_src, "record_completion_inner"))
     if "KeptNewer" not in record:
         fail(

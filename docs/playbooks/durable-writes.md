@@ -155,3 +155,11 @@ Reference implementation: `crates/atp-simulation/src/backtest_store.rs::save_to_
     on the token and clear on FULL equality, so an attempt that wrote nothing clears nothing
     — that beats threading the write's outcome through every path that might clean up.
     `(RESV-006 r18)`
+32. **A monotonicity rule is about the aggregate, not about one field.** Once a record has
+    two slots that can each be "the current one", every guard that says "do not go backwards"
+    must compare against whichever slot actually governs — and the reader already knows which
+    that is. RESV-006 shipped a reader taking the later of two slots while its writers guarded
+    only one, so an older write cleared a newer marker on its way past and shortened a live
+    safety window. Extract ONE selector and route the reader and every writer through it; a
+    comment saying "keep these in sync" is not a mechanism. Reviews r18 and r19 were the same
+    defect on the failure arm and the success arm, found a round apart. `(RESV-006 r19)`

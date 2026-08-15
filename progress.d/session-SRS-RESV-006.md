@@ -290,6 +290,23 @@ without the change.
   EQUALS the provisional one rather than counting calls, which is the assertion that makes
   the two layers agree.
 
+* **r19 `block`** — *a confirmed retry can replace a newer provisional window with an older
+  completion* [high]. Class: *the same rule, one slot over* — the r18 hole on the success arm.
+  Monotonicity compared the offered completion against `last_completion` ONLY, so a
+  confirmation whose clock had stepped backwards cleared a newer provisional marker on its
+  way past and wrote the older completion, shortening the suppression an interrupted attempt
+  had established.
+
+  The rule the requirement actually states is about the window IN FORCE, and the window in
+  force is whichever slot runs later — which `resolve` already knew and the writers did not.
+  Both writers and the reader now call one `governing()`, so "the window in force" cannot
+  mean one thing when it is read and another when it is written, and the static check
+  requires every site that decides it to go through that function.
+
+  Three store regressions, one domain test at the operator's repair surface, and two
+  mutations: guarding only `last_completion` reddens two cases; making the READER disagree
+  with the writers reddens four.
+
 Every finding was accepted and fixed; none was disputed.
 
 ## Playbook updates

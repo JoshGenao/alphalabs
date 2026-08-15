@@ -734,9 +734,17 @@ fn record_completion_inner(
     let stored_provisional = existing
         .as_ref()
         .and_then(|record| record.provisional_completion.clone());
-    let previous = existing.and_then(|record| record.last_completion);
+    let previous = existing
+        .as_ref()
+        .and_then(|record| record.last_completion.clone());
 
-    if let Some(stored) = &previous {
+    // Monotone against the GOVERNING window, not against one slot — adversarial
+    // review r19. Checking only `last_completion` meant a confirmation with an older
+    // instant cleared a NEWER provisional marker on its way past, shortening the
+    // suppression an interrupted attempt had established. The rule the requirement
+    // actually states is about the window in force, and the window in force is
+    // whichever slot runs later (see `resolve`), so that is what the rule compares to.
+    if let Some(stored) = governing(&existing) {
         if stored.completed_at_seconds > completion.completed_at_seconds {
             return Ok(CompletionOutcome::KeptNewer {
                 stored: stored.clone(),
@@ -769,6 +777,28 @@ fn record_completion_inner(
 ///
 /// Identity, not equality: phase one stamps the ATTEMPT instant and phase two rewrites
 /// it with the completion instant, so the timestamps deliberately differ.
+/// The completion the stored window actually runs from — the LATER of the two slots.
+///
+/// One definition, used by every writer's monotonicity check and mirrored by
+/// [`resolve`]'s classification, so "the window in force" cannot mean one thing when
+/// it is read and another when it is written (adversarial review r19). A rule that
+/// guarded only `last_completion` let a confirmation with an older instant clear a
+/// newer provisional marker on its way past, which is a shortening by another name.
+fn governing(record: &Option<CooldownRecord>) -> Option<&SwapCompletion> {
+    let record = record.as_ref()?;
+    match (&record.last_completion, &record.provisional_completion) {
+        (Some(confirmed), Some(in_flight)) => Some(
+            if in_flight.completed_at_seconds > confirmed.completed_at_seconds {
+                in_flight
+            } else {
+                confirmed
+            },
+        ),
+        (Some(confirmed), None) => Some(confirmed),
+        (None, in_flight) => in_flight.as_ref(),
+    }
+}
+
 fn is_same_swap(left: &SwapCompletion, right: &SwapCompletion) -> bool {
     left.demoted_strategy_id == right.demoted_strategy_id
         && left.promoted_strategy_id == right.promoted_strategy_id
@@ -828,9 +858,13 @@ pub fn begin_provisional(
     let last_completion = existing
         .as_ref()
         .and_then(|record| record.last_completion.clone());
-    let previous = existing.and_then(|record| record.provisional_completion);
+    let previous = existing
+        .as_ref()
+        .and_then(|record| record.provisional_completion.clone());
 
-    if let Some(stored) = &previous {
+    // The same governing rule as phase two, for the same reason: a marker older than
+    // the window already in force can only shorten it.
+    if let Some(stored) = governing(&existing) {
         if stored.completed_at_seconds > completion.completed_at_seconds {
             return Ok(CompletionOutcome::KeptNewer {
                 stored: stored.clone(),
@@ -943,18 +977,14 @@ pub fn resolve(path: Option<&Path>, now_seconds: u64) -> CooldownState {
             // inside a running window — and the pair must never resolve to LESS
             // suppression than either alone. Taking the max is what makes an abandoned
             // attempt a no-op against the window it ran inside (review r15).
-            let governing = match (&record.last_completion, &record.provisional_completion) {
-                (Some(confirmed), Some(in_flight)) => {
-                    if in_flight.completed_at_seconds > confirmed.completed_at_seconds {
-                        Some(in_flight)
-                    } else {
-                        Some(confirmed)
-                    }
-                }
-                (confirmed, None) => confirmed.as_ref(),
-                (None, in_flight) => in_flight.as_ref(),
-            };
-            CooldownState::classify(governing, record.period, now_seconds)
+            //
+            // The SAME `governing` every writer's monotonicity check uses, not a second
+            // copy of the rule: r19 found the two had already drifted, and a window that
+            // means one thing when read and another when written is the whole defect.
+            let record = Some(record);
+            let start = governing(&record);
+            let period = record.as_ref().expect("just wrapped").period;
+            CooldownState::classify(start, period, now_seconds)
         }
         Ok(None) => CooldownState::classify(None, CooldownPeriodDays::default(), now_seconds),
         Err(error) => CooldownState::unknown(error.to_string()),

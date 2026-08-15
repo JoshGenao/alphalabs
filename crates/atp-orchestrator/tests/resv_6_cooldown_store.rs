@@ -775,6 +775,95 @@ fn resv_6_the_attempt_that_did_write_still_clears_its_own_marker() {
     );
 }
 
+#[test]
+fn resv_6_a_confirmation_cannot_shorten_a_newer_provisional_window() {
+    // Adversarial review r19 [high]. The r18 fix stopped a failed retry DELETING a
+    // newer marker; this is the same hole one slot over, on the success arm. The
+    // monotonicity rule compared the offered completion against `last_completion`
+    // only, so a confirmation whose clock had stepped backwards cleared a NEWER
+    // provisional marker on its way past and wrote the older completion — shortening
+    // the suppression an interrupted attempt had established.
+    //
+    // The rule is about the window IN FORCE, which is whichever slot runs later.
+    let scratch = Scratch::new("r19-confirm-shorten");
+    let path = scratch.path("cooldown.json");
+
+    let interrupted = completion_at(COMPLETED_AT + 5_000);
+    cooldown_store::begin_provisional(&path, &interrupted).unwrap();
+
+    let stale_confirm = completion_at(COMPLETED_AT);
+    let outcome = cooldown_store::record_completion(&path, &stale_confirm).unwrap();
+    assert!(
+        matches!(outcome, CompletionOutcome::KeptNewer { .. }),
+        "an older completion must not displace the window in force, got {outcome:?}"
+    );
+
+    let after = cooldown_store::load(&path).unwrap().expect("record");
+    assert_eq!(
+        after.provisional_completion,
+        Some(interrupted.clone()),
+        "the newer marker must survive — it is the window that is suppressing"
+    );
+    assert_eq!(
+        cooldown_store::resolve(Some(&path), COMPLETED_AT + 6_000).started_at_seconds(),
+        Some(COMPLETED_AT + 5_000),
+        "and it must still be the window an operator and the gate both read"
+    );
+}
+
+#[test]
+fn resv_6_a_confirmation_newer_than_the_marker_still_lands() {
+    // The non-vacuity control. A store that refused every confirmation would satisfy
+    // the case above and never open a window at all — which is the fail-open the whole
+    // feature exists to prevent, arrived at from the opposite direction.
+    let scratch = Scratch::new("r19-confirm-lands");
+    let path = scratch.path("cooldown.json");
+
+    let attempt = completion_at(COMPLETED_AT);
+    cooldown_store::begin_provisional(&path, &attempt).unwrap();
+    let completed = completion_at(COMPLETED_AT + 42);
+    let outcome = cooldown_store::record_completion(&path, &completed).unwrap();
+    assert!(
+        matches!(outcome, CompletionOutcome::Recorded { .. }),
+        "the ordinary phase two — completion after attempt — must land: {outcome:?}"
+    );
+
+    let after = cooldown_store::load(&path).unwrap().expect("record");
+    assert_eq!(after.last_completion, Some(completed));
+    assert_eq!(
+        after.provisional_completion, None,
+        "and it retires its own marker on the way"
+    );
+}
+
+#[test]
+fn resv_6_the_window_a_writer_guards_is_the_window_a_reader_resolves() {
+    // The two used to be separate copies of "which slot governs", and r19 is what
+    // happens when they drift. This pins that they agree, across every arrangement of
+    // the two slots — including the one where the in-flight marker is the later.
+    let scratch = Scratch::new("r19-read-write-agree");
+    let path = scratch.path("cooldown.json");
+
+    cooldown_store::record_completion(&path, &completion_at(COMPLETED_AT)).unwrap();
+    cooldown_store::begin_provisional(&path, &completion_at(COMPLETED_AT + 900)).unwrap();
+
+    // The reader says the later slot governs...
+    assert_eq!(
+        cooldown_store::resolve(Some(&path), COMPLETED_AT + 1_000).started_at_seconds(),
+        Some(COMPLETED_AT + 900),
+    );
+    // ...so the writer must refuse anything older than THAT, not merely older than the
+    // confirmed completion, which this offer is not.
+    let between = completion_at(COMPLETED_AT + 500);
+    assert!(
+        matches!(
+            cooldown_store::record_completion(&path, &between).unwrap(),
+            CompletionOutcome::KeptNewer { .. }
+        ),
+        "a writer guarding only `last_completion` would accept this and shorten the window"
+    );
+}
+
 // NOTE: the relative-path case needs `set_current_dir`, which is process-global and would
 // race the tests above (cargo runs one file's tests as threads in a single process). It
 // lives alone in `resv_6_cooldown_relative_path.rs`, which cargo builds as its own binary.
