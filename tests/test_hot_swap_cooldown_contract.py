@@ -105,7 +105,7 @@ class AntiBypassDiscoveryTest(unittest.TestCase):
         # went stale — the mutation stopped applying and `_rewrite` said so, which is
         # why it asserts the count rather than silently replacing nothing.
         self._rewrite(
-            "if !window.proven_clear() && !cooldown.acknowledgement.is_acknowledged() {",
+            "if !window.proven_clear() && !cooldown.origin.waives_cooldown() {",
             "if false {",
         )
         with self.assertRaises(HotSwapCooldownCheckError) as caught:
@@ -508,3 +508,63 @@ class ContractDriftTest(unittest.TestCase):
             with self.assertRaises(HotSwapCooldownCheckError) as caught:
                 check_the_contract_names_nothing_that_moved(self.config, Path(empty))
         self.assertIn("vacuously", str(caught.exception))
+
+
+class SwapOriginGuardTest(AntiBypassDiscoveryTest):
+    """The waiver belongs to the manual origin and nowhere else (review r17).
+
+    Inherits the mutated-copy fixture: every case rewrites a scratch tree and runs the
+    real collector against it, never a monkeypatched function (test-integrity r25).
+    """
+
+    def test_the_shipped_tree_passes(self) -> None:
+        evidence = check_the_window_is_committed_after_the_publish(self.config, self.root)
+        self.assertIn("provisional window", evidence)
+
+    def test_a_bare_acknowledgement_back_on_the_control_is_caught(self) -> None:
+        # The r17 defect itself: a waiver with no proof of who is waiving. With the
+        # acknowledgement on the control rather than on the manual origin, an automatic
+        # proposal converted into a demotion request executes inside an active window.
+        module = self._module()
+        source = module.read_text(encoding="utf-8")
+        anchor = "pub struct CooldownControl<'a, W>"
+        brace = source.index("{", source.index(anchor))
+        mutated = (
+            source[: brace + 1]
+            + "\n    pub acknowledgement: ManualCooldownAcknowledgement,"
+            + source[brace + 1 :]
+        )
+        module.write_text(mutated, encoding="utf-8")
+
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_the_window_is_committed_after_the_publish(self.config, self.root)
+        self.assertIn("bare `acknowledgement`", str(caught.exception))
+
+    def test_an_automatic_variant_that_grows_a_payload_is_caught(self) -> None:
+        # The structural property, not just the name: `Automatic` must have nothing a
+        # caller could put a waiver in. A future `Automatic { acknowledged: bool }`
+        # reopens the hole while every existing test still passes.
+        self._rewrite("    Automatic,\n", "    Automatic { acknowledged: bool },\n")
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_the_window_is_committed_after_the_publish(self.config, self.root)
+        self.assertIn("unit variant", str(caught.exception))
+
+    def test_an_automatic_swap_granted_the_waiver_is_caught(self) -> None:
+        # And the behaviour behind the shape: SYS-49e has no automatic exemption.
+        self._rewrite(
+            "            Self::Automatic => false,", "            Self::Automatic => true,"
+        )
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_the_window_is_committed_after_the_publish(self.config, self.root)
+        self.assertIn("ignored for the configured period", str(caught.exception))
+
+    def test_a_gate_that_stops_consulting_the_waiver_is_caught(self) -> None:
+        # One place where the two SYS-49e rules meet. A gate that inlined its own
+        # version of the decision would let them drift apart silently.
+        self._rewrite(
+            "if !window.proven_clear() && !cooldown.origin.waives_cooldown() {",
+            "if !window.proven_clear() {",
+        )
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_the_window_is_committed_after_the_publish(self.config, self.root)
+        self.assertIn("waives_cooldown", str(caught.exception))

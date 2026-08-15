@@ -246,6 +246,30 @@ without the change.
   LATER so the pair can never resolve to less suppression than either alone. Four store
   regressions, three mutation-verified against the exact defect.
 
+* **r16 `block`** — *the required e2e evidence is recorded as not run* [high]. Class: *the
+  record is part of the deliverable*. The committed `evidence.json` still carried step 2 —
+  the browser leg — as `fail` from the prior session that never got to run it. Every step
+  re-run and re-recorded at the final code commit, with screenshots attached to step 3 as
+  well as step 2, since step 3 is the one whose AC is about what a reviewer can SEE.
+* **r17 `block`** — *the cool-down acknowledgement is not limited to manual swaps* [high].
+  Class: *a waiver with no proof of who is waiving* — the r2 class, one layer in. SYS-49e
+  ignores AUTOMATIC triggers for the whole window; SYS-49a(a) keeps MANUAL promotion
+  available behind a confirmation. Two rules, two callers, and the gate could not tell them
+  apart: it took a bare `ManualCooldownAcknowledgement`, and `HotSwapDemotionRequest` carries
+  no trigger kind, so an automatic proposal converted into a request and handed
+  `Acknowledged` executed straight through an active window.
+
+  Fixed structurally rather than with another check: the waiver is now a field of
+  `SwapOrigin::Manual` and exists nowhere else, so "automatic swap, cool-down waived" has no
+  representation — `SwapOrigin::Automatic` is a unit variant with nothing to pass, and
+  `waives_cooldown()` is the single place the two rules meet. Honest about its limit: this is
+  not unforgeability, since no type inside one process can stop a caller misdescribing itself
+  (`LiveDesignationConfirmation::from_operator` is `pub` and takes any string). What it does
+  is remove the accidental path and give the guard something to check — four static
+  assertions with their own mutation tests, and a four-case regression quartet including the
+  non-vacuity control that a clear window still lets an automatic swap through, without which
+  a gate that refused every automatic swap would pass and silently disable SRS-RESV-003.
+
 Every finding was accepted and fixed; none was disputed.
 
 ## Playbook updates

@@ -367,6 +367,44 @@ pub trait HotSwapCooldownPort {
     fn abandon_provisional_window(&self, completion: &SwapCompletion);
 }
 
+/// Who asked for a swap — the SYS-49e distinction the cool-down turns on.
+///
+/// SyRS SYS-49e suppresses AUTOMATIC triggers for the whole window; SYS-49a(a)
+/// keeps MANUAL promotion available throughout, behind a confirmation warning.
+/// Adversarial review r17 found the gate could not tell the two apart: it took a
+/// bare [`ManualCooldownAcknowledgement`], and `HotSwapDemotionRequest` carries no
+/// trigger kind, so an automatic proposal converted into a request and handed
+/// `Acknowledged` executed straight through an active window.
+///
+/// The fix is structural rather than a check: the waiver is a field of the MANUAL
+/// variant and exists nowhere else, so the state "automatic swap, cool-down waived"
+/// has no representation. A caller can still misdescribe itself — no type inside one
+/// process can prevent that, any more than it can prevent a fabricated
+/// `LiveDesignationConfirmation` — but it can no longer do so by accident, and the
+/// automatic path has nothing to pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwapOrigin {
+    /// An SRS-RESV-003 automatic trigger proposed this swap. NEVER waivable: SYS-49e
+    /// says these are ignored for the configured period, full stop.
+    Automatic,
+    /// An operator asked for this swap at a surface that showed them the window.
+    Manual(ManualCooldownAcknowledgement),
+}
+
+impl SwapOrigin {
+    /// Whether this caller may proceed through a window that is not proven clear.
+    ///
+    /// The single place the two SYS-49e rules meet, so they cannot drift: an
+    /// automatic swap is never waived, and a manual one is waived exactly when the
+    /// operator acknowledged the warning.
+    pub fn waives_cooldown(&self) -> bool {
+        match self {
+            Self::Automatic => false,
+            Self::Manual(acknowledgement) => acknowledgement.is_acknowledged(),
+        }
+    }
+}
+
 /// The SYS-49e inputs [`StrategyOrchestrator::execute_hot_swap`] requires.
 ///
 /// There is deliberately **no `state` field**. It used to carry a
@@ -382,7 +420,7 @@ pub trait HotSwapCooldownPort {
 ///
 /// ```compile_fail
 /// use atp_orchestrator::cooldown::{CooldownState, ManualCooldownAcknowledgement};
-/// use atp_orchestrator::hot_swap_promotion::{CooldownControl, HotSwapCooldownPort};
+/// use atp_orchestrator::hot_swap_promotion::{CooldownControl, HotSwapCooldownPort, SwapOrigin};
 /// // The trait bound is spelled out on purpose: without it this would fail to
 /// // compile for a reason that has nothing to do with the forged window, and a
 /// // compile_fail test that fails for the wrong reason cannot fail for the right
@@ -390,7 +428,7 @@ pub trait HotSwapCooldownPort {
 /// fn forge<W: HotSwapCooldownPort>(store: &W) -> CooldownControl<'_, W> {
 ///     CooldownControl {
 ///         state: &CooldownState::NeverSwapped,
-///         acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
+///         origin: SwapOrigin::Manual(ManualCooldownAcknowledgement::NotAcknowledged),
 ///         store,
 ///     }
 /// }
@@ -401,10 +439,10 @@ pub trait HotSwapCooldownPort {
 ///
 /// ```
 /// use atp_orchestrator::cooldown::ManualCooldownAcknowledgement;
-/// use atp_orchestrator::hot_swap_promotion::{CooldownControl, HotSwapCooldownPort};
+/// use atp_orchestrator::hot_swap_promotion::{CooldownControl, HotSwapCooldownPort, SwapOrigin};
 /// fn honest<W: HotSwapCooldownPort>(store: &W) -> CooldownControl<'_, W> {
 ///     CooldownControl {
-///         acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
+///         origin: SwapOrigin::Manual(ManualCooldownAcknowledgement::NotAcknowledged),
 ///         store,
 ///     }
 /// }
@@ -419,13 +457,23 @@ pub struct CooldownControl<'a, W>
 where
     W: HotSwapCooldownPort,
 {
-    /// Whether the operator has acknowledged the confirmation warning. An enum, so
-    /// a bare `true` at the call site is not one character from the opposite.
+    /// WHO asked for this swap — and, for a manual one only, whether the operator
+    /// acknowledged the confirmation warning.
     ///
     /// This is the ONE thing the caller still supplies, and it is the one thing only
-    /// the caller can know: whether a human was shown the warning and said yes. The
-    /// window itself is read from the store below, never handed in.
-    pub acknowledgement: ManualCooldownAcknowledgement,
+    /// the caller can know. The window itself is read from the store below, never
+    /// handed in.
+    ///
+    /// It is an origin rather than a bare acknowledgement because of adversarial
+    /// review r17: SYS-49e says automatic triggers must not be ACTED UPON during a
+    /// window, and SYS-49a(a) says a manual swap may be, with a confirmation. Those
+    /// are different rules for different callers, and a bare
+    /// `ManualCooldownAcknowledgement::Acknowledged` let an automatic swap claim the
+    /// manual one's waiver — the demotion request carries no trigger kind, so nothing
+    /// downstream could tell them apart. [`SwapOrigin::Automatic`] carries no
+    /// acknowledgement field at all, so "an automatic swap waiving the cool-down" is
+    /// not a value this API can express.
+    pub origin: SwapOrigin,
     /// The durable window: read for the gate, probed before the swap, written after
     /// it. One port for the whole SYS-49e concern, so there is no arrangement of
     /// arguments in which the gate consults one window and records into another.
@@ -1163,7 +1211,7 @@ impl StrategyOrchestrator {
         // READ the window here, from the store, at the instant the swap is gated —
         // never from a caller-supplied value (adversarial review r10).
         let window = cooldown.store.resolve_window(observed_at_seconds);
-        if !window.proven_clear() && !cooldown.acknowledgement.is_acknowledged() {
+        if !window.proven_clear() && !cooldown.origin.waives_cooldown() {
             let error = HotSwapPromotionError::CooldownConfirmationRequired {
                 warning: window.warning_text(),
                 state: window,

@@ -24,7 +24,7 @@ use atp_orchestrator::demotion_pending_store::{DemotionPendingRecord, DemotionPe
 use atp_orchestrator::hot_swap_promotion::{
     CooldownControl, DemotionProof, HotSwapCooldownPort, HotSwapPromotionError,
     HotSwapPromotionEvent, HotSwapPromotionEventSink, LivePositionProbe, OpenPosition,
-    PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
+    PaperHistoryFingerprint, PaperHistorySource, PromotionPorts, SwapOrigin,
 };
 use atp_orchestrator::{
     DemotionPendingLock, DeployedVersionRegistry, DeployedVersionRegistryError,
@@ -348,7 +348,7 @@ impl HotSwapCooldownPort for Completions {
 /// A window no swap has ever opened, plus a sink — the "nothing is in effect" case.
 fn clear_cooldown(store: &Completions) -> CooldownControl<'_, Completions> {
     CooldownControl {
-        acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
+        origin: SwapOrigin::Manual(ManualCooldownAcknowledgement::NotAcknowledged),
         store,
     }
 }

@@ -1131,6 +1131,53 @@ def test_the_repair_cannot_shorten_a_newer_window(tmp_path) -> None:
     assert status["cooldown-started-at-seconds"] == str(COMPLETED_AT + 10_000)
 
 
+def test_an_acknowledged_manual_swap_buys_one_swap_not_a_lifted_cooldown(
+    swap_binaries, tmp_path
+) -> None:
+    """Adversarial review r17, end to end across three real binaries.
+
+    The waiver is per-swap and MANUAL-only. SYS-49a(a) lets an operator promote during
+    a window by confirming; SYS-49e still ignores the automatic triggers throughout.
+    Those are two rules about two callers, and the gate used to take a bare
+    acknowledgement that could not tell them apart.
+
+    What that means where an operator can see it: acknowledging one swap does not
+    unlock the automatic path — not for the old window, and not for the new one the
+    swap just opened.
+    """
+    state = tmp_path / "cd.json"
+    log = tmp_path / "triggers.jsonl"
+    _open_window(state)
+
+    # Automatic evaluation inside the window: suppressed, as always.
+    assert _kv(_evaluate(state, log, DURING).stdout)["cooldown-suppressed"] == "true"
+
+    # The operator acknowledges and the manual swap FIRES — the asymmetry SYS-49a(a)
+    # requires. Without this the assertions below would hold on a gate that refuses
+    # everything, which would silently disable the whole promotion path.
+    confirmed = _swap(
+        swap_binaries,
+        tmp_path,
+        cooldown_state=state,
+        now=DURING,
+        extra=("--confirm-cooldown",),
+    )
+    assert confirmed.returncode == 0, confirmed.stderr
+
+    # ...and the automatic path is STILL suppressed, now by the window that swap just
+    # opened. The acknowledgement bought one swap, not a lifted cool-down.
+    after = _kv(_evaluate(state, log, DURING + 60).stdout)
+    assert after["cooldown-state"] == "ACTIVE"
+    assert after["cooldown-suppressed"] == "true"
+    assert after["selected"] == "NONE"
+    assert after["fired-count"] == "0"
+    assert after["cooldown-started-at-seconds"] == str(DURING), (
+        "the running window is the one THIS swap opened, so the seven days restart "
+        "from its completion — an acknowledgement does not shorten what follows it"
+    )
+    assert _log_lines(log) == 0, "no automatic trigger armed at any point"
+
+
 def test_a_confirmed_window_is_reported_as_confirmed(swap_binaries, tmp_path) -> None:
     """The other direction, without which the case above proves nothing.
 

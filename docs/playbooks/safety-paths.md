@@ -257,3 +257,19 @@ including when only the *filename* matches (a notes-only chore for a safety-name
   or a session note that quotes it is flagged even though it contains no test. Write "a pytest
   skip decorator" instead of pasting the token. `(RESV-005, on its own write-back)`
   `(DATA-012)`
+50. **A waiver needs proof of WHO is waiving.** If a rule exempts one class of caller
+    ("manual swaps may proceed with a confirmation") and the exemption is expressed as a
+    standalone flag, every caller can claim it — including the class the rule exists to
+    stop. Look at what actually reaches the gate: RESV-006 passed a bare
+    `ManualCooldownAcknowledgement`, and the request carried no trigger kind, so an
+    automatic proposal converted into a request and handed `Acknowledged` executed inside
+    the window it was meant to be ignored in. Make the waiver a FIELD of the exempt
+    variant, so the forbidden combination has no representation, and put the two rules in
+    one predicate so they cannot drift. Then say plainly what it does not achieve: a caller
+    can still misdescribe itself, and no type inside one process prevents that.
+    `(RESV-006 r17)`
+51. **The non-vacuity control for a suppression rule is the case that still fires.** Tests
+    that only assert "refused during the window" pass on a gate that refuses always — which
+    silently disables the feature the suppression protects. Pair every suppression case with
+    the same caller succeeding outside the window, and with the exempt caller succeeding
+    inside it. `(RESV-006 r17)`

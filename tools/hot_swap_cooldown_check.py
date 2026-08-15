@@ -366,7 +366,42 @@ def check_the_window_is_committed_after_the_publish(config: dict, root: Path) ->
             "store at execution time rather than accept one from its caller, which any "
             "external caller could forge"
         )
-    control = _struct_body_named(module, "CooldownControl")
+    # r17: the waiver must belong to the MANUAL origin and nowhere else. A bare
+    # acknowledgement on the control let an automatic swap claim the manual one's
+    # exemption, because the demotion request carries no trigger kind.
+    origin = guard["origin_enum"]
+    control_body = _struct_body_named(module, "CooldownControl")
+    if re.search(r"\backnowledgement\s*:", control_body):
+        fail(
+            "`CooldownControl` carries a bare `acknowledgement` — the cool-down waiver "
+            f"must be a field of `{origin}::{guard['origin_manual_variant']}`, or an "
+            "AUTOMATIC swap can claim the manual exemption SYS-49a(a) grants and "
+            "execute inside a window SYS-49e says it must be ignored in"
+        )
+    if f"{origin}::" not in module and f"origin: {origin}" not in module:
+        fail(f"the gate no longer takes a `{origin}`")
+    variants = _enum_body(module, origin)
+    automatic = guard["origin_automatic_variant"]
+    if not re.search(rf"\b{re.escape(automatic)}\s*,", variants):
+        fail(
+            f"`{origin}::{automatic}` is not a unit variant — an automatic swap must "
+            "have nothing it can pass to waive the window"
+        )
+    waiver = guard["waiver_predicate"]
+    if f"{waiver}()" not in entry_body:
+        fail(
+            f"`{entry}` does not consult `{waiver}()` — the two SYS-49e rules (automatic "
+            "is suppressed, manual is asked to confirm) must meet in exactly one place "
+            "or they drift apart"
+        )
+    waiver_body = _any_fn_block(module, waiver)
+    if not re.search(rf"Self::{re.escape(automatic)}\s*=>\s*false", waiver_body):
+        fail(
+            f"`{waiver}` does not map `{automatic}` to `false`; SYS-49e says automatic "
+            "triggers are ignored for the configured period, with no exemption"
+        )
+
+    control = control_body
     if re.search(r"\bstate\s*:", control):
         fail(
             "`CooldownControl` carries a caller-supplied `state` — that is the forgeable "

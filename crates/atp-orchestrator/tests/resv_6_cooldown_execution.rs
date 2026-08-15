@@ -32,7 +32,7 @@ use atp_orchestrator::demotion_pending_store::{DemotionPendingRecord, DemotionPe
 use atp_orchestrator::hot_swap_promotion::{
     CooldownControl, CooldownWindowOutcome, DemotionProof, HotSwapCooldownPort,
     HotSwapPromotionError, HotSwapPromotionEvent, HotSwapPromotionEventSink, LivePositionProbe,
-    OpenPosition, PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
+    OpenPosition, PaperHistoryFingerprint, PaperHistorySource, PromotionPorts, SwapOrigin,
 };
 use atp_orchestrator::{
     DemotionPendingLock, DeployedVersionRegistry, DeployedVersionRegistryError,
@@ -47,6 +47,8 @@ use std::cell::RefCell;
 
 const COMPLETED_AT: u64 = 1_715_000_000;
 const SEVEN_DAYS: u64 = 7 * 86_400;
+/// One hour into the window `active_window` builds — inside it by six days and change.
+const DURING_WINDOW: u64 = COMPLETED_AT + 3_600;
 const DEMOTING: &str = "live-alpha";
 const CANDIDATE: &str = "paper-beta";
 const HASH_A: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -380,7 +382,7 @@ fn refused_swap(
             events,
         },
         CooldownControl {
-            acknowledgement,
+            origin: SwapOrigin::Manual(acknowledgement),
             store: completions,
         },
         &mut designation,
@@ -426,7 +428,7 @@ fn live_swap(
             events,
         },
         CooldownControl {
-            acknowledgement,
+            origin: SwapOrigin::Manual(acknowledgement),
             store: completions,
         },
         &mut designation,
@@ -779,7 +781,7 @@ fn resv_6_a_completion_clock_that_cannot_be_read_does_not_fall_back_to_the_start
             events: &events,
         },
         CooldownControl {
-            acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
+            origin: SwapOrigin::Manual(ManualCooldownAcknowledgement::NotAcknowledged),
             store: &NoClock,
         },
         &mut designation,
@@ -877,7 +879,7 @@ fn resv_6_a_refused_swap_opened_a_window_first_and_then_cleared_it() {
             events: &events,
         },
         CooldownControl {
-            acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
+            origin: SwapOrigin::Manual(ManualCooldownAcknowledgement::NotAcknowledged),
             store: &completions,
         },
         &mut designation,
@@ -900,6 +902,167 @@ fn resv_6_a_refused_swap_opened_a_window_first_and_then_cleared_it() {
     assert!(
         completions.recorded.borrow().is_empty(),
         "nothing was confirmed, because nothing completed"
+    );
+}
+
+#[test]
+fn resv_6_an_automatic_swap_cannot_waive_the_window_at_all() {
+    // Adversarial review r17 [high]. SYS-49e says automatic triggers are IGNORED for
+    // the configured period; SYS-49a(a) says a manual swap stays available behind a
+    // confirmation. Two rules, two callers — and the gate could not tell them apart,
+    // because it took a bare `ManualCooldownAcknowledgement` and
+    // `HotSwapDemotionRequest` carries no trigger kind. An automatic proposal
+    // converted into a request and handed `Acknowledged` executed straight through an
+    // active window.
+    //
+    // The waiver now belongs to `SwapOrigin::Manual` and exists nowhere else, so this
+    // test is what an automatic caller CAN express: no acknowledgement at all. Every
+    // demotion-side port panics, which is the strongest available form of "was never
+    // called".
+    let events = PromotionEvents::default();
+    let completions = Completions::working().reporting(active_window(DURING_WINDOW));
+    let mut designation = live_designation();
+
+    let outcome = StrategyOrchestrator.execute_hot_swap(
+        request(),
+        &ForbiddenProbe,
+        &ForbiddenCanceller,
+        &ForbiddenAlerts,
+        &DemotionEvents,
+        &ForbiddenLock,
+        PromotionPorts {
+            positions: &FlatPositions,
+            paper_history: &StablePaper,
+            versions: &StableVersions,
+            events: &events,
+        },
+        CooldownControl {
+            origin: SwapOrigin::Automatic,
+            store: &completions,
+        },
+        &mut designation,
+        confirmation(CANDIDATE),
+        DURING_WINDOW,
+    );
+
+    assert!(
+        matches!(
+            outcome,
+            Err(HotSwapPromotionError::CooldownConfirmationRequired { .. })
+        ),
+        "an automatic swap inside a window must be refused, got {outcome:?}"
+    );
+    assert!(
+        completions.provisional.borrow().is_empty() && completions.recorded.borrow().is_empty(),
+        "a refused automatic swap must not touch the window"
+    );
+}
+
+#[test]
+fn resv_6_automatic_is_refused_under_an_unknown_window_too() {
+    // The fail-closed half. `Unknown` is an unreadable, absent or corrupt store, and
+    // "we could not tell" is never "no cool-down is in effect" — least of all for the
+    // caller that has no waiver to offer.
+    let events = PromotionEvents::default();
+    let completions = Completions::working().reporting(CooldownState::unknown("store unreadable"));
+    let mut designation = live_designation();
+
+    let outcome = StrategyOrchestrator.execute_hot_swap(
+        request(),
+        &ForbiddenProbe,
+        &ForbiddenCanceller,
+        &ForbiddenAlerts,
+        &DemotionEvents,
+        &ForbiddenLock,
+        PromotionPorts {
+            positions: &FlatPositions,
+            paper_history: &StablePaper,
+            versions: &StableVersions,
+            events: &events,
+        },
+        CooldownControl {
+            origin: SwapOrigin::Automatic,
+            store: &completions,
+        },
+        &mut designation,
+        confirmation(CANDIDATE),
+        DURING_WINDOW,
+    );
+    assert!(
+        outcome.is_err(),
+        "an unknown window refuses an automatic swap"
+    );
+}
+
+#[test]
+fn resv_6_an_automatic_swap_still_fires_when_the_window_is_genuinely_clear() {
+    // The non-vacuity control, and it is doing real work: a gate that refused EVERY
+    // automatic swap would satisfy both cases above and silently disable SRS-RESV-003
+    // forever. SYS-49e suppresses automatic triggers DURING a window, not always.
+    let events = PromotionEvents::default();
+    let completions = Completions::working().reporting(CooldownState::NeverSwapped);
+    let mut designation = live_designation();
+
+    let outcome = StrategyOrchestrator.execute_hot_swap(
+        request(),
+        &FlatProbe,
+        &Canceller,
+        &Alerts,
+        &DemotionEvents,
+        &ClearLock,
+        PromotionPorts {
+            positions: &FlatPositions,
+            paper_history: &StablePaper,
+            versions: &StableVersions,
+            events: &events,
+        },
+        CooldownControl {
+            origin: SwapOrigin::Automatic,
+            store: &completions,
+        },
+        &mut designation,
+        confirmation(CANDIDATE),
+        COMPLETED_AT,
+    );
+    assert!(
+        outcome.is_ok(),
+        "a clear window must not block an automatic swap: {outcome:?}"
+    );
+}
+
+#[test]
+fn resv_6_the_same_window_lets_an_acknowledged_manual_swap_through() {
+    // The asymmetry SYS-49a(a) requires, asserted against the SAME window that just
+    // refused the automatic caller. Without this pair the suppression tests would pass
+    // on a gate that refuses everything.
+    let events = PromotionEvents::default();
+    let completions = Completions::working().reporting(active_window(DURING_WINDOW));
+    let mut designation = live_designation();
+
+    let outcome = StrategyOrchestrator.execute_hot_swap(
+        request(),
+        &FlatProbe,
+        &Canceller,
+        &Alerts,
+        &DemotionEvents,
+        &ClearLock,
+        PromotionPorts {
+            positions: &FlatPositions,
+            paper_history: &StablePaper,
+            versions: &StableVersions,
+            events: &events,
+        },
+        CooldownControl {
+            origin: SwapOrigin::Manual(ManualCooldownAcknowledgement::Acknowledged),
+            store: &completions,
+        },
+        &mut designation,
+        confirmation(CANDIDATE),
+        DURING_WINDOW,
+    );
+    assert!(
+        outcome.is_ok(),
+        "an acknowledged MANUAL swap stays available during a window (SYS-49a(a)): {outcome:?}"
     );
 }
 
@@ -932,7 +1095,7 @@ fn resv_6_a_swap_whose_publish_failed_opens_no_window() {
             events: &events,
         },
         CooldownControl {
-            acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
+            origin: SwapOrigin::Manual(ManualCooldownAcknowledgement::NotAcknowledged),
             store: &completions,
         },
         &mut designation,
@@ -999,7 +1162,7 @@ fn resv_6_dropping_the_token_leaves_the_provisional_window_standing() {
             events: &events,
         },
         CooldownControl {
-            acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
+            origin: SwapOrigin::Manual(ManualCooldownAcknowledgement::NotAcknowledged),
             store: &completions,
         },
         &mut designation,
@@ -1062,7 +1225,7 @@ fn resv_6_a_refused_swap_opens_no_window() {
             events: &events,
         },
         CooldownControl {
-            acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
+            origin: SwapOrigin::Manual(ManualCooldownAcknowledgement::NotAcknowledged),
             store: &completions,
         },
         &mut designation,

@@ -42,7 +42,7 @@ use atp_orchestrator::cooldown_store::{self, CompletionOutcome};
 use atp_orchestrator::hot_swap_promotion::{
     CooldownControl, CooldownWindowOutcome, DemotionProof, HotSwapCooldownPort,
     HotSwapPromotionEvent, HotSwapPromotionEventSink, LivePositionProbe, OpenPosition,
-    PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
+    PaperHistoryFingerprint, PaperHistorySource, PromotionPorts, SwapOrigin,
 };
 use atp_orchestrator::{
     demotion_pending_store::FileDemotionPendingLock, trigger_config_store, DeployedVersionRegistry,
@@ -534,11 +534,16 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
     // `resolve_window` the gate uses, so the line an operator reads and the state
     // the gate acted on cannot describe different windows.
     let cooldown_state = store.resolve_window(observed_at_seconds);
-    let acknowledgement = if args.confirm_cooldown {
+    // MANUAL, and it says so (adversarial review r17). This subcommand exists for an
+    // operator: it refuses to run at all without `--confirm` (SYS-2d), and SYS-49a(a)
+    // guarantees that operator a promotion path during a cool-down. An SRS-RESV-003
+    // automatic trigger reaching execution must construct `SwapOrigin::Automatic`,
+    // which carries no acknowledgement and so cannot waive the window.
+    let origin = SwapOrigin::Manual(if args.confirm_cooldown {
         ManualCooldownAcknowledgement::Acknowledged
     } else {
         ManualCooldownAcknowledgement::NotAcknowledged
-    };
+    });
 
     println!("transports:FIXTURE");
     println!("demoting:{}", demoting.as_str());
@@ -565,7 +570,7 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
             events: &events,
         },
         CooldownControl {
-            acknowledgement,
+            origin,
             store: &store,
         },
         &mut designation,
