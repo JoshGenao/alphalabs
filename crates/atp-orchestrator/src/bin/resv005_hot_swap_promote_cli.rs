@@ -353,7 +353,34 @@ impl HotSwapCooldownPort for FileCooldownStore {
         }
     }
 
-    fn record_swap_completion(&self, completion: &SwapCompletion) -> Result<(), String> {
+    /// PHASE ONE (adversarial review r13): open the window BEFORE the demotion, so
+    /// no interruption between the promotion and the confirmation can leave a live
+    /// strategy with the automatic triggers still armed.
+    fn begin_provisional_window(&self, completion: &SwapCompletion) -> Result<(), String> {
+        match cooldown_store::begin_provisional(&self.path, completion) {
+            Ok(CompletionOutcome::Recorded { .. }) => Ok(()),
+            // A NEWER completion is already stored, so this provisional record was
+            // not written — and must not be. That is reachable on the legitimate
+            // path: an ACKNOWLEDGED manual swap inside a running window (SYS-49a(a)),
+            // whose attempt instant is older than the window already in force. The
+            // guarantee phase one owes is "a window exists across the interruption",
+            // and one does. Phase two records this swap's completion, which is newer
+            // than both, and the monotone rule settles which window wins.
+            Ok(CompletionOutcome::KeptNewer { .. }) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// Give back a provisional window whose swap did not become durable. Best-effort
+    /// and infallible by signature: the caller is already on a failure path, and a
+    /// window that could not be cleared over-suppresses, which is the safe direction.
+    fn abandon_provisional_window(&self, completion: &SwapCompletion) {
+        let _ = cooldown_store::abandon_provisional(&self.path, completion);
+    }
+
+    /// PHASE TWO: confirm the window and stamp it with the real completion instant,
+    /// which is what SYS-49e's third clause names.
+    fn confirm_window(&self, completion: &SwapCompletion) -> Result<(), String> {
         match cooldown_store::record_completion(&self.path, completion) {
             Ok(CompletionOutcome::Recorded { .. }) => Ok(()),
             // The store KEPT a newer completion than the one this swap offered. The
@@ -577,8 +604,18 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
     if designated_after != designated_before {
         match save_designation(&state_path, &designation) {
             PublishOutcome::Durable => {}
-            // Nothing was published, so no committed promotion record may exist.
-            PublishOutcome::FailedBeforePublish(reason) => return Err(reason),
+            // Nothing was published, so no committed promotion record may exist —
+            // and, since r13, no PROVISIONAL one either. Phase one opened a window
+            // before the demotion; the durable slot is provably unchanged, so that
+            // window is owed to nobody and giving it back here is what keeps r6's
+            // guarantee true under the two-phase protocol. Dropping the token would
+            // silently leave seven days of suppression over a swap that never was.
+            PublishOutcome::FailedBeforePublish(reason) => {
+                if let Ok(promoted) = outcome {
+                    promoted.abandon(&store);
+                }
+                return Err(reason);
+            }
             PublishOutcome::PublishedNotSynced(reason) => published_unsynced = Some(reason),
         }
     }

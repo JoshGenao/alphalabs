@@ -28,6 +28,7 @@ from atp_hotswap import (
     CliHotSwapCooldownSource,
     CompositeHotSwapStatusSource,
     HotSwapStatusUnavailable,
+    HotSwapTriggerOutputUnreadable,
 )
 from atp_runtime import OperatorInterfaceRuntime
 
@@ -41,6 +42,11 @@ ACTIVE_STATUS = (
     "cooldown-started-at-seconds:1715000000\n"
     "cooldown-expires-at-seconds:1715604800\n"
     "cooldown-days-default:7\n"
+    "cooldown-completion-provisional:false\n"
+)
+#: The same window, opened by phase one and never confirmed (adversarial review r13).
+PROVISIONAL_STATUS = ACTIVE_STATUS.replace(
+    "cooldown-completion-provisional:false", "cooldown-completion-provisional:true"
 )
 NEVER_STATUS = (
     "observed-at-seconds:1715003600\n"
@@ -109,6 +115,10 @@ def test_an_active_window_resolves_both_boundaries_as_iso_utc() -> None:
     assert state == {
         "cooldown": {
             "in_effect": True,
+            # r13: whether the swap that opened this window ever confirmed it. An
+            # exact-shape assertion, so a new key cannot be added to the published
+            # payload without a reviewer of this file seeing it.
+            "completion_provisional": False,
             "started_at": "2024-05-06T12:53:20Z",
             "expires_at": "2024-05-13T12:53:20Z",
         }
@@ -650,3 +660,54 @@ def test_a_blocked_swap_still_declares_its_cooldown_window_field(tmp_path) -> No
         assert status == 200, body
         assert body["promotion_state"] == "BLOCKED", body
         assert "cooldown_window" in body, body
+
+
+def test_a_provisional_window_is_published_as_provisional() -> None:
+    """Adversarial review r13 — the interrupted swap reaches the operator's pane.
+
+    A window opened by phase one and never confirmed suppresses exactly like a real
+    one, which is the safe direction. But only an operator can find out whether the
+    candidate actually went live, and a pane that renders the two identically leaves
+    them nothing to act on.
+    """
+    source = CliHotSwapCooldownSource(
+        "/x/cooldown.json", binary="/bin/true", runner=_StubCli(PROVISIONAL_STATUS)
+    )
+    cooldown = source.live_state()["cooldown"]
+    assert cooldown["in_effect"] is True, "a provisional window still suppresses"
+    assert cooldown["completion_provisional"] is True
+
+
+def test_a_confirmed_window_is_published_as_confirmed() -> None:
+    # The non-vacuity control: a surface that reported `True` unconditionally would
+    # satisfy the case above and train an operator to ignore the flag entirely.
+    source = CliHotSwapCooldownSource(
+        "/x/cooldown.json", binary="/bin/true", runner=_StubCli(ACTIVE_STATUS)
+    )
+    assert source.live_state()["cooldown"]["completion_provisional"] is False
+
+
+def test_an_unanswerable_provisional_flag_is_never_published_as_confirmed() -> None:
+    # CLAUDE.md rule 3 at the boundary. `unknown` means the store could not answer,
+    # and publishing that as `False` would render an unreadable window as a healthy
+    # completed swap — the same fail-open one layer out.
+    unknown = ACTIVE_STATUS.replace(
+        "cooldown-completion-provisional:false", "cooldown-completion-provisional:unknown"
+    )
+    source = CliHotSwapCooldownSource(
+        "/x/cooldown.json", binary="/bin/true", runner=_StubCli(unknown)
+    )
+    assert source.live_state()["cooldown"]["completion_provisional"] is None
+
+
+def test_a_provisional_flag_the_surface_does_not_understand_is_refused() -> None:
+    # A third value would be a fact this build cannot honour; rendering the rest of
+    # the window while dropping it silently is the fail-open direction.
+    garbled = ACTIVE_STATUS.replace(
+        "cooldown-completion-provisional:false", "cooldown-completion-provisional:maybe"
+    )
+    source = CliHotSwapCooldownSource(
+        "/x/cooldown.json", binary="/bin/true", runner=_StubCli(garbled)
+    )
+    with pytest.raises(HotSwapTriggerOutputUnreadable, match="unknown provisional flag"):
+        source.live_state()

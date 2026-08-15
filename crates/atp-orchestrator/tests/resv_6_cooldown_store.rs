@@ -460,6 +460,7 @@ fn resv_6_a_saved_record_is_published_atomically_and_leaves_no_scratch_behind() 
         &CooldownRecord {
             period: CooldownPeriodDays::default(),
             last_completion: Some(completion_at(COMPLETED_AT)),
+            provisional: false,
         },
     )
     .unwrap();
@@ -475,6 +476,72 @@ fn resv_6_a_saved_record_is_published_atomically_and_leaves_no_scratch_behind() 
         "scratch/lock left behind: {leftovers:?}"
     );
 }
+#[test]
+fn resv_6_an_unanswerable_provisional_question_is_never_answered_false() {
+    // CLAUDE.md rule 3, at the accessor r13 added. "Not provisional" is a claim about
+    // a window that was READ; absent, empty and corrupt support no claims. Reporting
+    // `false` for any of them would render an unreadable store as a healthy completed
+    // swap on every operator surface that shows the flag.
+    let dir = Scratch::new("provisional-unknown");
+
+    let missing = dir.path("not-there.json");
+    assert_eq!(
+        cooldown_store::completion_is_provisional(&missing),
+        None,
+        "an absent store cannot say whether a swap completed"
+    );
+
+    let corrupt = dir.path("corrupt.json");
+    fs::write(&corrupt, "{not json at all").unwrap();
+    assert_eq!(
+        cooldown_store::completion_is_provisional(&corrupt),
+        None,
+        "an unreadable store cannot say whether a swap completed"
+    );
+
+    // A store that exists and has been READ, with no completion in it, is also not a
+    // confirmed swap — it is a configured window that no swap has ever opened.
+    let empty = dir.path("empty.json");
+    cooldown_store::save(
+        &empty,
+        &CooldownRecord {
+            period: CooldownPeriodDays::default(),
+            last_completion: None,
+            provisional: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        cooldown_store::completion_is_provisional(&empty),
+        None,
+        "no completion means the question does not apply, which is not `false`"
+    );
+}
+
+#[test]
+fn resv_6_the_provisional_flag_survives_the_round_trip_in_both_states() {
+    // The non-vacuity control for the case above: an accessor that returned `None`
+    // unconditionally would satisfy every assertion there.
+    let dir = Scratch::new("provisional-roundtrip");
+    for provisional in [true, false] {
+        let path = dir.path(&format!("cd-{provisional}.json"));
+        cooldown_store::save(
+            &path,
+            &CooldownRecord {
+                period: CooldownPeriodDays::default(),
+                last_completion: Some(completion_at(COMPLETED_AT)),
+                provisional,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            cooldown_store::completion_is_provisional(&path),
+            Some(provisional),
+            "the flag an operator reads must be the one on disk"
+        );
+    }
+}
+
 // NOTE: the relative-path case needs `set_current_dir`, which is process-global and would
 // race the tests above (cargo runs one file's tests as threads in a single process). It
 // lives alone in `resv_6_cooldown_relative_path.rs`, which cargo builds as its own binary.

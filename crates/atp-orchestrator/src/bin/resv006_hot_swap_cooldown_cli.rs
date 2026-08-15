@@ -146,6 +146,19 @@ fn cmd_status(rest: &[String]) -> Result<(), String> {
         println!("cooldown-expires-at-seconds:{expires}");
     }
     println!("cooldown-days-default:{COOLDOWN_DAYS_DEFAULT}");
+    // Adversarial review r13. The two-phase write introduced a THIRD durable
+    // condition — a window opened before the swap and never confirmed — and a window
+    // an operator cannot distinguish from a completed one is a window they cannot
+    // resolve. `unknown` when the store could not be read, never `false`: "this swap
+    // completed" is a claim, and an unreadable store supports no claims.
+    println!(
+        "cooldown-completion-provisional:{}",
+        match cooldown_store::completion_is_provisional(Path::new(&state_path)) {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "unknown",
+        }
+    );
 
     // An UNKNOWN window is a failed read, and a shell wrapper must not be able to treat it
     // as an answer — the whole point of the state existing.

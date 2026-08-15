@@ -38,8 +38,15 @@ SRS-RESV-006 traces SyRS SYS-49e (StRS SN-1.25). The contract guarantees:
       ``TriggerEvaluation`` / ``ManualPromotionError`` additionally carry the states
       that make a suppressed pass distinguishable from a healthy quiet one.
   (g) the durable store declares its magic + version marker and the four
-      durability tokens, and ``record_completion`` holds the exclusive guard and
-      keeps the newer completion.
+      durability tokens; EVERY declared writer holds the exclusive guard (round
+      13's two-phase protocol added three more read-modify-writes to a check that
+      named only one), and the completion write keeps the newer completion.
+  (g2) **The two-phase window.** ``execute_hot_swap`` opens a provisional window
+      before its first demotion-side port and abandons it if the swap does not
+      complete, while the CONFIRMATION stays with the caller, after the durable
+      publish. Round 6 moved the write after the publish; round 13 found that the
+      gap between the publish and that write fails OPEN — a crash there leaves a
+      live strategy with the automatic triggers armed and nothing to report it.
   (h) **The fabrication + clock guard.** Both operator subcommands obtain their
       state from ``cooldown_store::resolve(`` and construct no ``CooldownState``
       literal of their own, and the trigger CLI reads a real clock rather than
@@ -314,20 +321,31 @@ def check_trigger_arms_are_gated(config: dict, orchestrator_src: str) -> str:
 
 
 def check_the_window_is_committed_after_the_publish(config: dict, root: Path) -> str:
-    """The window opens only once the swap is DURABLE (adversarial review r6).
+    """The window is CONFIRMED only once the swap is durable — and opened before it.
 
-    ``execute_hot_swap`` designates the candidate live in memory; the CLI publishes
-    that durably afterwards. A window recorded inside the gate would survive a
-    publish that failed before its rename — seven days of suppressed automatic
-    triggers for a swap the durable authority never accepted.
+    Round 6: ``execute_hot_swap`` designates the candidate live in memory and the CLI
+    publishes that durably afterwards, so a *confirmed* window recorded inside the gate
+    would survive a publish that failed before its rename — seven days of suppressed
+    automatic triggers for a swap the durable authority never accepted.
 
-    Two halves, both checked here because either alone is satisfiable while the
-    defect is live: the gate must NOT record (the write must not appear in
-    ``execute_hot_swap``'s body), and the CLI must redeem the token AFTER its
-    ``save_designation``, not before.
+    Round 13: that fix opened the opposite direction. The publish and the window are
+    two separate file writes; a crash between them left the candidate live with NO
+    window, so the automatic triggers stayed armed on a strategy that had just been
+    promoted — SYS-49e's exact failure, failing open and silently. So the window is
+    written twice, and this checks all four halves, because each is satisfiable while
+    one of the two defects is live:
+
+      * the gate OPENS a provisional window (``begin_provisional_window``) — r13;
+      * it opens it BEFORE the first demotion-side port call, since anything after
+        that point is already inside the interruptible region — r13;
+      * it ABANDONS that window when the swap does not complete, so r6's other
+        direction still holds: a failed changeover leaves no window;
+      * it never CONFIRMS (``confirm_window`` must not appear in its body); the
+        confirmation is the caller's, after ``save_designation`` — r6.
     """
     guard = contract_block(config)["guard"]
     commit = guard["commit_method"]
+    confirm_write = guard["confirm_write_token"]
     entry = guard["execute_method"]
     module = _strip_comments(_read(root, guard["promotion_module"]))
 
@@ -349,9 +367,9 @@ def check_the_window_is_committed_after_the_publish(config: dict, root: Path) ->
             "`CooldownControl` carries a caller-supplied `state` — that is the forgeable "
             "proof r10 removed; the window comes from the port"
         )
-    if "record_swap_completion(" in entry_body:
+    if f"{confirm_write}(" in entry_body:
         fail(
-            f"`{entry}` records the swap completion itself; the window must be minted "
+            f"`{entry}` confirms the swap completion itself; the window must be minted "
             f"as a {guard['pending_window_token']} and redeemed by the caller AFTER the "
             "durable publish, or a publish that fails before its rename leaves a window "
             "open for a swap that never became durable"
@@ -364,16 +382,52 @@ def check_the_window_is_committed_after_the_publish(config: dict, root: Path) ->
         name
         for match in re.finditer(r"\bfn\s+(\w+)", module)
         for name in [match.group(1)]
-        if "record_swap_completion(" in _any_fn_block(module, name)
+        if f"{confirm_write}(" in _any_fn_block(module, name)
     ]
     if writers != [commit]:
         fail(
-            f"`record_swap_completion(` is called from {writers or 'nowhere'} — it must be "
+            f"`{confirm_write}(` is called from {writers or 'nowhere'} — it must be "
             f"called from `{commit}` and nowhere else, because that is the only function "
             "the caller invokes after its durable publish"
         )
     if guard["pending_window_token"] not in module:
         fail(f"the promotion module never mints a `{guard['pending_window_token']}`")
+
+    # ------------------------------------------------------------------ r13 --- #
+    # Phase one: the window exists BEFORE the swap becomes durable, so no crash
+    # can leave a promoted strategy with the automatic triggers still armed.
+    begin = guard["provisional_open_method"]
+    abandon = guard["provisional_abandon_method"]
+    for method, why in (
+        (
+            begin,
+            "nothing opens the window before the swap becomes durable, so an "
+            "interruption between the publish and the confirmation leaves a live "
+            "strategy with the automatic triggers armed — fail-open, and silent",
+        ),
+        (
+            abandon,
+            "nothing clears the provisional window when the swap does not complete, "
+            "so a failed changeover would suppress the automatic triggers for seven "
+            "days over a swap that never happened",
+        ),
+    ):
+        if f"{method}(" not in entry_body:
+            fail(f"`{entry}` never calls `{method}(` — {why}")
+
+    # ...and before, specifically. A `begin_provisional_window` placed after the
+    # demotion has started is inside the very region it is meant to cover: the
+    # liquidation can take the whole SYS-49b timeout, and a crash anywhere in it
+    # lands back on the fail-open r13 found.
+    opened_at = entry_body.index(f"{begin}(")
+    for marker in guard["swap_path_markers"]:
+        found = entry_body.find(f"self.{marker}")
+        if 0 <= found < opened_at:
+            fail(
+                f"`{entry}` calls `{marker[:-1]}` BEFORE `{begin}(` — phase one must "
+                "precede every demotion-side port, or the interruptible region it "
+                "exists to cover starts before the window does"
+            )
 
     cli = _strip_comments(_read(root, guard["promote_cli"]))
     swap_body = _any_fn_block(cli, "cmd_swap")
@@ -386,9 +440,29 @@ def check_the_window_is_committed_after_the_publish(config: dict, root: Path) ->
             f"`cmd_swap` calls `{redeem}(` BEFORE `{publish}(` — the cool-down window "
             "would be opened for a swap whose designation is not yet durable"
         )
+
+    # The publish-FAILED arm must give the window back (r6, restated for r13). Under
+    # the one-phase design "publish failed" and "drop the token" were the same act and
+    # dropping opened nothing; phase one now writes before the demotion, so a dropped
+    # token leaves a provisional window standing for a swap that never became durable.
+    failed_arm = guard["publish_failed_variant"]
+    if failed_arm not in swap_body:
+        fail(f"`cmd_swap` no longer handles `{failed_arm}`")
+    tail = swap_body[swap_body.index(failed_arm) :]
+    arm = tail[: tail.index("return Err")] if "return Err" in tail else tail
+    if f".{guard['token_abandon_method']}(" not in arm:
+        fail(
+            f"`cmd_swap`'s `{failed_arm}` arm does not call "
+            f"`.{guard['token_abandon_method']}(` — the durable slot provably never "
+            "moved, so the provisional window phase one opened is owed to nobody; "
+            "returning without it suppresses the automatic triggers for seven days "
+            "over a swap that never happened"
+        )
     return (
-        f"`{entry}` mints a {guard['pending_window_token']} and records nothing; "
-        f"`cmd_swap` redeems it with `{commit}` only after `{publish}`"
+        f"`{entry}` opens a provisional window with `{begin}` ahead of every "
+        f"demotion-side port, abandons it with `{abandon}` when the swap does not "
+        f"complete, and mints a {guard['pending_window_token']} rather than "
+        f"confirming; `cmd_swap` redeems it with `{commit}` only after `{publish}`"
     )
 
 
@@ -505,9 +579,33 @@ def check_store_durability(config: dict, store_src: str) -> str:
             "directory (the rename). fsync on a file makes its contents durable, not its name"
         )
 
-    record = _strip_comments(_fn_block(store_src, "record_completion"))
-    if "ExclusiveGuard" not in record:
-        fail("record_completion must hold the exclusive guard across its read-modify-write")
+    # EVERY writer, not just the one this check was born naming. Round 13's two-phase
+    # protocol added three more read-modify-writes on the same file; an unguarded one
+    # races the resolver into reading a half-applied window, and the old check —
+    # which asserted about `record_completion` and nothing else — would have passed.
+    writers = spec["guarded_writers"]
+    for writer in writers:
+        body = _strip_comments(_fn_block(store_src, writer))
+        if "ExclusiveGuard" in body:
+            continue
+        # One level of delegation is allowed, and only one: a writer may hand its
+        # read-modify-write to a single helper, which must then hold the guard.
+        delegates = [
+            name
+            for name in re.findall(r"\b(\w+)\s*\(", body)
+            if name != writer and re.search(rf"\bfn {re.escape(name)}\s*\(", store_src)
+        ]
+        if not any(
+            "ExclusiveGuard" in _strip_comments(_any_fn_block(store_src, name))
+            for name in delegates
+        ):
+            fail(
+                f"cooldown_store::{writer} mutates the window without holding "
+                "`ExclusiveGuard` — it must take the O_EXCL lock across its "
+                "read-modify-write, or a concurrent writer interleaves with it"
+            )
+
+    record = _strip_comments(_any_fn_block(store_src, "record_completion_inner"))
     if "KeptNewer" not in record:
         fail(
             "record_completion must keep a newer stored completion; a backwards clock would "
@@ -515,7 +613,8 @@ def check_store_durability(config: dict, store_src: str) -> str:
         )
     return (
         f"cooldown_store publishes {spec['magic']} v{spec['marker']} via "
-        f"{spec['durability']!s:.44}… and record_completion is guarded + monotone"
+        f"{spec['durability']!s:.44}… and all {len(writers)} writers are guarded, "
+        "with the completion write monotone"
     )
 
 

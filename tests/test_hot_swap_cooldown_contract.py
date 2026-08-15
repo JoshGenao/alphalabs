@@ -42,6 +42,7 @@ if str(TOOLS_ROOT) not in sys.path:
 from hot_swap_cooldown_check import (  # noqa: E402
     HotSwapCooldownCheckError,
     check_every_swap_path_is_gated,
+    check_store_durability,
     check_the_window_is_committed_after_the_publish,
     check_trigger_arms_are_gated,
     load_config,
@@ -193,6 +194,91 @@ impl StrategyOrchestrator {
             check_the_window_is_committed_after_the_publish(self.config, self.root)
         self.assertIn("resolve_window", str(caught.exception))
 
+    def test_a_gate_that_never_opens_the_provisional_window_is_caught(self) -> None:
+        """Adversarial review r13 [critical] — the fail-open on the OTHER side of r6.
+
+        Round 6 moved the window write after the durable publish. Those are two
+        separate file writes, so a crash between them leaves the candidate live with
+        no window: the automatic triggers stay armed on a strategy that was just
+        promoted, and nothing reports it. Phase one closes that; deleting phase one
+        must turn the guard red, or the next edit reopens it silently.
+        """
+        self._rewrite(
+            "if let Err(reason) = cooldown.store.begin_provisional_window(&provisional) {",
+            "if let Err(reason) = Ok::<(), String>(()) {",
+        )
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_the_window_is_committed_after_the_publish(self.config, self.root)
+        self.assertIn("begin_provisional_window", str(caught.exception))
+        self.assertIn("fail-open", str(caught.exception))
+
+    def test_a_provisional_window_opened_too_LATE_is_caught(self) -> None:
+        """Phase one must precede the demotion, not merely exist.
+
+        A `begin_provisional_window` sitting after `resolve_demotion` is inside the
+        very region it exists to cover — the liquidation can run for the whole
+        SYS-49b timeout, and a crash anywhere in it lands back on r13's fail-open.
+        The check therefore asserts the ORDER, and this moves the call to prove it:
+        an assertion that only checks presence passes on the defect.
+        """
+        module = self._module()
+        source = module.read_text(encoding="utf-8")
+        opener = (
+            "        if let Err(reason) = cooldown.store.begin_provisional_window(&provisional) {"
+        )
+        start = source.index(opener)
+        end = source.index("\n        }\n", start) + len("\n        }\n")
+        block = source[start:end]
+        without = source[:start] + source[end:]
+        # AFTER the demotion, which is the defect. Re-inserting it anywhere still
+        # ahead of `resolve_demotion` would be a no-op reorder that proves nothing —
+        # the first draft of this test did exactly that and passed on the defect.
+        anchor = "        if outcome.is_err() {"
+        moved = without.replace(anchor, block + anchor, 1)
+        self.assertNotEqual(moved, without, "reorder mutation did not apply")
+        self.assertGreater(
+            moved.index("begin_provisional_window(&provisional)"),
+            moved.index("let outcome = match self.resolve_demotion("),
+            "the mutation must place phase one AFTER the demotion, or it tests nothing",
+        )
+        module.write_text(moved, encoding="utf-8")
+
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_the_window_is_committed_after_the_publish(self.config, self.root)
+        self.assertIn("BEFORE", str(caught.exception))
+        self.assertIn("resolve_demotion", str(caught.exception))
+
+    def test_a_gate_that_never_abandons_the_provisional_window_is_caught(self) -> None:
+        # r6's direction, which r13 must not undo: a swap that FAILS leaves no
+        # window, or a failed changeover suppresses the triggers for seven days.
+        self._rewrite(
+            "cooldown.store.abandon_provisional_window(&provisional);",
+            "let _ = &provisional;",
+        )
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_the_window_is_committed_after_the_publish(self.config, self.root)
+        self.assertIn("abandon_provisional_window", str(caught.exception))
+
+    def test_a_publish_failure_that_keeps_the_provisional_window_is_caught(self) -> None:
+        """r6's guarantee, restated for r13 — and checked, not assumed to survive.
+
+        Under one phase, "the publish failed" and "drop the token" were the same act
+        and dropping opened nothing. Phase one writes BEFORE the demotion, so the same
+        code now leaves a provisional window standing for a swap whose designation
+        provably never moved. The CLI must give it back; deleting that call must be
+        caught here rather than by the next reviewer.
+        """
+        cli = self.root / self.config["hot_swap_cooldown_contract"]["guard"]["promote_cli"]
+        source = cli.read_text(encoding="utf-8")
+        anchor = "                if let Ok(promoted) = outcome {\n                    promoted.abandon(&store);\n                }\n"
+        self.assertEqual(source.count(anchor), 1, "abandon-on-publish-failure anchor drifted")
+        cli.write_text(source.replace(anchor, ""), encoding="utf-8")
+
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_the_window_is_committed_after_the_publish(self.config, self.root)
+        self.assertIn("FailedBeforePublish", str(caught.exception))
+        self.assertIn("owed to nobody", str(caught.exception))
+
     def test_markers_that_match_nothing_fail_rather_than_pass_vacuously(self) -> None:
         # A guard that quietly stops looking is worse than no guard (CLAUDE.md r9).
         config = load_config()
@@ -268,6 +354,102 @@ class TriggerArmsTest(unittest.TestCase):
         with self.assertRaises(HotSwapCooldownCheckError) as caught:
             check_trigger_arms_are_gated(self.config, mutated)
         self.assertIn("evaluate_automatic_triggers", str(caught.exception))
+
+
+class StoreWriterGuardTest(unittest.TestCase):
+    """Every writer holds the O_EXCL guard — not just the one the check was born naming.
+
+    This is the r12 lesson applied to the r13 diff. Before the two-phase protocol
+    the store had ONE writer and ``check_store_durability`` asserted about it by
+    name; r13 added three more read-modify-writes on the same file, and the check
+    would have kept passing while any of them raced the resolver into reading a
+    half-applied window. The declared set is now enumerated in the contract, and
+    these cases prove the enumeration is enforced rather than decorative.
+    """
+
+    def setUp(self) -> None:
+        self.config = load_config()
+        self.source = (ROOT / "crates/atp-orchestrator/src/cooldown_store.rs").read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_shipped_store_passes(self) -> None:
+        evidence = check_store_durability(self.config, self.source)
+        self.assertIn("writers are guarded", evidence)
+
+    def test_an_unguarded_writer_is_caught(self) -> None:
+        # `abandon_provisional` is r13's clear-down: it reads the record, decides
+        # whether the window is ours, and rewrites. Without the guard it interleaves
+        # with a concurrent `record_completion` and one of the two writes is lost —
+        # and the lost one may be the window that suppresses.
+        import re as _re
+
+        match = _re.search(r"\bpub fn abandon_provisional\b[^{]*\{", self.source)
+        assert match is not None
+        start, depth, index = match.end(), 1, match.end()
+        while depth:
+            if self.source[index] == "{":
+                depth += 1
+            elif self.source[index] == "}":
+                depth -= 1
+            index += 1
+        body = self.source[start : index - 1]
+        self.assertIn(
+            "ExclusiveGuard",
+            body,
+            "anchor drifted: abandon_provisional no longer takes the guard",
+        )
+        mutated = (
+            self.source[:start]
+            + body.replace("ExclusiveGuard", "NoGuardAtAll")
+            + self.source[index - 1 :]
+        )
+
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_store_durability(self.config, mutated)
+        self.assertIn("abandon_provisional", str(caught.exception))
+        self.assertIn("ExclusiveGuard", str(caught.exception))
+
+    def test_every_public_store_writer_is_declared(self) -> None:
+        """The enumeration cannot go stale silently.
+
+        A fifth writer added later and left out of ``guarded_writers`` would be
+        unchecked, which is precisely the shape of the r2 bypass: a checklist cannot
+        catch the arm nobody added to it. So the list is cross-checked against the
+        functions that actually call ``save(``.
+        """
+        import re as _re
+
+        declared = set(
+            self.config["hot_swap_cooldown_contract"]["cooldown_store"]["guarded_writers"]
+        )
+        actual = {
+            name
+            for name in _re.findall(r"\bpub fn (\w+)", self.source)
+            if "save(" in _any_fn(self.source, name)
+        }
+        self.assertTrue(actual, "no store writers discovered; this test would pass vacuously")
+        self.assertEqual(
+            actual - declared,
+            set(),
+            "a store writer is not in the contract's guarded_writers and is therefore unchecked",
+        )
+
+
+def _any_fn(source: str, name: str) -> str:
+    import re as _re
+
+    match = _re.search(rf"\bfn\s+{_re.escape(name)}\b[^{{]*{{", source)
+    if not match:
+        return ""
+    start, depth, index = match.end(), 1, match.end()
+    while index < len(source) and depth:
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+        index += 1
+    return source[start : index - 1]
 
 
 if __name__ == "__main__":

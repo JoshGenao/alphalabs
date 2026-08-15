@@ -2930,7 +2930,13 @@
         ? "cool-down state UNKNOWN — no readable SRS-RESV-006 window on this runtime; promotion is held"
         : dialState === "expired"
           ? "no active cool-down — automatic triggers may fire"
-          : (typeof started === "string" && started ? "since " + started + " · " : "") + "expires " + expires;
+          // A PROVISIONAL window (r13) was opened before its swap became durable and
+          // never confirmed — the process died in between. It suppresses exactly like
+          // a real one, which is the safe direction, but an operator who cannot tell
+          // the two apart cannot resolve it: only they can check whether the candidate
+          // is actually live. So the pane says which kind it is looking at.
+          : (hotSwapCellBool(cd.completion_provisional) === true ? "PROVISIONAL — a swap was interrupted before it could confirm this window · " : "")
+            + (typeof started === "string" && started ? "since " + started + " · " : "") + "expires " + expires;
     }
     return inEffect;
   }

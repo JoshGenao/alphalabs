@@ -402,6 +402,14 @@ class HotSwapStatusProvider:
                 "in_effect": _bool_cell(cooldown, "in_effect", HOT_SWAP_COOLDOWN_OWNER),
                 "started_at": _str_cell(cooldown, "started_at", HOT_SWAP_COOLDOWN_OWNER),
                 "expires_at": _str_cell(cooldown, "expires_at", HOT_SWAP_COOLDOWN_OWNER),
+                # Tri-state, and the None matters (adversarial review r13): a window
+                # opened before its swap became durable and never confirmed suppresses
+                # exactly like a real one, so an operator needs to be told which kind
+                # they are looking at — and "the store could not answer" is a third
+                # state, not a quiet `false`.
+                "completion_provisional": _bool_cell(
+                    cooldown, "completion_provisional", HOT_SWAP_COOLDOWN_OWNER
+                ),
             },
             # The SYS-49a aggregate the contract's /hot-swap/status route names,
             # plus the per-trigger detail the chips render. Both deferred.

@@ -72,22 +72,31 @@ const FIELD_COOLDOWN_DAYS: &str = "cooldown_days";
 const FIELD_COMPLETED_AT: &str = "last_completed_at_seconds";
 const FIELD_DEMOTED: &str = "last_demoted_strategy_id";
 const FIELD_PROMOTED: &str = "last_promoted_strategy_id";
+/// Whether the recorded window is still PROVISIONAL — opened before the swap that
+/// owns it became durable, and not yet confirmed. See [`CooldownRecord::provisional`].
+const FIELD_PROVISIONAL: &str = "last_completion_provisional";
 
 /// The complete set of keys a v1 payload may declare. Anything else fails the read: a key
 /// this build does not know is a fact it cannot honour, and honouring the rest of the
 /// record while silently dropping it is the fail-open direction.
-const KNOWN_FIELDS: [&str; 6] = [
+const KNOWN_FIELDS: [&str; 7] = [
     FIELD_MAGIC,
     FIELD_SCHEMA_VERSION,
     FIELD_COOLDOWN_DAYS,
     FIELD_COMPLETED_AT,
     FIELD_DEMOTED,
     FIELD_PROMOTED,
+    FIELD_PROVISIONAL,
 ];
 
 /// The three completion fields are all-present-or-all-absent. A partial triple is a
 /// payload that half-remembers a swap, and there is no half of it worth believing.
-const COMPLETION_FIELDS: [&str; 3] = [FIELD_COMPLETED_AT, FIELD_DEMOTED, FIELD_PROMOTED];
+const COMPLETION_FIELDS: [&str; 4] = [
+    FIELD_COMPLETED_AT,
+    FIELD_DEMOTED,
+    FIELD_PROMOTED,
+    FIELD_PROVISIONAL,
+];
 
 /// Base name of the scratch file an atomic save writes before renaming it onto the
 /// caller's path; the real name appends `<pid>.<seq>` so two writers in one directory
@@ -104,6 +113,22 @@ static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
 pub struct CooldownRecord {
     pub period: CooldownPeriodDays,
     pub last_completion: Option<SwapCompletion>,
+    /// The recorded window was opened BEFORE its swap became durable, and has not
+    /// been confirmed since (adversarial review r13).
+    ///
+    /// A swap is not atomic: `execute_hot_swap` designates in memory and the caller
+    /// publishes afterwards. Recording only after the publish left a completed swap
+    /// whose window-write failed with the automatic triggers armed — unrecoverable,
+    /// because the designation had already moved. Recording only before it opened a
+    /// seven-day window for swaps that never became durable (r6).
+    ///
+    /// So the window is opened provisionally first and confirmed after. A provisional
+    /// window SUPPRESSES exactly like a confirmed one — over-suppressing after a
+    /// maybe-swap is recoverable, under-suppressing after a real one is not — but it
+    /// says so, so an operator can tell a real cool-down from a stranded marker and
+    /// clear it. Same shape as SRS-RESV-004's engage-then-amend lockout
+    /// (`safety-paths` rule 40).
+    pub provisional: bool,
 }
 
 impl CooldownRecord {
@@ -112,6 +137,7 @@ impl CooldownRecord {
         Self {
             period: CooldownPeriodDays::default(),
             last_completion: None,
+            provisional: false,
         }
     }
 }
@@ -300,6 +326,7 @@ pub fn serialize(record: &CooldownRecord) -> String {
             ",\"{FIELD_PROMOTED}\":\"{}\"",
             completion.promoted_strategy_id.as_str()
         ));
+        payload.push_str(&format!(",\"{FIELD_PROVISIONAL}\":{}", record.provisional));
     }
     payload.push('}');
     payload
@@ -374,9 +401,10 @@ fn deserialize(path: &Path, payload: &str) -> Result<CooldownRecord, CooldownSto
         .copied()
         .filter(|key| keys.contains(key))
         .collect();
+    let mut provisional = false;
     let last_completion = match present.len() {
         0 => None,
-        3 => {
+        4 => {
             let completed_at_raw =
                 parse_strict_i64(required(FIELD_COMPLETED_AT)?).ok_or_else(|| {
                     malformed(
@@ -421,6 +449,24 @@ fn deserialize(path: &Path, payload: &str) -> Result<CooldownRecord, CooldownSto
                     ),
                 ));
             }
+            // The provisional flag is REQUIRED alongside the triple, not optional.
+            // An absent one would have to default, and both defaults are wrong: `false`
+            // reads a stranded provisional marker as a real cool-down, `true` reads a
+            // genuine window as clearable. A record that cannot say which it is has not
+            // said anything (CLAUDE.md rule 3).
+            let provisional_raw = required(FIELD_PROVISIONAL)?;
+            provisional = match provisional_raw.trim() {
+                "true" => true,
+                "false" => false,
+                other => {
+                    return Err(malformed(
+                        path,
+                        format!(
+                            "field '{FIELD_PROVISIONAL}' is {other:?}, not a JSON boolean;                              this build cannot tell a confirmed cool-down from a stranded                              provisional marker"
+                        ),
+                    ))
+                }
+            };
             Some(SwapCompletion {
                 completed_at_seconds,
                 demoted_strategy_id: StrategyId::new(demoted),
@@ -449,6 +495,7 @@ fn deserialize(path: &Path, payload: &str) -> Result<CooldownRecord, CooldownSto
     Ok(CooldownRecord {
         period,
         last_completion,
+        provisional,
     })
 }
 
@@ -542,7 +589,9 @@ pub fn set_period(
     let existing = load(path)?;
     let record = CooldownRecord {
         period,
-        last_completion: existing.and_then(|record| record.last_completion),
+        last_completion: existing.as_ref().and_then(|r| r.last_completion.clone()),
+        // A period change must not silently confirm a provisional window.
+        provisional: existing.as_ref().is_some_and(|r| r.provisional),
     };
     save(path, &record)?;
     Ok(record)
@@ -614,6 +663,14 @@ pub fn record_completion(
     path: &Path,
     completion: &SwapCompletion,
 ) -> Result<CompletionOutcome, CooldownStoreError> {
+    record_completion_inner(path, completion, false)
+}
+
+fn record_completion_inner(
+    path: &Path,
+    completion: &SwapCompletion,
+    provisional: bool,
+) -> Result<CompletionOutcome, CooldownStoreError> {
     // Validated BEFORE the guard and the write: a completion this build's own reader would
     // refuse must never reach the file (durable-writes rule 4). `StrategyId::new` accepts
     // ANY string, so this is the only place between an arbitrary caller — including the
@@ -657,9 +714,72 @@ pub fn record_completion(
         &CooldownRecord {
             period,
             last_completion: Some(completion.clone()),
+            provisional,
         },
     )?;
     Ok(CompletionOutcome::Recorded { previous })
+}
+
+/// Open the window PROVISIONALLY, before the swap that owns it is durable.
+///
+/// Phase one of two (adversarial review r13). It suppresses exactly like a confirmed
+/// window — over-suppressing after a maybe-swap is recoverable, under-suppressing
+/// after a real one is not — but it is labelled, so an operator can tell a stranded
+/// marker from a genuine cool-down and clear it with [`abandon_provisional`].
+pub fn begin_provisional(
+    path: &Path,
+    completion: &SwapCompletion,
+) -> Result<CompletionOutcome, CooldownStoreError> {
+    record_completion_inner(path, completion, true)
+}
+
+/// Clear a provisional window whose swap never became durable.
+///
+/// Refuses to touch a CONFIRMED window: a swap that failed must not retire the
+/// cool-down of the last one that succeeded.
+pub fn abandon_provisional(
+    path: &Path,
+    completion: &SwapCompletion,
+) -> Result<(), CooldownStoreError> {
+    let _guard = ExclusiveGuard::acquire_creating(path).map_err(|e| from_lock_error(e, path))?;
+    let Some(record) = load(path)? else {
+        return Ok(());
+    };
+    let ours = record.last_completion.as_ref().is_some_and(|stored| {
+        stored.demoted_strategy_id == completion.demoted_strategy_id
+            && stored.promoted_strategy_id == completion.promoted_strategy_id
+    });
+    if !record.provisional || !ours {
+        // Not ours, or already confirmed. Leaving it alone is the safe direction.
+        return Ok(());
+    }
+    save(
+        path,
+        &CooldownRecord {
+            period: record.period,
+            last_completion: None,
+            provisional: false,
+        },
+    )
+}
+
+/// Whether the stored completion is still PROVISIONAL — phase one written, phase two
+/// never confirmed (adversarial review r13).
+///
+/// `None` means the question could not be answered: no file, no completion, or an
+/// unreadable one. That is deliberately NOT `Some(false)` — "not provisional" is a
+/// claim about a window that was read, and a surface that renders an unreadable store
+/// as a healthy confirmed swap is the same fail-open in a smaller place (CLAUDE.md
+/// rule 3).
+///
+/// Reported rather than acted upon: a provisional window suppresses exactly like a
+/// confirmed one, because an interrupted swap may well have gone live. What an
+/// operator needs is to be able to TELL, since only they can find out whether the
+/// candidate is actually running and then either let the window stand or clear it.
+pub fn completion_is_provisional(path: &Path) -> Option<bool> {
+    let record = load(path).ok()??;
+    record.last_completion.as_ref()?;
+    Some(record.provisional)
 }
 
 /// **The** production producer of a [`CooldownState`] — the one place a store failure
@@ -715,6 +835,7 @@ mod resv006_cooldown_store_unit_tests {
                 demoted_strategy_id: StrategyId::new("alpha"),
                 promoted_strategy_id: StrategyId::new("beta"),
             }),
+            provisional: false,
         };
         let payload = serialize(&record);
         let parsed = deserialize(Path::new("t.json"), &payload).expect("round trip");

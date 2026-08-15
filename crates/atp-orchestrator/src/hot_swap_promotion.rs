@@ -348,7 +348,23 @@ pub trait HotSwapCooldownPort {
     /// become `observed_at_seconds` again, which is the bug wearing a fallback.
     fn completed_at_seconds(&self) -> Result<u64, String>;
 
-    fn record_swap_completion(&self, completion: &SwapCompletion) -> Result<(), String>;
+    /// PHASE ONE: open the window provisionally, before the swap is durable.
+    ///
+    /// Called after every guard and before `resolve_demotion` fires anything. A
+    /// provisional window suppresses exactly like a confirmed one, so from this
+    /// instant the automatic triggers are held — which is the point: the gap between
+    /// "the swap ran" and "the swap is durable" is the one r13 found unprotected,
+    /// and over-suppressing across it is recoverable where under-suppressing is not.
+    fn begin_provisional_window(&self, completion: &SwapCompletion) -> Result<(), String>;
+
+    /// PHASE TWO: the swap became durable, so its window is real.
+    fn confirm_window(&self, completion: &SwapCompletion) -> Result<(), String>;
+
+    /// The swap did NOT become durable: clear the provisional window it opened.
+    ///
+    /// Best-effort by design. Failing to clear leaves a labelled marker that
+    /// over-suppresses — the safe direction — and an operator can resolve it.
+    fn abandon_provisional_window(&self, completion: &SwapCompletion);
 }
 
 /// The SYS-49e inputs [`StrategyOrchestrator::execute_hot_swap`] requires.
@@ -488,8 +504,27 @@ impl PendingCooldownWindow {
         }
     }
 
+    /// Clear the provisional window this swap opened, because the swap did not
+    /// become durable. Reachable only through [`HotSwapPromoted::abandon`].
+    ///
+    /// The instant does not matter here — the store matches a provisional record on
+    /// swap IDENTITY, and a confirmed one is never touched — so this needs no clock
+    /// and cannot fail in a way the caller could act on. Best-effort by design: a
+    /// failure leaves a labelled provisional window that over-suppresses, which is
+    /// the safe direction and is resolvable by an operator.
+    fn abandon<W>(self, completions: &W)
+    where
+        W: HotSwapCooldownPort,
+    {
+        completions.abandon_provisional_window(&SwapCompletion {
+            completed_at_seconds: 0,
+            demoted_strategy_id: self.demoted_strategy_id,
+            promoted_strategy_id: self.promoted_strategy_id,
+        });
+    }
+
     /// Open the window this swap owes. The ONLY caller of
-    /// [`HotSwapCooldownPort::record_swap_completion`], and reachable only through
+    /// [`HotSwapCooldownPort::confirm_window`], and reachable only through
     /// [`HotSwapPromoted::into_completed`].
     ///
     /// Takes `self` by value: one swap, one window.
@@ -515,7 +550,12 @@ impl PendingCooldownWindow {
             demoted_strategy_id: self.demoted_strategy_id,
             promoted_strategy_id: self.promoted_strategy_id,
         };
-        match completions.record_swap_completion(&completion) {
+        // PHASE TWO. The window is already open (provisionally) and already
+        // suppressing; this confirms it and stamps the real completion instant. A
+        // failure here is no longer a fail-open — the provisional window stands and
+        // keeps suppressing — but it IS a state an operator must resolve, so it is
+        // still reported as NotStarted rather than swallowed.
+        match completions.confirm_window(&completion) {
             Ok(()) => CooldownWindowOutcome::Started {
                 started_at_seconds: completed_at_seconds,
             },
@@ -605,8 +645,8 @@ impl HotSwapPromoted {
     /// Redeem the SYS-49e window and hand back what the swap did.
     ///
     /// Call this AFTER the durable publish — that ordering is the whole point of
-    /// the token (see [`PendingCooldownWindow`]), and a caller whose publish failed
-    /// simply drops this value instead, which opens no window.
+    /// the token (see [`PendingCooldownWindow`]). A caller whose publish FAILED
+    /// calls [`HotSwapPromoted::abandon`] instead.
     ///
     /// Consumes `self`, so a swap cannot be reported twice or reported without its
     /// window.
@@ -624,6 +664,28 @@ impl HotSwapPromoted {
             demotion_elapsed_seconds: self.demotion_elapsed_seconds,
             cooldown_window,
         }
+    }
+
+    /// Give the window back: the promotion happened in memory, but the caller's
+    /// durable publish FAILED, so no swap became durable and no window is owed.
+    ///
+    /// This is r6's guarantee, restated for the two-phase protocol. Under the
+    /// one-phase design "publish failed" and "drop the token" were the same act, and
+    /// dropping opened nothing. Phase one now writes a provisional window BEFORE the
+    /// demotion, so dropping the token leaves that window standing — and a swap whose
+    /// designation never moved would suppress the automatic triggers for seven days,
+    /// which is exactly what r6 found. A caller that cannot publish must say so.
+    ///
+    /// Deliberately NOT the `Drop` impl: an implicit abandon would also fire on the
+    /// panic and early-return paths, where the durable state is *unknown* rather than
+    /// known-unchanged, and clearing a window you cannot reason about is the
+    /// fail-open direction. Consumes `self` for the same reason `into_completed`
+    /// does — one swap, one decision.
+    pub fn abandon<W>(self, completions: &W)
+    where
+        W: HotSwapCooldownPort,
+    {
+        self.pending_cooldown.abandon(completions);
     }
 }
 
@@ -1161,6 +1223,41 @@ impl StrategyOrchestrator {
             return Err(error);
         }
 
+        // PHASE ONE — open the window PROVISIONALLY, before anything fires.
+        //
+        // From here the automatic triggers are suppressed. That is deliberate and it
+        // is the whole of r13's fix: a swap is not atomic, and the gap between "the
+        // demotion ran" and "the caller published the designation" belongs to nobody.
+        // Recording only AFTER the publish left a completed swap whose window-write
+        // failed with the triggers armed and nothing left to undo. Recording only
+        // BEFORE opened seven days of suppression for swaps that never became durable
+        // (r6). So: provisional now, confirmed on success, cleared on refusal — and a
+        // provisional window says what it is, so an operator can tell a real cool-down
+        // from a stranded marker. Same shape as SRS-RESV-004's engage-then-amend.
+        //
+        // The timestamp here is the ATTEMPT's; `confirm_window` rewrites it with the
+        // real completion instant, which is why the store matches on swap identity
+        // rather than on the whole record.
+        let provisional = SwapCompletion {
+            completed_at_seconds: observed_at_seconds,
+            demoted_strategy_id: demoting.clone(),
+            promoted_strategy_id: candidate.clone(),
+        };
+        if let Err(reason) = cooldown.store.begin_provisional_window(&provisional) {
+            let error = HotSwapPromotionError::CooldownWindowUnrecordable { reason };
+            let _ = ports.events.record(HotSwapPromotionEvent {
+                demoting_strategy_id: demoting,
+                candidate_strategy_id: candidate,
+                promoted: false,
+                refusal: Some(error.machine_reason()),
+                flat_confirmed: false,
+                paper_history_preserved: false,
+                deployed_version: None,
+                observed_at_seconds,
+            });
+            return Err(error);
+        }
+
         let outcome = match self.resolve_demotion(
             request,
             liquidation,
@@ -1188,6 +1285,14 @@ impl StrategyOrchestrator {
             },
             Err(refused) => Err(HotSwapPromotionError::DemotionRefused(refused)),
         };
+
+        // The swap did NOT complete, so the provisional window it opened must go —
+        // a failed changeover is not a swap, and seven days of suppression over one
+        // is r6's defect. Best-effort: a failure to clear leaves a LABELLED marker
+        // that over-suppresses, which is the safe direction and is resolvable.
+        if outcome.is_err() {
+            cooldown.store.abandon_provisional_window(&provisional);
+        }
 
         // START THE NEXT WINDOW — SYS-49e's third clause, on the success arm ONLY.
         //

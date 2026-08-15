@@ -23,6 +23,7 @@ the real clock — pinned separately by
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -986,6 +987,81 @@ def test_a_failed_window_write_tells_the_operator_the_right_instant(
     assert "the instant this swap COMPLETED" in result.stderr, result.stderr
     assert "do not substitute the time the attempt started" in result.stderr, result.stderr
     assert "THE COOL-DOWN IS NOT IN EFFECT" in result.stderr, result.stderr
+
+
+def test_an_interrupted_swap_leaves_a_window_that_still_suppresses(swap_binaries, tmp_path) -> None:
+    """Adversarial review r13 [critical] — the interruption between publish and confirm.
+
+    Round 6 moved the window write to AFTER the durable publish, which fixed one
+    direction and opened the other. The publish and the window are two separate file
+    writes; a crash, a kill or a full disk in between left the candidate live with no
+    window at all, so the automatic triggers stayed armed on a strategy that had just
+    been promoted. That is SYS-49e's exact failure, and it failed OPEN and silently —
+    the one shape this feature exists to make impossible.
+
+    The window is now written twice: provisionally before the demotion, confirmed
+    after the publish. This is the state a killed process leaves behind, driven
+    through the REAL binaries: the record is produced by the real writer and only the
+    confirmation bit is cleared, which is precisely what an interruption does.
+
+    Three readers, three processes, one guarantee — the interrupted swap suppresses:
+    """
+    state = tmp_path / "cd.json"
+    log = tmp_path / "triggers.jsonl"
+    _open_window(state)
+
+    # The interruption: phase one's record, phase two never reached.
+    record = json.loads(state.read_text())
+    assert record["last_completion_provisional"] is False, (
+        "the real writer must confirm its own record; if this is already true, the "
+        "test is asserting nothing about the interrupted case"
+    )
+    record["last_completion_provisional"] = True
+    state.write_text(json.dumps(record))
+
+    # 1. The operator surface says a window is in effect...
+    status = _kv(_cooldown("status", "--state", str(state), "--now", str(DURING)).stdout)
+    assert status["cooldown-state"] == "ACTIVE"
+    assert status["cooldown-in-effect"] == "true"
+    # ...and says WHICH KIND, because a window an operator cannot tell apart from a
+    # completed one is a window they cannot resolve.
+    assert status["cooldown-completion-provisional"] == "true"
+
+    # 2. The automatic triggers are suppressed — the whole point. Before r13 this
+    #    state did not exist: the process died and left NO window here.
+    evaluated = _evaluate(state, log, DURING)
+    assert evaluated.returncode == 0, evaluated.stderr
+    fields = _kv(evaluated.stdout)
+    assert fields["cooldown-state"] == "ACTIVE"
+    assert fields["cooldown-suppressed"] == "true"
+    assert fields["selected"] == "NONE"
+    assert fields["fired-count"] == "0"
+    assert _log_lines(log) == 0, "a suppressed evaluation must arm nothing"
+
+    # 3. And a manual swap still needs the confirmation warning, so SYS-49a(a) holds
+    #    across the interrupted state too.
+    manual = _manual(state, log, DURING)
+    assert manual.returncode != 0
+    assert "COOLDOWN_CONFIRMATION_REQUIRED" in manual.stdout + manual.stderr
+
+
+def test_a_confirmed_window_is_reported_as_confirmed(swap_binaries, tmp_path) -> None:
+    """The other direction, without which the case above proves nothing.
+
+    A surface that reported `provisional:true` unconditionally would satisfy every
+    assertion in the interrupted test and be useless. This is a REAL swap, through the
+    real gate and the real publish, and its window must come out confirmed.
+    """
+    state = tmp_path / "cd.json"
+    result = _swap(swap_binaries, tmp_path, cooldown_state=state, now=DURING)
+    assert result.returncode == 0, result.stderr
+
+    status = _kv(_cooldown("status", "--state", str(state), "--now", str(DURING + 1)).stdout)
+    assert status["cooldown-state"] == "ACTIVE"
+    assert status["cooldown-completion-provisional"] == "false", (
+        "a swap that ran to completion must confirm its own window; a provisional one "
+        "left behind by a healthy swap would train an operator to ignore the flag"
+    )
 
 
 def test_a_swap_is_refused_when_its_window_could_not_be_recorded(swap_binaries, tmp_path) -> None:

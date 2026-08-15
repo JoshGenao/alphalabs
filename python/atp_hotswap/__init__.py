@@ -608,6 +608,21 @@ class CliHotSwapCooldownSource:
                 f"resv006_hot_swap_cooldown_cli reported state {state!r} without both "
                 "window boundaries; refusing to render a half-known cool-down"
             )
+        # Adversarial review r13. A window opened by phase one and never confirmed
+        # suppresses exactly like a completed one — but only an operator can find out
+        # whether the candidate actually went live, so the pane has to be able to TELL
+        # them the two apart. `unknown` is carried as ``None`` and never as ``False``:
+        # "this swap completed" is a claim, and a store that could not be read supports
+        # no claims (CLAUDE.md rule 3).
+        provisional = values.get("cooldown-completion-provisional")
+        if provisional not in ("true", "false", "unknown", None):
+            raise HotSwapTriggerOutputUnreadable(
+                f"resv006_hot_swap_cooldown_cli reported an unknown provisional flag "
+                f"{provisional!r}; refusing to guess whether a swap completed"
+            )
+        cooldown["completion_provisional"] = (
+            {"true": True, "false": False}.get(provisional) if provisional else None
+        )
         try:
             cooldown["started_at"] = _iso_utc(int(started))
             cooldown["expires_at"] = _iso_utc(int(expires))

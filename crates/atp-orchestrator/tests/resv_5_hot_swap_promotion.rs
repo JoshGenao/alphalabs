@@ -333,10 +333,16 @@ impl HotSwapCooldownPort for Completions {
         Ok(OBSERVED_AT)
     }
 
-    fn record_swap_completion(&self, completion: &SwapCompletion) -> Result<(), String> {
+    fn begin_provisional_window(&self, _completion: &SwapCompletion) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn confirm_window(&self, completion: &SwapCompletion) -> Result<(), String> {
         self.recorded.borrow_mut().push(completion.clone());
         Ok(())
     }
+
+    fn abandon_provisional_window(&self, _completion: &SwapCompletion) {}
 }
 
 /// A window no swap has ever opened, plus a sink — the "nothing is in effect" case.

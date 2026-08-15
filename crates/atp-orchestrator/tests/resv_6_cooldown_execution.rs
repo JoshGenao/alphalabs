@@ -206,6 +206,12 @@ struct Completions {
     /// The instant `completed_at_seconds()` reports. `None` = "same as the caller's
     /// observation instant", which is the DEGENERATE case a real clock never hits.
     completed_at: Option<u64>,
+    /// Provisional windows opened (phase one), confirmed ones (`recorded`), and
+    /// provisional ones cleared after a refusal — kept apart so a test can assert
+    /// WHICH phase ran.
+    provisional: RefCell<Vec<SwapCompletion>>,
+    abandoned: RefCell<Vec<SwapCompletion>>,
+    begin_fails_with: Option<&'static str>,
     /// The window this store REPORTS. Held here, not passed to the gate: since
     /// adversarial review r10 the gate reads its own window through the port, so a
     /// test cannot hand it a forged one either — which is the property under test.
@@ -216,6 +222,9 @@ impl Completions {
     fn working() -> Self {
         Self {
             recorded: RefCell::new(Vec::new()),
+            provisional: RefCell::new(Vec::new()),
+            abandoned: RefCell::new(Vec::new()),
+            begin_fails_with: None,
             fail_with: None,
             probe_fails_with: None,
             completed_at: None,
@@ -226,6 +235,9 @@ impl Completions {
     fn failing() -> Self {
         Self {
             recorded: RefCell::new(Vec::new()),
+            provisional: RefCell::new(Vec::new()),
+            abandoned: RefCell::new(Vec::new()),
+            begin_fails_with: None,
             fail_with: Some("the cool-down state file is read-only"),
             probe_fails_with: None,
             completed_at: None,
@@ -236,6 +248,9 @@ impl Completions {
     fn unwritable() -> Self {
         Self {
             recorded: RefCell::new(Vec::new()),
+            provisional: RefCell::new(Vec::new()),
+            abandoned: RefCell::new(Vec::new()),
+            begin_fails_with: None,
             fail_with: Some("the cool-down state file is read-only"),
             probe_fails_with: Some("cannot write hot-swap cool-down window: permission denied"),
             completed_at: None,
@@ -247,6 +262,9 @@ impl Completions {
     fn with_completion_clock(completed_at: u64) -> Self {
         Self {
             recorded: RefCell::new(Vec::new()),
+            provisional: RefCell::new(Vec::new()),
+            abandoned: RefCell::new(Vec::new()),
+            begin_fails_with: None,
             fail_with: None,
             probe_fails_with: None,
             completed_at: Some(completed_at),
@@ -280,12 +298,24 @@ impl HotSwapCooldownPort for Completions {
         Ok(self.completed_at.unwrap_or(COMPLETED_AT))
     }
 
-    fn record_swap_completion(&self, completion: &SwapCompletion) -> Result<(), String> {
+    fn begin_provisional_window(&self, completion: &SwapCompletion) -> Result<(), String> {
+        if let Some(reason) = self.begin_fails_with {
+            return Err(reason.to_string());
+        }
+        self.provisional.borrow_mut().push(completion.clone());
+        Ok(())
+    }
+
+    fn confirm_window(&self, completion: &SwapCompletion) -> Result<(), String> {
         if let Some(reason) = self.fail_with {
             return Err(reason.to_string());
         }
         self.recorded.borrow_mut().push(completion.clone());
         Ok(())
+    }
+
+    fn abandon_provisional_window(&self, completion: &SwapCompletion) {
+        self.abandoned.borrow_mut().push(completion.clone());
     }
 }
 
@@ -679,6 +709,9 @@ fn resv_6_a_failed_window_write_carries_the_completion_instant_for_the_repair() 
     let events = PromotionEvents::default();
     let completions = Completions {
         recorded: RefCell::new(Vec::new()),
+        provisional: RefCell::new(Vec::new()),
+        abandoned: RefCell::new(Vec::new()),
+        begin_fails_with: None,
         fail_with: Some("the cool-down state file is read-only"),
         probe_fails_with: None,
         completed_at: Some(COMPLETED_AT + SWAP_TOOK),
@@ -721,9 +754,13 @@ fn resv_6_a_completion_clock_that_cannot_be_read_does_not_fall_back_to_the_start
         fn completed_at_seconds(&self) -> Result<u64, String> {
             Err("system clock reports a time before the Unix epoch".to_string())
         }
-        fn record_swap_completion(&self, _completion: &SwapCompletion) -> Result<(), String> {
-            panic!("nothing may be recorded against a completion instant nobody could read");
+        fn begin_provisional_window(&self, _completion: &SwapCompletion) -> Result<(), String> {
+            Ok(())
         }
+        fn confirm_window(&self, _completion: &SwapCompletion) -> Result<(), String> {
+            panic!("nothing may be confirmed against a completion instant nobody could read");
+        }
+        fn abandon_provisional_window(&self, _completion: &SwapCompletion) {}
     }
 
     let events = PromotionEvents::default();
@@ -769,6 +806,104 @@ fn resv_6_a_completion_clock_that_cannot_be_read_does_not_fall_back_to_the_start
 }
 
 #[test]
+fn resv_6_a_failed_confirm_leaves_the_window_open_and_suppressing() {
+    // Adversarial review r13 [critical]. This is the case the whole two-phase design
+    // exists for. Before it, a swap that completed durably and then failed to write
+    // its window left the automatic triggers ARMED against the strategy just promoted
+    // — unrecoverable, because the designation had already moved.
+    //
+    // Now phase one opens the window BEFORE anything fires, so by the time a confirm
+    // can fail the window is already there and already suppressing. The failure is
+    // reported (an operator still has a provisional record to resolve) but it is no
+    // longer a fail-OPEN.
+    let events = PromotionEvents::default();
+    let completions = Completions::failing(); // confirm fails; begin succeeds
+    let (outcome, _) = live_swap(
+        ManualCooldownAcknowledgement::NotAcknowledged,
+        &events,
+        &completions,
+        COMPLETED_AT,
+    );
+    let promoted = outcome.expect("the swap itself succeeded");
+
+    // The confirm failed and is reported...
+    assert!(!promoted.cooldown_window.started());
+    // ...but phase one DID open a window, and nothing abandoned it, so the automatic
+    // triggers are suppressed from before the swap ran.
+    assert_eq!(
+        completions.provisional.borrow().len(),
+        1,
+        "the window must have been opened BEFORE the swap, not after it"
+    );
+    assert!(
+        completions.abandoned.borrow().is_empty(),
+        "a swap that COMPLETED must not have its window cleared"
+    );
+}
+
+#[test]
+fn resv_6_a_refused_swap_opened_a_window_first_and_then_cleared_it() {
+    // The ordering the r13 fix turns on, proved through the refusal path: phase one
+    // runs BEFORE the outcome is known, so a swap that is later refused must show
+    // both halves — a provisional window opened, then abandoned.
+    //
+    // If phase one ran after the demotion instead, `provisional` would be empty here
+    // and the fail-open r13 found would still be reachable.
+    let events = PromotionEvents::default();
+    let completions = Completions::working().reporting(CooldownState::NeverSwapped);
+    let mut designation = live_designation();
+
+    struct OpenPositions;
+    impl LivePositionProbe for OpenPositions {
+        fn open_positions(&self) -> Result<Vec<OpenPosition>, HotSwapSideEffectError> {
+            Ok(vec![OpenPosition {
+                symbol: "AAPL".to_string(),
+                quantity: 100,
+            }])
+        }
+    }
+
+    let outcome = StrategyOrchestrator.execute_hot_swap(
+        request(),
+        &FlatProbe,
+        &Canceller,
+        &Alerts,
+        &DemotionEvents,
+        &ClearLock,
+        PromotionPorts {
+            positions: &OpenPositions,
+            paper_history: &StablePaper,
+            versions: &StableVersions,
+            events: &events,
+        },
+        CooldownControl {
+            acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
+            store: &completions,
+        },
+        &mut designation,
+        confirmation(CANDIDATE),
+        COMPLETED_AT,
+    );
+
+    assert!(outcome.is_err(), "open positions must refuse the promotion");
+    assert_eq!(
+        completions.provisional.borrow().len(),
+        1,
+        "phase one must run BEFORE the outcome is known"
+    );
+    assert_eq!(
+        completions.abandoned.borrow().len(),
+        1,
+        "a refused swap must clear the provisional window it opened — a failed \
+         changeover is not a swap, and seven days of suppression over one is r6's defect"
+    );
+    assert!(
+        completions.recorded.borrow().is_empty(),
+        "nothing was confirmed, because nothing completed"
+    );
+}
+
+#[test]
 fn resv_6_a_swap_whose_publish_failed_opens_no_window() {
     // Adversarial review r6 [high]. `execute_hot_swap` designates the candidate live
     // IN MEMORY; the caller publishes that durably afterwards. Recording the window
@@ -806,15 +941,90 @@ fn resv_6_a_swap_whose_publish_failed_opens_no_window() {
     );
 
     let promoted = outcome.expect("the gate itself succeeded");
-    // ...and here the caller's durable publish fails, so the acceptance is dropped
-    // WHOLE rather than converted — which is the only other thing a caller can do
-    // with it, and it opens no window.
-    drop(promoted);
+
+    // Phase one (r13) already opened a PROVISIONAL window, before the demotion — so
+    // "drop the token" no longer means "the store is untouched", and r6's guarantee
+    // has to be restated rather than assumed to survive.
+    assert_eq!(
+        completions.provisional.borrow().len(),
+        1,
+        "phase one must have opened a window before the demotion"
+    );
+
+    // ...and here the caller's durable publish fails. It KNOWS the slot never moved,
+    // so it gives the window back. Dropping instead would leave the provisional
+    // window standing and suppress the automatic triggers for seven days over a swap
+    // the durable authority never accepted — r6's defect, reachable again through
+    // r13's fix if this call is ever removed.
+    promoted.abandon(&completions);
 
     assert_eq!(
         completions.count(),
         0,
         "a swap whose designation was never durably published must not open a window"
+    );
+    assert_eq!(
+        completions.abandoned.borrow().len(),
+        1,
+        "the provisional window must be given back, not merely left unconfirmed"
+    );
+}
+
+#[test]
+fn resv_6_dropping_the_token_leaves_the_provisional_window_standing() {
+    // The other half of the r13 trade, pinned so it is a DECISION rather than an
+    // oversight: `abandon` is an explicit call, not a `Drop` impl.
+    //
+    // An implicit abandon would also fire on the panic and early-return paths, where
+    // the durable state is UNKNOWN rather than known-unchanged — and clearing a
+    // window you cannot reason about is the fail-open direction this whole feature
+    // exists to prevent. So a caller that simply drops the token gets the safe
+    // outcome: a labelled provisional window that over-suppresses until an operator
+    // resolves it, never an absent one.
+    let events = PromotionEvents::default();
+    let completions = Completions::working();
+    let mut designation = live_designation();
+
+    let outcome = StrategyOrchestrator.execute_hot_swap(
+        request(),
+        &FlatProbe,
+        &Canceller,
+        &Alerts,
+        &DemotionEvents,
+        &ClearLock,
+        PromotionPorts {
+            positions: &FlatPositions,
+            paper_history: &StablePaper,
+            versions: &StableVersions,
+            events: &events,
+        },
+        CooldownControl {
+            acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
+            store: &completions,
+        },
+        &mut designation,
+        confirmation(CANDIDATE),
+        COMPLETED_AT,
+    );
+
+    drop(outcome.expect("the gate itself succeeded"));
+
+    assert_eq!(
+        completions.provisional.borrow().len(),
+        1,
+        "the provisional window stands — a dropped token says nothing about the \
+         durable state, and an absent window is the one failure mode SYS-49e cannot \
+         tolerate"
+    );
+    assert!(
+        completions.abandoned.borrow().is_empty(),
+        "dropping must NOT abandon: `abandon` is a claim about the durable slot that \
+         only the caller can make"
+    );
+    assert_eq!(
+        completions.count(),
+        0,
+        "and nothing was confirmed, because nothing was published"
     );
 }
 
