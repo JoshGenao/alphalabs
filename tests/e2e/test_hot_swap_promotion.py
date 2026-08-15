@@ -99,6 +99,11 @@ def live_stack(binaries, tmp_path) -> Iterator[tuple[tuple[str, int], Path, Path
         paper_state_dir=paper,
         log_path=journal,
         demotion_lock_path=tmp_path / "demotion-pending.json",
+        # SRS-RESV-006 / SYS-49e — required, so no composition can skip the window.
+        # The file does not exist here, which the real classifier reads as
+        # NEVER_SWAPPED: genuinely clear, because no swap has completed in this
+        # fixture. That keeps this suite measuring the PROMOTION gate.
+        cooldown_state_path=tmp_path / "cooldown.json",
         # Declared DRILL: the flat-account and code-identity producers are deferred
         # (SRS-EXE-006 / SRS-ORCH-004), and an undeclared composition refuses.
         fixture_safety_inputs={

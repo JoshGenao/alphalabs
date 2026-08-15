@@ -155,6 +155,17 @@ Read this whenever you write a test, and before you believe a green one.
     suspect that you made one of ITS anchors ambiguous before you suspect the test.
     `(RESV-006, on SRS-RESV-005's guard)`
 
+35. **A GATED suite you did not run is not a suite that passed — and a required new
+    parameter breaks every caller, including the ones behind the gate.** SRS-RESV-006 made
+    `cooldown_state_path` required on `mount_hot_swap_execution`, updated the callers it knew
+    about, and ran `tests/e2e/` only as three named files for four review rounds.
+    `test_hot_swap_promotion.py` calls that mount too and had been erroring the whole time —
+    invisible because `pytest -m "not e2e"` skips the directory entirely, and because
+    "ATP_RUN_E2E=1 pytest a.py b.py c.py" reads like e2e coverage in a commit message while
+    covering three files. After changing a shared signature, `grep -rn "<name>(" tests/` and
+    run the WHOLE gated directory at least once before believing the diff is clean.
+    `(RESV-006, found four rounds late)`
+
 ## Layer selection
 
 `tests/unit` L1 · `tests/property` L2 · `tests/` L3 contract · `tests/boundary` L4 ·

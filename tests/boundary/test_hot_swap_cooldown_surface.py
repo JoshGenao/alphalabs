@@ -460,6 +460,72 @@ def _swap_request(where: tuple[str, int], body: dict) -> tuple[int, dict]:
     return _request(where, "POST", "/api/v1/hot-swap?confirm=true", body)
 
 
+def test_the_SHIPPED_entrypoint_composes_the_execution_route(tmp_path) -> None:
+    """Adversarial review r9 — implemented is not shipped (`adversarial-precheck` rule 7).
+
+    Every other case here mounts the route itself, so they prove it works WHEN mounted
+    and say nothing about whether `python -m atp_dashboard` mounts it. It did not: the
+    SPA posts to `/api/v1/hot-swap?confirm=true` and an operator got a generic
+    `HANDLER_DEFERRED` 501 naming nobody.
+
+    This drives `serve()`'s OWN composition helpers over an env mapping, which is the
+    only thing that can fail when the shipped entrypoint stops composing the route.
+
+    The route is deliberately mounted WITHOUT fixture safety inputs, so it still
+    cannot promote — it refuses with `SAFETY_INPUTS_UNAVAILABLE` naming SRS-EXE-006
+    and SRS-ORCH-004. Both halves are asserted: that it is SERVED (not deferred), and
+    that it REFUSES (not promotes). Declaring fixtures in the shipped path would let
+    the dashboard report a promotion decided on a fixture flat-account, which is the
+    false green SRS-RESV-005's round-1 review blocked.
+    """
+    from atp_dashboard.server import _mount_hot_swap_execution_arm
+
+    env = {
+        "ATP_HOT_SWAP_DESIGNATION_STATE": str(tmp_path / "live.state"),
+        "ATP_HOT_SWAP_PAPER_STATE_DIR": str(tmp_path / "paper"),
+        "ATP_HOT_SWAP_PROMOTION_LOG": str(tmp_path / "swaps.jsonl"),
+        "ATP_HOT_SWAP_DEMOTION_STATE": str(tmp_path / "demotion-pending.json"),
+        "ATP_HOT_SWAP_COOLDOWN_STATE": str(tmp_path / "cooldown.json"),
+    }
+    runtime = OperatorInterfaceRuntime()
+    _mount_hot_swap_execution_arm(runtime, env)
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        status, body = _request(
+            (host, port), "POST", "/api/v1/hot-swap?confirm=true", {"candidate_strategy_id": "c"}
+        )
+    finally:
+        runtime.stop()
+
+    # SERVED — not the generic unbound-handler 501.
+    assert body["error"]["type"] != "HANDLER_DEFERRED", body
+    # ...and REFUSING, with the owners of the two facts it cannot prove.
+    assert status == 501, body
+    assert body["error"]["type"] == "SAFETY_INPUTS_UNAVAILABLE", body
+    owner = body["error"]["detail"]["owner"]
+    assert "SRS-EXE-006" in owner and "SRS-ORCH-004" in owner, body
+
+
+def test_the_shipped_arm_refuses_to_start_without_its_cooldown_window(tmp_path) -> None:
+    # The window is load-bearing on this surface — it gates the swap AND records the
+    # completion that starts the next one. A surface that could execute a swap it
+    # cannot cool down must not come up claiming it can, so a missing knob is a boot
+    # failure that names the cause once rather than once per request.
+    from atp_dashboard.server import _mount_hot_swap_execution_arm
+
+    env = {
+        "ATP_HOT_SWAP_DESIGNATION_STATE": str(tmp_path / "live.state"),
+        "ATP_HOT_SWAP_PAPER_STATE_DIR": str(tmp_path / "paper"),
+        "ATP_HOT_SWAP_PROMOTION_LOG": str(tmp_path / "swaps.jsonl"),
+        "ATP_HOT_SWAP_DEMOTION_STATE": str(tmp_path / "demotion-pending.json"),
+        # ATP_HOT_SWAP_COOLDOWN_STATE deliberately absent.
+    }
+    with pytest.raises(ValueError) as caught:
+        _mount_hot_swap_execution_arm(OperatorInterfaceRuntime(), env)
+    assert "ATP_HOT_SWAP_COOLDOWN_STATE" in str(caught.value)
+    assert "SYS-49e" in str(caught.value)
+
+
 def test_the_execution_route_forwards_the_cooldown_state_on_every_swap(tmp_path) -> None:
     # Unconditional, never optional: a route that could skip the window would BE the
     # execution bypass this gate closes.

@@ -37,6 +37,7 @@ from atp_logs_service import LogEventPublisher, wire_logs
 # reflowing or reordering it fails that gate. The trigger arm is imported from the SUBMODULE
 # below precisely so isort has no second `from atp_orchestration import` to merge into it.
 from atp_orchestration import REST_LIFECYCLE_OPERATION, mount_rollback, rollback_is_served
+from atp_orchestration.hot_swap_execution import mount_hot_swap_execution
 from atp_orchestration.hot_swap_triggers import mount_hot_swap_triggers
 from atp_runtime import OperatorInterfaceRuntime
 
@@ -690,6 +691,70 @@ def _mount_hot_swap_trigger_arm(
     )
 
 
+def _mount_hot_swap_execution_arm(
+    runtime: OperatorInterfaceRuntime, env: Mapping[str, str]
+) -> None:
+    """Register SRS-RESV-005's ``POST /api/v1/hot-swap`` on the SHIPPED entrypoint.
+
+    Adversarial review r9 (`adversarial-precheck` rule 7 — *implemented is not
+    shipped*): SRS-RESV-006's browser walk mounted this route on its own fixture
+    runtime, so it proved the route works when mounted and NOT that the shipped
+    ``python -m atp_dashboard`` composes it. It did not. The SPA posts to
+    ``/api/v1/hot-swap?confirm=true``, so an operator could see the control and get a
+    generic `HANDLER_DEFERRED` 501 that names nobody.
+
+    **Deliberately composed WITHOUT ``fixture_safety_inputs``.** The route still
+    cannot promote — it answers a structured 501 ``SAFETY_INPUTS_UNAVAILABLE`` naming
+    SRS-EXE-006 (the real IB position feed) and SRS-ORCH-004 (the durable
+    deployed-version registry). That is the whole point: declaring fixtures HERE
+    would let the shipped dashboard report a promotion decided on a fixture
+    flat-account, which is a false green on a live trading path and is exactly what
+    SRS-RESV-005's round-1 review blocked. What this changes is the honesty of the
+    refusal, not the capability: an operator now learns WHICH producers are missing
+    instead of that some handler is unbound.
+
+    Opt-in on ``ATP_HOT_SWAP_DESIGNATION_STATE``, the same knob the pane's
+    live-strategy leg uses — a runtime with no durable designation record has nothing
+    to demote and must not answer on the route whose success means a swap happened.
+    The remaining paths are required alongside it for the reason the trigger arm
+    applies to its own: a surface that could execute a swap it cannot record, cannot
+    block, or cannot cool down must not come up at all.
+    """
+
+    designation_state = env.get("ATP_HOT_SWAP_DESIGNATION_STATE") or None
+    if designation_state is None:
+        return
+    required = {
+        "ATP_HOT_SWAP_PAPER_STATE_DIR": "the SRS-SIM-004 paper-state store whose history "
+        "the promotion must prove it preserved",
+        "ATP_HOT_SWAP_PROMOTION_LOG": "the durable promotion journal — a live state change "
+        "nobody can address is not a success (SRS-RESV-005)",
+        "ATP_HOT_SWAP_DEMOTION_STATE": "SRS-RESV-004's demotion-pending lockout, which "
+        "blocks a swap attempted while a previous demotion is unresolved",
+        "ATP_HOT_SWAP_COOLDOWN_STATE": "SRS-RESV-006's SyRS SYS-49e window, which both "
+        "gates the swap and records the completion that starts the next one",
+    }
+    missing = [knob for knob in required if not env.get(knob)]
+    if missing:
+        raise ValueError(
+            "ATP_HOT_SWAP_DESIGNATION_STATE is set but "
+            + ", ".join(sorted(missing))
+            + " is not: "
+            + "; ".join(required[knob] for knob in sorted(missing))
+            + ". A swap-execution surface that cannot do all of these must not come up "
+            "claiming it can."
+        )
+    mount_hot_swap_execution(
+        runtime,
+        state_path=designation_state,
+        paper_state_dir=env["ATP_HOT_SWAP_PAPER_STATE_DIR"],
+        log_path=env["ATP_HOT_SWAP_PROMOTION_LOG"],
+        demotion_lock_path=env["ATP_HOT_SWAP_DEMOTION_STATE"],
+        cooldown_state_path=env["ATP_HOT_SWAP_COOLDOWN_STATE"],
+        # NO fixture_safety_inputs — see the docstring. The shipped posture REFUSES.
+    )
+
+
 def serve(host: str = "127.0.0.1", port: int = 8080) -> None:
     """Run the dashboard until interrupted (blocking; SIGINT/SIGTERM shut down)."""
 
@@ -702,6 +767,10 @@ def serve(host: str = "127.0.0.1", port: int = 8080) -> None:
     publisher = mount_default_dashboard(
         runtime, env, hot_swap_source=_mount_hot_swap_trigger_arm(runtime, env)
     )
+    # SRS-RESV-005's swap-EXECUTION route, on the shipped entrypoint rather than only
+    # in tests (adversarial review r9). Composed without fixture safety inputs, so it
+    # refuses with a 501 that NAMES its missing producers — see the arm's docstring.
+    _mount_hot_swap_execution_arm(runtime, env)
     logs_publisher = _mount_logs_arm(runtime, env)
 
     # Startup is all-or-nothing. The publishers run on their own threads, so a
