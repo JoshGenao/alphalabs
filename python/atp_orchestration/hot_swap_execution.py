@@ -495,9 +495,15 @@ class SwapExecutionHandler:
             "demotion_state": ("DEMOTED" if demotion == "FLAT_CONFIRMED" else "DEMOTION_PENDING"),
             "promotion_state": promotion,
             # SRS-RESV-006 / SYS-49e. Present on EVERY 200, including a BLOCKED
-            # swap (where it is NOT_STARTED because no swap completed and no window
-            # was due) — an optional field would make the commonest degraded
-            # response a subset of what the schema advertises.
+            # swap — an optional field would make the commonest degraded response a
+            # subset of what the schema advertises.
+            #
+            # On a BLOCKED swap the value is UNKNOWN, not NOT_STARTED (adversarial
+            # review r21 corrected this comment, which had said the opposite). The
+            # promote CLI emits its `cooldown-window` line on the success arm only, and
+            # an ABSENT line is UNKNOWN and never STARTED — the registry's
+            # `cooldown_window_note` and the handler have always agreed; only this
+            # description of the public response semantics was wrong.
             "cooldown_window": cooldown_window,
         }
         ordinal = values.get("swap-record-ordinal", "-")

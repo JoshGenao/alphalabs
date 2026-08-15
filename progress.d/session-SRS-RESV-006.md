@@ -324,6 +324,37 @@ without the change.
   delegation credit to any writer whose helper held the guard — which is precisely how this
   defect is spelled. A writer that calls `load(` must now hold the guard ITSELF.
 
+* **r21 `block` x2 + `warn` x2** — the round the reviewer went wide.
+  1. *`begin_provisional` clobbers a DIFFERENT swap's provisional window* [block]. The
+     arrangement r13/r15/r18/r19 had not covered: swap A→B publishes durably and is killed
+     before phase two, leaving P1 as the only suppression; an acknowledged manual swap B→C
+     (legal under SYS-49a(a)) overwrites P1 with its own P2 — which looks harmless because
+     P2 is newer — and then FAILS, abandoning P2 and leaving nothing at all, with B live and
+     its automatic triggers armed. `begin_provisional` now REFUSES to displace another
+     swap's unconfirmed marker and says how to reconcile it; the same rule was already
+     asserted on the other writer.
+  2. *the execution arm opts in on the pane's DISPLAY knob* [block]. `_mount_hot_swap_
+     execution_arm` keyed off `ATP_HOT_SWAP_DESIGNATION_STATE` and then hard-failed startup
+     unless four more variables were set — contradicting the composition contract three
+     functions above it ("any one composes without the others") and, worse, a boot
+     REGRESSION: a deployment that had always set only the display knob would no longer come
+     up. It now opts in on `ATP_HOT_SWAP_PROMOTION_LOG`, which exists for this route and
+     nothing else.
+  3. *contradictory proof lines* [warn]. `record-completion` could print
+     `cooldown-window-started:true` and `:false` on one stdout. Emitted once now, after the
+     re-read, so it is a claim about the VERIFIED window — and this repo's own strict parser
+     accepts it, which the duplicate broke.
+  4. *doc drift* [warn]. The `cooldown_window` field's comment claimed NOT_STARTED on a
+     BLOCKED swap; the code and the registry both say UNKNOWN, and the boundary test
+     asserted presence without value. Comment corrected, assertion tightened.
+
+  **Five findings in one family** (r13, r15, r18, r19, r21#1), each an arrangement of the
+  two slots the previous fix had not covered. Rather than a sixth patch, the contract now
+  carries a closure ARGUMENT over the enumerated writer set: every writer either preserves
+  or extends the suppression in force, and `guarded_writers` is checked, so a sixth writer
+  cannot appear without being declared. That is what turns "the cases we thought of" into a
+  property of the code.
+
 Every finding was accepted and fixed; none was disputed.
 
 ## Playbook updates

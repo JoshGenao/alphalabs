@@ -124,3 +124,18 @@ Walk this against your own diff before Step 6.1. Most of it is one grep each.
   closed the session, or the reviewer was rate-limited after your last edit), say so
   explicitly in the session note and name which round the last real pass covered.
   `(LOG-001 r38 note)`
+
+## When one defect class keeps coming back (RESV-006, r13→r21)
+
+- **Five rounds found the same family**: a durable record with two slots that can each be
+  "the current one", and each round found an arrangement the previous fix had not covered
+  (confirm clobbers, abandon deletes, retry deletes, confirm shortens, a second attempt
+  displaces). Patching instance N+1 is not convergence. **Enumerate the writers in the
+  contract, then write the closure argument**: for each, state how it either preserves or
+  extends the invariant, and add the static check that fails when an undeclared writer
+  appears. An argument over a closed set is checkable; "the cases we thought of" is not.
+- **Ask the requirement which combinations are LEGAL, and test those first.** Every one of
+  those five landed on a sequence the requirement explicitly permits — SYS-49a(a) allows a
+  manual swap DURING the window the feature enforces, so two records coexisting is normal
+  operation, not an edge case. The permitted-concurrent-operation path is where this class
+  lives. `(RESV-006 r21)`

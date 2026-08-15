@@ -659,7 +659,12 @@ def test_a_blocked_swap_still_declares_its_cooldown_window_field(tmp_path) -> No
         status, body = _swap_request(where, {"candidate_strategy_id": "cand-b"})
         assert status == 200, body
         assert body["promotion_state"] == "BLOCKED", body
-        assert "cooldown_window" in body, body
+        # Present AND correct. Asserting presence alone is what let the field's own
+        # docstring drift into claiming NOT_STARTED here (adversarial review r21): the
+        # promote CLI emits its `cooldown-window` line on the success arm only, and an
+        # absent line is UNKNOWN — never STARTED, and not NOT_STARTED either, because
+        # "no window was due" is a different claim from "we could not tell".
+        assert body["cooldown_window"] == "UNKNOWN", body
 
 
 def test_a_provisional_window_is_published_as_provisional() -> None:
@@ -711,3 +716,74 @@ def test_a_provisional_flag_the_surface_does_not_understand_is_refused() -> None
     )
     with pytest.raises(HotSwapTriggerOutputUnreadable, match="unknown provisional flag"):
         source.live_state()
+
+
+def test_a_display_only_deployment_still_boots(tmp_path) -> None:
+    """Adversarial review r21 [block] — the arm's opt-in must be about the arm.
+
+    ``ATP_HOT_SWAP_DESIGNATION_STATE`` is the pane's live-strategy DISPLAY knob, and
+    the composition contract in ``server.py`` promises four independent legs: "any one
+    composes without the others; unset, a leg is absent and its cells keep their
+    deferred placeholder." Opting the execution ROUTE in on that knob broke the
+    promise and, worse, was a boot regression — a deployment that had always set only
+    the display knob suddenly raised out of ``serve()`` demanding four more variables
+    for a route it had never asked for.
+    """
+    from atp_dashboard.server import _mount_hot_swap_execution_arm
+
+    runtime = OperatorInterfaceRuntime()
+    _mount_hot_swap_execution_arm(runtime, {"ATP_HOT_SWAP_DESIGNATION_STATE": str(tmp_path / "s")})
+
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        status, body = _request(
+            (host, port), "POST", "/api/v1/hot-swap?confirm=true", {"candidate_strategy_id": "c"}
+        )
+    finally:
+        runtime.stop()
+    # Absent, not broken: the route keeps the structured 501 the frozen contract gives
+    # every unbound operation, which is what "a leg is absent" means here.
+    assert status == 501, body
+    assert body["error"]["type"] == "HANDLER_DEFERRED", body
+
+
+def test_naming_the_promotion_journal_opts_the_route_in(tmp_path) -> None:
+    # The non-vacuity control. An arm that never mounted would satisfy the case above
+    # and ship the r9 defect — a control an operator can see and a route nobody bound.
+    from atp_dashboard.server import _mount_hot_swap_execution_arm
+
+    env = {
+        "ATP_HOT_SWAP_PROMOTION_LOG": str(tmp_path / "swaps.jsonl"),
+        "ATP_HOT_SWAP_DESIGNATION_STATE": str(tmp_path / "live.state"),
+        "ATP_HOT_SWAP_PAPER_STATE_DIR": str(tmp_path / "paper"),
+        "ATP_HOT_SWAP_DEMOTION_STATE": str(tmp_path / "demotion-pending.json"),
+        "ATP_HOT_SWAP_COOLDOWN_STATE": str(tmp_path / "cooldown.json"),
+    }
+    runtime = OperatorInterfaceRuntime()
+    _mount_hot_swap_execution_arm(runtime, env)
+    host, port = runtime.start(host="127.0.0.1", port=0)
+    try:
+        status, body = _request(
+            (host, port), "POST", "/api/v1/hot-swap?confirm=true", {"candidate_strategy_id": "c"}
+        )
+    finally:
+        runtime.stop()
+    assert body["error"]["type"] != "HANDLER_DEFERRED", body
+
+
+def test_opting_in_without_the_designation_record_is_a_boot_failure(tmp_path) -> None:
+    # The designation state moved from opt-in to REQUIREMENT, so the loud failure it
+    # used to provide has to still exist — a route that could execute a swap with
+    # nothing durably designated must not come up claiming it can.
+    from atp_dashboard.server import _mount_hot_swap_execution_arm
+
+    env = {
+        "ATP_HOT_SWAP_PROMOTION_LOG": str(tmp_path / "swaps.jsonl"),
+        "ATP_HOT_SWAP_PAPER_STATE_DIR": str(tmp_path / "paper"),
+        "ATP_HOT_SWAP_DEMOTION_STATE": str(tmp_path / "demotion-pending.json"),
+        "ATP_HOT_SWAP_COOLDOWN_STATE": str(tmp_path / "cooldown.json"),
+        # ATP_HOT_SWAP_DESIGNATION_STATE deliberately absent.
+    }
+    with pytest.raises(ValueError) as caught:
+        _mount_hot_swap_execution_arm(OperatorInterfaceRuntime(), env)
+    assert "ATP_HOT_SWAP_DESIGNATION_STATE" in str(caught.value)

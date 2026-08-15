@@ -867,6 +867,39 @@ pub fn begin_provisional(
         .as_ref()
         .and_then(|record| record.provisional_completion.clone());
 
+    // A stranded marker belonging to a DIFFERENT swap is refused, not overwritten —
+    // adversarial review r21. Displacing it looks harmless because the replacement is
+    // newer and suppresses for longer, but the replacement is ABANDONED when its swap
+    // fails, and then nothing remains: the first swap may have published its
+    // designation durably before it was interrupted, so a strategy that is live has
+    // its automatic triggers armed again. The invariant is already asserted on the
+    // other writer (one swap's completion must not retire another's in-flight
+    // marker); this is the same rule on this one.
+    //
+    // Fail-closed and reconcilable: an unresolved interruption is exactly the state an
+    // operator must settle before another swap runs, and the message says how.
+    if let Some(stranded) = existing
+        .as_ref()
+        .and_then(|record| record.provisional_completion.as_ref())
+    {
+        if !is_same_swap(stranded, completion) {
+            return Err(malformed(
+                path,
+                format!(
+                    "an unconfirmed swap is already recorded here ({} -> {}, at {}); it \
+                     may have gone live before it was interrupted, so it is the only \
+                     thing suppressing the automatic triggers and must not be replaced. \
+                     Resolve it first: confirm it with `resv006_hot_swap_cooldown_cli \
+                     record-completion` if that swap did complete, or clear it if it did \
+                     not",
+                    stranded.demoted_strategy_id.as_str(),
+                    stranded.promoted_strategy_id.as_str(),
+                    stranded.completed_at_seconds,
+                ),
+            ));
+        }
+    }
+
     // The same governing rule as phase two, for the same reason: a marker older than
     // the window already in force can only shorten it.
     if let Some(stored) = governing(&existing) {

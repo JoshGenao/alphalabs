@@ -301,8 +301,14 @@ fn cmd_record_completion(rest: &[String]) -> Result<(), String> {
     println!("deferred-writer:SRS-RESV-005");
     match &outcome {
         CompletionOutcome::Recorded { previous } => {
+            // `cooldown-window-started` is deliberately NOT printed here. The write
+            // returning Ok is not the window being readable, and the re-read below can
+            // still contradict it — adversarial review r21 found both lines reaching
+            // the same stdout, so the proof stream asserted the window had and had not
+            // started. This repo's own `parse_trigger_cli_output` refuses contradictory
+            // duplicate keys, and this is the command the promote CLI's repair
+            // instruction sends operators to. It is emitted ONCE, after the re-read.
             println!("completion-recorded:true");
-            println!("cooldown-window-started:true");
             println!("completion-at-seconds:{completed_at_seconds}");
             match previous {
                 Some(previous) => println!(
@@ -355,6 +361,9 @@ fn cmd_record_completion(rest: &[String]) -> Result<(), String> {
              the automatic triggers with resv003_hot_swap_trigger_cli until it is."
         ));
     }
+    // The single emission, and it is a claim about the VERIFIED window: the completion
+    // was written and the bytes that landed classify.
+    println!("cooldown-window-started:true");
     Ok(())
 }
 

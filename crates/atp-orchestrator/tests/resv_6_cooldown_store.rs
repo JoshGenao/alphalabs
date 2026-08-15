@@ -935,6 +935,114 @@ fn resv_6_the_preflight_preserves_a_swap_completion_it_finds() {
     );
 }
 
+#[test]
+fn resv_6_a_new_swap_cannot_displace_another_swaps_unconfirmed_marker() {
+    // Adversarial review r21 [block]. The fail-open reached between two PROVISIONAL
+    // records — the one arrangement r13/r15/r18/r19 had not covered:
+    //
+    //   1. swap A->B runs, phase one writes P1=(A,B)@T1, the caller publishes the
+    //      designation durably (B is live), and the process is killed before phase
+    //      two. P1 is now the only thing suppressing the automatic triggers;
+    //   2. an operator acknowledges a manual swap B->C, which SYS-49a(a) permits
+    //      inside a running window. Phase one writes P2=(B,C)@T2 and DISCARDS P1 —
+    //      which looks harmless, because P2 is newer and suppresses for longer;
+    //   3. B->C fails for any ordinary reason, so it abandons P2;
+    //   4. nothing is left. B was promoted durably in step 1 and its automatic
+    //      triggers are armed again.
+    //
+    // The invariant is already asserted on the other writer — one swap's completion
+    // must not retire another's in-flight marker. This is the same rule here.
+    let scratch = Scratch::new("r21-two-provisionals");
+    let path = scratch.path("cooldown.json");
+
+    let stranded = SwapCompletion {
+        completed_at_seconds: COMPLETED_AT,
+        demoted_strategy_id: StrategyId::new("alpha"),
+        promoted_strategy_id: StrategyId::new("beta"),
+    };
+    cooldown_store::begin_provisional(&path, &stranded).unwrap();
+
+    let follow_up = SwapCompletion {
+        completed_at_seconds: COMPLETED_AT + 3_600,
+        demoted_strategy_id: StrategyId::new("beta"),
+        promoted_strategy_id: StrategyId::new("gamma"),
+    };
+    let refused = cooldown_store::begin_provisional(&path, &follow_up)
+        .expect_err("a different swap's unconfirmed marker must not be replaced");
+    let message = refused.to_string();
+    assert!(
+        message.contains("unconfirmed swap is already recorded"),
+        "the refusal must name the state an operator has to resolve: {message}"
+    );
+    assert!(
+        message.contains("record-completion"),
+        "...and how to resolve it: {message}"
+    );
+
+    assert_eq!(
+        cooldown_store::load(&path)
+            .unwrap()
+            .unwrap()
+            .provisional_completion,
+        Some(stranded),
+        "the stranded marker survives — it may be the only thing suppressing a \
+         strategy that went live before it was interrupted"
+    );
+}
+
+#[test]
+fn resv_6_the_same_swap_may_still_reopen_its_own_marker() {
+    // The non-vacuity control. A store that refused EVERY second provisional would
+    // break the ordinary retry: an operator re-running the same swap after a
+    // transient failure would be told to reconcile a marker that is their own.
+    let scratch = Scratch::new("r21-same-swap-retry");
+    let path = scratch.path("cooldown.json");
+
+    let first = completion_at(COMPLETED_AT);
+    cooldown_store::begin_provisional(&path, &first).unwrap();
+    let retry = completion_at(COMPLETED_AT + 60);
+    cooldown_store::begin_provisional(&path, &retry)
+        .expect("the same swap may reopen its own marker");
+
+    assert_eq!(
+        cooldown_store::load(&path)
+            .unwrap()
+            .unwrap()
+            .provisional_completion,
+        Some(retry),
+        "and the retry's newer instant governs, because it suppresses for longer"
+    );
+}
+
+#[test]
+fn resv_6_a_confirmed_window_does_not_block_an_acknowledged_manual_swap() {
+    // The refusal is about UNCONFIRMED markers only. SYS-49a(a) guarantees an
+    // acknowledged manual swap stays available inside a running cool-down, so a
+    // CONFIRMED completion must not be turned into a blocker by the r21 fix.
+    let scratch = Scratch::new("r21-confirmed-not-a-blocker");
+    let path = scratch.path("cooldown.json");
+
+    cooldown_store::record_completion(
+        &path,
+        &SwapCompletion {
+            completed_at_seconds: COMPLETED_AT,
+            demoted_strategy_id: StrategyId::new("alpha"),
+            promoted_strategy_id: StrategyId::new("beta"),
+        },
+    )
+    .unwrap();
+
+    cooldown_store::begin_provisional(
+        &path,
+        &SwapCompletion {
+            completed_at_seconds: COMPLETED_AT + 3_600,
+            demoted_strategy_id: StrategyId::new("beta"),
+            promoted_strategy_id: StrategyId::new("gamma"),
+        },
+    )
+    .expect("an acknowledged manual swap inside a confirmed window must proceed");
+}
+
 // NOTE: the relative-path case needs `set_current_dir`, which is process-global and would
 // race the tests above (cargo runs one file's tests as threads in a single process). It
 // lives alone in `resv_6_cooldown_relative_path.rs`, which cargo builds as its own binary.

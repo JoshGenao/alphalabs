@@ -1312,6 +1312,43 @@ def test_a_swap_preflight_leaves_the_operators_configured_period_alone(
     )
 
 
+def test_the_repair_command_states_the_window_verdict_exactly_once(tmp_path) -> None:
+    """Adversarial review r21 [warn] — a proof stream may not contradict itself.
+
+    ``record-completion`` printed ``cooldown-window-started:true`` on the write arm
+    and ``cooldown-window-started:false`` on the unreadable-re-read arm, so both could
+    reach the same stdout: the stream asserted the SYS-49e window had and had not
+    started. This repo's own ``parse_trigger_cli_output`` refuses contradictory
+    duplicate keys, so a strict consumer got "ambiguous stream" instead of the accurate
+    not-started signal, while a naive shell wrapper read whichever line it kept.
+
+    It matters here more than anywhere: this is the command the promote CLI's repair
+    instruction sends an operator to after a window failed to open.
+    """
+    state = tmp_path / "cd.json"
+    result = _cooldown(
+        "record-completion",
+        "--state",
+        str(state),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--completed-at",
+        str(COMPLETED_AT),
+    )
+    assert result.returncode == 0, result.stderr
+
+    lines = [
+        line for line in result.stdout.splitlines() if line.startswith("cooldown-window-started:")
+    ]
+    assert lines == ["cooldown-window-started:true"], (
+        f"exactly one verdict, and it must be the VERIFIED one: {lines}"
+    )
+    # And the repo's strict parser accepts it, which is the property the duplicate broke.
+    assert _kv(result.stdout)["cooldown-window-started"] == "true"
+
+
 def test_a_confirmed_window_is_reported_as_confirmed(swap_binaries, tmp_path) -> None:
     """The other direction, without which the case above proves nothing.
 

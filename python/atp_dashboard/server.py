@@ -713,22 +713,31 @@ def _mount_hot_swap_execution_arm(
     refusal, not the capability: an operator now learns WHICH producers are missing
     instead of that some handler is unbound.
 
-    Opt-in on ``ATP_HOT_SWAP_DESIGNATION_STATE``, the same knob the pane's
-    live-strategy leg uses — a runtime with no durable designation record has nothing
-    to demote and must not answer on the route whose success means a swap happened.
-    The remaining paths are required alongside it for the reason the trigger arm
+    Opt-in on ``ATP_HOT_SWAP_PROMOTION_LOG``, which exists for this route and nothing
+    else, so setting it is an unambiguous "I intend swaps to be executable here".
+
+    It used to opt in on ``ATP_HOT_SWAP_DESIGNATION_STATE`` — the pane's live-strategy
+    DISPLAY knob — and adversarial review r21 found that this contradicted the
+    composition contract three functions up ("four separate legs ... any one composes
+    without the others") and was a boot REGRESSION: a deployment that had always set
+    only the display knob suddenly raised out of ``serve()`` demanding four more
+    variables for a route it never asked for. An arm's opt-in has to be a knob that is
+    about that arm.
+
+    The remaining four paths are required alongside it, for the reason the trigger arm
     applies to its own: a surface that could execute a swap it cannot record, cannot
-    block, or cannot cool down must not come up at all.
+    block, or cannot cool down must not come up at all. That failure is loud on
+    purpose — the operator asked for this route by naming its journal.
     """
 
-    designation_state = env.get("ATP_HOT_SWAP_DESIGNATION_STATE") or None
-    if designation_state is None:
+    promotion_log = env.get("ATP_HOT_SWAP_PROMOTION_LOG") or None
+    if promotion_log is None:
         return
     required = {
+        "ATP_HOT_SWAP_DESIGNATION_STATE": "the durable SRS-EXE-001 live-designation "
+        "record — a runtime with nothing designated has nothing to demote",
         "ATP_HOT_SWAP_PAPER_STATE_DIR": "the SRS-SIM-004 paper-state store whose history "
         "the promotion must prove it preserved",
-        "ATP_HOT_SWAP_PROMOTION_LOG": "the durable promotion journal — a live state change "
-        "nobody can address is not a success (SRS-RESV-005)",
         "ATP_HOT_SWAP_DEMOTION_STATE": "SRS-RESV-004's demotion-pending lockout, which "
         "blocks a swap attempted while a previous demotion is unresolved",
         "ATP_HOT_SWAP_COOLDOWN_STATE": "SRS-RESV-006's SyRS SYS-49e window, which both "
@@ -737,7 +746,7 @@ def _mount_hot_swap_execution_arm(
     missing = [knob for knob in required if not env.get(knob)]
     if missing:
         raise ValueError(
-            "ATP_HOT_SWAP_DESIGNATION_STATE is set but "
+            "ATP_HOT_SWAP_PROMOTION_LOG is set but "
             + ", ".join(sorted(missing))
             + " is not: "
             + "; ".join(required[knob] for knob in sorted(missing))
@@ -746,9 +755,9 @@ def _mount_hot_swap_execution_arm(
         )
     mount_hot_swap_execution(
         runtime,
-        state_path=designation_state,
+        state_path=env["ATP_HOT_SWAP_DESIGNATION_STATE"],
         paper_state_dir=env["ATP_HOT_SWAP_PAPER_STATE_DIR"],
-        log_path=env["ATP_HOT_SWAP_PROMOTION_LOG"],
+        log_path=promotion_log,
         demotion_lock_path=env["ATP_HOT_SWAP_DEMOTION_STATE"],
         cooldown_state_path=env["ATP_HOT_SWAP_COOLDOWN_STATE"],
         # NO fixture_safety_inputs — see the docstring. The shipped posture REFUSES.
