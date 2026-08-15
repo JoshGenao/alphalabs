@@ -36,8 +36,8 @@
 //! window for a swap that never happened (review r6) and writing second strands a swap with
 //! no window (review r13).
 //!
-//! So [`begin_provisional`] opens the window BEFORE the demotion, flagged
-//! [`CooldownRecord::provisional`] and stamped with the attempt instant, and
+//! So [`begin_provisional`] opens the window BEFORE the demotion, in its own
+//! [`CooldownRecord::provisional_completion`] slot and stamped with the attempt instant, and
 //! [`record_completion`] confirms it after the durable publish with the real completion
 //! instant. A changeover that refuses or fails calls [`abandon_provisional`], so a window
 //! still never outlives a swap that did not happen. Every interruption in between now lands
@@ -68,7 +68,10 @@ pub const MAGIC: &str = "ATP-HOT-SWAP-COOLDOWN";
 /// The layout this build WRITES (SRS-DATA-015 / SyRS SYS-66).
 ///
 /// **Version history:** v1 = `{magic, schema_version, cooldown_days,
-/// last_completed_at_seconds?, last_demoted_strategy_id?, last_promoted_strategy_id?}`.
+/// last_completed_at_seconds?, last_demoted_strategy_id?, last_promoted_strategy_id?,
+/// provisional_completed_at_seconds?, provisional_demoted_strategy_id?,
+/// provisional_promoted_strategy_id?}` — two INDEPENDENT triples, each
+/// all-present-or-all-absent: the swap that completed, and the swap being attempted.
 ///
 /// Versioned since its first byte, so there is no unversioned payload to stay compatible
 /// with and no legacy floor to read at.
@@ -83,30 +86,44 @@ const FIELD_COOLDOWN_DAYS: &str = "cooldown_days";
 const FIELD_COMPLETED_AT: &str = "last_completed_at_seconds";
 const FIELD_DEMOTED: &str = "last_demoted_strategy_id";
 const FIELD_PROMOTED: &str = "last_promoted_strategy_id";
-/// Whether the recorded window is still PROVISIONAL — opened before the swap that
-/// owns it became durable, and not yet confirmed. See [`CooldownRecord::provisional`].
-const FIELD_PROVISIONAL: &str = "last_completion_provisional";
+/// The IN-FLIGHT swap's triple — phase one written, phase two not yet reached.
+///
+/// A SEPARATE slot from the confirmed completion above, and adversarial review r15 is
+/// why. The first two-phase draft reused the `last_*` triple for both and carried a
+/// boolean saying which it meant, so a provisional record OVERWROTE a confirmed one:
+/// an acknowledged manual swap inside a running window — which SYS-49a(a) guarantees
+/// is allowed — displaced the very window it was running inside, and abandoning that
+/// attempt then deleted a cool-down still in force, resuming the automatic triggers
+/// days early. "A swap completed" and "a swap is being attempted" are two different
+/// facts and cannot share one slot: clearing the second must never disturb the first.
+const FIELD_PROVISIONAL_COMPLETED_AT: &str = "provisional_completed_at_seconds";
+const FIELD_PROVISIONAL_DEMOTED: &str = "provisional_demoted_strategy_id";
+const FIELD_PROVISIONAL_PROMOTED: &str = "provisional_promoted_strategy_id";
 
 /// The complete set of keys a v1 payload may declare. Anything else fails the read: a key
 /// this build does not know is a fact it cannot honour, and honouring the rest of the
 /// record while silently dropping it is the fail-open direction.
-const KNOWN_FIELDS: [&str; 7] = [
+const KNOWN_FIELDS: [&str; 9] = [
     FIELD_MAGIC,
     FIELD_SCHEMA_VERSION,
     FIELD_COOLDOWN_DAYS,
     FIELD_COMPLETED_AT,
     FIELD_DEMOTED,
     FIELD_PROMOTED,
-    FIELD_PROVISIONAL,
+    FIELD_PROVISIONAL_COMPLETED_AT,
+    FIELD_PROVISIONAL_DEMOTED,
+    FIELD_PROVISIONAL_PROMOTED,
 ];
 
 /// The three completion fields are all-present-or-all-absent. A partial triple is a
 /// payload that half-remembers a swap, and there is no half of it worth believing.
-const COMPLETION_FIELDS: [&str; 4] = [
-    FIELD_COMPLETED_AT,
-    FIELD_DEMOTED,
-    FIELD_PROMOTED,
-    FIELD_PROVISIONAL,
+const COMPLETION_FIELDS: [&str; 3] = [FIELD_COMPLETED_AT, FIELD_DEMOTED, FIELD_PROMOTED];
+
+/// Same rule for the in-flight triple, for the same reason.
+const PROVISIONAL_FIELDS: [&str; 3] = [
+    FIELD_PROVISIONAL_COMPLETED_AT,
+    FIELD_PROVISIONAL_DEMOTED,
+    FIELD_PROVISIONAL_PROMOTED,
 ];
 
 /// Base name of the scratch file an atomic save writes before renaming it onto the
@@ -124,22 +141,27 @@ static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
 pub struct CooldownRecord {
     pub period: CooldownPeriodDays,
     pub last_completion: Option<SwapCompletion>,
-    /// The recorded window was opened BEFORE its swap became durable, and has not
-    /// been confirmed since (adversarial review r13).
+    /// A swap that has STARTED and not yet been confirmed durable (review r13).
     ///
     /// A swap is not atomic: `execute_hot_swap` designates in memory and the caller
     /// publishes afterwards. Recording only after the publish left a completed swap
     /// whose window-write failed with the automatic triggers armed — unrecoverable,
     /// because the designation had already moved. Recording only before it opened a
-    /// seven-day window for swaps that never became durable (r6).
+    /// seven-day window for swaps that never became durable (r6). So the window is
+    /// opened provisionally first and confirmed after, the same shape as
+    /// SRS-RESV-004's engage-then-amend lockout (`safety-paths` rule 40).
     ///
-    /// So the window is opened provisionally first and confirmed after. A provisional
-    /// window SUPPRESSES exactly like a confirmed one — over-suppressing after a
-    /// maybe-swap is recoverable, under-suppressing after a real one is not — but it
-    /// says so, so an operator can tell a real cool-down from a stranded marker and
-    /// clear it. Same shape as SRS-RESV-004's engage-then-amend lockout
-    /// (`safety-paths` rule 40).
-    pub provisional: bool,
+    /// It lives in its OWN field rather than flagging `last_completion`, because the
+    /// two facts have different lifetimes (review r15). A provisional attempt is
+    /// discarded when its swap fails; a completion is never discarded. Sharing one
+    /// slot meant an acknowledged manual swap inside a running window overwrote that
+    /// window, and failing then erased it — the automatic triggers resuming days
+    /// early, which is the fail-open SYS-49e exists to prevent.
+    ///
+    /// It SUPPRESSES exactly like a confirmed completion: over-suppressing after a
+    /// maybe-swap is recoverable, under-suppressing after a real one is not. See
+    /// [`resolve`], which classifies against whichever of the two runs later.
+    pub provisional_completion: Option<SwapCompletion>,
 }
 
 impl CooldownRecord {
@@ -148,7 +170,7 @@ impl CooldownRecord {
         Self {
             period: CooldownPeriodDays::default(),
             last_completion: None,
-            provisional: false,
+            provisional_completion: None,
         }
     }
 }
@@ -324,20 +346,31 @@ pub fn serialize(record: &CooldownRecord) -> String {
         "\"{FIELD_COOLDOWN_DAYS}\":{}",
         record.period.get()
     ));
-    if let Some(completion) = &record.last_completion {
-        payload.push_str(&format!(
-            ",\"{FIELD_COMPLETED_AT}\":{}",
-            completion.completed_at_seconds
-        ));
-        payload.push_str(&format!(
-            ",\"{FIELD_DEMOTED}\":\"{}\"",
-            completion.demoted_strategy_id.as_str()
-        ));
-        payload.push_str(&format!(
-            ",\"{FIELD_PROMOTED}\":\"{}\"",
-            completion.promoted_strategy_id.as_str()
-        ));
-        payload.push_str(&format!(",\"{FIELD_PROVISIONAL}\":{}", record.provisional));
+    for (completion, at, demoted, promoted) in [
+        (
+            &record.last_completion,
+            FIELD_COMPLETED_AT,
+            FIELD_DEMOTED,
+            FIELD_PROMOTED,
+        ),
+        (
+            &record.provisional_completion,
+            FIELD_PROVISIONAL_COMPLETED_AT,
+            FIELD_PROVISIONAL_DEMOTED,
+            FIELD_PROVISIONAL_PROMOTED,
+        ),
+    ] {
+        if let Some(completion) = completion {
+            payload.push_str(&format!(",\"{at}\":{}", completion.completed_at_seconds));
+            payload.push_str(&format!(
+                ",\"{demoted}\":\"{}\"",
+                completion.demoted_strategy_id.as_str()
+            ));
+            payload.push_str(&format!(
+                ",\"{promoted}\":\"{}\"",
+                completion.promoted_strategy_id.as_str()
+            ));
+        }
     }
     payload.push('}');
     payload
@@ -407,106 +440,94 @@ fn deserialize(path: &Path, payload: &str) -> Result<CooldownRecord, CooldownSto
     let period =
         CooldownPeriodDays::new(days).map_err(|error| malformed(path, error.to_string()))?;
 
-    let present: Vec<&str> = COMPLETION_FIELDS
-        .iter()
-        .copied()
-        .filter(|key| keys.contains(key))
-        .collect();
-    let mut provisional = false;
-    let last_completion = match present.len() {
-        0 => None,
-        4 => {
-            let completed_at_raw =
-                parse_strict_i64(required(FIELD_COMPLETED_AT)?).ok_or_else(|| {
-                    malformed(
-                        path,
-                        format!("field '{FIELD_COMPLETED_AT}' is not a JSON integer"),
-                    )
-                })?;
-            let completed_at_seconds = u64::try_from(completed_at_raw).map_err(|_| {
-                malformed(
-                    path,
-                    format!(
-                        "field '{FIELD_COMPLETED_AT}' ({completed_at_raw}) is negative; a swap \
-                         cannot have completed before the Unix epoch"
-                    ),
-                )
-            })?;
-            let demoted = json_string_value(required(FIELD_DEMOTED)?).ok_or_else(|| {
-                malformed(
-                    path,
-                    format!("field '{FIELD_DEMOTED}' is not a JSON string"),
-                )
-            })?;
-            let promoted = json_string_value(required(FIELD_PROMOTED)?).ok_or_else(|| {
-                malformed(
-                    path,
-                    format!("field '{FIELD_PROMOTED}' is not a JSON string"),
-                )
-            })?;
-            // Re-validated on READ, not merely on write: a hand-edited file, a record from
-            // a build with a laxer writer, or a partially-overwritten line is exactly where
-            // an id this format cannot represent would enter. Serving one would hand a
-            // caller a strategy id that is not the one that was recorded.
-            for (value, field) in [(demoted, FIELD_DEMOTED), (promoted, FIELD_PROMOTED)] {
-                validate_strategy_id(value, field).map_err(|reason| malformed(path, reason))?;
-            }
-            if demoted == promoted {
-                return Err(malformed(
-                    path,
-                    format!(
-                        "the recorded completion demotes and promotes the same strategy \
-                         ({demoted:?}); that is not a swap"
-                    ),
-                ));
-            }
-            // The provisional flag is REQUIRED alongside the triple, not optional.
-            // An absent one would have to default, and both defaults are wrong: `false`
-            // reads a stranded provisional marker as a real cool-down, `true` reads a
-            // genuine window as clearable. A record that cannot say which it is has not
-            // said anything (CLAUDE.md rule 3).
-            let provisional_raw = required(FIELD_PROVISIONAL)?;
-            provisional = match provisional_raw.trim() {
-                "true" => true,
-                "false" => false,
-                other => {
-                    return Err(malformed(
+    // ONE triple parser, used for both slots. Two hand-written copies would be two
+    // places for the id revalidation (r2) and the same-strategy refusal (r11) to drift
+    // apart, and the provisional slot is the one a stranded marker sits in longest.
+    let read_triple =
+        |fields: [&'static str; 3]| -> Result<Option<SwapCompletion>, CooldownStoreError> {
+            let (at_key, demoted_key, promoted_key) = (fields[0], fields[1], fields[2]);
+            let present: Vec<&str> = fields
+                .iter()
+                .copied()
+                .filter(|key| keys.contains(key))
+                .collect();
+            match present.len() {
+                0 => Ok(None),
+                3 => {
+                    let completed_at_raw =
+                        parse_strict_i64(required(at_key)?).ok_or_else(|| {
+                            malformed(path, format!("field '{at_key}' is not a JSON integer"))
+                        })?;
+                    let completed_at_seconds = u64::try_from(completed_at_raw).map_err(|_| {
+                        malformed(
+                            path,
+                            format!(
+                                "field '{at_key}' ({completed_at_raw}) is negative; a swap \
+                             cannot have completed before the Unix epoch"
+                            ),
+                        )
+                    })?;
+                    let demoted = json_string_value(required(demoted_key)?).ok_or_else(|| {
+                        malformed(path, format!("field '{demoted_key}' is not a JSON string"))
+                    })?;
+                    let promoted = json_string_value(required(promoted_key)?).ok_or_else(|| {
+                        malformed(path, format!("field '{promoted_key}' is not a JSON string"))
+                    })?;
+                    // Re-validated on READ, not merely on write: a hand-edited file, a record
+                    // from a build with a laxer writer, or a partially-overwritten line is
+                    // exactly where an id this format cannot represent would enter. Serving one
+                    // would hand a caller a strategy id that is not the one that was recorded.
+                    for (value, field) in [(demoted, demoted_key), (promoted, promoted_key)] {
+                        validate_strategy_id(value, field)
+                            .map_err(|reason| malformed(path, reason))?;
+                    }
+                    if demoted == promoted {
+                        return Err(malformed(
+                            path,
+                            format!(
+                                "the recorded completion demotes and promotes the same strategy \
+                             ({demoted:?}); that is not a swap"
+                            ),
+                        ));
+                    }
+                    Ok(Some(SwapCompletion {
+                        completed_at_seconds,
+                        demoted_strategy_id: StrategyId::new(demoted),
+                        promoted_strategy_id: StrategyId::new(promoted),
+                    }))
+                }
+                _ => {
+                    let missing: Vec<&str> = fields
+                        .iter()
+                        .copied()
+                        .filter(|key| !keys.contains(key))
+                        .collect();
+                    Err(malformed(
                         path,
                         format!(
-                            "field '{FIELD_PROVISIONAL}' is {other:?}, not a JSON boolean;                              this build cannot tell a confirmed cool-down from a stranded                              provisional marker"
+                            "payload declares {} of the {} {} fields (missing {}); a \
+                         half-recorded swap has no half worth believing",
+                            present.len(),
+                            fields.len(),
+                            if at_key == FIELD_COMPLETED_AT {
+                                "completion"
+                            } else {
+                                "provisional"
+                            },
+                            missing.join(", "),
                         ),
                     ))
                 }
-            };
-            Some(SwapCompletion {
-                completed_at_seconds,
-                demoted_strategy_id: StrategyId::new(demoted),
-                promoted_strategy_id: StrategyId::new(promoted),
-            })
-        }
-        _ => {
-            let missing: Vec<&str> = COMPLETION_FIELDS
-                .iter()
-                .copied()
-                .filter(|key| !keys.contains(key))
-                .collect();
-            return Err(malformed(
-                path,
-                format!(
-                    "payload declares {} of the {} completion fields (missing {}); a \
-                     half-recorded swap has no half worth believing",
-                    present.len(),
-                    COMPLETION_FIELDS.len(),
-                    missing.join(", "),
-                ),
-            ));
-        }
-    };
+            }
+        };
+
+    let last_completion = read_triple(COMPLETION_FIELDS)?;
+    let provisional_completion = read_triple(PROVISIONAL_FIELDS)?;
 
     Ok(CooldownRecord {
         period,
         last_completion,
-        provisional,
+        provisional_completion,
     })
 }
 
@@ -601,8 +622,10 @@ pub fn set_period(
     let record = CooldownRecord {
         period,
         last_completion: existing.as_ref().and_then(|r| r.last_completion.clone()),
-        // A period change must not silently confirm a provisional window.
-        provisional: existing.as_ref().is_some_and(|r| r.provisional),
+        // A period change must neither confirm nor discard an in-flight swap.
+        provisional_completion: existing
+            .as_ref()
+            .and_then(|r| r.provisional_completion.clone()),
     };
     save(path, &record)?;
     Ok(record)
@@ -674,13 +697,12 @@ pub fn record_completion(
     path: &Path,
     completion: &SwapCompletion,
 ) -> Result<CompletionOutcome, CooldownStoreError> {
-    record_completion_inner(path, completion, false)
+    record_completion_inner(path, completion)
 }
 
 fn record_completion_inner(
     path: &Path,
     completion: &SwapCompletion,
-    provisional: bool,
 ) -> Result<CompletionOutcome, CooldownStoreError> {
     // Validated BEFORE the guard and the write: a completion this build's own reader would
     // refuse must never reach the file (durable-writes rule 4). `StrategyId::new` accepts
@@ -709,7 +731,104 @@ fn record_completion_inner(
         .as_ref()
         .map(|record| record.period)
         .unwrap_or_default();
+    let stored_provisional = existing
+        .as_ref()
+        .and_then(|record| record.provisional_completion.clone());
     let previous = existing.and_then(|record| record.last_completion);
+
+    if let Some(stored) = &previous {
+        if stored.completed_at_seconds > completion.completed_at_seconds {
+            return Ok(CompletionOutcome::KeptNewer {
+                stored: stored.clone(),
+                offered: completion.clone(),
+            });
+        }
+    }
+
+    // Phase two also RETIRES this swap's provisional record: it has been superseded by
+    // the confirmed completion being written in the same locked section, so leaving it
+    // would strand a marker every surface would report as an unresolved interruption.
+    // Another swap's provisional record is left strictly alone.
+    let provisional_completion = match &stored_provisional {
+        Some(stored) if is_same_swap(stored, completion) => None,
+        other => other.clone(),
+    };
+
+    save(
+        path,
+        &CooldownRecord {
+            period,
+            last_completion: Some(completion.clone()),
+            provisional_completion,
+        },
+    )?;
+    Ok(CompletionOutcome::Recorded { previous })
+}
+
+/// Two records describe the same swap when they name the same pair of strategies.
+///
+/// Identity, not equality: phase one stamps the ATTEMPT instant and phase two rewrites
+/// it with the completion instant, so the timestamps deliberately differ.
+fn is_same_swap(left: &SwapCompletion, right: &SwapCompletion) -> bool {
+    left.demoted_strategy_id == right.demoted_strategy_id
+        && left.promoted_strategy_id == right.promoted_strategy_id
+}
+
+/// Open the window PROVISIONALLY, before the swap that owns it is durable.
+///
+/// Phase one of two (adversarial review r13). It suppresses exactly like a confirmed
+/// window — over-suppressing after a maybe-swap is recoverable, under-suppressing
+/// after a real one is not — but it is a separate record, so an operator can tell a
+/// stranded marker from a genuine cool-down and it can be cleared by
+/// [`abandon_provisional`] without disturbing the confirmed window.
+///
+/// It does NOT go through [`record_completion`]. Adversarial review r15: the first
+/// draft did, so opening a provisional window overwrote the confirmed completion —
+/// and since an acknowledged manual swap is legal INSIDE a running window
+/// (SYS-49a(a)), the attempt displaced the very window it was running inside. When
+/// that attempt then failed, abandoning it deleted a cool-down that was still in
+/// force. Nothing here touches `last_completion`, which is what makes abandoning safe.
+///
+/// The monotonicity rule applies within the slot: a provisional record is not replaced
+/// by an OLDER one, so a retry with a backwards clock cannot shorten the window an
+/// in-flight attempt already opened.
+pub fn begin_provisional(
+    path: &Path,
+    completion: &SwapCompletion,
+) -> Result<CompletionOutcome, CooldownStoreError> {
+    for (value, field) in [
+        (
+            completion.demoted_strategy_id.as_str(),
+            FIELD_PROVISIONAL_DEMOTED,
+        ),
+        (
+            completion.promoted_strategy_id.as_str(),
+            FIELD_PROVISIONAL_PROMOTED,
+        ),
+    ] {
+        validate_strategy_id(value, field).map_err(|reason| malformed(path, reason))?;
+    }
+    if completion.demoted_strategy_id.as_str() == completion.promoted_strategy_id.as_str() {
+        return Err(malformed(
+            path,
+            format!(
+                "the completion demotes and promotes the same strategy ({:?}); that is not \
+                 a swap and must not start a cool-down",
+                completion.demoted_strategy_id.as_str()
+            ),
+        ));
+    }
+
+    let _guard = ExclusiveGuard::acquire_creating(path).map_err(|e| from_lock_error(e, path))?;
+    let existing = load(path)?;
+    let period = existing
+        .as_ref()
+        .map(|record| record.period)
+        .unwrap_or_default();
+    let last_completion = existing
+        .as_ref()
+        .and_then(|record| record.last_completion.clone());
+    let previous = existing.and_then(|record| record.provisional_completion);
 
     if let Some(stored) = &previous {
         if stored.completed_at_seconds > completion.completed_at_seconds {
@@ -724,30 +843,19 @@ fn record_completion_inner(
         path,
         &CooldownRecord {
             period,
-            last_completion: Some(completion.clone()),
-            provisional,
+            last_completion,
+            provisional_completion: Some(completion.clone()),
         },
     )?;
     Ok(CompletionOutcome::Recorded { previous })
 }
 
-/// Open the window PROVISIONALLY, before the swap that owns it is durable.
-///
-/// Phase one of two (adversarial review r13). It suppresses exactly like a confirmed
-/// window — over-suppressing after a maybe-swap is recoverable, under-suppressing
-/// after a real one is not — but it is labelled, so an operator can tell a stranded
-/// marker from a genuine cool-down and clear it with [`abandon_provisional`].
-pub fn begin_provisional(
-    path: &Path,
-    completion: &SwapCompletion,
-) -> Result<CompletionOutcome, CooldownStoreError> {
-    record_completion_inner(path, completion, true)
-}
-
 /// Clear a provisional window whose swap never became durable.
 ///
-/// Refuses to touch a CONFIRMED window: a swap that failed must not retire the
-/// cool-down of the last one that succeeded.
+/// Touches ONLY the provisional slot. The confirmed completion is never disturbed —
+/// a swap that failed must not retire the cool-down of the last one that succeeded,
+/// which is exactly what adversarial review r15 found the shared-slot draft doing.
+/// A provisional record belonging to a DIFFERENT swap is also left alone.
 pub fn abandon_provisional(
     path: &Path,
     completion: &SwapCompletion,
@@ -756,20 +864,20 @@ pub fn abandon_provisional(
     let Some(record) = load(path)? else {
         return Ok(());
     };
-    let ours = record.last_completion.as_ref().is_some_and(|stored| {
-        stored.demoted_strategy_id == completion.demoted_strategy_id
-            && stored.promoted_strategy_id == completion.promoted_strategy_id
-    });
-    if !record.provisional || !ours {
-        // Not ours, or already confirmed. Leaving it alone is the safe direction.
+    let ours = record
+        .provisional_completion
+        .as_ref()
+        .is_some_and(|stored| is_same_swap(stored, completion));
+    if !ours {
+        // Nothing in flight, or not ours. Leaving it alone is the safe direction.
         return Ok(());
     }
     save(
         path,
         &CooldownRecord {
             period: record.period,
-            last_completion: None,
-            provisional: false,
+            last_completion: record.last_completion,
+            provisional_completion: None,
         },
     )
 }
@@ -789,8 +897,16 @@ pub fn abandon_provisional(
 /// candidate is actually running and then either let the window stand or clear it.
 pub fn completion_is_provisional(path: &Path) -> Option<bool> {
     let record = load(path).ok()??;
+    if record.provisional_completion.is_some() {
+        // An attempt is in flight, or a stranded marker is left over from one that was
+        // interrupted. Either way the window an operator is looking at is not yet a
+        // confirmed one, and that is exactly the state they must be told about.
+        return Some(true);
+    }
+    // Not provisional is a claim about a completion that exists. With no completion
+    // there is no window to describe, which is a third answer, not `false`.
     record.last_completion.as_ref()?;
-    Some(record.provisional)
+    Some(false)
 }
 
 /// **The** production producer of a [`CooldownState`] — the one place a store failure
@@ -813,7 +929,24 @@ pub fn resolve(path: Option<&Path>, now_seconds: u64) -> CooldownState {
     };
     match load(path) {
         Ok(Some(record)) => {
-            CooldownState::classify(record.last_completion.as_ref(), record.period, now_seconds)
+            // The LATER of the two slots wins, because both suppress and the longer
+            // window is the safe one. A confirmed completion and an in-flight attempt
+            // can legitimately coexist — SYS-49a(a) allows an acknowledged manual swap
+            // inside a running window — and the pair must never resolve to LESS
+            // suppression than either alone. Taking the max is what makes an abandoned
+            // attempt a no-op against the window it ran inside (review r15).
+            let governing = match (&record.last_completion, &record.provisional_completion) {
+                (Some(confirmed), Some(in_flight)) => {
+                    if in_flight.completed_at_seconds > confirmed.completed_at_seconds {
+                        Some(in_flight)
+                    } else {
+                        Some(confirmed)
+                    }
+                }
+                (confirmed, None) => confirmed.as_ref(),
+                (None, in_flight) => in_flight.as_ref(),
+            };
+            CooldownState::classify(governing, record.period, now_seconds)
         }
         Ok(None) => CooldownState::classify(None, CooldownPeriodDays::default(), now_seconds),
         Err(error) => CooldownState::unknown(error.to_string()),
@@ -846,7 +979,7 @@ mod resv006_cooldown_store_unit_tests {
                 demoted_strategy_id: StrategyId::new("alpha"),
                 promoted_strategy_id: StrategyId::new("beta"),
             }),
-            provisional: false,
+            provisional_completion: None,
         };
         let payload = serialize(&record);
         let parsed = deserialize(Path::new("t.json"), &payload).expect("round trip");

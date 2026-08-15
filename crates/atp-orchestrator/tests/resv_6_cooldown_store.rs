@@ -460,7 +460,7 @@ fn resv_6_a_saved_record_is_published_atomically_and_leaves_no_scratch_behind() 
         &CooldownRecord {
             period: CooldownPeriodDays::default(),
             last_completion: Some(completion_at(COMPLETED_AT)),
-            provisional: false,
+            provisional_completion: None,
         },
     )
     .unwrap();
@@ -507,7 +507,7 @@ fn resv_6_an_unanswerable_provisional_question_is_never_answered_false() {
         &CooldownRecord {
             period: CooldownPeriodDays::default(),
             last_completion: None,
-            provisional: false,
+            provisional_completion: None,
         },
     )
     .unwrap();
@@ -530,7 +530,7 @@ fn resv_6_the_provisional_flag_survives_the_round_trip_in_both_states() {
             &CooldownRecord {
                 period: CooldownPeriodDays::default(),
                 last_completion: Some(completion_at(COMPLETED_AT)),
-                provisional,
+                provisional_completion: provisional.then(|| completion_at(COMPLETED_AT + 5)),
             },
         )
         .unwrap();
@@ -540,6 +540,173 @@ fn resv_6_the_provisional_flag_survives_the_round_trip_in_both_states() {
             "the flag an operator reads must be the one on disk"
         );
     }
+}
+
+#[test]
+fn resv_6_a_failed_in_window_swap_cannot_delete_the_window_it_ran_inside() {
+    // Adversarial review r15 [critical]. The scenario, exactly:
+    //
+    //   1. swap A completes and opens a seven-day window;
+    //   2. an operator ACKNOWLEDGES a manual swap B inside it — SYS-49a(a) guarantees
+    //      that is allowed, so this is a normal operating sequence, not an edge case;
+    //   3. B opens its provisional record;
+    //   4. B FAILS, and abandons it.
+    //
+    // The first two-phase draft shared one slot with a `provisional` flag, so step 3
+    // OVERWROTE A's completion (B's attempt instant is newer) and step 4 then wrote
+    // `last_completion: None` — deleting a cool-down that was still in force and
+    // resuming the automatic triggers days early. The fail-open, restored by the fix
+    // for a different fail-open.
+    let scratch = Scratch::new("r15-in-window");
+    let path = scratch.path("cooldown.json");
+
+    let a = SwapCompletion {
+        completed_at_seconds: COMPLETED_AT,
+        demoted_strategy_id: StrategyId::new("alpha"),
+        promoted_strategy_id: StrategyId::new("beta"),
+    };
+    cooldown_store::record_completion(&path, &a).unwrap();
+
+    let b = SwapCompletion {
+        completed_at_seconds: COMPLETED_AT + 3_600,
+        demoted_strategy_id: StrategyId::new("beta"),
+        promoted_strategy_id: StrategyId::new("gamma"),
+    };
+    cooldown_store::begin_provisional(&path, &b).unwrap();
+
+    // A's completion is untouched while B is in flight — that is the whole fix.
+    let mid = cooldown_store::load(&path).unwrap().expect("record");
+    assert_eq!(
+        mid.last_completion.as_ref(),
+        Some(&a),
+        "an in-flight attempt must not displace the completion it is running inside"
+    );
+
+    cooldown_store::abandon_provisional(&path, &b).unwrap();
+
+    let after = cooldown_store::load(&path).unwrap().expect("record");
+    assert_eq!(
+        after.last_completion.as_ref(),
+        Some(&a),
+        "abandoning a failed swap must not delete the window it ran inside"
+    );
+    assert_eq!(after.provisional_completion, None, "B's marker is gone");
+
+    // ...and the window A opened still suppresses, read through the production resolver.
+    let state = cooldown_store::resolve(Some(&path), COMPLETED_AT + 7_200);
+    assert!(
+        !state.proven_clear(),
+        "the automatic triggers must still be suppressed: A's seven days are running"
+    );
+    assert_eq!(state.started_at_seconds(), Some(COMPLETED_AT));
+}
+
+#[test]
+fn resv_6_an_in_flight_attempt_extends_the_window_it_never_shortens() {
+    // The other direction. Both slots suppress, so the pair must never resolve to LESS
+    // suppression than either alone — a resolver that simply preferred `last_completion`
+    // would satisfy the case above and under-suppress here, which is the direction a
+    // cool-down must never move.
+    let scratch = Scratch::new("r15-later-wins");
+    let path = scratch.path("cooldown.json");
+
+    let old = SwapCompletion {
+        completed_at_seconds: COMPLETED_AT,
+        demoted_strategy_id: StrategyId::new("alpha"),
+        promoted_strategy_id: StrategyId::new("beta"),
+    };
+    cooldown_store::record_completion(&path, &old).unwrap();
+    let newer = SwapCompletion {
+        completed_at_seconds: COMPLETED_AT + SEVEN_DAYS - 10,
+        demoted_strategy_id: StrategyId::new("beta"),
+        promoted_strategy_id: StrategyId::new("gamma"),
+    };
+    cooldown_store::begin_provisional(&path, &newer).unwrap();
+
+    // An instant PAST the confirmed window but well inside the in-flight one.
+    let state = cooldown_store::resolve(Some(&path), COMPLETED_AT + SEVEN_DAYS + 60);
+    assert!(
+        !state.proven_clear(),
+        "the later of the two windows governs; a swap may have gone live moments ago"
+    );
+    assert_eq!(
+        state.started_at_seconds(),
+        Some(COMPLETED_AT + SEVEN_DAYS - 10)
+    );
+}
+
+#[test]
+fn resv_6_confirming_retires_this_swaps_marker_and_leaves_another_swaps_alone() {
+    // Phase two clears the marker it supersedes, or every completed swap would leave a
+    // stranded provisional record that every surface reports as an interruption. It
+    // must clear ONLY its own: a marker belonging to a different swap is another
+    // attempt's business.
+    let scratch = Scratch::new("r15-confirm-clears");
+    let path = scratch.path("cooldown.json");
+
+    let ours = SwapCompletion {
+        completed_at_seconds: COMPLETED_AT,
+        demoted_strategy_id: StrategyId::new("alpha"),
+        promoted_strategy_id: StrategyId::new("beta"),
+    };
+    cooldown_store::begin_provisional(&path, &ours).unwrap();
+    let confirmed = SwapCompletion {
+        completed_at_seconds: COMPLETED_AT + 42,
+        ..ours.clone()
+    };
+    cooldown_store::record_completion(&path, &confirmed).unwrap();
+    let after = cooldown_store::load(&path).unwrap().expect("record");
+    assert_eq!(after.last_completion.as_ref(), Some(&confirmed));
+    assert_eq!(
+        after.provisional_completion, None,
+        "a confirmed swap must not leave its own marker behind"
+    );
+
+    // Someone ELSE's marker survives an unrelated completion.
+    let theirs = SwapCompletion {
+        completed_at_seconds: COMPLETED_AT + 100,
+        demoted_strategy_id: StrategyId::new("beta"),
+        promoted_strategy_id: StrategyId::new("gamma"),
+    };
+    cooldown_store::begin_provisional(&path, &theirs).unwrap();
+    let unrelated = SwapCompletion {
+        completed_at_seconds: COMPLETED_AT + 200,
+        demoted_strategy_id: StrategyId::new("delta"),
+        promoted_strategy_id: StrategyId::new("epsilon"),
+    };
+    cooldown_store::record_completion(&path, &unrelated).unwrap();
+    assert_eq!(
+        cooldown_store::load(&path)
+            .unwrap()
+            .unwrap()
+            .provisional_completion,
+        Some(theirs),
+        "one swap's completion must not retire another's in-flight marker"
+    );
+}
+
+#[test]
+fn resv_6_an_older_provisional_cannot_shorten_an_in_flight_window() {
+    // The monotonicity rule applies WITHIN the provisional slot too, or a retry under a
+    // backwards clock would pull an in-flight window's start backwards.
+    let scratch = Scratch::new("r15-provisional-monotone");
+    let path = scratch.path("cooldown.json");
+
+    let newer = completion_at(COMPLETED_AT + 1_000);
+    cooldown_store::begin_provisional(&path, &newer).unwrap();
+    let older = completion_at(COMPLETED_AT);
+    let outcome = cooldown_store::begin_provisional(&path, &older).unwrap();
+    assert!(
+        matches!(outcome, CompletionOutcome::KeptNewer { .. }),
+        "an older attempt must not replace a newer in-flight one, got {outcome:?}"
+    );
+    assert_eq!(
+        cooldown_store::load(&path)
+            .unwrap()
+            .unwrap()
+            .provisional_completion,
+        Some(newer)
+    );
 }
 
 // NOTE: the relative-path case needs `set_current_dir`, which is process-global and would

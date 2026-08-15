@@ -1012,11 +1012,16 @@ def test_an_interrupted_swap_leaves_a_window_that_still_suppresses(swap_binaries
 
     # The interruption: phase one's record, phase two never reached.
     record = json.loads(state.read_text())
-    assert record["last_completion_provisional"] is False, (
-        "the real writer must confirm its own record; if this is already true, the "
-        "test is asserting nothing about the interrupted case"
+    assert "provisional_completed_at_seconds" not in record, (
+        "the real writer must leave no in-flight marker behind; if one is already "
+        "here, the test is asserting nothing about the interrupted case"
     )
-    record["last_completion_provisional"] = True
+    # Phase one's record, in its own slot (r15), with phase two never reached. The
+    # CONFIRMED triple is deliberately left absent: this is the first swap on this
+    # store, so an interruption leaves only the in-flight marker.
+    record["provisional_completed_at_seconds"] = record.pop("last_completed_at_seconds")
+    record["provisional_demoted_strategy_id"] = record.pop("last_demoted_strategy_id")
+    record["provisional_promoted_strategy_id"] = record.pop("last_promoted_strategy_id")
     state.write_text(json.dumps(record))
 
     # 1. The operator surface says a window is in effect...
@@ -1062,7 +1067,9 @@ def test_an_operator_can_clear_a_stranded_provisional_window(tmp_path) -> None:
     _open_window(state)
 
     record = json.loads(state.read_text())
-    record["last_completion_provisional"] = True
+    record["provisional_completed_at_seconds"] = record.pop("last_completed_at_seconds")
+    record["provisional_demoted_strategy_id"] = record.pop("last_demoted_strategy_id")
+    record["provisional_promoted_strategy_id"] = record.pop("last_promoted_strategy_id")
     state.write_text(json.dumps(record))
     assert (
         _kv(_cooldown("status", "--state", str(state), "--now", str(DURING)).stdout)[
