@@ -140,3 +140,21 @@ MD-003's dashboard watchdog took 9 rounds, all on this shape. Any future poll br
     closed without it. `(MD-003 r7)`
 32. **Shared-socket operations eat each other's frames** — two readers on one session
     consume each other's responses. `(MD-003 live)`
+
+## Guards that read before they write (RESV-006 r20)
+
+- **A read-modify-write split across two lock acquisitions is not locked.** Reading a value,
+  then calling a helper that takes the lock and writes it, leaves the whole gap open: a
+  concurrent change lands there and is then overwritten with what you read. The function
+  that READS is the function that must hold the guard. RESV-006's writability pre-flight
+  loaded the cool-down period unlocked and handed it to `set_period`, silently reverting an
+  operator's `configure --set-days`. `(RESV-006 r20)`
+- **A probe must not be able to change what it probes.** Proving a store is writable means
+  writing back exactly the record you read — not a reconstructed one, and not a default. A
+  probe that writes a fresh record passes every "is it writable" assertion while erasing the
+  window it was checking. `(RESV-006 r20)`
+- **Two ways a static guard silently exempts the very thing it is for:** a parser that only
+  sees `pub fn` skips private helpers, and "delegation credit" (this function is fine because
+  the one it calls holds the lock) legitimises the exact split above. Both were true of
+  RESV-006's writer check, and the unguarded writer was private AND delegating.
+  `(RESV-006 r20)`

@@ -676,11 +676,16 @@ pub fn probe_recordable(
 }
 
 fn probe_writable(path: &Path) -> Result<(), CooldownStoreError> {
-    let period = match load(path)? {
-        Some(record) => record.period,
-        None => CooldownPeriodDays::default(),
-    };
-    set_period(path, period).map(|_| ())
+    // ONE locked read-modify-write, and adversarial review r20 is why. This used to
+    // `load` the period OUTSIDE the lock and then hand it to `set_period`, which
+    // reacquires the lock and writes it back — so an operator running
+    // `configure --set-days 30` in the gap had their change silently rolled back to
+    // whatever the probe had read, and the enforced window quietly reverted to the old
+    // period. A pre-flight that proves the store is writable must not be able to
+    // CHANGE it: this writes back exactly the record it read, under the same guard.
+    let _guard = ExclusiveGuard::acquire_creating(path).map_err(|e| from_lock_error(e, path))?;
+    let record = load(path)?.unwrap_or_else(CooldownRecord::fresh);
+    save(path, &record)
 }
 
 /// Record a swap completion, starting the SYS-49e window at its timestamp.

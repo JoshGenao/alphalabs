@@ -864,6 +864,77 @@ fn resv_6_the_window_a_writer_guards_is_the_window_a_reader_resolves() {
     );
 }
 
+#[test]
+fn resv_6_the_preflight_cannot_roll_back_a_concurrent_period_change() {
+    // Adversarial review r20 [high]. `probe_writable` proved the store was writable by
+    // reading the period OUTSIDE the lock and handing it to `set_period`, which
+    // reacquires the lock and writes it back. An operator running
+    // `configure --set-days 30` in that gap had their change silently reverted, and
+    // the window the gate then enforced was the OLD period — a shorter cool-down than
+    // the one the operator configured and is watching.
+    //
+    // Interleaved for real, not simulated: probes run on background threads while the
+    // period is changed underneath them. The assertion can only fail if the probe can
+    // still write a stale period, so a correct build never reddens here.
+    use std::sync::Arc;
+    use std::thread;
+
+    let scratch = Scratch::new("r20-preflight-race");
+    let path = Arc::new(scratch.path("cooldown.json"));
+    cooldown_store::set_period(&path, CooldownPeriodDays::default()).unwrap();
+
+    let demoted = StrategyId::new("alpha");
+    let promoted = StrategyId::new("beta");
+    let probers: Vec<_> = (0..4)
+        .map(|_| {
+            let path = Arc::clone(&path);
+            let (demoted, promoted) = (demoted.clone(), promoted.clone());
+            thread::spawn(move || {
+                for _ in 0..150 {
+                    cooldown_store::probe_recordable(&path, &demoted, &promoted).unwrap();
+                }
+            })
+        })
+        .collect();
+
+    let changed = CooldownPeriodDays::new(30).unwrap();
+    cooldown_store::set_period(&path, changed).unwrap();
+
+    for prober in probers {
+        prober.join().expect("prober thread");
+    }
+
+    assert_eq!(
+        cooldown_store::load(&path).unwrap().unwrap().period.get(),
+        30,
+        "a writability pre-flight must not be able to CHANGE the window it is probing — \
+         reverting the period silently shortens the cool-down an operator configured"
+    );
+}
+
+#[test]
+fn resv_6_the_preflight_preserves_a_swap_completion_it_finds() {
+    // The other half of "a probe must not change what it probes". A pre-flight that
+    // wrote a fresh record would satisfy the period assertion above while erasing the
+    // running window entirely — which is the fail-open, not a config regression.
+    let scratch = Scratch::new("r20-preflight-preserves");
+    let path = scratch.path("cooldown.json");
+
+    let completion = completion_at(COMPLETED_AT);
+    cooldown_store::record_completion(&path, &completion).unwrap();
+    cooldown_store::begin_provisional(&path, &completion_at(COMPLETED_AT + 500)).unwrap();
+    let before = cooldown_store::load(&path).unwrap().expect("record");
+
+    cooldown_store::probe_recordable(&path, &StrategyId::new("alpha"), &StrategyId::new("beta"))
+        .unwrap();
+
+    assert_eq!(
+        cooldown_store::load(&path).unwrap().expect("record"),
+        before,
+        "the pre-flight must write back exactly what it read — both slots and the period"
+    );
+}
+
 // NOTE: the relative-path case needs `set_current_dir`, which is process-global and would
 // race the tests above (cargo runs one file's tests as threads in a single process). It
 // lives alone in `resv_6_cooldown_relative_path.rs`, which cargo builds as its own binary.

@@ -714,9 +714,25 @@ def check_store_durability(config: dict, store_src: str) -> str:
     # which asserted about `record_completion` and nothing else — would have passed.
     writers = spec["guarded_writers"]
     for writer in writers:
-        body = _strip_comments(_fn_block(store_src, writer))
+        # `_any_fn_block`, not `_fn_block`: `probe_writable` is deliberately private
+        # (its public face is `probe_recordable`), and a check that could only see
+        # `pub fn` would skip exactly the writer review r20 found unguarded.
+        body = _strip_comments(_any_fn_block(store_src, writer))
         if "ExclusiveGuard" in body:
             continue
+        # Delegation credit is NOT available to a writer that READS for itself. That
+        # is the exact shape of the r20 defect: `probe_writable` loaded the period
+        # outside the lock and handed it to `set_period`, which reacquired the lock and
+        # wrote the stale value back over a concurrent operator change. A
+        # read-modify-write has to happen under ONE guard, so the function that reads
+        # is the function that must hold it.
+        if "load(" in body:
+            fail(
+                f"cooldown_store::{writer} calls `load(` without holding "
+                "`ExclusiveGuard` itself — delegating the WRITE to a guarded helper "
+                "leaves the read outside the lock, and a concurrent change lands in "
+                "the gap and is then overwritten with what this function read"
+            )
         # One level of delegation is allowed, and only one: a writer may hand its
         # read-modify-write to a single helper, which must then hold the guard.
         delegates = [

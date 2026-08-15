@@ -1279,6 +1279,39 @@ def test_the_repair_cannot_shorten_an_INTERRUPTED_attempts_window(tmp_path) -> N
     assert _kv(_evaluate(state, log, COMPLETED_AT + 6_000).stdout)["cooldown-suppressed"] == "true"
 
 
+def test_a_swap_preflight_leaves_the_operators_configured_period_alone(
+    swap_binaries, tmp_path
+) -> None:
+    """Adversarial review r20, across the two binaries an operator actually uses.
+
+    The swap's writability pre-flight used to read the period outside the lock and
+    write it back inside, so it could roll a concurrent `configure --set-days` back to
+    the old value. What an operator sees when that happens: they set 30 days, the pane
+    keeps saying 30 days, and the cool-down expires after 7.
+
+    Sequential here rather than interleaved — the race itself is pinned at the store
+    layer, which is where the threads can be controlled. What this adds is the
+    end-to-end fact that a real swap through the real binary leaves the configured
+    period exactly as the operator set it, in the record and on the surface.
+    """
+    state = tmp_path / "cd.json"
+    configured = _cooldown("configure", "--state", str(state), "--set-days", "30")
+    assert configured.returncode == 0, configured.stderr
+
+    swapped = _swap(swap_binaries, tmp_path, cooldown_state=state, now=DURING)
+    assert swapped.returncode == 0, swapped.stderr
+
+    record = json.loads(state.read_text())
+    assert record["cooldown_days"] == 30, (
+        "the swap must not rewrite the period an operator configured"
+    )
+    status = _kv(_cooldown("status", "--state", str(state), "--now", str(DURING + 1)).stdout)
+    assert status["cooldown-state"] == "ACTIVE"
+    assert int(status["cooldown-expires-at-seconds"]) == DURING + 30 * 86_400, (
+        "and the window the gate enforces must be the 30 days the operator asked for"
+    )
+
+
 def test_a_confirmed_window_is_reported_as_confirmed(swap_binaries, tmp_path) -> None:
     """The other direction, without which the case above proves nothing.
 

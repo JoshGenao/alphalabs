@@ -411,6 +411,42 @@ class StoreWriterGuardTest(unittest.TestCase):
         self.assertIn("abandon_provisional", str(caught.exception))
         self.assertIn("ExclusiveGuard", str(caught.exception))
 
+    def test_a_writer_that_reads_outside_its_own_guard_is_caught(self) -> None:
+        """Adversarial review r20 [high] — and the reason delegation credit is limited.
+
+        `probe_writable` proved the store was writable by loading the period OUTSIDE
+        the lock and handing it to `set_period`, which reacquires the lock and wrote
+        the stale value back. An operator's concurrent `configure --set-days 30` landed
+        in that gap and was silently reverted, so the window the gate then enforced was
+        shorter than the one the operator had configured and was watching.
+
+        The behavioural test catches it; this catches the SHAPE, because the shape is
+        general: a read-modify-write must happen under one guard, so the function that
+        reads is the function that must hold it. The first version of this check gave
+        delegation credit unconditionally and passed on the defect.
+        """
+        import re as _re
+
+        match = _re.search(r"\bfn probe_writable\b[^{]*\{", self.source)
+        assert match is not None
+        start, depth, index = match.end(), 1, match.end()
+        while depth:
+            if self.source[index] == "{":
+                depth += 1
+            elif self.source[index] == "}":
+                depth -= 1
+            index += 1
+        mutated = (
+            self.source[:start] + "\n    let period = match load(path)? {\n"
+            "        Some(record) => record.period,\n"
+            "        None => CooldownPeriodDays::default(),\n"
+            "    };\n    set_period(path, period).map(|_| ())\n" + self.source[index - 1 :]
+        )
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_store_durability(self.config, mutated)
+        self.assertIn("probe_writable", str(caught.exception))
+        self.assertIn("without holding", str(caught.exception))
+
     def test_every_public_store_writer_is_declared(self) -> None:
         """The enumeration cannot go stale silently.
 

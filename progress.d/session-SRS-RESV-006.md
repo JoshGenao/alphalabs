@@ -307,6 +307,23 @@ without the change.
   mutations: guarding only `last_completion` reddens two cases; making the READER disagree
   with the writers reddens four.
 
+* **r20 `block`** — *the cool-down pre-flight can roll back a concurrent period change*
+  [high]. Class: *a read-modify-write split across two locks is not locked*.
+  `probe_writable` — the r4/r11 proof that a swap's window can be written before anything
+  destructive runs — read the period OUTSIDE the lock and handed it to `set_period`, which
+  reacquires the lock and wrote the stale value back. An operator running
+  `configure --set-days 30` in that gap had their change silently reverted: the pane keeps
+  saying 30 days and the cool-down expires after 7.
+
+  Now one locked read-modify-write that writes back exactly the record it read — a
+  pre-flight that proves the store is WRITABLE must not be able to CHANGE it.
+
+  The guard needed tightening twice, which is the part worth remembering. `probe_writable`
+  is private, and the writer check used a `pub fn`-only parser, so it had never looked at
+  the one writer that was wrong. And once it could see it, the check still passed: it gave
+  delegation credit to any writer whose helper held the guard — which is precisely how this
+  defect is spelled. A writer that calls `load(` must now hold the guard ITSELF.
+
 Every finding was accepted and fixed; none was disputed.
 
 ## Playbook updates
