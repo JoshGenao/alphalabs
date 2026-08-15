@@ -42,6 +42,7 @@ if str(TOOLS_ROOT) not in sys.path:
 from hot_swap_cooldown_check import (  # noqa: E402
     HotSwapCooldownCheckError,
     check_every_swap_path_is_gated,
+    check_the_window_is_committed_after_the_publish,
     check_trigger_arms_are_gated,
     load_config,
 )
@@ -152,6 +153,45 @@ impl StrategyOrchestrator {
         )
         evidence = check_every_swap_path_is_gated(self.config, self.root)
         self.assertIn("gated on `proven_clear`", evidence)
+
+    def test_a_reintroduced_caller_supplied_state_field_is_caught(self) -> None:
+        """Adversarial review r12 [high] — the guard against r10 was itself inert.
+
+        The check rejects a `state:` field on `CooldownControl`, which is the forged
+        proof round 10 removed. Its regex was written through a non-raw Python string,
+        so `\\b` became a literal backspace (`\\x08`) and the pattern could never
+        match — CI would have gone green while the API accepted a caller-supplied
+        cool-down state again.
+
+        A guard for a critical bypass with no test of its own is a grep that happens
+        to match today. This is that test.
+        """
+        module = self.root / PROMOTION_MODULE
+        source = module.read_text(encoding="utf-8")
+        anchor = "pub struct CooldownControl<'a, W>"
+        assert anchor in source
+        brace = source.index("{", source.index(anchor))
+        mutated = source[: brace + 1] + "\n    pub state: &'a CooldownState," + source[brace + 1 :]
+        module.write_text(mutated, encoding="utf-8")
+
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_the_window_is_committed_after_the_publish(self.config, self.root)
+        self.assertIn("forgeable", str(caught.exception))
+
+    def test_the_resolver_call_is_required_in_the_entry_point(self) -> None:
+        # The other half of r10's guard: the gate must READ the window, not take one.
+        module = self.root / PROMOTION_MODULE
+        source = module.read_text(encoding="utf-8")
+        mutated = source.replace(
+            "let window = cooldown.store.resolve_window(observed_at_seconds);",
+            "let window = CooldownState::NeverSwapped;",
+        )
+        self.assertNotEqual(mutated, source, "resolver mutation did not apply")
+        module.write_text(mutated, encoding="utf-8")
+
+        with self.assertRaises(HotSwapCooldownCheckError) as caught:
+            check_the_window_is_committed_after_the_publish(self.config, self.root)
+        self.assertIn("resolve_window", str(caught.exception))
 
     def test_markers_that_match_nothing_fail_rather_than_pass_vacuously(self) -> None:
         # A guard that quietly stops looking is worse than no guard (CLAUDE.md r9).

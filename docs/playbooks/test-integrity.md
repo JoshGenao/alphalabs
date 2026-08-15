@@ -166,6 +166,17 @@ Read this whenever you write a test, and before you believe a green one.
     run the WHOLE gated directory at least once before believing the diff is clean.
     `(RESV-006, found four rounds late)`
 
+36. **A guard written through a code generator inherits the generator's escaping — and a
+    guard with no test of its own cannot tell you it is inert.** SRS-RESV-006 added a check
+    rejecting a reintroduced forgeable field, wrote it via a Python heredoc, and `\b` inside
+    a non-raw triple-quoted string became a literal backspace (`\x08`). The pattern could
+    never match; CI would have stayed green while the critical bypass it guarded came back.
+    Two habits close this: after emitting code programmatically, `repr()` the line you
+    generated rather than eyeballing the file, and give EVERY guard for a critical bypass its
+    own mutation test — reintroduce the defect, watch the guard fail. The same session had
+    already been caught by a `compile_fail` doctest that failed for the wrong reason; both are
+    the same trap, one in a regex and one in a type. `(RESV-006 r12)`
+
 ## Layer selection
 
 `tests/unit` L1 · `tests/property` L2 · `tests/` L3 contract · `tests/boundary` L4 ·

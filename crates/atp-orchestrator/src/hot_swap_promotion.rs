@@ -316,7 +316,7 @@ pub trait HotSwapCooldownPort {
     /// `Err -> Unknown` mapping is what makes an unreadable store refuse.
     fn resolve_window(&self, now_seconds: u64) -> CooldownState;
 
-    /// Prove a completion COULD be recorded, before anything irreversible runs.
+    /// Prove THIS completion could be recorded, before anything irreversible runs.
     ///
     /// Checked at the top of [`StrategyOrchestrator::execute_hot_swap`], because a
     /// swap that completes and then cannot record its window is a fail-open that
@@ -324,7 +324,13 @@ pub trait HotSwapCooldownPort {
     /// flat, so it is far too late to refuse. Refusing HERE costs nothing — no
     /// demotion-side port has run — which is what makes the guarantee real rather
     /// than merely well-reported (adversarial review r4).
-    fn probe_writable(&self) -> Result<(), String>;
+    /// Takes the ids, because "the file is writable" is not "this completion can be
+    /// written". `serialize` hand-builds one JSON line, so an id carrying `"` or `\`
+    /// is refused on the WRITE — and a refusal that arrives after the swap has
+    /// completed finds the designation already moved and no window opened. That gap
+    /// between the escaping rule (r2) and the writability probe (r4) is what
+    /// adversarial review r11 found.
+    fn probe_recordable(&self, demoted: &StrategyId, promoted: &StrategyId) -> Result<(), String>;
 
     /// The instant the swap that just succeeded COMPLETED at.
     ///
@@ -1055,7 +1061,7 @@ impl StrategyOrchestrator {
         // and not writable a few seconds later. `CooldownWindowOutcome::NotStarted`
         // still covers it, still exits non-zero, and it is stated in
         // `hot_swap_cooldown_contract.deferred` rather than implied away.
-        if let Err(reason) = cooldown.store.probe_writable() {
+        if let Err(reason) = cooldown.store.probe_recordable(&demoting, &candidate) {
             let error = HotSwapPromotionError::CooldownWindowUnrecordable { reason };
             let _ = ports.events.record(HotSwapPromotionEvent {
                 demoting_strategy_id: demoting,

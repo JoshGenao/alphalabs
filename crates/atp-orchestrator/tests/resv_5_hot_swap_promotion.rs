@@ -325,7 +325,7 @@ impl HotSwapCooldownPort for Completions {
         CooldownState::NeverSwapped
     }
 
-    fn probe_writable(&self) -> Result<(), String> {
+    fn probe_recordable(&self, _d: &StrategyId, _p: &StrategyId) -> Result<(), String> {
         Ok(())
     }
 

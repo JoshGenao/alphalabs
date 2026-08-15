@@ -778,6 +778,77 @@ def test_a_window_exists_only_alongside_a_durably_moved_designation(
     )
 
 
+@pytest.mark.parametrize(
+    ("label", "demoting", "candidate"),
+    [
+        ("quote-in-demoting", 'reservoir-a"x', SWAP_CANDIDATE),
+        ("backslash-in-candidate", SWAP_DEMOTING, "reservoir-b\\x"),
+    ],
+)
+def test_an_unrecordable_id_refuses_the_swap_before_anything_is_published(
+    swap_binaries, tmp_path, label: str, demoting: str, candidate: str
+) -> None:
+    """Adversarial review r11 [critical] — the gap between r2's rule and r4's probe.
+
+    `cooldown_store` refuses an id carrying `"` or `\\` (its record is one hand-built
+    JSON line, and its reader returns raw still-escaped text, so escaping would
+    round-trip a DIFFERENT strategy id back). The pre-flight added in r4 proved the
+    FILE was writable — which is not the same as proving THIS completion can be
+    written. So a swap named with such an id passed the probe, ran, published the
+    live designation, and only then failed to open its window: a durably promoted
+    strategy with the automatic triggers still armed.
+
+    The pre-flight now takes the ids and applies the same rule, so the refusal
+    arrives while nothing has happened.
+    """
+
+    state = tmp_path / "cd.json"
+    designation = tmp_path / "live.state"
+    designation.write_text(f"{DESIGNATION_MAGIC}\ndesignated\t{demoting}\n")
+
+    result = subprocess.run(
+        [
+            str(swap_binaries[PROMOTE_BIN]),
+            "swap",
+            "--state",
+            str(designation),
+            "--demoting",
+            demoting,
+            "--candidate",
+            candidate,
+            "--paper-state",
+            str(tmp_path / "paper"),
+            "--demotion-lock",
+            str(tmp_path / "demotion-pending.json"),
+            "--cooldown-state",
+            str(state),
+            "--now",
+            str(COMPLETED_AT),
+            "--liquidation",
+            "flat",
+            "--positions",
+            "flat",
+            "--deployed-version",
+            "sha256:" + "a" * 64,
+            "--allow-fixture-safety-inputs",
+            "--confirm",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0, f"{label}: an unrecordable id must refuse the swap"
+    fields = _kv(result.stdout)
+    assert fields["refusal"] == "HOT_SWAP_COOLDOWN_UNRECORDABLE", result.stdout
+    assert fields["demotion-outcome"] == "NOT_STARTED", result.stdout
+    # NOTHING was published: the designation file is byte-identical to how it started,
+    # and no window exists at all.
+    assert designation.read_text() == f"{DESIGNATION_MAGIC}\ndesignated\t{demoting}\n"
+    assert not state.exists(), f"{label}: a refused swap must not create a window"
+
+
 def test_the_window_an_operator_reads_is_the_one_the_gate_enforced(swap_binaries, tmp_path) -> None:
     """Adversarial review r10 [critical] — one resolver, so the two cannot disagree.
 

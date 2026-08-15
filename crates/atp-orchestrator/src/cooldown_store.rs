@@ -570,7 +570,29 @@ pub fn set_period(
 /// This narrows the fail-open to a genuine race (a disk that fills between this call
 /// and the completion write). That residual is stated rather than implied — see
 /// `hot_swap_cooldown_contract.deferred`.
-pub fn probe_writable(path: &Path) -> Result<(), CooldownStoreError> {
+pub fn probe_recordable(
+    path: &Path,
+    demoted: &StrategyId,
+    promoted: &StrategyId,
+) -> Result<(), CooldownStoreError> {
+    // The IDs, by the SAME rule `record_completion` will apply. Proving the FILE is
+    // writable is not proving THIS completion can be written: `serialize` hand-builds
+    // one JSON line, so an id carrying `"` or `\` is refused on the write — and if
+    // that refusal arrives after the swap has completed, the designation has moved and
+    // no window opened. Adversarial review r11 found exactly that gap between r2's
+    // escaping rule and r4's writability probe.
+    validate_strategy_id(demoted.as_str(), FIELD_DEMOTED).map_err(|r| malformed(path, r))?;
+    validate_strategy_id(promoted.as_str(), FIELD_PROMOTED).map_err(|r| malformed(path, r))?;
+    if demoted.as_str() == promoted.as_str() {
+        return Err(malformed(
+            path,
+            "a swap completion names the same strategy on both sides",
+        ));
+    }
+    probe_writable(path)
+}
+
+fn probe_writable(path: &Path) -> Result<(), CooldownStoreError> {
     let period = match load(path)? {
         Some(record) => record.period,
         None => CooldownPeriodDays::default(),

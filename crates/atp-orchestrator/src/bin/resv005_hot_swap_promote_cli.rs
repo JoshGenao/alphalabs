@@ -337,8 +337,9 @@ impl HotSwapCooldownPort for FileCooldownStore {
         cooldown_store::resolve(Some(&self.path), now_seconds)
     }
 
-    fn probe_writable(&self) -> Result<(), String> {
-        cooldown_store::probe_writable(&self.path).map_err(|error| error.to_string())
+    fn probe_recordable(&self, demoted: &StrategyId, promoted: &StrategyId) -> Result<(), String> {
+        cooldown_store::probe_recordable(&self.path, demoted, promoted)
+            .map_err(|error| error.to_string())
     }
 
     fn completed_at_seconds(&self) -> Result<u64, String> {

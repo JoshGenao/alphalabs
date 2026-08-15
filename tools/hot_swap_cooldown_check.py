@@ -344,7 +344,7 @@ def check_the_window_is_committed_after_the_publish(config: dict, root: Path) ->
             "external caller could forge"
         )
     control = _struct_body_named(module, "CooldownControl")
-    if re.search(r"state\s*:", control):
+    if re.search(r"\bstate\s*:", control):
         fail(
             "`CooldownControl` carries a caller-supplied `state` — that is the forgeable "
             "proof r10 removed; the window comes from the port"

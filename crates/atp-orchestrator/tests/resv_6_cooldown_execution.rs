@@ -269,7 +269,7 @@ impl HotSwapCooldownPort for Completions {
         self.window.clone()
     }
 
-    fn probe_writable(&self) -> Result<(), String> {
+    fn probe_recordable(&self, _d: &StrategyId, _p: &StrategyId) -> Result<(), String> {
         match self.probe_fails_with {
             Some(reason) => Err(reason.to_string()),
             None => Ok(()),
@@ -715,7 +715,7 @@ fn resv_6_a_completion_clock_that_cannot_be_read_does_not_fall_back_to_the_start
         fn resolve_window(&self, _now_seconds: u64) -> CooldownState {
             CooldownState::NeverSwapped
         }
-        fn probe_writable(&self) -> Result<(), String> {
+        fn probe_recordable(&self, _d: &StrategyId, _p: &StrategyId) -> Result<(), String> {
             Ok(())
         }
         fn completed_at_seconds(&self) -> Result<u64, String> {
