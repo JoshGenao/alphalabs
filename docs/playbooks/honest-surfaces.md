@@ -204,3 +204,12 @@ phrase: "make sure to utilize the /frontend-design skill to make a modern/beauti
     refuse a marker belonging to a different one — clearing whatever happens to be there on
     the strength of a request about something else is how the wrong safety window gets
     retired. `(RESV-006 r22)`
+43. **An operator command that acts on state they just read must be a compare-and-swap.**
+    Between the read and the command, the state can move — and for a RETRY it moves to
+    something with the same name. RESV-006's repair command matched a stranded marker by
+    the swap it named, so an operator reconciling the interruption they inspected could
+    retire a later attempt's safety window instead. Require the version/instant they read,
+    match it in full, and when it has moved say so and name what is there now. Publish the
+    value on the READ surface so it comes from the same look. Never default it: a default
+    picks on the operator's behalf, which is the decision the command exists to ask them
+    for. `(RESV-006 r25 — the same defect as r18, one layer out)`

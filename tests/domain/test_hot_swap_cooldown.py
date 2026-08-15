@@ -1384,6 +1384,8 @@ def test_an_operator_can_reconcile_an_interrupted_swap_that_did_not_complete(tmp
         "live-a",
         "--promoted",
         "cand-b",
+        "--at",
+        str(COMPLETED_AT),
         "--confirm",
     )
     assert cleared.returncode == 0, cleared.stderr
@@ -1411,7 +1413,15 @@ def test_clearing_a_marker_needs_explicit_confirmation(tmp_path) -> None:
     before = json.loads(state.read_text())
 
     refused = _cooldown(
-        "clear-provisional", "--state", str(state), "--demoted", "live-a", "--promoted", "cand-b"
+        "clear-provisional",
+        "--state",
+        str(state),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--at",
+        str(COMPLETED_AT),
     )
     assert refused.returncode != 0
     assert "--confirm is required" in refused.stderr
@@ -1435,6 +1445,8 @@ def test_the_clear_refuses_a_marker_belonging_to_a_different_swap(tmp_path) -> N
         "someone-else",
         "--promoted",
         "not-mine",
+        "--at",
+        str(COMPLETED_AT),
         "--confirm",
     )
     assert refused.returncode != 0
@@ -1459,6 +1471,8 @@ def test_the_clear_can_never_retire_a_CONFIRMED_window(tmp_path) -> None:
         "live-a",
         "--promoted",
         "cand-b",
+        "--at",
+        str(COMPLETED_AT),
         "--confirm",
     )
     assert refused.returncode != 0
@@ -1493,6 +1507,8 @@ def test_reconciling_the_marker_unblocks_the_next_swap(swap_binaries, tmp_path) 
         "live-a",
         "--promoted",
         "cand-b",
+        "--at",
+        str(COMPLETED_AT),
         "--confirm",
     )
     assert cleared.returncode == 0, cleared.stderr
@@ -1550,6 +1566,8 @@ def test_every_operator_write_leaves_a_record_the_reader_accepts(tmp_path) -> No
         "live-a",
         "--promoted",
         "cand-b",
+        "--at",
+        str(COMPLETED_AT + 10_000),
         "--confirm",
     )
     assert cleared.returncode == 0, cleared.stderr
@@ -1587,6 +1605,92 @@ def test_the_operator_surface_refuses_a_completion_its_own_reader_would(tmp_path
         assert json.loads(state.read_text()) == before, (
             f"{label}: a refused write must not have moved the window"
         )
+
+
+def test_a_same_pair_retry_between_the_read_and_the_clear_is_refused(tmp_path) -> None:
+    """Adversarial review r25 [high] — identity is not provenance, at the operator surface.
+
+    ``clear-provisional`` matched the marker on the strategy pair alone. A retry of the
+    SAME swap replaces the marker, so an operator who read ``status``, saw an
+    interruption at T1, and then ran the clear could retire a DIFFERENT attempt's
+    suppression — the one at T2, which may be the interruption still protecting a
+    strategy that went live. The same defect r18 fixed inside the store, reached through
+    the surface built to repair it.
+
+    The clear is now a compare-and-swap against the operator's read: ``--at`` names the
+    instant, and a marker that moved refuses and says so.
+    """
+    state = tmp_path / "cd.json"
+    _strand(state, completed_at=COMPLETED_AT)
+
+    # What the operator read.
+    status = _kv(_cooldown("status", "--state", str(state), "--now", str(DURING)).stdout)
+    assert status["cooldown-provisional-at-seconds"] == str(COMPLETED_AT), status
+    inspected = int(status["cooldown-provisional-at-seconds"])
+
+    # ...and then the same swap is retried, moving the marker underneath them.
+    _strand(state, completed_at=COMPLETED_AT + 1_000)
+
+    refused = _cooldown(
+        "clear-provisional",
+        "--state",
+        str(state),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--at",
+        str(inspected),
+        "--confirm",
+    )
+    assert refused.returncode != 0, "a marker that MOVED must not be cleared"
+    assert "it MOVED between your read and this command" in refused.stderr, refused.stderr
+    assert str(COMPLETED_AT + 1_000) in refused.stderr, "and it must name what is there now"
+
+    marker = json.loads(state.read_text())
+    assert marker["provisional_completed_at_seconds"] == COMPLETED_AT + 1_000, (
+        "the newer attempt's suppression survives a request about the older one"
+    )
+
+    # Re-reading and naming what is actually there works — the non-vacuity control,
+    # without which a clear that refused everything would satisfy the case above and
+    # leave the operator with no way out at all (which is what r22 blocked on).
+    cleared = _cooldown(
+        "clear-provisional",
+        "--state",
+        str(state),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--at",
+        str(COMPLETED_AT + 1_000),
+        "--confirm",
+    )
+    assert cleared.returncode == 0, cleared.stderr
+    assert _kv(cleared.stdout)["provisional-cleared"] == "true"
+
+
+def test_the_clear_refuses_to_guess_which_attempt_was_meant(tmp_path) -> None:
+    # `--at` is REQUIRED, not defaulted. A default would pick an attempt on the
+    # operator's behalf, which is the decision only they can make.
+    state = tmp_path / "cd.json"
+    _strand(state)
+    before = json.loads(state.read_text())
+
+    refused = _cooldown(
+        "clear-provisional",
+        "--state",
+        str(state),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--confirm",
+    )
+    assert refused.returncode != 0
+    assert "--at <epoch-secs> is required" in refused.stderr
+    assert json.loads(state.read_text()) == before
 
 
 def test_a_confirmed_window_is_reported_as_confirmed(swap_binaries, tmp_path) -> None:

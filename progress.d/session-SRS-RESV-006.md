@@ -399,6 +399,19 @@ without the change.
   publishes, and phase two is then refused by the monotonicity rule — which is exactly
   `NotStarted`.
 
+* **r25 `block`** — *`clear-provisional` can clear the wrong same-pair marker* [high].
+  Class: *identity is not provenance* — r18's finding, reached through the surface built
+  in r22 to repair it. The clear matched on the strategy pair alone, and a retry of the
+  SAME swap replaces the marker: an operator who read `status`, saw an interruption at T1
+  and then ran the clear could retire a DIFFERENT attempt's suppression — the one at T2,
+  which may be the interruption still protecting a strategy that went live.
+
+  The clear is a compare-and-swap against the operator's read now: `--at` names the
+  instant, required and never defaulted (a default would pick an attempt on their behalf,
+  which is the one decision only they can make), and a marker that moved refuses and names
+  what is actually there. `status` publishes `cooldown-provisional-at-seconds` alongside
+  the pair, so the value to pass comes from the same read.
+
 Every finding was accepted and fixed; none was disputed.
 
 ## Playbook updates

@@ -64,6 +64,11 @@ clear-provisional FLAGS:
     --state <path>      the durable window (REQUIRED)
     --demoted <id>      the interrupted swap's demoted strategy (REQUIRED)
     --promoted <id>     the interrupted swap's promoted strategy (REQUIRED)
+    --at <epoch-secs>   the marker's instant, as `status` reported it (REQUIRED).
+                        A retry of the SAME swap replaces the marker, so naming the
+                        pair alone would clear whichever attempt happens to be there
+                        now rather than the one you inspected. This makes the clear a
+                        compare-and-swap against your read
     --confirm           REQUIRED. Clearing a marker retires suppression that may be
                         protecting a strategy that went live before the interruption,
                         so it is an explicit operator act (SyRS SYS-2d / NFR-S2)
@@ -175,6 +180,26 @@ fn cmd_status(rest: &[String]) -> Result<(), String> {
             None => "unknown",
         }
     );
+    // The marker's OWN instant, which `clear-provisional --at` requires (r25). Printed
+    // here so an operator reconciles what they read rather than whatever is there when
+    // they get around to typing: the clear is a compare-and-swap against this value, and
+    // a retry of the same swap between the two moves it.
+    if let Ok(Some(record)) = cooldown_store::load(Path::new(&state_path)) {
+        if let Some(marker) = record.provisional_completion {
+            println!(
+                "cooldown-provisional-at-seconds:{}",
+                marker.completed_at_seconds
+            );
+            println!(
+                "cooldown-provisional-demoted:{}",
+                marker.demoted_strategy_id.as_str()
+            );
+            println!(
+                "cooldown-provisional-promoted:{}",
+                marker.promoted_strategy_id.as_str()
+            );
+        }
+    }
 
     // An UNKNOWN window is a failed read, and a shell wrapper must not be able to treat it
     // as an answer — the whole point of the state existing.
@@ -263,6 +288,7 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
     let mut state_path: Option<String> = None;
     let mut demoted: Option<String> = None;
     let mut promoted: Option<String> = None;
+    let mut at_seconds: Option<u64> = None;
     let mut confirm = false;
 
     let mut iter = rest.iter();
@@ -286,6 +312,12 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
                 }
                 promoted = Some(take_value(&mut iter, flag)?);
             }
+            "--at" => {
+                if at_seconds.is_some() {
+                    return Err(dup(flag));
+                }
+                at_seconds = Some(parse_u64(&take_value(&mut iter, flag)?, flag)?);
+            }
             "--confirm" => {
                 if confirm {
                     return Err(dup(flag));
@@ -298,6 +330,15 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
     let state_path = state_path.ok_or_else(|| format!("--state <path> is required\n\n{USAGE}"))?;
     let demoted = demoted.ok_or_else(|| format!("--demoted <id> is required\n\n{USAGE}"))?;
     let promoted = promoted.ok_or_else(|| format!("--promoted <id> is required\n\n{USAGE}"))?;
+    let at_seconds = at_seconds.ok_or_else(|| {
+        format!(
+            "--at <epoch-secs> is required: name the marker's instant exactly as `status` \
+             reported it. A retry of the same swap REPLACES the marker, so a request that \
+             named only the pair would clear whichever attempt is there now rather than the \
+             one you inspected — and that attempt may be the interruption still protecting a \
+             strategy that went live (adversarial review r25)\n\n{USAGE}"
+        )
+    })?;
     if !confirm {
         return Err(format!(
             "--confirm is required: clearing an unconfirmed marker RETIRES the cool-down \
@@ -323,9 +364,15 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
     let found = cooldown_store::load(path)
         .map_err(|error| format!("the cool-down window could not be read: {error}"))?
         .and_then(|record| record.provisional_completion);
+    // FULL equality — pair AND instant. Identity is not provenance (the r18 lesson,
+    // here at the operator surface): between an operator reading `status` and running
+    // this command, a retry of the SAME swap can replace the marker, and a pair-only
+    // match would retire the newer attempt's suppression on the strength of a request
+    // about the older one.
     let matched = found.as_ref().is_some_and(|stored| {
         stored.demoted_strategy_id.as_str() == demoted_id.as_str()
             && stored.promoted_strategy_id.as_str() == promoted_id.as_str()
+            && stored.completed_at_seconds == at_seconds
     });
 
     match &found {
@@ -347,6 +394,19 @@ fn cmd_clear_provisional(rest: &[String]) -> Result<(), String> {
     if !matched {
         println!("provisional-cleared:false");
         return Err(match &found {
+            Some(stored)
+                if stored.demoted_strategy_id.as_str() == demoted_id.as_str()
+                    && stored.promoted_strategy_id.as_str() == promoted_id.as_str() =>
+            {
+                format!(
+                    "the marker for this swap is at {}s, not the {}s you named — it MOVED \
+                     between your read and this command, which means the swap was retried. \
+                     Re-read it with `status` and reconcile the attempt that is actually \
+                     recorded; the one you inspected is gone and the one here may be \
+                     protecting a strategy that went live",
+                    stored.completed_at_seconds, at_seconds,
+                )
+            }
             Some(stored) => format!(
                 "the unconfirmed marker here belongs to a DIFFERENT swap ({} -> {}); \
                  refusing to clear it on the strength of a request naming {} -> {}. \
