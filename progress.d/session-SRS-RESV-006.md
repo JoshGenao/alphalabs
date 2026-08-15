@@ -1,7 +1,7 @@
 === SESSION SRS-RESV-006 ===
 Date: 2026-08-14
 Feature: SRS-RESV-006 — enforce Hot-Swap cool-down behaviour (SyRS SYS-49e; StRS SN-1.25)
-Outcome: complete
+Outcome: serialized
 
 ## What I did
 
@@ -132,12 +132,35 @@ without the change.
    `tools/run_ci_locally.sh` is RED on the pytest step in this worktree, for a reason this
    diff did not cause. Operator authorised integrating with it documented.
 
+## Where this stands
+
+**The feature is built, tested and gated; it is not APPROVED.** 27 adversarial rounds, all
+blocks, every finding accepted and fixed. The last one landed on the round the operator
+capped the loop at, so its fix ships unreviewed by the judgment layer. What that means
+concretely for whoever picks this up:
+
+* `feature_list.json` stays `passes:false`. Nothing here flipped it.
+* The next session should run `adversarial_review.py origin/main` FIRST, against this head.
+  If it approves, record the verdict (`evidence.py critic ... --verdict approve`) and
+  `integrate --mode complete`. If it blocks, the finding is real — 27 for 27 so far.
+* The recurring family is worth reading before touching `cooldown_store.rs`: r13, r15, r18,
+  r19, r21, r25, r26 and r27 are all one shape — a durable record with two slots and an
+  ownership question. The contract's `writer_closure_note` and `attempt_identity_note` carry
+  the argument that closes it; `docs/playbooks/durable-writes.md` 26–33 carry the general
+  form.
+
 ## Critic verdicts
 
   deterministic (`critic_check.py --staged`): APPROVE — no findings, on every commit.
-  judgment (`adversarial_review.py`, reviewer=**codex**): PENDING-FINAL-VERDICT
+  deterministic (`critic_check.py --staged`): APPROVE — no findings, on every commit.
+  judgment (`adversarial_review.py`, reviewer=**codex**): **BLOCK at round 27**, recorded as
+  such. The operator capped the loop at that round; round 27's finding was accepted and
+  fixed, with its regression and its mutation, but no round ran after the fix, so no
+  APPROVE exists. `evidence.py verify` reports the record INCOMPLETE for exactly that
+  reason and `integrate` degrades to `serialized` on its own — which is the honest
+  outcome and the one this session takes.
 
-## Adversarial rounds: PENDING-FINAL-VERDICT
+## Adversarial rounds: 27 — every one a block, every finding real, none disputed
 
 * **r1 `block`** — `meta:critic-self-modification`. Structural refusal of any diff touching
   `tools/critic_check.py`. Class: reviewer refusal, not a code finding. (Prior session.)

@@ -2,10 +2,16 @@
   "created": "2026-08-11T12:35:32+00:00",
   "critic": {
     "deterministic": {
-      "head": "764c1c49f45d8f2f32347c415fb8be67a252e92f",
+      "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
       "reviewer": "critic_check",
-      "ts": "2026-08-15T13:37:57+00:00",
+      "ts": "2026-08-15T17:47:10+00:00",
       "verdict": "approve"
+    },
+    "judgment": {
+      "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
+      "reviewer": "codex",
+      "ts": "2026-08-15T17:47:03+00:00",
+      "verdict": "block"
     }
   },
   "feature": "SRS-RESV-006",
@@ -39,13 +45,13 @@
       "command": "./init.sh",
       "executed": true,
       "exit_code": 0,
-      "head": "764c1c49f45d8f2f32347c415fb8be67a252e92f",
+      "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
       "n": 1,
       "observed": "\u2192 Installing dependencies...\n  Using /Users/joshgenao/Documents/Programming/Python/alphalabs-wt-SRS-RESV-006/.venv/bin/python (Python 3.13)\n\u2192 Starting dev server...\n  Dev server already running at http://127.0.0.1:3000.\n\u2192 Waiting for server...\n\u2192 Running baseline smoke test...\n\u2192 Running contract checks (scope=env)...\n\u2192 contract checks (scope=env, 17 check(s))\n  \u00b7 architecture_check\n  \u00b7 dependency_boundary_check\n  \u00b7 config_check\n  \u00b7 startup_readiness_gate_check\n  \u00b7 startup_readiness_runtime_check\n  \u00b7 ib_adapter_check\n  \u00b7 rest_api_check\n  \u00b7 websocket_api_check\n  \u00b7 cli_check\n  \u00b7 operator_workflow_surface_check\n  \u00b7 operator_interface_runtime_check\n  \u00b7 log_record_check\n  \u00b7 log_persistence_check\n  \u00b7 subscription_fanout_check\n  \u00b7 sim_halt_check\n  \u00b7 strategy_api_indicators_check\n  \u00b7 strategy_api_documentation_check\n\u2713 17/17 contract check(s) passed (scope=env)\n\u2713 Environment ready",
       "status": "pass",
       "step_text": "Step 1: Run ./init.sh and confirm the development environment reports Environment ready before verification begins.",
       "steps_digest": "8d3fca4513f5238f",
-      "ts": "2026-08-15T13:37:06+00:00"
+      "ts": "2026-08-15T17:46:19+00:00"
     },
     {
       "argv": [
@@ -57,88 +63,97 @@
       ],
       "artifacts": [
         {
-          "bytes": 97994,
+          "bytes": 98334,
           "caption": "Hot-Swap pane with no cool-down window: the dial reads READY and the promote control is armable (SYS-49e clause 1, baseline)",
-          "head": "764c1c49f45d8f2f32347c415fb8be67a252e92f",
+          "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
           "kind": "image",
-          "name": "step2-01-ymce5v.png",
-          "sha256": "80afeeec3aee4363",
-          "ts": "2026-08-15T13:37:22+00:00"
+          "name": "step2-01-9dffps.png",
+          "sha256": "a5019457741405a5",
+          "ts": "2026-08-15T17:46:30+00:00"
         },
         {
-          "bytes": 114556,
+          "bytes": 114609,
           "caption": "A recorded swap completion opens the SYS-49e window: the dial reads ACTIVE with the remaining time counted from the completion timestamp (clause 1, and clause 3's start time)",
-          "head": "764c1c49f45d8f2f32347c415fb8be67a252e92f",
+          "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
           "kind": "image",
-          "name": "step2-02-ymce5v.png",
-          "sha256": "3923ae05f0b980b6",
-          "ts": "2026-08-15T13:37:22+00:00"
+          "name": "step2-02-9dffps.png",
+          "sha256": "b647c03e0f0cb977",
+          "ts": "2026-08-15T17:46:30+00:00"
         },
         {
-          "bytes": 129677,
+          "bytes": 129814,
           "caption": "Arming during the cool-down raises SYS-49e's confirmation warning \u2014 the manual swap is offered, not blocked (clause 2)",
-          "head": "764c1c49f45d8f2f32347c415fb8be67a252e92f",
+          "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
           "kind": "image",
-          "name": "step2-03-ymce5v.png",
-          "sha256": "72d166bbfb648b74",
-          "ts": "2026-08-15T13:37:22+00:00"
+          "name": "step2-03-9dffps.png",
+          "sha256": "edf604a29c4b65c6",
+          "ts": "2026-08-15T17:46:30+00:00"
         },
         {
-          "bytes": 114293,
+          "bytes": 114337,
           "caption": "After the confirmed swap: the window has RESTARTED at the new swap's own completion timestamp, so the countdown is back to nearly seven days (clause 3 \u2014 the start time is the most recent successful completion)",
-          "head": "764c1c49f45d8f2f32347c415fb8be67a252e92f",
+          "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
           "kind": "image",
-          "name": "step2-04-ymce5v.png",
-          "sha256": "ffa63a2b1204e7d1",
-          "ts": "2026-08-15T13:37:22+00:00"
+          "name": "step2-04-9dffps.png",
+          "sha256": "3071a3a947ef080b",
+          "ts": "2026-08-15T17:46:30+00:00"
         },
         {
-          "bytes": 999541,
+          "bytes": 1015998,
           "caption": "full session recording",
-          "head": "764c1c49f45d8f2f32347c415fb8be67a252e92f",
+          "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
           "kind": "video",
-          "name": "step2-page@50c099c658b0785ed9f3c079aa4dc5a9.webm",
-          "sha256": "a2764775833a715b",
-          "ts": "2026-08-15T13:37:22+00:00"
+          "name": "step2-page@690722737e155b0d74b8def5e0da64cb.webm",
+          "sha256": "268bd10199871e93",
+          "ts": "2026-08-15T17:46:30+00:00"
         },
         {
-          "bytes": 110419,
+          "bytes": 110381,
           "caption": "A corrupt cool-down window: the dial reports UNKNOWN and the promote control is held inert \u2014 an unreadable window is never read as 'clear'",
-          "head": "764c1c49f45d8f2f32347c415fb8be67a252e92f",
+          "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
           "kind": "image",
-          "name": "step2-01-4stxxv.png",
-          "sha256": "36c0c17cfaafc08d",
-          "ts": "2026-08-15T13:37:25+00:00"
+          "name": "step2-01-0bfyuw.png",
+          "sha256": "35768e0ca26b2025",
+          "ts": "2026-08-15T17:46:33+00:00"
         },
         {
-          "bytes": 271022,
+          "bytes": 255760,
           "caption": "full session recording",
-          "head": "764c1c49f45d8f2f32347c415fb8be67a252e92f",
+          "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
           "kind": "video",
-          "name": "step2-page@d118a25547eeb2fa4a8862200c069029.webm",
-          "sha256": "bfc48bcd67451d76",
-          "ts": "2026-08-15T13:37:25+00:00"
+          "name": "step2-page@62b1ab4fd88ac28087f8e546acc32340.webm",
+          "sha256": "1e2e03de9e6dd32f",
+          "ts": "2026-08-15T17:46:33+00:00"
         },
         {
-          "bytes": 129677,
-          "caption": "UI-5 pane, real browser: an ACTIVE SYS-49e window (6d 22h remaining, since/expires from the durable store) and the promote control armed with the cool-down confirmation warning \u2014 the AC's second clause, rendered",
-          "head": "764c1c49f45d8f2f32347c415fb8be67a252e92f",
+          "bytes": 114252,
+          "caption": "A swap that PROMOTED but could not open its SYS-49e window: the pane says the candidate is live AND that nothing is suppressing the automatic triggers, and names the repair command (adversarial review r24)",
+          "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
           "kind": "image",
-          "name": "step2-step2-03-ymce5v.png",
-          "sha256": "72d166bbfb648b74",
-          "ts": "2026-08-15T13:37:57+00:00"
+          "name": "step2-01-vp75sr.png",
+          "sha256": "f7d95cb4b37b30f4",
+          "ts": "2026-08-15T17:46:39+00:00"
+        },
+        {
+          "bytes": 562469,
+          "caption": "full session recording",
+          "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
+          "kind": "video",
+          "name": "step2-page@aa8e97e9eb05b6ac621d0cf6957fb586.webm",
+          "sha256": "2ec1d623649ecc0e",
+          "ts": "2026-08-15T17:46:39+00:00"
         }
       ],
       "command": ".venv/bin/python -m pytest tests/e2e/test_hot_swap_cooldown_browser.py -q",
       "executed": true,
       "exit_code": 0,
-      "head": "764c1c49f45d8f2f32347c415fb8be67a252e92f",
+      "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
       "n": 2,
-      "observed": "..                                                                       [100%]\n2 passed in 13.54s",
+      "observed": "...                                                                      [100%]\n3 passed in 19.48s",
       "status": "pass",
       "step_text": "Step 2: Exercise SRS-RESV-006 using browser automation against the dashboard plus REST or WebSocket checks where applicable with the fixtures, mocks, or operator controls needed by the requirement.",
       "steps_digest": "8d3fca4513f5238f",
-      "ts": "2026-08-15T13:37:25+00:00"
+      "ts": "2026-08-15T17:46:39+00:00"
     },
     {
       "argv": [
@@ -150,34 +165,34 @@
       ],
       "artifacts": [
         {
-          "bytes": 114293,
-          "caption": "The AC's third clause, visible: after the swap completed (\"promoted reservoir-b live \u00b7 swap sw-1\") the dial's start moved to 2026-08-15T13:37:22Z \u2014 the timestamp of THIS completion, not of the earlier window (12:37:12Z in the armed shot). The seven-day expiry moved with it.",
-          "head": "764c1c49f45d8f2f32347c415fb8be67a252e92f",
+          "bytes": 114337,
+          "caption": "The AC's third clause after the final head: the swap completed and the dial's start moved to THIS completion's instant, with the seven-day expiry moving with it",
+          "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
           "kind": "image",
-          "name": "step3-step2-04-ymce5v.png",
-          "sha256": "ffa63a2b1204e7d1",
-          "ts": "2026-08-15T13:38:21+00:00"
+          "name": "step3-step2-04-9dffps.png",
+          "sha256": "3071a3a947ef080b",
+          "ts": "2026-08-15T17:47:10+00:00"
         },
         {
-          "bytes": 97994,
-          "caption": "The AC's first clause: the three automatic triggers (drawdown demotion, top-ranked promotion, highest-momentum promotion) render off/suppressed while the window is in effect, and manual promotion stays 'always available' per SYS-49a(a).",
-          "head": "764c1c49f45d8f2f32347c415fb8be67a252e92f",
+          "bytes": 129814,
+          "caption": "The AC's first and second clauses: an ACTIVE window with the three automatic triggers suppressed, and the promote control armed carrying SYS-49e's confirmation warning",
+          "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
           "kind": "image",
-          "name": "step3-step2-01-ymce5v.png",
-          "sha256": "80afeeec3aee4363",
-          "ts": "2026-08-15T13:38:21+00:00"
+          "name": "step3-step2-03-9dffps.png",
+          "sha256": "edf604a29c4b65c6",
+          "ts": "2026-08-15T17:47:10+00:00"
         }
       ],
       "command": ".venv/bin/python -m pytest tests/domain/test_hot_swap_cooldown.py -q",
       "executed": true,
       "exit_code": 0,
-      "head": "764c1c49f45d8f2f32347c415fb8be67a252e92f",
+      "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
       "n": 3,
-      "observed": "...............................                                          [100%]\n31 passed in 2.30s",
+      "observed": "..............................................                           [100%]\n46 passed in 2.85s",
       "status": "pass",
       "step_text": "Step 3: Verify acceptance criteria: After successful swap, automatic triggers are ignored for the configured cool-down period defaulting to 7 calendar days; manual swap during cool-down requires confirmation warning; the cool-down start time is the timestamp of the most recent successful swap completion.",
       "steps_digest": "8d3fca4513f5238f",
-      "ts": "2026-08-15T13:37:46+00:00"
+      "ts": "2026-08-15T17:46:42+00:00"
     },
     {
       "argv": [
@@ -189,14 +204,14 @@
       "command": "cargo test -p atp-orchestrator",
       "executed": true,
       "exit_code": 0,
-      "head": "764c1c49f45d8f2f32347c415fb8be67a252e92f",
+      "head": "3f0afcf970377daf7dfa085f189d5ed3a096c521",
       "n": 4,
-      "observed": "t.rs (target/debug/deps/orch_1_lifecycle_contract-7831891b84ee895a)\n     Running tests/orch_2_resource_profile_contract.rs (target/debug/deps/orch_2_resource_profile_contract-7c122c85bc25ed55)\n     Running tests/orch_3_workload_priority_contract.rs (target/debug/deps/orch_3_workload_priority_contract-b2c0a21127794d21)\n     Running tests/orch_4_deployment_version_contract.rs (target/debug/deps/orch_4_deployment_version_contract-726fde9b617eabaa)\n     Running tests/orch_5_cli_fail_closed.rs (target/debug/deps/orch_5_cli_fail_closed-3a77e6ab502734fb)\n     Running tests/orch_5_rollback_contract.rs (target/debug/deps/orch_5_rollback_contract-86401f2bfa275bcb)\n     Running tests/resv_3_cli_fail_closed.rs (target/debug/deps/resv_3_cli_fail_closed-800e942f509af1e4)\nresv003_hot_swap_trigger_cli: SRS-RESV-006: manual Hot-Swap requires confirmation during a cool-down (window UNKNOWN): the Hot-Swap cool-down window could not be determined, so this build cannot say whether a swap is within one (SyRS SYS-49e): no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect. Confirm to swap manually anyway.\nresv003_hot_swap_trigger_cli: degraded input port(s): hot-swap cool-down state: no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect (fail closed)\nresv003_hot_swap_trigger_cli: degraded input port(s): hot-swap cool-down state: no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect (fail closed)\nresv003_hot_swap_trigger_cli: SRS-RESV-006: manual Hot-Swap requires confirmation during a cool-down (window UNKNOWN): the Hot-Swap cool-down window could not be determined, so this build cannot say whether a swap is within one (SyRS SYS-49e): no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect. Confirm to swap manually anyway.\n     Running tests/resv_3_hot_swap_triggers.rs (target/debug/deps/resv_3_hot_swap_triggers-61209c7189580bd8)\n     Running tests/resv_3_trigger_log_schema.rs (target/debug/deps/resv_3_trigger_log_schema-93b6e6aaf812c4e8)\n     Running tests/resv_4_demotion_pending_store.rs (target/debug/deps/resv_4_demotion_pending_store-8ff60a7498efb2ef)\n     Running tests/resv_4_demotion_sequence.rs (target/debug/deps/resv_4_demotion_sequence-e8671bc2caea6efe)\n     Running tests/resv_5_hot_swap_promotion.rs (target/debug/deps/resv_5_hot_swap_promotion-9c1d1ab4ccc457f4)\n     Running tests/resv_6_cli_fail_closed.rs (target/debug/deps/resv_6_cli_fail_closed-69514517cd57f634)\n     Running tests/resv_6_cooldown_classification.rs (target/debug/deps/resv_6_cooldown_classification-a4cb1b2c83a09735)\n     Running tests/resv_6_cooldown_execution.rs (target/debug/deps/resv_6_cooldown_execution-c721ff6e6d50e3ec)\n     Running tests/resv_6_cooldown_gate.rs (target/debug/deps/resv_6_cooldown_gate-42d0c6677a6e34fb)\n     Running tests/resv_6_cooldown_relative_path.rs (target/debug/deps/resv_6_cooldown_relative_path-ac52d07bb6e1721a)\n     Running tests/resv_6_cooldown_store.rs (target/debug/deps/resv_6_cooldown_store-c78f6b09b0f05d50)\n     Running tests/safe_002_liquidation_timeout_scenario.rs (target/debug/deps/safe_002_liquidation_timeout_scenario-c9b98b2df890067c)\n     Running tests/srs_err_001_broker_envelope_cli.rs (target/debug/deps/srs_err_001_broker_envelope_cli-f9208b28391a2650)\n     Running tests/srs_err_001_broker_envelope_live.rs (target/debug/deps/srs_err_001_broker_envelope_live-c072c7b3bd170949)\n     Running tests/srs_exe_002_routing_wiring.rs (target/debug/deps/srs_exe_002_routing_wiring-04db9f6704493cd1)\n     Running tests/srs_safe_003_connectivity_block_cli.rs (target/debug/deps/srs_safe_003_connectivity_block_cli-32507a0b483a7ec5)\n     Running tests/srs_safe_003_connectivity_block_wiring.rs (target/debug/deps/srs_safe_003_connectivity_block_wiring-442cff82d0507d35)\n   Doc-tests atp_orchestrator",
+      "observed": "t.rs (target/debug/deps/orch_1_lifecycle_contract-7831891b84ee895a)\n     Running tests/orch_2_resource_profile_contract.rs (target/debug/deps/orch_2_resource_profile_contract-7c122c85bc25ed55)\n     Running tests/orch_3_workload_priority_contract.rs (target/debug/deps/orch_3_workload_priority_contract-b2c0a21127794d21)\n     Running tests/orch_4_deployment_version_contract.rs (target/debug/deps/orch_4_deployment_version_contract-726fde9b617eabaa)\n     Running tests/orch_5_cli_fail_closed.rs (target/debug/deps/orch_5_cli_fail_closed-3a77e6ab502734fb)\n     Running tests/orch_5_rollback_contract.rs (target/debug/deps/orch_5_rollback_contract-86401f2bfa275bcb)\n     Running tests/resv_3_cli_fail_closed.rs (target/debug/deps/resv_3_cli_fail_closed-800e942f509af1e4)\nresv003_hot_swap_trigger_cli: SRS-RESV-006: manual Hot-Swap requires confirmation during a cool-down (window UNKNOWN): the Hot-Swap cool-down window could not be determined, so this build cannot say whether a swap is within one (SyRS SYS-49e): no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect. Confirm to swap manually anyway.\nresv003_hot_swap_trigger_cli: degraded input port(s): hot-swap cool-down state: no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect (fail closed)\nresv003_hot_swap_trigger_cli: SRS-RESV-006: manual Hot-Swap requires confirmation during a cool-down (window UNKNOWN): the Hot-Swap cool-down window could not be determined, so this build cannot say whether a swap is within one (SyRS SYS-49e): no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect. Confirm to swap manually anyway.\nresv003_hot_swap_trigger_cli: degraded input port(s): hot-swap cool-down state: no cool-down state path configured (--cooldown-state); this build cannot say whether a Hot-Swap cool-down is in effect (fail closed)\n     Running tests/resv_3_hot_swap_triggers.rs (target/debug/deps/resv_3_hot_swap_triggers-61209c7189580bd8)\n     Running tests/resv_3_trigger_log_schema.rs (target/debug/deps/resv_3_trigger_log_schema-93b6e6aaf812c4e8)\n     Running tests/resv_4_demotion_pending_store.rs (target/debug/deps/resv_4_demotion_pending_store-8ff60a7498efb2ef)\n     Running tests/resv_4_demotion_sequence.rs (target/debug/deps/resv_4_demotion_sequence-e8671bc2caea6efe)\n     Running tests/resv_5_hot_swap_promotion.rs (target/debug/deps/resv_5_hot_swap_promotion-9c1d1ab4ccc457f4)\n     Running tests/resv_6_cli_fail_closed.rs (target/debug/deps/resv_6_cli_fail_closed-69514517cd57f634)\n     Running tests/resv_6_cooldown_classification.rs (target/debug/deps/resv_6_cooldown_classification-a4cb1b2c83a09735)\n     Running tests/resv_6_cooldown_execution.rs (target/debug/deps/resv_6_cooldown_execution-c721ff6e6d50e3ec)\n     Running tests/resv_6_cooldown_gate.rs (target/debug/deps/resv_6_cooldown_gate-42d0c6677a6e34fb)\n     Running tests/resv_6_cooldown_relative_path.rs (target/debug/deps/resv_6_cooldown_relative_path-ac52d07bb6e1721a)\n     Running tests/resv_6_cooldown_store.rs (target/debug/deps/resv_6_cooldown_store-c78f6b09b0f05d50)\n     Running tests/safe_002_liquidation_timeout_scenario.rs (target/debug/deps/safe_002_liquidation_timeout_scenario-c9b98b2df890067c)\n     Running tests/srs_err_001_broker_envelope_cli.rs (target/debug/deps/srs_err_001_broker_envelope_cli-f9208b28391a2650)\n     Running tests/srs_err_001_broker_envelope_live.rs (target/debug/deps/srs_err_001_broker_envelope_live-c072c7b3bd170949)\n     Running tests/srs_exe_002_routing_wiring.rs (target/debug/deps/srs_exe_002_routing_wiring-04db9f6704493cd1)\n     Running tests/srs_safe_003_connectivity_block_cli.rs (target/debug/deps/srs_safe_003_connectivity_block_cli-32507a0b483a7ec5)\n     Running tests/srs_safe_003_connectivity_block_wiring.rs (target/debug/deps/srs_safe_003_connectivity_block_wiring-442cff82d0507d35)\n   Doc-tests atp_orchestrator",
       "status": "pass",
       "step_text": "Step 4: Record objective evidence from test and leave passes false until the evidence proves the requirement end to end.",
       "steps_digest": "8d3fca4513f5238f",
-      "ts": "2026-08-15T13:37:51+00:00"
+      "ts": "2026-08-15T17:46:57+00:00"
     }
   ],
-  "updated": "2026-08-15T13:43:53+00:00"
+  "updated": "2026-08-15T17:47:10+00:00"
 }
