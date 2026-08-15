@@ -160,7 +160,9 @@ concretely for whoever picks this up:
   reason and `integrate` degrades to `serialized` on its own — which is the honest
   outcome and the one this session takes.
 
-## Adversarial rounds: 27 — every one a block, every finding real, none disputed
+## Adversarial rounds
+
+Adversarial rounds: 27 — every one a block, every finding real, none disputed.
 
 * **r1 `block`** — `meta:critic-self-modification`. Structural refusal of any diff touching
   `tools/critic_check.py`. Class: reviewer refusal, not a code finding. (Prior session.)
