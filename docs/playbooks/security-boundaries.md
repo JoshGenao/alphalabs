@@ -95,3 +95,17 @@ as PASS. A compose text-check must handle all of these or refuse:
     class.** A checker with no proof it can fail is the same false green as any other.
 23. **Wire the check into `architecture_check.py` and BOTH CI slots.** See
     [contract-drift.md](contract-drift.md) rule 17.
+
+## Public primitives under a guarded API (RESV-006 r24)
+
+- **A `pub` write primitive undoes every invariant its callers enforce.** RESV-006 built five
+  guarded writers — validation, same-strategy refusal, O_EXCL lock, monotonicity — over a
+  `pub fn save` that had none of them, so the whole guard was one import away from being
+  bypassed. Audit the module's exported surface, not just the paths you wrote: `pub(crate)`
+  the primitive and make the guarded writers the only door.
+- **The tests that resist this are usually the tell.** All three external callers of that
+  primitive were the feature's own tests planting arbitrary records — i.e. the tests were
+  reaching around the production path, which is the same defect the reviewer found, wearing
+  a test's clothes. Rewriting them through the shipped writers made them better tests and
+  cost nothing. If a test genuinely needs an impossible record, write the BYTES, so it reads
+  as the hand-built artefact it is. `(RESV-006 r24)`

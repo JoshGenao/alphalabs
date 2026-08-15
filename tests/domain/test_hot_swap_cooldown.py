@@ -1504,6 +1504,91 @@ def test_reconciling_the_marker_unblocks_the_next_swap(swap_binaries, tmp_path) 
     ] == str(DURING), "and the window now running is the one the NEW swap opened"
 
 
+def test_every_operator_write_leaves_a_record_the_reader_accepts(tmp_path) -> None:
+    """Adversarial review r24 [high] — the guarded writers are the only door.
+
+    ``cooldown_store::save`` was public: it publishes an arbitrary record with no id
+    validation, no same-strategy refusal, no lock and no monotonicity, so a caller could
+    overwrite a running window with an older completion right past the guard the five
+    real writers enforce. It is ``pub(crate)`` now.
+
+    The property that buys, where an operator can see it: EVERY write this tool offers
+    leaves a record the reader accepts. A window that reads UNKNOWN after an operator's
+    own successful command is the fail-closed state arrived at by self-inflicted
+    corruption — the surface would be refusing swaps because of what it had just
+    written.
+    """
+    state = tmp_path / "cd.json"
+
+    def window_is_readable(after: str) -> None:
+        status = _cooldown("status", "--state", str(state), "--now", str(DURING))
+        assert status.returncode == 0, f"after {after}: {status.stderr}"
+        assert _kv(status.stdout)["cooldown-state"] != "UNKNOWN", (
+            f"after {after}, the tool's own write produced a record it cannot read back"
+        )
+
+    configured = _cooldown("configure", "--state", str(state), "--set-days", "14")
+    assert configured.returncode == 0, configured.stderr
+    window_is_readable("configure")
+
+    _open_window(state)
+    window_is_readable("record-completion")
+
+    # ...and the period an operator set survives every later write, which is the other
+    # half of "no unguarded writer": a write that reconstructed the record instead of
+    # amending it would silently reset it.
+    assert json.loads(state.read_text())["cooldown_days"] == 14
+
+    _strand(state, completed_at=COMPLETED_AT + 10_000)
+    window_is_readable("an interrupted swap")
+
+    cleared = _cooldown(
+        "clear-provisional",
+        "--state",
+        str(state),
+        "--demoted",
+        "live-a",
+        "--promoted",
+        "cand-b",
+        "--confirm",
+    )
+    assert cleared.returncode == 0, cleared.stderr
+    window_is_readable("clear-provisional")
+    assert json.loads(state.read_text())["cooldown_days"] == 14, (
+        "the configured period survives a reconciliation too"
+    )
+
+
+def test_the_operator_surface_refuses_a_completion_its_own_reader_would(tmp_path) -> None:
+    # The other half of r24: the writers VALIDATE, so no operator command can plant a
+    # record that reads back as a different swap or as corruption. Same rule the reader
+    # applies (review r2), on the way in.
+    state = tmp_path / "cd.json"
+    _open_window(state)
+    before = json.loads(state.read_text())
+
+    for label, demoted, promoted in (
+        ("same-strategy", "live-a", "live-a"),
+        ("quote-in-id", 'live-a"x', "cand-b"),
+        ("backslash-in-id", "live-a", "cand-b\\x"),
+    ):
+        refused = _cooldown(
+            "record-completion",
+            "--state",
+            str(state),
+            "--demoted",
+            demoted,
+            "--promoted",
+            promoted,
+            "--completed-at",
+            str(COMPLETED_AT + 5_000),
+        )
+        assert refused.returncode != 0, f"{label} must be refused"
+        assert json.loads(state.read_text()) == before, (
+            f"{label}: a refused write must not have moved the window"
+        )
+
+
 def test_a_confirmed_window_is_reported_as_confirmed(swap_binaries, tmp_path) -> None:
     """The other direction, without which the case above proves nothing.
 

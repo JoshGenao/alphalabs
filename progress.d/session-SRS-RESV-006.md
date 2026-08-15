@@ -375,6 +375,30 @@ without the change.
   subcommands, r22 added a fourth, and it would have said nothing. Exemptions are now
   declared in the contract with reasons, and a stale one is an error.
 
+* **r23** — `warn`, zero findings, and a summary that reads "I'm checking the status/read
+  surfaces now". An INCOMPLETE review, not a verdict (`CLAUDE.md` rule 7: a reviewer that
+  did not finish is an availability failure, not an approval). Re-run.
+* **r24 `block` x2** — both [high], both accepted.
+  1. *`cooldown_store::save` is public and bypasses every invariant*. It publishes an
+     arbitrary `CooldownRecord` with no id validation, no same-strategy refusal, no lock
+     and no monotonicity — so a caller could overwrite a running window with an older
+     completion, right past the guard the other five writers enforce. Now `pub(crate)`.
+     The three external callers were all in this feature's own store test, and routing
+     them through the shipped writers made them better tests: they now exercise the
+     production path instead of reaching around it.
+  2. *the SPA drops `PROMOTED_COOLDOWN_NOT_STARTED`*. It matched `promotion_state` against
+     the exact string `PROMOTED`, so the one condition this feature exists to REPORT — the
+     candidate is live and nothing is suppressing the automatic triggers against it — fell
+     through to "NOT promoted; awaiting durable confirmation of the block (SRS-RESV-004)".
+     Wrong twice: the swap succeeded, and the operator was sent to the demotion recovery
+     path instead of the cool-down repair. The pane now says the candidate is live AND that
+     the cool-down is not in effect, and names the repair command.
+
+  The browser regression reaches that state through the real binaries rather than a stub: a
+  window dated ahead of the swap's own clock is legitimately in force, so the swap runs and
+  publishes, and phase two is then refused by the monotonicity rule — which is exactly
+  `NotStarted`.
+
 Every finding was accepted and fixed; none was disputed.
 
 ## Playbook updates

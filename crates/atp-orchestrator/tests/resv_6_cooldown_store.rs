@@ -6,9 +6,7 @@
 //! because "no cool-down" is an all-clear authorising an automatic live-strategy swap.
 
 use atp_orchestrator::cooldown::{CooldownPeriodDays, CooldownState, SwapCompletion};
-use atp_orchestrator::cooldown_store::{
-    self, CompletionOutcome, CooldownRecord, CooldownStoreError,
-};
+use atp_orchestrator::cooldown_store::{self, CompletionOutcome, CooldownStoreError};
 use atp_types::StrategyId;
 use std::fs;
 use std::path::PathBuf;
@@ -455,15 +453,10 @@ fn resv_6_set_period_refuses_to_overwrite_a_window_it_cannot_read() {
 fn resv_6_a_saved_record_is_published_atomically_and_leaves_no_scratch_behind() {
     let scratch = Scratch::new("atomic");
     let path = scratch.path("cooldown.json");
-    cooldown_store::save(
-        &path,
-        &CooldownRecord {
-            period: CooldownPeriodDays::default(),
-            last_completion: Some(completion_at(COMPLETED_AT)),
-            provisional_completion: None,
-        },
-    )
-    .unwrap();
+    // Through the SHIPPED writer, not the raw publish primitive: `save` is
+    // `pub(crate)` since review r24 (it bypasses every invariant), and a test that
+    // reached around the production path would be asserting about a door nobody uses.
+    cooldown_store::record_completion(&path, &completion_at(COMPLETED_AT)).unwrap();
 
     let leftovers: Vec<_> = fs::read_dir(path.parent().unwrap())
         .unwrap()
@@ -502,15 +495,9 @@ fn resv_6_an_unanswerable_provisional_question_is_never_answered_false() {
     // A store that exists and has been READ, with no completion in it, is also not a
     // confirmed swap — it is a configured window that no swap has ever opened.
     let empty = dir.path("empty.json");
-    cooldown_store::save(
-        &empty,
-        &CooldownRecord {
-            period: CooldownPeriodDays::default(),
-            last_completion: None,
-            provisional_completion: None,
-        },
-    )
-    .unwrap();
+    // A configured window that no swap has ever opened — which is what `set_period`
+    // produces, and the only supported way to reach that state.
+    cooldown_store::set_period(&empty, CooldownPeriodDays::default()).unwrap();
     assert_eq!(
         cooldown_store::completion_is_provisional(&empty),
         None,
@@ -525,15 +512,10 @@ fn resv_6_the_provisional_flag_survives_the_round_trip_in_both_states() {
     let dir = Scratch::new("provisional-roundtrip");
     for provisional in [true, false] {
         let path = dir.path(&format!("cd-{provisional}.json"));
-        cooldown_store::save(
-            &path,
-            &CooldownRecord {
-                period: CooldownPeriodDays::default(),
-                last_completion: Some(completion_at(COMPLETED_AT)),
-                provisional_completion: provisional.then(|| completion_at(COMPLETED_AT + 5)),
-            },
-        )
-        .unwrap();
+        cooldown_store::record_completion(&path, &completion_at(COMPLETED_AT)).unwrap();
+        if provisional {
+            cooldown_store::begin_provisional(&path, &completion_at(COMPLETED_AT + 5)).unwrap();
+        }
         assert_eq!(
             cooldown_store::completion_is_provisional(&path),
             Some(provisional),

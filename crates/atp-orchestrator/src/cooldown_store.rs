@@ -557,7 +557,7 @@ pub fn load(path: &Path) -> Result<Option<CooldownRecord>, CooldownStoreError> {
 /// never sees a half-written window), then `fsync` the parent directory so the rename
 /// itself survives a crash. A window that silently reverted after a power loss would let
 /// an automatic trigger fire inside a cool-down the operator watched start.
-pub fn save(path: &Path, record: &CooldownRecord) -> Result<(), CooldownStoreError> {
+pub(crate) fn save(path: &Path, record: &CooldownRecord) -> Result<(), CooldownStoreError> {
     // A relative `cooldown.json` has an EMPTY parent, not an absent one; `.` is that
     // directory. Filtering it away would place the scratch file correctly and then skip
     // the final directory fsync, losing the very durability this contract states.

@@ -693,7 +693,8 @@ def check_store_durability(config: dict, store_src: str) -> str:
     if not re.search(rf"pub const {re.escape(spec['marker'])}:\s*i64", store_src):
         fail(f"cooldown_store must declare {spec['marker']}")
 
-    save = _strip_comments(_fn_block(store_src, "save"))
+    # `_any_fn_block`: `save` is `pub(crate)` since review r24.
+    save = _strip_comments(_any_fn_block(store_src, "save"))
     for token, why in (
         ("sync_all", "fsync the scratch bytes AND the parent directory"),
         ("rename", "publish atomically so a reader never sees a half-written window"),

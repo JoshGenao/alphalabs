@@ -2775,7 +2775,17 @@
         const swapId = body && typeof body.swap_id === "string" ? body.swap_id.trim() : "";
         const promotion = body && typeof body.promotion_state === "string" ? body.promotion_state : "UNKNOWN";
         const demotion = body && typeof body.demotion_state === "string" ? body.demotion_state : "UNKNOWN";
-        const promoted = !!swapId && promotion === "PROMOTED";
+        // PROMOTED_COOLDOWN_NOT_STARTED is a PROMOTED swap (adversarial review r24).
+        // The candidate is live; what failed is the SYS-49e window write. Matching only
+        // the exact string sent the operator down the demotion-pending recovery path
+        // for a swap that had already succeeded, and dropped the one condition this
+        // feature exists to report — a live strategy with its automatic triggers armed.
+        const promoted = !!swapId && (promotion === "PROMOTED" || promotion === "PROMOTED_COOLDOWN_NOT_STARTED");
+        const cooldownWindow = body && typeof body.cooldown_window === "string" ? body.cooldown_window : "UNKNOWN";
+        // STARTED is the only value that means a window is running. NOT_STARTED is the
+        // reported fail-open; UNKNOWN is a swap whose window nobody can speak for. Both
+        // need the operator, and neither may render as a clean success.
+        const cooldownNeedsRepair = promoted && cooldownWindow !== "STARTED";
         if (swapId) hotConfirmedSwapId = swapId;
         hotPendingSwap = {
           swapId: swapId || null,
@@ -2783,7 +2793,17 @@
           priorLive: hotLiveStrategy,
           promoted: promoted,
         };
-        if (promoted) {
+        if (cooldownNeedsRepair) {
+          // Loud, and pointed at the RIGHT owner. The swap succeeded and the cool-down
+          // did not start, so nothing is suppressing the automatic triggers against a
+          // strategy that just went live — the SYS-49e fail-open, which is reported
+          // rather than swallowed precisely so it can be repaired.
+          hsStatus("swap " + swapId + " PROMOTED " + candidate + " — but its cool-down window is " +
+            cooldownWindow + ". THE COOL-DOWN IS NOT IN EFFECT: the automatic triggers are " +
+            "armed against a strategy that just went live. Repair it with " +
+            "resv006_hot_swap_cooldown_cli record-completion, or disable the automatic " +
+            "triggers until you have (SRS-RESV-006 · SYS-49e)", "error");
+        } else if (promoted) {
           hsStatus("swap " + swapId + " reported PROMOTED — verifying live strategy is " +
             candidate + "…", "pending");
         } else if (swapId) {

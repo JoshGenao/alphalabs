@@ -390,3 +390,63 @@ def test_an_unreadable_window_holds_the_promote_control_inert(binaries, live_das
             "control is held inert — an unreadable window is never read as 'clear'",
             element="#hs",
         )
+
+
+def test_a_promoted_swap_whose_window_failed_says_so_in_the_browser(binaries, live_dashboard):
+    """Adversarial review r24 [high] — the fail-open must reach the operator's screen.
+
+    ``PROMOTED_COOLDOWN_NOT_STARTED`` is the one condition this whole feature exists to
+    report: the candidate IS live and no window is suppressing the automatic triggers
+    against it. The SPA matched ``promotion_state`` against the exact string
+    ``PROMOTED``, so this state fell through to the "NOT promoted — awaiting durable
+    confirmation of the block (SRS-RESV-004)" branch. Both halves of that are wrong: the
+    swap succeeded, and the operator was pointed at the demotion recovery path instead
+    of the cool-down repair.
+
+    Reached through the real binaries, not a stub. A window whose completion is dated
+    AHEAD of the swap's own clock is legitimately in force, so the swap runs and
+    publishes — and then phase two is refused by the monotonicity rule (a cool-down only
+    moves forward), which is exactly `NotStarted`.
+    """
+    url, cooldown = live_dashboard
+    now = _now_seconds()
+    _open_window(binaries, cooldown, completed_at=now + 3_600)
+
+    with evidence_browser(sync_api, FEATURE, step=STEP) as cap:
+        page = cap.page()
+        _open_pane(page, url)
+        assert _dial_state(page) == "active"
+
+        _arm(page)
+        assert "COOL-DOWN ACTIVE" in page.inner_text("#hs-status")
+        _arm(page)
+        with page.expect_response(
+            lambda r: "/api/v1/hot-swap" in r.url and r.request.method == "POST",
+            timeout=30_000,
+        ) as posted:
+            page.click("#hs-btn")
+        body = posted.value.json()
+
+        assert body["promotion_state"] == "PROMOTED_COOLDOWN_NOT_STARTED", body
+        assert body["cooldown_window"] != "STARTED", body
+
+        page.wait_for_function(
+            "() => (document.getElementById('hs-status')||{}).textContent"
+            ".includes('COOL-DOWN IS NOT IN EFFECT')",
+            timeout=15_000,
+        )
+        reported = page.inner_text("#hs-status")
+        # The swap SUCCEEDED — the operator must not be told it was blocked...
+        assert "NOT promoted" not in reported, reported
+        assert "PROMOTED" in reported, reported
+        # ...and must be sent to the cool-down repair, not to SRS-RESV-004's.
+        assert "SRS-RESV-006" in reported and "SYS-49e" in reported, reported
+        assert "record-completion" in reported, reported
+        assert "SRS-RESV-004" not in reported, reported
+        cap.shot(
+            page,
+            "A swap that PROMOTED but could not open its SYS-49e window: the pane says "
+            "the candidate is live AND that nothing is suppressing the automatic "
+            "triggers, and names the repair command (adversarial review r24)",
+            element="#hs",
+        )
