@@ -163,7 +163,22 @@ def check_receipt_encapsulation(config: dict, module_src: str) -> str:
             fail(f"{name} derives `{forbidden}` — {spec['note']}")
 
     constructor, visibility = spec["constructor"], spec["constructor_visibility"]
-    if not re.search(rf"{re.escape(visibility)}\s+fn\s+{re.escape(constructor)}\b", module_src):
+    # Scoped to `impl <name>`, NOT to the whole module.
+    #
+    # This searched the module and passed as long as SOMETHING matched. It went
+    # silently wrong the moment a sibling type declared a constructor of the same
+    # name: SRS-RESV-006 added `PendingCooldownWindow::mint`, and from then on
+    # `DemotionReceipt::mint` could be made `pub fn` while this check still found the
+    # OTHER `pub(crate) fn mint(` and reported the encapsulation intact. Its own
+    # mutation test caught it — the guard was reporting success over an unguarded
+    # subject, which is `test-integrity.md` rule 27's failure mode reached through a
+    # peer type rather than through an edit to this one.
+    impl_start = module_src.find(f"impl {name} {{")
+    if impl_start < 0:
+        fail(f"the promotion module has no `impl {name} {{` block to scope the constructor to")
+    impl_end = module_src.find("\n}", impl_start)
+    impl_body = module_src[impl_start : impl_end if impl_end > 0 else len(module_src)]
+    if not re.search(rf"{re.escape(visibility)}\s+fn\s+{re.escape(constructor)}\b", impl_body):
         fail(
             f"{name}::{constructor} is not `{visibility}` — the sole minting path must not be "
             "callable from outside the crate"

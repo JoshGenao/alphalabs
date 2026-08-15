@@ -719,6 +719,65 @@ def test_the_real_binary_stamps_the_window_from_its_own_clock(swap_binaries, tmp
     )
 
 
+def test_a_window_exists_only_alongside_a_durably_moved_designation(
+    swap_binaries, tmp_path
+) -> None:
+    """Adversarial review r6 [high] — no window without a durable swap, and none missing.
+
+    The gate designates the candidate live IN MEMORY; the CLI publishes that
+    afterwards. Recording the cool-down inside the gate meant a publish failing before
+    its rename left a seven-day window for a swap the durable authority never
+    accepted. The window is now a token redeemed only after the publish.
+
+    Forcing a mid-rename publish failure is not reachable through this binary, so that
+    direction is pinned at the Rust layer
+    (``resv_6_a_swap_whose_publish_failed_opens_no_window``, which drops the token).
+    What IS observable here is the pairing the invariant produces, in BOTH directions
+    and both read from separate processes: a swap that succeeded has moved the durable
+    designation AND opened a window; a swap that was refused has done neither.
+    """
+
+    state = tmp_path / "cd.json"
+    designation = tmp_path / "live.state"
+
+    def designated() -> str:
+        result = subprocess.run(
+            [str(swap_binaries[PROMOTE_BIN]), "status", "--state", str(designation)],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return _kv(result.stdout)["designated"]
+
+    # --- The REFUSED direction: neither moved. ---
+    _open_window(state)  # an ACTIVE window refuses an unacknowledged swap
+    before_window = state.read_text()
+    refused = _swap(swap_binaries, tmp_path, cooldown_state=state, now=DURING)
+    assert refused.returncode != 0
+    assert designated() == SWAP_DEMOTING, "a refused swap must not move the designation"
+    assert state.read_text() == before_window, "a refused swap must not touch the window"
+
+    # --- The SUCCEEDED direction: both moved, together. ---
+    confirmed = _swap(
+        swap_binaries,
+        tmp_path,
+        cooldown_state=state,
+        now=DURING,
+        extra=("--confirm-cooldown",),
+    )
+    assert confirmed.returncode == 0, confirmed.stderr
+    assert _kv(confirmed.stdout)["designation-persisted"] == "durable"
+    assert designated() == SWAP_CANDIDATE, "the swap must have moved the designation"
+
+    window = _kv(_cooldown("status", "--state", str(state), "--now", str(DURING + 1)).stdout)
+    assert window["cooldown-state"] == "ACTIVE"
+    assert window["cooldown-started-at-seconds"] == str(DURING), (
+        "the window that exists must be the one this durable swap opened"
+    )
+
+
 def test_a_swap_is_refused_when_its_window_could_not_be_recorded(swap_binaries, tmp_path) -> None:
     """Adversarial review r4 [critical] — the fail-open, closed at the only point it can be.
 

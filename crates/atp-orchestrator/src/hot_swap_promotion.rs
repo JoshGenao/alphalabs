@@ -278,13 +278,6 @@ pub struct HotSwapPromotionEvent {
     pub paper_history_preserved: bool,
     /// The candidate's deployed version identifier, when it could be resolved.
     pub deployed_version: Option<String>,
-    /// Whether this swap started its SyRS SYS-49e cool-down window. `false` on
-    /// every refusal (no swap completed, so no window is due) AND on a completed
-    /// swap whose window write failed — the fail-open case, which is exactly the
-    /// one an audit trail must not be silent about. Read `promoted` alongside it:
-    /// `promoted:true` with `cooldown_window_started:false` is the state that
-    /// needs an operator.
-    pub cooldown_window_started: bool,
     pub observed_at_seconds: u64,
 }
 
@@ -383,6 +376,41 @@ pub enum CooldownWindowOutcome {
     NotStarted { reason: String },
 }
 
+/// A window that is DUE but not yet opened — the swap is decided, not yet durable.
+///
+/// [`StrategyOrchestrator::execute_hot_swap`] designates the candidate live *in
+/// memory*; the caller then publishes that designation durably. Recording the
+/// cool-down inside the gate meant a publish that failed before its rename left a
+/// seven-day window suppressing the automatic triggers for a swap the durable
+/// authority never accepted (adversarial review r6). So the gate now MINTS this
+/// token and the caller redeems it with
+/// [`StrategyOrchestrator::commit_cooldown_window`] **after** the publish.
+///
+/// The same shape as [`DemotionReceipt`], for the same reason: private fields, no
+/// `Clone` (one swap opens one window), no `Default`, `pub(crate)` sole
+/// constructor. A caller cannot fabricate a window, and — because
+/// `execute_hot_swap` returns it inside [`HotSwapPromoted`] — cannot get one
+/// without a swap that actually succeeded.
+///
+/// `#[must_use]` because dropping it is the fail-open r4 closed: a completed swap
+/// whose window never opened.
+#[must_use = "a swap that completed owes a cool-down window; redeem this with \
+              StrategyOrchestrator::commit_cooldown_window after the durable publish"]
+#[derive(Debug, PartialEq, Eq)]
+pub struct PendingCooldownWindow {
+    demoted_strategy_id: StrategyId,
+    promoted_strategy_id: StrategyId,
+}
+
+impl PendingCooldownWindow {
+    pub(crate) fn mint(demoted: &StrategyId, promoted: &StrategyId) -> Self {
+        Self {
+            demoted_strategy_id: demoted.clone(),
+            promoted_strategy_id: promoted.clone(),
+        }
+    }
+}
+
 impl CooldownWindowOutcome {
     /// The operator-facing wire value.
     pub const fn as_str(&self) -> &'static str {
@@ -404,7 +432,12 @@ impl CooldownWindowOutcome {
 
 /// SRS-RESV-005 acceptance evidence: the candidate is the single designated live
 /// strategy, and every AC clause was verified rather than assumed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// **Not `Clone`.** It carries a [`PendingCooldownWindow`], and a clonable
+/// acceptance would let one swap redeem two windows — the same reasoning that keeps
+/// [`DemotionReceipt`] un-`Clone`-able. The compiler enforces it: this derive cannot
+/// name `Clone` while that field is present.
+#[derive(Debug, PartialEq, Eq)]
 pub struct HotSwapPromoted {
     pub demoted_strategy_id: StrategyId,
     pub promoted_strategy_id: StrategyId,
@@ -418,10 +451,12 @@ pub struct HotSwapPromoted {
     /// identical across the mode change.
     pub deployed_version: DeployedVersion,
     pub demotion_elapsed_seconds: u64,
-    /// Whether this swap started the SyRS SYS-49e cool-down window that now
-    /// suppresses automatic triggers. Not a `bool` and not omitted: a swap whose
-    /// window failed to start is a fail-open every surface must report.
-    pub cooldown_window: CooldownWindowOutcome,
+    /// The SyRS SYS-49e window this swap OWES, not one it has already opened.
+    ///
+    /// Redeemed by [`StrategyOrchestrator::commit_cooldown_window`] once the caller
+    /// has durably published the designation — see [`PendingCooldownWindow`] for why
+    /// the gate must not record it itself.
+    pub pending_cooldown: PendingCooldownWindow,
 }
 
 /// What the demotion half of a refused swap did — see
@@ -848,7 +883,6 @@ impl StrategyOrchestrator {
                 flat_confirmed: false,
                 paper_history_preserved: false,
                 deployed_version: None,
-                cooldown_window_started: false,
                 observed_at_seconds,
             });
             return Err(error);
@@ -890,7 +924,6 @@ impl StrategyOrchestrator {
                 flat_confirmed: false,
                 paper_history_preserved: false,
                 deployed_version: None,
-                cooldown_window_started: false,
                 observed_at_seconds,
             });
             return Err(error);
@@ -932,7 +965,6 @@ impl StrategyOrchestrator {
                 flat_confirmed: false,
                 paper_history_preserved: false,
                 deployed_version: None,
-                cooldown_window_started: false,
                 observed_at_seconds,
             });
             return Err(error);
@@ -983,33 +1015,6 @@ impl StrategyOrchestrator {
         //
         // A failed write is NOT swallowed and NOT a rollback — see
         // `CooldownWindowOutcome::NotStarted` for why neither is available here.
-        let outcome = outcome.map(|promoted| {
-            // The COMPLETION instant, read here rather than reused from
-            // `observed_at_seconds` — see `SwapCompletionSink::completed_at_seconds`.
-            // Everything above this line may have taken the whole SYS-49b liquidation
-            // timeout, and a window stamped with the attempt's START would be that
-            // much shorter than the seven days SYS-49e requires.
-            let cooldown_window = match cooldown.completions.completed_at_seconds() {
-                Err(reason) => CooldownWindowOutcome::NotStarted { reason },
-                Ok(completed_at_seconds) => {
-                    let completion = SwapCompletion {
-                        completed_at_seconds,
-                        demoted_strategy_id: promoted.demoted_strategy_id.clone(),
-                        promoted_strategy_id: promoted.promoted_strategy_id.clone(),
-                    };
-                    match cooldown.completions.record_swap_completion(&completion) {
-                        Ok(()) => CooldownWindowOutcome::Started {
-                            started_at_seconds: completed_at_seconds,
-                        },
-                        Err(reason) => CooldownWindowOutcome::NotStarted { reason },
-                    }
-                }
-            };
-            HotSwapPromoted {
-                cooldown_window,
-                ..promoted
-            }
-        });
 
         // Best-effort audit on both arms (see `HotSwapPromotionEventSink`): the
         // decision is already made and the designation write has already
@@ -1023,7 +1028,6 @@ impl StrategyOrchestrator {
                 flat_confirmed: true,
                 paper_history_preserved: true,
                 deployed_version: Some(promoted.deployed_version.version_identifier()),
-                cooldown_window_started: promoted.cooldown_window.started(),
                 observed_at_seconds,
             },
             Err(error) => HotSwapPromotionEvent {
@@ -1034,14 +1038,56 @@ impl StrategyOrchestrator {
                 flat_confirmed: error.demotion_outcome() == DemotionProof::FlatConfirmed,
                 paper_history_preserved: false,
                 deployed_version: None,
-                // No swap completed, so no window was due. Distinct from the
-                // `promoted:true` + `false` pair above, which IS the fail-open.
-                cooldown_window_started: false,
                 observed_at_seconds,
             },
         });
 
         outcome
+    }
+
+    /// Redeem a [`PendingCooldownWindow`] — open the SYS-49e window a completed swap
+    /// owes, AFTER its designation has been durably published.
+    ///
+    /// Separate from [`Self::execute_hot_swap`] because the ordering is the whole
+    /// point. That call designates the candidate live *in memory*; the caller then
+    /// persists it. Recording the cool-down inside the gate meant a publish that
+    /// failed before its rename left a seven-day window suppressing the automatic
+    /// triggers for a swap the durable authority never accepted — a partial-failure
+    /// state with nothing to reconcile against (adversarial review r6).
+    ///
+    /// So the caller redeems this only on the paths where the swap really is
+    /// durable, and simply drops the token on the paths where it is not. Dropping
+    /// warns (`#[must_use]`), which is what stops the *other* direction — a
+    /// completed swap whose window silently never opened.
+    ///
+    /// Takes the token **by value**: one swap, one window.
+    pub fn commit_cooldown_window<W>(
+        &self,
+        pending: PendingCooldownWindow,
+        completions: &W,
+    ) -> CooldownWindowOutcome
+    where
+        W: SwapCompletionSink,
+    {
+        // The COMPLETION instant, read HERE — after the promotion, after the durable
+        // publish. Everything before this may have taken the whole SYS-49b
+        // liquidation timeout, and a window stamped with the attempt's START would be
+        // that much shorter than the seven days SYS-49e requires (review r5).
+        let completed_at_seconds = match completions.completed_at_seconds() {
+            Ok(seconds) => seconds,
+            Err(reason) => return CooldownWindowOutcome::NotStarted { reason },
+        };
+        let completion = SwapCompletion {
+            completed_at_seconds,
+            demoted_strategy_id: pending.demoted_strategy_id,
+            promoted_strategy_id: pending.promoted_strategy_id,
+        };
+        match completions.record_swap_completion(&completion) {
+            Ok(()) => CooldownWindowOutcome::Started {
+                started_at_seconds: completed_at_seconds,
+            },
+            Err(reason) => CooldownWindowOutcome::NotStarted { reason },
+        }
     }
 
     /// The promotion gate proper. `pub(crate)` on purpose: a caller outside this
@@ -1197,15 +1243,12 @@ impl StrategyOrchestrator {
             paper_history: history_before,
             deployed_version: version_before,
             demotion_elapsed_seconds: receipt.elapsed_seconds,
-            // The gate does not own the SYS-49e window — `execute_hot_swap` records
-            // the completion and overwrites this. The default is the UNDER-claim, so
-            // any path that somehow reached the gate without going through the entry
-            // point reports "no window started", which is then the truth.
-            cooldown_window: CooldownWindowOutcome::NotStarted {
-                reason: "the cool-down window is recorded by `execute_hot_swap`, and this \
-                         promotion did not run through it"
-                    .to_string(),
-            },
+            // The window this swap OWES. Minted here, redeemed by the caller after
+            // the durable publish — see `PendingCooldownWindow`.
+            pending_cooldown: PendingCooldownWindow::mint(
+                &requested_demoting.clone(),
+                &requested_candidate.clone(),
+            ),
         })
     }
 }

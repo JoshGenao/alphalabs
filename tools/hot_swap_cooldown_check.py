@@ -298,6 +298,68 @@ def check_trigger_arms_are_gated(config: dict, orchestrator_src: str) -> str:
     return f"both {guard['evaluate_method']} and {guard['manual_method']} consult `{predicate}`"
 
 
+def check_the_window_is_committed_after_the_publish(config: dict, root: Path) -> str:
+    """The window opens only once the swap is DURABLE (adversarial review r6).
+
+    ``execute_hot_swap`` designates the candidate live in memory; the CLI publishes
+    that durably afterwards. A window recorded inside the gate would survive a
+    publish that failed before its rename — seven days of suppressed automatic
+    triggers for a swap the durable authority never accepted.
+
+    Two halves, both checked here because either alone is satisfiable while the
+    defect is live: the gate must NOT record (the write must not appear in
+    ``execute_hot_swap``'s body), and the CLI must redeem the token AFTER its
+    ``save_designation``, not before.
+    """
+    guard = contract_block(config)["guard"]
+    commit = guard["commit_method"]
+    entry = guard["execute_method"]
+    module = _strip_comments(_read(root, guard["promotion_module"]))
+
+    entry_body = _any_fn_block(module, entry)
+    if "record_swap_completion(" in entry_body:
+        fail(
+            f"`{entry}` records the swap completion itself; the window must be minted "
+            f"as a {guard['pending_window_token']} and redeemed by the caller AFTER the "
+            "durable publish, or a publish that fails before its rename leaves a window "
+            "open for a swap that never became durable"
+        )
+
+    # ONE call site, and it is the redeem method. The mint's location inside the
+    # module is incidental (the gate constructs the acceptance that carries it); what
+    # must not drift is where the WRITE happens.
+    writers = [
+        name
+        for match in re.finditer(r"\bfn\s+(\w+)", module)
+        for name in [match.group(1)]
+        if "record_swap_completion(" in _any_fn_block(module, name)
+    ]
+    if writers != [commit]:
+        fail(
+            f"`record_swap_completion(` is called from {writers or 'nowhere'} — it must be "
+            f"called from `{commit}` and nowhere else, because that is the only function "
+            "the caller invokes after its durable publish"
+        )
+    if guard["pending_window_token"] not in module:
+        fail(f"the promotion module never mints a `{guard['pending_window_token']}`")
+
+    cli = _strip_comments(_read(root, guard["promote_cli"]))
+    swap_body = _any_fn_block(cli, "cmd_swap")
+    publish, redeem = guard["commit_after_publish_tokens"]
+    for token in (publish, redeem):
+        if f"{token}(" not in swap_body:
+            fail(f"`cmd_swap` never calls `{token}(`")
+    if swap_body.index(f"{publish}(") > swap_body.index(f"{redeem}("):
+        fail(
+            f"`cmd_swap` calls `{redeem}(` BEFORE `{publish}(` — the cool-down window "
+            "would be opened for a swap whose designation is not yet durable"
+        )
+    return (
+        f"`{entry}` mints a {guard['pending_window_token']} and records nothing; "
+        f"`cmd_swap` redeems it with `{commit}` only after `{publish}`"
+    )
+
+
 def check_every_swap_path_is_gated(config: dict, root: Path) -> str:
     """The anti-bypass check — DISCOVERED from the code, not listed in the contract.
 
@@ -531,6 +593,7 @@ def assert_hot_swap_cooldown_static(config: dict, root: Path = ROOT) -> list[str
         check_clear_predicate(config, cooldown_src),
         check_trigger_arms_are_gated(config, orchestrator_src),
         check_every_swap_path_is_gated(config, root),
+        check_the_window_is_committed_after_the_publish(config, root),
         check_evaluation_and_error_carry_the_state(config, orchestrator_src),
         check_store_durability(config, store_src),
         check_resolver_is_the_only_producer(config, root),

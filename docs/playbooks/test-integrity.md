@@ -144,6 +144,17 @@ Read this whenever you write a test, and before you believe a green one.
     so an `endswith("/api/v1/hot-swap")` matcher never fires and the test times out looking
     like a broken feature rather than a broken assertion. `(RESV-006, same run)`
 
+34. **Rule 27's trap fires from a SIBLING feature too, and a static check has the same
+    weakness as its mutation test.** SRS-RESV-005's `check_receipt_encapsulation` searched
+    the whole module for `pub(crate) fn mint(` — unique when written. SRS-RESV-006 added
+    `PendingCooldownWindow::mint`, and from that commit on `DemotionReceipt::mint` could be
+    made `pub fn` while the check still found the OTHER match and reported the encapsulation
+    intact. Its own mutation test is what caught it, by failing for the one reason that looks
+    most like the guard working. Two lessons: scope a check to the type's `impl` SPAN rather
+    than to a module-wide token, and when a peer feature's test breaks after your diff,
+    suspect that you made one of ITS anchors ambiguous before you suspect the test.
+    `(RESV-006, on SRS-RESV-005's guard)`
+
 ## Layer selection
 
 `tests/unit` L1 · `tests/property` L2 · `tests/` L3 contract · `tests/boundary` L4 ·

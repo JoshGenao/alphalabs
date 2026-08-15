@@ -40,9 +40,9 @@ use atp_execution::designation::{LiveDesignation, LiveDesignationConfirmation};
 use atp_orchestrator::cooldown::{ManualCooldownAcknowledgement, SwapCompletion};
 use atp_orchestrator::cooldown_store::{self, CompletionOutcome};
 use atp_orchestrator::hot_swap_promotion::{
-    CooldownControl, CooldownWindowOutcome, HotSwapPromotionEvent, HotSwapPromotionEventSink,
-    LivePositionProbe, OpenPosition, PaperHistoryFingerprint, PaperHistorySource, PromotionPorts,
-    SwapCompletionSink,
+    CooldownControl, CooldownWindowOutcome, DemotionProof, HotSwapPromotionEvent,
+    HotSwapPromotionEventSink, LivePositionProbe, OpenPosition, PaperHistoryFingerprint,
+    PaperHistorySource, PromotionPorts, SwapCompletionSink,
 };
 use atp_orchestrator::{
     demotion_pending_store::FileDemotionPendingLock, trigger_config_store, DeployedVersionRegistry,
@@ -308,6 +308,14 @@ fn parse_swap_args(rest: &[String]) -> Result<SwapArgs, String> {
     Ok(parsed)
 }
 
+/// Facts a successful swap reports, carried separately because `HotSwapPromoted`
+/// is consumed when its `PendingCooldownWindow` is redeemed.
+struct PromotedFacts {
+    paper_history: PaperHistoryFingerprint,
+    deployed_version: DeployedVersion,
+    demotion_elapsed_seconds: u64,
+}
+
 /// The REAL SRS-RESV-006 window writer — the production caller `cooldown_store`
 /// named as `deferred-writer:SRS-RESV-005` until this binary existed.
 ///
@@ -551,6 +559,11 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
     // reads as "nothing mutated". A POST-publish failure is the opposite: the live
     // slot has already moved, so the proof lines MUST still be emitted (the swap
     // happened) with the durability caveat carried alongside them.
+    // Facts carried out of `outcome`, which is CONSUMED below when the window token
+    // is redeemed (`HotSwapPromoted` is deliberately not `Clone`).
+    let mut outcome_facts: Option<PromotedFacts> = None;
+    let mut refusal: Option<(DemotionProof, &'static str)> = None;
+    let mut refusal_display: Option<String> = None;
     let mut published_unsynced: Option<String> = None;
     if designated_after != designated_before {
         match save_designation(&state_path, &designation) {
@@ -561,13 +574,39 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
         }
     }
 
+    // THE WINDOW IS REDEEMED HERE, and only here.
+    //
+    // Every `return Err(...)` above this line leaves `PendingCooldownWindow` dropped
+    // and the cool-down store untouched — which is the point: a swap whose
+    // designation was never durably published must not open a seven-day window
+    // suppressing the automatic triggers (adversarial review r6). Reaching this line
+    // means the durable state is settled: published, published-not-synced (the slot
+    // HAS moved), or provably unchanged.
+    let cooldown_window = match outcome {
+        Ok(promoted) => {
+            let window = StrategyOrchestrator
+                .commit_cooldown_window(promoted.pending_cooldown, &completions);
+            outcome_facts = Some(PromotedFacts {
+                paper_history: promoted.paper_history,
+                deployed_version: promoted.deployed_version,
+                demotion_elapsed_seconds: promoted.demotion_elapsed_seconds,
+            });
+            Some(window)
+        }
+        Err(ref error) => {
+            refusal = Some((error.demotion_outcome(), error.machine_reason()));
+            refusal_display = Some(error.to_string());
+            None
+        }
+    };
+
     // The durable live state is now settled (published, or provably unchanged), so the
     // audit record can be committed without the risk of outliving a swap that never
     // took effect.
     events.commit();
 
-    match &outcome {
-        Ok(promoted) => {
+    match &outcome_facts {
+        Some(promoted) => {
             println!("demotion-outcome:FLAT_CONFIRMED");
             println!("promotion:PROMOTED");
             println!(
@@ -586,24 +625,32 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
             );
             // SYS-49e's third clause, evidenced: this swap's completion timestamp IS
             // the next window's start.
-            println!("cooldown-window:{}", promoted.cooldown_window.as_str());
-            if let CooldownWindowOutcome::Started {
-                started_at_seconds, ..
-            } = &promoted.cooldown_window
-            {
-                println!("cooldown-window-started-at-seconds:{started_at_seconds}");
+            if let Some(window) = &cooldown_window {
+                println!("cooldown-window:{}", window.as_str());
+                if let CooldownWindowOutcome::Started {
+                    started_at_seconds, ..
+                } = window
+                {
+                    println!("cooldown-window-started-at-seconds:{started_at_seconds}");
+                }
             }
         }
-        Err(error) => {
+        None => {
             // Three-valued, not a boolean: NOT_STARTED means no demotion-side port
             // was touched, so nothing mutated and no lockout exists to wait on.
             // Collapsing it into DEMOTION_PENDING told the surface a swap had been
             // accepted and left the dashboard inert awaiting a state that was never
             // created.
-            println!("demotion-outcome:{}", error.demotion_outcome().as_str());
+            let (proof, reason) = refusal.expect("a swap is either promoted or refused");
+            println!("demotion-outcome:{}", proof.as_str());
             println!("promotion:BLOCKED");
-            println!("refusal:{}", error.machine_reason());
-            eprintln!("{error}");
+            println!("refusal:{reason}");
+            eprintln!(
+                "{}",
+                refusal_display
+                    .as_deref()
+                    .unwrap_or("(no detail available)")
+            );
         }
     }
     println!("designation-after:{designated_after}");
@@ -649,8 +696,8 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
     // path — it cannot be undone here (the designation has moved and the book is
     // flat, so rolling back over an unwritable file would be strictly worse), so it
     // is made loud instead: an explicit sentence and a non-zero exit.
-    if let Ok(promoted) = &outcome {
-        if let CooldownWindowOutcome::NotStarted { reason } = &promoted.cooldown_window {
+    if outcome_facts.is_some() {
+        if let Some(CooldownWindowOutcome::NotStarted { reason }) = &cooldown_window {
             eprintln!(
                 "SRS-RESV-006: `{}` was promoted live but the SyRS SYS-49e cool-down window \
                  did NOT start ({reason}). THE COOL-DOWN IS NOT IN EFFECT — automatic swap \
@@ -663,7 +710,7 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
             return Ok(false);
         }
     }
-    if outcome.is_ok() && recorded == "false" {
+    if outcome_facts.is_some() && recorded == "false" {
         // The promotion HAPPENED — the designation is written and persisted — but
         // its audit record did not land. That is not a clean success, so the exit
         // code must not say it was.
@@ -675,7 +722,7 @@ fn cmd_swap(rest: &[String]) -> Result<bool, String> {
         );
         return Ok(false);
     }
-    Ok(outcome.is_ok())
+    Ok(outcome_facts.is_some())
 }
 
 fn cmd_status(rest: &[String]) -> Result<(), String> {

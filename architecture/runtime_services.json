@@ -5177,6 +5177,13 @@
       "execution_refusal_code": "HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED",
       "unrecordable_refusal_code": "HOT_SWAP_COOLDOWN_UNRECORDABLE",
       "completion_probe": "probe_writable",
+      "pending_window_token": "PendingCooldownWindow",
+      "commit_method": "commit_cooldown_window",
+      "publish_ordering_note": "Adversarial review r6 [high]. execute_hot_swap designates the candidate live IN MEMORY; the caller publishes that designation durably afterwards. Recording the cool-down inside the gate meant a publish that failed before its rename left a seven-day window suppressing the automatic triggers for a swap the durable authority never accepted. The gate now MINTS a PendingCooldownWindow -- private fields, no Clone, no Default, pub(crate) sole constructor, #[must_use] -- and the caller redeems it with commit_cooldown_window AFTER the publish. Dropping it opens no window (the r6 direction); dropping it silently is what #[must_use] and the r4 pre-flight guard against (the r2/r4 direction). HotSwapPromoted therefore lost its Clone derive: a clonable acceptance would let one swap redeem two windows.",
+      "commit_after_publish_tokens": [
+        "save_designation",
+        "commit_cooldown_window"
+      ],
       "window_outcome_enum": "CooldownWindowOutcome",
       "completion_sink": "SwapCompletionSink",
       "swap_path_markers": [

@@ -343,7 +343,21 @@ fn refused_swap(
     )
 }
 
+/// What a completed swap looks like to these tests, once its window is redeemed.
+///
+/// `HotSwapPromoted` is deliberately not `Clone` and carries a
+/// `PendingCooldownWindow` that `commit_cooldown_window` consumes, so the helper
+/// redeems it and hands back the facts plus the outcome.
+struct Completed {
+    promoted_strategy_id: String,
+    cooldown_window: CooldownWindowOutcome,
+}
+
 /// A swap attempt with every port WORKING, so it proceeds unless the cool-down stops it.
+///
+/// Redeems the pending window immediately, which is what a caller with a durable
+/// publish does. The case where the publish FAILS — and the token is dropped instead
+/// — is `resv_6_a_swap_whose_publish_failed_opens_no_window`.
 #[allow(clippy::type_complexity)]
 fn live_swap(
     cooldown: &CooldownState,
@@ -351,10 +365,7 @@ fn live_swap(
     events: &PromotionEvents,
     completions: &Completions,
     now: u64,
-) -> (
-    Result<atp_orchestrator::hot_swap_promotion::HotSwapPromoted, HotSwapPromotionError>,
-    Option<String>,
-) {
+) -> (Result<Completed, HotSwapPromotionError>, Option<String>) {
     let mut designation = live_designation();
     let outcome = StrategyOrchestrator.execute_hot_swap(
         request(),
@@ -379,6 +390,11 @@ fn live_swap(
         now,
     );
     let designated = designation.designated().map(|id| id.as_str().to_string());
+    let outcome = outcome.map(|promoted| Completed {
+        promoted_strategy_id: promoted.promoted_strategy_id.as_str().to_string(),
+        cooldown_window: StrategyOrchestrator
+            .commit_cooldown_window(promoted.pending_cooldown, completions),
+    });
     (outcome, designated)
 }
 
@@ -417,7 +433,6 @@ fn resv_6_an_active_window_refuses_the_swap_and_touches_no_demotion_side_port() 
     assert_eq!(recorded.len(), 1);
     assert!(!recorded[0].promoted);
     assert!(!recorded[0].flat_confirmed);
-    assert!(!recorded[0].cooldown_window_started);
     assert_eq!(
         recorded[0].refusal,
         Some("HOT_SWAP_COOLDOWN_CONFIRMATION_REQUIRED")
@@ -490,7 +505,7 @@ fn resv_6_an_acknowledged_swap_during_a_window_fires() {
     );
 
     let promoted = outcome.expect("an acknowledged swap must fire");
-    assert_eq!(promoted.promoted_strategy_id.as_str(), CANDIDATE);
+    assert_eq!(promoted.promoted_strategy_id, CANDIDATE);
     assert_eq!(designated.as_deref(), Some(CANDIDATE));
     assert!(promoted.cooldown_window.started());
 }
@@ -579,7 +594,6 @@ fn resv_6_a_successful_swap_starts_the_window_at_its_own_completion_timestamp() 
 
     let audit = events.recorded.borrow();
     assert!(audit[0].promoted);
-    assert!(audit[0].cooldown_window_started);
 }
 
 #[test]
@@ -681,12 +695,62 @@ fn resv_6_a_completion_clock_that_cannot_be_read_does_not_fall_back_to_the_start
     );
 
     let promoted = outcome.expect("the swap itself still succeeded");
-    match &promoted.cooldown_window {
+    let window = StrategyOrchestrator.commit_cooldown_window(promoted.pending_cooldown, &NoClock);
+    match &window {
         CooldownWindowOutcome::NotStarted { reason } => {
             assert!(reason.contains("Unix epoch"), "{reason}");
         }
         other => panic!("expected NotStarted, got {other:?}"),
     }
+}
+
+#[test]
+fn resv_6_a_swap_whose_publish_failed_opens_no_window() {
+    // Adversarial review r6 [high]. `execute_hot_swap` designates the candidate live
+    // IN MEMORY; the caller publishes that durably afterwards. Recording the window
+    // inside the gate meant a publish that failed before its rename left a seven-day
+    // window suppressing the automatic triggers for a swap the durable authority
+    // never accepted — a partial-failure state with nothing to reconcile against.
+    //
+    // The window is now a TOKEN the caller redeems only once the publish succeeded.
+    // This is the caller whose publish failed: it drops the token, and the store must
+    // be untouched.
+    let events = PromotionEvents::default();
+    let completions = Completions::working();
+    let mut designation = live_designation();
+
+    let outcome = StrategyOrchestrator.execute_hot_swap(
+        request(),
+        &FlatProbe,
+        &Canceller,
+        &Alerts,
+        &DemotionEvents,
+        &ClearLock,
+        PromotionPorts {
+            positions: &FlatPositions,
+            paper_history: &StablePaper,
+            versions: &StableVersions,
+            events: &events,
+        },
+        CooldownControl {
+            state: &CooldownState::NeverSwapped,
+            acknowledgement: ManualCooldownAcknowledgement::NotAcknowledged,
+            completions: &completions,
+        },
+        &mut designation,
+        confirmation(CANDIDATE),
+        COMPLETED_AT,
+    );
+
+    let promoted = outcome.expect("the gate itself succeeded");
+    // ...and here the caller's durable publish fails, so the token is NEVER redeemed.
+    drop(promoted.pending_cooldown);
+
+    assert_eq!(
+        completions.count(),
+        0,
+        "a swap whose designation was never durably published must not open a window"
+    );
 }
 
 #[test]
@@ -773,7 +837,6 @@ fn resv_6_a_swap_is_refused_when_its_window_could_not_be_recorded() {
     let recorded = events.recorded.borrow();
     assert_eq!(recorded.len(), 1);
     assert!(!recorded[0].promoted);
-    assert!(!recorded[0].cooldown_window_started);
 }
 
 #[test]
@@ -850,14 +913,11 @@ fn resv_6_a_window_that_fails_to_start_is_reported_not_swallowed() {
     }
     assert!(!promoted.cooldown_window.started());
 
-    // The AUDIT record carries the fail-open: `promoted:true` with
-    // `cooldown_window_started:false` is the pair that needs an operator.
+    // The promotion itself is still audited as having happened — the window's failure
+    // rides the CLI's non-zero exit and the REST route's PROMOTED_COOLDOWN_NOT_STARTED,
+    // not the journal line (which is a Pinned v1 format this feature does not revise).
     let audit = events.recorded.borrow();
     assert!(audit[0].promoted);
-    assert!(
-        !audit[0].cooldown_window_started,
-        "an audit trail must not be silent about an unsuppressed trigger path"
-    );
 }
 
 // --------------------------------------------------------------------------- //

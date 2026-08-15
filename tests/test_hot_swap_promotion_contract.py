@@ -114,7 +114,18 @@ class ReceiptEncapsulationTest(_Base):
         self.assertCaught(check_receipt_encapsulation, mutated, "Default")
 
     def test_a_public_constructor_is_caught(self) -> None:
-        mutated = self.src.replace("pub(crate) fn mint(", "pub fn mint(", 1)
+        # Anchored on `impl DemotionReceipt`'s SPAN, not on the bare token.
+        #
+        # `pub(crate) fn mint(` was unique when this was written and stopped being so
+        # the moment SRS-RESV-006 added `PendingCooldownWindow::mint` — at which point
+        # `.replace(..., 1)` mutated whichever `impl` the file declares FIRST, the
+        # check received an intact `DemotionReceipt`, and the test failed for the one
+        # reason that looks most like the guard working. `test-integrity.md` rule 27,
+        # arriving from a sibling feature rather than from an edit to this one.
+        start = self.src.index("impl DemotionReceipt {")
+        end = self.src.index("\n}", start)
+        span = self.src[start:end]
+        mutated = self.src.replace(span, span.replace("pub(crate) fn mint(", "pub fn mint("), 1)
         self.assertNotEqual(mutated, self.src, "visibility mutation did not apply")
         self.assertCaught(check_receipt_encapsulation, mutated, "pub(crate)")
 
