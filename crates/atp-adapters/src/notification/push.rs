@@ -50,7 +50,7 @@
 //! success path too.
 
 use std::io::{BufReader, Write};
-use std::net::TcpStream;
+use std::net::{IpAddr, TcpStream};
 use std::time::Duration;
 
 use atp_notification::{
@@ -59,8 +59,8 @@ use atp_notification::{
 };
 
 use super::{
-    arm_socket, fold_protocol_line, io_error_to_channel_error, read_line_budgeted,
-    read_to_end_budgeted, EgressEndpoint, SendBudget,
+    arm_socket, fold_protocol_line, io_error_to_channel_error, is_private_egress_address,
+    read_line_budgeted, read_to_end_budgeted, EgressEndpoint, SendBudget,
 };
 
 const CHANNEL: &str = "push";
@@ -138,6 +138,48 @@ impl PushConfig {
         topic: impl Into<String>,
         token: impl Into<String>,
     ) -> Result<Self, ChannelError> {
+        let host = host.into();
+
+        // THE HOST MUST BE A PRIVATE IP LITERAL, CHECKED HERE AT CONSTRUCTION.
+        //
+        // `EgressEndpoint` already re-validates every resolved address on every
+        // connect, and that stays — but a per-connect check alone means a
+        // misconfigured endpoint is discovered by the alert that fails to send,
+        // i.e. during the incident it was meant to report.
+        //
+        // The catalogue's Python validator enforces the same rule at startup.
+        // That was NOT sufficient on its own: `from_env` below is the production
+        // path the operator CLI uses and it never consults that validator, so the
+        // policy has to hold in the type that carries the configuration. This is
+        // deliberately on `PushConfig` and not on `EgressEndpoint`, because the
+        // email transport legitimately targets the `phase1-notification-egress`
+        // compose service BY NAME.
+        //
+        // A hostname is refused rather than resolved: resolution here would be a
+        // second, unbounded network call on the alert path, and a name that
+        // resolves privately now can resolve elsewhere by send time. A literal
+        // makes the property static.
+        match host.trim().parse::<IpAddr>() {
+            Ok(address) if is_private_egress_address(&address) => {}
+            Ok(_) => {
+                return Err(ChannelError::Unconfigured {
+                    detail: format!(
+                        "{CHANNEL}: ATP_PUSH_HOST must be a loopback or private (RFC 1918 / \
+                         unique-local) address; a public endpoint would carry the alert and \
+                         the credential off the private network"
+                    ),
+                })
+            }
+            Err(_) => {
+                return Err(ChannelError::Unconfigured {
+                    detail: format!(
+                        "{CHANNEL}: ATP_PUSH_HOST must be an IP address literal, not a \
+                         hostname — a name cannot be shown to stay private"
+                    ),
+                })
+            }
+        }
+
         let endpoint = EgressEndpoint::new(host, port, CHANNEL)?;
         let topic = topic.into();
         let token = token.into();
@@ -916,6 +958,43 @@ mod tests {
             _ => None,
         });
         assert!(matches!(result, Err(ChannelError::Unconfigured { .. })));
+    }
+
+    /// The IP-literal / private-egress policy must hold in the RUST config type,
+    /// not only in the Python startup validator.
+    ///
+    /// Found by adversarial review: `from_env` is the production path the
+    /// operator CLI uses and it never consults the catalogue validator, so
+    /// enforcing the rule only there left a real bypass — a hostname could reach
+    /// send-time resolution during the very incident the alert reports.
+    #[test]
+    fn a_hostname_or_public_push_host_is_refused_at_construction() {
+        for hostname in ["ntfy.lan", "localhost", "ntfy.example.com"] {
+            let error = PushConfig::new(hostname, 80, "atp-alerts-topic", "tk_x")
+                .expect_err("a hostname must be refused");
+            let ChannelError::Unconfigured { detail } = error else {
+                panic!("expected Unconfigured for {hostname:?}");
+            };
+            assert!(detail.contains("IP address literal"), "{detail}");
+        }
+        for public in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "169.254.169.254",
+            "2001:4860:4860::8888",
+        ] {
+            let error = PushConfig::new(public, 80, "atp-alerts-topic", "tk_x")
+                .expect_err("a public host must be refused");
+            let ChannelError::Unconfigured { detail } = error else {
+                panic!("expected Unconfigured for {public:?}");
+            };
+            assert!(detail.contains("private"), "{detail}");
+        }
+        // Private literals still build, including the IPv4-mapped form.
+        for allowed in ["127.0.0.1", "10.1.2.3", "192.168.1.10", "::1", "fc00::1"] {
+            PushConfig::new(allowed, 80, "atp-alerts-topic", "tk_x")
+                .unwrap_or_else(|err| panic!("{allowed} must be allowed: {err:?}"));
+        }
     }
 
     #[test]

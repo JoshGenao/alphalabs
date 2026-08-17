@@ -350,7 +350,7 @@ impl EgressEndpoint {
 /// this deployment needs it — the egress sidecar is reached over loopback or a
 /// Docker bridge, both of which are covered above — so the safe default is to
 /// refuse, not to widen the boundary for a case that does not arise.
-fn is_private_egress_address(address: &IpAddr) -> bool {
+pub(crate) fn is_private_egress_address(address: &IpAddr) -> bool {
     match address {
         IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
         IpAddr::V6(v6) => {
