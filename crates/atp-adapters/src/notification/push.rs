@@ -574,17 +574,26 @@ fn message_reference(payload: &str) -> Option<String> {
     ))
 }
 
-/// Extract a top-level JSON string field.
+/// Extract a top-level JSON string field from an OBJECT root.
 ///
 /// Hand-rolled for the same zero-dependency reason as the email transport's
-/// base64 encoder. **Depth-aware on purpose**: ntfy nests an `attachment` object
+/// base64 encoder, and depth-aware on purpose: ntfy nests an `attachment` object
 /// inside the reply, so a scanner that took the first `"id"` anywhere in the text
-/// would happily read a nested object's field and store the wrong reference. Only
-/// a key at object depth 1 is accepted.
+/// would read a nested object's field and store the wrong reference.
+///
+/// **Array nesting counts too, and missing that was a real bug.** Tracking only
+/// `{`/`}` made `[{"id":"ok"}]` look like object depth 1, so a proxy answering
+/// 200 with a JSON ARRAY satisfied the "must carry an ntfy id" guard and was
+/// recorded as a delivered operator page. The root must now be an object, and any
+/// key found inside an array is ignored however shallow it looks.
 fn json_string_field(payload: &str, key: &str) -> Option<String> {
     let bytes: Vec<char> = payload.chars().collect();
+    if !root_is_object(&bytes) {
+        return None;
+    }
     let mut index = 0usize;
     let mut depth = 0usize;
+    let mut array_depth = 0usize;
 
     while index < bytes.len() {
         match bytes[index] {
@@ -596,10 +605,12 @@ fn json_string_field(payload: &str, key: &str) -> Option<String> {
                 depth = depth.saturating_sub(1);
                 index += 1;
             }
-            '[' | ']' => {
-                // Arrays cannot hold a bare key, and anything inside one is
-                // deeper than the top level either way; step over the bracket
-                // and let the depth counter keep tracking objects within it.
+            '[' => {
+                array_depth += 1;
+                index += 1;
+            }
+            ']' => {
+                array_depth = array_depth.saturating_sub(1);
                 index += 1;
             }
             '"' => {
@@ -615,7 +626,7 @@ fn json_string_field(payload: &str, key: &str) -> Option<String> {
                     while probe < bytes.len() && bytes[probe].is_whitespace() {
                         probe += 1;
                     }
-                    if depth == 1 && text == key {
+                    if depth == 1 && array_depth == 0 && text == key {
                         if probe < bytes.len() && bytes[probe] == '"' {
                             return read_json_string(&bytes, probe).map(|(value, _)| value);
                         }
@@ -631,11 +642,27 @@ fn json_string_field(payload: &str, key: &str) -> Option<String> {
     None
 }
 
+/// Whether the payload's first non-whitespace character opens an OBJECT.
+///
+/// ntfy always replies with a JSON object. Requiring that here is what stops a
+/// JSON ARRAY from a wrong upstream being mined for an `id` (see
+/// [`json_string_field`]).
+fn root_is_object(chars: &[char]) -> bool {
+    chars
+        .iter()
+        .find(|c| !c.is_whitespace())
+        .is_some_and(|c| *c == '{')
+}
+
 /// Whether the payload carries a top-level key, whatever its value type.
 fn json_has_key(payload: &str, key: &str) -> bool {
     let bytes: Vec<char> = payload.chars().collect();
+    if !root_is_object(&bytes) {
+        return false;
+    }
     let mut index = 0usize;
     let mut depth = 0usize;
+    let mut array_depth = 0usize;
 
     while index < bytes.len() {
         match bytes[index] {
@@ -645,6 +672,14 @@ fn json_has_key(payload: &str, key: &str) -> bool {
             }
             '}' => {
                 depth = depth.saturating_sub(1);
+                index += 1;
+            }
+            '[' => {
+                array_depth += 1;
+                index += 1;
+            }
+            ']' => {
+                array_depth = array_depth.saturating_sub(1);
                 index += 1;
             }
             '"' => {
@@ -657,7 +692,7 @@ fn json_has_key(payload: &str, key: &str) -> bool {
                     probe += 1;
                 }
                 if probe < bytes.len() && bytes[probe] == ':' {
-                    if depth == 1 && text == key {
+                    if depth == 1 && array_depth == 0 && text == key {
                         return true;
                     }
                     index = probe + 1;
@@ -880,6 +915,32 @@ mod tests {
         assert!(json_has_key(converted, "attachment"));
         let normal = r#"{"id":"KKGUUf398qAB","event":"message","message":"real alert"}"#;
         assert!(!json_has_key(normal, "attachment"));
+    }
+
+    /// A JSON ARRAY root must not be mined for an id or an attachment key.
+    ///
+    /// Found by adversarial review. Tracking only `{`/`}` made `[{"id":"ok"}]`
+    /// register as object depth 1, so a wrong upstream or proxy answering 200
+    /// with an array satisfied the "must carry an ntfy message id" guard and was
+    /// recorded as a delivered operator page. ntfy always replies with an
+    /// object, so the root is now required to be one.
+    #[test]
+    fn a_top_level_array_is_not_a_valid_ntfy_reply() {
+        for array in [
+            r#"[{"id":"ok"}]"#,
+            r#"  [ {"id":"ok"} ] "#,
+            r#"[{"id":"ok","attachment":{"size":4097}}]"#,
+            r#"[[{"id":"ok"}]]"#,
+        ] {
+            assert_eq!(json_string_field(array, "id"), None, "{array}");
+            assert!(!json_has_key(array, "attachment"), "{array}");
+            assert_eq!(message_reference(array), None, "{array}");
+        }
+        // An array nested INSIDE the object is fine, and its keys are ignored.
+        let nested = r#"{"id":"RIGHT","actions":[{"id":"WRONG"}]}"#;
+        assert_eq!(json_string_field(nested, "id").as_deref(), Some("RIGHT"));
+        let arr_attachment = r#"{"id":"x","actions":[{"attachment":{"size":1}}]}"#;
+        assert!(!json_has_key(arr_attachment, "attachment"));
     }
 
     #[test]

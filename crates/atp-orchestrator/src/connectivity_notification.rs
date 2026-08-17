@@ -82,7 +82,12 @@ use atp_types::{ConnectivityEvent, ConnectivityState};
 
 /// Millisecond wall clock, injected so the SLA arithmetic is deterministic under
 /// test — the same discipline the dispatcher applies to its own clock.
-pub trait AlertClock {
+///
+/// `Send + Sync` because the dispatch worker reads it: the NFR-P6
+/// dispatch-began instant is stamped on the worker thread, at the moment the
+/// send actually starts, rather than on the caller's thread before the spawn
+/// (see [`ConnectivityNotifierSink::record`]).
+pub trait AlertClock: Send + Sync + 'static {
     fn now_millis(&self) -> u64;
 }
 
@@ -139,7 +144,7 @@ struct EpisodeState {
 pub struct ConnectivityNotifierSink<K: AlertClock> {
     notifier: OperatorNotifier,
     channels: Vec<SharedChannelClient>,
-    clock: K,
+    clock: Arc<K>,
     store_dir: Option<PathBuf>,
     state: Arc<Mutex<EpisodeState>>,
     /// Dispatches handed to a worker and not yet finished.
@@ -161,7 +166,7 @@ impl<K: AlertClock> ConnectivityNotifierSink<K> {
         Self {
             notifier,
             channels,
-            clock,
+            clock: Arc::new(clock),
             store_dir: None,
             state: Arc::new(Mutex::new(EpisodeState::default())),
             in_flight: Arc::new(AtomicUsize::new(0)),
@@ -356,11 +361,30 @@ impl<K: AlertClock> ConnectivityEventSink for ConnectivityNotifierSink<K> {
         let store_dir = self.store_dir.clone();
         let state_handle = Arc::clone(&self.state);
         let in_flight = Arc::clone(&self.in_flight);
+        // The DISPATCH-BEGAN instant is read by the WORKER, not here.
+        //
+        // The trigger keeps `now` as its DETECTION instant — that is when the
+        // block was observed and it is correct. But `dispatch_began_at_millis`
+        // is the other end of the NFR-P6 measurement, and stamping it before
+        // the spawn would make the stored latency describe a dispatch that had
+        // not started: a worker delayed by scheduler pressure or resource
+        // exhaustion would still record ~0ms and pass `within_dispatch_sla()`
+        // while nothing had been sent. That is falsifiable SLA evidence, which
+        // is worse than no evidence — the whole point of storing the latency is
+        // that an operator can trust it.
+        let dispatch_clock = Arc::clone(&self.clock);
 
         in_flight.fetch_add(1, Ordering::SeqCst);
         let spawned = self.spawn_dispatch(move || {
-            let outcome =
-                dispatch_and_store(&notifier, &trigger, now, &channels, suppression, &store_dir);
+            let dispatch_began = dispatch_clock.now_millis();
+            let outcome = dispatch_and_store(
+                &notifier,
+                &trigger,
+                dispatch_began,
+                &channels,
+                suppression,
+                &store_dir,
+            );
             let mut state = state_handle
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -443,7 +467,7 @@ fn dispatch_and_store(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
 
     use atp_notification::{
@@ -454,18 +478,22 @@ mod tests {
 
     use super::*;
 
-    struct StepClock(AtomicU64);
+    /// Owned + cloneable so the dispatch WORKER can hold it: `AlertClock` is
+    /// `Send + Sync + 'static` because the NFR-P6 dispatch-began instant is
+    /// stamped on the worker thread, not on the caller's.
+    #[derive(Clone)]
+    struct StepClock(Arc<AtomicU64>);
 
     impl StepClock {
         fn at(millis: u64) -> Self {
-            Self(AtomicU64::new(millis))
+            Self(Arc::new(AtomicU64::new(millis)))
         }
         fn advance(&self, millis: u64) {
             self.0.fetch_add(millis, Ordering::SeqCst);
         }
     }
 
-    impl AlertClock for &StepClock {
+    impl AlertClock for StepClock {
         fn now_millis(&self) -> u64 {
             self.0.load(Ordering::SeqCst)
         }
@@ -527,6 +555,70 @@ mod tests {
         );
     }
 
+    /// The stored NFR-P6 latency must describe when dispatch ACTUALLY began.
+    ///
+    /// Found by adversarial review. `record` used to stamp the dispatch-began
+    /// instant on the CALLER's thread, before spawning the worker, so a worker
+    /// delayed by scheduler pressure or resource exhaustion still recorded ~0 ms
+    /// and passed `within_dispatch_sla()` while nothing had been sent. That is
+    /// falsifiable SLA evidence — worse than none, because the only reason to
+    /// store the latency is so an operator can trust it.
+    ///
+    /// The delay is modelled by the CLOCK rather than by a sleep, which makes it
+    /// deterministic: read #1 is the detection stamp taken inside `record`, and
+    /// every later read is 90s further on — precisely "the worker got to run 90
+    /// seconds after the block was observed".
+    #[test]
+    fn the_stored_dispatch_latency_reflects_when_the_worker_actually_started() {
+        struct QueuedClock {
+            base: u64,
+            delay: u64,
+            reads: AtomicU64,
+        }
+
+        impl AlertClock for Arc<QueuedClock> {
+            fn now_millis(&self) -> u64 {
+                if self.reads.fetch_add(1, Ordering::SeqCst) == 0 {
+                    self.base
+                } else {
+                    self.base + self.delay
+                }
+            }
+        }
+
+        // 90s is past the 60s NFR-P6 budget, so a correct implementation must
+        // report the breach rather than a comfortable zero.
+        let delay = 90_000;
+        let clock = Arc::new(QueuedClock {
+            base: 1_000_000,
+            delay,
+            reads: AtomicU64::new(0),
+        });
+        let email = RecordingChannel::new(NotificationChannel::Email);
+        let push = RecordingChannel::new(NotificationChannel::Push);
+        let sink = ConnectivityNotifierSink::new(
+            OperatorNotifier::new(),
+            channels(email, push),
+            Arc::clone(&clock),
+        );
+
+        record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
+
+        let outcomes = sink.outcomes();
+        let ConnectivityAlertOutcome::Dispatched(event) = &outcomes[0] else {
+            panic!("expected a dispatch, got {outcomes:?}");
+        };
+        assert_eq!(
+            event.dispatch_latency_millis(),
+            delay,
+            "the time the worker spent queued must be visible in the stored latency"
+        );
+        assert!(
+            !event.within_dispatch_sla(),
+            "a dispatch that began 90s after detection must NOT pass NFR-P6"
+        );
+    }
+
     fn blocked(state: ConnectivityState, scheduled_restart: bool) -> ConnectivityEvent {
         ConnectivityEvent {
             state,
@@ -551,7 +643,7 @@ mod tests {
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
             channels(email.clone(), push.clone()),
-            &clock,
+            clock.clone(),
         );
 
         record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
@@ -579,7 +671,7 @@ mod tests {
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
             channels(email.clone(), push.clone()),
-            &clock,
+            clock.clone(),
         );
 
         record_and_wait(
@@ -612,7 +704,7 @@ mod tests {
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
             channels(email.clone(), push.clone()),
-            &clock,
+            clock.clone(),
         );
 
         // State says the gateway is genuinely unreachable; only the boolean
@@ -631,7 +723,7 @@ mod tests {
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
             channels(email.clone(), push.clone()),
-            &clock,
+            clock.clone(),
         );
 
         record_and_wait(&sink, blocked(ConnectivityState::Connected, false));
@@ -649,7 +741,7 @@ mod tests {
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
             channels(email.clone(), push.clone()),
-            &clock,
+            clock.clone(),
         );
 
         for _ in 0..200 {
@@ -667,7 +759,7 @@ mod tests {
 
         // After the cool-down the next block pages again, and says how many were
         // folded in — a coalesced storm must never read as one isolated block.
-        clock.advance(ConnectivityNotifierSink::<&StepClock>::COOLDOWN.as_millis() as u64);
+        clock.advance(ConnectivityNotifierSink::<StepClock>::COOLDOWN.as_millis() as u64);
         record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
         assert_eq!(email.sends(), 2);
         match sink.outcomes().last() {
@@ -698,7 +790,7 @@ mod tests {
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
             channels(email.clone(), push.clone()),
-            &clock,
+            clock.clone(),
         );
 
         // Planned maintenance: correctly silent.
@@ -730,7 +822,7 @@ mod tests {
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
             channels(email.clone(), push.clone()),
-            &clock,
+            clock.clone(),
         );
 
         record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
@@ -787,7 +879,7 @@ mod tests {
                 Arc::new(SlowChannel(NotificationChannel::Email)) as SharedChannelClient,
                 Arc::new(SlowChannel(NotificationChannel::Push)) as SharedChannelClient,
             ],
-            &clock,
+            clock.clone(),
         );
 
         let started = std::time::Instant::now();
@@ -826,7 +918,7 @@ mod tests {
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
             channels(email.clone(), push.clone()),
-            &clock,
+            clock.clone(),
         );
 
         sink.force_spawn_failure.store(true, Ordering::SeqCst);
@@ -880,7 +972,7 @@ mod tests {
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
             channels(email.clone(), push.clone()),
-            &clock,
+            clock.clone(),
         );
 
         record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
@@ -902,7 +994,7 @@ mod tests {
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
             channels(email.clone(), push.clone()),
-            &clock,
+            clock.clone(),
         );
 
         record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
@@ -931,7 +1023,7 @@ mod tests {
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
             channels(email.clone(), push.clone()),
-            &clock,
+            clock.clone(),
         );
 
         for _ in 0..50 {
@@ -956,7 +1048,7 @@ mod tests {
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
             channels(email.clone(), push.clone()),
-            &clock,
+            clock.clone(),
         );
 
         record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
@@ -981,7 +1073,7 @@ mod tests {
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
             channels(email.clone(), push.clone()),
-            &clock,
+            clock.clone(),
         )
         .with_store_dir(&dir);
 

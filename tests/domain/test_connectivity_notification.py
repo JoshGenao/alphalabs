@@ -212,6 +212,28 @@ def test_the_delivery_status_is_durably_stored() -> None:
     )
 
 
+def test_the_stored_sla_evidence_cannot_describe_a_dispatch_that_never_started() -> None:
+    """SRS-NOTIF-001 AC / NFR-P6: the stored latency must be trustworthy.
+
+    The acceptance criterion is "notification dispatch begins within 60 seconds
+    of detection and delivery status is stored as a notification event", and the
+    stored ``dispatch_latency_millis`` is the evidence for the first half. The
+    dispatch runs on a worker thread (so reporting an outage cannot delay
+    recovery from it), which means the instant recorded as the dispatch start has
+    to be read BY that worker. Stamped before the spawn instead, a worker held up
+    by scheduler pressure or resource exhaustion records ~0 ms and passes the SLA
+    while nothing has been sent — evidence that actively asserts a false green,
+    which is worse for an operator than no evidence at all.
+    """
+
+    _assert_one_passed(
+        _run_cargo_test(
+            "the_stored_dispatch_latency_reflects_when_the_worker_actually_started"
+        ),
+        "SRS-NOTIF-001 non-falsifiable SLA evidence",
+    )
+
+
 def test_a_public_push_host_is_refused_at_startup_not_at_alert_time() -> None:
     """SRS-NOTIF-001 / NFR-P6: the push endpoint must fail readiness, not the page.
 
