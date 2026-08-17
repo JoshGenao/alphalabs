@@ -173,8 +173,13 @@ pub const PERSISTED_ENTITIES: &[SchemaDescriptor] = &[
         writer_path: "crates/atp-notification/src/store.rs",
         marker: "SCHEMA_VERSION",
         magic: Some("ATP-NOTIFICATION-EVENT-STORE"),
-        current_version: 1,
-        min_supported_version: 1,
+        // v2 (2026-08-17): the SMS channel became push, so the delivery channel
+        // tag "S" became "P". min_supported moves with it — a v1 blob records
+        // deliveries to a channel that no longer exists, so it could never pass
+        // the store's required-channel symmetry check anyway, and refusing it by
+        // VERSION reports that precisely instead of as a corrupt tag.
+        current_version: 2,
+        min_supported_version: 2,
         posture: EvolutionPosture::Ranged,
         legacy_unversioned: false,
     },

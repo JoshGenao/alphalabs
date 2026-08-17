@@ -956,11 +956,11 @@ pub trait HealthCheckEventSink {
 //     adapter's `cancel_order` (deferred runtime); the gate calls it ONLY
 //     on the timeout branch.
 //
-//   * `OperatorAlertSink` — the SRS-RESV-004 dashboard/email/SMS
+//   * `OperatorAlertSink` — the SRS-RESV-004 dashboard/email/push
 //     notification fan-out. Fire-and-forget (mirrors `HealthCheckEventSink`):
 //     the demotion-pending decision is irreversible once the timeout fires,
 //     so an alert-dispatch failure does not roll it back. The concrete
-//     email/SMS transport is the deferred SRS-NOTIF-001 SMTP/SMS adapter
+//     email/push transport is the deferred SRS-NOTIF-001 SMTP/push adapter
 //     pair — kept behind this port so the demotion gate itself never sees
 //     the dispatcher (the SRS-SAFE-002 composition in `kill_switch_timeout`
 //     is where the orchestrator binds `atp-notification`'s OperatorNotifier).
@@ -1001,14 +1001,14 @@ pub trait UnfilledOrderCanceller {
 }
 
 pub trait OperatorAlertSink {
-    /// SRS-RESV-004 dashboard/email/SMS notification dispatch. Called ONLY
+    /// SRS-RESV-004 dashboard/email/push notification dispatch. Called ONLY
     /// on the `TimedOutDemotionPending` branch. Returns `Result` so a
-    /// transport failure (email/SMS unreachable, dashboard channel down) is
+    /// transport failure (email/push unreachable, dashboard channel down) is
     /// surfaced rather than silently dropped — a missed page on a liquidation
     /// timeout is itself a safety event. The gate does NOT abort on failure
     /// (the demotion-pending decision is irreversible once the timeout
     /// fires); it records the outcome on
-    /// `HotSwapDemotionEvent::operator_alert`. The concrete email/SMS
+    /// `HotSwapDemotionEvent::operator_alert`. The concrete email/push
     /// transport is the deferred SRS-NOTIF-001 dispatcher.
     fn dispatch(&self, event: OperatorAlertEvent) -> Result<(), HotSwapSideEffectError>;
 }
@@ -1017,7 +1017,7 @@ pub trait OperatorAlertSink {
 /// IB-cancel and operator-alert ports. Mirrors `WorkloadEventSinkError`:
 /// carries a short reason string for now; the typed CONNECTIVITY_BLOCKED /
 /// STALE_DATA_BLOCKED / transport-timeout taxonomy is added when the
-/// concrete IB-cancel (`atp-adapters`) and email/SMS (`atp-notification`)
+/// concrete IB-cancel (`atp-adapters`) and email/push (`atp-notification`)
 /// runtimes land (named in the contract's `deferred[]`). The orchestrator's
 /// `resolve_demotion` gate maps an `Err` into
 /// `SideEffectOutcome::Failed { reason }` on the demotion event so the
@@ -1648,7 +1648,7 @@ impl StrategyOrchestrator {
     ///
     ///   * `TimedOutDemotionPending` — the liquidation timed out. Per
     ///     SRS-RESV-004 the gate cancels the unfilled liquidation order,
-    ///     dispatches the dashboard/email/SMS operator alert, records a
+    ///     dispatches the dashboard/email/push operator alert, records a
     ///     `HotSwapDemotionEvent` with `promotion_blocked = true`, and
     ///     refuses with a `StructuredHotSwapDemotionError` whose category is
     ///     `OrderErrorCategory::HotSwapDemotionTimeout` (wire string
@@ -1920,7 +1920,7 @@ impl StrategyOrchestrator {
                     channels: vec![
                         OperatorAlertChannel::Dashboard,
                         OperatorAlertChannel::Email,
-                        OperatorAlertChannel::Sms,
+                        OperatorAlertChannel::Push,
                     ],
                     elapsed_seconds,
                     timeout_seconds,

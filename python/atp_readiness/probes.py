@@ -28,7 +28,7 @@ adapter is testable with canned output:
   imports.
 * :class:`RecordingAlertSink` / :class:`JsonlAlertSink` — concrete alert
   sinks (in-memory for tests/demos; durable JSON-lines for persisted-output
-  inspection). Real email/SMS fan-out is SRS-NOTIF-001's.
+  inspection). Real email/push fan-out is SRS-NOTIF-001's.
 
 Fail-closed rule: any subprocess failure, unparseable output, missing file,
 or schema drift produces a FAIL result (or raises to the composer) — a
@@ -530,7 +530,7 @@ class JsonlAlertSink:
     """Durable JSON-lines alert sink (persisted-output inspection context).
 
     One JSON object per alert, appended with an fsync'd file handle per
-    dispatch. Real email/SMS fan-out (Email+Sms required channel set) is
+    dispatch. Real email/push fan-out (Email+Push required channel set) is
     SRS-NOTIF-001's; this sink makes the alert trail INSPECTABLE today.
     Write failures propagate (a readiness alert that cannot be recorded is
     a failed dispatch — degraded-mode must not pass on it).

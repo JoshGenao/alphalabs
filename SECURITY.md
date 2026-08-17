@@ -54,7 +54,7 @@ receives security updates; there are no stable release branches yet.
 
 ## Credential handling (SRS-SEC-001)
 
-Brokerage (IB account) and notification (SMTP, SMS) credentials — plus the
+Brokerage (IB account) and notification (SMTP, push) credentials — plus the
 vendor data-provider keys — are treated as secrets end to end (NFR-S1, NFR-S4):
 
 - **Encryption at rest.** The credential vault
@@ -79,16 +79,16 @@ vendor data-provider keys — are treated as secrets end to end (NFR-S1, NFR-S4)
   (`DEFAULT_REDACTOR`). The sanctioned production boot path is
   `atp_logging_boot.build_boot_log_dispatcher(dir, env)`, which overlays the
   vault and then builds the value-aware `SecretRedactor(secret_values(env))`
-  itself — so bare IB/SMTP/SMS credential *values* are masked without the caller
+  itself — so bare IB/SMTP/push credential *values* are masked without the caller
   injecting anything. The operator-facing config view separately renders secret
   keys as `***REDACTED***`.
 - **Enforcement.** `tools/credential_security_check.py` (in CI) proves the
   vault produces ciphertext and that redaction is wired on every path; the
-  L7 `tests/domain/test_credential_redaction.py` proves IB/SMTP/SMS secrets
+  L7 `tests/domain/test_credential_redaction.py` proves IB/SMTP/push secrets
   never reach the logs. Committed secrets are independently blocked by
   `tools/critic_check.py` + `.gitleaks.toml`.
 
-The concrete Rust SMTP/SMS channel adapters (which will read these vault-sealed
+The concrete Rust SMTP/push channel adapters (which will read these vault-sealed
 keys) remain deferred to the SRS-NOTIF-001 adapter work; this feature provides
 the at-rest + redaction mechanism they consume.
 
@@ -186,7 +186,7 @@ StRS SN-1.18) — the two SRS-SEC-004 acceptance clauses:
 
 - **Cannot read brokerage credentials.** Jupyter's `environment` merges the
   `x-atp-no-secrets` anchor **first** in the `<<` sequence, and YAML merge is
-  earlier-wins — so every catalogued secret (`ATP_IB_ACCOUNT`, the SMTP/SMS API keys,
+  earlier-wins — so every catalogued secret (`ATP_IB_ACCOUNT`, the SMTP/push API keys,
   the DataBento/Sharadar keys) and all vault-unlock material (`ATP_VAULT_FILE` /
   `ATP_VAULT_KEY_FILE` / `ATP_VAULT_PASSPHRASE`) is blanked to `""`. Even a populated
   plaintext `.env` cannot leak a credential into the kernel, and no catalogued secret

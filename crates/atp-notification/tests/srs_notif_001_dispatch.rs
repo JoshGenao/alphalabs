@@ -11,7 +11,7 @@
 //!   2. **Delivery status is stored as a notification event** — every channel's
 //!      real outcome (delivered / failed / suppressed) is recorded on the event
 //!      and durably round-trips through the store.
-//!   3. **Email AND SMS fan-out is enforced** — the dispatcher fails closed on a
+//!   3. **Email AND push fan-out is enforced** — the dispatcher fails closed on a
 //!      channel set that omits or duplicates a required channel.
 //!   4. **A channel's transport timeout can't silence the other** — a channel
 //!      that returns a typed `Timeout` error is recorded `Failed` and the other
@@ -37,7 +37,7 @@ use atp_notification::event::{
     DeliveryOutcome, NotificationChannel, NotificationTrigger, DISPATCH_SLA_MS,
 };
 use atp_notification::store::{
-    NotificationEventStore, NotificationStoreError, NotificationStoreLock, MAGIC,
+    NotificationEventStore, NotificationStoreError, NotificationStoreLock, MAGIC, SCHEMA_VERSION,
 };
 
 // --------------------------------------------------------------------------- //
@@ -129,11 +129,11 @@ fn dispatch_within_sla_records_both_channels_delivered() {
         NotificationChannel::Email,
         "smtp-250-abc",
     ));
-    let sms = Arc::new(AcceptingChannel::new(
-        NotificationChannel::Sms,
-        "sms-gw-ticket-99",
+    let push = Arc::new(AcceptingChannel::new(
+        NotificationChannel::Push,
+        "ntfy-msg-id-99",
     ));
-    let set = channels(vec![email.clone(), sms.clone()]);
+    let set = channels(vec![email.clone(), push.clone()]);
     let notifier = OperatorNotifier::new();
 
     // Detected at t=100_000ms, dispatch begins at t=142_000ms — 42s, within budget.
@@ -147,19 +147,19 @@ fn dispatch_within_sla_records_both_channels_delivered() {
     let email_delivery = event.delivery_for(NotificationChannel::Email).unwrap();
     assert_eq!(email_delivery.outcome(), DeliveryOutcome::Delivered);
     assert_eq!(email_delivery.detail(), "smtp-250-abc");
-    let sms_delivery = event.delivery_for(NotificationChannel::Sms).unwrap();
-    assert_eq!(sms_delivery.outcome(), DeliveryOutcome::Delivered);
-    assert_eq!(sms_delivery.detail(), "sms-gw-ticket-99");
+    let push_delivery = event.delivery_for(NotificationChannel::Push).unwrap();
+    assert_eq!(push_delivery.outcome(), DeliveryOutcome::Delivered);
+    assert_eq!(push_delivery.detail(), "ntfy-msg-id-99");
 
     assert_eq!(email.send_count(), 1);
-    assert_eq!(sms.send_count(), 1);
+    assert_eq!(push.send_count(), 1);
 }
 
 #[test]
 fn dispatch_at_exactly_60000ms_is_within_sla_but_60001ms_is_a_breach() {
     let email = Arc::new(AcceptingChannel::new(NotificationChannel::Email, "ref"));
-    let sms = Arc::new(AcceptingChannel::new(NotificationChannel::Sms, "ref"));
-    let set = channels(vec![email, sms]);
+    let push = Arc::new(AcceptingChannel::new(NotificationChannel::Push, "ref"));
+    let set = channels(vec![email, push]);
     let notifier = OperatorNotifier::new();
 
     // Exactly 60,000 ms after detection — the NFR-P6 boundary, still within SLA.
@@ -193,8 +193,8 @@ fn dispatch_at_exactly_60000ms_is_within_sla_but_60001ms_is_a_breach() {
 #[test]
 fn reversed_timestamps_are_rejected_so_sla_evidence_cannot_be_falsified() {
     let email = Arc::new(AcceptingChannel::new(NotificationChannel::Email, "e"));
-    let sms = Arc::new(AcceptingChannel::new(NotificationChannel::Sms, "s"));
-    let set = channels(vec![email.clone(), sms.clone()]);
+    let push = Arc::new(AcceptingChannel::new(NotificationChannel::Push, "s"));
+    let set = channels(vec![email.clone(), push.clone()]);
     let notifier = OperatorNotifier::new();
 
     // Dispatch "began" BEFORE detection — impossible provenance. A saturating
@@ -213,7 +213,7 @@ fn reversed_timestamps_are_rejected_so_sla_evidence_cannot_be_falsified() {
     );
     // Fail-closed: no channel was contacted, no event produced.
     assert_eq!(email.send_count(), 0);
-    assert_eq!(sms.send_count(), 0);
+    assert_eq!(push.send_count(), 0);
 }
 
 // --------------------------------------------------------------------------- //
@@ -228,8 +228,8 @@ fn failing_channel_is_recorded_failed_never_fabricated_as_delivered() {
             detail: "smtp connect timeout".into(),
         },
     ));
-    let sms = Arc::new(AcceptingChannel::new(NotificationChannel::Sms, "sms-ok"));
-    let set = channels(vec![email.clone(), sms.clone()]);
+    let push = Arc::new(AcceptingChannel::new(NotificationChannel::Push, "push-ok"));
+    let set = channels(vec![email.clone(), push.clone()]);
     let notifier = OperatorNotifier::new();
 
     let event = notifier
@@ -249,12 +249,12 @@ fn failing_channel_is_recorded_failed_never_fabricated_as_delivered() {
     assert!(email_delivery.detail().contains("TRANSPORT_UNAVAILABLE"));
     assert!(email_delivery.detail().contains("smtp connect timeout"));
 
-    let sms_delivery = event.delivery_for(NotificationChannel::Sms).unwrap();
-    assert_eq!(sms_delivery.outcome(), DeliveryOutcome::Delivered);
+    let push_delivery = event.delivery_for(NotificationChannel::Push).unwrap();
+    assert_eq!(push_delivery.outcome(), DeliveryOutcome::Delivered);
 
     assert!(event.any_delivered());
     assert_eq!(email.send_count(), 1);
-    assert_eq!(sms.send_count(), 1);
+    assert_eq!(push.send_count(), 1);
 }
 
 #[test]
@@ -265,13 +265,13 @@ fn every_channel_failing_still_stores_the_event_with_no_delivery() {
             detail: "ATP_SMTP_API_KEY missing".into(),
         },
     ));
-    let sms = Arc::new(FailingChannel::new(
-        NotificationChannel::Sms,
+    let push = Arc::new(FailingChannel::new(
+        NotificationChannel::Push,
         ChannelError::Rejected {
             detail: "invalid recipient".into(),
         },
     ));
-    let set = channels(vec![email, sms]);
+    let set = channels(vec![email, push]);
     let notifier = OperatorNotifier::new();
     let event = notifier
         .dispatch(
@@ -290,7 +290,7 @@ fn every_channel_failing_still_stores_the_event_with_no_delivery() {
 }
 
 // --------------------------------------------------------------------------- //
-// AC property 3 — email AND SMS fan-out is enforced, fail-closed
+// AC property 3 — email AND push fan-out is enforced, fail-closed
 // --------------------------------------------------------------------------- //
 
 #[test]
@@ -315,9 +315,9 @@ fn dispatch_rejects_email_only() {
     assert_eq!(
         result,
         Err(DispatchError::MissingRequiredChannel {
-            channel: NotificationChannel::Sms
+            channel: NotificationChannel::Push
         }),
-        "email-only must fail closed — SRS-NOTIF-001 requires SMS too"
+        "email-only must fail closed — SRS-NOTIF-001 requires push too"
     );
     assert_eq!(
         email.send_count(),
@@ -327,9 +327,9 @@ fn dispatch_rejects_email_only() {
 }
 
 #[test]
-fn dispatch_rejects_sms_only() {
-    let sms = Arc::new(AcceptingChannel::new(NotificationChannel::Sms, "ref"));
-    let set = channels(vec![sms]);
+fn dispatch_rejects_push_only() {
+    let push = Arc::new(AcceptingChannel::new(NotificationChannel::Push, "ref"));
+    let set = channels(vec![push]);
     let notifier = OperatorNotifier::new();
     let result = notifier.dispatch(&NotificationTrigger::connectivity_loss("x", 0), 1, &set);
     assert_eq!(
@@ -344,8 +344,8 @@ fn dispatch_rejects_sms_only() {
 fn dispatch_rejects_duplicate_required_channel() {
     let email = Arc::new(AcceptingChannel::new(NotificationChannel::Email, "a"));
     let email_dup = Arc::new(AcceptingChannel::new(NotificationChannel::Email, "b"));
-    let sms = Arc::new(AcceptingChannel::new(NotificationChannel::Sms, "c"));
-    let set = channels(vec![email.clone(), email_dup.clone(), sms.clone()]);
+    let push = Arc::new(AcceptingChannel::new(NotificationChannel::Push, "c"));
+    let set = channels(vec![email.clone(), email_dup.clone(), push.clone()]);
     let notifier = OperatorNotifier::new();
     let result = notifier.dispatch(&NotificationTrigger::critical_failure("x", 0), 1, &set);
     assert_eq!(
@@ -356,7 +356,7 @@ fn dispatch_rejects_duplicate_required_channel() {
     );
     assert_eq!(email.send_count(), 0);
     assert_eq!(email_dup.send_count(), 0);
-    assert_eq!(sms.send_count(), 0);
+    assert_eq!(push.send_count(), 0);
 }
 
 // --------------------------------------------------------------------------- //
@@ -373,8 +373,8 @@ fn channel_timeout_is_recorded_failed_and_other_channel_still_delivers() {
             detail: "smtp send exceeded socket deadline".into(),
         },
     ));
-    let sms = Arc::new(AcceptingChannel::new(NotificationChannel::Sms, "sms-ok"));
-    let set = channels(vec![email.clone(), sms.clone()]);
+    let push = Arc::new(AcceptingChannel::new(NotificationChannel::Push, "push-ok"));
+    let set = channels(vec![email.clone(), push.clone()]);
     let notifier = OperatorNotifier::new();
 
     let event = notifier
@@ -393,12 +393,12 @@ fn channel_timeout_is_recorded_failed_and_other_channel_still_delivers() {
         "a channel that returned a timeout error must be recorded Failed"
     );
     assert!(email_delivery.detail().contains("TIMEOUT"));
-    // ...and SMS is still attempted + delivered, and the event is produced.
-    let sms_delivery = event.delivery_for(NotificationChannel::Sms).unwrap();
-    assert_eq!(sms_delivery.outcome(), DeliveryOutcome::Delivered);
+    // ...and push is still attempted + delivered, and the event is produced.
+    let push_delivery = event.delivery_for(NotificationChannel::Push).unwrap();
+    assert_eq!(push_delivery.outcome(), DeliveryOutcome::Delivered);
     assert!(event.any_delivered());
     assert_eq!(email.send_count(), 1);
-    assert_eq!(sms.send_count(), 1);
+    assert_eq!(push.send_count(), 1);
 }
 
 #[test]
@@ -406,8 +406,8 @@ fn dispatcher_threads_its_configured_deadline_into_every_channel() {
     // The per-channel deadline is a mandatory part of the send API: the
     // dispatcher hands its configured budget to each adapter.
     let email = Arc::new(AcceptingChannel::new(NotificationChannel::Email, "e"));
-    let sms = Arc::new(AcceptingChannel::new(NotificationChannel::Sms, "s"));
-    let set = channels(vec![email.clone(), sms.clone()]);
+    let push = Arc::new(AcceptingChannel::new(NotificationChannel::Push, "s"));
+    let set = channels(vec![email.clone(), push.clone()]);
     let notifier = OperatorNotifier::with_channel_deadline(Duration::from_secs(7));
 
     notifier
@@ -415,7 +415,7 @@ fn dispatcher_threads_its_configured_deadline_into_every_channel() {
         .unwrap();
 
     assert_eq!(email.last_deadline_millis(), 7_000);
-    assert_eq!(sms.last_deadline_millis(), 7_000);
+    assert_eq!(push.last_deadline_millis(), 7_000);
     // The default notifier uses the 20s budget.
     assert_eq!(
         OperatorNotifier::new().channel_deadline(),
@@ -452,8 +452,8 @@ fn over_large_channel_deadline_is_clamped_to_fit_the_sla_budget() {
 #[test]
 fn connectivity_loss_is_suppressed_during_scheduled_restart_window() {
     let email = Arc::new(AcceptingChannel::new(NotificationChannel::Email, "ref"));
-    let sms = Arc::new(AcceptingChannel::new(NotificationChannel::Sms, "ref"));
-    let set = channels(vec![email.clone(), sms.clone()]);
+    let push = Arc::new(AcceptingChannel::new(NotificationChannel::Push, "ref"));
+    let set = channels(vec![email.clone(), push.clone()]);
     let notifier = OperatorNotifier::new();
 
     let event = notifier
@@ -466,7 +466,7 @@ fn connectivity_loss_is_suppressed_during_scheduled_restart_window() {
         .unwrap();
 
     assert_eq!(email.send_count(), 0);
-    assert_eq!(sms.send_count(), 0);
+    assert_eq!(push.send_count(), 0);
     assert!(!event.any_delivered());
     assert_eq!(event.deliveries().len(), 2);
     assert!(event
@@ -483,8 +483,8 @@ fn connectivity_loss_is_suppressed_during_scheduled_restart_window() {
 #[test]
 fn critical_failure_is_never_suppressed_even_when_requested() {
     let email = Arc::new(AcceptingChannel::new(NotificationChannel::Email, "smtp-ok"));
-    let sms = Arc::new(AcceptingChannel::new(NotificationChannel::Sms, "sms-ok"));
-    let set = channels(vec![email.clone(), sms.clone()]);
+    let push = Arc::new(AcceptingChannel::new(NotificationChannel::Push, "push-ok"));
+    let set = channels(vec![email.clone(), push.clone()]);
     let notifier = OperatorNotifier::new();
 
     let event = notifier
@@ -501,7 +501,7 @@ fn critical_failure_is_never_suppressed_even_when_requested() {
         1,
         "a critical failure must always dispatch, whatever suppression is requested"
     );
-    assert_eq!(sms.send_count(), 1);
+    assert_eq!(push.send_count(), 1);
     assert!(event.any_delivered());
     assert_eq!(
         event
@@ -521,8 +521,8 @@ fn detect_dispatch_store_and_read_back_the_delivery_status() {
     let dir = temp_dir("notif-e2e");
     std::fs::create_dir_all(&dir).unwrap(); // the store directory is provisioned at startup
     let email = Arc::new(AcceptingChannel::new(NotificationChannel::Email, "smtp-1"));
-    let sms = Arc::new(AcceptingChannel::new(NotificationChannel::Sms, "sms-1"));
-    let set = channels(vec![email, sms]);
+    let push = Arc::new(AcceptingChannel::new(NotificationChannel::Push, "push-1"));
+    let set = channels(vec![email, push]);
     let notifier = OperatorNotifier::new();
 
     let mut store = NotificationEventStore::load_from_path(&dir).unwrap();
@@ -548,10 +548,10 @@ fn detect_dispatch_store_and_read_back_the_delivery_status() {
     );
     assert_eq!(
         stored
-            .delivery_for(NotificationChannel::Sms)
+            .delivery_for(NotificationChannel::Push)
             .unwrap()
             .detail(),
-        "sms-1"
+        "push-1"
     );
 
     cleanup(&dir);
@@ -561,11 +561,11 @@ fn detect_dispatch_store_and_read_back_the_delivery_status() {
 fn store_round_trips_many_events_in_insertion_order() {
     let dir = temp_dir("notif-order");
     let email = Arc::new(AcceptingChannel::new(NotificationChannel::Email, "e"));
-    let sms = Arc::new(FailingChannel::new(
-        NotificationChannel::Sms,
+    let push = Arc::new(FailingChannel::new(
+        NotificationChannel::Push,
         ChannelError::TransportUnavailable { detail: "x".into() },
     ));
-    let set = channels(vec![email, sms]);
+    let set = channels(vec![email, push]);
     let notifier = OperatorNotifier::new();
 
     let mut store = NotificationEventStore::new();
@@ -596,8 +596,8 @@ fn concurrent_appends_do_not_lose_events() {
     let dir = temp_dir("notif-concurrent");
     std::fs::create_dir_all(&dir).unwrap();
     let email = Arc::new(AcceptingChannel::new(NotificationChannel::Email, "e"));
-    let sms = Arc::new(AcceptingChannel::new(NotificationChannel::Sms, "s"));
-    let set = channels(vec![email, sms]);
+    let push = Arc::new(AcceptingChannel::new(NotificationChannel::Push, "s"));
+    let set = channels(vec![email, push]);
     let notifier = OperatorNotifier::new();
 
     let event_a = notifier
@@ -665,8 +665,8 @@ fn held_lock_refuses_a_second_writer_then_releases_on_drop() {
 #[test]
 fn corrupt_blob_fails_closed_with_checksum_mismatch() {
     let email = Arc::new(AcceptingChannel::new(NotificationChannel::Email, "e"));
-    let sms = Arc::new(AcceptingChannel::new(NotificationChannel::Sms, "s"));
-    let set = channels(vec![email, sms]);
+    let push = Arc::new(AcceptingChannel::new(NotificationChannel::Push, "s"));
+    let set = channels(vec![email, push]);
     let notifier = OperatorNotifier::new();
     let mut store = NotificationEventStore::new();
     store.append(
@@ -736,7 +736,11 @@ fn craft_event_blob(
         s.push('\n');
     }
     let mut body = String::new();
-    body.push_str("1\n"); // schema version
+    // Built at the CURRENT schema version on purpose: these tests exercise the
+    // SEMANTIC restore rejections, so pinning a literal version here would turn
+    // them into version-mismatch tests the moment the schema is bumped, and
+    // silently stop proving that a checksum-valid blob cannot lie.
+    body.push_str(&format!("{SCHEMA_VERSION}\n")); // schema version
     body.push_str("1\n"); // event count
     body.push_str(trigger_tag);
     body.push('\n'); // trigger tag
@@ -757,11 +761,11 @@ fn craft_event_blob(
 #[test]
 fn restore_rejects_checksum_valid_blob_with_reversed_timestamps() {
     // Sanity: a well-formed crafted blob restores.
-    let ok = craft_event_blob("C", 100, 200, &[("E", "D", "ok"), ("S", "D", "ok")]);
+    let ok = craft_event_blob("C", 100, 200, &[("E", "D", "ok"), ("P", "D", "ok")]);
     assert_eq!(NotificationEventStore::restore(&ok).unwrap().len(), 1);
 
     // Reversed timestamps (dispatch before detection) — impossible SLA evidence.
-    let reversed = craft_event_blob("C", 200, 100, &[("E", "D", "ok"), ("S", "D", "ok")]);
+    let reversed = craft_event_blob("C", 200, 100, &[("E", "D", "ok"), ("P", "D", "ok")]);
     match NotificationEventStore::restore(&reversed) {
         Err(NotificationStoreError::Corrupt { .. }) => {}
         other => panic!("expected Corrupt for reversed timestamps, got {other:?}"),
@@ -770,7 +774,7 @@ fn restore_rejects_checksum_valid_blob_with_reversed_timestamps() {
 
 #[test]
 fn restore_rejects_checksum_valid_blob_missing_a_required_channel() {
-    // Only email present — a real dispatch always fans out email + SMS.
+    // Only email present — a real dispatch always fans out email + push.
     let missing = craft_event_blob("C", 100, 200, &[("E", "D", "ok")]);
     match NotificationEventStore::restore(&missing) {
         Err(NotificationStoreError::Corrupt { .. }) => {}
@@ -795,7 +799,7 @@ fn restore_rejects_suppressed_critical_failure() {
 fn restore_rejects_mixed_suppression() {
     // A suppressed dispatch suppresses EVERY required channel (all-or-nothing);
     // a mix of suppressed + sent is impossible provenance.
-    let mixed = craft_event_blob("C", 100, 200, &[("E", "X", "win"), ("S", "D", "ok")]);
+    let mixed = craft_event_blob("C", 100, 200, &[("E", "X", "win"), ("P", "D", "ok")]);
     match NotificationEventStore::restore(&mixed) {
         Err(NotificationStoreError::Corrupt { .. }) => {}
         other => panic!("expected Corrupt for mixed suppression, got {other:?}"),

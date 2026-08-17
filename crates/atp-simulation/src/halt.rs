@@ -51,7 +51,7 @@
 //! transport behind the cancel/disconnect port is the SRS-EXE-006 adapter; hosting every non-live
 //! strategy on a fleet-registered gate is the SRS-EXE-002 orchestrator's routing job; the SRS-LOG-001
 //! feature's own dashboard-viewing flip ([`HaltTransition`] remains the in-memory groundwork,
-//! carrying no wall-clock time); operator email/SMS is SRS-NOTIF-001; the rich dashboard control is
+//! carrying no wall-clock time); operator email/push is SRS-NOTIF-001; the rich dashboard control is
 //! UI-4; the `on_fill` callback runtime + Python strategy host are SRS-SDK / SRS-EXE-002.
 
 use std::fmt;

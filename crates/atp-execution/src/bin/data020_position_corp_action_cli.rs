@@ -13,7 +13,7 @@
 //! This is a pure planner: it makes the adjust / remap / delist / review DECISION over
 //! fixtures. The production feed of live positions **carrying cost basis** is the
 //! deferred SRS-EXE-006 / API-5 brokerage adapter positions sync; real operator
-//! email/SMS is SRS-NOTIF-001; live callback delivery is SRS-SDK-004. std-only;
+//! email/push is SRS-NOTIF-001; live callback delivery is SRS-SDK-004. std-only;
 //! depends only on the already-declared `atp-execution` crate.
 //!
 //! Exit codes: `0` = every position planned; `2` = usage / fixture error (unknown

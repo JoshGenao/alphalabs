@@ -108,7 +108,7 @@ KILL_SWITCH_ACTIVATION_OWNER = "SRS-SAFE-001"
 #: Owner of the SYS-44b unfilled-liquidation timeout leg.
 KILL_SWITCH_TIMEOUT_OWNER = "SRS-SAFE-002"
 
-#: Owner of the operator email/SMS notification leg (the SYS-44b escalation's
+#: Owner of the operator email/push notification leg (the SYS-44b escalation's
 #: delivery transports).
 KILL_SWITCH_NOTIFY_OWNER = "SRS-NOTIF-001"
 

@@ -12,7 +12,7 @@ Types and envelopes:
   (b) ``HotSwapDemotionRequest`` carries its three required fields and no broker / IB-order /
       vendor / container leakage; cancellation flows through a port, never a field on the
       envelope.
-  (c) ``OperatorAlertChannel`` declares the dashboard/email/SMS triad, and
+  (c) ``OperatorAlertChannel`` declares the dashboard/email/push triad, and
       ``OperatorAlertEvent`` + ``HotSwapDemotionEvent`` carry their required fields — including
       ``demotion_pending``, the outcome that separates "promotion is blocked" from "promotion
       STAYS blocked" — and reject the same forbidden allowlist.
@@ -271,7 +271,7 @@ def check_operator_alert_channel_enum(config: dict, types_src: str) -> str:
     return _check_enum(
         types_src,
         contract_block(config)["operator_alert_channel"],
-        "the SRS-RESV-004 dashboard/email/SMS notification triad",
+        "the SRS-RESV-004 dashboard/email/push notification triad",
     )
 
 
@@ -320,7 +320,7 @@ def check_operator_alert_sink_port(config: dict, orch_src: str) -> str:
     return _check_port(
         orch_src,
         contract_block(config)["operator_alert_sink_port"],
-        "the SRS-RESV-004 dashboard/email/SMS operator-alert dispatch channel",
+        "the SRS-RESV-004 dashboard/email/push operator-alert dispatch channel",
     )
 
 
@@ -514,7 +514,7 @@ def check_resolve_demotion_guard(config: dict, orch_src: str) -> str:
             fail(
                 f"{entry['method']} {timeout_token} arm is missing alert channel "
                 f"`{channel}` — SRS-RESV-004 fans the notification to dashboard, "
-                "email, AND SMS"
+                "email, AND push"
             )
     category_token = f"OrderErrorCategory::{block['rejection_category']}"
     factory_token = guard["error_factory"] + "("

@@ -20,7 +20,7 @@ deterministic critic recognizes the paired ``tests/domain/`` diff for the
 
 Completeness: **serialized** — this proves the deterministic core over fixtures.
 The live resting-order state + broker cancel wiring (SRS-EXE-001/EXE-006), real
-operator email/SMS (SRS-NOTIF-001), and live in-container callback delivery
+operator email/push (SRS-NOTIF-001), and live in-container callback delivery
 (SRS-SDK-004) are the deferred end-to-end integration that keeps SRS-DATA-019
 ``passes:false``.
 """

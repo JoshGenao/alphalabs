@@ -8,8 +8,8 @@
 //!   ExecutionEngine::submit_live_order   (the REAL ERR-2 / SRS-SAFE-003 gate)
 //!     -> ConnectivityEvent               (produced BY that gate, not hand-built)
 //!     -> ConnectivityNotifierSink        (the REAL detection wiring)
-//!     -> OperatorNotifier                (the REAL dispatcher, required email+SMS)
-//!     -> SmtpEmailChannel / SmsGatewayChannel  (the REAL IF-10 / IF-11 transports)
+//!     -> OperatorNotifier                (the REAL dispatcher, required email+push)
+//!     -> SmtpEmailChannel / PushChannel   (the REAL IF-10 / IF-11 transports)
 //!     -> NotificationEventStore          (the REAL durable audit store)
 //! ```
 //!
@@ -20,11 +20,20 @@
 //! regression that stopped the gate emitting it would fail this run rather than
 //! be papered over by a hand-constructed event.
 //!
-//! What is still NOT proven by this binary, and must not be claimed from it: that
-//! the *IB Gateway* was genuinely unreachable (the operator asserts the state),
-//! and that the relay actually delivered to a mailbox and a handset (the
-//! transports prove hand-off to the relay). The flip needs a real gateway outage
-//! and a real inbox/handset.
+//! What is still NOT proven by this binary, and must not be claimed from it:
+//! that the *IB Gateway* was genuinely unreachable — the operator asserts the
+//! state — and that either channel reached the operator. The two channels fall
+//! short in different ways now that they no longer share a relay:
+//!
+//! * **email (IF-10)** proves hand-off to the `phase1-notification-egress`
+//!   relay. Whether the relay's provider then delivered to a mailbox is outside
+//!   this run.
+//! * **push (IF-11)** proves ntfy *accepted* the publish and returned a message
+//!   id. That is a stronger hand-off — there is no relay in between — but
+//!   acceptance still is not receipt: it does not prove the operator's phone was
+//!   subscribed, online, or that the notification was displayed.
+//!
+//! The flip needs a real gateway outage, a real inbox, and a real handset.
 //!
 //! ## Exit codes
 //!
@@ -42,9 +51,7 @@ use std::time::Duration;
 /// here means something is genuinely wedged rather than merely slow.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(90);
 
-use atp_adapters::notification::{
-    SmsGatewayChannel, SmsGatewayConfig, SmtpEmailChannel, SmtpRelayConfig,
-};
+use atp_adapters::notification::{PushChannel, PushConfig, SmtpEmailChannel, SmtpRelayConfig};
 use atp_execution::{
     BrokerageConnectivity, ExecutionEngine, LiveBrokerageSubmit, MarketDataFreshnessProbe,
     StaleDataEventSink,
@@ -78,10 +85,13 @@ ENVIRONMENT (the transports; see architecture/runtime_services.json):
     ATP_SMTP_API_KEY    relay credential for IF-10   (required)
     ATP_SMTP_SENDER     envelope sender              (required)
     ATP_OPERATOR_EMAIL  destination mailbox          (required)
-    ATP_SMS_API_KEY     relay credential for IF-11   (required)
-    ATP_OPERATOR_SMS    destination handset          (required)
-    ATP_SMTP_RELAY_HOST/PORT, ATP_SMS_RELAY_HOST/PORT/PATH, ATP_SMTP_RELAY_USER
+    ATP_PUSH_TOKEN      ntfy access token for IF-11  (required, secret)
+    ATP_PUSH_TOPIC      ntfy topic                   (required, SECRET — on ntfy
+                        the topic alone is enough to publish)
+    ATP_SMTP_RELAY_HOST/PORT, ATP_SMTP_RELAY_USER
                         optional; default to the phase1-notification-egress sidecar
+    ATP_PUSH_HOST/PORT  optional; default to a loopback ntfy on port 80. Push
+                        needs no relay hop — it targets the LAN ntfy directly.
 
 EXIT CODES:
     0  every required channel terminal-succeeded AND the event was stored
@@ -225,10 +235,10 @@ impl StaleDataEventSink for IgnoredStaleEvents {
 fn build_channels() -> Result<Vec<SharedChannelClient>, ChannelError> {
     let read = |key: &str| std::env::var(key).ok();
     let email = SmtpEmailChannel::new(SmtpRelayConfig::from_env(read)?);
-    let sms = SmsGatewayChannel::new(SmsGatewayConfig::from_env(read)?);
+    let push = PushChannel::new(PushConfig::from_env(read)?);
     Ok(vec![
         std::sync::Arc::new(email) as SharedChannelClient,
-        std::sync::Arc::new(sms) as SharedChannelClient,
+        std::sync::Arc::new(push) as SharedChannelClient,
     ])
 }
 
@@ -317,12 +327,12 @@ fn report<K: atp_orchestrator::connectivity_notification::AlertClock>(
             println!("stored=true");
 
             let mut all_terminal_ok = true;
-            for channel in [NotificationChannel::Email, NotificationChannel::Sms] {
+            for channel in [NotificationChannel::Email, NotificationChannel::Push] {
                 match event.delivery_for(channel) {
                     Some(delivery) => {
                         let label = match channel {
                             NotificationChannel::Email => "email",
-                            NotificationChannel::Sms => "sms",
+                            NotificationChannel::Push => "push",
                         };
                         println!(
                             "{label}={:?} detail={}",

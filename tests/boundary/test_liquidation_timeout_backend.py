@@ -29,7 +29,7 @@ pytestmark = [pytest.mark.boundary]
 _TIMEOUT_PAYLOAD: dict[str, object] = {
     "disposition": "TIMED_OUT_UNFILLED",
     "transports": "FIXTURE",
-    "notification": {"events": 1, "email_accepted": 1, "sms_accepted": 1},
+    "notification": {"events": 1, "email_accepted": 1, "push_accepted": 1},
     "gateway_calls": ["cancel:B-0001", "disconnect"],
     "probe_polls": 61,
     "simulated_elapsed_ms": 30000,
@@ -61,7 +61,7 @@ def _no_cleanup_payload(disposition: str) -> dict[str, object]:
     payload["disposition"] = disposition
     payload["manual_resolution_required"] = False
     payload["gateway_calls"] = []
-    payload["notification"] = {"events": 0, "email_accepted": 0, "sms_accepted": 0}
+    payload["notification"] = {"events": 0, "email_accepted": 0, "push_accepted": 0}
     payload["cleanup"] = {
         "operator_alert": {"status": "NOT_ATTEMPTED"},
         "liquidation_cancel": {"status": "NOT_ATTEMPTED"},
@@ -231,7 +231,7 @@ def test_non_timeout_disposition_claiming_cleanup_ran_is_refused() -> None:
 
 def test_filled_disposition_claiming_accepted_pages_is_refused() -> None:
     payload = _no_cleanup_payload("FILLED_BEFORE_TIMEOUT")
-    payload["notification"] = {"events": 1, "email_accepted": 1, "sms_accepted": 1}
+    payload["notification"] = {"events": 1, "email_accepted": 1, "push_accepted": 1}
     backend = _backend_with(_completed(0, f"outcome:{json.dumps(payload)}\n"))
     with pytest.raises(LiquidationTimeoutBackendError, match="email_accepted"):
         backend.resolve()
@@ -313,7 +313,7 @@ def test_timed_out_success_claims_without_evidence_are_refused() -> None:
     # evidence — all-SUCCEEDED with zero accepted pages and no broker calls
     # would put a false "handled" record in the durable audit log.
     payload = dict(_TIMEOUT_PAYLOAD)
-    payload["notification"] = {"events": 0, "email_accepted": 0, "sms_accepted": 0}
+    payload["notification"] = {"events": 0, "email_accepted": 0, "push_accepted": 0}
     payload["gateway_calls"] = []
     backend = _backend_with(_completed(1, f"outcome:{json.dumps(payload)}\n"))
     with pytest.raises(LiquidationTimeoutBackendError, match="without"):
@@ -330,7 +330,7 @@ def test_timed_out_succeeded_disconnect_without_gateway_call_is_refused() -> Non
 
 def test_timed_out_succeeded_page_without_accepted_channels_is_refused() -> None:
     payload = dict(_TIMEOUT_PAYLOAD)
-    payload["notification"] = {"events": 1, "email_accepted": 1, "sms_accepted": 0}
+    payload["notification"] = {"events": 1, "email_accepted": 1, "push_accepted": 0}
     backend = _backend_with(_completed(1, f"outcome:{json.dumps(payload)}\n"))
     with pytest.raises(LiquidationTimeoutBackendError, match="operator_alert=SUCCEEDED without"):
         backend.resolve()
@@ -341,7 +341,7 @@ def test_timed_out_disposition_with_failed_legs_is_a_valid_outcome() -> None:
     # only an UNATTEMPTED leg on a confirmed timeout is a contract breach.
     payload = dict(_TIMEOUT_PAYLOAD)
     payload["cleanup"] = {
-        "operator_alert": {"status": "FAILED", "reason": "SMS gateway down"},
+        "operator_alert": {"status": "FAILED", "reason": "push service down"},
         "liquidation_cancel": {"status": "FAILED", "reason": "IB cancel unreachable"},
         "ib_disconnect": {"status": "SUCCEEDED"},
         "event_sink_recorded": True,

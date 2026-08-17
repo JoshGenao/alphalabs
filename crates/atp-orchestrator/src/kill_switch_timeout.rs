@@ -21,9 +21,9 @@
 //! * [`NotifierAlertSink`] — the REAL `KillSwitchOperatorAlertSink`: builds a
 //!   `CriticalFailure` trigger carrying the full unfilled-order details and
 //!   dispatches it through the REAL SRS-NOTIF-001 `OperatorNotifier` over
-//!   exactly the required email + SMS channel pair. Only the channel
+//!   exactly the required email + push channel pair. Only the channel
 //!   *transports* are fixtures ([`FixtureEmailChannel`] /
-//!   [`FixtureSmsChannel`]) — the concrete SMTP/SMS adapters are the deferred
+//!   [`FixturePushChannel`]) — the concrete SMTP/push adapters are the deferred
 //!   SRS-NOTIF-001 leg, and these types never claim otherwise.
 //! * [`FixtureFillFeed`] — the deterministic **mocked-IB order-state source**
 //!   SRS-SAFE-002's own verification Step 2 prescribes ("integration or
@@ -414,14 +414,14 @@ impl NotificationChannelClient for FixtureEmailChannel {
     }
 }
 
-/// Fixture SMS transport (see [`FixtureEmailChannel`]).
+/// Fixture push transport (see [`FixtureEmailChannel`]).
 #[derive(Debug, Default)]
-pub struct FixtureSmsChannel {
+pub struct FixturePushChannel {
     pub fail: bool,
     sent: Mutex<Vec<NotificationMessage>>,
 }
 
-impl FixtureSmsChannel {
+impl FixturePushChannel {
     /// See [`FixtureEmailChannel::with_failure`].
     pub fn with_failure(fail: bool) -> Self {
         Self {
@@ -438,22 +438,22 @@ impl FixtureSmsChannel {
     }
 }
 
-impl NotificationChannelClient for FixtureSmsChannel {
+impl NotificationChannelClient for FixturePushChannel {
     fn channel(&self) -> NotificationChannel {
-        NotificationChannel::Sms
+        NotificationChannel::Push
     }
 
     fn send(&self, message: &NotificationMessage, _deadline: Duration) -> ChannelSendResult {
         if self.fail {
             return Err(ChannelError::TransportUnavailable {
-                detail: "fixture: injected SMS transport outage".to_string(),
+                detail: "fixture: injected push transport outage".to_string(),
             });
         }
         self.sent
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(message.clone());
-        Ok(ChannelReceipt::new("fixture-sms-accept"))
+        Ok(ChannelReceipt::new("fixture-push-accept"))
     }
 }
 
@@ -461,7 +461,7 @@ impl NotificationChannelClient for FixtureSmsChannel {
 /// trigger (never suppressed — the SYS-75 fail-safe, right for a SYS-44b
 /// liquidation timeout) carrying the full unfilled-order details and fans it
 /// out through the REAL `OperatorNotifier` over exactly the required
-/// email + SMS pair. Succeeds only when BOTH channels delivered; any other
+/// email + push pair. Succeeds only when BOTH channels delivered; any other
 /// outcome surfaces as a `Failed` side effect on the timeout event. Every
 /// produced `NotificationEvent` is retained as evidence.
 pub struct NotifierAlertSink {
@@ -513,7 +513,7 @@ impl KillSwitchOperatorAlertSink for NotifierAlertSink {
                 KillSwitchSideEffectError::new(format!("SRS-NOTIF-001 dispatch refused: {error}"))
             })?;
         let mut undelivered = Vec::new();
-        for channel in [NotificationChannel::Email, NotificationChannel::Sms] {
+        for channel in [NotificationChannel::Email, NotificationChannel::Push] {
             let delivered = notification
                 .delivery_for(channel)
                 .is_some_and(|delivery| delivery.outcome().is_delivered());
@@ -587,7 +587,7 @@ pub struct TimeoutScenario {
     /// seconds BEFORE the deadline (the gate must reject it as inconsistent).
     pub premature_timeout_at: Option<u64>,
     pub fail_email: bool,
-    pub fail_sms: bool,
+    pub fail_push: bool,
     pub fail_cancel: bool,
     pub fail_disconnect: bool,
     /// `false` → simulate a missing domain→broker order-id binding.
@@ -610,7 +610,7 @@ impl TimeoutScenario {
             probe_fault: None,
             premature_timeout_at: None,
             fail_email: false,
-            fail_sms: false,
+            fail_push: false,
             fail_cancel: false,
             fail_disconnect: false,
             bind_broker_order_id: true,
@@ -671,7 +671,7 @@ pub struct FixtureTimeoutRun {
     pub timeout_events: Vec<KillSwitchTimeoutEvent>,
     pub notifications: Vec<NotificationEvent>,
     pub email_pages: Vec<NotificationMessage>,
-    pub sms_pages: Vec<NotificationMessage>,
+    pub push_pages: Vec<NotificationMessage>,
     pub gateway_calls: Vec<String>,
     pub probe_polls: u32,
     pub simulated_elapsed_ms: u64,
@@ -679,7 +679,7 @@ pub struct FixtureTimeoutRun {
 
 /// Drive the REAL `resolve_kill_switch_timeout` gate with the REAL
 /// `PollingLiquidationProbe` (on the simulated clock), the REAL
-/// `OperatorNotifier` (over fixture email/SMS transports), and the REAL
+/// `OperatorNotifier` (over fixture email/push transports), and the REAL
 /// `IbGatewayLiquidationCleanup` (over the fixture gateway).
 pub fn run_fixture_timeout(scenario: &TimeoutScenario) -> Result<FixtureTimeoutRun, String> {
     let request = scenario.request()?;
@@ -712,15 +712,15 @@ pub fn run_fixture_timeout(scenario: &TimeoutScenario) -> Result<FixtureTimeoutR
         fail: scenario.fail_email,
         ..FixtureEmailChannel::default()
     });
-    let sms = Arc::new(FixtureSmsChannel {
-        fail: scenario.fail_sms,
-        ..FixtureSmsChannel::default()
+    let push = Arc::new(FixturePushChannel {
+        fail: scenario.fail_push,
+        ..FixturePushChannel::default()
     });
     let alerts = NotifierAlertSink::new(
         OperatorNotifier::new(),
         vec![
             Arc::clone(&email) as SharedChannelClient,
-            Arc::clone(&sms) as SharedChannelClient,
+            Arc::clone(&push) as SharedChannelClient,
         ],
     );
 
@@ -785,7 +785,7 @@ pub fn run_fixture_timeout(scenario: &TimeoutScenario) -> Result<FixtureTimeoutR
         timeout_events: events.recorded(),
         notifications: alerts.events(),
         email_pages: email.sent(),
-        sms_pages: sms.sent(),
+        push_pages: push.sent(),
         gateway_calls: cleanup.gateway().recorded_calls(),
         probe_polls: feed.polls(),
         simulated_elapsed_ms: clock.now_ms(),

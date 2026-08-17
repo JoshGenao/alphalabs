@@ -62,7 +62,7 @@ pub mod sim;
 /// fill-loop / SRS-SAFE-001 activation runtime's job. This is ONE
 /// named sub-component: the full kill-switch sequence (IB cancel/disconnect = SRS-EXE-006;
 /// orchestrated activation + 5s NFR-P3 = SRS-EXE-002 / SAFE-001 runtime; SRS-LOG-001 1s HALTED
-/// observability; email/SMS = SRS-NOTIF-001; dashboard/CLI/REST trigger = SRS-API-001 / SRS-UI) is
+/// observability; email/push = SRS-NOTIF-001; dashboard/CLI/REST trigger = SRS-API-001 / SRS-UI) is
 /// deferred, so SRS-SAFE-001 stays `passes:false`.
 pub mod halt;
 pub mod halt_fleet;

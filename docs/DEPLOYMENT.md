@@ -37,7 +37,7 @@ docker compose --env-file .env --profile phase1 up
 
 **Credentials in staging/production (SRS-SEC-001).** The readiness gate
 **rejects** any catalogued secret (`ATP_IB_ACCOUNT`, `ATP_SMTP_API_KEY`,
-`ATP_SMS_API_KEY`, `DATABENTO_API_KEY`, `SHARADAR_API_KEY`) supplied as a real
+`ATP_PUSH_TOPIC`, `ATP_PUSH_TOKEN`, `DATABENTO_API_KEY`, `SHARADAR_API_KEY`) supplied as a real
 plaintext value when `ATP_ENV` is `staging`/`production` — those credentials
 must be encrypted at rest in the credential vault, never edited into `.env`.
 Keep the placeholders in `.env` and seal the real secrets instead:
@@ -45,7 +45,7 @@ Keep the placeholders in `.env` and seal the real secrets instead:
 ```bash
 mkdir -p ./secrets && chmod 700 ./secrets
 python -m atp_config.vault generate-key > ./secrets/atp.key && chmod 600 ./secrets/atp.key
-ATP_IB_ACCOUNT=U... ATP_SMTP_API_KEY=... ATP_SMS_API_KEY=... \
+ATP_IB_ACCOUNT=U... ATP_SMTP_API_KEY=... ATP_PUSH_TOPIC=... ATP_PUSH_TOKEN=... \
   DATABENTO_API_KEY=... SHARADAR_API_KEY=... \
   ATP_VAULT_KEY_FILE=./secrets/atp.key \
   python -m atp_config.vault seal ./secrets/atp.vault
@@ -184,12 +184,12 @@ variables sourced from `.env` (SRS-ARCH-005). The required keys are:
 - `ATP_MARKET_DATA_LINE_LIMIT` — IB market-data line cap.
 - `ATP_SSD_DATA_DIR`, `ATP_NAS_DATA_DIR` — host-side bind paths for the
   storage tiers.
-- `ATP_SMTP_API_KEY`, `ATP_SMS_API_KEY` — notification channel
+- `ATP_SMTP_API_KEY`, `ATP_PUSH_TOPIC`, `ATP_PUSH_TOKEN` — notification channel
   credentials.
 - `DATABENTO_API_KEY`, `SHARADAR_API_KEY` — vendor data provider
   credentials, isolated behind adapter interfaces (SRS-ARCH-003).
 
-The five secret keys (`ATP_IB_ACCOUNT`, `ATP_SMTP_API_KEY`, `ATP_SMS_API_KEY`,
+The six secret keys (`ATP_IB_ACCOUNT`, `ATP_SMTP_API_KEY`, `ATP_PUSH_TOPIC`, `ATP_PUSH_TOKEN`,
 `DATABENTO_API_KEY`, `SHARADAR_API_KEY`) must be sealed in the encrypted
 credential vault for staging/production (see *Bring-up commands* above),
 delivered via `ATP_VAULT_FILE` / `ATP_VAULT_KEY_FILE` and the read-only
@@ -261,7 +261,7 @@ readiness failures. The catalogue lives in the `configuration` block of
 | `ib_account` | `ATP_ENV`, `ATP_IB_HOST`, `ATP_IB_LIVE_PORT`, `ATP_IB_PAPER_PORT`, `ATP_IB_ACCOUNT` |
 | `market_data_limits` | `ATP_MARKET_DATA_LINE_LIMIT` |
 | `resource_limits` | `ATP_LIVE_STRATEGY_MEM_MB`, `ATP_LIVE_STRATEGY_CPU`, `ATP_PAPER_STRATEGY_MEM_MB`, `ATP_PAPER_STRATEGY_CPU`, `ATP_HOST_MEMORY_SAFETY_MARGIN_MB` |
-| `notification_channels` | `ATP_SMTP_API_KEY`, `ATP_SMS_API_KEY` |
+| `notification_channels` | `ATP_SMTP_API_KEY`, `ATP_OPERATOR_EMAIL`, `ATP_PUSH_HOST`, `ATP_PUSH_PORT`, `ATP_PUSH_TOPIC`, `ATP_PUSH_TOKEN` |
 
 Every key is documented with a type (`int`, `float`, `path`, `host`,
 `enum`, or `secret`), a validator (range bounds, absolute-path,

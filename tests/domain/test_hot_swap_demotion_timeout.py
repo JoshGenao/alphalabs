@@ -2,7 +2,7 @@
 Hot-Swap demotion's liquidation does not reach flat within the configured
 timeout (default 60 s), the orchestrator's ``resolve_demotion`` gate must
 enter the demotion-pending state: cancel the unfilled liquidation order,
-notify the operator over dashboard + email + SMS, record the demotion
+notify the operator over dashboard + email + push, record the demotion
 transition, refuse the swap with ``HOT_SWAP_DEMOTION_TIMEOUT``, and BLOCK
 promotion. On flat-before-timeout the swap proceeds with no alert and no
 cancel.

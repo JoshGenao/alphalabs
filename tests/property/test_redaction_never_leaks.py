@@ -1,12 +1,12 @@
 """SRS-SEC-001 — property proof that registered secrets never survive redaction.
 
-L2 property layer. The L7 domain test pins the guarantee on fixed IB/SMTP/SMS
+L2 property layer. The L7 domain test pins the guarantee on fixed IB/SMTP/push
 values through the real dispatcher + store; this layer generalises it over
 Hypothesis-generated secrets and surrounding noise: a registered secret value,
 wherever it appears in a log field, is never emitted in plaintext.
 
 Secrets are drawn from an alphanumeric alphabet (min length 8) to model real
-IB account ids / SMTP / SMS credentials — this deliberately excludes the
+IB account ids / SMTP / push credentials — this deliberately excludes the
 pathological case of a "secret" that is itself a substring of the redaction
 marker, which value-based masking cannot help (a real credential is never
 ``***REDACTED***``).

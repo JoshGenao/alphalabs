@@ -427,7 +427,7 @@ ERR-1 split.
 ERR-2 lands the connectivity gate at the execution layer; the
 production IB-Gateway TCP probe / readiness check / daily-restart
 detection lands with later EXE-* and IB-adapter features. The
-notification dispatcher fan-out (email + SMS within 60 s,
+notification dispatcher fan-out (email + push within 60 s,
 SRS-NOTIF-001) and the dashboard WebSocket subscription that surfaces
 the `ConnectivityEvent` to operators arrive with NOTIF-1 and UI-*
 features respectively.

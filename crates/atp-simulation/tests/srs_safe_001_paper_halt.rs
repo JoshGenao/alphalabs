@@ -10,7 +10,7 @@
 //!
 //! SRS-SAFE-001 stays `passes:false`: this is one named sub-component; the full kill-switch
 //! sequence (IB cancel/disconnect, orchestrated activation + 5s budget, SRS-LOG-001 observability,
-//! email/SMS, dashboard/CLI/REST trigger) is deferred to its named owners.
+//! email/push, dashboard/CLI/REST trigger) is deferred to its named owners.
 
 use atp_simulation::halt::{
     HaltError, HaltOutcome, HaltReason, HaltTransition, HaltablePaperEngine, PaperEngineState,

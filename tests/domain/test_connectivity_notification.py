@@ -1,5 +1,5 @@
 """SRS-NOTIF-001 / SRS-SAFE-003 — a blocked live submission must page the
-operator over email AND SMS, must not page for planned maintenance, and must not
+operator over email AND push, must not page for planned maintenance, and must not
 be silenceable by a forged flag or drowned by a retry storm.
 
 L7 domain (safety) test. ``crates/atp-orchestrator/src/connectivity_notification.rs``
@@ -76,7 +76,7 @@ def _assert_one_passed(result: subprocess.CompletedProcess[str], label: str) -> 
 
 def test_an_unreachable_gateway_pages_over_both_required_channels() -> None:
     # SYS-46: the whole point of the feature. A blocked live submission reaches
-    # the operator on email AND SMS, inside the NFR-P6 60s dispatch budget.
+    # the operator on email AND push, inside the NFR-P6 60s dispatch budget.
     _assert_one_passed(
         _run_cargo_test("an_unreachable_gateway_dispatches_over_both_required_channels"),
         "SRS-NOTIF-001 connectivity page",
@@ -136,7 +136,7 @@ def test_an_outage_does_not_consume_the_maintenance_budget() -> None:
 
 def test_a_retry_storm_pages_once_and_admits_what_it_folded() -> None:
     # The sink fires once per BLOCKED ORDER, not once per outage. Without
-    # coalescing, a retry loop pages hundreds of times, burns the SMS budget, and
+    # coalescing, a retry loop pages hundreds of times, burns the push service's rate limit, and
     # buries the first useful alert. Coalescing is never silent -- the count
     # rides in the next alert, so a storm cannot read as one isolated block.
     _assert_one_passed(

@@ -240,7 +240,7 @@ pub trait StaleDataEventSink {
 // SRS-SAFE-002 is the kill-switch error path: when a liquidation order
 // submitted by the kill switch (SRS-SAFE-001) stays unfilled past the
 // configured timeout (default 30 s), the system logs the unfilled order
-// details, notifies the operator by email AND SMS, cancels the unfilled
+// details, notifies the operator by email AND push, cancels the unfilled
 // liquidation order, and disconnects from IB. The execution engine owns
 // kill-switch behavior (SRS-ARCH-001 service map), so the
 // `resolve_kill_switch_timeout` gate and the ports it consumes live here —
@@ -258,7 +258,7 @@ pub trait StaleDataEventSink {
 //     from `TimedOutUnfilled` so the gate matches on the decision without
 //     re-implementing the 30 s async wait loop (deferred runtime). Read-only.
 //
-//   * `KillSwitchOperatorAlertSink` — the SYS-44b email/SMS page. Fallible
+//   * `KillSwitchOperatorAlertSink` — the SYS-44b email/push page. Fallible
 //     so a missed page on a liquidation timeout (itself a safety event) is
 //     surfaced, not silently dropped.
 //
@@ -306,16 +306,16 @@ pub trait KillSwitchLiquidationProbe {
 }
 
 pub trait KillSwitchOperatorAlertSink {
-    /// SYS-44b email/SMS operator page. Called ONLY on the `TimedOutUnfilled`
+    /// SYS-44b email/push operator page. Called ONLY on the `TimedOutUnfilled`
     /// branch, AFTER the broker-side cancel + disconnect — the concrete
     /// SRS-NOTIF-001 dispatcher sends synchronously with per-channel
     /// deadlines, and a slow notification transport must never delay killing
     /// the live order or severing the session. Returns `Result` so a
-    /// transport failure (email/SMS unreachable) is surfaced rather than
+    /// transport failure (email/push unreachable) is surfaced rather than
     /// silently dropped — a missed page on a liquidation timeout is itself a
     /// safety event. The gate does NOT abort on failure; it records the
     /// outcome on `KillSwitchTimeoutEvent::operator_alert`. The concrete
-    /// SMTP/SMS transports are the deferred SRS-NOTIF-001 leg.
+    /// SMTP/push transports are the deferred SRS-NOTIF-001 leg.
     fn dispatch(&self, event: KillSwitchAlertEvent) -> Result<(), KillSwitchSideEffectError>;
 }
 
@@ -348,7 +348,7 @@ pub trait IbLiquidationCleanup {
 /// alert / cancel / disconnect ports. Mirrors `HotSwapSideEffectError`:
 /// carries a short reason string for now; the typed CONNECTIVITY_BLOCKED /
 /// transport-timeout taxonomy is added when the concrete IB-cancel/disconnect
-/// (`atp-adapters`, SRS-EXE-006) and email/SMS (`atp-notification`,
+/// (`atp-adapters`, SRS-EXE-006) and email/push (`atp-notification`,
 /// SRS-NOTIF-001) runtimes land (named in the contract's `deferred[]`). The
 /// gate maps an `Err` into `SideEffectOutcome::Failed { reason }` on the
 /// audit event so the failure is observable end to end.
@@ -1178,7 +1178,7 @@ impl ExecutionEngine {
     /// reached fill in time and the SYS-44b error path does NOT engage (the
     /// gate records the audit transition and returns `Ok`, no alert / no
     /// cancel / no disconnect). On `TimedOutUnfilled` the gate runs the
-    /// SYS-44b sequence — notify the operator by email AND SMS, cancel the
+    /// SYS-44b sequence — notify the operator by email AND push, cancel the
     /// unfilled liquidation order, disconnect from IB — records each
     /// side-effect outcome plus the logged unfilled-order details on the audit
     /// event, and refuses with `OrderErrorCategory::KillSwitchLiquidationTimeout`
@@ -1227,7 +1227,7 @@ impl ExecutionEngine {
     /// (`atp-orchestrator::kill_switch_timeout`) binds the alert sink to the
     /// real SRS-NOTIF-001 dispatcher and the cleanup to the adapter boundary.
     /// What remains deferred — the LIVE IB order-status wire + disconnect
-    /// binding (SRS-EXE-006), the real SMTP/SMS transports (SRS-NOTIF-001),
+    /// binding (SRS-EXE-006), the real SMTP/push transports (SRS-NOTIF-001),
     /// and the durable post-timeout lockout (SRS-API-001) — is enumerated in
     /// `architecture/runtime_services.json` `kill_switch_timeout_contract
     /// .deferred[]`. ERR-8 stays `passes:false` until the live path exists.
@@ -1345,7 +1345,7 @@ impl ExecutionEngine {
             } => {
                 // SRS-SAFE-002 / SyRS SYS-44b timeout branch: cancel the
                 // unfilled liquidation order, disconnect from IB, and notify
-                // the operator by email AND SMS. ALL THREE are attempted
+                // the operator by email AND push. ALL THREE are attempted
                 // unconditionally (a failed cancel must not suppress the
                 // disconnect or the page) and each outcome is recorded on the
                 // event so a missed page / failed cancel / failed disconnect
@@ -1355,7 +1355,7 @@ impl ExecutionEngine {
                 // actions run FIRST (cancel, then disconnect — a severed
                 // session cannot cancel anything), and the operator page runs
                 // AFTER them — the concrete SRS-NOTIF-001 dispatcher sends
-                // email/SMS synchronously with per-channel deadlines (tens of
+                // email/push synchronously with per-channel deadlines (tens of
                 // seconds worst-case), and a slow notification transport must
                 // never delay killing the live order or severing the session.
                 let liquidation_cancel =
@@ -1364,7 +1364,7 @@ impl ExecutionEngine {
                 let operator_alert = into_outcome(alerts.dispatch(KillSwitchAlertEvent {
                     live_strategy_id: request.live_strategy_id.clone(),
                     unfilled_order: request.unfilled_order.clone(),
-                    channels: vec![OperatorAlertChannel::Email, OperatorAlertChannel::Sms],
+                    channels: vec![OperatorAlertChannel::Email, OperatorAlertChannel::Push],
                     elapsed_seconds,
                     timeout_seconds,
                     observed_at_seconds,

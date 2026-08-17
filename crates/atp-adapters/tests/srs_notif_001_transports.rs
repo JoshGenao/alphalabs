@@ -16,16 +16,13 @@ use std::net::{TcpListener, TcpStream};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use atp_adapters::notification::{
-    SmsGatewayChannel, SmsGatewayConfig, SmtpEmailChannel, SmtpRelayConfig,
-};
+use atp_adapters::notification::{PushChannel, PushConfig, SmtpEmailChannel, SmtpRelayConfig};
 use atp_notification::{
     ChannelError, NotificationChannel, NotificationChannelClient, NotificationMessage,
 };
 
 const SENDER: &str = "atp@example.com";
 const RECIPIENT: &str = "operator@example.com";
-const OPERATOR_SMS: &str = "+15550001111";
 const KEY: &str = "relay-secret";
 
 /// The standard reply script for a relay that accepts the message.
@@ -533,7 +530,7 @@ fn the_email_channel_reports_its_own_identity() {
     assert_eq!(channel.channel(), NotificationChannel::Email);
 }
 
-// ---------------------------------------------------------------- SMS / IF-11
+// --------------------------------------------------------------- push / IF-11
 
 struct ScriptedHttp {
     port: u16,
@@ -542,6 +539,10 @@ struct ScriptedHttp {
 
 /// Serve one HTTP request, sleeping `delay` before the response. Returns the raw
 /// request text the client sent.
+///
+/// Bodies below are the REAL shapes a live ntfy returns, captured with `curl -v`
+/// against `ntfy.sh` and a local `binwiederhier/ntfy` before this suite was
+/// written — not shapes invented to match the implementation.
 fn spawn_http(status_line: &'static str, body: &'static str, delay: Duration) -> ScriptedHttp {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     let port = listener.local_addr().expect("local addr").port();
@@ -599,34 +600,50 @@ fn spawn_http(status_line: &'static str, body: &'static str, delay: Duration) ->
 
     ScriptedHttp { port, handle }
 }
+const PUSH_TOPIC: &str = "atp-alerts-9f8e7d6c5b4a3210";
 
-fn sms_channel(port: u16) -> SmsGatewayChannel {
-    SmsGatewayChannel::new(
-        SmsGatewayConfig::new("127.0.0.1", port, "/sms", OPERATOR_SMS, KEY)
-            .expect("config is valid"),
-    )
+/// A real ntfy 2xx body. Note it ECHOES the topic — which is a publish
+/// credential — so the success path is the one that reliably carries a secret.
+const NTFY_OK: &str = concat!(
+    r#"{"id":"b19RmMeCXTYy","time":1786939980,"expires":1786983180,"#,
+    r#""event":"message","topic":"atp-alerts-9f8e7d6c5b4a3210","message":"ATP alert"}"#
+);
+
+fn push_channel(port: u16) -> PushChannel {
+    PushChannel::new(PushConfig::new("127.0.0.1", port, PUSH_TOPIC, KEY).expect("config is valid"))
 }
 
 #[test]
-fn an_accepted_sms_returns_the_gateway_accept_id_and_posts_the_relay_contract() {
-    let server = spawn_http("HTTP/1.1 202 Accepted", "SM-ACCEPT-4242", Duration::ZERO);
-    let receipt = sms_channel(server.port)
+fn an_accepted_publish_returns_ntfys_message_id_and_posts_the_ntfy_contract() {
+    let server = spawn_http("HTTP/1.1 200 OK", NTFY_OK, Duration::ZERO);
+    let receipt = push_channel(server.port)
         .send(&alert(), Duration::from_secs(5))
-        .expect("relay accepted the message");
-    assert_eq!(receipt.reference(), "SM-ACCEPT-4242");
+        .expect("ntfy accepted the publish");
+    assert_eq!(receipt.reference(), "b19RmMeCXTYy");
 
     let request = server.handle.join().expect("server thread");
-    assert!(request.starts_with("POST /sms HTTP/1.1"), "{request}");
+    // The topic is the URL PATH on ntfy — there is no relay path to post to.
+    assert!(
+        request.starts_with(&format!("POST /{PUSH_TOPIC} HTTP/1.1")),
+        "{request}"
+    );
     assert!(
         request.contains(&format!("Authorization: Bearer {KEY}")),
         "{request}"
     );
-    assert!(request.contains("Connection: close"), "{request}");
+    // Plain text, not JSON: ntfy takes the message as the raw body.
     assert!(
-        request.contains(&format!("\"to\":\"{OPERATOR_SMS}\"")),
+        request.contains("Content-Type: text/plain; charset=utf-8"),
         "{request}"
     );
-    // SMS has no subject line, so the subject must ride in the text.
+    assert!(
+        request.contains("X-Title: CRITICAL: IB connectivity lost"),
+        "{request}"
+    );
+    assert!(request.contains("X-Priority: 5"), "{request}");
+    assert!(request.contains("Connection: close"), "{request}");
+    // The subject rides in the BODY too, so the alert still states what fired
+    // even if the title header is dropped anywhere in the path.
     assert!(
         request.contains("CRITICAL: IB connectivity lost: IB Gateway unreachable"),
         "{request}"
@@ -634,11 +651,36 @@ fn an_accepted_sms_returns_the_gateway_accept_id_and_posts_the_relay_contract() 
 }
 
 #[test]
-fn a_rejected_relay_credential_is_an_operator_setup_fault_not_a_bad_message() {
-    let server = spawn_http("HTTP/1.1 401 Unauthorized", "bad token", Duration::ZERO);
-    match sms_channel(server.port).send(&alert(), Duration::from_secs(5)) {
+fn a_refused_token_is_an_operator_setup_fault_not_a_bad_message() {
+    // ntfy's real 401: a wrong or revoked token.
+    let server = spawn_http(
+        "HTTP/1.1 401 Unauthorized",
+        r#"{"code":40101,"http":401,"error":"unauthorized"}"#,
+        Duration::ZERO,
+    );
+    match push_channel(server.port).send(&alert(), Duration::from_secs(5)) {
         Err(ChannelError::Unconfigured { detail }) => {
-            assert!(detail.contains("ATP_SMS_API_KEY"), "detail: {detail}");
+            assert!(detail.contains("ATP_PUSH_TOKEN"), "detail: {detail}");
+        }
+        other => panic!("expected Unconfigured, got {other:?}"),
+    }
+    let _ = server.handle.join();
+}
+
+/// ntfy answers 403, not 401, when the token is valid but has no publish access
+/// to this topic (and when no token is sent to a protected topic). Both were
+/// confirmed against a live instance; both are setup faults, so both must land
+/// on `Unconfigured` rather than being read as a transport outage and retried.
+#[test]
+fn a_token_without_access_to_the_topic_is_also_a_setup_fault() {
+    let server = spawn_http(
+        "HTTP/1.1 403 Forbidden",
+        r#"{"code":40301,"http":403,"error":"forbidden"}"#,
+        Duration::ZERO,
+    );
+    match push_channel(server.port).send(&alert(), Duration::from_secs(5)) {
+        Err(ChannelError::Unconfigured { detail }) => {
+            assert!(detail.contains("ATP_PUSH_TOPIC"), "detail: {detail}");
         }
         other => panic!("expected Unconfigured, got {other:?}"),
     }
@@ -646,27 +688,32 @@ fn a_rejected_relay_credential_is_an_operator_setup_fault_not_a_bad_message() {
 }
 
 #[test]
-fn gateway_rate_limiting_and_outages_are_retryable_but_a_bad_request_is_not() {
+fn rate_limiting_and_outages_are_retryable_but_a_bad_request_is_not() {
     let throttled = spawn_http(
         "HTTP/1.1 429 Too Many Requests",
         "slow down",
         Duration::ZERO,
     );
-    match sms_channel(throttled.port).send(&alert(), Duration::from_secs(5)) {
+    match push_channel(throttled.port).send(&alert(), Duration::from_secs(5)) {
         Err(ChannelError::TransportUnavailable { .. }) => {}
         other => panic!("expected TransportUnavailable for 429, got {other:?}"),
     }
     let _ = throttled.handle.join();
 
     let outage = spawn_http("HTTP/1.1 503 Service Unavailable", "down", Duration::ZERO);
-    match sms_channel(outage.port).send(&alert(), Duration::from_secs(5)) {
+    match push_channel(outage.port).send(&alert(), Duration::from_secs(5)) {
         Err(ChannelError::TransportUnavailable { .. }) => {}
         other => panic!("expected TransportUnavailable for 503, got {other:?}"),
     }
     let _ = outage.handle.join();
 
-    let malformed = spawn_http("HTTP/1.1 400 Bad Request", "no such number", Duration::ZERO);
-    match sms_channel(malformed.port).send(&alert(), Duration::from_secs(5)) {
+    // ntfy's real 400, e.g. an out-of-range X-Priority.
+    let malformed = spawn_http(
+        "HTTP/1.1 400 Bad Request",
+        r#"{"code":40007,"http":400,"error":"invalid priority parameter"}"#,
+        Duration::ZERO,
+    );
+    match push_channel(malformed.port).send(&alert(), Duration::from_secs(5)) {
         Err(ChannelError::Rejected { .. }) => {}
         other => panic!("expected Rejected for 400, got {other:?}"),
     }
@@ -674,14 +721,10 @@ fn gateway_rate_limiting_and_outages_are_retryable_but_a_bad_request_is_not() {
 }
 
 #[test]
-fn a_stalled_sms_gateway_is_bounded_by_the_send_deadline() {
-    let server = spawn_http(
-        "HTTP/1.1 202 Accepted",
-        "SM-LATE",
-        Duration::from_millis(1500),
-    );
+fn a_stalled_ntfy_is_bounded_by_the_send_deadline() {
+    let server = spawn_http("HTTP/1.1 200 OK", NTFY_OK, Duration::from_millis(1500));
     let started = Instant::now();
-    let result = sms_channel(server.port).send(&alert(), Duration::from_millis(300));
+    let result = push_channel(server.port).send(&alert(), Duration::from_millis(300));
     let elapsed = started.elapsed();
 
     match result {
@@ -695,22 +738,50 @@ fn a_stalled_sms_gateway_is_bounded_by_the_send_deadline() {
     let _ = server.handle.join();
 }
 
-/// The SMS bearer token must not survive into the durable store — on EITHER path.
+/// A 200 whose body says the message became a file attachment must FAIL.
+///
+/// This is the sharpest failure mode on this transport, because every signal
+/// says success: HTTP 200, a valid message id, no error field. What actually
+/// happened is that ntfy replaced the alert text with "You received a file",
+/// so the operator's phone shows a filename instead of the outage. Recording
+/// that as a delivery would put a lie in the audit trail.
+#[test]
+fn a_2xx_that_converted_the_alert_into_a_file_is_not_a_delivery() {
+    let server = spawn_http(
+        "HTTP/1.1 200 OK",
+        concat!(
+            r#"{"id":"KKGUUf398qAB","time":1786939993,"event":"message","#,
+            r#""topic":"atp-alerts-9f8e7d6c5b4a3210","#,
+            r#""message":"You received a file: attachment.txt","#,
+            r#""attachment":{"name":"attachment.txt","type":"text/plain","size":4097}}"#
+        ),
+        Duration::ZERO,
+    );
+    match push_channel(server.port).send(&alert(), Duration::from_secs(5)) {
+        Err(ChannelError::Rejected { detail }) => {
+            assert!(detail.contains("attachment"), "detail: {detail}");
+        }
+        other => panic!("expected Rejected for an attachment conversion, got {other:?}"),
+    }
+    let _ = server.handle.join();
+}
+
+/// The bearer token must not survive into the durable store — on EITHER path.
 ///
 /// The 2xx body becomes the stored `ChannelReceipt` reference, so a success is
-/// just as capable of carrying the secret as a failure is. A relay that echoes
+/// just as capable of carrying the secret as a failure is. A server that echoes
 /// the `Authorization` header it was handed is a realistic verbose-logging
 /// misconfiguration as well as the obvious hostile move.
 #[test]
-fn an_echoing_sms_relay_cannot_get_the_token_into_a_stored_receipt() {
+fn an_echoing_server_cannot_get_the_token_into_a_stored_receipt() {
     let server = spawn_http(
-        "HTTP/1.1 202 Accepted",
-        "accepted with Authorization: Bearer relay-secret",
+        "HTTP/1.1 200 OK",
+        r#"{"id":"ok with Authorization: Bearer relay-secret"}"#,
         Duration::ZERO,
     );
-    let receipt = sms_channel(server.port)
+    let receipt = push_channel(server.port)
         .send(&alert(), Duration::from_secs(5))
-        .expect("relay accepted the message");
+        .expect("ntfy accepted the publish");
     assert!(
         !receipt.reference().contains(KEY),
         "the bearer token reached the stored receipt: {:?}",
@@ -719,14 +790,55 @@ fn an_echoing_sms_relay_cannot_get_the_token_into_a_stored_receipt() {
     let _ = server.handle.join();
 }
 
+/// The TOPIC must not survive into the durable store either.
+///
+/// Distinct from the token test on purpose. ntfy echoes the topic in every
+/// success body **by design**, so this is not a hostile-server hypothetical —
+/// it is the documented happy path, and the topic is a publish credential. This
+/// is the test that would have caught treating the topic as an ordinary
+/// destination.
 #[test]
-fn an_echoing_sms_relay_cannot_get_the_token_into_a_stored_error() {
+fn the_ntfy_topic_never_reaches_a_stored_receipt_or_error() {
+    let ok = spawn_http("HTTP/1.1 200 OK", NTFY_OK, Duration::ZERO);
+    let receipt = push_channel(ok.port)
+        .send(&alert(), Duration::from_secs(5))
+        .expect("ntfy accepted the publish");
+    assert!(
+        !receipt.reference().contains(PUSH_TOPIC),
+        "the topic reached the stored receipt: {:?}",
+        receipt.reference()
+    );
+    let _ = ok.handle.join();
+
+    let bad = spawn_http(
+        "HTTP/1.1 400 Bad Request",
+        r#"{"error":"bad topic atp-alerts-9f8e7d6c5b4a3210"}"#,
+        Duration::ZERO,
+    );
+    match push_channel(bad.port).send(&alert(), Duration::from_secs(5)) {
+        Err(ChannelError::Rejected { detail }) => {
+            assert!(
+                detail.contains("400"),
+                "the status must still surface: {detail}"
+            );
+            assert!(
+                !detail.contains(PUSH_TOPIC),
+                "the topic leaked into: {detail}"
+            );
+        }
+        other => panic!("expected Rejected, got {other:?}"),
+    }
+    let _ = bad.handle.join();
+}
+
+#[test]
+fn an_echoing_server_cannot_get_the_token_into_a_stored_error() {
     let server = spawn_http(
         "HTTP/1.1 400 Bad Request",
         "rejected: Bearer relay-secret is malformed",
         Duration::ZERO,
     );
-    match sms_channel(server.port).send(&alert(), Duration::from_secs(5)) {
+    match push_channel(server.port).send(&alert(), Duration::from_secs(5)) {
         Err(ChannelError::Rejected { detail }) => {
             assert!(
                 detail.contains("400"),
@@ -742,21 +854,25 @@ fn an_echoing_sms_relay_cannot_get_the_token_into_a_stored_error() {
     let _ = server.handle.join();
 }
 
-/// A malformed status line is relay-controlled text that flows straight into a
+/// A malformed status line is server-controlled text that flows straight into a
 /// persisted error, and it is read BEFORE the response body is scrubbed — so the
 /// redaction has to happen inside the status parser, not after it.
 #[test]
-fn a_malformed_status_line_echoing_the_token_is_redacted_too() {
+fn a_malformed_status_line_echoing_a_secret_is_redacted_too() {
     let server = spawn_http(
-        "GARBAGE Authorization: Bearer relay-secret",
+        "GARBAGE Authorization: Bearer relay-secret atp-alerts-9f8e7d6c5b4a3210",
         "",
         Duration::ZERO,
     );
-    match sms_channel(server.port).send(&alert(), Duration::from_secs(5)) {
+    match push_channel(server.port).send(&alert(), Duration::from_secs(5)) {
         Err(ChannelError::TransportUnavailable { detail }) => {
             assert!(
                 !detail.contains(KEY),
                 "the bearer token leaked into: {detail}"
+            );
+            assert!(
+                !detail.contains(PUSH_TOPIC),
+                "the topic leaked into: {detail}"
             );
         }
         other => panic!("expected TransportUnavailable, got {other:?}"),
@@ -765,17 +881,29 @@ fn a_malformed_status_line_echoing_the_token_is_redacted_too() {
 }
 
 #[test]
-fn an_accepted_sms_with_no_body_never_fabricates_an_accept_id() {
-    let server = spawn_http("HTTP/1.1 204 No Content", "", Duration::ZERO);
-    let receipt = sms_channel(server.port)
-        .send(&alert(), Duration::from_secs(5))
-        .expect("relay accepted the message");
-    assert_eq!(receipt.reference(), "http-204-no-reference");
-    let _ = server.handle.join();
+fn the_push_channel_reports_its_own_identity() {
+    assert_eq!(push_channel(18080).channel(), NotificationChannel::Push);
 }
 
+/// No-fabrication, matching the core dispatcher's discipline: a 2xx whose body
+/// carries no usable `id` must yield an explicit non-reference, never a
+/// plausible-looking id an operator would hunt for in ntfy's logs and never
+/// find. Driven over a real socket rather than only as a unit test, because the
+/// value that reaches the durable store comes off the wire.
 #[test]
-fn the_sms_channel_reports_its_own_identity() {
-    let channel = sms_channel(8025);
-    assert_eq!(channel.channel(), NotificationChannel::Sms);
+fn an_accepted_publish_with_no_usable_id_never_fabricates_a_reference() {
+    let empty = spawn_http("HTTP/1.1 200 OK", "", Duration::ZERO);
+    let receipt = push_channel(empty.port)
+        .send(&alert(), Duration::from_secs(5))
+        .expect("ntfy accepted the publish");
+    assert_eq!(receipt.reference(), "http-200-no-reference");
+    let _ = empty.handle.join();
+
+    // A 2xx that is not JSON at all must not become a reference either.
+    let garbage = spawn_http("HTTP/1.1 200 OK", "OK", Duration::ZERO);
+    let receipt = push_channel(garbage.port)
+        .send(&alert(), Duration::from_secs(5))
+        .expect("ntfy accepted the publish");
+    assert_eq!(receipt.reference(), "http-200-no-reference");
+    let _ = garbage.handle.join();
 }

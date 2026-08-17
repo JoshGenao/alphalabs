@@ -72,7 +72,7 @@
 //! names no notification transport and never depends on `atp-notification`. A routine
 //! adjust / remap does not page the operator (it does surface a
 //! [`PositionChangeEvent`] for the running strategy — a distinct audience). The
-//! concrete email/SMS binding and the `deliver_order_event` callback are the deferred
+//! concrete email/push binding and the `deliver_order_event` callback are the deferred
 //! composition-root wiring (SRS-NOTIF-001 / SRS-SDK-004).
 //!
 //! ## Scope (this is the deterministic core; the live path is deferred)
@@ -82,7 +82,7 @@
 //! adapter account/positions sync (SRS-EXE-006 / API-5, which currently fails closed
 //! `LIVE_WIRE_PROTOCOL_PENDING`) — today's live [`crate::LiveExecutionState`] tracks
 //! positions as a bare symbol -> signed share count with no basis, so there is no
-//! live basis to adjust yet. Real operator email/SMS is SRS-NOTIF-001; live callback
+//! live basis to adjust yet. Real operator email/push is SRS-NOTIF-001; live callback
 //! delivery is SRS-SDK-004. So SRS-DATA-020 lands `serialized` (`passes:false`) until
 //! that end-to-end evidence exists.
 
@@ -682,7 +682,7 @@ pub trait PositionCorpActionAlertSink {
     /// missed page on a delisting or a review is itself a safety event, so a transport
     /// failure is surfaced rather than silently swallowed (the exact reason
     /// [`crate::KillSwitchOperatorAlertSink::dispatch`] is fallible). The concrete
-    /// email/SMS binding is the deferred composition-root wiring (SRS-NOTIF-001).
+    /// email/push binding is the deferred composition-root wiring (SRS-NOTIF-001).
     fn dispatch(&self, alert: PositionCorpActionAlert) -> Result<(), PositionAlertError>;
 }
 

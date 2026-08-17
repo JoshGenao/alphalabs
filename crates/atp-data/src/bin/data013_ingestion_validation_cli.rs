@@ -21,7 +21,7 @@
 //! fixed instant (NOT a clock read) so the demonstration is deterministic and re-runnable.
 //!
 //! Scope: the durable quarantine STORE that persists rejected payloads is SRS-DATA-014 / SRS-DATA-015;
-//! the dashboard alert pane and email/SMS reason summaries are SRS-UI-001 / SRS-NOTIF-001. This CLI
+//! the dashboard alert pane and email/push reason summaries are SRS-UI-001 / SRS-NOTIF-001. This CLI
 //! produces the structured counts-and-reasons those surfaces will consume.
 
 use std::env;

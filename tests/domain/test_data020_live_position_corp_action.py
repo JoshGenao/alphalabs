@@ -24,7 +24,7 @@ The three AC clauses proven here over fixtures:
 
 Completeness: **serialized** — this proves the deterministic core over fixtures. The
 live position feed **carrying cost basis** (the brokerage adapter positions sync,
-SRS-EXE-006 / API-5), real operator email/SMS (SRS-NOTIF-001), and the live
+SRS-EXE-006 / API-5), real operator email/push (SRS-NOTIF-001), and the live
 position-change strategy callback (SRS-SDK-004 — the SDK's ``deliver_order_event``
 seam is order-event-specific; a position-change callback surface is deferred to that
 owner) are the end-to-end integration that keeps SRS-DATA-020 ``passes:false``.

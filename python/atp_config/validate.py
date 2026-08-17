@@ -209,7 +209,7 @@ def secret_values(env: Mapping[str, str]) -> set[str]:
     """Return the live plaintext values of the catalogued ``secret`` keys.
 
     For every SRS-ARCH-005 catalogue key flagged ``secret`` (IB account, SMTP,
-    SMS, and the vendor data-provider keys), include its value from ``env`` when
+    push, and the vendor data-provider keys), include its value from ``env`` when
     present and not the placeholder. The SRS-SEC-001 log-redaction layer uses
     this to learn exactly which plaintext credentials must never reach a log.
     """

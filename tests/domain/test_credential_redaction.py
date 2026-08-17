@@ -1,19 +1,19 @@
 """L7 domain test: credential encryption-at-rest + log redaction (``SRS-SEC-001``).
 
 SRS-SEC-001 / NFR-S1 / NFR-S4 / StRS C-3, SN-1.12 — the trading-system safety
-invariant that brokerage (IB) and notification (SMTP, SMS) credentials are
+invariant that brokerage (IB) and notification (SMTP, push) credentials are
 **encrypted at rest** and **never emitted in plaintext to logs**. Both halves of
 the acceptance criteria are proved here end to end:
 
   1. *Encryption at rest.* A :class:`~atp_config.CredentialVault` seals the IB /
-     SMTP / SMS secrets to a file; the file bytes contain no plaintext secret and
+     SMTP / push secrets to a file; the file bytes contain no plaintext secret and
      round-trip back only under the correct key.
 
   2. *Log redaction.* A redactor built from the catalogue's ``secret`` keys is
      installed on the SRS-LOG-001 boot dispatcher + both persistent stores.
      Records embedding each secret — via the dispatcher AND written directly to a
      store (the bypass path) — are read back from disk and none of the IB / SMTP /
-     SMS plaintext appears; the redaction marker does.
+     push plaintext appears; the redaction marker does.
 """
 
 from __future__ import annotations
@@ -261,7 +261,7 @@ def test_secrets_never_reach_logs_in_plaintext() -> None:
                     LogClass.SYSTEM,
                 )
             )
-            # SMTP + SMS secrets via the dispatcher, in a STRATEGY record.
+            # SMTP + push secrets via the dispatcher, in a STRATEGY record.
             dispatcher.dispatch(
                 LogRecord(
                     ts,

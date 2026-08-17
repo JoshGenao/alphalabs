@@ -45,10 +45,22 @@ pub const MAGIC: &str = "ATP-NOTIFICATION-EVENT-STORE";
 /// The current serialized schema version. Bumped only when the on-disk layout
 /// changes; [`NotificationEventStore::restore`] accepts
 /// `[MIN_SUPPORTED_SCHEMA_VERSION, SCHEMA_VERSION]`.
-pub const SCHEMA_VERSION: i64 = 1;
+///
+/// v2 (2026-08-17): the SMS channel became push, so the delivery channel tag
+/// `"S"` became `"P"`.
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// The oldest schema version [`NotificationEventStore::restore`] still reads.
-pub const MIN_SUPPORTED_SCHEMA_VERSION: i64 = 1;
+///
+/// Deliberately raised to 2 in lockstep with the v1 -> v2 channel-tag change
+/// rather than left at 1. A v1 blob is not merely differently-tagged: it records
+/// deliveries to a channel the system no longer has, so its required-channel
+/// symmetry check could never pass. Refusing it by VERSION yields the precise
+/// `unknown notification store schema version` error; leaving MIN at 1 would
+/// have surfaced the same blob as the vaguer `unknown channel tag` several
+/// hundred bytes later. No production store exists to migrate — SRS-NOTIF-001
+/// has never run against a real provider.
+pub const MIN_SUPPORTED_SCHEMA_VERSION: i64 = 2;
 
 /// The file an atomic save publishes under the store directory.
 pub const STORE_FILENAME: &str = "notification_events.store";
@@ -445,7 +457,7 @@ fn decode_event(cursor: &mut Cursor<'_>) -> Result<NotificationEvent, Notificati
         deliveries.push(ChannelDelivery::new(channel, outcome, detail));
     }
     // Symmetry with the dispatcher's required-channel fan-out contract: every
-    // stored event must carry each SRS-NOTIF-001 required channel (email + SMS)
+    // stored event must carry each SRS-NOTIF-001 required channel (email + push)
     // exactly once. A restored event missing or duplicating one is a corrupt blob
     // (a real dispatch could never produce it), so fail closed.
     for &required in REQUIRED_CHANNELS {
@@ -508,14 +520,14 @@ fn trigger_from_tag(tag: &str) -> Result<TriggerKind, NotificationStoreError> {
 const fn channel_tag(channel: NotificationChannel) -> &'static str {
     match channel {
         NotificationChannel::Email => "E",
-        NotificationChannel::Sms => "S",
+        NotificationChannel::Push => "P",
     }
 }
 
 fn channel_from_tag(tag: &str) -> Result<NotificationChannel, NotificationStoreError> {
     match tag {
         "E" => Ok(NotificationChannel::Email),
-        "S" => Ok(NotificationChannel::Sms),
+        "P" => Ok(NotificationChannel::Push),
         _ => Err(NotificationStoreError::Corrupt {
             context: "unknown channel tag",
         }),

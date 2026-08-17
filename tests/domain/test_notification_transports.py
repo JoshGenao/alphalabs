@@ -3,7 +3,7 @@ bound their own send deadline, keep the cleartext egress hop on a private
 network, refuse an unauthenticated relay, and never leak the relay credential.
 
 L7 domain (safety) test. The transports at
-``crates/atp-adapters/src/notification/`` are the email + SMS half of the
+``crates/atp-adapters/src/notification/`` are the email + push half of the
 connectivity/critical-failure safety path (SyRS SYS-46, NFR-P6; StRS SN-1.12,
 SN-2.04, SC-9): they are what actually carries an alert off the host when the IB
 Gateway drops. The Rust boundary tests at
@@ -17,7 +17,7 @@ connectivity/critical-failure path, which this is, so the pairing is written
 anyway (the same call made for ``test_notification_dispatch.py``).
 
 The end-to-end proof over REAL providers — a genuine IB connectivity loss
-dispatching a real email and a real SMS — is the operator integration that keeps
+dispatching a real email and a real push — is the operator integration that keeps
 SRS-NOTIF-001 ``passes:false``. These tests prove the transport properties
 deterministically, without a provider account.
 """
@@ -83,12 +83,12 @@ def test_send_deadline_bounds_the_whole_conversation() -> None:
     )
 
 
-def test_a_stalled_sms_gateway_cannot_outlive_its_deadline() -> None:
+def test_a_stalled_ntfy_cannot_outlive_its_deadline() -> None:
     # Same property on the IF-11 path: a gateway that accepts the request and
     # then stalls is cut off at the deadline, not held until the socket gives up.
     _assert_one_passed(
-        _run_cargo_test("a_stalled_sms_gateway_is_bounded_by_the_send_deadline"),
-        "SRS-NOTIF-001 SMS deadline",
+        _run_cargo_test("a_stalled_ntfy_is_bounded_by_the_send_deadline"),
+        "SRS-NOTIF-001 push deadline",
     )
 
 
@@ -126,7 +126,7 @@ def test_an_accepted_send_never_fabricates_an_accept_id() -> None:
     # body yields an explicit non-reference, never a plausible-looking id an
     # operator would hunt for in the provider's logs and never find.
     _assert_one_passed(
-        _run_cargo_test("an_accepted_sms_with_no_body_never_fabricates_an_accept_id"),
+        _run_cargo_test("an_accepted_publish_with_no_usable_id_never_fabricates_a_reference"),
         "SRS-NOTIF-001 no fabricated accept id",
     )
 

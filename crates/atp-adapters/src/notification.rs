@@ -1,4 +1,4 @@
-//! SRS-NOTIF-001 operator-notification transports (IF-10 email, IF-11 SMS).
+//! SRS-NOTIF-001 operator-notification transports (IF-10 email, IF-11 push).
 //!
 //! The core dispatcher ([`atp_notification::OperatorNotifier`]) fans an operator
 //! alert out over the two REQUIRED channels through the
@@ -6,31 +6,44 @@
 //! concrete transports behind that port, which AGENTS.md requires to live in the
 //! adapter crate: the core names no vendor and holds no provider credential.
 //!
-//! ## Why both transports speak to a local egress relay
+//! ## Why email needs an egress relay and push does not
 //!
-//! Every real provider (SMTP submission, an SMS gateway REST API) requires TLS,
-//! and the ATP Rust workspace carries **zero external crates** — there is no TLS
-//! implementation available to a std-only adapter, and adding one would break the
-//! workspace-wide zero-dependency invariant for the entire tree.
+//! A real SMTP provider requires TLS, and the ATP Rust workspace carries **zero
+//! external crates** — there is no TLS implementation available to a std-only
+//! adapter, and adding one would break the workspace-wide zero-dependency
+//! invariant for the entire tree.
 //!
-//! So the TLS boundary is a deployment component, not a library: the
+//! So for IF-10 the TLS boundary is a deployment component, not a library: the
 //! `phase1-notification-egress` service owns the authenticated TLS session to the
-//! real provider, and these adapters speak plaintext to it over an **internal
-//! container network**. That split is what keeps the transports std-only while
-//! still delivering a real message to a real inbox and a real phone.
+//! real provider, and [`smtp`] speaks plaintext to it over an **internal
+//! container network**. That split is what keeps the transport std-only while
+//! still delivering a real message to a real inbox.
 //!
-//! Two properties make the plaintext hop safe, and both are enforced here rather
+//! IF-11 needs no such hop. [`push`] targets a **self-hosted ntfy on the LAN**,
+//! which the operator reaches from their phone over the VPN — the publish never
+//! crosses the public internet, so there is nothing for TLS to protect against
+//! here that the network boundary does not already. Push therefore talks to its
+//! server directly, under the same egress allow-list as the relay hop.
+//!
+//! (SMS was IF-11 through 2026-08-16. It was replaced by push because US A2P
+//! 10DLC registration is weeks of lead time with silent carrier filtering, and
+//! push preserves StRS SN-1.12's reach-the-operator-when-they-are-not-looking
+//! intent without it. SC-9's "at least two configured channels" is unchanged.)
+//!
+//! Two properties make the plaintext hops safe, and both are enforced here rather
 //! than documented and hoped for:
 //!
-//! * [`EgressEndpoint`] refuses any relay host that does not resolve to a
+//! * [`EgressEndpoint`] refuses any host that does not resolve to a
 //!   loopback or RFC 1918 address, re-resolving **per connect** so a DNS record
 //!   that changes between validation and use cannot move the hop onto a public
 //!   network (the same resolve-then-validate discipline as the SRS-RES-001
 //!   research proxy). A cleartext credential and an operator-facing alert body
 //!   never leave the host's private network.
-//! * The relay is **not** an open relay: each adapter authenticates with its own
-//!   catalogued secret (`ATP_SMTP_API_KEY` / `ATP_SMS_API_KEY`), so a foreign
-//!   container that can route to the relay still cannot send operator alerts.
+//! * Neither endpoint is anonymous: each adapter authenticates with its own
+//!   catalogued secret (`ATP_SMTP_API_KEY` / `ATP_PUSH_TOKEN`), so a foreign
+//!   container that can route to them still cannot send operator alerts.
+//!   On ntfy the TOPIC is a second credential — holding it is enough to
+//!   publish — so `ATP_PUSH_TOPIC` is catalogued secret too (NFR-S4).
 //!   This is also what keeps [`atp_notification::channel`]'s contract true — the
 //!   adapter reads the key and keeps it inside itself; the core never sees it.
 //!
@@ -51,7 +64,7 @@
 //! [`atp_notification::ChannelError::Timeout`].
 //!
 //! This is the residual `atp_notification::channel` documents as "verified at the
-//! deferred SMTP/SMS adapter integration": a cancellable socket deadline is the
+//! deferred SMTP/push adapter integration": a cancellable socket deadline is the
 //! only leak-free bound available to a synchronous zero-dependency core, and it
 //! is armed here.
 
@@ -62,10 +75,10 @@ use std::time::{Duration, Instant};
 
 use atp_notification::ChannelError;
 
-pub mod sms;
+pub mod push;
 pub mod smtp;
 
-pub use sms::{SmsGatewayChannel, SmsGatewayConfig};
+pub use push::{PushChannel, PushConfig};
 pub use smtp::{SmtpEmailChannel, SmtpRelayConfig};
 
 /// The remaining-time clock for one `send`.

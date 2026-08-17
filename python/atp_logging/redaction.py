@@ -1,6 +1,6 @@
 """Credential redaction for the SRS-LOG-001 log path (SRS-SEC-001 / NFR-S1,S4).
 
-NFR-S1 / NFR-S4 require that brokerage (IB) and notification (SMTP, SMS)
+NFR-S1 / NFR-S4 require that brokerage (IB) and notification (SMTP, push)
 credentials are **never emitted in plaintext to logs**. The structured-log
 subsystem (:mod:`atp_logging`) is the single place persisted log bytes are
 produced, so this module scrubs secrets there.
@@ -10,7 +10,7 @@ secret values (the caller sources these from the configuration catalogue's
 ``secret`` keys — e.g. ``SecretRedactor(atp_config.secret_values(env))``) and
 replaces any occurrence of those values in a
 :class:`~atp_logging.LogRecord`'s free-form fields with a constant marker. This
-is the strong guarantee — if the operator's real IB account / SMTP key / SMS
+is the strong guarantee — if the operator's real IB account / SMTP key / push token
 key appears anywhere in a message, it is masked. A conservative **pattern
 fallback** additionally masks secret-shaped tokens (``api_key=…``, provider key
 shapes) so a secret that was *not* registered still cannot leak.
@@ -43,7 +43,7 @@ config view (``atp_runtime``) and the log path present secrets identically."""
 _MIN_SECRET_LEN = 4
 """Registered secret values shorter than this are ignored for *value*-based
 redaction — a 1–3 character 'secret' would pathologically mask ordinary log
-text. The pattern fallback still applies. Real IB/SMTP/SMS credentials are far
+text. The pattern fallback still applies. Real IB/SMTP/push credentials are far
 longer, so this never weakens the guarantee for genuine secrets."""
 
 # Conservative secret-shaped patterns (mirrors tools/critic_check.py's
@@ -174,8 +174,8 @@ and a bare Interactive Brokers account id (``U#######`` / ``DU#######``) — so
 the default log path is never *zero* redaction, and even a raw IB account can't
 slip through. Production boot injects the value-aware redactor —
 ``SecretRedactor(atp_config.secret_values(env))`` (see
-``atp_logging_boot.build_boot_log_dispatcher``) — for full IB/SMTP/SMS coverage
-including arbitrarily-shaped SMTP/SMS keys; this constant is the safe floor when
+``atp_logging_boot.build_boot_log_dispatcher``) — for full IB/SMTP/push coverage
+including arbitrarily-shaped SMTP/push keys; this constant is the safe floor when
 it does not."""
 
 

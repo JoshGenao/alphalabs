@@ -2,7 +2,7 @@
 //! liquidation order stays unfilled past the configured timeout (default
 //! 30 s), the execution engine's `resolve_kill_switch_timeout` gate runs the
 //! SYS-44b error path: it logs the unfilled order details, notifies the
-//! operator by email AND SMS, cancels the unfilled liquidation order,
+//! operator by email AND push, cancels the unfilled liquidation order,
 //! disconnects from IB, and refuses with `KILL_SWITCH_LIQUIDATION_TIMEOUT`
 //! (positions then await manual resolution). On filled-before-timeout the
 //! kill switch completed in time and the error path does not engage — no
@@ -11,7 +11,7 @@
 //! L7 domain (safety) test. The post-conditions are:
 //!   * Timeout: `Err` with category `KillSwitchLiquidationTimeout` (wire
 //!     string `KILL_SWITCH_LIQUIDATION_TIMEOUT`); the operator is paged
-//!     exactly once over email + SMS; the unfilled order is canceled exactly
+//!     exactly once over email + push; the unfilled order is canceled exactly
 //!     once; IB is disconnected exactly once; the audit event records
 //!     `manual_resolution_required == true`; the probe is consulted once.
 //!   * Filled (positive control): `Ok` with `filled_before_timeout == true`,
@@ -106,7 +106,7 @@ impl KillSwitchOperatorAlertSink for KillSwitchOperatorAlertSinkSpy {
 }
 
 /// Alert sink that records the call but reports failure — models an
-/// unreachable email/SMS transport. The gate must still record
+/// unreachable email/push transport. The gate must still record
 /// `operator_alert = Failed` and still refuse.
 #[derive(Default)]
 struct OperatorAlertFailingSink {
@@ -116,7 +116,7 @@ struct OperatorAlertFailingSink {
 impl KillSwitchOperatorAlertSink for OperatorAlertFailingSink {
     fn dispatch(&self, event: KillSwitchAlertEvent) -> Result<(), KillSwitchSideEffectError> {
         self.alerts.borrow_mut().push(event);
-        Err(KillSwitchSideEffectError::new("SMS gateway timed out"))
+        Err(KillSwitchSideEffectError::new("push service timed out"))
     }
 }
 
@@ -237,9 +237,9 @@ fn timeout_request(strategy: &str, order: &str, timeout_seconds: u64) -> KillSwi
 const OBSERVED_AT_SECONDS: u64 = 1_715_000_000;
 
 #[test]
-fn err_8_timeout_pages_email_sms_cancels_disconnects_and_refuses() {
+fn err_8_timeout_pages_email_push_cancels_disconnects_and_refuses() {
     // SRS-SAFE-002 / SYS-44b: the liquidation stayed unfilled — page the
-    // operator (email + SMS), cancel the unfilled order, disconnect from IB,
+    // operator (email + push), cancel the unfilled order, disconnect from IB,
     // and refuse so positions await manual resolution.
     let engine = ExecutionEngine::default();
     let probe =
@@ -279,12 +279,12 @@ fn err_8_timeout_pages_email_sms_cancels_disconnects_and_refuses() {
     // The probe is the timing authority, consulted exactly once.
     assert_eq!(probe.calls.get(), 1);
 
-    // The operator is paged over email + SMS, exactly once.
+    // The operator is paged over email + push, exactly once.
     let alerts_seen = alerts.alerts.borrow();
     assert_eq!(alerts_seen.len(), 1);
     let alert = &alerts_seen[0];
     assert!(alert.channels.contains(&OperatorAlertChannel::Email));
-    assert!(alert.channels.contains(&OperatorAlertChannel::Sms));
+    assert!(alert.channels.contains(&OperatorAlertChannel::Push));
     assert!(!alert.channels.contains(&OperatorAlertChannel::Dashboard));
     assert_eq!(alert.elapsed_seconds, 41);
     assert_eq!(alert.unfilled_order, request.unfilled_order);
@@ -719,7 +719,7 @@ fn err_8_boundary_timeout_at_exact_deadline_runs_the_cleanup() {
 /// Alert sink + cleanup sharing one call log, so the CROSS-PORT ordering of
 /// the timeout branch is observable: the destructive broker-side safety
 /// actions (cancel, then disconnect) must run BEFORE the operator page — the
-/// concrete SRS-NOTIF-001 dispatcher sends email/SMS synchronously with
+/// concrete SRS-NOTIF-001 dispatcher sends email/push synchronously with
 /// per-channel deadlines, and a slow notification transport must never delay
 /// killing the live order or severing the session.
 struct OrderedAlertSink<'a> {
@@ -756,7 +756,7 @@ impl IbLiquidationCleanup for OrderedCleanup<'_> {
 fn err_8_broker_safety_actions_run_before_the_operator_page() {
     // Ordering is safety-load-bearing: cancel → disconnect → alert. A page
     // dispatched first could sit behind tens of seconds of synchronous
-    // email/SMS transport latency while the unfilled liquidation order stays
+    // email/push transport latency while the unfilled liquidation order stays
     // live on a connected session.
     let engine = ExecutionEngine::default();
     let probe =
@@ -788,7 +788,7 @@ fn err_8_broker_safety_actions_run_before_the_operator_page() {
 #[test]
 fn err_8_timeout_refuses_across_many_liquidations() {
     // Pseudo-property sweep: every timeout outcome refuses and emits exactly
-    // one page (email + SMS) + one cancel + one disconnect, regardless of the
+    // one page (email + push) + one cancel + one disconnect, regardless of the
     // (elapsed, timeout) numerics.
     let engine = ExecutionEngine::default();
     let cases = [(31_u64, 30_u64), (45, 30), (90, 30), (60, 20)];

@@ -28,8 +28,8 @@ Design (mirrors ``atp_reliability.restart`` and the MD-003 monitor):
   argument (SYS-76 makes "alert the operator" first-class — a fold that can
   silently drop alerts is unrepresentable) and its failures propagate.
 
-The concrete email/SMS fan-out behind :class:`AlertSink` belongs to
-SRS-NOTIF-001 (``crates/atp-notification`` pins the Email+Sms channel set);
+The concrete email/push fan-out behind :class:`AlertSink` belongs to
+SRS-NOTIF-001 (``crates/atp-notification`` pins the Email+Push channel set);
 this port is the seam it will implement.
 """
 
@@ -157,7 +157,7 @@ class AlertSink(Protocol):
     ``dispatch`` is FALLIBLE and its failures PROPAGATE: SYS-76 makes the
     alert first-class, so a fold that silently swallows a failed dispatch
     would hide exactly the outage it exists to surface. The concrete
-    email/SMS fan-out (``crates/atp-notification`` Email+Sms channel set) is
+    email/push fan-out (``crates/atp-notification`` Email+Push channel set) is
     SRS-NOTIF-001's; tests and the operator CLI use recording/JSONL sinks.
     """
 

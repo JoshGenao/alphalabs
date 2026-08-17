@@ -1,18 +1,18 @@
 //! SRS-SAFE-002 / SyRS SYS-44b / StRS SN-1.11 — the fault-injection SCENARIO
 //! test: the REAL `resolve_kill_switch_timeout` gate driven end-to-end through
 //! the REAL `PollingLiquidationProbe` (full 30 s window on a simulated clock),
-//! the REAL SRS-NOTIF-001 `OperatorNotifier` (over fixture email/SMS
+//! the REAL SRS-NOTIF-001 `OperatorNotifier` (over fixture email/push
 //! transports), and the REAL `IbGatewayLiquidationCleanup` (over the fixture
 //! IB gateway) — the mocked-IB workflow the feature's own verification Step 2
 //! prescribes.
 //!
 //! Acceptance shape (SYS-44b): "If a liquidation order remains unfilled after
-//! 30 seconds, details are logged, email and SMS are sent, the unfilled
+//! 30 seconds, details are logged, email and push are sent, the unfilled
 //! liquidation order is canceled, and IB is disconnected."
 //!
 //! L7 domain (safety) scenarios:
 //!   (a) never-fills → refusal at exactly 30 simulated seconds; ONE page
-//!       delivered on EACH of email + SMS carrying the order details; the
+//!       delivered on EACH of email + push carrying the order details; the
 //!       gateway saw exactly ["cancel:B-0001", "disconnect"]; the audit event
 //!       records every side effect Succeeded + manual_resolution_required.
 //!   (b) fills at 10 s → acceptance; ZERO pages, ZERO gateway calls.
@@ -50,13 +50,13 @@ fn unfilled_liquidation_runs_the_full_sys_44b_sequence_at_thirty_seconds() {
     assert_eq!(run.simulated_elapsed_ms, 30_000);
     assert_eq!(run.probe_polls, 60);
 
-    // "email and SMS are sent": the REAL dispatcher produced ONE notification
+    // "email and push are sent": the REAL dispatcher produced ONE notification
     // event whose required channels BOTH delivered, and each fixture transport
     // accepted exactly one page carrying the unfilled-order details.
     assert_eq!(run.notifications.len(), 1);
     assert_eq!(run.email_pages.len(), 1);
-    assert_eq!(run.sms_pages.len(), 1);
-    for page in run.email_pages.iter().chain(run.sms_pages.iter()) {
+    assert_eq!(run.push_pages.len(), 1);
+    for page in run.email_pages.iter().chain(run.push_pages.iter()) {
         for needle in [
             "live-momentum/ks-liq-0001",
             "SELL",
@@ -105,7 +105,7 @@ fn filled_liquidation_completes_with_zero_pages_and_zero_gateway_calls() {
     // The SYS-44b error path did not engage anywhere in the composition.
     assert!(run.notifications.is_empty());
     assert!(run.email_pages.is_empty());
-    assert!(run.sms_pages.is_empty());
+    assert!(run.push_pages.is_empty());
     assert!(run.gateway_calls.is_empty());
     // The audit transition is still recorded (filled outcome, no side effects).
     assert_eq!(run.timeout_events.len(), 1);
@@ -137,7 +137,7 @@ fn probe_fault_fails_closed_with_no_destructive_action() {
         // no page, no audit event, every side effect NotAttempted.
         assert!(run.gateway_calls.is_empty(), "{fault:?}");
         assert!(run.email_pages.is_empty(), "{fault:?}");
-        assert!(run.sms_pages.is_empty(), "{fault:?}");
+        assert!(run.push_pages.is_empty(), "{fault:?}");
         assert!(run.timeout_events.is_empty(), "{fault:?}");
         assert_eq!(
             error.cleanup.liquidation_cancel,
@@ -167,7 +167,7 @@ fn premature_lying_probe_is_rejected_with_no_destructive_action() {
     // Nothing destructive fired early on an order that may still fill.
     assert!(run.gateway_calls.is_empty());
     assert!(run.email_pages.is_empty());
-    assert!(run.sms_pages.is_empty());
+    assert!(run.push_pages.is_empty());
     assert!(run.timeout_events.is_empty());
 }
 
@@ -175,7 +175,7 @@ fn premature_lying_probe_is_rejected_with_no_destructive_action() {
 fn failed_channels_still_cancel_and_disconnect() {
     let scenario = TimeoutScenario {
         fail_email: true,
-        fail_sms: true,
+        fail_push: true,
         ..TimeoutScenario::reference_unfilled()
     };
     let run = run_fixture_timeout(&scenario).expect("failed-channel scenario runs");
@@ -207,17 +207,17 @@ fn failed_channels_still_cancel_and_disconnect() {
 #[test]
 fn one_failed_channel_is_a_failed_page_but_the_other_still_receives_it() {
     let scenario = TimeoutScenario {
-        fail_sms: true,
+        fail_push: true,
         ..TimeoutScenario::reference_unfilled()
     };
     let run = run_fixture_timeout(&scenario).expect("one-channel scenario runs");
 
     let error = run.result.expect_err("the timeout still refuses");
-    // SYS-44b requires email AND SMS — one failed required channel is a
+    // SYS-44b requires email AND push — one failed required channel is a
     // Failed page even though the other delivered.
     assert!(error.cleanup.operator_alert.is_failed());
     assert_eq!(run.email_pages.len(), 1);
-    assert!(run.sms_pages.is_empty());
+    assert!(run.push_pages.is_empty());
     assert_eq!(run.gateway_calls, vec!["cancel:B-0001", "disconnect"]);
 }
 
@@ -240,7 +240,7 @@ fn failed_cancel_still_disconnects_and_refuses() {
     );
     // The page still went out on both channels.
     assert_eq!(run.email_pages.len(), 1);
-    assert_eq!(run.sms_pages.len(), 1);
+    assert_eq!(run.push_pages.len(), 1);
 }
 
 #[test]

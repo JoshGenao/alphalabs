@@ -54,7 +54,7 @@
 //! [`KillSwitchBrokerageControl`] (SRS-EXE-006), live population of
 //! `LiveExecutionState` (SRS-EXE-001 / SRS-EXE-005 producers), hosting every
 //! paper strategy on fleet-registered halt gates (SRS-EXE-002), operator
-//! email/SMS (SRS-NOTIF-001), the rich dashboard control (UI-4), and a
+//! email/push (SRS-NOTIF-001), the rich dashboard control (UI-4), and a
 //! durable cross-process activation lockout (replay protection lives at the
 //! operator layer's persisted last-activation record today). SRS-SAFE-001
 //! stays `passes:false` until the live path exists.

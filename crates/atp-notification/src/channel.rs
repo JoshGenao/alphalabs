@@ -1,14 +1,14 @@
 //! Notification channel transport port (SRS-NOTIF-001).
 //!
 //! SRS-NOTIF-001 fans an operator notification out over email (IF-10, SMTP or a
-//! third-party email API) and SMS (IF-11, a third-party SMS gateway). AGENTS.md
+//! third-party email API) and push (IF-11, a self-hosted ntfy on the LAN). AGENTS.md
 //! forbids vendor SDK logic in the core runtime services and requires every
 //! external provider to sit behind an adapter interface. So the dispatcher
 //! ([`crate::dispatcher`]) talks only to this **port** — [`NotificationChannelClient`] —
-//! and the concrete SMTP client / SMS gateway client are adapters that live in
+//! and the concrete SMTP client / push client are adapters that live in
 //! `atp-adapters` (deferred with the real end-to-end integration; see the
 //! crate-level scope note). The core never names a vendor and never holds a
-//! credential; the adapter reads `ATP_SMTP_API_KEY` / `ATP_SMS_API_KEY`
+//! credential; the adapter reads `ATP_SMTP_API_KEY` / `ATP_PUSH_TOKEN`
 //! (NFR-S4, encrypted at rest, never logged) and keeps them inside itself.
 //!
 //! ## Fail-closed, never-dropped transport errors
@@ -27,7 +27,7 @@ use std::time::Duration;
 use crate::event::NotificationChannel;
 
 /// The operator-facing message a channel delivers. Deliberately holds only
-/// non-secret, operator-facing content: a `subject` (used by email; SMS ignores
+/// non-secret, operator-facing content: a `subject` (used by email; push ignores
 /// it) and a `body`. It carries **no** recipient credential, provider API key,
 /// or auth token — those live inside the concrete adapter (NFR-S4). The
 /// dispatcher builds one of these from a [`crate::event::NotificationTrigger`].
@@ -55,7 +55,7 @@ impl NotificationMessage {
 }
 
 /// A successful hand-off receipt from a channel adapter — the provider accepted
-/// the message for delivery (SMTP `250`, SMS gateway accept). The `reference` is
+/// the message for delivery (SMTP `250`, ntfy message id). The `reference` is
 /// the provider's opaque accept id (a message id / gateway ticket); it is
 /// non-secret and is stored on the notification event's delivery `detail` so an
 /// operator can correlate with the provider's own logs. It is NOT a proof of
@@ -86,11 +86,11 @@ impl ChannelReceipt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChannelError {
     /// The channel has no usable configuration (missing or blank
-    /// `ATP_SMTP_API_KEY` / `ATP_SMS_API_KEY`, no sender/recipient). The
+    /// `ATP_SMTP_API_KEY` / `ATP_PUSH_TOKEN`, no sender/recipient). The
     /// operator must configure the channel; a fail-closed setup error, not a
     /// transient one.
     Unconfigured { detail: String },
-    /// The provider was unreachable (SMTP connect failure, SMS gateway 5xx).
+    /// The provider was unreachable (SMTP connect failure, ntfy 5xx).
     /// Transient — a retry / the next detection may succeed.
     TransportUnavailable { detail: String },
     /// The adapter's own cancellable send deadline (the `deadline` passed to
@@ -144,7 +144,7 @@ pub type ChannelSendResult = Result<ChannelReceipt, ChannelError>;
 /// The adapter interface every notification channel implements (SRS-NOTIF-001,
 /// AGENTS.md adapter-isolation constraint). The dispatcher holds channel clients
 /// only as `&dyn NotificationChannelClient` / generic ports, so the core carries
-/// no SMTP or SMS vendor dependency.
+/// no SMTP or push vendor dependency.
 ///
 /// ## The send deadline is a mandatory part of the API
 ///

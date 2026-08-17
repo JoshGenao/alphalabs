@@ -64,7 +64,7 @@ class KillSwitchTimeoutScriptTest(unittest.TestCase):
             "UnfilledLiquidationOrder with the 4 required fields",
             "order_id, symbol, side, quantity",
             "KillSwitchLiquidationOutcome with 2 required variant(s) (FilledBeforeTimeout, TimedOutUnfilled)",
-            "OperatorAlertChannel with 2 required variant(s) (Email, Sms)",
+            "OperatorAlertChannel with 2 required variant(s) (Email, Push)",
             "KillSwitchAlertEvent with the 6 required fields",
             "SideEffectOutcome with 3 required variant(s) (NotAttempted, Succeeded, Failed)",
             "KillSwitchTimeoutEvent with the 8 required fields",
@@ -519,7 +519,7 @@ class ResolveKillSwitchTimeoutGuardTest(unittest.TestCase):
     def test_page_ordered_before_the_broker_actions_is_caught(self) -> None:
         # Ordering is safety-load-bearing (adversarial r6): a page dispatched
         # before the cancel/disconnect could sit behind tens of seconds of
-        # synchronous email/SMS latency while the order stays live.
+        # synchronous email/push latency while the order stays live.
         mutated = self.exec_src.replace(
             "                let liquidation_cancel =",
             "                let _premature_page = alerts.dispatch(unreachable_event);\n"
@@ -539,10 +539,10 @@ class ResolveKillSwitchTimeoutGuardTest(unittest.TestCase):
         self.assertIn("alerts.dispatch", str(ctx.exception))
 
     def test_missing_sms_channel_in_timeout_arm_is_caught(self) -> None:
-        mutated = self.exec_src.replace(", OperatorAlertChannel::Sms]", "]", 1)
+        mutated = self.exec_src.replace(", OperatorAlertChannel::Push]", "]", 1)
         with self.assertRaises(KillSwitchTimeoutCheckError) as ctx:
             check_resolve_kill_switch_timeout_guard(self.config, mutated)
-        self.assertIn("OperatorAlertChannel::Sms", str(ctx.exception))
+        self.assertIn("OperatorAlertChannel::Push", str(ctx.exception))
 
     def test_acceptance_in_timeout_arm_is_caught(self) -> None:
         mutated = self.exec_src.replace(

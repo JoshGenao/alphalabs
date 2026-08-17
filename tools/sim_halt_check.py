@@ -29,7 +29,7 @@ gate -- which lives in ``crates/atp-simulation`` (module ``halt``), per the stru
 The PASS line is ``SRS-SAFE-001 HALT-GATE PASS`` -- a SUB-COMPONENT pass, NOT a full/SDK-SURFACE
 pass. feature_list.json keeps SRS-SAFE-001 ``passes:false``; the closing line names the genuinely
 DEFERRED owners of the rest of the sequence (SRS-EXE-006 IB cancel/disconnect, SRS-EXE-002 /
-SAFE-001 runtime activation + 5s NFR-P3, SRS-LOG-001 1s observability, SRS-NOTIF-001 email/SMS,
+SAFE-001 runtime activation + 5s NFR-P3, SRS-LOG-001 1s observability, SRS-NOTIF-001 email/push,
 SRS-API-001 / SRS-UI trigger).
 
 Mirrors the PASS/FAIL output style of ``tools/sim_ledger_check.py``.
@@ -384,7 +384,7 @@ _DEFERRED_OWNERS = (
     "SRS-EXE-006 (the REAL IB transport behind the activation gate's cancel/liquidate/disconnect port)",
     "SRS-EXE-002 (hosting every real paper strategy on fleet-registered halt gates)",
     "SRS-LOG-001 (the log feature's own dashboard-viewing flip; the activation layer now writes ACTIVATION+HALTED durably)",
-    "SRS-NOTIF-001 (operator email/SMS)",
+    "SRS-NOTIF-001 (operator email/push)",
     "SRS-API-001 / SRS-UI (the operator runtime's own flip; the kill-switch handlers themselves are wired by atp_safety)",
 )
 

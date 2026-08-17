@@ -64,7 +64,7 @@
 //! `NotificationTrigger::critical_failure` + `OperatorNotifier::dispatch`, and
 //! onto a `deliver_order_event` `OrderEvent(CANCELLED)` — is the deferred
 //! composition-root wiring (SRS-NOTIF-001 / SRS-SDK-004); the notification
-//! subsystem's own dispatch-within-SLA over email + SMS is proven by
+//! subsystem's own dispatch-within-SLA over email + push is proven by
 //! SRS-NOTIF-001's tests. The `srs_data_019_corp_action_notify` integration test
 //! proves the emission half here: every cancel — and only a cancel — is routed
 //! through the port carrying the symbol + reason the trigger and callback need.
@@ -75,7 +75,7 @@
 //! feed of live resting-order state and the routing of the cancel / cancel-replace
 //! to the real IB adapter (`BrokerageAdapter::cancel_order`, which currently fails
 //! closed `LIVE_WIRE_PROTOCOL_PENDING`) is the deferred SRS-EXE-001 / SRS-EXE-006
-//! runtime; real operator email/SMS is SRS-NOTIF-001; live in-container callback
+//! runtime; real operator email/push is SRS-NOTIF-001; live in-container callback
 //! delivery is SRS-SDK-004. So SRS-DATA-019 lands `serialized` (`passes:false`)
 //! until that end-to-end evidence exists.
 
@@ -357,7 +357,7 @@ pub trait RestingOrderCorpActionAlertSink {
     /// callback on a corp-action cancel is itself a safety event, so a transport
     /// failure is surfaced rather than silently swallowed (the exact reason
     /// [`crate::KillSwitchOperatorAlertSink::dispatch`] is fallible). The concrete
-    /// email/SMS + `deliver_order_event` binding is the deferred composition-root
+    /// email/push + `deliver_order_event` binding is the deferred composition-root
     /// wiring (SRS-NOTIF-001 / SRS-SDK-004).
     fn dispatch(&self, alert: RestingOrderCorpActionAlert) -> Result<(), RestingOrderAlertError>;
 }

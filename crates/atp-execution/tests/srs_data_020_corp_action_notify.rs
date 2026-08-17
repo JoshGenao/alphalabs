@@ -42,7 +42,7 @@ struct FailingSink;
 
 impl PositionCorpActionAlertSink for FailingSink {
     fn dispatch(&self, _alert: PositionCorpActionAlert) -> Result<(), PositionAlertError> {
-        Err(PositionAlertError::new("email/SMS gateway unreachable"))
+        Err(PositionAlertError::new("email/push gateway unreachable"))
     }
 }
 
@@ -141,7 +141,7 @@ fn srs_data_020_failed_alert_dispatch_is_surfaced_not_swallowed() {
     );
     let failure = &report.alert_failures[0];
     assert_eq!(failure.symbol, "DEAD");
-    assert_eq!(failure.error.reason, "email/SMS gateway unreachable");
+    assert_eq!(failure.error.reason, "email/push gateway unreachable");
     // The delisting decision itself still stands even though the page failed.
     assert!(matches!(
         report.outcomes[0],

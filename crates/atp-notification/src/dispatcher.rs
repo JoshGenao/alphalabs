@@ -3,7 +3,7 @@
 //! [`OperatorNotifier`] is the source-neutral engine that turns a *detected*
 //! condition ([`NotificationTrigger`]) into a stored [`NotificationEvent`]: it
 //! builds the operator message, fans it out over the supplied channel ports
-//! (email + SMS), records each channel's real delivery outcome, and stamps the
+//! (email + push), records each channel's real delivery outcome, and stamps the
 //! dispatch instant so the ≤ 60-second SLA (NFR-P6 / SYS-46) is measurable from
 //! the stored event. It is the concrete fan-out the deferred kill-switch /
 //! Hot-Swap / orchestrator operator-alert sinks named as "landing with the
@@ -34,7 +34,7 @@
 //! send (which would leak a stuck thread on a wedged adapter). The residual — an
 //! adapter that ignores its `deadline` and blocks forever — is unrepresentable
 //! without an async/cancellable transport runtime (out of the zero-dep baseline)
-//! and is verified at the deferred SMTP/SMS adapter integration, one reason
+//! and is verified at the deferred SMTP/push adapter integration, one reason
 //! SRS-NOTIF-001 lands `serialized`.
 //!
 //! ## Safety invariant: a critical failure is never suppressed
@@ -57,20 +57,20 @@ use crate::event::{
 };
 
 /// A channel client the dispatcher fans out to. Held as a shared `Arc` handle —
-/// the composition root constructs each concrete SMTP / SMS adapter once and
+/// the composition root constructs each concrete SMTP / push adapter once and
 /// shares it across the runtime (the notification dispatcher, the readiness
 /// probe, etc.). `Send + Sync` keeps the handle usable from whatever runtime
 /// task drives dispatch.
 pub type SharedChannelClient = Arc<dyn NotificationChannelClient + Send + Sync>;
 
 /// Why a dispatch was refused before any channel was attempted. SRS-NOTIF-001
-/// requires notifying over **email and SMS** — the dispatcher owns that fan-out
+/// requires notifying over **email and push** — the dispatcher owns that fan-out
 /// obligation rather than trusting the caller's channel slice, so a mis-wired
 /// call cannot silently store an "apparently valid" notification event that
 /// never attempted a required channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchError {
-    /// A channel SRS-NOTIF-001 requires (email or SMS) was absent from the
+    /// A channel SRS-NOTIF-001 requires (email or push) was absent from the
     /// client set. Fail-closed: no event is produced.
     MissingRequiredChannel { channel: NotificationChannel },
     /// A channel appeared more than once in the client set — a mis-wiring that
@@ -91,7 +91,7 @@ impl core::fmt::Display for DispatchError {
         match self {
             Self::MissingRequiredChannel { channel } => write!(
                 f,
-                "SRS-NOTIF-001 requires email and SMS; required channel {} was not supplied",
+                "SRS-NOTIF-001 requires email and push; required channel {} was not supplied",
                 channel.as_str()
             ),
             Self::DuplicateChannel { channel } => {
@@ -153,7 +153,7 @@ impl OperatorNotifier {
     /// The largest per-channel send deadline that still lets **every** required
     /// channel be attempted within the NFR-P6 dispatch budget in the worst case
     /// (sequential fan-out): `DISPATCH_SLA_MS / REQUIRED_CHANNELS.len()`. With the
-    /// Phase-1 email+SMS pair that is 30,000 ms, so two back-to-back timed-out
+    /// Phase-1 email+push pair that is 30,000 ms, so two back-to-back timed-out
     /// sends still fit inside the 60,000 ms budget.
     /// [`with_channel_deadline`](Self::with_channel_deadline) clamps to this so a
     /// mis-configured over-large deadline can never let the second required
@@ -199,7 +199,7 @@ impl OperatorNotifier {
     /// [`dispatch_with_suppression`](Self::dispatch_with_suppression) with `None`.
     ///
     /// **Fail-closed on the channel set:** SRS-NOTIF-001 requires email *and*
-    /// SMS, so `channels` must contain each required channel
+    /// push, so `channels` must contain each required channel
     /// ([`REQUIRED_CHANNELS`]) exactly once; a missing or duplicated required
     /// channel returns a [`DispatchError`] and produces **no** event, so a
     /// mis-wired caller can never store an "apparently valid" notification that
@@ -221,7 +221,7 @@ impl OperatorNotifier {
     /// Dispatch, honouring an optional [`SuppressionReason`].
     ///
     /// Enforces the same required-channel contract as [`dispatch`](Self::dispatch)
-    /// (email + SMS, each exactly once — even a suppressed dispatch records both
+    /// (email + push, each exactly once — even a suppressed dispatch records both
     /// required channels) and the same reversed-timestamp guard.
     ///
     /// When `suppression` is `Some` **and** the trigger is a connectivity loss,
@@ -280,8 +280,8 @@ impl OperatorNotifier {
         ))
     }
 
-    /// Fail closed unless every [`REQUIRED_CHANNELS`] entry (email + SMS) is
-    /// present exactly once. Because the channel enum *is* email + SMS and both
+    /// Fail closed unless every [`REQUIRED_CHANNELS`] entry (email + push) is
+    /// present exactly once. Because the channel enum *is* email + push and both
     /// are required, this forces the supplied set to be exactly those two in some
     /// order: a missing one is [`DispatchError::MissingRequiredChannel`], a
     /// repeated one is [`DispatchError::DuplicateChannel`].

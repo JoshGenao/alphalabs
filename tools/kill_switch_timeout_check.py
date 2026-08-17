@@ -19,7 +19,7 @@ guarantees:
       timeout; neither it nor the alert/audit events leak broker / IB-order /
       vendor / container fields. The cancel + disconnect flow through a port,
       never a field on the envelope.
-  (c) ``OperatorAlertChannel`` declares (at least) the SYS-44b email/SMS pair,
+  (c) ``OperatorAlertChannel`` declares (at least) the SYS-44b email/push pair,
       and ``KillSwitchAlertEvent`` / ``KillSwitchTimeoutEvent`` carry their
       required fields and reject the forbidden allowlist.
   (d) the four ports — ``KillSwitchLiquidationProbe`` (timing authority,
@@ -31,7 +31,7 @@ guarantees:
       arm is the only construction site of ``KillSwitchLiquidationResolved {``
       and dispatches NO alert, cancels NOTHING, and disconnects NOTHING; the
       TimedOutUnfilled arm cancels the unfilled order, disconnects from IB,
-      pages the operator over email + SMS — in THAT order (the broker-side
+      pages the operator over email + push — in THAT order (the broker-side
       safety actions must never wait behind a synchronous notification
       transport) — records the audit event, and produces
       ``OrderErrorCategory::KillSwitchLiquidationTimeout`` (via the
@@ -221,7 +221,7 @@ def check_operator_alert_channel_enum(config: dict, types_src: str) -> str:
     return _check_enum(
         types_src,
         contract_block(config)["operator_alert_channel"],
-        "the SYS-44b email/SMS operator-page pair",
+        "the SYS-44b email/push operator-page pair",
     )
 
 
@@ -344,7 +344,7 @@ def check_operator_alert_sink_port(config: dict, exec_src: str) -> str:
     return _check_port(
         exec_src,
         contract_block(config)["operator_alert_sink_port"],
-        "the SYS-44b email/SMS operator-page dispatch channel",
+        "the SYS-44b email/push operator-page dispatch channel",
     )
 
 
@@ -441,14 +441,14 @@ def check_resolve_kill_switch_timeout_guard(config: dict, exec_src: str) -> str:
                 "disconnects nothing (the SYS-44b error path must not engage)"
             )
 
-    # --- Timeout arm: page(email+SMS) + cancel + disconnect + event + ------- #
+    # --- Timeout arm: page(email+push) + cancel + disconnect + event + ------- #
     # --- reject; NO acceptance. -------------------------------------------- #
     for required in (alert_token, cancel_token, disconnect_token, event_token):
         if required not in timeout_arm:
             fail(
                 f"{entry['method']} {timeout_token} arm is missing required "
                 f"call `{required}` (SYS-44b: log the unfilled order, notify by "
-                "email and SMS, cancel the unfilled order, disconnect from IB)"
+                "email and push, cancel the unfilled order, disconnect from IB)"
             )
 
     # Cross-port ordering is safety-load-bearing: the destructive broker-side
@@ -470,7 +470,7 @@ def check_resolve_kill_switch_timeout_guard(config: dict, exec_src: str) -> str:
         if channel not in timeout_arm:
             fail(
                 f"{entry['method']} {timeout_token} arm is missing alert channel "
-                f"`{channel}` — SYS-44b notifies the operator by email AND SMS"
+                f"`{channel}` — SYS-44b notifies the operator by email AND push"
             )
     category_token = f"OrderErrorCategory::{block['rejection_category']}"
     factory_token = guard["error_factory"] + "("
@@ -491,7 +491,7 @@ def check_resolve_kill_switch_timeout_guard(config: dict, exec_src: str) -> str:
         f"`{guard['probe_call']}`; the {filled_token} arm is the sole "
         f"`{guard['accepted_struct']}` site (no page, no cancel, no disconnect); "
         f"the {timeout_token} arm pages via `{guard['alert_call']}` over email + "
-        f"SMS, cancels via `{guard['cancel_call']}`, disconnects via "
+        f"push, cancels via `{guard['cancel_call']}`, disconnects via "
         f"`{guard['disconnect_call']}` — in the safety order cancel → disconnect "
         f"→ page — records via `{guard['event_call']}`, and emits "
         f"OrderErrorCategory::{block['rejection_category']} (ERR-8)"

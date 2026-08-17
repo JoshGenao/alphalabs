@@ -4,7 +4,7 @@
 ``atp_config`` import (enforced by ``tools/log_record_check.py``), so it can
 never source the operator's real secret *values* on its own — its default
 factory only pattern-masks token-shaped strings. Value-based redaction of an IB
-account / SMTP / SMS credential therefore has to be composed one layer up, by
+account / SMTP / push credential therefore has to be composed one layer up, by
 the code that owns both config and logging.
 
 This module is that layer. :func:`build_boot_log_dispatcher` is the sanctioned

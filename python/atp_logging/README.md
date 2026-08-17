@@ -135,7 +135,7 @@ from atp_logging_boot import build_boot_log_dispatcher
 
 # PRODUCTION boot wiring (SRS-SEC-001): overlays the encrypted credential vault
 # and installs a value-aware redactor sourced from the config secrets, so IB /
-# SMTP / SMS credential VALUES are masked before persistence. Always use this
+# SMTP / push credential VALUES are masked before persistence. Always use this
 # for production log wiring — the lower-level build_separated_log_dispatcher
 # only installs the pattern-based redaction floor.
 dispatcher, system_store, strategy_store = build_boot_log_dispatcher("data/logs", os.environ)

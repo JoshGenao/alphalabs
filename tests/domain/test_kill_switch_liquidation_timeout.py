@@ -2,7 +2,7 @@
 liquidation order stays unfilled past the configured timeout (default 30 s),
 the execution engine's ``resolve_kill_switch_timeout`` gate must run the
 SYS-44b error path: log the unfilled order details, notify the operator by
-email AND SMS, cancel the unfilled liquidation order, disconnect from IB, and
+email AND push, cancel the unfilled liquidation order, disconnect from IB, and
 refuse with ``KILL_SWITCH_LIQUIDATION_TIMEOUT`` (positions then await manual
 resolution). On filled-before-timeout the error path does not engage — no
 page, no cancel, no disconnect.
@@ -21,7 +21,7 @@ The concrete runtime is exercised here too: the SYS-44b SCENARIO suite
 (``crates/atp-orchestrator/tests/safe_002_liquidation_timeout_scenario.rs``)
 drives the REAL gate through the REAL ``PollingLiquidationProbe`` (the full
 30 s wait window on a simulated clock — no test sleeps), the REAL
-SRS-NOTIF-001 ``OperatorNotifier`` over fixture email/SMS transports, and the
+SRS-NOTIF-001 ``OperatorNotifier`` over fixture email/push transports, and the
 REAL ``IbGatewayLiquidationCleanup`` over the fixture IB gateway; the
 operator CLI drills below shell ``safe002_liquidation_timeout_cli`` exactly
 as the ``python/atp_safety`` timeout backend does and land the SYS-44b
@@ -33,7 +33,7 @@ requirement, not a latency NFR). This slice does NOT change the SRS-SAFE-001
 / NFR-P3 5-second kill-switch *activation* budget, whose paired latency test
 is the separate ``tests/domain/test_kill_switch_latency.py``. The LIVE legs
 (real SRS-EXE-006 IB order-state wire + disconnect, real SRS-NOTIF-001
-SMTP/SMS transports, SRS-API-001 post-timeout lockout) are enumerated in
+SMTP/push transports, SRS-API-001 post-timeout lockout) are enumerated in
 ``kill_switch_timeout_contract.deferred[]`` and keep the feature
 ``passes:false`` (serialized).
 """
@@ -85,13 +85,13 @@ def _assert_passed(result: subprocess.CompletedProcess[str], label: str) -> None
     )
 
 
-def test_timeout_pages_email_sms_cancels_disconnects_and_refuses() -> None:
+def test_timeout_pages_email_push_cancels_disconnects_and_refuses() -> None:
     # SYS-44b: on liquidation timeout the gate must refuse with
-    # KILL_SWITCH_LIQUIDATION_TIMEOUT, page the operator over email + SMS
+    # KILL_SWITCH_LIQUIDATION_TIMEOUT, page the operator over email + push
     # exactly once, cancel the unfilled order exactly once, disconnect from IB
     # exactly once, and record manual_resolution_required == true.
     _assert_passed(
-        _run_cargo_test("err_8_timeout_pages_email_sms_cancels_disconnects_and_refuses"),
+        _run_cargo_test("err_8_timeout_pages_email_push_cancels_disconnects_and_refuses"),
         "ERR-8 timeout-sequence Rust domain test",
     )
 
@@ -128,7 +128,7 @@ def test_filled_over_deadline_is_failed_closed_and_refuses() -> None:
 
 def test_timeout_refuses_across_many_liquidations() -> None:
     # Pseudo-property: the Rust test sweeps several (elapsed, timeout) cases and
-    # verifies every timeout refuses with exactly one page (email + SMS) + one
+    # verifies every timeout refuses with exactly one page (email + push) + one
     # cancel + one disconnect + one event whose manual_resolution_required flag
     # is set.
     _assert_passed(
@@ -161,7 +161,7 @@ def test_mismatched_timeout_report_is_rejected_without_any_automated_action() ->
 
 def test_broker_safety_actions_run_before_the_operator_page() -> None:
     # Ordering is safety-load-bearing (adversarial r6): cancel → disconnect →
-    # page. The concrete SRS-NOTIF-001 dispatcher sends email/SMS
+    # page. The concrete SRS-NOTIF-001 dispatcher sends email/push
     # synchronously with per-channel deadlines (tens of seconds worst-case),
     # so a page dispatched first could delay killing the live order and
     # severing the session well past the 30 s deadline.
@@ -184,14 +184,14 @@ def test_boundary_timeout_at_exact_deadline_runs_the_cleanup() -> None:
 # --------------------------------------------------------------------------- #
 # The concrete-runtime SCENARIO suite (atp-orchestrator): the REAL gate driven
 # through the REAL PollingLiquidationProbe (full 30 s window, simulated clock),
-# the REAL SRS-NOTIF-001 OperatorNotifier (fixture email/SMS transports), and
+# the REAL SRS-NOTIF-001 OperatorNotifier (fixture email/push transports), and
 # the REAL IbGatewayLiquidationCleanup (fixture IB gateway).
 # --------------------------------------------------------------------------- #
 
 
 def test_scenario_unfilled_liquidation_runs_the_full_sys_44b_sequence() -> None:
     # SYS-44b end-to-end over mocked IB: refusal at exactly 30 simulated
-    # seconds; one page delivered on EACH of email + SMS carrying the order
+    # seconds; one page delivered on EACH of email + push carrying the order
     # details; gateway saw exactly ["cancel:B-0001", "disconnect"]; the audit
     # event records every side effect + manual_resolution_required.
     _assert_passed(
@@ -348,7 +348,7 @@ def test_cli_timeout_drill_runs_sys_44b_and_the_record_lands_durably(tmp_path: P
     assert outcome["transports"] == "FIXTURE"
     assert outcome["manual_resolution_required"] is True
     assert outcome["gateway_calls"] == ["cancel:B-0001", "disconnect"]
-    assert outcome["notification"] == {"events": 1, "email_accepted": 1, "sms_accepted": 1}
+    assert outcome["notification"] == {"events": 1, "email_accepted": 1, "push_accepted": 1}
     assert outcome["simulated_elapsed_ms"] == 30000
     assert outcome["cleanup"]["liquidation_cancel"]["status"] == "SUCCEEDED"
     assert outcome["cleanup"]["ib_disconnect"]["status"] == "SUCCEEDED"
@@ -382,7 +382,7 @@ def test_cli_filled_drill_exits_zero_with_no_side_effects() -> None:
     assert outcome["disposition"] == "FILLED_BEFORE_TIMEOUT"
     assert outcome["gateway_calls"] == []
     assert outcome["notification"]["email_accepted"] == 0
-    assert outcome["notification"]["sms_accepted"] == 0
+    assert outcome["notification"]["push_accepted"] == 0
     assert outcome["elapsed_seconds"] == 10
 
 
@@ -419,7 +419,7 @@ def test_backend_refuses_a_contradictory_non_timeout_outcome() -> None:
     contradictory = {
         "disposition": "PROBE_UNAVAILABLE",
         "transports": "FIXTURE",
-        "notification": {"events": 0, "email_accepted": 0, "sms_accepted": 0},
+        "notification": {"events": 0, "email_accepted": 0, "push_accepted": 0},
         "gateway_calls": ["cancel:B-0001", "disconnect"],  # cleanup RAN
         "probe_polls": 1,
         "simulated_elapsed_ms": 0,
@@ -465,7 +465,7 @@ def test_backend_refuses_a_timed_out_outcome_whose_cleanup_never_ran() -> None:
     contradictory = {
         "disposition": "TIMED_OUT_UNFILLED",
         "transports": "FIXTURE",
-        "notification": {"events": 0, "email_accepted": 0, "sms_accepted": 0},
+        "notification": {"events": 0, "email_accepted": 0, "push_accepted": 0},
         "gateway_calls": [],
         "probe_polls": 61,
         "simulated_elapsed_ms": 30000,
@@ -546,7 +546,7 @@ def test_backend_refuses_success_claims_without_their_own_evidence() -> None:
     contradictory = {
         "disposition": "TIMED_OUT_UNFILLED",
         "transports": "FIXTURE",
-        "notification": {"events": 0, "email_accepted": 0, "sms_accepted": 0},
+        "notification": {"events": 0, "email_accepted": 0, "push_accepted": 0},
         "gateway_calls": [],
         "probe_polls": 61,
         "simulated_elapsed_ms": 30000,
@@ -590,7 +590,7 @@ def test_backend_refuses_a_timeout_missing_the_order_details() -> None:
     truncated = {
         "disposition": "TIMED_OUT_UNFILLED",
         "transports": "FIXTURE",
-        "notification": {"events": 1, "email_accepted": 1, "sms_accepted": 1},
+        "notification": {"events": 1, "email_accepted": 1, "push_accepted": 1},
         "gateway_calls": ["cancel:B-0001", "disconnect"],
         "probe_polls": 60,
         "simulated_elapsed_ms": 30000,
@@ -638,7 +638,7 @@ def test_backend_launch_failure_is_typed_never_a_raw_oserror(tmp_path: Path) -> 
 
 
 def test_cli_failed_side_effects_are_observable_and_still_exit_one() -> None:
-    result = _run_cli("resolve", "--fail-email", "--fail-sms", "--fail-cancel")
+    result = _run_cli("resolve", "--fail-email", "--fail-push", "--fail-cancel")
     assert result.returncode == 1, f"the SYS-44b sequence still ran:\n{result.stderr}"
     outcome = _parse_outcome(result.stdout)
     assert outcome["cleanup"]["operator_alert"]["status"] == "FAILED"

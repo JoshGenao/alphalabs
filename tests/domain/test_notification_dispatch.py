@@ -1,5 +1,5 @@
 """SRS-NOTIF-001 — operator notification for IB connectivity loss and critical
-failures must begin dispatch within 60 seconds of detection over email and SMS,
+failures must begin dispatch within 60 seconds of detection over email and push,
 and the delivery status must be stored as a notification event.
 
 L7 domain (safety) test. The Rust integration + fault-injection tests at
@@ -12,7 +12,7 @@ layer so the deterministic critic recognizes the diff as having a paired
 
 This is the notification half of the connectivity/critical-failure safety path
 (SyRS SYS-46, NFR-P6; StRS SN-1.12, SN-2.04, SC-9). The end-to-end proof over
-real SMTP / SMS providers (IF-10 / IF-11) is the deferred integration that keeps
+real SMTP / push providers (IF-10 / IF-11) is the deferred integration that keeps
 SRS-NOTIF-001 ``passes:false``; these tests prove the core dispatch + storage
 properties deterministically.
 """
@@ -67,7 +67,7 @@ def _assert_one_passed(result: subprocess.CompletedProcess[str], label: str) -> 
 
 def test_dispatch_begins_within_60s_and_records_both_channels() -> None:
     # NFR-P6 / SYS-46: dispatch begins within 60 seconds of detection over email
-    # AND SMS; the stored event records the detection->dispatch latency and each
+    # AND push; the stored event records the detection->dispatch latency and each
     # channel's delivery status.
     _assert_one_passed(
         _run_cargo_test("dispatch_within_sla_records_both_channels_delivered"),
@@ -121,7 +121,7 @@ def test_delivery_status_durably_stored_and_read_back() -> None:
 
 
 def test_email_and_sms_fanout_is_enforced_fail_closed() -> None:
-    # SRS-NOTIF-001 requires BOTH email and SMS: the dispatcher fails closed on a
+    # SRS-NOTIF-001 requires BOTH email and push: the dispatcher fails closed on a
     # channel set that omits a required channel, so a mis-wired caller can never
     # store a notification event that skipped a required channel.
     _assert_one_passed(

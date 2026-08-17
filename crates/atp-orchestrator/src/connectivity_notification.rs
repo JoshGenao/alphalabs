@@ -57,8 +57,8 @@
 //!
 //! The sink is called once per *blocked order*, not once per outage. A strategy
 //! retrying into a dead gateway would drive one real SMTP conversation and one
-//! real SMS per attempt — an alert storm that pages the operator hundreds of
-//! times, burns the SMS budget, and buries the first (useful) alert.
+//! real push per attempt — an alert storm that pages the operator hundreds of
+//! times, burns the push service's rate limit, and buries the first (useful) alert.
 //!
 //! So an outage notifies once, and further events inside
 //! [`ConnectivityNotifierSink::COOLDOWN`] are **coalesced** rather than
@@ -538,26 +538,26 @@ mod tests {
 
     fn channels(
         email: Arc<RecordingChannel>,
-        sms: Arc<RecordingChannel>,
+        push: Arc<RecordingChannel>,
     ) -> Vec<SharedChannelClient> {
-        vec![email as SharedChannelClient, sms as SharedChannelClient]
+        vec![email as SharedChannelClient, push as SharedChannelClient]
     }
 
     #[test]
     fn an_unreachable_gateway_dispatches_over_both_required_channels() {
         let email = RecordingChannel::new(NotificationChannel::Email);
-        let sms = RecordingChannel::new(NotificationChannel::Sms);
+        let push = RecordingChannel::new(NotificationChannel::Push);
         let clock = StepClock::at(1_000);
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
-            channels(email.clone(), sms.clone()),
+            channels(email.clone(), push.clone()),
             &clock,
         );
 
         record_and_wait(&sink, blocked(ConnectivityState::Unreachable, false));
 
         assert_eq!(email.sends(), 1);
-        assert_eq!(sms.sends(), 1);
+        assert_eq!(push.sends(), 1);
         match sink.outcomes().as_slice() {
             [ConnectivityAlertOutcome::Dispatched(event)] => {
                 assert!(event.within_dispatch_sla());
@@ -574,11 +574,11 @@ mod tests {
     #[test]
     fn a_scheduled_restart_window_is_suppressed_not_sent() {
         let email = RecordingChannel::new(NotificationChannel::Email);
-        let sms = RecordingChannel::new(NotificationChannel::Sms);
+        let push = RecordingChannel::new(NotificationChannel::Push);
         let clock = StepClock::at(1_000);
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
-            channels(email.clone(), sms.clone()),
+            channels(email.clone(), push.clone()),
             &clock,
         );
 
@@ -591,7 +591,7 @@ mod tests {
         // both required channels as Suppressed — proof the dispatcher CHOSE not
         // to send, which a dropped alert could not produce.
         assert_eq!(email.sends(), 0);
-        assert_eq!(sms.sends(), 0);
+        assert_eq!(push.sends(), 0);
         match sink.outcomes().as_slice() {
             [ConnectivityAlertOutcome::Dispatched(event)] => {
                 assert!(event
@@ -607,11 +607,11 @@ mod tests {
     #[test]
     fn a_scheduled_restart_flag_alone_cannot_silence_a_genuine_outage() {
         let email = RecordingChannel::new(NotificationChannel::Email);
-        let sms = RecordingChannel::new(NotificationChannel::Sms);
+        let push = RecordingChannel::new(NotificationChannel::Push);
         let clock = StepClock::at(1_000);
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
-            channels(email.clone(), sms.clone()),
+            channels(email.clone(), push.clone()),
             &clock,
         );
 
@@ -620,35 +620,35 @@ mod tests {
         record_and_wait(&sink, blocked(ConnectivityState::Unreachable, true));
 
         assert_eq!(email.sends(), 1, "a forged flag must not silence an outage");
-        assert_eq!(sms.sends(), 1);
+        assert_eq!(push.sends(), 1);
     }
 
     #[test]
     fn a_healthy_state_never_fabricates_an_outage_alert() {
         let email = RecordingChannel::new(NotificationChannel::Email);
-        let sms = RecordingChannel::new(NotificationChannel::Sms);
+        let push = RecordingChannel::new(NotificationChannel::Push);
         let clock = StepClock::at(1_000);
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
-            channels(email.clone(), sms.clone()),
+            channels(email.clone(), push.clone()),
             &clock,
         );
 
         record_and_wait(&sink, blocked(ConnectivityState::Connected, false));
 
         assert_eq!(email.sends(), 0);
-        assert_eq!(sms.sends(), 0);
+        assert_eq!(push.sends(), 0);
         assert_eq!(sink.outcomes(), vec![ConnectivityAlertOutcome::NotAnOutage]);
     }
 
     #[test]
     fn a_retry_storm_pages_once_and_reports_the_coalesced_count() {
         let email = RecordingChannel::new(NotificationChannel::Email);
-        let sms = RecordingChannel::new(NotificationChannel::Sms);
+        let push = RecordingChannel::new(NotificationChannel::Push);
         let clock = StepClock::at(1_000);
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
-            channels(email.clone(), sms.clone()),
+            channels(email.clone(), push.clone()),
             &clock,
         );
 
@@ -662,7 +662,7 @@ mod tests {
             1,
             "200 blocked orders must not send 200 emails"
         );
-        assert_eq!(sms.sends(), 1);
+        assert_eq!(push.sends(), 1);
         assert_eq!(sink.coalesced_since_last_dispatch(), 199);
 
         // After the cool-down the next block pages again, and says how many were
@@ -693,11 +693,11 @@ mod tests {
     #[test]
     fn a_maintenance_window_cannot_silence_a_real_outage_that_follows_it() {
         let email = RecordingChannel::new(NotificationChannel::Email);
-        let sms = RecordingChannel::new(NotificationChannel::Sms);
+        let push = RecordingChannel::new(NotificationChannel::Push);
         let clock = StepClock::at(1_000);
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
-            channels(email.clone(), sms.clone()),
+            channels(email.clone(), push.clone()),
             &clock,
         );
 
@@ -717,7 +717,7 @@ mod tests {
             1,
             "a real outage during/after a maintenance window was silenced"
         );
-        assert_eq!(sms.sends(), 1);
+        assert_eq!(push.sends(), 1);
     }
 
     /// The converse: the two windows are independent, so a genuine outage does
@@ -725,11 +725,11 @@ mod tests {
     #[test]
     fn an_outage_does_not_consume_the_maintenance_windows_budget() {
         let email = RecordingChannel::new(NotificationChannel::Email);
-        let sms = RecordingChannel::new(NotificationChannel::Sms);
+        let push = RecordingChannel::new(NotificationChannel::Push);
         let clock = StepClock::at(1_000);
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
-            channels(email.clone(), sms.clone()),
+            channels(email.clone(), push.clone()),
             &clock,
         );
 
@@ -785,7 +785,7 @@ mod tests {
             OperatorNotifier::new(),
             vec![
                 Arc::new(SlowChannel(NotificationChannel::Email)) as SharedChannelClient,
-                Arc::new(SlowChannel(NotificationChannel::Sms)) as SharedChannelClient,
+                Arc::new(SlowChannel(NotificationChannel::Push)) as SharedChannelClient,
             ],
             &clock,
         );
@@ -821,11 +821,11 @@ mod tests {
     #[test]
     fn a_failed_worker_spawn_does_not_arm_the_cooldown() {
         let email = RecordingChannel::new(NotificationChannel::Email);
-        let sms = RecordingChannel::new(NotificationChannel::Sms);
+        let push = RecordingChannel::new(NotificationChannel::Push);
         let clock = StepClock::at(1_000);
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
-            channels(email.clone(), sms.clone()),
+            channels(email.clone(), push.clone()),
             &clock,
         );
 
@@ -851,7 +851,7 @@ mod tests {
             1,
             "a failed spawn armed the cool-down and silenced the retry"
         );
-        assert_eq!(sms.sends(), 1);
+        assert_eq!(push.sends(), 1);
     }
 
     /// The alert must not let a reader mistake observation for detection.
@@ -875,11 +875,11 @@ mod tests {
     #[test]
     fn recovery_re_arms_immediate_notification() {
         let email = RecordingChannel::new(NotificationChannel::Email);
-        let sms = RecordingChannel::new(NotificationChannel::Sms);
+        let push = RecordingChannel::new(NotificationChannel::Push);
         let clock = StepClock::at(1_000);
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
-            channels(email.clone(), sms.clone()),
+            channels(email.clone(), push.clone()),
             &clock,
         );
 
@@ -897,11 +897,11 @@ mod tests {
     #[test]
     fn a_failing_transport_is_recorded_and_never_panics_the_execution_path() {
         let email = RecordingChannel::failing(NotificationChannel::Email);
-        let sms = RecordingChannel::failing(NotificationChannel::Sms);
+        let push = RecordingChannel::failing(NotificationChannel::Push);
         let clock = StepClock::at(1_000);
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
-            channels(email.clone(), sms.clone()),
+            channels(email.clone(), push.clone()),
             &clock,
         );
 
@@ -926,11 +926,11 @@ mod tests {
     #[test]
     fn the_cooldown_is_armed_by_the_attempt_not_by_success() {
         let email = RecordingChannel::failing(NotificationChannel::Email);
-        let sms = RecordingChannel::failing(NotificationChannel::Sms);
+        let push = RecordingChannel::failing(NotificationChannel::Push);
         let clock = StepClock::at(1_000);
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
-            channels(email.clone(), sms.clone()),
+            channels(email.clone(), push.clone()),
             &clock,
         );
 
@@ -944,18 +944,18 @@ mod tests {
             1,
             "a failing provider must still be rate-limited"
         );
-        assert_eq!(sms.sends(), 1);
+        assert_eq!(push.sends(), 1);
     }
 
     #[test]
     fn a_backwards_clock_step_cannot_reopen_the_cooldown() {
         let email = RecordingChannel::new(NotificationChannel::Email);
-        let sms = RecordingChannel::new(NotificationChannel::Sms);
+        let push = RecordingChannel::new(NotificationChannel::Push);
         // Start high enough that the "rewind" below stays a valid u64.
         let clock = StepClock::at(10_000_000);
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
-            channels(email.clone(), sms.clone()),
+            channels(email.clone(), push.clone()),
             &clock,
         );
 
@@ -976,11 +976,11 @@ mod tests {
         let _ = std::fs::remove_file(dir.join("notifications.json"));
 
         let email = RecordingChannel::new(NotificationChannel::Email);
-        let sms = RecordingChannel::new(NotificationChannel::Sms);
+        let push = RecordingChannel::new(NotificationChannel::Push);
         let clock = StepClock::at(1_000);
         let sink = ConnectivityNotifierSink::new(
             OperatorNotifier::new(),
-            channels(email.clone(), sms.clone()),
+            channels(email.clone(), push.clone()),
             &clock,
         )
         .with_store_dir(&dir);

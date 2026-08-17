@@ -326,15 +326,15 @@ class BoundaryMatchesSyrsTest(_Fixture):
     def test_phrase_missing_from_perf_boundary_is_caught(self) -> None:
         # Remove the phrase everywhere (it also appears in a constant doc) so the
         # boundary() arm truly loses it.
-        mutated_perf = self.perf_src.replace("email and SMS", "e-mail/text")
+        mutated_perf = self.perf_src.replace("email and push", "e-mail/text")
         with self.assertRaises(PerfMeasurementCheckError) as ctx:
             check_boundary_matches_syrs(self.config, mutated_perf, self.syrs, self.srs)
-        self.assertIn("email and SMS", str(ctx.exception))
+        self.assertIn("email and push", str(ctx.exception))
 
     def test_phrase_absent_from_syrs_row_is_caught(self) -> None:
         # Phrase still in perf.rs but no longer in the SyRS NFR-P6 row → the
         # boundary drifted from the SyRS condition.
-        mutated_syrs = self.syrs.replace("email and SMS", "a channel")
+        mutated_syrs = self.syrs.replace("email and push", "a channel")
         with self.assertRaises(PerfMeasurementCheckError) as ctx:
             check_boundary_matches_syrs(self.config, self.perf_src, mutated_syrs, self.srs)
         self.assertIn("spec row", str(ctx.exception))

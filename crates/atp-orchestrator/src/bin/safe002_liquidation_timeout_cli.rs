@@ -4,7 +4,7 @@
 //! Drives the REAL `atp-execution` timeout gate through the REAL
 //! `PollingLiquidationProbe` (the full wait window on a simulated clock — a
 //! 30 s drill completes instantly), the REAL SRS-NOTIF-001 `OperatorNotifier`
-//! (over fixture email/SMS transports; the concrete SMTP/SMS adapters are the
+//! (over fixture email/push transports; the concrete SMTP/push adapters are the
 //! deferred SRS-NOTIF-001 leg) and the REAL `IbGatewayLiquidationCleanup`
 //! (over the fixture IB gateway; the live transport binding is the deferred
 //! SRS-EXE-006 leg) — the mocked-IB fault-injection workflow the feature's
@@ -29,7 +29,7 @@ use atp_types::{OrderErrorCategory, SideEffectOutcome, UnfilledLiquidationOrder}
 
 const USAGE: &str = "\
 SRS-SAFE-002 kill-switch liquidation-timeout CLI (mocked-IB fixtures; live IB = SRS-EXE-006,
-real SMTP/SMS = SRS-NOTIF-001)
+real SMTP/push = SRS-NOTIF-001)
 
 USAGE:
   safe002_liquidation_timeout_cli resolve [OPTIONS]
@@ -47,7 +47,7 @@ RESOLVE OPTIONS:
   --probe-error <KIND>          inject a probe fault: connectivity | order-state | probe-timeout
   --premature-timeout-at <N>    inject a LYING probe reporting a timeout at N s (< deadline)
   --fail-email                  email transport fails
-  --fail-sms                    SMS transport fails
+  --fail-push                   push transport fails
   --fail-cancel                 IB cancel_order fails
   --fail-disconnect             IB disconnect fails
   --no-broker-binding           simulate a missing domain->broker order-id binding
@@ -98,7 +98,7 @@ struct ParsedArgs {
     probe_error: Option<ProbeFault>,
     premature_timeout_at: Option<u64>,
     fail_email: bool,
-    fail_sms: bool,
+    fail_push: bool,
     fail_cancel: bool,
     fail_disconnect: bool,
     no_broker_binding: bool,
@@ -192,7 +192,7 @@ impl ParsedArgs {
                     )?;
                 }
                 "--fail-email" => set_bool_once(&mut parsed.fail_email, flag)?,
-                "--fail-sms" => set_bool_once(&mut parsed.fail_sms, flag)?,
+                "--fail-push" => set_bool_once(&mut parsed.fail_push, flag)?,
                 "--fail-cancel" => set_bool_once(&mut parsed.fail_cancel, flag)?,
                 "--fail-disconnect" => set_bool_once(&mut parsed.fail_disconnect, flag)?,
                 "--no-broker-binding" => set_bool_once(&mut parsed.no_broker_binding, flag)?,
@@ -244,7 +244,7 @@ impl ParsedArgs {
             }
         }
         scenario.fail_email = self.fail_email;
-        scenario.fail_sms = self.fail_sms;
+        scenario.fail_push = self.fail_push;
         scenario.fail_cancel = self.fail_cancel;
         scenario.fail_disconnect = self.fail_disconnect;
         scenario.bind_broker_order_id = !self.no_broker_binding;
@@ -369,14 +369,14 @@ fn run_to_json(run: &FixtureTimeoutRun, disposition: &str) -> String {
         .map(|call| format!("\"{}\"", json_escape(call)))
         .collect();
     let notification = format!(
-        "{{\"events\":{},\"email_accepted\":{},\"sms_accepted\":{}}}",
+        "{{\"events\":{},\"email_accepted\":{},\"push_accepted\":{}}}",
         run.notifications.len(),
         run.email_pages.len(),
-        run.sms_pages.len(),
+        run.push_pages.len(),
     );
     // The outcome SELF-LABELS its transport tier: this CLI drives the REAL
     // gate/probe/dispatcher but FIXTURE transports (mocked IB gateway,
-    // fixture email/SMS channels) — the consumer must never be able to
+    // fixture email/push channels) — the consumer must never be able to
     // mistake a drill outcome for live SYS-44b evidence. The live runtime
     // (deferred SRS-EXE-006 + SRS-NOTIF-001 legs) will label itself LIVE.
     let common = format!(

@@ -6,7 +6,7 @@ further on_fill callbacks emitted". This slice ships ONE named sub-component of 
 per-engine Running -> Halted transition and the un-bypassable refuse-to-fill gate, in
 ``crates/atp-simulation`` (module ``halt``). SRS-SAFE-001 STAYS ``passes:false`` -- the full
 sequence (IB cancel/disconnect, orchestrated activation + 5s budget, SRS-LOG-001 observability,
-email/SMS, dashboard/CLI/REST trigger) is deferred to its named owners.
+email/push, dashboard/CLI/REST trigger) is deferred to its named owners.
 
 Mirrors ``tests/test_virtual_ledger_contract.py``: shells out to ``tools/sim_halt_check.py``, then
 exercises each per-check function in-process, including negative spot-checks that mutate the Rust

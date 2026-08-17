@@ -7,7 +7,7 @@ binary*. The backend here shells ``safe002_liquidation_timeout_cli resolve``
 — the orchestrator composition that drives the REAL
 ``atp-execution`` timeout gate through the REAL ``PollingLiquidationProbe``
 (full wait window on a simulated clock), the REAL SRS-NOTIF-001
-``OperatorNotifier`` (fixture email/SMS transports; the concrete SMTP/SMS
+``OperatorNotifier`` (fixture email/push transports; the concrete SMTP/push
 adapters are the deferred SRS-NOTIF-001 leg) and the REAL
 ``IbGatewayLiquidationCleanup`` (fixture IB gateway; the live transport is
 the deferred SRS-EXE-006 leg).
@@ -66,7 +66,7 @@ _REQUIRED_OUTCOME_KEYS = (
 )
 
 #: Transport tiers an outcome may declare. Today only the FIXTURE drill
-#: exists (mocked IB gateway + fixture email/SMS channels around the real
+#: exists (mocked IB gateway + fixture email/push channels around the real
 #: gate/probe/dispatcher); the LIVE tier arrives with the deferred
 #: SRS-EXE-006 + SRS-NOTIF-001 legs. Anything else is version skew — refuse.
 _KNOWN_TRANSPORT_TIERS = frozenset({"FIXTURE", "LIVE"})
@@ -138,7 +138,7 @@ class LiquidationTimeoutOutcome:
     @property
     def is_fixture_drill(self) -> bool:
         """True when the outcome ran over FIXTURE transports (mocked IB
-        gateway + fixture email/SMS) — drill evidence, never live SYS-44b
+        gateway + fixture email/push) — drill evidence, never live SYS-44b
         evidence."""
 
         return self.transports == "FIXTURE"
@@ -310,7 +310,7 @@ def _assert_outcome_consistency(payload: Mapping[str, object], disposition: str)
         if not isinstance(notification, Mapping):
             contradictions.append(f"notification={notification!r}")
         else:
-            for channel_key in ("email_accepted", "sms_accepted"):
+            for channel_key in ("email_accepted", "push_accepted"):
                 if notification.get(channel_key) != 0:
                     contradictions.append(
                         f"notification.{channel_key}={notification.get(channel_key)!r}"
@@ -362,7 +362,7 @@ def _assert_outcome_consistency(payload: Mapping[str, object], disposition: str)
             # broker calls would put a false "handled" record in the durable
             # audit log.
             if statuses.get("operator_alert") == "SUCCEEDED" and not (
-                accepted.get("email_accepted") == 1 and accepted.get("sms_accepted") == 1
+                accepted.get("email_accepted") == 1 and accepted.get("push_accepted") == 1
             ):
                 contradictions.append(
                     "cleanup.operator_alert=SUCCEEDED without one accepted page on "
@@ -450,7 +450,7 @@ def resolve_liquidation_timeout(
     timed out); the returned record is ``None``.
 
     **Fixture-drill guard (fail-closed):** the only runnable SAFE-002 runtime
-    today is the FIXTURE drill (mocked IB gateway + fixture email/SMS around
+    today is the FIXTURE drill (mocked IB gateway + fixture email/push around
     the real gate/probe/dispatcher). A FIXTURE outcome is durably logged ONLY
     when the caller explicitly passes ``fixture_drill=True`` — the record's
     message then carries ``transports=FIXTURE`` so drill evidence can never
@@ -464,7 +464,7 @@ def resolve_liquidation_timeout(
     if outcome.is_fixture_drill and not fixture_drill:
         raise LiquidationTimeoutBackendError(
             "liquidation-timeout outcome ran over FIXTURE transports (mocked IB "
-            "gateway + fixture email/SMS) but fixture_drill=True was not passed "
+            "gateway + fixture email/push) but fixture_drill=True was not passed "
             "— refusing to durably log drill evidence as SYS-44b history; the "
             "live runtime is the deferred SRS-EXE-006 + SRS-NOTIF-001 legs"
         )

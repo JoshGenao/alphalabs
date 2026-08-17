@@ -1,9 +1,9 @@
 //! Notification domain types (SRS-NOTIF-001).
 //!
-//! SRS-NOTIF-001 ("notify the operator through email and SMS for IB
+//! SRS-NOTIF-001 ("notify the operator through email and push for IB
 //! connectivity loss and critical failures") requires the platform to, within
 //! 60 seconds of *detecting* a connectivity loss or a critical system failure,
-//! begin dispatching an operator notification over **both** email and SMS, and
+//! begin dispatching an operator notification over **both** email and push, and
 //! to **store the delivery status as a notification event**. Traces SyRS SYS-46
 //! (the 60-second notify obligation), NFR-P6 (the ≤ 60,000 ms dispatch budget),
 //! NFR-S4 (channel credentials encrypted / never logged); StRS SN-1.12 (multi-
@@ -34,7 +34,7 @@
 //!
 //! A [`NotificationEvent`] carries only operator-facing metadata (what failed,
 //! when, which channels, the delivery outcome + a short non-secret detail
-//! string). It never carries an SMTP password, SMS gateway API key, or message
+//! string). It never carries an SMTP password, push access token, or message
 //! body that could embed one — NFR-S4 keeps channel credentials out of logs and
 //! out of the stored event. The credential lives only inside the concrete
 //! channel adapter (deferred to the SRS-NOTIF-001 transport adapters).
@@ -101,30 +101,31 @@ impl NotificationSeverity {
 }
 
 /// A channel a notification fans out to (SRS-NOTIF-001). Phase 1 is email and
-/// SMS (StRS SN-1.12; push / Telegram / Discord are explicitly future phases).
+/// push (StRS SN-1.12; SMS / Telegram / Discord are explicitly future phases —
+/// SMS left Phase 1 on 2026-08-16, see the crate docs).
 /// The wire strings feed the durable store codec and the `/api/v1/alerts`
 /// `channel` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum NotificationChannel {
     Email,
-    Sms,
+    Push,
 }
 
 impl NotificationChannel {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Email => "EMAIL",
-            Self::Sms => "SMS",
+            Self::Push => "PUSH",
         }
     }
 }
 
 /// The two channels SRS-NOTIF-001 requires every operator notification to reach
-/// ("email **and** SMS"). The dispatcher fans out to exactly these unless a
+/// ("email **and** push"). The dispatcher fans out to exactly these unless a
 /// caller narrows the set. Kept as a constant so the "both channels" obligation
 /// is a single source of truth.
 pub const REQUIRED_CHANNELS: &[NotificationChannel] =
-    &[NotificationChannel::Email, NotificationChannel::Sms];
+    &[NotificationChannel::Email, NotificationChannel::Push];
 
 /// What was detected, with the **detection instant** the ≤ 60,000 ms dispatch
 /// SLA is measured against (NFR-P6). `detected_at_millis` is an epoch-**millisecond**
@@ -185,7 +186,7 @@ impl NotificationTrigger {
 }
 
 /// The outcome of a single channel send. `Delivered` means the channel adapter
-/// *accepted the message for delivery* (an SMTP `250 OK`, an SMS gateway accept
+/// *accepted the message for delivery* (an SMTP `250 OK`, an ntfy message id
 /// receipt) — it is a hand-off acknowledgement, not a proof the operator's
 /// phone rang; end-to-end read receipts are out of the Phase-1 baseline.
 /// `Failed` means the send attempt returned a transport error, and the paired
@@ -275,7 +276,7 @@ impl ChannelDelivery {
 
 /// The stored notification event (SRS-NOTIF-001's "delivery status is stored as
 /// a notification event"). Matches the data-dictionary shape — event type,
-/// timestamp, channels dispatched (email, SMS), delivery status — and aligns
+/// timestamp, channels dispatched (email, push), delivery status — and aligns
 /// with the deferred `/api/v1/alerts` response fields (`raised_at`, `severity`,
 /// `channel`, `delivery_status`).
 ///
@@ -347,7 +348,7 @@ impl NotificationEvent {
     }
 
     /// The per-channel delivery records, in the order the dispatcher attempted
-    /// them (email before SMS, the canonical `REQUIRED_CHANNELS` order).
+    /// them (email before push, the canonical `REQUIRED_CHANNELS` order).
     pub fn deliveries(&self) -> &[ChannelDelivery] {
         &self.inner.deliveries
     }

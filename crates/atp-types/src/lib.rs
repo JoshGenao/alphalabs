@@ -2566,13 +2566,13 @@ impl std::error::Error for StructuredOrchestratorError {}
 // submits liquidation orders, and waits for flat confirmation OR a
 // configured timeout (default 60 seconds). On flat-before-timeout the swap
 // proceeds to paper normally; ON TIMEOUT the swap enters demotion-pending
-// state, dashboard/email/SMS notifications are sent, the unfilled
+// state, dashboard/email/push notifications are sent, the unfilled
 // liquidation order is canceled, and promotion is blocked until manual
 // resolution.
 //
 // This SDK surface models only the timeout *decision point* — a binary
 // outcome mirroring `LaunchReadiness` (the unbuilt 60 s async wait loop,
-// the real IB cancel, and the real email/SMS transport are the deferred
+// the real IB cancel, and the real email/push transport are the deferred
 // runtime, enumerated in `architecture/runtime_services.json`
 // `hot_swap_demotion_contract.deferred[]`). The orchestrator's
 // `resolve_demotion` gate matches on `HotSwapDemotionOutcome` and triggers
@@ -2586,7 +2586,7 @@ impl std::error::Error for StructuredOrchestratorError {}
 // cancel flows through the `UnfilledOrderCanceller` port, not a field on
 // the envelope.
 //
-// `OperatorAlertChannel` types SRS-RESV-004's dashboard/email/SMS triad;
+// `OperatorAlertChannel` types SRS-RESV-004's dashboard/email/push triad;
 // `OperatorAlertEvent` is the structured notification payload carrying all
 // three channels so the contract can assert the full fan-out was
 // requested. `HotSwapDemotionEvent` is the structured state-transition
@@ -2633,7 +2633,7 @@ pub struct HotSwapDemotionRequest {
 pub enum OperatorAlertChannel {
     Dashboard,
     Email,
-    Sms,
+    Push,
 }
 
 impl OperatorAlertChannel {
@@ -2641,7 +2641,7 @@ impl OperatorAlertChannel {
         match self {
             Self::Dashboard => "DASHBOARD",
             Self::Email => "EMAIL",
-            Self::Sms => "SMS",
+            Self::Push => "PUSH",
         }
     }
 }
@@ -2672,7 +2672,7 @@ pub struct OperatorAlertEvent {
 
 /// Observable outcome of a timeout-branch side effect (the unfilled-order
 /// cancel and the operator-alert dispatch). Per SRS-RESV-004 the cancel
-/// routes to the IB adapter and the alert to the email/SMS transport —
+/// routes to the IB adapter and the alert to the email/push transport —
 /// both are fallible IO in the deferred runtime, so the gate records the
 /// outcome on `HotSwapDemotionEvent` rather than treating the side effect
 /// as infallible: a failed cancel could otherwise leave a live liquidation
@@ -2708,7 +2708,7 @@ pub struct HotSwapDemotionEvent {
     /// dashboard / log surface must not read a timeout demotion as "cleanly
     /// liquidated" without inspecting this field.
     pub liquidation_cancel: SideEffectOutcome,
-    /// SRS-RESV-004 observability: the outcome of the dashboard/email/SMS
+    /// SRS-RESV-004 observability: the outcome of the dashboard/email/push
     /// operator-alert dispatch on the timeout branch (`NotAttempted` on the
     /// flat branch). A `Failed` value means the operator may not have been
     /// paged.
@@ -3467,13 +3467,13 @@ mod resv003_trigger_config_tests {
 // SRS-SAFE-002 (SyRS SYS-44b) is the error-path companion: if any liquidation
 // order is still unfilled after the configured timeout (default 30 s), the
 // system LOGS the unfilled order details, NOTIFIES the operator by email AND
-// SMS, CANCELS the unfilled liquidation order, and DISCONNECTS from IB; the
+// push, CANCELS the unfilled liquidation order, and DISCONNECTS from IB; the
 // operator then resolves remaining positions manually.
 //
 // These types model the SRS-SAFE-002 timeout *decision point* as a binary
 // outcome mirroring `HotSwapDemotionOutcome` (ERR-7). The 30 s async wait
 // loop, the real SRS-SAFE-001 liquidate sequence, the real IB cancel /
-// disconnect (SRS-EXE-006 adapter), and the real email/SMS transport
+// disconnect (SRS-EXE-006 adapter), and the real email/push transport
 // (SRS-NOTIF-001) are the deferred runtime, enumerated in
 // `architecture/runtime_services.json` `kill_switch_timeout_contract
 // .deferred[]`. The execution engine's `resolve_kill_switch_timeout` gate
@@ -3537,7 +3537,7 @@ pub struct KillSwitchTimeoutRequest {
 }
 
 /// SRS-SAFE-002 operator-alert payload for the kill-switch timeout. Reuses
-/// `OperatorAlertChannel` (SYS-44b fans the page to email AND SMS) but carries
+/// `OperatorAlertChannel` (SYS-44b fans the page to email AND push) but carries
 /// the live strategy + unfilled-order details rather than the Hot-Swap
 /// demoting/candidate pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3566,7 +3566,7 @@ pub struct KillSwitchTimeoutEvent {
     /// in time). Mirrors ERR-7's `promotion_blocked` decision flag so the
     /// dashboard renders the safety posture without re-matching the outcome.
     pub manual_resolution_required: bool,
-    /// SRS-SAFE-002 observability: outcome of the email/SMS operator-alert
+    /// SRS-SAFE-002 observability: outcome of the email/push operator-alert
     /// dispatch (`NotAttempted` on the filled branch).
     pub operator_alert: SideEffectOutcome,
     /// SRS-SAFE-002 observability: outcome of the unfilled-liquidation-order
@@ -3653,7 +3653,7 @@ impl StructuredKillSwitchTimeoutError {
             "SRS-SAFE-002 + SyRS SYS-44b: kill-switch liquidation order {order} \
              ({side} {quantity} {symbol}) for live strategy {strategy} stayed \
              unfilled — {elapsed} s elapsed, {timeout} s permitted; the SYS-44b \
-             cleanup was attempted (operator page over email + SMS, \
+             cleanup was attempted (operator page over email + push, \
              unfilled-order cancel, and IB disconnect dispatched — see this \
              error's `cleanup` outcomes, also mirrored on the kill-switch \
              timeout event when the audit sink accepted it); positions await \
@@ -4161,10 +4161,10 @@ mod tests {
 
     #[test]
     fn operator_alert_channel_wire_strings_cover_the_resv_004_triad() {
-        // SRS-RESV-004: notifications are sent over dashboard, email, and SMS.
+        // SRS-RESV-004: notifications are sent over dashboard, email, and push.
         assert_eq!(OperatorAlertChannel::Dashboard.as_str(), "DASHBOARD");
         assert_eq!(OperatorAlertChannel::Email.as_str(), "EMAIL");
-        assert_eq!(OperatorAlertChannel::Sms.as_str(), "SMS");
+        assert_eq!(OperatorAlertChannel::Push.as_str(), "PUSH");
     }
 
     #[test]

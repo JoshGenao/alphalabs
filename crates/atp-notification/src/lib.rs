@@ -1,7 +1,7 @@
 //! Operator notification dispatch (SRS-NOTIF-001).
 //!
 //! The core Rust notification dispatcher (AC-16 / C-12 require it in Rust): it
-//! notifies the operator over **email and SMS** for **IB connectivity loss and
+//! notifies the operator over **email and push** for **IB connectivity loss and
 //! critical failures**, begins dispatch within 60 seconds of detection (NFR-P6 /
 //! SYS-46), and **stores the delivery status as a notification event** for the
 //! operator audit trail. Traces StRS SN-1.12 / SN-2.04, SC-9.
@@ -13,12 +13,12 @@
 //!   stored record), [`ChannelDelivery`] (the per-channel outcome — opaque, so a
 //!   delivery status cannot be fabricated without a real send).
 //! * [`channel`] — the [`NotificationChannelClient`] transport port + the typed
-//!   [`ChannelError`] failure taxonomy. The concrete SMTP (IF-10) / SMS gateway
+//!   [`ChannelError`] failure taxonomy. The concrete SMTP (IF-10) / ntfy push
 //!   (IF-11) adapters live in `atp-adapters::notification`; the core names no
 //!   vendor and holds no credential (NFR-S4).
 //! * [`dispatcher`] — [`OperatorNotifier`], the detection→dispatch→record
 //!   authority. Injected clock (deterministic latency), reversed-timestamp
-//!   rejection, required email+SMS fan-out, and the SYS-75 fail-safe that a
+//!   rejection, required email+push fan-out, and the SYS-75 fail-safe that a
 //!   critical failure is never suppressed. It passes a mandatory per-channel
 //!   `deadline` to every send; the adapter enforces it via cancellable I/O and
 //!   returns a typed timeout, which is recorded `Failed` while the other channel
@@ -34,13 +34,13 @@
 //! and durably stored. What is **deferred** (and why SRS-NOTIF-001 stays
 //! `passes:false` until an operator finishes the integration):
 //!
-//!   * a REAL provider behind the transports. The SMTP (IF-10) and SMS gateway
+//!   * a REAL provider behind the transports. The SMTP (IF-10) and ntfy push
 //!     (IF-11) adapters now exist in `atp-adapters::notification` and are
 //!     verified over real sockets against scripted relays — but they submit to
 //!     the `phase1-notification-egress` sidecar, which owns the TLS session to
 //!     the actual provider, and neither that sidecar nor a provider account has
 //!     been stood up. Until an alert lands in a real inbox and on a real phone,
-//!     "email and SMS are sent" is proven to the relay, not to the operator;
+//!     "email and push are sent" is proven to the relay, not to the operator;
 //!   * an automatic runtime that dispatches without an operator invoking it.
 //!     Both detection bindings below are composed and driven by operator CLIs;
 //!     `phase1-notification-dispatcher` still runs `core-runtime.Dockerfile`'s
@@ -71,7 +71,7 @@
 //!
 //! Credential encryption at rest stays with NFR-S4 / SRS-SEC-001.
 //!
-//! The end-to-end proof (real connectivity loss → real email + SMS delivered →
+//! The end-to-end proof (real connectivity loss → real email + push delivered →
 //! status stored) is the `Fault injection, integration test` method the feature
 //! names; it cannot run solo in parallel, so this lands `serialized`.
 

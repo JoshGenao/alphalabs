@@ -98,7 +98,7 @@ class HotSwapDemotionScriptTest(unittest.TestCase):
             "HotSwapDemotionOutcome with 2 variants",
             "FlatBeforeTimeout, TimedOutDemotionPending",
             "OperatorAlertChannel with 3 variants",
-            "Dashboard, Email, Sms",
+            "Dashboard, Email, Push",
             "OperatorAlertEvent with the 7 required fields",
             "SideEffectOutcome with 3 variants",
             "NotAttempted, Succeeded, Failed",
@@ -194,20 +194,20 @@ class OperatorAlertChannelEnumTest(unittest.TestCase):
 
     def test_all_three_channels_present(self) -> None:
         evidence = check_operator_alert_channel_enum(self.config, self.types_src)
-        for variant in ("Dashboard", "Email", "Sms"):
+        for variant in ("Dashboard", "Email", "Push"):
             self.assertIn(variant, evidence)
 
     def test_missing_sms_channel_is_caught(self) -> None:
-        # SRS-RESV-004 requires the dashboard/email/SMS triad — dropping
-        # SMS must be caught (a missed SMS is a missed operator page).
+        # SRS-RESV-004 requires the dashboard/email/push triad — dropping
+        # push must be caught (a missed push is a missed operator page).
         mutated = self.types_src.replace(
-            "pub enum OperatorAlertChannel {\n    Dashboard,\n    Email,\n    Sms,\n}",
+            "pub enum OperatorAlertChannel {\n    Dashboard,\n    Email,\n    Push,\n}",
             "pub enum OperatorAlertChannel {\n    Dashboard,\n    Email,\n}",
             1,
         )
         with self.assertRaises(HotSwapDemotionCheckError) as ctx:
             check_operator_alert_channel_enum(self.config, mutated)
-        self.assertIn("Sms", str(ctx.exception))
+        self.assertIn("Push", str(ctx.exception))
 
 
 class SideEffectOutcomeEnumTest(unittest.TestCase):
@@ -439,11 +439,11 @@ class ResolveDemotionGuardTest(unittest.TestCase):
 
     def test_missing_sms_channel_in_timeout_arm_is_caught(self) -> None:
         mutated = self.orch_src.replace(
-            "                        OperatorAlertChannel::Sms,\n", "", 1
+            "                        OperatorAlertChannel::Push,\n", "", 1
         )
         with self.assertRaises(HotSwapDemotionCheckError) as ctx:
             check_resolve_demotion_guard(self.config, mutated)
-        self.assertIn("OperatorAlertChannel::Sms", str(ctx.exception))
+        self.assertIn("OperatorAlertChannel::Push", str(ctx.exception))
 
     def test_promotion_path_in_timeout_arm_is_caught(self) -> None:
         # A `promote(` call in the timeout arm is the regression the

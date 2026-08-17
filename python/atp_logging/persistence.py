@@ -290,7 +290,7 @@ class JsonlLogStore:
         # default to zero redaction. When no value-aware redactor is injected we
         # fall back to the always-on pattern-based DEFAULT_REDACTOR — production
         # boot injects SecretRedactor(atp_config.secret_values(env)) for full
-        # IB/SMTP/SMS value coverage.
+        # IB/SMTP/push value coverage.
         self._redactor = redactor if redactor is not None else DEFAULT_REDACTOR
         self._lock = threading.Lock()
         self._closed = False
@@ -358,7 +358,7 @@ class JsonlLogStore:
 
         # SRS-SEC-001: redact credentials at the persistence boundary — the
         # LAST line of defence. A record written directly to the store
-        # (bypassing the dispatcher) is scrubbed here, so an IB/SMTP/SMS secret
+        # (bypassing the dispatcher) is scrubbed here, so an IB/SMTP/push secret
         # can never land in the on-disk audit trail in plaintext. ``_redactor``
         # is always set (DEFAULT_REDACTOR at minimum), so there is no
         # zero-redaction path. Redaction preserves the schema (message /
@@ -1437,7 +1437,7 @@ def build_separated_log_dispatcher(
     ``redactor`` is omitted it falls back to the always-on pattern-based
     ``DEFAULT_REDACTOR`` (never zero redaction); the boot layer should inject the
     value-aware ``SecretRedactor(atp_config.secret_values(env))`` for full
-    IB/SMTP/SMS value coverage.
+    IB/SMTP/push value coverage.
 
     The two sinks MUST resolve to different physical files — that is the
     SRS-LOG-001 separation guarantee. Each filename must therefore be a bare

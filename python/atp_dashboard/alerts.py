@@ -11,7 +11,7 @@ Honesty (no fabrication — the SRS-UI-001 convention)
 ----------------------------------------------------
 Alert events are produced by the SRS-NOTIF-001 operator notifier
 (``crates/atp-notification``: ``OperatorNotifier`` + ``NotificationEventStore``).
-That feature is not yet delivered: its SMTP/SMS adapters, its detection wiring
+That feature is not yet delivered: its SMTP/push adapters, its detection wiring
 (IB connectivity loss, critical failures), and its store-path configuration are
 all deferred, so **no honest live alert data exists today**. Crucially, an empty
 alert list must NOT render as "0 active alerts" — with detection unwired,

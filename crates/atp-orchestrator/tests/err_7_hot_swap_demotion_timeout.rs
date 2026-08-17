@@ -2,7 +2,7 @@
 //! Hot-Swap demotion's liquidation does not reach flat within the
 //! configured timeout (default 60 s), the orchestrator's `resolve_demotion`
 //! gate enters the demotion-pending state: it cancels the unfilled
-//! liquidation order, notifies the operator over dashboard + email + SMS,
+//! liquidation order, notifies the operator over dashboard + email + push,
 //! records the demotion transition, refuses the swap with
 //! `HOT_SWAP_DEMOTION_TIMEOUT`, and blocks promotion (the caller promotes
 //! only on `Ok`). On flat-before-timeout the swap proceeds with no alert
@@ -132,7 +132,7 @@ impl OperatorAlertSink for OperatorAlertSinkSpy {
 }
 
 /// Alert sink that records the call but reports failure — models an
-/// unreachable email/SMS transport. The gate must still record
+/// unreachable email/push transport. The gate must still record
 /// `operator_alert = Failed` and block promotion.
 #[derive(Default)]
 struct OperatorAlertFailingSink {
@@ -142,7 +142,7 @@ struct OperatorAlertFailingSink {
 impl OperatorAlertSink for OperatorAlertFailingSink {
     fn dispatch(&self, event: OperatorAlertEvent) -> Result<(), HotSwapSideEffectError> {
         self.alerts.borrow_mut().push(event);
-        Err(HotSwapSideEffectError::new("SMS gateway timed out"))
+        Err(HotSwapSideEffectError::new("push service timed out"))
     }
 }
 
@@ -327,7 +327,7 @@ fn err_7_timeout_enters_demotion_pending_blocks_promotion_and_alerts_all_channel
     let alert = &alerts_seen[0];
     assert!(alert.channels.contains(&OperatorAlertChannel::Dashboard));
     assert!(alert.channels.contains(&OperatorAlertChannel::Email));
-    assert!(alert.channels.contains(&OperatorAlertChannel::Sms));
+    assert!(alert.channels.contains(&OperatorAlertChannel::Push));
     assert_eq!(alert.elapsed_seconds, 72);
     assert_eq!(alert.timeout_seconds, HOT_SWAP_DEMOTION_TIMEOUT_SECONDS);
 

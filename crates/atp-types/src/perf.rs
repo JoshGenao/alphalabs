@@ -74,7 +74,7 @@ pub const ORDER_SIGNAL_TO_ACK_LATENCY_P95_MS: u64 = 1_000;
 pub const HEARTBEAT_STALENESS_THRESHOLD_MS: u64 = 15_000;
 
 /// NFR-P6 connectivity-loss notification delivery budget: `≤ 60,000 ms` from
-/// detection to dispatch via email and SMS. The authoritative runtime constant
+/// detection to dispatch via email and push. The authoritative runtime constant
 /// is `atp_notification::event::DISPATCH_SLA_MS` (also `60_000`); it lives in a
 /// crate *above* `atp-types` (which is dependency-free) so it cannot be imported
 /// here. Both trace SyRS NFR-P6 and are pinned to it by
@@ -500,7 +500,7 @@ impl LatencyNfr {
             }
             Self::HeartbeatStaleness => "continuous during market hours",
             Self::ConnectivityNotification => {
-                "from detection to notification dispatch via email and SMS"
+                "from detection to notification dispatch via email and push"
             }
             Self::StrategyStartup => {
                 "from orchestrator start command to strategy ready (warm-up excluded)"

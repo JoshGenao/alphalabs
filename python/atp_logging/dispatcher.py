@@ -125,7 +125,7 @@ class RoutedLogDispatcher:
         validate_log_record(record)
 
         # SRS-SEC-001: scrub credentials before the record reaches any sink so
-        # an IB/SMTP/SMS secret embedded in a message can never be persisted in
+        # an IB/SMTP/push secret embedded in a message can never be persisted in
         # plaintext. Redaction preserves schema validity (message /
         # correlation_id stay non-empty), so the sink's own validation still
         # holds.

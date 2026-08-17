@@ -17,7 +17,7 @@
 //! partially-filled affected order is cancelled fail-closed. The deferred
 //! composition-root binding maps each alert onto
 //! `NotificationTrigger::critical_failure` → `OperatorNotifier::dispatch` (whose
-//! dispatch-within-SLA over email + SMS is proven by SRS-NOTIF-001's own tests)
+//! dispatch-within-SLA over email + push is proven by SRS-NOTIF-001's own tests)
 //! and onto `deliver_order_event` (SRS-SDK-004) — which is why SRS-DATA-019 lands
 //! serialized until that end-to-end delivery is proven.
 
@@ -54,7 +54,9 @@ struct FailingSink;
 
 impl RestingOrderCorpActionAlertSink for FailingSink {
     fn dispatch(&self, _alert: RestingOrderCorpActionAlert) -> Result<(), RestingOrderAlertError> {
-        Err(RestingOrderAlertError::new("email/SMS gateway unreachable"))
+        Err(RestingOrderAlertError::new(
+            "email/push gateway unreachable",
+        ))
     }
 }
 
@@ -169,7 +171,7 @@ fn srs_data_019_failed_alert_dispatch_is_surfaced_not_swallowed() {
     let failure = &report.alert_failures[0];
     assert_eq!(failure.order_id, key("cancel").to_string());
     assert_eq!(failure.symbol, "DEAD");
-    assert_eq!(failure.error.reason, "email/SMS gateway unreachable");
+    assert_eq!(failure.error.reason, "email/push gateway unreachable");
 }
 
 #[test]

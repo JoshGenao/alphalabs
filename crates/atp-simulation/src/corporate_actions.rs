@@ -101,7 +101,7 @@
 //! [`apply_and_emit`] surfaces every dispatch failure in
 //! [`PaperCorpActionReport::alert_failures`] and continues (one bad channel
 //! cannot suppress the rest). `atp-simulation` names no notification transport;
-//! the concrete email/SMS binding is the composition root's (SRS-NOTIF-001).
+//! the concrete email/push binding is the composition root's (SRS-NOTIF-001).
 
 use std::collections::HashMap;
 

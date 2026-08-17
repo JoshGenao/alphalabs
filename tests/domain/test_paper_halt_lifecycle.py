@@ -15,7 +15,7 @@ sub-component; the activation sequence above it is now built as the SRS-SAFE-001
 ``halt_fleet`` fan-out, the orchestrator fixture CLI, and the ``python/atp_safety`` operator
 surfaces; see ``tests/domain/test_kill_switch_activation.py``), while the LIVE path stays deferred
 to its named owners (SRS-EXE-006 real IB transport behind the brokerage port; SRS-EXE-002 hosting of
-real strategies on fleet-registered gates; SRS-LOG-001's own feature flip; SRS-NOTIF-001 email/SMS;
+real strategies on fleet-registered gates; SRS-LOG-001's own feature flip; SRS-NOTIF-001 email/push;
 SRS-API-001's own feature flip for the operator runtime the trigger rides on).
 
 This test proves the invariant from three angles:

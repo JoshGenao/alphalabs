@@ -705,7 +705,7 @@ def test_ui_1_alerts_real_feed_counts_string_false_ack_as_active(
         ' "severity": "CRITICAL", "channel": "EMAIL",'
         ' "delivery_status": "SENT", "acknowledged": "false"},'
         '{"alert_id": "alert-2", "raised_at": "2026-07-16T00:00:02Z",'
-        ' "severity": "ERROR", "channel": "SMS",'
+        ' "severity": "ERROR", "channel": "PUSH",'
         ' "delivery_status": "SENT", "acknowledged": "true"}'
         "]}"
     )

@@ -13,7 +13,7 @@
 //! This is a pure planner: it makes the adjust/cancel DECISION over fixtures. The
 //! production feed of live resting-order state and the routing of the resulting
 //! cancel / cancel-replace to the real IB adapter is the deferred SRS-EXE-001 /
-//! SRS-EXE-006 runtime; real operator email/SMS is SRS-NOTIF-001; live callback
+//! SRS-EXE-006 runtime; real operator email/push is SRS-NOTIF-001; live callback
 //! delivery is SRS-SDK-004. std-only; depends only on the already-declared
 //! `atp-execution` / `atp-types` crates.
 //!
