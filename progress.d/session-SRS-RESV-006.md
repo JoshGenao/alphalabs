@@ -140,9 +140,28 @@ capped the loop at, so its fix ships unreviewed by the judgment layer. What that
 concretely for whoever picks this up:
 
 * `feature_list.json` stays `passes:false`. Nothing here flipped it.
-* The next session should run `adversarial_review.py origin/main` FIRST, against this head.
-  If it approves, record the verdict (`evidence.py critic ... --verdict approve`) and
-  `integrate --mode complete`. If it blocks, the finding is real — 27 for 27 so far.
+* **Round 28 has already run** — after the integrate, against `90578a9` (the last commit
+  before this feature's work, because `origin/main` had become a no-op base). It BLOCKED,
+  and the verdict is in `review.jsonl`. Do not re-run the reviewer expecting a clean slate;
+  start from 28's finding.
+
+  *r28 [high] — the repair path's compare-and-swap is not revalidated under the lock.*
+  `clear-provisional` matches `--at` against a marker read OUTSIDE the guard, then calls
+  `abandon_provisional`, which compares only the attempt id and the strategy pair. The
+  instant the operator named never reaches the mutation. Verified against the code, not
+  taken on the reviewer's word: `resv006_hot_swap_cooldown_cli.rs:457` passes
+  `&attempt.completion` + `&attempt.attempt_id`; `cooldown_store.rs:1050` compares those
+  two and nothing else.
+
+  *The fix*, if you take it: move match-and-clear into ONE `cooldown_store` operation that
+  holds the exclusive guard and compares attempt id, both strategy ids AND
+  `completed_at_seconds` before clearing — the same "one locked read-modify-write" shape
+  r20 applied to `probe_writable`. Add a regression where the marker is replaced between
+  the CLI read and the store clear. Then round 29.
+
+  This is the eighth finding in one family (r13, r15, r18, r19, r21, r25, r26, r27/28) and
+  each has been narrower than the last. Read `guard.attempt_identity_note` and
+  `durable-writes` 26–33 before touching `cooldown_store.rs`; the general form is there.
 * The recurring family is worth reading before touching `cooldown_store.rs`: r13, r15, r18,
   r19, r21, r25, r26 and r27 are all one shape — a durable record with two slots and an
   ownership question. The contract's `writer_closure_note` and `attempt_identity_note` carry
@@ -162,7 +181,7 @@ concretely for whoever picks this up:
 
 ## Adversarial rounds
 
-Adversarial rounds: 27 — every one a block, every finding real, none disputed.
+Adversarial rounds: 28 — every one a block, every finding real, none disputed.
 
 * **r1 `block`** — `meta:critic-self-modification`. Structural refusal of any diff touching
   `tools/critic_check.py`. Class: reviewer refusal, not a code finding. (Prior session.)
