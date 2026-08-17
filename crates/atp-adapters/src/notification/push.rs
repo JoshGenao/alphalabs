@@ -334,6 +334,26 @@ impl PushChannel {
 
         match status {
             200..=299 => {
+                // VALIDATE THE DOCUMENT BEFORE INTERPRETING IT.
+                //
+                // Everything below reads meaning out of this body — whether an
+                // attachment key is present, what the message id is — and both
+                // readings are only sound on a COMPLETE document. A reply cut
+                // short mid-write still contains a readable `id`, and a
+                // truncated body is also missing whatever came after the cut, so
+                // "no attachment key" would mean "the key had not arrived yet".
+                // Checking completeness first makes both conclusions honest and
+                // reports the real diagnosis (truncated) rather than a
+                // consequence of it.
+                if !json_object_is_complete(&raw_payload.chars().collect::<Vec<_>>()) {
+                    return Err(ChannelError::TransportUnavailable {
+                        detail: format!(
+                            "{CHANNEL}: HTTP {status} body is not a complete JSON object — the \
+                             reply was truncated or is not ntfy's, so the alert cannot be \
+                             treated as delivered"
+                        ),
+                    });
+                }
                 // A 2xx that converted the message into a file is a SILENT
                 // failure: the operator's phone shows "You received a file"
                 // instead of the alert. MAX_PUSH_BODY_BYTES should make this
@@ -642,6 +662,51 @@ fn json_string_field(payload: &str, key: &str) -> Option<String> {
     None
 }
 
+/// Whether the payload is ONE complete, balanced JSON object and nothing else.
+///
+/// The 2xx path needs this before it trusts anything it scanned out of the body.
+/// Found by adversarial review: `message_reference` only looks for a top-level
+/// string `id`, and a prematurely closed reply like `{"id":"EARLY-ID"` contains a
+/// perfectly complete string value — so a response truncated by a crash, a proxy
+/// cutting the connection, or a half-written write was being stored as a
+/// DELIVERED operator page. Scanning a fragment tells you what it happens to
+/// contain, never that it is the document it claims to be.
+///
+/// Returns false for: an unbalanced object, an unterminated string, trailing
+/// content after the root closes, and anything whose root is not an object.
+fn json_object_is_complete(chars: &[char]) -> bool {
+    let mut index = match chars.iter().position(|c| !c.is_whitespace()) {
+        Some(start) if chars[start] == '{' => start,
+        _ => return false,
+    };
+    let mut depth = 0usize;
+
+    while index < chars.len() {
+        match chars[index] {
+            '{' | '[' => {
+                depth += 1;
+                index += 1;
+            }
+            '}' | ']' => {
+                depth = depth.saturating_sub(1);
+                index += 1;
+                if depth == 0 {
+                    // The root closed: everything after it must be whitespace,
+                    // so a second document or trailing garbage is refused.
+                    return chars[index..].iter().all(|c| c.is_whitespace());
+                }
+            }
+            '"' => match read_json_string(chars, index) {
+                Some((_, next)) => index = next,
+                None => return false, // unterminated string
+            },
+            _ => index += 1,
+        }
+    }
+    // Ran out of input with the object still open.
+    false
+}
+
 /// Whether the payload's first non-whitespace character opens an OBJECT.
 ///
 /// ntfy always replies with a JSON object. Requiring that here is what stops a
@@ -924,6 +989,49 @@ mod tests {
     /// with an array satisfied the "must carry an ntfy message id" guard and was
     /// recorded as a delivered operator page. ntfy always replies with an
     /// object, so the root is now required to be one.
+    /// A truncated reply must not be trusted just because it contains an id.
+    ///
+    /// Found by adversarial review. `{"id":"EARLY-ID"` holds a complete STRING
+    /// value, so the id scanner returned Some and the adapter stored Delivered —
+    /// a response cut short by a crash, a proxy dropping the connection, or a
+    /// half-finished write became a successful operator page in the audit trail.
+    /// Scanning a fragment tells you what it happens to contain, never that it is
+    /// the document it claims to be.
+    #[test]
+    fn an_incomplete_json_body_is_not_a_complete_object() {
+        for truncated in [
+            r#"{"id":"EARLY-ID""#,
+            r#"{"id":"EARLY-ID","#,
+            r#"{"id":"EARLY-ID","attachment":{"size":1"#,
+            r#"{"id":"unterminated"#,
+            r#"{"#,
+            "",
+            "   ",
+            r#"[{"id":"x"}]"#,
+        ] {
+            assert!(
+                !json_object_is_complete(&truncated.chars().collect::<Vec<_>>()),
+                "must be rejected: {truncated}"
+            );
+        }
+        // Trailing content after the root closes is refused too.
+        assert!(!json_object_is_complete(
+            &r#"{"id":"x"} {"id":"y"}"#.chars().collect::<Vec<_>>()
+        ));
+        // And a genuine ntfy reply passes, nested objects included.
+        for good in [
+            r#"{"id":"b19RmMeCXTYy"}"#,
+            r#"  {"id":"x","attachment":{"name":"a.txt","size":4097}}  "#,
+            r#"{"id":"x","actions":[{"id":"y"}]}"#,
+            r#"{"id":"has "escaped" quotes and a } brace"}"#,
+        ] {
+            assert!(
+                json_object_is_complete(&good.chars().collect::<Vec<_>>()),
+                "must be accepted: {good}"
+            );
+        }
+    }
+
     #[test]
     fn a_top_level_array_is_not_a_valid_ntfy_reply() {
         for array in [

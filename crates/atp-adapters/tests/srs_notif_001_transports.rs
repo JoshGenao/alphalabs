@@ -898,12 +898,23 @@ fn the_push_channel_reports_its_own_identity() {
 /// proof the operator was reached.
 #[test]
 fn a_2xx_without_an_ntfy_message_id_is_not_a_delivery() {
-    for body in ["", "OK", "<html>proxy</html>", r#"{"status":"queued"}"#] {
+    // A COMPLETE JSON object that simply lacks an id hits the id guard...
+    let server = spawn_http("HTTP/1.1 200 OK", r#"{"status":"queued"}"#, Duration::ZERO);
+    match push_channel(server.port).send(&alert(), Duration::from_secs(5)) {
+        Err(ChannelError::TransportUnavailable { detail }) => {
+            assert!(detail.contains("no ntfy message id"), "detail: {detail}");
+        }
+        other => panic!("a 200 without an id must not be a delivery: {other:?}"),
+    }
+    let _ = server.handle.join();
+
+    // ...and a reply that is not a JSON object at all is refused earlier, by the
+    // completeness gate. Either way it is never a delivery, which is the
+    // property that matters.
+    for body in ["", "OK", "<html>proxy</html>"] {
         let server = spawn_http("HTTP/1.1 200 OK", body, Duration::ZERO);
         match push_channel(server.port).send(&alert(), Duration::from_secs(5)) {
-            Err(ChannelError::TransportUnavailable { detail }) => {
-                assert!(detail.contains("no ntfy message id"), "detail: {detail}");
-            }
+            Err(ChannelError::TransportUnavailable { .. }) => {}
             other => panic!("a 200 with body {body:?} must not be a delivery: {other:?}"),
         }
         let _ = server.handle.join();
@@ -1071,4 +1082,33 @@ fn a_malformed_status_line_is_still_scrubbed_after_the_parse_order_fix() {
         other => panic!("expected TransportUnavailable, got {other:?}"),
     }
     let _ = server.handle.join();
+}
+
+/// A 2xx whose body was cut short must be a FAILURE, over a real socket.
+///
+/// Found by adversarial review. `{"id":"EARLY-ID"` carries a complete string
+/// value, so the id scanner accepted it and the adapter recorded Delivered — a
+/// reply truncated by a crash or a proxy dropping the connection became a
+/// successful operator page in the durable audit trail. Driven over a socket and
+/// not only as a unit test, because the bytes that reach the store come off the
+/// wire.
+#[test]
+fn a_2xx_with_a_truncated_json_body_is_not_a_delivery() {
+    for truncated in [
+        r#"{"id":"EARLY-ID""#,
+        r#"{"id":"EARLY-ID","attachment":{"size":4097"#,
+        r#"{"#,
+    ] {
+        let server = spawn_http("HTTP/1.1 200 OK", truncated, Duration::ZERO);
+        match push_channel(server.port).send(&alert(), Duration::from_secs(5)) {
+            Err(ChannelError::TransportUnavailable { detail }) => {
+                assert!(
+                    detail.contains("not a complete JSON object"),
+                    "detail: {detail}"
+                );
+            }
+            other => panic!("truncated body {truncated:?} must not be a delivery: {other:?}"),
+        }
+        let _ = server.handle.join();
+    }
 }
