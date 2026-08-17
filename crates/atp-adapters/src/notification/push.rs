@@ -138,7 +138,12 @@ impl PushConfig {
         topic: impl Into<String>,
         token: impl Into<String>,
     ) -> Result<Self, ChannelError> {
-        let host = host.into();
+        // Trim ONCE, here, and use the trimmed value everywhere below.
+        // Validating `host.trim()` and then storing the original let
+        // ATP_PUSH_HOST=" 127.0.0.1 " pass construction and reach the RESOLVER as
+        // a hostname at send time — the check would have said private and the
+        // send would have failed during the incident.
+        let host = host.into().trim().to_string();
 
         // THE HOST MUST BE A PRIVATE IP LITERAL, CHECKED HERE AT CONSTRUCTION.
         //
@@ -159,7 +164,7 @@ impl PushConfig {
         // second, unbounded network call on the alert path, and a name that
         // resolves privately now can resolve elsewhere by send time. A literal
         // makes the property static.
-        match host.trim().parse::<IpAddr>() {
+        match host.parse::<IpAddr>() {
             Ok(address) if is_private_egress_address(&address) => {}
             Ok(_) => {
                 return Err(ChannelError::Unconfigured {
@@ -896,17 +901,32 @@ fn read_json_string(chars: &[char], start: usize) -> Option<(String, usize)> {
                     't' => out.push('\t'),
                     'b' => out.push('\u{08}'),
                     'f' => out.push('\u{0c}'),
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    '/' => out.push('/'),
                     'u' => {
-                        let hex: String = chars.get(index + 2..index + 6)?.iter().collect();
-                        let code = u32::from_str_radix(&hex, 16).ok()?;
+                        let hex: Vec<char> = chars.get(index + 2..index + 6)?.to_vec();
+                        // `from_str_radix` accepts a leading sign and unicode
+                        // digits; JSON allows exactly four HEX digits.
+                        if !hex.iter().all(|c| c.is_ascii_hexdigit()) {
+                            return None;
+                        }
+                        let code = u32::from_str_radix(&hex.iter().collect::<String>(), 16).ok()?;
                         out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
                         index += 6;
                         continue;
                     }
-                    other => out.push(other),
+                    // ANY OTHER ESCAPE IS INVALID JSON, and must be refused
+                    // rather than passed through. `{"id":"ok\q"}` is not a
+                    // document ntfy produces, so accepting it would let a wrong
+                    // upstream reach a Delivered receipt.
+                    _ => return None,
                 }
                 index += 2;
             }
+            // Raw control characters are forbidden inside a JSON string (they
+            // must be escaped). An id carrying a literal newline is not ntfy's.
+            c if (c as u32) < 0x20 => return None,
             c => {
                 out.push(c);
                 index += 1;
@@ -1140,6 +1160,14 @@ mod tests {
             // accepted — it was in this test's ACCEPT list until the strict
             // validator landed, which is how the review caught it.
             r#"{"id":"has "unescaped" quotes"}"#,
+            // Escapes outside JSON's set, and raw control characters in a
+            // string. Both were passed straight through before.
+            r#"{"id":"ok\q"}"#,
+            r#"{"id":"ok\x41"}"#,
+            r#"{"id":"ok\u00zz"}"#,
+            r#"{"id":"ok\u+041"}"#,
+            "{\"id\":\"raw\nnewline\"}",
+            "{\"id\":\"raw\ttab\"}",
         ] {
             assert!(
                 !json_object_is_complete(&truncated.chars().collect::<Vec<_>>()),
@@ -1296,6 +1324,27 @@ mod tests {
             PushConfig::new(allowed, 80, "atp-alerts-topic", "tk_x")
                 .unwrap_or_else(|err| panic!("{allowed} must be allowed: {err:?}"));
         }
+    }
+
+    /// A whitespace-padded host must be canonicalised, not merely validated.
+    ///
+    /// Found by adversarial review: `new` checked `host.trim()` and then stored
+    /// the ORIGINAL, so `" 127.0.0.1 "` passed the private-literal gate and then
+    /// reached the resolver as a hostname at send time — the check said private,
+    /// the send failed during the incident.
+    #[test]
+    fn a_whitespace_padded_host_is_trimmed_before_it_is_stored() {
+        let config = PushConfig::new("  127.0.0.1  ", 18080, "atp-alerts-topic", "tk_x")
+            .expect("a padded private literal is still private");
+        // The stored endpoint must parse as a literal, exactly as the send path
+        // will read it.
+        assert!(config.endpoint.host().parse::<IpAddr>().is_ok());
+        assert_eq!(config.endpoint.host(), "127.0.0.1");
+        // ...and padding does not smuggle a public host past the gate either.
+        assert!(matches!(
+            PushConfig::new("  8.8.8.8  ", 18080, "atp-alerts-topic", "tk_x"),
+            Err(ChannelError::Unconfigured { .. })
+        ));
     }
 
     #[test]

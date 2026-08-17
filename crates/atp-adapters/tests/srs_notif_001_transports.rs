@@ -1092,6 +1092,26 @@ fn a_malformed_status_line_is_still_scrubbed_after_the_parse_order_fix() {
 /// successful operator page in the durable audit trail. Driven over a socket and
 /// not only as a unit test, because the bytes that reach the store come off the
 /// wire.
+/// A raw control character inside a JSON string is not valid JSON, so a 2xx
+/// carrying one is not an ntfy reply and must not be a delivery.
+///
+/// Separate from the case list above because it needs a real newline in the body
+/// rather than a raw-string literal.
+#[test]
+fn a_2xx_with_a_raw_control_character_in_the_id_is_not_a_delivery() {
+    let server = spawn_http("HTTP/1.1 200 OK", "{\"id\":\"EARLY\nID\"}", Duration::ZERO);
+    match push_channel(server.port).send(&alert(), Duration::from_secs(5)) {
+        Err(ChannelError::TransportUnavailable { detail }) => {
+            assert!(
+                detail.contains("not a complete JSON object"),
+                "detail: {detail}"
+            );
+        }
+        other => panic!("a raw control character must not be a delivery: {other:?}"),
+    }
+    let _ = server.handle.join();
+}
+
 #[test]
 fn a_2xx_with_a_truncated_json_body_is_not_a_delivery() {
     for truncated in [
@@ -1107,6 +1127,8 @@ fn a_2xx_with_a_truncated_json_body_is_not_a_delivery() {
         r#"{"id":"EARLY-ID" garbage}"#,
         r#"{id:"EARLY-ID"}"#,
         r#"{"id":"EARLY-ID",}"#,
+        // Invalid escape and a raw control character inside the id string.
+        r#"{"id":"EARLY\qID"}"#,
     ] {
         let server = spawn_http("HTTP/1.1 200 OK", truncated, Duration::ZERO);
         match push_channel(server.port).send(&alert(), Duration::from_secs(5)) {
