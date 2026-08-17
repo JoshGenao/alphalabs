@@ -122,11 +122,12 @@ def test_the_relay_credential_is_never_sent_in_the_clear() -> None:
 
 
 def test_an_accepted_send_never_fabricates_an_accept_id() -> None:
-    # No-fabrication, matching the core dispatcher's discipline: a 2xx with no
-    # body yields an explicit non-reference, never a plausible-looking id an
-    # operator would hunt for in the provider's logs and never find.
+    # No-fabrication, matching the core dispatcher's discipline. Stricter than
+    # a synthetic placeholder: ntfy returns an id on every 2xx, so a 2xx WITHOUT
+    # one did not come from ntfy (a proxy answered), and it must be recorded as a
+    # FAILED delivery rather than a success with an invented reference.
     _assert_one_passed(
-        _run_cargo_test("an_accepted_publish_with_no_usable_id_never_fabricates_a_reference"),
+        _run_cargo_test("a_2xx_without_an_ntfy_message_id_is_not_a_delivery"),
         "SRS-NOTIF-001 no fabricated accept id",
     )
 

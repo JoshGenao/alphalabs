@@ -30,7 +30,7 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::event::{
@@ -371,13 +371,37 @@ impl NotificationEventStore {
                 if found < MIN_SUPPORTED_SCHEMA_VERSION =>
             {
                 let live = dir.join(STORE_FILENAME);
-                let retired = dir.join(format!("{STORE_FILENAME}.v{found}.superseded"));
+                let retired = Self::free_supersede_path(dir, found)?;
                 fs::rename(&live, &retired)
                     .map_err(|err| io_error("supersede obsolete store", &err))?;
                 Ok(Self::default())
             }
             other => other,
         }
+    }
+
+    /// First unused `notification_events.store.v<n>.superseded[.k]` name.
+    ///
+    /// `fs::rename` REPLACES an existing destination on Unix, so a fixed archive
+    /// name would let a second supersede silently destroy the first archive —
+    /// the exact silent-evidence-loss this store is built to prevent. The name is
+    /// therefore probed for a free slot, and running out of slots is an error
+    /// rather than an overwrite.
+    fn free_supersede_path(dir: &Path, found: i64) -> Result<PathBuf, NotificationStoreError> {
+        const MAX_ARCHIVES: u32 = 1_000;
+        let base = dir.join(format!("{STORE_FILENAME}.v{found}.superseded"));
+        if !base.exists() {
+            return Ok(base);
+        }
+        for k in 1..=MAX_ARCHIVES {
+            let candidate = dir.join(format!("{STORE_FILENAME}.v{found}.superseded.{k}"));
+            if !candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+        Err(NotificationStoreError::Io {
+            context: "no free superseded-store archive name",
+        })
     }
 }
 

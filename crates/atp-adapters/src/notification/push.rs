@@ -308,12 +308,38 @@ impl PushChannel {
                         ),
                     });
                 }
-                // Likewise: extract the id from the RAW payload, then scrub the
+                // A 2xx MUST carry a parseable top-level `id`, or it is not a
+                // delivery.
+                //
+                // ntfy always returns one — verified on every 2xx probe against
+                // both ntfy.sh and a local instance, attachment conversions
+                // included. So a 2xx WITHOUT one did not come from ntfy: an
+                // intercepting proxy, a captive portal, or a reverse proxy
+                // pointed at the wrong upstream will happily answer 200 with an
+                // empty or non-JSON body. Recording that as Delivered would put
+                // a false operator page in the durable audit trail — the worst
+                // kind of entry, because it reads as proof the operator was
+                // reached.
+                //
+                // The transport this replaced fell back to a synthetic
+                // `http-<status>-no-reference` here, which was right for an SMS
+                // gateway whose accept genuinely carried no body. It is wrong
+                // for ntfy, where the id IS the receipt.
+                //
+                // Extract from the RAW payload (see above), then scrub the
                 // extracted value before it becomes the persisted reference.
-                Ok(ChannelReceipt::new(redact_secrets(
-                    &message_reference(&raw_payload, status),
-                    &secrets,
-                )))
+                match message_reference(&raw_payload) {
+                    Some(reference) => {
+                        Ok(ChannelReceipt::new(redact_secrets(&reference, &secrets)))
+                    }
+                    None => Err(ChannelError::TransportUnavailable {
+                        detail: format!(
+                            "{CHANNEL}: HTTP {status} carried no ntfy message id — the reply did \
+                             not come from ntfy (an intercepting proxy or a wrong upstream), so \
+                             the alert cannot be treated as delivered"
+                        ),
+                    }),
+                }
             }
             // 401 is a wrong/revoked token; 403 is a missing token or a token
             // without publish access to this topic. Both were confirmed against
@@ -476,18 +502,23 @@ fn read_to_end_bounded(
     Ok(body.trim().to_string())
 }
 
-/// The stored message reference: ntfy's `id`, or the status when it sent none.
+/// ntfy's message id, or `None` when the reply carries no usable one.
 ///
-/// Never fabricates an id — a body without a usable `id` yields an explicit
-/// `http-<status>-no-reference` rather than a plausible-looking identifier that
-/// an operator would try, and fail, to find in ntfy's own logs.
-fn message_reference(payload: &str, status: u16) -> String {
-    match json_string_field(payload, "id") {
-        Some(id) if !id.trim().is_empty() => {
-            truncate_chars(&fold_protocol_line(id.trim()), MAX_REFERENCE_CHARS)
-        }
-        _ => format!("http-{status}-no-reference"),
+/// Never fabricates: `None` is returned rather than a synthetic placeholder, and
+/// the caller turns that into a FAILED delivery. A plausible-looking identifier
+/// an operator would try, and fail, to find in ntfy's own logs is worse than no
+/// identifier — and on this transport a missing id also means the reply did not
+/// come from ntfy at all, which is a failure in its own right.
+fn message_reference(payload: &str) -> Option<String> {
+    let id = json_string_field(payload, "id")?;
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return None;
     }
+    Some(truncate_chars(
+        &fold_protocol_line(trimmed),
+        MAX_REFERENCE_CHARS,
+    ))
 }
 
 /// Extract a top-level JSON string field.
@@ -755,7 +786,7 @@ mod tests {
     #[test]
     fn the_message_id_is_read_from_the_real_ntfy_success_body() {
         let payload = r#"{"id":"b19RmMeCXTYy","time":1786939980,"expires":1786983180,"event":"message","topic":"atp-alerts-topic","message":"ATP probe"}"#;
-        assert_eq!(message_reference(payload, 200), "b19RmMeCXTYy");
+        assert_eq!(message_reference(payload).as_deref(), Some("b19RmMeCXTYy"));
     }
 
     #[test]
@@ -767,21 +798,26 @@ mod tests {
         assert_eq!(json_string_field(payload, "id").as_deref(), Some("RIGHT"));
     }
 
+    /// A reply with no usable id yields None — which the caller turns into a
+    /// FAILED delivery, not a synthetic reference.
+    ///
+    /// TIGHTENED (adversarial review round 4): this used to assert a
+    /// `http-<status>-no-reference` fallback that was then stored as a
+    /// DELIVERED receipt. ntfy always returns an id, so a 2xx without one did
+    /// not come from ntfy — an intercepting proxy or a wrong upstream answering
+    /// 200 would have been recorded as a successful operator page.
     #[test]
-    fn a_body_without_a_usable_id_yields_an_explicit_non_reference() {
-        assert_eq!(message_reference("", 200), "http-200-no-reference");
-        assert_eq!(
-            message_reference("not json at all", 202),
-            "http-202-no-reference"
-        );
-        assert_eq!(
-            message_reference(r#"{"id":""}"#, 201),
-            "http-201-no-reference"
-        );
+    fn a_body_without_a_usable_id_is_not_a_reference_at_all() {
+        assert_eq!(message_reference(""), None);
+        assert_eq!(message_reference("not json at all"), None);
+        assert_eq!(message_reference(r#"{"id":""}"#), None);
+        assert_eq!(message_reference(r#"{"id":"   "}"#), None);
         // An unterminated string must fail closed, not return a partial id.
+        assert_eq!(message_reference(r#"{"id":"trunca"#), None);
+        // And the happy path still reads the id.
         assert_eq!(
-            message_reference(r#"{"id":"trunca"#, 200),
-            "http-200-no-reference"
+            message_reference(r#"{"id":"b19RmMeCXTYy"}"#).as_deref(),
+            Some("b19RmMeCXTYy")
         );
     }
 

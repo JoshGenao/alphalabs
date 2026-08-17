@@ -917,3 +917,45 @@ fn one_event() -> atp_notification::NotificationEvent {
         .dispatch(&trigger, 510_000, &set)
         .expect("dispatch")
 }
+
+/// A second supersede must not destroy the first archive.
+///
+/// `fs::rename` REPLACES an existing destination on Unix, so the fixed archive
+/// name the first version of this fix used would have let a later supersede
+/// silently overwrite earlier retired evidence — the exact silent-loss the store
+/// exists to prevent.
+#[test]
+fn superseding_twice_keeps_both_archives() {
+    let dir = temp_dir("notif-supersede-twice");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let v1_of = |marker: &str| {
+        let mut body = String::new();
+        body.push_str("1\n1\nC\n");
+        body.push_str(&format!("{}\n{marker}\n", marker.len()));
+        body.push_str("100\n200\n2\n");
+        body.push_str("E\nD\n2\nok\n");
+        body.push_str("S\nD\n2\nok\n");
+        format!("{MAGIC}\n{}\n{}", fnv1a(body.as_bytes()), body)
+    };
+
+    let first = v1_of("first");
+    std::fs::write(dir.join(STORE_FILENAME), &first).unwrap();
+    NotificationEventStore::append_durably(&dir, one_event()).expect("first append");
+
+    // A second pre-v2 store lands in the same directory (an operator restoring a
+    // backup over it, say) and is superseded too.
+    let second = v1_of("secnd");
+    std::fs::write(dir.join(STORE_FILENAME), &second).unwrap();
+    NotificationEventStore::append_durably(&dir, one_event()).expect("second append");
+
+    let a = dir.join(format!("{STORE_FILENAME}.v1.superseded"));
+    let b = dir.join(format!("{STORE_FILENAME}.v1.superseded.1"));
+    assert!(a.is_file() && b.is_file(), "both archives must survive");
+    let kept: std::collections::BTreeSet<String> = [&a, &b]
+        .iter()
+        .map(|p| std::fs::read_to_string(p).unwrap())
+        .collect();
+    assert!(kept.contains(&first), "the FIRST archive was overwritten");
+    assert!(kept.contains(&second), "the second archive is missing");
+}

@@ -885,27 +885,29 @@ fn the_push_channel_reports_its_own_identity() {
     assert_eq!(push_channel(18080).channel(), NotificationChannel::Push);
 }
 
-/// No-fabrication, matching the core dispatcher's discipline: a 2xx whose body
-/// carries no usable `id` must yield an explicit non-reference, never a
-/// plausible-looking id an operator would hunt for in ntfy's logs and never
-/// find. Driven over a real socket rather than only as a unit test, because the
-/// value that reaches the durable store comes off the wire.
+/// A 2xx with no ntfy message id is NOT a delivery.
+///
+/// TIGHTENED (adversarial review round 4). This previously asserted that such a
+/// reply produced a synthetic `http-200-no-reference` receipt — which the
+/// dispatcher then stored as a DELIVERED page. ntfy returns an id on every 2xx
+/// (verified against ntfy.sh and a local instance, attachment conversions
+/// included), so a 2xx WITHOUT one did not come from ntfy at all: an
+/// intercepting proxy, a captive portal, or a reverse proxy aimed at the wrong
+/// upstream will cheerfully answer 200 with an empty or non-JSON body. Storing
+/// that as a success is the worst possible audit entry, because it reads as
+/// proof the operator was reached.
 #[test]
-fn an_accepted_publish_with_no_usable_id_never_fabricates_a_reference() {
-    let empty = spawn_http("HTTP/1.1 200 OK", "", Duration::ZERO);
-    let receipt = push_channel(empty.port)
-        .send(&alert(), Duration::from_secs(5))
-        .expect("ntfy accepted the publish");
-    assert_eq!(receipt.reference(), "http-200-no-reference");
-    let _ = empty.handle.join();
-
-    // A 2xx that is not JSON at all must not become a reference either.
-    let garbage = spawn_http("HTTP/1.1 200 OK", "OK", Duration::ZERO);
-    let receipt = push_channel(garbage.port)
-        .send(&alert(), Duration::from_secs(5))
-        .expect("ntfy accepted the publish");
-    assert_eq!(receipt.reference(), "http-200-no-reference");
-    let _ = garbage.handle.join();
+fn a_2xx_without_an_ntfy_message_id_is_not_a_delivery() {
+    for body in ["", "OK", "<html>proxy</html>", r#"{"status":"queued"}"#] {
+        let server = spawn_http("HTTP/1.1 200 OK", body, Duration::ZERO);
+        match push_channel(server.port).send(&alert(), Duration::from_secs(5)) {
+            Err(ChannelError::TransportUnavailable { detail }) => {
+                assert!(detail.contains("no ntfy message id"), "detail: {detail}");
+            }
+            other => panic!("a 200 with body {body:?} must not be a delivery: {other:?}"),
+        }
+        let _ = server.handle.join();
+    }
 }
 
 /// A topic that collides with a JSON key ntfy uses must not blind the parser.
