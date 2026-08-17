@@ -2612,6 +2612,7 @@
       "ATP_SSD_DATA_DIR",
       "ATP_NAS_DATA_DIR",
       "ATP_SMTP_API_KEY",
+      "ATP_SMTP_SENDER",
       "ATP_OPERATOR_EMAIL",
       "ATP_PUSH_HOST",
       "ATP_PUSH_PORT",
@@ -2911,6 +2912,21 @@
         ]
       },
       {
+        "name": "ATP_SMTP_SENDER",
+        "category": "notification_channels",
+        "type": "string",
+        "validator": {
+          "non_empty": true
+        },
+        "default": "atp-alerts@example.invalid",
+        "secret": false,
+        "srs_trace": [
+          "SRS-NOTIF-001",
+          "IF-10",
+          "StRS:SN-1.12"
+        ]
+      },
+      {
         "name": "ATP_OPERATOR_EMAIL",
         "category": "notification_channels",
         "type": "string",
@@ -2962,7 +2978,8 @@
         "category": "notification_channels",
         "type": "secret",
         "validator": {
-          "non_empty": true
+          "non_empty": true,
+          "charset": "alnum_dash_underscore"
         },
         "default": "placeholder-set-in-environment",
         "secret": true,

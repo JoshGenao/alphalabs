@@ -30,7 +30,7 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 | `resource_limits` | Live and paper strategy memory/CPU caps and the host memory safety margin. |
 | `notification_channels` | Email (IF-10) and push (IF-11) dispatch credentials and destinations. The push topic is catalogued **secret**: on ntfy, holding the topic is enough to publish. |
 
-## Required keys (23)
+## Required keys (24)
 
 | Key | Category | Type | Default | Secret | SRS trace |
 |---|---|---|---|---|---|
@@ -45,10 +45,11 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 | `ATP_BACKTEST_RESULTS_DIR` | storage_paths | path | `/var/lib/atp/ssd/backtest_results` | no | SRS-BT-009, SyRS:SYS-79 |
 | `ATP_DATA_STORE_DIR` | storage_paths | path | `/var/lib/atp/ssd/market_data` | no | SRS-DATA-016, SyRS:NFR-R4 |
 | `ATP_SMTP_API_KEY` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, NFR-S4 |
+| `ATP_SMTP_SENDER` | notification_channels | string | `atp-alerts@example.invalid` | no | SRS-NOTIF-001, IF-10 |
 | `ATP_OPERATOR_EMAIL` | notification_channels | string | `operator@example.invalid` | no | SRS-NOTIF-001, IF-10 |
 | `ATP_PUSH_HOST` | notification_channels | host (private, literal) | `127.0.0.1` | no | SRS-NOTIF-001, IF-11 |
 | `ATP_PUSH_PORT` | notification_channels | int | `80` | no | SRS-NOTIF-001, IF-11 |
-| `ATP_PUSH_TOPIC` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, IF-11, NFR-S4 |
+| `ATP_PUSH_TOPIC` | notification_channels | secret (charset) | placeholder | yes | SRS-NOTIF-001, IF-11, NFR-S4 |
 | `ATP_PUSH_TOKEN` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, IF-11, NFR-S4 |
 | `DATABENTO_API_KEY` | credentials | secret | placeholder | yes | SRS-DATA-001, NFR-S1 |
 | `SHARADAR_API_KEY` | credentials | secret | placeholder | yes | SRS-DATA-005, NFR-S1 |
@@ -77,6 +78,12 @@ ARCH-005 is the catalogue + static validator that those features will consume.
   destination's grammar belongs to the transport that sends to it, not to this
   catalogue, so the validator must not reject an address the transport accepts.
 - `enum`: must be one of the declared `choices`.
+- `charset` (on any key): the value must use only the named character set.
+  `alnum_dash_underscore` is ntfy's topic alphabet (ASCII letters, digits, `-`,
+  `_`), required on `ATP_PUSH_TOPIC` because the transport interpolates it into
+  an HTTP request line — a `/`, `?`, `#`, space or control character would
+  retarget or split the request. The failure reason names the key and the rule
+  and never echoes the value, since this key is a credential.
 - `secret`: non-empty string. The literal placeholder
   `placeholder-set-in-environment` is a **warning** when `ATP_ENV=development`
   and a hard **error** when `ATP_ENV` is `staging` or `production`. This lets
@@ -99,7 +106,7 @@ ReadinessReport(
     ],
     evidence=[
         "SRS-ARCH-005 configuration system evidence:",
-        "23 keys catalogued across 6 categories (ATP_ENV='development')",
+        "24 keys catalogued across 6 categories (ATP_ENV='development')",
         "credentials: 2 keys — OK (DATABENTO_API_KEY, SHARADAR_API_KEY)",
         "...",
     ],

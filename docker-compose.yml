@@ -13,6 +13,7 @@ x-atp-env: &atp-env
   ATP_SSD_DATA_DIR: ${ATP_SSD_DATA_DIR:-/var/lib/atp/ssd}
   ATP_NAS_DATA_DIR: ${ATP_NAS_DATA_DIR:-/var/lib/atp/nas}
   ATP_SMTP_API_KEY: ${ATP_SMTP_API_KEY:-placeholder-set-in-environment}
+  ATP_SMTP_SENDER: ${ATP_SMTP_SENDER:-atp-alerts@example.invalid}
   ATP_OPERATOR_EMAIL: ${ATP_OPERATOR_EMAIL:-operator@example.invalid}
   ATP_PUSH_HOST: ${ATP_PUSH_HOST:-127.0.0.1}
   ATP_PUSH_PORT: ${ATP_PUSH_PORT:-80}
@@ -235,7 +236,7 @@ services:
       - path: .env
         required: false
     environment: *atp-env
-    # SRS-SEC-001: SMTP/SMS credential consumer — needs the read-only vault mount.
+    # SRS-SEC-001: SMTP/push credential consumer — needs the read-only vault mount.
     volumes: *atp-volumes
 
   phase1-dashboard-api:

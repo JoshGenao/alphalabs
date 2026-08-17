@@ -234,6 +234,52 @@ def test_the_stored_sla_evidence_cannot_describe_a_dispatch_that_never_started()
     )
 
 
+def test_a_malformed_push_topic_is_refused_at_startup_and_never_echoed() -> None:
+    """SRS-NOTIF-001 / NFR-S4: the topic's SHAPE is a readiness property.
+
+    The transport requires ntfy's topic alphabet because the topic becomes the
+    URL path — a `/`, `?`, `#`, space or control character would retarget the
+    publish or split the request line. If startup only checked non-empty, a topic
+    like `topic/with/slash` would pass readiness and fail at send time: the alert
+    path is broken and the only thing that would say so is the page that never
+    arrived.
+
+    The failure reason must NOT contain the value. `ATP_PUSH_TOPIC` is a publish
+    credential (holding it is enough to send), and readiness reasons are emitted
+    to logs and the dashboard.
+    """
+
+    import sys
+    from pathlib import Path
+
+    python_root = Path(__file__).resolve().parents[2] / "python"
+    if str(python_root) not in sys.path:
+        sys.path.insert(0, str(python_root))
+    from atp_config import REQUIRED_KEYS, load_and_validate
+
+    def topic_errors(topic: str) -> list[str]:
+        env = {s.name: s.default for s in REQUIRED_KEYS if s.default is not None}
+        env["ATP_PUSH_TOPIC"] = topic
+        report = load_and_validate(env)
+        return [f.reason for f in report.errors if f.key == "ATP_PUSH_TOPIC"]
+
+    for good in ("atp-alerts-9f8e7d6c5b4a3210", "a_b-C9", "A" * 64):
+        assert not topic_errors(good), f"{good!r} must pass readiness"
+
+    for bad in (
+        "topic/with/slash",
+        "topic with space",
+        "topic?query",
+        "topic#frag",
+        "topic\r\nX-Evil: 1",
+        "café",
+        "topic:8080",
+    ):
+        reasons = topic_errors(bad)
+        assert reasons, f"{bad!r} must FAIL readiness before any alert is due"
+        assert bad not in reasons[0], f"the topic leaked into the reason: {reasons[0]}"
+
+
 def test_a_public_push_host_is_refused_at_startup_not_at_alert_time() -> None:
     """SRS-NOTIF-001 / NFR-P6: the push endpoint must fail readiness, not the page.
 

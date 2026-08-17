@@ -82,9 +82,55 @@ def _validate_path(spec: KeySpec, raw: str) -> ReadinessFailure | None:
     return None
 
 
+#: Named character sets a key's validator may require. Kept as names rather than
+#: raw regexes so the catalogue stays declarative and reviewable.
+_CHARSETS = {
+    # ntfy's own topic alphabet. The transport enforces this too, because the
+    # topic is interpolated into the HTTP request line: a `/`, `?`, `#` or a
+    # space would retarget or split the request.
+    "alnum_dash_underscore": lambda value: all(
+        c.isascii() and (c.isalnum() or c in "-_") for c in value
+    ),
+}
+
+
+def _validate_charset(spec: KeySpec, raw: str) -> ReadinessFailure | None:
+    """Enforce a declared character set WITHOUT echoing the value.
+
+    The reason string reaches logs and the dashboard, and this check also runs on
+    secret keys (``ATP_PUSH_TOPIC`` is a publish credential), so it names the key
+    and states the rule but never prints what was configured — the same
+    discipline the transport applies to its own rejections.
+    """
+
+    name = spec.validator.get("charset")
+    if name is None:
+        return None
+    allowed = _CHARSETS.get(name)
+    if allowed is None:
+        return _fail(spec, Severity.ERROR, f"unknown charset {name!r} in the catalogue")
+    if not allowed(raw):
+        return _fail(
+            spec,
+            Severity.ERROR,
+            "value contains characters outside the permitted set "
+            "(ASCII letters, digits, '-' and '_'); the transport interpolates it "
+            "into an HTTP request line, so a '/', '?', '#', space or control "
+            "character would retarget or split the request",
+        )
+    return None
+
+
 def _validate_secret(spec: KeySpec, raw: str, atp_env: str | None) -> ReadinessFailure | None:
     if spec.validator.get("non_empty", True) and not raw:
         return _fail(spec, Severity.ERROR, "secret is empty")
+    # Shape before placeholder-severity: a malformed value is an ERROR in every
+    # environment, and reporting it as a mere development-mode warning would let
+    # a broken alert endpoint reach staging.
+    if raw != PLACEHOLDER_VALUE:
+        shape = _validate_charset(spec, raw)
+        if shape is not None:
+            return shape
     if raw == PLACEHOLDER_VALUE:
         if atp_env in PRODUCTION_ENVS:
             return _fail(
