@@ -252,9 +252,19 @@ def test_a_public_push_host_is_refused_at_startup_not_at_alert_time() -> None:
         "::1",
         "fc00::1",
         "::ffff:192.168.1.10",
-        "ntfy.lan",  # a hostname is re-validated per connect by the adapter
     ):
         assert not push_errors(allowed), f"{allowed} must pass readiness"
+
+    # A HOSTNAME is refused outright. Deferring it to the adapter was the first
+    # attempt and it left the hole this check exists to close: the name would
+    # pass readiness and fail at send time, i.e. during the incident. Resolving
+    # it here is not an option — load_and_validate is pure by contract — and a
+    # name that resolves privately at startup can resolve elsewhere by the time
+    # an alert is dispatched.
+    for hostname in ("ntfy.lan", "ntfy.example.com", "localhost"):
+        reasons = push_errors(hostname)
+        assert reasons, f"{hostname} must FAIL readiness — a name is not decidable"
+        assert "IP address literal" in reasons[0], reasons
 
     # Public, carrier-grade NAT, link-local, and the IPv4-mapped forms — refused.
     for refused in (

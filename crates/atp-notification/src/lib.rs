@@ -34,13 +34,23 @@
 //! and durably stored. What is **deferred** (and why SRS-NOTIF-001 stays
 //! `passes:false` until an operator finishes the integration):
 //!
-//!   * a REAL provider behind the transports. The SMTP (IF-10) and ntfy push
-//!     (IF-11) adapters now exist in `atp-adapters::notification` and are
-//!     verified over real sockets against scripted relays — but they submit to
-//!     the `phase1-notification-egress` sidecar, which owns the TLS session to
-//!     the actual provider, and neither that sidecar nor a provider account has
-//!     been stood up. Until an alert lands in a real inbox and on a real phone,
-//!     "email and push are sent" is proven to the relay, not to the operator;
+//!   * a REAL destination behind the transports. Both adapters exist in
+//!     `atp-adapters::notification` and are verified over real sockets, but the
+//!     two now fall short in DIFFERENT ways and the difference matters for what
+//!     may be claimed:
+//!       * **email (IF-10)** submits to the `phase1-notification-egress`
+//!         sidecar, which owns the TLS session to the real SMTP provider.
+//!         Neither that sidecar nor a provider account has been stood up, so
+//!         email is proven only to the relay boundary.
+//!       * **push (IF-11)** posts DIRECTLY to a self-hosted ntfy on the LAN —
+//!         there is no relay in the path. It has been driven end to end against
+//!         a real ntfy, which accepted the publish and returned its message id.
+//!         That is a genuinely stronger hand-off than email's, but acceptance is
+//!         still not receipt: it does not prove the operator's phone was
+//!         subscribed, online, or that the notification was displayed.
+//!
+//!     So "email and push are sent" is not yet proven to the OPERATOR on
+//!     either channel, for two different reasons;
 //!   * an automatic runtime that dispatches without an operator invoking it.
 //!     Both detection bindings below are composed and driven by operator CLIs;
 //!     `phase1-notification-dispatcher` still runs `core-runtime.Dockerfile`'s

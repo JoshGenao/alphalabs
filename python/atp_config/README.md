@@ -46,7 +46,7 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 | `ATP_DATA_STORE_DIR` | storage_paths | path | `/var/lib/atp/ssd/market_data` | no | SRS-DATA-016, SyRS:NFR-R4 |
 | `ATP_SMTP_API_KEY` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, NFR-S4 |
 | `ATP_OPERATOR_EMAIL` | notification_channels | string | `operator@example.invalid` | no | SRS-NOTIF-001, IF-10 |
-| `ATP_PUSH_HOST` | notification_channels | host | `127.0.0.1` | no | SRS-NOTIF-001, IF-11 |
+| `ATP_PUSH_HOST` | notification_channels | host (private, literal) | `127.0.0.1` | no | SRS-NOTIF-001, IF-11 |
 | `ATP_PUSH_PORT` | notification_channels | int | `80` | no | SRS-NOTIF-001, IF-11 |
 | `ATP_PUSH_TOPIC` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, IF-11, NFR-S4 |
 | `ATP_PUSH_TOKEN` | notification_channels | secret | placeholder | yes | SRS-NOTIF-001, IF-11, NFR-S4 |
@@ -63,7 +63,16 @@ ARCH-005 is the catalogue + static validator that those features will consume.
 - `int`: parses as integer; range `min..max` (per key).
 - `float`: parses as float; range `min..max` (per key).
 - `path`: non-empty string; must be absolute (start with `/`).
-- `host`: non-empty string.
+- `host`: non-empty string. When the key's validator sets `private_egress`
+  (currently `ATP_PUSH_HOST`), the value must additionally be an **IP address
+  literal** that is loopback or private (RFC 1918 for IPv4, `fc00::/7` for
+  IPv6; IPv4-mapped forms are unwrapped). Link-local is refused —
+  `169.254.169.254` is the cloud metadata endpoint and the transports send a
+  credential immediately after connect. A hostname is refused too: the endpoint
+  is restricted to private egress, and `load_and_validate` is pure (no DNS), so
+  a name cannot be shown to stay private. Rejecting these at startup matters
+  because the alternative is discovering the alert path is broken from the alert
+  that never arrived.
 - `string`: non-empty string. Deliberately format-free — a notification
   destination's grammar belongs to the transport that sends to it, not to this
   catalogue, so the validator must not reject an address the transport accepts.
@@ -90,7 +99,7 @@ ReadinessReport(
     ],
     evidence=[
         "SRS-ARCH-005 configuration system evidence:",
-        "19 keys catalogued across 6 categories (ATP_ENV='development')",
+        "23 keys catalogued across 6 categories (ATP_ENV='development')",
         "credentials: 2 keys — OK (DATABENTO_API_KEY, SHARADAR_API_KEY)",
         "...",
     ],

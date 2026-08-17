@@ -147,11 +147,30 @@ def _validate_host(spec: KeySpec, raw: str) -> ReadinessFailure | None:
         try:
             address = ipaddress.ip_address(raw.strip())
         except ValueError:
-            # A HOSTNAME cannot be judged without resolving it, and this
-            # validator is pure (SRS-ARCH-005: no filesystem, no network). The
-            # adapter re-resolves and re-validates on EVERY connect, so a
-            # hostname is checked there; what is decidable here is a literal.
-            return None
+            # A HOSTNAME IS REFUSED OUTRIGHT, rather than deferred.
+            #
+            # Deferring it was the first attempt and it left the hole this check
+            # exists to close: `ntfy.example.com` would pass readiness and then
+            # be refused at send time, so the operator learns the alert path is
+            # broken from the alert that never came. Resolving it here is not the
+            # alternative — `load_and_validate` is pure by contract (no
+            # filesystem, no network), and a name checked once at startup could
+            # resolve somewhere else by the time an alert is dispatched anyway.
+            #
+            # Requiring a literal makes the property STATIC and decidable. The
+            # cost is that this endpoint cannot be named by DNS or by a compose
+            # service name; that is the right trade for an alert endpoint on a
+            # LAN with a fixed address, and it matches how the live integration
+            # environment is already configured. The adapter still re-resolves
+            # and re-validates on every connect — this is an additional gate,
+            # not a replacement for it.
+            return _fail(
+                spec,
+                Severity.ERROR,
+                f"host {raw.strip()!r} must be an IP address literal, not a "
+                "hostname: this endpoint is restricted to private egress, and a "
+                "name cannot be shown to stay private without resolving it",
+            )
         if not _is_private_egress_address(address):
             return _fail(
                 spec,
