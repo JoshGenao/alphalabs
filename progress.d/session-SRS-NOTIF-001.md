@@ -420,3 +420,175 @@ provider account. See "WHAT IS AND IS NOT PROVEN" below before claiming anything
   never touched. PHANTOM: the concurrent agent session was running cargo test at the same
   time and the fixed-name scratch dirs collided (see [[feedback_no_concurrent_cargo_test_runs]]).
   22/22 in isolation, 0 failures on a clean re-run. Do not chase these.
+
+=== SESSION 2026-08-17 (operator-directed: replace the SMS channel with push/ntfy) ===
+Outcome: STILL SERIALIZED (passes:false). The provider blocker that kept this
+feature un-verifiable for three sessions is GONE — a real operator alert now
+reaches a real push server, driven by the real gate. The two STRUCTURAL blockers
+(R3/R9 below) are untouched and remain the reason passes stays false.
+
+## Why the channel changed (operator decision, 2026-08-16)
+US A2P 10DLC registration is weeks of lead time and carriers filter unregistered
+traffic silently, so an SMS channel could never be PROVEN to deliver — three
+sessions failed to close this feature for exactly that reason. IF-11 is now push
+notification to a self-hosted ntfy on the LAN (RFC 1918), reached from the
+operator's phone over VPN. SC-9 ("at least two configured channels") unchanged.
+
+## Step 0: ntfy verified EMPIRICALLY before any code was written
+`curl -v` against ntfy.sh and a local `binwiederhier/ntfy`. Two findings the
+documentation does NOT give, and both changed the design:
+  * THE 4,096-BYTE ATTACHMENT THRESHOLD IS INCLUSIVE. Docs say "greater than";
+    a body of EXACTLY 4,096 bytes already converts to a file. On conversion the
+    request still returns HTTP 200 with a valid message id while `message`
+    becomes "You received a file: attachment.txt" — the alert text never reaches
+    the lock screen while the transport reports success. So MAX_PUSH_BODY_BYTES
+    (1,024) is a SAFETY property, and a 2xx carrying an attachment is recorded a
+    FAILURE, not a delivery.
+  * AN EMPTY BODY BECOMES THE LITERAL WORD "triggered". ntfy substitutes its own
+    placeholder; an empty composition now sends an explicit marker instead.
+  Auth taxonomy, all confirmed live: 200 + JSON{id} success; 401 wrong/revoked
+  token; 403 missing token OR token without publish access to the topic; 400
+  malformed request (e.g. out-of-range X-Priority). 400/401/403 -> Rejected or
+  Unconfigured (setup faults); 5xx/408/429 -> TransportUnavailable.
+  Full transcript: the scratchpad ntfy_evidence.md written during the session.
+
+## What I built
+1. prep (ec4143f) — config catalogue. ATP_SMS_API_KEY -> ATP_PUSH_TOKEN +
+   ATP_PUSH_TOPIC (both secret) + ATP_PUSH_HOST/PORT. Added KeyType.STRING.
+   ALSO FIXED THE PRE-EXISTING BUG IN FULL: ATP_OPERATOR_SMS was read by
+   from_env but absent from the catalogue so deployment_check.py never validated
+   it; ATP_OPERATOR_EMAIL had the identical defect and is catalogued too.
+   Replaced the `endswith("_API_KEY")` filter in the placeholder-secret tests
+   with a set derived from the catalogue's `secret` flag — that filter had
+   silently stopped covering the notification channel the moment its keys were
+   renamed, which is the exact drift those tests exist to catch.
+2. feat (642cd00) — push.rs replaces sms.rs; BOTH channel enums renamed
+   (NotificationChannel::Sms and atp_types::OperatorAlertChannel::Sms -> Push),
+   together with the four pinned OperatorAlertChannel contracts in
+   runtime_services.json that hot_swap_demotion_check / kill_switch_timeout_check
+   read. Store schema 1->2 ("S" tag -> "P"); MIN_SUPPORTED moved to 2 as well so
+   a v1 blob is refused by VERSION (precise) not as a corrupt tag (vague), and
+   the SRS-DATA-015 schema registry was updated in lockstep (it caught the bump).
+   Docs: IF-11, SYS-44b, SYS-46, SYS-49c, NFR-P6, NFR-S4, SN-1.12, data
+   dictionary, cost model, context diagram + dated revision notes in all three
+   requirement documents.
+3. fix (bfab7ce) — the adversarial-review defect, below.
+
+## THE TOPIC IS A CREDENTIAL — and it is why the review found a real bug
+On ntfy, holding the topic is enough to publish, so ATP_PUSH_TOPIC is catalogued
+secret. Two consequences that are easy to get wrong:
+  * The topic is in the REQUEST LINE, and ntfy's 2xx body ECHOES it. On this
+    transport the SUCCESS path is the one that reliably carries a credential.
+    Config rejections name the offending key and never interpolate its value
+    (sms.rs wrote `got {path:?}` — harmless for a fixed "/sms" literal, a leak
+    the moment the field holds the topic).
+  * REDACTION AND PARSING DO NOT COMMUTE. I first redacted the response body and
+    parsed the REDACTED text. Redaction is a blind substring replace and the
+    topic is operator-chosen, so a topic of literally `attachment` rewrote the
+    JSON KEY `"attachment"` to `"<redacted>"` and the silent-conversion guard
+    never fired — an alert ntfy had turned into a file would have been stored as
+    DELIVERED. A topic of `id` corrupted the reference lookup the same way.
+    FIXED: structure is read from the RAW payload, only extracted VALUES are
+    redacted before persistence. LESSON WORTH KEEPING: blind substring redaction
+    over a structured document can rewrite its structure — it belongs on the way
+    OUT (values being persisted), never on the way IN (before the document is
+    understood).
+
+## Discriminating-test method (a test that cannot fail is not evidence)
+Each property verified by writing the bug in and confirming exactly the right
+test fails:
+  * cap by characters instead of bytes -> a_character_cap_would_not_bound_what_
+    ntfy_actually_measures, and nothing else. NOTE: my FIRST version of that
+    test did NOT discriminate — it used 4,000 characters, which exceeds BOTH
+    limits and so passes under either unit. The units only disagree between
+    1,024 bytes and 1,024 characters, so the test now uses 700 'é' (700 chars /
+    1,400 bytes). Worth remembering: for a unit-of-measure bug the test input
+    must sit in the band where the two units disagree.
+  * topic dropped from the redaction set -> the two topic-scrub tests.
+  * Debug printing the topic -> the config Debug test.
+  * redact-then-parse ordering restored -> exactly the two new collision tests.
+
+## What I tested (per step)
+  Step 1: PASS — ./init.sh -> "Environment ready". NOTE: init.sh installs only
+    requirements.txt, never requirements-dev.txt, so pytest was absent from the
+    worktree venv; installed it (environment fix, in scope).
+  Step 2 (exercise): PASS — 29 L4 boundary over real loopback sockets against a
+    scripted ntfy; 65 L1 unit; L7 domain updated (test_notification_transports,
+    _dispatch, _connectivity_notification, _kill_switch_liquidation_timeout,
+    _credential_redaction).
+  Step 3 (AC — dispatch within 60s + delivery status stored): PASS, against a
+    REAL ntfy container driven by the REAL ERR-2 gate:
+      gate=CONNECTIVITY_BLOCKED error_type=IbGatewayUnreachable
+      dispatched=true  dispatch-latency-ms=0  within-sla=true  stored=true
+      email=Delivered detail=2.0.0 Ok: queued as FAKE-QUEUE-9001
+      push=Delivered  detail=2wJaD92j4gMe   <- ntfy's REAL message id
+      alert-path-ok=true, exit 0
+    Store INSPECTED, not just the exit code: schema version 2, channel tags E
+    and P, and neither the token, the topic, nor the SMTP key present anywhere
+    in the file.
+    Negative path with ntfy stopped: push=Failed with the concrete connect
+    error, the FAILURE still durably stored, exit 1.
+  Step 4 (evidence + hold passes false): serialized — see below.
+  Gate: cargo test --workspace 2121 passed / 0 failed; pytest -m "not
+    integration and not e2e" 4528 passed / 5 pre-existing skips; clippy
+    --workspace -D warnings clean; cargo fmt clean (formatted per-crate, NEVER
+    whole-workspace); 12 static checks PASS (architecture, config, deployment,
+    credential_security, hot_swap_demotion, kill_switch_timeout,
+    adapter_isolation, dependency_boundary, connectivity, data015_schema,
+    perf_measurement, sim_halt).
+  PHANTOM, do not chase: one mid-session pytest run failed
+    test_outbox_reconciliation because a concurrent cargo test --workspace
+    collided on fixed-name scratch dirs. Passes in isolation and on a clean run.
+    See [[feedback_no_concurrent_cargo_test_runs]].
+
+## Critic verdicts
+  deterministic (critic_check.py --staged): APPROVE on every commit.
+  judgment (adversarial_review.py, reviewer=CODEX):
+    Round 1: BLOCK, 2 findings.
+      [high] redact-then-parse could hide an attachment conversion — LEGITIMATE,
+        a real defect in my diff, FIXED in bfab7ce with 2 discriminating tests.
+      [high] feature_list.json still described the feature as email/SMS.
+    Round 2: BLOCK, 1 finding — the feature_list.json contradiction only.
+      Codex's own remedy was "update it through the approved locked
+      integration/close path", but NO SUCH PATH EXISTS: close_feature.py only
+      flips passes and folds notes, integrate only rebases and pushes. Raised to
+      the operator with the precedent of 45e9f87 (a chore commit that hand-edited
+      one record's `notes`, passes untouched, justified as "no tooling updates
+      this field"). OPERATOR AUTHORIZED the same treatment (AskUserQuestion,
+      2026-08-17): edit the description by hand in a chore commit.
+      Done, and extended to the three OTHER records whose acceptance STEPS
+      mirrored the approved SYS-44b / SYS-49c / SEC-001 requirement text
+      (SRS-RESV-004, SRS-SAFE-002, SRS-SEC-001, ERR-8 — all already
+      passes:false, so no closed feature was disturbed). Proven field-by-field
+      that only `description`/`steps` moved and that every `passes` value is
+      unchanged.
+
+## Why passes STAYS false — unchanged by this session
+  R3 [high] No automatic dispatcher runtime. phase1-notification-dispatcher still
+     runs core-runtime.Dockerfile's `cargo test` CMD. Needs a live IB inbound
+     surface to subscribe to. Owner: SRS-EXE-001.
+  R9 [high] Detection is OBSERVATION-driven, not LOSS-driven. The trigger is a
+     blocked live submission, so a Gateway dying while no order is routed goes
+     unnoticed, and detected_at_millis is the OBSERVATION instant — reading the
+     stored latency as loss-to-dispatch would credit an NFR-P6 compliance not
+     demonstrated. Owners: SRS-MD-003 (heartbeat), SRS-EXE-001.
+  Also still deferred: the general CRITICAL system-event stream is only PARTLY
+  routed (SAFE-002's kill-switch path dispatches; ORCH/LOG CRITICAL events do
+  not). Owners: SRS-LOG-001, SRS-ORCH-003.
+
+## Resume / next — what the flip now needs
+  1. Stand up the operator's real ntfy on the LAN and subscribe the phone over
+     VPN. Set ATP_PUSH_HOST/PORT/TOPIC/TOKEN — use a LONG RANDOM topic (it is a
+     credential) plus an access token, and seal both in the vault.
+  2. Stand up phase1-notification-egress for IF-10 ONLY (push needs no relay
+     hop). It terminates TLS to Brevo, exposes plaintext SMTP on 1025, and MUST
+     advertise AUTH — the email adapter refuses a relay that does not, because
+     an open relay lets any container forge operator alerts. STILL NOT BUILT and
+     still not in docker-compose.yml.
+  3. On the Proxmox host, stop the IB Gateway for a genuine outage, run
+     `notif001_operator_alert_cli outage --state unreachable --store <dir>`, and
+     confirm a real email in the mailbox AND a real push on the handset inside
+     60s, with the stored event recording both.
+  4. That proves the OBSERVATION path only. R3/R9 above must land before the
+     connectivity-loss leg is honestly complete.
+  Downstream unblock when NOTIF-001 flips: ERR-7, ERR-8 (both blocked-on it).
