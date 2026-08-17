@@ -907,3 +907,61 @@ fn an_accepted_publish_with_no_usable_id_never_fabricates_a_reference() {
     assert_eq!(receipt.reference(), "http-200-no-reference");
     let _ = garbage.handle.join();
 }
+
+/// A topic that collides with a JSON key ntfy uses must not blind the parser.
+///
+/// The bug this pins (found by adversarial review): the transport used to
+/// redact the response body FIRST and parse the redacted text. Redaction is a
+/// blind substring replace and the topic is operator-chosen, so a topic of
+/// `attachment` rewrote the JSON KEY `"attachment"` into `"<redacted>"` — and
+/// the silent-conversion guard never fired. An alert ntfy had turned into a
+/// file would have been recorded as DELIVERED in the durable audit trail.
+///
+/// Structure is now read from the RAW payload and only extracted values are
+/// scrubbed, so a colliding topic changes nothing about what is detected.
+#[test]
+fn a_topic_named_after_a_json_key_can_not_blind_the_attachment_guard() {
+    let channel = PushChannel::new(
+        PushConfig::new("127.0.0.1", 1, "attachment", KEY).expect("config is valid"),
+    );
+    let _ = channel; // config builds; the wire behaviour is asserted below.
+
+    let server = spawn_http(
+        "HTTP/1.1 200 OK",
+        concat!(
+            r#"{"id":"KKGUUf398qAB","event":"message","topic":"attachment","#,
+            r#""message":"You received a file: attachment.txt","#,
+            r#""attachment":{"name":"attachment.txt","size":4097}}"#
+        ),
+        Duration::ZERO,
+    );
+    let colliding = PushChannel::new(
+        PushConfig::new("127.0.0.1", server.port, "attachment", KEY).expect("config is valid"),
+    );
+    match colliding.send(&alert(), Duration::from_secs(5)) {
+        Err(ChannelError::Rejected { detail }) => {
+            assert!(detail.contains("attachment"), "detail: {detail}");
+        }
+        other => panic!("a colliding topic hid the attachment conversion: {other:?}"),
+    }
+    let _ = server.handle.join();
+}
+
+/// The same collision against the reference lookup: a topic of `id` must not
+/// stop the real message id being read, and must still not reach the store.
+#[test]
+fn a_topic_named_id_still_yields_the_real_message_id_and_is_still_redacted() {
+    let server = spawn_http(
+        "HTTP/1.1 200 OK",
+        r#"{"id":"b19RmMeCXTYy","event":"message","topic":"id"}"#,
+        Duration::ZERO,
+    );
+    let channel = PushChannel::new(
+        PushConfig::new("127.0.0.1", server.port, "id", KEY).expect("config is valid"),
+    );
+    let receipt = channel
+        .send(&alert(), Duration::from_secs(5))
+        .expect("ntfy accepted the publish");
+    assert_eq!(receipt.reference(), "b19RmMeCXTYy");
+    let _ = server.handle.join();
+}

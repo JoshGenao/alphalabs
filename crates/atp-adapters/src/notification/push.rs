@@ -268,14 +268,26 @@ impl PushChannel {
         let status = read_status_line(&mut reader, budget, &secrets)?;
         let raw_payload = read_to_end_bounded(&mut reader, budget)?;
 
-        // Scrub BOTH secrets BEFORE the payload can reach a receipt or an error,
-        // each of which the dispatcher PERSISTS to the durable notification
-        // store. This is not defensive decoration: ntfy's 2xx body ECHOES the
-        // topic by design, so on this transport the success path is the one that
-        // reliably carries a credential. A server that also echoes the
-        // Authorization header it was sent -- verbose logging, or hostility --
-        // would write a recoverable ATP_PUSH_TOKEN into the operator's audit
-        // trail the same way.
+        // ORDER MATTERS, AND IT IS THE OPPOSITE OF THE OBVIOUS ONE.
+        //
+        // Every string that reaches a receipt or an error is PERSISTED by the
+        // dispatcher, so both secrets must be scrubbed before that happens —
+        // ntfy's 2xx body echoes the topic by design, so on this transport the
+        // success path is the one that reliably carries a credential, and a
+        // server echoing the Authorization header it was sent (verbose logging,
+        // or hostility) would write back a recoverable ATP_PUSH_TOKEN.
+        //
+        // But scrubbing FIRST and parsing the scrubbed text is wrong, and
+        // dangerously so. `redact_secrets` is a blind substring replace and the
+        // topic is arbitrary — an operator whose topic is literally
+        // `attachment` would have the JSON KEY `"attachment"` rewritten to
+        // `"<redacted>"`, and the silent-conversion check below would never
+        // fire: an alert that ntfy turned into a file would be recorded as
+        // DELIVERED. A topic of `id` corrupts the reference lookup the same way.
+        //
+        // So structure is read from the RAW payload and only the extracted
+        // VALUES are redacted. Free text that is never parsed (error snippets)
+        // is still scrubbed wholesale.
         let payload = redact_secrets(&raw_payload, &secrets);
 
         match status {
@@ -285,8 +297,8 @@ impl PushChannel {
                 // instead of the alert. MAX_PUSH_BODY_BYTES should make this
                 // unreachable, so reaching it means the cap or ntfy's threshold
                 // is wrong -- exactly the case that must be loud rather than
-                // recorded as a delivery.
-                if json_has_key(&payload, "attachment") {
+                // recorded as a delivery. Read from the RAW payload, per above.
+                if json_has_key(&raw_payload, "attachment") {
                     return Err(ChannelError::Rejected {
                         detail: format!(
                             "{CHANNEL}: ntfy converted the alert into a file attachment \
@@ -296,7 +308,12 @@ impl PushChannel {
                         ),
                     });
                 }
-                Ok(ChannelReceipt::new(message_reference(&payload, status)))
+                // Likewise: extract the id from the RAW payload, then scrub the
+                // extracted value before it becomes the persisted reference.
+                Ok(ChannelReceipt::new(redact_secrets(
+                    &message_reference(&raw_payload, status),
+                    &secrets,
+                )))
             }
             // 401 is a wrong/revoked token; 403 is a missing token or a token
             // without publish access to this topic. Both were confirmed against
