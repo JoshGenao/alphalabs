@@ -679,18 +679,26 @@ fn json_object_is_complete(chars: &[char]) -> bool {
         Some(start) if chars[start] == '{' => start,
         _ => return false,
     };
-    let mut depth = 0usize;
+    // A STACK, not a counter. A single depth counter lets a `]` close a `{`, so
+    // `{"id":"x"]` balanced to zero and was accepted as a complete object — a
+    // wrong upstream returning syntactically invalid JSON with a top-level `id`
+    // would have been stored as a delivered operator page. Each closer must match
+    // the opener it is closing.
+    let mut open: Vec<char> = Vec::new();
 
     while index < chars.len() {
         match chars[index] {
-            '{' | '[' => {
-                depth += 1;
+            opener @ ('{' | '[') => {
+                open.push(opener);
                 index += 1;
             }
-            '}' | ']' => {
-                depth = depth.saturating_sub(1);
+            closer @ ('}' | ']') => {
+                let expected = if closer == '}' { '{' } else { '[' };
+                if open.pop() != Some(expected) {
+                    return false;
+                }
                 index += 1;
-                if depth == 0 {
+                if open.is_empty() {
                     // The root closed: everything after it must be whitespace,
                     // so a second document or trailing garbage is refused.
                     return chars[index..].iter().all(|c| c.is_whitespace());
@@ -1008,6 +1016,12 @@ mod tests {
             "",
             "   ",
             r#"[{"id":"x"}]"#,
+            // MISMATCHED delimiters: a single depth counter balanced these to
+            // zero and accepted them. A `]` must not close a `{`.
+            r#"{"id":"x"]"#,
+            r#"{"actions":[{"id":"y"}}]"#,
+            r#"{"a":[1,2}"#,
+            r#"{"a":{"b":1]}"#,
         ] {
             assert!(
                 !json_object_is_complete(&truncated.chars().collect::<Vec<_>>()),

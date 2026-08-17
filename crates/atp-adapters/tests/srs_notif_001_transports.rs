@@ -1098,6 +1098,10 @@ fn a_2xx_with_a_truncated_json_body_is_not_a_delivery() {
         r#"{"id":"EARLY-ID""#,
         r#"{"id":"EARLY-ID","attachment":{"size":4097"#,
         r#"{"#,
+        // Mismatched delimiters: syntactically invalid but carrying a readable
+        // top-level id. A single depth counter accepted these.
+        r#"{"id":"EARLY-ID"]"#,
+        r#"{"id":"x","actions":[{"y":1}}]"#,
     ] {
         let server = spawn_http("HTTP/1.1 200 OK", truncated, Duration::ZERO);
         match push_channel(server.port).send(&alert(), Duration::from_secs(5)) {
