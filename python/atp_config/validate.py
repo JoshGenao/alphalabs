@@ -8,6 +8,7 @@ loaded once at import time from ``architecture/runtime_services.json``.
 
 from __future__ import annotations
 
+import ipaddress
 from collections import defaultdict
 from collections.abc import Mapping
 
@@ -21,6 +22,15 @@ from .schema import (
     ReadinessFailure,
     ReadinessReport,
     Severity,
+)
+
+
+#: The three RFC 1918 blocks, exactly as the Rust adapter's `Ipv4Addr::is_private`
+#: defines them — no more (see :func:`_is_private_egress_address`).
+_RFC1918_V4 = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
 )
 
 
@@ -103,9 +113,53 @@ def _validate_enum(spec: KeySpec, raw: str) -> ReadinessFailure | None:
     return None
 
 
+def _is_private_egress_address(address: ipaddress._BaseAddress) -> bool:
+    """Mirror of ``atp_adapters``' ``is_private_egress_address`` (Rust).
+
+    Written out rather than delegated to :attr:`ipaddress.IPv4Address.is_private`
+    because Python's definition is BROADER than the adapter's: it also counts
+    169.254.0.0/16, 100.64.0.0/10 and 192.0.0.0/24 as private. Accepting a host
+    here that the adapter refuses at send time would reproduce the very bug this
+    validator exists to catch, only inverted — so the two policies are kept
+    literally identical: loopback, plus RFC 1918 for v4 and unique-local
+    (fc00::/7) for v6. Link-local is deliberately EXCLUDED from both:
+    169.254.169.254 is the cloud metadata endpoint, and the transports send a
+    credential immediately after connect.
+    """
+
+    if isinstance(address, ipaddress.IPv6Address):
+        mapped = address.ipv4_mapped
+        if mapped is not None:
+            return _is_private_egress_address(mapped)
+        return address.is_loopback or (int(address) >> 121) == 0b1111110
+    return address.is_loopback or any(address in net for net in _RFC1918_V4)
+
+
 def _validate_host(spec: KeySpec, raw: str) -> ReadinessFailure | None:
     if spec.validator.get("non_empty", True) and not raw.strip():
         return _fail(spec, Severity.ERROR, "host is empty")
+
+    # Keys whose transport refuses non-private egress must be rejected HERE, at
+    # startup, not at send time. A notification endpoint that only fails when it
+    # is finally used fails during the incident it was meant to report — the
+    # operator learns the alert path is broken from the alert that never came.
+    if spec.validator.get("private_egress"):
+        try:
+            address = ipaddress.ip_address(raw.strip())
+        except ValueError:
+            # A HOSTNAME cannot be judged without resolving it, and this
+            # validator is pure (SRS-ARCH-005: no filesystem, no network). The
+            # adapter re-resolves and re-validates on EVERY connect, so a
+            # hostname is checked there; what is decidable here is a literal.
+            return None
+        if not _is_private_egress_address(address):
+            return _fail(
+                spec,
+                Severity.ERROR,
+                f"host {raw.strip()!r} is not a loopback or private (RFC 1918 / "
+                "unique-local) address; this endpoint may not be reached over a "
+                "public network",
+            )
     return None
 
 

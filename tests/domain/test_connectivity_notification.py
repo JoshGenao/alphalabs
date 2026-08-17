@@ -210,3 +210,63 @@ def test_the_delivery_status_is_durably_stored() -> None:
         _run_cargo_test("the_stored_event_is_appended_to_the_durable_audit_store"),
         "SRS-NOTIF-001 durable storage",
     )
+
+
+def test_a_public_push_host_is_refused_at_startup_not_at_alert_time() -> None:
+    """SRS-NOTIF-001 / NFR-P6: the push endpoint must fail readiness, not the page.
+
+    The transport refuses non-private egress at send time (the alert body and a
+    bearer token would otherwise leave the private network). If startup accepted
+    a public host, the ONLY thing that would reveal the misconfiguration is the
+    connectivity-loss alert that never arrives — the failure surfaces during the
+    incident it was supposed to report. So the catalogue validator has to reject
+    it first, and with the SAME policy the adapter enforces.
+
+    Link-local is refused deliberately: 169.254.169.254 is the cloud metadata
+    endpoint, and the transport sends its credential immediately after connect.
+    """
+
+    import sys
+    from pathlib import Path
+
+    python_root = Path(__file__).resolve().parents[2] / "python"
+    if str(python_root) not in sys.path:
+        sys.path.insert(0, str(python_root))
+    from atp_config import REQUIRED_KEYS, load_and_validate
+
+    def env_with(host: str) -> dict[str, str]:
+        env = {s.name: s.default for s in REQUIRED_KEYS if s.default is not None}
+        env["ATP_PUSH_HOST"] = host
+        return env
+
+    def push_errors(host: str) -> list[str]:
+        report = load_and_validate(env_with(host))
+        return [f.reason for f in report.errors if f.key == "ATP_PUSH_HOST"]
+
+    # Reachable only over a private network — accepted.
+    for allowed in (
+        "127.0.0.1",
+        "10.1.2.3",
+        "172.16.4.1",
+        "192.168.1.10",
+        "::1",
+        "fc00::1",
+        "::ffff:192.168.1.10",
+        "ntfy.lan",  # a hostname is re-validated per connect by the adapter
+    ):
+        assert not push_errors(allowed), f"{allowed} must pass readiness"
+
+    # Public, carrier-grade NAT, link-local, and the IPv4-mapped forms — refused.
+    for refused in (
+        "8.8.8.8",
+        "1.1.1.1",
+        "169.254.169.254",
+        "172.32.0.1",
+        "100.64.0.1",
+        "2001:4860:4860::8888",
+        "fe80::1",
+        "::ffff:8.8.8.8",
+    ):
+        reasons = push_errors(refused)
+        assert reasons, f"{refused} must FAIL readiness before any alert is due"
+        assert "public network" in reasons[0], reasons

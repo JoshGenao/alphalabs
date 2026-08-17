@@ -456,21 +456,32 @@ fn read_status_line(
         "response status",
         MAX_STATUS_LINE_BYTES,
     )?;
-    // Redact BEFORE any error is constructed from this line. A malformed status
-    // line is server-controlled text that flows straight into a persisted
-    // ChannelError detail, so scrubbing it later in `post` is too late.
-    let line = redact_secrets(&String::from_utf8_lossy(&raw), secrets);
     if raw.is_empty() {
         return Err(ChannelError::TransportUnavailable {
             detail: format!("{CHANNEL}: ntfy closed the connection before replying"),
         });
     }
 
+    // PARSE THE RAW LINE; REDACT ONLY WHAT GOES INTO AN ERROR.
+    //
+    // Same rule as the response body, and it was missed here first time round:
+    // redaction and parsing do not commute. `redact_secrets` is a blind
+    // substring replace over an operator-chosen topic, so a topic of `HTTP` or
+    // `200` would rewrite the protocol token or the status code inside
+    // `HTTP/1.1 200 OK` — turning a perfectly good ntfy success into "reply is
+    // not HTTP" and recording a failed operator page for a delivery that
+    // actually happened.
+    let line = String::from_utf8_lossy(&raw);
+    let scrubbed = || redact_secrets(&line, secrets);
+
     let mut parts = line.split_whitespace();
     let version = parts.next().unwrap_or_default();
     if !version.starts_with("HTTP/") {
         return Err(ChannelError::TransportUnavailable {
-            detail: format!("{CHANNEL}: ntfy reply is not HTTP: {}", body_snippet(&line)),
+            detail: format!(
+                "{CHANNEL}: ntfy reply is not HTTP: {}",
+                body_snippet(&scrubbed())
+            ),
         });
     }
     parts
@@ -479,7 +490,7 @@ fn read_status_line(
         .ok_or_else(|| ChannelError::TransportUnavailable {
             detail: format!(
                 "{CHANNEL}: ntfy reply has no status code: {}",
-                body_snippet(&line)
+                body_snippet(&scrubbed())
             ),
         })
 }

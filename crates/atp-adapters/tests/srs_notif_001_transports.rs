@@ -1024,3 +1024,51 @@ fn a_2xx_larger_than_the_read_cap_is_a_failure_not_a_delivery() {
     }
     let _ = handle.join();
 }
+
+/// A topic that collides with the STATUS LINE must not turn a success into a
+/// failure.
+///
+/// Found by adversarial review. `read_status_line` redacted before parsing, and
+/// the topic is operator-chosen from `[A-Za-z0-9_-]`, so a topic of `HTTP` or
+/// `200` rewrote the protocol token or the status code inside
+/// `HTTP/1.1 200 OK` — a real ntfy delivery was recorded as "reply is not HTTP".
+/// Same rule as the body: parse raw, redact only what reaches an error.
+#[test]
+fn a_topic_colliding_with_the_status_line_does_not_break_a_successful_publish() {
+    for topic in ["HTTP", "200", "OK"] {
+        let server = spawn_http(
+            "HTTP/1.1 200 OK",
+            r#"{"id":"b19RmMeCXTYy","event":"message"}"#,
+            Duration::ZERO,
+        );
+        let channel = PushChannel::new(
+            PushConfig::new("127.0.0.1", server.port, topic, KEY).expect("config is valid"),
+        );
+        let receipt = channel
+            .send(&alert(), Duration::from_secs(5))
+            .unwrap_or_else(|err| panic!("topic {topic:?} broke a real delivery: {err:?}"));
+        assert_eq!(receipt.reference(), "b19RmMeCXTYy");
+        let _ = server.handle.join();
+    }
+}
+
+/// ...and a malformed status line still has its secrets scrubbed.
+///
+/// The pair matters: fixing the collision by simply dropping the redaction would
+/// pass the test above and leak a credential into the persisted error.
+#[test]
+fn a_malformed_status_line_is_still_scrubbed_after_the_parse_order_fix() {
+    let server = spawn_http(
+        "NOTHTTP Authorization: Bearer relay-secret atp-alerts-9f8e7d6c5b4a3210",
+        "",
+        Duration::ZERO,
+    );
+    match push_channel(server.port).send(&alert(), Duration::from_secs(5)) {
+        Err(ChannelError::TransportUnavailable { detail }) => {
+            assert!(!detail.contains(KEY), "token leaked: {detail}");
+            assert!(!detail.contains(PUSH_TOPIC), "topic leaked: {detail}");
+        }
+        other => panic!("expected TransportUnavailable, got {other:?}"),
+    }
+    let _ = server.handle.join();
+}

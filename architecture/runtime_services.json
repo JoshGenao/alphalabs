@@ -2930,7 +2930,8 @@
         "category": "notification_channels",
         "type": "host",
         "validator": {
-          "non_empty": true
+          "non_empty": true,
+          "private_egress": true
         },
         "default": "127.0.0.1",
         "secret": false,
