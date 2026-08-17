@@ -122,7 +122,13 @@ def _validate_charset(spec: KeySpec, raw: str) -> ReadinessFailure | None:
 
 
 def _validate_secret(spec: KeySpec, raw: str, atp_env: str | None) -> ReadinessFailure | None:
-    if spec.validator.get("non_empty", True) and not raw:
+    # `strip()`, not just a length check: a whitespace-only secret is unusable,
+    # and every consumer already treats it that way — `PushConfig::new` and
+    # `SmtpRelayConfig::new` both reject `trim().is_empty()`. Accepting it here
+    # made startup validation assert a channel was configured when the transport
+    # would refuse it, so the operator would learn the alert path was broken from
+    # the alert that never arrived.
+    if spec.validator.get("non_empty", True) and not raw.strip():
         return _fail(spec, Severity.ERROR, "secret is empty")
     # Shape before placeholder-severity: a malformed value is an ERROR in every
     # environment, and reporting it as a mere development-mode warning would let

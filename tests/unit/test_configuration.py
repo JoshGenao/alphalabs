@@ -117,6 +117,24 @@ class ValidatorBehaviourTest(unittest.TestCase):
             self.assertEqual(failure.severity, Severity.ERROR)
             self.assertIn("production", failure.reason)
 
+    def test_a_whitespace_only_secret_is_as_unset_as_an_empty_one(self) -> None:
+        """Every consumer trims; startup validation must agree.
+
+        `PushConfig::new` and `SmtpRelayConfig::new` both reject a
+        `trim().is_empty()` credential. A validator that accepted `"   "` would
+        declare a required notification channel ready when the transport would
+        refuse it — so the break surfaces at dispatch, during the incident.
+        """
+
+        for blank in ("", "   ", "\t", "\n "):
+            for key in sorted(_PLACEHOLDER_SECRET_KEYS):
+                env = _defaults()
+                env[key] = blank
+                report = load_and_validate(env)
+                errors = [f for f in report.errors if f.key == key]
+                self.assertTrue(errors, f"{key}={blank!r} must be a readiness ERROR")
+                self.assertIn("empty", errors[0].reason)
+
     def test_push_topic_is_catalogued_secret(self) -> None:
         """On ntfy the topic IS a credential — holding it is enough to publish.
 
