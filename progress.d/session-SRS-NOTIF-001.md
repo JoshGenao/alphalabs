@@ -592,3 +592,89 @@ test fails:
   4. That proves the OBSERVATION path only. R3/R9 above must land before the
      connectivity-loss leg is honestly complete.
   Downstream unblock when NOTIF-001 flips: ERR-7, ERR-8 (both blocked-on it).
+
+## ADVERSARIAL REVIEW: 15 CODEX ROUNDS, 19 DEFECTS FIXED (2026-08-17)
+Every round's findings are recorded in the commit that fixed them; this is the
+index and, more usefully, the PATTERNS.
+
+R1  redact-then-parse hid an attachment conversion. A topic of literally
+    `attachment` rewrote the JSON KEY before the guard read it, so an alert ntfy
+    had turned into a file was stored DELIVERED. Also: feature_list.json still
+    said email/SMS (see the operator-authorised chore).
+R3  the capped response read returned a truncated body as SUCCESS; and a v1
+    store on disk would have blocked the NEXT alert from being stored at all
+    (append_durably loads before it writes).
+R4  a 2xx with no ntfy `id` was stored as Delivered (inherited from the SMS
+    adapter, where a bodyless accept was legitimate); the supersede archive name
+    was fixed, and fs::rename OVERWRITES, so a second supersede destroyed the
+    first archive.
+R5  a public ATP_PUSH_HOST passed startup and failed only at alert time; the
+    status line was still redacted before being parsed (a topic of `HTTP` or
+    `200` turned a real delivery into a false failure).
+R6  a push HOSTNAME still bypassed the startup gate; the crate scope docs still
+    described push as relay-backed.
+R7  the host policy lived only in the Python validator — `PushConfig::from_env`,
+    the production path, never consults it.
+R8  the stored NFR-P6 latency was stamped BEFORE the worker spawned, so a
+    delayed worker recorded ~0ms and passed the SLA with nothing sent; a JSON
+    ARRAY root satisfied the "must carry an id" guard.
+R9  ATP_SMTP_SENDER was read but never catalogued; a malformed ATP_PUSH_TOPIC
+    (`topic/with/slash`) passed readiness.
+R10 `{"id":"EARLY-ID"` — a truncated reply — was stored as Delivered.
+R11 a whitespace-only secret passed readiness (`not raw` vs `not raw.strip()`).
+R12 one depth counter let `]` close `{`.
+R13 the delimiter stack skipped arbitrary tokens: `{"id":"ok" garbage}` passed.
+R14 invalid JSON escapes and raw control characters inside strings passed; the
+    host was validated trimmed and STORED untrimmed.
+
+### PATTERNS WORTH KEEPING
+1. **Startup validation must reject exactly what the transport rejects.**
+   R5, R6, R7, R9, R11 and half of R14 are all one bug wearing six hats: a
+   readiness gate that says "configured" where the send path says "refused".
+   The failure mode is always the same and always the worst one — the operator
+   learns the alert path is broken FROM THE ALERT THAT NEVER CAME. When two
+   layers both validate, they must share one definition; `_is_private_egress_address`
+   is written out longhand in Python precisely so it cannot drift from the Rust.
+2. **Never conclude anything from a document you have not established is whole.**
+   R3, R8, R10, R12, R13, R14 are one bug shrinking: truncated-read-as-success,
+   array-vs-object, truncated-but-id-bearing, `]` closing `{`, tokens skipped,
+   loose escapes. Each fix left a smaller version. THAT is the signal the
+   property was wrong — "are the brackets tidy" was never the question. Only
+   validating the grammar answers "is this the document ntfy sends". When three
+   consecutive fixes are the same bug, stop patching and change the property.
+3. **Redaction and parsing do not commute.** Blind substring redaction over a
+   structured document can rewrite its structure (R1, R5). It belongs on the way
+   OUT — on values being persisted — never on the way IN.
+4. **A test that cannot fail is not evidence, and check it.** My byte-cap test
+   used 4,000 characters, which exceeds BOTH limits and so passes under either
+   unit; the units only disagree between 1,024 bytes and 1,024 chars. And this
+   suite's ACCEPT list contained `{"id":"has "unescaped" quotes"}` — invalid
+   JSON that the loose scanner accepted, so the test enshrined the bug until R14
+   removed it. Every fix this session was verified by writing the bug back in.
+
+### DECLINED, four times, with reasons
+Codex asks (R4, R7, R12, R15; confidence 0.74 -> 0.91) that pre-v2 store records
+stay readable in the ACTIVE audit path. Declined: a v1 record states an SMS
+delivery, so "keeping it live" means either restating it as a push delivery — a
+false entry in an audit trail whose entire design forbids that — or adding a
+permanent legacy-channel variant that must then be threaded through the store's
+required-channel symmetry check, the most safety-critical validation in the
+crate, to represent ZERO real records (SRS-NOTIF-001 has never run against a real
+provider). The bytes are preserved under a self-describing name and are readable
+with the v1 codec from git history. THIS IS A JUDGEMENT CALL AND IT IS RECORDED
+AS ONE, not as an oversight.
+
+### OPEN, and NOT mine to land unasked (round 15)
+Two real, PRE-EXISTING defects in SRS-SAFE-002's composition
+(crates/atp-orchestrator/src/kill_switch_timeout.rs) — the same two classes this
+session fixed on the connectivity path:
+  * `NotifierAlertSink` dispatches the critical-failure alert but keeps the
+    NotificationEvent in an in-memory RefCell and NEVER calls
+    append_durably — so SRS-NOTIF-001's "delivery status is stored as a
+    notification event" is unmet on the CriticalFailure trigger.
+  * it passes `observed_at_seconds * 1000` as BOTH detection and
+    dispatch-began, so dispatch_latency_millis() is always 0 — the same
+    fabricated-SLA-evidence bug fixed for connectivity in R8.
+Both are SRS-SAFE-002's code and changing them alters a serialized feature
+awaiting operator verification, so they are surfaced rather than silently fixed.
+Owner decision required.
