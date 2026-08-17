@@ -1102,6 +1102,11 @@ fn a_2xx_with_a_truncated_json_body_is_not_a_delivery() {
         // top-level id. A single depth counter accepted these.
         r#"{"id":"EARLY-ID"]"#,
         r#"{"id":"x","actions":[{"y":1}}]"#,
+        // Balanced AND well-delimited, but not valid JSON. The guard's question
+        // is "is this the document ntfy sends", not "are the brackets tidy".
+        r#"{"id":"EARLY-ID" garbage}"#,
+        r#"{id:"EARLY-ID"}"#,
+        r#"{"id":"EARLY-ID",}"#,
     ] {
         let server = spawn_http("HTTP/1.1 200 OK", truncated, Duration::ZERO);
         match push_channel(server.port).send(&alert(), Duration::from_secs(5)) {

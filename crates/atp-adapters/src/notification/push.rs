@@ -662,57 +662,149 @@ fn json_string_field(payload: &str, key: &str) -> Option<String> {
     None
 }
 
-/// Whether the payload is ONE complete, balanced JSON object and nothing else.
+/// Whether the payload is ONE complete, VALID JSON object and nothing else.
 ///
-/// The 2xx path needs this before it trusts anything it scanned out of the body.
-/// Found by adversarial review: `message_reference` only looks for a top-level
-/// string `id`, and a prematurely closed reply like `{"id":"EARLY-ID"` contains a
-/// perfectly complete string value — so a response truncated by a crash, a proxy
-/// cutting the connection, or a half-written write was being stored as a
-/// DELIVERED operator page. Scanning a fragment tells you what it happens to
-/// contain, never that it is the document it claims to be.
+/// A strict recursive-descent validator over the JSON grammar, hand-written for
+/// the same zero-dependency reason as the email transport's base64 encoder.
 ///
-/// Returns false for: an unbalanced object, an unterminated string, trailing
-/// content after the root closes, and anything whose root is not an object.
+/// It got here in three steps, and the steps are the reason it is strict rather
+/// than approximate. First it did not exist, and `{"id":"EARLY-ID"` — a reply cut
+/// short mid-write — was stored as a delivered operator page because it happened
+/// to contain a readable string. Then it balanced one depth counter, and
+/// `{"id":"x"]` passed because a `]` could close a `{`. Then it matched
+/// delimiters with a stack, and `{"id":"ok" garbage}` passed because anything
+/// between delimiters was skipped. Each fix left a smaller version of the same
+/// hole, which is the signal that the property being checked was wrong: the
+/// question is not "are the brackets tidy" but "is this the document ntfy sends".
+/// Only validating the grammar answers that.
+///
+/// This does not build a value — the field scanners do that. It establishes that
+/// there IS a whole, well-formed object to scan, so that a conclusion drawn from
+/// what the body does NOT contain (no `attachment` key) is sound.
 fn json_object_is_complete(chars: &[char]) -> bool {
-    let mut index = match chars.iter().position(|c| !c.is_whitespace()) {
-        Some(start) if chars[start] == '{' => start,
+    let start = match chars.iter().position(|c| !c.is_whitespace()) {
+        Some(index) if chars[index] == '{' => index,
         _ => return false,
     };
-    // A STACK, not a counter. A single depth counter lets a `]` close a `{`, so
-    // `{"id":"x"]` balanced to zero and was accepted as a complete object — a
-    // wrong upstream returning syntactically invalid JSON with a top-level `id`
-    // would have been stored as a delivered operator page. Each closer must match
-    // the opener it is closing.
-    let mut open: Vec<char> = Vec::new();
+    match json_object(chars, start) {
+        Some(end) => chars[end..].iter().all(|c| c.is_whitespace()),
+        None => false,
+    }
+}
 
-    while index < chars.len() {
-        match chars[index] {
-            opener @ ('{' | '[') => {
-                open.push(opener);
+/// Skip JSON whitespace, returning the next index.
+fn json_ws(chars: &[char], mut index: usize) -> usize {
+    while index < chars.len() && matches!(chars[index], ' ' | '\t' | '\n' | '\r') {
+        index += 1;
+    }
+    index
+}
+
+/// Validate one JSON value at `index`; returns the index just past it.
+fn json_value(chars: &[char], index: usize) -> Option<usize> {
+    match chars.get(index)? {
+        '{' => json_object(chars, index),
+        '[' => json_array(chars, index),
+        '"' => read_json_string(chars, index).map(|(_, next)| next),
+        't' => json_literal(chars, index, "true"),
+        'f' => json_literal(chars, index, "false"),
+        'n' => json_literal(chars, index, "null"),
+        c if *c == '-' || c.is_ascii_digit() => json_number(chars, index),
+        _ => None,
+    }
+}
+
+fn json_literal(chars: &[char], index: usize, word: &str) -> Option<usize> {
+    let end = index + word.chars().count();
+    if chars.get(index..end)?.iter().copied().eq(word.chars()) {
+        Some(end)
+    } else {
+        None
+    }
+}
+
+/// `-? int frac? exp?` per the JSON grammar: no leading `+`, no leading zeros, a
+/// decimal point must have digits on both sides.
+fn json_number(chars: &[char], mut index: usize) -> Option<usize> {
+    if chars.get(index) == Some(&'-') {
+        index += 1;
+    }
+    match chars.get(index)? {
+        '0' => index += 1,
+        c if c.is_ascii_digit() => {
+            while chars.get(index).is_some_and(|c| c.is_ascii_digit()) {
                 index += 1;
             }
-            closer @ ('}' | ']') => {
-                let expected = if closer == '}' { '{' } else { '[' };
-                if open.pop() != Some(expected) {
-                    return false;
-                }
-                index += 1;
-                if open.is_empty() {
-                    // The root closed: everything after it must be whitespace,
-                    // so a second document or trailing garbage is refused.
-                    return chars[index..].iter().all(|c| c.is_whitespace());
-                }
-            }
-            '"' => match read_json_string(chars, index) {
-                Some((_, next)) => index = next,
-                None => return false, // unterminated string
-            },
-            _ => index += 1,
+        }
+        _ => return None,
+    }
+    if chars.get(index) == Some(&'.') {
+        index += 1;
+        if !chars.get(index).is_some_and(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        while chars.get(index).is_some_and(|c| c.is_ascii_digit()) {
+            index += 1;
         }
     }
-    // Ran out of input with the object still open.
-    false
+    if matches!(chars.get(index), Some('e' | 'E')) {
+        index += 1;
+        if matches!(chars.get(index), Some('+' | '-')) {
+            index += 1;
+        }
+        if !chars.get(index).is_some_and(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        while chars.get(index).is_some_and(|c| c.is_ascii_digit()) {
+            index += 1;
+        }
+    }
+    Some(index)
+}
+
+fn json_object(chars: &[char], index: usize) -> Option<usize> {
+    if chars.get(index) != Some(&'{') {
+        return None;
+    }
+    let mut index = json_ws(chars, index + 1);
+    if chars.get(index) == Some(&'}') {
+        return Some(index + 1);
+    }
+    loop {
+        // A member key must be a string — a bare word is not JSON.
+        index = read_json_string(chars, index).map(|(_, next)| next)?;
+        index = json_ws(chars, index);
+        if chars.get(index) != Some(&':') {
+            return None;
+        }
+        index = json_ws(chars, index + 1);
+        index = json_value(chars, index)?;
+        index = json_ws(chars, index);
+        match chars.get(index)? {
+            ',' => index = json_ws(chars, index + 1),
+            '}' => return Some(index + 1),
+            _ => return None,
+        }
+    }
+}
+
+fn json_array(chars: &[char], index: usize) -> Option<usize> {
+    if chars.get(index) != Some(&'[') {
+        return None;
+    }
+    let mut index = json_ws(chars, index + 1);
+    if chars.get(index) == Some(&']') {
+        return Some(index + 1);
+    }
+    loop {
+        index = json_value(chars, index)?;
+        index = json_ws(chars, index);
+        match chars.get(index)? {
+            ',' => index = json_ws(chars, index + 1),
+            ']' => return Some(index + 1),
+            _ => return None,
+        }
+    }
 }
 
 /// Whether the payload's first non-whitespace character opens an OBJECT.
@@ -783,7 +875,14 @@ fn json_has_key(payload: &str, key: &str) -> bool {
 /// is decoded only far enough to keep scanning correct — the escape is consumed
 /// so its digits can never be mistaken for structure.
 fn read_json_string(chars: &[char], start: usize) -> Option<(String, usize)> {
-    debug_assert_eq!(chars.get(start), Some(&'"'));
+    // A GUARD, not a debug assertion. The grammar validator calls this wherever a
+    // string is REQUIRED (an object member's key), so "there is no quote here" is
+    // an ordinary parse failure that must be reported — `{id:"ok"}` has a bare
+    // word where JSON demands a string. A debug_assert made that a panic in
+    // debug builds and, worse, silently skipped the check in release.
+    if chars.get(start) != Some(&'"') {
+        return None;
+    }
     let mut out = String::new();
     let mut index = start + 1;
     while index < chars.len() {
@@ -1022,6 +1121,25 @@ mod tests {
             r#"{"actions":[{"id":"y"}}]"#,
             r#"{"a":[1,2}"#,
             r#"{"a":{"b":1]}"#,
+            // BALANCED but not valid JSON: the grammar has to be checked, not
+            // just the brackets. Each of these carries a readable top-level id.
+            r#"{"id":"ok" garbage}"#,
+            r#"{"id":"ok",}"#,
+            r#"{"id":"ok" "extra":"x"}"#,
+            r#"{id:"ok"}"#,
+            r#"{"id":ok}"#,
+            r#"{"id":"ok","n":01}"#,
+            r#"{"id":"ok","n":.5}"#,
+            r#"{"id":"ok","n":1.}"#,
+            r#"{"id":"ok","n":1e}"#,
+            r#"{"id":"ok","b":TRUE}"#,
+            r#"{"id":"ok","x":}"#,
+            r#"{,"id":"ok"}"#,
+            // UNESCAPED quote inside a string value. The old scanner ended the
+            // string early and skipped the remainder as garbage, so this was
+            // accepted — it was in this test's ACCEPT list until the strict
+            // validator landed, which is how the review caught it.
+            r#"{"id":"has "unescaped" quotes"}"#,
         ] {
             assert!(
                 !json_object_is_complete(&truncated.chars().collect::<Vec<_>>()),
@@ -1037,7 +1155,7 @@ mod tests {
             r#"{"id":"b19RmMeCXTYy"}"#,
             r#"  {"id":"x","attachment":{"name":"a.txt","size":4097}}  "#,
             r#"{"id":"x","actions":[{"id":"y"}]}"#,
-            r#"{"id":"has "escaped" quotes and a } brace"}"#,
+            "{\"id\":\"has \\\"escaped\\\" quotes and a } brace\"}",
         ] {
             assert!(
                 json_object_is_complete(&good.chars().collect::<Vec<_>>()),
