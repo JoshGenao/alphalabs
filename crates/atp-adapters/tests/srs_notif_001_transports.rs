@@ -965,3 +965,60 @@ fn a_topic_named_id_still_yields_the_real_message_id_and_is_still_redacted() {
     assert_eq!(receipt.reference(), "b19RmMeCXTYy");
     let _ = server.handle.join();
 }
+
+/// A 2xx too large to read in full must NOT be recorded as a delivery.
+///
+/// Found by adversarial review. The capped read used to return the truncated
+/// prefix as success, and `post` then drew a conclusion from what was ABSENT:
+/// a body whose `attachment` key sat past the 64 KiB cap looked exactly like a
+/// clean delivery, so an alert ntfy had turned into a file would have been
+/// stored as Delivered. A reply the adapter cannot read in full leaves the
+/// outcome indeterminate, and on an alert path indeterminate must record as a
+/// failure.
+#[test]
+fn a_2xx_larger_than_the_read_cap_is_a_failure_not_a_delivery() {
+    // 128 KiB of padding, with the attachment signal only at the very end —
+    // past any cap, exactly the shape that used to slip through.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().expect("local addr").port();
+    let handle = thread::spawn(move || {
+        let Ok((stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut reader = BufReader::new(stream);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
+            }
+            if line.trim().is_empty() {
+                break;
+            }
+        }
+        let padding = "x".repeat(128 * 1024);
+        let body = format!(
+            "{{\"id\":\"EARLY-ID\",\"pad\":\"{padding}\",\"attachment\":{{\"size\":4097}}}}"
+        );
+        let mut socket: &TcpStream = reader.get_ref();
+        let _ = socket.write_all(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        );
+        let _ = socket.flush();
+    });
+
+    let channel = PushChannel::new(
+        PushConfig::new("127.0.0.1", port, PUSH_TOPIC, KEY).expect("config is valid"),
+    );
+    match channel.send(&alert(), Duration::from_secs(5)) {
+        Err(ChannelError::TransportUnavailable { detail }) => {
+            assert!(detail.contains("truncated"), "detail: {detail}");
+        }
+        other => panic!("an unreadable oversized 2xx must not be a delivery: {other:?}"),
+    }
+    let _ = handle.join();
+}

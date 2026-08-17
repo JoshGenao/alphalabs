@@ -438,7 +438,17 @@ pub(crate) fn read_line_budgeted(
 }
 
 /// Read to end of stream under the same per-read budget discipline as
-/// [`read_line_budgeted`], stopping at `max_bytes`.
+/// [`read_line_budgeted`], **failing closed** at `max_bytes`.
+///
+/// Reaching the cap is an error, not a short read. Returning the truncated
+/// prefix as if it were the whole reply is unsafe on this path because callers
+/// draw conclusions from what is ABSENT: the push transport reads a 2xx body to
+/// decide whether ntfy converted the alert into a file attachment, and a
+/// truncated body with the `attachment` key past the cap would look exactly like
+/// a clean delivery. A reply the adapter cannot read in full leaves the outcome
+/// INDETERMINATE, and on an alert path an indeterminate outcome must be recorded
+/// as a failure rather than a success. (A well-formed ntfy reply is ~150 bytes,
+/// so hitting a 64 KiB cap is never legitimate traffic.)
 pub(crate) fn read_to_end_budgeted(
     reader: &mut BufReader<TcpStream>,
     budget: &SendBudget,
@@ -462,7 +472,12 @@ pub(crate) fn read_to_end_budgeted(
         collected.extend_from_slice(&available[..take]);
         reader.consume(take);
         if collected.len() >= max_bytes {
-            break;
+            return Err(ChannelError::TransportUnavailable {
+                detail: format!(
+                    "{channel}: reply exceeded the {max_bytes}-byte cap during {stage} — \
+                     refusing to interpret a truncated response"
+                ),
+            });
         }
     }
     Ok(collected)

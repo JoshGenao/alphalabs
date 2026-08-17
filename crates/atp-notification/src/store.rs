@@ -334,11 +334,50 @@ impl NotificationEventStore {
             }
         }
         let _lock = acquired.expect("loop set the lock or returned early");
-        let mut store = Self::load_from_path(dir)?;
+        let mut store = Self::load_or_supersede_obsolete(dir)?;
         store.append(event);
         store.save_to_path(dir)?;
         Ok(())
         // `_lock` drops here → the lock file is removed, releasing the next writer.
+    }
+
+    /// Load for an append, moving a store too OLD to read aside first.
+    ///
+    /// `append_durably` has to read the existing store before it can add to it,
+    /// so a pre-v2 file on disk would make every subsequent append fail — an
+    /// operator upgrading with prior notification evidence could not store the
+    /// NEXT alert at all. On an alert path "cannot record the page" is the worst
+    /// available outcome, so a store whose schema predates
+    /// [`MIN_SUPPORTED_SCHEMA_VERSION`] is renamed to
+    /// `notification_events.store.v<n>.superseded` and the append proceeds
+    /// against a fresh store.
+    ///
+    /// Three deliberate properties:
+    ///
+    /// * **Only a too-old VERSION qualifies.** `Corrupt`, `ChecksumMismatch` and
+    ///   `Io` still fail closed exactly as before — those mean tampering, disk
+    ///   rot or a broken filesystem, and none of them may be resolved by moving
+    ///   the evidence out of the way.
+    /// * **Nothing is deleted, and nothing is migrated.** The old bytes are kept
+    ///   under a self-describing name. They are NOT re-read into the new schema:
+    ///   a v1 event records a delivery to the SMS channel, and rewriting that as
+    ///   a push delivery would put a statement in the audit trail that never
+    ///   happened. Retiring a channel retires its evidence with it.
+    /// * **The rename must succeed.** If it fails the append fails, so the old
+    ///   file can never be silently overwritten by the new store.
+    fn load_or_supersede_obsolete(dir: &Path) -> Result<Self, NotificationStoreError> {
+        match Self::load_from_path(dir) {
+            Err(NotificationStoreError::UnknownSchemaVersion { found })
+                if found < MIN_SUPPORTED_SCHEMA_VERSION =>
+            {
+                let live = dir.join(STORE_FILENAME);
+                let retired = dir.join(format!("{STORE_FILENAME}.v{found}.superseded"));
+                fs::rename(&live, &retired)
+                    .map_err(|err| io_error("supersede obsolete store", &err))?;
+                Ok(Self::default())
+            }
+            other => other,
+        }
     }
 }
 

@@ -38,6 +38,7 @@ use atp_notification::event::{
 };
 use atp_notification::store::{
     NotificationEventStore, NotificationStoreError, NotificationStoreLock, MAGIC, SCHEMA_VERSION,
+    STORE_FILENAME,
 };
 
 // --------------------------------------------------------------------------- //
@@ -821,4 +822,98 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
 
 fn cleanup(dir: &std::path::Path) {
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A store too OLD to read must not block the NEXT alert from being stored.
+///
+/// Found by adversarial review. `append_durably` loads the existing store before
+/// appending, so raising MIN_SUPPORTED_SCHEMA_VERSION to 2 meant a pre-v2 file on
+/// disk made every subsequent append fail — an upgraded deployment carrying
+/// earlier notification evidence could not record the next operator page at all.
+/// On an alert path that is the worst available outcome.
+#[test]
+fn an_obsolete_store_is_superseded_so_the_next_alert_can_still_be_stored() {
+    let dir = temp_dir("notif-obsolete");
+    std::fs::create_dir_all(&dir).unwrap();
+    // A v1 blob: the old schema version, with the old "S" (SMS) channel tag.
+    let v1 = {
+        let mut body = String::new();
+        body.push_str("1\n1\nC\n");
+        body.push_str("1\nx\n");
+        body.push_str("100\n200\n2\n");
+        body.push_str("E\nD\n2\nok\n");
+        body.push_str("S\nD\n2\nok\n");
+        format!("{MAGIC}\n{}\n{}", fnv1a(body.as_bytes()), body)
+    };
+    let live = dir.join(STORE_FILENAME);
+    std::fs::write(&live, &v1).expect("write v1 store");
+
+    // Reading it directly still refuses, loudly and by VERSION.
+    match NotificationEventStore::load_from_path(&dir) {
+        Err(NotificationStoreError::UnknownSchemaVersion { found: 1 }) => {}
+        other => panic!("expected UnknownSchemaVersion{{1}}, got {other:?}"),
+    }
+
+    // But an append succeeds: the obsolete file is moved aside, not deleted.
+    NotificationEventStore::append_durably(&dir, one_event())
+        .expect("the next alert must be storable");
+
+    let retired = dir.join(format!("{STORE_FILENAME}.v1.superseded"));
+    assert!(
+        retired.is_file(),
+        "the old evidence must be kept, not deleted"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&retired).expect("read retired"),
+        v1,
+        "the retired bytes must be untouched"
+    );
+    let reloaded = NotificationEventStore::load_from_path(&dir).expect("fresh store reads back");
+    assert_eq!(
+        reloaded.len(),
+        1,
+        "exactly the new event — v1 is NOT migrated"
+    );
+}
+
+/// Corruption must STILL fail closed — only a too-old version is superseded.
+///
+/// The distinction is the whole point: a bad checksum means tampering or disk
+/// rot, and moving that evidence out of the way to keep writing would be exactly
+/// the silent-loss behaviour the store is built to prevent.
+#[test]
+fn a_corrupt_store_is_never_superseded_it_still_fails_closed() {
+    let dir = temp_dir("notif-corrupt-keep");
+    std::fs::create_dir_all(&dir).unwrap();
+    let body = "2\n0\n";
+    // Valid magic + structure, deliberately WRONG checksum.
+    std::fs::write(
+        dir.join(STORE_FILENAME),
+        format!("{MAGIC}\n{}\n{}", 12345_u64, body),
+    )
+    .expect("write corrupt store");
+
+    match NotificationEventStore::append_durably(&dir, one_event()) {
+        Err(NotificationStoreError::ChecksumMismatch) => {}
+        other => panic!("corruption must fail closed, got {other:?}"),
+    }
+    assert!(
+        !dir.join(format!("{STORE_FILENAME}.v2.superseded")).exists(),
+        "corruption must never be moved aside"
+    );
+    assert!(
+        dir.join(STORE_FILENAME).is_file(),
+        "the corrupt file stays put"
+    );
+}
+
+/// One real dispatched event, for the store tests above.
+fn one_event() -> atp_notification::NotificationEvent {
+    let email = Arc::new(AcceptingChannel::new(NotificationChannel::Email, "smtp-1"));
+    let push = Arc::new(AcceptingChannel::new(NotificationChannel::Push, "ntfy-1"));
+    let set = channels(vec![email, push]);
+    let trigger = NotificationTrigger::connectivity_loss("IB gateway unreachable", 500_000);
+    OperatorNotifier::new()
+        .dispatch(&trigger, 510_000, &set)
+        .expect("dispatch")
 }
